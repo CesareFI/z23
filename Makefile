@@ -13749,7 +13749,7 @@ setup:
 	    echo "  skipped Git hooks           no .git authority or metadata required"; \
 	else \
 	    echo "══ setup: arming this clone ══"; \
-	    $(MAKE) --no-print-directory install-hooks; \
+	    $(MAKE) --no-print-directory install-hooks || exit $$?; \
 	    echo "  wrote  .git/config          core.hooksPath = build/githooks"; \
 	fi
 	@$(MAKE) --no-print-directory compdb
@@ -13800,6 +13800,7 @@ pr-check:
 
 help-selftest:
 	@tools/scripts/make_help.sh --self-test
+	@bash tools/scripts/setup_selftest.sh
 
 doctor-selftest:
 	@tools/scripts/doctor.sh --self-test
