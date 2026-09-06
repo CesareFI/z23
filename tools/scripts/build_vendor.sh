@@ -331,9 +331,12 @@ fetch() {
             die "offline cache miss or checksum failure: $(basename "$dest")"
         say "fetch   $url"
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL --retry 3 -o "$dest.tmp" "$url"
+            curl -fsSL --retry 3 -o "$dest.tmp" "$url" \
+                || die "download failed for $url (curl)"
         else
-            need wget; wget -q -O "$dest.tmp" "$url"
+            need wget
+            wget -q -O "$dest.tmp" "$url" \
+                || die "download failed for $url (wget)"
         fi
         [[ "$(vp_sha256_file "$dest.tmp")" == "$sha" ]] \
             || die "SHA256 mismatch for $url (expected $sha)"

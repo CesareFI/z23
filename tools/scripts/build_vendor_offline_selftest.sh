@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
-# Prove offline vendor mode refuses a cache miss before invoking a downloader.
+# Prove offline cache misses and online downloader failures refuse builds.
 
 set -euo pipefail
 
@@ -38,10 +38,24 @@ fi
     fail 'cache-miss refusal did not name the missing pinned archive'
 [ ! -s "$contact_log" ] || fail 'offline mode invoked a downloader'
 
+if output="$(cd "$SANDBOX" && \
+        DOWNLOADER_CONTACT_LOG="$contact_log" \
+        PATH="$SANDBOX/bin:$PATH" ZCL_VENDOR_OFFLINE=0 \
+        tools/scripts/build_vendor.sh libz.a 2>&1)"; then
+    fail 'failed download unexpectedly built an archive'
+fi
+[ -s "$contact_log" ] || fail 'online fixture did not invoke a downloader'
+[[ "$output" == *'download failed for '* ]] ||
+    fail 'downloader failure did not report the transport failure'
+[[ "$output" != *'SHA256 mismatch'* ]] ||
+    fail 'downloader failure was misreported as a checksum mismatch'
+[ ! -e "$SANDBOX/vendor/.cache/zlib-1.3.1.tar.gz" ] ||
+    fail 'failed download published a cache archive'
+
 if ZCL_VENDOR_OFFLINE=invalid "$ROOT/tools/scripts/build_vendor.sh" \
         --check-provenance >/dev/null 2>&1; then
     fail 'invalid offline policy value was accepted'
 fi
 
 printf '%s\n' \
-    'build_vendor_offline_selftest: PASS downloader_contacted=false cache_miss_refused=true'
+    'build_vendor_offline_selftest: PASS offline_downloader_contacted=false cache_miss_refused=true online_failure_refused=true'
