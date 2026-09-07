@@ -10,6 +10,7 @@
 #include "platform/directory_compat.h"
 #include "platform/os_binary_slots.h"
 #include "platform/os_proc.h"
+#include "platform/positioned_file.h"
 #include "platform/process_compat.h"
 #include "util/blocker.h"
 
@@ -284,6 +285,50 @@ static bool ab_run_nodectl(const char *slots, const char *threshold,
 }
 #endif /* !defined(_WIN32) */
 
+static int ab_promote_descriptor_stability(const char *dir, const char *source,
+                                           bool expected)
+{
+    int failures = 0;
+    size_t before = 0, after = 0;
+    AB_CHECK("read descriptor count before promotion", os_proc_open_fd_count(&before));
+    for (int i = 0; i < 16; ++i)
+        AB_CHECK("promotion preserves expected result",
+                 binary_ab_promote(dir, source) == expected);
+    AB_CHECK("read descriptor count after promotion", os_proc_open_fd_count(&after));
+    AB_CHECK("repeated promotion preserves descriptor count", after == before);
+    return failures;
+}
+
+static int ab_descriptor_observation_control(const char *source)
+{
+    int failures = 0;
+    size_t before = 0, during = 0, after = 0;
+    struct platform_positioned_file input;
+    platform_positioned_file_init(&input);
+    AB_CHECK("read control descriptor count", os_proc_open_fd_count(&before));
+    AB_CHECK("open descriptor observation control",
+             platform_positioned_file_open(&input, source));
+    AB_CHECK("census observes the opened descriptor",
+             os_proc_open_fd_count(&during) && during == before + 1);
+    platform_positioned_file_close(&input);
+    AB_CHECK("census observes the closed descriptor",
+             os_proc_open_fd_count(&after) && after == before);
+    return failures;
+}
+
+static int ab_rejected_source_descriptors(const char *dir, const char *source)
+{
+    int failures = ab_descriptor_observation_control(source);
+    AB_CHECK("make source non-executable", chmod(source, 0600) == 0);
+    failures += ab_promote_descriptor_stability(dir, source, false);
+    AB_CHECK("remove source for missing-source control", unlink(source) == 0);
+    failures += ab_promote_descriptor_stability(dir, source, false);
+    AB_CHECK("restore executable source control",
+             ab_write_file(source, "CURRENT-V1-BYTES", 0755) == 0);
+    failures += ab_promote_descriptor_stability(dir, source, true);
+    return failures;
+}
+
 static int test_binary_ab_fallback_platform_arm(void)
 {
     printf("\n=== binary_ab_fallback tests ===\n");
@@ -348,6 +393,7 @@ static int test_binary_ab_fallback_platform_arm(void)
         struct stat st;
         AB_CHECK("last-good is executable",
                  stat(lastgood, &st) == 0 && (st.st_mode & S_IXUSR));
+        failures += ab_rejected_source_descriptors(dir, cur);
         AB_CHECK("promote with empty current_path fails", !binary_ab_promote(dir, ""));
         AB_CHECK("promote with empty slots_dir fails", !binary_ab_promote("", cur));
     }

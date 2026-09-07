@@ -169,16 +169,26 @@ static bool binary_ab_promote_stream(const char *slots_dir, FILE *input,
     return true;
 }
 
+static bool binary_ab_open_executable(struct platform_positioned_file *input,
+                                      const char *current_path)
+{
+    if (!platform_positioned_file_open(input, current_path) ||
+        !platform_positioned_file_is_executable(input)) {
+        platform_positioned_file_close(input);
+        LOG_FAIL("binary_ab", "promote: %s is not a regular executable",
+                 current_path);
+    }
+    return true;
+}
+
 bool binary_ab_promote(const char *slots_dir, const char *current_path)
 {
     if (!current_path || current_path[0] == '\0')
         LOG_FAIL("binary_ab", "promote: empty current_path");
     struct platform_positioned_file input;
     platform_positioned_file_init(&input);
-    if (!platform_positioned_file_open(&input, current_path) ||
-        !platform_positioned_file_is_executable(&input))
-        LOG_FAIL("binary_ab", "promote: %s is not a regular executable",
-                 current_path);
+    if (!binary_ab_open_executable(&input, current_path))
+        LOG_FAIL("binary_ab", "promote: source validation failed");
     uint64_t size = 0;
     bool ok = platform_positioned_file_size(&input, &size);
     char requested[1024], dst[1024], parent[1024], tmp[1088];
