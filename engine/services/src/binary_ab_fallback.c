@@ -32,6 +32,16 @@
 
 #ifdef ZCL_TESTING
 static bool g_binary_ab_fail_before_promote_rename_once;
+static bool g_binary_ab_intercept_source_open;
+static bool g_binary_ab_source_open_attempted;
+
+bool binary_ab_test_intercept_source_open(bool enabled)
+{
+    bool attempted = g_binary_ab_source_open_attempted;
+    g_binary_ab_source_open_attempted = false;
+    g_binary_ab_intercept_source_open = enabled;
+    return attempted;
+}
 
 void binary_ab_test_fail_before_promote_rename_once(void)
 {
@@ -169,18 +179,28 @@ static bool binary_ab_promote_stream(const char *slots_dir, FILE *input,
     return true;
 }
 
-bool binary_ab_promote(const char *slots_dir, const char *current_path)
+static bool binary_ab_copy_positioned(struct platform_positioned_file *input,
+                                      struct platform_private_file *output,
+                                      uint64_t size)
 {
-    if (!current_path || current_path[0] == '\0')
-        LOG_FAIL("binary_ab", "promote: empty current_path");
-    struct platform_positioned_file input;
-    platform_positioned_file_init(&input);
-    if (!platform_positioned_file_open(&input, current_path) ||
-        !platform_positioned_file_is_executable(&input))
-        LOG_FAIL("binary_ab", "promote: %s is not a regular executable",
-                 current_path);
+    unsigned char buf[BINARY_AB_COPY_CHUNK];
+    for (uint64_t offset = 0; offset < size;) {
+        size_t chunk = size - offset > sizeof(buf) ? sizeof(buf) :
+                       (size_t)(size - offset);
+        int64_t read = platform_positioned_file_read(input, buf, chunk, offset);
+        if (read != (int64_t)chunk ||
+            !platform_private_file_write_at(output, buf, chunk, offset))
+            LOG_FAIL("binary_ab", "promote: binary copy failed");
+        offset += chunk;
+    }
+    return true;
+}
+
+static bool binary_ab_promote_file(const char *slots_dir,
+                                   struct platform_positioned_file *input)
+{
     uint64_t size = 0;
-    bool ok = platform_positioned_file_size(&input, &size);
+    bool ok = platform_positioned_file_size(input, &size);
     char requested[1024], dst[1024], parent[1024], tmp[1088];
     int requested_len = snprintf(requested, sizeof(requested), "%s/%s",
                                  slots_dir, BINARY_AB_LASTGOOD_BASENAME);
@@ -192,19 +212,45 @@ bool binary_ab_promote(const char *slots_dir, const char *current_path)
     struct platform_private_file output;
     platform_private_file_init(&output);
     if (ok) ok = binary_ab_open_staging(dst, tmp, &output);
-    unsigned char buf[BINARY_AB_COPY_CHUNK];
-    for (uint64_t offset = 0; ok && offset < size;) {
-        size_t chunk = size - offset > sizeof(buf) ? sizeof(buf) :
-                       (size_t)(size - offset);
-        int64_t read = platform_positioned_file_read(&input, buf, chunk, offset);
-        ok = read == (int64_t)chunk &&
-             platform_private_file_write_at(&output, buf, chunk, offset);
-        offset += chunk;
-    }
-    if (ok) ok = binary_ab_install_staging(&output, tmp, dst, parent);
+    if (ok)
+        ok = binary_ab_copy_positioned(input, &output, size) &&
+             binary_ab_install_staging(&output, tmp, dst, parent);
     if (!ok && output.native != (uintptr_t)-1)
         (void)platform_private_file_retire(&output, tmp);
     platform_private_file_close(&output);
+    if (!ok)
+        LOG_WARN("binary_ab", "promote: could not publish last-good in %s",
+                 slots_dir);
+    return ok;
+}
+
+static bool binary_ab_open_source(struct platform_positioned_file *input,
+                                  const char *current_path)
+{
+#ifdef ZCL_TESTING
+    if (g_binary_ab_intercept_source_open) {
+        g_binary_ab_source_open_attempted = true;
+        LOG_FAIL("binary_ab", "promote: intercepted source open for test");
+    }
+#endif
+    if (!platform_positioned_file_open(input, current_path) ||
+        !platform_positioned_file_is_executable(input))
+        LOG_FAIL("binary_ab", "promote: %s is not a regular executable",
+                 current_path);
+    return true;
+}
+
+bool binary_ab_promote(const char *slots_dir, const char *current_path)
+{
+    if (!slots_dir || slots_dir[0] == '\0')
+        LOG_FAIL("binary_ab", "promote: empty slots_dir");
+    if (!current_path || current_path[0] == '\0')
+        LOG_FAIL("binary_ab", "promote: empty current_path");
+    struct platform_positioned_file input;
+    platform_positioned_file_init(&input);
+    if (!binary_ab_open_source(&input, current_path))
+        LOG_FAIL("binary_ab", "promote: source validation failed");
+    bool ok = binary_ab_promote_file(slots_dir, &input);
     platform_positioned_file_close(&input);
     return ok;
 }
