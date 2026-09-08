@@ -110,6 +110,20 @@ enum qb_insert_mode {
 #define QB_VALUES_MAX   192   /* the "(?,?,?...)" tail of an INSERT      */
 #define QB_MAX_BINDS     48
 #define QB_ERROR_MAX    160
+#define QB_MAX_JOINS      4   /* a bounded chain, never a silent drop    */
+
+/* The alias the one permitted self-join gives the second instance of a
+ * table: "<table>__2". Fixed text, so it can never carry caller bytes. */
+#define QB_SELF_ALIAS_SUFFIX "__2"
+
+/* One INNER JOIN. `self` marks the aliased second instance of a table the
+ * statement already names. */
+struct qb_join {
+    enum qb_table  table;
+    enum qb_column left;
+    enum qb_column right;
+    bool           self;
+};
 
 enum qb_bind_kind { QB_BIND_INT, QB_BIND_DOUBLE, QB_BIND_TEXT, QB_BIND_BLOB,
                     QB_BIND_NULL };
@@ -144,10 +158,11 @@ struct qb {
     enum qb_verb  verb;
     enum qb_stage stage;
     enum qb_table table;
-    enum qb_table join_table;
-    enum qb_column join_left;
-    enum qb_column join_right;
-    bool   has_join;
+    struct qb_join joins[QB_MAX_JOINS];
+    int    njoins;
+    bool   has_self_join;
+    enum qb_table self_table;   /* only meaningful with has_self_join   */
+    bool   self_alias;          /* qualify self_table with the alias    */
     bool   conflict_opened;
     bool   conflict_updates;
 
@@ -190,11 +205,28 @@ void qb_select_agg(struct qb *q, enum qb_agg a, enum qb_column c,
 /* COUNT(*) — the aggregate with no column operand. */
 void qb_select_count_star(struct qb *q);
 
-/* INNER JOIN t2 ON <left> = <right>. Both columns must belong to the two
- * tables named by this statement. After a join every identifier is
- * table-qualified. */
+/* INNER JOIN t2 ON <left> = <right>. Both columns must belong to tables
+ * this statement names. After a join every identifier is table-qualified.
+ *
+ * Joins APPEND, up to QB_MAX_JOINS, so a multi-hop traversal emits every
+ * hop. Hop QB_MAX_JOINS+1 fails the statement CLOSED with a named error;
+ * it is never dropped, because a dropped hop returns a plausible wrong
+ * number instead of a refusal. */
 void qb_join(struct qb *q, enum qb_table t2,
              enum qb_column left, enum qb_column right);
+
+/* INNER JOIN t AS t__2 ON t.<left> = t__2.<right> — the one self-join a
+ * statement may hold. `t` must already be named by the statement (its own
+ * table or an earlier join); a second self-join is refused, because one
+ * fixed alias cannot name two instances. */
+void qb_join_self(struct qb *q, enum qb_table t,
+                  enum qb_column left, enum qb_column right);
+
+/* While `on`, an identifier belonging to the self-joined table is emitted
+ * against the alias (t__2.<col>) instead of the base instance. This is how
+ * a caller projects or filters the far side of a self-join without any
+ * entry point that takes identifier text. No-op without a self-join. */
+void qb_self_alias(struct qb *q, bool on);
 
 /* ── INSERT values ───────────────────────────────────────────────────── */
 

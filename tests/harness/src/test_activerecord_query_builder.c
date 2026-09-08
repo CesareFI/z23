@@ -56,10 +56,233 @@ static int qb_count_char(const char *s, char c)
     return n;
 }
 
+/* ── Join chains ────────────────────────────────────────────────────────
+ *
+ * Before QB_MAX_JOINS the builder held exactly ONE join and a second
+ * qb_join() silently OVERWROTE the first. A two-hop traversal then emitted
+ * SQL joining only the last pair and returned a plausible WRONG number
+ * instead of a refusal. These cases pin the fix: hops append, the one-hop
+ * text is unchanged, and the hop past the cap fails closed with a named
+ * error. They live in small helpers so each stays under the complexity
+ * cap the whole tree is held to. */
+
+static int qb_join_text_cases(void)
+{
+    int failures = 0;
+
+    TEST("qb join: the one-hop text is byte-identical to the pinned string") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_select_column(&q, QB_C_peers_id);
+        qb_select_column(&q, QB_C_peer_chain_observations_best_height);
+        qb_where_int(&q, QB_C_peer_chain_observations_best_height, QB_GT, 100);
+        ASSERT(qb_ok(&q));
+        ASSERT_STR_EQ(qb_sql(&q),
+            "SELECT peers.id,peer_chain_observations.best_height "
+            "FROM peers INNER JOIN peer_chain_observations "
+            "ON peers.id=peer_chain_observations.peer_id "
+            "WHERE peer_chain_observations.best_height>?");
+        ASSERT_EQ(qb_bind_count(&q), 1);
+        PASS();
+    }
+
+    TEST("qb join: two hops emit two INNER JOINs, not the last one only") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_join(&q, QB_T_app_events, QB_C_peer_chain_observations_id,
+                QB_C_app_events_sequence);
+        qb_select_column(&q, QB_C_app_events_app_id);
+        ASSERT(qb_ok(&q));
+        ASSERT_STR_EQ(qb_sql(&q),
+            "SELECT app_events.app_id FROM peers "
+            "INNER JOIN peer_chain_observations "
+            "ON peers.id=peer_chain_observations.peer_id "
+            "INNER JOIN app_events "
+            "ON peer_chain_observations.id=app_events.sequence");
+        PASS();
+    }
+
+    TEST("qb join: three hops keep every pair, in call order") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_join(&q, QB_T_app_events, QB_C_peer_chain_observations_id,
+                QB_C_app_events_sequence);
+        qb_join(&q, QB_T_zswap_ads, QB_C_app_events_app_id,
+                QB_C_zswap_ads_token_id);
+        qb_select_column(&q, QB_C_zswap_ads_quote_root);
+        ASSERT(qb_ok(&q));
+        ASSERT_STR_EQ(qb_sql(&q),
+            "SELECT zswap_ads.quote_root FROM peers "
+            "INNER JOIN peer_chain_observations "
+            "ON peers.id=peer_chain_observations.peer_id "
+            "INNER JOIN app_events "
+            "ON peer_chain_observations.id=app_events.sequence "
+            "INNER JOIN zswap_ads "
+            "ON app_events.app_id=zswap_ads.token_id");
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
+static int qb_join_bound_cases(void)
+{
+    int failures = 0;
+
+    TEST("qb join: the hop past QB_MAX_JOINS is refused, never dropped") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_join(&q, QB_T_app_events, QB_C_peer_chain_observations_id,
+                QB_C_app_events_sequence);
+        qb_join(&q, QB_T_zswap_ads, QB_C_app_events_app_id,
+                QB_C_zswap_ads_token_id);
+        qb_join(&q, QB_T_op_return_index, QB_C_zswap_ads_token_id,
+                QB_C_op_return_index_height);
+        ASSERT(qb_ok(&q));
+        qb_join(&q, QB_T_parity_samples, QB_C_op_return_index_height,
+                QB_C_parity_samples_our_height);
+        ASSERT(!qb_ok(&q));
+        ASSERT(strstr(qb_error(&q), "more than 4 joins") != NULL);
+        qb_select_column(&q, QB_C_peers_id);
+        ASSERT_STR_EQ(qb_sql(&q), "");
+        PASS();
+    }
+
+    TEST("qb join: naming a table twice is refused, not aliased by accident") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_join(&q, QB_T_peers, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        ASSERT(!qb_ok(&q));
+        ASSERT(strstr(qb_error(&q), "not peers again") != NULL);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
+static int qb_join_self_cases(void)
+{
+    int failures = 0;
+
+    TEST("qb join: a self-join aliases the second instance") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join_self(&q, QB_T_peers, QB_C_peers_source, QB_C_peers_id);
+        qb_select_column(&q, QB_C_peers_id);
+        qb_self_alias(&q, true);
+        qb_select_column(&q, QB_C_peers_port);
+        qb_self_alias(&q, false);
+        qb_where_int(&q, QB_C_peers_attempts, QB_GT, 0);
+        ASSERT(qb_ok(&q));
+        ASSERT_STR_EQ(qb_sql(&q),
+            "SELECT peers.id,peers__2.port FROM peers "
+            "INNER JOIN peers AS peers__2 ON peers.source=peers__2.id "
+            "WHERE peers.attempts>?");
+        PASS();
+    }
+
+    TEST("qb join: a self-join may follow a plain hop, but only one of it") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_join_self(&q, QB_T_peer_chain_observations,
+                     QB_C_peer_chain_observations_id,
+                     QB_C_peer_chain_observations_peer_id);
+        qb_select_column(&q, QB_C_peers_id);
+        ASSERT(qb_ok(&q));
+        ASSERT_STR_EQ(qb_sql(&q),
+            "SELECT peers.id FROM peers "
+            "INNER JOIN peer_chain_observations "
+            "ON peers.id=peer_chain_observations.peer_id "
+            "INNER JOIN peer_chain_observations AS peer_chain_observations__2 "
+            "ON peer_chain_observations.id="
+            "peer_chain_observations__2.peer_id");
+
+        struct qb t;
+        qb_select(&t, QB_T_peers);
+        qb_join_self(&t, QB_T_peers, QB_C_peers_source, QB_C_peers_id);
+        qb_join_self(&t, QB_T_peers, QB_C_peers_id, QB_C_peers_source);
+        ASSERT(!qb_ok(&t));
+        ASSERT(strstr(qb_error(&t), "one self-join per statement") != NULL);
+        PASS();
+    }
+
+    TEST("qb join: a self-join on a table the statement never names fails") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join_self(&q, QB_T_zswap_ads, QB_C_zswap_ads_token_id,
+                     QB_C_zswap_ads_quote_root);
+        ASSERT(!qb_ok(&q));
+        ASSERT(strstr(qb_error(&q), "is not named by this statement") != NULL);
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
+static int qb_join_capacity_cases(void)
+{
+    int failures = 0;
+
+    TEST("qb join: three hops plus eight predicates stay inside capacity") {
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_peer_chain_observations_peer_id);
+        qb_join(&q, QB_T_app_events, QB_C_peer_chain_observations_id,
+                QB_C_app_events_sequence);
+        qb_join(&q, QB_T_zswap_ads, QB_C_app_events_app_id,
+                QB_C_zswap_ads_token_id);
+        qb_select_column(&q, QB_C_peers_id);
+        qb_select_column(&q, QB_C_peer_chain_observations_best_height);
+        qb_select_column(&q, QB_C_app_events_topic);
+        qb_select_column(&q, QB_C_zswap_ads_quote_root);
+        qb_where_int(&q, QB_C_peers_port, QB_EQ, 8033);
+        qb_where_int(&q, QB_C_peers_attempts, QB_LT, 5);
+        qb_where_int(&q, QB_C_peer_chain_observations_best_height, QB_GE, 1);
+        qb_where_int(&q, QB_C_peer_chain_observations_latency_us, QB_LE, 9);
+        qb_where_text(&q, QB_C_app_events_topic, QB_EQ, "plan");
+        qb_where_int(&q, QB_C_app_events_created_at, QB_GT, 1700000000);
+        qb_where_int(&q, QB_C_zswap_ads_token_id, QB_NE, 3);
+        qb_where_int(&q, QB_C_zswap_ads_seen_count, QB_GE, 1);
+        qb_order_by(&q, QB_C_peers_last_seen, QB_DESC);
+        qb_limit(&q, 500);
+        ASSERT(qb_ok(&q));
+        ASSERT_EQ(qb_bind_count(&q), 9);
+        ASSERT(qb_bind_count(&q) <= QB_MAX_BINDS);
+        ASSERT(strlen(qb_sql(&q)) < (size_t)QB_SQL_MAX);
+        ASSERT_EQ(qb_count_char(qb_sql(&q), '?'), qb_bind_count(&q));
+        PASS();
+    }
+
+_test_next:;
+    return failures;
+}
+
 int test_activerecord_query_builder(void);
 int test_activerecord_query_builder(void)
 {
     int failures = 0;
+
+    failures += qb_join_text_cases();
+    failures += qb_join_bound_cases();
+    failures += qb_join_self_cases();
+    failures += qb_join_capacity_cases();
 
     /* ── 1. Emitted text is exactly what the builder chose ─────────── */
 

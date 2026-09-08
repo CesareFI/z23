@@ -126,10 +126,22 @@ static bool qb_table_valid(struct qb *q, enum qb_table t, const char *what)
     return true;
 }
 
-/* Emit one column identifier. Refuses an id outside the generated range and
- * an id belonging to a table this statement does not name — the two ways a
- * caller could otherwise steer the text. */
-static bool qb_ident(struct qb *q, enum qb_column c)
+/* Does this statement name `t` at all — as its own table or as any join? */
+static bool qb_names_table(const struct qb *q, enum qb_table t)
+{
+    if (t == q->table)
+        return true;
+    for (int i = 0; i < q->njoins; i++)
+        if (q->joins[i].table == t)
+            return true;
+    return false;
+}
+
+/* Emit one column identifier, optionally against the self-join alias.
+ * Refuses an id outside the generated range and an id belonging to a table
+ * this statement does not name — the two ways a caller could otherwise
+ * steer the text. */
+static bool qb_ident_as(struct qb *q, enum qb_column c, bool aliased)
 {
     if (q->failed)
         return false;
@@ -138,17 +150,27 @@ static bool qb_ident(struct qb *q, enum qb_column c)
         return false;
     }
     enum qb_table owner = k_col[c].table;
-    if (owner != q->table && !(q->has_join && owner == q->join_table)) {
+    if (!qb_names_table(q, owner)) {
         qb_fail(q, "column %s.%s does not belong to this statement's table %s",
                 k_table[owner], k_col[c].name, k_table[q->table]);
         return false;
     }
-    if (q->has_join) {
+    if (q->njoins > 0) {
         qb_puts(q, k_table[owner]);
+        if (aliased)
+            qb_puts(q, QB_SELF_ALIAS_SUFFIX);
         qb_puts(q, ".");
     }
     qb_puts(q, k_col[c].name);
     return !q->failed;
+}
+
+static bool qb_ident(struct qb *q, enum qb_column c)
+{
+    bool aliased = q->self_alias && q->has_self_join &&
+                   (int)c >= 0 && (int)c < QB_COLUMN_COUNT &&
+                   k_col[c].table == q->self_table;
+    return qb_ident_as(q, c, aliased);
 }
 
 /* ── Bind collection. The ONLY store of a caller value. ─────────────── */
@@ -344,28 +366,102 @@ void qb_select_count_star(struct qb *q)
     qb_puts(q, "COUNT(*)");
 }
 
+/* Shared admission for both join forms: the section, the ordering rule,
+ * the closed-set range check and the QB_MAX_JOINS bound. Nothing here
+ * indexes k_table before the range check, and nothing is appended. */
+static bool qb_join_admit(struct qb *q, enum qb_table t, const char *what)
+{
+    if (!qb_in_projection(q, what))
+        return false;  // raw-return-ok:qb_fail already latched the reason
+    if (q->n_projection != 0) {
+        qb_fail(q, "%s must be called before any projection column, so "
+                   "every identifier can be table-qualified", what);
+        return false;
+    }
+    if (!qb_table_valid(q, t, what))
+        return false;  // raw-return-ok:qb_fail already latched the reason
+    if (q->njoins >= QB_MAX_JOINS) {
+        qb_fail(q, "%s: more than %d joins in one statement", what,
+                QB_MAX_JOINS);
+        return false;
+    }
+    return true;
+}
+
+/* Append one already-admitted join. Both endpoints are validated when the
+ * ON clause is emitted in qb_close_projection(), after the join makes
+ * qualification legal. */
+static void qb_join_push(struct qb *q, enum qb_table t, enum qb_column left,
+                         enum qb_column right, bool self)
+{
+    q->joins[q->njoins++] = (struct qb_join){ .table = t, .left = left,
+                                              .right = right, .self = self };
+}
+
 void qb_join(struct qb *q, enum qb_table t2,
              enum qb_column left, enum qb_column right)
 {
-    if (!qb_in_projection(q, "qb_join"))
-        return;
-    if (q->n_projection != 0) {
-        qb_fail(q, "qb_join must be called before any projection column, so "
-                   "every identifier can be table-qualified");
-        return;
-    }
-    if (!qb_table_valid(q, t2, "qb_join"))
+    if (!qb_join_admit(q, t2, "qb_join"))
         return;
     if (t2 == q->table) {
         qb_fail(q, "qb_join needs a second table, not %s again", k_table[t2]);
         return;
     }
-    q->has_join = true;
-    q->join_table = t2;
-    /* Both endpoints are validated when the ON clause is emitted in
-     * qb_close_projection(), after has_join makes qualification legal. */
-    q->join_left = left;
-    q->join_right = right;
+    if (qb_names_table(q, t2)) {
+        qb_fail(q, "qb_join: %s is already named by this statement; use "
+                   "qb_join_self for a second instance", k_table[t2]);
+        return;
+    }
+    qb_join_push(q, t2, left, right, false);
+}
+
+void qb_join_self(struct qb *q, enum qb_table t,
+                  enum qb_column left, enum qb_column right)
+{
+    if (!qb_join_admit(q, t, "qb_join_self"))
+        return;
+    if (q->has_self_join) {
+        qb_fail(q, "qb_join_self: one self-join per statement; the alias "
+                   "%s%s is already taken", k_table[q->self_table],
+                QB_SELF_ALIAS_SUFFIX);
+        return;
+    }
+    if (!qb_names_table(q, t)) {
+        qb_fail(q, "qb_join_self: %s is not named by this statement",
+                k_table[t]);
+        return;
+    }
+    qb_join_push(q, t, left, right, true);
+    q->has_self_join = true;
+    q->self_table = t;
+}
+
+void qb_self_alias(struct qb *q, bool on)
+{
+    if (q->failed)
+        return;
+    q->self_alias = on;
+}
+
+/* One " INNER JOIN <t>[ AS <t>__2] ON <l>=<r>" clause. A self-join's right
+ * endpoint is emitted against the alias so the two instances stay distinct
+ * in the ON clause itself, before any caller touches qb_self_alias(). */
+static bool qb_emit_join(struct qb *q, const struct qb_join *j)
+{
+    qb_puts(q, " INNER JOIN ");
+    qb_puts(q, k_table[j->table]);
+    if (j->self) {
+        qb_puts(q, " AS ");
+        qb_puts(q, k_table[j->table]);
+        qb_puts(q, QB_SELF_ALIAS_SUFFIX);
+    }
+    qb_puts(q, " ON ");
+    if (!qb_ident_as(q, j->left, false))
+        return false;
+    qb_puts(q, "=");
+    if (!qb_ident_as(q, j->right, j->self))
+        return false;
+    return !q->failed;
 }
 
 static void qb_close_projection(struct qb *q)
@@ -378,16 +474,9 @@ static void qb_close_projection(struct qb *q)
     }
     qb_puts(q, " FROM ");
     qb_puts(q, k_table[q->table]);
-    if (q->has_join) {
-        qb_puts(q, " INNER JOIN ");
-        qb_puts(q, k_table[q->join_table]);
-        qb_puts(q, " ON ");
-        if (!qb_ident(q, q->join_left))
+    for (int i = 0; i < q->njoins; i++)
+        if (!qb_emit_join(q, &q->joins[i]))
             return;
-        qb_puts(q, "=");
-        if (!qb_ident(q, q->join_right))
-            return;
-    }
     q->stage = QB_STAGE_WHERE;
 }
 
