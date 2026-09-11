@@ -27,3 +27,25 @@ Authored wrappers apply explicit bounds, check provider errors and return
 typed failures. Upstream code is separately identified and must remain covered
 by sanitizer/known-answer validation when used. No third-party code is asserted
 memory-safe merely because it has been vendored.
+
+## libsecp256k1
+
+The C provider is upstream **0.8.0**, copied unchanged beneath repository
+`vendor/android-secp256k1/`. Release archive:
+`https://github.com/bitcoin-core/secp256k1/releases/download/v0.8.0/libsecp256k1-0.8.0.tar.gz`.
+SHA-256: `dd685546f9e717b9adde329acd5a4cd8083d40f710fdb0a603ee5a83f908132b`.
+Selected release files retain the MIT license and a per-file SHA-256 manifest.
+No source arithmetic, precomputed table or provider test is rewritten.
+
+The detached release signature verified on 2026-09-11 with full fingerprint
+`6A8F9C266528E25AEB1D7731C2371D91CB716EA7`, listed for Sebastian Falbesoner in the
+release's SECURITY.md. The public key was retrieved from keys.openpgp.org by
+that fingerprint into a temporary public-only verification keyring. This binds
+the archive to that listed key; it does not establish personal identity through
+an independently trusted certification chain or prove the code safe.
+
+Android links only the core ECDSA/key primitives. Unused ECDH/recovery/Schnorr/
+MuSig/ElligatorSwift/silent-payment modules and assembly are disabled. Verification
+window 8 and the 22 KiB generator table bound mobile data size. Provider tests
+run separately with the same arithmetic/table configuration. Optional modules
+remaining as inert vendor source do not create app features or messaging keys.

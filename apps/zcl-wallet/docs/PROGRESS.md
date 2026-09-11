@@ -63,3 +63,28 @@ Next milestone: C recovery/key derivation with independent known-answer vectors,
 then authenticated on-device secret storage and the receiving/read-only UI.
 The current launcher is a development placeholder. No private-key API, signing,
 network synchronization or shielded transaction capability is enabled yet.
+
+2026-09-11 20:52 UTC: C English BIP39 recovery, BIP32 derivation, OS randomness
+and Zclassic BIP44 receiving addresses pass the published vectors and 48
+independent OpenSSL comparisons. Provider errors, allocation failure, invalid
+child keys, RNG failures and output preservation have explicit tests. The full
+C safety script now also analyzes JNI, and passes its complexity/static-analysis/
+ASan/UBSan/leak checks. All 20 JVM/JNI tests passed before a small test-cleanup
+improvement; the Android checkpoint build will rerun them with that improvement.
+The 15-minute recovery fuzzer completed 14,014,058 executions in 901 seconds
+without a finding. libsecp256k1's separate 123-case suite and Valgrind constant-time
+executable passed; the latter reported zero memory errors and no leaked blocks.
+
+libsecp256k1 0.8.0's release signature verified against its listed maintainer key.
+Only JNI entry points are intended to be dynamically exported. Key functions
+are not exposed by the launcher yet. Next: authenticated Android storage,
+recovery lifecycle and receive/QR/read-only network UI. Emulator installation
+is complete; hardware Keystore acceptance still requires suitable hardware.
+
+2026-09-11 20:56 UTC: the Android key checkpoint passes all 20 JVM tests,
+ARM64/x86-64 debug assembly and Android lint. The debug APK is 3,643,616 bytes.
+Dynamic-symbol inspection confirms only the 13 intended JNI exports. Repository
+lint passes all 32 gates. The key safety review is recorded in
+`C_SAFETY_REVIEW.md`; storage and UI are the next implementation slice.
+All nine unsanitized native test executables additionally pass Valgrind with
+origin tracking and full leak checks, with no reported errors or leaked blocks.

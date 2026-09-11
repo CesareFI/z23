@@ -19,19 +19,32 @@ fi
     cd "$repo_root/vendor/android-mbedtls"
     sha256sum -c SHA256SUMS
 )
+(
+    cd "$repo_root/vendor/android-bip39"
+    sha256sum -c SHA256SUMS
+)
+(
+    cd "$repo_root/vendor/android-secp256k1"
+    sha256sum -c SHA256SUMS
+)
 
 common=(-std=c17 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
     -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096
     '-DMBEDTLS_CONFIG_FILE="zcl_mbedtls_config.h"'
-    -I native/include -I "$repo_root/vendor/android-mbedtls/include")
+    -I native/include -I "$repo_root/vendor/android-mbedtls/include"
+    -I "$repo_root/vendor/android-bip39" -I "$repo_root/vendor/android-secp256k1/include")
+javac_path=$(command -v javac)
+jdk_root=$(dirname -- "$(dirname -- "$(readlink -f -- "$javac_path")")")
+jni_common=("${common[@]}" -I "$jdk_root/include" -I "$jdk_root/include/linux")
 
 for source in native/src/*.c; do
+    flags=("${common[@]}")
     case "$source" in
-        */jni_*) continue ;;
+        */jni_*) flags=("${jni_common[@]}") ;;
     esac
     name=${source##*/}
-    "$clang_bin" --analyze -Xanalyzer -analyzer-werror "${common[@]}" "$source" -o "$analysis_dir/$name.plist"
-    "$gcc_bin" -fanalyzer "${common[@]}" -c "$source" -o "$analysis_dir/$name.o"
+    "$clang_bin" --analyze -Xanalyzer -analyzer-werror "${flags[@]}" "$source" -o "$analysis_dir/$name.plist"
+    "$gcc_bin" -fanalyzer "${flags[@]}" -c "$source" -o "$analysis_dir/$name.o"
 done
 
 if [[ ! -x "$repo_root/build/bin/z23-lint" ]]; then

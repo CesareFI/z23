@@ -1,0 +1,2 @@
+# Preserve the exact upstream release, including its existing whitespace.
+** -whitespace

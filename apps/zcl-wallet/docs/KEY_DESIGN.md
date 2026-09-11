@@ -1,4 +1,7 @@
-# Recovery and custody design — implementation pending
+# Recovery and custody design
+
+C recovery and receiving-key derivation are implemented and under checkpoint
+validation. Android storage and lifecycle acceptance below are still pending.
 
 The first recovery profile uses BIP39 English and the BIP44 transparent path
 `m/44'/147'/0'/0/index` on Zclassic mainnet. Testnet uses coin type 1. Creation
@@ -25,7 +28,8 @@ finished. An unsuccessful call leaves caller output unchanged.
 Key derivation uses SHA-512/HMAC/PBKDF2 and libsecp256k1 primitives. No new curve,
 signature algorithm or arithmetic implementation is introduced. A preallocated,
 per-operation secp256k1 context has a checked storage bound and independent RNG
-blinding. It is destroyed and its storage cleared before returning. No live
+blinding. Its transient allocation is checked nonzero and capped at 1024 bytes;
+the owner destroys, clears and frees it through one cleanup path. No live
 private-key native handle crosses JNI. Deterministic failure tests use published
 fixtures and test-only injected failure points, never production seeds.
 
@@ -42,6 +46,11 @@ as authenticated additional data. Encryption IVs come from the provider; a calle
 cannot select or reuse them. Reads enforce exact format and size bounds before
 decryption. A missing/invalidated wrapping key or corrupt record is an explicit
 recovery state, never permission to create replacement keys silently.
+
+A receiving address read from disk is not trusted before GCM authentication
+and independent re-derivation from the decrypted entropy. Public-looking
+metadata is still attacker-controlled storage input. The app must not display
+an unauthenticated stored address for receiving funds.
 
 Creation must confirm recovery backup before considering setup complete. A
 temporary record must not overwrite an existing wallet. Storage requires an
