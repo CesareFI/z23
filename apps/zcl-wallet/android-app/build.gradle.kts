@@ -1,0 +1,49 @@
+// Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
+plugins {
+    id("com.android.application")
+    kotlin("android")
+}
+android {
+    namespace = "org.zclassic.wallet"
+    compileSdk = 36
+    ndkVersion = "27.2.12479018"
+    defaultConfig {
+        applicationId = "org.zclassic.wallet.dev"
+        minSdk = 30
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0-dev"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        externalNativeBuild { cmake { arguments += "-DZCL_JNI=ON" } }
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("../native/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    lint {
+        abortOnError = true
+        warningsAsErrors = true
+    }
+}
+kotlin { compilerOptions { allWarningsAsErrors.set(true) } }
+dependencies {
+    implementation(project(":wallet-core"))
+    implementation("com.google.zxing:core:3.5.4")
+    testImplementation(kotlin("test-junit"))
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+}

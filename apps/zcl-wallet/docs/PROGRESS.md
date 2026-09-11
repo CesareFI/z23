@@ -1,0 +1,65 @@
+# Development record
+
+Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC
+(16:11 Europe/Amsterdam). Branch `agent/android-wallet-20260911`, based on
+Z23 `337f4e6da1368087fa56e1a6cd30f2371a6041a6`.
+
+The tmux session `zcl-android-20h-20260911` hosts persistent development commands.
+It preserves shell/build processes across terminal disconnects; it does not
+itself guarantee that an interactive reasoning service remains available.
+
+Initial inspection: no existing Android project or Java toolchain. This app
+owns `apps/zcl-wallet/`; sealed consensus sources and existing wallets remain
+outside its write scope. Main checkout was clean at start.
+
+Next acceptance: a reproducible debug APK plus core tests for checked amounts,
+Zclassic transparent addresses, QR input bounds and malformed input rejection.
+No completed test or custody claim is recorded before execution.
+
+2026-09-11 18:45 UTC: first debug APK built in tmux (10 MB, unminified).
+12 core tests passed: amount arithmetic/formatting, pinned public address
+scripts, checksum mutations, network separation and bounded Base58 round trips.
+Architecture placement passed. Android lint initially rejected two old test
+dependency versions and a missing icon; fixes are in progress. No on-device
+key operation, network sync or transaction is implemented at this checkpoint.
+
+2026-09-11 18:51 UTC: user changed the implementation to C11/C17 core with a
+thin Android adapter and explicitly prohibited Rust. No Rust project files or
+toolchain were installed. An unsuccessful installer had created bootstrap
+files; these were moved out of the user tool paths into a temporary quarantine.
+Retain the working Android project and adapt all 16 passing Kotlin parser
+tests and their public fixtures to C/JNI. Apply the user's full C safety review
+before every C implementation commit.
+
+2026-09-11 19:10 UTC: portable C17 amounts, Base58Check and transparent address
+validation pass all 16 adapted JVM/JNI tests with `-Xcheck:jni`. Native C tests
+pass nine groups under ASan/UBSan/leak checking, including the upstream hash
+primitive known-answer tests. Clang static analysis of these core sources
+reported no findings. The Android C/JNI build and lint passed for ARM64 and
+x86-64 before the latest codec migration; that build will be rerun with codecs.
+The bounded amount fuzz campaign completed 41,908,413 executions in 601 seconds,
+without a reported finding. These are parser observations, not custody or
+transaction compatibility acceptance. QR parsing is the remaining Kotlin logic
+being moved into the C core before the first implementation checkpoint.
+
+2026-09-11 19:56 UTC: the C parser checkpoint passes the full safety script:
+Clang static analysis, GCC analyzer, strict C17 warnings, authored function
+complexity at most 10, pinned provider hashes, ASan/UBSan and leak checking.
+The three native executables contain 13 native test sections and also pass GCC Release.
+All 16 Kotlin/JNI tests pass. A clean Android build passes debug/release assembly
+and lint for ARM64/x86-64, with dependency lockfiles and SHA-256 verification
+metadata generated. Debug APK: 3,159,115 bytes. The much smaller unsigned release
+APK strips currently unused adapters; it is not a measurement of a complete
+wallet. No device acceptance is claimed.
+
+The exact final parser sources were fuzzed with bounded ASan/UBSan jobs in tmux:
+amounts 4,169,736 executions/61 seconds; codecs 360,623/181 seconds; payment URIs
+818,464/601 seconds. No finding was reported. Earlier codec fuzzing separately
+completed 870,764 executions/601 seconds. Local logs and source/binary hashes
+remain under ignored `.cache/android-wallet` and `native/build/fuzz-checkpoint`.
+These counts are execution evidence, not a guarantee against defects.
+
+Next milestone: C recovery/key derivation with independent known-answer vectors,
+then authenticated on-device secret storage and the receiving/read-only UI.
+The current launcher is a development placeholder. No private-key API, signing,
+network synchronization or shielded transaction capability is enabled yet.
