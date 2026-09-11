@@ -88,3 +88,40 @@ lint passes all 32 gates. The key safety review is recorded in
 `C_SAFETY_REVIEW.md`; storage and UI are the next implementation slice.
 All nine unsanitized native test executables additionally pass Valgrind with
 origin tracking and full leak checks, with no reported errors or leaked blocks.
+
+2026-09-11 22:45 UTC: bounded C wallet-record serialization and private-file
+storage pass the full C safety script (13 native executables, both static
+analyzers, strict warnings, complexity at most 10, ASan/UBSan/leak checking).
+The four new native record/storage executables also pass Valgrind origin/leak
+checks; normal exits retain only standard descriptors. Fault tests cover short
+IO, bounded interruptions, failures at each flush/rename/close stage, five
+process-death points, twelve competing creators, and a destination created
+between the absence check and the actual kernel no-replace operation.
+
+The first Android storage acceptance found that hard-link creation returned
+EACCES. This candidate was replaced with `renameat2(RENAME_NOREPLACE)` and the
+pending directory entry is flushed before rename. All affected checks were
+rerun. The API-35 x86-64 emulator now passes the native-storage/GCM integration
+test (7.801 seconds): create/read/no-overwrite, recovered-address agreement,
+GCM rejection after changing each of 80 header bytes, and ciphertext tampering.
+It uses public test fixtures and a public test AES key, not a production wallet
+or a claim of hardware Keystore acceptance. The temporary diagnostic was removed.
+
+All 25 JVM/JNI tests and ARM64/x86-64 Android debug assembly/instrumentation
+assembly/lint pass. Debug APK: 3,679,016 bytes. Host dynamic-symbol inspection
+shows only 20 intended JNI exports. Repository lint passes all 32 gates. The
+full per-hazard source review is in `C_SAFETY_REVIEW.md`; format, ownership,
+durability assumptions and recovery limits are in `WALLET_RECORD.md`.
+
+The record-parser fuzzer completed 23,906,974 executions in 901 seconds without
+a reported finding. Its exercised record/header parser source was unchanged
+by the subsequent filesystem correction. Exact snapshot and binary hashes are
+under `native/build/fuzz-record`; this is parser evidence, not filesystem fuzzing.
+Local build/analysis/fuzz/Valgrind logs remain under ignored
+`.cache/android-wallet` and native build directories.
+
+Next milestone: the Android hardware-keystore adapter, per-use authentication,
+secret lifecycle and create/restore/receive UI. The launcher remains a placeholder;
+network sync, balance display, camera/QR UI, signing and shielded transactions
+are not enabled yet. There have been no pushes, merges, production services,
+mining, funded-wallet operations or Rust installations.

@@ -27,6 +27,14 @@ publisher-signature verification. An offline build exercised their enforcement.
 Android hardware-backed custody requires device acceptance; host unit tests do
 not prove device security.
 
+The C core currently covers checked amounts/addresses/payment URIs, English
+BIP39 recovery, BIP32/BIP44 Zclassic receiving keys, authenticated-record
+serialization and private storage that refuses overwrite. The launcher is
+still a placeholder while the per-use Android Keystore and UI are integrated.
+The [record format](docs/WALLET_RECORD.md) explains authentication and recovery.
+An emulator test exercises C storage and GCM with public fixtures; it does not
+qualify physical hardware custody.
+
 For C safety checks on a Linux development host with Clang 20 and GCC:
 
 ```sh

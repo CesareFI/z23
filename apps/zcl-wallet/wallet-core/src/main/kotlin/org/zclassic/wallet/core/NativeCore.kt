@@ -18,4 +18,11 @@ internal object NativeCore {
     @JvmStatic external fun recoveryPhrase(entropy: ByteArray): CharArray?
     @JvmStatic external fun restoreEntropy(phrase: CharArray): ByteArray?
     @JvmStatic external fun receivingAddress(entropy: ByteArray, network: Int, index: Int): ByteArray?
+    @JvmStatic external fun createWalletHeader(entropy: ByteArray, network: Int): ByteArray?
+    @JvmStatic external fun recoveredWalletAddress(header: ByteArray, entropy: ByteArray): ByteArray?
+    @JvmStatic external fun packWalletRecord(header: ByteArray, iv: ByteArray, ciphertext: ByteArray): ByteArray?
+    @JvmStatic external fun unpackWalletRecord(record: ByteArray): Array<ByteArray>?
+    @JvmStatic external fun readWalletStorage(directory: ByteArray): ByteArray?
+    @JvmStatic external fun createWalletStorage(directory: ByteArray, record: ByteArray): Int
+    @JvmStatic external fun promoteWalletStorage(directory: ByteArray, record: ByteArray): Int
 }

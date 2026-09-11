@@ -21,7 +21,11 @@ typedef enum {
     ZCL_CRYPTO_FAILURE,
     ZCL_IO_FAILURE,
     ZCL_INVALID_CHILD,
-    ZCL_RESOURCE_EXHAUSTED
+    ZCL_RESOURCE_EXHAUSTED,
+    ZCL_NOT_FOUND,
+    ZCL_ALREADY_EXISTS,
+    ZCL_BUSY,
+    ZCL_IO_UNCERTAIN
 } zcl_status;
 
 #define ZCL_ZATOSHIS_PER_COIN UINT64_C(100000000)
@@ -49,6 +53,8 @@ zcl_status zcl_base58check_decode(const uint8_t *text, size_t text_len,
                                  uint8_t *payload, size_t payload_capacity, size_t *payload_len);
 
 typedef enum { ZCL_MAINNET = 0, ZCL_TESTNET = 1 } zcl_network;
+/* 32-byte genesis hash in displayed big-endian order, not wire uint256 order. */
+zcl_status zcl_network_genesis(zcl_network network, uint8_t *hash, size_t capacity);
 typedef enum { ZCL_P2PKH = 1, ZCL_P2SH = 2 } zcl_address_kind;
 typedef struct {
     zcl_network network;
