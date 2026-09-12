@@ -158,3 +158,17 @@ owner, then checks final background cleanup. Select this method with CAMERA
 granted and the same emulator opt-in. Debug test assembly and Android lint pass.
 This is Activity recreation evidence; OS process death, physical-device camera
 interoperability and the other outstanding acceptance items remain separate.
+
+The scanner now records network selection immediately, including before the
+user starts capture, and saves only that mainnet/testnet preference in Activity
+state. The launch Intent remains the initial default. Background/resume and
+recreation retain a user's changed selection; frames, decoded requests and
+permission/capture continuation remain unsaved and require a new action.
+`ScanStateInstrumentedTest` exercises this without camera permission, capture,
+wallet access or external traffic. Its selected-network assertion fails against
+the preceding implementation; the initial fixture was corrected to inspect the
+radio's checked state rather than the click-listener return value.
+The corrected test fails on the old selected-network state in 32.265 seconds
+and passes on the fixed implementation in 46.999 seconds. Debug/test and unsigned
+minified release builds plus both Android lints pass. This is public Activity
+state evidence; the separate physical-camera and process-death limits remain.

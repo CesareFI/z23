@@ -14,6 +14,7 @@ import org.zclassic.wallet.core.PaymentRequest
 /** Private Activity: camera permission/lifecycle and public request presentation.
  * Scanning never opens a wallet session or authorizes a transfer. */
 class CameraScanActivity : Activity() {
+    private companion object { const val NETWORK_STATE = "scan_network_mainnet" }
     private lateinit var screens: ScanScreens
     private var network = Network.TESTNET
     private var resumed = false
@@ -26,8 +27,17 @@ class CameraScanActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         if (Build.VERSION.SDK_INT >= 31) window.setHideOverlayWindows(true)
-        network = if (intent.getBooleanExtra("mainnet", false)) Network.MAINNET else Network.TESTNET
+        val launchMainnet = intent.getBooleanExtra("mainnet", false)
+        network = if (savedInstanceState?.getBoolean(NETWORK_STATE, launchMainnet) ?: launchMainnet)
+            Network.MAINNET else Network.TESTNET
         screens = ScanScreens(this)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        // Public preference only. Capture, decoded requests and permission
+        // continuation still require a new foreground action after recreation.
+        outState.putBoolean(NETWORK_STATE, network == Network.MAINNET)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -60,7 +70,7 @@ class CameraScanActivity : Activity() {
 
     private fun choose(message: Int = R.string.scan_description) {
         stop()
-        if (resumed) screens.choose(network, message, ::start, ::finish)
+        if (resumed) screens.choose(network, message, { network = it }, ::start, ::finish)
     }
 
     private fun start(selected: Network) {

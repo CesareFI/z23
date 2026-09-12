@@ -396,3 +396,21 @@ SECURITY REVIEW; its original reproducer/corpus/provider source/output were
 not altered or rerun. Root lint's preserved environment/selftest blockers
 remain separate from passing wallet/Android gates. All checkpoints remain on
 the existing wallet branch, with no push, merge, production node or real funds.
+
+2026-09-13 scanner correctness follow-through: changing the network before
+starting capture previously lived only in the radio group; recreation restored
+the launch Intent's network. Selection now updates the Activity immediately,
+and only its public mainnet/testnet preference enters saved state. Capture,
+decoded requests and permission continuation remain unsaved; no camera or
+network starts automatically after recreation.
+
+The corrected public-state regression fails on the preceding implementation's
+selected network in 32.265 seconds and passes after the fix in 46.999 seconds.
+An initial test incorrectly treated RadioButton.performClick's listener return
+as selection success; it was corrected to assert the actual checked state.
+Before/after source and APK hashes are retained under the continuation cache.
+Debug/test and unsigned minified release builds and both Android lints pass.
+No C, JNI, custody, decoder or transport code changes in this slice. The next
+implementation remains fixture-only Android balance presentation with the C
+watch's owner/time contracts; physical hardware custody, TLS, real sync,
+transactions and the documented camera/device acceptance remain unfinished.

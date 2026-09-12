@@ -65,7 +65,8 @@ internal class ScanScreens(private val activity: Activity) {
     private fun networkLabel(network: Network) = activity.getString(
         if (network == Network.MAINNET) R.string.network_mainnet else R.string.network_testnet)
 
-    fun choose(network: Network, message: Int, start: (Network) -> Unit, close: () -> Unit) {
+    fun choose(network: Network, message: Int, selected: (Network) -> Unit,
+               start: (Network) -> Unit, close: () -> Unit) {
         begin(message)
         val group = RadioGroup(activity)
         for (chain in listOf(Network.TESTNET, Network.MAINNET)) group.addView(RadioButton(activity).apply {
@@ -75,6 +76,12 @@ internal class ScanScreens(private val activity: Activity) {
             filterTouchesWhenObscured = true
         })
         group.check(if (network == Network.MAINNET) R.id.network_mainnet else R.id.network_testnet)
+        group.setOnCheckedChangeListener { _, identifier ->
+            when (identifier) {
+                R.id.network_mainnet -> selected(Network.MAINNET)
+                R.id.network_testnet -> selected(Network.TESTNET)
+            }
+        }
         root.addView(group)
         button(root, R.string.scan_start, R.id.scan_start) {
             start(if (group.checkedRadioButtonId == R.id.network_mainnet) Network.MAINNET else Network.TESTNET)
