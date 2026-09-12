@@ -23,6 +23,13 @@ tasks.test {
     inputs.files(rootProject.fileTree("../../vendor/android-secp256k1")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-qrcodegen")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-quirc")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(rootProject.fileTree("../../contexts/commons/packages/zjsonp") {
+        include("src/**", "include/**")
+    }).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(rootProject.fileTree("../../contexts/commons/packages/zutf8") {
+        include("src/**", "include/**")
+    }).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(rootProject.file("native/json-provider.sha256")).withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 val configureHostNative by tasks.registering(Exec::class) {

@@ -1,8 +1,9 @@
 # Read-only sync compatibility checkpoint
 
-This is a design checkpoint, not implemented networking or validated balance
-support. No endpoint was contacted, no address was queried, and no node ran on
-the development server. The next implementation gate remains
+The C read-only request builders, framing and reply parsers are implemented.
+Sockets/TLS, synchronization state, Android balance integration and lightweight
+validation remain unfinished. No endpoint was contacted, no address was
+queried, and no node ran on the development server. The next implementation gate remains
 [`NEXT_MILESTONE.md`](NEXT_MILESTONE.md).
 
 ## Pin the network and protocol separately
@@ -44,6 +45,77 @@ must not become mobile validation rules. Original node rules and independent
 fixtures must qualify any future C verifier. The observed original-beta6
 rejection at block 478544 remains undiagnosed until the added diagnostic is
 collected; no exception for that block is authorized.
+
+## Implemented C protocol profile
+
+`zcl_electrum.h` provides five request types: `server.version` (requesting
+protocol 1.2), `server.features`, `blockchain.block.headers` with `[0,1]`,
+`blockchain.headers.subscribe` with `[true]`, and
+`blockchain.scripthash.get_balance`. No signing, key, broadcast, socket or
+logging operation is in these functions. Output requests have an exact length
+and one final LF. Each ID is an explicit nonzero uint32.
+
+The genesis request deliberately uses the plural block-headers method:
+[the protocol history](https://electrumx.readthedocs.io/en/latest/protocol-changes.html)
+places the singular `blockchain.block.header` method in protocol 1.3. Server
+availability and agreement with this legacy Zclassic profile still require
+measurement before a service can be enabled.
+
+Frames are limited to 16384 bytes, JSON containers to eight levels, tokens to
+128, and decoded object keys to 256 printable ASCII bytes (including complete
+DNS names in feature-host maps). The parser rejects
+duplicate keys (including escaped aliases and nested extension fields),
+malformed UTF-8/escapes/surrogates, trailing data, wrong reply IDs, mixed
+notification/reply envelopes and invalid numeric representations. Unknown
+bounded extension fields may be ignored. Batches are unsupported. Notifications
+need separate session handling; they cannot be mistaken for successful replies.
+The line accumulator consumes at most one line per call and preserves its
+ready buffer until reset. Overflow is sticky; resetting clears owned bytes.
+
+Money uses checked zatoshi integers. Confirmed value is 0..MAX_MONEY; the
+pending value is a signed delta within +/-MAX_MONEY; their sum must remain
+0..MAX_MONEY. Output is a server-reported balance, not spendable UTXOs or proof
+of inclusion. Public output arguments remain unchanged on failed parsing.
+
+Mainnet/testnet genesis headers in `native/tests/electrum_genesis_fixture.h`
+were serialized offline using original beta6 constructors, transaction Merkle
+root calculation, `CBlockHeader` and `CDataStream`. The generator checked both
+original genesis hashes before emitting the fixtures. The C parser independently
+recomputes SHA256d over those exact bytes. Header serialization expects canonical
+CompactSize and the original 1344/400-byte solution sizes around the separately
+pinned Bubbles heights. Synthetic fork-boundary fixtures test size selection;
+they are deliberately not valid Equihash solutions. No proof-of-work,
+difficulty, ancestry, Merkle inclusion or consensus validity is established by
+this serialization/hash check.
+
+The allocation-free `zjsonp` lexer and `zutf8` package are reused from
+`contexts/commons/packages`, with hashes in `native/json-provider.sha256`.
+The observed package-source revision is
+`de043e0465ef6cccdb33320347565d71455dfd68`. No node/core code is linked.
+Review found that the provider's string decoder re-encodes raw non-ASCII UTF-8
+bytes incorrectly. This wrapper only uses decoded output for printable ASCII
+protocol fields/keys; valid Unicode extension values are syntax-checked and
+ignored, never displayed or returned. Tests cover raw/escaped non-ASCII keys
+being rejected and ignored Unicode values being accepted. Do not reuse this
+ASCII adapter as a Unicode display decoder. Provider integer/float conversion
+helpers are unused; the C wrapper implements checked integer conversion.
+
+Host fuzzing exercises all reply parsers and fragmented/multiple LF-delimited
+frames, with output-preservation and money invariants. Reproduce from this app:
+
+```sh
+cmake -S native -B native/build/fuzz-electrum -DCMAKE_C_COMPILER=clang-20 \
+  -DZCL_SANITIZE=ON -DZCL_FUZZ=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build native/build/fuzz-electrum -j4 --target fuzz_electrum seed_electrum
+mkdir -p native/build/fuzz-electrum/corpus native/build/fuzz-electrum/artifacts
+(cd native/build/fuzz-electrum/corpus && ../seed_electrum)
+native/build/fuzz-electrum/fuzz_electrum native/build/fuzz-electrum/corpus \
+  -max_total_time=300 -max_len=16385 -rss_limit_mb=512 -malloc_limit_mb=32 \
+  -timeout=5 -artifact_prefix=native/build/fuzz-electrum/artifacts/
+```
+
+Seed data contains public fixed genesis/header/protocol fixtures only. This
+does not test actual TLS, socket cancellation, stale data or reorg behavior.
 
 ## Proposed C transport boundary
 

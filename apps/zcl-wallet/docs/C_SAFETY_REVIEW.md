@@ -274,3 +274,39 @@ Evidence: all 20 native tests, full authored/provider analysis and complexity
 gate, 41 JVM/JNI tests, 12070 camera fuzz executions with matching final hashes,
 and real emulator Binder/permission/camera lifecycle tests described in
 SCANNING_QR.md. No sanitizer result is treated as a complete memory-safety proof.
+
+## Read-only Electrum codec review — 2026-09-12, before implementation commit
+
+Scope: `rpc_json.c`, `rpc_values.c`, `electrum_*.c`, their public/private
+headers, pinned JSON/UTF-8 provider use, and public fixture/fuzz tools. No TLS,
+socket, JNI, custody or consensus implementation changes are included.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow | Frame <=16384 and request <=256. Decoded output counts are checked against destination capacity before public copies. Header hex <=2974 characters decodes into <=1487 bytes. The line accumulator checks capacity before every non-LF byte. |
+| Buffer underflow | Token offsets are checked before subtracting from frame length. Signed-number leading-minus subtraction follows nonempty-token checks. Header byte accesses follow exact length checks. Reverse hash indexing uses i<32. |
+| Out-of-bounds reads/writes | Provider events must lie within the caller span before narrowing. Index count <=128; nesting stack <=8; container next indices are validated. Private member/child helpers only receive tokens belonging to a successfully parsed document. UTF-8 decoder checks sequence length before continuation-byte access. |
+| Integer overflow/underflow | Frame/token/string counts are bounded before arithmetic. Integer magnitude checks `(limit-digit)/10` before multiply/add; limit is INT64_MAX or INT64_MAX+1, both >=9. Money operands are each bounded to +/-2.1e15 before summing. Request formatting checks negative/truncated snprintf returns. |
+| Signed/unsigned conversions | IDs are uint32 and compare exactly in int64. Magnitudes cast to int64 only when <=INT64_MAX; INT64_MIN has a separate branch. Heights are checked 0..INT32_MAX before uint32 conversion. Hex nibbles are nonnegative before byte encoding. Offsets <=16384 precede uint16 casts. |
+| Use-after-free | No allocator or freed object is involved in the codec. Invocation-owned token indexes borrow a stable frame only for the synchronous call. No token/frame pointer is retained. |
+| Double-free | No malloc/calloc/realloc/free calls in the new protocol path or reused lexer/UTF-8 path. Fixture FILE ownership has exactly one fclose after a successful fopen. |
+| Memory leaks | Fixed caller/stack storage requires no cleanup allocation path. Every fixture stream closes after write success or failure. Future TLS/socket resources require a separate ownership review. |
+| NULL dereferences | Public frame/output/length arguments are checked before use. Missing typed members refuse through NULL-aware accessors. Internal document/token pointers have a documented successfully-parsed-document contract. Framing reset accepts NULL as a no-op. |
+| Uninitialized memory | Document/index state initializes before parsing; parsed public result structs initialize locally. Decoded scratch is inspected only through a successful returned length. Requests copy only snprintf's checked written length. Failed public result parsing leaves all caller bytes unchanged, exercised by canaries/fuzz assertions. |
+| Dangling pointers | All spans remain caller-owned, stable and nonoverlapping for the call. Tokens contain bounded offsets, not retained frame pointers exposed to callers. Line bytes remain owned by their enclosing object until reset. |
+| Invalid pointer arithmetic | Token pointer subtraction is private and only between members of the same document array. Every byte offset is proven within the original frame before addition. No wire-to-struct pointer casts, alignment assumptions or pointer tagging. |
+| Format-string vulnerabilities | Request/fixture snprintf formats are compile-time constants, checked for failure/truncation. The only interpolated request string is exactly 64 validated lowercase hex bytes with explicit precision. Server strings never become format strings or logs. |
+| Stack exhaustion | No recursion or VLA. JSON parsing uses an eight-entry stack; authored frames pass the <=4096-byte compiler gate. The largest nested call path combines bounded document, header and hex scratch (under 8 KiB plus bounded provider/call overhead). The 16 KiB line object must be caller-owned heap/enclosing storage on Android, not an automatic thread-stack object. |
+| Excessive allocation | No authored or provider protocol allocation. Maximum scratch and traversal sizes are constants. Fixture tools use fixed frames <=16385, with their largest buffer static rather than on the stack. Fuzz inputs <=16385, RSS <=512 MiB, individual allocations <=32 MiB and execution time are capped. |
+| Malformed serialization | Strict JSON grammar, UTF-8/escape/surrogate checks, duplicate-key rejection and exact integer representations precede semantic access. Canonical header lengths/CompactSize and pinned genesis hashes reject malformed/wrong-network identity replies. These checks do not claim PoW or consensus validation. |
+| Malformed network input | The codec treats frames as untrusted: nonzero expected ID must match; non-null error, mixed method/reply, unsupported version, malformed result, invalid money or excessive resource use refuse. Batches/notifications are unsupported by reply APIs. No network is enabled until transport/session handling is qualified. |
+| Race conditions | No mutable global production state. Each caller exclusively owns its line/index/output. Immutable provider tables may be shared. Concurrent mutation of a borrowed span is outside the documented API contract; future transport must enforce one owner. |
+| Resource exhaustion | At most 128 tokens, eight nesting levels and 257 event iterations. Duplicate comparison is bounded by that token budget and 256-byte keys, sufficient for DNS names in feature maps. Decoder scans are bounded by the frame cap. Socket deadlines, retry budgets, connection counts and notification limits remain unimplemented and must be enforced by the next layer. |
+| Secret leakage | No key, entropy, signing, wallet record, log or network callback in this API. Requests contain public script hashes whose disclosure still has address-privacy implications. Line reset clears bytes; parsed extension/server text is never exposed to UI. Test/fuzz seeds contain only public genesis/amount/protocol fixtures. |
+
+The reused provider's raw-Unicode string decoding defect is explicitly bounded
+to ignored syntax-checking or printable-ASCII output; no decoded Unicode text
+is consumed. See READ_ONLY_SYNC.md. All 22 native executables pass
+ASan/UBSan/LSan, authored GCC/Clang and provider Clang analysis, and authored
+complexity <=10. Those results complement this review and do not prove complete
+memory safety, secure networking or accepted balances.

@@ -270,3 +270,32 @@ cancellation during pending camera open, process recreation and supported-API
 coverage. Positive hardware custody remains unqualified. Bounded C read-only
 sync is the next independent implementation milestone before transparent send,
 shielded support, mobile validation and the separate messaging design.
+
+2026-09-12 read-only protocol continuation: implemented portable C Electrum 1.2
+request construction, reversed SHA-256 script hashes, bounded LF framing,
+strict JSON reply handling, signed pending balance accounting, and mainnet/
+testnet genesis identity/header serialization checks. Original beta6 C++
+constructors/serialization generated the public genesis fixtures offline and
+checked both original hashes before export; no node or proof bypass was run.
+The profile accepts full DNS names in feature-host maps while bounding decoded
+keys to 256 bytes, frames to 16384, tokens to 128 and nesting to eight levels.
+Output arguments remain unchanged on failed replies. Reused independent JSON/
+UTF-8 packages are pinned and included in native analysis and Gradle test input
+tracking. Their Unicode-display decoding limitation is documented and excluded
+from the protocol's ASCII adapter.
+
+All 22 native executables pass ASan/UBSan/LSan, including the unchanged JSON
+provider test suite. Authored GCC/Clang and provider Clang static analysis pass;
+215 authored functions in 43 files have complexity <=10. The final tmux fuzz
+campaign includes maximum-size frames and completed 275159 executions in 301
+seconds, with RSS 258 MiB, no finding and matching final source/binary hashes.
+The preceding campaign before the DNS-key boundary correction completed 471076
+executions; its counts are not attributed to the final source. All 41 JVM/JNI
+tests, Android debug build/lint and 32 root lint-fast gates pass.
+
+This is protocol implementation, not completed synchronization. No endpoint,
+address query, TLS connection, balance UI, signing or broadcast was enabled.
+Next implement C TLS/socket lifetime, source trust, deadlines, notification/
+reorg/retry state and Android unverified/offline/stale balance presentation.
+Hardware-positive custody and the previously listed camera acceptance remain
+pending; all later phases retain their original scope.

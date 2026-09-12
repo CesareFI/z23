@@ -7,6 +7,17 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 
+# Reuse the existing allocation-free JSON/UTF-8 packages as C17 providers.
+# Only the bounded lexer and escape checker are used, never floating-point
+# conversion or Unicode display decoding. See docs/READ_ONLY_SYNC.md.
+set(ZCL_COMMONS_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../contexts/commons/packages")
+add_library(zcl_json_provider STATIC ${ZCL_COMMONS_SOURCE}/zjsonp/src/zjsonp.c
+    ${ZCL_COMMONS_SOURCE}/zutf8/src/zutf8.c)
+target_include_directories(zcl_json_provider PUBLIC ${ZCL_COMMONS_SOURCE}/zjsonp/include
+    ${ZCL_COMMONS_SOURCE}/zutf8/include)
+target_compile_options(zcl_json_provider PRIVATE -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong)
+set_target_properties(zcl_json_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 option(ZCL_SANITIZE "Enable host ASan and UBSan" OFF)
 option(ZCL_FUZZ "Build Clang libFuzzer harnesses" OFF)
 option(ZCL_JNI "Build the thin JNI bridge" OFF)
@@ -55,10 +66,12 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c
-    src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c)
+    src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
+    src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
+    src/electrum_identity.c src/electrum_header.c)
 target_include_directories(zcl_wallet_core PUBLIC include)
 target_include_directories(zcl_wallet_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-bip39")
-target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1 zcl_qr_provider zcl_scan_provider)
+target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1 zcl_qr_provider zcl_scan_provider zcl_json_provider)
 set_target_properties(zcl_wallet_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(zcl_wallet_core PRIVATE
     -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
@@ -75,6 +88,7 @@ if(ZCL_SANITIZE)
     target_compile_options(zcl_hash_provider PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(zcl_qr_provider PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_compile_options(zcl_json_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(secp256k1 PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(secp256k1_precomputed PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined)
@@ -101,6 +115,15 @@ if(ZCL_FUZZ)
     target_compile_options(zcl_wallet_core PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_qr_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=fuzzer-no-link)
+    target_compile_options(zcl_json_provider PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(fuzz_electrum tests/fuzz_electrum.c)
+    target_link_libraries(fuzz_electrum PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(seed_electrum tests/seed_electrum.c)
+    target_compile_options(seed_electrum PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion)
     add_executable(fuzz_camera_frame tests/fuzz_camera_frame.c)
     target_link_libraries(fuzz_camera_frame PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_camera_frame PRIVATE -fsanitize=fuzzer,address,undefined
@@ -149,6 +172,20 @@ endif()
 
 if(NOT ANDROID)
     enable_testing()
+    add_executable(electrum_tests tests/test_electrum.c)
+    target_link_libraries(electrum_tests PRIVATE zcl_wallet_core zcl_json_provider)
+    target_include_directories(electrum_tests PRIVATE src)
+    target_compile_options(electrum_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_electrum COMMAND electrum_tests)
+    set_tests_properties(wallet_electrum PROPERTIES TIMEOUT 15)
+    add_executable(rpc_provider_tests ${ZCL_COMMONS_SOURCE}/zjsonp/tests/test_zjsonp.c)
+    target_link_libraries(rpc_provider_tests PRIVATE zcl_json_provider)
+    if(ZCL_SANITIZE)
+        target_compile_options(rpc_provider_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rpc_provider_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME wallet_rpc_provider COMMAND rpc_provider_tests)
+    set_tests_properties(wallet_rpc_provider PROPERTIES TIMEOUT 15)
     add_executable(camera_frame_tests tests/test_camera_frame.c tests/scan_fixture.c)
     target_link_libraries(camera_frame_tests PRIVATE zcl_wallet_core zcl_qr_provider)
     target_compile_options(camera_frame_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)

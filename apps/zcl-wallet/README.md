@@ -42,6 +42,9 @@ qualify physical hardware custody.
 QR encoding is C, with fixed buffers and a pinned provider. Android only draws
 the public modules. ZXing is a test oracle and is not an app runtime dependency.
 Balance is explicitly unavailable until read-only network sync is implemented.
+Bounded C Electrum request/reply parsing, signed balance arithmetic and pinned
+genesis-header fixtures are present; [sync scope](docs/READ_ONLY_SYNC.md)
+records the remaining TLS, socket, state and Android integration work.
 The C QR decoder has bounded input/work and strict request validation. The
 camera screen uses a bounded grayscale preview, an isolated decoder service,
 and a public request review; see [scanner scope](docs/SCANNING_QR.md). Actual

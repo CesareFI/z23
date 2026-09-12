@@ -36,7 +36,9 @@ orientation on different devices, and the minified release at runtime. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full
 journey. Retain no secret scan/import route or automatic transaction authority.
 
-Implement bounded read-only networking in C. Define the source trust and
+The bounded C request/reply codec and original-genesis fixtures are present.
+Implement TLS/socket ownership and the read-only synchronization state in C,
+then integrate server-reported balances into Android. Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report
 offline/stale/unverified balances explicitly. Exercise malformed responses,

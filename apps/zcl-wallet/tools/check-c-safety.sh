@@ -35,13 +35,19 @@ fi
     cd "$repo_root/vendor/android-quirc"
     sha256sum -c SHA256SUMS
 )
+(
+    cd "$repo_root"
+    sha256sum -c apps/zcl-wallet/native/json-provider.sha256
+)
 
 common=(-std=c17 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
     -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096
     '-DMBEDTLS_CONFIG_FILE="zcl_mbedtls_config.h"'
     -I native/include -I "$repo_root/vendor/android-mbedtls/include"
     -I "$repo_root/vendor/android-bip39" -I "$repo_root/vendor/android-secp256k1/include"
-    -I "$repo_root/vendor/android-qrcodegen" -I "$repo_root/vendor/android-quirc")
+    -I "$repo_root/vendor/android-qrcodegen" -I "$repo_root/vendor/android-quirc"
+    -I "$repo_root/contexts/commons/packages/zjsonp/include"
+    -I "$repo_root/contexts/commons/packages/zutf8/include")
 javac_path=$(command -v javac)
 jdk_root=$(dirname -- "$(dirname -- "$(readlink -f -- "$javac_path")")")
 jni_common=("${common[@]}" -I "$jdk_root/include" -I "$jdk_root/include/linux")
@@ -62,6 +68,14 @@ for unit in quirc identify decode version_db; do
     "$clang_bin" --analyze -Xanalyzer -analyzer-werror -std=c17 \
         -I "$repo_root/vendor/android-quirc" "$repo_root/vendor/android-quirc/$unit.c" \
         -o "$analysis_dir/quirc-$unit.plist"
+done
+
+for unit in zjsonp zutf8; do
+    "$clang_bin" --analyze -Xanalyzer -analyzer-werror -std=c17 \
+        -I "$repo_root/contexts/commons/packages/zjsonp/include" \
+        -I "$repo_root/contexts/commons/packages/zutf8/include" \
+        "$repo_root/contexts/commons/packages/$unit/src/$unit.c" \
+        -o "$analysis_dir/$unit.plist"
 done
 
 if [[ ! -x "$repo_root/build/bin/z23-lint" ]]; then
