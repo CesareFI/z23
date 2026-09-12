@@ -43,6 +43,19 @@ class CameraLifecycleInstrumentedTest {
 
     private fun cameraThreadsClosed() = Thread.getAllStackTraces().keys.none { it.name == "WalletCamera" && it.isAlive }
 
+    private fun awaitPreview(scenario: ActivityScenario<CameraScanActivity>): CameraPreviewView {
+        var preview: CameraPreviewView? = null
+        await("Camera did not deliver a sampled frame") {
+            var ready = false
+            scenario.onActivity { activity ->
+                preview = activity.findViewById(R.id.scan_preview)
+                ready = preview?.hasFrame == true
+            }
+            ready
+        }
+        return checkNotNull(preview)
+    }
+
     @Test fun deniedPermissionClosesCameraWorkerWithoutFrame() {
         assertEquals(PackageManager.PERMISSION_DENIED,
             instrumentation.targetContext.checkSelfPermission(Manifest.permission.CAMERA))
@@ -69,17 +82,9 @@ class CameraLifecycleInstrumentedTest {
                     assertNull(activity.findViewById<View>(R.id.scan_preview))
                     assertTrue(activity.findViewById<View>(R.id.scan_start).performClick())
                 }
-                var preview: CameraPreviewView? = null
-                await("Camera did not deliver a sampled frame") {
-                    var ready = false
-                    scenario.onActivity { activity ->
-                        preview = activity.findViewById(R.id.scan_preview)
-                        ready = preview?.hasFrame == true
-                    }
-                    ready
-                }
+                val preview = awaitPreview(scenario)
                 scenario.moveToState(Lifecycle.State.CREATED)
-                instrumentation.runOnMainSync { assertFalse(requireNotNull(preview).hasFrame) }
+                instrumentation.runOnMainSync { assertFalse(preview.hasFrame) }
                 await("Background capture left its worker alive", ::cameraThreadsClosed)
                 scenario.moveToState(Lifecycle.State.RESUMED)
                 scenario.onActivity { activity ->
@@ -90,5 +95,30 @@ class CameraLifecycleInstrumentedTest {
             }
         }
         await("Destroyed scanner left its worker alive", ::cameraThreadsClosed)
+    }
+
+    @Test fun recreationClearsCapturedFrameAndRequiresExplicitRestart() {
+        assertEquals(PackageManager.PERMISSION_GRANTED,
+            instrumentation.targetContext.checkSelfPermission(Manifest.permission.CAMERA))
+        ActivityScenario.launch(CameraScanActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertTrue(activity.findViewById<View>(R.id.scan_start).performClick())
+            }
+            val oldPreview = awaitPreview(scenario)
+            scenario.recreate()
+            instrumentation.runOnMainSync { assertFalse(oldPreview.hasFrame) }
+            await("Recreated scanner retained the old camera worker", ::cameraThreadsClosed)
+            scenario.onActivity { activity ->
+                assertTrue(activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
+                assertNotNull(activity.findViewById<View>(R.id.scan_start))
+                assertNull(activity.findViewById<View>(R.id.scan_preview))
+                assertTrue(activity.findViewById<View>(R.id.scan_start).performClick())
+            }
+            val newPreview = awaitPreview(scenario)
+            assertNotSame(oldPreview, newPreview)
+            scenario.moveToState(Lifecycle.State.CREATED)
+            instrumentation.runOnMainSync { assertFalse(newPreview.hasFrame) }
+        }
+        await("Recreated scanner did not close its final worker", ::cameraThreadsClosed)
     }
 }

@@ -139,7 +139,7 @@ Actual camera QR-to-review interoperability, physical-device preview rotation,
 runtime permission-dialog interactions, cancellation during pending OS open,
 process recreation and oldest/current API coverage remain unqualified.
 
-The two `CameraLifecycleInstrumentedTest` methods require different permission
+The `CameraLifecycleInstrumentedTest` methods require different permission
 fixtures and must be invoked separately on the dedicated development emulator.
 Use `-e cameraFixture yes` and select one method with `-e class`:
 `org.zclassic.wallet.CameraLifecycleInstrumentedTest#deniedPermissionClosesCameraWorkerWithoutFrame`
@@ -149,3 +149,12 @@ with CAMERA granted. The instrumentation component is
 `org.zclassic.wallet.dev.test/androidx.test.runner.AndroidJUnitRunner`.
 The tests assert permission state; they never revoke permissions or remove any
 wallet. Do not run this opted-in fixture on a physical/operator device.
+
+2026-09-13: `recreationClearsCapturedFrameAndRequiresExplicitRestart` passed on
+the API-35 emulator in 114.094 seconds. It receives a real camera frame, recreates
+the Activity, observes the old preview cleared and camera worker terminated,
+requires an explicit restart, receives a new frame through a different preview
+owner, then checks final background cleanup. Select this method with CAMERA
+granted and the same emulator opt-in. Debug test assembly and Android lint pass.
+This is Activity recreation evidence; OS process death, physical-device camera
+interoperability and the other outstanding acceptance items remain separate.

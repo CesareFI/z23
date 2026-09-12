@@ -360,3 +360,11 @@ pass. Root lint's previously documented environment/selftest blockers remain
 unresolved; the TLS investigation remains parked. No network or new JNI API is
 enabled by this slice. Next validate camera recreation independently, then
 implement fixture-only Android balance presentation/lifetime bindings.
+
+2026-09-13 camera follow-through: the new emulator-only Activity recreation
+acceptance passed in 114.094 seconds with actual captured frames before and
+after recreation. The old preview clears, the old worker terminates, the new
+Activity requires explicit start and uses a distinct preview, then final
+background cleanup releases its frame/worker. Debug test assembly and lint pass.
+The architecture-tree gate also passes. This adds Activity recreation evidence,
+not an OS-process-death or physical camera QR-to-review claim.
