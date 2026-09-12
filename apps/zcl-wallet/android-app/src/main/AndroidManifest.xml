@@ -15,6 +15,9 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
+        <service android:name=".ScanDecodeService" android:exported="false"
+            android:isolatedProcess="true" android:process=":qrdecode" android:stopWithTask="true" />
+        <activity android:name=".CameraScanActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <item name="scan_request" type="id" />
+    <item name="scan_start" type="id" />
+    <item name="scan_close" type="id" />
+    <item name="scan_cancel" type="id" />
+    <item name="scan_preview" type="id" />
+    <item name="scan_address" type="id" />
+    <item name="scan_amount" type="id" />
+    <item name="scan_label" type="id" />
+    <item name="scan_message" type="id" />
     <item name="screen_title" type="id" />
     <item name="status_message" type="id" />
     <item name="network_mainnet" type="id" />

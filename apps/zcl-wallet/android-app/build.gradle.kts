@@ -4,6 +4,7 @@ plugins {
     kotlin("android")
 }
 android {
+    buildFeatures { aidl = true }
     namespace = "org.zclassic.wallet"
     compileSdk = 36
     ndkVersion = "27.2.12479018"

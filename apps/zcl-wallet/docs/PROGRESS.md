@@ -239,3 +239,34 @@ Next add a bounded camera permission/lifecycle adapter and public-request review
 screen, then qualify actual camera behavior. Hardware-positive custody and
 read-only sync remain pending, followed by the original ordered phases in
 `NEXT_MILESTONE.md`. No Rust, real funds, node/miner, push or merge was introduced.
+
+2026-09-12 camera continuation: implemented the private scanner Activity,
+Camera2/ImageReader lifetime adapter, bounded grayscale preview, isolated AIDL
+decoder and full public request review. C validates/samples direct image planes
+into <=147461-byte packets. One camera worker owns all Image/reader/device
+access and closure. One frame may be outstanding; submission is capped at four
+per second. Late OS camera-open callbacks retain at most one owner. The service
+has no app permissions and checks its caller UID. Returned exact request bytes
+are parsed again by C in the app process before display. Scan never authorizes
+spending or enters the recovery/key workflow.
+
+All 20 native test executables pass ASan/UBSan/LSan with authored GCC/Clang and
+provider Clang analysis and authored complexity <=10. All 41 JVM/JNI tests pass.
+The camera fuzzer completed 12070 runs in 301 seconds, reported RSS 263 MiB,
+and final source/provider/binary checks passed. Debug/test and unsigned minified
+release builds plus debug/release lint pass. Root lint-fast passes 32 gates.
+
+On the API-35 software emulator, the isolated decoder's actual Binder UID is
+different from the app UID; a public request round-trip and wrong-network
+refusal pass in 23.136 seconds. Permission refusal returns no frame and closes
+the worker in 0.642 seconds. Actual Camera2 frames plus three background/resume
+cycles pass in 149.774 seconds: preview cleared, worker terminated, explicit
+restart required. This is separate synthetic QR and real emulator capture
+evidence, not physical QR-to-review or minified runtime acceptance.
+
+Remaining scanner acceptance includes a QR through an actual camera into the
+review screen, physical orientations, runtime permission-dialog behavior,
+cancellation during pending camera open, process recreation and supported-API
+coverage. Positive hardware custody remains unqualified. Bounded C read-only
+sync is the next independent implementation milestone before transparent send,
+shielded support, mobile validation and the separate messaging design.

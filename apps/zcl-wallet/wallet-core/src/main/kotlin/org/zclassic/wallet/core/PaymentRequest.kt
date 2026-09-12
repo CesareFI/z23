@@ -14,9 +14,14 @@ data class PaymentRequest(
     companion object {
         fun parse(text: String, network: Network): PaymentRequest {
             require(text.length <= 1024) { "Invalid payment request size" }
-            val record = requireNotNull(NativeCore.parsePayment(text.toByteArray(Charsets.UTF_8), network.nativeId)) {
+            return requireNotNull(parseEncoded(text.toByteArray(Charsets.UTF_8), network)) {
                 "Invalid or unsupported Zclassic payment request"
             }
+        }
+
+        /** Revalidate untrusted IPC bytes in C before creating display Strings. */
+        fun parseEncoded(text: ByteArray, network: Network): PaymentRequest? {
+            val record = NativeCore.parsePayment(text, network.nativeId) ?: return null
             return fromNative(record, network)
         }
 

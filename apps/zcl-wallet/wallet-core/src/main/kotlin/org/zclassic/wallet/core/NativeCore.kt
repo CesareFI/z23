@@ -16,6 +16,9 @@ internal object NativeCore {
     @JvmStatic external fun receiveQr(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun scanQr(image: ByteArray, width: Int, height: Int, rowStride: Int,
                                    pixelStride: Int, network: Int): ByteArray?
+    @JvmStatic external fun packCameraPlane(buffer: java.nio.ByteBuffer, offset: Int, length: Int,
+        width: Int, height: Int, rowStride: Int, pixelStride: Int): ByteArray?
+    @JvmStatic external fun scanCameraPacket(packet: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun parsePayment(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun createEntropy(): ByteArray?
     @JvmStatic external fun recoveryPhrase(entropy: ByteArray): CharArray?

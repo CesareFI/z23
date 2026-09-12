@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="scan_request">Scan Zclassic request</string>
+    <string name="scan_description">Choose the request’s network. Camera access starts when you tap Start camera.</string>
+    <string name="scan_start">Start camera</string>
+    <string name="scan_again">Scan again</string>
+    <string name="scan_close">Close</string>
+    <string name="scan_cancel">Stop camera</string>
+    <string name="scan_position">Point the camera at one Zclassic address or payment QR code. Keep the whole code visible and steady.</string>
+    <string name="scan_preview_description">Camera preview for scanning a Zclassic request</string>
+    <string name="scan_review_notice">Review the scanned request. Sending is not available in this development version.</string>
+    <string name="scan_amount">Amount: %1$s ZCL</string>
+    <string name="scan_no_amount">No amount requested</string>
+    <string name="scan_label">Label: %1$s</string>
+    <string name="scan_message">Message: %1$s</string>
+    <string name="scan_permission_denied">Camera permission is needed to scan. Try again or enable it in Android app settings.</string>
+    <string name="scan_unavailable">Scanning could not continue. Check camera permission and close other camera apps, then try again.</string>
     <string name="receiving_qr_description">QR code for the receiving address shown above</string>
     <string name="receiving_qr_unavailable">The address is available above. Its QR code could not be generated.</string>
     <string name="app_name">Zclassic Dev Wallet</string>

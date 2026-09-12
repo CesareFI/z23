@@ -2,6 +2,7 @@
 package org.zclassic.wallet
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -78,7 +79,7 @@ class MainActivity : Activity() {
             busy = false
             when (stored.status) {
                 CoreStatus.NOT_FOUND -> screens.welcome(
-                    { prepare(WalletAction.CREATE, it) }, { prepare(WalletAction.RESTORE, it) })
+                    { prepare(WalletAction.CREATE, it) }, { prepare(WalletAction.RESTORE, it) }, ::openScanner)
                 CoreStatus.OK -> showLocked(stored)
                 else -> showFailure(R.string.storage_failed)
             }
@@ -153,7 +154,19 @@ class MainActivity : Activity() {
     private fun received(address: TransparentAddress) {
         clearSetupTimeout()
         busy = false
-        screens.receive(address, ::restart)
+        screens.receive(address, ::restart) { openScanner(address.network) }
+    }
+
+    private fun openScanner(network: Network) {
+        if (!resumed || busy) return
+        busy = true
+        try {
+            startActivity(Intent(this, CameraScanActivity::class.java)
+                .putExtra("mainnet", network == Network.MAINNET))
+        } catch (_: Exception) {
+            busy = false
+            showFailure(R.string.operation_failed)
+        }
     }
 
     private fun failed(problem: WalletProblem) = showFailure(when (problem) {

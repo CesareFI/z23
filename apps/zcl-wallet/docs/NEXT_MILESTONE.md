@@ -26,12 +26,15 @@ permission for a software key or timed-authentication fallback.
 
 ## Complete phase 1
 
-The pinned C QR decoder and thin JNI adapter are present; see
-[`SCANNING_QR.md`](SCANNING_QR.md). Add the camera permission/lifecycle adapter
-with bounded frame ownership and queueing, and a public-request review screen.
-Qualify real-camera interoperability, denial, cancellation, backgrounding and
-process recreation. Retain no secret scan/import route; a scan must never
-authorize a transaction.
+The C QR decoder, bounded camera adapter, isolated decoding service and public
+request review are present; see [`SCANNING_QR.md`](SCANNING_QR.md). The API-35
+emulator proves separate Binder identity, public request round-trip, permission
+refusal, actual captured frames and three background/resume cleanup cycles.
+Qualify QR-to-review interoperability through an actual camera, the runtime
+permission dialog, cancellation during camera open, process recreation, preview
+orientation on different devices, and the minified release at runtime. A
+synthetic QR round-trip and a separate camera-frame test do not prove that full
+journey. Retain no secret scan/import route or automatic transaction authority.
 
 Implement bounded read-only networking in C. Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
@@ -42,9 +45,8 @@ fixtures. No production node or mining runs on Worldstream.
 The pinned transport-reference findings and original beta6 network differences
 are recorded in [`READ_ONLY_SYNC.md`](READ_ONLY_SYNC.md).
 
-Receiving QR encoding is present. Device rendering and real-camera scan
-interoperability remain part of this gate; synthetic image decoding is not a
-camera acceptance claim.
+Receiving QR encoding and device rendering are present. Physical camera QR
+interoperability remains part of this gate.
 
 ## Remaining ordered scope
 

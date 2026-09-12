@@ -79,7 +79,7 @@ internal class WalletScreens(private val activity: Activity) {
 
     fun waiting(message: Int = R.string.wallet_working) = begin(R.string.wallet_title, message)
 
-    fun welcome(create: (Network) -> Unit, restore: (Network) -> Unit) {
+    fun welcome(create: (Network) -> Unit, restore: (Network) -> Unit, scan: (Network) -> Unit) {
         begin(R.string.wallet_welcome, R.string.wallet_setup_description)
         val networks = RadioGroup(activity)
         for ((network, label) in listOf(Network.TESTNET to R.string.network_testnet,
@@ -97,6 +97,7 @@ internal class WalletScreens(private val activity: Activity) {
             Network.MAINNET else Network.TESTNET
         button(R.string.create_wallet, R.id.create_wallet) { create(selected()) }
         button(R.string.restore_wallet, R.id.restore_wallet) { restore(selected()) }
+        button(R.string.scan_request, R.id.scan_request) { scan(selected()) }
     }
 
     fun locked(pending: Boolean, unlock: () -> Unit) {
@@ -141,7 +142,7 @@ internal class WalletScreens(private val activity: Activity) {
         button(R.string.cancel_setup, R.id.cancel_setup, cancel)
     }
 
-    fun receive(address: TransparentAddress, lock: () -> Unit) {
+    fun receive(address: TransparentAddress, lock: () -> Unit, scan: () -> Unit) {
         begin(R.string.receive_title, R.string.balance_unavailable)
         text(activity.getString(if (address.network == Network.MAINNET)
             R.string.network_mainnet else R.string.network_testnet), 16f)
@@ -153,6 +154,7 @@ internal class WalletScreens(private val activity: Activity) {
         if (qr != null) content.addView(ReceiveQrView(activity).apply { show(qr) })
         else text(activity.getString(R.string.receiving_qr_unavailable), 16f)
         button(R.string.lock_wallet, R.id.lock_wallet, lock)
+        button(R.string.scan_request, R.id.scan_request, scan)
     }
 
     fun failure(message: Int, retry: () -> Unit) {

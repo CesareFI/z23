@@ -3,6 +3,7 @@
 #include "zcl_keys.h"
 #include "quirc.h"
 #include <stdlib.h>
+#include <string.h>
 
 _Static_assert(ZCL_SCAN_DIMENSION_MAX == QUIRC_MAX_IMAGE_DIMENSION,
                "Scanner and provider dimension limits must agree");
@@ -39,7 +40,7 @@ zcl_status zcl_scan_image_bounds(size_t image_len, const zcl_qr_image *layout)
 }
 
 static zcl_status decode_payload(struct scan_workspace *work, zcl_network network,
-                                  zcl_payment_request *request)
+                                  zcl_scanned_request *result)
 {
     quirc_decode_error_t decoded = quirc_decode(&work->code, &work->data);
     if (decoded == QUIRC_ERROR_DATA_ECC) {
@@ -53,11 +54,20 @@ static zcl_status decode_payload(struct scan_workspace *work, zcl_network networ
     if (work->data.data_type == QUIRC_DATA_TYPE_KANJI ||
         (work->data.eci != 0 && work->data.eci != 26))
         return ZCL_UNSUPPORTED;
-    return zcl_payment_parse(work->data.payload, (size_t)work->data.payload_len, network, request);
+    zcl_payment_request parsed = {0};
+    const size_t length = (size_t)work->data.payload_len;
+    const zcl_status status = zcl_payment_parse(work->data.payload, length, network, &parsed);
+    if (status == ZCL_OK) {
+        result->request = parsed;
+        memcpy(result->text, work->data.payload, length);
+        result->text_len = length;
+    }
+    zcl_secure_zero(&parsed, sizeof(parsed));
+    return status;
 }
 
 static zcl_status decode_request(const struct quirc *decoder, zcl_network network,
-                                  zcl_payment_request *request)
+                                  zcl_scanned_request *request)
 {
     if (quirc_is_limited(decoder))
         return ZCL_RESOURCE_EXHAUSTED;
@@ -94,7 +104,7 @@ static zcl_status copy_image(struct quirc *decoder, const uint8_t *image,
 
 static zcl_status scan_owned(struct quirc *decoder, const uint8_t *image,
                               const zcl_qr_image *layout, zcl_network network,
-                              zcl_payment_request *request)
+                              zcl_scanned_request *request)
 {
     /* Bounds already prove these casts and the provider allocation sizes. */
     if (quirc_resize(decoder, (int)layout->width, (int)layout->height) != 0)
@@ -106,9 +116,9 @@ static zcl_status scan_owned(struct quirc *decoder, const uint8_t *image,
     return decode_request(decoder, network, request);
 }
 
-zcl_status zcl_scan_qr(const uint8_t *image, size_t image_len,
+zcl_status zcl_scan_request(const uint8_t *image, size_t image_len,
                        const zcl_qr_image *layout, zcl_network network,
-                       zcl_payment_request *request)
+                       zcl_scanned_request *request)
 {
     if (image == NULL || request == NULL)
         return ZCL_INVALID_ARGUMENT;
@@ -124,5 +134,19 @@ zcl_status zcl_scan_qr(const uint8_t *image, size_t image_len,
         return ZCL_RESOURCE_EXHAUSTED;
     const zcl_status status = scan_owned(decoder, image, layout, network, request);
     quirc_destroy(decoder);
+    return status;
+}
+
+zcl_status zcl_scan_qr(const uint8_t *image, size_t image_len,
+                       const zcl_qr_image *layout, zcl_network network,
+                       zcl_payment_request *request)
+{
+    if (request == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    zcl_scanned_request result = {0};
+    const zcl_status status = zcl_scan_request(image, image_len, layout, network, &result);
+    if (status == ZCL_OK)
+        *request = result.request;
+    zcl_secure_zero(&result, sizeof(result));
     return status;
 }

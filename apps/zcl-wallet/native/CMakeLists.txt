@@ -55,7 +55,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c
-    src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c)
+    src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c)
 target_include_directories(zcl_wallet_core PUBLIC include)
 target_include_directories(zcl_wallet_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-bip39")
 target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1 zcl_qr_provider zcl_scan_provider)
@@ -82,7 +82,7 @@ endif()
 
 if(ZCL_JNI OR ANDROID)
     add_library(zclwallet_jni SHARED src/jni_amount.c src/jni_codecs.c src/jni_payment.c src/jni_support.c
-        src/jni_keys.c src/jni_wallet_record.c src/jni_storage.c src/jni_custody.c src/jni_qr.c src/jni_scan.c)
+        src/jni_keys.c src/jni_wallet_record.c src/jni_storage.c src/jni_custody.c src/jni_qr.c src/jni_scan.c src/jni_camera.c)
     target_link_libraries(zclwallet_jni PRIVATE zcl_wallet_core)
     target_compile_options(zclwallet_jni PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -fstack-protector-strong)
@@ -101,6 +101,11 @@ if(ZCL_FUZZ)
     target_compile_options(zcl_wallet_core PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_qr_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(fuzz_camera_frame tests/fuzz_camera_frame.c)
+    target_link_libraries(fuzz_camera_frame PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_camera_frame PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_camera_frame PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_scan_qr tests/fuzz_scan_qr.c)
     target_link_libraries(fuzz_scan_qr PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_scan_qr PRIVATE -fsanitize=fuzzer,address,undefined
@@ -144,6 +149,11 @@ endif()
 
 if(NOT ANDROID)
     enable_testing()
+    add_executable(camera_frame_tests tests/test_camera_frame.c tests/scan_fixture.c)
+    target_link_libraries(camera_frame_tests PRIVATE zcl_wallet_core zcl_qr_provider)
+    target_compile_options(camera_frame_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_camera_frame COMMAND camera_frame_tests)
+    set_tests_properties(wallet_camera_frame PROPERTIES TIMEOUT 10)
     add_executable(scan_provider_tests tests/test_scan_provider.c
         ${ZCL_SCAN_SOURCE}/quirc.c ${ZCL_SCAN_SOURCE}/version_db.c)
     target_include_directories(scan_provider_tests PRIVATE ${ZCL_SCAN_SOURCE})

@@ -28,6 +28,15 @@ typedef struct {
     size_t pixel_stride;
 } zcl_qr_image;
 
+/* The exact validated public text accompanies its parsed view for transfer to
+ * an isolated decoder's caller. That caller must independently parse it again.
+ * text_len bytes are meaningful; remaining text bytes are not serialized. */
+typedef struct {
+    zcl_payment_request request;
+    uint8_t text[ZCL_PAYMENT_TEXT_MAX];
+    size_t text_len;
+} zcl_scanned_request;
+
 /* Public camera luminance only. One visible QR, decoded and validated as a
  * receiving address/payment request for the explicit network. Never imports
  * secrets or authorizes payment. Dimensions 21..1024, pixel stride 1..4, row
@@ -39,6 +48,11 @@ typedef struct {
 zcl_status zcl_scan_qr(const uint8_t *image, size_t image_len,
                        const zcl_qr_image *layout, zcl_network network,
                        zcl_payment_request *request);
+
+/* Same ownership/bounds as zcl_scan_qr; output is unchanged on failure. */
+zcl_status zcl_scan_request(const uint8_t *image, size_t image_len,
+                            const zcl_qr_image *layout, zcl_network network,
+                            zcl_scanned_request *result);
 
 /* Validate spans without reading the image or allocating. Useful to the JNI
  * adapter before copying a camera plane. No outputs or retained pointers. */

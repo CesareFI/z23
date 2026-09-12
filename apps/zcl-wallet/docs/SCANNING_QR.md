@@ -18,7 +18,9 @@ does not pin arrays, hold native handles or retain frames. The caller owns a
 stable managed image for the call and must clear it afterward. Native copies,
 decoder image/context and decoded workspace are cleared before release. Camera
 and runtime copies outside these owners cannot be claimed erased by this API.
-No image, payload, key or recovery phrase is logged, saved or transmitted.
+No image, payload, key or recovery phrase is logged or persisted. The camera
+adapter transfers one bounded frame through local Binder to its isolated
+decoder; nothing is transmitted over a network.
 
 ## Bounds and ownership
 
@@ -62,8 +64,88 @@ The complete C check passes 19 executables, authored GCC/Clang analysis,
 provider Clang analysis and authored complexity <=10. All 38 JVM/JNI tests,
 debug/instrumentation assembly, unsigned release assembly and Android lint pass.
 
-A camera permission/lifecycle adapter and visible review screen are still
-required. They must be separate from custody/setup screens, display the selected
-network and complete request, retain no background frames, bound pending work,
-and never authorize a send. Device camera interoperability, permission denial,
-background/cancellation and process-recreation acceptance remain pending.
+The evidence above describes the decoder-only checkpoint. The camera adapter
+and its additional evidence are described below.
+
+## Camera and isolated decoding
+
+The welcome and receive screens open a private scanner Activity. The selected
+network is fixed during capture. Starting the camera requests runtime camera
+permission; scanning cannot open a wallet session. Leaving the receive screen
+locks that session through the existing lifecycle. Recovery/setup screens do
+not expose the scanner. A valid result stops capture and displays its network,
+full address, optional amount, label and message. It never authorizes a send.
+
+`CameraCapture` confines Camera2 devices, sessions, ImageReader and Image planes
+to one handler thread. ImageReader holds at most two images, and every acquired
+image closes in finally. A direct Y-plane pointer is borrowed synchronously by
+JNI only while its Image remains open. Closing ImageReader is posted onto that
+same handler, so background cleanup cannot invalidate a concurrent C copy.
+An outstanding OS camera-open callback keeps its owner alive until its terminal
+response; a process-wide token permits at most one pending camera owner. There
+is no growing retry/thread queue if a driver does not respond.
+
+C validates the original plane, samples dimensions to at most 384 each, and
+produces an exact versioned luminance packet of at most 147461 bytes. The adapter
+selects a supported YUV camera size of at most 640*480 pixels and dimensions
+240..1024. Preview and decoding use the same sampled grayscale pixels, with the
+entire frame visible. Presentation samples at most four frames per second; this
+does not claim to limit the camera sensor itself to four frames per second.
+One frame may be outstanding. New camera images are dropped/closed while busy.
+
+The non-exported decoder service uses Android `isolatedProcess=true` and has no
+app permissions. The client verifies the installed service flags, performs a
+Binder handshake and refuses the app's own UID as the decoder. The service
+accepts only its owning app UID. Both sides bound pending work; startup is
+limited to 15 seconds and replies to 5 seconds. A timeout closes the client and
+returns to an explicit retry screen. These deadlines are refusal policy, not
+proof of universal decode latency or immediate termination of OS work.
+
+The service's C core validates both the packet and QR payload. It returns at
+most 1024 bytes of exact request text. The app's C parser validates that text
+again against the selected network before display Strings are created. The
+decoder never supplies trusted display fields, key handles or spending actions.
+Queued arrays, JNI copies, C decoder work, and preview owners clear on their
+respective cleanup paths. Camera-driver, Binder, VM, GPU and runtime copies
+cannot all be claimed erased. Frames and requests are not saved in Activity
+state, logs, files, telemetry or network requests.
+
+Android contracts: [isolated services](https://developer.android.com/guide/topics/manifest/service-element),
+[ImageReader ownership](https://developer.android.com/reference/android/media/ImageReader),
+[camera orientation](https://developer.android.com/media/camera/camera2/camera-preview).
+
+## Camera checkpoint evidence — 2026-09-12
+
+- All 20 native executables pass ASan/UBSan/LSan, with authored Clang/GCC and
+  provider Clang analysis, strict warnings, and authored complexity <=10.
+  New cases check exact pixel sampling, canaries, short planes/capacities,
+  canonical packets, network mismatch and exact returned public text.
+- All 41 JVM/JNI cases pass with `-Xcheck:jni`. New cases cover direct, read-only
+  and sliced ByteBuffers with offsets/limits, non-direct/invalid ranges,
+  independently encoded QR requests, wrong networks and malformed IPC text.
+- Camera-packet fuzzing completed 12070 executions in 301 seconds without a
+  sanitizer finding (263 MiB reported RSS). Source/provider/binary hashes
+  rechecked afterward under `native/build/fuzz-scan/camera-final`.
+- API-35 emulator: isolated UID plus valid/wrong-network public QR Binder
+  round-trip passes (23.136 seconds); denied camera permission produces no
+  frame and releases its worker (0.642 seconds); actual camera frames and
+  three background/resume cycles pass (149.774 seconds). Every cycle clears
+  preview ownership, terminates the camera thread and requires explicit restart.
+- Debug/test assembly, unsigned R8 release assembly, debug/release Android lint
+  and the repository's 32 lint-fast gates pass. No minified runtime claim.
+
+These are separate isolation, synthetic QR and actual camera lifecycle tests.
+Actual camera QR-to-review interoperability, physical-device preview rotation,
+runtime permission-dialog interactions, cancellation during pending OS open,
+process recreation and oldest/current API coverage remain unqualified.
+
+The two `CameraLifecycleInstrumentedTest` methods require different permission
+fixtures and must be invoked separately on the dedicated development emulator.
+Use `-e cameraFixture yes` and select one method with `-e class`:
+`org.zclassic.wallet.CameraLifecycleInstrumentedTest#deniedPermissionClosesCameraWorkerWithoutFrame`
+with CAMERA denied, or
+`org.zclassic.wallet.CameraLifecycleInstrumentedTest#actualFramesStopOnBackgroundAndRequireExplicitRestart`
+with CAMERA granted. The instrumentation component is
+`org.zclassic.wallet.dev.test/androidx.test.runner.AndroidJUnitRunner`.
+The tests assert permission state; they never revoke permissions or remove any
+wallet. Do not run this opted-in fixture on a physical/operator device.

@@ -42,10 +42,12 @@ qualify physical hardware custody.
 QR encoding is C, with fixed buffers and a pinned provider. Android only draws
 the public modules. ZXing is a test oracle and is not an app runtime dependency.
 Balance is explicitly unavailable until read-only network sync is implemented.
-The C QR decoder and JNI adapter are also present with bounded input/work and
-strict request validation; see [scanner scope](docs/SCANNING_QR.md). The camera
-adapter and its acceptance, sending, shielded support and mobile node validation remain
-unfinished. See [the next milestone](docs/NEXT_MILESTONE.md) for acceptance gates.
+The C QR decoder has bounded input/work and strict request validation. The
+camera screen uses a bounded grayscale preview, an isolated decoder service,
+and a public request review; see [scanner scope](docs/SCANNING_QR.md). Actual
+camera capture/lifecycle passes on the emulator; physical QR interoperability,
+hardware custody, sync, sending, shielded support and mobile validation remain
+unqualified or unfinished. See [the next milestone](docs/NEXT_MILESTONE.md).
 
 For C safety checks on a Linux development host with Clang 20 and GCC:
 

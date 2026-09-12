@@ -239,3 +239,38 @@ index bounds and unsupported modes. Independent encoder/JNI tests, adversarial
 span tests, every-allocation fault injection and full-provider ASan/UBSan/LSan
 complement this manual review; they do not constitute complete memory-safety
 proof or real-camera acceptance. Final check results are recorded in PROGRESS.
+
+## Camera packet and IPC review — 2026-09-12, before implementation commit
+
+Scope: `camera_frame.c`, `jni_camera.c`, `zcl_camera.h`, the exact-text result
+extension in `scan_qr.c`/`zcl_qr.h`, and Android frame/IPC ownership. The pinned
+provider is unchanged. No network, key handling, transaction or consensus logic
+is modified. Every category below was explicitly checked against the source.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow | Existing image bounds precede sampling. Output dimensions <=384 prove `5+width*height <=147461`; capacity is checked before any write. Payload length <=1024 precedes copying exact decoded text. JNI output uses the checked byte-array helper. |
+| Buffer underflow | Input dimensions >=21 precede all subtraction. Step is ceil(max dimension/384), hence 1..3. Packet length >=5 precedes header reads and subtraction; direct capacity subtraction follows offset<=capacity. |
+| Out-of-bounds reads/writes | Each sampled coordinate `(dimension-1)/step*step` is below its source dimension. Existing last-pixel bounds prove source indexes. Canonical packet length must match its checked dimensions exactly. Canary, shortened-span/capacity and malformed-header tests run under sanitizers. |
+| Integer overflow/underflow | All source dimensions <=1024 and strides <=8192 are validated first. Output sums/products and sampling arithmetic are bounded before use. Packet fields are LE16 converted into size_t. New allocations use a constant maximum or an already checked 5..147461 length. |
+| Signed/unsigned conversions | Negative jint dimensions/strides/offset/length are rejected before size_t casts. Direct capacity is nonnegative before range arithmetic. Packet header shifts are size_t and bounded; byte truncation is deliberate encoding of validated <=384 dimensions. |
+| Use-after-free | JNI borrows a direct plane only synchronously. CameraCapture keeps Image open until C returns; ImageReader/device closure runs on the same handler. No pointer, Image, pin or native handle escapes. Result text is copied before provider cleanup. |
+| Double-free | Each of the two new JNI malloc sites has one invocation owner and one free path. Provider ownership is unchanged. Android queued packets use atomic transfer; closed clients clear only unclaimed pending replies. Images close in one finally block. |
+| Memory leaks | Allocation returns are checked; encode/decode/VM failures converge on zero/free. Service close discards queued owned inputs and finalizes active work. Camera release uses nested finally blocks for session/device/reader and thread cleanup. An OS open that never replies can retain at most one camera owner, documented rather than claimed immediately reclaimable. |
+| NULL dereferences | Public input/output pointers are checked. Layout validity is delegated to the existing NULL-aware image checker. JNI validates buffers, capacity, addresses, arrays, exceptions and allocations before access. A missing camera/plane/service causes refusal. |
+| Uninitialized memory | JNI decoded structs initialize to zero. Image samples fill every packet pixel and all header bytes before return. Only successful parsing populates exact request text/length; failure leaves caller output unchanged. No uninitialized tail is returned to Java. |
+| Dangling pointers | All C spans are borrowed for one call, with documented nonoverlap/lifetime. Native output is copied into VM-owned arrays. Camera callbacks check closure and dispose late devices/sessions; managed preview references clear on background/detach. |
+| Invalid pointer arithmetic | The direct offset/length must fit the direct-buffer capacity before pointer addition. Source indexes follow validated stride bounds. Packet+5 is formed only after a valid canonical header/length. No serialized-struct casts or pointer tagging. |
+| Format-string vulnerabilities | No camera/decoder payload logging. Public request labels/messages are data passed to fixed Android string resources, with no HTML, autolinking, executable routing or format-string interpretation. C diagnostics use fixed test strings only. |
+| Stack exhaustion | No recursion/VLA/new caller-sized stack buffer. The exact-text struct adds a bounded 1024-byte member. Authored C/JNI frames pass the <=4096-byte compiler gate. Provider stack bounds remain those of the preceding review. |
+| Excessive allocation | JNI owns at most one <=147461-byte packet per call; decoder image is now at most 384*384 in this route. Camera has two bounded platform images, one pending packet and a bounded preview bitmap/scratch. One decoder worker and one outstanding Binder request prevent frame queues. All allocation sizes are proven before allocation, all returns checked. |
+| Malformed serialization | App-local packet version, dimensions and exact length are checked by C. It is not a Zclassic wire format. QR payload parsing occurs in isolated C and repeats in app C before display; no server-supplied display record is trusted. Unknown/malformed/wrong-network requests refuse. |
+| Malformed network input | No network path is enabled. Non-exported explicit service binding and owning-app UID checks constrain IPC callers. Returned bytes remain untrusted even from that isolated service. No scan-to-key/import/transaction route exists. |
+| Race conditions | C has no new mutable globals. Camera resource access is serialized on one handler; close marks cancellation synchronously and posts resource cleanup. Atomic ownership prevents queued-array double cleanup or callbacks after disposal. Client checks request ID, UID, closure and pending ownership; service allows one decode. Caller mutation of borrowed C spans remains outside the documented contract. |
+| Resource exhaustion | Camera output <=640*480 pixels; C packet <=147461 bytes; at most four submitted frames/second and one outstanding frame. Startup/reply deadlines bound waiting and require user retry after failure. Provider work budgets still apply. OS driver/VM scheduling and immediate termination of already active work are not falsely claimed bounded by wall time. |
+| Secret leakage | Scan has no access to keys or recovery workflows. Arbitrary camera content may still be private: owned queued frames, JNI copies, decoder scratch and preview data are cleared on cleanup. No logs/files/telemetry/network transmission or saved Activity frames. Local Binder transfers bounded camera data to an isolated process without app permissions. Driver/VM/Binder/GPU copies cannot be claimed universally erased. |
+
+Evidence: all 20 native tests, full authored/provider analysis and complexity
+gate, 41 JVM/JNI tests, 12070 camera fuzz executions with matching final hashes,
+and real emulator Binder/permission/camera lifecycle tests described in
+SCANNING_QR.md. No sanitizer result is treated as a complete memory-safety proof.
