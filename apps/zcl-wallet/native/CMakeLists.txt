@@ -22,13 +22,32 @@ option(ZCL_SANITIZE "Enable host ASan and UBSan" OFF)
 option(ZCL_FUZZ "Build Clang libFuzzer harnesses" OFF)
 option(ZCL_JNI "Build the thin JNI bridge" OFF)
 option(ZCL_ORACLE "Build host-only OpenSSL differential tests" OFF)
+option(ZCL_TLS_REVIEW "Build quarantined TLS candidate for explicit host security review only" OFF)
+if(ZCL_TLS_REVIEW AND (ANDROID OR ZCL_JNI))
+    message(FATAL_ERROR "TLS is BLOCKED — REQUIRES FURTHER SECURITY REVIEW; no Android/JNI binding is permitted")
+endif()
 
 set(ZCL_MBEDTLS_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-mbedtls")
 add_library(zcl_hash_provider STATIC
     ${ZCL_MBEDTLS_SOURCE}/library/sha256.c ${ZCL_MBEDTLS_SOURCE}/library/sha512.c
     ${ZCL_MBEDTLS_SOURCE}/library/ripemd160.c ${ZCL_MBEDTLS_SOURCE}/library/platform_util.c)
-target_include_directories(zcl_hash_provider PUBLIC ${ZCL_MBEDTLS_SOURCE}/include PRIVATE include)
+if(ZCL_TLS_REVIEW)
+  target_compile_definitions(zcl_hash_provider PUBLIC ZCL_TLS_REVIEW=1)
+  foreach(unit asn1parse asn1write bignum bignum_core bignum_mod bignum_mod_raw
+        chacha20 chachapoly cipher cipher_wrap constant_time ecdh ecdsa ecp ecp_curves
+        md oid pk pk_ecc pkparse pk_wrap platform poly1305 rsa rsa_alt_helpers ssl_ciphersuites
+        ssl_client ssl_msg ssl_tls ssl_tls12_client x509 x509_crt)
+    target_sources(zcl_hash_provider PRIVATE ${ZCL_MBEDTLS_SOURCE}/library/${unit}.c)
+  endforeach()
+  target_sources(zcl_hash_provider PRIVATE src/transport_alloc.c)
+  set_source_files_properties(src/transport_alloc.c PROPERTIES COMPILE_OPTIONS
+    "-Wconversion;-Wsign-conversion;-Wshadow;-Wformat=2;-Wvla;-Wframe-larger-than=4096")
+endif()
+target_include_directories(zcl_hash_provider SYSTEM PUBLIC ${ZCL_MBEDTLS_SOURCE}/include)
+target_include_directories(zcl_hash_provider PRIVATE include)
 target_compile_definitions(zcl_hash_provider PUBLIC MBEDTLS_CONFIG_FILE="zcl_mbedtls_config.h")
+target_compile_options(zcl_hash_provider PRIVATE -Wall -Wextra -Wpedantic -Werror
+    -Os -fstack-protector-strong)
 set_target_properties(zcl_hash_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(ZCL_QR_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-qrcodegen")
@@ -68,7 +87,15 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c
     src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
-    src/electrum_identity.c src/electrum_header.c)
+    src/electrum_identity.c src/electrum_header.c src/sync.c)
+# The TLS candidate remains confined to defensive host fixtures until the
+# certificate-parser finding and provider analysis receive a completed review.
+# No Android socket/transport entry point is compiled during that quarantine.
+if(ZCL_TLS_REVIEW)
+    target_sources(zcl_wallet_core PRIVATE src/transport.c src/transport_limit.c
+        src/transport_resolve.c src/transport_socket.c src/transport_bio.c
+        src/transport_tls.c src/transport_io.c)
+endif()
 target_include_directories(zcl_wallet_core PUBLIC include)
 target_include_directories(zcl_wallet_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-bip39")
 target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1 zcl_qr_provider zcl_scan_provider zcl_json_provider)
@@ -84,13 +111,13 @@ if(ZCL_SANITIZE)
     if(ANDROID)
         message(FATAL_ERROR "Use a separately configured on-device sanitizer build")
     endif()
-    target_compile_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_compile_options(zcl_hash_provider PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_compile_options(zcl_qr_provider PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_compile_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_compile_options(zcl_hash_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_compile_options(zcl_qr_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(zcl_json_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
-    target_compile_options(secp256k1 PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_compile_options(secp256k1_precomputed PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_compile_options(secp256k1 PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_compile_options(secp256k1_precomputed PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_link_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined)
 endif()
 
@@ -116,6 +143,28 @@ if(ZCL_FUZZ)
     target_compile_options(zcl_qr_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_json_provider PRIVATE -fsanitize=fuzzer-no-link)
+    target_compile_options(zcl_hash_provider PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(fuzz_sync tests/fuzz_sync.c tests/sync_fixture.c)
+    target_link_libraries(fuzz_sync PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_sync PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_sync PRIVATE -fsanitize=fuzzer,address,undefined)
+    if(ZCL_TLS_REVIEW)
+    find_package(OpenSSL REQUIRED)
+    find_package(Threads REQUIRED)
+    add_executable(fuzz_tls tests/fuzz_tls.c)
+    target_include_directories(fuzz_tls PRIVATE src)
+    target_link_libraries(fuzz_tls PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_options(fuzz_tls PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_tls PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(seed_tls tests/seed_tls.c tests/tls_fixture.c tests/fuzz_tls.c)
+    target_link_libraries(seed_tls PRIVATE zcl_wallet_core zcl_hash_provider OpenSSL::SSL Threads::Threads)
+    target_include_directories(seed_tls PRIVATE src)
+    target_compile_options(seed_tls PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion)
+    target_link_options(seed_tls PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
+    endif()
     add_executable(fuzz_electrum tests/fuzz_electrum.c)
     target_link_libraries(fuzz_electrum PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined
@@ -172,6 +221,35 @@ endif()
 
 if(NOT ANDROID)
     enable_testing()
+    if(NOT ZCL_TLS_REVIEW)
+        add_test(NAME wallet_tls_quarantine COMMAND ${CMAKE_COMMAND}
+            -DNM=${CMAKE_NM} -DCORE=$<TARGET_FILE:zcl_wallet_core>
+            -DHASH=$<TARGET_FILE:zcl_hash_provider> -DSOURCE=${CMAKE_CURRENT_LIST_DIR}
+            -DNEGATIVE_BUILD=${CMAKE_CURRENT_BINARY_DIR}/refuse-tls-jni
+            -P ${CMAKE_CURRENT_LIST_DIR}/tests/check_quarantine.cmake)
+        set_tests_properties(wallet_tls_quarantine PROPERTIES TIMEOUT 15)
+    endif()
+    add_executable(sync_tests tests/test_sync.c tests/sync_fixture.c)
+    target_link_libraries(sync_tests PRIVATE zcl_wallet_core)
+    target_compile_options(sync_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_sync COMMAND sync_tests)
+    set_tests_properties(wallet_sync PROPERTIES TIMEOUT 15)
+    if(ZCL_TLS_REVIEW)
+    find_package(OpenSSL REQUIRED)
+    find_package(Threads REQUIRED)
+    add_executable(transport_tests tests/test_transport.c tests/tls_fixture.c)
+    target_include_directories(transport_tests PRIVATE src)
+    target_link_libraries(transport_tests PRIVATE zcl_wallet_core zcl_hash_provider OpenSSL::SSL Threads::Threads)
+    target_compile_options(transport_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_transport COMMAND transport_tests)
+    set_tests_properties(wallet_transport PROPERTIES TIMEOUT 30)
+    add_executable(transport_allocation_tests tests/test_transport_allocations.c tests/tls_fixture.c)
+    target_link_libraries(transport_allocation_tests PRIVATE zcl_wallet_core OpenSSL::SSL Threads::Threads)
+    target_compile_options(transport_allocation_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(transport_allocation_tests PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free)
+    add_test(NAME wallet_transport_allocations COMMAND transport_allocation_tests)
+    set_tests_properties(wallet_transport_allocations PROPERTIES TIMEOUT 90)
+    endif()
     add_executable(electrum_tests tests/test_electrum.c)
     target_link_libraries(electrum_tests PRIVATE zcl_wallet_core zcl_json_provider)
     target_include_directories(electrum_tests PRIVATE src)

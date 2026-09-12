@@ -1,10 +1,35 @@
 # Read-only sync compatibility checkpoint
 
 The C read-only request builders, framing and reply parsers are implemented.
-Sockets/TLS, synchronization state, Android balance integration and lightweight
+The one-attempt C synchronization state is implemented and tested offline.
+TLS remains [blocked for further security review](TLS_REVIEW.md).
+Android balance integration and lightweight
 validation remain unfinished. No endpoint was contacted, no address was
 queried, and no node ran on the development server. The next implementation gate remains
 [`NEXT_MILESTONE.md`](NEXT_MILESTONE.md).
+
+## One-attempt synchronization state
+
+`zcl_sync.h` owns a copied address/network, one outstanding request and six
+reserved IDs. Requests proceed through version, features, original genesis,
+tip, address balance and final tip. The address script hash is withheld until
+the identity replies and initial tip parse successfully. This is compatibility
+screening; a malicious server can echo the expected genesis. The eventual
+adapter must independently require authenticated transport and explicit source
+selection before sending anything.
+
+A report is available only after all six responses, with equal before/after
+tip height and hash. A changed tip, notification, unexpected ID, malformed
+response, error, cancellation or disconnect invalidates the attempt and clears
+candidate amounts. Buffer-capacity errors before transmission are retryable;
+no network retry or reconnection occurs in this API. It retains no pointers,
+allocates nothing and accesses no keys, sockets or persistent storage.
+
+Even a successful report is an unverified server claim for one transparent
+address. It supplies no account total, spendable UTXOs, history completeness,
+chain proof or signing authority. A same-tip balance can change with mempool
+activity; the check does not create an atomic server snapshot. Deadline,
+freshness, late-callback handling and Android presentation remain separate work.
 
 ## Pin the network and protocol separately
 

@@ -310,3 +310,28 @@ is consumed. See READ_ONLY_SYNC.md. All 22 native executables pass
 ASan/UBSan/LSan, authored GCC/Clang and provider Clang analysis, and authored
 complexity <=10. Those results complement this review and do not prove complete
 memory safety, secure networking or accepted balances.
+
+## Offline sync and TLS quarantine review — 2026-09-13
+
+The active implementation reviewed here is `sync.c`/`zcl_sync.h`, its public
+fixtures and fuzzer, and build-profile separation. Existing uncommitted TLS
+source is preserved as a disabled candidate, with its known unresolved hazards
+in TLS_REVIEW.md. Preservation does not approve that code or resolve its review.
+
+| Required hazard | Explicit active-code review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Address parsing requires exactly 35 bytes before the copy. Six phase values bound the request-method table. Existing bounded frame parsers handle all replies. Caller outputs stay unchanged until a full successful report; canaries exercise failed requests/reports. |
+| Integer overflow/underflow; signed/unsigned conversions | Six nonzero IDs are reserved with first_id <= UINT32_MAX-5. Increment stops after the sixth reply. Validated enum range precedes subtraction/index conversion. Existing signed money bounds remain unchanged. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation, ownership transfer or retained pointer exists. The session copies public address/result data. All borrowed spans remain valid only during a synchronous call. Abort clears candidate amounts and tip. |
+| NULL dereferences; uninitialized memory | Public pointers are checked. Start initializes the entire session even on failure; parsed tip/address temporaries initialize before use. Failed-state corruption with fault=OK cannot publish success. Caller must initialize state and must not mutate its private fields. |
+| Pointer arithmetic; format strings | No new production pointer arithmetic or formatting. Tests bound searches by remaining span and check snprintf results; test diagnostics contain only fixed strings/line numbers. |
+| Stack usage; allocation limits; resource exhaustion | Fixed session/report and <=256-byte request buffers; no recursive calls, VLAs, allocation or retry loops. The existing bounded parser limits remain. Fuzz fixture scratch is static only in the single-threaded host harness. Authored function complexity remains <=10. |
+| Malformed serialization/network input | Strict expected-ID parsers gate every state transition. Wrong network/genesis, errors, notifications and unexpected replies invalidate the attempt. Changed final tip publishes nothing. Tip equality establishes only consistency of server statements, not consensus or atomic mempool state. |
+| Races; lifetimes | One worker owns a session and its connection/request-ID range. No concurrent mutation or cross-connection response is allowed. Timeout/disconnect/cancellation uses abort; no callback, scheduler, network or persistence is introduced. |
+| Secret leakage | No keys, seed, secret logs or transmission are introduced. Address script hashes still reveal address interest to an eventual endpoint; identity screening cannot provide privacy or authenticate that endpoint. TLS stays excluded from normal archives and every JNI/Android build. |
+
+Active-source Clang/GCC analysis and configured hash/JSON/QR provider analysis
+pass. All 23 native functional tests pass ASan/UBSan/LSan; a separate archive
+and forbidden TLS/JNI configuration test passes. The offline sync fuzzer passes
+128180 executions in 121 seconds with source/binary hash rechecks. None of this
+is a passing result for the quarantined TLS provider or real-network acceptance.

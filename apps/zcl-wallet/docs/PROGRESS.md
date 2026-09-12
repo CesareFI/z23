@@ -299,3 +299,44 @@ Next implement C TLS/socket lifetime, source trust, deadlines, notification/
 reorg/retry state and Android unverified/offline/stale balance presentation.
 Hardware-positive custody and the previously listed camera acceptance remain
 pending; all later phases retain their original scope.
+
+2026-09-13 continuation: preserved the existing eight wallet commits and all
+uncommitted source. The original TLS reproducer/corpus, provider source, binary,
+hashes, sanitizer output and analysis remain at the original artifact path;
+a hash-checked second archive plus complete pre-edit diff/untracked snapshot is
+under `.cache/android-wallet/continuation-20260912`. TLS is explicitly
+**BLOCKED — REQUIRES FURTHER SECURITY REVIEW**. The investigation was not rerun.
+
+Normal host/Android builds now exclude the transport and TLS provider units,
+restoring the original hash-only runtime profile. Explicit host review is OFF
+by default and forbidden with JNI/Android. Whole-archive checks verify absent
+TLS symbols and required sync/hash symbols; the forbidden configuration refuses.
+The safety script labels enabled-wallet versus explicit TLS-review scope and
+retains all provider checks in the latter. Existing TLS findings remain open.
+
+Completed validation of the pre-existing offline C sync state and added its
+state-aware malformed-response fuzzer. Six requests enforce identity before
+address disclosure and complete-only, equal-tip reporting. Wrong IDs, network,
+notifications, changed tips, cancellation and timeouts discard candidate values.
+No endpoint, spending or network authority is enabled.
+
+Authored Clang/GCC and enabled-provider analysis pass; 276 authored functions
+in 52 files satisfy complexity <=10 (including preserved transport functions).
+All 23 native functional executables pass ASan/UBSan/LSan. The quarantine test
+also passes after correcting its whitespace expectation for CMake's wrapped
+error output. The first sandbox fuzz run completed 127462 inputs but failed
+LSan process inspection at shutdown; it is preserved and is not called a pass.
+The host campaign passed 128180 inputs in 121 seconds with final hashes matching.
+
+Android debug/test assembly, debug lint, 41 core JVM/JNI tests and two executor
+tests pass offline. Six API-35 emulator public-fixture tests pass in 37.421s:
+native storage/GCM, receive QR canvas, scan QR and isolated IPC. These do not
+qualify hardware custody. Root lint remains separately blocked: the old root
+allowlist rejects environment-injected `.agents`/`.codex`; the unrestricted run
+also reports an empty-scan failure in its flag-registry selftest. Neither gate
+was weakened and neither directory was removed. Local logs retain both runs.
+
+Next independent work is C deadline/freshness and late-result handling for
+unverified balances, then fixture-only Android presentation and lifecycle
+acceptance. No push, merge, upstream integration, production node or real funds
+are part of this checkpoint; upstream divergence was inspected and retained.

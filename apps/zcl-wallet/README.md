@@ -45,6 +45,12 @@ Balance is explicitly unavailable until read-only network sync is implemented.
 Bounded C Electrum request/reply parsing, signed balance arithmetic and pinned
 genesis-header fixtures are present; [sync scope](docs/READ_ONLY_SYNC.md)
 records the remaining TLS, socket, state and Android integration work.
+The [host TLS candidate is quarantined](docs/TLS_REVIEW.md) after a reproducible
+certificate-parser sanitizer finding; Android builds exclude its network entry
+points and provider translation units while that review remains open. Normal
+host builds also exclude TLS; an explicit host review option cannot be combined
+with JNI/Android. The independent C sync state now checks request order, identity
+before address disclosure and final-tip consistency using offline fixtures.
 The C QR decoder has bounded input/work and strict request validation. The
 camera screen uses a bounded grayscale preview, an isolated decoder service,
 and a public request review; see [scanner scope](docs/SCANNING_QR.md). Actual

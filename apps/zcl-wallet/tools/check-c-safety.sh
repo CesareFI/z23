@@ -7,7 +7,14 @@ cd "$wallet_root"
 
 clang_bin=${1:-clang-20}
 gcc_bin=${2:-gcc}
-analysis_dir=native/build/analysis
+tls_review=${3:-OFF}
+case "$tls_review" in
+    OFF) echo 'Scope: enabled wallet core. TLS remains BLOCKED — REQUIRES FURTHER SECURITY REVIEW.' ;;
+    ON) echo 'Scope: explicit host TLS security review, including all preserved provider findings.' ;;
+    *) echo 'Usage: check-c-safety.sh [clang] [gcc] [OFF|ON]' >&2; exit 2 ;;
+esac
+analysis_dir=native/build/analysis-active
+if [[ "$tls_review" == ON ]]; then analysis_dir=native/build/analysis-tls-review; fi
 mkdir -p "$analysis_dir"
 
 if rg -n '\b(strcpy|strcat|sprintf|vsprintf|gets|scanf|sscanf|fscanf|alloca)\s*\(' native/src native/include; then
@@ -51,8 +58,10 @@ common=(-std=c17 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
 javac_path=$(command -v javac)
 jdk_root=$(dirname -- "$(dirname -- "$(readlink -f -- "$javac_path")")")
 jni_common=("${common[@]}" -I "$jdk_root/include" -I "$jdk_root/include/linux")
+if [[ "$tls_review" == ON ]]; then common+=(-DZCL_TLS_REVIEW=1); fi
 
 for source in native/src/*.c; do
+    if [[ "$tls_review" == OFF && "$source" == native/src/transport*.c ]]; then continue; fi
     flags=("${common[@]}")
     case "$source" in
         */jni_*) flags=("${jni_common[@]}") ;;
@@ -78,6 +87,22 @@ for unit in zjsonp zutf8; do
         -o "$analysis_dir/$unit.plist"
 done
 
+# Analyze only the enabled provider translation units. The explicit review
+# mode retains the full TLS analysis; its unresolved findings are not waived.
+for source in "$repo_root"/vendor/android-mbedtls/library/*.c; do
+    name=${source##*/}
+    if [[ "$tls_review" == OFF ]]; then
+        case "$name" in sha256.c|sha512.c|ripemd160.c|platform_util.c) ;; *) continue ;; esac
+    fi
+    review_flags=()
+    if [[ "$tls_review" == ON ]]; then review_flags=(-DZCL_TLS_REVIEW=1); fi
+    "$clang_bin" --analyze -Xanalyzer -analyzer-werror -std=c17 \
+        "${review_flags[@]}" \
+        '-DMBEDTLS_CONFIG_FILE="zcl_mbedtls_config.h"' -I native/include \
+        -I "$repo_root/vendor/android-mbedtls/include" "$source" \
+        -o "$analysis_dir/mbedtls-$name.plist"
+done
+
 if [[ ! -x "$repo_root/build/bin/z23-lint" ]]; then
     make -C "$repo_root" build/bin/z23-lint
 fi
@@ -93,7 +118,10 @@ if ! rg -q 'report: [1-9][0-9]* functions in [1-9][0-9]* files$' "$analysis_dir/
     exit 1
 fi
 
-cmake -S native -B native/build/safety -DCMAKE_C_COMPILER="$clang_bin" -DZCL_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build native/build/safety -j4
-ctest --test-dir native/build/safety --output-on-failure
-echo 'C safety checks passed; manual ownership and threat review is still required before a commit.'
+build_dir=native/build/safety-active
+if [[ "$tls_review" == ON ]]; then build_dir=native/build/safety-tls-review; fi
+cmake -S native -B "$build_dir" -DCMAKE_C_COMPILER="$clang_bin" -DZCL_SANITIZE=ON \
+    -DZCL_TLS_REVIEW="$tls_review" -DCMAKE_BUILD_TYPE=Debug
+cmake --build "$build_dir" -j4
+ctest --test-dir "$build_dir" --output-on-failure
+echo "C safety checks passed for selected scope (TLS review=$tls_review); manual review remains required."
