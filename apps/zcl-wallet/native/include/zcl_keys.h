@@ -24,6 +24,10 @@ zcl_status zcl_mnemonic_encode(const uint8_t *entropy, size_t entropy_len,
                               uint8_t *text, size_t text_capacity, size_t *text_len);
 zcl_status zcl_mnemonic_decode(const uint8_t *text, size_t text_len,
                               uint8_t *entropy, size_t entropy_capacity, size_t *entropy_len);
+/* Check backup confirmation without returning decoded entropy. Comparison
+ * examines every entropy byte; no mismatch position or secret is exposed. */
+zcl_status zcl_mnemonic_confirm(const uint8_t *entropy, size_t entropy_len,
+                               const uint8_t *text, size_t text_len);
 
 /* English, canonical single-space mnemonic and checksum required. Passphrase
  * accepts printable ASCII only (already NFKD); unsupported Unicode fails.

@@ -13,10 +13,12 @@ internal object NativeCore {
     @JvmStatic external fun parseAddress(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun addressScript(record: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun addressFromHash(hash: ByteArray, network: Int): ByteArray?
+    @JvmStatic external fun receiveQr(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun parsePayment(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun createEntropy(): ByteArray?
     @JvmStatic external fun recoveryPhrase(entropy: ByteArray): CharArray?
     @JvmStatic external fun restoreEntropy(phrase: CharArray): ByteArray?
+    @JvmStatic external fun confirmRecoveryPhrase(entropy: ByteArray, phrase: CharArray): Boolean
     @JvmStatic external fun receivingAddress(entropy: ByteArray, network: Int, index: Int): ByteArray?
     @JvmStatic external fun createWalletHeader(entropy: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun recoveredWalletAddress(header: ByteArray, entropy: ByteArray): ByteArray?
@@ -25,4 +27,5 @@ internal object NativeCore {
     @JvmStatic external fun readWalletStorage(directory: ByteArray): ByteArray?
     @JvmStatic external fun createWalletStorage(directory: ByteArray, record: ByteArray): Int
     @JvmStatic external fun promoteWalletStorage(directory: ByteArray, record: ByteArray): Int
+    @JvmStatic external fun acceptWrappingPolicy(bits: Int, hardware: Int, flags: Int, seconds: Int, methods: Int): Boolean
 }

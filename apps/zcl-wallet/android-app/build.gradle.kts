@@ -42,8 +42,8 @@ android {
 kotlin { compilerOptions { allWarningsAsErrors.set(true) } }
 dependencies {
     implementation(project(":wallet-core"))
-    implementation("com.google.zxing:core:3.5.4")
     testImplementation(kotlin("test-junit"))
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("com.google.zxing:core:3.5.4")
 }

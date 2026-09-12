@@ -29,11 +29,21 @@ not prove device security.
 
 The C core currently covers checked amounts/addresses/payment URIs, English
 BIP39 recovery, BIP32/BIP44 Zclassic receiving keys, authenticated-record
-serialization and private storage that refuses overwrite. The launcher is
-still a placeholder while the per-use Android Keystore and UI are integrated.
+serialization, private storage that refuses overwrite, backup confirmation,
+custody-policy validation and public receiving QR generation. The launcher now
+has create/restore/backup-confirmation/lock/unlock/receive screens, with a thin
+Android Keystore and authentication adapter. Successful custody workflows still
+require device qualification; the development emulator reports software-only
+key protection and the app refuses setup on it. This is not a production wallet.
 The [record format](docs/WALLET_RECORD.md) explains authentication and recovery.
 An emulator test exercises C storage and GCM with public fixtures; it does not
 qualify physical hardware custody.
+
+QR encoding is C, with fixed buffers and a pinned provider. Android only draws
+the public modules. ZXing is a test oracle and is not an app runtime dependency.
+Balance is explicitly unavailable until read-only network sync is implemented;
+camera scanning, sending, shielded support and mobile node validation remain
+unfinished. See [the next milestone](docs/NEXT_MILESTONE.md) for acceptance gates.
 
 For C safety checks on a Linux development host with Clang 20 and GCC:
 

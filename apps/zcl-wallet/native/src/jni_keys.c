@@ -111,6 +111,26 @@ cleanup:
     return output;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_org_zclassic_wallet_core_NativeCore_confirmRecoveryPhrase(JNIEnv *env, jclass type,
+                                                              jbyteArray entropy_input, jcharArray phrase_input)
+{
+    (void)type;
+    uint8_t entropy[32] = {0}, phrase[215] = {0};
+    size_t entropy_len = 0, phrase_len = 0;
+    jboolean result = JNI_FALSE;
+    if (zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
+        goto cleanup;
+    if (read_phrase(env, phrase_input, phrase, sizeof(phrase), &phrase_len) != ZCL_OK)
+        goto cleanup;
+    if (zcl_mnemonic_confirm(entropy, entropy_len, phrase, phrase_len) == ZCL_OK)
+        result = JNI_TRUE;
+cleanup:
+    zcl_secure_zero(entropy, sizeof(entropy));
+    zcl_secure_zero(phrase, sizeof(phrase));
+    return result;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_receivingAddress(JNIEnv *env, jclass type,
                                                          jbyteArray input, jint chain, jint index)

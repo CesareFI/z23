@@ -17,6 +17,9 @@ object WalletKeys {
     fun restoreEntropy(phrase: CharArray): ByteArray =
         requireNotNull(NativeCore.restoreEntropy(phrase)) { "Invalid or unsupported recovery phrase" }
 
+    fun confirmRecoveryPhrase(entropy: ByteArray, phrase: CharArray): Boolean =
+        NativeCore.confirmRecoveryPhrase(entropy, phrase)
+
     fun receivingAddress(entropy: ByteArray, network: Network, index: Int = 0): TransparentAddress {
         val bytes = checkNotNull(NativeCore.receivingAddress(entropy, network.nativeId, index)) {
             "Receiving address derivation failed"

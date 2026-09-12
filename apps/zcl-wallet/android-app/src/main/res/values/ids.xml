@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="screen_title" type="id" />
+    <item name="status_message" type="id" />
+    <item name="network_mainnet" type="id" />
+    <item name="network_testnet" type="id" />
+    <item name="create_wallet" type="id" />
+    <item name="restore_wallet" type="id" />
+    <item name="unlock_wallet" type="id" />
+    <item name="recovery_words" type="id" />
+    <item name="backup_written" type="id" />
+    <item name="cancel_setup" type="id" />
+    <item name="recovery_input" type="id" />
+    <item name="save_wallet" type="id" />
+    <item name="receiving_address" type="id" />
+    <item name="lock_wallet" type="id" />
+    <item name="retry_wallet" type="id" />
+</resources>

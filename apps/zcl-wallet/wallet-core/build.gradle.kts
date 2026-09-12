@@ -6,6 +6,7 @@ kotlin {
 }
 dependencies {
     testImplementation(kotlin("test-junit5"))
+    testImplementation("com.google.zxing:core:3.5.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.12.2")
 }
 tasks.test {
@@ -20,6 +21,7 @@ tasks.test {
     inputs.files(rootProject.fileTree("../../vendor/android-mbedtls")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-bip39")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-secp256k1")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(rootProject.fileTree("../../vendor/android-qrcodegen")).withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 val configureHostNative by tasks.registering(Exec::class) {

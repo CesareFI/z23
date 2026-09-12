@@ -46,6 +46,11 @@ static void round_trip(const uint8_t *data, size_t size)
         abort();
     if (restored != entropy_size || memcmp(data, entropy, restored) != 0)
         abort();
+    if (zcl_mnemonic_confirm(data, entropy_size, text + 1, length) != ZCL_OK)
+        abort();
+    entropy[restored - 1] ^= 1;
+    if (zcl_mnemonic_confirm(entropy, restored, text + 1, length) != ZCL_INVALID_ENCODING)
+        abort();
     zcl_secure_zero(text, sizeof(text));
     zcl_secure_zero(entropy, sizeof(entropy));
 }

@@ -6,8 +6,27 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WalletKeysTest {
+    @Test fun backupConfirmationRequiresTheExactEntropy() {
+        val entropy = ByteArray(32)
+        var phrase: CharArray? = null
+        try {
+            val words = WalletKeys.recoveryPhrase(entropy).also { phrase = it }
+            assertTrue(WalletKeys.confirmRecoveryPhrase(entropy, words))
+            entropy[31] = 1
+            assertFalse(WalletKeys.confirmRecoveryPhrase(entropy, words))
+            assertFalse(WalletKeys.confirmRecoveryPhrase(ByteArray(33), words))
+            assertFalse(WalletKeys.confirmRecoveryPhrase(entropy, CharArray(216)))
+            assertFalse(WalletKeys.confirmRecoveryPhrase(entropy, charArrayOf('\uD800')))
+        } finally {
+            entropy.fill(0)
+            phrase?.fill('\u0000')
+        }
+    }
+
     @Test fun publishedPhraseRoundTripsThroughCharacters() {
         val entropy = ByteArray(16)
         val expected = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".toCharArray()

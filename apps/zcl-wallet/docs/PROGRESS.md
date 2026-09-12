@@ -125,3 +125,69 @@ secret lifecycle and create/restore/receive UI. The launcher remains a placehold
 network sync, balance display, camera/QR UI, signing and shielded transactions
 are not enabled yet. There have been no pushes, merges, production services,
 mining, funded-wallet operations or Rust installations.
+
+2026-09-12 13:06 UTC: the launcher now implements the create/restore/backup
+confirmation/lock/unlock/receive workflow. The platform adapter requires an
+actual provider-generated AES-256 GCM key with per-use hardware-enforced
+authentication, checked by a C predicate. Backup confirmation and all wallet
+decisions remain in C. UI-owned phrase arrays are bounded and cleared on
+transition; a single bounded worker owns transient platform entropy. The
+per-hazard review precedes the pending implementation commit.
+
+The API-35 emulator became unresponsive and was restarted with its data
+preserved, four virtual cores and 4 GB RAM. One host tool call took almost
+12 hours to return, so this was not 20 hours of uninterrupted active coding.
+The post-restart launcher also crashed; after stopping that development
+launcher, the two Keystore tests passed in 3.330 seconds. Actual metadata is
+software security level 0, hardware authentication false, key size 256,
+authentication methods 3 and duration 0. The C predicate correctly refuses it.
+This emulator cannot qualify successful hardware-authenticated create/restore
+or unlock. The positive interactive cases remain unqualified; a dedicated
+unsupported-protection UI case passed in 37.895 seconds. It verifies that the
+actual generated provider key fails the C predicate, no recovery view appears,
+no wallet record is written, and only that invocation's key/files are cleaned up.
+
+Receiving QR generation now uses a pinned C provider with no heap allocation,
+exact public address/network validation, fixed buffers and a white quiet zone.
+ZXing was removed from the app runtime and is used only as a host-test decoder.
+All 48 public fixtures decode directly from their C modules; all 288 rendered
+scale/orientation cases decode with the multi-candidate image detector. A
+separate regression preserves the simple detector's rejection of a valid
+symbol. This is not real-camera acceptance; details are in `RECEIVING_QR.md`.
+
+Current checks pass: 32 JVM/JNI tests (JNI checking enabled), two worker unit
+tests, ARM64/x86-64 debug and instrumentation assembly, Android lint and all
+32 repository lint-fast gates. The full C safety script passes 16 native
+executables, Clang/GCC analysis, strict warnings, complexity at most 10 and
+ASan/UBSan/LSan. The unchanged provider passes 521 upstream tests under
+sanitizers. The QR fuzzer completed 14,331 executions in 301 seconds with no
+finding; its source/provider/binary hashes and final source recheck are kept
+under `native/build/fuzz-receive-qr`. The earlier confirmation fuzzer completed
+11,088,373 executions in 901 seconds. Dynamic exports are only 23 JNI entries.
+
+`NEXT_MILESTONE.md` lists the exact custody qualification and remaining phase-1
+acceptance, followed by the original ordered send/shielded/mobile-validation/
+separate-messaging scope. No balance or network verification is claimed. No
+production node/miner, funded wallet, Rust installation, push or merge occurred.
+
+2026-09-12 13:23 UTC: four Android tests pass in 42.989 seconds: the actual
+Android Canvas output independently decodes at three aspect ratios on both
+networks; an undersized view produces no cropped QR; recovery input remains
+bounded and transfers/clears its array; recovery display clears owned arrays
+including rejected input. These are public-fixture tests, not screenshots or
+camera tests. Together with the two Keystore cases and one refusal workflow,
+seven scoped device tests now pass.
+
+Final review found that a fatal VM Error could bypass the worker's ordinary
+Exception handler after setup entropy had been retained. The worker now clears
+setup in finally whenever its action did not complete, before the Error
+propagates; fatal errors are not swallowed. Debug assembly and worker tests
+were rebuilt after this correction. Positive hardware workflows and fault
+acceptance on real devices remain explicitly unqualified.
+
+Unsigned release assembly with R8 and release lint also pass. Dependency locks
+were regenerated across all configurations: ZXing is present only in host or
+instrumentation test configurations, with no stale release/runtime entry.
+The authored diff passes whitespace checking. The two vendored QR source files
+retain upstream's whitespace unchanged and are verified by their SHA-256 pins;
+no source-format normalization or generic lint weakening is applied.

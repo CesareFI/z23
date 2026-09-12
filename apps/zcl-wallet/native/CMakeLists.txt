@@ -20,6 +20,12 @@ target_include_directories(zcl_hash_provider PUBLIC ${ZCL_MBEDTLS_SOURCE}/includ
 target_compile_definitions(zcl_hash_provider PUBLIC MBEDTLS_CONFIG_FILE="zcl_mbedtls_config.h")
 set_target_properties(zcl_hash_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+set(ZCL_QR_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-qrcodegen")
+add_library(zcl_qr_provider STATIC ${ZCL_QR_SOURCE}/qrcodegen.c)
+target_include_directories(zcl_qr_provider PUBLIC ${ZCL_QR_SOURCE})
+target_compile_options(zcl_qr_provider PRIVATE -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong)
+set_target_properties(zcl_qr_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 set(ZCL_SECP_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-secp256k1")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -39,12 +45,12 @@ add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 
 add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c
-    src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/ec_context.c src/bip32.c
+    src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c
-    src/storage_posix.c src/storage_read.c src/storage_write.c)
+    src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c)
 target_include_directories(zcl_wallet_core PUBLIC include)
 target_include_directories(zcl_wallet_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-bip39")
-target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1)
+target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1 zcl_qr_provider)
 set_target_properties(zcl_wallet_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(zcl_wallet_core PRIVATE
     -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
@@ -59,6 +65,7 @@ if(ZCL_SANITIZE)
     endif()
     target_compile_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(zcl_hash_provider PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_compile_options(zcl_qr_provider PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(secp256k1 PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(secp256k1_precomputed PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined)
@@ -66,7 +73,7 @@ endif()
 
 if(ZCL_JNI OR ANDROID)
     add_library(zclwallet_jni SHARED src/jni_amount.c src/jni_codecs.c src/jni_payment.c src/jni_support.c
-        src/jni_keys.c src/jni_wallet_record.c src/jni_storage.c)
+        src/jni_keys.c src/jni_wallet_record.c src/jni_storage.c src/jni_custody.c src/jni_qr.c)
     target_link_libraries(zclwallet_jni PRIVATE zcl_wallet_core)
     target_compile_options(zclwallet_jni PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -fstack-protector-strong)
@@ -83,6 +90,12 @@ if(ZCL_FUZZ)
         message(FATAL_ERROR "Fuzzing requires host Clang")
     endif()
     target_compile_options(zcl_wallet_core PRIVATE -fsanitize=fuzzer-no-link)
+    target_compile_options(zcl_qr_provider PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(fuzz_receive_qr tests/fuzz_receive_qr.c)
+    target_link_libraries(fuzz_receive_qr PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_receive_qr PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_receive_qr PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_amount tests/fuzz_amount.c)
     target_link_libraries(fuzz_amount PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_amount PRIVATE -fsanitize=fuzzer,address,undefined
@@ -112,6 +125,10 @@ endif()
 
 if(NOT ANDROID)
     enable_testing()
+    add_executable(receive_qr_tests tests/test_receive_qr.c)
+    target_link_libraries(receive_qr_tests PRIVATE zcl_wallet_core)
+    target_compile_options(receive_qr_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_receive_qr COMMAND receive_qr_tests)
     if(ZCL_ORACLE)
         find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)
@@ -149,6 +166,14 @@ if(NOT ANDROID)
     target_link_libraries(wallet_record_tests PRIVATE zcl_wallet_core)
     target_compile_options(wallet_record_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_record COMMAND wallet_record_tests)
+    add_executable(custody_policy_tests tests/test_custody_policy.c)
+    target_link_libraries(custody_policy_tests PRIVATE zcl_wallet_core)
+    target_compile_options(custody_policy_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_custody_policy COMMAND custody_policy_tests)
+    add_executable(mnemonic_confirm_tests tests/test_mnemonic_confirm.c)
+    target_link_libraries(mnemonic_confirm_tests PRIVATE zcl_wallet_core)
+    target_compile_options(mnemonic_confirm_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_mnemonic_confirm COMMAND mnemonic_confirm_tests)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(storage_tests tests/test_storage.c tests/storage_fixture.c)
         target_link_libraries(storage_tests PRIVATE zcl_wallet_core)

@@ -95,6 +95,9 @@ static int mnemonic_failures(void)
     inject(1);
     CHECK(zcl_mnemonic_decode(text, sizeof(text) - 1, output, sizeof(output), &length) == ZCL_CRYPTO_FAILURE);
     CHECK(length == 999 && cleared_spans >= 2 && memcmp(output, before, sizeof(output)) == 0);
+    inject(1);
+    CHECK(zcl_mnemonic_confirm(entropy, sizeof(entropy), text, sizeof(text) - 1) == ZCL_CRYPTO_FAILURE);
+    CHECK(calls == 1 && cleared_spans >= 3);
     static const size_t points[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 101, 8193, 16385};
     for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); ++i) {
         inject(points[i]);
