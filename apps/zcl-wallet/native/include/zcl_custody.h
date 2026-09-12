@@ -32,6 +32,13 @@ typedef struct {
  * Accepts both documented (-1) and current provider (0) per-use encodings. */
 zcl_status zcl_wrapping_policy_check(const zcl_wrapping_policy *policy);
 
+#define ZCL_AUTH_WINDOW_MS UINT64_C(90000)
+/* Pending prompt/foreground-continuation lifetime only, never an alternative
+ * to hardware per-use authentication. Times must come from the same monotonic
+ * clock including device sleep. A backward clock or age >=90s fails closed.
+ * Subtraction follows ordering checks; no absolute deadline addition occurs. */
+zcl_status zcl_authentication_window_check(uint64_t started_ms, uint64_t now_ms);
+
 #ifdef __cplusplus
 }
 #endif

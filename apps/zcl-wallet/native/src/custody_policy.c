@@ -1,6 +1,13 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_custody.h"
 
+zcl_status zcl_authentication_window_check(uint64_t started_ms, uint64_t now_ms)
+{
+    if (now_ms < started_ms) return ZCL_IO_UNCERTAIN;
+    if (now_ms - started_ms >= ZCL_AUTH_WINDOW_MS) return ZCL_TIMED_OUT;
+    return ZCL_OK;
+}
+
 zcl_status zcl_wrapping_policy_check(const zcl_wrapping_policy *policy)
 {
     if (policy == NULL)

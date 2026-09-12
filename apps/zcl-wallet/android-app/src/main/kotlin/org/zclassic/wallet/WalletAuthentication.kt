@@ -7,9 +7,11 @@ import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import javax.crypto.Cipher
 import org.zclassic.wallet.core.Network
 import org.zclassic.wallet.core.WalletRecord
+import org.zclassic.wallet.core.WrappingPolicy
 
 internal enum class WalletAction { CREATE, RESTORE, UNLOCK }
 
@@ -32,6 +34,7 @@ internal class WalletAuthentication(
     private val failed: () -> Unit,
 ) {
     private class Pending(val prepared: PreparedWalletAction) {
+        val startedMillis = SystemClock.elapsedRealtime()
         val signal = CancellationSignal()
         var succeeded = false
         var timeout: Runnable? = null
@@ -48,7 +51,7 @@ internal class WalletAuthentication(
         val request = Pending(prepared)
         pending = request
         val timeout = Runnable { fail(request) }.also { request.timeout = it }
-        if (!handler.postDelayed(timeout, 90_000)) {
+        if (!windowOpen(request) || !handler.postDelayed(timeout, WrappingPolicy.authenticationWindowMillis)) {
             fail(request)
             return
         }
@@ -71,6 +74,7 @@ internal class WalletAuthentication(
     private fun callback(request: Pending) = object : BiometricPrompt.AuthenticationCallback() {
         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
             if (pending !== request) return
+            if (!windowOpen(request)) { fail(request); return }
             if (result.cryptoObject?.cipher !== request.prepared.cipher) {
                 fail(request)
                 return
@@ -96,13 +100,19 @@ internal class WalletAuthentication(
     private fun deliver() {
         val request = pending ?: return
         if (!foreground || !request.succeeded) return
+        if (!windowOpen(request)) { fail(request); return }
         pending = null
         request.timeout?.let(handler::removeCallbacks)
         approved(request.prepared)
     }
 
+    private fun windowOpen(request: Pending): Boolean =
+        WrappingPolicy.authenticationWindowOpen(request.startedMillis, SystemClock.elapsedRealtime())
+
     fun onResume() {
         foreground = true
+        val request = pending
+        if (request != null && !windowOpen(request)) { fail(request); return }
         if (deferredFailure) {
             deferredFailure = false
             failed()

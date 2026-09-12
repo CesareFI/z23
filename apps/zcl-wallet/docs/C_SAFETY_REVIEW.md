@@ -358,3 +358,24 @@ milliseconds, timeout at the exact deadline, failures at all six phases, clock
 rollback, near-UINT64_MAX deadlines, token exhaustion, old/completed tokens,
 restart with empty state and unchanged error outputs. Static analysis covers
 the enabled code; the TLS review remains blocked and separate.
+
+## Authentication continuation timing review — 2026-09-13
+
+Scope: the new pure predicate in `custody_policy.c`, its JNI wrappers and the
+elapsed-clock calls in `WalletAuthentication`. The key-protection predicate,
+cryptographic operations and record persistence are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | The C/JNI addition uses only two integer values, no buffers or dereferenced pointers. The fuzzer reads exactly three eight-byte spans after an exact 24-byte length check. |
+| Integer overflow/underflow; signed/unsigned conversions | Ordering is checked before subtraction; no deadline addition exists. Negative jlong inputs refuse before uint64 conversion. A compile-time assertion proves the C duration fits jlong. Fuzzer shifts are 0..56; timestamp translation is guarded in both directions. Boundary tests include UINT64_MAX and Long.MIN/MAX. |
+| Use-after-free; double-free; leaks; dangling pointers; NULL dereferences | No allocation, free, retained pointer, array pin or JNI object is added. Existing Pending identity/lifetime and cancellation own the platform signal. C/JNI use no env/type dereference. |
+| Uninitialized memory; format strings; secret leakage | All new state is an initialized monotonic timestamp or checked primitive. No formatting, logging, secret input or serialized state. Test data are public timestamps. Pending continues to hold only a provider handle and public/ciphertext data. |
+| Stack usage; allocation limits; resource exhaustion | Constant tiny C frames; no recursive calls, loops in the predicate, allocations or retries. Existing handler bounds remain; the C predicate is checked independently when Android delivers callbacks. All authored functions remain <=10 complexity. |
+| Malformed input; races | Signed JNI and backward-clock refusals fail closed. Android reads one monotonic clock including sleep. Main-thread ownership and exact Pending/Cipher identity checks remain. Rechecking at successful callback and delivery prevents expiration between those events; resume expires even an unfinished prompt. This is an additional time gate, never authentication by itself. |
+
+The original Handler-only path is documented in KEYSTORE_PLATFORM.md. Native
+and JNI tests cover exact 89999/90000ms boundaries and invalid clocks; the
+timestamp fuzzer checks translation invariance and that expired forward time
+cannot reopen the window. These tests do not qualify a physical authentication
+provider or prove an end-to-end hardware suspend/resume workflow.

@@ -84,6 +84,31 @@ and unlock UI acceptance is **not qualified** by this emulator. The positive
 interactive cases remain separate from the explicit software-protection refusal
 case, and the policy is not changed to accommodate the emulator.
 
+## Authentication continuation timing — 2026-09-13
+
+The pending prompt's 90-second window is now enforced by
+`zcl_authentication_window_check`, using Android `elapsedRealtime()` observations
+at creation, successful callback, foreground delivery and resume. Age >=90000
+milliseconds or backward time refuses. The JNI adapter rejects negative Java
+timestamps before conversion; no pointers, allocation or secret data cross this
+new boundary. The delay value also comes from C.
+
+The prior implementation relied on a Handler timeout alone. Android documents
+that [Handler delays use uptime and are extended by deep sleep](https://developer.android.com/reference/android/os/Handler),
+while [elapsedRealtime includes deep sleep](https://developer.android.com/reference/android/os/SystemClock).
+Consequently the prior code did not enforce its stated elapsed-time limit when
+delivery followed suspension or an overdue callback. This is a code/clock-contract
+finding, not an observed theft or bypass of the hardware's per-use requirement.
+The Handler still schedules cleanup, but its delivery order is no longer the
+authority to accept an authentication continuation.
+
+The same-Cipher, foreground, request-identity and per-use hardware checks remain
+mandatory. The new predicate only constrains how long the app retains a pending
+prompt/foreground continuation; it cannot authenticate a user or approve a key.
+Exact boundary/overflow/clock tests, metamorphic timestamp fuzzing and host/device
+JNI tests complement the source review. Physical-device suspend/resume during
+an actual successful BiometricPrompt operation remains required acceptance.
+
 The software-protection refusal UI case passes: the actual newly generated key
 is rejected by the C predicate, no recovery view is shown and no wallet record
 is created. The fixture preserves preexisting empty storage scaffolding and

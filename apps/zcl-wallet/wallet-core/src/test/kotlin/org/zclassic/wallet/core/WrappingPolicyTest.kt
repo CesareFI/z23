@@ -4,8 +4,23 @@ package org.zclassic.wallet.core
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 
 class WrappingPolicyTest {
+    @Test fun authenticationContinuationUsesBoundedElapsedTimeAcrossJni() {
+        assertEquals(90_000L, WrappingPolicy.authenticationWindowMillis)
+        for (start in listOf(0L, 1L, 123_456_789L, Long.MAX_VALUE - 90_000)) {
+            assertTrue(WrappingPolicy.authenticationWindowOpen(start, start))
+            assertTrue(WrappingPolicy.authenticationWindowOpen(start, start + 89_999))
+            assertFalse(WrappingPolicy.authenticationWindowOpen(start, start + 90_000))
+            if (start > 0) assertFalse(WrappingPolicy.authenticationWindowOpen(start, start - 1))
+        }
+        assertFalse(WrappingPolicy.authenticationWindowOpen(-1, 0))
+        assertFalse(WrappingPolicy.authenticationWindowOpen(0, -1))
+        assertFalse(WrappingPolicy.authenticationWindowOpen(Long.MIN_VALUE, Long.MAX_VALUE))
+        assertFalse(WrappingPolicy.authenticationWindowOpen(0, Long.MAX_VALUE))
+        assertTrue(WrappingPolicy.authenticationWindowOpen(Long.MAX_VALUE, Long.MAX_VALUE))
+    }
     @Test fun onlyCompleteHardwarePerUsePolicyIsAccepted() {
         for (hardware in listOf(WrappingPolicy.TEE, WrappingPolicy.STRONGBOX)) {
             assertTrue(WrappingPolicy.accepts(256, hardware, 15, 0, 3))

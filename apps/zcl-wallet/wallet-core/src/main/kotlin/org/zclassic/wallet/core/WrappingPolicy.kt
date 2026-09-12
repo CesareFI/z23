@@ -15,6 +15,12 @@ object WrappingPolicy {
     const val STRONG_BIOMETRIC = 1
     const val DEVICE_CREDENTIAL = 2
 
+    /** UI scheduling hint; the C elapsed-time predicate must still guard
+     * actual delivery after sleep or delayed platform callbacks. */
+    val authenticationWindowMillis: Long get() = NativeCore.authenticationWindowMillis()
+    fun authenticationWindowOpen(startedMillis: Long, nowMillis: Long): Boolean =
+        NativeCore.authenticationWindowOpen(startedMillis, nowMillis)
+
     fun accepts(keyBits: Int, hardware: Int, flags: Int, authenticationSeconds: Int, methods: Int): Boolean =
         NativeCore.acceptWrappingPolicy(keyBits, hardware, flags, authenticationSeconds, methods)
 }

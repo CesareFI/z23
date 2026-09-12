@@ -144,6 +144,11 @@ if(ZCL_FUZZ)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_json_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_hash_provider PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(fuzz_authentication_window tests/fuzz_authentication_window.c)
+    target_link_libraries(fuzz_authentication_window PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_authentication_window PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_authentication_window PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_sync tests/fuzz_sync.c tests/sync_fixture.c)
     target_link_libraries(fuzz_sync PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_sync PRIVATE -fsanitize=fuzzer,address,undefined

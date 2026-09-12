@@ -368,3 +368,31 @@ Activity requires explicit start and uses a distinct preview, then final
 background cleanup releases its frame/worker. Debug test assembly and lint pass.
 The architecture-tree gate also passes. This adds Activity recreation evidence,
 not an OS-process-death or physical camera QR-to-review claim.
+
+2026-09-13 authentication follow-through: code review found that the documented
+90-second pending authentication continuation relied only on Handler uptime.
+The C custody module now checks elapsed monotonic age, rejecting >=90000ms and
+backward time. Android checks that predicate before opening the prompt, on its
+successful callback, before foreground delivery and on resume. JNI refuses
+negative timestamps before unsigned conversion. Hardware metadata/per-use
+policy, same-Cipher checks and storage behavior are unchanged. Android's clock
+contracts and the precise claim are linked in KEYSTORE_PLATFORM.md.
+
+All 25 active native tests pass ASan/UBSan/LSan. Enabled-code static analysis
+passes and 291 authored functions in 53 files remain at complexity <=10.
+Timestamp metamorphic fuzzing completed 20564425 runs in 31 seconds; final
+C/JNI/platform source, configuration and binary hashes match. Debug/test and
+unsigned minified release assembly, debug/release lint, 42 core JVM/JNI tests
+and two executor tests pass. Six emulator tests pass in 4.541 seconds: new
+timestamp JNI boundaries, existing isolated Keystore refusal and secret-view
+checks. The actual software-only key still fails the unchanged hardware policy
+and refuses unauthenticated finalization. Actual successful hardware-prompt
+suspend/resume remains unqualified; simulated timestamps do not prove it.
+
+The whole-archive quarantine test additionally passes against the actual
+ARM64 and x86-64 Android debug core/hash archives. The initial preservation
+archive/diff checksums still match. TLS remains BLOCKED — REQUIRES FURTHER
+SECURITY REVIEW; its original reproducer/corpus/provider source/output were
+not altered or rerun. Root lint's preserved environment/selftest blockers
+remain separate from passing wallet/Android gates. All checkpoints remain on
+the existing wallet branch, with no push, merge, production node or real funds.
