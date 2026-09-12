@@ -340,3 +340,23 @@ Next independent work is C deadline/freshness and late-result handling for
 unverified balances, then fixture-only Android presentation and lifecycle
 acceptance. No push, merge, upstream integration, production node or real funds
 are part of this checkpoint; upstream divergence was inspected and retained.
+
+2026-09-13 next slice: added the C foreground balance watch around the existing
+sync attempt. It owns one selected source/address, one attempt token and one
+cached unverified report. Deadlines are <=30 seconds; stale age starts at 60
+seconds. Explicit failures, refreshes and offline/cancelled attempts retain only
+a stale prior report. Backward monotonic time clears it. Late/completed tokens
+cannot mutate another attempt or its clock; overflow and token wrap refuse.
+Close/restart discards all state. The required caller owner-lifetime check and
+eventual I/O interruption remain explicit adapter responsibilities.
+
+All 25 active native tests pass ASan/UBSan/LSan, including the archive quarantine
+check and new deadline/freshness/lifetime cases. Authored Clang/GCC and enabled
+provider analysis pass; 288 functions in 53 files remain at complexity <=10.
+The event-sequence fuzzer passed 76753 runs in 121 seconds and final source,
+configuration, provider-manifest and binary hash checks match. Android debug
+and unsigned minified release builds, both lints, core JVM/JNI and executor tests
+pass. Root lint's previously documented environment/selftest blockers remain
+unresolved; the TLS investigation remains parked. No network or new JNI API is
+enabled by this slice. Next validate camera recreation independently, then
+implement fixture-only Android balance presentation/lifetime bindings.

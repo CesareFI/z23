@@ -87,7 +87,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c
     src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
-    src/electrum_identity.c src/electrum_header.c src/sync.c)
+    src/electrum_identity.c src/electrum_header.c src/sync.c src/sync_watch.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -149,6 +149,11 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_sync PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     target_link_options(fuzz_sync PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_sync_watch tests/fuzz_sync_watch.c tests/sync_fixture.c)
+    target_link_libraries(fuzz_sync_watch PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_sync_watch PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_sync_watch PRIVATE -fsanitize=fuzzer,address,undefined)
     if(ZCL_TLS_REVIEW)
     find_package(OpenSSL REQUIRED)
     find_package(Threads REQUIRED)
@@ -234,6 +239,12 @@ if(NOT ANDROID)
     target_compile_options(sync_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_sync COMMAND sync_tests)
     set_tests_properties(wallet_sync PROPERTIES TIMEOUT 15)
+    add_executable(sync_watch_tests tests/test_sync_watch.c tests/sync_fixture.c)
+    target_link_libraries(sync_watch_tests PRIVATE zcl_wallet_core)
+    target_compile_options(sync_watch_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_sync_watch COMMAND sync_watch_tests)
+    set_tests_properties(wallet_sync_watch PROPERTIES TIMEOUT 15)
     if(ZCL_TLS_REVIEW)
     find_package(OpenSSL REQUIRED)
     find_package(Threads REQUIRED)

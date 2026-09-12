@@ -29,7 +29,37 @@ Even a successful report is an unverified server claim for one transparent
 address. It supplies no account total, spendable UTXOs, history completeness,
 chain proof or signing authority. A same-tip balance can change with mempool
 activity; the check does not create an atomic server snapshot. Deadline,
-freshness, late-callback handling and Android presentation remain separate work.
+freshness and late-callback handling are supplied by the C watch below. Android
+presentation and qualified transport remain separate work.
+
+## Foreground balance lifetime
+
+`zcl_sync_watch.h` composes the attempt with caller-supplied monotonic time,
+one nonwrapping attempt token, one cached report and one selected source's
+opaque configuration ID. Its caller owns the lifetime on one worker. This is
+an offline state API; it contains no thread, socket, timer or JNI handle.
+
+An explicit begin admits one attempt with a deadline of at most 30 seconds,
+covering connection setup and every reply. Request/reply calls and snapshot
+polls expire it at the deadline. A late token cannot advance the current clock,
+cancel another attempt or publish a report. The eventual adapter must still
+close connections and enforce I/O interruption; calling this API alone cannot
+interrupt an OS call. It must use elapsed monotonic time that includes sleep,
+not wall time or a clock that pauses when the device suspends.
+
+| Display state | Meaning |
+| --- | --- |
+| Unavailable | No completed report in this owner lifetime; amount fields are zeroed and must not be presented as a zero balance. |
+| Unverified | Completed server statement, younger than 60 seconds, no intervening failure or refresh. This never means verified funds or spendable value. |
+| Stale | Prior statement during refresh, after offline/error/cancellation, or at age >=60 seconds. Its age and last error remain explicit. |
+
+A backward clock clears even cached reports and fails the attempt. A subsequent
+explicit retry can establish a new observation in the new clock epoch. Close
+clears all owned state; recreation starts unavailable. Source/address/network
+changes require a new owner and discard the old cache. Configuration identity
+is caller metadata, not authentication. The adapter must reject callbacks from
+a destroyed owner before checking numeric tokens, which can start again in a
+new lifetime. No UI snapshot is a serializable native state or restart authority.
 
 ## Pin the network and protocol separately
 

@@ -335,3 +335,26 @@ pass. All 23 native functional tests pass ASan/UBSan/LSan; a separate archive
 and forbidden TLS/JNI configuration test passes. The offline sync fuzzer passes
 128180 executions in 121 seconds with source/binary hash rechecks. None of this
 is a passing result for the quarantined TLS provider or real-network acceptance.
+
+## Balance watch review — 2026-09-13
+
+Scope: `sync_watch.c`, `zcl_sync_watch.h`, fixtures and event-sequence fuzzer.
+The watch composes the reviewed attempt and never accesses transport or custody.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Validated 35-byte address and exact 32-byte source ID precede copies. Every request/reply delegates to the existing bounded C API. Snapshot output is a fixed caller struct, populated only after pointer/lifetime checks. |
+| Integer overflow/underflow; checked conversions | Deadline addition checks now <= UINT64_MAX-timeout; timeout is 1..30000. Tokens stop at UINT64_MAX. Age subtraction follows monotonic-clock acceptance; clock rollback removes the report before subtraction. No narrowing conversions occur in the watch. Six request IDs retain the existing UINT32_MAX-5 bound. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocations, frees, retained pointers or native handles. Struct members own copied public data. Close clears state and makes further calls refuse. The adapter must retain the original owner lifetime for asynchronous work; numeric token equality alone is explicitly insufficient across recreated owners. |
+| NULL dereferences; uninitialized memory | Init clears the entire object, then sets initialized only after validation. All public dereferences follow argument checks. Snapshots and intermediate reports initialize locally. Invalid/closed snapshots and failed token outputs leave caller bytes unchanged. Native structs are never serialized. |
+| Pointer arithmetic; format strings | No pointer arithmetic or formatting in authored watch code. Test/fuzz offsets follow size bounds and fixtures check formatted output lengths. No untrusted text enters logs or format strings. |
+| Stack usage; allocation limits; resource exhaustion | Fixed attempt, cached report and snapshot; no heap, recursion, variable stack arrays, queue, automatic retry or background timer. Authored frame/complexity gates pass. Fuzzer caps event count at 128 and frame length at 16384, with bounded execution/RSS/allocation settings. |
+| Malformed serialization/network input | The watch accepts complete-only reports from its own C attempt. Strict reply/identity/money checks remain in force. Source metadata cannot authorize an endpoint. Deadlines include all phases; rejection clears partial amounts and marks any previous report stale. |
+| Races and ownership | One worker owns all watch calls; no shared mutable globals. Late tokens return before time/state changes, tested against a byte-for-byte current-state snapshot. Cancellation and timeout stop publication; the eventual adapter must also interrupt/close real I/O. |
+| Secret leakage | No key, seed, signing, storage, network or logging path. Cached addresses/amounts remain private application data: close clears the owner; restart/source changes discard it. No fresh balance can be restored from serialized UI state, and no state represents verified or spendable funds. |
+
+Tests cover both networks, complete-only publication, freshness at 59999/60000
+milliseconds, timeout at the exact deadline, failures at all six phases, clock
+rollback, near-UINT64_MAX deadlines, token exhaustion, old/completed tokens,
+restart with empty state and unchanged error outputs. Static analysis covers
+the enabled code; the TLS review remains blocked and separate.
