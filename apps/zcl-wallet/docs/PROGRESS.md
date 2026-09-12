@@ -206,3 +206,36 @@ camera scanning, read-only sync, sending, shielded operation, mobile validation
 and messaging remain pending in the documented order. Only local development
 artifacts are retained; no node, miner, real funds, Rust installation, push or
 merge is part of this run.
+
+2026-09-12 continuation after the requested window: added a bounded C receiving
+request QR decoder and thin JNI adapter. The provider is pinned quirc with
+explicit local hardening and a reproducible patch, not an unmodified upstream
+release. Local probes reproduced the original NULL-source memcpy and
+nonfinite-to-int UB before fixes. C validates image spans before allocation,
+limits candidate/alignment/fitness work, refuses ambiguous/unsupported payloads,
+and feeds decoded requests to the existing payment parser. Owned images and
+decoded buffers are cleared; there is no camera, network or spending callback.
+
+The final source passes 19 native executables with ASan/UBSan/LSan, authored
+Clang/GCC analysis, provider Clang analysis and authored complexity <=10.
+Allocation-failure tests verify unchanged output and zeroed allocations before
+exactly-one free. All 38 JVM/JNI cases pass; six scanner cases use an independent
+encoder. ARM64/x86-64 debug/test assembly, unsigned release assembly and Android
+lint pass. The provider patch reproduces the compiled files exactly from the
+pinned original sources and hashes. Dynamic exports are the 24 intended JNI
+entry points.
+
+The final fuzz run completed 12088 executions in 301 seconds without a finding;
+source/provider/binary hashes recheck successfully under
+`native/build/fuzz-scan/final`. An earlier run completed 11537 before the final
+stack-buffer clearing change; it is not the final-source acceptance. Both new
+Android public-fixture tests pass in 6.670 seconds using the verified development
+test component. An initial invocation used the wrong component name and ran no
+tests. One host response was delayed nearly two hours; work continued from
+verified process/artifact state instead of restarting on stale observations.
+
+The current slice implements decoding and its acceptance, not the camera UX.
+Next add a bounded camera permission/lifecycle adapter and public-request review
+screen, then qualify actual camera behavior. Hardware-positive custody and
+read-only sync remain pending, followed by the original ordered phases in
+`NEXT_MILESTONE.md`. No Rust, real funds, node/miner, push or merge was introduced.

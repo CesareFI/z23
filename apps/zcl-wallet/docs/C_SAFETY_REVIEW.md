@@ -202,3 +202,40 @@ regression preserves this failure, while its multi-candidate detector must find
 exactly one correctly decoded QR at every tested scale/orientation. No failed
 image or checksum is treated as a successfully decoded address. This establishes
 synthetic interoperability, not universal camera/device acceptance.
+
+## Receiving-request scanner review — 2026-09-12, before implementation commit
+
+Scope: `scan_qr.c`, `jni_scan.c`, shared JNI payment record serialization,
+`zcl_qr.h`, and the locally hardened quirc provider. No camera UI, networking,
+wallet import, signing or consensus code is introduced. The source and local
+provider differences are pinned and documented separately.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow | C validates dimensions, strides and last-addressed pixel before allocation/read. Dimensions <=1024, pixel stride <=4, row stride <=8192 and input <=8 MiB prove every copied pixel fits. Decoder output length is checked against 1024 before the existing payment parser. JNI output reuses the existing bounded record serializer. |
+| Buffer underflow | Width/height >=21 precede subtraction. Row stride must include the last pixel. Provider flood fill checks image borders and its bounded explicit stack before pushing. Extraction indices are checked before forming a grid pointer. |
+| Out-of-bounds reads/writes | Provider grid versions are checked before table-address formation and bitmap reads. QR grids are 21..177; raw bits need fewer bytes than the fixed 8896-byte payload buffer. Version/ECC table indices are bounded. Berlekamp-Massey loop invariants keep syndrome indices nonnegative. The adapter only extracts index zero after count==1. |
+| Integer overflow/underflow | Frame arithmetic has bounded operands before multiplication. Provider allocations check size_t products before allocating. Line intersections use int64 on image-bounded corners; alignment areas use int64 and must fit the image area. Subsequent area*100 <=104857600 and step squares <=1050625 fit int. Region counts*100 also fit int. |
+| Signed/unsigned conversions | JNI rejects negative dimensions/strides before size_t conversion. C proves dimensions <=1024 before int casts. Nonfinite or projected coordinates beyond +/-4096 are rejected before conversion; all callers handle failure. Existing provider signed/unsigned comparisons involve proven nonnegative bounded indices. Finder run lengths cover preceding image pixels, so their subtractions do not wrap. |
+| Use-after-free | One invocation owns each decoder, its image/fill buffers and decoded workspace. No context or image pointer escapes. Work is complete before cleanup. JNI uses a snapshot, not a pinned or retained managed array. |
+| Double-free | quirc's pixel/image alias case is handled explicitly. Wrapper ownership has one destroy/free path per allocation. Fault injection observes each of the four allocation sites and exactly-one release, including resize failures. |
+| Memory leaks | Checked allocation failure returns through the appropriate owner. The provider leaves an existing context unchanged on failed resize and frees partial new allocations. JNI frees its bounded snapshot even when the VM copy, decoder or result allocation fails. |
+| NULL dereferences | Public image/layout/output pointers and managed arrays are checked before use. Every allocated pointer is checked. The original first-resize NULL-source memcpy was reproduced under UBSan and is now skipped when its length is zero. NULL optional clearing spans are no-ops. |
+| Uninitialized memory | Provider contexts and decode workspace are zero-initialized. New image allocation is zeroed and the full active image is copied before identification. Fields are read only after successful decode/range checks. JNI request state initializes before use; rejected output remains untouched. |
+| Dangling pointers | All borrowed spans must remain stable during the call; no native handles or stored callbacks exist. Provider buffers are private to one context. The alias pointer is replaced before image identification and is never freed separately. |
+| Invalid pointer arithmetic | The validated last-pixel formula bounds row/pixel offsets. Extraction validates index before taking an array address. Version validation precedes version-table pointer formation. No serialized-struct casts or ownership-tagged pointers are used. |
+| Format-string vulnerabilities | No decoder, wrapper or JNI logging. Public fixture tools use fixed format strings and check snprintf/fwrite/fclose results. Decoded payloads are always data, never format strings. |
+| Stack exhaustion | No recursion or VLA. Flood fill uses a bounded heap stack. Large code/data results use a fixed heap workspace. The provider decoder has a fixed approximately 9 KiB datastream stack buffer; mirror scratch is fixed approximately 4 KiB. These calls are sequential, and authored wrapper/JNI frames retain the 4096-byte compiler gate. |
+| Excessive allocation | Provider image <=1 MiB, fixed context/workspace and fill storage <=682 entries; JNI snapshot <=8 MiB. Constant sizeof allocations cannot overflow, and every variable-size product is checked or proven bounded before allocation. There is no native frame queue/cache. Camera queue bounds remain a required separate adapter gate. |
+| Malformed serialization | QR error correction must succeed. Unsupported modes cannot silently truncate a payload. Only supported byte/text encoding reaches the existing exact payment parser; wrong networks, duplicate/unknown fields, invalid amounts/UTF-8 and arbitrary non-request content are refused. Scanned data does not enter wallet record or recovery APIs. |
+| Malformed network input | No network operation is added. A selected network is a separate caller parameter and is never inferred from the image. Future network sync has no new trust or validation shortcut. |
+| Race conditions | No mutable global provider or wallet scan state. Each call owns its context and scratch; shared tables are const. Concurrent mutation of caller-owned input is outside the API contract. The camera adapter must enforce sole frame ownership and bounded worker dispatch. |
+| Resource exhaustion | Per-frame candidate, alignment and fitness budgets are explicit. Exhaustion is reported and causes whole-frame refusal; no partial decode is accepted. Bounds cap remaining table/bitmap loops. Fuzzing has input/RSS/allocation/time limits. No universal real-device latency guarantee is inferred. |
+| Secret leakage | There is no secret import/export or spending callback. Images and rejected payloads are never logged, persisted or transmitted. Native snapshots, provider pixels/context/fill allocations, decoded workspace and provider datastream/mirror stack buffers are cleared before release. Managed/frame/runtime copies require their own owners and cannot all be claimed erased. The purpose remains public requests, with no guarantee that camera users never point at private material. |
+
+The original provider's NULL-source copy and nonfinite-to-int conversion fail
+local UBSan probes. Named provider regressions cover the fixes, work budgets,
+index bounds and unsupported modes. Independent encoder/JNI tests, adversarial
+span tests, every-allocation fault injection and full-provider ASan/UBSan/LSan
+complement this manual review; they do not constitute complete memory-safety
+proof or real-camera acceptance. Final check results are recorded in PROGRESS.

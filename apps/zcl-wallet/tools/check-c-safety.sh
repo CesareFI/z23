@@ -31,13 +31,17 @@ fi
     cd "$repo_root/vendor/android-qrcodegen"
     sha256sum -c SHA256SUMS
 )
+(
+    cd "$repo_root/vendor/android-quirc"
+    sha256sum -c SHA256SUMS
+)
 
 common=(-std=c17 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
     -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096
     '-DMBEDTLS_CONFIG_FILE="zcl_mbedtls_config.h"'
     -I native/include -I "$repo_root/vendor/android-mbedtls/include"
     -I "$repo_root/vendor/android-bip39" -I "$repo_root/vendor/android-secp256k1/include"
-    -I "$repo_root/vendor/android-qrcodegen")
+    -I "$repo_root/vendor/android-qrcodegen" -I "$repo_root/vendor/android-quirc")
 javac_path=$(command -v javac)
 jdk_root=$(dirname -- "$(dirname -- "$(readlink -f -- "$javac_path")")")
 jni_common=("${common[@]}" -I "$jdk_root/include" -I "$jdk_root/include/linux")
@@ -50,6 +54,14 @@ for source in native/src/*.c; do
     name=${source##*/}
     "$clang_bin" --analyze -Xanalyzer -analyzer-werror "${flags[@]}" "$source" -o "$analysis_dir/$name.plist"
     "$gcc_bin" -fanalyzer "${flags[@]}" -c "$source" -o "$analysis_dir/$name.o"
+done
+
+# Provider internals participate in static analysis as well as sanitizers.
+# Their reviewed upstream compiler warnings are separate from analyzer findings.
+for unit in quirc identify decode version_db; do
+    "$clang_bin" --analyze -Xanalyzer -analyzer-werror -std=c17 \
+        -I "$repo_root/vendor/android-quirc" "$repo_root/vendor/android-quirc/$unit.c" \
+        -o "$analysis_dir/quirc-$unit.plist"
 done
 
 if [[ ! -x "$repo_root/build/bin/z23-lint" ]]; then

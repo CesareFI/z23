@@ -22,6 +22,7 @@ tasks.test {
     inputs.files(rootProject.fileTree("../../vendor/android-bip39")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-secp256k1")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-qrcodegen")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(rootProject.fileTree("../../vendor/android-quirc")).withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 val configureHostNative by tasks.registering(Exec::class) {

@@ -1,0 +1,535 @@
+--- a/quirc.c
++++ b/quirc.c
+@@ -23,6 +23,11 @@
+ 	return "1.0";
+ }
+ 
++int quirc_is_limited(const struct quirc *q)
++{
++	return q->limit_reached;
++}
++
+ struct quirc *quirc_new(void)
+ {
+ 	struct quirc *q = malloc(sizeof(*q));
+@@ -34,14 +39,33 @@
+ 	return q;
+ }
+ 
++/* Camera frames can contain unintended private material. Do not retain owned
++ * pixels or geometry in freed allocations. Volatile stores resist removal. */
++void quirc_clear(void *buffer, size_t length)
++{
++	volatile uint8_t *bytes = buffer;
++	if (bytes == NULL)
++		return;
++	while (length != 0) {
++		*bytes++ = 0;
++		length--;
++	}
++}
++
+ void quirc_destroy(struct quirc *q)
+ {
++	size_t pixels = (size_t)q->w * (size_t)q->h;
++	quirc_clear(q->image, pixels);
+ 	free(q->image);
+ 	/* q->pixels may alias q->image when their type representation is of the
+ 	   same size, so we need to be careful here to avoid a double free */
+-	if (!QUIRC_PIXEL_ALIAS_IMAGE)
++	if (!QUIRC_PIXEL_ALIAS_IMAGE) {
++		quirc_clear(q->pixels, pixels * sizeof(quirc_pixel_t));
+ 		free(q->pixels);
++	}
++	quirc_clear(q->flood_fill_vars, q->num_flood_fill_vars * sizeof(*q->flood_fill_vars));
+ 	free(q->flood_fill_vars);
++	quirc_clear(q, sizeof(*q));
+ 	free(q);
+ }
+ 
+@@ -59,21 +83,24 @@
+ 	 * both the API and ABI. Thus, at the moment, let's just do a sanity
+ 	 * check.
+ 	 */
+-	if (w < 0 || h < 0)
++	if (w <= 0 || h <= 0 || w > QUIRC_MAX_IMAGE_DIMENSION ||
++	    h > QUIRC_MAX_IMAGE_DIMENSION)
++		goto fail;
++	if ((size_t)w > SIZE_MAX / (size_t)h)
+ 		goto fail;
+ 
+ 	/*
+ 	 * alloc a new buffer for q->image. We avoid realloc(3) because we want
+ 	 * on failure to be leave `q` in a consistant, unmodified state.
+ 	 */
+-	image = calloc(w, h);
++	image = calloc((size_t)w, (size_t)h);
+ 	if (!image)
+ 		goto fail;
+ 
+ 	/* compute the "old" (i.e. currently allocated) and the "new"
+ 	   (i.e. requested) image dimensions */
+-	size_t olddim = q->w * q->h;
+-	size_t newdim = w * h;
++	size_t olddim = (size_t)q->w * (size_t)q->h;
++	size_t newdim = (size_t)w * (size_t)h;
+ 	size_t min = (olddim < newdim ? olddim : newdim);
+ 
+ 	/*
+@@ -81,10 +108,13 @@
+ 	 * old buffer when the new size is greater and (b) to write beyond the
+ 	 * new buffer when the new size is smaller, hence the min computation.
+ 	 */
+-	(void)memcpy(image, q->image, min);
++	if (min != 0)
++		(void)memcpy(image, q->image, min);
+ 
+ 	/* alloc a new buffer for q->pixels if needed */
+ 	if (!QUIRC_PIXEL_ALIAS_IMAGE) {
++		if (newdim > SIZE_MAX / sizeof(quirc_pixel_t))
++			goto fail;
+ 		pixels = calloc(newdim, sizeof(quirc_pixel_t));
+ 		if (!pixels)
+ 			goto fail;
+@@ -101,7 +131,7 @@
+ 	 * - the maximum height of rings would be about 1/3 of the image height.
+ 	 */
+ 
+-	if ((size_t)h * 2 / 2 != h) {
++	if ((size_t)h > SIZE_MAX / 2) {
+ 		goto fail; /* size_t overflow */
+ 	}
+ 	num_vars = (size_t)h * 2 / 3;
+@@ -109,15 +139,19 @@
+ 		num_vars = 1;
+ 	}
+ 
+-	vars_byte_size = sizeof(*vars) * num_vars;
+-	if (vars_byte_size / sizeof(*vars) != num_vars) {
++	if (num_vars > SIZE_MAX / sizeof(*vars)) {
+ 		goto fail; /* size_t overflow */
+ 	}
++	vars_byte_size = sizeof(*vars) * num_vars;
+ 	vars = malloc(vars_byte_size);
+ 	if (!vars)
+ 		goto fail;
+ 
+ 	/* alloc succeeded, update `q` with the new size and buffers */
++	quirc_clear(q->image, olddim);
++	if (!QUIRC_PIXEL_ALIAS_IMAGE)
++		quirc_clear(q->pixels, olddim * sizeof(quirc_pixel_t));
++	quirc_clear(q->flood_fill_vars, q->num_flood_fill_vars * sizeof(*vars));
+ 	q->w = w;
+ 	q->h = h;
+ 	free(q->image);
+@@ -133,6 +167,10 @@
+ 	return 0;
+ 	/* NOTREACHED */
+ fail:
++	/* image may contain a copy from the prior frame; the requested dimensions
++	 * were bounded before image allocation. No failed path retains that copy. */
++	if (image != NULL)
++		quirc_clear(image, (size_t)w * (size_t)h);
+ 	free(image);
+ 	free(pixels);
+ 	free(vars);
+--- a/quirc.h
++++ b/quirc.h
+@@ -25,6 +25,10 @@
+ 
+ struct quirc;
+ 
++/* Wallet build limits: malformed images must have bounded memory and work. */
++#define QUIRC_MAX_IMAGE_DIMENSION 1024
++int quirc_is_limited(const struct quirc *q);
++
+ /* Obtain the library version string. */
+ const char *quirc_version(void);
+ 
+--- a/quirc_internal.h
++++ b/quirc_internal.h
+@@ -22,6 +22,9 @@
+ 
+ #include "quirc.h"
+ 
++/* Optimization-resistant cleanup of an owned writable span. NULL is a no-op. */
++void quirc_clear(void *buffer, size_t length);
++
+ #define QUIRC_ASSERT(a)	assert(a)
+ 
+ #define QUIRC_PIXEL_WHITE	0
+@@ -101,6 +104,10 @@
+ };
+ 
+ struct quirc {
++	size_t alignment_budget;
++	size_t fitness_budget;
++	unsigned int grid_budget;
++	int limit_reached;
+ 	uint8_t			*image;
+ 	quirc_pixel_t		*pixels;
+ 	int			w;
+--- a/identify.c
++++ b/identify.c
+@@ -36,16 +36,16 @@
+ 			  struct quirc_point *r)
+ {
+ 	/* (a, b) is perpendicular to line p */
+-	int a = -(p1->y - p0->y);
+-	int b = p1->x - p0->x;
++	int64_t a = -((int64_t)p1->y - p0->y);
++	int64_t b = (int64_t)p1->x - p0->x;
+ 
+ 	/* (c, d) is perpendicular to line q */
+-	int c = -(q1->y - q0->y);
+-	int d = q1->x - q0->x;
++	int64_t c = -((int64_t)q1->y - q0->y);
++	int64_t d = (int64_t)q1->x - q0->x;
+ 
+ 	/* e and f are dot products of the respective vectors with p and q */
+-	int e = a * p1->x + b * p1->y;
+-	int f = c * q1->x + d * q1->y;
++	int64_t e = a * p1->x + b * p1->y;
++	int64_t f = c * q1->x + d * q1->y;
+ 
+ 	/* Now we need to solve:
+ 	 *     [a b] [rx]   [e]
+@@ -55,13 +55,18 @@
+ 	 *       [ d -b] [e]   [rx]
+ 	 * 1/det [-c  a] [f] = [ry]
+ 	 */
+-	int det = (a * d) - (b * c);
++	int64_t det = (a * d) - (b * c);
+ 
+ 	if (!det)
+ 		return 0;
+ 
+-	r->x = (d * e - b * f) / det;
+-	r->y = (-c * e + a * f) / det;
++	/* Inputs are corners inside an image of at most 1024x1024. */
++	int64_t x = (d * e - b * f) / det;
++	int64_t y = (-c * e + a * f) / det;
++	if (x < 0 || y < 0 || x > INT_MAX || y > INT_MAX)
++		return 0;
++	r->x = (int)x;
++	r->y = (int)y;
+ 
+ 	return 1;
+ }
+@@ -97,15 +102,24 @@
+ 		hden;
+ }
+ 
+-static void perspective_map(const quirc_float_t *c,
++static int perspective_map(const quirc_float_t *c,
+ 			    quirc_float_t u, quirc_float_t v, struct quirc_point *ret)
+ {
+ 	quirc_float_t den = (quirc_float_t)1 / (c[6]*u + c[7]*v + (quirc_float_t)1.0);
+ 	quirc_float_t x = (c[0]*u + c[1]*v + c[2]) * den;
+ 	quirc_float_t y = (c[3]*u + c[4]*v + c[5]) * den;
+ 
+-	ret->x = (int) rint(x);
+-	ret->y = (int) rint(y);
++	x = rint(x);
++	y = rint(y);
++	/* Do not cast nonfinite or excessive coordinates to int. No caller
++	 * needs geometry farther than four image dimensions from the origin. */
++	if (!isfinite(x) || !isfinite(y) ||
++	    fabs(x) > 4 * QUIRC_MAX_IMAGE_DIMENSION ||
++	    fabs(y) > 4 * QUIRC_MAX_IMAGE_DIMENSION)
++		return 0;
++	ret->x = (int)x;
++	ret->y = (int)y;
++	return 1;
+ }
+ 
+ static void perspective_unmap(const quirc_float_t *c,
+@@ -490,7 +504,11 @@
+ 
+ 	/* Set up the perspective transform and find the center */
+ 	perspective_setup(capstone->c, capstone->corners, 7.0, 7.0);
+-	perspective_map(capstone->c, 3.5, 3.5, &capstone->center);
++	if (!perspective_map(capstone->c, 3.5, 3.5, &capstone->center)) {
++		stone_reg->capstone = -1;
++		ring_reg->capstone = -1;
++		q->num_capstones--;
++	}
+ }
+ 
+ static void test_capstone(struct quirc *q, unsigned int x, unsigned int y,
+@@ -595,23 +613,36 @@
+ 	 * can estimate its size.
+ 	 */
+ 	perspective_unmap(c0->c, &b, &u, &v);
+-	perspective_map(c0->c, u, v + (quirc_float_t)1.0, &a);
++	if (!perspective_map(c0->c, u, v + (quirc_float_t)1.0, &a))
++		return;
+ 	perspective_unmap(c2->c, &b, &u, &v);
+-	perspective_map(c2->c, u + (quirc_float_t)1.0, v, &c);
++	if (!perspective_map(c2->c, u + (quirc_float_t)1.0, v, &c))
++		return;
+ 
+-	size_estimate = abs((a.x - b.x) * -(c.y - b.y) +
+-			    (a.y - b.y) * (c.x - b.x));
++	int64_t area = ((int64_t)a.x - b.x) * -((int64_t)c.y - b.y) +
++		       ((int64_t)a.y - b.y) * ((int64_t)c.x - b.x);
++	if (area < 0)
++		area = -area;
++	if (area > (int64_t)q->w * q->h)
++		return;
++	size_estimate = (int)area;
+ 
+ 	/* Spiral outwards from the estimate point until we find something
+ 	 * roughly the right size. Don't look too far from the estimate
+ 	 * point.
+ 	 */
+-	while (step_size * step_size < size_estimate * 100) {
++	const int max_step = (q->w > q->h ? q->w : q->h) + 1;
++	while (step_size <= max_step && step_size * step_size < size_estimate * 100) {
+ 		static const int dx_map[] = {1, 0, -1, 0};
+ 		static const int dy_map[] = {0, -1, 0, 1};
+ 		int i;
+ 
+ 		for (i = 0; i < step_size; i++) {
++			if (q->alignment_budget == 0) {
++				q->limit_reached = 1;
++				return;
++			}
++			q->alignment_budget--;
+ 			int code = region_code(q, b.x, b.y);
+ 
+ 			if (code >= 0) {
+@@ -692,15 +723,21 @@
+ 	const struct quirc_grid *qr = &q->grids[index];
+ 	struct quirc_point p;
+ 
+-	perspective_map(qr->c, x + (quirc_float_t)0.5, y + (quirc_float_t)0.5, &p);
++	if (!perspective_map(qr->c, x + (quirc_float_t)0.5, y + (quirc_float_t)0.5, &p))
++		return 0;
+ 	if (p.y < 0 || p.y >= q->h || p.x < 0 || p.x >= q->w)
+ 		return 0;
+ 
+ 	return q->pixels[p.y * q->w + p.x] ? 1 : -1;
+ }
+ 
+-static int fitness_cell(const struct quirc *q, int index, int x, int y)
++static int fitness_cell(struct quirc *q, int index, int x, int y)
+ {
++	if (q->fitness_budget == 0) {
++		q->limit_reached = 1;
++		return 0;
++	}
++	q->fitness_budget--;
+ 	const struct quirc_grid *qr = &q->grids[index];
+ 	int score = 0;
+ 	int u, v;
+@@ -710,8 +747,9 @@
+ 			static const quirc_float_t offsets[] = {0.3, 0.5, 0.7};
+ 			struct quirc_point p;
+ 
+-			perspective_map(qr->c, x + offsets[u],
+-					       y + offsets[v], &p);
++			if (!perspective_map(qr->c, x + offsets[u],
++					     y + offsets[v], &p))
++				continue;
+ 			if (p.y < 0 || p.y >= q->h || p.x < 0 || p.x >= q->w)
+ 				continue;
+ 
+@@ -724,7 +762,7 @@
+ 	return score;
+ }
+ 
+-static int fitness_ring(const struct quirc *q, int index, int cx, int cy,
++static int fitness_ring(struct quirc *q, int index, int cx, int cy,
+ 			int radius)
+ {
+ 	int i;
+@@ -740,14 +778,14 @@
+ 	return score;
+ }
+ 
+-static int fitness_apat(const struct quirc *q, int index, int cx, int cy)
++static int fitness_apat(struct quirc *q, int index, int cx, int cy)
+ {
+ 	return fitness_cell(q, index, cx, cy) -
+ 		fitness_ring(q, index, cx, cy, 1) +
+ 		fitness_ring(q, index, cx, cy, 2);
+ }
+ 
+-static int fitness_capstone(const struct quirc *q, int index, int x, int y)
++static int fitness_capstone(struct quirc *q, int index, int x, int y)
+ {
+ 	x += 3;
+ 	y += 3;
+@@ -762,10 +800,12 @@
+  * transform, using the features we expect to find by scanning the
+  * grid.
+  */
+-static int fitness_all(const struct quirc *q, int index)
++static int fitness_all(struct quirc *q, int index)
+ {
+ 	const struct quirc_grid *qr = &q->grids[index];
+ 	int version = (qr->grid_size - 17) / 4;
++	if (version < 1 || version > QUIRC_MAX_VERSION)
++		return 0;
+ 	const struct quirc_version_info *info = &quirc_version_db[version];
+ 	int score = 0;
+ 	int i, j;
+@@ -816,8 +856,8 @@
+ 	for (i = 0; i < 8; i++)
+ 		adjustments[i] = qr->c[i] * (quirc_float_t)0.02;
+ 
+-	for (pass = 0; pass < 5; pass++) {
+-		for (i = 0; i < 16; i++) {
++	for (pass = 0; pass < 5 && !q->limit_reached; pass++) {
++		for (i = 0; i < 16 && !q->limit_reached; i++) {
+ 			int j = i >> 1;
+ 			int test;
+ 			quirc_float_t old = qr->c[j];
+@@ -905,6 +945,11 @@
+ 
+ 	if (q->num_grids >= QUIRC_MAX_GRIDS)
+ 		return;
++	if (q->grid_budget == 0) {
++		q->limit_reached = 1;
++		return;
++	}
++	q->grid_budget--;
+ 
+ 	/* Construct the hypotenuse line from A to C. B should be to
+ 	 * the left of this line.
+@@ -948,6 +993,8 @@
+ 	 * transform.
+ 	 */
+ 	measure_grid_size(q, qr_index);
++	if (qr->grid_size < 21 || qr->grid_size > QUIRC_MAX_GRID_SIZE)
++		goto fail;
+ 	/* Make an estimate based for the alignment pattern based on extending
+ 	 * lines from capstones A and C.
+ 	 */
+@@ -959,6 +1006,8 @@
+ 		goto fail;
+ 
+ 	/* On V2+ grids, we should use the alignment pattern. */
++	if (qr->align.x >= q->w || qr->align.y >= q->h)
++		goto fail;
+ 	if (qr->grid_size > 21) {
+ 		/* Try to find the actual location of the alignment pattern. */
+ 		find_alignment_pattern(q, qr_index);
+@@ -1089,6 +1138,10 @@
+ 
+ uint8_t *quirc_begin(struct quirc *q, int *w, int *h)
+ {
++	q->alignment_budget = (size_t)q->w * (size_t)q->h * 2;
++	q->fitness_budget = 131072; /* At most 1,179,648 projection samples/frame. */
++	q->grid_budget = 128;
++	q->limit_reached = 0;
+ 	q->num_regions = QUIRC_PIXEL_REGION;
+ 	q->num_capstones = 0;
+ 	q->num_grids = 0;
+@@ -1111,27 +1164,27 @@
+ 	for (i = 0; i < q->h; i++)
+ 		finder_scan(q, i);
+ 
+-	for (i = 0; i < q->num_capstones; i++)
++	for (i = 0; i < q->num_capstones && !q->limit_reached; i++)
+ 		test_grouping(q, i);
+ }
+ 
+ void quirc_extract(const struct quirc *q, int index,
+ 		   struct quirc_code *code)
+ {
+-	const struct quirc_grid *qr = &q->grids[index];
+ 	int y;
+ 	int i = 0;
+ 
+ 	memset(code, 0, sizeof(*code));
+ 
+-	if (index < 0 || index > q->num_grids)
++	if (index < 0 || index >= q->num_grids)
+ 		return;
++	const struct quirc_grid *qr = &q->grids[index];
+ 
+-	perspective_map(qr->c, 0.0, 0.0, &code->corners[0]);
+-	perspective_map(qr->c, qr->grid_size, 0.0, &code->corners[1]);
+-	perspective_map(qr->c, qr->grid_size, qr->grid_size,
+-			&code->corners[2]);
+-	perspective_map(qr->c, 0.0, qr->grid_size, &code->corners[3]);
++	if (!perspective_map(qr->c, 0.0, 0.0, &code->corners[0]) ||
++	    !perspective_map(qr->c, qr->grid_size, 0.0, &code->corners[1]) ||
++	    !perspective_map(qr->c, qr->grid_size, qr->grid_size, &code->corners[2]) ||
++	    !perspective_map(qr->c, 0.0, qr->grid_size, &code->corners[3]))
++		return;
+ 
+ 	code->size = qr->grid_size;
+ 
+--- a/decode.c
++++ b/decode.c
+@@ -860,8 +860,10 @@
+ 			err = decode_eci(data, ds);
+ 			break;
+ 
+-		default:
++		case 0: /* Explicit terminator. Unsupported modes must not truncate. */
+ 			goto done;
++		default:
++			return QUIRC_ERROR_UNKNOWN_DATA_TYPE;
+ 		}
+ 
+ 		if (err)
+@@ -886,7 +888,7 @@
+ 	quirc_decode_error_t err;
+ 	struct datastream ds;
+ 
+-	if (code->size > QUIRC_MAX_GRID_SIZE)
++	if (code->size < 21 || code->size > QUIRC_MAX_GRID_SIZE)
+ 		return QUIRC_ERROR_INVALID_GRID_SIZE;
+ 
+ 	if ((code->size - 17) % 4)
+@@ -898,15 +900,17 @@
+ 	data->version = (code->size - 17) / 4;
+ 
+ 	if (data->version < 1 ||
+-	    data->version > QUIRC_MAX_VERSION)
+-		return QUIRC_ERROR_INVALID_VERSION;
++	    data->version > QUIRC_MAX_VERSION) {
++		err = QUIRC_ERROR_INVALID_VERSION;
++		goto done;
++	}
+ 
+ 	/* Read format information -- try both locations */
+ 	err = read_format(code, data, 0);
+ 	if (err)
+ 		err = read_format(code, data, 1);
+ 	if (err)
+-		return err;
++		goto done;
+ 
+ 	/*
+ 	 * Borrow data->payload to store the raw bits.
+@@ -921,15 +925,14 @@
+ 	read_data(code, data, &ds);
+ 	err = codestream_ecc(data, &ds);
+ 	if (err)
+-		return err;
++		goto done;
+ 
+ 	ds.raw = NULL; /* We've done with this buffer. */
+ 
+ 	err = decode_payload(data, &ds);
+-	if (err)
+-		return err;
+-
+-	return QUIRC_SUCCESS;
++done:
++	quirc_clear(&ds, sizeof(ds));
++	return err;
+ }
+ 
+ void quirc_flip(struct quirc_code *code)
+@@ -945,4 +948,5 @@
+ 		}
+ 	}
+ 	memcpy(&code->cell_bitmap, &flipped.cell_bitmap, sizeof(flipped.cell_bitmap));
++	quirc_clear(&flipped, sizeof(flipped));
+ }

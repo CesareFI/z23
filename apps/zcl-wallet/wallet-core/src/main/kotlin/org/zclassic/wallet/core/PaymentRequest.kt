@@ -21,7 +21,7 @@ data class PaymentRequest(
         }
 
         // Decode the bounded JNI adapter record, not a blockchain/URI format.
-        private fun fromNative(record: ByteArray, network: Network): PaymentRequest {
+        internal fun fromNative(record: ByteArray, network: Network): PaymentRequest {
             check(record.size in 49..449 && record[0] == 1.toByte()) { "Invalid native payment result" }
             val flags = record[1].toInt()
             val buffer = ByteBuffer.wrap(record).order(ByteOrder.LITTLE_ENDIAN)

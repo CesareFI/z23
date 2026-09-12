@@ -1,0 +1,203 @@
+/* quirc -- QR-code recognition library
+ * Copyright (C) 2010-2012 Daniel Beer <dlbeer@gmail.com>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include "quirc_internal.h"
+
+const char *quirc_version(void)
+{
+	return "1.0";
+}
+
+int quirc_is_limited(const struct quirc *q)
+{
+	return q->limit_reached;
+}
+
+struct quirc *quirc_new(void)
+{
+	struct quirc *q = malloc(sizeof(*q));
+
+	if (!q)
+		return NULL;
+
+	memset(q, 0, sizeof(*q));
+	return q;
+}
+
+/* Camera frames can contain unintended private material. Do not retain owned
+ * pixels or geometry in freed allocations. Volatile stores resist removal. */
+void quirc_clear(void *buffer, size_t length)
+{
+	volatile uint8_t *bytes = buffer;
+	if (bytes == NULL)
+		return;
+	while (length != 0) {
+		*bytes++ = 0;
+		length--;
+	}
+}
+
+void quirc_destroy(struct quirc *q)
+{
+	size_t pixels = (size_t)q->w * (size_t)q->h;
+	quirc_clear(q->image, pixels);
+	free(q->image);
+	/* q->pixels may alias q->image when their type representation is of the
+	   same size, so we need to be careful here to avoid a double free */
+	if (!QUIRC_PIXEL_ALIAS_IMAGE) {
+		quirc_clear(q->pixels, pixels * sizeof(quirc_pixel_t));
+		free(q->pixels);
+	}
+	quirc_clear(q->flood_fill_vars, q->num_flood_fill_vars * sizeof(*q->flood_fill_vars));
+	free(q->flood_fill_vars);
+	quirc_clear(q, sizeof(*q));
+	free(q);
+}
+
+int quirc_resize(struct quirc *q, int w, int h)
+{
+	uint8_t		*image  = NULL;
+	quirc_pixel_t	*pixels = NULL;
+	size_t num_vars;
+	size_t vars_byte_size;
+	struct quirc_flood_fill_vars *vars = NULL;
+
+	/*
+	 * XXX: w and h should be size_t (or at least unsigned) as negatives
+	 * values would not make much sense. The downside is that it would break
+	 * both the API and ABI. Thus, at the moment, let's just do a sanity
+	 * check.
+	 */
+	if (w <= 0 || h <= 0 || w > QUIRC_MAX_IMAGE_DIMENSION ||
+	    h > QUIRC_MAX_IMAGE_DIMENSION)
+		goto fail;
+	if ((size_t)w > SIZE_MAX / (size_t)h)
+		goto fail;
+
+	/*
+	 * alloc a new buffer for q->image. We avoid realloc(3) because we want
+	 * on failure to be leave `q` in a consistant, unmodified state.
+	 */
+	image = calloc((size_t)w, (size_t)h);
+	if (!image)
+		goto fail;
+
+	/* compute the "old" (i.e. currently allocated) and the "new"
+	   (i.e. requested) image dimensions */
+	size_t olddim = (size_t)q->w * (size_t)q->h;
+	size_t newdim = (size_t)w * (size_t)h;
+	size_t min = (olddim < newdim ? olddim : newdim);
+
+	/*
+	 * copy the data into the new buffer, avoiding (a) to read beyond the
+	 * old buffer when the new size is greater and (b) to write beyond the
+	 * new buffer when the new size is smaller, hence the min computation.
+	 */
+	if (min != 0)
+		(void)memcpy(image, q->image, min);
+
+	/* alloc a new buffer for q->pixels if needed */
+	if (!QUIRC_PIXEL_ALIAS_IMAGE) {
+		if (newdim > SIZE_MAX / sizeof(quirc_pixel_t))
+			goto fail;
+		pixels = calloc(newdim, sizeof(quirc_pixel_t));
+		if (!pixels)
+			goto fail;
+	}
+
+	/*
+	 * alloc the work area for the flood filling logic.
+	 *
+	 * the size was chosen with the following assumptions and observations:
+	 *
+	 * - rings are the regions which requires the biggest work area.
+	 * - they consumes the most when they are rotated by about 45 degree.
+	 *   in that case, the necessary depth is about (2 * height_of_the_ring).
+	 * - the maximum height of rings would be about 1/3 of the image height.
+	 */
+
+	if ((size_t)h > SIZE_MAX / 2) {
+		goto fail; /* size_t overflow */
+	}
+	num_vars = (size_t)h * 2 / 3;
+	if (num_vars == 0) {
+		num_vars = 1;
+	}
+
+	if (num_vars > SIZE_MAX / sizeof(*vars)) {
+		goto fail; /* size_t overflow */
+	}
+	vars_byte_size = sizeof(*vars) * num_vars;
+	vars = malloc(vars_byte_size);
+	if (!vars)
+		goto fail;
+
+	/* alloc succeeded, update `q` with the new size and buffers */
+	quirc_clear(q->image, olddim);
+	if (!QUIRC_PIXEL_ALIAS_IMAGE)
+		quirc_clear(q->pixels, olddim * sizeof(quirc_pixel_t));
+	quirc_clear(q->flood_fill_vars, q->num_flood_fill_vars * sizeof(*vars));
+	q->w = w;
+	q->h = h;
+	free(q->image);
+	q->image = image;
+	if (!QUIRC_PIXEL_ALIAS_IMAGE) {
+		free(q->pixels);
+		q->pixels = pixels;
+	}
+	free(q->flood_fill_vars);
+	q->flood_fill_vars = vars;
+	q->num_flood_fill_vars = num_vars;
+
+	return 0;
+	/* NOTREACHED */
+fail:
+	/* image may contain a copy from the prior frame; the requested dimensions
+	 * were bounded before image allocation. No failed path retains that copy. */
+	if (image != NULL)
+		quirc_clear(image, (size_t)w * (size_t)h);
+	free(image);
+	free(pixels);
+	free(vars);
+
+	return -1;
+}
+
+int quirc_count(const struct quirc *q)
+{
+	return q->num_grids;
+}
+
+static const char *const error_table[] = {
+	[QUIRC_SUCCESS] = "Success",
+	[QUIRC_ERROR_INVALID_GRID_SIZE] = "Invalid grid size",
+	[QUIRC_ERROR_INVALID_VERSION] = "Invalid version",
+	[QUIRC_ERROR_FORMAT_ECC] = "Format data ECC failure",
+	[QUIRC_ERROR_DATA_ECC] = "ECC failure",
+	[QUIRC_ERROR_UNKNOWN_DATA_TYPE] = "Unknown data type",
+	[QUIRC_ERROR_DATA_OVERFLOW] = "Data overflow",
+	[QUIRC_ERROR_DATA_UNDERFLOW] = "Data underflow"
+};
+
+const char *quirc_strerror(quirc_decode_error_t err)
+{
+	if (err >= 0 && err < sizeof(error_table) / sizeof(error_table[0]))
+		return error_table[err];
+
+	return "Unknown error";
+}

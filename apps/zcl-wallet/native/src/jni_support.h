@@ -10,4 +10,5 @@ zcl_status zcl_jni_read_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
                               size_t capacity, size_t *length);
 jbyteArray zcl_jni_new_bytes(JNIEnv *env, const uint8_t *bytes, size_t length);
 zcl_status zcl_jni_network(jint value, zcl_network *network);
+jbyteArray zcl_jni_payment_record(JNIEnv *env, const zcl_payment_request *request);
 #endif

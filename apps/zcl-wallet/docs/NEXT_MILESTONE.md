@@ -26,10 +26,12 @@ permission for a software key or timed-authentication fallback.
 
 ## Complete phase 1
 
-Add a pinned C QR decoder with explicit frame/stride/dimension bounds, checked
-allocation ownership, adversarial-image fuzzing, camera permission/lifecycle
-tests and no secret scan/import route. Display decoded public requests for
-review; a scan must never authorize a transaction.
+The pinned C QR decoder and thin JNI adapter are present; see
+[`SCANNING_QR.md`](SCANNING_QR.md). Add the camera permission/lifecycle adapter
+with bounded frame ownership and queueing, and a public-request review screen.
+Qualify real-camera interoperability, denial, cancellation, backgrounding and
+process recreation. Retain no secret scan/import route; a scan must never
+authorize a transaction.
 
 Implement bounded read-only networking in C. Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic

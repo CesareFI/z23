@@ -6,7 +6,7 @@
 /* UI adapter packet v1: version, presence flags, 35 address bytes, LE amount,
  * two LE 16-bit UTF-8 lengths, then the label and message. No native struct
  * bytes or padding are serialized. This is not a Zclassic wire format. */
-static jbyteArray payment_record(JNIEnv *env, const zcl_payment_request *request)
+jbyteArray zcl_jni_payment_record(JNIEnv *env, const zcl_payment_request *request)
 {
     if (request->label_len > 200 || request->message_len > 200)
         return NULL;
@@ -40,5 +40,5 @@ Java_org_zclassic_wallet_core_NativeCore_parsePayment(JNIEnv *env, jclass type,
         return NULL;
     if (zcl_payment_parse(text, length, network, &request) != ZCL_OK)
         return NULL;
-    return payment_record(env, &request);
+    return zcl_jni_payment_record(env, &request);
 }
