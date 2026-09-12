@@ -37,6 +37,8 @@ chain/network identity, enforce deadlines and byte/count limits, and report
 offline/stale/unverified balances explicitly. Exercise malformed responses,
 disconnects, retry bounds, reorgs and address/network mismatches against local
 fixtures. No production node or mining runs on Worldstream.
+The pinned transport-reference findings and original beta6 network differences
+are recorded in [`READ_ONLY_SYNC.md`](READ_ONLY_SYNC.md).
 
 Receiving QR encoding is present. Device rendering and real-camera scan
 interoperability remain part of this gate; synthetic image decoding is not a

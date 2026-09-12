@@ -191,3 +191,18 @@ instrumentation test configurations, with no stale release/runtime entry.
 The authored diff passes whitespace checking. The two vendored QR source files
 retain upstream's whitespace unchanged and are verified by their SHA-256 pins;
 no source-format normalization or generic lint weakening is applied.
+
+2026-09-12 14:08 UTC: implementation checkpoint `66375d001` is committed locally.
+Read-only source research found that the historical Electrum Zclassic client
+advertises protocol 1.2, has a testnet header-verification early return and uses
+fixed difficulty tables at some mainnet transitions. `READ_ONLY_SYNC.md` pins
+the reference and records the original beta6 mainnet/testnet differences. This
+is compatibility research, not network or mobile-validation acceptance.
+
+The requested 20-hour window ends at 14:11 UTC. Host/tool delays prevented
+uninterrupted active coding. The repository contains a development foundation,
+not a completed or production-qualified wallet: hardware-positive custody,
+camera scanning, read-only sync, sending, shielded operation, mobile validation
+and messaging remain pending in the documented order. Only local development
+artifacts are retained; no node, miner, real funds, Rust installation, push or
+merge is part of this run.
