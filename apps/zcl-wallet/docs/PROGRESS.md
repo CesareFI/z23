@@ -629,3 +629,19 @@ both runner/host logs are in the balance-lifecycle files in the 48-hour scratch
 directory. This does not qualify positive custody or process-death recovery.
 Next make release fixture separation a repeatable build check, then continue
 process relaunch and transaction/history correctness work.
+
+2026-09-13 repeatable fixture isolation: Gradle now exposes checkFixtureIsolation
+and includes it in the app check lifecycle. It builds/inspects debug, test and
+unsigned release APKs, requires exactly one nonexported debug display host,
+rejects that host in release, and requires all twelve response frames only in
+the test APK. The regression injects exported-host and release-host manifest
+output; both must fail for their specific reason. APK bytes are never modified.
+
+The new task, both Android lints, shell syntax checks and architecture pass.
+All prior lifecycle source/APK hashes still match, so no unchanged emulator
+suite was repeated. Positive/negative reports and hashes are retained under
+fixture-isolation in the 48-hour scratch directory. A read-only upstream fetch
+advanced origin/main to a898cf77913f786e69c2e85b357004972d796976; the wallet
+worktree was 24 ahead/16 behind before this checkpoint. No upstream changes
+were integrated and no external push was made. Continue process relaunch and
+C transaction/history work; TLS and hardware qualification remain blocked.

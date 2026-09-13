@@ -27,6 +27,19 @@ publisher-signature verification. An offline build exercised their enforcement.
 Android hardware-backed custody requires device acceptance; host unit tests do
 not prove device security.
 
+Verify fixture separation in the built debug, test and unsigned release APKs:
+
+```sh
+./gradlew :android-app:checkFixtureIsolation
+```
+
+This task is also part of `:android-app:check`. It requires a nonexported debug
+display host, excludes that host from the release manifest, and keeps public
+response frames only in the test APK. Negative manifest fixtures must refuse;
+the APKs themselves are never modified. Reports and exact APK hashes are saved
+under `android-app/build/reports/fixture-isolation`. This does not run device
+instrumentation or qualify hardware custody.
+
 The C core currently covers checked amounts/addresses/payment URIs, English
 BIP39 recovery, BIP32/BIP44 Zclassic receiving keys, authenticated-record
 serialization, private storage that refuses overwrite, backup confirmation,
@@ -41,10 +54,12 @@ qualify physical hardware custody.
 
 QR encoding is C, with fixed buffers and a pinned provider. Android only draws
 the public modules. ZXing is a test oracle and is not an app runtime dependency.
-Balance is explicitly unavailable until read-only network sync is implemented.
+Balance is explicitly unavailable until a qualified network source is connected.
 Bounded C Electrum request/reply parsing, signed balance arithmetic and pinned
 genesis-header fixtures are present; [sync scope](docs/READ_ONLY_SYNC.md)
-records the remaining TLS, socket, state and Android integration work.
+records C/JNI state, bounded foreground display/timer lifetimes and the remaining
+TLS, endpoint/privacy and real-network integration work. Public fixtures qualify
+unverified/stale display and Activity recreation without opening a wallet.
 The [host TLS candidate is quarantined](docs/TLS_REVIEW.md) after a reproducible
 certificate-parser sanitizer finding; Android builds exclude its network entry
 points and provider translation units while that review remains open. Normal

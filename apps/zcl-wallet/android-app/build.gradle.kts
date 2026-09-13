@@ -51,6 +51,16 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
         include("libzclwallet_jni.so", "libzclwallet_jni.dylib")
     }).withPathSensitivity(PathSensitivity.RELATIVE)
 }
+val checkFixtureIsolation by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Verify built APK fixture separation and negative manifest regressions."
+    dependsOn("assembleDebug", "assembleDebugAndroidTest", "assembleRelease")
+    workingDir(rootProject.projectDir)
+    commandLine("bash", rootProject.file("tools/test-android-fixtures.sh"),
+        android.sdkDirectory.resolve("build-tools/${android.buildToolsVersion}/aapt2"),
+        layout.buildDirectory.dir("reports/fixture-isolation").get().asFile)
+}
+tasks.named("check") { dependsOn(checkFixtureIsolation) }
 dependencies {
     implementation(project(":wallet-core"))
     testImplementation(kotlin("test-junit"))
