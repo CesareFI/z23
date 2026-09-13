@@ -77,6 +77,11 @@ zcl_status zcl_address_from_hash(const uint8_t *hash, size_t hash_len,
                                  size_t text_capacity, size_t *text_len);
 zcl_status zcl_address_script(const zcl_address *address, uint8_t *script,
                               size_t script_capacity, size_t *script_len);
+/* Exact standard P2PKH/P2SH templates only. Script bytes contain no network;
+ * the caller must supply its already selected network. This recognizes the
+ * destination template, not a valid signature, redeem script or owned key. */
+zcl_status zcl_address_from_script(const uint8_t *script, size_t script_len,
+                                   zcl_network network, zcl_address *address);
 
 #define ZCL_PAYMENT_TEXT_MAX ((size_t)1024)
 #define ZCL_PAYMENT_FIELD_MAX ((size_t)200)

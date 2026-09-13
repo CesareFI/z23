@@ -807,3 +807,22 @@ isolation and architecture pass. No JNI change or unchanged device suite was
 rerun. Evidence/corpus/hash manifests are in transaction-* under the48-hour
 scratch directory. TLS stays blocked/excluded. Continue with checked synthetic
 funding, output classification, change ownership and exact-byte review binding.
+
+2026-09-13 previous-output and destination checks: C now extracts a previous
+output only after parsing bounded owned bytes, matching their transaction ID
+to the spending input and checking its output index. Amount/script substitution
+therefore refuses; inclusion, unspentness, maturity and ownership are still
+unqualified. Exact P2PKH/P2SH script decoding requires the caller's selected
+network and refuses unknown or alternative templates without changing output.
+
+All32 native ASan/UBSan/LSan tests pass, including both networks/kinds, every
+opcode/hash-byte value, fixture truncations/byte mutations, wrong hashes/indexes,
+independent projected output values and synthetic standard destinations.
+Clang/GCC analysis and351 functions in61 files at complexity<=10 pass. The
+expanded transaction/script/prevout fuzzer completed795,266 executions in91s
+without a finding and final hashes match. The58 core and24 app JVM tests, both
+ABI builds, lints, APK fixture isolation and architecture pass. No JNI/UI/device
+route was changed. Evidence and preserved corpus are in prevout-* under the
+48-hour scratch directory. Continue with bounded input/output totals, explicit
+fee limits and an exact transaction-ID assessment; no change/ownership or
+signing approval may be inferred from this data.

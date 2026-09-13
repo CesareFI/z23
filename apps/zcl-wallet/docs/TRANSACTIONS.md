@@ -90,6 +90,37 @@ Canaries and prefilled outputs check failure atomicity. The bounded fuzzer
 mutates both wire input and caller-owned unsigned-integer/byte objects, checks
 failure atomicity and requires canonical byte equality after successful parsing.
 
+## Previous outputs and destination templates
+
+`zcl_transaction_prevout` parses supplied previous-transaction bytes into owned
+storage, derives that exact canonical transaction ID, compares it to the input's
+display-order ID, then checks the uint32 output index before copying its value
+and script. A caller cannot substitute an amount, another transaction or a
+different indexed output while retaining the expected outpoint. The previous
+transaction must fit this codec's subset; larger, legacy and shielded funding
+transactions remain unsupported. Failure leaves the output unchanged.
+
+This comparison establishes byte/hash/index consistency. It does not establish
+that the previous transaction occurred on the selected chain, remains unspent,
+is mature, or belongs to the wallet. Inputs themselves must later be bound to
+an authenticated wallet review and qualified chain evidence. A remote balance,
+history row or arbitrary caller-provided outpoint cannot authorize spending.
+
+`zcl_address_from_script` recognizes only the exact P2PKH and P2SH templates,
+including their canonical direct20-byte push and exact final opcodes. Unknown,
+longer, shorter or alternative pushdata forms refuse without changing output.
+All20 hash bytes are opaque. The caller supplies the selected network because
+transaction scripts do not encode one; this API neither discovers a network nor
+proves key/redeem-script ownership. Existing address-to-script encoding remains
+the inverse for these two templates.
+
+Fixtures cover both networks/kinds, every opcode-byte substitution, every hash
+byte value, all shortened/extended lengths and failure canaries. Independent
+projected previous-output values/scripts, every fixture-byte mutation, wrong
+hashes, invalid indexes and synthetic standard destinations exercise extraction.
+The transaction fuzzer also checks script round trips and successful/mismatched
+previous-output extraction from each accepted transaction.
+
 ## Ordered continuation
 
 1. Checked synthetic funding/prevout amounts, output classification, change

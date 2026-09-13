@@ -99,3 +99,35 @@ zcl_status zcl_address_script(const zcl_address *address, uint8_t *script,
     *script_len = length;
     return ZCL_OK;
 }
+
+static size_t script_hash_offset(const uint8_t *script, size_t length, zcl_address_kind *kind)
+{
+    static const uint8_t p2pkh_start[3] = {0x76, 0xa9, 0x14};
+    static const uint8_t p2pkh_end[2] = {0x88, 0xac};
+    static const uint8_t p2sh_start[2] = {0xa9, 0x14};
+    if (length == 25 && memcmp(script, p2pkh_start, sizeof(p2pkh_start)) == 0
+        && memcmp(script + 23, p2pkh_end, sizeof(p2pkh_end)) == 0) {
+        *kind = ZCL_P2PKH;
+        return 3;
+    }
+    if (length == 23 && memcmp(script, p2sh_start, sizeof(p2sh_start)) == 0
+        && script[22] == 0x87) {
+        *kind = ZCL_P2SH;
+        return 2;
+    }
+    return 0;
+}
+
+zcl_status zcl_address_from_script(const uint8_t *script, size_t script_len,
+                                   zcl_network network, zcl_address *address)
+{
+    if (script == NULL || address == NULL) return ZCL_INVALID_ARGUMENT;
+    if (!supported_network(network)) return ZCL_UNSUPPORTED;
+    zcl_address candidate = {0};
+    candidate.network = network;
+    const size_t offset = script_hash_offset(script, script_len, &candidate.kind);
+    if (offset == 0) return ZCL_UNSUPPORTED;
+    memcpy(candidate.hash, script + offset, sizeof(candidate.hash));
+    *address = candidate;
+    return ZCL_OK;
+}

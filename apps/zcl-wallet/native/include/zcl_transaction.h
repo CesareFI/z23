@@ -59,6 +59,14 @@ zcl_status zcl_transaction_serialize(const zcl_transparent_tx *transaction,
  */
 zcl_status zcl_transaction_id(const zcl_transparent_tx *transaction,
                               uint8_t *txid, size_t capacity);
+/* Extract one previous output only after the supplied canonical transaction
+ * matches input.previous_txid and contains input.previous_index. The previous
+ * transaction must fit this codec's v4 transparent subset. Output is unchanged
+ * on failure. This proves byte/hash/index consistency only, NOT chain inclusion,
+ * unspentness, ownership, maturity or authorization. Scripts remain opaque. */
+zcl_status zcl_transaction_prevout(const zcl_tx_input *input,
+                                   const uint8_t *previous_wire, size_t previous_length,
+                                   zcl_tx_output *output);
 
 #ifdef __cplusplus
 }

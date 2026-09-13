@@ -92,7 +92,8 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
     src/electrum_identity.c src/electrum_header.c src/electrum_history.c
     src/sync.c src/sync_watch.c src/sync_owners.c
-    src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c)
+    src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c
+    src/transaction_prevout.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -350,6 +351,12 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_transaction COMMAND transaction_tests)
     set_tests_properties(wallet_transaction PROPERTIES TIMEOUT 15)
+    add_executable(prevout_tests tests/test_prevout.c)
+    target_link_libraries(prevout_tests PRIVATE zcl_wallet_core)
+    target_compile_options(prevout_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_prevout COMMAND prevout_tests)
+    set_tests_properties(wallet_prevout PROPERTIES TIMEOUT 15)
     add_executable(sync_history_tests tests/test_sync_history.c tests/sync_fixture.c)
     target_link_libraries(sync_history_tests PRIVATE zcl_wallet_core)
     target_compile_options(sync_history_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
