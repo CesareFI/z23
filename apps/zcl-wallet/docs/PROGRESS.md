@@ -1316,3 +1316,30 @@ Continue with fresh Android paired wallet/change-state creation, then exact
 review/change/authorization binding. Restoration cannot initialize a historical
 change counter from zero without discovery evidence. Existing records remain
 preserved, and hardware custody, TLS and BLAKE2 blockers stay unchanged.
+
+2026-09-13 continuation: finished the pending Android fresh paired-creation
+adapter on `agent/android-wallet-20260911`. CREATE persists authenticated change
+state before the encrypted wallet; RESTORE retains wallet-only persistence and
+UNLOCK cannot enter creation. JNI copies bounded inputs and clears its complete
+native entropy buffer on success, refusal and partial VM reads. Existing wallet,
+pending and orphan records cannot be overwritten or reset.
+
+Resumption found the previous session stopped after a fuzz assertion caused by
+truncating its trusted temporary-directory path. The original unsafe harness,
+crash input and public artifacts remain preserved; it was not rerun. The fixed
+harness passes a registered regression covering the reproducer, all 256 path
+selectors, a real paired write and six VM failure ordinals. A new ASan/UBSan/LSan
+campaign completed 18,490 executions in 121 seconds without a finding, and final
+source/binary hashes matched. The original 58 native tests and new regression
+pass; Clang/GCC analysis and all 457 production functions at complexity <=10 pass.
+The sandbox initially prevented LeakSanitizer process inspection; the full suite
+passed with that access restored and leak detection still enabled.
+
+Both Android ABIs, 113 JVM tests, debug/release lint, APK fixture isolation and
+architecture pass. Nine API-35 emulator tests pass for public GCM paired/wallet-only
+storage, native key handling, secret views and authentication timing (13.129s).
+These do not qualify physical hardware custody. Repository lint remains red on
+existing injected `.agents`/`.codex` root entries, its flag-registry selftest and
+16 over-complex wallet test functions. The latter are the next defensive cleanup;
+no threshold or baseline was weakened. Evidence is under the ignored
+`.cache/android-wallet/resume-20260913` directory.

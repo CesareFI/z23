@@ -33,6 +33,7 @@ internal object NativeCore {
     @JvmStatic external fun unpackWalletRecord(record: ByteArray): Array<ByteArray>?
     @JvmStatic external fun readWalletStorage(directory: ByteArray): ByteArray?
     @JvmStatic external fun createWalletStorage(directory: ByteArray, record: ByteArray): Int
+    @JvmStatic external fun createFreshWalletStorage(directory: ByteArray, record: ByteArray, entropy: ByteArray): Int
     @JvmStatic external fun promoteWalletStorage(directory: ByteArray, record: ByteArray): Int
     @JvmStatic external fun acceptWrappingPolicy(bits: Int, hardware: Int, flags: Int, seconds: Int, methods: Int): Boolean
     @JvmStatic external fun authenticationWindowMillis(): Long
