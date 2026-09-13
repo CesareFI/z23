@@ -6,10 +6,14 @@ class ReadOnlySyncFailure(val status: CoreStatus) : IllegalStateException("Read-
 /** Thin synchronous JNI owner. C owns protocol, bounds, clocks and balance
  * policy. This class has no network, persistence, key or signing capability.
  * Use on a bounded worker and close on foreground/source/address replacement.
- * Use one elapsed monotonic clock including sleep. Never save/restore snapshots
- * as current state. The four-slot native registry is shared by these owners.
+ * Supply one elapsed monotonic clock including sleep. It is sampled inside the
+ * owner's lock so concurrent callers cannot reorder pre-sampled timestamps.
+ * Never save/restore snapshots as current state. The four-slot native registry
+ * is shared by these owners.
  */
-class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray) : AutoCloseable {
+class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray,
+                   clock: () -> Long) : AutoCloseable {
+    private var clockSource: (() -> Long)? = clock
     private val source: ByteArray = sourceIdentity.also {
         require(it.size == 32) { "Invalid sync source identity size" }
     }.copyOf()
@@ -23,17 +27,17 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray) :
 
     /** The owner reference is immutable. Never dispatch this token on a new owner. */
     class Attempt internal constructor(private val owner: ReadOnlySync, private val token: Long) {
-        fun request(nowMillis: Long): ByteArray = owner.request(token, nowMillis)
+        fun request(): ByteArray = owner.request(token)
         /** frame must remain stable during this synchronous call. */
-        fun reply(nowMillis: Long, frame: ByteArray): CoreStatus = owner.reply(token, nowMillis, frame)
+        fun reply(frame: ByteArray): CoreStatus = owner.reply(token, frame)
         fun fail(reason: CoreStatus = CoreStatus.CANCELLED): CoreStatus = owner.fail(token, reason)
     }
 
     fun sourceIdentity(): ByteArray = source.copyOf()
 
-    @Synchronized fun begin(nowMillis: Long, timeoutMillis: Long = 30_000, firstId: Long = 1): Attempt {
+    @Synchronized fun begin(timeoutMillis: Long = 30_000, firstId: Long = 1): Attempt {
         requireOpen()
-        val token = positive(NativeCore.beginSyncAttempt(owner, nowMillis, timeoutMillis, firstId))
+        val token = positive(NativeCore.beginSyncAttempt(owner, now(), timeoutMillis, firstId))
         try {
             return Attempt(this, token)
         } catch (problem: Throwable) {
@@ -42,9 +46,9 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray) :
         }
     }
 
-    @Synchronized private fun request(token: Long, nowMillis: Long): ByteArray {
+    @Synchronized private fun request(token: Long): ByteArray {
         requireOpen()
-        val packet = checkNotNull(NativeCore.syncRequest(owner, token, nowMillis)) { "Native sync request failed" }
+        val packet = checkNotNull(NativeCore.syncRequest(owner, token, now())) { "Native sync request failed" }
         check(packet.isNotEmpty()) { "Empty native sync request" }
         requireSuccess(packet[0].toInt() and 0xff)
         try {
@@ -55,9 +59,9 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray) :
         }
     }
 
-    @Synchronized private fun reply(token: Long, nowMillis: Long, frame: ByteArray): CoreStatus {
+    @Synchronized private fun reply(token: Long, frame: ByteArray): CoreStatus {
         if (owner == 0L) return CoreStatus.CANCELLED
-        return CoreStatus.fromCode(NativeCore.syncReply(owner, token, nowMillis, frame))
+        return CoreStatus.fromCode(NativeCore.syncReply(owner, token, now(), frame))
     }
 
     @Synchronized private fun fail(token: Long, reason: CoreStatus): CoreStatus {
@@ -65,9 +69,9 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray) :
         return CoreStatus.fromCode(NativeCore.failSyncAttempt(owner, token, reason.code))
     }
 
-    @Synchronized fun snapshot(nowMillis: Long): Snapshot {
+    @Synchronized fun snapshot(): Snapshot {
         requireOpen()
-        val packet = checkNotNull(NativeCore.syncSnapshot(owner, nowMillis)) { "Native sync snapshot failed" }
+        val packet = checkNotNull(NativeCore.syncSnapshot(owner, now())) { "Native sync snapshot failed" }
         check(packet.size == 9) { "Invalid native sync snapshot size" }
         requireSuccess(packet[0].toInt())
         check(packet[1] in 0L..2L && packet[2] in 0L..1L) { "Invalid native sync snapshot flags" }
@@ -80,12 +84,15 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray) :
     @Synchronized override fun close() {
         val previous = owner
         owner = 0
+        clockSource = null
         if (previous != 0L) requireSuccess(NativeCore.closeSyncOwner(previous))
     }
 
     private fun requireOpen() {
         if (owner == 0L) throw ReadOnlySyncFailure(CoreStatus.CANCELLED)
     }
+
+    private fun now(): Long = checkNotNull(clockSource) { "Sync clock is unavailable" }.invoke()
 
     companion object {
         private fun requireSuccess(code: Int) {

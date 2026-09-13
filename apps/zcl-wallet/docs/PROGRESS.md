@@ -499,3 +499,18 @@ provider and quarantine tests pass, including all eight provider cases. The
 previous JNI fuzzer binary is byte-identical after reconfiguration. No production
 C behavior or application APK changes in this slice. Initial/final configure
 logs and command databases are preserved in the 48-hour scratch directory.
+
+2026-09-13 serialized elapsed clock: the managed sync owner now samples its
+required clock function after acquiring its monitor. Worker and display callers
+cannot reorder timestamps sampled before waiting for that monitor. Android must
+supply elapsedRealtime; C still owns deadline, freshness and rollback policy.
+Close drops the clock reference, and closed owners never invoke it. The raw JNI
+timestamp boundary fixtures are retained.
+
+All 52 core JVM/JNI and nine app JVM tests pass; the added case verifies sampling
+under the owner monitor and no sampling after close. Debug/test and unsigned
+release builds and both lints pass. The API-35 mainnet/testnet sync fixture passes
+in 1.746 seconds. The sync-clock logs and source/APK hashes in the 48-hour scratch
+directory identify this evidence. No native C changed; prior native safety
+evidence remains applicable. Next protect queued Android display updates from
+stale snapshots and closed foreground owners.

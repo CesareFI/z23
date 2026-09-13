@@ -232,6 +232,14 @@ finalizer, automatic retry or socket is introduced.
 Java timestamps, request IDs and tokens are checked before unsigned/narrowing
 conversion. A deadline must fit positive Java-long time. C remains authoritative
 for expiry, stale age, protocol transitions, balance bounds and publication.
+The managed owner now takes one elapsed-clock function and samples it inside
+its serialized operations. Android must supply `SystemClock.elapsedRealtime`;
+an uptime or wall-clock substitute is not valid. Taking a timestamp before
+waiting for the owner lock could otherwise deliver an older observation after
+a newer one from another thread. Raw timestamp JNI calls remain internal for
+the adapter and boundary fixtures. Closing drops the supplied clock reference,
+and a closed managed owner never invokes it. The clock function must be quick,
+nonblocking and monotonic; expiry/rollback decisions still belong to C.
 JNI request delivery publishes waiting state only after creating the returned
 array; allocation/region failure aborts the current attempt. Replies use one
 checked 16384-byte allocation which is cleared and freed on every path.

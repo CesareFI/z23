@@ -4,6 +4,7 @@ package org.zclassic.wallet.core
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -14,7 +15,8 @@ import kotlin.test.assertTrue
 
 class ReadOnlySyncTest {
     private val address = TransparentAddress.fromPublicKeyHash(ByteArray(20), Network.MAINNET)
-    private fun owner(): ReadOnlySync = ReadOnlySync(address, ByteArray(32) { 1 })
+    private val now = AtomicLong(0)
+    private fun owner(): ReadOnlySync = ReadOnlySync(address, ByteArray(32) { 1 }, now::get)
     private fun failure(status: CoreStatus, operation: () -> Unit) {
         assertEquals(status, assertFailsWith<ReadOnlySyncFailure> { operation() }.status)
     }
@@ -27,14 +29,16 @@ class ReadOnlySyncTest {
     @Test fun completeFixturePublishesSignedDeltaAndBecomesStaleAtExactBoundary() {
         for (network in Network.entries) {
             val receiving = TransparentAddress.fromPublicKeyHash(ByteArray(20), network)
-            ReadOnlySync(receiving, ByteArray(32) { 1 }).use { sync ->
-                val attempt = sync.begin(100, 100)
+            ReadOnlySync(receiving, ByteArray(32) { 1 }, now::get).use { sync ->
+                now.set(100)
+                val attempt = sync.begin(100)
                 for (step in 1..6) {
-                    assertNull(sync.snapshot(100 + step.toLong()).report)
-                    assertTrue(attempt.request(100 + step.toLong()).last() == '\n'.code.toByte())
-                    assertEquals(CoreStatus.OK, attempt.reply(100 + step.toLong(), fixture(network, step)))
+                    now.set(100 + step.toLong())
+                    assertNull(sync.snapshot().report)
+                    assertTrue(attempt.request().last() == '\n'.code.toByte())
+                    assertEquals(CoreStatus.OK, attempt.reply(fixture(network, step)))
                 }
-                val complete = sync.snapshot(106)
+                val complete = sync.snapshot()
                 assertEquals(ReadOnlySync.Freshness.UNVERIFIED, complete.freshness)
                 assertFalse(complete.refreshing)
                 val report = checkNotNull(complete.report)
@@ -42,81 +46,95 @@ class ReadOnlySyncTest {
                 assertEquals(-7L, report.pendingDelta)
                 assertEquals(993L, report.total.value)
                 assertEquals(0L, report.height)
-                assertEquals(ReadOnlySync.Freshness.UNVERIFIED, sync.snapshot(60105).freshness)
-                assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot(60106).freshness)
-                val refresh = sync.begin(60106, 10)
+                now.set(60105)
+                assertEquals(ReadOnlySync.Freshness.UNVERIFIED, sync.snapshot().freshness)
+                now.set(60106)
+                assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot().freshness)
+                val refresh = sync.begin(10)
                 assertEquals(CoreStatus.IO_FAILURE, refresh.fail(CoreStatus.IO_FAILURE))
-                assertEquals(report, sync.snapshot(60106).report)
-                assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot(60106).freshness)
-                assertNull(sync.snapshot(60105).report) // Clock rollback drops the cached report.
+                assertEquals(report, sync.snapshot().report)
+                assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot().freshness)
+                now.set(60105)
+                assertNull(sync.snapshot().report) // Clock rollback drops the cached report.
             }
-            ReadOnlySync(receiving, ByteArray(32) { 1 }).use { assertNull(it.snapshot(0).report) }
+            now.set(0)
+            ReadOnlySync(receiving, ByteArray(32) { 1 }, now::get).use { assertNull(it.snapshot().report) }
         }
     }
 
     @Test fun initialStateIsUnavailableAndClosedAttemptsCannotReachReplacement() {
         val first = owner()
-        val oldAttempt = first.begin(0, 100)
+        val oldAttempt = first.begin(100)
         first.close()
         first.close()
         owner().use { second ->
-            val attempt = second.begin(0, 100)
-            failure(CoreStatus.CANCELLED) { oldAttempt.request(0) }
-            assertEquals(CoreStatus.CANCELLED, oldAttempt.reply(0, byteArrayOf()))
+            val attempt = second.begin(100)
+            failure(CoreStatus.CANCELLED) { oldAttempt.request() }
+            assertEquals(CoreStatus.CANCELLED, oldAttempt.reply(byteArrayOf()))
             assertEquals(CoreStatus.CANCELLED, oldAttempt.fail())
-            val snapshot = second.snapshot(0)
+            val snapshot = second.snapshot()
             assertEquals(ReadOnlySync.Freshness.UNAVAILABLE, snapshot.freshness)
             assertNull(snapshot.report)
             assertTrue(snapshot.refreshing)
             assertEquals(CoreStatus.OK, snapshot.lastFault)
-            assertTrue(attempt.request(0).toString(Charsets.US_ASCII).contains("server.version"))
+            assertTrue(attempt.request().toString(Charsets.US_ASCII).contains("server.version"))
         }
     }
 
     @Test fun deadlinesAndWrongRepliesFailClosedAndExplicitRetryWorks() = owner().use { sync ->
-        val timed = sync.begin(100, 10)
-        timed.request(109)
-        assertEquals(CoreStatus.TIMED_OUT, timed.reply(110,
+        now.set(100)
+        val timed = sync.begin(10)
+        now.set(109)
+        timed.request()
+        now.set(110)
+        assertEquals(CoreStatus.TIMED_OUT, timed.reply(
             "{\"id\":1,\"result\":[\"fixture\",\"1.2\"]}".toByteArray()))
-        assertFalse(sync.snapshot(110).refreshing)
-        assertNull(sync.snapshot(110).report)
-        val retry = sync.begin(110, 10)
-        failure(CoreStatus.CANCELLED) { timed.request(Long.MAX_VALUE) }
-        retry.request(110)
-        assertEquals(CoreStatus.INVALID_ENCODING, retry.reply(111,
+        assertFalse(sync.snapshot().refreshing)
+        assertNull(sync.snapshot().report)
+        val retry = sync.begin(10)
+        now.set(Long.MAX_VALUE)
+        failure(CoreStatus.CANCELLED) { timed.request() }
+        now.set(110)
+        retry.request()
+        now.set(111)
+        assertEquals(CoreStatus.INVALID_ENCODING, retry.reply(
             "{\"id\":2,\"result\":[\"fixture\",\"1.2\"]}".toByteArray()))
-        assertEquals(CoreStatus.INVALID_ENCODING, sync.snapshot(111).lastFault)
+        assertEquals(CoreStatus.INVALID_ENCODING, sync.snapshot().lastFault)
         assertEquals(CoreStatus.CANCELLED, retry.fail())
-        val next = sync.begin(111, 10)
-        next.request(111)
-        assertEquals(CoreStatus.OK, next.reply(111,
+        val next = sync.begin(10)
+        next.request()
+        assertEquals(CoreStatus.OK, next.reply(
             "{\"id\":1,\"result\":[\"fixture\",\"1.2\"]}".toByteArray()))
-        assertTrue(next.request(111).toString(Charsets.US_ASCII).contains("server.features"))
+        assertTrue(next.request().toString(Charsets.US_ASCII).contains("server.features"))
     }
 
     @Test fun oversizedRepliesAbortButDoNotExposePartialBalance() = owner().use { sync ->
-        val attempt = sync.begin(0)
-        attempt.request(0)
-        assertEquals(CoreStatus.OUT_OF_RANGE, attempt.reply(0, ByteArray(16385)))
-        val snapshot = sync.snapshot(0)
+        val attempt = sync.begin()
+        attempt.request()
+        assertEquals(CoreStatus.OUT_OF_RANGE, attempt.reply(ByteArray(16385)))
+        val snapshot = sync.snapshot()
         assertEquals(CoreStatus.OUT_OF_RANGE, snapshot.lastFault)
         assertNull(snapshot.report)
         assertFalse(snapshot.refreshing)
     }
 
     @Test fun signedBoundsAndUnknownStatusesCannotEnterCState() = owner().use { sync ->
-        for (now in listOf(-1L, Long.MIN_VALUE, Long.MAX_VALUE))
-            failure(CoreStatus.OUT_OF_RANGE) { sync.begin(now, 1) }
+        for (time in listOf(-1L, Long.MIN_VALUE, Long.MAX_VALUE)) {
+            now.set(time)
+            failure(CoreStatus.OUT_OF_RANGE) { sync.begin(1) }
+        }
+        now.set(0)
         for (timeout in listOf(-1L, 0L, 30001L, Long.MAX_VALUE))
-            failure(CoreStatus.OUT_OF_RANGE) { sync.begin(0, timeout) }
+            failure(CoreStatus.OUT_OF_RANGE) { sync.begin(timeout) }
         for (id in listOf(-1L, 0L, 4294967291L, Long.MAX_VALUE))
-            failure(CoreStatus.OUT_OF_RANGE) { sync.begin(0, 1, id) }
-        val attempt = sync.begin(0, 1, 4294967290L)
+            failure(CoreStatus.OUT_OF_RANGE) { sync.begin(1, id) }
+        val attempt = sync.begin(1, 4294967290L)
         assertEquals(CoreStatus.INVALID_ARGUMENT, attempt.fail(CoreStatus.OK))
-        assertTrue(sync.snapshot(0).refreshing)
-        assertEquals(CoreStatus.OUT_OF_RANGE, attempt.reply(-1, byteArrayOf()))
+        assertTrue(sync.snapshot().refreshing)
+        now.set(-1)
+        assertEquals(CoreStatus.OUT_OF_RANGE, attempt.reply(byteArrayOf()))
         assertEquals(CoreStatus.CANCELLED, attempt.fail())
-        failure(CoreStatus.OUT_OF_RANGE) { sync.snapshot(-1) }
+        failure(CoreStatus.OUT_OF_RANGE) { sync.snapshot() }
     }
 
     @Test fun nativeHandlesHaveBoundsAndFullRegistryRecoversAfterClose() {
@@ -143,12 +161,12 @@ class ReadOnlySyncTest {
         } finally {
             for (id in handles) assertEquals(CoreStatus.OK.code, NativeCore.closeSyncOwner(id))
         }
-        owner().use { assertNull(it.snapshot(0).report) }
+        owner().use { assertNull(it.snapshot().report) }
     }
 
     @Test fun sourceIdentityIsCopiedAtEachManagedBoundary() {
         val source = ByteArray(32) { 1 }
-        ReadOnlySync(address, source).use { sync ->
+        ReadOnlySync(address, source, now::get).use { sync ->
             source.fill(2)
             val returned = sync.sourceIdentity()
             returned.fill(3)
@@ -158,7 +176,8 @@ class ReadOnlySyncTest {
 
     @Test fun closeAndConcurrentCallbacksSerializeWithoutNativePointerExposure() {
         val sync = owner()
-        val attempt = sync.begin(0, 100)
+        val attempt = sync.begin(100)
+        now.set(1)
         val start = CountDownLatch(1)
         val done = CountDownLatch(2)
         val problem = AtomicReference<Throwable>()
@@ -167,7 +186,7 @@ class ReadOnlySyncTest {
                 try {
                     check(start.await(5, TimeUnit.SECONDS))
                     repeat(128) {
-                        val result = attempt.reply(1, "{}".toByteArray())
+                        val result = attempt.reply("{}".toByteArray())
                         check(result == CoreStatus.INVALID_ENCODING || result == CoreStatus.CANCELLED)
                     }
                 } catch (failure: Throwable) { problem.set(failure) }
@@ -184,7 +203,27 @@ class ReadOnlySyncTest {
             workers.forEach { it.join(5000) }
             sync.close()
         }
-        owner().use { assertTrue(it.begin(0).request(0).isNotEmpty()) }
+        owner().use { assertTrue(it.begin().request().isNotEmpty()) }
+    }
+
+    @Test fun liveOperationsSampleClockInsideOwnerSerialization() {
+        val ticks = AtomicLong(0)
+        lateinit var sync: ReadOnlySync
+        sync = ReadOnlySync(address, ByteArray(32)) {
+            assertTrue(Thread.holdsLock(sync), "Clock sampling must follow owner-lock acquisition")
+            ticks.incrementAndGet()
+        }
+        sync.use {
+            assertNull(it.snapshot().report)
+            val attempt = it.begin()
+            assertTrue(attempt.request().isNotEmpty())
+            assertEquals(CoreStatus.OK, attempt.reply(fixture(Network.MAINNET, 1)))
+            assertEquals(CoreStatus.OK, it.snapshot().lastFault)
+            assertTrue(ticks.get() >= 5)
+        }
+        val sampled = ticks.get()
+        failure(CoreStatus.CANCELLED) { sync.snapshot() }
+        assertEquals(sampled, ticks.get()) // Closed owners do not consult the clock.
     }
 
     @Test fun directJniCallbacksCannotFindAClosedOwnerDuringSlotReuse() {
