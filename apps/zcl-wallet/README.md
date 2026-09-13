@@ -50,8 +50,10 @@ debug/release APK alignment and both packaged libraries' ELF LOAD segments:
 This also runs in `:android-app:check`. It requires 16 KiB-compatible segment
 alignment and file/virtual-address offsets, uses the SDK's APK alignment check,
 and refuses an unexpected native-library inventory. Reports and APK hashes are
-saved under `android-app/build/reports/native-alignment`. This is artifact
-verification; runtime acceptance on a 16 KiB device remains separate.
+saved under `android-app/build/reports/native-alignment`. Eleven public-fixture
+JNI/storage/QR tests also pass on an API35 x86_64 16 KiB emulator; the preserved
+4 KiB library fails to load there. This does not qualify arm64 hardware or
+hardware-authenticated custody. Runtime details are in the work log.
 
 The C core currently covers checked amounts/addresses/payment URIs, English
 BIP39 recovery, BIP32/BIP44 Zclassic receiving keys, authenticated-record

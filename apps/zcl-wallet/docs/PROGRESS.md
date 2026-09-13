@@ -1477,3 +1477,22 @@ failures. Evidence is under `.cache/android-wallet/page-alignment-20260914`;
 the gate also saves exact APK hashes and ELF reports. This establishes build
 layout plus runtime on the existing 4 KiB emulator, not a 16 KiB device test,
 hardware custody, physical-camera acceptance or consensus qualification.
+
+2026-09-14 native page-size runtime continuation: a fresh official API35
+Google APIs 16 KiB x86_64 emulator reports PAGE_SIZE=16384. The preserved
+pre-alignment APK installs but its public mnemonic test fails loading the JNI
+library with an UnsatisfiedLinkError. The aligned APK passes all eleven public
+key, storage/GCM, amount-presentation, QR and isolated-Binder tests in 49.146
+seconds. The test APK, fixtures and assertions are unchanged between the
+before/fixed runs. Exact APK hashes and device fingerprint are retained under
+`.cache/android-wallet/page-alignment-20260914/device16k-*`.
+
+The first fixed run passed both key tests before Android killed instrumentation
+for a startup ANR; exit-info records reason=6, not a native crash. On this
+disposable profile only, disabling repeatedly failing Google services/search
+and Bluetooth through normal package-manager controls allowed the full rerun.
+The attempt to disable page-size compatibility through shell properties was
+refused; no property bypass was used or claimed. The old-library failure and
+fixed-library success are observed runtime evidence, not a claim about a forced
+compatibility setting. This qualifies x86_64 emulator JNI behavior at 16 KiB;
+arm64 hardware, hardware-authenticated custody and physical optics remain open.
