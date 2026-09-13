@@ -87,7 +87,7 @@ add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
-    src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c
+    src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
     src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
     src/electrum_identity.c src/electrum_header.c src/electrum_history.c
@@ -273,6 +273,11 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_mnemonic PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     target_link_options(fuzz_mnemonic PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_wallet_change tests/fuzz_wallet_change.c)
+    target_link_libraries(fuzz_wallet_change PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_wallet_change PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+    target_link_options(fuzz_wallet_change PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_wallet_record tests/fuzz_wallet_record.c)
     target_link_libraries(fuzz_wallet_record PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_wallet_record PRIVATE -fsanitize=fuzzer,address,undefined
@@ -556,6 +561,12 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_change COMMAND change_tests)
     set_tests_properties(wallet_change PROPERTIES TIMEOUT 30)
+    add_executable(wallet_change_tests tests/test_wallet_change.c)
+    target_link_libraries(wallet_change_tests PRIVATE zcl_wallet_core)
+    target_compile_options(wallet_change_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_recovered_change COMMAND wallet_change_tests)
+    set_tests_properties(wallet_recovered_change PROPERTIES TIMEOUT 30)
     add_executable(wallet_record_tests tests/test_wallet_record.c)
     target_link_libraries(wallet_record_tests PRIVATE zcl_wallet_core)
     target_compile_options(wallet_record_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)

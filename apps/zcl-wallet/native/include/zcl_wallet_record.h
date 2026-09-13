@@ -48,6 +48,21 @@ zcl_status zcl_wallet_recovered_address(const uint8_t *header, size_t header_len
                                        const uint8_t *blinding, size_t blinding_len,
                                        uint8_t *address, size_t capacity);
 
+#define ZCL_WALLET_CHANGE_BLINDING_BYTES ((size_t)64)
+/* Platform MUST first authenticate this exact header/entropy with GCM.
+ * Verify the v1 recovery profile and external0 wallet address, then derive
+ * internal chain1/index on that same network/account. Index must be <2^31.
+ * blinding contains two independent32-byte OS-random values, one for each
+ * derivation; fixed values are test-only. The caller owns/clears secret spans.
+ * Writes exactly35 public ASCII bytes, no terminator, only on success.
+ * Stable input/output spans must not overlap; no pointer/secret is retained.
+ * This does not authenticate GCM itself, reserve an index, classify an output
+ * as change, prove chain funding, or authorize any transaction/signature. */
+zcl_status zcl_wallet_recovered_change(const uint8_t *header, size_t header_len,
+                                      const uint8_t *entropy, size_t entropy_len,
+                                      uint32_t index, const uint8_t *blinding, size_t blinding_len,
+                                      uint8_t *address, size_t capacity);
+
 #ifdef __cplusplus
 }
 #endif

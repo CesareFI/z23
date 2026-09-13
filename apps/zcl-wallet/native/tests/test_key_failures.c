@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "secret_hash.h"
+#include "zcl_wallet_record.h"
 
 #include <secp256k1_preallocated.h>
 #include <stdio.h>
@@ -184,9 +185,36 @@ static int address_failures(void)
     return 0;
 }
 
+static int recovered_change_failures(void)
+{
+    uint8_t entropy[16] = {0}, blinding[64] = {1}, header[80], output[35], before[35];
+    blinding[32] = 2;
+    mode = NORMAL;
+    CHECK(zcl_wallet_header_create(entropy, sizeof(entropy), ZCL_MAINNET, blinding, 32,
+        header, sizeof(header)) == ZCL_OK);
+    memset(output, 0xa5, sizeof(output)); memcpy(before, output, sizeof(output));
+    for (mode = NO_MEMORY; mode <= NO_BLINDING; mode = (failure_mode)((int)mode + 1)) {
+        const zcl_status expected = mode == NO_MEMORY ? ZCL_RESOURCE_EXHAUSTED : ZCL_CRYPTO_FAILURE;
+        CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, sizeof(entropy), 17,
+            blinding, sizeof(blinding), output, sizeof(output)) == expected);
+        CHECK(memcmp(output, before, sizeof(output)) == 0 && owned == NULL && allocations == releases);
+    }
+    mode = CHILD_FAILURE;
+    for (fail_child = 1; fail_child <= 10; ++fail_child) {
+        child_calls = 0;
+        CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, sizeof(entropy), UINT32_C(0x7fffffff),
+            blinding, sizeof(blinding), output, sizeof(output)) == ZCL_INVALID_CHILD);
+        CHECK(child_calls == fail_child);
+        CHECK(memcmp(output, before, sizeof(output)) == 0 && owned == NULL && allocations == releases);
+    }
+    mode = NORMAL;
+    zcl_secure_zero(entropy, sizeof(entropy));
+    return 0;
+}
+
 int main(void)
 {
-    if (context_failures() || derivation_failures() || address_failures())
+    if (context_failures() || derivation_failures() || address_failures() || recovered_change_failures())
         return 1;
     puts("key failures: allocation, context, blinding and invalid BIP32 results handled");
     return 0;

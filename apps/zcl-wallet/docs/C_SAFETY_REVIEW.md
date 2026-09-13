@@ -755,3 +755,26 @@ sanitizer memory violation. The exact failing fixture/source hashes are kept.
 Android's [JNI exception contract](https://developer.android.com/ndk/guides/jni-tips#exceptions)
 permits exception inspection and selected cleanup calls while an exception is
 pending; array access/allocation/publication calls are outside that set.
+
+## Recovered-wallet internal address binding — 2026-09-13
+
+Scope: public internal address derivation after the existing recovered-header/
+entropy check. GCM/hardware authorization remains a platform precondition.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | All header/entropy/blinding spans carry lengths. NULLs, exact64-byte blinding, index and35-byte output capacity validate first. Existing header parser requires exactly80 bytes before field reads; recovery checks entropy length before derivation. The only new span split is offset32/length32 inside the checked64-byte blinding span. Both intermediate addresses are fixed35-byte arrays. Final output copies exactly35 bytes after every check succeeds. |
+| Integer overflow/underflow; signed/unsigned conversions | No new money/count arithmetic, allocation math or signed conversion. uint32 index must be below0x80000000; it passes unchanged into existing derivation. Unknown network/profile/entropy sizes fail in existing header validation. SIZE_MAX lengths refuse before indexing. No automatic next-index calculation or invalid-child retry. |
+| Use-after-free; double-free; leaks; dangling pointers | The wrapper allocates no heap and retains no pointer. Existing derivation owns and clears/frees one bounded EC context per call; the wallet check completes cleanup before internal derivation starts. Fault tests inspect cleared context storage and balanced allocation/release on failures at all ten child steps across both derivations. |
+| NULL dereferences; uninitialized memory | Required pointers check before use. Parsed info and both public address candidates initialize to zero. Header validation and recovered-wallet verification must succeed before internal derivation; the result length must equal35 before publication. Failure never exposes partial candidate or prior caller output. |
+| Pointer arithmetic; format strings | One fixed checked blinding offset32 is introduced. Output is a fixed-size memcpy; no cursor, pointer subtraction, unaligned load, variadic format, user data diagnostic or secret logging. Input/output spans must stay nonoverlapping and stable for the synchronous call. |
+| Stack usage; allocation limits; resource exhaustion | Adds one small public info structure and two35-byte public address arrays above existing bounded derivation frames. All414 production functions in72files pass complexity<=10 and4096-byte frame checks, including both Android ABIs. Two existing full derivations are deliberate: no retained seed/key cache is introduced. No recursion/VLA, network, retry loop, worker, new native allocation or persistent state. |
+| Malformed serialization and failure atomicity | Every header truncation/single-bit mutation, wrong wallet/entropy, invalid length/index/blinding/capacity and NULL input is covered. The network/account/profile comes only from the checked header. Both networks, all five entropy widths and index0/1/2^31-1 produce the same canonical P2PKH result as the existing internal derivation. Output canaries and the whole prefilled result remain unchanged on refusal. |
+| Races and ownership | Stateless, with no new callback/ID/mutex/registry. Caller owns stable header/entropy/blinding spans; this API cannot authenticate concurrent mutation or infer that platform GCM succeeded. No receive/change index is advanced, reserved, restored or persisted by deriving an address. |
+| Secret leakage and custody | Only a public address is returned. The wrapper adds no secret copy; existing mnemonic/seed/private child/context cleanup is reused without modification. Independent32-byte blinding halves belong to the caller and require cleanup with entropy. GCM and per-use hardware enforcement are unchanged. Success does not establish source inclusion/unspentness, output classification, user consent or signing authority. TLS/BLAKE2 findings remain isolated. |
+
+The fuzzer includes a complete valid recovered-wallet derivation in each input,
+then altered and raw headers plus arbitrary bounded metadata, comparing public
+results to the existing internal derivation and checking input/output stability.
+These fixtures qualify C binding and cleanup; they do not qualify physical
+hardware custody, mutable-index recovery or a sending flow.

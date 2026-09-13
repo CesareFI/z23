@@ -1125,3 +1125,27 @@ The baseline is an injected JNI-contract failure, not a production crash or
 sanitizer memory finding. No exception is suppressed, no hardware custody gate
 changes, and VM/GC copies are not claimed physically erased. Resume authenticated
 key/change ownership and durable index recovery after this focused fix.
+
+2026-09-13 recovered-wallet internal address binding: a small C wrapper now
+requires the existing v1 header/recovered-entropy match before deriving the
+explicit internal-chain index on that same network/account. Two independent
+32-byte blinding values serve the separate wallet-check/change derivations.
+The wrapper returns only35 public address bytes and publishes nothing on any
+failure. It adds no private-key output, mutable record field, JNI entry, index
+reservation, output classification or transaction authorization.
+
+All42 native ASan/UBSan/LSan cases, Clang/GCC analysis and414 functions in72files
+at complexity<=10 pass. Deterministic tests cover both networks/all five entropy
+widths/index0,1,2^31-1; header truncations/bit edits; wrong-wallet entropy;
+length/NULL/capacity/index bounds; and full output canaries. Context/allocation
+faults and invalid children at every one of the ten derivation steps leave no
+partial output or owned context. Bounded full-binding/raw-header fuzz completed
+869 executions in91s without a finding, with final source/binary hashes matching.
+Each fuzz input completes valid wallet and change derivations before mutations.
+
+Both Android ABIs,72 core/35 app JVM gates, both lints, fixture isolation and
+architecture pass. No unchanged device route was rerun for this C-only API.
+Evidence is in wallet-change-* under the48-hour scratch directory. Platform GCM
+and qualified per-use hardware remain prerequisites for a real recovered-wallet
+claim. Continue with durable index reservation/restart recovery and explicit
+transaction authorization binding; seed-restoration discovery remains required.

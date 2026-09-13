@@ -41,6 +41,30 @@ control. Version 1 creates one immutable wallet record and has no mutable addres
 index or transaction state to roll back. Future mutable state needs its own
 rollback and recovery design.
 
+## Recovered-wallet internal address binding
+
+`zcl_wallet_recovered_change` checks the same version1 header/recovered entropy
+agreement as receiving-address recovery before deriving an internal chain1
+address at the explicitly requested index. The selected network/account/profile
+comes from that checked header. A caller cannot supply a separate network or
+use another wallet's header with the recovered entropy. The result is exactly
+35 public ASCII bytes, without a terminator, and remains unchanged on failure.
+
+The platform must authenticate GCM with the exact header and ciphertext before
+calling this function. C establishes recovery-profile consistency; it cannot
+observe or substitute for hardware authentication. The caller supplies two
+independent32-byte OS-random blinding values in one64-byte span, one for the
+wallet check and one for internal derivation. Both operations reuse existing
+bounded key derivation/cleanup. Secret spans remain caller-owned and must clear
+after use; no private key, seed, pointer or context is returned or retained.
+
+Only indexes below2^31 are accepted, and invalid children refuse without an
+implicit retry. This adds no mutable record field or JNI entry. It does not
+reserve an index, classify a transaction output as change, establish funding,
+or grant transaction authorization. Durable index reservation, cancellation
+and seed-restoration discovery remain separate requirements before using a
+change output in a sending flow. The immutable version1 wallet is unchanged.
+
 ## Storage implementation
 
 `zcl_storage_*` is the Android/Linux C filesystem adapter. It accepts an absolute
