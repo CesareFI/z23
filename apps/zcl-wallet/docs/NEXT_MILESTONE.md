@@ -65,8 +65,10 @@ and independent hash fixtures; see [transaction scope](TRANSACTIONS.md).
 Hash-matched previous outputs and explicit bounded fee/destination assessment
 now have synthetic tests. Public change derivation has independent OpenSSL and
 cleanup evidence; index reservation/recovery and ownership remain unfinished.
-Continue with immutable review/key ownership and original branch-specific signature hashes
-before exposing any send action.
+Immutable unsigned review lifetime now has cancellation, deadline, ownership
+and failure-atomicity fixtures. Complete its input/outpoint/lock/expiry snapshot
+context and thin JNI projection, then authenticated key ownership and original
+branch-specific signature hashes before exposing any send action.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report

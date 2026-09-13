@@ -880,3 +880,26 @@ hashed; see [BLAKE2_REVIEW.md](BLAKE2_REVIEW.md). TLS evidence/quarantine is
 untouched. A read-only fetch still shows origin/main a898cf779,35ahead/16behind;
 no integration occurred. Move immediately to immutable transaction-review
 lifetime work, without making either provider review the active investigation.
+
+2026-09-13 immutable unsigned review lifetime: one caller-owned C owner now
+retains canonical unsigned bytes, exact assessment/network/fee policy and a
+nonreused positive ID. Preparation publishes only after complete validation.
+Copied snapshots and wire buffers cannot mutate the retained draft. Stale IDs
+cannot sample its clock; rollback and inclusive90s expiry clear it. Reads never
+extend its deadline, and clear/cancel preserves issuance. This is public review
+data with no consent, ownership, chain, JNI, signing or broadcast authority.
+
+The optimized arm64 build caught a5344-byte frame after inlining preparation.
+Separating preparation into its own C unit fixed it while retaining the4096-byte
+warning limit. The initial failure log and both bounded fuzz corpora remain
+preserved. Final35 native ASan/UBSan/LSan tests, Clang/GCC analysis and366
+functions in64files at complexity<=10 pass. Final sequence fuzzing completed
+152,143 executions in91s without a finding; source/binary hashes match.
+Measured host owner3024bytes/snapshot1064bytes; no heap was added.
+
+The58 core JVM tests pass; unchanged24 app JVM cases remain up-to-date and
+passing. Both ABI builds, both lints, APK isolation and architecture pass. No
+JNI/UI/device path changed, so no unchanged device suite was rerun. Evidence
+is in review-* and review-final-* under the48-hour scratch directory. Continue
+with exact outpoint/sequence/lock/expiry snapshot context before the thin JNI
+projection; no finality or current-chain validity may be inferred from fields.

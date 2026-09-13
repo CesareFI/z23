@@ -160,6 +160,52 @@ and truncate every byte of both funding fixtures. A dedicated bounded fuzzer
 uses fixed public funding and dynamically matched previous transactions to
 exercise complete assessments, fee limits, row totals and failure atomicity.
 
+## Immutable unsigned review lifetime
+
+`zcl_review_owner` retains one prepared unsigned draft, its exact canonical
+bytes, selected network and assessed absolute fee policy. Opening parses an
+owned transaction, rejects every nonempty input script, completes the previous
+output assessment, then serializes that same owned object before publishing a
+positive review ID. Caller mutation after opening cannot change the draft.
+Returned snapshots and byte buffers are independent copies. A read exposes
+review data only; it is not consent or authority to sign or broadcast.
+
+Initialize the caller-owned state once with `{0}` per enclosing adapter
+lifetime and serialize every operation under the same lock. No borrowed
+pointer, native heap or background worker survives a call. IDs increase through
+INT64_MAX without reuse, including across clear/cancel; exhaustion refuses.
+Never copy/reset an owner while callbacks can retain its IDs. A future JNI
+adapter must retain its enclosing owner identity as well as the review ID.
+
+The fixed lifetime is90,000ms from a trusted elapsed-monotonic opening time.
+An opening that would overflow its uint64 deadline refuses. Every snapshot or
+byte read checks identity before time: a late callback cannot read or expire a
+replacement review. A valid ID expires at the deadline, and clock rollback
+cancels it. Neither reads nor failed small-buffer copies extend the deadline.
+Returned remaining time is only a scheduling hint; delivery must read again.
+
+Active state returns BUSY even if its deadline has elapsed, until a read
+observes expiry or the caller explicitly cancels/clears. Failed preparation
+leaves the owner and output ID unchanged. Read failures leave caller outputs
+unchanged; a valid read with insufficient capacity still samples the clock.
+Cancellation, observed expiry, rollback and foreground teardown clear all
+retained draft bytes without resetting the issuance counter. Do not persist or
+restore this state from disk, Bundle or intents; restart has no active review.
+
+The review owns public transaction metadata, not keys or authenticated wallet
+ownership. Supplied previous bytes remain unqualified for chain inclusion,
+unspentness or maturity. P2SH recognition is not redeem-script ownership.
+Change classification, chain/branch context, hardware authentication and
+original signature hashes are separate gates. This lifetime has no JNI/UI
+entry yet and cannot enable the quarantined transport or BLAKE2 candidate.
+
+Deterministic cases cover caller/copy mutation, every draft truncation and
+undersized copy capacity, late callbacks after repeated replacements, exact
+deadline and rollback transitions, time/ID exhaustion, signed-script refusal,
+failed source/fee preparation and zeroed cancellation state. The sequence
+fuzzer compares public operations with an independent fixed-duration model
+using subtraction from the opening time, bounded to64 operations per input.
+
 ## Ordered continuation
 
 1. Checked synthetic funding/prevout amounts, output classification, change
