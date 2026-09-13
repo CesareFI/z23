@@ -9,6 +9,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.zclassic.wallet.core.CoreStatus
 import org.zclassic.wallet.core.Network
+import org.zclassic.wallet.core.TransparentAddress
 import org.zclassic.wallet.core.TransparentAddressKind
 import org.zclassic.wallet.core.UnsignedReview
 import org.zclassic.wallet.core.UnsignedReviewFailure
@@ -22,6 +23,14 @@ class UnsignedReviewInstrumentedTest {
     private fun previous(): Array<ByteArray> = arrayOf(fixture("previous0"), fixture("previous1"))
     private fun open(clock: () -> Long = SystemClock::elapsedRealtime): UnsignedReview =
         UnsignedReview.open(fixture("draft"), previous(), Network.MAINNET, Zatoshi.of(500), clock)
+    private fun prepare(network: Network = Network.MAINNET, sources: Array<ByteArray> = previous(),
+                        fee: Long = 500, clock: () -> Long = SystemClock::elapsedRealtime): UnsignedReview =
+        UnsignedReview.prepare(listOf(
+            UnsignedReview.Funding(sources[0], 0, 0xffff_ffffL),
+            UnsignedReview.Funding(sources[1], 1, 0xffff_ffffL)), listOf(
+            UnsignedReview.Output(TransparentAddress.fromPublicKeyHash(ByteArray(20) { 0x55 }, network), Zatoshi.of(9000)),
+            UnsignedReview.Output(TransparentAddress.fromScriptHash(ByteArray(20) { 0x66 }, network), Zatoshi.of(1500))),
+            network, 0, 0, Zatoshi.of(fee), clock)
     private fun failure(action: () -> Unit): CoreStatus {
         try { action() } catch (problem: UnsignedReviewFailure) { return problem.status }
         throw AssertionError("Expected review refusal")
@@ -97,5 +106,36 @@ class UnsignedReviewInstrumentedTest {
             assertEquals(CoreStatus.CANCELLED, failure { review.snapshot() })
             open().use { assertEquals(500L, it.snapshot().fee.value) }
         }
+    }
+
+    @Test fun constructedDraftBindsTheSamePrivateSourcesThroughRealVmOpening() {
+        for (network in Network.entries) {
+            val sources = previous()
+            // This callback runs between C construction and C review opening.
+            prepare(network, sources) {
+                sources.forEach { it.fill(0) }
+                SystemClock.elapsedRealtime()
+            }.use { review ->
+                assertArrayEquals(fixture("draft"), review.unsignedBytes())
+                val snapshot = review.snapshot()
+                assertEquals(network, snapshot.network)
+                assertEquals("602c673db0503b48a400414347009ae968b1aaba9b10663bde508e7f8218dc46", snapshot.transactionId)
+                assertEquals(500L, snapshot.fee.value)
+                assertEquals(11000L, snapshot.inputTotal.value)
+                assertEquals(TransparentAddressKind.P2SH, snapshot.outputs.last().address().kind)
+                assertEquals(network, snapshot.outputs.last().address().network)
+                assertTrue(sources.all { bytes -> bytes.all { it == 0.toByte() } })
+            }
+        }
+    }
+
+    @Test fun failedPreparationPreservesExistingOwnerAndLaterAllowsReplacement() {
+        prepare().use { old ->
+            assertEquals(CoreStatus.BUSY, failure { prepare().close() })
+            assertEquals(CoreStatus.OUT_OF_RANGE, failure { prepare(fee = 499).close() })
+            assertArrayEquals(fixture("draft"), old.unsignedBytes())
+            assertEquals(500L, old.snapshot().fee.value)
+        }
+        prepare().use { assertArrayEquals(fixture("draft"), it.unsignedBytes()) }
     }
 }

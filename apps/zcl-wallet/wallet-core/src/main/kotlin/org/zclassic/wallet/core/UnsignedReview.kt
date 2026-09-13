@@ -17,6 +17,13 @@ class UnsignedReviewFailure(val status: CoreStatus) : IllegalStateException("Uns
 class UnsignedReview private constructor(private var id: Long, clock: () -> Long) : AutoCloseable {
     private var clockSource: (() -> Long)? = clock
 
+    /** Explicit public source selection. Bytes belong to the caller and must
+     * remain stable during prepare; the factory retains only private copies
+     * until C construction/opening completes. No funding or ownership proof. */
+    data class Funding(val previousTransaction: ByteArray, val outputIndex: Long, val sequence: Long)
+    /** Exact intended output; no implicit change destination or classification. */
+    data class Output(val address: TransparentAddress, val value: Zatoshi)
+
     /** Exact public destination data; no change label or ownership assertion. */
     data class Destination(val network: Network, val kind: TransparentAddressKind,
                            val hashHex: String, val value: Zatoshi) {
@@ -45,15 +52,7 @@ class UnsignedReview private constructor(private var id: Long, clock: () -> Long
 
     /** Independent public copy of the retained unsigned bytes, never a signature. */
     fun unsignedBytes(): ByteArray = read { handle, now ->
-        val packet = checkNotNull(NativeCore.reviewWire(handle, now)) { "Native review bytes failed" }
-        check(packet.size in 1..1926) { "Invalid native review byte packet" }
-        val status = CoreStatus.fromCode(packet[0].toInt() and 0xff)
-        if (status != CoreStatus.OK) {
-            check(packet.size == 1) { "Invalid native review failure packet" }
-            throw UnsignedReviewFailure(status)
-        }
-        check(packet.size > 1) { "Empty native review bytes" }
-        packet.copyOfRange(1, packet.size)
+        decodeWire(checkNotNull(NativeCore.reviewWire(handle, now)) { "Native review bytes failed" })
     }
 
     @Synchronized private fun <T> read(operation: (Long, Long) -> T): T {
@@ -75,6 +74,49 @@ class UnsignedReview private constructor(private var id: Long, clock: () -> Long
     }
 
     companion object {
+        /** Prepare on a bounded worker. Lists and source bytes must remain stable
+         * for this synchronous call. C constructs and assesses the exact draft;
+         * opening reuses those same privately copied sources. Temporary source
+         * and draft byte copies clear on success/failure. Row order is explicit.
+         * No coin selection, authenticated funding, change, signing or broadcast.
+         */
+        @Synchronized fun prepare(funding: List<Funding>, outputs: List<Output>, network: Network,
+                                  lockTime: Long, expiryHeight: Long, maximumFee: Zatoshi,
+                                  clock: () -> Long): UnsignedReview {
+            val inputCount = funding.size
+            val outputCount = outputs.size
+            require(inputCount in 1..8 && outputCount in 1..16) { "Invalid draft row counts" }
+            val sources = Array(inputCount) { ByteArray(0) }
+            var draft: ByteArray? = null
+            try {
+                val parameters = LongArray(3 + 2 * inputCount + outputCount)
+                parameters[0] = lockTime
+                parameters[1] = expiryHeight
+                parameters[2] = maximumFee.value
+                for (index in sources.indices) {
+                    val input = funding[index]
+                    require(input.previousTransaction.size in 1..1925) { "Invalid previous transaction size" }
+                    sources[index] = input.previousTransaction.copyOf()
+                    parameters[3 + 2 * index] = input.outputIndex
+                    parameters[4 + 2 * index] = input.sequence
+                }
+                val addresses = Array(outputCount) { index ->
+                    val output = outputs[index]
+                    parameters[3 + 2 * inputCount + index] = output.value.value
+                    output.address.encoded.toByteArray(Charsets.US_ASCII)
+                }
+                val packet = checkNotNull(NativeCore.buildDraft(sources, addresses, parameters, network.nativeId)) {
+                    "Native unsigned draft construction failed"
+                }
+                val prepared = decodeWire(packet)
+                draft = prepared
+                return open(prepared, sources, network, maximumFee, clock)
+            } finally {
+                draft?.fill(0)
+                sources.forEach { it.fill(0) }
+            }
+        }
+
         /** Inputs must remain stable for this synchronous call. C copies all
          * bytes before publishing an ID; callers retain/dispose of their arrays.
          * Public synthetic previous bytes alone cannot establish spendability.
@@ -97,6 +139,19 @@ class UnsignedReview private constructor(private var id: Long, clock: () -> Long
         private fun cancelNative(handle: Long) {
             val status = CoreStatus.fromCode(NativeCore.cancelReview(handle))
             if (status != CoreStatus.OK && status != CoreStatus.CANCELLED) throw UnsignedReviewFailure(status)
+        }
+
+        private fun decodeWire(packet: ByteArray): ByteArray {
+            try {
+                check(packet.size in 1..1926) { "Invalid native review byte packet" }
+                val status = CoreStatus.fromCode(packet[0].toInt() and 0xff)
+                if (status != CoreStatus.OK) {
+                    check(packet.size == 1) { "Invalid native review failure packet" }
+                    throw UnsignedReviewFailure(status)
+                }
+                check(packet.size > 1) { "Empty native review bytes" }
+                return packet.copyOfRange(1, packet.size)
+            } finally { packet.fill(0) }
         }
 
         private fun uint32(value: Long): Long {

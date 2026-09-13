@@ -1075,3 +1075,27 @@ Evidence/corpus is in draft-* under the48-hour scratch directory. Continue with
 a thin bounded constructor/review adapter, retaining all source ownership,
 error-publication and foreground cancellation requirements. No JNI constructor
 or current-chain/funding/signing claim is included in this checkpoint.
+
+2026-09-13 draft JNI and managed preparation: the stateless C adapter now
+constructs from bounded previous-byte/address arrays and exact signed-long
+metadata. Numeric widths and canonical selected-network addresses validate in
+C before construction. One fixed16272-byte source allocation clears/frees
+before Java publication, including partial VM reads and allocation failures.
+UnsignedReview.prepare keeps the same private source copies through construction
+and opening, clearing temporary source/draft bytes afterward. BUSY or malformed
+preparation cannot cancel the existing review. No key, change, consent or send
+authority is added.
+
+All40 native ASan/UBSan/LSan cases, Clang/GCC analysis and412 functions in71files
+at complexity<=10 pass. Fake VM fault injection checks reference/heap cleanup,
+partial reads, signed extremes, malformed shapes and maximum requests. The
+bounded JNI fuzzer completed40,621 executions in91s without a finding; final
+source/binary hashes match. Optimized Clang20 host JNI frame2328bytes preserves
+the4096-byte gate. All72 core/35 app JVM cases, both ABI builds, both lints,
+fixture isolation and architecture pass. The API35 emulator passed9 review
+and Activity lifecycle cases in143.352s, including the same privately copied
+source handoff and construction-to-display recreation/background/close path.
+Evidence/corpus is in draft-jni-* under the48-hour scratch directory. The
+initial12 focused JVM cases preceded an additional clock-callback source-mutation
+regression in the full run. Continue with authenticated key/change ownership
+and durable index recovery; quarantined providers remain disabled and preserved.

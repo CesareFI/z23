@@ -13,6 +13,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.zclassic.wallet.core.CoreStatus
 import org.zclassic.wallet.core.Network
+import org.zclassic.wallet.core.TransparentAddress
 import org.zclassic.wallet.core.UnsignedReview
 import org.zclassic.wallet.core.UnsignedReviewFailure
 import org.zclassic.wallet.core.Zatoshi
@@ -23,9 +24,12 @@ class ReviewLifecycleInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private data class Displayed(val review: UnsignedReview, val view: ReviewView)
     private fun fixture(name: String) = instrumentation.context.assets.open("review/$name").use { it.readBytes() }
-    private fun owner() = UnsignedReview.open(fixture("draft"),
-        arrayOf(fixture("previous0"), fixture("previous1")), Network.MAINNET,
-        Zatoshi.of(500), SystemClock::elapsedRealtime)
+    private fun owner() = UnsignedReview.prepare(listOf(
+        UnsignedReview.Funding(fixture("previous0"), 0, 0xffff_ffffL),
+        UnsignedReview.Funding(fixture("previous1"), 1, 0xffff_ffffL)), listOf(
+        UnsignedReview.Output(TransparentAddress.fromPublicKeyHash(ByteArray(20) { 0x55 }, Network.MAINNET), Zatoshi.of(9000)),
+        UnsignedReview.Output(TransparentAddress.fromScriptHash(ByteArray(20) { 0x66 }, Network.MAINNET), Zatoshi.of(1500))),
+        Network.MAINNET, 0, 0, Zatoshi.of(500), SystemClock::elapsedRealtime)
 
     private fun unavailable(view: ReviewView) {
         assertTrue(view.text.startsWith(instrumentation.targetContext.getString(R.string.review_unavailable)))

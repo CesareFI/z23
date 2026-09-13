@@ -358,14 +358,45 @@ This constructs a bounded unsigned v4 transparent candidate. It does not select
 coins, reserve/classify change, prove source inclusion/unspentness/maturity,
 qualify current-chain finality, authenticate ownership or sign/broadcast. Previous
 transactions remain limited to the existing canonical codec subset; legacy,
-v3, shielded or larger sources are unsupported. No JNI constructor is wired yet.
+v3, shielded or larger sources are unsupported.
+
+`UnsignedReview.prepare` is the thin managed factory for this constructor. Each
+funding row supplies previous bytes, output index and sequence; each output
+supplies an immutable canonical address and amount. Lists and bytes must remain
+stable during the synchronous call. The factory checks counts before bounded
+allocation and keeps private copies of every previous transaction through both
+C construction and C review opening. Caller mutation during the intervening
+clock callback cannot substitute funding. Temporary source/draft byte copies
+clear in finally, including BUSY, malformed input and clock failures.
+
+The stateless JNI constructor accepts1..8 previous byte arrays of<=1925bytes,
+1..16 canonical address byte arrays of<=35bytes and exactly
+`3 + 2*input_count + output_count` signed longs, capped at35. The parameters are
+lock time, expiry height, absolute fee ceiling, each input's index/sequence pair,
+then each output's amount. C checks nonnegative uint32/money ranges before
+conversion. Addresses must parse on the explicitly selected network; network
+identity cannot be inferred or changed from a bare public hash.
+
+One checked16272-byte host allocation owns all native source copies until
+construction returns. Each local element reference releases after its copy.
+Partial VM reads and pending exceptions stop processing; every cleanup clears
+the whole allocation before freeing once. Java publication occurs afterward
+and returns one status byte followed only on success by canonical unsigned
+bytes. A construction/publication failure cannot touch another review owner.
+Opening still uses the existing single-slot lifetime and can return BUSY.
+
+Fake VM fault tests check partial reads, every small-fixture read ordinal,
+allocation/publication failure, NULL/oversized arrays, signed extremes and
+maximum8-input/16-output requests. Real JVM and emulator tests bind the prepared
+bytes to the exact public draft fixture on both networks. The actual debug
+review Activity lifecycle fixture now prepares its drafts through this factory;
+background/recreation/close continue to cancel the same C owner.
 
 ## Ordered continuation
 
-1. Thin bounded draft construction/review integration, followed by checked
-   synthetic funding/prevout amounts, output classification, change
-   ownership and review binding to exact transaction bytes. A server balance or
-   history assertion cannot provide spending authority.
+1. Authenticated key/change ownership and durable index recovery, using the
+   existing exact draft construction/assessment/review binding. A server balance
+   or history assertion cannot provide spending authority.
 2. Independently qualify the exact original serialization and branch-specific
    signature-hash construction with offline public fixtures. No signing until
    scriptCode, input amount, branch/height, outputs and authorization are bound.

@@ -51,4 +51,6 @@ internal object NativeCore {
     @JvmStatic external fun cancelReview(id: Long): Int
     @JvmStatic external fun reviewSnapshot(id: Long, nowMillis: Long): LongArray?
     @JvmStatic external fun reviewWire(id: Long, nowMillis: Long): ByteArray?
+    @JvmStatic external fun buildDraft(previous: Array<ByteArray>, destinations: Array<ByteArray>,
+                                      parameters: LongArray, network: Int): ByteArray?
 }
