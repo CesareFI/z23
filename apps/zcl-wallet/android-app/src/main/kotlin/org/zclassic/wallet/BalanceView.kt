@@ -30,6 +30,7 @@ internal class BalanceView(context: Context) : TextView(context) {
     }
 
     fun showUnavailable(status: CoreStatus = CoreStatus.OK) {
+        text = ""
         text = context.getString(R.string.balance_status_lines,
             context.getString(R.string.balance_unavailable), context.getString(faultText(status)))
     }

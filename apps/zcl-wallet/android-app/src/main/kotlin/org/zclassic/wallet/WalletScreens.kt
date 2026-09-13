@@ -156,6 +156,7 @@ internal class WalletScreens(private val activity: Activity) {
         content.addView(BalanceView(activity)) // No qualified network source is enabled.
         button(R.string.lock_wallet, R.id.lock_wallet, lock)
         button(R.string.scan_request, R.id.scan_request, scan)
+        content.addView(HistoryView(activity)) // Empty until a qualified source is available.
     }
 
     fun failure(message: Int, retry: () -> Unit) {

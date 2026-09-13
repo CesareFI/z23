@@ -743,3 +743,24 @@ public assets are reused; no wallet, secret or remote query was involved.
 Evidence is in history-jni-final/history-jni files in the48-hour scratch
 directory. Continue with explicit unverified history display and lifecycle
 fixtures, then original transparent transaction serialization/signing work.
+
+2026-09-13 explicit history view: the receive screen now includes an unavailable
+history section after lock/scan controls. Public fixtures render bounded IDs,
+reported pending/block-height labels, and explicit unverified/outdated states.
+Empty assertions differ from absent queries and unavailable reports; no amount,
+confirmation count, explorer link or spending action is added. Invalid display
+rows clear prior IDs before refusal, and save/restore/detach paths cannot revive
+history text. Both public report views now blank existing text before formatting
+their unavailable message. There is still no enabled network source.
+
+The initial device run passed all five balance-view regressions but rejected
+the new history class during JUnit initialization: an expression-bodied test
+inferred ActivityScenario instead of Unit. Its return was corrected; the five
+history cases then passed in42.288s, including actual detach and foreground
+timer expiry. The original failure log is preserved and unchanged balance cases
+were not rerun. Builds, both lints, APK isolation, app JVM tests and architecture
+pass; the58 core JVM tests and native sanitizer/fuzzer evidence remain current,
+with native source/fuzzer hashes unchanged. Source/APK manifests and logs are
+under history-view/history-view-final in the48-hour scratch directory. Continue
+combined balance/history Activity/process lifetime integration, then pinned
+original transparent transaction work.

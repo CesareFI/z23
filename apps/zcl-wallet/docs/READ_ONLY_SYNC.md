@@ -148,7 +148,8 @@ of inclusion. Public output arguments remain unchanged on failed parsing.
 ### Bounded history codec
 
 The history codec is optionally composed by the C sync/watch and explicit JNI
-owner; it has no history UI, persistence or enabled endpoint. It accepts an array of at
+owner; its history view is fixture-only and it has no persistence or enabled endpoint.
+It accepts an array of at
 most 16 unique 32-byte transaction IDs and claimed heights, preserving server
 order. More entries return `RESOURCE_EXHAUSTED`, never a truncated success.
 The existing 128-token limit also applies: 16 entries with a numeric fee fit,
@@ -341,6 +342,20 @@ The view excludes text from framework saving, ignores restored TextView state
 under its ID, and clears amounts when detached. Formatting failure clears the
 previous display before propagating to its owner. This is view-state evidence,
 not a qualified hardware-authenticated wallet or process-death recovery journey.
+
+The receive screen also includes a HistoryView after the lock/scan controls,
+keeping those actions accessible before a long report. It starts unavailable.
+Public fixtures can render at most16 exact IDs, pending status or a reported
+block height, with explicit unverified/outdated labels and an incomplete-history
+caveat. An empty server assertion is distinct from unavailable history or a
+balance-only report. No amount, confirmation count, explorer link or spending
+action is derived from these entries. Display bounds reject malformed row
+strings/heights before publishing the assembled text. Both public report views
+clear existing text before formatting an unavailable message. History IDs are
+excluded from framework text saving, autofill and content capture; old saved
+TextView state and detachment clear the view. Its expiry test uses the existing
+foreground presenter and C wakeup hint. Combined Activity/process-owner
+replacement remains the next integration fixture; no real source is enabled.
 The bounded metadata
 query may run on the UI thread; blocking I/O must never hold the sync monitor
 or native registry lock.
