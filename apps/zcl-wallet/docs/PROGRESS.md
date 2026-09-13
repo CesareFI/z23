@@ -869,3 +869,14 @@ was opened or erased. Evidence/corpus/hashes are in change-* under the48-hour
 scratch directory. Continue with reviewed standalone C BLAKE2b/sighash support
 and immutable review/key ownership; do not link the sealed consensus core or
 enable signing until the original branch/context and authorization are qualified.
+
+2026-09-13 BLAKE2 pre-integration candidate blocked: Clang20 reported a possible
+uninitialized parameter-block byte in the official pinned reference provider.
+One text-diagnostic pass preserved the call path; runtime defect versus analyzer
+limitation is unresolved. The strict script stopped before GCC or sanitizer
+self-tests. No source was patched, suppressed, vendored or linked into wallet
+builds. Exact source/license/KATs/logs/command/commit metadata are archived and
+hashed; see [BLAKE2_REVIEW.md](BLAKE2_REVIEW.md). TLS evidence/quarantine is
+untouched. A read-only fetch still shows origin/main a898cf779,35ahead/16behind;
+no integration occurred. Move immediately to immutable transaction-review
+lifetime work, without making either provider review the active investigation.

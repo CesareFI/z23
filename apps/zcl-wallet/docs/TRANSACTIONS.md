@@ -168,6 +168,9 @@ exercise complete assessments, fee limits, row totals and failure atomicity.
 2. Independently qualify the exact original serialization and branch-specific
    signature-hash construction with offline public fixtures. No signing until
    scriptCode, input amount, branch/height, outputs and authorization are bound.
+   The first standalone BLAKE2 reference candidate is
+   [blocked for further security review](BLAKE2_REVIEW.md) and is not in builds;
+   continue immutable review work independently of this candidate.
 3. Synthetic signing and explicit review/cancellation, then qualified broadcast
    lifecycle and restart recovery. Real funds remain outside development tests.
 4. Shielded wire/proof/witness/value/recovery qualification before exposing it.
