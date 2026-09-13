@@ -63,8 +63,9 @@ combined recreation, background/resume and process-relaunch fixtures pass.
 The bounded transparent v4 C codec now has canonical wire, failure-atomicity
 and independent hash fixtures; see [transaction scope](TRANSACTIONS.md).
 Hash-matched previous outputs and explicit bounded fee/destination assessment
-now have synthetic tests. Continue with independently checked change derivation,
-immutable review/key ownership and original branch-specific signature hashes
+now have synthetic tests. Public change derivation has independent OpenSSL and
+cleanup evidence; index reservation/recovery and ownership remain unfinished.
+Continue with immutable review/key ownership and original branch-specific signature hashes
 before exposing any send action.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic

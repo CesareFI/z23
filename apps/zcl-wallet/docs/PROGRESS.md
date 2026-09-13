@@ -845,3 +845,27 @@ both ABI builds, both lints, APK isolation and architecture pass. Logs, syntheti
 seeds, corpus, hashes and size measurement are in assessment-* under the48-hour
 scratch directory. Continue with independently checked change-address derivation
 and immutable review/key ownership before original branch-specific signing.
+
+2026-09-13 public change-address derivation: the C receiving wrapper retains
+external chain0 and a new change wrapper selects internal chain1, sharing the
+existing entropy/profile/blinding and deterministic secret-cleanup path. It
+returns only a public address. No change index is reserved or persisted and no
+JNI change, signing or ownership-approval route is added.
+
+All34 native ASan/UBSan/LSan tests pass, including both branches' argument
+bounds, blinding independence, allocation/context failures, exact invalid-child
+refusal at every path level and early/middle/final provider failures. The
+independent OpenSSL oracle passed96 comparisons across published seeds, both
+networks/branches and indices through2^31-1 in1.93s. Clang/GCC analysis and358
+functions in62files at complexity<=10 pass. The full-derivation fuzzer completed
+716 executions in61s with no finding and matching final source/binary hashes.
+Every nonempty in-bound iteration includes three complete derivations as well
+as refusal cases.
+
+The58 core and24 app JVM tests, both ABI builds, both lints, APK isolation and
+architecture pass. The API35 public GCM/storage/receiving-address JNI fixture
+passed one test in4.813s using its own new isolated directory; no real wallet
+was opened or erased. Evidence/corpus/hashes are in change-* under the48-hour
+scratch directory. Continue with reviewed standalone C BLAKE2b/sighash support
+and immutable review/key ownership; do not link the sealed consensus core or
+enable signing until the original branch/context and authorization are qualified.

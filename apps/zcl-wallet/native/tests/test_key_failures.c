@@ -7,10 +7,14 @@
 #include <string.h>
 
 typedef enum { NORMAL, NO_MEMORY, HUGE_CONTEXT, EMPTY_CONTEXT, NO_CONTEXT,
-    NO_BLINDING, HASH_FAILURE, ZERO_HASH, ORDER_TWEAK, NEGATIVE_TWEAK, ZERO_TWEAK } failure_mode;
+    NO_BLINDING, HASH_FAILURE, CHILD_FAILURE, ZERO_HASH, ORDER_TWEAK, NEGATIVE_TWEAK, ZERO_TWEAK } failure_mode;
 static failure_mode mode = NORMAL;
 static void *owned = NULL;
 static size_t owned_size = 0, allocations = 0, releases = 0;
+static size_t child_calls = 0, fail_child = 0;
+typedef zcl_status (*address_function)(const uint8_t *, size_t, zcl_network, uint32_t,
+    const uint8_t *, size_t, uint8_t *, size_t, size_t *);
+static const address_function address_functions[] = {zcl_receive_from_entropy, zcl_change_from_entropy};
 
 void *__real_malloc(size_t);
 void __real_free(void *);
@@ -79,6 +83,15 @@ zcl_status __wrap_zcl_hmac_sha512(const uint8_t *key, size_t key_len,
     };
     if (mode == HASH_FAILURE)
         return ZCL_CRYPTO_FAILURE;
+    if (mode == CHILD_FAILURE && key_len == 32 && data_len == 37) {
+        ++child_calls;
+        if (child_calls == fail_child) {
+            if (out == NULL || capacity < 64) abort();
+            memset(out, 0, 64);
+            memcpy(out, order, sizeof(order));
+            return ZCL_OK;
+        }
+    }
     if (mode < ZERO_HASH)
         return __real_zcl_hmac_sha512(key, key_len, data, data_len, out, capacity);
     if (out == NULL || capacity < 64)
@@ -145,9 +158,35 @@ static int derivation_failures(void)
     return 0;
 }
 
+static int address_failures(void)
+{
+    uint8_t entropy[16] = {0}, blinding[32] = {1}, output[35], before[35];
+    memset(output, 0xa5, sizeof(output)); memcpy(before, output, sizeof(output));
+    size_t length = 777;
+    for (size_t chain = 0; chain < 2; ++chain) {
+        for (mode = NO_MEMORY; mode <= NO_BLINDING; mode = (failure_mode)((int)mode + 1)) {
+            const zcl_status expected = mode == NO_MEMORY ? ZCL_RESOURCE_EXHAUSTED : ZCL_CRYPTO_FAILURE;
+            CHECK(address_functions[chain](entropy, sizeof(entropy), ZCL_TESTNET, 19, blinding, 32,
+                output, sizeof(output), &length) == expected);
+            CHECK(length == 777 && memcmp(output, before, sizeof(output)) == 0);
+            CHECK(owned == NULL && allocations == releases);
+        }
+        mode = CHILD_FAILURE;
+        for (fail_child = 1; fail_child <= 5; ++fail_child) {
+            child_calls = 0;
+            CHECK(address_functions[chain](entropy, sizeof(entropy), ZCL_MAINNET, UINT32_C(0x7fffffff),
+                blinding, 32, output, sizeof(output), &length) == ZCL_INVALID_CHILD);
+            CHECK(child_calls == fail_child && length == 777);
+            CHECK(memcmp(output, before, sizeof(output)) == 0 && owned == NULL && allocations == releases);
+        }
+    }
+    mode = NORMAL;
+    return 0;
+}
+
 int main(void)
 {
-    if (context_failures() || derivation_failures())
+    if (context_failures() || derivation_failures() || address_failures())
         return 1;
     puts("key failures: allocation, context, blinding and invalid BIP32 results handled");
     return 0;

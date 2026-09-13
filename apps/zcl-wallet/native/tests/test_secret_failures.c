@@ -14,6 +14,7 @@ int __real_mbedtls_sha512_starts(mbedtls_sha512_context *, int);
 int __real_mbedtls_sha512_update(mbedtls_sha512_context *, const unsigned char *, size_t);
 int __real_mbedtls_sha512_finish(mbedtls_sha512_context *, unsigned char *);
 int __real_mbedtls_sha256(const unsigned char *, size_t, unsigned char *, int);
+int __real_mbedtls_ripemd160(const unsigned char *, size_t, unsigned char *);
 void __real_mbedtls_platform_zeroize(void *, size_t);
 
 static int fail_now(void)
@@ -42,6 +43,11 @@ int __wrap_mbedtls_sha256(const unsigned char *input, size_t length,
                          unsigned char *output, int is224)
 {
     return fail_now() ? -1 : __real_mbedtls_sha256(input, length, output, is224);
+}
+
+int __wrap_mbedtls_ripemd160(const unsigned char *input, size_t length, unsigned char *output)
+{
+    return fail_now() ? -1 : __real_mbedtls_ripemd160(input, length, output);
 }
 
 void __wrap_mbedtls_platform_zeroize(void *buffer, size_t length)
@@ -111,9 +117,38 @@ static int mnemonic_failures(void)
     return 0;
 }
 
+static int address_provider_failures(void)
+{
+    typedef zcl_status (*address_function)(const uint8_t *, size_t, zcl_network, uint32_t,
+        const uint8_t *, size_t, uint8_t *, size_t, size_t *);
+    const address_function functions[] = {zcl_receive_from_entropy, zcl_change_from_entropy};
+    uint8_t entropy[16] = {0}, blinding[32] = {1}, output[35], before[35];
+    memset(before, 0xa5, sizeof(before));
+    for (size_t chain = 0; chain < 2; ++chain) {
+        size_t length = 0;
+        inject(SIZE_MAX);
+        CHECK(functions[chain](entropy, sizeof(entropy), ZCL_MAINNET, 19, blinding, 32,
+            output, sizeof(output), &length) == ZCL_OK && length == 35);
+        const size_t total = calls;
+        CHECK(total > 16385 && cleared_spans > 12000);
+        const size_t points[] = {1, 2, 3, 4, 10, 101, 8193, 16385, 16386,
+            total - 4, total - 3, total - 2, total - 1, total};
+        for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); ++i) {
+            memcpy(output, before, sizeof(output));
+            length = 777;
+            inject(points[i]);
+            CHECK(functions[chain](entropy, sizeof(entropy), ZCL_MAINNET, 19, blinding, 32,
+                output, sizeof(output), &length) == ZCL_CRYPTO_FAILURE);
+            CHECK(calls == points[i] && cleared_spans >= 5 && length == 777);
+            CHECK(memcmp(output, before, sizeof(output)) == 0);
+        }
+    }
+    return 0;
+}
+
 int main(void)
 {
-    if (hmac_failures() || mnemonic_failures())
+    if (hmac_failures() || mnemonic_failures() || address_provider_failures())
         return 1;
     puts("secret failures: provider errors preserve output and cleanup clears storage");
     return 0;

@@ -31,13 +31,13 @@ static zcl_status entropy_seed(const uint8_t *entropy, size_t entropy_len,
     return status;
 }
 
-static zcl_status receive_path(const uint8_t *seed, size_t seed_len,
-                               zcl_network network, uint32_t index,
+static zcl_status address_path(const uint8_t *seed, size_t seed_len,
+                               zcl_network network, uint32_t chain, uint32_t index,
                                const secp256k1_context *context, zcl_extended_private *output)
 {
     uint32_t coin = network == ZCL_MAINNET ? 147 : 1;
     uint32_t path[5] = {UINT32_C(0x8000002c), UINT32_C(0x80000000) | coin,
-                        UINT32_C(0x80000000), 0, index};
+                        UINT32_C(0x80000000), chain, index};
     zcl_extended_private parent = {0}, child = {0};
     zcl_status status = zcl_bip32_master(seed, seed_len, &parent);
     if (status != ZCL_OK)
@@ -75,8 +75,9 @@ cleanup:
     return status;
 }
 
-zcl_status zcl_receive_from_entropy(const uint8_t *entropy, size_t entropy_len,
-                                    zcl_network network, uint32_t index,
+/* Only the two public wrappers select chain: fixed external0 or internal1. */
+static zcl_status address_from_entropy(const uint8_t *entropy, size_t entropy_len,
+                                    zcl_network network, uint32_t chain, uint32_t index,
                                     const uint8_t *blinding, size_t blinding_len,
                                     uint8_t *address, size_t address_capacity, size_t *address_len)
 {
@@ -93,7 +94,7 @@ zcl_status zcl_receive_from_entropy(const uint8_t *entropy, size_t entropy_len,
     status = entropy_seed(entropy, entropy_len, seed, sizeof(seed));
     if (status != ZCL_OK)
         goto cleanup;
-    status = receive_path(seed, sizeof(seed), network, index, context.handle, &key);
+    status = address_path(seed, sizeof(seed), network, chain, index, context.handle, &key);
     if (status != ZCL_OK)
         goto cleanup;
     status = zcl_ec_public(context.handle, key.secret, sizeof(key.secret), public_key, sizeof(public_key));
@@ -105,4 +106,22 @@ cleanup:
     zcl_secure_zero(&key, sizeof(key));
     zcl_ec_end(&context);
     return status;
+}
+
+zcl_status zcl_receive_from_entropy(const uint8_t *entropy, size_t entropy_len,
+                                    zcl_network network, uint32_t index,
+                                    const uint8_t *blinding, size_t blinding_len,
+                                    uint8_t *address, size_t address_capacity, size_t *address_len)
+{
+    return address_from_entropy(entropy, entropy_len, network, 0, index, blinding,
+        blinding_len, address, address_capacity, address_len);
+}
+
+zcl_status zcl_change_from_entropy(const uint8_t *entropy, size_t entropy_len,
+                                   zcl_network network, uint32_t index,
+                                   const uint8_t *blinding, size_t blinding_len,
+                                   uint8_t *address, size_t address_capacity, size_t *address_len)
+{
+    return address_from_entropy(entropy, entropy_len, network, 1, index, blinding,
+        blinding_len, address, address_capacity, address_len);
 }

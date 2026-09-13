@@ -204,6 +204,11 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_assessment PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     target_link_options(fuzz_assessment PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_change tests/fuzz_change.c)
+    target_link_libraries(fuzz_change PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_change PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_change PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(seed_assessment tests/seed_assessment.c tests/assessment_fixture.c)
     target_link_libraries(seed_assessment PRIVATE zcl_wallet_core)
     target_compile_options(seed_assessment PRIVATE -Wall -Wextra -Wpedantic -Werror
@@ -443,6 +448,12 @@ if(NOT ANDROID)
     target_link_libraries(bip32_tests PRIVATE zcl_wallet_core)
     target_compile_options(bip32_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_bip32 COMMAND bip32_tests)
+    add_executable(change_tests tests/test_change.c)
+    target_link_libraries(change_tests PRIVATE zcl_wallet_core)
+    target_compile_options(change_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_change COMMAND change_tests)
+    set_tests_properties(wallet_change PROPERTIES TIMEOUT 30)
     add_executable(wallet_record_tests tests/test_wallet_record.c)
     target_link_libraries(wallet_record_tests PRIVATE zcl_wallet_core)
     target_compile_options(wallet_record_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
@@ -486,7 +497,7 @@ if(NOT ANDROID)
         target_compile_options(secret_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         target_link_options(secret_failure_tests PRIVATE
             -Wl,--wrap=mbedtls_sha512_starts -Wl,--wrap=mbedtls_sha512_update
-            -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha256
+            -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha256 -Wl,--wrap=mbedtls_ripemd160
             -Wl,--wrap=mbedtls_platform_zeroize)
         add_test(NAME wallet_secret_failures COMMAND secret_failure_tests)
         add_executable(random_tests tests/test_random.c)

@@ -153,7 +153,7 @@ static unsigned nibble(uint8_t value)
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "receive oracle check failed at line %d\n", __LINE__); return 1; } } while (0)
 
-static int check_fixture(size_t fixture_index, zcl_network network, uint32_t index)
+static int check_fixture(size_t fixture_index, zcl_network network, uint32_t chain, uint32_t index)
 {
     const fixture *item = &fixtures[fixture_index];
     uint8_t entropy[32] = {0}, seed[64] = {0}, secret[32] = {0}, blinding[32] = {1};
@@ -165,12 +165,16 @@ static int check_fixture(size_t fixture_index, zcl_network network, uint32_t ind
     CHECK(PKCS5_PBKDF2_HMAC((const char *)item->mnemonic, (int)item->mnemonic_len,
         (const unsigned char *)"mnemonic", 8, 2048, EVP_sha512(), 64, seed) == 1);
     uint32_t coin = network == ZCL_MAINNET ? 147 : 1;
-    uint32_t path[] = {UINT32_C(0x8000002c), UINT32_C(0x80000000) | coin, UINT32_C(0x80000000), 0, index};
+    uint32_t path[] = {UINT32_C(0x8000002c), UINT32_C(0x80000000) | coin, UINT32_C(0x80000000), chain, index};
     CHECK(oracle_derive(seed, sizeof(seed), path, 5, secret, sizeof(secret)));
     CHECK(oracle_address(secret, sizeof(secret), network, expected, sizeof(expected)));
     memset(actual, 0xa5, sizeof(actual));
-    CHECK(zcl_receive_from_entropy(entropy, item->entropy_len, network, index, blinding, sizeof(blinding),
-                                    actual + 1, 35, &actual_len) == ZCL_OK);
+    const zcl_status status = chain == 0
+        ? zcl_receive_from_entropy(entropy, item->entropy_len, network, index, blinding, sizeof(blinding),
+                                    actual + 1, 35, &actual_len)
+        : zcl_change_from_entropy(entropy, item->entropy_len, network, index, blinding, sizeof(blinding),
+                                    actual + 1, 35, &actual_len);
+    CHECK(status == ZCL_OK);
     CHECK(actual_len == 35 && actual[0] == 0xa5 && actual[36] == 0xa5);
     CHECK(memcmp(actual + 1, expected, sizeof(expected)) == 0);
     OPENSSL_cleanse(entropy, sizeof(entropy));
@@ -185,10 +189,12 @@ int main(void)
     static const uint32_t indices[] = {0, 1, 19, UINT32_C(0x7fffffff)};
     for (size_t i = 0; i < sizeof(selected) / sizeof(selected[0]); ++i) {
         for (size_t j = 0; j < sizeof(indices) / sizeof(indices[0]); ++j) {
-            CHECK(check_fixture(selected[i], ZCL_MAINNET, indices[j]) == 0);
-            CHECK(check_fixture(selected[i], ZCL_TESTNET, indices[j]) == 0);
+            for (uint32_t chain = 0; chain < 2; ++chain) {
+                CHECK(check_fixture(selected[i], ZCL_MAINNET, chain, indices[j]) == 0);
+                CHECK(check_fixture(selected[i], ZCL_TESTNET, chain, indices[j]) == 0);
+            }
         }
     }
-    puts("receive: 48 independent OpenSSL seed/HD/public-key/hash/address comparisons passed");
+    puts("receive/change: 96 independent OpenSSL seed/HD/public-key/hash/address comparisons passed");
     return 0;
 }

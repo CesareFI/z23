@@ -73,6 +73,16 @@ zcl_status zcl_receive_from_entropy(const uint8_t *entropy, size_t entropy_len,
                                     zcl_network network, uint32_t index,
                                     const uint8_t *blinding, size_t blinding_len,
                                     uint8_t *address, size_t address_capacity, size_t *address_len);
+/* Same account/profile, internal chain1 rather than receive chain0:
+ * m/44'/147'/0'/1/index on mainnet, coin1 on testnet. Index must be <2^31.
+ * Returns only a public P2PKH address with the same entropy/blinding/cleanup
+ * contract. No index reservation, persistence, signing or transaction approval.
+ * A future change output must be bound to authenticated wallet ownership and
+ * durable index/recovery state before use. No silent invalid-child retry. */
+zcl_status zcl_change_from_entropy(const uint8_t *entropy, size_t entropy_len,
+                                   zcl_network network, uint32_t index,
+                                   const uint8_t *blinding, size_t blinding_len,
+                                   uint8_t *address, size_t address_capacity, size_t *address_len);
 
 #ifdef __cplusplus
 }
