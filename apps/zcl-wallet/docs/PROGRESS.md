@@ -1439,3 +1439,16 @@ camera is configured as `emulated`; its generated scene provides real camera
 frames but no public QR target. A separate disposable virtual-scene fixture can
 qualify that path without touching existing wallet or emulator data. Physical
 camera/device qualification remains a separate gate.
+
+2026-09-14 fixture-gate diagnosis: the repository flag self-test assumes a
+chmod-000 file cannot be read. Root can still read it, so this session fails
+that refusal assertion. The unchanged binary's self-test passes under an
+unprivileged UID in an isolated temporary directory, including its expected
+empty-scan and unreadable-file refusals. No assertion was skipped or weakened.
+Running the tracked-tree scan separately exposed four wallet fixture-script
+variables missing from the authoritative registry. Registering them as
+env_test, with checked first-use pointers, makes that complete scan pass.
+This metadata change grants no runtime feature or wallet authority. Evidence
+is under `.cache/android-wallet/camera-scene-20260914/lint-flag-*.log`.
+The original lint-fast failures remain visible for root execution and the
+preserved injected `.agents`/`.codex` root directories.

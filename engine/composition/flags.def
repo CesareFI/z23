@@ -879,6 +879,14 @@ Z23_FLAG("ZCL_FIRST_BUILD_ORIGIN", "env_build", "-", "-",
           "undocumented; first use tools/scripts/first_build_timing.sh:48")
 Z23_FLAG("ZCL_FIRST_BUILD_WORKDIR", "env_build", "-", "-",
           "undocumented; first use tools/scripts/first_build_timing.sh:89")
+Z23_FLAG("ZCL_FIXTURE_TEST_AAPT", "env_test", "-", "-",
+          "Android fixture-isolation test's actual aapt2 path; first use apps/zcl-wallet/tools/test-android-fixtures.sh:16")
+Z23_FLAG("ZCL_FIXTURE_TEST_FAULT", "env_test", "-", "-",
+          "Android fixture-isolation test's bounded output mutation selector; first use apps/zcl-wallet/tools/test-android-fixtures.sh:14")
+Z23_FLAG("ZCL_FIXTURE_TEST_HOST", "env_test", "-", "-",
+          "Android fixture-isolation test's expected debug-only Activity name; first use apps/zcl-wallet/tools/test-android-fixtures.sh:16")
+Z23_FLAG("ZCL_FIXTURE_TEST_UNZIP", "env_test", "-", "-",
+          "Android fixture-isolation test's actual unzip path; first use apps/zcl-wallet/tools/test-android-fixtures.sh:53")
 Z23_FLAG("ZCL_FLEET_BOARD_BRIDGE_BIN", "env_test", "-", "-",
           "undocumented; first use tests/harness/src/test_fleet_board_bridge.c:20")
 Z23_FLAG("ZCL_FLEET_BOX", "env_build", "-", "-",
