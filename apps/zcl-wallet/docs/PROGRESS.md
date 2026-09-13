@@ -609,3 +609,23 @@ release builds, both lints, 54 core/24 app tests and architecture pass. No nativ
 C changed. Evidence/hashes are in balance-view-final files in the 48-hour scratch
 directory. Next qualify these display owners through actual Activity recreation
 and foreground replacement using a public fixture host, without wallet access.
+
+2026-09-13 Activity lifecycle: a nonexported debug-only host now composes the real
+receive screen, bounded C sync owner, presentation, wakeup and balance view using
+only public fixture frames. It has no storage, Keystore, endpoint or intent-state
+input. Pause/destroy close the original owner and clear amounts; resume creates
+an empty owner with no automatic replay. Release source sets exclude the host.
+
+All three API-35 cases completed with zero failures: five recreation cycles
+(more than the four registry slots), background/resume with a live old attempt,
+and a newly launched Activity after completion. The host-side 120-second adb
+timeout ended before the final console result. The preserved process-specific
+TestRunner log proves completion of all three cases over 128.082 seconds; the
+original timeout record is retained, and no passing case was rerun. Debug/test
+and unsigned release builds, both lints, 54 core/24 app tests and architecture
+pass. APK manifests confirm a nonexported debug host and no release entry;
+neither application APK contains sync response assets. Source/APK hashes and
+both runner/host logs are in the balance-lifecycle files in the 48-hour scratch
+directory. This does not qualify positive custody or process-death recovery.
+Next make release fixture separation a repeatable build check, then continue
+process relaunch and transaction/history correctness work.

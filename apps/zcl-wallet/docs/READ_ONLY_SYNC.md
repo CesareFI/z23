@@ -294,3 +294,20 @@ ASan/UBSan/LSan and assert native frame clearing. That fixture is excluded from
 the TLS-review build profile. Fake-VM/fuzzer results do not qualify Android VM
 behavior; real JVM checks and emulator tests complement them. TLS remains
 **BLOCKED — REQUIRES FURTHER SECURITY REVIEW**, excluded from Android/JNI builds.
+
+### Activity lifecycle fixture
+
+WalletDisplayFixtureActivity exists only under the Android debug source set.
+It is nonexported, has no launch filter, and uses the actual receive layout with
+a public zero-hash mainnet address. It never opens storage, Keystore, a socket or
+intent-supplied state. Instrumentation feeds the existing public frames through
+the normal C/JNI attempt API. Pause closes the presentation/wakeup/native owner
+and clears the view; resume creates an empty owner and does not replay frames.
+
+The API-35 fixture verifies five recreation cycles (exceeding four registry
+slots), background/resume with a live old attempt, and a new Activity after
+completion. Old attempts refuse and old views lose their displayed amount.
+All three device cases completed with zero failures. APK inspection confirms
+the host is absent from the release manifest and sync frames remain in the test
+APK only. This is public display lifecycle evidence, not positive hardware
+custody or process-death recovery qualification.
