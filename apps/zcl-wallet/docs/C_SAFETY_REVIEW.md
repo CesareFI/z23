@@ -379,3 +379,20 @@ and JNI tests cover exact 89999/90000ms boundaries and invalid clocks; the
 timestamp fuzzer checks translation invariance and that expired forward time
 cannot reopen the window. These tests do not qualify a physical authentication
 provider or prove an end-to-end hardware suspend/resume workflow.
+
+## Sync owner lifetime review — 2026-09-13
+
+Scope: `sync_owners.c`, its header and lifecycle fixtures/fuzzer. The pool is a
+caller-owned C value, with no production globals or retained external pointers.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Every slot search is bounded by the four-element array. Address/source inputs pass through the existing exact-length watch initializer before publication. No caller input controls an array index or memory-clear length. |
+| Integer overflow/underflow; checked signed/unsigned conversions | Issued IDs are checked below 9223372036854775807 before increment; close and clear-all preserve the counter. Zero/oversized IDs refuse lookup/close. No pointer/integer conversion or narrowing occurs. The cap prepares for exact positive Java-long representation. |
+| Use-after-free; double-free; leaks; dangling pointers | No heap or free. A successful lookup lends an in-pool watch only for the current serialized C call. Borrowed pointers cannot cross JNI or survive close/reuse. Late callbacks must look up the original ID, which is never reassigned. Caller lifecycle/locking remains an explicit adapter obligation. |
+| NULL dereferences; uninitialized memory | All public pointer arguments are checked. The pool initializes once to zero; a local watch initializes fully before a slot is occupied. Failed opens and failed lookups preserve outputs. Close clears an entire known slot; clear-all clears only slots and keeps issuance history. |
+| Pointer arithmetic; format strings | Only addresses of bounds-checked array elements/members are formed. No byte-offset arithmetic, format strings or input logging in production. Test diagnostics use fixed messages/line numbers. |
+| Stack usage; allocation limits; resource exhaustion | Four fixed slots and one local watch during open; no recursion, VLA, dynamic allocation, automatic retry or I/O. Full pools and exhausted IDs refuse. Static warning/frame gates and complexity <=10 apply. Fuzzer caps events/history at 128 and its campaign has time/RSS limits. |
+| Malformed serialization/network input | No serialization or new network parser is added. The existing watch validates address/network/source; existing reply parsing remains authoritative. IDs are lifetime selectors only, never address/endpoint authentication or spending authority. |
+| Races and ownership | The enclosing adapter must serialize all pool operations and every borrowed-watch use. No asynchronous pointer is returned. Tests deliberately reuse a slot and match old/new attempt-token values while proving the old owner cannot reach or mutate the new watch. Cross-thread locking will require separate JNI acceptance. |
+| Secret leakage | Only public address/source and unverified balance/report state is held. Closing zeroes the released slot. No key, seed, custody, log or transport path is added, and TLS quarantine remains in force. |

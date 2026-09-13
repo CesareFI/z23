@@ -194,3 +194,25 @@ Its cleartext manifest setting alone is not a TLS control for raw C sockets.
 Server-advertised genesis, history and balance are claims, not validation
 proofs. Show stale, unavailable and unverified states honestly. This read-only
 module must have no spending-key, entropy-generation or signing callback.
+
+## Foreground owner identity
+
+`zcl_sync_owners` supplies a caller-owned pool of four public balance watches.
+Each successful open receives a positive lifetime ID that fits Java long.
+Recycling a slot or clearing all watches never resets the issued-ID counter.
+Exhaustion refuses instead of wrapping. Failed opens leave the pool and output
+unchanged; close clears the slot's public address, report and attempt state.
+
+This is the C boundary for the future JNI owner registry, not a Java pointer
+handle. A callback must look up its original lifetime ID, then use its attempt
+token on that watch. A recreated watch may issue the same numeric attempt token
+as its predecessor; the preceding lifetime ID will still be rejected. The
+adapter must serialize lookup, borrowed-watch use and closure under one lock
+or worker. No borrowed C pointer may escape the synchronous call or cross JNI.
+Only the enclosing adapter initializes the pool, once; clearing it through the
+API retains the ID history. Never serialize or restore this native struct.
+
+The current slice adds no registry globals, JNI binding, socket or background
+job. Tests exercise full capacity, rejected allocation, closure/reuse, matching
+attempt tokens across distinct owners, clear-all and ID exhaustion. The event
+fuzzer checks old callbacks against its independent live-owner history.

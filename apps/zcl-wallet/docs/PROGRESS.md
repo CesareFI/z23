@@ -433,3 +433,23 @@ array lifetime evidence, not full VM erasure or positive hardware custody.
 The 48-hour continuation/backlog is retained in that scratch directory. TLS
 remains BLOCKED — REQUIRES FURTHER SECURITY REVIEW and disabled; the next
 independent task is the bounded C lifetime owner for read-only sync JNI.
+
+2026-09-13 C lifetime boundary: the new caller-owned sync pool holds at most four
+public watches, assigns never-reused positive IDs that fit Java long, and clears
+closed slots without resetting ID history. It refuses exhaustion and leaves
+failed-open outputs/state unchanged. A borrowed watch remains inside a serialized
+synchronous C call; asynchronous adapters retain IDs and look them up again.
+The regression reuses a slot with the same numeric attempt token and proves the
+old lifetime cannot reach or alter the new watch. No JNI/global registry or
+transport is enabled in this slice.
+
+The 25 existing active native tests pass ASan/UBSan/LSan. The new test initially
+expected INVALID_ENCODING for a cross-network address; it was corrected to the
+existing UNSUPPORTED contract and then passed the focused sanitizer run. Logs
+preserve that initial test failure. Clang/GCC and enabled provider analysis pass;
+296 authored functions in 54 files remain at complexity <=10. A bounded owner
+event fuzzer completed 33105 runs in 61 seconds with matching final source/binary
+hashes. Android debug and unsigned release assembly and the architecture-tree
+gate pass. Evidence is under .cache/android-wallet/48h-20260912T235829Z. Continue
+with the serialized JNI registry and fixture-only callback/deadline acceptance;
+TLS and physical hardware qualification remain separately blocked.
