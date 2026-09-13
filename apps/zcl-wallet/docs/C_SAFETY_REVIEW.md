@@ -420,3 +420,21 @@ The bounded fake VM is single-threaded and tracks its local references for
 deterministic cleanup. Actual JVM -Xcheck:jni and device fixtures are separate
 evidence for the real VM boundary. This does not qualify physical custody or
 the quarantined TLS candidate.
+
+## Fuzz configuration enforcement — 2026-09-13
+
+`ZCL_FUZZ=ON` now requires `ZCL_SANITIZE=ON`. Previously the fuzz harness could
+carry sanitizer flags while linked core/provider compilations had only coverage
+instrumentation. The negative configuration regression reproduces that prior
+acceptance and now requires an explicit refusal. Its positive configure checks
+the actual emitted commands for enabled native sources and Android/Commons
+providers, requiring ASan/UBSan and fail-on-finding behavior. On this host it
+observes 56 such compilations; missing host Clang is explicitly unqualified for
+the positive check. These are build-configuration checks, not additional fuzz
+executions or a substitute for sanitizer runs.
+
+The command inspection also found the standalone JSON-provider test already had
+ASan/UBSan but lacked `-fno-sanitize-recover=all`. That option is now mandatory
+there as in the core/provider builds. Its eight cases pass with the stricter
+failure behavior. The previously fuzzed JNI binary remains byte-identical after
+the build-profile change; no unchanged fuzz campaign was repeated.

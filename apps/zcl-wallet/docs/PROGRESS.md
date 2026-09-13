@@ -487,3 +487,15 @@ owner, retaining explicit unavailable/stale/unverified presentation. A queued
 snapshot still needs the enclosing foreground identity check before display.
 Physical custody, real-network validation, TLS and transactions remain unfinished;
 TLS is still BLOCKED — REQUIRES FURTHER SECURITY REVIEW, with evidence intact.
+
+2026-09-13 fuzz build guard: a negative configure regression reproduced that
+ZCL_FUZZ=ON/ZCL_SANITIZE=OFF was accepted, emitting coverage-only core commands
+despite sanitizer flags on harnesses. That combination now refuses explicitly.
+The positive regression inspects 56 emitted native/provider compile commands
+for ASan/UBSan and fail-on-finding flags. It also detected that the standalone
+JSON-provider test lacked the fail-on-finding option (its sanitizer flags were
+already present); that option is now added. The three affected configuration,
+provider and quarantine tests pass, including all eight provider cases. The
+previous JNI fuzzer binary is byte-identical after reconfiguration. No production
+C behavior or application APK changes in this slice. Initial/final configure
+logs and command databases are preserved in the 48-hour scratch directory.

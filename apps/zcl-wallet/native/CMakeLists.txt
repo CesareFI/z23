@@ -26,6 +26,9 @@ option(ZCL_TLS_REVIEW "Build quarantined TLS candidate for explicit host securit
 if(ZCL_TLS_REVIEW AND (ANDROID OR ZCL_JNI))
     message(FATAL_ERROR "TLS is BLOCKED — REQUIRES FURTHER SECURITY REVIEW; no Android/JNI binding is permitted")
 endif()
+if(ZCL_FUZZ AND NOT ZCL_SANITIZE)
+    message(FATAL_ERROR "ZCL_FUZZ requires ZCL_SANITIZE=ON for core and provider instrumentation")
+endif()
 
 set(ZCL_MBEDTLS_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-mbedtls")
 add_library(zcl_hash_provider STATIC
@@ -270,6 +273,18 @@ endif()
 
 if(NOT ANDROID)
     enable_testing()
+    find_program(ZCL_TEST_FUZZ_CLANG NAMES clang-20 clang)
+    set(ZCL_TEST_FUZZ_COMPILER "")
+    if(ZCL_TEST_FUZZ_CLANG)
+        set(ZCL_TEST_FUZZ_COMPILER "${ZCL_TEST_FUZZ_CLANG}")
+    endif()
+    add_test(NAME wallet_fuzz_profile COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}" "-DCOMPILER=${CMAKE_C_COMPILER}"
+        "-DCLANG=${ZCL_TEST_FUZZ_COMPILER}"
+        "-DNEGATIVE_BUILD=${CMAKE_CURRENT_BINARY_DIR}/refuse-unsanitized-fuzz"
+        "-DPOSITIVE_BUILD=${CMAKE_CURRENT_BINARY_DIR}/verify-sanitized-fuzz"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_fuzz_profile.cmake")
+    set_tests_properties(wallet_fuzz_profile PROPERTIES TIMEOUT 120)
     if(NOT ZCL_TLS_REVIEW)
         add_test(NAME wallet_tls_quarantine COMMAND ${CMAKE_COMMAND}
             -DNM=${CMAKE_NM} -DCORE=$<TARGET_FILE:zcl_wallet_core>
@@ -320,7 +335,7 @@ if(NOT ANDROID)
     add_executable(rpc_provider_tests ${ZCL_COMMONS_SOURCE}/zjsonp/tests/test_zjsonp.c)
     target_link_libraries(rpc_provider_tests PRIVATE zcl_json_provider)
     if(ZCL_SANITIZE)
-        target_compile_options(rpc_provider_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_compile_options(rpc_provider_tests PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
         target_link_options(rpc_provider_tests PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME wallet_rpc_provider COMMAND rpc_provider_tests)
