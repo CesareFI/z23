@@ -22,6 +22,7 @@
     <item name="recovery_input" type="id" />
     <item name="save_wallet" type="id" />
     <item name="receiving_address" type="id" />
+    <item name="address_balance" type="id" />
     <item name="lock_wallet" type="id" />
     <item name="retry_wallet" type="id" />
 </resources>

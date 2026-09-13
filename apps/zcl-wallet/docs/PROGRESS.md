@@ -590,3 +590,22 @@ Debug/test and unsigned release builds, both lints and architecture pass. No
 native C changed. Logs and hashes are in the balance-wakeup files in the 48-hour
 scratch directory. Next implement explicit address-balance rendering and prove
 that view restoration cannot recover a previously displayed amount.
+
+2026-09-13 explicit balance view: the receive screen now includes an unavailable
+address-balance widget with no numeric amount. Public fixture reports render
+C-formatted confirmed/total amounts and signed pending changes, always labeled
+unverified and scoped to this address. Stale reports remain explicitly outdated
+and unverified. Update/fault states never manufacture a zero balance. No endpoint
+is connected. Formatting failure clears previous amounts before propagating.
+The view saves no text and ignores even an earlier ordinary TextView's saved
+state under the same ID; detachment clears the display.
+
+Five API-35 tests pass in 6.558 seconds: exact signed display/offline retention,
+unavailable versus reported zero, saved-state rejection, malformed-input clearing,
+and real timer-to-view stale transition. Lint initially found assembled status
+messages requiring resource placeholders; those messages were corrected without
+a suppression. Initial and corrected logs are preserved. Debug/test and unsigned
+release builds, both lints, 54 core/24 app tests and architecture pass. No native
+C changed. Evidence/hashes are in balance-view-final files in the 48-hour scratch
+directory. Next qualify these display owners through actual Activity recreation
+and foreground replacement using a public fixture host, without wallet access.

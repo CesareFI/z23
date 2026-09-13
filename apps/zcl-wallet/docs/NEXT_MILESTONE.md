@@ -48,8 +48,12 @@ pending deltas, deadlines, stale age and empty restart state. Managed owners
 sample elapsed monotonic time inside serialization. Android presentation now
 retains its original foreground owner and reads snapshots at UI delivery,
 with queued-callback cancellation and empty replacement proven by local JVM
-and main-queue fixtures. Next render unavailable/stale/unverified balances
-explicitly and exercise view/process recreation. Define the source trust and
+and main-queue fixtures. C now supplies an expiry delay to one owned main-queue
+wakeup; delivery rechecks current state. The receive view renders explicit
+unavailable/stale/unverified states, signed C amounts and this-address-only scope.
+It rejects restored text state and starts with no amount. Nonempty display is
+still local-fixture-only. Next exercise actual Activity/process recreation and
+foreground replacement. Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report
 offline/stale/unverified balances explicitly. Exercise malformed responses,

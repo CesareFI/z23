@@ -143,7 +143,7 @@ internal class WalletScreens(private val activity: Activity) {
     }
 
     fun receive(address: TransparentAddress, lock: () -> Unit, scan: () -> Unit) {
-        begin(R.string.receive_title, R.string.balance_unavailable)
+        begin(R.string.receive_title, R.string.receiving_description)
         text(activity.getString(if (address.network == Network.MAINNET)
             R.string.network_mainnet else R.string.network_testnet), 16f)
         text(address.encoded, 21f).apply {
@@ -153,6 +153,7 @@ internal class WalletScreens(private val activity: Activity) {
         val qr = runCatching { ReceiveQr.forAddress(address) }.getOrNull()
         if (qr != null) content.addView(ReceiveQrView(activity).apply { show(qr) })
         else text(activity.getString(R.string.receiving_qr_unavailable), 16f)
+        content.addView(BalanceView(activity)) // No qualified network source is enabled.
         button(R.string.lock_wallet, R.id.lock_wallet, lock)
         button(R.string.scan_request, R.id.scan_request, scan)
     }

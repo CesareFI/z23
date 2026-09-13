@@ -273,8 +273,18 @@ Close cancels the wakeup even if its old callback was already captured. Android
 Handler uptime schedules only a hint; the owner's elapsedRealtime clock remains
 authoritative, including sleep. The platform checks the scheduling addition and
 starts no periodic poll. Foreground closure/resume must still replace the owner.
-No snapshot is saved, and no endpoint, worker or app balance screen is enabled
-by this adapter alone. The bounded metadata
+No snapshot is saved, and no endpoint or worker is enabled by this adapter.
+The receive screen includes a BalanceView that starts unavailable with no
+numeric amount. Complete reports are labeled unverified for this address only;
+stale reports retain that label and show that they are outdated. Formatting
+comes from C, including signed pending changes. Updating/fault messages never
+turn an unavailable result into zero. No real source is connected in the app;
+nonempty rendering is currently qualified only with public local fixtures.
+The view excludes text from framework saving, ignores restored TextView state
+under its ID, and clears amounts when detached. Formatting failure clears the
+previous display before propagating to its owner. This is view-state evidence,
+not a qualified hardware-authenticated wallet or process-death recovery journey.
+The bounded metadata
 query may run on the UI thread; blocking I/O must never hold the sync monitor
 or native registry lock.
 
