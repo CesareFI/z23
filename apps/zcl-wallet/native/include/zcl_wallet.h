@@ -34,6 +34,7 @@ typedef enum {
 #define ZCL_ZATOSHIS_PER_COIN UINT64_C(100000000)
 #define ZCL_MAX_MONEY (UINT64_C(21000000) * ZCL_ZATOSHIS_PER_COIN)
 #define ZCL_AMOUNT_TEXT_MAX ((size_t)17)
+#define ZCL_AMOUNT_DELTA_TEXT_MAX ((size_t)18)
 
 /* No API below allocates, retains pointers, mutates input or uses global state.
  * Buffers are caller-owned for the call. Input/output must not overlap.
@@ -44,6 +45,10 @@ typedef enum {
 zcl_status zcl_amount_parse(const uint8_t *text, size_t text_len, uint64_t *amount);
 zcl_status zcl_amount_format(uint64_t amount, uint8_t *text, size_t text_capacity,
                              size_t *text_len);
+/* Display-only signed change within +/- MAX_MONEY. Nonzero values include +/-,
+ * zero is "0". This does not make a negative amount valid for payment parsing. */
+zcl_status zcl_amount_delta_format(int64_t delta, uint8_t *text, size_t text_capacity,
+                                  size_t *text_len);
 zcl_status zcl_amount_add(uint64_t left, uint64_t right, uint64_t *result);
 zcl_status zcl_amount_subtract(uint64_t left, uint64_t right, uint64_t *result);
 

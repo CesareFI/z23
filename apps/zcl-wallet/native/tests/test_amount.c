@@ -89,11 +89,63 @@ static bool bounded_formatting(void)
     return true;
 }
 
+static bool delta_case(int64_t delta, const char *expected, size_t expected_len)
+{
+    uint8_t buffer[20];
+    memset(buffer, 0xa5, sizeof(buffer));
+    size_t length = SIZE_MAX;
+    CHECK(zcl_amount_delta_format(delta, buffer + 1, 18, &length) == ZCL_OK);
+    CHECK(length == expected_len && length <= 18);
+    CHECK(memcmp(buffer + 1, expected, length) == 0);
+    CHECK(buffer[0] == 0xa5 && buffer[length + 1] == 0xa5 && buffer[19] == 0xa5);
+    for (size_t capacity = 0; capacity < length; ++capacity) {
+        uint8_t before[20];
+        memcpy(before, buffer, sizeof(before));
+        size_t unchanged = SIZE_MAX;
+        CHECK(zcl_amount_delta_format(delta, buffer + 1, capacity, &unchanged) == ZCL_BUFFER_TOO_SMALL);
+        CHECK(unchanged == SIZE_MAX && memcmp(buffer, before, sizeof(buffer)) == 0);
+    }
+    return true;
+}
+
+static bool signed_delta_formatting(void)
+{
+    static const struct { int64_t delta; const char *text; size_t length; } cases[] = {
+        {0, "0", 1}, {1, "+0.00000001", 11}, {-1, "-0.00000001", 11},
+        {10, "+0.0000001", 10}, {-10, "-0.0000001", 10},
+        {INT64_C(100000000), "+1", 2}, {-INT64_C(123456789), "-1.23456789", 11},
+        {(int64_t)ZCL_MAX_MONEY, "+21000000", 9}, {-(int64_t)ZCL_MAX_MONEY, "-21000000", 9},
+        {(int64_t)ZCL_MAX_MONEY - 1, "+20999999.99999999", 18},
+        {1 - (int64_t)ZCL_MAX_MONEY, "-20999999.99999999", 18}
+    };
+    for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index)
+        CHECK(delta_case(cases[index].delta, cases[index].text, cases[index].length));
+    return true;
+}
+
+static bool invalid_deltas_preserve_output(void)
+{
+    static const int64_t cases[] = {INT64_MIN, INT64_MAX,
+        -(int64_t)ZCL_MAX_MONEY - 1, (int64_t)ZCL_MAX_MONEY + 1};
+    uint8_t buffer[18] = {0};
+    uint8_t before[18] = {0};
+    size_t unchanged = SIZE_MAX;
+    CHECK(zcl_amount_delta_format(0, NULL, 18, &unchanged) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_amount_delta_format(0, buffer, 18, NULL) == ZCL_INVALID_ARGUMENT);
+    for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+        CHECK(zcl_amount_delta_format(cases[index], buffer, sizeof(buffer), &unchanged) == ZCL_OUT_OF_RANGE);
+        CHECK(unchanged == SIZE_MAX && memcmp(buffer, before, sizeof(buffer)) == 0);
+    }
+    return true;
+}
+
 int main(void)
 {
     if (!valid_amounts() || !invalid_amounts() || !null_and_arithmetic() || !bounded_formatting())
         return 1;
-    if (puts("wallet-core: 4 amount test groups passed") == EOF)
+    if (!signed_delta_formatting() || !invalid_deltas_preserve_output())
+        return 1;
+    if (puts("wallet-core: 6 amount test groups passed") == EOF)
         return 1;
     return 0;
 }

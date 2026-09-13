@@ -248,7 +248,12 @@ Unexpected JNI/provider/mutex errors fail closed, without input text in errors.
 The snapshot carries unverified/stale/unavailable state, refresh/fault/age and
 the reported confirmed amount, signed pending delta, total and height. An
 unavailable report becomes null in the managed view. It has no spending or
-chain-proof authority. Source/address remain fixed metadata on the owner.
+chain-proof authority. Pending changes use the bounded C signed-delta formatter:
+zero is "0", positive changes include "+", and negative changes include "-".
+MoneyRange is checked before negation and decimal conversion. The nonnegative
+payment-amount parser continues to reject both signs. No floating-point or
+locale-dependent amount formatting is used. Source/address remain fixed
+metadata on the owner.
 Android BalancePresentation owns one sync lifetime, coalesces worker signals
 into at most one pending UI redraw, and samples the snapshot at actual delivery.
 Create/close/render belong to the same UI thread. Close cancels pending reads,

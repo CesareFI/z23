@@ -18,6 +18,14 @@ value class Zatoshi private constructor(val value: Long) : Comparable<Zatoshi> {
         const val MAX_VALUE = 21_000_000L * PER_ZCL
         val ZERO = Zatoshi(0)
 
+        /** Display a signed change; C checks MoneyRange before negation/formatting.
+         * Nonzero changes include + or -. Payment amounts remain nonnegative.
+         */
+        fun formatDelta(delta: Long): String {
+            val bytes = requireNotNull(NativeCore.formatAmountDelta(delta)) { "Invalid ZCL change" }
+            return bytes.toString(Charsets.US_ASCII)
+        }
+
         fun of(value: Long): Zatoshi {
             return fromNative(NativeCore.changeAmount(value, 0, false))
         }

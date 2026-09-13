@@ -148,6 +148,37 @@ zcl_status zcl_amount_format(uint64_t amount, uint8_t *text, size_t text_capacit
     return ZCL_OK;
 }
 
+zcl_status zcl_amount_delta_format(int64_t delta, uint8_t *text, size_t text_capacity,
+                                  size_t *text_len)
+{
+    if (text == NULL || text_len == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    if (delta < -(int64_t)ZCL_MAX_MONEY || delta > (int64_t)ZCL_MAX_MONEY)
+        return ZCL_OUT_OF_RANGE;
+    uint8_t temporary[18] = {0};
+    size_t prefix = (size_t)(delta != 0);
+    uint64_t magnitude = 0;
+    if (delta < 0) {
+        temporary[0] = (uint8_t)'-';
+        magnitude = (uint64_t)(-delta); /* Range check excludes INT64_MIN. */
+    } else {
+        temporary[0] = (uint8_t)'+';
+        magnitude = (uint64_t)delta;
+    }
+    size_t count = 0;
+    /* prefix is zero or one; all arithmetic stays within the 18-byte array. */
+    zcl_status status = zcl_amount_format(magnitude, temporary + prefix,
+                                         sizeof(temporary) - prefix, &count);
+    if (status != ZCL_OK)
+        return status;
+    count += prefix; /* The formatter returns at most 17 bytes. */
+    if (text_capacity < count)
+        return ZCL_BUFFER_TOO_SMALL;
+    memcpy(text, temporary, count);
+    *text_len = count;
+    return ZCL_OK;
+}
+
 zcl_status zcl_amount_add(uint64_t left, uint64_t right, uint64_t *result)
 {
     if (result == NULL)

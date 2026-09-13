@@ -4,7 +4,7 @@
 #include <jni.h>
 
 /* No retained Java references, pins, heap allocation, or wallet logic here.
- * At most 17 Java bytes cross this boundary. Failure uses a negative status;
+ * At most 18 public Java bytes cross this boundary. Failure uses a negative status;
  * every successful monetary value fits in signed jlong. */
 JNIEXPORT jlong JNICALL
 Java_org_zclassic_wallet_core_NativeCore_parseAmount(JNIEnv *env, jclass type,
@@ -29,6 +29,21 @@ Java_org_zclassic_wallet_core_NativeCore_parseAmount(JNIEnv *env, jclass type,
     return (jlong)amount;
 }
 
+/* env is checked by both callers. Public stack bytes are copied, never pinned. */
+static jbyteArray formatted_bytes(JNIEnv *env, const uint8_t *bytes, size_t length)
+{
+    if (length == 0 || length > ZCL_AMOUNT_DELTA_TEXT_MAX)
+        return NULL;
+    /* Checked length fits jsize exactly. */
+    jbyteArray result = (*env)->NewByteArray(env, (jsize)length);
+    if (result == NULL || (*env)->ExceptionCheck(env))
+        return NULL;
+    (*env)->SetByteArrayRegion(env, result, 0, (jsize)length, (const jbyte *)bytes);
+    if ((*env)->ExceptionCheck(env))
+        return NULL;
+    return result;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_formatAmount(JNIEnv *env, jclass type,
                                                     jlong amount)
@@ -40,14 +55,22 @@ Java_org_zclassic_wallet_core_NativeCore_formatAmount(JNIEnv *env, jclass type,
     size_t length = 0;
     if (zcl_amount_format((uint64_t)amount, bytes, sizeof(bytes), &length) != ZCL_OK)
         return NULL;
-    /* Core contract bounds length to 17, so conversion to jsize is exact. */
-    jbyteArray result = (*env)->NewByteArray(env, (jsize)length);
-    if (result == NULL || (*env)->ExceptionCheck(env))
+    return formatted_bytes(env, bytes, length);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_org_zclassic_wallet_core_NativeCore_formatAmountDelta(JNIEnv *env, jclass type,
+                                                         jlong delta)
+{
+    (void)type;
+    if (env == NULL)
         return NULL;
-    (*env)->SetByteArrayRegion(env, result, 0, (jsize)length, (const jbyte *)bytes);
-    if ((*env)->ExceptionCheck(env))
+    uint8_t bytes[18] = {0};
+    size_t length = 0;
+    /* JNI jlong and int64_t both have exactly the signed 64-bit range. */
+    if (zcl_amount_delta_format((int64_t)delta, bytes, sizeof(bytes), &length) != ZCL_OK)
         return NULL;
-    return result;
+    return formatted_bytes(env, bytes, length);
 }
 
 JNIEXPORT jlong JNICALL

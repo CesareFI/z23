@@ -532,3 +532,21 @@ green, with no retry or change to assertions. Debug/test and unsigned release
 builds, both lints and the architecture-tree gate pass. Native behavior did not
 change. Evidence and hashes are in the balance-presentation files in the 48-hour
 scratch directory. Positive custody and TLS remain independently blocked.
+
+2026-09-13 signed amount display: C now formats bounded signed changes with an
+explicit sign for nonzero values. It checks +/- MAX_MONEY before negation, so
+INT64_MIN and out-of-range values refuse without touching caller output. The
+existing decimal formatter is reused; payment parsing remains nonnegative.
+JNI shares one checked <=18-byte result copier. No floating-point or locale
+conversion is used, and no transaction authority is introduced.
+
+All 28 active native tests pass ASan/UBSan/LSan, including six amount groups.
+Clang/GCC and enabled-provider analysis pass; all 312 authored functions across
+55 files remain at complexity <=10. The expanded amount fuzzer checks signed
+round-trips, arbitrary signed bit patterns, canaries and unchanged failure
+outputs: 1611305 executions in 61 seconds, no finding, final hashes match.
+All 53 core JVM/JNI and 18 app tests pass. The two API-35 read-only/amount tests
+pass in 2.424 seconds. Debug/test and unsigned release builds and both lints
+pass. The amount-delta logs, corpus and hashes are retained in the 48-hour
+scratch directory. Next expose the next display-expiry delay from C, so an idle
+foreground UI can invalidate its display without duplicating freshness policy.

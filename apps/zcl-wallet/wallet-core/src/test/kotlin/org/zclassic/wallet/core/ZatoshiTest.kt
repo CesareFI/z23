@@ -36,4 +36,19 @@ class ZatoshiTest {
         assertEquals("0.00000001", Zatoshi.of(1).format())
         assertEquals("1", Zatoshi.of(100_000_000).format())
     }
+
+    @Test fun signedChangesAreExactAndCannotBecomePaymentAmounts() {
+        val cases = mapOf(0L to "0", 1L to "+0.00000001", -1L to "-0.00000001",
+            100_000_000L to "+1", -123_456_789L to "-1.23456789",
+            Zatoshi.MAX_VALUE to "+21000000", -Zatoshi.MAX_VALUE to "-21000000",
+            Zatoshi.MAX_VALUE - 1 to "+20999999.99999999",
+            1 - Zatoshi.MAX_VALUE to "-20999999.99999999")
+        cases.forEach { (value, expected) ->
+            assertEquals(expected, Zatoshi.formatDelta(value))
+            if (value != 0L) assertFailsWith<IllegalArgumentException> { Zatoshi.parse(expected) }
+        }
+        for (value in listOf(Long.MIN_VALUE, Long.MAX_VALUE,
+                             Zatoshi.MAX_VALUE + 1, -Zatoshi.MAX_VALUE - 1))
+            assertFailsWith<IllegalArgumentException> { Zatoshi.formatDelta(value) }
+    }
 }

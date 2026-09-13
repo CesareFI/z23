@@ -438,3 +438,19 @@ ASan/UBSan but lacked `-fno-sanitize-recover=all`. That option is now mandatory
 there as in the core/provider builds. Its eight cases pass with the stricter
 failure behavior. The previously fuzzed JNI binary remains byte-identical after
 the build-profile change; no unchanged fuzz campaign was repeated.
+
+## Signed amount display review — 2026-09-13
+
+Scope: `zcl_amount_delta_format`, its JNI byte-copy helper and public fixtures.
+This is display formatting; the existing nonnegative payment parser is unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | C formats into an initialized 18-byte temporary. Prefix is exactly zero or one; the existing amount formatter writes at most 17 bytes. Capacity is checked before copying to the caller. Tests check exact output, adjacent canaries and unchanged buffers/lengths for every insufficient capacity. |
+| Integer overflow/underflow; signed/unsigned conversions | Delta must lie within +/- MAX_MONEY before negation, excluding INT64_MIN and every out-of-range value. The magnitude then fits uint64_t exactly. Prefix plus returned count is <=18. JNI jlong has the same signed 64-bit range; result length is checked before jsize conversion. No floating-point or locale conversion participates. |
+| Use-after-free; double-free; leaks; dangling pointers | No C allocation/free, retained pointer, pin or Java global reference. JNI copies one bounded stack array into a checked Java allocation; local references are VM-owned for the native call. |
+| NULL dereferences; uninitialized memory | Public C output pointers and JNI env are checked. Temporary byte arrays and lengths initialize before use. The shared private JNI helper receives only checked env and initialized local arrays. NewByteArray/SetByteArrayRegion failures return no result and preserve the pending exception. |
+| Pointer arithmetic; format strings | The only new C offset is a proven zero/one byte prefix inside the 18-byte temporary. No untrusted index, implicit NUL, printf formatting or input-derived diagnostic is used. Fuzzer canaries bound the returned length before indexing. |
+| Stack usage; allocation limits; resource exhaustion | Fixed <=18-byte production arrays, no recursion/VLA, bounded existing decimal loops. At most one <=18-byte Java result allocation. Host campaign has time/input/RSS limits; no retry or background work is introduced. |
+| Malformed input; races; ownership | Arbitrary signed 64-bit values fail closed outside money range. Output changes only after all checks succeed. No global state or mutable shared input exists; caller owns output exclusively for the call. Positive and negative display changes remain invalid inputs to the payment-amount parser. |
+| Secret leakage | Only public monetary display values pass this API. It accepts no key, seed, record, address or network frame and emits no logs. Secret-bearing state and TLS quarantine are unaffected. |

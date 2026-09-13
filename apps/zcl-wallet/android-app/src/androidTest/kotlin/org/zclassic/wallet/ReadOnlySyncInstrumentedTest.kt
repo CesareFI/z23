@@ -14,10 +14,27 @@ import org.zclassic.wallet.core.CoreStatus
 import org.zclassic.wallet.core.Network
 import org.zclassic.wallet.core.ReadOnlySync
 import org.zclassic.wallet.core.TransparentAddress
+import org.zclassic.wallet.core.Zatoshi
 
 /** Public local fixtures only. No endpoint, socket, wallet record or Keystore. */
 @RunWith(AndroidJUnit4::class)
 class ReadOnlySyncInstrumentedTest {
+    @Test fun signedPendingAmountsUseCheckedNativeFormatting() {
+        val cases = mapOf(0L to "0", -7L to "-0.00000007", 7L to "+0.00000007",
+            Zatoshi.MAX_VALUE to "+21000000", -Zatoshi.MAX_VALUE to "-21000000",
+            Zatoshi.MAX_VALUE - 1 to "+20999999.99999999",
+            1 - Zatoshi.MAX_VALUE to "-20999999.99999999")
+        for ((value, expected) in cases) assertEquals(expected, Zatoshi.formatDelta(value))
+        for (value in listOf(Long.MIN_VALUE, Long.MAX_VALUE,
+                             Zatoshi.MAX_VALUE + 1, -Zatoshi.MAX_VALUE - 1)) {
+            var refused = false
+            try { Zatoshi.formatDelta(value) }
+            catch (_: IllegalArgumentException) { refused = true }
+            assertTrue(refused)
+        }
+        assertEquals("0.00000007", Zatoshi.of(7).format())
+    }
+
     @Test fun bothNetworksPublishOnlyCompleteUnverifiedReportsAndRestartEmpty() {
         val assets = InstrumentationRegistry.getInstrumentation().context.assets
         for (network in Network.entries) {

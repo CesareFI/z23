@@ -7,6 +7,7 @@ internal object NativeCore {
 
     @JvmStatic external fun parseAmount(text: ByteArray): Long
     @JvmStatic external fun formatAmount(amount: Long): ByteArray?
+    @JvmStatic external fun formatAmountDelta(delta: Long): ByteArray?
     @JvmStatic external fun changeAmount(left: Long, right: Long, subtract: Boolean): Long
     @JvmStatic external fun encodeBase58(payload: ByteArray): ByteArray?
     @JvmStatic external fun decodeBase58(text: ByteArray): ByteArray?
