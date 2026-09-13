@@ -41,6 +41,10 @@ control. Version 1 creates one immutable wallet record and has no mutable addres
 index or transaction state to roll back. Future mutable state needs its own
 rollback and recovery design.
 
+The [change-counter codec](CHANGE_STATE.md) now authenticates a separate fixed
+record against this recovered wallet identity. Its storage/reservation/recovery
+layer remains unfinished; it cannot by itself advance or restore an index.
+
 ## Recovered-wallet internal address binding
 
 `zcl_wallet_recovered_change` checks the same version1 header/recovered entropy

@@ -1157,3 +1157,27 @@ object's lifetime ends. The focused JNI key ASan/UBSan/LSan fixture passes;
 production source is unchanged. Evidence/source/binary hashes are in
 jni-key-tracker-* under the48-hour scratch directory. This small test-only
 checkpoint remains separate from the in-progress authenticated index codec.
+
+2026-09-13 authenticated change-counter codec: an exact80-byte internal-chain
+record now binds its uint32 next index to recovered wallet identity through
+private HKDF-SHA512/HMAC keys. All key material clears on success/failure;
+only the public record or verified counter publishes. The codec performs no
+reservation, increment, storage, freshness check or transaction approval.
+Old authenticated content still verifies, explicitly tested and documented;
+the next storage slice must enforce durable monotonic consumption.
+
+All44 native ASan/UBSan/LSan tests, Clang/GCC analysis and420 functions in74files
+at complexity<=10 pass. Independent OpenSSL3.0.13 HKDF/HMAC matched40 complete
+records across network/entropy/counter boundaries. Regular tests cover640 record
+bit edits, truncations, wrong wallet/network, header mutations and canaries.
+Faults at extract/expand/tag generation verify live key cleanup and unchanged
+caller results. Bounded full-codec/raw-record fuzzing completed966 executions
+in91s without a finding; final source/binary hashes match.
+
+Clang20 host and NDK ARM64 -O2 assembly inspect every tag byte before equality;
+encode/decode frames are152/168 and176/192bytes respectively. Both Android
+ABIs,72 core/35 app JVM gates, both lints, fixture isolation and architecture
+pass. This C-only codec adds no JNI/device route; unchanged device cases were
+not rerun. Evidence is in change-state-* under the48-hour scratch directory.
+Continue immediately with bounded durable reservation and explicit incomplete-
+write recovery; missing/corrupt state must never silently restart at zero.
