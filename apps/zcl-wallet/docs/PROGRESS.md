@@ -784,3 +784,26 @@ the existing sanitizer, analysis and fuzz evidence remains applicable. Logs,
 PID records and source/APK hashes are in history-lifecycle-* and
 history-process-run1 under the48-hour scratch directory. Continue with bounded
 transparent transaction serialization/parsing and pinned-original fixtures.
+
+2026-09-13 bounded transparent transaction codec: C now owns a fixed v4
+transparent representation, canonical parser, transactional serializer and
+SHA256d ID calculation. Eight inputs, sixteen outputs,128/25-byte script caps
+and1925-byte wire cap bound memory/work; unsupported larger/legacy/shielded
+forms refuse. Unique/non-null outpoints, expiry and checked output totals are
+enforced, while scripts remain opaque and no funding/signing authority exists.
+
+Three fixtures preserve transparent prefixes from pinned original beta6
+sighash rows with explicitly replaced zero shielded tails. A read-only shell
+projector records exact original objects and uses OpenSSL for independent IDs.
+These projections establish byte/hash behavior, not original-node acceptance.
+All fixture truncations, output capacities, max-size boundaries and malformed
+counts/amounts/expiry/outpoints have deterministic failure-atomicity coverage.
+
+All31 native ASan/UBSan/LSan tests pass, as do Clang/GCC analysis and348 authored
+functions in60 files at complexity<=10. The wire/object fuzzer completed
+2,471,229 executions in91s without a finding; source/binary hashes match.
+The58 core and24 app JVM tests, both ABI builds, both Android lints, APK fixture
+isolation and architecture pass. No JNI change or unchanged device suite was
+rerun. Evidence/corpus/hash manifests are in transaction-* under the48-hour
+scratch directory. TLS stays blocked/excluded. Continue with checked synthetic
+funding, output classification, change ownership and exact-byte review binding.

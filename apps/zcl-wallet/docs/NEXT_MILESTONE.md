@@ -60,7 +60,10 @@ now has maximum-packet, exception and public-device fixtures. The history view
 has unverified/empty/unavailable, restoration, detach and timer evidence. Both
 views now share one foreground snapshot and clear together on rendering failure;
 combined recreation, background/resume and process-relaunch fixtures pass.
-Continue with pinned-original transparent transaction wire fixtures in C.
+The bounded transparent v4 C codec now has canonical wire, failure-atomicity
+and independent hash fixtures; see [transaction scope](TRANSACTIONS.md).
+Continue with checked synthetic funding, exact-byte review and original
+branch-specific signature hashes before exposing any send action.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report

@@ -1,0 +1,32 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+/* Transparent prefixes projected from MIT-licensed Zclassic test vectors at
+ * 14a83d510ffd109d3fa09bf74ebf8c28854a263f, sighash.json lines 203/208/296.
+ * Only the shielded tail is replaced by zeros. See TRANSACTIONS.md for scope,
+ * original attribution and the independent OpenSSL SHA256d derivation. */
+#ifndef ZCL_TRANSACTION_FIXTURE_H
+#define ZCL_TRANSACTION_FIXTURE_H
+#include "zcl_transaction.h"
+static const struct {
+    const char *hex;
+    const char *txid;
+    size_t inputs;
+    size_t outputs;
+    uint32_t lock_time;
+} transaction_vectors[] = {
+    {"0400008085202f89015efcea13ce020de08ae06a7c21027be149fe49de610ebf893c113d65e874c854"
+     "03000000056a52525263ffffffff028993cd04000000000653520053006a84d6fa04000000000563536a6a53"
+     "00000000000000000000000000000000000000",
+     "da2f263e188558255f3255961628ad1fe1852b1dbd50b3e309cc756176d476fc", 1, 2, 0},
+    {"0400008085202f8901ccdac1eb2c136862438a9ceed37f47a9dfb984179907c67cc9b2dcbd1cd946b3"
+     "01000000050000536551d40c603903539763040000000003526351214b0c000000000002ac51a688a50200000000"
+     "056aac65ac5124e51871000000000000000000000000000000",
+     "da843fd2017648345db1c04250be1fda776a3538192fc684815c6cf15c87679e", 1, 3, UINT32_C(0x7118e524)},
+    {"0400008085202f8904cb7c3c2c06a345e70ef3a0e900a59df181956157235ae22df5243119f53bb0d3"
+     "030000000552006300acffffffffecc8796c66400db86eb6dc1a8c6a3355922e2a29d53d0dc5cdacb7521bf0b71c"
+     "0200000007ac6552526552acffffffffe56057a94ce6839e4cdef0668f4807f03fe02cc0f083bd0eaf7b94301bfb2d8b"
+     "03000000025265bad875ffa771ae941924f5fd87b20897c98a276cc4a094382deeb6e61cb9f217c14c7349"
+     "0000000009acac6a6552005265634fccc36702f8a3ab03000000000452516aac48bcb50500000000095200636a6553515365"
+     "25d152b3000000000000000000000000000000",
+     "6ea61ff7f113af243e96a3844571754796a994e0996bf740e68a0a011213af78", 4, 2, UINT32_C(0xb352d125)}
+};
+#endif

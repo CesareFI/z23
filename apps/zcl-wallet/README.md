@@ -72,6 +72,9 @@ and a public request review; see [scanner scope](docs/SCANNING_QR.md). Actual
 camera capture/lifecycle passes on the emulator; physical QR interoperability,
 hardware custody, sync, sending, shielded support and mobile validation remain
 unqualified or unfinished. See [the next milestone](docs/NEXT_MILESTONE.md).
+The offline [transparent transaction codec](docs/TRANSACTIONS.md) now has
+bounded C parsing/serialization and independent SHA256d fixtures; it grants no
+funding, signing or broadcast authority.
 
 For C safety checks on a Linux development host with Clang 20 and GCC:
 

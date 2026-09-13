@@ -91,7 +91,8 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
     src/electrum_identity.c src/electrum_header.c src/electrum_history.c
-    src/sync.c src/sync_watch.c src/sync_owners.c)
+    src/sync.c src/sync_watch.c src/sync_owners.c
+    src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -192,6 +193,11 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     target_link_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_transaction tests/fuzz_transaction.c)
+    target_link_libraries(fuzz_transaction PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_transaction PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_link_options(fuzz_transaction PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(seed_electrum tests/seed_electrum.c)
     target_compile_options(seed_electrum PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion)
@@ -338,6 +344,12 @@ if(NOT ANDROID)
     target_compile_options(electrum_history_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_electrum_history COMMAND electrum_history_tests)
     set_tests_properties(wallet_electrum_history PROPERTIES TIMEOUT 15)
+    add_executable(transaction_tests tests/test_transaction.c)
+    target_link_libraries(transaction_tests PRIVATE zcl_wallet_core)
+    target_compile_options(transaction_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion)
+    add_test(NAME wallet_transaction COMMAND transaction_tests)
+    set_tests_properties(wallet_transaction PROPERTIES TIMEOUT 15)
     add_executable(sync_history_tests tests/test_sync_history.c tests/sync_fixture.c)
     target_link_libraries(sync_history_tests PRIVATE zcl_wallet_core)
     target_compile_options(sync_history_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
