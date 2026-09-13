@@ -40,6 +40,19 @@ the APKs themselves are never modified. Reports and exact APK hashes are saved
 under `android-app/build/reports/fixture-isolation`. This does not run device
 instrumentation or qualify hardware custody.
 
+Native builds enable the NDK's flexible page-size support. Verify the actual
+debug/release APK alignment and both packaged libraries' ELF LOAD segments:
+
+```sh
+./gradlew :android-app:checkNativeAlignment
+```
+
+This also runs in `:android-app:check`. It requires 16 KiB-compatible segment
+alignment and file/virtual-address offsets, uses the SDK's APK alignment check,
+and refuses an unexpected native-library inventory. Reports and APK hashes are
+saved under `android-app/build/reports/native-alignment`. This is artifact
+verification; runtime acceptance on a 16 KiB device remains separate.
+
 The C core currently covers checked amounts/addresses/payment URIs, English
 BIP39 recovery, BIP32/BIP44 Zclassic receiving keys, authenticated-record
 serialization, private storage that refuses overwrite, backup confirmation,

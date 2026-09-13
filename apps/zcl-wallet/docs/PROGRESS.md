@@ -1452,3 +1452,28 @@ This metadata change grants no runtime feature or wallet authority. Evidence
 is under `.cache/android-wallet/camera-scene-20260914/lint-flag-*.log`.
 The original lint-fast failures remain visible for root execution and the
 preserved injected `.agents`/`.codex` root directories.
+
+2026-09-14 Android native layout: inspected release ELF headers showed 4096-byte
+LOAD alignment on both arm64-v8a and x86_64. Enable the pinned NDK27 flexible
+page-size option, which sets 16384-byte maximum page alignment and removes the
+Bionic compile-time PAGE_SIZE macro. No authored native source uses page-size
+macros or mmap/mprotect/msync/munmap; this change alters build layout, not
+wallet buffers, allocation arithmetic, object ownership or secret cleanup.
+
+The new `checkNativeAlignment` task is part of Android `check`. It verifies the
+actual debug/release APKs with SDK zipalign, requires exactly the two expected
+native libraries, and checks every ELF LOAD segment's power-of-two alignment
+and matching file/virtual-address low bits. Tool output must parse as bounded
+hex before shell arithmetic; no input is evaluated as a command. The check
+rejects preserved pre-fix APKs, an APK realigned to only 4 KiB and an aligned
+archive containing a third native library. No deployed APK was mutated for
+these negative fixtures.
+
+Both ABI builds, JVM tests, Android debug/release lint, fixture isolation,
+native alignment and architecture pass. Eleven API35 public-fixture JNI,
+storage, amount, QR and isolated-Binder tests pass in 26.106 seconds on the
+rebuilt app. Repository lint-fast retains the two diagnosed environment
+failures. Evidence is under `.cache/android-wallet/page-alignment-20260914`;
+the gate also saves exact APK hashes and ELF reports. This establishes build
+layout plus runtime on the existing 4 KiB emulator, not a 16 KiB device test,
+hardware custody, physical-camera acceptance or consensus qualification.

@@ -16,7 +16,9 @@ android {
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
-        externalNativeBuild { cmake { arguments += "-DZCL_JNI=ON" } }
+        externalNativeBuild { cmake {
+            arguments += listOf("-DZCL_JNI=ON", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+        } }
     }
     externalNativeBuild {
         cmake {
@@ -60,7 +62,26 @@ val checkFixtureIsolation by tasks.registering(Exec::class) {
         android.sdkDirectory.resolve("build-tools/${android.buildToolsVersion}/aapt2"),
         layout.buildDirectory.dir("reports/fixture-isolation").get().asFile)
 }
-tasks.named("check") { dependsOn(checkFixtureIsolation) }
+val checkNativeAlignment by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Verify both APKs and native ABIs support 16 KiB page alignment."
+    dependsOn("assembleDebug", "assembleRelease")
+    workingDir(rootProject.projectDir)
+    val osName = System.getProperty("os.name")
+    val ndkHost = when {
+        osName.startsWith("Mac") -> "darwin-x86_64"
+        osName.startsWith("Windows") -> "windows-x86_64"
+        else -> "linux-x86_64"
+    }
+    val executableSuffix = if (osName.startsWith("Windows")) ".exe" else ""
+    commandLine("bash", rootProject.file("tools/check-android-native.sh"),
+        android.sdkDirectory.resolve("build-tools/${android.buildToolsVersion}/zipalign$executableSuffix"),
+        android.sdkDirectory.resolve("ndk/${android.ndkVersion}/toolchains/llvm/prebuilt/$ndkHost/bin/llvm-readelf$executableSuffix"),
+        layout.buildDirectory.file("outputs/apk/debug/android-app-debug.apk").get().asFile,
+        layout.buildDirectory.file("outputs/apk/release/android-app-release-unsigned.apk").get().asFile,
+        layout.buildDirectory.dir("reports/native-alignment").get().asFile)
+}
+tasks.named("check") { dependsOn(checkFixtureIsolation, checkNativeAlignment) }
 dependencies {
     implementation(project(":wallet-core"))
     testImplementation(kotlin("test-junit"))
