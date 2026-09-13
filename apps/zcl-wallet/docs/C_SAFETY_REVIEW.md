@@ -488,3 +488,26 @@ the existing Electrum fuzzer. The codec reports server assertions only.
 | Malformed serialization/network input | Shared parser rejects bad UTF-8/escapes, duplicate keys, incorrect IDs, notifications, errors and trailing data even in ignored fields. History rejects nonobjects, malformed IDs/heights, local-only -2, and duplicate decoded hashes including case aliases. Oversized history never succeeds partially; no completeness, amount, inclusion or spending claim is derived. |
 | Races and ownership | Synchronous caller-owned stable nonoverlapping spans; no globals or persistent state. Callers must serialize writes to their own output. This codec alone does not bind a reply to an address, source, tip or owner; that remains an independent sync integration gate before presentation. |
 | Secret leakage | Inputs/outputs are public protocol metadata only. No seed, key, custody file, fee estimate or network operation is exposed or logged. Historical reference files were inspected as text, not executed. TLS remains blocked and excluded. |
+
+## Optional history sync lifetime review — 2026-09-13
+
+Scope: the opt-in seven-response C sync/watch profile. Default six-response
+balance behavior and existing phase values remain unchanged. No JNI history
+entry point, source transport or presentation is enabled in this slice.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | HISTORY is an appended enum handled before the existing six-element request table is indexed. Active-phase validation bounds every other index. History traversal uses only the <=16 count produced by the strict codec. Candidate history clearing uses its exact sizeof. Existing request/frame limits and transactional output checks remain authoritative. |
+| Integer overflow/underflow; conversions | Opt-in initialization reserves seven nonzero IDs and rejects first_id > UINT32_MAX-6. The last reply does not increment its ID. Phase transitions explicitly route BALANCE to HISTORY to TIP_AFTER without relying on the appended enum's ordering. Positive int32 heights are checked before uint32 conversion and comparison with the tip; no confirmation or amount arithmetic is introduced. |
+| Use-after-free; double-free; leaks; dangling pointers | All new state is fixed caller-owned storage. No allocation, free, retained external pointer or asynchronous callback. Existing JNI owners still refer to registry IDs and borrow watches only under the mutex; their report packet remains ten longs and their profile stays balance-only. |
+| NULL dereferences; uninitialized memory | Opt-in wrappers delegate to the existing argument-checking initializers before accessing state. Invalid starts clear state. Reports initialize fully, history availability defaults false, and every abort clears candidate history and availability together. Private partial reports cannot publish before DONE. |
+| Pointer arithmetic; format strings | New production pointers name existing members/checked array elements only. No byte offsets, pointer reconstruction, input logging or format strings. Existing checked request encoder handles the history method. |
+| Stack usage; allocation limits; resource exhaustion | Candidate, cached report and snapshots each grow by one fixed 16-entry history and availability flag. Owner count remains four and storage remains bounded; strict individual-frame warnings apply to the JNI build too. No timer, thread, heap, recursion, VLA, retry or extra query in the default profile. History overflow fails the opt-in attempt, never truncates. |
+| Malformed serialization/network input | Every reply uses the current expected ID and strict existing envelope parser. The codec rejects duplicate IDs, malformed heights and oversize arrays. Claimed heights beyond the initial tip or changed final height/hash return IO_UNCERTAIN and clear all candidate values. Equal tips establish only internal server consistency, not proof or an atomic mempool snapshot. |
+| Races, ownership and restart | Profile is immutable within the watch lifetime and shares its source/address, token, clock and deadline. Late tokens cannot advance the current clock or cancel a replacement. A failed refresh retains only the prior completed report as stale; rollback clears it. Close/reinitialization discards reports and the prior source; callers must still retain owner identity as well as token across callbacks. |
+| Secret leakage | Only public unverified history IDs/heights are added. No keys, wallet records, amounts derived from transactions, endpoint or authentication authority. Existing TLS quarantine and hardware custody controls remain intact. |
+
+Measured host sizeof values: history 584, report 688, attempt 704, watch 1504,
+snapshot 752 and four-owner pool 6056 bytes. These are host ABI measurements,
+not a claim about every Android ABI or total thread stack use. Static frame
+warnings and both Android ABI builds complement this storage measurement.

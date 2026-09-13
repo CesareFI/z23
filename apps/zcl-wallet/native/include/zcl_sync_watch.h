@@ -40,16 +40,21 @@ typedef struct {
     zcl_network network;
     uint64_t sequence, deadline_ms, clock_ms, observed_ms;
     zcl_status last_fault;
-    bool initialized, in_flight, has_report;
+    bool initialized, in_flight, has_report, include_history;
 } zcl_sync_watch;
 
 /* Initialize once per owner lifetime. Nonoverlapping, caller-owned spans must
  * be stable during each synchronous call. Failure clears a non-NULL watch. */
 zcl_status zcl_sync_watch_init(zcl_sync_watch *watch, const uint8_t *address, size_t length,
     zcl_network network, const uint8_t *source_id, size_t source_length);
+/* Opt-in history is fixed for the entire owner lifetime. It shares all source,
+ * token, deadline, freshness and empty-restart rules with the balance report.
+ * A bounded-history refusal fails the whole attempt; no partial report appears. */
+zcl_status zcl_sync_watch_init_with_history(zcl_sync_watch *watch, const uint8_t *address,
+    size_t length, zcl_network network, const uint8_t *source_id, size_t source_length);
 void zcl_sync_watch_close(zcl_sync_watch *watch);
 /* now_ms comes from one monotonic clock, including suspended time, throughout
- * this owner lifetime. Begin reserves six IDs on a NEW connection; the adapter
+ * this owner lifetime. Begin reserves six IDs (seven with history) on a NEW connection; the adapter
  * must close every old connection and require authenticated TLS independently.
  * Deadline includes connection setup and all responses. No wrapping arithmetic.
  * Token output stays unchanged on failure. Only one attempt can be active. */

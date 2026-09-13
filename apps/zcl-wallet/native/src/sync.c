@@ -12,6 +12,8 @@ zcl_status zcl_sync_abort(zcl_sync *session, zcl_status reason)
     if (session == NULL || reason == ZCL_OK) return ZCL_INVALID_ARGUMENT;
     memset(&session->candidate.balance, 0, sizeof(session->candidate.balance));
     memset(&session->candidate.tip, 0, sizeof(session->candidate.tip));
+    memset(&session->candidate.history, 0, sizeof(session->candidate.history));
+    session->candidate.has_history = false;
     session->phase = ZCL_SYNC_FAILED;
     session->waiting = false;
     session->fault = reason;
@@ -35,11 +37,22 @@ zcl_status zcl_sync_start(zcl_sync *session, const uint8_t *address, size_t addr
     return ZCL_OK;
 }
 
+zcl_status zcl_sync_start_with_history(zcl_sync *session, const uint8_t *address,
+    size_t address_length, zcl_network network, uint32_t first_id)
+{
+    const zcl_status status = zcl_sync_start(session, address, address_length, network, first_id);
+    if (status != ZCL_OK) return status;
+    if (first_id > UINT32_MAX - 6) return zcl_sync_abort(session, ZCL_OUT_OF_RANGE);
+    session->include_history = true;
+    return ZCL_OK;
+}
+
 static zcl_status active(const zcl_sync *session)
 {
     if (session == NULL) return ZCL_INVALID_ARGUMENT;
     if (session->phase == ZCL_SYNC_FAILED) return failure_status(session);
-    if (session->phase < ZCL_SYNC_VERSION || session->phase > ZCL_SYNC_TIP_AFTER)
+    if ((session->phase < ZCL_SYNC_VERSION || session->phase > ZCL_SYNC_TIP_AFTER) &&
+        session->phase != ZCL_SYNC_HISTORY)
         return ZCL_INVALID_ARGUMENT;
     if (session->request_id == 0) return ZCL_INVALID_ARGUMENT;
     return ZCL_OK;
@@ -56,8 +69,9 @@ zcl_status zcl_sync_request(zcl_sync *session, uint8_t *output, size_t capacity,
     };
     _Static_assert(sizeof(methods) / sizeof(methods[0]) == ZCL_SYNC_TIP_AFTER - ZCL_SYNC_VERSION + 1,
         "Every active phase needs a request method");
-    const size_t index = (size_t)(session->phase - ZCL_SYNC_VERSION);
-    const zcl_status status = zcl_electrum_request(methods[index], session->request_id,
+    const zcl_electrum_method method = session->phase == ZCL_SYNC_HISTORY
+        ? ZCL_ELECTRUM_HISTORY : methods[(size_t)(session->phase - ZCL_SYNC_VERSION)];
+    const zcl_status status = zcl_electrum_request(method, session->request_id,
         session->candidate.address, sizeof(session->candidate.address), session->candidate.network,
         output, capacity, length);
     if (status == ZCL_OK) session->waiting = true;
@@ -78,10 +92,25 @@ static zcl_status identity_reply(const zcl_sync *session, const uint8_t *frame, 
     }
 }
 
+static zcl_status history_reply(zcl_sync *session, const uint8_t *frame, size_t length)
+{
+    zcl_reported_history *history = &session->candidate.history;
+    const zcl_status status = zcl_electrum_history_reply(frame, length, session->request_id, history);
+    if (status != ZCL_OK) return status;
+    for (size_t i = 0; i < history->count; ++i) {
+        const int32_t height = history->entries[i].reported_height;
+        if (height > 0 && (uint32_t)height > session->candidate.tip.height)
+            return ZCL_IO_UNCERTAIN;
+    }
+    session->candidate.has_history = true;
+    return ZCL_OK;
+}
+
 static zcl_status data_reply(zcl_sync *session, const uint8_t *frame, size_t length)
 {
     if (session->phase == ZCL_SYNC_BALANCE)
         return zcl_electrum_balance_reply(frame, length, session->request_id, &session->candidate.balance);
+    if (session->phase == ZCL_SYNC_HISTORY) return history_reply(session, frame, length);
     zcl_reported_tip tip = {0};
     const zcl_status status = zcl_electrum_tip_reply(frame, length, session->request_id,
         session->candidate.network, &tip);
@@ -95,6 +124,15 @@ static zcl_status data_reply(zcl_sync *session, const uint8_t *frame, size_t len
     return ZCL_OK;
 }
 
+static void advance(zcl_sync *session)
+{
+    if (session->phase == ZCL_SYNC_BALANCE && session->include_history)
+        session->phase = ZCL_SYNC_HISTORY;
+    else if (session->phase == ZCL_SYNC_HISTORY) session->phase = ZCL_SYNC_TIP_AFTER;
+    else session->phase = (zcl_sync_phase)(session->phase + 1);
+    if (session->phase != ZCL_SYNC_DONE) ++session->request_id;
+}
+
 zcl_status zcl_sync_reply(zcl_sync *session, const uint8_t *frame, size_t length)
 {
     const zcl_status allowed = active(session);
@@ -105,8 +143,7 @@ zcl_status zcl_sync_reply(zcl_sync *session, const uint8_t *frame, size_t length
     else status = data_reply(session, frame, length);
     if (status != ZCL_OK) return zcl_sync_abort(session, status);
     session->waiting = false;
-    session->phase = (zcl_sync_phase)(session->phase + 1);
-    if (session->phase != ZCL_SYNC_DONE) ++session->request_id;
+    advance(session);
     return ZCL_OK;
 }
 

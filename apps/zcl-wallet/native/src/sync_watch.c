@@ -23,6 +23,14 @@ zcl_status zcl_sync_watch_init(zcl_sync_watch *watch, const uint8_t *address, si
     return ZCL_OK;
 }
 
+zcl_status zcl_sync_watch_init_with_history(zcl_sync_watch *watch, const uint8_t *address,
+    size_t length, zcl_network network, const uint8_t *source_id, size_t source_length)
+{
+    const zcl_status status = zcl_sync_watch_init(watch, address, length, network, source_id, source_length);
+    if (status == ZCL_OK) watch->include_history = true;
+    return status;
+}
+
 static zcl_status stop(zcl_sync_watch *watch, zcl_status reason)
 {
     const zcl_status status = zcl_sync_abort(&watch->attempt, reason);
@@ -52,12 +60,23 @@ static zcl_status owns_attempt(const zcl_sync_watch *watch, uint64_t token)
     return ZCL_OK;
 }
 
-static zcl_status begin_limits(uint64_t now_ms, uint64_t timeout_ms, uint32_t first_id)
+static zcl_status begin_limits(uint64_t now_ms, uint64_t timeout_ms, uint32_t first_id,
+    bool include_history)
 {
     if (timeout_ms == 0 || timeout_ms > ZCL_SYNC_TIMEOUT_MAX_MS || now_ms > UINT64_MAX - timeout_ms)
         return ZCL_OUT_OF_RANGE;
-    if (first_id == 0 || first_id > UINT32_MAX - 5) return ZCL_OUT_OF_RANGE;
+    const uint32_t remaining_ids = include_history ? 6 : 5;
+    if (first_id == 0 || first_id > UINT32_MAX - remaining_ids) return ZCL_OUT_OF_RANGE;
     return ZCL_OK;
+}
+
+static zcl_status start_attempt(zcl_sync_watch *watch, uint32_t first_id)
+{
+    if (watch->include_history)
+        return zcl_sync_start_with_history(&watch->attempt, watch->address,
+            sizeof(watch->address), watch->network, first_id);
+    return zcl_sync_start(&watch->attempt, watch->address,
+        sizeof(watch->address), watch->network, first_id);
 }
 
 zcl_status zcl_sync_watch_begin(zcl_sync_watch *watch, uint64_t now_ms, uint64_t timeout_ms,
@@ -65,13 +84,12 @@ zcl_status zcl_sync_watch_begin(zcl_sync_watch *watch, uint64_t now_ms, uint64_t
 {
     if (watch == NULL || !watch->initialized || token == NULL) return ZCL_INVALID_ARGUMENT;
     if (watch->in_flight) return ZCL_BUSY;
-    const zcl_status limits = begin_limits(now_ms, timeout_ms, first_id);
+    const zcl_status limits = begin_limits(now_ms, timeout_ms, first_id, watch->include_history);
     if (limits != ZCL_OK) return limits;
     if (watch->sequence == UINT64_MAX) return ZCL_RESOURCE_EXHAUSTED;
     const zcl_status clock = clock_update(watch, now_ms);
     if (clock != ZCL_OK) return clock;
-    const zcl_status status = zcl_sync_start(&watch->attempt, watch->address,
-        sizeof(watch->address), watch->network, first_id);
+    const zcl_status status = start_attempt(watch, first_id);
     if (status != ZCL_OK) return status;
     watch->deadline_ms = now_ms + timeout_ms;
     watch->in_flight = true;

@@ -689,3 +689,32 @@ suite was repeated. Evidence, initial failure, focused correction, corpus and
 hashes are in history-* files in the 48-hour scratch directory. Next add an
 explicit optional history exchange to the existing C sync lifetime while
 preserving the six-response balance-only path and transport quarantine.
+
+2026-09-13 optional C history lifetime: explicit start/init profiles insert
+history between balance and final tip, while the existing default remains six
+responses. The opt-in profile reserves seven IDs without wrapping. Reports
+include history only after final height/hash equality and refuse positive
+history heights beyond the initial tip. Every failed attempt clears candidate
+history and balance; prior completed history remains explicitly stale during
+failed refresh. Source/address, elapsed deadline, late-token, rollback and
+empty restart rules are shared with the existing watch. No JNI history entry
+point, endpoint or history display is enabled yet.
+
+All 30 native ASan/UBSan/LSan tests pass, including failure/cancellation at
+every phase, changed height/hash, both networks, maximum request IDs, explicit
+empty history and synthetic matching positive-height assertions. Clang/GCC
+analysis and 322 functions in 56 files at complexity <=10 pass. Bounded fuzz
+campaigns completed 39,771 sync executions/91s, 52,521 watch executions/61s and
+5,244 JNI executions/31s with no finding. Review of initial watch seeds found
+their first snapshot/reset pair exercises rollback; a supplementary 1,000-run
+campaign starts directly with complete mainnet/testnet history exchanges.
+All final source and fuzzer hashes match; the earlier corpus is preserved.
+
+Android builds for arm64-v8a/x86_64, 54 core and 24 app JVM tests, both lints,
+APK isolation and architecture pass. The existing API-35 default-sync fixture
+passes two tests in 2.08 seconds, retaining the ten-long JNI snapshot contract.
+Measured host fixed storage is report 688, watch 1504 and four-owner pool 6056
+bytes; no persistent allocation or worker was added. Logs, hashes, corpora and
+size measurement are under history-sync/history-watch/history-jni in the
+48-hour scratch directory. Continue with checked JNI history projection and
+public fixtures, then pinned-original transparent transaction work.

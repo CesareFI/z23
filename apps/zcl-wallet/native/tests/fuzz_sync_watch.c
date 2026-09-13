@@ -41,6 +41,12 @@ static void inspect(zcl_sync_watch *watch, uint64_t now)
         return;
     }
     const zcl_reported_balance *balance = &report.report.balance;
+    if (report.report.has_history != watch->include_history) abort();
+    if (report.report.history.count > ZCL_ELECTRUM_HISTORY_MAX) abort();
+    for (size_t i = 0; i < report.report.history.count; ++i) {
+        const int32_t height = report.report.history.entries[i].reported_height;
+        if (height < -1 || (height > 0 && (uint32_t)height > report.report.tip.height)) abort();
+    }
     if (balance->confirmed > ZCL_MAX_MONEY || balance->total > ZCL_MAX_MONEY) abort();
     if (balance->pending_delta < -(int64_t)ZCL_MAX_MONEY || balance->pending_delta > (int64_t)ZCL_MAX_MONEY) abort();
     if ((int64_t)balance->total != (int64_t)balance->confirmed + balance->pending_delta) abort();
@@ -54,7 +60,7 @@ static void response(zcl_sync_watch *watch, uint64_t token, uint64_t now,
     static char frame[4096]; /* Host-only single-threaded fixture buffer. */
     if (valid && watch->in_flight) {
         const unsigned phase = (unsigned)watch->attempt.phase;
-        if (phase < 1 || phase > 6) abort();
+        if ((phase < 1 || phase > 6) && phase != ZCL_SYNC_HISTORY) abort();
         const size_t count = sync_fixture_reply(watch->network, phase, watch->attempt.request_id,
             frame, sizeof(frame));
         (void)zcl_sync_watch_reply(watch, token, now, (const uint8_t *)frame, count);
@@ -70,8 +76,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     sync_fixture_start(&fixture, (data[0] & 8) == 0 ? ZCL_MAINNET : ZCL_TESTNET, 1);
     zcl_sync_watch watch;
     const uint8_t source[32] = {1};
-    if (zcl_sync_watch_init(&watch, fixture.candidate.address, 35, fixture.candidate.network,
-        source, sizeof(source)) != ZCL_OK) abort();
+    const zcl_status initialized = (data[0] & 4) == 0
+        ? zcl_sync_watch_init(&watch, fixture.candidate.address, 35, fixture.candidate.network, source, sizeof(source))
+        : zcl_sync_watch_init_with_history(&watch, fixture.candidate.address, 35, fixture.candidate.network, source, sizeof(source));
+    if (initialized != ZCL_OK) abort();
     uint64_t token = 0, old = 0, now = 0;
     const size_t operations = size < 128 ? size : 128;
     for (size_t i = 0; i < operations; ++i) {

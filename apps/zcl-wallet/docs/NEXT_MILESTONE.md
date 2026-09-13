@@ -54,8 +54,9 @@ unavailable/stale/unverified states, signed C amounts and this-address-only scop
 It rejects restored text state and starts with no amount. Nonempty display is
 still local-fixture-only. Actual Activity recreation, foreground replacement
 and deliberate emulator process relaunch now have public-fixture evidence.
-The independent bounded C history codec is the next protocol slice; bind any
-eventual report to the same address/source/tip lifetime before displaying it.
+The optional bounded C history exchange now shares the address/source/tip
+lifetime and publishes only after its final tip. Next add a checked JNI
+projection with public fixtures before displaying any transaction history.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report

@@ -17,6 +17,16 @@ void sync_fixture_start(zcl_sync *session, zcl_network network, uint32_t first_i
     CHECK(zcl_sync_start(session, address, length, network, first_id) == ZCL_OK);
 }
 
+void sync_fixture_start_with_history(zcl_sync *session, zcl_network network, uint32_t first_id)
+{
+    const uint8_t zero_hash[20] = {0};
+    uint8_t address[35];
+    size_t length = 0;
+    CHECK(zcl_address_from_hash(zero_hash, sizeof(zero_hash), network,
+        address, sizeof(address), &length) == ZCL_OK);
+    CHECK(zcl_sync_start_with_history(session, address, length, network, first_id) == ZCL_OK);
+}
+
 size_t sync_fixture_reply(zcl_network network, unsigned step, uint32_t id,
                            char *frame, size_t capacity)
 {
@@ -44,6 +54,10 @@ size_t sync_fixture_reply(zcl_network network, unsigned step, uint32_t id,
     case 5:
         count = snprintf(frame, capacity,
             "{\"id\":%" PRIu32 ",\"result\":{\"confirmed\":1000,\"unconfirmed\":-7}}", id);
+        break;
+    case ZCL_SYNC_HISTORY:
+        count = snprintf(frame, capacity,
+            "{\"id\":%" PRIu32 ",\"result\":[{\"tx_hash\":\"%064u\",\"height\":0},{\"tx_hash\":\"%064u\",\"height\":-1}]}", id, 0u, 1u);
         break;
     default:
         abort();

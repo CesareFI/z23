@@ -25,9 +25,21 @@ candidate amounts. Buffer-capacity errors before transmission are retryable;
 no network retry or reconnection occurs in this API. It retains no pointers,
 allocates nothing and accesses no keys, sockets or persistent storage.
 
+The explicit `zcl_sync_start_with_history` and
+`zcl_sync_watch_init_with_history` profiles insert one bounded history query
+between balance and final tip, reserving seven IDs instead of six. This choice
+is fixed for the watch's lifetime. The default initializers remain balance-only.
+The combined report publishes only after every response succeeds; malformed or
+oversized history, changed final tip, and positive history heights beyond the
+initial tip invalidate the attempt and clear its entire candidate. The existing
+source/address ownership, elapsed deadline, stale prior report, late-token
+refusal, clock-rollback clearing and empty restart rules also cover history.
+`has_history=false` means no history query was included; `true` with count zero
+means the server asserted an empty array. Neither establishes completeness.
+
 Even a successful report is an unverified server claim for one transparent
 address. It supplies no account total, spendable UTXOs, history completeness,
-chain proof or signing authority. A same-tip balance can change with mempool
+chain proof or signing authority. A same-tip balance or history can change with mempool
 activity; the check does not create an atomic server snapshot. Deadline,
 freshness and late-callback handling are supplied by the C watch below. Android
 presentation and qualified transport remain separate work.
@@ -135,8 +147,8 @@ of inclusion. Public output arguments remain unchanged on failed parsing.
 
 ### Bounded history codec
 
-The history codec is currently independent of the six-response balance watch;
-it has no JNI, UI, persistence or enabled endpoint. It accepts an array of at
+The history codec is optionally composed by the C sync/watch; it has no JNI,
+UI, persistence or enabled endpoint. It accepts an array of at
 most 16 unique 32-byte transaction IDs and claimed heights, preserving server
 order. More entries return `RESOURCE_EXHAUSTED`, never a truncated success.
 The existing 128-token limit also applies: 16 entries with a numeric fee fit,
