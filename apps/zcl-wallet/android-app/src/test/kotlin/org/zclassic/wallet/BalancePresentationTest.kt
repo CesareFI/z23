@@ -178,10 +178,12 @@ class BalancePresentationTest {
     @Test fun receiverFailureClosesOwnerAndPropagates() {
         val ui = DelayedUi()
         val sync = owner()
+        var fault: CoreStatus? = null
         presentation(sync, ui, { error("Public fixture receiver failure") },
-                            { error("Receiver failure is not a sync fault") }).use {
+                            { fault = it }).use {
             assertTrue(it.requestUpdate())
             assertFailsWith<IllegalStateException> { ui.runNext() }
+            assertEquals(CoreStatus.IO_UNCERTAIN, fault)
             assertFalse(it.requestUpdate())
             assertEquals(CoreStatus.CANCELLED,
                 assertFailsWith<ReadOnlySyncFailure> { sync.snapshot() }.status)
@@ -337,11 +339,13 @@ class BalancePresentationTest {
         val ui = DelayedUi()
         val wakeup = DelayedWakeup()
         val sync = owner()
+        var fault: CoreStatus? = null
         BalancePresentation(sync, ui, wakeup, { error("Public fixture receiver failure") },
-                            { error("Receiver failure is not a sync fault") }).use {
+                            { fault = it }).use {
             complete(sync)
             it.requestUpdate()
             assertFailsWith<IllegalStateException> { ui.runNext() }
+            assertEquals(CoreStatus.IO_UNCERTAIN, fault)
             assertNull(wakeup.callback)
             assertFalse(it.requestUpdate())
         }

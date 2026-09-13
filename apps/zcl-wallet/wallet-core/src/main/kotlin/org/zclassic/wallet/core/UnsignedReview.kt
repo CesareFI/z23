@@ -5,8 +5,10 @@ import java.util.Collections
 
 class UnsignedReviewFailure(val status: CoreStatus) : IllegalStateException("Unsigned review failed: $status")
 
-/** Thin owner of one C unsigned draft. Use on a bounded worker, with a trusted
- * elapsed monotonic clock including sleep. C owns bytes, accounting and expiry.
+/** Thin owner of one C unsigned draft. Prepare on a bounded worker, with a
+ * trusted elapsed monotonic clock including sleep. Snapshot queries are bounded
+ * metadata reads suitable for UI delivery, with no network I/O. C owns bytes,
+ * accounting and expiry.
  * Close on background, lock or replacement; never persist/restore this owner.
  * Snapshots are public copies, not consent, key ownership or chain evidence.
  * A queued UI delivery must re-read its original foreground owner.

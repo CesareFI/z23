@@ -985,3 +985,21 @@ destination scripts and selected networks. Original public address vectors
 independently qualify both factories. Evidence is in address-jni-* under the
 48-hour scratch directory. Continue with owned foreground review presentation,
 one C-driven expiry wakeup, failure cleanup and restoration/recreation fixtures.
+
+2026-09-13 foreground unsigned review delivery: an owned review presentation now
+reuses the balance queue/timer engine. Every delivery samples its original C
+owner; expiry wakeups carry only a redraw signal. Close releases owner/receiver
+references, drops late callbacks and requires a newly prepared replacement.
+Failure cleanup now clears the display even if timer cancellation or owner close
+throws, preserving renderer/fatal and cleanup exceptions. Existing balance
+renderer-failure tests now require clearing as well as propagation/cancellation.
+
+All66 core and35 app JVM cases pass, including11 new review timing/replacement
+and cleanup-failure cases. Both ABI APK builds, both lints, fixture isolation
+and architecture pass. The API35 emulator passed10 existing balance presentation
+and balance/history lifecycle cases in215.681s. No native source changed, so
+unchanged sanitizer/fuzz campaigns were not repeated. Evidence is in
+review-presentation-* under the48-hour scratch directory; the initial test
+compile failure (shadowed loop variable) is preserved separately. The review
+view and its device fixtures are the next independent slice; this checkpoint
+has no review Activity, signing, custody or broadcast claim.

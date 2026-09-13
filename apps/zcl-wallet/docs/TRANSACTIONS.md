@@ -276,6 +276,28 @@ independent OpenSSL SHA256d identifies the draft. Real JVM `-Xcheck:jni` and
 API35 emulator tests qualify transfer, cancellation, expiry and owned copies;
 they do not qualify a review Activity or original-node transaction acceptance.
 
+## Foreground presentation ownership
+
+`ReviewPresentation` owns an already prepared `UnsignedReview` on the UI thread.
+It shares the balance display's `ForegroundPresentation` queue and wakeup
+mechanism. Producer notifications coalesce to one redraw signal; delivery reads
+the original owner at the current C clock and arms one cancellable wakeup from
+the returned remaining duration. Early or late timer callbacks only request a
+new read. They cannot decide expiry, extend a deadline or authorize a signature.
+
+Background, lock and replacement must close the presentation and clear its
+views. Closed presentations drop source/receiver references and reject queued
+or captured timer callbacks. A replacement owns a newly prepared review; no
+review ID or snapshot is restored. The native single-review slot is released
+by explicit cancellation or observed expiry, including failed rendering.
+
+Delivery failures close the owner and invoke the unavailable callback even
+when timer cancellation or owner cleanup throws. Renderer/fatal failures still
+propagate, with cleanup problems preserved as suppressed exceptions. This also
+tightens the existing balance presentation's failure cleanup. No exception is
+treated as permission to show a previous snapshot. The view/Activity integration
+remains a separate acceptance slice; this adapter supplies no sending action.
+
 ## Ordered continuation
 
 1. Checked synthetic funding/prevout amounts, output classification, change
