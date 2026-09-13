@@ -187,6 +187,17 @@ static const jlong *history_snapshot(jlong id, jlong now)
     return values;
 }
 
+static void refuse_pending_snapshots(jlong id, jlong now)
+{
+    CHECK(!pending_exception);
+    const size_t before = reference_count;
+    pending_exception = true;
+    CHECK(API(syncSnapshot)(&environment, NULL, id, now) == NULL);
+    CHECK(API(syncHistorySnapshot)(&environment, NULL, id, now) == NULL);
+    CHECK(pending_exception && reference_count == before);
+    pending_exception = false;
+}
+
 #ifndef ZCL_JNI_FUZZ
 static void request_allocation_and_region_failure(void)
 {
@@ -220,6 +231,20 @@ static void frame_allocation_and_region_failure(void)
     }
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     release_references();
+}
+
+static void pending_snapshot_reads(void)
+{
+    for (unsigned mode = 0; mode < 2; ++mode) {
+        const jlong id = open_owner_mode(mode != 0);
+        CHECK(API(beginSyncAttempt)(&environment, NULL, id, 100, 10, 1) > 0);
+        refuse_pending_snapshots(id, 110);
+        /* Refused VM entries must not advance/expire the native owner clock. */
+        const jlong *state = snapshot(id, 109);
+        CHECK(state[0] == ZCL_OK && state[2] == 1 && state[3] == ZCL_OK && state[9] == 1);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
 }
 
 static void snapshot_failure_preserves_timeout(void)
@@ -315,6 +340,7 @@ static void history_packet_and_owner_replacement(void)
 int main(void)
 {
     request_allocation_and_region_failure(); frame_allocation_and_region_failure();
+    pending_snapshot_reads();
     snapshot_failure_preserves_timeout();
     history_snapshot_failures(); history_packet_and_owner_replacement();
     puts("JNI sync: allocation/region exceptions, full frame clearing, slot cleanup and retained timeout passed");
@@ -363,6 +389,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
         CHECK(status >= ZCL_OK && status <= ZCL_TLS_FAILURE);
         pending_exception = false; fail_get = false; fail_frame = false;
     }
+    refuse_pending_snapshots(id, INT64_MAX);
     inspect_fuzz_owner(id, history, step);
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     CHECK(API(failSyncAttempt)(&environment, NULL, id, token, (jint)ZCL_CANCELLED) == ZCL_CANCELLED);

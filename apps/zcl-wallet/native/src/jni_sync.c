@@ -238,7 +238,7 @@ Java_org_zclassic_wallet_core_NativeCore_syncHistorySnapshot(JNIEnv *env, jclass
     jlong id, jlong now)
 {
     (void)type;
-    if (env == NULL) return NULL;
+    if (env == NULL || (*env)->ExceptionCheck(env)) return NULL;
     jlong values[HISTORY_PACKET_MAX] = {0};
     size_t length = 12;
     zcl_sync_watch *watch = NULL;
@@ -257,7 +257,7 @@ JNIEXPORT jlongArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_syncSnapshot(JNIEnv *env, jclass type, jlong id, jlong now)
 {
     (void)type;
-    if (env == NULL) return NULL;
+    if (env == NULL || (*env)->ExceptionCheck(env)) return NULL;
     jlong values[10] = {0};
     zcl_sync_watch *watch = NULL;
     zcl_status status = now < 0 ? ZCL_OUT_OF_RANGE : enter_owner(id, &watch);

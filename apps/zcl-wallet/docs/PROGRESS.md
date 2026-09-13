@@ -1409,3 +1409,33 @@ The broader JNI audit found the same pending-exception gap in the oldest amount
 adapter's duplicated VM reads/publication. Continue by reusing the common helpers
 and preserving its signed status mapping, with a failing-before/passing-after
 fake-VM regression. Custody, signing, transport and BLAKE2 boundaries are unchanged.
+
+2026-09-14 amount/snapshot JNI continuation: amount parsing and formatting now
+reuse the shared checked byte-array helpers, removing duplicate publication
+code and refusing existing exceptions. Negative/oversized length still returns
+INVALID_ENCODING; numeric overflow still returns OUT_OF_RANGE. New fake-VM tests
+preserve exact zero/one-zatoshi/maximum values, signed formatting, malformed
+lengths, every read/publication exception and allocation failure without an
+exception. The pending-call regression fails on the prior implementation.
+
+Both sync snapshot entries now check pending exceptions before native owner
+lookup or VM allocation. A regression fails against the previous implementation;
+after the fix, refused reads at expiry cannot advance or expire either history
+mode's owner. The same refusal is injected at INT64_MAX in every JNI sync fuzz
+iteration. A bounded public-corpus campaign completes 11,592 executions in 61
+seconds without a finding, with source/binary hashes rechecked.
+
+All 61 native ASan/UBSan/LSan tests pass in 44.13 seconds, plus Clang/GCC analysis
+and unchanged complexity caps. Both Android ABIs, JVM tests, debug/release lint,
+fixture isolation and architecture pass. Seven API35 amount/balance/history
+tests pass in 2.688 seconds. The final scanner's additional actual-camera test
+passes three foreground/background capture cycles in 136.905 seconds, checking
+frame clearing, worker shutdown and explicit restart. Evidence is preserved in
+`.cache/android-wallet/continue-20260913`. Repository lint-fast still has only
+the two previously recorded failures; no threshold or guard was weakened.
+
+Continue with camera-to-review interoperability. The existing emulator's back
+camera is configured as `emulated`; its generated scene provides real camera
+frames but no public QR target. A separate disposable virtual-scene fixture can
+qualify that path without touching existing wallet or emulator data. Physical
+camera/device qualification remains a separate gate.

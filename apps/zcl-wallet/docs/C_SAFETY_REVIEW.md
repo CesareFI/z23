@@ -973,3 +973,23 @@ operation with a pending exception, and passes after the guards. All 60 native
 ASan/UBSan/LSan tests pass in 44.23 seconds; Clang/GCC analysis passes with 457
 production functions <=10 and 780 fixture functions <=15. Actual VM/device
 and bounded QR fuzz evidence are recorded separately in the progress log.
+
+## Amount and sync JNI pending exceptions — 2026-09-14
+
+Scope: reuse the checked byte-array helpers for amount parsing/formatting and
+refuse pending exceptions before either sync snapshot reads its native owner.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Amount parsing keeps a fixed 17-byte array and formatting retains 17/18-byte arrays. Shared helpers check VM counts before copying and jsize limits before publication. New fixtures retain input comparison, output canaries and untouched bytes past the result. Sync's existing 10/156-long packet bounds are unchanged. |
+| Integer overflow/underflow; signed/unsigned conversions | Only shared-helper length refusal maps back to INVALID_ENCODING, preserving the existing JNI length status. Core amount overflow remains OUT_OF_RANGE. Valid money fits positive jlong; signed delta checks and INT64_MIN/MAX refusals stay in the core. No new monetary arithmetic, multiplication or narrowing. Independent exact strings and signed status fixtures cover zero, one zatoshi, maximum and overflow. |
+| Use-after-free; double-free; leaks; dangling pointers | Amount paths retain only invocation stack bytes and VM-local output references. Removing the duplicate formatter adds no heap/owner. Fake arrays are bounded public host-only state. Sync guards run before registry lock/borrow, so refused calls retain neither a lock nor an owner pointer. |
+| NULL dereferences; uninitialized memory | Shared byte helpers reject NULL environment/input and pending exceptions before VM access. Arrays and returned lengths initialize. Sync checks NULL before ExceptionCheck. Length/region/publication faults remain pending and stop further VM calls; no failed read can reach parsing. |
+| Pointer arithmetic; format strings | No new production offsets or format operations. Test strings are fixed public literals with length checks before copying. Diagnostics contain only fixture line numbers. |
+| Stack usage; allocation limits; resource exhaustion | Production removes one duplicate helper and introduces no loop, worker, native allocation or retained data. Existing fixed frames and packet bounds remain. Fake-VM tests observe no allocation/access for pending calls, failed Java allocation and partial publication. Complexity caps are unchanged. |
+| Malformed input; races; native lifetime | Parse fixtures cover negative/empty/oversized lengths, malformed strings and every VM read fault; format fixtures cover each VM publication fault and allocation refusal without an exception. Pending sync reads use a time at/after expiry, then a valid earlier read proves that the refused call did not advance or expire the owner. Both history modes exercise this; the fuzzer also injects pending snapshot reads at INT64_MAX. |
+| Secret leakage and authority | All affected data is public amounts and unverified sync metadata. No secret, key, custody policy, network endpoint, signing, consensus or interpretation of verification status changes. Byte helpers keep their existing pending-exception semantics. |
+
+Both new regressions fail on the preceding JNI implementations and pass after
+the changes. Final native, VM/device and fuzz observations are recorded in the
+progress log; no broader wallet or hardware qualification is inferred.
