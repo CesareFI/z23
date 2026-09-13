@@ -13,12 +13,14 @@
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "JNI sync check failed at %d\n", __LINE__); abort(); } } while (0)
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
 JNIEXPORT jlong JNICALL API(openSyncOwner)(JNIEnv *, jclass, jbyteArray, jint, jbyteArray);
+JNIEXPORT jlong JNICALL API(openHistorySyncOwner)(JNIEnv *, jclass, jbyteArray, jint, jbyteArray);
 JNIEXPORT jint JNICALL API(closeSyncOwner)(JNIEnv *, jclass, jlong);
 JNIEXPORT jlong JNICALL API(beginSyncAttempt)(JNIEnv *, jclass, jlong, jlong, jlong, jlong);
 JNIEXPORT jint JNICALL API(failSyncAttempt)(JNIEnv *, jclass, jlong, jlong, jint);
 JNIEXPORT jbyteArray JNICALL API(syncRequest)(JNIEnv *, jclass, jlong, jlong, jlong);
 JNIEXPORT jint JNICALL API(syncReply)(JNIEnv *, jclass, jlong, jlong, jlong, jbyteArray);
 JNIEXPORT jlongArray JNICALL API(syncSnapshot)(JNIEnv *, jclass, jlong, jlong);
+JNIEXPORT jlongArray JNICALL API(syncHistorySnapshot)(JNIEnv *, jclass, jlong, jlong);
 
 /* Bounded fake VM local references for sanitizer/failure injection. This tests
  * native cleanup only; real JVM -Xcheck:jni and Android tests remain separate.
@@ -28,7 +30,7 @@ JNIEXPORT jlongArray JNICALL API(syncSnapshot)(JNIEnv *, jclass, jlong, jlong);
 typedef struct {
     jsize length;
     bool longs;
-    union { uint8_t bytes[16385]; jlong numbers[10]; } data;
+    union { uint8_t bytes[16385]; jlong numbers[156]; } data;
 } fake_array;
 static fake_array *references[32];
 static size_t reference_count;
@@ -54,7 +56,7 @@ void zcl_jni_test_free(void *pointer)
 
 static fake_array *array_new(jsize length, bool longs)
 {
-    CHECK(length >= 0 && length <= (longs ? 10 : 16385));
+    CHECK(length >= 0 && length <= (longs ? 156 : 16385));
     CHECK(reference_count < sizeof(references) / sizeof(references[0]));
     fake_array *array = calloc(1, sizeof(*array));
     CHECK(array != NULL);
@@ -142,15 +144,23 @@ static const struct JNINativeInterface_ table = {
 };
 static JNIEnv environment = &table;
 
-static jlong open_owner(void)
+static jlong open_owner_mode(bool history)
 {
     zcl_sync fixture;
     sync_fixture_start(&fixture, ZCL_MAINNET, 1);
     const uint8_t source[32] = {1};
-    const jlong id = API(openSyncOwner)(&environment, NULL,
-        bytes(fixture.candidate.address, 35), (jint)ZCL_MAINNET, bytes(source, sizeof(source)));
+    const jbyteArray address = bytes(fixture.candidate.address, 35);
+    const jbyteArray source_input = bytes(source, sizeof(source));
+    const jlong id = history
+        ? API(openHistorySyncOwner)(&environment, NULL, address, (jint)ZCL_MAINNET, source_input)
+        : API(openSyncOwner)(&environment, NULL, address, (jint)ZCL_MAINNET, source_input);
     CHECK(id > 0 && !pending_exception);
     return id;
+}
+
+static jlong open_owner(void)
+{
+    return open_owner_mode(false);
 }
 
 static const jlong *snapshot(jlong id, jlong now)
@@ -159,6 +169,22 @@ static const jlong *snapshot(jlong id, jlong now)
     CHECK(result != NULL && result->longs && result->length == 10 && !pending_exception);
     CHECK(result->data.numbers[9] >= 0 && result->data.numbers[9] <= (jlong)ZCL_SYNC_FRESH_MS);
     return result->data.numbers;
+}
+
+static const jlong *history_snapshot(jlong id, jlong now)
+{
+    fake_array *result = (fake_array *)API(syncHistorySnapshot)(&environment, NULL, id, now);
+    CHECK(result != NULL && result->longs && result->length >= 12 && result->length <= 156 && !pending_exception);
+    const jlong *values = result->data.numbers;
+    CHECK(values[10] >= 0 && values[10] <= 1 && values[11] >= 0 && values[11] <= 16);
+    CHECK(result->length == 12 + values[11] * 9);
+    if (values[10] == 0) CHECK(values[11] == 0);
+    for (size_t i = 0; i < (size_t)values[11]; ++i) {
+        for (size_t word = 0; word < 8; ++word)
+            CHECK(values[12 + i * 9 + word] >= 0 && values[12 + i * 9 + word] <= UINT32_MAX);
+        CHECK(values[20 + i * 9] >= -1 && values[20 + i * 9] <= INT32_MAX);
+    }
+    return values;
 }
 
 #ifndef ZCL_JNI_FUZZ
@@ -215,10 +241,82 @@ static void snapshot_failure_preserves_timeout(void)
     release_references();
 }
 
+static void history_snapshot_failures(void)
+{
+    const jlong id = open_owner_mode(true);
+    CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 100, UINT32_MAX - 5) == -(jlong)ZCL_OUT_OF_RANGE);
+    CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 1, UINT32_MAX - 6) > 0);
+    CHECK(API(syncHistorySnapshot)(NULL, NULL, id, 1) == NULL);
+    CHECK(history_snapshot(id, 0)[9] == 1);
+    for (unsigned mode = 0; mode < 2; ++mode) {
+        if (mode == 0) fail_new = true; else fail_set = true;
+        CHECK(API(syncHistorySnapshot)(&environment, NULL, id, 1) == NULL && pending_exception);
+        pending_exception = false;
+        const jlong *state = history_snapshot(id, 1);
+        CHECK(state[0] == ZCL_OK && state[3] == ZCL_TIMED_OUT && state[10] == 0);
+    }
+    CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+    CHECK(history_snapshot(id, 1)[0] == ZCL_CANCELLED);
+    release_references();
+}
+
+static size_t maximum_history(char *frame, size_t capacity)
+{
+    static const char prefix[] = "{\"id\":6,\"result\":[";
+    CHECK(capacity > sizeof(prefix));
+    size_t used = sizeof(prefix) - 1;
+    memcpy(frame, prefix, used);
+    for (unsigned i = 0; i < 16; ++i) {
+        const int count = snprintf(frame + used, capacity - used,
+            "%s{\"tx_hash\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffff%08x\",\"height\":%d}",
+            i == 0 ? "" : ",", i, i % 2 == 0 ? 0 : -1);
+        CHECK(count > 0 && (size_t)count < capacity - used);
+        used += (size_t)count;
+    }
+    CHECK(capacity - used >= 2);
+    memcpy(frame + used, "]}", 2);
+    return used + 2;
+}
+
+static void history_packet_and_owner_replacement(void)
+{
+    const jlong id = open_owner_mode(true);
+    const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+    CHECK(token > 0);
+    release_references();
+    for (unsigned step = 1; step <= 7; ++step) {
+        CHECK(API(syncRequest)(&environment, NULL, id, token, step) != NULL);
+        static char frame[4096];
+        const unsigned phase = step == 6 ? ZCL_SYNC_HISTORY : (step == 7 ? ZCL_SYNC_TIP_AFTER : step);
+        const size_t length = step == 6 ? maximum_history(frame, sizeof(frame))
+            : sync_fixture_reply(ZCL_MAINNET, phase, step, frame, sizeof(frame));
+        CHECK(API(syncReply)(&environment, NULL, id, token, step, bytes((const uint8_t *)frame, length)) == ZCL_OK);
+        const jlong *state = history_snapshot(id, step);
+        CHECK(state[10] == (step == 7 ? 1 : 0));
+        release_references();
+    }
+    const jlong *state = history_snapshot(id, 7);
+    CHECK(state[0] == ZCL_OK && state[1] == ZCL_BALANCE_UNVERIFIED && state[7] == 993 && state[11] == 16);
+    for (size_t i = 0; i < 16; ++i) {
+        for (size_t word = 0; word < 7; ++word) CHECK(state[12 + i * 9 + word] == UINT32_MAX);
+        CHECK(state[19 + i * 9] == (jlong)i && state[20 + i * 9] == (i % 2 == 0 ? 0 : -1));
+    }
+    CHECK(history_snapshot(id, 60007)[1] == ZCL_BALANCE_STALE);
+    CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+    release_references();
+    const jlong replacement = open_owner();
+    CHECK(replacement > id && history_snapshot(replacement, 60007)[10] == 0);
+    CHECK(API(failSyncAttempt)(&environment, NULL, id, token, ZCL_IO_FAILURE) == ZCL_CANCELLED);
+    CHECK(history_snapshot(id, 60007)[0] == ZCL_CANCELLED);
+    CHECK(API(closeSyncOwner)(&environment, NULL, replacement) == ZCL_OK);
+    release_references();
+}
+
 int main(void)
 {
     request_allocation_and_region_failure(); frame_allocation_and_region_failure();
     snapshot_failure_preserves_timeout();
+    history_snapshot_failures(); history_packet_and_owner_replacement();
     puts("JNI sync: allocation/region exceptions, full frame clearing, slot cleanup and retained timeout passed");
     return 0;
 }
@@ -226,14 +324,16 @@ int main(void)
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
 {
     if (length == 0 || length > ZCL_ELECTRUM_FRAME_MAX + 1) return 0;
-    const jlong id = open_owner();
+    const bool history = (data[0] & 8) != 0;
+    const jlong id = history ? open_owner_mode(true) : open_owner();
     const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
     CHECK(token > 0);
-    const unsigned step = (unsigned)data[0] % 6 + 1;
+    const unsigned step = (unsigned)data[0] % (history ? 7u : 6u) + 1;
     for (unsigned n = 1; n < step; ++n) {
         CHECK(API(syncRequest)(&environment, NULL, id, token, (jlong)n) != NULL);
         static char frame[4096]; /* Single-threaded public fuzz fixture only. */
-        const size_t count = sync_fixture_reply(ZCL_MAINNET, n, n, frame, sizeof(frame));
+        const unsigned phase = history && n == 6 ? ZCL_SYNC_HISTORY : (history && n == 7 ? ZCL_SYNC_TIP_AFTER : n);
+        const size_t count = sync_fixture_reply(ZCL_MAINNET, phase, n, frame, sizeof(frame));
         CHECK(API(syncReply)(&environment, NULL, id, token, (jlong)n,
             bytes((const uint8_t *)frame, count)) == ZCL_OK);
     }
@@ -251,6 +351,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
     }
     const jlong *state = snapshot(id, (jlong)step);
     CHECK(state[0] == ZCL_OK && state[1] >= 0 && state[1] <= 2);
+    const jlong *complete = history_snapshot(id, (jlong)step);
+    CHECK(complete[0] == ZCL_OK && complete[1] == state[1]);
+    if (complete[10] != 0) CHECK(history && step == 7 && complete[11] == 2);
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     CHECK(API(failSyncAttempt)(&environment, NULL, id, token, (jint)ZCL_CANCELLED) == ZCL_CANCELLED);
     release_references();

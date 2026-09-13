@@ -30,11 +30,9 @@ static zcl_status enter_owner(jlong id, zcl_sync_watch **watch)
     return status == ZCL_OK ? ZCL_OK : unlock_registry(status);
 }
 
-JNIEXPORT jlong JNICALL
-Java_org_zclassic_wallet_core_NativeCore_openSyncOwner(JNIEnv *env, jclass type,
-    jbyteArray address_input, jint chain, jbyteArray source_input)
+static jlong open_owner(JNIEnv *env, jbyteArray address_input, jint chain,
+    jbyteArray source_input, bool include_history)
 {
-    (void)type;
     uint8_t address[35] = {0}, source[32] = {0};
     size_t address_length = 0, source_length = 0;
     zcl_network network;
@@ -46,9 +44,27 @@ Java_org_zclassic_wallet_core_NativeCore_openSyncOwner(JNIEnv *env, jclass type,
     if (status != ZCL_OK) return -(jlong)status;
     if (pthread_mutex_lock(&registry_lock) != 0) return -(jlong)ZCL_IO_FAILURE;
     uint64_t id = 0;
-    status = zcl_sync_owners_open(&registry, address, address_length, network, source, source_length, &id);
+    status = include_history
+        ? zcl_sync_owners_open_with_history(&registry, address, address_length, network, source, source_length, &id)
+        : zcl_sync_owners_open(&registry, address, address_length, network, source, source_length, &id);
     status = unlock_registry(status);
     return status == ZCL_OK ? (jlong)id : -(jlong)status;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_zclassic_wallet_core_NativeCore_openSyncOwner(JNIEnv *env, jclass type,
+    jbyteArray address, jint chain, jbyteArray source)
+{
+    (void)type;
+    return open_owner(env, address, chain, source, false);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_zclassic_wallet_core_NativeCore_openHistorySyncOwner(JNIEnv *env, jclass type,
+    jbyteArray address, jint chain, jbyteArray source)
+{
+    (void)type;
+    return open_owner(env, address, chain, source, true);
 }
 
 JNIEXPORT jint JNICALL
@@ -157,24 +173,84 @@ Java_org_zclassic_wallet_core_NativeCore_syncReply(JNIEnv *env, jclass type,
     return (jint)unlock_registry(status);
 }
 
+static zcl_status snapshot_values(const zcl_sync_snapshot *snapshot, jlong values[10])
+{
+    if (snapshot->age_ms > INT64_MAX || snapshot->report.balance.confirmed > INT64_MAX ||
+        snapshot->report.balance.total > INT64_MAX || snapshot->next_change_ms > INT64_MAX)
+        return ZCL_OUT_OF_RANGE;
+    values[1] = (jlong)snapshot->freshness;
+    values[2] = snapshot->refreshing ? 1 : 0;
+    values[3] = (jlong)snapshot->last_fault;
+    values[4] = (jlong)snapshot->age_ms;
+    values[5] = (jlong)snapshot->report.balance.confirmed;
+    values[6] = (jlong)snapshot->report.balance.pending_delta;
+    values[7] = (jlong)snapshot->report.balance.total;
+    values[8] = (jlong)snapshot->report.tip.height;
+    values[9] = (jlong)snapshot->next_change_ms;
+    return ZCL_OK;
+}
+
 static zcl_status snapshot_numbers(zcl_sync_watch *watch, uint64_t now, jlong values[10])
 {
     zcl_sync_snapshot snapshot = {0};
     const zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
+    return status == ZCL_OK ? snapshot_values(&snapshot, values) : status;
+}
+
+#define HISTORY_PACKET_MAX ((size_t)12 + 9 * ZCL_ELECTRUM_HISTORY_MAX)
+_Static_assert(HISTORY_PACKET_MAX <= INT32_MAX, "History packets fit jsize");
+
+/* Eight big-endian uint32 words avoid implementation-defined uint64-to-signed
+ * conversions. Each Java long carries exactly 0..UINT32_MAX, followed by height.
+ * Caller supplies nine elements for one validated C entry. */
+static void history_entry_values(const zcl_reported_history_entry *entry, jlong values[9])
+{
+    for (size_t word = 0; word < 8; ++word) {
+        uint32_t value = 0;
+        for (size_t byte = 0; byte < 4; ++byte)
+            value = (value << 8) | entry->txid[word * 4 + byte];
+        values[word] = (jlong)value;
+    }
+    values[8] = (jlong)entry->reported_height;
+}
+
+static zcl_status history_snapshot_numbers(zcl_sync_watch *watch, uint64_t now,
+    jlong values[HISTORY_PACKET_MAX], size_t *length)
+{
+    zcl_sync_snapshot snapshot = {0};
+    zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
     if (status != ZCL_OK) return status;
-    if (snapshot.age_ms > INT64_MAX || snapshot.report.balance.confirmed > INT64_MAX ||
-        snapshot.report.balance.total > INT64_MAX || snapshot.next_change_ms > INT64_MAX)
-        return ZCL_OUT_OF_RANGE;
-    values[1] = (jlong)snapshot.freshness;
-    values[2] = snapshot.refreshing ? 1 : 0;
-    values[3] = (jlong)snapshot.last_fault;
-    values[4] = (jlong)snapshot.age_ms;
-    values[5] = (jlong)snapshot.report.balance.confirmed;
-    values[6] = (jlong)snapshot.report.balance.pending_delta;
-    values[7] = (jlong)snapshot.report.balance.total;
-    values[8] = (jlong)snapshot.report.tip.height;
-    values[9] = (jlong)snapshot.next_change_ms;
+    status = snapshot_values(&snapshot, values);
+    if (status != ZCL_OK) return status;
+    const zcl_reported_history *history = &snapshot.report.history;
+    if (history->count > ZCL_ELECTRUM_HISTORY_MAX) return ZCL_OUT_OF_RANGE;
+    if (!snapshot.report.has_history && history->count != 0) return ZCL_INVALID_ENCODING;
+    values[10] = snapshot.report.has_history ? 1 : 0;
+    values[11] = (jlong)history->count;
+    for (size_t i = 0; i < history->count; ++i)
+        history_entry_values(&history->entries[i], &values[12 + i * 9]);
+    *length = 12 + history->count * 9; /* count <=16 proves length <=156. */
     return ZCL_OK;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_org_zclassic_wallet_core_NativeCore_syncHistorySnapshot(JNIEnv *env, jclass type,
+    jlong id, jlong now)
+{
+    (void)type;
+    if (env == NULL) return NULL;
+    jlong values[HISTORY_PACKET_MAX] = {0};
+    size_t length = 12;
+    zcl_sync_watch *watch = NULL;
+    zcl_status status = now < 0 ? ZCL_OUT_OF_RANGE : enter_owner(id, &watch);
+    if (status == ZCL_OK)
+        status = unlock_registry(history_snapshot_numbers(watch, (uint64_t)now, values, &length));
+    values[0] = (jlong)status;
+    /* Private helper and static cap prove the jsize conversion is exact. */
+    jlongArray result = (*env)->NewLongArray(env, (jsize)length);
+    if (result == NULL || (*env)->ExceptionCheck(env)) return NULL;
+    (*env)->SetLongArrayRegion(env, result, 0, (jsize)length, values);
+    return (*env)->ExceptionCheck(env) ? NULL : result;
 }
 
 JNIEXPORT jlongArray JNICALL

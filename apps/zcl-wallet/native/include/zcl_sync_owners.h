@@ -32,6 +32,10 @@ typedef struct {
 zcl_status zcl_sync_owners_open(zcl_sync_owners *owners, const uint8_t *address,
     size_t length, zcl_network network, const uint8_t *source, size_t source_length,
     uint64_t *id);
+/* Same pool and nonreused IDs, with history fixed on for this owner lifetime. */
+zcl_status zcl_sync_owners_open_with_history(zcl_sync_owners *owners, const uint8_t *address,
+    size_t length, zcl_network network, const uint8_t *source, size_t source_length,
+    uint64_t *id);
 /* A borrowed watch must stay within the caller's serialized synchronous call.
  * No borrowed pointer may cross JNI or escape into an asynchronous callback.
  * Every callback looks up its owner ID again before using its attempt token.

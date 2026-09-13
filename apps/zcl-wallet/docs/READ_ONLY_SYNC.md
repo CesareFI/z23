@@ -147,8 +147,8 @@ of inclusion. Public output arguments remain unchanged on failed parsing.
 
 ### Bounded history codec
 
-The history codec is optionally composed by the C sync/watch; it has no JNI,
-UI, persistence or enabled endpoint. It accepts an array of at
+The history codec is optionally composed by the C sync/watch and explicit JNI
+owner; it has no history UI, persistence or enabled endpoint. It accepts an array of at
 most 16 unique 32-byte transaction IDs and claimed heights, preserving server
 order. More entries return `RESOURCE_EXHAUSTED`, never a truncated success.
 The existing 128-token limit also applies: 16 entries with a numeric fee fit,
@@ -240,7 +240,7 @@ module must have no spending-key, entropy-generation or signing callback.
 
 ## Foreground owner identity
 
-`zcl_sync_owners` supplies a caller-owned pool of four public balance watches.
+`zcl_sync_owners` supplies a caller-owned pool of four public sync watches.
 Each successful open receives a positive lifetime ID that fits Java long.
 Recycling a slot or clearing all watches never resets the issued-ID counter.
 Exhaustion refuses instead of wrapping. Failed opens leave the pool and output
@@ -302,6 +302,20 @@ MoneyRange is checked before negation and decimal conversion. The nonnegative
 payment-amount parser continues to reject both signs. No floating-point or
 locale-dependent amount formatting is used. Source/address remain fixed
 metadata on the owner.
+
+`ReadOnlySync.withHistory` opts into the seven-response profile through the
+same registry. The original constructor remains balance-only. History snapshots
+sample C once under the registry mutex and project balance, freshness and
+history together; Java allocation happens after unlocking. The existing
+ten-long snapshot is unchanged. The opt-in packet appends availability/count,
+then eight unsigned 32-bit hash words and one signed height per entry, bounded
+to 156 Java longs. Every hash word fits a positive long, avoiding unsigned
+64-bit to signed conversion. The managed adapter checks packet/word/count bounds
+and renders the exact hash words as lowercase hexadecimal; protocol and
+publication decisions remain in C. Report history is null when no query was
+included, an empty list for an empty assertion, or at most 16 public entries.
+None of these states supplies an inclusion proof or spending authority.
+
 Android BalancePresentation owns one sync lifetime, coalesces worker signals
 into at most one pending UI redraw, and samples the snapshot at actual delivery.
 Create/close/render belong to the same UI thread. Close cancels pending reads,

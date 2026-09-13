@@ -55,8 +55,9 @@ It rejects restored text state and starts with no amount. Nonempty display is
 still local-fixture-only. Actual Activity recreation, foreground replacement
 and deliberate emulator process relaunch now have public-fixture evidence.
 The optional bounded C history exchange now shares the address/source/tip
-lifetime and publishes only after its final tip. Next add a checked JNI
-projection with public fixtures before displaying any transaction history.
+lifetime and publishes only after its final tip. Its checked JNI projection
+now has maximum-packet, exception and public-device fixtures. Next render
+explicit unverified history through the existing foreground presentation owner.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report

@@ -10,21 +10,37 @@ static zcl_sync_owner_slot *find_slot(zcl_sync_owners *owners, uint64_t id)
     return NULL;
 }
 
-zcl_status zcl_sync_owners_open(zcl_sync_owners *owners, const uint8_t *address,
+static zcl_status open_owner(zcl_sync_owners *owners, const uint8_t *address,
     size_t length, zcl_network network, const uint8_t *source, size_t source_length,
-    uint64_t *id)
+    uint64_t *id, bool include_history)
 {
     if (owners == NULL || id == NULL) return ZCL_INVALID_ARGUMENT;
     if (owners->issued >= ZCL_SYNC_OWNER_ID_MAX) return ZCL_RESOURCE_EXHAUSTED;
     zcl_sync_owner_slot *slot = find_slot(owners, 0);
     if (slot == NULL) return ZCL_RESOURCE_EXHAUSTED;
     zcl_sync_watch watch = {0};
-    const zcl_status status = zcl_sync_watch_init(&watch, address, length, network, source, source_length);
+    const zcl_status status = include_history
+        ? zcl_sync_watch_init_with_history(&watch, address, length, network, source, source_length)
+        : zcl_sync_watch_init(&watch, address, length, network, source, source_length);
     if (status != ZCL_OK) return status;
     slot->watch = watch;
     slot->id = ++owners->issued; /* Bounded above before increment. */
     *id = slot->id;
     return ZCL_OK;
+}
+
+zcl_status zcl_sync_owners_open(zcl_sync_owners *owners, const uint8_t *address,
+    size_t length, zcl_network network, const uint8_t *source, size_t source_length,
+    uint64_t *id)
+{
+    return open_owner(owners, address, length, network, source, source_length, id, false);
+}
+
+zcl_status zcl_sync_owners_open_with_history(zcl_sync_owners *owners, const uint8_t *address,
+    size_t length, zcl_network network, const uint8_t *source, size_t source_length,
+    uint64_t *id)
+{
+    return open_owner(owners, address, length, network, source, source_length, id, true);
 }
 
 zcl_status zcl_sync_owners_get(zcl_sync_owners *owners, uint64_t id, zcl_sync_watch **watch)

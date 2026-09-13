@@ -718,3 +718,28 @@ bytes; no persistent allocation or worker was added. Logs, hashes, corpora and
 size measurement are under history-sync/history-watch/history-jni in the
 48-hour scratch directory. Continue with checked JNI history projection and
 public fixtures, then pinned-original transparent transaction work.
+
+2026-09-13 checked JNI history projection: `ReadOnlySync.withHistory` opts into
+the same four-slot registry with nonreused owner IDs. One C snapshot supplies
+balance/freshness/history atomically before Java allocation. The bounded packet
+contains at most156 longs, encoding each transaction ID as eight exact unsigned
+32-bit words; no unsigned64-to-signed conversion is used. The thin managed
+decoder checks shape/count/word/height bounds and renders lowercase IDs. The
+original constructor and ten-long balance snapshot remain compatible. No
+history screen, endpoint or spending route is enabled.
+
+All30 native ASan/UBSan/LSan tests, Clang/GCC analysis and330 functions/56files
+at complexity<=10 pass. The fake VM covers maximum16-entry packets, high-bit
+hash words, allocation/region exceptions, retained timeout on allocation failure,
+NULL-env nonmutation and closed-owner replacement. The extended JNI fuzzer
+completed17,337 executions in91s without a finding; source/binary hashes match.
+
+All58 core and24 app JVM tests, arm64-v8a/x86_64 debug/release builds, APK
+isolation, both lints and architecture pass. Three API35 tests passed in3.268s:
+maximum history on both networks and late-callback rejection, plus the existing
+balance/signed-amount regressions. New fixtures assert empty versus absent
+history, malformed/oversized replies, shared capacity and ID limits. Existing
+public assets are reused; no wallet, secret or remote query was involved.
+Evidence is in history-jni-final/history-jni files in the48-hour scratch
+directory. Continue with explicit unverified history display and lifecycle
+fixtures, then original transparent transaction serialization/signing work.

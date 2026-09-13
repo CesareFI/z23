@@ -511,3 +511,21 @@ Measured host sizeof values: history 584, report 688, attempt 704, watch 1504,
 snapshot 752 and four-owner pool 6056 bytes. These are host ABI measurements,
 not a claim about every Android ABI or total thread stack use. Static frame
 warnings and both Android ABI builds complement this storage measurement.
+
+## History JNI projection review — 2026-09-13
+
+Scope: history-enabled owner creation, one atomic public snapshot projection,
+the thin managed decoder and native/JVM/device fixtures. No history screen or
+network connection is enabled here.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Snapshot storage has 156 initialized longs: 12 metadata fields and 16 rows of nine longs. The C count is checked <=16 before offset arithmetic; maximum row ends at index155. Hash indexes are word*4+byte <=31. The fake VM independently checks actual array lengths/regions, including a maximum history packet. Managed decoding checks exact length, count and word bounds before indexing. |
+| Integer overflow/underflow; signed/unsigned conversions | Each uint32 hash word is assembled from four uint8 bytes and converts exactly to positive jlong. Signed int32 reported heights also fit jlong exactly. Count <=16 proves 12+9*count<=156; a static assertion proves jsize representation. Existing signed timestamp/token/owner guards apply; C enforces the extra request ID for history mode before changing the attempt. |
+| Use-after-free; double-free; leaks; dangling pointers | New owner creation reuses the same four-slot registry and never-reused IDs. Failed opens publish no slot; close clears it. Snapshot retains no Java reference or pointer, and its C stack value is copied into a local Java array after unlocking. JNI allocation/region exceptions return NULL; the VM owns local-reference cleanup. Reply frame allocation/zeroization/free remain unchanged and fault-tested. |
+| NULL dereferences; uninitialized memory | Both snapshot JNI functions refuse NULL env before touching native time/state. All output longs initialize to zero. Only successfully sampled state is encoded; failures return an error packet or NULL on VM exception, never a successful partial report. The opt-in open delegates to existing network/array and watch argument checks. |
+| Pointer arithmetic; format strings | New pointer offsets are bounded rows in the fixed array; no pointer/integer casts or retained borrows cross JNI. Hash encoding uses explicit fixed loops. Production adds no format string or input diagnostic. Managed hex formatting acts only on checked public words. |
+| Stack usage; allocation limits; resource exhaustion | Fixed maximum JNI result payload is1248 bytes plus the existing bounded C snapshot on the nested helper frame. No VLA, recursion, new native heap, timer or worker. Java creates at most one156-long result and16 small public row objects/hex strings per snapshot. Required frame warnings/analyzers apply; combined balance/history uses one sample rather than racing two reads. |
+| Malformed input and publication | C remains authoritative for parser, tip, money, height, freshness and complete-only rules. Managed decoding rejects malformed packet shape/flags/heights/words and an unavailable snapshot with history. Absent history remains distinct from an empty assertion. New JNI entry points cannot enable transport, spend, select a server, restore native state or derive a fee. |
+| Races, ownership and restart | The mutex spans owner lookup and the entire C snapshot. Java result allocation occurs after unlock. Managed operations retain their original owner and sample the elapsed clock while serialized. Mixed profile owners consume the same bounded pool; callbacks for closed history owners cannot reach replacement balance owners, even when attempt tokens match. |
+| Secret leakage | These packets contain unverified public transaction IDs/heights and existing public amounts/status only. No key, seed, wallet file, endpoint or input-derived log is added. Fixtures use synthetic public claims and test-only assets; custody controls and TLS quarantine remain unchanged. |
