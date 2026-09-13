@@ -5,8 +5,34 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
+static void history_reply(const uint8_t *data, size_t size)
+{
+    struct {
+        uint64_t before;
+        zcl_reported_history history;
+        uint64_t after;
+    } box;
+    memset(&box, 0xa5, sizeof(box));
+    zcl_reported_history previous;
+    memcpy(&previous, &box.history, sizeof(previous));
+    const zcl_status status = zcl_electrum_history_reply(data, size, 1, &box.history);
+    if (box.before != UINT64_C(0xa5a5a5a5a5a5a5a5) || box.after != box.before) abort();
+    if (status != ZCL_OK) {
+        if (memcmp(&previous, &box.history, sizeof(previous)) != 0) abort();
+        return;
+    }
+    if (box.history.count > ZCL_ELECTRUM_HISTORY_MAX) abort();
+    for (size_t i = 0; i < box.history.count; ++i) {
+        if (box.history.entries[i].reported_height < -1) abort();
+        for (size_t j = 0; j < i; ++j) {
+            if (memcmp(box.history.entries[i].txid, box.history.entries[j].txid, 32) == 0) abort();
+        }
+    }
+}
+
 static void replies(const uint8_t *data, size_t size)
 {
+    history_reply(data, size);
     zcl_reported_balance balance, before;
     memset(&balance, 0xa5, sizeof(balance));
     memcpy(&before, &balance, sizeof(before));

@@ -24,7 +24,7 @@ static void requests(void)
     static const char expected[] = "acb87996319dca2c2e2afd6c0f7514b18e72e204069718976e1abdc8fcf5de75";
     CHECK(memcmp(script_hash + 1, expected, 64) == 0);
     CHECK(script_hash[0] == 0xa5 && script_hash[65] == 0xa5);
-    for (int method = ZCL_ELECTRUM_VERSION; method <= ZCL_ELECTRUM_BALANCE; ++method) {
+    for (int method = ZCL_ELECTRUM_VERSION; method <= ZCL_ELECTRUM_HISTORY; ++method) {
         memset(request, 0xa5, sizeof(request));
         CHECK(zcl_electrum_request((zcl_electrum_method)method, UINT32_MAX, address, sizeof(address),
                                     ZCL_MAINNET, request + 1, 256, &length) == ZCL_OK);

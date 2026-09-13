@@ -52,8 +52,11 @@ and main-queue fixtures. C now supplies an expiry delay to one owned main-queue
 wakeup; delivery rechecks current state. The receive view renders explicit
 unavailable/stale/unverified states, signed C amounts and this-address-only scope.
 It rejects restored text state and starts with no amount. Nonempty display is
-still local-fixture-only. Next exercise actual Activity/process recreation and
-foreground replacement. Define the source trust and
+still local-fixture-only. Actual Activity recreation, foreground replacement
+and deliberate emulator process relaunch now have public-fixture evidence.
+The independent bounded C history codec is the next protocol slice; bind any
+eventual report to the same address/source/tip lifetime before displaying it.
+Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report
 offline/stale/unverified balances explicitly. Exercise malformed responses,

@@ -103,10 +103,11 @@ collected; no exception for that block is authorized.
 
 ## Implemented C protocol profile
 
-`zcl_electrum.h` provides five request types: `server.version` (requesting
+`zcl_electrum.h` provides six request types: `server.version` (requesting
 protocol 1.2), `server.features`, `blockchain.block.headers` with `[0,1]`,
 `blockchain.headers.subscribe` with `[true]`, and
-`blockchain.scripthash.get_balance`. No signing, key, broadcast, socket or
+`blockchain.scripthash.get_balance` and `blockchain.scripthash.get_history`.
+No signing, key, broadcast, socket or
 logging operation is in these functions. Output requests have an exact length
 and one final LF. Each ID is an explicit nonzero uint32.
 
@@ -131,6 +132,36 @@ Money uses checked zatoshi integers. Confirmed value is 0..MAX_MONEY; the
 pending value is a signed delta within +/-MAX_MONEY; their sum must remain
 0..MAX_MONEY. Output is a server-reported balance, not spendable UTXOs or proof
 of inclusion. Public output arguments remain unchanged on failed parsing.
+
+### Bounded history codec
+
+The history codec is currently independent of the six-response balance watch;
+it has no JNI, UI, persistence or enabled endpoint. It accepts an array of at
+most 16 unique 32-byte transaction IDs and claimed heights, preserving server
+order. More entries return `RESOURCE_EXHAUSTED`, never a truncated success.
+The existing 128-token limit also applies: 16 entries with a numeric fee fit,
+but sufficiently complex extension fields can exhaust the budget sooner.
+This initial operational cap makes heavily used addresses unavailable through
+this codec until a separate bounded retrieval design is qualified. It is not a
+consensus rule, pagination support or a claim of complete transaction history.
+
+Fields and duplicate refusal follow the pinned client's
+[`Synchronizer.on_address_history`](https://github.com/ZclassicCommunity/electrum-zclassic/blob/854b91c9bc3cf93e814596a417b474c584c7f589/lib/synchronizer.py#L104).
+Its [`wallet.py` constants](https://github.com/ZclassicCommunity/electrum-zclassic/blob/854b91c9bc3cf93e814596a417b474c584c7f589/lib/wallet.py#L76)
+distinguish -1 (unconfirmed parent), 0 (unconfirmed), and -2 (local-only).
+Network replies accept -1..INT32_MAX, matching this wallet's supported tip
+range; they reject the local-only sentinel. The
+[`network.py` request](https://github.com/ZclassicCommunity/electrum-zclassic/blob/854b91c9bc3cf93e814596a417b474c584c7f589/lib/network.py#L653)
+uses `blockchain.scripthash.get_history`. These historical files were inspected
+as text only; no old client or wallet was executed.
+
+IDs decode from exact 64-hex-character strings, allowing upper/lower case and
+valid JSON ASCII escapes. Duplicate detection compares decoded bytes, preventing
+case aliases. Unknown bounded fields, including fee, are syntax-checked but
+never surfaced as fee estimates or amounts. Every failed reply preserves the
+caller's output, including a malformed entry after valid entries. Empty success
+means only an empty server assertion. No transaction bytes, inclusion proof,
+confirmation count, amount, completeness or spendability is established.
 
 Mainnet/testnet genesis headers in `native/tests/electrum_genesis_fixture.h`
 were serialized offline using original beta6 constructors, transaction Merkle

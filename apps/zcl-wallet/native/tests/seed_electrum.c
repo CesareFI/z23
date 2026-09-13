@@ -30,6 +30,24 @@ static int maximum_frame(void)
     return write_frame("maximum-frame", frame, sizeof(frame));
 }
 
+static int history(const char *name, size_t count, int height, int duplicate)
+{
+    char frame[4096];
+    static const char prefix[] = "{\"id\":1,\"result\":[";
+    size_t used = sizeof(prefix) - 1;
+    memcpy(frame, prefix, used);
+    if (count > 17) return 1;
+    for (size_t i = 0; i < count; ++i) {
+        const int n = snprintf(frame + used, sizeof(frame) - used,
+            "%s{\"tx_hash\":\"%064zx\",\"height\":%d}", i == 0 ? "" : ",", duplicate ? 0 : i, height);
+        if (n < 0 || (size_t)n >= sizeof(frame) - used) return 1;
+        used += (size_t)n;
+    }
+    if (sizeof(frame) - used < 3) return 1;
+    memcpy(frame + used, "]}\n", 3);
+    return write_frame(name, frame, used + 3);
+}
+
 int main(void)
 {
     /* Run in an explicitly created corpus directory; every byte is public. */
@@ -41,5 +59,12 @@ int main(void)
     if (write_frame("features", features, sizeof(features) - 1) != 0) return 1;
     if (genesis("main-genesis", main_genesis) != 0) return 1;
     if (maximum_frame() != 0) return 1;
+    if (history("history-empty", 0, 0, 0) != 0) return 1;
+    if (history("history-parent", 1, -1, 0) != 0) return 1;
+    if (history("history-local-invalid", 1, -2, 0) != 0) return 1;
+    if (history("history-mempool", 1, 0, 0) != 0) return 1;
+    if (history("history-maximum", 16, 2147483647, 0) != 0) return 1;
+    if (history("history-overflow", 17, 1, 0) != 0) return 1;
+    if (history("history-duplicate", 2, 1, 1) != 0) return 1;
     return genesis("test-genesis", test_genesis);
 }

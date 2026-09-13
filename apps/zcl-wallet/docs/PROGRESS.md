@@ -664,3 +664,28 @@ source/APK hashes are under process-relaunch in the 48-hour scratch directory.
 This is clean process relaunch, not OS saved-task or positive-custody recovery
 qualification. Continue with bounded C transaction-history parsing using the
 pinned original Zclassic transport reference; no real source is enabled.
+
+2026-09-13 bounded C history codec: added the original scripthash history
+request and an allocation-free reply parser for at most 16 unique decoded
+transaction IDs. Heights retain -1/0 mempool semantics and are bounded by
+INT32_MAX; the local-only -2 sentinel refuses. Server order is preserved.
+Oversized, duplicate, malformed and wrong-envelope replies leave output
+unchanged, including failures after valid entries. Empty history remains only
+a server assertion. The pinned historical synchronizer/network/wallet source
+was fetched as text and hashed; no old client, wallet or endpoint was executed.
+
+All 29 native ASan/UBSan/LSan tests are covered by passing runs. The initial
+history test expected INVALID_ARGUMENT for ID zero; the shared envelope parser
+correctly returns INVALID_ENCODING. That expectation was corrected, with the
+initial failure retained and the complete history test passing on rerun.
+Clang/GCC static analysis and 317 authored functions in 56 files at complexity
+<=10 pass. The seeded Electrum campaign completed 64,372 executions in 91
+seconds without a finding; exact source/fuzzer hashes match afterward.
+
+Android debug/test/unsigned release assembly, APK isolation including negative
+mutations, 54 core JVM tests, cached 24 app JVM tests, both lints and architecture
+pass. No JNI entry or UI route to history was added; no unchanged emulator
+suite was repeated. Evidence, initial failure, focused correction, corpus and
+hashes are in history-* files in the 48-hour scratch directory. Next add an
+explicit optional history exchange to the existing C sync lifetime while
+preserving the six-response balance-only path and transport quarantine.

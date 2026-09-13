@@ -49,6 +49,11 @@ static bool request_arguments(uint32_t id, const uint8_t *text, const size_t *le
     return text != NULL && length != NULL && id != 0;
 }
 
+static bool address_method(zcl_electrum_method method)
+{
+    return method == ZCL_ELECTRUM_BALANCE || method == ZCL_ELECTRUM_HISTORY;
+}
+
 zcl_status zcl_electrum_request(zcl_electrum_method method, uint32_t id,
                                 const uint8_t *address, size_t address_len, zcl_network network,
                                 uint8_t *text, size_t capacity, size_t *length)
@@ -57,11 +62,12 @@ zcl_status zcl_electrum_request(zcl_electrum_method method, uint32_t id,
     if (network != ZCL_MAINNET && network != ZCL_TESTNET) return ZCL_UNSUPPORTED;
     char encoded[ZCL_ELECTRUM_REQUEST_MAX];
     int written;
-    if (method == ZCL_ELECTRUM_BALANCE) {
+    if (address_method(method)) {
         uint8_t hash[64];
         const zcl_status status = zcl_electrum_script_hash(address, address_len, network, hash, sizeof(hash));
         if (status != ZCL_OK) return status;
-        written = snprintf(encoded, sizeof(encoded), "{\"id\":%" PRIu32 ",\"method\":\"blockchain.scripthash.get_balance\",\"params\":[\"%.*s\"]}\n", id, 64, (const char *)hash);
+        const char *name = method == ZCL_ELECTRUM_BALANCE ? "get_balance" : "get_history";
+        written = snprintf(encoded, sizeof(encoded), "{\"id\":%" PRIu32 ",\"method\":\"blockchain.scripthash.%s\",\"params\":[\"%.*s\"]}\n", id, name, 64, (const char *)hash);
     } else {
         written = public_request(method, id, encoded, sizeof(encoded));
     }
