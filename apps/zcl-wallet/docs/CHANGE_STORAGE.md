@@ -10,7 +10,8 @@ record with hardware/GCM, verify its recovered entropy, and authenticate state
 records with the [change-state codec](CHANGE_STATE.md). Storage checks the
 record's structure and file position; it cannot check a MAC without the secret
 codec. No index, address, signing authority or transaction approval is returned
-by these IO functions. There is no JNI or Android sending integration yet.
+by these IO functions. The C reservation wrapper below supplies recovered-wallet
+and MAC sequencing. There is no JNI or Android sending integration yet.
 
 ## Fixed append log
 
@@ -83,10 +84,44 @@ reused descriptor. Observe publishes its snapshot only after all closes succeed.
 | Missing state for a committed wallet | Refuse; no automatic initialization. |
 | Cap reached | Refuse further growth; no rollover. |
 
-The future secret-facing reservation wrapper must authenticate the observation,
-derive a candidate change address privately, authenticate/encode the successor,
-perform this append, and publish only after success. It must preserve the same
-wallet binding across those steps. IO success alone cannot replace that wrapper.
+## Authenticated C reservation
+
+`zcl_wallet_change_create/reserve` in `zcl_change_reservation.h` compose the
+recovered-wallet codec, derivation and IO. The platform must first authenticate
+the exact ciphertext/header/entropy with GCM and its per-use hardware policy;
+C cannot prove that platform action. These operations belong on a worker thread.
+
+C copies the bounded encrypted wallet record before parsing it. Every following
+crypto and storage operation uses that same private copy. Entropy stays borrowed
+for the synchronous call, must remain stable and must be cleared by its caller.
+There is no retained seed, MAC key, descriptor or authorization handle. OS
+blinding is generated internally and clears after each operation, even when a
+test-injected RNG or cryptographic failure leaves partial scratch output.
+
+Fresh create verifies recovered-wallet identity and encodes state0 before
+paired creation. The caller cannot choose an initial counter. Wrong entropy,
+RNG failure or codec failure cannot create wallet/state files. Existing/orphan
+state remains a refusal; this API does not provide migration or repair.
+
+Reserve observes the exact committed wallet/state, validates a complete bounded
+head, authenticates its MAC and recovered wallet, and requires the verified
+index to equal the file position. It privately derives the internal-chain
+address with independent blinding, encodes the authenticated successor, then
+performs the checked append. Only after all durability and descriptor cleanup
+succeed does it publish the public index, network and35-byte canonical address.
+It never takes a caller-selected index or state record.
+
+No error changes the caller's result, including when a complete append occurred
+before a late failure. Such an index is consumed; the next reservation advances.
+A competing append after observation causes BUSY and no publication. Missing,
+partial, bad-MAC, misplaced or exhausted state refuses without automatic repair.
+Cancelling or losing a result after success also burns its index. No decrement,
+retry, secret cache or address reuse is introduced to hide these outcomes.
+
+The public reservation result is not a transaction approval or change-output
+authentication receipt. The sending flow still needs exact review/authorization
+binding, cancellation/lifecycle checks and recovery/discovery acceptance. No
+signing/broadcast or hardware-policy relaxation is supplied here.
 
 ## Threat and evidence limits
 
@@ -103,3 +138,11 @@ descriptor counts test cleanup and publication refusal. Child processes stop
 at26 reached write/flush/rename/close boundaries; twelve competing appenders
 must produce exactly one success. These are process/IO observations, not a
 simulation of filesystem power loss or a hardware-custody qualification.
+
+Reservation fixtures cover both networks/all five entropy widths, re-derived
+public addresses, authenticated successor records, wrong entropy/wallet/MAC,
+all short initial files, final permitted index65534 and exhaustion. Source-only
+hooks fail each RNG/decode/derive/encode step, verify live blinding cleanup,
+change the original ciphertext after its private copy, and simulate a competing
+append. IO faults check unchanged public results and conservative consumption
+after late failures. Inert public ciphertext fixtures make no GCM claim.

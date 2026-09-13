@@ -1206,3 +1206,34 @@ was introduced, so unchanged device cases were not repeated. The public-data
 IO adapter requires caller GCM/recovered-wallet/state authentication; it grants
 no index/address publication itself. Continue with an authenticating reservation
 wrapper, explicit append-only repair, migration and gap-aware seed discovery.
+
+2026-09-13 authenticated reservation: C now owns a bounded private ciphertext
+copy across recovered-wallet/MAC checks, internal-address derivation and durable
+append. Fresh creation encodes state0 internally. Reservation takes no caller-
+selected index or state, uses fresh OS blinding for each cryptographic step,
+clears it on every exit, and publishes index/network/address only after all IO
+cleanup succeeds. Wrong entropy, bad MAC, wrong position, missing/partial state,
+stale observation and exhaustion refuse without changing the caller's result.
+
+All49 native ASan/UBSan/LSan tests, Clang/GCC analysis and439 functions in77files
+at complexity<=10 pass. Both networks/all entropy widths, final index65534 and
+exhaustion have deterministic coverage. Source-only faults check live blinding
+cleanup and partial RNG/crypto outputs. Every close/flush across observe/append,
+partial write, ciphertext mutation after private copying and a competing append
+exercise unchanged failure results and conservative index consumption.
+
+Initial fuzzing completed2930 executions in91s but grew only to13-byte inputs.
+A reusable host seeder added complete authenticated, bad-MAC, misplaced and
+partial-successor public records. A focused follow-up completed4234 executions
+in61s from86..166-byte seeds without a finding. Both corpora, logs and matching
+source/binary hashes are preserved in change-reservation-* under the48-hour
+scratch directory. The seeder is fuzz-only; production C did not change for
+that follow-up. Both Android ABIs,72 core/35 app JVM gates, both lints, fixture
+isolation and architecture pass; unchanged app JVM cases were UP-TO-DATE.
+No new JNI/device path exists, so device tests were not repeated.
+
+GCM/per-use hardware authentication remains a platform prerequisite, and public
+reservation metadata is not transaction consent or a change-output receipt.
+Continue immediately with explicit append-only repair: preserve bytes, burn
+uncertain gaps, refuse missing files and detect authenticated counters at wrong
+positions. Migration, seed discovery and exact review binding remain required.

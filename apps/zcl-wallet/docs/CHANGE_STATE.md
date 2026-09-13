@@ -72,11 +72,12 @@ a sending flow, the complete reservation owner must enforce:
 - An explicit filesystem-rollback threat boundary; MACs do not supply freshness.
 - Seed-restoration discovery that accounts for consumed but unused indexes.
 
-The IO adapter supplies bounded durable append and interruption refusal; the
-secret-facing reservation wrapper, explicit repair, migration and seed-discovery
-acceptance remain active development requirements. No JNI or Android sending
-path uses this codec yet. TLS and BLAKE2 quarantine, hardware policy and the
-immutable wallet record format remain unchanged.
+The IO adapter supplies bounded durable append and interruption refusal. The C
+reservation wrapper now composes recovered-wallet/MAC checks and private change
+derivation before durable publication. Explicit repair, migration, seed discovery
+and transaction-authorization binding remain active development requirements.
+No JNI or Android sending path uses this codec yet. TLS and BLAKE2 quarantine,
+hardware policy and the immutable wallet record format remain unchanged.
 
 ## Evidence scope
 

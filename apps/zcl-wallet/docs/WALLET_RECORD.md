@@ -43,8 +43,10 @@ its own rollback and recovery design.
 The [change-counter codec](CHANGE_STATE.md) now authenticates a separate fixed
 record against this recovered wallet identity. The public-data
 [change storage adapter](CHANGE_STORAGE.md) provides fresh paired creation and
-bounded compare-and-append. Its authenticating reservation/recovery layer remains
-unfinished; neither the codec nor IO alone grants index/address publication.
+bounded compare-and-append. The C reservation wrapper now authenticates state,
+privately derives change and publishes only after durable append; neither codec
+nor IO alone grants index/address publication. Explicit repair, migration,
+discovery and Android sending integration remain unfinished.
 Both creation APIs refuse an existing change file, including orphan state left
 by interrupted paired creation. Missing state never permits an existing wallet
 to initialize an index automatically.

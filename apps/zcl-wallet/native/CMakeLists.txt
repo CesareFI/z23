@@ -88,7 +88,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
-    src/change_state.c src/change_state_key.c
+    src/change_state.c src/change_state_key.c src/change_reservation.c
     src/storage_posix.c src/storage_read.c src/storage_write.c
     src/storage_change_read.c src/storage_change_write.c
     src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
@@ -293,6 +293,18 @@ if(ZCL_FUZZ)
         target_compile_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined
             -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         target_link_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined)
+        add_executable(fuzz_change_reservation tests/fuzz_change_reservation.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(fuzz_change_reservation PRIVATE zcl_wallet_core)
+        target_compile_options(fuzz_change_reservation PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(fuzz_change_reservation PRIVATE -fsanitize=fuzzer,address,undefined)
+        add_executable(seed_change_reservation tests/seed_change_reservation.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(seed_change_reservation PRIVATE zcl_wallet_core)
+        target_compile_options(seed_change_reservation PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(seed_change_reservation PRIVATE -fsanitize=fuzzer-no-link)
     endif()
     add_executable(fuzz_wallet_record tests/fuzz_wallet_record.c)
     target_link_libraries(fuzz_wallet_record PRIVATE zcl_wallet_core)
@@ -636,6 +648,26 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         add_test(NAME wallet_change_storage COMMAND change_storage_tests)
         set_tests_properties(wallet_change_storage PROPERTIES TIMEOUT 30)
+        add_executable(change_reservation_tests tests/test_change_reservation.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_reservation_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_reservation_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        add_test(NAME wallet_change_reservation COMMAND change_reservation_tests)
+        set_tests_properties(wallet_change_reservation PROPERTIES TIMEOUT 30)
+        add_executable(change_reservation_failure_tests tests/test_change_reservation_failures.c
+            src/change_reservation.c tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
+        target_link_libraries(change_reservation_failure_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(change_reservation_failure_tests PRIVATE
+            zcl_random_bytes=zcl_reservation_test_random zcl_secure_zero=zcl_reservation_test_zero
+            zcl_change_state_encode=zcl_reservation_test_encode zcl_change_state_decode=zcl_reservation_test_decode
+            zcl_wallet_recovered_change=zcl_reservation_test_derive)
+        target_compile_options(change_reservation_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(change_reservation_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+            -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
+        add_test(NAME wallet_change_reservation_failures COMMAND change_reservation_failure_tests)
+        set_tests_properties(wallet_change_reservation_failures PROPERTIES TIMEOUT 30)
         add_executable(storage_fault_tests tests/test_storage_faults.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(storage_fault_tests PRIVATE zcl_wallet_core)
         target_compile_options(storage_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
