@@ -1388,3 +1388,24 @@ Continue immediately with the scanner JNI boundary: unlike the shared array
 helpers, direct camera/scanner entries still accessed the VM before checking
 for an already-pending exception. Add a registered fake-VM fault/cleanup fixture
 and preserve the independent real-VM and emulator acceptance.
+
+2026-09-14 scanner JNI continuation: all three camera/scan entries now refuse
+NULL environments and pending exceptions before ordinary VM access. The new
+registered fake-VM fixture fails on the preceding implementation, then passes
+with the guards. It covers all four packing/five decoding VM failure ordinals,
+partial reads, allocation refusal, exact public QR results, untouched inputs,
+output canaries and full clearing of invocation-owned allocations before free.
+
+All 60 native ASan/UBSan/LSan tests pass in 44.23 seconds. Authored Clang/GCC
+analysis and the unchanged production/test complexity caps pass. Bounded camera
+and QR campaigns complete 1,675 and 1,604 executions respectively over 61 seconds
+each, using preserved public corpora with leak detection; binary hashes recheck.
+Both Android ABIs, JVM tests, debug/release lint and fixture isolation pass.
+Eight API35 QR/Binder tests pass in 73.337 seconds on the final scanner APK.
+Architecture passes; repository lint-fast retains only its two existing failures.
+Evidence remains under `.cache/android-wallet/continue-20260913`.
+
+The broader JNI audit found the same pending-exception gap in the oldest amount
+adapter's duplicated VM reads/publication. Continue by reusing the common helpers
+and preserving its signed status mapping, with a failing-before/passing-after
+fake-VM regression. Custody, signing, transport and BLAKE2 boundaries are unchanged.

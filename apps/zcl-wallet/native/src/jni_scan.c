@@ -45,7 +45,9 @@ Java_org_zclassic_wallet_core_NativeCore_scanQr(JNIEnv *env, jclass type, jbyteA
                                                 jint pixel_stride, jint chain)
 {
     (void)type;
-    if (input == NULL)
+    if (env == NULL || input == NULL)
+        return NULL;
+    if ((*env)->ExceptionCheck(env))
         return NULL;
     zcl_network network;
     if (zcl_jni_network(chain, &network) != ZCL_OK)

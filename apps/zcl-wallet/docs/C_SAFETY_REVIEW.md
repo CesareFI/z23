@@ -951,3 +951,25 @@ passes. Separate bounded fuzz campaigns exercise every changed fuzz translation
 unit against copies of the existing public corpora; evidence is recorded in
 the accompanying progress entry. This is fixture acceptance, not hardware
 custody, chain validation or general security certification.
+
+## Scanner JNI exception boundary — 2026-09-14
+
+Scope: pending-exception/NULL-environment guards on `packCameraPlane`,
+`scanCameraPacket` and `scanQr`, plus a registered fake-VM fixture.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | No production copy, capacity or image-layout arithmetic changes. Entry refusal precedes direct-buffer/array access. The fixture supplies backed public spans, checks region lengths against capacity, checks output canaries and exact packet/request bytes, and compares every input byte after each call. |
+| Integer overflow/underflow; signed/unsigned conversions | Guards add no arithmetic or casts. Existing negative jsize/jlong and length/capacity checks remain. Fixtures cover negative, empty, short and INT32_MAX array lengths and invalid direct capacities; valid fixture dimensions are proven <=147 before jint conversion. |
+| Use-after-free; double-free; leaks; dangling pointers | Existing single-owner allocations and cleanup paths are unchanged. Source-only allocator hooks track one live allocation, inspect every byte for zero while it is live, free once and immediately retire its pointer/length. No production pointer/reference is retained. |
+| NULL dereferences; uninitialized memory | The environment NULL check short-circuits before dereferencing the VM table. Every pending exception remains pending and prevents all ordinary JNI calls and allocation. The fixture fills allocations with nonzero bytes before use, injects partial array reads and checks whole-allocation clearing. |
+| Pointer arithmetic; format strings | No new production offsets, pointer reconstruction or formatting. Fixture painting stays within fixed checked image dimensions; JNI output bounds precede indexing. Failures print only a fixture line number, never camera data. |
+| Stack usage; allocation limits; resource exhaustion | Guards allocate nothing and add no loop or retained state. Existing frame/packet/raw-image caps remain. Public test backing arrays use documented single-threaded static storage; the module matrix fits the strict 4096-byte frame limit. The test observes at most one invocation allocation and injects allocation refusal. |
+| Malformed input; races; VM failure atomicity | Registered tests exercise all four packing and five decoding VM operations, including every exception ordinal, pre-existing exceptions and NULL entries. No JNI call follows a pending exception. Output publication failures return NULL, input arrays remain unchanged, and owned native memory clears. No production synchronization or lifetime contract changes. |
+| Secret leakage and authority | Scanner data is public request/image input. No wallet key, custody operation, network source, signing, consent or consensus behavior is introduced. Tests generate an unfunded public receiving QR and inspect native cleanup; they do not claim erasure of VM/Binder/provider copies or positive hardware custody. |
+
+The registered test fails against the prior scanner entries at the first VM
+operation with a pending exception, and passes after the guards. All 60 native
+ASan/UBSan/LSan tests pass in 44.23 seconds; Clang/GCC analysis passes with 457
+production functions <=10 and 780 fixture functions <=15. Actual VM/device
+and bounded QR fuzz evidence are recorded separately in the progress log.

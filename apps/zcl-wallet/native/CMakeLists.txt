@@ -340,6 +340,17 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(JNI QUIET COMPONENTS JVM)
     if(JNI_FOUND)
         find_package(Threads REQUIRED)
+        add_executable(jni_camera_tests tests/test_jni_camera.c src/jni_camera.c src/jni_scan.c
+            src/jni_payment.c src/jni_support.c)
+        target_include_directories(jni_camera_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_camera_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(jni_camera_tests PRIVATE
+            malloc=zcl_jni_camera_test_malloc free=zcl_jni_camera_test_free)
+        target_compile_options(jni_camera_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        enable_testing()
+        add_test(NAME wallet_jni_camera COMMAND jni_camera_tests)
+        set_tests_properties(wallet_jni_camera PROPERTIES TIMEOUT 15)
         add_executable(jni_sync_tests tests/test_jni_sync.c tests/sync_fixture.c src/jni_sync.c src/jni_support.c)
         target_include_directories(jni_sync_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_sync_tests PRIVATE zcl_wallet_core Threads::Threads)

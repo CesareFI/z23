@@ -56,6 +56,8 @@ Java_org_zclassic_wallet_core_NativeCore_packCameraPlane(JNIEnv *env, jclass typ
                                                         jint height, jint row, jint pixel)
 {
     (void)type;
+    if (env == NULL || (*env)->ExceptionCheck(env))
+        return NULL;
     zcl_qr_image layout = {0};
     if (!camera_layout(width, height, row, pixel, &layout))
         return NULL;
@@ -91,7 +93,9 @@ Java_org_zclassic_wallet_core_NativeCore_scanCameraPacket(JNIEnv *env, jclass ty
                                                           jbyteArray input, jint chain)
 {
     (void)type;
-    if (input == NULL)
+    if (env == NULL || input == NULL)
+        return NULL;
+    if ((*env)->ExceptionCheck(env))
         return NULL;
     zcl_network network;
     if (zcl_jni_network(chain, &network) != ZCL_OK)
