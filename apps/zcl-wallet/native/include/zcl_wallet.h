@@ -72,6 +72,11 @@ typedef struct {
 
 zcl_status zcl_address_parse(const uint8_t *text, size_t text_len,
                              zcl_network network, zcl_address *address);
+/* Canonical Base58Check text for an explicit supported network and P2PKH/P2SH
+ * kind. Public hash only; no ownership assertion. No terminator is appended.
+ * Caller owns stable nonoverlapping objects; outputs are unchanged on failure. */
+zcl_status zcl_address_encode(const zcl_address *address, uint8_t *text,
+                              size_t text_capacity, size_t *text_len);
 zcl_status zcl_address_from_hash(const uint8_t *hash, size_t hash_len,
                                  zcl_network network, uint8_t *text,
                                  size_t text_capacity, size_t *text_len);

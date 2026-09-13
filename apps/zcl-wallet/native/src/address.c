@@ -49,6 +49,24 @@ zcl_status zcl_address_parse(const uint8_t *text, size_t text_len,
     return ZCL_OK;
 }
 
+zcl_status zcl_address_encode(const zcl_address *address, uint8_t *text,
+                              size_t text_capacity, size_t *text_len)
+{
+    if (address == NULL || text == NULL || text_len == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    if (!supported_network(address->network))
+        return ZCL_UNSUPPORTED;
+    if (address->kind != ZCL_P2PKH && address->kind != ZCL_P2SH)
+        return ZCL_UNSUPPORTED;
+    const uint16_t prefix = address->kind == ZCL_P2PKH
+        ? p2pkh_prefix(address->network) : p2sh_prefix(address->network);
+    uint8_t payload[22] = {0};
+    payload[0] = (uint8_t)(prefix >> 8);
+    payload[1] = (uint8_t)(prefix & UINT16_C(255));
+    memcpy(payload + 2, address->hash, sizeof(address->hash));
+    return zcl_base58check_encode(payload, sizeof(payload), text, text_capacity, text_len);
+}
+
 zcl_status zcl_address_from_hash(const uint8_t *hash, size_t hash_len,
                                  zcl_network network, uint8_t *text,
                                  size_t text_capacity, size_t *text_len)
@@ -59,12 +77,9 @@ zcl_status zcl_address_from_hash(const uint8_t *hash, size_t hash_len,
         return ZCL_UNSUPPORTED;
     if (hash_len != 20)
         return ZCL_INVALID_ARGUMENT;
-    uint16_t prefix = p2pkh_prefix(network);
-    uint8_t payload[22] = {0};
-    payload[0] = (uint8_t)(prefix >> 8);
-    payload[1] = (uint8_t)(prefix & UINT16_C(255));
-    memcpy(payload + 2, hash, hash_len);
-    return zcl_base58check_encode(payload, sizeof(payload), text, text_capacity, text_len);
+    zcl_address address = {network, ZCL_P2PKH, {0}};
+    memcpy(address.hash, hash, sizeof(address.hash));
+    return zcl_address_encode(&address, text, text_capacity, text_len);
 }
 
 zcl_status zcl_address_script(const zcl_address *address, uint8_t *script,

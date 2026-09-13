@@ -254,7 +254,15 @@ without close can leave BUSY state until process restart; GC is not a lifecycle
 mechanism. A queued display must re-read its original foreground owner.
 
 Destinations currently expose network, kind, hash and value. Canonical address
-encoding for both P2PKH and P2SH is a follow-up before a user-facing review view.
+encoding for both P2PKH and P2SH is available in C through `zcl_address_encode`;
+the JNI/managed display factory is a follow-up before a user-facing review view.
+The encoder validates explicit network/kind and reuses the same version prefixes
+as parsing. The existing public-key-hash receiving helper delegates without
+changing its P2PKH behavior. Four public address/script vectors from the pinned
+original `src/test/data/base58_keys_valid.json` qualify the exact text/hash
+mapping; arbitrary hashes, every short capacity and a bounded encode/parse
+fuzzer supplement these independent vectors. Outputs have no appended NUL and
+remain unchanged on failure.
 No label asserts change, inclusion, unspentness, maturity or wallet ownership.
 There is no authentication, signing, broadcast, persisted review or automatic
 network operation in the adapter.

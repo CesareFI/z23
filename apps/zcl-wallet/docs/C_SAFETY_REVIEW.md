@@ -652,3 +652,19 @@ The expanded test-only seed helper writes fixed filenames with exclusive
 and preserves existing files on refusal. Partial failed fixture generation never
 grants application or wallet authority. Both required asset-listing mutations
 operate on tool output without altering an APK.
+
+## Canonical transparent address encoding — 2026-09-13
+
+Scope: public C encoding for both transparent destination kinds, and delegation
+of the existing P2PKH-only public-hash helper. No new JNI entry or key path.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Encoder copies exactly20 hash bytes from the owned address into a22-byte version/hash payload at offset2. Existing bounded Base58Check encoding checks capacity before publishing any byte or length. No terminator is appended. All35 undersized capacities, exact-size output, canaries and unchanged-failure checks are covered for every original vector. |
+| Integer overflow/underflow; signed/unsigned conversions | Network and kind validate before selecting an existing uint16 prefix. High-byte shift and low-byte mask each yield <=255 before uint8 casts. Payload length is fixed22; no input-controlled arithmetic, truncation or money operation. Existing P2PKH wrapper preserves argument/network/hash-length validation order before copying20 bytes into an owned address. |
+| Use-after-free; double-free; leaks; dangling pointers; races | No allocation/free, callback, timer, global state or retained pointer. Both functions use small synchronous public stack objects; callers provide stable nonoverlapping input/output spans. Existing hash helper delegates without changing caller ownership. |
+| NULL dereferences; uninitialized memory | Address/text/length pointers are checked before use; unsupported network/kind returns before prefix/hash work. Payload and wrapper address initialize before assignment. Failed Base58Check/provider/capacity operations retain the existing failure-atomic output contract. |
+| Pointer arithmetic; format strings | Only a fixed offset2 into a22-byte payload is added; the20-byte copy fits exactly. No pointer subtraction, unaligned typed access, string format or input logging. Tests use bounded trusted public hex literals and explicit nibble checks. |
+| Stack usage; allocation limits; resource exhaustion | One22-byte payload and one small wrapper address add only fixed storage above the existing bounded Base58Check/hash frames. No recursion/VLA/heap/retry or network operation. Existing4096-byte frame and strict compiler gates remain enabled. |
+| Malformed input and compatibility | Only explicit MAINNET/TESTNET plus P2PKH/P2SH combinations encode. Unknown enums refuse without changing output. Four original public address/script vectors independently bind both networks/kinds; all hash-byte values and wrong-network refusal supplement them. The old receiving helper remains P2PKH and emits identical bytes; no wallet record, derivation path or network prefix is changed. |
+| Secret leakage and authority | Inputs contain only a public20-byte destination hash and explicit metadata. Encoding proves neither private-key/redeem-script ownership nor inclusion, change status or spending approval. No key export, endpoint, signing/broadcast or custody change. TLS and BLAKE2 findings remain isolated. |

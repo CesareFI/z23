@@ -950,3 +950,20 @@ qualify an Activity, hardware custody or original-node transaction acceptance.
 Evidence is in review-jni-* under the48-hour scratch directory. Continue with
 canonical P2PKH/P2SH destination encoding and foreground review presentation;
 key/change ownership and branch-specific signing remain separate gates.
+
+2026-09-13 canonical transparent destination encoding: C now encodes an explicit
+network/kind/public hash for both P2PKH and P2SH using the existing prefixes and
+bounded Base58Check encoder. The original P2PKH-only helper delegates while
+preserving validation order and receiving-address bytes. No JNI entry or
+ownership/signing capability is added in this slice.
+
+Four original public address/script vectors were rechecked against the pinned
+reference, with all short capacities, canaries, arbitrary hash values and bad
+network/kind/argument refusals. All37 native ASan/UBSan/LSan tests, Clang/GCC
+analysis and389 functions in66files at complexity<=10 pass. Dedicated address
+encode/parse fuzzing completed111,149 executions in61s without a finding;
+final source/binary hashes match. All64 core/24 app JVM cases, both ABI builds,
+both lints, APK isolation and architecture pass. No unchanged device suite was
+rerun. Evidence/corpus is in address-encode-* under the48-hour scratch directory.
+Continue with the thin JNI/managed address factory and exact review destination
+text, then foreground review presentation without signing authority.
