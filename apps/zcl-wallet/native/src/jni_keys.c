@@ -9,6 +9,8 @@ JNIEXPORT jbyteArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_createEntropy(JNIEnv *env, jclass type)
 {
     (void)type;
+    if (env == NULL) return NULL;
+    if ((*env)->ExceptionCheck(env)) return NULL;
     uint8_t entropy[32] = {0};
     jbyteArray output = NULL;
     if (zcl_random_bytes(entropy, sizeof(entropy)) == ZCL_OK)
@@ -20,6 +22,8 @@ Java_org_zclassic_wallet_core_NativeCore_createEntropy(JNIEnv *env, jclass type)
 static jcharArray new_phrase(JNIEnv *env, const uint8_t *text, size_t length)
 {
     if (env == NULL || text == NULL || length > 215)
+        return NULL;
+    if ((*env)->ExceptionCheck(env))
         return NULL;
     jchar chars[215] = {0};
     jcharArray output = NULL;
@@ -57,6 +61,8 @@ cleanup:
 static zcl_status phrase_size(JNIEnv *env, jcharArray input, size_t capacity, jsize *length)
 {
     if (env == NULL || input == NULL || length == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    if ((*env)->ExceptionCheck(env))
         return ZCL_INVALID_ARGUMENT;
     jsize size = (*env)->GetArrayLength(env, input);
     if ((*env)->ExceptionCheck(env))

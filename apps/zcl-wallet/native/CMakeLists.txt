@@ -295,6 +295,15 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_options(jni_sync_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         enable_testing()
+        add_executable(jni_key_tests tests/test_jni_keys.c src/jni_keys.c src/jni_support.c)
+        target_include_directories(jni_key_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_key_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(jni_key_tests PRIVATE
+            zcl_secure_zero=zcl_jni_key_test_zero zcl_random_bytes=zcl_jni_key_test_random)
+        target_compile_options(jni_key_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_keys COMMAND jni_key_tests)
+        set_tests_properties(wallet_jni_keys PROPERTIES TIMEOUT 15)
         add_test(NAME wallet_jni_sync COMMAND jni_sync_tests)
         set_tests_properties(wallet_jni_sync PROPERTIES TIMEOUT 15)
         add_executable(jni_review_tests tests/test_jni_review.c tests/assessment_fixture.c
@@ -323,6 +332,14 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME wallet_jni_draft COMMAND jni_draft_tests)
         set_tests_properties(wallet_jni_draft PROPERTIES TIMEOUT 15)
         if(ZCL_FUZZ)
+            add_executable(fuzz_jni_keys tests/test_jni_keys.c src/jni_keys.c src/jni_support.c)
+            target_include_directories(fuzz_jni_keys PRIVATE src ${JNI_INCLUDE_DIRS})
+            target_link_libraries(fuzz_jni_keys PRIVATE zcl_wallet_core)
+            target_compile_definitions(fuzz_jni_keys PRIVATE ZCL_JNI_KEYS_FUZZ=1
+                zcl_secure_zero=zcl_jni_key_test_zero zcl_random_bytes=zcl_jni_key_test_random)
+            target_compile_options(fuzz_jni_keys PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+            target_link_options(fuzz_jni_keys PRIVATE -fsanitize=fuzzer,address,undefined)
             add_executable(fuzz_jni_draft tests/test_jni_draft.c tests/draft_fixture.c tests/assessment_fixture.c
                 src/jni_draft.c src/jni_draft_fields.c src/jni_draft_wire.c src/jni_support.c)
             target_include_directories(fuzz_jni_draft PRIVATE src ${JNI_INCLUDE_DIRS})

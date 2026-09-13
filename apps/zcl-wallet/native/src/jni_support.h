@@ -5,7 +5,10 @@
 #include <jni.h>
 /* No pins, retained references, native heap allocation or handles. Caller
  * owns output; Java references are local to the JNI invocation. Secret-bearing
- * callers must clear native scratch and arrange managed-array cleanup. */
+ * callers must clear native scratch and arrange managed-array cleanup.
+ * Pending exceptions refuse before any array access/allocation and remain
+ * pending. A failed region read can leave partial bytes in caller scratch;
+ * length publishes only on success. Clear secret scratch on every exit. */
 zcl_status zcl_jni_read_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
                               size_t capacity, size_t *length);
 jbyteArray zcl_jni_new_bytes(JNIEnv *env, const uint8_t *bytes, size_t length);

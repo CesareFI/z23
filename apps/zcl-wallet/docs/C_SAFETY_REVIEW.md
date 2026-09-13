@@ -731,3 +731,27 @@ construction-to-review lifecycle observations complement this review. The
 bounded fuzzer combines complete small/maximum requests on both networks with
 signed metadata, arbitrary previous bytes, malformed addresses/counts and VM
 read/allocation/publication faults, checking every success and cleanup.
+
+## Pending-exception refusal in secret JNI adapters — 2026-09-13
+
+Scope: shared byte-copy/publication helpers and the existing five key JNI
+entries. The fake VM reproduced GetArrayLength with an exception already
+pending; early guards now refuse without clearing or replacing that exception.
+This is a defensive JNI contract finding, not an observed production crash or
+sanitizer memory violation. The exact failing fixture/source hashes are kept.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Existing explicit byte/char capacities remain unchanged. New guards execute before array length, region or allocation calls. Key scratch remains32-byte entropy/blinding,215-byte mnemonic and430-byte UTF16 conversion storage. Fault VM independently checks claimed regions against fixed actual arrays and injects partial writes. No output length publishes on a read failure. |
+| Integer overflow/underflow; signed/unsigned conversions | No production arithmetic, cast, count limit or conversion changes. Negative/oversized jsize values still refuse before unsigned use. Test loops use checked<=216-element arrays and bounded region subtraction; fuzz metadata cannot grow native storage. |
+| Use-after-free; double-free; leaks; dangling pointers | No new production heap, reference, pin or retained pointer. Existing key cleanup tails still clear every owned secret scratch array on failure. The test tracks pointers seen during RNG/VM read/publication and observes their zeroization while each span is still live; it never inspects a dead stack frame. VM result ownership remains local to the invocation/managed caller. |
+| NULL dereferences; uninitialized memory | NULL env/arguments refuse before ExceptionCheck. Entropy generation now refuses NULL env or pending exception before drawing randomness. Phrase readers and publishers check pending state before their first VM call. Existing initialized scratch and deterministic cleanup remain, including partially written byte/char regions, NULL allocation with/without exception and failed output publication. |
+| Pointer arithmetic; format strings | No new production pointer operation, offset, format string or log. Test canary/zero scans are bounded by the actual registered span and matching live buffer; no cross-object pointer ordering/subtraction. Diagnostics emit only fixed check locations, never mnemonic/entropy/key bytes. |
+| Stack usage; allocation limits; resource exhaustion | Only ExceptionCheck calls and early returns are added. Existing4096-byte frame limits and bounded buffers remain. Test-only RNG substitution emits public bytes and is confined to the fake VM target; shipped CSPRNG and cryptographic providers are unchanged. No retry, exception polling loop, recursion, VLA, native worker or allocation is added. |
+| Malformed input and exception handling | Shared read/new-byte helpers refuse a preexisting exception before prohibited JNI operations. Phrase-size/new-phrase helpers do the same. Original exceptions stay pending so the VM handles them; no ExceptionClear or replacement exception is introduced. Region failure may leave partial caller scratch, explicitly documented; secret callers clear it before returning. |
+| Races and ownership | Each JNIEnv remains invocation/thread local. No global production state, lock, identity, callback or lifetime changes. Fake VM globals are single-threaded test state only. Existing sync/review fault fixtures and real JVM tests exercise users of the shared helpers. |
+| Secret leakage and custody | The fix prevents unnecessary RNG work and further VM calls on a pending exception. Native scratch clears even after publication failure. An unreachable VM array partially filled before an exception remains under VM/GC control; this is not a physical Java-heap erasure guarantee. Device tests keep fresh test entropy in mutable arrays with finally cleanup and no string/log conversion. Only the published zero-entropy phrase is compared as text. Hardware per-use custody, GCM, key profiles and TLS/BLAKE2 quarantine remain unchanged. |
+
+Android's [JNI exception contract](https://developer.android.com/ndk/guides/jni-tips#exceptions)
+permits exception inspection and selected cleanup calls while an exception is
+pending; array access/allocation/publication calls are outside that set.

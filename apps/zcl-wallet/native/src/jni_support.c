@@ -8,6 +8,8 @@ zcl_status zcl_jni_read_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
 {
     if (env == NULL || input == NULL || bytes == NULL || length == NULL)
         return ZCL_INVALID_ARGUMENT;
+    if ((*env)->ExceptionCheck(env))
+        return ZCL_INVALID_ARGUMENT;
     jsize count = (*env)->GetArrayLength(env, input);
     if ((*env)->ExceptionCheck(env))
         return ZCL_INVALID_ARGUMENT;
@@ -23,6 +25,8 @@ zcl_status zcl_jni_read_bytes(JNIEnv *env, jbyteArray input, uint8_t *bytes,
 jbyteArray zcl_jni_new_bytes(JNIEnv *env, const uint8_t *bytes, size_t length)
 {
     if (env == NULL || bytes == NULL || length > (size_t)INT32_MAX)
+        return NULL;
+    if ((*env)->ExceptionCheck(env))
         return NULL;
     jbyteArray result = (*env)->NewByteArray(env, (jsize)length);
     if (result == NULL || (*env)->ExceptionCheck(env))

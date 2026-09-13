@@ -1099,3 +1099,29 @@ Evidence/corpus is in draft-jni-* under the48-hour scratch directory. The
 initial12 focused JVM cases preceded an additional clock-callback source-mutation
 regression in the full run. Continue with authenticated key/change ownership
 and durable index recovery; quarantined providers remain disabled and preserved.
+
+2026-09-13 secret JNI exception refusal: custody inspection found that shared
+byte helpers and phrase readers could start VM array operations with an exception
+already pending. A deterministic fake VM rejected that forbidden call before
+the fix. Early guards now preserve the original exception and return before
+array access/allocation; entropy creation also avoids RNG work on an unusable
+VM context. Existing partial-read/publication cleanup remains intact.
+
+All41 native ASan/UBSan/LSan tests, Clang/GCC analysis and412 functions in71files
+at complexity<=10 pass. The new fault fixture covers all five key JNI entries,
+NULL/pending VM state, each read/publication failure ordinal, RNG failure,
+malformed lengths/text and observed zeroization of live native spans. Bounded
+key JNI fuzzing completed44,056 executions in91s without a finding; final
+source/binary hashes match. All72 core/35 app JVM gates, both ABI builds, both
+lints, fixture isolation and architecture pass. The API35 emulator passed2
+new mnemonic/RNG cases and the existing public GCM/storage case in5.669s.
+
+Evidence is in jni-key-* under the48-hour scratch directory, including the
+failing baseline and four exact source hashes verified against its preserved
+source snapshot. That initial fixture stopped before an unqualified address
+literal; the final passing fixture compares the adapter against the already
+qualified C derivation instead. No new independent address oracle is claimed.
+The baseline is an injected JNI-contract failure, not a production crash or
+sanitizer memory finding. No exception is suppressed, no hardware custody gate
+changes, and VM/GC copies are not claimed physically erased. Resume authenticated
+key/change ownership and durable index recovery after this focused fix.
