@@ -22,8 +22,12 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray,
 
     enum class Freshness { UNAVAILABLE, UNVERIFIED, STALE }
     data class Report(val confirmed: Zatoshi, val pendingDelta: Long, val total: Zatoshi, val height: Long)
+    /** nextChangeDelayMillis is C's relative wakeup hint; zero means none.
+     * Read again at delivery time. Never turn the hint into a freshness decision.
+     */
     data class Snapshot(val freshness: Freshness, val refreshing: Boolean,
-                        val lastFault: CoreStatus, val ageMillis: Long, val report: Report?)
+                        val lastFault: CoreStatus, val ageMillis: Long, val report: Report?,
+                        val nextChangeDelayMillis: Long)
 
     /** The owner reference is immutable. Never dispatch this token on a new owner. */
     class Attempt internal constructor(private val owner: ReadOnlySync, private val token: Long) {
@@ -72,13 +76,15 @@ class ReadOnlySync(val address: TransparentAddress, sourceIdentity: ByteArray,
     @Synchronized fun snapshot(): Snapshot {
         requireOpen()
         val packet = checkNotNull(NativeCore.syncSnapshot(owner, now())) { "Native sync snapshot failed" }
-        check(packet.size == 9) { "Invalid native sync snapshot size" }
+        check(packet.size == 10) { "Invalid native sync snapshot size" }
         requireSuccess(packet[0].toInt())
         check(packet[1] in 0L..2L && packet[2] in 0L..1L) { "Invalid native sync snapshot flags" }
+        check(packet[9] >= 0) { "Invalid native sync wakeup delay" }
         val freshness = Freshness.entries[packet[1].toInt()]
         val report = if (freshness == Freshness.UNAVAILABLE) null else
             Report(Zatoshi.of(packet[5]), packet[6], Zatoshi.of(packet[7]), packet[8])
-        return Snapshot(freshness, packet[2] == 1L, CoreStatus.fromCode(packet[3].toInt()), packet[4], report)
+        return Snapshot(freshness, packet[2] == 1L, CoreStatus.fromCode(packet[3].toInt()),
+                        packet[4], report, packet[9])
     }
 
     @Synchronized override fun close() {

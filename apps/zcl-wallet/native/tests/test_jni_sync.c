@@ -5,6 +5,7 @@
 #undef free
 #include "jni_support.h"
 #include "sync_fixture.h"
+#include "zcl_sync_watch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +28,7 @@ JNIEXPORT jlongArray JNICALL API(syncSnapshot)(JNIEnv *, jclass, jlong, jlong);
 typedef struct {
     jsize length;
     bool longs;
-    union { uint8_t bytes[16385]; jlong numbers[9]; } data;
+    union { uint8_t bytes[16385]; jlong numbers[10]; } data;
 } fake_array;
 static fake_array *references[32];
 static size_t reference_count;
@@ -53,7 +54,7 @@ void zcl_jni_test_free(void *pointer)
 
 static fake_array *array_new(jsize length, bool longs)
 {
-    CHECK(length >= 0 && length <= (longs ? 9 : 16385));
+    CHECK(length >= 0 && length <= (longs ? 10 : 16385));
     CHECK(reference_count < sizeof(references) / sizeof(references[0]));
     fake_array *array = calloc(1, sizeof(*array));
     CHECK(array != NULL);
@@ -155,7 +156,8 @@ static jlong open_owner(void)
 static const jlong *snapshot(jlong id, jlong now)
 {
     fake_array *result = (fake_array *)API(syncSnapshot)(&environment, NULL, id, now);
-    CHECK(result != NULL && result->longs && result->length == 9 && !pending_exception);
+    CHECK(result != NULL && result->longs && result->length == 10 && !pending_exception);
+    CHECK(result->data.numbers[9] >= 0 && result->data.numbers[9] <= (jlong)ZCL_SYNC_FRESH_MS);
     return result->data.numbers;
 }
 
@@ -198,11 +200,13 @@ static void snapshot_failure_preserves_timeout(void)
 {
     const jlong id = open_owner();
     CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 1, 1) > 0);
+    CHECK(API(syncSnapshot)(NULL, NULL, id, 1) == NULL);
+    CHECK(snapshot(id, 0)[9] == 1); /* NULL env did not advance/expire the owner. */
     fail_new = true;
     CHECK(API(syncSnapshot)(&environment, NULL, id, 1) == NULL && pending_exception);
     pending_exception = false;
     const jlong *state = snapshot(id, 1);
-    CHECK(state[0] == ZCL_OK && state[2] == 0 && state[3] == ZCL_TIMED_OUT);
+    CHECK(state[0] == ZCL_OK && state[2] == 0 && state[3] == ZCL_TIMED_OUT && state[9] == 0);
     fail_set = true;
     CHECK(API(syncSnapshot)(&environment, NULL, id, 1) == NULL && pending_exception);
     pending_exception = false;

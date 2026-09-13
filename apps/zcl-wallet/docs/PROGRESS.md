@@ -550,3 +550,25 @@ pass in 2.424 seconds. Debug/test and unsigned release builds and both lints
 pass. The amount-delta logs, corpus and hashes are retained in the 48-hour
 scratch directory. Next expose the next display-expiry delay from C, so an idle
 foreground UI can invalidate its display without duplicating freshness policy.
+
+2026-09-13 C expiry hint: snapshots now return a relative delay to an active
+attempt deadline or fresh-report expiry, with zero for no pending timed change.
+JNI projects ten checked longs and refuses NULL env before altering the watch.
+The managed adapter retains the hint without reimplementing freshness policy.
+No timer, endpoint, periodic poll or persistence is added in this slice.
+
+The native run passed 27 tests but the extended watch fixture initially expected
+a retry to clear its previous clock fault. C intentionally retains that fault
+until complete success. The corrected expectation then passed focused sanitizer
+validation, completing coverage of all 28 active tests. Production policy did
+not change. Clang/GCC/provider analysis and all 312 functions/55 files <=10 pass.
+The watch fuzzer follows each returned delay on a copied watch and checks both
+sides of the exact transition: 47850 runs/61s. The changed JNI packet also passed
+4961 fake-VM fuzz runs/31s. Final source/binary hashes match; no finding.
+
+All 54 core JVM/JNI and 18 app tests pass; signed-clock-limit deadline/cancellation
+and exact freshness hints are covered. Four API-35 sync/presentation tests pass
+in 3.08 seconds. Debug/test and unsigned release builds and both lints pass.
+Initial/final logs, corpora and hashes are retained in the sync-delay files in
+the 48-hour scratch directory. Next bind the hint to one cancellable foreground
+UI timer, then render explicit unavailable/stale/unverified balance views.

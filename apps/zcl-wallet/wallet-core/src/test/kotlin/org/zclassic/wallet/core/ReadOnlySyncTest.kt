@@ -41,6 +41,7 @@ class ReadOnlySyncTest {
                 val complete = sync.snapshot()
                 assertEquals(ReadOnlySync.Freshness.UNVERIFIED, complete.freshness)
                 assertFalse(complete.refreshing)
+                assertEquals(60000L, complete.nextChangeDelayMillis)
                 val report = checkNotNull(complete.report)
                 assertEquals(1000L, report.confirmed.value)
                 assertEquals(-7L, report.pendingDelta)
@@ -48,14 +49,17 @@ class ReadOnlySyncTest {
                 assertEquals(0L, report.height)
                 now.set(60105)
                 assertEquals(ReadOnlySync.Freshness.UNVERIFIED, sync.snapshot().freshness)
+                assertEquals(1L, sync.snapshot().nextChangeDelayMillis)
                 now.set(60106)
                 assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot().freshness)
+                assertEquals(0L, sync.snapshot().nextChangeDelayMillis)
                 val refresh = sync.begin(10)
                 assertEquals(CoreStatus.IO_FAILURE, refresh.fail(CoreStatus.IO_FAILURE))
                 assertEquals(report, sync.snapshot().report)
                 assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot().freshness)
                 now.set(60105)
                 assertNull(sync.snapshot().report) // Clock rollback drops the cached report.
+                assertEquals(0L, sync.snapshot().nextChangeDelayMillis)
             }
             now.set(0)
             ReadOnlySync(receiving, ByteArray(32) { 1 }, now::get).use { assertNull(it.snapshot().report) }
@@ -224,6 +228,27 @@ class ReadOnlySyncTest {
         val sampled = ticks.get()
         failure(CoreStatus.CANCELLED) { sync.snapshot() }
         assertEquals(sampled, ticks.get()) // Closed owners do not consult the clock.
+    }
+
+    @Test fun wakeupDelayTracksDeadlineAtSignedClockLimitAndClearsOnCancellation() = owner().use { sync ->
+        assertEquals(0L, sync.snapshot().nextChangeDelayMillis)
+        now.set(Long.MAX_VALUE - 30000)
+        val attempt = sync.begin()
+        assertEquals(30000L, sync.snapshot().nextChangeDelayMillis)
+        now.set(Long.MAX_VALUE - 1)
+        assertEquals(1L, sync.snapshot().nextChangeDelayMillis)
+        now.set(Long.MAX_VALUE)
+        val expired = sync.snapshot()
+        assertEquals(0L, expired.nextChangeDelayMillis)
+        assertEquals(CoreStatus.TIMED_OUT, expired.lastFault)
+        assertFalse(expired.refreshing)
+        assertEquals(CoreStatus.CANCELLED, attempt.fail())
+        now.set(0)
+        assertEquals(CoreStatus.IO_UNCERTAIN, sync.snapshot().lastFault)
+        val retry = sync.begin()
+        assertEquals(30000L, sync.snapshot().nextChangeDelayMillis)
+        assertEquals(CoreStatus.CANCELLED, retry.fail())
+        assertEquals(0L, sync.snapshot().nextChangeDelayMillis)
     }
 
     @Test fun directJniCallbacksCannotFindAClosedOwnerDuringSlotReuse() {

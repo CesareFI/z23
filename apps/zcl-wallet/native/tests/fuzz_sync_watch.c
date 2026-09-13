@@ -6,10 +6,35 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
+static void inspect_wakeup(const zcl_sync_watch *watch, uint64_t now,
+    const zcl_sync_snapshot *report)
+{
+    const uint64_t delay = report->next_change_ms;
+    if (delay > ZCL_SYNC_FRESH_MS) abort();
+    if (delay == 0) {
+        if (report->refreshing || report->freshness == ZCL_BALANCE_UNVERIFIED) abort();
+        return;
+    }
+    /* A relative delay requires no absolute addition in production. Bound this
+     * fixture's future timestamps explicitly before exercising both sides. */
+    if (now > UINT64_MAX - delay) return;
+    zcl_sync_watch copy = *watch;
+    zcl_sync_snapshot before = {0}, after = {0};
+    if (zcl_sync_watch_snapshot(&copy, now + delay - 1, &before) != ZCL_OK) abort();
+    if (before.freshness != report->freshness || before.refreshing != report->refreshing ||
+        before.last_fault != report->last_fault) abort();
+    if (before.next_change_ms != 1) abort();
+    if (zcl_sync_watch_snapshot(&copy, now + delay, &after) != ZCL_OK) abort();
+    if (after.freshness == report->freshness && after.refreshing == report->refreshing &&
+        after.last_fault == report->last_fault) abort();
+    if (after.next_change_ms != 0) abort();
+}
+
 static void inspect(zcl_sync_watch *watch, uint64_t now)
 {
     zcl_sync_snapshot report;
     if (zcl_sync_watch_snapshot(watch, now, &report) != ZCL_OK) abort();
+    inspect_wakeup(watch, now, &report);
     if (report.freshness == ZCL_BALANCE_UNAVAILABLE) {
         const zcl_sync_report empty = {0};
         if (memcmp(&report.report, &empty, sizeof(empty)) != 0 || report.age_ms != 0) abort();

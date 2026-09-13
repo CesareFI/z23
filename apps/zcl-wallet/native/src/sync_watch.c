@@ -131,14 +131,18 @@ zcl_status zcl_sync_watch_snapshot(zcl_sync_watch *watch, uint64_t now_ms,
     (void)clock_update(watch, now_ms);
     zcl_sync_snapshot result = {0};
     result.refreshing = watch->in_flight;
+    /* clock_update stopped every expired attempt, so this subtraction is safe. */
+    if (result.refreshing) result.next_change_ms = watch->deadline_ms - now_ms;
     result.last_fault = watch->last_fault;
     memcpy(result.source_id, watch->source_id, sizeof(result.source_id));
     if (watch->has_report) {
         result.report = watch->last;
         result.age_ms = now_ms - watch->observed_ms;
         result.freshness = ZCL_BALANCE_STALE;
-        if (!watch->in_flight && watch->last_fault == ZCL_OK && result.age_ms < ZCL_SYNC_FRESH_MS)
+        if (!watch->in_flight && watch->last_fault == ZCL_OK && result.age_ms < ZCL_SYNC_FRESH_MS) {
             result.freshness = ZCL_BALANCE_UNVERIFIED;
+            result.next_change_ms = ZCL_SYNC_FRESH_MS - result.age_ms;
+        }
     }
     *snapshot = result;
     return ZCL_OK;

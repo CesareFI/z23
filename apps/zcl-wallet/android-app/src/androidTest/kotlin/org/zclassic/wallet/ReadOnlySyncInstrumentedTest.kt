@@ -59,10 +59,13 @@ class ReadOnlySyncInstrumentedTest {
                 assertEquals(-7L, report.pendingDelta)
                 assertEquals(993L, report.total.value)
                 assertFalse(complete.refreshing)
+                assertEquals(60000L, complete.nextChangeDelayMillis)
                 now.set(60005)
                 assertEquals(ReadOnlySync.Freshness.UNVERIFIED, sync.snapshot().freshness)
+                assertEquals(1L, sync.snapshot().nextChangeDelayMillis)
                 now.set(60006)
                 assertEquals(ReadOnlySync.Freshness.STALE, sync.snapshot().freshness)
+                assertEquals(0L, sync.snapshot().nextChangeDelayMillis)
             }
             now.set(0)
             ReadOnlySync(address, ByteArray(32) { 1 }, now::get).use { fresh ->
@@ -70,9 +73,11 @@ class ReadOnlySyncInstrumentedTest {
                 assertEquals(CoreStatus.CANCELLED, checkNotNull(old).reply(byteArrayOf()))
                 assertNull(fresh.snapshot().report)
                 assertTrue(fresh.snapshot().refreshing)
+                assertEquals(1L, fresh.snapshot().nextChangeDelayMillis)
                 now.set(1)
                 assertEquals(CoreStatus.TIMED_OUT, attempt.reply(byteArrayOf()))
                 assertFalse(fresh.snapshot().refreshing)
+                assertEquals(0L, fresh.snapshot().nextChangeDelayMillis)
                 assertNull(fresh.snapshot().report)
             }
         }

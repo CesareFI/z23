@@ -74,31 +74,33 @@ static void freshness_and_retry(zcl_network network)
 {
     zcl_sync_watch watch;
     init(&watch, network);
-    (void)snapshot(&watch, 100, ZCL_BALANCE_UNAVAILABLE, false, ZCL_OK);
+    CHECK(snapshot(&watch, 100, ZCL_BALANCE_UNAVAILABLE, false, ZCL_OK).next_change_ms == 0);
     const uint64_t first = begin(&watch, 100, 100);
-    (void)snapshot(&watch, 100, ZCL_BALANCE_UNAVAILABLE, true, ZCL_OK);
+    CHECK(snapshot(&watch, 100, ZCL_BALANCE_UNAVAILABLE, true, ZCL_OK).next_change_ms == 100);
     uint64_t unchanged = 88;
     CHECK(zcl_sync_watch_begin(&watch, 100, 100, 1, &unchanged) == ZCL_BUSY && unchanged == 88);
     finish(&watch, first, 100);
     zcl_sync_snapshot report = snapshot(&watch, 106, ZCL_BALANCE_UNVERIFIED, false, ZCL_OK);
     CHECK(report.report.network == network && report.report.balance.total == 993 && report.age_ms == 0);
+    CHECK(report.next_change_ms == ZCL_SYNC_FRESH_MS);
     late(&watch, first);
     report = snapshot(&watch, 60105, ZCL_BALANCE_UNVERIFIED, false, ZCL_OK);
-    CHECK(report.age_ms == 59999);
-    (void)snapshot(&watch, 60106, ZCL_BALANCE_STALE, false, ZCL_OK);
+    CHECK(report.age_ms == 59999 && report.next_change_ms == 1);
+    CHECK(snapshot(&watch, 60106, ZCL_BALANCE_STALE, false, ZCL_OK).next_change_ms == 0);
     const uint64_t second = begin(&watch, 60106, 10);
     CHECK(second > first);
     late(&watch, first);
-    (void)snapshot(&watch, 60115, ZCL_BALANCE_STALE, true, ZCL_OK);
+    CHECK(snapshot(&watch, 60115, ZCL_BALANCE_STALE, true, ZCL_OK).next_change_ms == 1);
     report = snapshot(&watch, 60116, ZCL_BALANCE_STALE, false, ZCL_TIMED_OUT);
     CHECK(report.report.balance.total == 993 && watch.attempt.candidate.balance.total == 0);
+    CHECK(report.next_change_ms == 0);
     late(&watch, second);
     const uint64_t third = begin(&watch, 60116, 100);
     finish(&watch, third, 60116);
     (void)snapshot(&watch, 60122, ZCL_BALANCE_UNVERIFIED, false, ZCL_OK);
     zcl_sync_watch_close(&watch);
     init(&watch, network); /* New process/owner starts empty, never fresh from persisted display state. */
-    (void)snapshot(&watch, 0, ZCL_BALANCE_UNAVAILABLE, false, ZCL_OK);
+    CHECK(snapshot(&watch, 0, ZCL_BALANCE_UNAVAILABLE, false, ZCL_OK).next_change_ms == 0);
 }
 
 static void fail_at_every_phase(void)
@@ -114,6 +116,7 @@ static void fail_at_every_phase(void)
         CHECK(zcl_sync_watch_fail(&watch, token, reason) == reason);
         const zcl_sync_snapshot report = snapshot(&watch, 20, ZCL_BALANCE_STALE, false, reason);
         CHECK(report.report.balance.total == 993 && watch.attempt.candidate.balance.total == 0);
+        CHECK(report.next_change_ms == 0);
         late(&watch, token);
     }
 }
@@ -132,12 +135,14 @@ static void deadline_and_clock(void)
     (void)snapshot(&watch, 110, ZCL_BALANCE_UNAVAILABLE, false, ZCL_TIMED_OUT);
     token = begin(&watch, 110, 100);
     finish(&watch, token, 110);
-    (void)snapshot(&watch, 115, ZCL_BALANCE_UNAVAILABLE, false, ZCL_IO_UNCERTAIN);
+    CHECK(snapshot(&watch, 115, ZCL_BALANCE_UNAVAILABLE, false, ZCL_IO_UNCERTAIN).next_change_ms == 0);
     token = begin(&watch, 115, 100);
     CHECK(zcl_sync_watch_request(&watch, token, 114, request, sizeof(request), &written) == ZCL_IO_UNCERTAIN);
     (void)snapshot(&watch, 114, ZCL_BALANCE_UNAVAILABLE, false, ZCL_IO_UNCERTAIN);
     token = begin(&watch, UINT64_MAX - 10, 10);
-    (void)snapshot(&watch, UINT64_MAX, ZCL_BALANCE_UNAVAILABLE, false, ZCL_TIMED_OUT);
+    /* Beginning a retry retains the last fault until a complete success. */
+    CHECK(snapshot(&watch, UINT64_MAX - 1, ZCL_BALANCE_UNAVAILABLE, true, ZCL_IO_UNCERTAIN).next_change_ms == 1);
+    CHECK(snapshot(&watch, UINT64_MAX, ZCL_BALANCE_UNAVAILABLE, false, ZCL_TIMED_OUT).next_change_ms == 0);
     late(&watch, token);
 }
 

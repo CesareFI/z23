@@ -454,3 +454,20 @@ This is display formatting; the existing nonnegative payment parser is unchanged
 | Stack usage; allocation limits; resource exhaustion | Fixed <=18-byte production arrays, no recursion/VLA, bounded existing decimal loops. At most one <=18-byte Java result allocation. Host campaign has time/input/RSS limits; no retry or background work is introduced. |
 | Malformed input; races; ownership | Arbitrary signed 64-bit values fail closed outside money range. Output changes only after all checks succeed. No global state or mutable shared input exists; caller owns output exclusively for the call. Positive and negative display changes remain invalid inputs to the payment-amount parser. |
 | Secret leakage | Only public monetary display values pass this API. It accepts no key, seed, record, address or network frame and emits no logs. Secret-bearing state and TLS quarantine are unaffected. |
+
+## Read-only display expiry hint review — 2026-09-13
+
+Scope: one relative `next_change_ms` field in the C snapshot and its JNI/managed
+projection. C returns a delay to the current attempt deadline or fresh-report
+expiry, and zero if neither can change by time alone. It grants no freshness
+authority to a platform timer; delivery must read the C snapshot again.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Snapshot is a fully initialized C value. JNI packet grows from nine to ten longs, with both array creation and region count changed together. Fake-VM storage and independent bounds now require ten. Constant field index nine is in bounds. No network or wallet-file layout changes. |
+| Integer overflow/underflow; conversions | The clock update cancels every expired attempt before deadline minus now. Freshness delay is computed only for age < FRESH_MS. No absolute-time addition occurs in production. Delays are positive <=60000ms or zero, checked before jlong conversion; managed decoding rejects negative delay. Tests include unsigned and signed maximum clock boundaries. |
+| Use-after-free; double-free; leaks; dangling pointers; races | No new C allocation or pointer retention. The existing registry mutex still covers snapshot derivation; the ten-long Java result is allocated after unlocking and has no global reference. The owner retains its established serialized clock and explicit close semantics. |
+| NULL dereferences; uninitialized reads | Existing C argument checks apply. New field starts at zero on all no-event/error states. JNI now refuses NULL env before touching the watch; the fault fixture proves this does not expire its attempt. Java allocation/region exceptions still return no result. |
+| Pointer arithmetic; format strings; stack; resource exhaustion | No new pointer arithmetic, format string, loop, recursion or VLA. Stack growth is one uint64_t/long field. The bounded relative hint permits one timer instead of periodic polling; timers and worker work remain outside this C slice. |
+| Malformed input and state consistency | Existing strict protocol and clock checks are unchanged. Cancelled/offline/rollback/restarted state has no scheduled transition unless a new explicit attempt is active. Tests follow a returned delay on a copied watch and require unchanged flags just before it and a real change exactly at it. |
+| Secret leakage | Only public status/timing metadata is added. No seed, key, wallet file, endpoint, diagnostic content or transport authority is exposed. TLS remains quarantined. |

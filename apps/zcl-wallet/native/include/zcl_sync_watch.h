@@ -17,6 +17,10 @@ typedef struct {
     bool refreshing;
     zcl_status last_fault;
     uint64_t age_ms; /* Zero with UNAVAILABLE; report is then entirely zero. */
+    /* Relative delay from this snapshot's clock sample until the next timed
+     * freshness/deadline change. Zero means none pending. At most FRESH_MS.
+     * A timer is only a wakeup hint: read a new snapshot when it actually runs. */
+    uint64_t next_change_ms;
     uint8_t source_id[32]; /* Opaque caller-selected configuration identity. */
     zcl_sync_report report;
 } zcl_sync_snapshot;

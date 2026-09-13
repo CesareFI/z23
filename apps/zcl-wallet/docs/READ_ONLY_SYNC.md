@@ -246,7 +246,12 @@ checked 16384-byte allocation which is cleared and freed on every path.
 Unexpected JNI/provider/mutex errors fail closed, without input text in errors.
 
 The snapshot carries unverified/stale/unavailable state, refresh/fault/age and
-the reported confirmed amount, signed pending delta, total and height. An
+the reported confirmed amount, signed pending delta, total and height. Its
+`nextChangeDelayMillis` is C's relative delay to an active deadline or fresh
+report expiry, bounded to 60000ms. Zero means no time-only transition is pending.
+It is a wakeup hint, never a cached decision: a delayed timer must query C again,
+and foreground replacement must cancel the timer with its original owner.
+No timer or polling worker is created by the core. An
 unavailable report becomes null in the managed view. It has no spending or
 chain-proof authority. Pending changes use the bounded C signed-delta formatter:
 zero is "0", positive changes include "+", and negative changes include "-".

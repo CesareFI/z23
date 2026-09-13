@@ -157,13 +157,14 @@ Java_org_zclassic_wallet_core_NativeCore_syncReply(JNIEnv *env, jclass type,
     return (jint)unlock_registry(status);
 }
 
-static zcl_status snapshot_numbers(zcl_sync_watch *watch, uint64_t now, jlong values[9])
+static zcl_status snapshot_numbers(zcl_sync_watch *watch, uint64_t now, jlong values[10])
 {
     zcl_sync_snapshot snapshot = {0};
     const zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
     if (status != ZCL_OK) return status;
     if (snapshot.age_ms > INT64_MAX || snapshot.report.balance.confirmed > INT64_MAX ||
-        snapshot.report.balance.total > INT64_MAX) return ZCL_OUT_OF_RANGE;
+        snapshot.report.balance.total > INT64_MAX || snapshot.next_change_ms > INT64_MAX)
+        return ZCL_OUT_OF_RANGE;
     values[1] = (jlong)snapshot.freshness;
     values[2] = snapshot.refreshing ? 1 : 0;
     values[3] = (jlong)snapshot.last_fault;
@@ -172,6 +173,7 @@ static zcl_status snapshot_numbers(zcl_sync_watch *watch, uint64_t now, jlong va
     values[6] = (jlong)snapshot.report.balance.pending_delta;
     values[7] = (jlong)snapshot.report.balance.total;
     values[8] = (jlong)snapshot.report.tip.height;
+    values[9] = (jlong)snapshot.next_change_ms;
     return ZCL_OK;
 }
 
@@ -179,13 +181,14 @@ JNIEXPORT jlongArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_syncSnapshot(JNIEnv *env, jclass type, jlong id, jlong now)
 {
     (void)type;
-    jlong values[9] = {0};
+    if (env == NULL) return NULL;
+    jlong values[10] = {0};
     zcl_sync_watch *watch = NULL;
     zcl_status status = now < 0 ? ZCL_OUT_OF_RANGE : enter_owner(id, &watch);
     if (status == ZCL_OK) status = unlock_registry(snapshot_numbers(watch, (uint64_t)now, values));
     values[0] = (jlong)status;
-    jlongArray result = (*env)->NewLongArray(env, 9);
+    jlongArray result = (*env)->NewLongArray(env, 10);
     if (result == NULL || (*env)->ExceptionCheck(env)) return NULL;
-    (*env)->SetLongArrayRegion(env, result, 0, 9, values);
+    (*env)->SetLongArrayRegion(env, result, 0, 10, values);
     return (*env)->ExceptionCheck(env) ? NULL : result;
 }
