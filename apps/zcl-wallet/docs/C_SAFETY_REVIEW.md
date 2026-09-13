@@ -778,3 +778,9 @@ then altered and raw headers plus arbitrary bounded metadata, comparing public
 results to the existing internal derivation and checking input/output stability.
 These fixtures qualify C binding and cleanup; they do not qualify physical
 hardware custody, mutable-index recovery or a sending flow.
+
+The JNI key fault fixture also clears each tracked pointer immediately after
+observing its live span zeroed. Later cleanup events inspect only the saved
+cleared flag, not a pointer whose stack object's lifetime has ended. No native
+production path or secret policy changes; the focused ASan/UBSan/LSan JNI key
+fixture passes with the same partial-read/publication cleanup assertions.

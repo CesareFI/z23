@@ -1149,3 +1149,11 @@ Evidence is in wallet-change-* under the48-hour scratch directory. Platform GCM
 and qualified per-use hardware remain prerequisites for a real recovered-wallet
 claim. Continue with durable index reservation/restart recovery and explicit
 transaction authorization binding; seed-restoration discovery remains required.
+
+2026-09-13 test-observer lifetime: the JNI key fault fixture now clears saved
+pointers as soon as it observes their live buffers zeroed. Subsequent cleanup
+checks keep the recorded result without comparing a pointer after its stack
+object's lifetime ends. The focused JNI key ASan/UBSan/LSan fixture passes;
+production source is unchanged. Evidence/source/binary hashes are in
+jni-key-tracker-* under the48-hour scratch directory. This small test-only
+checkpoint remains separate from the in-progress authenticated index codec.

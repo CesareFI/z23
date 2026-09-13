@@ -53,6 +53,8 @@ void zcl_jni_key_test_zero(void *pointer, size_t length)
         if (touched[i].pointer != pointer) continue;
         CHECK(length >= touched[i].length);
         touched[i].cleared = true;
+        touched[i].pointer = NULL; /* Do not retain a pointer past this span's lifetime. */
+        touched[i].length = 0;
     }
 }
 
