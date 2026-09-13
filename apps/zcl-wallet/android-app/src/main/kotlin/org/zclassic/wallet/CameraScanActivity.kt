@@ -82,9 +82,9 @@ class CameraScanActivity : Activity() {
             return
         }
         screens.scanning(network) { choose() }
-        val client = ScanDecodeClient(this, ::decoderReady) { owner ->
+        val client = ScanDecodeClient(this, ::decoderReady, onFailure = { owner ->
             if (resumed && decoder === owner) choose(R.string.scan_unavailable)
-        }
+        })
         decoder = client
         client.connect()
     }

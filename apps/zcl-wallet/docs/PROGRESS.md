@@ -1366,3 +1366,25 @@ selftest's empty tracked-file scan. Neither was hidden or weakened. Work stays
 on the existing Android branch, with no merge, push, custody or consensus change.
 Continue with QR callback deadlines: Handler cleanup alone does not reject a
 reply whose delivery is delayed beyond its allowed elapsed-time window.
+
+2026-09-13 QR deadline continuation: the isolated Binder adapter now checks
+elapsed time at connection/reply arrival and queued delivery, including after
+public request parsing. Existing cleanup timers, cancellation, array clearing
+and network validation remain. Bounds are unchanged at 15 seconds for ready
+and 5 seconds for a reply; rollback/negative time refuses, and subtraction
+avoids overflow at the signed clock limit.
+
+Six API35 tests pass in 61.466 seconds, including new real-Binder queued
+expiry/rollback and valid-boundary fixtures. Removing just the delivery checks
+in a temporary build makes the regression fail in 20.344 seconds because the
+expired reply is delivered. Fixed source is restored. Debug/test and minified
+release builds, JVM tests, both lints and fixture isolation pass. Evidence is
+under `.cache/android-wallet/continue-20260913`. The initial instrumentation
+attempt overlapped completion of test-APK installation and reported process
+death; the successful run started after installation completed. No wallet data
+was cleared.
+
+Continue immediately with the scanner JNI boundary: unlike the shared array
+helpers, direct camera/scanner entries still accessed the VM before checking
+for an already-pending exception. Add a registered fake-VM fault/cleanup fixture
+and preserve the independent real-VM and emulator acceptance.

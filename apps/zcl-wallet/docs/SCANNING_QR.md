@@ -172,3 +172,27 @@ The corrected test fails on the old selected-network state in 32.265 seconds
 and passes on the fixed implementation in 46.999 seconds. Debug/test and unsigned
 minified release builds plus both Android lints pass. This is public Activity
 state evidence; the separate physical-camera and process-death limits remain.
+
+## Elapsed callback deadlines — 2026-09-13
+
+The Binder adapter now checks elapsed monotonic time at ready/reply arrival and
+again at main-queue delivery. Parsing a public request is followed by a final
+deadline check. Handler timers continue to schedule cleanup, but a queued reply
+cannot become usable merely because its runnable precedes a delayed timeout.
+Connection readiness expires at 15 seconds; a frame reply expires at 5 seconds.
+Clock rollback before the start and negative start times refuse. Checked
+subtraction avoids adding a deadline near the signed clock limit.
+
+Expired replies use the existing close/failure path and clear their owned array;
+they do not display a request or keep the decoder ready. The platform clock is
+an internal constructor dependency, with elapsedRealtime as the production
+default. There is no Intent, preference or runtime bypass for these limits.
+
+Three new real-isolated-Binder instrumentation tests cover queued connection
+expiry, reply expiry/rollback, a reply one millisecond before its deadline and
+a valid clock value near Long.MAX_VALUE. Together with the existing isolated
+round-trip and QR tests, all six pass on API35 in 61.466 seconds. A temporary
+build removing only the two reply-delivery checks fails the expiry regression
+in 20.344 seconds by delivering the late reply. The fixed source was restored
+immediately after that build. This models elapsed time with an injected clock;
+it is not a physical device-sleep or camera interoperability qualification.
