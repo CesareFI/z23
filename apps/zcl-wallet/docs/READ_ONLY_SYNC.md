@@ -265,8 +265,16 @@ Create/close/render belong to the same UI thread. Close cancels pending reads,
 drops receiver references and closes the C owner, so replacement cannot render
 an old session. A failed snapshot closes the owner and delivers only a stable
 unavailable status; receiver exceptions close and propagate. Queue rejection
-permits an explicit retry. No snapshot is saved, and no endpoint, timer, worker
-or app balance screen is enabled by this adapter alone. The bounded metadata
+permits an explicit retry. Presentation owns one cancellable main-queue wakeup
+using C's delay; a timer callback coalesces a new redraw and never carries a
+snapshot. Early/late callbacks recheck C. Failure to arm a required wakeup closes
+the owner and reports unavailable before displaying a new unverified result.
+Close cancels the wakeup even if its old callback was already captured. Android
+Handler uptime schedules only a hint; the owner's elapsedRealtime clock remains
+authoritative, including sleep. The platform checks the scheduling addition and
+starts no periodic poll. Foreground closure/resume must still replace the owner.
+No snapshot is saved, and no endpoint, worker or app balance screen is enabled
+by this adapter alone. The bounded metadata
 query may run on the UI thread; blocking I/O must never hold the sync monitor
 or native registry lock.
 

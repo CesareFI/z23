@@ -1,6 +1,8 @@
 // Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 package org.zclassic.wallet
 
+import android.os.Handler
+import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.CountDownLatch
@@ -55,7 +57,7 @@ class BalancePresentationInstrumentedTest {
         try {
             complete(sync)
             instrumentation.runOnMainSync {
-                val current = BalancePresentation(sync, instrumentation.targetContext.mainExecutor,
+                val current = BalancePresentation(sync, instrumentation.targetContext.mainExecutor, MainQueueBalanceWakeup(),
                     { delivered.set(it); ready.countDown() }, { fault.set(it); ready.countDown() })
                 presentation = current
                 postFromWorker(current) // Main callback cannot run until this block ends.
@@ -84,12 +86,12 @@ class BalancePresentationInstrumentedTest {
         try {
             complete(first)
             instrumentation.runOnMainSync {
-                val current = BalancePresentation(first, instrumentation.targetContext.mainExecutor,
+                val current = BalancePresentation(first, instrumentation.targetContext.mainExecutor, MainQueueBalanceWakeup(),
                     { oldCallbacks.incrementAndGet() }, { oldCallbacks.incrementAndGet() })
                 old = current
                 postFromWorker(current)
                 current.close()
-                val next = BalancePresentation(owner(now), instrumentation.targetContext.mainExecutor,
+                val next = BalancePresentation(owner(now), instrumentation.targetContext.mainExecutor, MainQueueBalanceWakeup(),
                     { delivered.set(it); ready.countDown() }, { fault.set(it); ready.countDown() })
                 replacement = next
                 postFromWorker(next)
@@ -106,5 +108,52 @@ class BalancePresentationInstrumentedTest {
             instrumentation.runOnMainSync { old?.close(); replacement?.close() }
             first.close()
         }
+    }
+
+    @Test fun idleFreshReportExpiresThroughMainQueueTimer() {
+        val now = AtomicLong(0)
+        val sync = owner(now)
+        val states = mutableListOf<ReadOnlySync.Freshness>() // Read on main after the latch.
+        val fault = AtomicReference<CoreStatus>()
+        val ready = CountDownLatch(2)
+        var presentation: BalancePresentation? = null
+        try {
+            complete(sync)
+            now.set(59999)
+            instrumentation.runOnMainSync {
+                val current = BalancePresentation(sync, instrumentation.targetContext.mainExecutor, MainQueueBalanceWakeup(),
+                    { states.add(it.freshness); now.set(60000); ready.countDown() },
+                    { fault.set(it); ready.countDown(); ready.countDown() })
+                presentation = current
+                postFromWorker(current)
+            }
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            assertNull(fault.get())
+            instrumentation.runOnMainSync {
+                assertEquals(listOf(ReadOnlySync.Freshness.UNVERIFIED, ReadOnlySync.Freshness.STALE), states)
+            }
+        } finally {
+            instrumentation.runOnMainSync { presentation?.close() }
+            sync.close()
+        }
+    }
+
+    @Test fun mainQueueWakeupChecksBoundsAndCancelsReplacedCallbacks() {
+        val callbacks = AtomicInteger(0)
+        val ready = CountDownLatch(1)
+        instrumentation.runOnMainSync {
+            val wakeup = MainQueueBalanceWakeup()
+            val callback = Runnable { callbacks.incrementAndGet() }
+            assertFalse(wakeup.replace(0, callback))
+            assertFalse(wakeup.replace(-1, callback))
+            assertFalse(wakeup.replace(Long.MAX_VALUE, callback))
+            assertTrue(wakeup.replace(1, callback))
+            assertTrue(wakeup.replace(10, callback))
+            wakeup.cancel()
+            wakeup.cancel()
+            assertTrue(Handler(Looper.getMainLooper()).postDelayed({ ready.countDown() }, 20))
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS))
+        assertEquals(0, callbacks.get())
     }
 }

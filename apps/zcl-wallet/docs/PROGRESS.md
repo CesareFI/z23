@@ -572,3 +572,21 @@ in 3.08 seconds. Debug/test and unsigned release builds and both lints pass.
 Initial/final logs, corpora and hashes are retained in the sync-delay files in
 the 48-hour scratch directory. Next bind the hint to one cancellable foreground
 UI timer, then render explicit unavailable/stale/unverified balance views.
+
+2026-09-13 owned UI wakeup: foreground presentation now owns one replaceable
+main-queue timer using C's delay. Timer delivery only coalesces a new snapshot
+read. Close cancels it and rejects captured late callbacks; no periodic polling
+or automatic network retry is introduced. Failure to schedule a required wakeup
+closes the owner and reports unavailable before publishing a new unverified
+display. Handler scheduling addition is checked; elapsedRealtime in C remains
+the time authority. Foreground replacement is still required across pause/resume.
+
+Six new JVM cases cover early/late expiry, idle timeout, scheduling rejection,
+captured callback after close, armed-timer cleanup on receiver failure and queue
+coalescing/rejection. All 24 app tests and 54 core tests pass. Four API-35 tests
+pass in 3.354 seconds, including an idle report crossing the exact C freshness
+boundary through a real main-queue timer and cancellation of replaced callbacks.
+Debug/test and unsigned release builds, both lints and architecture pass. No
+native C changed. Logs and hashes are in the balance-wakeup files in the 48-hour
+scratch directory. Next implement explicit address-balance rendering and prove
+that view restoration cannot recover a previously displayed amount.

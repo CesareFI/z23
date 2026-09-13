@@ -12,11 +12,13 @@ import org.zclassic.wallet.core.ReadOnlySyncFailure
  * close on the UI thread; requestUpdate may run on the producer worker. Queue
  * only a redraw signal, never a previously sampled snapshot. This query does
  * bounded C metadata work; neither the owner lock nor UI may span network I/O.
- * No timer, worker, socket, persistence or automatic retry is created here.
+ * Owns one cancellable wakeup hint from C. No worker, socket, persistence,
+ * periodic polling or automatic network retry is created here.
  */
 internal class BalancePresentation(
     private val sync: ReadOnlySync,
     private val ui: Executor,
+    private val wakeup: BalanceWakeup,
     receive: (ReadOnlySync.Snapshot) -> Unit,
     unavailable: (CoreStatus) -> Unit
 ) : AutoCloseable {
@@ -27,6 +29,7 @@ internal class BalancePresentation(
     private val queued = AtomicBoolean(false)
     private var receiver: Receiver? = Receiver(receive, unavailable)
     private val redraw = Runnable { deliver() }
+    private val timedRedraw = Runnable { wakeupFired() }
 
     /** Coalesces at most one pending redraw. False means closed or rejected;
      * acceptance is not a promise that a foreground session stays open.
@@ -52,7 +55,12 @@ internal class BalancePresentation(
         if (!queued.getAndSet(false) || closed.get()) return
         val target = checkNotNull(receiver)
         val snapshot = try {
-            sync.snapshot()
+            wakeup.cancel()
+            val current = sync.snapshot()
+            if (current.nextChangeDelayMillis > 0 &&
+                !wakeup.replace(current.nextChangeDelayMillis, timedRedraw))
+                throw ReadOnlySyncFailure(CoreStatus.RESOURCE_EXHAUSTED)
+            current
         } catch (problem: ReadOnlySyncFailure) {
             fail(problem.status)
             return
@@ -77,12 +85,24 @@ internal class BalancePresentation(
         target?.unavailable?.invoke(status)
     }
 
+    private fun wakeupFired() {
+        checkUiThread()
+        if (closed.get()) return
+        try {
+            if (!requestUpdate()) fail(CoreStatus.RESOURCE_EXHAUSTED)
+        } catch (problem: Throwable) {
+            close()
+            throw problem
+        }
+    }
+
     override fun close() {
         checkUiThread()
         if (!closed.compareAndSet(false, true)) return
         queued.set(false)
         receiver = null
-        sync.close()
+        try { wakeup.cancel() }
+        finally { sync.close() }
     }
 
     private fun checkUiThread() {

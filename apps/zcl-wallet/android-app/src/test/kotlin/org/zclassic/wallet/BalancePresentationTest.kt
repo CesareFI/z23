@@ -30,6 +30,29 @@ class BalancePresentationTest {
     }
     private val now = AtomicLong(0)
     private val samples = AtomicInteger(0)
+    private class DelayedWakeup : BalanceWakeup {
+        var delay: Long? = null
+        var callback: Runnable? = null
+        var rejecting = false
+        override fun replace(delayMillis: Long, callback: Runnable): Boolean {
+            cancel()
+            if (rejecting) return false
+            check(delayMillis > 0)
+            delay = delayMillis
+            this.callback = callback
+            return true
+        }
+        override fun cancel() { callback = null; delay = null }
+        fun fire() {
+            val next = checkNotNull(callback)
+            cancel()
+            next.run()
+        }
+    }
+    private fun presentation(sync: ReadOnlySync, ui: Executor,
+                             receive: (ReadOnlySync.Snapshot) -> Unit,
+                             unavailable: (CoreStatus) -> Unit) =
+        BalancePresentation(sync, ui, DelayedWakeup(), receive, unavailable)
     private fun owner(clock: () -> Long = { samples.incrementAndGet(); now.get() }): ReadOnlySync =
         ReadOnlySync(TransparentAddress.fromPublicKeyHash(ByteArray(20), Network.MAINNET),
                      ByteArray(32), clock)
@@ -47,7 +70,7 @@ class BalancePresentationTest {
         val ui = DelayedUi()
         val sync = owner()
         val delivered = mutableListOf<ReadOnlySync.Snapshot>()
-        BalancePresentation(sync, ui, {
+        presentation(sync, ui, {
             assertFalse(Thread.holdsLock(sync))
             delivered.add(it)
         }, { error("Unexpected unavailable state: $it") }).use { presentation ->
@@ -68,7 +91,7 @@ class BalancePresentationTest {
     @Test fun closeCancelsQueuedReadsAndReplacementStartsUnavailable() {
         val ui = DelayedUi()
         val first = owner()
-        val old = BalancePresentation(first, ui, { error("Closed session rendered") },
+        val old = presentation(first, ui, { error("Closed session rendered") },
                                       { error("Closed session notified") })
         try {
             complete(first)
@@ -76,7 +99,7 @@ class BalancePresentationTest {
             old.close()
             val before = samples.get()
             owner().let { replacement ->
-                BalancePresentation(replacement, ui, {
+                presentation(replacement, ui, {
                     assertNull(it.report)
                     assertEquals(ReadOnlySync.Freshness.UNAVAILABLE, it.freshness)
                 }, { error("Replacement failed") }).use { current ->
@@ -95,7 +118,7 @@ class BalancePresentationTest {
         val ui = DelayedUi()
         var rejecting = true
         var deliveries = 0
-        BalancePresentation(owner(), { command ->
+        presentation(owner(), { command ->
             if (rejecting) throw RejectedExecutionException("Public fixture rejection")
             ui.execute(command)
         }, { deliveries++ }, { error("Unexpected failure") }).use { presentation ->
@@ -112,7 +135,7 @@ class BalancePresentationTest {
         val ui = DelayedUi()
         val sync = owner()
         var delivered: ReadOnlySync.Snapshot? = null
-        BalancePresentation(sync, ui, { delivered = it }, { error("Unexpected failure") }).use {
+        presentation(sync, ui, { delivered = it }, { error("Unexpected failure") }).use {
             complete(sync)
             assertTrue(it.requestUpdate())
             assertEquals(CoreStatus.IO_FAILURE, sync.begin().fail(CoreStatus.IO_FAILURE))
@@ -129,7 +152,7 @@ class BalancePresentationTest {
         val ui = DelayedUi()
         val sync = owner()
         var fault: CoreStatus? = null
-        BalancePresentation(sync, ui, { error("Failed owner rendered") }, { fault = it }).use {
+        presentation(sync, ui, { error("Failed owner rendered") }, { fault = it }).use {
             assertTrue(it.requestUpdate())
             sync.close() // Simulate an independently invalidated native lifetime.
             ui.runNext()
@@ -142,7 +165,7 @@ class BalancePresentationTest {
         val ui = DelayedUi()
         val sync = owner { throw IllegalStateException("Public fixture clock failure") }
         var fault: CoreStatus? = null
-        BalancePresentation(sync, ui, { error("Clock failure rendered") }, { fault = it }).use {
+        presentation(sync, ui, { error("Clock failure rendered") }, { fault = it }).use {
             assertTrue(it.requestUpdate())
             ui.runNext()
             assertEquals(CoreStatus.IO_UNCERTAIN, fault)
@@ -155,7 +178,7 @@ class BalancePresentationTest {
     @Test fun receiverFailureClosesOwnerAndPropagates() {
         val ui = DelayedUi()
         val sync = owner()
-        BalancePresentation(sync, ui, { error("Public fixture receiver failure") },
+        presentation(sync, ui, { error("Public fixture receiver failure") },
                             { error("Receiver failure is not a sync fault") }).use {
             assertTrue(it.requestUpdate())
             assertFailsWith<IllegalStateException> { ui.runNext() }
@@ -170,7 +193,7 @@ class BalancePresentationTest {
         val start = CountDownLatch(1)
         val problem = AtomicReference<Throwable>()
         var delivered = 0
-        BalancePresentation(owner(), ui, { delivered++ }, { error("Unexpected failure") }).use { owner ->
+        presentation(owner(), ui, { delivered++ }, { error("Unexpected failure") }).use { owner ->
             val workers = List(2) {
                 Thread {
                     try {
@@ -201,7 +224,7 @@ class BalancePresentationTest {
         val release = CountDownLatch(1)
         val callback = AtomicReference<Runnable>()
         val problem = AtomicReference<Throwable>()
-        val presentation = BalancePresentation(owner(), { command ->
+        val presentation = presentation(owner(), { command ->
             entered.countDown()
             check(release.await(5, TimeUnit.SECONDS))
             callback.set(command)
@@ -223,5 +246,129 @@ class BalancePresentationTest {
         assertNull(problem.get())
         checkNotNull(callback.get()).run()
         assertEquals(0, samples.get())
+    }
+
+    @Test fun earlyAndLateWakeupsAlwaysRecheckCAndStopWhenStale() {
+        val ui = DelayedUi()
+        val wakeup = DelayedWakeup()
+        val sync = owner()
+        val delivered = mutableListOf<ReadOnlySync.Snapshot>()
+        BalancePresentation(sync, ui, wakeup, { delivered.add(it) }, { error("Unexpected fault") }).use {
+            complete(sync)
+            it.requestUpdate()
+            ui.runNext()
+            assertEquals(60000L, wakeup.delay)
+            now.set(59999)
+            wakeup.fire() // A scheduler firing early cannot decide that the report expired.
+            ui.runNext()
+            assertEquals(ReadOnlySync.Freshness.UNVERIFIED, delivered.last().freshness)
+            assertEquals(1L, wakeup.delay)
+            now.set(60007)
+            wakeup.fire()
+            assertEquals(2, delivered.size) // Timer carries no snapshot; only the UI queue reads it.
+            ui.runNext()
+            assertEquals(ReadOnlySync.Freshness.STALE, delivered.last().freshness)
+            assertNull(wakeup.callback)
+            assertNull(wakeup.delay)
+        }
+    }
+
+    @Test fun wakeupExpiresAnAttemptWithoutAnotherProducerEvent() {
+        val ui = DelayedUi()
+        val wakeup = DelayedWakeup()
+        val sync = owner()
+        var delivered: ReadOnlySync.Snapshot? = null
+        BalancePresentation(sync, ui, wakeup, { delivered = it }, { error("Unexpected fault") }).use {
+            sync.begin(10)
+            it.requestUpdate()
+            ui.runNext()
+            assertEquals(10L, wakeup.delay)
+            assertTrue(checkNotNull(delivered).refreshing)
+            now.set(10)
+            wakeup.fire()
+            ui.runNext()
+            val expired = checkNotNull(delivered)
+            assertFalse(expired.refreshing)
+            assertNull(expired.report)
+            assertEquals(CoreStatus.TIMED_OUT, expired.lastFault)
+            assertNull(wakeup.callback)
+        }
+    }
+
+    @Test fun rejectedWakeupDoesNotPublishANewUnverifiedDisplay() {
+        val ui = DelayedUi()
+        val wakeup = DelayedWakeup().apply { rejecting = true }
+        val sync = owner()
+        var fault: CoreStatus? = null
+        BalancePresentation(sync, ui, wakeup, { error("Unscheduled balance rendered") }, { fault = it }).use {
+            complete(sync)
+            it.requestUpdate()
+            ui.runNext()
+            assertEquals(CoreStatus.RESOURCE_EXHAUSTED, fault)
+            assertFalse(it.requestUpdate())
+            assertNull(wakeup.callback)
+            assertEquals(CoreStatus.CANCELLED,
+                assertFailsWith<ReadOnlySyncFailure> { sync.snapshot() }.status)
+        }
+    }
+
+    @Test fun closeCancelsWakeupAndRejectsItsAlreadyCapturedCallback() {
+        val ui = DelayedUi()
+        val wakeup = DelayedWakeup()
+        val sync = owner()
+        var deliveries = 0
+        BalancePresentation(sync, ui, wakeup, { deliveries++ }, { error("Unexpected fault") }).use {
+            complete(sync)
+            it.requestUpdate()
+            ui.runNext()
+            val late = checkNotNull(wakeup.callback)
+            val before = samples.get()
+            it.close()
+            assertNull(wakeup.callback)
+            now.set(60000)
+            late.run()
+            assertTrue(ui.callbacks.isEmpty())
+            assertEquals(before, samples.get())
+            assertEquals(1, deliveries)
+        }
+    }
+
+    @Test fun receiverFailureAlsoCancelsAnArmedWakeup() {
+        val ui = DelayedUi()
+        val wakeup = DelayedWakeup()
+        val sync = owner()
+        BalancePresentation(sync, ui, wakeup, { error("Public fixture receiver failure") },
+                            { error("Receiver failure is not a sync fault") }).use {
+            complete(sync)
+            it.requestUpdate()
+            assertFailsWith<IllegalStateException> { ui.runNext() }
+            assertNull(wakeup.callback)
+            assertFalse(it.requestUpdate())
+        }
+    }
+
+    @Test fun timerCoalescesWithPendingProducerAndClosesOnQueueRejection() {
+        val ui = DelayedUi()
+        val wakeup = DelayedWakeup()
+        val sync = owner()
+        var reject = false
+        var fault: CoreStatus? = null
+        BalancePresentation(sync, { command ->
+            if (reject) throw RejectedExecutionException("Public fixture queue rejection")
+            ui.execute(command)
+        }, wakeup, {}, { fault = it }).use {
+            complete(sync)
+            it.requestUpdate()
+            ui.runNext()
+            it.requestUpdate()
+            wakeup.fire()
+            assertEquals(1, ui.callbacks.size)
+            ui.runNext()
+            reject = true
+            wakeup.fire()
+            assertEquals(CoreStatus.RESOURCE_EXHAUSTED, fault)
+            assertNull(wakeup.callback)
+            assertFalse(it.requestUpdate())
+        }
     }
 }
