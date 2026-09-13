@@ -1039,3 +1039,19 @@ close/new-Activity behavior. Native/C-core behavior is unchanged; no unchanged
 sanitizer/fuzz campaign was repeated. Evidence is in review-activity-* under the
 48-hour scratch directory. Continue immediately with public review process
 termination/relaunch acceptance; signing and authenticated funding remain gated.
+
+2026-09-13 review process-restart acceptance: the existing opt-in emulator
+controller now has a review profile, retaining its exact-PID/readiness/profile
+checks and new-report-directory rule. A live public unsigned draft was verified
+before terminating PID24937. New PID24997 started with an empty view and free
+native review slot; explicitly preparing another draft did not auto-display it.
+The relaunch case passed in24.129s. The intentionally killed preparation reports
+process loss, as expected; this is not a native parser or sanitizer failure.
+
+Invalid profile and physical-device arguments refuse before adb or directory
+creation. Both ABI artifacts, both lints, fixture isolation and architecture
+pass; the unchanged35 app/66 core JVM and38 native safety cases remain the prior
+baseline. No unchanged unit/sanitizer/fuzz suite was repeated. Evidence is in
+review-process-* and review-process-acceptance under the48-hour scratch directory.
+Continue with a bounded C unsigned-draft constructor using existing canonical
+parsing/assessment, without implying spendability, change ownership or signing.

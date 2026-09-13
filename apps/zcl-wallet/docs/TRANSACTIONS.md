@@ -328,9 +328,20 @@ and absent from the release manifest. Independent export, missing-export,
 missing-host and release-host mutations exercise both host boundaries. Public
 transaction fixtures remain confined to the test APK.
 
+`tools/check-process-relaunch.sh <adb> <emulator-serial> <new-report-directory>
+review` runs the separate opt-in process acceptance. It verifies a live public
+draft on screen, receives readiness/profile/PID from that fixture and matches
+the current process before force-stop. The new process must have a different
+PID, an empty review view and an available native review slot. Explicitly
+preparing a new public draft does not automatically display it. Invalid profiles
+or non-emulator serials refuse before creating a report directory or calling adb.
+Preparation is intentionally terminated; its instrumentation crash message is
+expected evidence of process loss, not a parser/sanitizer finding.
+
 ## Ordered continuation
 
-1. Checked synthetic funding/prevout amounts, output classification, change
+1. Bounded C unsigned draft construction from explicit funding/output selections,
+   reusing checked synthetic funding/prevout amounts, output classification, change
    ownership and review binding to exact transaction bytes. A server balance or
    history assertion cannot provide spending authority.
 2. Independently qualify the exact original serialization and branch-specific

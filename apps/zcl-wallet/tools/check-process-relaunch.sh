@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 set -euo pipefail
-adb=${1:?Usage: check-process-relaunch.sh <sdk-adb> <emulator-serial> <new-report-directory> [balance|history]}
+adb=${1:?Usage: check-process-relaunch.sh <sdk-adb> <emulator-serial> <new-report-directory> [balance|history|review]}
 serial=${2:?An explicit emulator serial is required}
 report=${3:?A new report directory is required}
 profile=${4:-balance}
+fixture=org.zclassic.wallet.BalanceProcessInstrumentedTest
+relaunch_method=newProcessStartsWithoutBalanceOrReplay
 case "$profile" in
     balance|history) ;;
-    *) echo 'Process fixture profile must be balance or history' >&2; exit 1 ;;
+    review) fixture=org.zclassic.wallet.ReviewProcessInstrumentedTest
+        relaunch_method=newProcessStartsWithoutReviewOrReplay ;;
+    *) echo 'Process fixture profile must be balance, history or review' >&2; exit 1 ;;
 esac
 if [[ ! "$serial" =~ ^emulator-[0-9]+$ ]]; then
     echo 'Process fixture requires an explicit emulator serial' >&2
@@ -17,7 +21,6 @@ fi
 mkdir "$report"
 package=org.zclassic.wallet.dev
 runner=org.zclassic.wallet.dev.test/androidx.test.runner.AndroidJUnitRunner
-fixture=org.zclassic.wallet.BalanceProcessInstrumentedTest
 timeout 180 "$adb" -s "$serial" shell am instrument -w -r -e processKillFixture yes \
     -e reportProfile "$profile" \
     -e class "$fixture#preparePublicReportForTermination" "$runner" > "$report/prepare.log" 2>&1 &
@@ -63,7 +66,7 @@ printf '%s\n' "$preparation_status" > "$report/prepare-host-status.txt"
 trap - EXIT
 timeout 180 "$adb" -s "$serial" shell am instrument -w -r -e processKillFixture yes \
     -e reportProfile "$profile" \
-    -e previousPid "$fixture_pid" -e class "$fixture#newProcessStartsWithoutBalanceOrReplay" \
+    -e previousPid "$fixture_pid" -e class "$fixture#$relaunch_method" \
     "$runner" > "$report/relaunch.log" 2>&1
 rg -q '^OK \(1 test\)' "$report/relaunch.log"
 echo 'Process relaunch passed: verified public report, terminated original PID, empty display in a new process.'
