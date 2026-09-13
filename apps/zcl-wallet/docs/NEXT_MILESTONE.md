@@ -44,10 +44,12 @@ with Android presentation using isolated fixtures: C deadline/freshness and
 offline balance state, late-token rejection and empty restart state are now
 implemented, together with a bounded C owner pool and serialized JNI adapter.
 JVM and emulator fixtures verify complete-only unverified reports, signed
-pending deltas, deadlines, stale age and empty restart state. Next bind Android
-UI callbacks to their original foreground session and use elapsed monotonic
-time including sleep. Reject a previously computed snapshot queued before that
-session closed. Define the source trust and
+pending deltas, deadlines, stale age and empty restart state. Managed owners
+sample elapsed monotonic time inside serialization. Android presentation now
+retains its original foreground owner and reads snapshots at UI delivery,
+with queued-callback cancellation and empty replacement proven by local JVM
+and main-queue fixtures. Next render unavailable/stale/unverified balances
+explicitly and exercise view/process recreation. Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report
 offline/stale/unverified balances explicitly. Exercise malformed responses,

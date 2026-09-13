@@ -25,6 +25,7 @@ android {
         }
     }
     sourceSets.getByName("androidTest").assets.srcDir("../wallet-core/src/test/resources")
+    sourceSets.getByName("test").resources.srcDir("../wallet-core/src/test/resources")
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -42,6 +43,14 @@ android {
     }
 }
 kotlin { compilerOptions { allWarningsAsErrors.set(true) } }
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    dependsOn(":wallet-core:buildHostNative")
+    systemProperty("java.library.path", rootProject.file("native/build/jni").absolutePath)
+    jvmArgs("-Xcheck:jni")
+    inputs.files(rootProject.fileTree("native/build/jni") {
+        include("libzclwallet_jni.so", "libzclwallet_jni.dylib")
+    }).withPathSensitivity(PathSensitivity.RELATIVE)
+}
 dependencies {
     implementation(project(":wallet-core"))
     testImplementation(kotlin("test-junit"))

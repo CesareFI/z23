@@ -248,10 +248,17 @@ Unexpected JNI/provider/mutex errors fail closed, without input text in errors.
 The snapshot carries unverified/stale/unavailable state, refresh/fault/age and
 the reported confirmed amount, signed pending delta, total and height. An
 unavailable report becomes null in the managed view. It has no spending or
-chain-proof authority. Source/address remain fixed metadata on the owner;
-an eventual Android callback must also retain/check its original foreground
-session before rendering an already-computed snapshot. No endpoint, app balance
-screen or real synchronization is enabled by this adapter alone.
+chain-proof authority. Source/address remain fixed metadata on the owner.
+Android BalancePresentation owns one sync lifetime, coalesces worker signals
+into at most one pending UI redraw, and samples the snapshot at actual delivery.
+Create/close/render belong to the same UI thread. Close cancels pending reads,
+drops receiver references and closes the C owner, so replacement cannot render
+an old session. A failed snapshot closes the owner and delivers only a stable
+unavailable status; receiver exceptions close and propagate. Queue rejection
+permits an explicit retry. No snapshot is saved, and no endpoint, timer, worker
+or app balance screen is enabled by this adapter alone. The bounded metadata
+query may run on the UI thread; blocking I/O must never hold the sync monitor
+or native registry lock.
 
 The same twelve native public fixture frames feed JVM tests and Android test
 assets. Host fake-VM tests inject allocation and JNI-region exceptions under

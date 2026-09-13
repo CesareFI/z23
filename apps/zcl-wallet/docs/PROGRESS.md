@@ -514,3 +514,21 @@ in 1.746 seconds. The sync-clock logs and source/APK hashes in the 48-hour scrat
 directory identify this evidence. No native C changed; prior native safety
 evidence remains applicable. Next protect queued Android display updates from
 stale snapshots and closed foreground owners.
+
+2026-09-13 queued balance presentation: the Android adapter now owns its original
+C sync lifetime and queues only redraw signals. It samples the snapshot when
+the UI actually runs, coalesces pending signals, and drops callbacks/owner on
+foreground replacement. Closed callbacks perform no clock read or render.
+Snapshot failure closes the owner and reports a stable unavailable status;
+receiver failure closes and propagates. No endpoint or balance screen enabled.
+
+Nine new app JVM/JNI tests pass, alongside the nine prior app tests and 52 core
+tests. They cover stale-at-delivery, offline refresh failure, rejection/retry,
+owner/clock/receiver failures, concurrent signals and close during submission.
+Both real Android main-queue tests pass on API 35 in 2.38 seconds, proving the
+delayed freshness decision and old-callback cancellation on replacement.
+Instrumentation was initially slow to produce output; its completed result is
+green, with no retry or change to assertions. Debug/test and unsigned release
+builds, both lints and the architecture-tree gate pass. Native behavior did not
+change. Evidence and hashes are in the balance-presentation files in the 48-hour
+scratch directory. Positive custody and TLS remain independently blocked.
