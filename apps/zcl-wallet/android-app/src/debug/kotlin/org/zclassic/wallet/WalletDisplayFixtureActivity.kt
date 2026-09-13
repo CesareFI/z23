@@ -15,26 +15,32 @@ import org.zclassic.wallet.core.TransparentAddress
  * Release source sets do not contain this host.
  */
 class WalletDisplayFixtureActivity : Activity() {
-    private lateinit var balance: BalanceView
+    private lateinit var views: ReadOnlyReportViews
     private lateinit var address: TransparentAddress
     private var sync: ReadOnlySync? = null
     private var presentation: BalancePresentation? = null
+    private var historyEnabled = false // Deliberately absent from Bundle/intent state.
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         address = TransparentAddress.fromPublicKeyHash(ByteArray(20), Network.MAINNET)
-        WalletScreens(this).receive(address, ::finish, ::finish)
-        balance = findViewById(R.id.address_balance)
+        views = WalletScreens(this).receive(address, ::finish, ::finish)
     }
 
     override fun onResume() {
         super.onResume()
-        balance.showUnavailable()
-        val next = ReadOnlySync(address, ByteArray(32) { 0x46 }, SystemClock::elapsedRealtime)
+        openDisplay()
+    }
+
+    private fun openDisplay() {
+        views.showUnavailable()
+        val source = ByteArray(32) { 0x46 }
+        val next = if (historyEnabled) ReadOnlySync.withHistory(address, source, SystemClock::elapsedRealtime)
+            else ReadOnlySync(address, source, SystemClock::elapsedRealtime)
         try {
             presentation = BalancePresentation(next, mainExecutor, MainQueueBalanceWakeup(),
-                balance::show, balance::showUnavailable)
+                views::show, views::showUnavailable)
             sync = next
         } catch (problem: Throwable) {
             next.close()
@@ -43,6 +49,14 @@ class WalletDisplayFixtureActivity : Activity() {
     }
 
     internal fun beginFixture(): ReadOnlySync.Attempt = checkNotNull(sync).begin()
+    internal fun beginHistoryFixture(): ReadOnlySync.Attempt {
+        if (!historyEnabled) {
+            closeDisplay()
+            historyEnabled = true
+            openDisplay()
+        }
+        return beginFixture()
+    }
     internal fun redrawFixture(): Boolean = checkNotNull(presentation).requestUpdate()
 
     private fun closeDisplay() {
@@ -52,8 +66,8 @@ class WalletDisplayFixtureActivity : Activity() {
         sync = null
         try { previous?.close() }
         finally {
-            previousSync?.close()
-            balance.showUnavailable()
+            try { previousSync?.close() }
+            finally { views.showUnavailable() }
         }
     }
 

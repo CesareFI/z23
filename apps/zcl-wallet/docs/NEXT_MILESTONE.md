@@ -57,8 +57,10 @@ and deliberate emulator process relaunch now have public-fixture evidence.
 The optional bounded C history exchange now shares the address/source/tip
 lifetime and publishes only after its final tip. Its checked JNI projection
 now has maximum-packet, exception and public-device fixtures. The history view
-has unverified/empty/unavailable, restoration, detach and timer evidence. Next
-bind both views to one actual foreground owner across Activity/process changes.
+has unverified/empty/unavailable, restoration, detach and timer evidence. Both
+views now share one foreground snapshot and clear together on rendering failure;
+combined recreation, background/resume and process-relaunch fixtures pass.
+Continue with pinned-original transparent transaction wire fixtures in C.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report

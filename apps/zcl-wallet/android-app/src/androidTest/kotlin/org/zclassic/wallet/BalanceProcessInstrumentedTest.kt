@@ -27,23 +27,31 @@ import org.zclassic.wallet.core.ReadOnlySync
 @RunWith(AndroidJUnit4::class)
 class BalanceProcessInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val profile = InstrumentationRegistry.getArguments().getString("reportProfile") ?: "balance"
+    private val historyEnabled get() = profile == "history"
+    private val transactionId = "c".repeat(64)
 
     @Before fun optedInEmulatorOnly() {
         assumeTrue("Requires the bounded process-relaunch controller",
             InstrumentationRegistry.getArguments().getString("processKillFixture") == "yes")
         assertEquals("ranchu", Build.HARDWARE)
         assertEquals("org.zclassic.wallet.dev", instrumentation.targetContext.packageName)
+        assertTrue(profile == "balance" || profile == "history")
     }
 
     @Test fun preparePublicReportForTermination() {
         ActivityScenario.launch(WalletDisplayFixtureActivity::class.java).use { scenario ->
             var attempt: ReadOnlySync.Attempt? = null
-            scenario.onActivity { attempt = it.beginFixture() }
+            scenario.onActivity { attempt = if (historyEnabled) it.beginHistoryFixture() else it.beginFixture() }
             val current = checkNotNull(attempt)
-            for (step in 1..6) {
+            for (step in 1..(if (historyEnabled) 7 else 6)) {
                 current.request()
-                val frame = instrumentation.context.assets.open("sync/mainnet-$step.json").use { it.readBytes() }
-                assertEquals(CoreStatus.OK, current.reply(frame))
+                val frame = if (historyEnabled && step == 6)
+                    "{\"id\":6,\"result\":[{\"tx_hash\":\"$transactionId\",\"height\":0}]}"
+                else instrumentation.context.assets.open("sync/mainnet-${minOf(step, 6)}.json")
+                    .use { it.readBytes().toString(Charsets.US_ASCII) }
+                    .let { if (step == 7) it.replaceFirst("\"id\":6", "\"id\":7") else it }
+                assertEquals(CoreStatus.OK, current.reply(frame.toByteArray(Charsets.US_ASCII)))
             }
             scenario.onActivity { assertTrue(it.redrawFixture()) }
             instrumentation.waitForIdleSync()
@@ -51,10 +59,16 @@ class BalanceProcessInstrumentedTest {
                 val view = it.findViewById<BalanceView>(R.id.address_balance)
                 assertTrue(view.text.startsWith(it.getString(R.string.balance_unverified)))
                 assertTrue(view.text.contains("0.00000993 ZCL"))
+                if (historyEnabled) {
+                    val history = it.findViewById<HistoryView>(R.id.address_history)
+                    assertTrue(history.text.startsWith(it.getString(R.string.history_unverified)))
+                    assertTrue(history.text.contains(transactionId))
+                }
             }
             instrumentation.sendStatus(2, Bundle().apply {
                 putString("zcl_process_fixture", "ready")
                 putInt("zcl_fixture_pid", Process.myPid())
+                putString("zcl_fixture_profile", profile)
             })
             // The external controller must kill this process while state is live.
             CountDownLatch(1).await(90, TimeUnit.SECONDS)
@@ -72,7 +86,10 @@ class BalanceProcessInstrumentedTest {
                 val view = it.findViewById<BalanceView>(R.id.address_balance)
                 assertTrue(view.text.startsWith(it.getString(R.string.balance_unavailable)))
                 assertFalse(view.text.any { character -> character in '0'..'9' })
-                val attempt = it.beginFixture()
+                val history = it.findViewById<HistoryView>(R.id.address_history)
+                assertTrue(history.text.startsWith(it.getString(R.string.history_unavailable)))
+                assertFalse(history.text.contains(transactionId))
+                val attempt = if (historyEnabled) it.beginHistoryFixture() else it.beginFixture()
                 assertTrue(attempt.request().toString(Charsets.US_ASCII).contains("server.version"))
                 assertEquals(CoreStatus.CANCELLED, attempt.fail())
             }

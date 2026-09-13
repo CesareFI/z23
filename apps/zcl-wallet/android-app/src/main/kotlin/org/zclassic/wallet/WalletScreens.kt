@@ -142,7 +142,7 @@ internal class WalletScreens(private val activity: Activity) {
         button(R.string.cancel_setup, R.id.cancel_setup, cancel)
     }
 
-    fun receive(address: TransparentAddress, lock: () -> Unit, scan: () -> Unit) {
+    fun receive(address: TransparentAddress, lock: () -> Unit, scan: () -> Unit): ReadOnlyReportViews {
         begin(R.string.receive_title, R.string.receiving_description)
         text(activity.getString(if (address.network == Network.MAINNET)
             R.string.network_mainnet else R.string.network_testnet), 16f)
@@ -153,10 +153,13 @@ internal class WalletScreens(private val activity: Activity) {
         val qr = runCatching { ReceiveQr.forAddress(address) }.getOrNull()
         if (qr != null) content.addView(ReceiveQrView(activity).apply { show(qr) })
         else text(activity.getString(R.string.receiving_qr_unavailable), 16f)
-        content.addView(BalanceView(activity)) // No qualified network source is enabled.
+        val balance = BalanceView(activity)
+        content.addView(balance) // No qualified network source is enabled.
         button(R.string.lock_wallet, R.id.lock_wallet, lock)
         button(R.string.scan_request, R.id.scan_request, scan)
-        content.addView(HistoryView(activity)) // Empty until a qualified source is available.
+        val history = HistoryView(activity)
+        content.addView(history) // Empty until a qualified source is available.
+        return ReadOnlyReportViews(balance, history)
     }
 
     fun failure(message: Int, retry: () -> Unit) {

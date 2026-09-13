@@ -764,3 +764,23 @@ with native source/fuzzer hashes unchanged. Source/APK manifests and logs are
 under history-view/history-view-final in the48-hour scratch directory. Continue
 combined balance/history Activity/process lifetime integration, then pinned
 original transparent transaction work.
+
+2026-09-13 combined report lifetime: one foreground snapshot renders balance
+and history together, clearing both on malformed display data or a failed
+render. The nonexported debug host has an explicit memory-only history profile;
+replacement closes its prior owner. Pause clears both views, resume starts an
+empty owner, and recreation requires a new explicit fixture exchange.
+
+Four API35 lifecycle cases passed in153.158s, including five recreations beyond
+the four-owner capacity, cancelled late attempts, background/resume, composite
+render failures and the default balance background regression. The bounded
+history process controller verified the requested profile and live PID before
+termination, then proved empty views and a fresh request sequence in a different
+process: one relaunch test passed in22.99s. No wallet or key was opened or erased.
+
+The58 core and24 app JVM tests, both ABI builds, debug/release lints, APK fixture
+isolation and architecture pass. Native source/fuzzer hashes are unchanged;
+the existing sanitizer, analysis and fuzz evidence remains applicable. Logs,
+PID records and source/APK hashes are in history-lifecycle-* and
+history-process-run1 under the48-hour scratch directory. Continue with bounded
+transparent transaction serialization/parsing and pinned-original fixtures.

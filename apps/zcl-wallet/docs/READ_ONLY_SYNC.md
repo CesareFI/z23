@@ -354,8 +354,15 @@ strings/heights before publishing the assembled text. Both public report views
 clear existing text before formatting an unavailable message. History IDs are
 excluded from framework text saving, autofill and content capture; old saved
 TextView state and detachment clear the view. Its expiry test uses the existing
-foreground presenter and C wakeup hint. Combined Activity/process-owner
-replacement remains the next integration fixture; no real source is enabled.
+foreground presenter and C wakeup hint. ReadOnlyReportViews renders both views
+from one snapshot and clears both if either render fails. The nonexported debug
+host has an explicit history fixture profile; changing profiles closes the
+prior owner, and the choice is never stored in Bundle or read from an intent.
+Pause closes the owner and clears both views. Resume starts an empty owner;
+recreation defaults to balance-only until a new explicit history fixture call.
+The process-relaunch controller supports either public profile and requires a
+matching readiness profile and PID before terminating the development app.
+No wallet record, key, endpoint or automatic fixture replay participates.
 The bounded metadata
 query may run on the UI thread; blocking I/O must never hold the sync monitor
 or native registry lock.
