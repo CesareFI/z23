@@ -12,24 +12,38 @@ cat > "$report/fault-aapt" <<'FIXTURE'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$ZCL_FIXTURE_TEST_FAULT:$5" in
-    exported:*/debug/android-app-debug.apk)
-        "$ZCL_FIXTURE_TEST_AAPT" "$@" | sed 's/:exported(0x01010010)=false/:exported(0x01010010)=true/g' ;;
+    exported:*/debug/android-app-debug.apk|missing-exported:*/debug/android-app-debug.apk|missing:*/debug/android-app-debug.apk)
+        "$ZCL_FIXTURE_TEST_AAPT" "$@" | awk -v host="$ZCL_FIXTURE_TEST_HOST" -v fault="$ZCL_FIXTURE_TEST_FAULT" '
+            /E:/ { fixture=0 }
+            /android:name/ && index($0, "\"" host "\"") { fixture=1; if (fault == "missing") next }
+            fixture && /android:exported/ {
+                if (fault == "missing-exported") next
+                if (fault == "exported") sub(/=false$/, "=true")
+            }
+            { print }' ;;
     release:*/release/android-app-release-unsigned.apk)
-        printf '%s\n' 'E: activity' 'A: android:name="org.zclassic.wallet.WalletDisplayFixtureActivity"' ;;
+        printf '%s\n' 'E: activity' "A: android:name=\"$ZCL_FIXTURE_TEST_HOST\"" ;;
     *) "$ZCL_FIXTURE_TEST_AAPT" "$@" ;;
 esac
 FIXTURE
 chmod u+x "$report/fault-aapt"
 bash "$wallet_root/tools/check-android-fixtures.sh" "$ZCL_FIXTURE_TEST_AAPT" "$report/positive" > "$report/positive.log" 2>&1
-for fault in exported release; do
-    if ZCL_FIXTURE_TEST_FAULT="$fault" bash "$wallet_root/tools/check-android-fixtures.sh" \
-        "$report/fault-aapt" "$report/$fault" > "$report/$fault.log" 2>&1; then
-        echo "Fixture isolation regression: accepted $fault host" >&2
-        exit 1
-    fi
+for host in WalletDisplayFixtureActivity WalletReviewFixtureActivity; do
+    for fault in exported missing-exported missing release; do
+        result="$report/$host-$fault"
+        if ZCL_FIXTURE_TEST_HOST="org.zclassic.wallet.$host" ZCL_FIXTURE_TEST_FAULT="$fault" \
+            bash "$wallet_root/tools/check-android-fixtures.sh" "$report/fault-aapt" \
+            "$result" > "$result.log" 2>&1; then
+            echo "Fixture isolation regression: accepted $fault host $host" >&2
+            exit 1
+        fi
+        if [[ "$fault" == release ]]; then
+            rg -q 'debug host entered release manifest' "$result.log"
+        else
+            rg -q 'expected exactly one nonexported debug host' "$result.log"
+        fi
+    done
 done
-rg -q 'expected exactly one nonexported debug host' "$report/exported.log"
-rg -q 'debug host entered release manifest' "$report/release.log"
 mkdir -p "$report/fault-tools"
 cat > "$report/fault-tools/unzip" <<'FIXTURE'
 #!/usr/bin/env bash

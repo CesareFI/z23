@@ -1022,3 +1022,20 @@ review-view-* under the48-hour scratch directory. The initial byte-count
 localization lint finding was corrected through unit-label wording, without a
 suppression; its log is preserved. Continue with actual foreground/recreation
 Activity acceptance and process-relaunch fixtures.
+
+2026-09-13 review Activity lifecycle: a nonexported debug-only FLAG_SECURE host
+now receives explicitly prepared public review owners from instrumentation.
+Background/close/recreation clear the old owner and view; an owner arriving
+after foreground loss is immediately cancelled. The single native slot remains
+unchanged. The screen has one obscured-touch-filtered close action and no
+wallet/Keystore, intent data, persisted ID, fixture assets or automatic replay.
+
+All35 app JVM cases, both ABI builds, lints, fixture isolation and architecture
+pass. Independent per-host export/missing-export/missing/release mutations
+qualify both debug hosts; a missing export cannot borrow a following component's
+attribute. The API35 emulator passed4 new review lifecycle cases in146.594s,
+including repeated recreation, late prepared-owner refusal, queued close and
+close/new-Activity behavior. Native/C-core behavior is unchanged; no unchanged
+sanitizer/fuzz campaign was repeated. Evidence is in review-activity-* under the
+48-hour scratch directory. Continue immediately with public review process
+termination/relaunch acceptance; signing and authenticated funding remain gated.

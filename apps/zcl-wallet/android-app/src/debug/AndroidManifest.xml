@@ -4,5 +4,7 @@
     <application>
         <activity android:name=".WalletDisplayFixtureActivity" android:exported="false"
             android:excludeFromRecents="true" />
+        <activity android:name=".WalletReviewFixtureActivity" android:exported="false"
+            android:excludeFromRecents="true" />
     </application>
 </manifest>

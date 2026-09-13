@@ -206,7 +206,8 @@ The review owns public transaction metadata, not keys or authenticated wallet
 ownership. Supplied previous bytes remain unqualified for chain inclusion,
 unspentness or maturity. P2SH recognition is not redeem-script ownership.
 Change classification, chain/branch context, hardware authentication and
-original signature hashes are separate gates. No review Activity is wired yet;
+original signature hashes are separate gates. Review Activity acceptance uses
+only a nonexported debug fixture host; no wallet sending route is wired yet;
 the review cannot enable the quarantined transport or BLAKE2 candidate.
 
 Deterministic cases cover caller/copy mutation, every draft truncation and
@@ -274,8 +275,9 @@ the Android test APK. The package gate refuses them in application APKs and
 requires all three binary fixtures in the test APK; negative listing mutations
 exercise both refusals. The C fixture generator refuses existing files and
 independent OpenSSL SHA256d identifies the draft. Real JVM `-Xcheck:jni` and
-API35 emulator tests qualify transfer, cancellation, expiry and owned copies;
-they do not qualify a review Activity or original-node transaction acceptance.
+API35 emulator transfer tests qualify cancellation, expiry and owned copies;
+Activity lifecycle has a separate public fixture acceptance below. Neither
+establishes original-node transaction acceptance.
 
 ## Foreground presentation ownership
 
@@ -296,8 +298,8 @@ Delivery failures close the owner and invoke the unavailable callback even
 when timer cancellation or owner cleanup throws. Renderer/fatal failures still
 propagate, with cleanup problems preserved as suppressed exceptions. This also
 tightens the existing balance presentation's failure cleanup. No exception is
-treated as permission to show a previous snapshot. Activity integration remains
-a separate acceptance slice; this adapter supplies no sending action.
+treated as permission to show a previous snapshot. This adapter supplies no
+sending action.
 
 `ReviewView` shows the selected network, all outputs in native order, exact
 C-formatted input/output totals, fee and fee limit. It explicitly labels the
@@ -311,6 +313,20 @@ new text. Previous text clears before any conversion that can fail. Hierarchy
 save/restore is disabled, even for an older ordinary TextView state under the
 same ID; detach clears the view. Autofill and content capture are excluded.
 Actual foreground closure must still cancel the presentation and clear the view.
+
+The nonexported debug `WalletReviewFixtureActivity` displays only explicitly
+transferred public review owners prepared by instrumentation off the UI thread.
+It has FLAG_SECURE, one obscured-touch-filtered close action, no wallet/Keystore
+access and no intent/Bundle/asset replay. An owner arriving after foreground loss
+is immediately cancelled. Pause/destruction clear the presentation reference
+before closing it and clear the view in finally. Resume/recreation starts empty.
+
+Device fixtures observe repeated recreation, old-view clearing, late preparation
+after backgrounding, queued redraw cancellation and close/new-Activity behavior.
+The package gate requires each debug fixture host to be explicitly nonexported
+and absent from the release manifest. Independent export, missing-export,
+missing-host and release-host mutations exercise both host boundaries. Public
+transaction fixtures remain confined to the test APK.
 
 ## Ordered continuation
 

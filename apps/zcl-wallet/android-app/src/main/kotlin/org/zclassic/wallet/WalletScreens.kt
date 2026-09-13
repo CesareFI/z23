@@ -166,4 +166,12 @@ internal class WalletScreens(private val activity: Activity) {
         begin(R.string.wallet_unavailable, message)
         button(R.string.retry_wallet, R.id.retry_wallet, retry)
     }
+
+    fun review(close: () -> Unit): ReviewView {
+        begin(R.string.review_title, R.string.review_description)
+        val view = ReviewView(activity)
+        content.addView(view)
+        button(R.string.review_close, R.id.review_close, close)
+        return view
+    }
 }
