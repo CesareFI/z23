@@ -9,6 +9,21 @@ extern "C" {
 #define ZCL_REVIEW_ID_MAX UINT64_C(9223372036854775807)
 #define ZCL_REVIEW_LIFETIME_MS UINT64_C(90000)
 
+typedef struct {
+    uint8_t previous_txid[32]; /* Displayed big-endian order. */
+    uint32_t previous_index;
+    uint32_t sequence;
+} zcl_review_input;
+
+/* Exact raw transaction fields, not interpreted finality/expiry/chain evidence.
+ * Valid input rows are bounded by the accompanying assessment.input_count;
+ * unused rows are zero. Destinations/values share that same input order. */
+typedef struct {
+    uint32_t lock_time;
+    uint32_t expiry_height;
+    zcl_review_input inputs[ZCL_TX_INPUT_MAX];
+} zcl_review_context;
+
 /* Private representation: only the functions below may modify these fields. */
 typedef struct {
     uint64_t id;
@@ -17,6 +32,7 @@ typedef struct {
     size_t wire_length;
     uint8_t wire[ZCL_TX_WIRE_MAX];
     zcl_transaction_assessment assessment;
+    zcl_review_context context;
 } zcl_review_data;
 
 /* One active unsigned draft. Initialize {0} once per enclosing adapter lifetime;
@@ -31,6 +47,7 @@ typedef struct {
 
 typedef struct {
     zcl_transaction_assessment assessment;
+    zcl_review_context context;
     uint64_t remaining_ms;
 } zcl_review_snapshot;
 

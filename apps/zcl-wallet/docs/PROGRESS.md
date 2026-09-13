@@ -903,3 +903,20 @@ JNI/UI/device path changed, so no unchanged device suite was rerun. Evidence
 is in review-* and review-final-* under the48-hour scratch directory. Continue
 with exact outpoint/sequence/lock/expiry snapshot context before the thin JNI
 projection; no finality or current-chain validity may be inferred from fields.
+
+2026-09-13 exact review context: the same immutable snapshot now carries raw
+uint32 lock/expiry and each input's display-order previous ID, output index and
+sequence beside accounting. It derives all fields from the already owned
+parsed transaction. High-bit fields, maximum accepted expiry, all eight rows,
+indexes through15 and eight-to-two replacement cleanup have deterministic
+coverage. No contextual finality, replacement, chain or ownership claim is added.
+
+All35 native ASan/UBSan/LSan tests, Clang/GCC analysis and367 functions in64files
+at complexity<=10 pass. Extended context/lifetime fuzzing completed127,332
+executions in91s without a finding and with matching final source/binary hashes.
+The58 core JVM cases, unchanged24 app JVM cases, both ABI builds, both lints,
+APK isolation and architecture pass. No JNI/UI/device route changed. Host owner
+is3352bytes and snapshot1392bytes; no heap was added and the4096-byte frame gate
+still passes. Evidence/corpus is in review-context-* under the48-hour scratch
+directory. Continue with the thin JNI owner and public projection, including
+exception/cleanup, stale-ID, cancellation and empty-restart fixtures.

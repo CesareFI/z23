@@ -54,9 +54,23 @@ static void copy_refused(uint64_t id, uint64_t now, size_t capacity, zcl_status 
     CHECK(memcmp(wire, original, sizeof(wire)) == 0 && length == SIZE_MAX);
 }
 
+static void check_context(const zcl_review_context *context, const zcl_transparent_tx *expected)
+{
+    CHECK(context->lock_time == expected->lock_time && context->expiry_height == expected->expiry_height);
+    for (size_t i = 0; i < expected->input_count; ++i) {
+        CHECK(memcmp(context->inputs[i].previous_txid, expected->inputs[i].previous_txid, 32) == 0);
+        CHECK(context->inputs[i].previous_index == expected->inputs[i].previous_index);
+        CHECK(context->inputs[i].sequence == expected->inputs[i].sequence);
+    }
+    static const zcl_review_input zero;
+    for (size_t i = expected->input_count; i < ZCL_TX_INPUT_MAX; ++i)
+        CHECK(memcmp(&context->inputs[i], &zero, sizeof(zero)) == 0);
+}
+
 static void immutable_draft(void)
 {
     reset_fixture();
+    const zcl_transparent_tx expected_transaction = fixture.spending;
     uint64_t id = 99;
     CHECK(open_draft(1000, &id) == ZCL_OK && id == 1);
     uint8_t expected[ZCL_TX_WIRE_MAX];
@@ -71,6 +85,7 @@ static void immutable_draft(void)
     CHECK(box.value.assessment.input_total == 11000 && box.value.assessment.output_total == 10500);
     CHECK(box.value.assessment.network == ZCL_MAINNET && box.value.assessment.maximum_fee == 500);
     CHECK(box.value.assessment.serialized_size == draft_length);
+    check_context(&box.value.context, &expected_transaction);
     struct { uint64_t before; uint8_t value[ZCL_TX_WIRE_MAX]; uint64_t after; } bytes;
     memset(&bytes, 0xa5, sizeof(bytes));
     size_t length = 0;
@@ -82,10 +97,73 @@ static void immutable_draft(void)
     memset(bytes.value, 0, sizeof(bytes.value));
     CHECK(zcl_review_snapshot_get(&owner, id, 1002, &box.value) == ZCL_OK);
     CHECK(box.value.assessment.fee == 500 && box.value.remaining_ms == 89998);
+    check_context(&box.value.context, &expected_transaction);
     CHECK(zcl_review_copy_wire(&owner, id, 1002, bytes.value, sizeof(bytes.value), &length) == ZCL_OK);
     CHECK(memcmp(bytes.value, expected, length) == 0);
     zcl_review_clear(&owner);
     cleared(1);
+}
+
+static void raw_context_fields(void)
+{
+    const uint32_t locks[] = {0, 1, UINT32_C(0x80000000), UINT32_MAX};
+    const uint32_t expiries[] = {0, 1, ZCL_TX_EXPIRY_LIMIT - 1};
+    for (size_t i = 0; i < sizeof(locks) / sizeof(locks[0]); ++i) {
+        for (size_t j = 0; j < sizeof(expiries) / sizeof(expiries[0]); ++j) {
+            reset_fixture();
+            fixture.spending.lock_time = locks[i];
+            fixture.spending.expiry_height = expiries[j];
+            fixture.spending.inputs[0].sequence = locks[i];
+            fixture.spending.inputs[1].sequence = UINT32_MAX - locks[i];
+            encode_draft();
+            uint64_t id = 0;
+            CHECK(open_draft(100, &id) == ZCL_OK);
+            zcl_review_snapshot snapshot;
+            CHECK(zcl_review_snapshot_get(&owner, id, 101, &snapshot) == ZCL_OK);
+            check_context(&snapshot.context, &fixture.spending);
+            CHECK(snapshot.assessment.input_count == 2);
+            zcl_review_clear(&owner);
+            cleared(1);
+        }
+    }
+}
+
+static void maximum_context_rows(void)
+{
+    reset_fixture();
+    fixture.previous[0].output_count = ZCL_TX_OUTPUT_MAX;
+    const zcl_tx_output destination = fixture.previous[0].outputs[0];
+    for (size_t i = 0; i < ZCL_TX_OUTPUT_MAX; ++i) {
+        fixture.previous[0].outputs[i] = destination;
+        fixture.previous[0].outputs[i].value = i == 8 ? 10000 : 0;
+    }
+    CHECK(assessment_fixture_rebind(&fixture, 0));
+    fixture.spending.input_count = ZCL_TX_INPUT_MAX;
+    fixture.spending.outputs[1].value = 500;
+    for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i) {
+        fixture.spending.inputs[i] = fixture.spending.inputs[0];
+        fixture.spending.inputs[i].previous_index = (uint32_t)(8 + i);
+        fixture.spending.inputs[i].sequence = UINT32_MAX - (uint32_t)i;
+        fixture.sources[i] = fixture.sources[0];
+    }
+    encode_draft();
+    uint64_t id = 0;
+    CHECK(zcl_review_open(&owner, draft, draft_length, ZCL_TESTNET, fixture.sources,
+        ZCL_TX_INPUT_MAX, 500, 100, &id) == ZCL_OK);
+    zcl_review_snapshot snapshot;
+    CHECK(zcl_review_snapshot_get(&owner, id, 100, &snapshot) == ZCL_OK);
+    CHECK(snapshot.assessment.input_count == 8 && snapshot.assessment.network == ZCL_TESTNET);
+    check_context(&snapshot.context, &fixture.spending);
+    zcl_review_clear(&owner);
+    cleared(1);
+    /* A smaller replacement must not retain the last owner's extra rows. */
+    CHECK(assessment_fixture_init(&fixture));
+    encode_draft();
+    CHECK(open_draft(100, &id) == ZCL_OK && id == 2);
+    CHECK(zcl_review_snapshot_get(&owner, id, 100, &snapshot) == ZCL_OK);
+    check_context(&snapshot.context, &fixture.spending);
+    zcl_review_clear(&owner);
+    cleared(2);
 }
 
 static void opening_refused(const uint8_t *wire, size_t length, size_t previous_count,
@@ -233,7 +311,7 @@ static void arguments(void)
 int main(void)
 {
     immutable_draft(); opening_atomicity(); stale_callbacks(); deadlines();
-    capacity_and_issuance(); arguments();
+    capacity_and_issuance(); arguments(); raw_context_fields(); maximum_context_rows();
     puts("Immutable unsigned review lifetime checks passed");
     return 0;
 }

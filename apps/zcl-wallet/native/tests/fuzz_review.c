@@ -102,6 +102,14 @@ static void snapshot_operation(zcl_review_owner *owner, review_model *model, uin
     if (box.value.assessment.fee != 500 || box.value.assessment.input_total != 11000) abort();
     if (box.value.assessment.output_total != 10500 || box.value.assessment.serialized_size != draft_length) abort();
     if (box.value.assessment.network != ZCL_MAINNET || box.value.assessment.maximum_fee != 500) abort();
+    if (box.value.context.lock_time != fixture.spending.lock_time) abort();
+    if (box.value.context.expiry_height != fixture.spending.expiry_height) abort();
+    for (size_t i = 0; i < fixture.spending.input_count; ++i) {
+        const zcl_review_input *input = &box.value.context.inputs[i];
+        if (memcmp(input->previous_txid, fixture.spending.inputs[i].previous_txid, 32) != 0) abort();
+        if (input->previous_index != fixture.spending.inputs[i].previous_index) abort();
+        if (input->sequence != fixture.spending.inputs[i].sequence) abort();
+    }
     /* Caller is free to mutate its copy; no subsequent operation may see it. */
     memset(&box.value, 0, sizeof(box.value));
 }
@@ -164,9 +172,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if (size > 640) return 0;
     if (!initialized) {
         if (!assessment_fixture_init(&fixture)) abort();
-        if (zcl_transaction_serialize(&fixture.spending, draft, sizeof(draft), &draft_length) != ZCL_OK) abort();
         initialized = true;
     }
+    const uint64_t fields = size >= 8 ? read_time(data) : 0;
+    fixture.spending.lock_time = (uint32_t)(fields & UINT32_MAX);
+    fixture.spending.expiry_height = (uint32_t)(fields % ZCL_TX_EXPIRY_LIMIT);
+    fixture.spending.inputs[0].sequence = (uint32_t)(fields >> 32);
+    fixture.spending.inputs[1].sequence = UINT32_MAX - fixture.spending.inputs[0].sequence;
+    if (zcl_transaction_serialize(&fixture.spending, draft, sizeof(draft), &draft_length) != ZCL_OK) abort();
     zcl_review_owner owner = {0};
     review_model model = {0};
     open_operation(&owner, &model, 0);

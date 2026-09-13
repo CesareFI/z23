@@ -53,6 +53,7 @@ zcl_status zcl_review_snapshot_get(zcl_review_owner *owner, uint64_t id, uint64_
     if (status != ZCL_OK) return status;
     zcl_review_snapshot candidate = {0};
     candidate.assessment = owner->data.assessment;
+    candidate.context = owner->data.context;
     candidate.remaining_ms = owner->data.deadline_ms - now_ms;
     *snapshot = candidate;
     return ZCL_OK;

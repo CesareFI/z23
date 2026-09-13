@@ -170,6 +170,15 @@ positive review ID. Caller mutation after opening cannot change the draft.
 Returned snapshots and byte buffers are independent copies. A read exposes
 review data only; it is not consent or authority to sign or broadcast.
 
+Each snapshot also owns the exact uint32 lock time and expiry height, plus
+display-order previous-transaction ID, uint32 output index and uint32 sequence
+for every input. Rows share the assessment's input count/order, and unused
+rows remain zero. The context comes from the same owned parsed transaction
+used for assessment and serialization. These are raw fields; no boolean
+finality, current-tip expiry, confirmation or replaceability claim is derived.
+All outputs remain explicit assessed destination/value rows without a change
+label. Context and accounting publish in one copied snapshot.
+
 Initialize the caller-owned state once with `{0}` per enclosing adapter
 lifetime and serialize every operation under the same lock. No borrowed
 pointer, native heap or background worker survives a call. IDs increase through
@@ -205,6 +214,10 @@ deadline and rollback transitions, time/ID exhaustion, signed-script refusal,
 failed source/fee preparation and zeroed cancellation state. The sequence
 fuzzer compares public operations with an independent fixed-duration model
 using subtraction from the opening time, bounded to64 operations per input.
+Context fixtures cover high-bit lock/sequence values, zero and maximum accepted
+expiry, all eight rows with distinct output indexes through15, and a smaller
+replacement leaving no stale extra rows. Fuzz inputs vary full-width lock and
+sequence fields and bounded expiry while exercising the same lifetime model.
 
 ## Ordered continuation
 

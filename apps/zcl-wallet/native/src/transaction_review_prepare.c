@@ -1,5 +1,18 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "transaction_review_internal.h"
+#include <string.h>
+
+static void review_context(const zcl_transparent_tx *transaction, zcl_review_context *context)
+{
+    context->lock_time = transaction->lock_time;
+    context->expiry_height = transaction->expiry_height;
+    for (size_t i = 0; i < transaction->input_count; ++i) {
+        const zcl_tx_input *input = &transaction->inputs[i];
+        memcpy(context->inputs[i].previous_txid, input->previous_txid, sizeof(input->previous_txid));
+        context->inputs[i].previous_index = input->previous_index;
+        context->inputs[i].sequence = input->sequence;
+    }
+}
 
 static bool unsigned_inputs(const zcl_transparent_tx *tx)
 {
@@ -22,6 +35,8 @@ zcl_status zcl_review_prepare(const uint8_t *wire, size_t length, zcl_network ne
         maximum_fee, &candidate->assessment);
     if (status != ZCL_OK) return status;
     /* Serialize the owned parsed value, never re-read a borrowed wire span. */
-    return zcl_transaction_serialize(&transaction, candidate->wire, sizeof(candidate->wire),
+    status = zcl_transaction_serialize(&transaction, candidate->wire, sizeof(candidate->wire),
         &candidate->wire_length);
+    if (status == ZCL_OK) review_context(&transaction, &candidate->context);
+    return status;
 }
