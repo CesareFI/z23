@@ -15,6 +15,8 @@ const char *zcl_store_name(zcl_store_slot slot)
         return "wallet.zcl";
     if (slot == ZCL_STORE_PENDING)
         return ".wallet.pending";
+    if (slot == ZCL_STORE_CHANGE)
+        return ".change.index";
     return NULL;
 }
 

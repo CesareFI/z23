@@ -37,13 +37,17 @@ replacement wallet silently. No erase/overwrite operation is part of version 1.
 
 This format authenticates content, not freshness. It does not claim protection
 against restoration of an older valid record by an attacker with filesystem
-control. Version 1 creates one immutable wallet record and has no mutable address
-index or transaction state to roll back. Future mutable state needs its own
-rollback and recovery design.
+control. Version1 `wallet.zcl` remains immutable. Separate mutable state needs
+its own rollback and recovery design.
 
 The [change-counter codec](CHANGE_STATE.md) now authenticates a separate fixed
-record against this recovered wallet identity. Its storage/reservation/recovery
-layer remains unfinished; it cannot by itself advance or restore an index.
+record against this recovered wallet identity. The public-data
+[change storage adapter](CHANGE_STORAGE.md) provides fresh paired creation and
+bounded compare-and-append. Its authenticating reservation/recovery layer remains
+unfinished; neither the codec nor IO alone grants index/address publication.
+Both creation APIs refuse an existing change file, including orphan state left
+by interrupted paired creation. Missing state never permits an existing wallet
+to initialize an index automatically.
 
 ## Recovered-wallet internal address binding
 

@@ -1181,3 +1181,28 @@ pass. This C-only codec adds no JNI/device route; unchanged device cases were
 not rerun. Evidence is in change-state-* under the48-hour scratch directory.
 Continue immediately with bounded durable reservation and explicit incomplete-
 write recovery; missing/corrupt state must never silently restart at zero.
+
+2026-09-13 durable change IO: fresh paired creation now persists authenticated
+initial-state bytes before any pending wallet write. Both creation routes
+refuse orphan state. Existing wallets missing state never initialize at0.
+Bounded observation and compare-and-append match the exact committed wallet
+and snapshot under the existing nonblocking lock, using the same state
+descriptor for read/write. Complete uncertain appends consume their prior
+index; partial data remains intact and blocks normal reservation. The5MiB cap
+permits65535 reservations without compaction or rollover.
+
+All47 native ASan/UBSan/LSan tests, Clang/GCC analysis and433 functions in76files
+at complexity<=10 pass. Fault fixtures cover short/EINTR/failed IO, partial
+writes, each flush/close boundary, unchanged failed observations and descriptor
+counts. Child processes reached26 interruption boundaries; exactly one of12
+competing appenders succeeded. These are process/IO tests, not power-loss or
+malicious-filesystem-rollback proof. Bounded raw/structured file fuzzing completed
+124907 executions in91s without a finding; source/binary hashes matched.
+
+Both Android ABIs,72 core/35 app JVM gates, both lints, fixture isolation and
+architecture pass. Evidence/source/binary hashes and corpus are preserved in
+change-storage-* under the48-hour scratch directory. No new JNI/device route
+was introduced, so unchanged device cases were not repeated. The public-data
+IO adapter requires caller GCM/recovered-wallet/state authentication; it grants
+no index/address publication itself. Continue with an authenticating reservation
+wrapper, explicit append-only repair, migration and gap-aware seed discovery.

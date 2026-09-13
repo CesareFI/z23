@@ -9,13 +9,16 @@
 
 io_fault storage_read_fault, storage_write_fault, storage_sync_fault;
 io_fault storage_rename_fault, storage_close_fault;
+io_fault storage_pread_fault;
 
 ssize_t __real_read(int fd, void *buffer, size_t length);
+ssize_t __real_pread(int fd, void *buffer, size_t length, off_t offset);
 ssize_t __real_write(int fd, const void *buffer, size_t length);
 int __real_fsync(int fd);
 int __real_renameat2(int olddir, const char *oldpath, int newdir, const char *newpath, unsigned flags);
 int __real_close(int fd);
 ssize_t __wrap_read(int fd, void *buffer, size_t length);
+ssize_t __wrap_pread(int fd, void *buffer, size_t length, off_t offset);
 ssize_t __wrap_write(int fd, const void *buffer, size_t length);
 int __wrap_fsync(int fd);
 int __wrap_renameat2(int olddir, const char *oldpath, int newdir, const char *newpath, unsigned flags);
@@ -28,6 +31,7 @@ void storage_faults_reset(void)
     storage_sync_fault = (io_fault){0};
     storage_rename_fault = (io_fault){0};
     storage_close_fault = (io_fault){0};
+    storage_pread_fault = (io_fault){0};
 }
 
 static io_mode next_fault(io_fault *fault)
@@ -63,6 +67,16 @@ ssize_t __wrap_write(int fd, const void *buffer, size_t length)
         return __real_write(fd, buffer, length);
     if (mode == IO_SHORT)
         return __real_write(fd, buffer, length > 1 ? 1 : length);
+    if (mode == IO_PARTIAL_ERROR && storage_write_fault.calls == 1)
+        return __real_write(fd, buffer, length / 2);
+    return failed_io(mode, length);
+}
+
+ssize_t __wrap_pread(int fd, void *buffer, size_t length, off_t offset)
+{
+    io_mode mode = next_fault(&storage_pread_fault);
+    if (mode == IO_NORMAL) return __real_pread(fd, buffer, length, offset);
+    if (mode == IO_SHORT) return __real_pread(fd, buffer, length > 1 ? 1 : length, offset);
     return failed_io(mode, length);
 }
 

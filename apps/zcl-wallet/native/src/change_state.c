@@ -2,9 +2,9 @@
 #include "change_state_internal.h"
 #include <string.h>
 
-static zcl_status state_prefix(const uint8_t *record, size_t length, uint32_t *next_index)
+zcl_status zcl_change_state_inspect(const uint8_t *record, size_t length, uint32_t *next_index)
 {
-    if (record == NULL) return ZCL_INVALID_ARGUMENT;
+    if (record == NULL || next_index == NULL) return ZCL_INVALID_ARGUMENT;
     if (length != ZCL_CHANGE_STATE_BYTES) return ZCL_OUT_OF_RANGE;
     static const uint8_t start[8] = {'Z', 'C', 'L', 'I', 1, 1, 0, 0};
     static const uint8_t reserved[4] = {0};
@@ -52,7 +52,7 @@ zcl_status zcl_change_state_decode(const uint8_t *header, size_t header_len,
 {
     if (next_index == NULL) return ZCL_INVALID_ARGUMENT;
     uint32_t candidate = 0;
-    zcl_status status = state_prefix(record, record_len, &candidate);
+    zcl_status status = zcl_change_state_inspect(record, record_len, &candidate);
     if (status != ZCL_OK) return status;
     uint8_t key[64] = {0}, expected[64] = {0};
     status = zcl_change_state_key(header, header_len, entropy, entropy_len,

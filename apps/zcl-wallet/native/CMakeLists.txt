@@ -89,7 +89,9 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
     src/change_state.c src/change_state_key.c
-    src/storage_posix.c src/storage_read.c src/storage_write.c src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
+    src/storage_posix.c src/storage_read.c src/storage_write.c
+    src/storage_change_read.c src/storage_change_write.c
+    src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
     src/electrum_identity.c src/electrum_header.c src/electrum_history.c
     src/sync.c src/sync_watch.c src/sync_owners.c
@@ -284,6 +286,14 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_change_state PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
     target_link_options(fuzz_change_state PRIVATE -fsanitize=fuzzer,address,undefined)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(fuzz_change_storage tests/fuzz_change_storage.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(fuzz_change_storage PRIVATE zcl_wallet_core)
+        target_compile_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     add_executable(fuzz_wallet_record tests/fuzz_wallet_record.c)
     target_link_libraries(fuzz_wallet_record PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_wallet_record PRIVATE -fsanitize=fuzzer,address,undefined
@@ -619,13 +629,38 @@ if(NOT ANDROID)
         target_compile_options(storage_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         add_test(NAME wallet_storage COMMAND storage_tests)
         set_tests_properties(wallet_storage PROPERTIES TIMEOUT 30)
+        add_executable(change_storage_tests tests/test_change_storage.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_storage_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_storage_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        add_test(NAME wallet_change_storage COMMAND change_storage_tests)
+        set_tests_properties(wallet_change_storage PROPERTIES TIMEOUT 30)
         add_executable(storage_fault_tests tests/test_storage_faults.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(storage_fault_tests PRIVATE zcl_wallet_core)
         target_compile_options(storage_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
-        target_link_options(storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=fsync
+        target_link_options(storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=write -Wl,--wrap=fsync
             -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_storage_faults COMMAND storage_fault_tests)
         set_tests_properties(wallet_storage_faults PROPERTIES TIMEOUT 30)
+        add_executable(change_storage_fault_tests tests/test_change_storage_faults.c
+            tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
+        target_link_libraries(change_storage_fault_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_storage_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(change_storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+            -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
+        add_test(NAME wallet_change_storage_faults COMMAND change_storage_fault_tests)
+        set_tests_properties(wallet_change_storage_faults PROPERTIES TIMEOUT 30)
+        add_executable(change_storage_crash_tests tests/test_change_storage_crash.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_storage_crash_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_storage_crash_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(change_storage_crash_tests PRIVATE -Wl,--wrap=write
+            -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
+        add_test(NAME wallet_change_storage_crash COMMAND change_storage_crash_tests)
+        set_tests_properties(wallet_change_storage_crash PROPERTIES TIMEOUT 30)
         add_executable(storage_crash_tests tests/test_storage_crash.c tests/storage_fixture.c)
         target_link_libraries(storage_crash_tests PRIVATE zcl_wallet_core)
         target_compile_options(storage_crash_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)

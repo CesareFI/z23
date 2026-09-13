@@ -19,7 +19,7 @@ zcl_status zcl_store_sync(int fd)
     return ZCL_IO_UNCERTAIN;
 }
 
-static zcl_status write_bytes(int fd, const uint8_t *record, size_t length)
+zcl_status zcl_store_write_bytes(int fd, const uint8_t *record, size_t length)
 {
     size_t offset = 0;
     for (size_t attempt = 0; attempt < 256 && offset < length; ++attempt) {
@@ -48,7 +48,7 @@ zcl_status zcl_store_write_pending(const zcl_store *store, const uint8_t *record
                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0)
         return errno == EEXIST ? ZCL_ALREADY_EXISTS : ZCL_IO_FAILURE;
-    status = write_bytes(fd, record, length);
+    status = zcl_store_write_bytes(fd, record, length);
     if (status == ZCL_OK)
         status = zcl_store_sync(fd);
     if (close(fd) != 0)
@@ -91,6 +91,8 @@ zcl_status zcl_storage_create(const uint8_t *directory, size_t directory_len,
         status = zcl_store_absent(&store, ZCL_STORE_COMMITTED);
     if (status == ZCL_OK)
         status = zcl_store_absent(&store, ZCL_STORE_PENDING);
+    if (status == ZCL_OK)
+        status = zcl_store_absent(&store, ZCL_STORE_CHANGE);
     if (status == ZCL_OK)
         status = zcl_store_write_pending(&store, record, record_len);
     if (status == ZCL_OK)

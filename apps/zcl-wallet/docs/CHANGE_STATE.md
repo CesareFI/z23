@@ -57,9 +57,11 @@ change label, a transaction or an index reset.
 
 ## Required persistence and recovery work
 
-The immutable wallet record remains unchanged. There is no automatic counter
+The immutable wallet record remains unchanged. The public-data
+[storage adapter](CHANGE_STORAGE.md) now provides fresh paired creation,
+bounded observation and compare-and-append. There is no automatic counter
 initialization, upgrade, or reset for existing wallets. Before using change in
-a sending flow, the storage owner must enforce:
+a sending flow, the complete reservation owner must enforce:
 
 - Explicit authenticated initialization and bounded monotonic reservations.
 - Complete write and durability checks before an index/address is returned.
@@ -70,9 +72,11 @@ a sending flow, the storage owner must enforce:
 - An explicit filesystem-rollback threat boundary; MACs do not supply freshness.
 - Seed-restoration discovery that accounts for consumed but unused indexes.
 
-These remain active development requirements. No JNI or Android sending path
-uses this codec yet. TLS and BLAKE2 quarantine, hardware policy and the existing
-wallet record/storage format remain unchanged.
+The IO adapter supplies bounded durable append and interruption refusal; the
+secret-facing reservation wrapper, explicit repair, migration and seed-discovery
+acceptance remain active development requirements. No JNI or Android sending
+path uses this codec yet. TLS and BLAKE2 quarantine, hardware policy and the
+immutable wallet record format remain unchanged.
 
 ## Evidence scope
 

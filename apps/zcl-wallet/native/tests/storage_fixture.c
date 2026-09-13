@@ -26,7 +26,7 @@ int fixture_open(storage_fixture *fixture)
 
 int fixture_close(storage_fixture *fixture)
 {
-    static const char *const names[] = {"wallet.zcl", ".wallet.pending", ".lock", "target", "child"};
+    static const char *const names[] = {"wallet.zcl", ".wallet.pending", ".change.index", ".lock", "target", "child"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
         int result = unlinkat(fixture->directory, names[i], 0);
         CHECK(result == 0 || errno == ENOENT);
