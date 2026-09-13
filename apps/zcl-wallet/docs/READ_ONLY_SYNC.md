@@ -311,3 +311,29 @@ All three device cases completed with zero failures. APK inspection confirms
 the host is absent from the release manifest and sync frames remain in the test
 APK only. This is public display lifecycle evidence, not positive hardware
 custody or process-death recovery qualification.
+
+### Explicit emulator process relaunch
+
+After installing the current debug and test APKs, the separate controller can
+terminate only its verified public-fixture development process and test a fresh
+process. It requires an explicit emulator serial and a new report directory:
+
+```sh
+bash tools/check-process-relaunch.sh "$ANDROID_HOME/platform-tools/adb" \
+  emulator-5554 /tmp/zcl-public-process-fixture-new
+```
+
+Preparation verifies a complete displayed public report, then announces its PID
+and waits with a bound. The controller requires that exact running app PID before
+force-stopping `org.zclassic.wallet.dev`, verifies termination, and starts a
+separate test process. The new process must have a different PID, show no amount
+or replay, and begin an empty protocol exchange. Preparation is intentionally
+killed and is never counted as a standalone passing test; its crash/host status
+is preserved. The subsequent test must produce an explicit JUnit success.
+The fixture also requires emulator hardware and opt-in arguments. It is not part
+of ordinary Gradle check and never opens wallet files, keys or network sources.
+
+The API-35 run verified PID 22911, termination, and new PID 22968; the final
+test passed in 28.579 seconds. This qualifies clean process relaunch of public
+display state. It does not qualify restored OS task state, hardware custody,
+interrupted secret persistence or a real synchronized wallet.

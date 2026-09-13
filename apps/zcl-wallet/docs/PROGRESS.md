@@ -645,3 +645,22 @@ advanced origin/main to a898cf77913f786e69c2e85b357004972d796976; the wallet
 worktree was 24 ahead/16 behind before this checkpoint. No upstream changes
 were integrated and no external push was made. Continue process relaunch and
 C transaction/history work; TLS and hardware qualification remain blocked.
+
+2026-09-13 explicit process relaunch: the bounded opt-in emulator controller
+verified a public displayed report in PID 22911, confirmed that exact app PID,
+force-stopped only the development app, and observed termination. Its next
+instrumented process (PID 22968) started the fixture without an amount or replay
+and began an empty protocol exchange. That test passed in 28.579 seconds.
+Preparation was deliberately killed after its readiness assertions and is not
+counted as a passing standalone test; the expected process-crash output and its
+host status are retained. No wallet record, credential, key or endpoint was used.
+
+Debug/test/release builds, both lints, APK-isolation positive/negative checks,
+shell syntax and architecture pass. No application or native implementation
+changed, so prior JVM/sanitizer/fuzz evidence remains applicable. The controller
+requires a new report directory, explicit emulator serial, matching PID and
+in-app emulator opt-in. Its preparation, termination, new-process success and
+source/APK hashes are under process-relaunch in the 48-hour scratch directory.
+This is clean process relaunch, not OS saved-task or positive-custody recovery
+qualification. Continue with bounded C transaction-history parsing using the
+pinned original Zclassic transport reference; no real source is enabled.
