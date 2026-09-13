@@ -1055,3 +1055,23 @@ baseline. No unchanged unit/sanitizer/fuzz suite was repeated. Evidence is in
 review-process-* and review-process-acceptance under the48-hour scratch directory.
 Continue with a bounded C unsigned-draft constructor using existing canonical
 parsing/assessment, without implying spendability, change ownership or signing.
+
+2026-09-13 bounded C unsigned-draft constructor: fixed public funding selections
+and explicit network/destination/value/context/fee policy now produce an owned
+unsigned transaction only after canonical source/index checks, exact script
+construction and the existing full assessment. Input/output order is preserved;
+no coin selection, change reservation, authenticated funding or signing is added.
+Every refusal leaves the full caller result unchanged. Separate bounded C
+translation units preserve the4096-byte frame gate without allocation or waiver.
+
+All39 native ASan/UBSan/LSan tests, Clang/GCC analysis and397 functions in68files
+at complexity<=10 pass. Structured/raw-previous-wire fuzzing completed195,757
+executions in91s without a finding; final source/binary hashes match. Exact
+fixture bytes and the independently qualified OpenSSL draft ID match on both
+networks. Host request872 and transaction2200bytes; optimized Clang20 frames
+measure2264/2216/1192bytes. Both Android ABIs,66 core/35 app JVM gates, lints,
+fixture isolation and architecture pass. No unchanged device route was rerun.
+Evidence/corpus is in draft-* under the48-hour scratch directory. Continue with
+a thin bounded constructor/review adapter, retaining all source ownership,
+error-publication and foreground cancellation requirements. No JNI constructor
+or current-chain/funding/signing claim is included in this checkpoint.

@@ -338,10 +338,32 @@ or non-emulator serials refuse before creating a report directory or calling adb
 Preparation is intentionally terminated; its instrumentation crash message is
 expected evidence of process loss, not a parser/sanitizer finding.
 
+## Unsigned draft construction
+
+`zcl_transaction_draft` takes a fixed request with up to8 explicit funding
+selections and16 destination/value outputs, selected network, raw lock/expiry/
+sequence fields and an absolute fee ceiling. It derives each outpoint ID from
+the supplied canonical previous bytes, checks the selected index and builds
+each exact standard destination script. Input/output order is preserved, and
+all current input scripts and unused rows start empty.
+
+The existing complete assessment must pass before the owned transaction is
+published. Duplicate outpoints, unsupported funding scripts, wrong-network
+destinations, excessive amounts, underfunding and excessive fees refuse without
+changing the caller result. Different outputs may share a previous transaction.
+Caller request/source bytes stay stable for the synchronous call; no pointer,
+heap allocation or secret is retained. The result is independent of those bytes.
+
+This constructs a bounded unsigned v4 transparent candidate. It does not select
+coins, reserve/classify change, prove source inclusion/unspentness/maturity,
+qualify current-chain finality, authenticate ownership or sign/broadcast. Previous
+transactions remain limited to the existing canonical codec subset; legacy,
+v3, shielded or larger sources are unsupported. No JNI constructor is wired yet.
+
 ## Ordered continuation
 
-1. Bounded C unsigned draft construction from explicit funding/output selections,
-   reusing checked synthetic funding/prevout amounts, output classification, change
+1. Thin bounded draft construction/review integration, followed by checked
+   synthetic funding/prevout amounts, output classification, change
    ownership and review binding to exact transaction bytes. A server balance or
    history assertion cannot provide spending authority.
 2. Independently qualify the exact original serialization and branch-specific
