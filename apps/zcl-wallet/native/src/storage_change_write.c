@@ -75,9 +75,7 @@ static zcl_status append_locked(const zcl_store *store, const zcl_change_storage
     int fd = -1;
     zcl_change_storage_snapshot actual = {0};
     zcl_status status = zcl_store_change_open(store, true, &fd, &actual);
-    if (status == ZCL_OK && actual.file_bytes != expected->file_bytes) status = ZCL_BUSY;
-    if (status == ZCL_OK && (actual.tail_len != expected->tail_len ||
-        memcmp(actual.tail, expected->tail, expected->tail_len) != 0)) status = ZCL_BUSY;
+    if (status == ZCL_OK) status = zcl_store_change_matches(&actual, expected);
     if (status == ZCL_OK) status = zcl_store_write_bytes(fd, state, state_len);
     if (status == ZCL_OK) status = zcl_store_sync(fd);
     status = zcl_store_change_close(&fd, status);

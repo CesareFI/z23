@@ -23,7 +23,8 @@ typedef struct {
 /* Public-data IO on Android/Linux; all zcl_storage path/ownership rules apply.
  * Stable caller-owned spans must not overlap. No secrets enter these APIs.
  * Caller MUST authenticate the exact wallet ciphertext/header/entropy first,
- * and authenticate state records with the recovered-wallet codec. IO checks
+ * and authenticate newly written state records with the recovered-wallet codec.
+ * Normal append also requires an authenticated prior head. IO checks
  * state structure/position only, never its MAC, GCM or hardware protection.
  * No index/address is published here and no operation grants sending approval.
  * MACs and this append log cannot defeat malicious filesystem rollback.
@@ -53,6 +54,20 @@ zcl_status zcl_storage_change_observe(const uint8_t *directory, size_t directory
 zcl_status zcl_storage_change_append(const uint8_t *directory, size_t directory_len,
     const uint8_t *wallet_record, size_t wallet_len,
     const zcl_change_storage_snapshot *expected, const uint8_t *next_state, size_t state_len);
+
+/* Explicit recovery IO, never an automatic append fallback. Caller MUST verify
+ * recovered wallet identity, classify damage and authenticate the replacement.
+ * Expected may contain partial/invalid prior bytes. Under the same lock/fd,
+ * compare exact snapshot, append only zero padding needed to finish its slot,
+ * then the authenticated next-position record. Empty existing file pads80
+ * bytes then appends record1, burning index0. Missing remains NOT_FOUND.
+ * Preserves ALL previous bytes, never truncates/replaces/rolls over. At most160
+ * new bytes, within the existing cap; failures/uncertainty preserve artifacts.
+ * Successful repair returns no address or reservation. Healthy or authenticated
+ * inconsistent heads must be refused by the authenticating recovery caller. */
+zcl_status zcl_storage_change_repair(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len,
+    const zcl_change_storage_snapshot *expected, const uint8_t *replacement, size_t state_len);
 
 #ifdef __cplusplus
 }

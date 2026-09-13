@@ -1237,3 +1237,33 @@ reservation metadata is not transaction consent or a change-output receipt.
 Continue immediately with explicit append-only repair: preserve bytes, burn
 uncertain gaps, refuse missing files and detect authenticated counters at wrong
 positions. Migration, seed discovery and exact review binding remain required.
+
+2026-09-13 append-only repair IO: a checked public-data plan pads an incomplete
+slot with at most80 zero bytes, then appends its authenticated next-position
+record. At most160 bytes are added within the existing cap. It never changes
+an earlier byte or creates missing state. Exact wallet/snapshot comparison and
+the existing descriptor/lock/durability rails are shared with normal append.
+No normal-reservation fallback or authenticating recovery caller is added.
+
+All52 native ASan/UBSan/LSan tests, Clang/GCC analysis and445 functions in78files
+at complexity<=10 pass. All prefix lengths0..159, capacity boundaries, missing/
+stale/wrong-wallet refusal, padding/replacement partial failures, repeated repair
+and descriptor cleanup have deterministic coverage. Twelve reached process-
+interruption boundaries preserve every original and subsequently appended byte.
+The older storage/reservation fault suites also pass after extending the test
+partial-write hook to a selected ordinal. Bounded structured/raw repair fuzzing
+completed118566 executions in91s without a finding; source/binary hashes matched.
+
+Both Android ABIs,72 core/35 app JVM gates, both lints, fixture isolation and
+architecture pass; unchanged app JVM cases were UP-TO-DATE. No new JNI/device
+path exists. Evidence and full public seed copies/corpus remain in change-repair-*
+under the48-hour scratch directory. No power-loss or malicious-rollback proof
+is claimed.
+
+Continue with authenticated recovery evidence before exposing repair. File
+length alone cannot establish a consumed-index bound after data loss. A
+committed wallet with empty/short initial state must not be reset through this
+primitive. Require a verified predecessor, supported interrupted-record prefix
+and consistent positions; preserve/refuse ambiguous loss or unsupported formats
+pending independent discovery. The next slice needs a bounded predecessor probe
+and an authenticating recovery caller. Signing and both quarantines stay disabled.

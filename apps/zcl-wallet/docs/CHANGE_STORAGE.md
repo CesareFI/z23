@@ -53,8 +53,8 @@ was durable before any pending wallet write started.
 An existing committed wallet with no change file returns NOT_FOUND from
 observation and append. It is never treated as an unused wallet or reset to0.
 Old receive-only wallets need a separate authenticated migration and discovery
-decision. A recovery implementation for partial/corrupt change files is still
-required; this slice preserves those bytes and refuses normal reservation.
+decision. Explicit repair IO is available below; its authenticating recovery
+caller is still required. Normal reservation preserves damaged bytes and refuses.
 
 ## Comparison, durability and failure
 
@@ -83,6 +83,60 @@ reused descriptor. Observe publishes its snapshot only after all closes succeed.
 | Complete appended record, even if the call failed | Prior index is consumed; stale snapshot refuses and the next append advances again. |
 | Missing state for a committed wallet | Refuse; no automatic initialization. |
 | Cap reached | Refuse further growth; no rollover. |
+
+## Explicit repair IO
+
+`zcl_storage_change_repair` is a separate public-data IO operation. It is never
+called automatically by normal reservation. Before invoking it, the recovery
+caller must verify recovered-wallet identity, classify damage and authenticate
+the replacement record. Healthy or authenticated-but-misplaced heads must refuse
+repair. That authenticating recovery caller remains unfinished; no JNI route
+exposes this primitive.
+
+Under the existing lock and on the same append descriptor, repair compares the
+exact observed size/tail and wallet bytes. It appends only zero padding needed
+to finish the current80-byte slot, then a newly authenticated record at the next
+position. Existing empty files pad one full slot and append record1, consuming
+at least index0. Missing files still refuse; no file is created by repair.
+
+| Existing damaged bytes | Zero padding | Replacement counter | Final bytes |
+| --- | --- | --- | --- |
+| 0 | 80 | 1 | 160 |
+| 40 | 40 | 1 | 160 |
+| 80 | 0 | 1 | 160 |
+| 120 | 40 | 2 | 240 |
+| 200 | 40 | 3 | 320 |
+
+The checked plan permits at most80 padding bytes and160 total new bytes, within
+the existing cap. No previous byte is changed. The counter is the new record's
+file position, so padding and uncertain attempts conservatively consume gaps.
+Capacity checks precede writes; no truncation, replacing rename, reset or
+rollover is available. A repair at the last available slot leaves an exhausted
+head, without creating more reservation capacity.
+
+Failure during padding or replacement preserves all bytes written so far and
+returns no success. A later explicit attempt computes its plan from the larger
+observed size, preserves prior padding/partial replacement too, and advances
+again where needed. Complete uncertain replacements remain stored. The same
+file flush/close, directory flush and owner cleanup precede success. Repair
+returns no address or reservation; normal authenticated reservation is separate.
+
+Deterministic tests preserve every prefix length0..159, exercise final capacity,
+missing-state and stale/wrong-wallet refusal, and verify subsequent authenticated
+reservation in representative cases. Faults cover both padding and replacement,
+partial completion, every flush/close and descriptor counts. Twelve reached
+child-process interruption boundaries verify byte preservation across repeated
+repair. These IO fixtures do not qualify the pending damage-classification or
+authentication policy and do not simulate power loss.
+
+File length alone is not proof of a consumed-index bound after data loss. The
+authenticating recovery caller must establish that bound from verified records
+before allowing this IO. Empty/short initial state with a committed wallet
+contradicts fresh paired-creation ordering and may represent lost history;
+padding capability does not authorize its use in that case. Recovery of a
+recognized interrupted suffix needs an authenticated predecessor, supported
+record profile and consistent position. Ambiguous loss or unsupported formats
+must remain preserved and refused until independent recovery evidence exists.
 
 ## Authenticated C reservation
 

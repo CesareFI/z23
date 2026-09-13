@@ -79,6 +79,16 @@ zcl_status zcl_store_change_close(int *fd, zcl_status status)
     return status;
 }
 
+zcl_status zcl_store_change_matches(const zcl_change_storage_snapshot *actual,
+    const zcl_change_storage_snapshot *expected)
+{
+    if (actual->tail_len > sizeof(actual->tail) || expected->tail_len > sizeof(expected->tail))
+        return ZCL_INVALID_ENCODING;
+    if (actual->file_bytes != expected->file_bytes || actual->tail_len != expected->tail_len)
+        return ZCL_BUSY;
+    return memcmp(actual->tail, expected->tail, expected->tail_len) == 0 ? ZCL_OK : ZCL_BUSY;
+}
+
 zcl_status zcl_storage_change_observe(const uint8_t *directory, size_t directory_len,
     const uint8_t *wallet_record, size_t wallet_len, zcl_change_storage_snapshot *snapshot)
 {
