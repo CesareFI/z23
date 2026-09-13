@@ -867,3 +867,19 @@ caller must require verified predecessor/profile/position evidence for a
 recognized interrupted suffix; ambiguous loss and unsupported formats remain
 preserved/refused pending independent discovery. No such caller or JNI route is
 introduced by this IO checkpoint.
+
+## Bounded recovery predecessor probe — 2026-09-13
+
+Scope: read-only public metadata needed for the future authenticated recovery
+policy. The probe performs no MAC verification, repair or index publication.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Shared pread helper explicitly requires length<=80 and start<=cap-length before any read. Tail length remains min(size,80); predecessor is a separate owned80-byte array. Offset and returned counts remain within the validated span. Probe publishes its whole owned snapshot only after both reads, metadata recheck and all closes. Tests check321 exact file lengths and every output byte/absence field. |
+| Integer overflow/underflow; signed/unsigned conversions | File size is already nonnegative uint32 bounded to5MiB. Only size>80 enters predecessor arithmetic: (size-1)/80>=1, then (slot-1)*80 fits uint32 with end<=size. Range subtraction occurs only after length<=80; start+read offset stays within the cap before off_t conversion. No unchecked signed count conversion, user-sized allocation or growing counter. Full-cap fixtures verify final offsets. |
+| Use-after-free; double-free; leaks; dangling pointers | One invocation owns directory/lock/state descriptors. Tail and predecessor use the same open descriptor, with no close/reopen or retained buffer/pointer. Every failure closes each owner once; Linux/Android EINTR close is consumed. Source-only fault tests count descriptors and verify unchanged outputs after cleanup failures. |
+| NULL dereferences; uninitialized memory | Public output and wallet spans validate before use. Parsed wallet, current/probe snapshots and stat structures initialize. Files<=80 keep has_predecessor false and predecessor bytes zero. Partial reads remain private and are never published. A failed metadata call cannot expose fields that fstat did not fill. |
+| Pointer arithmetic; format strings | Only checked byte-array offsets and one bounded predecessor position are introduced. No pointer reconstruction/order/subtraction, unaligned loads, formatted pathname or input logging. Fuzzer zero-length input uses a valid one-byte backing object, avoiding NULL pointer arithmetic. All returned data is copied into caller-owned structs. |
+| Stack usage; allocation limits; resource exhaustion | No heap, recursion/VLA, file scan, worker or secret cache. At most160 state bytes are read per probe, plus the existing bounded wallet record. Existing normal observe still reads<=80. Read retries remain<=256 per span and locks stay nonblocking. Strict4096-byte frames and448 production functions in78files at complexity<=10 pass. |
+| Malformed files, races and failure atomicity | Existing nofollow/nonblock/private/regular/effective-UID/single-link/size checks remain shared. After predecessor read, fstat and size comparison run again. An injected size change returns BUSY with unchanged output; both reads and all six stat/five close points have fault coverage. Cooperative writers use the same lock. This does not claim protection against malicious same-UID mutation or rollback. |
+| Secret leakage, authentication and authority | Inputs/output are ciphertext and public state metadata only; no new secret is copied or retained. MAC, supported profile, predecessor/current positions and consumed-index bound must be verified by the recovery caller. Probe success never repairs a file, initializes missing state, returns an address, establishes freshness or grants transaction consent. GCM/hardware and TLS/BLAKE2 quarantine remain unchanged. |

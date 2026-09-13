@@ -1267,3 +1267,24 @@ primitive. Require a verified predecessor, supported interrupted-record prefix
 and consistent positions; preserve/refuse ambiguous loss or unsupported formats
 pending independent discovery. The next slice needs a bounded predecessor probe
 and an authenticating recovery caller. Signing and both quarantines stay disabled.
+
+2026-09-13 recovery predecessor probe: C now returns the current state tail and
+immediately preceding complete record as owned public metadata, reading at
+most160 state bytes on the same descriptor under the existing wallet/lock rules.
+Files<=80 report no predecessor with zero bytes. A bounded shared pread helper
+checks range arithmetic, and metadata/size are rechecked before publication.
+Normal observation remains one-tail-only; probing does not authenticate or repair.
+
+All54 native ASan/UBSan/LSan tests, Clang/GCC analysis and448 functions in78files
+at complexity<=10 pass. Tests cover321 exact file lengths, actual authenticated
+predecessors/partial successors, cap offsets, both reads, all stat/close faults,
+descriptor counts and a size change before publication. Bounded file/argument
+fuzzing completed79726 executions in61s without a finding; source/binary hashes
+matched. Both Android ABIs,72 core/35 app JVM gates, both lints, fixture isolation
+and architecture pass. No JNI/device route changed. Evidence remains in
+change-probe-* under the48-hour scratch directory.
+
+Continue with authenticated recovery for supported interrupted records backed
+by a verified predecessor. Missing/invalid predecessors, unsupported/too-short
+prefixes, misplaced authenticated counters and ambiguous loss remain refused;
+the public probe is evidence to verify, never repair authority by itself.

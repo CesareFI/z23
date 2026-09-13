@@ -138,6 +138,27 @@ recognized interrupted suffix needs an authenticated predecessor, supported
 record profile and consistent position. Ambiguous loss or unsupported formats
 must remain preserved and refused until independent recovery evidence exists.
 
+## Bounded predecessor probe
+
+`zcl_storage_change_probe` returns owned public recovery metadata: the current
+size/tail, a predecessor-presence flag and the complete80-byte record immediately
+before the current complete or partial slot. Files of at most80 bytes have no
+predecessor, and that array stays zero. This observation is unauthenticated and
+cannot itself establish consumed indexes or approve repair.
+
+The probe matches the same committed wallet under the existing lock, reads tail
+and predecessor on one descriptor, rechecks file metadata/size, and publishes
+only after all descriptor cleanup succeeds. It reads at most160 state bytes,
+without scanning history or retaining pointers. Normal observation still reads
+only the current tail. Both paths share one explicitly bounded pread helper.
+
+Tests check every byte length0..320, the file-cap offsets, actual authenticated
+predecessors and partial successors. Faults cover both reads, persistent EINTR,
+all metadata/close stages, descriptor counts and a size change before publication.
+The authenticating recovery caller must still verify MAC, profile and position,
+and refuse missing/unverifiable predecessor or ambiguous loss. No repair or
+address publication is introduced by probing.
+
 ## Authenticated C reservation
 
 `zcl_wallet_change_create/reserve` in `zcl_change_reservation.h` compose the

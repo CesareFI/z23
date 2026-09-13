@@ -36,23 +36,30 @@ static zcl_status change_size(int fd, uint32_t *size)
     return ZCL_OK;
 }
 
-static zcl_status read_tail(int fd, zcl_change_storage_snapshot *snapshot)
+static zcl_status read_range(int fd, uint32_t start, uint8_t *bytes, size_t length)
 {
+    if (length > 80 || start > ZCL_CHANGE_STORAGE_MAX_BYTES - length) return ZCL_OUT_OF_RANGE;
     size_t offset = 0;
-    const uint32_t start = snapshot->file_bytes - (uint32_t)snapshot->tail_len;
-    for (size_t attempt = 0; attempt < 256 && offset < snapshot->tail_len; ++attempt) {
+    for (size_t attempt = 0; attempt < 256 && offset < length; ++attempt) {
         /* start+offset <= validated file size <=5MiB, fits uint32 and off_t. */
         off_t position = (off_t)(start + (uint32_t)offset);
-        ssize_t count = pread(fd, snapshot->tail + offset, snapshot->tail_len - offset, position);
+        ssize_t count = pread(fd, bytes + offset, length - offset, position);
         if (count < 0) {
             if (errno == EINTR) continue;
             return ZCL_IO_FAILURE;
         }
-        if (count == 0 || (size_t)count > snapshot->tail_len - offset)
+        if (count == 0 || (size_t)count > length - offset)
             return ZCL_INVALID_ENCODING;
         offset += (size_t)count;
     }
-    return offset == snapshot->tail_len ? ZCL_OK : ZCL_IO_FAILURE;
+    return offset == length ? ZCL_OK : ZCL_IO_FAILURE;
+}
+
+static zcl_status read_tail(int fd, zcl_change_storage_snapshot *snapshot)
+{
+    /* Only after size validation and tail_len=min(size,80). */
+    const uint32_t start = snapshot->file_bytes - (uint32_t)snapshot->tail_len;
+    return read_range(fd, start, snapshot->tail, snapshot->tail_len);
 }
 
 zcl_status zcl_store_change_open(const zcl_store *store, bool append, int *fd,
@@ -102,6 +109,41 @@ zcl_status zcl_storage_change_observe(const uint8_t *directory, size_t directory
     status = zcl_store_open(directory, directory_len, &store);
     if (status == ZCL_OK) status = zcl_store_match_wallet(&store, wallet_record, wallet_len);
     if (status == ZCL_OK) status = zcl_store_change_open(&store, false, &fd, &candidate);
+    status = zcl_store_change_close(&fd, status);
+    status = zcl_store_close(&store, status);
+    if (status == ZCL_OK) *snapshot = candidate;
+    return status;
+}
+
+static zcl_status read_predecessor(int fd, zcl_change_recovery_snapshot *snapshot)
+{
+    uint32_t size = snapshot->current.file_bytes;
+    if (size <= 80) return ZCL_OK;
+    /* size>80 proves slot>=1 and bounded offset+80<=size. */
+    uint32_t slot = (size - 1) / 80;
+    uint32_t start = (slot - 1) * UINT32_C(80);
+    zcl_status status = read_range(fd, start, snapshot->predecessor, sizeof(snapshot->predecessor));
+    uint32_t final_size = 0;
+    if (status == ZCL_OK) status = change_size(fd, &final_size);
+    if (status == ZCL_OK && final_size != size) status = ZCL_BUSY;
+    if (status == ZCL_OK) snapshot->has_predecessor = true;
+    return status;
+}
+
+zcl_status zcl_storage_change_probe(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, zcl_change_recovery_snapshot *snapshot)
+{
+    if (snapshot == NULL) return ZCL_INVALID_ARGUMENT;
+    zcl_wallet_record parsed = {0};
+    zcl_status status = zcl_wallet_record_parse(wallet_record, wallet_len, &parsed);
+    if (status != ZCL_OK) return status;
+    zcl_store store = {-1, -1};
+    int fd = -1;
+    zcl_change_recovery_snapshot candidate = {0};
+    status = zcl_store_open(directory, directory_len, &store);
+    if (status == ZCL_OK) status = zcl_store_match_wallet(&store, wallet_record, wallet_len);
+    if (status == ZCL_OK) status = zcl_store_change_open(&store, false, &fd, &candidate.current);
+    if (status == ZCL_OK) status = read_predecessor(fd, &candidate);
     status = zcl_store_change_close(&fd, status);
     status = zcl_store_close(&store, status);
     if (status == ZCL_OK) *snapshot = candidate;

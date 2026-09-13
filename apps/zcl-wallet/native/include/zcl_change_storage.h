@@ -20,6 +20,16 @@ typedef struct {
     uint8_t tail[80];
 } zcl_change_storage_snapshot;
 
+/* Recovery evidence is public and UNAUTHENTICATED. The predecessor is the
+ * complete record immediately before the current complete/partial slot.
+ * Size<=80 has no predecessor; its bytes stay zero. This is not repair approval
+ * or proof of a consumed-index bound until the caller authenticates it. */
+typedef struct {
+    zcl_change_storage_snapshot current;
+    bool has_predecessor;
+    uint8_t predecessor[80];
+} zcl_change_recovery_snapshot;
+
 /* Public-data IO on Android/Linux; all zcl_storage path/ownership rules apply.
  * Stable caller-owned spans must not overlap. No secrets enter these APIs.
  * Caller MUST authenticate the exact wallet ciphertext/header/entropy first,
@@ -42,6 +52,12 @@ zcl_status zcl_storage_create_with_change(const uint8_t *directory, size_t direc
  * Output remains unchanged on any failure, including descriptor cleanup. */
 zcl_status zcl_storage_change_observe(const uint8_t *directory, size_t directory_len,
     const uint8_t *wallet_record, size_t wallet_len, zcl_change_storage_snapshot *snapshot);
+
+/* Same exact wallet/lock/file rules as observe; reads at most160 state bytes
+ * on one descriptor, without scanning history. Output unchanged on failure.
+ * No write, initialization, authentication or repair occurs. */
+zcl_status zcl_storage_change_probe(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, zcl_change_recovery_snapshot *snapshot);
 
 /* Caller authenticates expected.tail and next_state first. Under one lock,
  * compare size/tail on the SAME descriptor used to append. Require old/new

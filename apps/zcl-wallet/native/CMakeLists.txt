@@ -293,6 +293,12 @@ if(ZCL_FUZZ)
         target_compile_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined
             -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         target_link_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined)
+        add_executable(fuzz_change_probe tests/fuzz_change_probe.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(fuzz_change_probe PRIVATE zcl_wallet_core)
+        target_compile_options(fuzz_change_probe PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(fuzz_change_probe PRIVATE -fsanitize=fuzzer,address,undefined)
         add_executable(fuzz_change_repair tests/fuzz_change_repair.c
             tests/change_storage_fixture.c tests/storage_fixture.c)
         target_include_directories(fuzz_change_repair PRIVATE src)
@@ -655,6 +661,22 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         add_test(NAME wallet_change_storage COMMAND change_storage_tests)
         set_tests_properties(wallet_change_storage PROPERTIES TIMEOUT 30)
+        add_executable(change_probe_tests tests/test_change_probe.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_probe_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_probe_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        add_test(NAME wallet_change_probe COMMAND change_probe_tests)
+        set_tests_properties(wallet_change_probe PROPERTIES TIMEOUT 30)
+        add_executable(change_probe_fault_tests tests/test_change_probe_faults.c
+            tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
+        target_link_libraries(change_probe_fault_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_probe_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+        target_link_options(change_probe_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=fstat
+            -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
+        add_test(NAME wallet_change_probe_faults COMMAND change_probe_fault_tests)
+        set_tests_properties(wallet_change_probe_faults PROPERTIES TIMEOUT 30)
         add_executable(change_repair_tests tests/test_change_repair.c
             tests/change_storage_fixture.c tests/storage_fixture.c)
         target_include_directories(change_repair_tests PRIVATE src)
