@@ -25,8 +25,13 @@ fi
 unzip -Z1 "$debug" > "$report/debug-entries.txt"
 unzip -Z1 "$release" > "$report/release-entries.txt"
 unzip -Z1 "$test_apk" > "$report/test-entries.txt"
-if rg -q '^assets/sync/' "$report/debug-entries.txt" "$report/release-entries.txt"; then
-    echo 'Fixture isolation: sync response assets entered an application APK' >&2
+if rg -q '^assets/(sync|review)/' "$report/debug-entries.txt" "$report/release-entries.txt"; then
+    echo 'Fixture isolation: public response/review assets entered an application APK' >&2
+    exit 1
+fi
+review_count=$(awk '/^assets\/review\/(draft|previous0|previous1)$/ { count++ } END { print count+0 }' "$report/test-entries.txt")
+if [[ "$review_count" != 3 ]]; then
+    echo 'Fixture isolation: expected three public transactions in the test APK' >&2
     exit 1
 fi
 count=$(awk '/^assets\/sync\/(mainnet|testnet)-[1-6]\.json$/ { count++ } END { print count+0 }' "$report/test-entries.txt")

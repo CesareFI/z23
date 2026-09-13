@@ -131,7 +131,7 @@ endif()
 if(ZCL_JNI OR ANDROID)
     add_library(zclwallet_jni SHARED src/jni_amount.c src/jni_codecs.c src/jni_payment.c src/jni_support.c
         src/jni_keys.c src/jni_wallet_record.c src/jni_storage.c src/jni_custody.c src/jni_qr.c src/jni_scan.c src/jni_camera.c
-        src/jni_sync.c)
+        src/jni_sync.c src/jni_review.c src/jni_review_packet.c)
     target_link_libraries(zclwallet_jni PRIVATE zcl_wallet_core)
     target_compile_options(zclwallet_jni PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -fstack-protector-strong)
@@ -286,7 +286,25 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         enable_testing()
         add_test(NAME wallet_jni_sync COMMAND jni_sync_tests)
         set_tests_properties(wallet_jni_sync PROPERTIES TIMEOUT 15)
+        add_executable(jni_review_tests tests/test_jni_review.c tests/assessment_fixture.c
+            src/jni_review.c src/jni_review_packet.c src/jni_support.c)
+        target_include_directories(jni_review_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_review_tests PRIVATE zcl_wallet_core Threads::Threads)
+        target_compile_definitions(jni_review_tests PRIVATE malloc=zcl_jni_review_test_malloc free=zcl_jni_review_test_free)
+        target_compile_options(jni_review_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_review COMMAND jni_review_tests)
+        set_tests_properties(wallet_jni_review PROPERTIES TIMEOUT 15)
         if(ZCL_FUZZ)
+            add_executable(fuzz_jni_review tests/test_jni_review.c tests/assessment_fixture.c
+                src/jni_review.c src/jni_review_packet.c src/jni_support.c)
+            target_include_directories(fuzz_jni_review PRIVATE src ${JNI_INCLUDE_DIRS})
+            target_link_libraries(fuzz_jni_review PRIVATE zcl_wallet_core Threads::Threads)
+            target_compile_definitions(fuzz_jni_review PRIVATE ZCL_JNI_REVIEW_FUZZ=1
+                malloc=zcl_jni_review_test_malloc free=zcl_jni_review_test_free)
+            target_compile_options(fuzz_jni_review PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+            target_link_options(fuzz_jni_review PRIVATE -fsanitize=fuzzer,address,undefined)
             add_executable(fuzz_jni_sync tests/test_jni_sync.c tests/sync_fixture.c src/jni_sync.c src/jni_support.c)
             target_include_directories(fuzz_jni_sync PRIVATE src ${JNI_INCLUDE_DIRS})
             target_link_libraries(fuzz_jni_sync PRIVATE zcl_wallet_core Threads::Threads)

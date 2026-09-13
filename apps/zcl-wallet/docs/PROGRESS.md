@@ -920,3 +920,33 @@ is3352bytes and snapshot1392bytes; no heap was added and the4096-byte frame gate
 still passes. Evidence/corpus is in review-context-* under the48-hour scratch
 directory. Continue with the thin JNI owner and public projection, including
 exception/cleanup, stale-ID, cancellation and empty-restart fixtures.
+
+2026-09-13 unsigned review JNI/managed bridge: one process-wide C owner now
+accepts bounded copied public drafts/previous transactions and returns exact
+268-long maximum snapshots or copied unsigned bytes. One17472-byte input
+allocation clears before free; all local refs are bounded/deleted. Java result
+allocation happens after unlocking. Failed publication cancels only the original
+ID, including a deterministic close/reopen interleaving at allocation.
+
+The managed owner samples its clock under serialization, closes on read/clock/
+decode failure, cancels construction failures and checks close results. Its
+rows/lists are immutable public copies. Destinations expose kind/hash/network/
+value; canonical address display and an actual review Activity remain next.
+No signing, authentication, transport, endpoint or persisted review is enabled.
+
+All36 native ASan/UBSan/LSan tests, Clang/GCC analysis and388 functions in66files
+at complexity<=10 pass. JNI exception/sequence fuzzing completed21,502runs/91s;
+after adding the publication interleaving regression, focused sanitizer tests
+and a supplemental7,659runs/31s pass with final source/binary hashes matching.
+Both original and supplemental corpora/logs remain preserved.
+
+All64 core JVM and24 app JVM tests pass, including6 new real-JVM review cases
+with-Xcheck:jni. Both ABI builds, both Android lints, architecture and APK
+isolation pass. Isolation additionally rejects leaked review fixtures in an
+app APK and a missing required transaction in the test APK. The API35 emulator
+passed3 public JNI review cases in7.504s, covering both networks, immutable
+copies, repeated replacements, rollback and inclusive expiry. This does not
+qualify an Activity, hardware custody or original-node transaction acceptance.
+Evidence is in review-jni-* under the48-hour scratch directory. Continue with
+canonical P2PKH/P2SH destination encoding and foreground review presentation;
+key/change ownership and branch-specific signing remain separate gates.

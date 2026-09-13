@@ -67,8 +67,10 @@ now have synthetic tests. Public change derivation has independent OpenSSL and
 cleanup evidence; index reservation/recovery and ownership remain unfinished.
 Immutable unsigned review lifetime and exact input/outpoint/lock/expiry context
 now have cancellation, deadline, ownership and failure-atomicity fixtures.
-Complete the thin JNI projection, then authenticated key ownership and original
-branch-specific signature hashes before exposing any send action.
+The thin JNI/managed projection now has fake/real VM and public emulator
+evidence. Complete canonical destination address encoding and foreground review
+presentation, then authenticated key ownership and original branch-specific
+signature hashes before exposing any send action.
 Define the source trust and
 address-privacy model before enabling a real endpoint. Verify the exact Zclassic
 chain/network identity, enforce deadlines and byte/count limits, and report

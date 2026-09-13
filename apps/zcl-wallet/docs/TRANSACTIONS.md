@@ -1,8 +1,8 @@
 # Transparent transaction development
 
 The C codec handles a bounded transparent-only subset of the existing Zclassic
-v4/Sapling wire format. It is an offline library with no JNI, endpoint, key,
-signing, broadcast or send-screen entry point. Successful decoding establishes
+v4/Sapling wire format. A thin JNI adapter exposes offline unsigned review data;
+there is no endpoint, key, signing, broadcast or send-screen entry point. Successful decoding establishes
 only the checks listed below. It does not establish valid scripts, signatures,
 funding, ownership, fees, expiry at the current tip or chain acceptance.
 
@@ -183,8 +183,9 @@ Initialize the caller-owned state once with `{0}` per enclosing adapter
 lifetime and serialize every operation under the same lock. No borrowed
 pointer, native heap or background worker survives a call. IDs increase through
 INT64_MAX without reuse, including across clear/cancel; exhaustion refuses.
-Never copy/reset an owner while callbacks can retain its IDs. A future JNI
-adapter must retain its enclosing owner identity as well as the review ID.
+Never copy/reset an owner while callbacks can retain its IDs. The JNI adapter
+uses one process-lifetime owner and never resets its issuance counter. IDs must
+remain within that process and must never be restored from external state.
 
 The fixed lifetime is90,000ms from a trusted elapsed-monotonic opening time.
 An opening that would overflow its uint64 deadline refuses. Every snapshot or
@@ -205,8 +206,8 @@ The review owns public transaction metadata, not keys or authenticated wallet
 ownership. Supplied previous bytes remain unqualified for chain inclusion,
 unspentness or maturity. P2SH recognition is not redeem-script ownership.
 Change classification, chain/branch context, hardware authentication and
-original signature hashes are separate gates. This lifetime has no JNI/UI
-entry yet and cannot enable the quarantined transport or BLAKE2 candidate.
+original signature hashes are separate gates. No review screen is wired yet;
+the review cannot enable the quarantined transport or BLAKE2 candidate.
 
 Deterministic cases cover caller/copy mutation, every draft truncation and
 undersized copy capacity, late callbacks after repeated replacements, exact
@@ -218,6 +219,53 @@ Context fixtures cover high-bit lock/sequence values, zero and maximum accepted
 expiry, all eight rows with distinct output indexes through15, and a smaller
 replacement leaving no stale extra rows. Fuzz inputs vary full-width lock and
 sequence fields and bounded expiry while exercising the same lifetime model.
+
+## JNI and managed ownership
+
+The JNI adapter serializes one process-wide unsigned review under a mutex.
+Opening another active draft returns BUSY. It copies the draft and at most
+eight previous Java byte arrays, each bounded to1925bytes, into one checked
+fixed native allocation. No Java array is pinned and no reference is retained;
+each temporary element reference is deleted, and the entire allocation is
+zeroed before free on success or failure. Only a positive nonreused ID escapes.
+
+Snapshots encode at most268 longs:20 header fields,17 per input and7 per
+output. Header fields carry status, remaining time, network, lock/expiry,
+serialized size, counts, totals, fee/ceiling and eight transaction-ID words.
+Input rows carry eight previous-ID words, index, sequence, value, kind and five
+address-hash words. Output rows carry value, kind and five hash words. Hash
+words are unsigned32 values represented exactly as positive longs; no signed
+64-bit hash reinterpretation occurs. Failure packets contain one status only.
+
+Java result allocation happens after native unlocking. A failed allocation or
+region write attempts cancellation only for the sampled ID, so failure cleanup
+cannot reach a replacement. The deterministic fake VM interleaves replacement
+at this exact boundary and checks both unlocked allocation and stale cleanup.
+Mutex failures return an I/O fault; an exceptional mutex failure can require
+process restart rather than safely claiming that a draft was cleared.
+
+`UnsignedReview` retains only its ID and clock. Reads sample the trusted elapsed
+clock inside managed serialization and close on clock/native/decode failure.
+Close drops the clock and checks the native cancellation result; construction
+failure cancels the newly issued ID. Returned rows use immutable values and
+unmodifiable lists; unsigned byte copies belong to the caller. A caller must
+explicitly close the owner on background, lock or replacement. Abandoning it
+without close can leave BUSY state until process restart; GC is not a lifecycle
+mechanism. A queued display must re-read its original foreground owner.
+
+Destinations currently expose network, kind, hash and value. Canonical address
+encoding for both P2PKH and P2SH is a follow-up before a user-facing review view.
+No label asserts change, inclusion, unspentness, maturity or wallet ownership.
+There is no authentication, signing, broadcast, persisted review or automatic
+network operation in the adapter.
+
+Public fixtures are shared from `wallet-core/src/test/resources/review` into
+the Android test APK. The package gate refuses them in application APKs and
+requires all three binary fixtures in the test APK; negative listing mutations
+exercise both refusals. The C fixture generator refuses existing files and
+independent OpenSSL SHA256d identifies the draft. Real JVM `-Xcheck:jni` and
+API35 emulator tests qualify transfer, cancellation, expiry and owned copies;
+they do not qualify a review Activity or original-node transaction acceptance.
 
 ## Ordered continuation
 
