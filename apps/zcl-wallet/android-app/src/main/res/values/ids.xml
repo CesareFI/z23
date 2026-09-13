@@ -24,6 +24,7 @@
     <item name="receiving_address" type="id" />
     <item name="address_balance" type="id" />
     <item name="address_history" type="id" />
+    <item name="transaction_review" type="id" />
     <item name="lock_wallet" type="id" />
     <item name="retry_wallet" type="id" />
 </resources>

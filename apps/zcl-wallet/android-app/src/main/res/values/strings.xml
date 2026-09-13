@@ -87,4 +87,24 @@
     <string name="storage_failed">Wallet data could not be verified. Keep your recovery backup and retry when storage is available.</string>
     <string name="operation_failed">The operation did not finish. Check the saved wallet again and keep your recovery backup.</string>
     <string name="setup_expired">Setup expired and recovery material was cleared. Start again using your written backup if needed.</string>
+    <string name="review_unavailable">Transaction review unavailable</string>
+    <string name="review_status_lines">%1$s\n%2$s</string>
+    <string name="review_waiting">Prepare a transaction to review its details.</string>
+    <string name="review_expired">This review expired. Start a new review.</string>
+    <string name="review_cancelled">This review was closed.</string>
+    <string name="review_failed">The transaction could not be reviewed.</string>
+    <string name="review_unsigned">Unsigned Zclassic transaction</string>
+    <string name="review_funding_notice">The supplied funding transactions are unverified. Available funds and ownership have not been confirmed.</string>
+    <string name="review_sending_notice">Signing and sending are unavailable in this development version.</string>
+    <string name="review_output">Output %1$d\n%2$s\n%3$s ZCL</string>
+    <string name="review_input_total">Total input value: %1$s ZCL</string>
+    <string name="review_output_total">Total output value: %1$s ZCL</string>
+    <string name="review_fee">Fee: %1$s ZCL</string>
+    <string name="review_fee_limit">Fee limit: %1$s ZCL</string>
+    <string name="review_details">Unsigned transaction details</string>
+    <string name="review_draft_id">Draft ID (changes after signing):\n%1$s</string>
+    <string name="review_size">Unsigned size (bytes): %1$d</string>
+    <string name="review_lock_time">Lock time (raw): %1$s</string>
+    <string name="review_expiry_height">Expiry height (raw): %1$s</string>
+    <string name="review_input">Input %1$d\nPrevious transaction: %2$s\nOutput index: %3$s\nSequence (raw): %4$s\nFunding address: %5$s\nValue: %6$s ZCL</string>
 </resources>

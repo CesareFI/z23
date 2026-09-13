@@ -1003,3 +1003,22 @@ review-presentation-* under the48-hour scratch directory; the initial test
 compile failure (shadowed loop variable) is preserved separately. The review
 view and its device fixtures are the next independent slice; this checkpoint
 has no review Activity, signing, custody or broadcast claim.
+
+2026-09-13 unsigned review display: ReviewView now displays complete canonical
+output/funding addresses, C-formatted totals/fee/limit, selected network and
+unsigned/unverified funding labels. Raw draft/outpoint IDs and unsigned32
+context remain fully inspectable without finality or ownership assertions.
+Earlier text clears before formatting; bounded malformed data cannot leave a
+partial or previous transaction visible. Hierarchy restoration, autofill and
+content capture are excluded; there is no cached countdown or sending action.
+
+All35 app JVM cases, both ABI builds, both lints, APK fixture isolation and
+architecture pass. The API35 emulator passed6 new view cases in12.42s, covering
+both networks, full-width fields, failure clearing, forged old TextView state,
+and inclusive C expiry through the actual main-queue timer. Native code and
+core behavior are unchanged; existing66 core JVM and38 native sanitizer tests
+remain the baseline, with no unchanged fuzz campaign repeated. Evidence is in
+review-view-* under the48-hour scratch directory. The initial byte-count
+localization lint finding was corrected through unit-label wording, without a
+suppression; its log is preserved. Continue with actual foreground/recreation
+Activity acceptance and process-relaunch fixtures.

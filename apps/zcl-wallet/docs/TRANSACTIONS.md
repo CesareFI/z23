@@ -206,7 +206,7 @@ The review owns public transaction metadata, not keys or authenticated wallet
 ownership. Supplied previous bytes remain unqualified for chain inclusion,
 unspentness or maturity. P2SH recognition is not redeem-script ownership.
 Change classification, chain/branch context, hardware authentication and
-original signature hashes are separate gates. No review screen is wired yet;
+original signature hashes are separate gates. No review Activity is wired yet;
 the review cannot enable the quarantined transport or BLAKE2 candidate.
 
 Deterministic cases cover caller/copy mutation, every draft truncation and
@@ -256,7 +256,8 @@ mechanism. A queued display must re-read its original foreground owner.
 Destinations expose network, kind, hash and value. `Destination.address()` now
 uses the thin JNI/managed factories for canonical P2PKH/P2SH text, with encoding
 in C through `zcl_address_encode`. The P2SH factory owns its copied public record
-and does not establish redeem-script ownership. A review view remains a follow-up.
+and does not establish redeem-script ownership. `ReviewView` displays these full
+addresses beside every output and each supplied funding destination.
 The encoder validates explicit network/kind and reuses the same version prefixes
 as parsing. The existing public-key-hash receiving helper delegates without
 changing its P2PKH behavior. Four public address/script vectors from the pinned
@@ -295,8 +296,21 @@ Delivery failures close the owner and invoke the unavailable callback even
 when timer cancellation or owner cleanup throws. Renderer/fatal failures still
 propagate, with cleanup problems preserved as suppressed exceptions. This also
 tightens the existing balance presentation's failure cleanup. No exception is
-treated as permission to show a previous snapshot. The view/Activity integration
-remains a separate acceptance slice; this adapter supplies no sending action.
+treated as permission to show a previous snapshot. Activity integration remains
+a separate acceptance slice; this adapter supplies no sending action.
+
+`ReviewView` shows the selected network, all outputs in native order, exact
+C-formatted input/output totals, fee and fee limit. It explicitly labels the
+draft unsigned and its supplied funding unverified. It does not infer change,
+available funds or ownership. Inspectable details retain the full draft ID and
+outpoints, raw unsigned lock/expiry/index/sequence fields and unsigned byte size;
+these do not establish current-chain finality. No countdown is cached in text.
+
+Formatting bounds counts, numeric widths and hashes before publishing the full
+new text. Previous text clears before any conversion that can fail. Hierarchy
+save/restore is disabled, even for an older ordinary TextView state under the
+same ID; detach clears the view. Autofill and content capture are excluded.
+Actual foreground closure must still cancel the presentation and clear the view.
 
 ## Ordered continuation
 
