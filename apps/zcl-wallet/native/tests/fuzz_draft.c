@@ -65,18 +65,23 @@ static void check_assessment(const zcl_draft_request *request, const zcl_transpa
     }
 }
 
-static void check_fields(const zcl_draft_request *request, const zcl_transparent_tx *tx)
+static void check_inputs(const zcl_draft_request *request, const zcl_transparent_tx *tx)
 {
-    if (tx->input_count != request->input_count || tx->output_count != request->output_count) abort();
-    if (tx->input_count == 0 || tx->input_count > ZCL_TX_INPUT_MAX ||
-        tx->output_count == 0 || tx->output_count > ZCL_TX_OUTPUT_MAX) abort();
-    if (tx->lock_time != request->lock_time || tx->expiry_height != request->expiry_height) abort();
     for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i) {
         if (tx->inputs[i].script_len != 0) abort();
         for (size_t j = 0; j < ZCL_TX_INPUT_SCRIPT_MAX; ++j) if (tx->inputs[i].script[j] != 0) abort();
         if (i < tx->input_count && (tx->inputs[i].previous_index != request->inputs[i].output_index ||
             tx->inputs[i].sequence != request->inputs[i].sequence)) abort();
     }
+}
+
+static void check_fields(const zcl_draft_request *request, const zcl_transparent_tx *tx)
+{
+    if (tx->input_count != request->input_count || tx->output_count != request->output_count) abort();
+    if (tx->input_count == 0 || tx->input_count > ZCL_TX_INPUT_MAX ||
+        tx->output_count == 0 || tx->output_count > ZCL_TX_OUTPUT_MAX) abort();
+    if (tx->lock_time != request->lock_time || tx->expiry_height != request->expiry_height) abort();
+    check_inputs(request, tx);
 }
 
 static void exercise(const zcl_draft_request *request)

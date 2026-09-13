@@ -6,6 +6,30 @@
 
 #define REQUIRE(v) do { if (!(v)) abort(); } while (0)
 
+static void inspect_owner(zcl_sync_owners *owners, uint64_t id, bool live, uint64_t now)
+{
+    zcl_sync_watch *watch = NULL;
+    const zcl_status expected = live ? ZCL_OK : ZCL_CANCELLED;
+    REQUIRE(zcl_sync_owners_get(owners, id, &watch) == expected);
+    if (expected == ZCL_OK) {
+        uint64_t token = 0;
+        const zcl_status status = zcl_sync_watch_begin(watch, now, 1, 1, &token);
+        REQUIRE(status == ZCL_OK || status == ZCL_BUSY);
+        zcl_sync_snapshot snapshot = {0};
+        REQUIRE(zcl_sync_watch_snapshot(watch, now, &snapshot) == ZCL_OK);
+        REQUIRE(snapshot.freshness == ZCL_BALANCE_UNAVAILABLE);
+    } else REQUIRE(watch == NULL);
+}
+
+static void inspect_history(zcl_sync_owners *owners, const uint64_t *ids, const bool *live, size_t issued)
+{
+    for (size_t old = 0; old < issued; ++old) {
+        zcl_sync_watch *watch = NULL;
+        REQUIRE(zcl_sync_owners_get(owners, ids[old], &watch) == (live[old] ? ZCL_OK : ZCL_CANCELLED));
+        if (!live[old]) REQUIRE(watch == NULL);
+    }
+}
+
 /* Exercise acquire/release/callback histories, including slot reuse, closed
  * owners, resource bounds and attempts whose numeric tokens coincide. No live
  * sockets or process-wide registry. The harness caps histories at 128 events. */
@@ -41,23 +65,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
             zcl_sync_owners_close_all(&owners);
             memset(live, 0, sizeof(live));
         } else {
-            zcl_sync_watch *watch = NULL;
-            const zcl_status expected = live[selected] ? ZCL_OK : ZCL_CANCELLED;
-            REQUIRE(zcl_sync_owners_get(&owners, ids[selected], &watch) == expected);
-            if (expected == ZCL_OK) {
-                uint64_t token = 0;
-                const zcl_status status = zcl_sync_watch_begin(watch, (uint64_t)event, 1, 1, &token);
-                REQUIRE(status == ZCL_OK || status == ZCL_BUSY);
-                zcl_sync_snapshot snapshot = {0};
-                REQUIRE(zcl_sync_watch_snapshot(watch, (uint64_t)event, &snapshot) == ZCL_OK);
-                REQUIRE(snapshot.freshness == ZCL_BALANCE_UNAVAILABLE);
-            } else REQUIRE(watch == NULL);
+            inspect_owner(&owners, ids[selected], live[selected], (uint64_t)event);
         }
-        for (size_t old = 0; old < issued; ++old) {
-            zcl_sync_watch *watch = NULL;
-            REQUIRE(zcl_sync_owners_get(&owners, ids[old], &watch) == (live[old] ? ZCL_OK : ZCL_CANCELLED));
-            if (!live[old]) REQUIRE(watch == NULL);
-        }
+        inspect_history(&owners, ids, live, issued);
     }
     zcl_sync_owners_close_all(&owners);
     return 0;

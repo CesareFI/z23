@@ -266,6 +266,21 @@ static fake_array *run(const java_inputs *inputs)
         (jobjectArray)inputs->destinations, (jlongArray)inputs->parameters, inputs->network);
 }
 
+static void verify_outputs(const java_inputs *inputs, const zcl_transaction_assessment *assessment,
+    size_t input_count, size_t output_count)
+{
+    const jlong *values = inputs->parameters->data.numbers;
+    for (size_t i = 0; i < output_count; ++i) {
+        const fake_array *text = inputs->destinations->data.objects[i];
+        CHECK(text != NULL && text->kind == BYTES && text->length >= 0 && text->length <= 35);
+        zcl_address expected;
+        CHECK(zcl_address_parse(text->data.bytes, (size_t)text->length, (zcl_network)inputs->network, &expected) == ZCL_OK);
+        CHECK(assessment->outputs[i].destination.kind == expected.kind);
+        CHECK(memcmp(assessment->outputs[i].destination.hash, expected.hash, 20) == 0);
+        CHECK((jlong)assessment->outputs[i].value == values[3 + 2 * input_count + i]);
+    }
+}
+
 static void verify_success(const java_inputs *inputs, const fake_array *result)
 {
     CHECK(inputs->previous != NULL && inputs->destinations != NULL && inputs->parameters != NULL);
@@ -292,15 +307,7 @@ static void verify_success(const java_inputs *inputs, const fake_array *result)
     zcl_transaction_assessment assessment;
     CHECK(zcl_transaction_assess(&tx, (zcl_network)inputs->network, previous, input_count,
         (uint64_t)values[2], &assessment) == ZCL_OK);
-    for (size_t i = 0; i < output_count; ++i) {
-        const fake_array *text = inputs->destinations->data.objects[i];
-        CHECK(text != NULL && text->kind == BYTES && text->length >= 0 && text->length <= 35);
-        zcl_address expected;
-        CHECK(zcl_address_parse(text->data.bytes, (size_t)text->length, (zcl_network)inputs->network, &expected) == ZCL_OK);
-        CHECK(assessment.outputs[i].destination.kind == expected.kind);
-        CHECK(memcmp(assessment.outputs[i].destination.hash, expected.hash, 20) == 0);
-        CHECK((jlong)assessment.outputs[i].value == values[3 + 2 * input_count + i]);
-    }
+    verify_outputs(inputs, &assessment, input_count, output_count);
 }
 
 static void verify_result(const java_inputs *inputs, const fake_array *result)
@@ -394,7 +401,7 @@ static void allocation_and_publication_failures(void)
     CHECK(API(NULL, NULL, NULL, NULL, NULL, 0) == NULL);
 }
 
-static void null_and_count_arguments(void)
+static void null_arguments(void)
 {
     for (size_t field = 0; field < 5; ++field) {
         java_inputs inputs = prepare_fixture(false, ZCL_MAINNET);
@@ -406,6 +413,10 @@ static void null_and_count_arguments(void)
         expect_status(&inputs, ZCL_INVALID_ARGUMENT);
         release_references();
     }
+}
+
+static void invalid_array_counts(void)
+{
     const jsize invalid[] = {-1, 0, INT32_MAX};
     for (size_t field = 0; field < 3; ++field) for (size_t i = 0; i < 3; ++i) {
         java_inputs inputs = prepare_fixture(false, ZCL_MAINNET);
@@ -497,7 +508,8 @@ int main(void)
     exact_and_maximum_inputs();
     read_failures();
     allocation_and_publication_failures();
-    null_and_count_arguments();
+    null_arguments();
+    invalid_array_counts();
     parameter_shapes_and_widths();
     malformed_byte_arrays();
     bounded_wire_helper();
@@ -519,6 +531,14 @@ static jlong signed_word(const uint8_t *data, size_t size)
     return word <= INT64_MAX ? (jlong)word : -1 - (jlong)(UINT64_MAX - word);
 }
 
+static void mutate_source(fake_array *source, const uint8_t *data, size_t size)
+{
+    size_t length = size > 2 ? size - 2 : 0;
+    if (length > sizeof(source->data.bytes)) length = sizeof(source->data.bytes);
+    if (length != 0) memcpy(source->data.bytes, data + 2, length);
+    source->length = (jsize)length;
+}
+
 static void mutate(java_inputs *inputs, const uint8_t *data, size_t size)
 {
     const uint8_t selector = byte_at(data, size, 2);
@@ -526,14 +546,9 @@ static void mutate(java_inputs *inputs, const uint8_t *data, size_t size)
     case 0:
         inputs->parameters->data.numbers[selector % (size_t)inputs->parameters->length] = signed_word(data, size);
         break;
-    case 1: {
-        fake_array *source = inputs->previous->data.objects[0];
-        size_t length = size > 2 ? size - 2 : 0;
-        if (length > sizeof(source->data.bytes)) length = sizeof(source->data.bytes);
-        if (length != 0) memcpy(source->data.bytes, data + 2, length);
-        source->length = (jsize)length;
+    case 1:
+        mutate_source(inputs->previous->data.objects[0], data, size);
         break;
-    }
     case 2:
         inputs->destinations->data.objects[0]->data.bytes[selector % 35] = byte_at(data, size, 3);
         break;

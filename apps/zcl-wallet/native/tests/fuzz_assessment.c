@@ -21,6 +21,22 @@ static uint64_t row_sum(const zcl_assessed_output *rows, size_t count, zcl_netwo
     return sum;
 }
 
+static void check_counts(const zcl_transaction_assessment *report, const zcl_transparent_tx *tx,
+    size_t count)
+{
+    if (report->input_count != tx->input_count || report->output_count != tx->output_count) abort();
+    if (report->input_count > ZCL_TX_INPUT_MAX || report->output_count > ZCL_TX_OUTPUT_MAX) abort();
+    if (report->input_count == 0 || report->output_count == 0 || report->input_count != count) abort();
+}
+
+static void check_totals(const zcl_transaction_assessment *report, zcl_network network, uint64_t ceiling)
+{
+    if (report->network != network || report->maximum_fee != ceiling || report->fee > ceiling) abort();
+    if (report->input_total != row_sum(report->inputs, report->input_count, network)) abort();
+    if (report->output_total != row_sum(report->outputs, report->output_count, network)) abort();
+    if (report->output_total > report->input_total || report->fee != report->input_total - report->output_total) abort();
+}
+
 static void assess(const zcl_transparent_tx *tx, zcl_network network,
                     const zcl_previous_transaction *previous, size_t count, uint64_t ceiling)
 {
@@ -38,13 +54,8 @@ static void assess(const zcl_transparent_tx *tx, zcl_network network,
         return;
     }
     const zcl_transaction_assessment *report = &box.report;
-    if (report->input_count != tx->input_count || report->output_count != tx->output_count) abort();
-    if (report->input_count > ZCL_TX_INPUT_MAX || report->output_count > ZCL_TX_OUTPUT_MAX) abort();
-    if (report->input_count == 0 || report->output_count == 0 || report->input_count != count) abort();
-    if (report->network != network || report->maximum_fee != ceiling || report->fee > ceiling) abort();
-    if (report->input_total != row_sum(report->inputs, report->input_count, network)) abort();
-    if (report->output_total != row_sum(report->outputs, report->output_count, network)) abort();
-    if (report->output_total > report->input_total || report->fee != report->input_total - report->output_total) abort();
+    check_counts(report, tx, count);
+    check_totals(report, network, ceiling);
     if (report->serialized_size > ZCL_TX_WIRE_MAX) abort();
     uint8_t id[32];
     if (zcl_transaction_id(tx, id, sizeof(id)) != ZCL_OK || memcmp(id, report->transaction_id, sizeof(id)) != 0) abort();

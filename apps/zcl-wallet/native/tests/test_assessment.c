@@ -26,6 +26,24 @@ static void default_refusal(zcl_status expected)
     refused(&fixture.spending, ZCL_MAINNET, fixture.sources, fixture.spending.input_count, 500, expected);
 }
 
+static void check_destinations(const zcl_transaction_assessment *report, zcl_network network)
+{
+    CHECK(report->inputs[0].value == 10000 && report->inputs[1].value == 1000);
+    CHECK(report->outputs[0].value == 9000 && report->outputs[1].value == 1500);
+    CHECK(report->inputs[0].destination.kind == ZCL_P2PKH && report->inputs[1].destination.kind == ZCL_P2SH);
+    CHECK(report->outputs[0].destination.kind == ZCL_P2PKH && report->outputs[1].destination.kind == ZCL_P2SH);
+    for (size_t i = 0; i < 20; ++i) {
+        CHECK(report->inputs[0].destination.hash[i] == 0x11 && report->inputs[1].destination.hash[i] == 0x44);
+        CHECK(report->outputs[0].destination.hash[i] == 0x55 && report->outputs[1].destination.hash[i] == 0x66);
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        CHECK(report->inputs[i].destination.network == network);
+        CHECK(report->outputs[i].destination.network == network);
+    }
+    for (size_t i = 2; i < ZCL_TX_INPUT_MAX; ++i) CHECK(report->inputs[i].value == 0);
+    for (size_t i = 2; i < ZCL_TX_OUTPUT_MAX; ++i) CHECK(report->outputs[i].value == 0);
+}
+
 static void exact_accounting(void)
 {
     for (int network = 0; network < 2; ++network) {
@@ -39,20 +57,7 @@ static void exact_accounting(void)
         CHECK(report->network == (zcl_network)network && report->maximum_fee == 500);
         CHECK(report->input_count == 2 && report->output_count == 2);
         CHECK(report->input_total == 11000 && report->output_total == 10500 && report->fee == 500);
-        CHECK(report->inputs[0].value == 10000 && report->inputs[1].value == 1000);
-        CHECK(report->outputs[0].value == 9000 && report->outputs[1].value == 1500);
-        CHECK(report->inputs[0].destination.kind == ZCL_P2PKH && report->inputs[1].destination.kind == ZCL_P2SH);
-        CHECK(report->outputs[0].destination.kind == ZCL_P2PKH && report->outputs[1].destination.kind == ZCL_P2SH);
-        for (size_t i = 0; i < 20; ++i) {
-            CHECK(report->inputs[0].destination.hash[i] == 0x11 && report->inputs[1].destination.hash[i] == 0x44);
-            CHECK(report->outputs[0].destination.hash[i] == 0x55 && report->outputs[1].destination.hash[i] == 0x66);
-        }
-        for (size_t i = 0; i < 2; ++i) {
-            CHECK(report->inputs[i].destination.network == (zcl_network)network);
-            CHECK(report->outputs[i].destination.network == (zcl_network)network);
-        }
-        for (size_t i = 2; i < ZCL_TX_INPUT_MAX; ++i) CHECK(report->inputs[i].value == 0);
-        for (size_t i = 2; i < ZCL_TX_OUTPUT_MAX; ++i) CHECK(report->outputs[i].value == 0);
+        check_destinations(report, (zcl_network)network);
         uint8_t wire[ZCL_TX_WIRE_MAX], id[32];
         size_t length = 0;
         CHECK(zcl_transaction_serialize(&fixture.spending, wire, sizeof(wire), &length) == ZCL_OK);

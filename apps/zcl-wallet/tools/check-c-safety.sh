@@ -118,6 +118,17 @@ if ! rg -q 'report: [1-9][0-9]* functions in [1-9][0-9]* files$' "$analysis_dir/
     exit 1
 fi
 
+# Test and fuzz code owns fixture lifetimes and assertions too. Apply the
+# repository's test cap explicitly; the production cap above remains stricter.
+ZCL_CYCLOMATIC_ROOT="$wallet_root/native/tests" ZCL_LINT_MODE=FAIL \
+    "$repo_root/build/bin/z23-lint" check-cyclomatic-complexity --report > "$analysis_dir/test-complexity.txt"
+cat "$analysis_dir/test-complexity.txt"
+if ! rg -q '^  M>10: [0-9]+  M>15: 0  M>20: 0$' "$analysis_dir/test-complexity.txt" ||
+    ! rg -q 'report: [1-9][0-9]* functions in [1-9][0-9]* files$' "$analysis_dir/test-complexity.txt"; then
+    echo 'Test complexity exceeds 15 or no fixture functions were observed' >&2
+    exit 1
+fi
+
 build_dir=native/build/safety-active
 if [[ "$tls_review" == ON ]]; then build_dir=native/build/safety-tls-review; fi
 cmake -S native -B "$build_dir" -DCMAKE_C_COMPILER="$clang_bin" -DZCL_SANITIZE=ON \

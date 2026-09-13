@@ -85,6 +85,25 @@ static void open_operation(zcl_review_owner *owner, review_model *model, uint64_
     if (id != model->active) abort();
 }
 
+static void check_context(const zcl_review_context *context)
+{
+    if (context->lock_time != fixture.spending.lock_time) abort();
+    if (context->expiry_height != fixture.spending.expiry_height) abort();
+    for (size_t i = 0; i < fixture.spending.input_count; ++i) {
+        const zcl_review_input *input = &context->inputs[i];
+        if (memcmp(input->previous_txid, fixture.spending.inputs[i].previous_txid, 32) != 0) abort();
+        if (input->previous_index != fixture.spending.inputs[i].previous_index) abort();
+        if (input->sequence != fixture.spending.inputs[i].sequence) abort();
+    }
+}
+
+static void check_assessment(const zcl_transaction_assessment *assessment)
+{
+    if (assessment->fee != 500 || assessment->input_total != 11000) abort();
+    if (assessment->output_total != 10500 || assessment->serialized_size != draft_length) abort();
+    if (assessment->network != ZCL_MAINNET || assessment->maximum_fee != 500) abort();
+}
+
 static void snapshot_operation(zcl_review_owner *owner, review_model *model, uint64_t id, uint64_t now)
 {
     struct { uint64_t before; zcl_review_snapshot value; uint64_t after; } box;
@@ -99,17 +118,8 @@ static void snapshot_operation(zcl_review_owner *owner, review_model *model, uin
         return;
     }
     if (box.value.remaining_ms != 90000 - (now - model->opened)) abort();
-    if (box.value.assessment.fee != 500 || box.value.assessment.input_total != 11000) abort();
-    if (box.value.assessment.output_total != 10500 || box.value.assessment.serialized_size != draft_length) abort();
-    if (box.value.assessment.network != ZCL_MAINNET || box.value.assessment.maximum_fee != 500) abort();
-    if (box.value.context.lock_time != fixture.spending.lock_time) abort();
-    if (box.value.context.expiry_height != fixture.spending.expiry_height) abort();
-    for (size_t i = 0; i < fixture.spending.input_count; ++i) {
-        const zcl_review_input *input = &box.value.context.inputs[i];
-        if (memcmp(input->previous_txid, fixture.spending.inputs[i].previous_txid, 32) != 0) abort();
-        if (input->previous_index != fixture.spending.inputs[i].previous_index) abort();
-        if (input->sequence != fixture.spending.inputs[i].sequence) abort();
-    }
+    check_assessment(&box.value.assessment);
+    check_context(&box.value.context);
     /* Caller is free to mutate its copy; no subsequent operation may see it. */
     memset(&box.value, 0, sizeof(box.value));
 }

@@ -1343,3 +1343,26 @@ existing injected `.agents`/`.codex` root entries, its flag-registry selftest an
 16 over-complex wallet test functions. The latter are the next defensive cleanup;
 no threshold or baseline was weakened. Evidence is under the ignored
 `.cache/android-wallet/resume-20260913` directory.
+
+2026-09-13 fixture continuation: finished the inherited C test/fuzzer refactor.
+All 16 complexity violations are removed by extracting bounded helpers while
+preserving the existing assertions and cleanup. The wallet safety command now
+requires a nonempty fixture census at the existing <=15 cap, independently of
+the unchanged production <=10 cap. It observes 761 fixture functions in 101
+files and 457 production functions in 80 files; no baseline was loosened.
+
+All 59 ASan/UBSan/LSan tests pass in 44.10 seconds, with authored Clang/GCC and
+enabled-provider Clang analysis. Eleven changed fuzz harnesses complete
+1,391,788 executions over 231 aggregate seconds without a finding, using copied
+public corpora, bounded inputs/RSS/time and leak detection. Each campaign's
+binary hash rechecks. Logs, corpora and final source hashes are preserved under
+`.cache/android-wallet/continue-20260913`. A reused CMake cache discarded its
+requested fuzz settings during regeneration; a new invocation-owned build
+directory was configured and its sanitizer/fuzz settings verified before use.
+
+Repository lint-fast now passes 30/32 gates. The remaining pre-existing failures
+are the injected `.agents`/`.codex` root directories and the flag-registry
+selftest's empty tracked-file scan. Neither was hidden or weakened. Work stays
+on the existing Android branch, with no merge, push, custody or consensus change.
+Continue with QR callback deadlines: Handler cleanup alone does not reject a
+reply whose delivery is delayed beyond its allowed elapsed-time window.

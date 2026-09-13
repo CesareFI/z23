@@ -234,6 +234,16 @@ static void pending_and_null_entries(void)
     }
 }
 
+static void check_receive_result(void)
+{
+    uint8_t expected[35], blinding[32] = {1};
+    size_t length = 0;
+    CHECK(zcl_receive_from_entropy(entropy.data.bytes, 16, ZCL_MAINNET, 0,
+        blinding, sizeof(blinding), expected, sizeof(expected), &length) == ZCL_OK);
+    CHECK(result_array.kind == BYTES && result_array.length == 35);
+    CHECK(length == 35 && memcmp(result_array.data.bytes, expected, 35) == 0);
+}
+
 static void exact_results(void)
 {
     for (unsigned operation = 0; operation < 5; ++operation) {
@@ -248,12 +258,7 @@ static void exact_results(void)
             CHECK(result_array.kind == BYTES && result_array.length == 16);
             for (size_t i = 0; i < 16; ++i) CHECK(result_array.data.bytes[i] == 0);
         } else if (operation == 4) {
-            uint8_t expected[35], blinding[32] = {1};
-            size_t length = 0;
-            CHECK(zcl_receive_from_entropy(entropy.data.bytes, 16, ZCL_MAINNET, 0,
-                blinding, sizeof(blinding), expected, sizeof(expected), &length) == ZCL_OK);
-            CHECK(result_array.kind == BYTES && result_array.length == 35);
-            CHECK(length == 35 && memcmp(result_array.data.bytes, expected, 35) == 0);
+            check_receive_result();
         }
         CHECK(entropy.length == 16 && phrase.length == (jsize)(sizeof(known_phrase) - 1));
         for (size_t i = 0; i < sizeof(entropy.data.bytes); ++i) CHECK(entropy.data.bytes[i] == 0);

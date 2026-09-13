@@ -930,3 +930,24 @@ filesystem access (0, -1, 1025), with a pre-call invariant. A registered sanitiz
 regression replays the original input, all 256 path selectors, a successful
 paired write and all six VM exception ordinals. Refused calls also require the
 pending wallet file to remain absent. Production path semantics are unchanged.
+
+## Test and fuzzer complexity cleanup — 2026-09-13
+
+Scope: finish the inherited fixture refactor and enforce the existing test
+complexity cap in `check-c-safety.sh`. No production C or assertion is changed.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Extracted helpers receive the same bounded arrays, counts and capacities after the same guards. The amount helper uses the explicit 20-byte extent instead of sizeof on its pointer parameter. Counter decoding receives four bytes only after the six-byte input minimum. Canary, capacity, failure-atomicity and exact-output assertions remain present. |
+| Integer overflow/underflow; signed/unsigned conversions | All arithmetic, casts, signed-delta bounds and count checks are preserved. The counter helper shifts uint32 bytes by 0, 8, 16 and 24. No new narrowing, input-controlled product or unchecked subtraction is introduced. |
+| Use-after-free; double-free; leaks; dangling pointers | Helpers borrow caller-owned fixture spans only during synchronous calls. None retains pointers or acquires heap/descriptor ownership. JNI reference release, live secret-scratch checks and final cleanup remain in their original lifetime. |
+| NULL dereferences; uninitialized memory | Existing preconditions and initialization stay before helper calls. Public success reports are checked before traversal. JNI destination pointers and signed lengths are still checked before decoding. Failed snapshots retain full byte-for-byte sentinel assertions. |
+| Pointer arithmetic; format strings | Existing checked offsets are preserved. No new pointer reconstruction, ordering, input formatting or logging. The moved JNI wire mutation retains its size cap before copying from offset two. |
+| Stack usage; allocation limits; resource exhaustion | Small synchronous helpers replace oversized control-flow bodies; no recursion, VLA, new allocation or unbounded loop. Existing fuzz input/event caps and fixture static scratch ownership remain unchanged. All 761 fixture functions in 101 files are observed at complexity <=15; all 457 production functions in 80 files remain <=10. Neither cap nor baseline was raised. |
+| Malformed input; races; secret leakage | Every malformed-input, stale-owner, exact-accounting, exception and zeroization assertion is retained. Fixture state remains host-only and single-threaded where documented. No runtime lock, secret lifecycle, storage policy, cryptographic operation, consensus predicate or custody authority changes. |
+
+All 59 native tests pass with ASan/UBSan/LSan, and authored Clang/GCC analysis
+passes. Separate bounded fuzz campaigns exercise every changed fuzz translation
+unit against copies of the existing public corpora; evidence is recorded in
+the accompanying progress entry. This is fixture acceptance, not hardware
+custody, chain validation or general security certification.

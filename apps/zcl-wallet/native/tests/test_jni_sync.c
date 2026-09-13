@@ -321,14 +321,8 @@ int main(void)
     return 0;
 }
 #else
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
+static void advance_fuzz_owner(jlong id, jlong token, bool history, unsigned step)
 {
-    if (length == 0 || length > ZCL_ELECTRUM_FRAME_MAX + 1) return 0;
-    const bool history = (data[0] & 8) != 0;
-    const jlong id = history ? open_owner_mode(true) : open_owner();
-    const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
-    CHECK(token > 0);
-    const unsigned step = (unsigned)data[0] % (history ? 7u : 6u) + 1;
     for (unsigned n = 1; n < step; ++n) {
         CHECK(API(syncRequest)(&environment, NULL, id, token, (jlong)n) != NULL);
         static char frame[4096]; /* Single-threaded public fuzz fixture only. */
@@ -337,6 +331,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
         CHECK(API(syncReply)(&environment, NULL, id, token, (jlong)n,
             bytes((const uint8_t *)frame, count)) == ZCL_OK);
     }
+}
+
+static void inspect_fuzz_owner(jlong id, bool history, unsigned step)
+{
+    const jlong *state = snapshot(id, (jlong)step);
+    CHECK(state[0] == ZCL_OK && state[1] >= 0 && state[1] <= 2);
+    const jlong *complete = history_snapshot(id, (jlong)step);
+    CHECK(complete[0] == ZCL_OK && complete[1] == state[1]);
+    if (complete[10] != 0) CHECK(history && step == 7 && complete[11] == 2);
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
+{
+    if (length == 0 || length > ZCL_ELECTRUM_FRAME_MAX + 1) return 0;
+    const bool history = (data[0] & 8) != 0;
+    const jlong id = history ? open_owner_mode(true) : open_owner();
+    const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+    CHECK(token > 0);
+    const unsigned step = (unsigned)data[0] % (history ? 7u : 6u) + 1;
+    advance_fuzz_owner(id, token, history, step);
     if ((data[0] & 0x80) != 0) fail_new = true;
     if ((data[0] & 0x40) != 0) fail_set = true;
     jbyteArray request = API(syncRequest)(&environment, NULL, id, token, (jlong)step);
@@ -349,11 +363,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
         CHECK(status >= ZCL_OK && status <= ZCL_TLS_FAILURE);
         pending_exception = false; fail_get = false; fail_frame = false;
     }
-    const jlong *state = snapshot(id, (jlong)step);
-    CHECK(state[0] == ZCL_OK && state[1] >= 0 && state[1] <= 2);
-    const jlong *complete = history_snapshot(id, (jlong)step);
-    CHECK(complete[0] == ZCL_OK && complete[1] == state[1]);
-    if (complete[10] != 0) CHECK(history && step == 7 && complete[11] == 2);
+    inspect_fuzz_owner(id, history, step);
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     CHECK(API(failSyncAttempt)(&environment, NULL, id, token, (jint)ZCL_CANCELLED) == ZCL_CANCELLED);
     release_references();

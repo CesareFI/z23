@@ -28,6 +28,19 @@ static void round_trip(uint64_t amount)
     }
 }
 
+static void delta_capacity(int64_t delta, uint8_t text[static 20], size_t length)
+{
+    for (size_t capacity = 0; capacity < length; ++capacity) {
+        uint8_t before[20];
+        memcpy(before, text, sizeof(before));
+        size_t unchanged = SIZE_MAX;
+        if (zcl_amount_delta_format(delta, text + 1, capacity, &unchanged) != ZCL_BUFFER_TOO_SMALL)
+            abort();
+        if (unchanged != SIZE_MAX || memcmp(text, before, sizeof(before)) != 0)
+            abort();
+    }
+}
+
 static void delta_round_trip(int64_t delta)
 {
     uint8_t text[20];
@@ -47,15 +60,7 @@ static void delta_round_trip(int64_t delta)
     uint64_t magnitude = delta < 0 ? (uint64_t)(-delta) : (uint64_t)delta;
     if (recovered != magnitude)
         abort();
-    for (size_t capacity = 0; capacity < length; ++capacity) {
-        uint8_t before[20];
-        memcpy(before, text, sizeof(before));
-        size_t unchanged = SIZE_MAX;
-        if (zcl_amount_delta_format(delta, text + 1, capacity, &unchanged) != ZCL_BUFFER_TOO_SMALL)
-            abort();
-        if (unchanged != SIZE_MAX || memcmp(text, before, sizeof(text)) != 0)
-            abort();
-    }
+    delta_capacity(delta, text, length);
 }
 
 static void arbitrary_delta(uint64_t bits)
