@@ -967,3 +967,21 @@ both lints, APK isolation and architecture pass. No unchanged device suite was
 rerun. Evidence/corpus is in address-encode-* under the48-hour scratch directory.
 Continue with the thin JNI/managed address factory and exact review destination
 text, then foreground review presentation without signing authority.
+
+2026-09-13 canonical review destination factory: a fixed21-byte public-record
+JNI entry now validates network/kind before C encoding. The managed P2SH
+factory owns its copied hash record, and review destinations derive canonical
+P2PKH/P2SH addresses from bounded public fields. No ownership/change label,
+signing action or review screen is introduced.
+
+All38 native ASan/UBSan/LSan tests, Clang/GCC analysis and390 functions in66files
+at complexity<=10 pass. The dedicated JNI record/exception fuzzer completed
+212,176 executions in61s without a finding and final source/binary hashes match.
+Tests cover every type byte, record sizes, network bounds, partial region reads,
+allocation failures with/without pending exception, and output-region failure.
+All66 core/24 app JVM cases, both ABI builds, lints, APK isolation and architecture
+pass. The API35 emulator passed3 updated review cases in6.111s, including exact
+destination scripts and selected networks. Original public address vectors
+independently qualify both factories. Evidence is in address-jni-* under the
+48-hour scratch directory. Continue with owned foreground review presentation,
+one C-driven expiry wakeup, failure cleanup and restoration/recreation fixtures.

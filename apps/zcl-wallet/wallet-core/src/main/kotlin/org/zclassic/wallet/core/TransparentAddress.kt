@@ -38,5 +38,16 @@ class TransparentAddress private constructor(
             val encoded = requireNotNull(NativeCore.addressFromHash(hash, network.nativeId)) { "Invalid public hash" }
             return parse(encoded.toString(Charsets.US_ASCII), network)
         }
+
+        /** Public script hash only; this does not establish redeem-script ownership. */
+        fun fromScriptHash(hash: ByteArray, network: Network): TransparentAddress {
+            require(hash.size == 20) { "Invalid script hash size" }
+            val record = ByteArray(21)
+            record[0] = 2
+            hash.copyInto(record, destinationOffset = 1)
+            val encoded = requireNotNull(NativeCore.encodeAddress(record, network.nativeId)) { "Invalid script hash" }
+            check(encoded.size == 35) { "Invalid native address result" }
+            return TransparentAddress(encoded.toString(Charsets.US_ASCII), network, record)
+        }
     }
 }

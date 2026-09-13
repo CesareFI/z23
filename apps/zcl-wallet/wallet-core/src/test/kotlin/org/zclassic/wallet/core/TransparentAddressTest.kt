@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class TransparentAddressTest {
     // Public fixtures from zclassic/src/test/data/base58_keys_valid.json.
@@ -60,5 +61,32 @@ class TransparentAddressTest {
         val address = TransparentAddress.parse(fixtures[0].first, Network.MAINNET)
         address.scriptPubKey().fill(0)
         assertContentEquals(fixtures[0].third.hexToByteArray(), address.scriptPubKey())
+    }
+
+    @Test fun canonicalFactoriesMatchOriginalBothKindVectors() {
+        fixtures.forEach { (encoded, network, script) ->
+            val isScriptHash = script.startsWith("a914")
+            val hash = script.substring(if (isScriptHash) 4 else 6, if (isScriptHash) 44 else 46).hexToByteArray()
+            val address = if (isScriptHash) TransparentAddress.fromScriptHash(hash, network)
+                else TransparentAddress.fromPublicKeyHash(hash, network)
+            hash.fill(0)
+            assertEquals(encoded, address.encoded)
+            assertEquals(TransparentAddress.parse(encoded, network), address)
+            assertContentEquals(script.hexToByteArray(), address.scriptPubKey())
+        }
+    }
+
+    @Test fun invalidPublicRecordsAndScriptHashLengthsRefuse() {
+        for (length in listOf(0, 19, 21, 1024)) assertFailsWith<IllegalArgumentException> {
+            TransparentAddress.fromScriptHash(ByteArray(length), Network.MAINNET)
+        }
+        for (length in listOf(0, 1, 20, 22, 1024)) assertNull(NativeCore.encodeAddress(ByteArray(length), 0))
+        for (kind in 0..255) {
+            if (kind == 1 || kind == 2) continue
+            assertNull(NativeCore.encodeAddress(ByteArray(21).also { it[0] = kind.toByte() }, 0))
+        }
+        val record = ByteArray(21).also { it[0] = 2 }
+        assertNull(NativeCore.encodeAddress(record, -1))
+        assertNull(NativeCore.encodeAddress(record, 2))
     }
 }

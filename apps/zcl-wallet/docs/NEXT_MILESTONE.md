@@ -67,8 +67,8 @@ now have synthetic tests. Public change derivation has independent OpenSSL and
 cleanup evidence; index reservation/recovery and ownership remain unfinished.
 Immutable unsigned review lifetime and exact input/outpoint/lock/expiry context
 now have cancellation, deadline, ownership and failure-atomicity fixtures.
-The thin JNI/managed projection now has fake/real VM and public emulator
-evidence. Complete canonical destination address encoding and foreground review
+The thin JNI/managed projection and canonical destination address factories now
+have fake/real VM and public emulator evidence. Complete foreground review
 presentation, then authenticated key ownership and original branch-specific
 signature hashes before exposing any send action.
 Define the source trust and

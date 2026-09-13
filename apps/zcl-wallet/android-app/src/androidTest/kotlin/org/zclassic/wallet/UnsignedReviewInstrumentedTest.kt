@@ -51,6 +51,13 @@ class UnsignedReviewInstrumentedTest {
                 assertEquals("44".repeat(20), snapshot.inputs.last().destination.hashHex)
                 assertEquals("55".repeat(20), snapshot.outputs.first().hashHex)
                 assertEquals("66".repeat(20), snapshot.outputs.last().hashHex)
+                assertEquals(network, snapshot.outputs.first().address().network)
+                assertEquals(network, snapshot.outputs.last().address().network)
+                assertEquals(TransparentAddressKind.P2SH, snapshot.outputs.last().address().kind)
+                assertArrayEquals(("76a914" + "55".repeat(20) + "88ac").hexToByteArray(),
+                    snapshot.outputs.first().address().scriptPubKey())
+                assertArrayEquals(("a914" + "66".repeat(20) + "87").hexToByteArray(),
+                    snapshot.outputs.last().address().scriptPubKey())
                 assertTrue(snapshot.remainingMillis in 1L..90000L)
                 val copy = review.unsignedBytes()
                 assertArrayEquals(expected, copy)

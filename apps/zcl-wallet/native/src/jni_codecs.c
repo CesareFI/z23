@@ -88,3 +88,24 @@ Java_org_zclassic_wallet_core_NativeCore_addressFromHash(JNIEnv *env, jclass typ
         return NULL;
     return zcl_jni_new_bytes(env, text, length);
 }
+
+JNIEXPORT jbyteArray JNICALL
+Java_org_zclassic_wallet_core_NativeCore_encodeAddress(JNIEnv *env, jclass type,
+                                                      jbyteArray input, jint chain)
+{
+    (void)type;
+    if (env == NULL || (*env)->ExceptionCheck(env)) return NULL;
+    uint8_t record[21] = {0}, text[35] = {0};
+    size_t size = 0, length = 0;
+    zcl_address address = {0};
+    if (zcl_jni_network(chain, &address.network) != ZCL_OK)
+        return NULL;
+    if (zcl_jni_read_bytes(env, input, record, sizeof(record), &size) != ZCL_OK || size != sizeof(record))
+        return NULL;
+    if (record[0] != (uint8_t)ZCL_P2PKH && record[0] != (uint8_t)ZCL_P2SH) return NULL;
+    address.kind = (zcl_address_kind)record[0];
+    memcpy(address.hash, record + 1, sizeof(address.hash));
+    if (zcl_address_encode(&address, text, sizeof(text), &length) != ZCL_OK)
+        return NULL;
+    return zcl_jni_new_bytes(env, text, length);
+}

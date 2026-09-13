@@ -14,6 +14,7 @@ internal object NativeCore {
     @JvmStatic external fun parseAddress(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun addressScript(record: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun addressFromHash(hash: ByteArray, network: Int): ByteArray?
+    @JvmStatic external fun encodeAddress(record: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun receiveQr(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun scanQr(image: ByteArray, width: Int, height: Int, rowStride: Int,
                                    pixelStride: Int, network: Int): ByteArray?

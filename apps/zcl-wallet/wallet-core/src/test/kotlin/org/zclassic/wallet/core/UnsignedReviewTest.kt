@@ -53,6 +53,11 @@ class UnsignedReviewTest {
             assertEquals(listOf("55".repeat(20), "66".repeat(20)), snapshot.outputs.map { it.hashHex })
             assertEquals(listOf(TransparentAddressKind.P2PKH, TransparentAddressKind.P2SH), snapshot.outputs.map { it.kind })
             assertTrue(snapshot.outputs.all { it.network == Network.TESTNET })
+            assertContentEquals(("76a914" + "55".repeat(20) + "88ac").hexToByteArray(),
+                snapshot.outputs.first().address().scriptPubKey())
+            assertContentEquals(("a914" + "66".repeat(20) + "87").hexToByteArray(),
+                snapshot.outputs.last().address().scriptPubKey())
+            assertTrue(snapshot.outputs.all { it.address().network == Network.TESTNET })
             assertFailsWith<UnsupportedOperationException> { (snapshot.inputs as MutableList<*>).clear() }
             assertFailsWith<UnsupportedOperationException> { (snapshot.outputs as MutableList<*>).clear() }
             val bytes = review.unsignedBytes()

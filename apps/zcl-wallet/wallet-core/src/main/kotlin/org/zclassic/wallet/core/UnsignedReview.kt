@@ -17,7 +17,17 @@ class UnsignedReview private constructor(private var id: Long, clock: () -> Long
 
     /** Exact public destination data; no change label or ownership assertion. */
     data class Destination(val network: Network, val kind: TransparentAddressKind,
-                           val hashHex: String, val value: Zatoshi)
+                           val hashHex: String, val value: Zatoshi) {
+        /** Canonical C encoding of this public destination, never a change label. */
+        fun address(): TransparentAddress {
+            require(hashHex.length == 40) { "Invalid review destination hash length" }
+            val hash = hashHex.hexToByteArray()
+            return when (kind) {
+                TransparentAddressKind.P2PKH -> TransparentAddress.fromPublicKeyHash(hash, network)
+                TransparentAddressKind.P2SH -> TransparentAddress.fromScriptHash(hash, network)
+            }
+        }
+    }
     /** Lock/expiry/index/sequence are raw unsigned32 fields, carried exactly in Long. */
     data class Input(val previousTransactionId: String, val previousIndex: Long,
                      val sequence: Long, val destination: Destination)

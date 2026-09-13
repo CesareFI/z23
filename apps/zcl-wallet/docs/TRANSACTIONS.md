@@ -253,9 +253,10 @@ explicitly close the owner on background, lock or replacement. Abandoning it
 without close can leave BUSY state until process restart; GC is not a lifecycle
 mechanism. A queued display must re-read its original foreground owner.
 
-Destinations currently expose network, kind, hash and value. Canonical address
-encoding for both P2PKH and P2SH is available in C through `zcl_address_encode`;
-the JNI/managed display factory is a follow-up before a user-facing review view.
+Destinations expose network, kind, hash and value. `Destination.address()` now
+uses the thin JNI/managed factories for canonical P2PKH/P2SH text, with encoding
+in C through `zcl_address_encode`. The P2SH factory owns its copied public record
+and does not establish redeem-script ownership. A review view remains a follow-up.
 The encoder validates explicit network/kind and reuses the same version prefixes
 as parsing. The existing public-key-hash receiving helper delegates without
 changing its P2PKH behavior. Four public address/script vectors from the pinned
