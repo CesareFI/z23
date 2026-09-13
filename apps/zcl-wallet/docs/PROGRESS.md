@@ -1288,3 +1288,31 @@ Continue with authenticated recovery for supported interrupted records backed
 by a verified predecessor. Missing/invalid predecessors, unsupported/too-short
 prefixes, misplaced authenticated counters and ambiguous loss remain refused;
 the public probe is evidence to verify, never repair authority by itself.
+
+2026-09-13 authenticated suffix recovery: the C caller now requires a verified
+immediate predecessor at its exact position and all 16 supported current-prefix
+bytes before appending a successor. Healthy heads cause no write; authenticated
+misplaced heads, missing/short initial state, unknown prefixes, exhausted capacity
+and ambiguous loss refuse. Recovery returns no address or authorization, never
+runs as a reservation fallback and preserves every existing byte.
+
+All 57 native ASan/UBSan/LSan tests pass in 42.89s, including 18 reached recovery
+process boundaries, all original lengths 0..159, both networks/all entropy
+widths, capacity and crypto/IO fault cases. Clang/GCC analysis and all 456
+production functions in 80 files at complexity <=10 pass. Shared private custody
+helpers retain reservation's original blinding/cleanup sequence and its suites
+remain green. The authenticated caller explicitly refuses a partial replacement
+whose immediate predecessor is invalid; this limitation is preserved and tested.
+
+Bounded recovery fuzzing completed 5,302 executions in 91s without a finding,
+starting with complete authenticated, supported partial and damaged-MAC seeds.
+This campaign explored inputs through 166 bytes; deterministic tests separately
+cover larger/cap-boundary states. Source/binary hashes matched. Both Android ABIs,
+72 core/35 app JVM gates, both lints, fixture isolation and architecture pass;
+unchanged app JVM tests were UP-TO-DATE. No JNI/device route changed. Full evidence
+and corpora remain in change-recovery-* under the 48-hour scratch directory.
+
+Continue with fresh Android paired wallet/change-state creation, then exact
+review/change/authorization binding. Restoration cannot initialize a historical
+change counter from zero without discovery evidence. Existing records remain
+preserved, and hardware custody, TLS and BLAKE2 blockers stay unchanged.

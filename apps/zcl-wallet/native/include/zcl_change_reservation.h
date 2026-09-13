@@ -41,6 +41,19 @@ zcl_status zcl_wallet_change_reserve(const uint8_t *directory, size_t directory_
     const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len,
     zcl_change_reservation *reservation);
 
+/* Explicit repair of a recognized damaged v1 suffix only. Authenticate current
+ * and predecessor evidence against the recovered wallet. Healthy consistent
+ * head returns ALREADY_EXISTS without mutation or a new durability claim.
+ * Repair requires a valid immediate predecessor at its exact position and
+ * at least the complete16-byte supported current prefix. Missing/short initial
+ * state, invalid predecessor, unsupported prefix, authenticated misplaced head
+ * and exhausted capacity refuse. No automatic fallback/retry or address result.
+ * An interrupted repair may leave ambiguous evidence requiring independent
+ * discovery/review; never weaken these checks to resume it. GCM/hardware and
+ * caller secret/lifetime contracts above remain mandatory. */
+zcl_status zcl_wallet_change_recover(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -198,6 +198,53 @@ authentication receipt. The sending flow still needs exact review/authorization
 binding, cancellation/lifecycle checks and recovery/discovery acceptance. No
 signing/broadcast or hardware-policy relaxation is supplied here.
 
+## Authenticated suffix recovery
+
+`zcl_wallet_change_recover` is an explicit synchronous operation with the same
+exact-record GCM, per-use hardware and stable caller-span requirements as
+reservation. It returns no address, index or authorization handle. Normal
+reservation never invokes it as a fallback.
+
+Recovery first checks the current tail. A valid MAC must also have the correct
+aligned file position. A healthy head causes no write and returns ALREADY_EXISTS;
+an authenticated but misplaced head refuses. ALREADY_EXISTS can also report an
+exact-wallet storage conflict, so that status alone is not proof of healthy
+wallet state or a new durability guarantee. Only OK reports a completed repair.
+RNG, provider, IO and internal failures never grant permission to repair.
+
+An unverified tail can proceed only when its immediately preceding complete
+record authenticates against the recovered wallet at the exact expected
+position. The current suffix must include all 16 public prefix bytes matching
+the supported v1 format and expected counter. This comparison uses the existing
+codec to produce the expected prefix; MAC comparisons remain in that codec.
+Recovery then authenticates a new successor and calls the append-only repair
+primitive with the original observation and private wallet copy. Its bounded
+plan and compare-and-append checks still apply.
+
+Missing, empty, short initial, unsupported, unrecognized or exhausted state
+refuses without modification. Recovery never treats file length alone as
+permission to initialize a consumed-index bound. It does not scan older records,
+roll back, migrate formats or relax the immediate-predecessor requirement.
+
+Failure preserves all bytes, including newly written padding and any partial
+replacement. A complete successor consumes the skipped indexes even if a later
+flush/close reports failure. An incomplete replacement may now have an invalid
+immediate predecessor: another authenticated recovery attempt must refuse it.
+Such ambiguous state needs independent discovery or security review. The raw
+IO primitive's ability to append again is not authority for this caller to do
+so. No internal retry or automatic recovery loop is supplied.
+
+Deterministic tests cover every original length 0..159, header/tag corruption,
+authenticated wrong-position predecessors and heads, a misaligned valid tail,
+both networks/all entropy widths, exact wallet binding and capacity. Successful
+repairs preserve the entire original prefix and support subsequent reservation
+at the authenticated successor. Source-only faults cover all four RNG/codec
+steps, live blinding cleanup, competing repair and every close/flush stage.
+Eighteen reached child-process interruption boundaries check preserved bytes,
+complete-successor consumption and refusal of ambiguous partial replacement.
+These fixtures use public entropy and inert ciphertext, and do not simulate
+power loss, establish GCM/hardware custody or qualify seed discovery.
+
 ## Threat and evidence limits
 
 The lock coordinates cooperating processes. A same-UID attacker who replaces,
