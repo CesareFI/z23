@@ -121,6 +121,45 @@ hashes, invalid indexes and synthetic standard destinations exercise extraction.
 The transaction fuzzer also checks script round trips and successful/mismatched
 previous-output extraction from each accepted transaction.
 
+## Bounded transaction assessment
+
+`zcl_transaction_assess` supplies public review data from the current bounded
+transaction and exactly one previous-transaction descriptor per input. Each
+descriptor supplies a stable span only for the call; different inputs may
+share the same previous bytes when they select distinct output indexes. The
+assessment output must not overlap any input. No borrowed pointer escapes.
+
+Every source passes the hash/index check above, and every selected input and
+current output must have an exact P2PKH/P2SH destination template. Unknown
+destinations refuse the whole assessment; they cannot disappear from the total
+or be mislabeled as change. Input and output totals use checked integer money
+addition. Output total must not exceed input total before fee subtraction.
+The caller must provide an explicit absolute fee ceiling within0..MAX_MONEY;
+the computed fee must fit it. No remote estimate, fee rate or default allowance
+is inferred. A zero ceiling accepts only zero fee under these numeric checks;
+that does not establish relay acceptance.
+
+The1056-byte host assessment owns bounded input/output destination/value rows,
+totals, fee, fee ceiling, selected network, current serialized size and exact
+current transaction ID. It includes no ownership/change/verified/approved flag.
+Size describes current serialized bytes, including any current input scripts,
+and is not a forecast of a later signed transaction's size. Later mutation does
+not change already returned rows, but requires a new assessment before use.
+
+The transaction ID binds transaction bytes. It does not bind the selected
+network, fee policy, source inclusion/unspentness or user consent. A future
+immutable review/signing lifetime must retain and check those separately. This
+API cannot establish wallet ownership merely because a caller supplied a
+matching destination. No assessment, JNI or UI route signs or broadcasts.
+
+Synthetic fixtures cover exact500-zatoshi fee boundaries, output/input money
+overflow, insufficient funds, zero/max ceilings,8-input/16-output boundaries,
+distinct versus duplicate outpoints, wrong source order/count, unknown
+destinations and unchanged outputs after failures at later inputs. Tests mutate
+and truncate every byte of both funding fixtures. A dedicated bounded fuzzer
+uses fixed public funding and dynamically matched previous transactions to
+exercise complete assessments, fee limits, row totals and failure atomicity.
+
 ## Ordered continuation
 
 1. Checked synthetic funding/prevout amounts, output classification, change

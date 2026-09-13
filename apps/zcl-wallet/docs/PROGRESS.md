@@ -826,3 +826,22 @@ route was changed. Evidence and preserved corpus are in prevout-* under the
 48-hour scratch directory. Continue with bounded input/output totals, explicit
 fee limits and an exact transaction-ID assessment; no change/ownership or
 signing approval may be inferred from this data.
+
+2026-09-13 bounded transaction assessment: C now matches one previous source
+per input, requires explicit P2PKH/P2SH destinations for all input/output rows,
+checks money totals and subtraction, and enforces an explicit absolute fee
+ceiling. It publishes one owned1056-byte host result only after all checks and
+the current transaction ID succeed. Network/policy remain explicit metadata;
+the byte ID alone cannot bind them or provide consent. No change ownership,
+inclusion, unspentness, signing or broadcast authority is added.
+
+All33 native ASan/UBSan/LSan tests pass, including exact/excessive fees,
+insufficient funds, combined-input money overflow, duplicate/distinct outpoints,
+maximum counts/money, wrong source order/count and every funding-byte mutation
+and truncation. Clang/GCC analysis and356 functions in62files at complexity<=10
+pass. Dedicated assessment fuzzing completed2,862,743 executions in91s without
+a finding; final source/binary hashes match. The58 core and24 app JVM tests,
+both ABI builds, both lints, APK isolation and architecture pass. Logs, synthetic
+seeds, corpus, hashes and size measurement are in assessment-* under the48-hour
+scratch directory. Continue with independently checked change-address derivation
+and immutable review/key ownership before original branch-specific signing.
