@@ -414,3 +414,22 @@ No C, JNI, custody, decoder or transport code changes in this slice. The next
 implementation remains fixture-only Android balance presentation with the C
 watch's owner/time contracts; physical hardware custody, TLS, real sync,
 transactions and the documented camera/device acceptance remain unfinished.
+
+2026-09-13 autonomous continuation: a queued recovery phrase previously stayed
+in its owned character array after session closure until its UI callback ran.
+The new bounded RecoveryPhraseDelivery owner clears that pending array at close,
+including a worker submission racing closure. Closed callbacks cannot deliver;
+queue rejection, excessive input and receiver failure also clear their input.
+Successful UI delivery transfers cleanup to the secret view. No hardware policy,
+record format or active durable-write behavior changes.
+
+Seven deterministic delivery tests and both existing executor tests pass.
+Three API-35 emulator secret-view tests pass in 4.205 seconds, including actual
+main-executor queued delivery cancelled before the queue drains. Debug/test and
+unsigned minified release builds and both Android lints pass. Evidence and exact
+source/APK hashes are in .cache/android-wallet/48h-20260912T235829Z. No native C
+changes required repeating the prior sanitizer/fuzz campaigns. This is owned
+array lifetime evidence, not full VM erasure or positive hardware custody.
+The 48-hour continuation/backlog is retained in that scratch directory. TLS
+remains BLOCKED — REQUIRES FURTHER SECURITY REVIEW and disabled; the next
+independent task is the bounded C lifetime owner for read-only sync JNI.

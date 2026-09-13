@@ -31,10 +31,14 @@ internal class WalletPlatformSession(
     }
 
     private val work = OwnedExecutor()
+    private val phrases = RecoveryPhraseDelivery(ui)
     private val wrappingKey = KeystoreWrappingKey(context, storage)
     private var setup: Setup? = null // Accessed only by the worker.
 
-    fun close() { work.close(::clearSetup) }
+    fun close() {
+        phrases.close()
+        work.close(::clearSetup)
+    }
 
     private fun clearSetup() {
         val previous = setup
@@ -94,23 +98,7 @@ internal class WalletPlatformSession(
     }
 
     private fun postWords(words: CharArray, result: (CharArray) -> Unit) {
-        var queued = false
-        try {
-            ui.execute {
-                var transferred = false
-                try {
-                    if (!work.isClosed) {
-                        result(words)
-                        transferred = true
-                    }
-                } finally {
-                    if (!transferred) words.fill('\u0000')
-                }
-            }
-            queued = true
-        } finally {
-            if (!queued) words.fill('\u0000')
-        }
+        phrases.post(words, result)
     }
 
     fun createAfterAuthentication(prepared: PreparedWalletAction, words: (CharArray) -> Unit,

@@ -58,6 +58,16 @@ Closing cancels queued work, permits active native/provider code to complete its
 cleanup, then clears worker-owned session state on the same thread. It never
 waits for filesystem/keystore work on the UI thread.
 
+`RecoveryPhraseDelivery` separately owns the one bounded phrase awaiting the UI
+queue. Closing the foreground session clears that array immediately, including
+while the worker is submitting its callback. A late callback cannot deliver it.
+Previously the callback alone cleared undelivered words, leaving them resident
+after closure until the UI queue ran. Rejection, excess input and receiver failure
+also clear the owned input. Successful delivery transfers cleanup to the secret
+view. Closure and delivery run on the main thread; only submission uses the
+worker. This reduces retention of the owned array; it does not erase all VM or
+framework copies or establish successful hardware authentication.
+
 The activity now drives create/restore/confirm/receive/lock/unlock screens.
 `WalletAuthentication` binds approval to the same provider Cipher, retains no
 entropy while the prompt is pending, and delivers only in the foreground.

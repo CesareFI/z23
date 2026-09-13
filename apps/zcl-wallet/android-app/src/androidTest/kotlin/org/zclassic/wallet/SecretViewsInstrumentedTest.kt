@@ -3,6 +3,8 @@ package org.zclassic.wallet
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -12,6 +14,35 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SecretViewsInstrumentedTest {
+    @Test fun closingDeliveryClearsWordsBeforeTheMainQueueDrains() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val delivered = AtomicBoolean(false)
+        val failure = AtomicReference<Throwable>()
+        instrumentation.runOnMainSync {
+            val owner = RecoveryPhraseDelivery(instrumentation.targetContext.mainExecutor)
+            val words = charArrayOf('a', 'b', 'c') // Public markers; no wallet or key.
+            val worker = Thread {
+                try { owner.post(words) { delivered.set(true) } }
+                catch (problem: Throwable) { failure.set(problem) }
+            }
+            try {
+                worker.start()
+                // Hold this main-thread fixture callback until the worker posts,
+                // so the delivery cannot run before the cancellation assertion.
+                worker.join(5000)
+                assertFalse(worker.isAlive)
+                assertEquals(null, failure.get())
+                assertFalse(delivered.get())
+                owner.close()
+                assertTrue(words.all { it == '\u0000' })
+            } finally {
+                owner.close()
+            }
+        }
+        instrumentation.waitForIdleSync()
+        assertFalse(delivered.get())
+    }
+
     @Test fun recoveryDisplayClearsOwnedArraysIncludingRejectedInput() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.runOnMainSync {
