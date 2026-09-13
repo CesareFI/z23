@@ -35,4 +35,11 @@ internal object NativeCore {
     @JvmStatic external fun acceptWrappingPolicy(bits: Int, hardware: Int, flags: Int, seconds: Int, methods: Int): Boolean
     @JvmStatic external fun authenticationWindowMillis(): Long
     @JvmStatic external fun authenticationWindowOpen(startedMillis: Long, nowMillis: Long): Boolean
+    @JvmStatic external fun openSyncOwner(address: ByteArray, network: Int, source: ByteArray): Long
+    @JvmStatic external fun closeSyncOwner(owner: Long): Int
+    @JvmStatic external fun beginSyncAttempt(owner: Long, nowMillis: Long, timeoutMillis: Long, firstId: Long): Long
+    @JvmStatic external fun failSyncAttempt(owner: Long, token: Long, reason: Int): Int
+    @JvmStatic external fun syncRequest(owner: Long, token: Long, nowMillis: Long): ByteArray?
+    @JvmStatic external fun syncReply(owner: Long, token: Long, nowMillis: Long, frame: ByteArray): Int
+    @JvmStatic external fun syncSnapshot(owner: Long, nowMillis: Long): LongArray?
 }

@@ -453,3 +453,37 @@ hashes. Android debug and unsigned release assembly and the architecture-tree
 gate pass. Evidence is under .cache/android-wallet/48h-20260912T235829Z. Continue
 with the serialized JNI registry and fixture-only callback/deadline acceptance;
 TLS and physical hardware qualification remain separately blocked.
+
+2026-09-13 read-only JNI binding: an explicit four-slot process registry and
+mutex now serialize C owner lookup/use/close. Positive IDs are never native
+pointers. The thin managed owner retains each attempt's original owner, checks
+native status values and closes explicitly. C owns protocol, limits, clocks,
+signed balances and freshness. JNI clears/frees bounded reply storage even on
+allocation/region exceptions; failed Java request delivery aborts its attempt.
+No socket, endpoint, custody access or app balance display is enabled.
+
+All 27 active native tests pass ASan/UBSan/LSan, including the new fake-VM
+allocation/region-failure fixture and unchanged TLS quarantine test. Clang/GCC
+and enabled-provider analysis pass; 309 authored functions in 55 files remain
+at complexity <=10. JNI fuzzing through the fake VM completed 21184 runs in
+91 seconds, with final source/binary checks passing. A subsequent CMake guard
+also excludes the fake-VM fixture from explicit TLS-review configurations; after
+reconfiguration the tested fuzzer binary remained byte-identical.
+
+All 51 core JVM/JNI tests and nine app executor/delivery tests pass. Nine new
+core cases cover complete mainnet/testnet exchanges, signed pending delta,
+stale boundary, offline retention, rollback, owner/slot reuse, signed arguments,
+capacity, malformed frames and direct concurrent JNI callbacks. The Android
+fixture initially needed a Kotlin nullable-property compile correction; after
+that correction both builds/lints pass, and the API-35 emulator's full public
+fixture test passes in 1.904 seconds. Debug/test and unsigned minified release
+assembly pass. The application APKs exclude sync fixtures; only the test APK
+contains the twelve shared JSON frames. Architecture and final quarantine
+checks pass. Logs, public corpus and exact hashes are retained in the 48-hour
+scratch directory.
+
+Next bind Android's foreground worker and main-queue callback lifecycle to this
+owner, retaining explicit unavailable/stale/unverified presentation. A queued
+snapshot still needs the enclosing foreground identity check before display.
+Physical custody, real-network validation, TLS and transactions remain unfinished;
+TLS is still BLOCKED — REQUIRES FURTHER SECURITY REVIEW, with evidence intact.

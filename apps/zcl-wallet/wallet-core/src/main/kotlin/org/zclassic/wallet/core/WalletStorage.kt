@@ -5,7 +5,8 @@ package org.zclassic.wallet.core
 enum class CoreStatus(internal val code: Int) {
     OK(0), INVALID_ARGUMENT(1), INVALID_ENCODING(2), OUT_OF_RANGE(3), BUFFER_TOO_SMALL(4),
     UNSUPPORTED(5), CRYPTO_FAILURE(6), IO_FAILURE(7), INVALID_CHILD(8), RESOURCE_EXHAUSTED(9),
-    NOT_FOUND(10), ALREADY_EXISTS(11), BUSY(12), IO_UNCERTAIN(13);
+    NOT_FOUND(10), ALREADY_EXISTS(11), BUSY(12), IO_UNCERTAIN(13),
+    TIMED_OUT(14), CANCELLED(15), TLS_FAILURE(16);
 
     companion object {
         internal fun fromCode(code: Int): CoreStatus = entries.single { it.code == code }

@@ -212,7 +212,42 @@ or worker. No borrowed C pointer may escape the synchronous call or cross JNI.
 Only the enclosing adapter initializes the pool, once; clearing it through the
 API retains the ID history. Never serialize or restore this native struct.
 
-The current slice adds no registry globals, JNI binding, socket or background
-job. Tests exercise full capacity, rejected allocation, closure/reuse, matching
-attempt tokens across distinct owners, clear-all and ID exhaustion. The event
-fuzzer checks old callbacks against its independent live-owner history.
+The C pool itself has no global state, JNI or background job. Tests exercise
+full capacity, rejected allocation, closure/reuse, matching attempt tokens across
+distinct owners, clear-all and ID exhaustion. The event fuzzer checks old
+callbacks against its independent live-owner history.
+
+## JNI ownership and public snapshots
+
+`jni_sync.c` now explicitly owns one four-slot process registry and its mutex.
+Lookup, borrowed-watch use and closure all hold that same mutex. Only positive
+never-reused numeric IDs cross JNI; there is no pointer cast, native struct
+serialization or retained Java reference. The managed `ReadOnlySync` owner also
+serializes its own methods. Each Attempt retains its original managed owner and
+token. Close is idempotent through that owner and makes future callbacks refuse.
+Owners require explicit close; failure to close consumes a bounded slot until
+process exit and eventually refuses creation. No background cleanup thread,
+finalizer, automatic retry or socket is introduced.
+
+Java timestamps, request IDs and tokens are checked before unsigned/narrowing
+conversion. A deadline must fit positive Java-long time. C remains authoritative
+for expiry, stale age, protocol transitions, balance bounds and publication.
+JNI request delivery publishes waiting state only after creating the returned
+array; allocation/region failure aborts the current attempt. Replies use one
+checked 16384-byte allocation which is cleared and freed on every path.
+Unexpected JNI/provider/mutex errors fail closed, without input text in errors.
+
+The snapshot carries unverified/stale/unavailable state, refresh/fault/age and
+the reported confirmed amount, signed pending delta, total and height. An
+unavailable report becomes null in the managed view. It has no spending or
+chain-proof authority. Source/address remain fixed metadata on the owner;
+an eventual Android callback must also retain/check its original foreground
+session before rendering an already-computed snapshot. No endpoint, app balance
+screen or real synchronization is enabled by this adapter alone.
+
+The same twelve native public fixture frames feed JVM tests and Android test
+assets. Host fake-VM tests inject allocation and JNI-region exceptions under
+ASan/UBSan/LSan and assert native frame clearing. That fixture is excluded from
+the TLS-review build profile. Fake-VM/fuzzer results do not qualify Android VM
+behavior; real JVM checks and emulator tests complement them. TLS remains
+**BLOCKED — REQUIRES FURTHER SECURITY REVIEW**, excluded from Android/JNI builds.

@@ -24,6 +24,7 @@ android {
             version = "3.22.1"
         }
     }
+    sourceSets.getByName("androidTest").assets.srcDir("../wallet-core/src/test/resources")
     buildTypes {
         release {
             isMinifyEnabled = true

@@ -396,3 +396,27 @@ caller-owned C value, with no production globals or retained external pointers.
 | Malformed serialization/network input | No serialization or new network parser is added. The existing watch validates address/network/source; existing reply parsing remains authoritative. IDs are lifetime selectors only, never address/endpoint authentication or spending authority. |
 | Races and ownership | The enclosing adapter must serialize all pool operations and every borrowed-watch use. No asynchronous pointer is returned. Tests deliberately reuse a slot and match old/new attempt-token values while proving the old owner cannot reach or mutate the new watch. Cross-thread locking will require separate JNI acceptance. |
 | Secret leakage | Only public address/source and unverified balance/report state is held. Closing zeroes the released slot. No key, seed, custody, log or transport path is added, and TLS quarantine remains in force. |
+
+## Read-only sync JNI review — 2026-09-13
+
+Scope: `jni_sync.c`, its thin managed owner, shared public test fixtures and
+native failure-injection/fuzzer target. No new networking or custody capability.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Input address/source copies independently cap 35/32 bytes. Request storage is 257 bytes including a checked status byte. Replies allocate exactly 16384 bytes; JNI array length/region checks precede use. Nine fixed Java-long snapshot fields use constant indexes. The fake VM checks every region against its exact array length. |
+| Integer overflow/underflow; checked conversions | Negative time/token/ID inputs refuse before unsigned conversion. Deadlines fit positive Java-long time; first request ID is 1..UINT32_MAX-5. Owner and attempt IDs stop at INT64_MAX. Snapshot unsigned values are checked before conversion; signed pending deltas are already bounded in C. Size-to-jsize conversions use the existing checked JNI helper. |
+| Use-after-free; double-free; leaks; dangling pointers | No native pointer crosses JNI. The single explicit registry's mutex spans every borrowed-watch use and close. A reply has one allocation and one clear/free path, including JNI exceptions. No Java global reference or pinned array is retained. Explicit managed close releases a slot; forgotten owners cause bounded exhaustion, never unbounded allocation. |
+| NULL dereferences; uninitialized memory | JNI helpers check arrays and allocation results. Local snapshot/request arrays initialize to zero. Frame bytes are consumed only after a successful complete copy, then the full allocation is zeroed even on failure. NewByteArray/NewLongArray/region exceptions return no result. Request publication follows successful Java packet construction; failure aborts that attempt. |
+| Pointer arithmetic; format strings | Request payload offset is one byte in a known 257-byte array. Other byte/array copying delegates to length-checked helpers. No arithmetic reconstructs native pointers. No input-derived logging or format string is added. |
+| Stack usage; allocation limits; resource exhaustion | Stack holds fixed small watch/snapshot/address/request values; network frames stay off stack. One bounded frame allocation per synchronous reply; at most four persistent public watches. C frame and <=10 complexity gates pass. Fuzz histories/inputs/heap/RSS/time are bounded. |
+| Malformed serialization/network input | Existing strict C parsing handles all frames, and oversized JNI inputs poison the current attempt. No private native struct is serialized or reconstructed from attacker bytes. NULL unavailable reports are distinct from zero amounts. JNI errors never promote a verified/spendable balance. |
+| Races and lifetimes | The registry mutex covers open, lookup, mutation and close; snapshot Java allocation happens after releasing it. All callbacks retain an original owner ID and attempt token. Managed methods add per-owner serialization. Direct concurrent JNI tests exercise the native mutex without relying on the managed lock. No Java callback is invoked while holding the native mutex. |
+| Secret leakage | This registry contains public addresses, source metadata and unverified reports only. Frame and released-slot storage are cleared. No wallet record, RNG, seed, key, signer, endpoint or network call is exposed. All fixture addresses/frames are public and unfunded; only the test APK bundles them. |
+
+Native fault injection redirects allocation only for the test target's JNI
+translation unit, leaving shipped code and libFuzzer's allocator unchanged.
+The bounded fake VM is single-threaded and tracks its local references for
+deterministic cleanup. Actual JVM -Xcheck:jni and device fixtures are separate
+evidence for the real VM boundary. This does not qualify physical custody or
+the quarantined TLS candidate.
