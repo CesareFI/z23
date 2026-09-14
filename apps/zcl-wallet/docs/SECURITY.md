@@ -70,6 +70,12 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   before publishing recovery words. It owns incoming characters from entry and
   clears them if the previous screen or any construction step fails. The final
   secret render retains the recovery view's existing concealment/cleanup rules.
+* A queued recovery delivery retires its strong references to the character
+  array and UI receiver when cancelled or claimed. Cancellation wipes the words
+  immediately; a successful claim transfers them without erasure, and a failed
+  receiver wipes them. A delayed executor cannot keep those inputs through the
+  retired holder or deliver them to a replacement session. Active receiver and
+  executor internals retain their own lifetime obligations.
 * Unsigned-review text replacements remain concealed until complete. If expiry
   or cancellation text cannot be rendered, earlier transaction details stay
   hidden even when Android refuses clearing. Native review closure and display

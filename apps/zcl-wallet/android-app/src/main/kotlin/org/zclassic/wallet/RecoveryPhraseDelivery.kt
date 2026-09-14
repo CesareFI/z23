@@ -10,7 +10,14 @@ import java.util.concurrent.Executor
  * No caller may reuse the transferred array. No callback runs under our lock.
  */
 internal class RecoveryPhraseDelivery(private val ui: Executor) {
-    private class Delivery(val words: CharArray, val receive: (CharArray) -> Unit)
+    private class Delivery(var words: CharArray?, var receive: ((CharArray) -> Unit)?) {
+        fun clear() {
+            val previous = words
+            words = null
+            receive = null
+            previous?.fill('\u0000')
+        }
+    }
     private val control = Any()
     private var closed = false
     private var pending: Delivery? = null
@@ -39,27 +46,35 @@ internal class RecoveryPhraseDelivery(private val ui: Executor) {
     private fun discard(delivery: Delivery) = synchronized(control) {
         if (pending === delivery) {
             pending = null
-            delivery.words.fill('\u0000')
+            delivery.clear()
         }
     }
 
     private fun deliver(delivery: Delivery) {
+        val words: CharArray
+        val receive: (CharArray) -> Unit
         synchronized(control) {
             if (pending !== delivery) return
+            words = checkNotNull(delivery.words)
+            receive = checkNotNull(delivery.receive)
             pending = null
+            // The queued Runnable may outlive this call. Retire its references
+            // before invoking the receiver, without clearing transferred words.
+            delivery.words = null
+            delivery.receive = null
         }
         var transferred = false
         try {
-            delivery.receive(delivery.words)
+            receive(words)
             transferred = true
         } finally {
-            if (!transferred) delivery.words.fill('\u0000')
+            if (!transferred) words.fill('\u0000')
         }
     }
 
     fun close() = synchronized(control) {
         closed = true
-        pending?.words?.fill('\u0000')
+        pending?.clear()
         pending = null
     }
 }

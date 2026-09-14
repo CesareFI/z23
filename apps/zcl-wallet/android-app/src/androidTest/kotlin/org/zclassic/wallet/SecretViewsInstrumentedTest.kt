@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -239,8 +240,9 @@ class SecretViewsInstrumentedTest {
         instrumentation.runOnMainSync {
             val owner = RecoveryPhraseDelivery(instrumentation.targetContext.mainExecutor)
             val words = charArrayOf('a', 'b', 'c') // Public markers; no wallet or key.
+            val receiver: (CharArray) -> Unit = { delivered.set(true) }
             val worker = Thread {
-                try { owner.post(words) { delivered.set(true) } }
+                try { owner.post(words, receiver) }
                 catch (problem: Throwable) { failure.set(problem) }
             }
             try {
@@ -251,8 +253,19 @@ class SecretViewsInstrumentedTest {
                 assertFalse(worker.isAlive)
                 assertEquals(null, failure.get())
                 assertFalse(delivered.get())
+                val holder = checkNotNull(RecoveryPhraseDelivery::class.java.getDeclaredField("pending").apply {
+                    isAccessible = true
+                }.get(owner))
                 owner.close()
                 assertTrue(words.all { it == '\u0000' })
+                // Observe ART's actual queued holder, without relying on GC.
+                // Main-queue delay must not retain an old UI receiver or array.
+                for (field in holder.javaClass.declaredFields) {
+                    if (java.lang.reflect.Modifier.isStatic(field.modifiers)) continue
+                    field.isAccessible = true
+                    assertNotSame(words, field.get(holder))
+                    assertNotSame(receiver, field.get(holder))
+                }
             } finally {
                 owner.close()
             }

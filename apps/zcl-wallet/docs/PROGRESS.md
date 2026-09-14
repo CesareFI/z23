@@ -2886,3 +2886,44 @@ work remain untouched. Origin main was fetched and has no new wallet changes.
 Work remains local because the earlier development-ref push was rejected with
 HTTP 403; no main push or merge occurred. TLS remains quarantined and hardware
 custody qualification remains open.
+
+2026-09-14: recovery delivery now retires both queued input references when
+cancelled, rejected or claimed. The old owner cleared cancelled characters but
+left the array and receiver in the queued holder, which could retain the old
+Activity until queue disposal. Claiming also retained those references after
+successful delivery. The new implementation clears them before invoking the
+receiver; successfully transferred words remain intact, and a failed receiver
+still clears them. It retains the one-pending-delivery bound, identity checks,
+lock scope and nonblocking close. No buffer, task, thread or normal-path object
+allocation is added.
+
+Three JVM regressions fail the old implementation. They observe strong input
+references directly rather than depending on garbage-collector timing, and
+cover cancellation before dispatch, retirement before a successful/failing
+receiver, reentrant close and an executor throwing after enqueue. Ordinary
+rejection and fatal allocation-error models both preserve the original failure,
+clear the cancelled input and allow a new delivery; the old queued task cannot
+claim that replacement. Existing posting/cancellation concurrency tests remain.
+All 121 JVM tests pass. The Android main-queue fixture now observes the actual
+ART holder before the queued callback can run, verifies both references retire
+on close and confirms no stale delivery. All 31 selected key, record, secret
+display, backup, authentication-window and worker tests pass on both isolated
+API 30 and API 36 emulators. This does not qualify physical hardware custody.
+
+The minified release's mapped instructions retain both NULL stores on claim,
+rejection and close; bytecode inspection confirms no extra success-path object
+allocation. Android builds, debug/release lint, fixture isolation, native
+alignment and architecture checks pass. Both ABI libraries are byte-identical
+in debug and release to the preceding seed checkpoint. Four focused native
+sanitizer groups pass in 1.49 seconds; its full sanitizer/fuzz evidence remains
+applicable to the unchanged native bytes. Debug/release APK sizes remain
+3947746/613111 bytes. The unsigned release APK SHA256 is
+`3dba23b1c3d62772020b7f240f630ae717c4538774707f283444e08398027ef9`.
+
+Source, baseline failures, final tests, bytecode/mapping and exact artifacts are
+in `.cache/android-wallet/phrase-delivery-20260914/`. An initial instrumented
+test compile failed for a missing assertion import; the corrected build passes
+without suppression. Owned emulator launches shut down gracefully. Existing
+devices, the original 26 ADB zombies and unrelated dirty work remain preserved.
+The development branch remains local after the earlier HTTP 403 push refusal;
+no main push, production operation or custody-policy change occurred.
