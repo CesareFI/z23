@@ -2701,3 +2701,32 @@ emulator exits normally through the qualified reaping wrapper, leaving the
 original 26 ADB zombies and their live parents unchanged. Exact source, baseline
 failures, timeout evidence, retries and artifacts remain in
 `.cache/android-wallet/review-concealment-20260914/`.
+
+2026-09-14: payment metadata fuzzing now uses an independent UTF-8 reference
+derived from Unicode 17's byte-sequence table and RFC 3629's grammar. It reuses
+the independently verified full Cf enumeration, with Cc and line/paragraph
+separators, instead of calling production decoding/classification helpers. The
+new property covers all successful decoded labels/messages and compares raw
+fuzzer inputs directly; it subsumes the former separator-only assertion.
+
+A mandatory unit checks every Unicode codepoint position, every overlong form
+below U+10000, all four-byte patterns above the scalar ceiling, all first/second
+byte pairs at lengths 1..4, and full/truncated field boundaries: 2427023 bounded
+comparison cases. Production decoding and allocation are unchanged. Twelve
+deliberate production errors and six reference errors all fail intended
+assertions. All 89 sanitizer groups pass in 64.34 seconds, with Clang/GCC
+analysis and unchanged 10/15 complexity caps. Expanded payment fuzzing passes
+181911 executions in 121 seconds without a finding (five-second cases,
+1024-byte inputs, 512 MiB RSS cap; observed 109 MiB).
+
+The exact release-archive executable passes on x86-64 API 30/35/36;
+ARM64 is compiled only. Runtime SHA256 is
+`ec927faba469e48505baae04d8b1a3a1a92019230064c2b581a4db8a7ef8ecc6`.
+Both ABI executables pass ELF protection/alignment inspection. Android/JVM,
+build/lint, fixture isolation, native alignment and architecture gates pass.
+Debug, release and test APKs all remain byte-identical to the prior milestone,
+whose exact device acceptance remains applicable. No new emulator is required;
+the original 26 ADB zombies and live parents remain unchanged. Standards,
+source, mutation/fuzz evidence and artifacts are in
+`.cache/android-wallet/utf8-reference-20260914/`. The full hazard review and
+primary source links are in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).

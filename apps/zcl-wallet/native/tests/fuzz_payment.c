@@ -1,21 +1,12 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_wallet.h"
+#include "uri_text.h"
+#include "utf8_reference.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-
-static bool has_layout_separator(const uint8_t *text, size_t length)
-{
-    /* Called only for independently checked <=200-byte decoded fields. Match
-     * canonical U+2028/U+2029 bytes without reusing the production predicate. */
-    for (size_t i = 0; i + 2 < length; ++i) {
-        if (text[i] == 0xe2 && text[i + 1] == 0x80 &&
-            (text[i + 2] == 0xa8 || text[i + 2] == 0xa9)) return true;
-    }
-    return false;
-}
 
 static void check_request(const uint8_t *data, size_t size)
 {
@@ -31,8 +22,8 @@ static void check_request(const uint8_t *data, size_t size)
     }
     if (request.label_len > 200 || request.message_len > 200)
         abort();
-    if (has_layout_separator(request.label, request.label_len) ||
-        has_layout_separator(request.message, request.message_len)) abort();
+    if (utf8_reference_text(request.label, request.label_len) != ZCL_OK ||
+        utf8_reference_text(request.message, request.message_len) != ZCL_OK) abort();
     if (request.has_amount && (request.amount == 0 || request.amount > ZCL_MAX_MONEY))
         abort();
     zcl_address restored = {0};
@@ -62,6 +53,7 @@ static void encoded_label(const uint8_t *data, size_t size)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
+    if (zcl_utf8_visible_text(data, size) != utf8_reference_text(data, size)) abort();
     check_request(data, size);
     encoded_label(data, size);
     static const uint8_t prefix[] = "zclassic:t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF?";

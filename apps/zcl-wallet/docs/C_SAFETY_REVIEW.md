@@ -1553,3 +1553,45 @@ and fresh API 30 minified camera acceptance passes in 9.385 seconds. Android/JVM
 build/lint, fixture isolation, native alignment and architecture checks pass.
 Exact identities and evidence remain in
 `.cache/android-wallet/request-separators-20260914/`.
+
+## Independent UTF-8 request-text reference — 2026-09-14
+
+Scope: test-only `utf8_reference.c/.h`, its exhaustive registered unit, payment
+fuzzer assertions and CMake wiring. No production behavior or Android library
+changes. The reference matches byte classes from
+[Unicode 17 Table 3-7](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/#G27506)
+and [RFC 3629 section 4](https://www.rfc-editor.org/rfc/rfc3629.html#section-4),
+instead of decoding and checking the production minimum/scalar ranges. Display
+classification uses binary search over the existing complete 170-scalar Cf
+enumeration plus Cc and Zl/Zp predicates. The enumeration was regenerated from
+pinned UnicodeData 17.0.0 and compared byte-for-byte; its SHA256 is
+`ccea93e53a2df5981150ff561cafa8856fab2f59eaee60bac93c2dd1d56fb9e7`.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Reference entry rejects NULL and lengths above its independently asserted 200-byte cap before access. The selected immutable rule has length 1..4 and must fit remaining input before any tail or scalar read. Tail reads and scalar construction stay inside that rule span. The fuzzer checks both decoded field lengths before reference calls and retains all previous output-preservation/address/amount assertions. Unit encoding requires four writable bytes, width 1..4 and a bounded code value; suffix writes at offset 196 have five remaining bytes. Fixed four-byte prefix fixtures and a 201-byte boundary array require no caller-derived storage. |
+| Integer overflow/underflow; signed/unsigned conversions | Offset never exceeds input length; subtraction precedes addition, and each rule consumes 1..4 bytes. Valid byte classes bound scalar multiplication by 64 to U+10FFFF, with subtraction performed only after byte validation. Binary search maintains 0<=low<=high<=170. Unit scalar counters stop below 0x200000; width/count loops and total case counts fit 32-bit size_t. Base-64 division, prefixes and byte casts are checked/bounded, including deliberately overlong forms. SIZE_MAX length refuses before access or arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | The reference retains no input, returns no borrowed pointer to its caller, and uses only immutable constant tables. Its private rule pointer refers to static storage throughout the synchronous call. Unit and new fuzzer checks allocate nothing and open no resource. Existing fuzzer ownership and caller-output contracts are unchanged. |
+| NULL dereferences; uninitialized memory | NULL input refuses even at zero length. Missing byte rules and insufficient remaining spans refuse before dereference. All unit byte buffers initialize before calls; every selected rule initializes all five fields. Unit comparisons use explicit expected statuses for every canonical codepoint, overlong form and out-of-range ceiling pattern, not uninitialized production results. |
+| Pointer arithmetic; format strings | Every text+offset is within an entry-validated span and each tail read is bounded by its checked rule length. Unit suffix pointer arithmetic stays within its fixed array. Diagnostics print only a fixed public message and source line. No text becomes a format string, path, callback or command. |
+| Stack usage; allocation limits; resource exhaustion | No heap, VLA, recursion, thread or mutable global is added. Optimized host frames with stack protection measure 48 bytes for reference text, zero for classification, 296 for the unit main, and 1064 each for existing fuzzer entry/request frames; nested calls/provider costs are separate. Tables contain 170 uint32_t values and nine five-byte rules. The unit performs 2427023 comparison cases under a 20-second registered limit, measured 0.98 seconds in its first sanitizer run. Fuzzing uses 1024-byte inputs, five-second cases, a 120-second campaign, 512 MiB RSS cap and an outer timeout. |
+| Malformed serialization; races; explicit lifetimes | All 1114112 codepoint positions, including 2048 invalid surrogates, are checked. The expected refusal count independently binds 65 Cc, 170 Cf and two Zl/Zp values. Units additionally cover every overlong form below U+10000, all four-byte patterns above U+10FFFF through 0x1FFFFF, every first/second-byte pair at lengths 1..4, and full/truncated 200-byte fields. Twelve decoder mutants and six reference mutants all fail intended assertions. The fuzzer now compares raw text against the reference and requires every successful decoded field to satisfy it; this subsumes the former separator-only property. This is an independent UTF-8/display-policy reference, not a complete URI/address parser or spoof detector. |
+| Secret leakage, custody and authority | Fixtures are public Unicode bytes, unfunded request text and synthetic malformed inputs. No key, wallet, RNG, Keystore, network or operator path is used. Test code is excluded from application libraries. No consensus, normalization, address/amount serialization, signing or consent rule changes. |
+
+All 89 final ASan/UBSan/LSan groups pass in 64.34 seconds. Production/providers
+and all new test/fuzzer sources pass strict Clang/GCC analysis; unchanged 10/15
+complexity caps cover 500 production and 1187 test functions. All 18 mutants
+fail intended assertions. The expanded payment fuzzer completes 181911 cases
+in 121 seconds without a finding, observing 109 MiB; its SHA256 is
+`5aa226a5cb5eedd7cc9a131bf87165a0352db91f6d7d58d8404412099e501955`.
+
+The exact release-archive executable passes on x86-64 API 30/35/36 with SHA256
+`ec927faba469e48505baae04d8b1a3a1a92019230064c2b581a4db8a7ef8ecc6`.
+ARM64 is compiled only, SHA256
+`a8abe09b59d99c5aec3150bb7eaef3523fc79b68e853e711d39d776895c237af`.
+Both retain 16 KiB alignment, RELRO, immediate binding and nonexecutable stack.
+Android/JVM/build/lint, fixture isolation, APK alignment and architecture checks
+pass. All three application/test APKs compare byte-identically with the prior
+review-concealment milestone, retaining that exact device evidence. All source,
+standards, mutants, seeds and artifacts are in
+`.cache/android-wallet/utf8-reference-20260914/`.
