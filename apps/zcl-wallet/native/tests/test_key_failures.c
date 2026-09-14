@@ -13,6 +13,13 @@ static failure_mode mode = NORMAL;
 static void *owned = NULL;
 static size_t owned_size = 0, allocations = 0, releases = 0;
 static size_t child_calls = 0, fail_child = 0;
+enum { DIGEST_SPAN, CHILD_DATA_SPAN, CHILD_RESULT_SPAN, SPAN_COUNT };
+typedef struct {
+    uintptr_t address;
+    size_t length, observed, erased;
+    bool live;
+} observed_span;
+static observed_span spans[SPAN_COUNT];
 typedef zcl_status (*address_function)(const uint8_t *, size_t, zcl_network, uint32_t,
     const uint8_t *, size_t, uint8_t *, size_t, size_t *);
 static const address_function address_functions[] = {zcl_receive_from_entropy, zcl_change_from_entropy};
@@ -23,6 +30,71 @@ size_t __real_secp256k1_context_preallocated_size(unsigned int);
 secp256k1_context *__real_secp256k1_context_preallocated_create(void *, unsigned int);
 int __real_secp256k1_context_randomize(secp256k1_context *, const unsigned char *);
 zcl_status __real_zcl_hmac_sha512(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t);
+int __real_secp256k1_ec_seckey_tweak_add(const secp256k1_context *, unsigned char *, const unsigned char *);
+void __real_zcl_secure_zero(void *, size_t);
+
+static void observe_span(size_t slot, const void *buffer, size_t length)
+{
+    if (slot >= SPAN_COUNT || buffer == NULL || spans[slot].live)
+        abort();
+    /* Retain only an address stamp, never an expired C pointer. All byte reads
+     * below use the zeroizer's currently live argument. Counts/flags remain
+     * inspectable if a mutation returns without clearing an observed object. */
+    spans[slot].address = (uintptr_t)buffer;
+    spans[slot].length = length;
+    spans[slot].live = true;
+    ++spans[slot].observed;
+}
+
+static bool all_spans_erased(void)
+{
+    for (size_t i = 0; i < SPAN_COUNT; ++i) {
+        if (spans[i].live || spans[i].observed != spans[i].erased)
+            return false;
+    }
+    return true;
+}
+
+void __wrap_zcl_secure_zero(void *buffer, size_t length)
+{
+    __real_zcl_secure_zero(buffer, length);
+    for (size_t i = 0; i < SPAN_COUNT; ++i) {
+        if (!spans[i].live || spans[i].address != (uintptr_t)buffer)
+            continue;
+        if (buffer == NULL || length != spans[i].length)
+            abort();
+        const uint8_t *bytes = buffer;
+        for (size_t j = 0; j < length; ++j) {
+            if (bytes[j] != 0) abort();
+        }
+        spans[i].live = false;
+        spans[i].address = 0;
+        ++spans[i].erased;
+    }
+}
+
+int __wrap_secp256k1_ec_seckey_tweak_add(const secp256k1_context *context,
+                                        unsigned char *secret, const unsigned char *tweak)
+{
+    /* derive_child passes the first member of its complete 64-byte result.
+     * Observe that object's later full clear; do not inspect beyond secret here. */
+    _Static_assert(offsetof(zcl_extended_private, secret) == 0 && sizeof(zcl_extended_private) == 64,
+        "BIP32 result observer requires the exact public struct layout");
+    observe_span(CHILD_RESULT_SPAN, secret, sizeof(zcl_extended_private));
+    return __real_secp256k1_ec_seckey_tweak_add(context, secret, tweak);
+}
+
+static void observe_hmac(const uint8_t *key, size_t key_len, const uint8_t *data,
+                          size_t data_len, uint8_t *out, size_t capacity)
+{
+    if (key_len != 12 && !(key_len == 32 && data_len == 37))
+        return; /* The mnemonic PBKDF2 HMAC buffers have a different owner. */
+    if (key == NULL || data == NULL || out == NULL || capacity < 64)
+        abort();
+    observe_span(DIGEST_SPAN, out, 64);
+    if (key_len == 32)
+        observe_span(CHILD_DATA_SPAN, data, 37);
+}
 
 void *__wrap_malloc(size_t size)
 {
@@ -75,36 +147,41 @@ int __wrap_secp256k1_context_randomize(secp256k1_context *context, const unsigne
     return mode == NO_BLINDING ? 0 : __real_secp256k1_context_randomize(context, seed);
 }
 
-zcl_status __wrap_zcl_hmac_sha512(const uint8_t *key, size_t key_len,
-                                 const uint8_t *data, size_t data_len, uint8_t *out, size_t capacity)
+static zcl_status synthetic_hash(uint8_t *out, size_t capacity)
 {
     static const uint8_t order[32] = {
         0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,
         0xba,0xae,0xdc,0xe6,0xaf,0x48,0xa0,0x3b,0xbf,0xd2,0x5e,0x8c,0xd0,0x36,0x41,0x41
     };
-    if (mode == HASH_FAILURE)
-        return ZCL_CRYPTO_FAILURE;
-    if (mode == CHILD_FAILURE && key_len == 32 && data_len == 37) {
-        ++child_calls;
-        if (child_calls == fail_child) {
-            if (out == NULL || capacity < 64) abort();
-            memset(out, 0, 64);
-            memcpy(out, order, sizeof(order));
-            return ZCL_OK;
-        }
-    }
-    if (mode < ZERO_HASH)
-        return __real_zcl_hmac_sha512(key, key_len, data, data_len, out, capacity);
     if (out == NULL || capacity < 64)
         abort();
     memset(out, 0, 64);
-    if (mode == ORDER_TWEAK || mode == NEGATIVE_TWEAK)
+    if (mode == CHILD_FAILURE || mode == ORDER_TWEAK || mode == NEGATIVE_TWEAK)
         memcpy(out, order, sizeof(order));
     if (mode == NEGATIVE_TWEAK)
         --out[31];
     if (mode == ZERO_TWEAK)
         memset(out + 32, 0x42, 32);
     return ZCL_OK;
+}
+
+zcl_status __wrap_zcl_hmac_sha512(const uint8_t *key, size_t key_len,
+                                 const uint8_t *data, size_t data_len, uint8_t *out, size_t capacity)
+{
+    observe_hmac(key, key_len, data, data_len, out, capacity);
+    if (mode == HASH_FAILURE) {
+        if (out == NULL || capacity < 64) abort();
+        memset(out, 0x42, 64); /* Failed providers can leave partial secrets. */
+        return ZCL_CRYPTO_FAILURE;
+    }
+    if (mode == CHILD_FAILURE && key_len == 32 && data_len == 37) {
+        ++child_calls;
+        if (child_calls == fail_child)
+            return synthetic_hash(out, capacity);
+    }
+    if (mode < ZERO_HASH)
+        return __real_zcl_hmac_sha512(key, key_len, data, data_len, out, capacity);
+    return synthetic_hash(out, capacity);
 }
 
 #define CHECK(condition) do { if (!(condition)) { \
@@ -156,6 +233,53 @@ static int derivation_failures(void)
     for (size_t i = 0; i < 32; ++i)
         CHECK(out.chain_code[i] == 0x42);
     CHECK(owned == NULL && allocations == releases);
+    return 0;
+}
+
+static void reset_observations(void)
+{
+    if (!all_spans_erased() || owned != NULL || allocations != releases)
+        abort();
+    memset(spans, 0, sizeof(spans));
+}
+
+static int derivation_erasure(void)
+{
+    static const struct {
+        failure_mode fault;
+        zcl_status master, child;
+    } cases[] = {
+        {NORMAL, ZCL_OK, ZCL_OK}, {HASH_FAILURE, ZCL_CRYPTO_FAILURE, ZCL_CRYPTO_FAILURE},
+        {ZERO_HASH, ZCL_CRYPTO_FAILURE, ZCL_OK}, {ORDER_TWEAK, ZCL_CRYPTO_FAILURE, ZCL_INVALID_CHILD},
+        {NEGATIVE_TWEAK, ZCL_OK, ZCL_INVALID_CHILD}, {ZERO_TWEAK, ZCL_CRYPTO_FAILURE, ZCL_OK}
+    };
+    uint8_t seed[32] = {0}, blinding[32] = {1};
+    zcl_extended_private parent = {0}, output, before;
+    parent.secret[31] = 1;
+    memset(&before, 0xa5, sizeof(before));
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        mode = cases[i].fault;
+        output = before;
+        reset_observations();
+        CHECK(zcl_bip32_master(seed, sizeof(seed), &output) == cases[i].master);
+        CHECK(all_spans_erased() && spans[DIGEST_SPAN].observed == 1);
+        CHECK(spans[CHILD_DATA_SPAN].observed == 0 && spans[CHILD_RESULT_SPAN].observed == 0);
+        CHECK(cases[i].master == ZCL_OK || memcmp(&output, &before, sizeof(output)) == 0);
+        for (size_t hardened = 0; hardened < 2; ++hardened) {
+            output = before;
+            reset_observations();
+            CHECK(zcl_bip32_child(&parent, hardened == 0 ? 19 : UINT32_MAX,
+                blinding, sizeof(blinding), &output) == cases[i].child);
+            CHECK(all_spans_erased() && spans[DIGEST_SPAN].observed == 1);
+            CHECK(spans[CHILD_DATA_SPAN].observed == 1);
+            CHECK(spans[CHILD_RESULT_SPAN].observed == (mode == HASH_FAILURE ? 0u : 1u));
+            CHECK(cases[i].child == ZCL_OK || memcmp(&output, &before, sizeof(output)) == 0);
+        }
+    }
+    zcl_secure_zero(seed, sizeof(seed));
+    zcl_secure_zero(&parent, sizeof(parent));
+    zcl_secure_zero(&output, sizeof(output));
+    mode = NORMAL;
     return 0;
 }
 
@@ -214,8 +338,10 @@ static int recovered_change_failures(void)
 
 int main(void)
 {
-    if (context_failures() || derivation_failures() || address_failures() || recovered_change_failures())
+    if (context_failures() || derivation_failures() || derivation_erasure() ||
+        address_failures() || recovered_change_failures())
         return 1;
+    CHECK(all_spans_erased());
     puts("key failures: allocation, context, blinding and invalid BIP32 results handled");
     return 0;
 }

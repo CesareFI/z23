@@ -1336,7 +1336,8 @@ if(NOT ANDROID)
         target_compile_options(key_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         target_link_options(key_failure_tests PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free
             -Wl,--wrap=secp256k1_context_preallocated_size -Wl,--wrap=secp256k1_context_preallocated_create
-            -Wl,--wrap=secp256k1_context_randomize -Wl,--wrap=zcl_hmac_sha512)
+            -Wl,--wrap=secp256k1_context_randomize -Wl,--wrap=zcl_hmac_sha512
+            -Wl,--wrap=secp256k1_ec_seckey_tweak_add -Wl,--wrap=zcl_secure_zero)
         add_test(NAME wallet_key_failures COMMAND key_failure_tests)
     endif()
 endif()

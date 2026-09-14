@@ -1703,3 +1703,41 @@ ARM64 is compiled only. Both emulator launches shut down gracefully through the
 qualified reaping wrapper. JVM/build/lint, fixture isolation, native alignment
 and architecture gates pass. Detailed measurements and exact artifacts remain
 in `.cache/android-wallet/seed-profile-20260914/` in the isolated worktree.
+
+## 2026-09-14: BIP32 scratch-erasure qualification
+
+Reviewed the strengthened host-only `test_key_failures.c` and its additional
+linker wrapping. Production derivation, providers and APK bytes are unchanged.
+The old fixture passes six mutations which omit or shorten digest, child-input
+or child-result clearing. The new fixture rejects all six; bounded diagnostic
+backtraces locate the intended owner/span assertions with argument values hidden.
+
+The HMAC boundary observes master/child digest destinations and the child's
+37-byte input. The tweak boundary observes the child result whose first member
+is the supplied private scalar. The observer checks each complete clear through
+the real zeroizer's live argument. It retains only integer address stamps and
+metadata, so a missed clear cannot cause an expired-pointer read or comparison.
+The layout assertion and fixture's only tweak caller bind that result to the
+64-byte `zcl_extended_private` object. This directly observes the master digest
+and child input/digest/result; it does not independently observe every other
+temporary, including the master's separate result copy or provider internals.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Exactly three observation slots hold fixed 37/64-byte claims. Slot index, pointer and pending-owner state are checked before recording. The zero callback compares the actual span length before reading any bytes, then reads only that live span after the real clear. HMAC fault writes require a non-NULL output and at least 64 bytes. Synthetic scalar/chain-code writes stay in those 64 bytes. |
+| Integer overflow/underflow; signed/unsigned conversions | Address stamps use uintptr_t only for identity; no stamp arithmetic or cast back to a pointer occurs. Counts are bounded by the finite fixture loops and reset only after all observed owners retire. The six-mode matrix has two child indexes per case, one ordinary and UINT32_MAX hardened. Existing exact scalar order/negative/zero cases and enum bounds remain unchanged. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation is added. The original allocator wrapper still checks bounded context allocation, exact ownership and full clearing before free. Observation records contain no borrowed C pointer. If cleanup is missing, metadata remains safe to inspect and a subsequent acquisition/reset refuses. All memory reads use the currently executing zeroizer's valid argument; no expired stack memory is dereferenced. |
+| NULL dereferences; uninitialized memory | All observation metadata starts zeroed. Public seeds, parent keys and canaries initialize before use; result buffers are reset before every operation. The failed-HMAC fixture now writes a public nonzero marker before returning failure, proving cleanup does not depend on an untouched or already-zero destination. Null and short provider destinations abort before the marker write. |
+| Pointer arithmetic; format strings | Existing synthetic digest offsets are bounded at 32 within 64 bytes. The child-result observer relies on the compile-time offset-zero/64-byte layout assertion and the fixture's known derive_child caller, without reading beyond the scalar at acquisition. Diagnostics contain only fixed text/lines and public pass/fail evidence; no private bytes or captured address stamp is logged. |
+| Stack usage; allocation limits; resource exhaustion | Fixed observation metadata is 120 bytes on the measured 64-bit host and exists only in the test executable. Optimized protected host frames measure 328 bytes for main, 312 for the existing recovered-change case and 24 for the zero observer; nested provider frames are additional. No VLA, heap owner, recursion, worker, retry loop or external-input parser is added. The expanded registered key-failure group completes in 0.28 seconds. |
+| Malformed input; races; failure behavior | Eighteen dedicated master/child cases cover success, provider failure after a write, zero/order/negative tweaks and both ordinary/hardened derivation. Each checks exact observed-owner counts, retirement and unchanged failed output. Existing context, invalid-child, receive/change and recovered-change cases now pass through the same observation. Test globals are single-threaded and host-only. The initial wrapper complexity of 17 was reduced by extracting synthetic digest construction; the unchanged test cap is 15. |
+| Secret leakage and authority | The observed bytes are unfunded fixture secrets. The real zeroizer runs before byte inspection; the test copies no observed secret data. Six removed/partial-clear mutants pass the previous test and fail the strengthened one at intended ownership/span assertions. The public-key scheme, chain derivation, authentication, network, storage, signing and consensus rules are unchanged. This is precise cleanup evidence, not a comprehensive memory-erasure or hardware-custody claim. |
+
+All 89 ASan/UBSan/LSan groups pass in 63.79 seconds. Strict Clang/GCC analysis,
+production/test complexity gates, Android/JVM builds/tests/lint, fixture
+isolation, native alignment and architecture checks pass. Debug, instrumented
+test and unsigned release APKs compare byte-identically to the recovery-delivery
+checkpoint, retaining its exact API 30/36 evidence. Native/fuzzer bytes remain
+unchanged, so their prior campaigns remain applicable. Source, mutations,
+backtraces, initial complexity failure, final reports and hashes are retained in
+`.cache/android-wallet/bip32-erasure-20260914/` in the isolated worktree.

@@ -2927,3 +2927,29 @@ without suppression. Owned emulator launches shut down gracefully. Existing
 devices, the original 26 ADB zombies and unrelated dirty work remain preserved.
 The development branch remains local after the earlier HTTP 403 push refusal;
 no main push, production operation or custody-policy change occurred.
+
+2026-09-14: BIP32 failure tests now observe complete clearing of master/child
+digests, child derivation input and the child private result. They record fixed
+integer address stamps, validate the real zeroizer's live span and check owner
+retirement without dereferencing expired stack memory. A failed-HMAC fixture
+writes nonzero public markers before refusing. Eighteen dedicated cases bind
+success/failure behavior across ordinary and hardened children and invalid
+zero/order/negative scalar results. The separate master result copy and provider
+internals are not claimed as independently observed by this fixture.
+
+All six omitted/shortened-clear mutations pass the former tests and fail the
+strengthened owner/span assertions. Diagnostic backtraces confirm those sites
+without displaying argument values. Initial fixture complexity exceeded the
+test cap; extracting synthetic digest construction restored the unchanged
+15 limit. Strict Clang/GCC analysis and all 89 ASan/UBSan/LSan groups pass, the
+latter in 63.79 seconds. Android/JVM builds/tests, debug/release lint, fixture
+isolation, native alignment and architecture checks pass. Production source and
+all three APKs are byte-identical to the previous checkpoint, so its exact
+API 30/36 tests and the unchanged native fuzz campaigns remain applicable.
+No emulator or operator state was touched for this test-only change.
+
+The explicit hazard review is in C_SAFETY_REVIEW.md. Source, six pairs of
+before/after mutation runs, backtraces, stack/metadata budgets, the initial
+complexity failure and final hashes remain in
+`.cache/android-wallet/bip32-erasure-20260914/`. The development branch remains
+local after the earlier HTTP 403 push refusal; main was fetched and left intact.
