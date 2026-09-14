@@ -1824,3 +1824,51 @@ secret-failure group. Production/test complexity gates, all 121 JVM tests,
 Android builds/lint, fixture isolation, native alignment and architecture pass.
 All three APKs compare byte-identically to the preceding camera checkpoint,
 preserving its exact API 30/36 device evidence; native/fuzzer code is unchanged.
+
+## 2026-09-14: exact bounded camera packet allocation
+
+Reviewed `camera_frame.c`, `jni_camera.c`, the new size-query declaration and
+the five edited C fixtures plus reference header. The JNI packer previously
+allocated/cleared the maximum 147461 bytes for every accepted source plane.
+It now obtains an exact size through the C sampler's shared geometry. Packing
+still validates source bounds and actual output capacity independently before
+copying any pixels; the new query is neither a permission nor a trusted-buffer
+substitute. The versioned packet, sampling points, decoder, JNI return format,
+camera ownership and network/transaction rules are unchanged.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Both public query and pack first use the existing source bounds validator. The private shared geometry is called only after valid 21..1024 source dimensions and bounded strides. It requires both sampled dimensions in 21..384, giving exact sizes 446..147461. JNI allocates that size, checks NULL, and passes the actual capacity to the independently validating packer. Successful output publishes only the validated packet length; full allocation clearing precedes free. |
+| Integer overflow/underflow; signed/unsigned conversions | Validated source maxima bound ceiling-division numerators at 1407 and step at 1..3. Sampled dimensions bound their product at 147456 and header addition at 147461. Source indexing retains the existing proven last-pixel/stride bounds. Header narrowing still explicitly encodes low/high bytes. No unchecked allocator-size multiplication or signed size conversion is introduced. The eight JNI budget cases use fixed positive jint dimensions no larger than 1024, so their product fits jint. |
+| Use-after-free; double-free; leaks; dangling pointers | The Image/direct ByteBuffer remains borrowed only for the synchronous JNI call. The exact packet has one checked allocation and the existing unconditional clear/free path, including failed VM allocation or partial VM output. No pointer, cache, arena, callback, native handle or frame escapes. The JNI fixture's separate 1 MiB public source is allocated once, checked, retired from its fake-array holder before free, and never supplied to an OS camera. |
+| NULL dereferences; uninitialized memory | The query checks its output pointer and relies on the existing validator to reject NULL layout. Target/step/query capacity initialize before use, and query output remains unchanged on failure. The private geometry receives valid local output objects. JNI publishes no bytes unless pack succeeds; every packet byte inside the returned length is written first. Failed or unused allocated bytes are cleared without being logged or published. |
+| Pointer arithmetic; format strings | Pixel and packet offsets remain the existing bounded sampling operations; the helper introduces no new source-pointer arithmetic. The size query reads no image byte. Test canaries bound native/VM output, including maximum dimensions and interleaved/padded sources. Diagnostics contain only fixed text, public statuses, sizes and artifact identities. |
+| Stack usage; allocation limits; resource exhaustion | For 640x480, the allocator fixture observes 76805 bytes instead of 147461: 70656 fewer bytes, or 47.915 percent. Invalid sampled shapes allocate nothing; the maximum valid allocation is unchanged. NDK release-profile pack frames remain 88/64 bytes on x86-64/ARM64; JNI pack frames remain 104 on x86-64 and grow 128 to 144 on ARM64. The new query frames are 24/32, below the packing branch's frame. Caller/VM/provider frames are additional. Combined object text grows 287/216 bytes respectively; no production static buffer, worker or persistent memory is added. |
+| Malformed input; races; failure behavior | The allocation regression fails before the fix, then checks exact requests for six valid geometries and zero allocation for two invalid thin outputs. Existing allocation failure and every JNI exception point still prove clearing before free, unchanged borrowed input and guarded output. An independent enumerating model checks query status/length across 1200 layouts, invalid dimensions/strides/lengths, plus the existing exact-pixel/guard comparisons. The same size model runs in the camera fuzzer. Caller-owned layout/input must remain stable for each synchronous call; the query adds no shared state or concurrency. |
+| Secret leakage and authority | Public fixture pixels only. JNI clears the entire allocation using its original allocation size, regardless of success or partial provider/VM writes. Camera-driver, Binder, VM and rendering copies remain outside this erasure claim. No wallet record, key, authentication, consensus, transaction validity, networking authority, signing path or custody policy changes. This measures temporary bytes requested/cleared, not physical-phone RSS, latency or battery use. |
+
+All 89 ASan/UBSan/LSan groups pass in 64.56 seconds. Strict production and edited
+fixture Clang/GCC analysis, unchanged complexity caps, all 121 JVM tests,
+Android builds/lint, fixture isolation, native alignment and architecture pass.
+The expanded camera fuzzer completes 3831 runs in 121 seconds without a finding,
+with a 1048584-byte input cap, five-second cases and 512 MiB RSS cap (257 MiB
+observed). Its SHA256 is
+`60c242296850c16137669d653354f981b47e32367926308859138d2d38bb8aac`.
+The deterministic model also covers padded input spans approaching the separate
+8 MiB source limit; the fuzz input cap is deliberately narrower.
+
+All 14 selected preview/start-failure/QR/state tests and three real Camera2
+lifecycle tests pass on both isolated API 30 and API 36 emulators. The latter
+cover background cycles, recreation and pending-open cancellation. A native
+test linked against the exact release archives also passes camera query/pack,
+guards and public QR decoding on both; SHA256
+`9f96865cc77571cbedfaaf5ee47214f5ec5b111f27dd1cc9d1c2a6230baf3839`.
+ARM64 is compiled only. These are emulator results, not physical-camera or
+hardware-custody qualification.
+
+Fresh debug/release APKs grow 544/288 bytes to 3560269/613415 bytes. The unsigned
+release SHA256 is `6002f632c3906183424c5f6e036656375ffb82e419be0c80117db0305bdb1985`.
+An initial test compile referenced the wrong local layout name; the corrected
+fixture passes without weakening checks or warnings. Baseline failure, that
+compile diagnostic, full tests, budgets, fuzz corpus and exact artifacts remain
+in `.cache/android-wallet/camera-allocation-20260914/` in the isolated worktree.

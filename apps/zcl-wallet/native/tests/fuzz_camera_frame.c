@@ -28,6 +28,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const zcl_qr_image layout = {(size_t)data[0] + (size_t)data[1] * 256,
         (size_t)data[2] + (size_t)data[3] * 256,
         (size_t)data[4] + (size_t)data[5] * 256, (size_t)data[6]};
+    size_t measured = 17;
+    const zcl_status size_status = zcl_camera_frame_size(size - 8, &layout, &measured);
+    if (!camera_reference_size_matches(size - 8, &layout, size_status, measured)) abort();
     /* Constant checked allocation, owned/freed solely by this fuzz iteration. */
     uint8_t *packet = malloc(ZCL_CAMERA_PACKET_MAX + 2);
     if (packet == NULL) return 0;

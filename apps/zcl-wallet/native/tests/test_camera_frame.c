@@ -19,8 +19,11 @@ static void samples(void)
     source[478 * 1312 + 638 * 2] = 251;
     memset(packet, 0xa5, sizeof(packet));
     size_t length = 0;
+    size_t measured = 0;
+    CHECK(zcl_camera_frame_size(sizeof(source), &layout, &measured) == ZCL_OK);
+    CHECK(measured == 76805);
     CHECK(zcl_camera_frame_pack(source, sizeof(source), &layout, packet + 1,
-                               ZCL_CAMERA_PACKET_MAX, &length) == ZCL_OK);
+                               measured, &length) == ZCL_OK);
     const uint8_t header[] = {1, 64, 1, 240, 0};
     CHECK(length == 5 + 320 * 240);
     CHECK(memcmp(packet + 1, header, sizeof(header)) == 0);
@@ -53,6 +56,9 @@ static void pack_bounds(void)
     bad = (zcl_qr_image){21, 1024, 21, 1};
     pack_refuses(21 * 1024, &bad, sizeof(packet));
     size_t length = 0;
+    CHECK(zcl_camera_frame_size(sizeof(source), &good, NULL) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_camera_frame_size(sizeof(source), NULL, &length) == ZCL_INVALID_ARGUMENT);
+    CHECK(length == 0);
     CHECK(zcl_camera_frame_pack(NULL, sizeof(source), &good, packet, sizeof(packet), &length) == ZCL_INVALID_ARGUMENT);
     CHECK(zcl_camera_frame_pack(source, sizeof(source), &good, NULL, sizeof(packet), &length) == ZCL_INVALID_ARGUMENT);
     CHECK(zcl_camera_frame_pack(source, sizeof(source), &good, packet, sizeof(packet), NULL) == ZCL_INVALID_ARGUMENT);

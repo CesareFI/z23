@@ -17,8 +17,9 @@ static void sample_pixels(const uint8_t *image, const zcl_qr_image *source,
     }
 }
 
-static zcl_status pack_validated(const uint8_t *image, const zcl_qr_image *layout,
-                                  uint8_t *packet, size_t capacity, size_t *packet_len)
+/* The caller has validated source dimensions/strides with scan_image_bounds. */
+static zcl_status sampled_layout(const zcl_qr_image *layout, zcl_qr_image *target,
+                                  size_t *sample_step)
 {
     const size_t largest = layout->width > layout->height ? layout->width : layout->height;
     /* Input dimensions <=1024 prove these sums/products before any write. */
@@ -27,16 +28,44 @@ static zcl_status pack_validated(const uint8_t *image, const zcl_qr_image *layou
     const size_t height = (layout->height + step - 1) / step;
     if (!valid_output(width, height))
         return ZCL_OUT_OF_RANGE;
-    const size_t length = 5 + width * height;
+    *target = (zcl_qr_image){width, height, width, 1};
+    *sample_step = step;
+    return ZCL_OK;
+}
+
+zcl_status zcl_camera_frame_size(size_t image_len, const zcl_qr_image *layout,
+                                  size_t *packet_len)
+{
+    if (packet_len == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    zcl_status status = zcl_scan_image_bounds(image_len, layout);
+    if (status != ZCL_OK)
+        return status;
+    zcl_qr_image target = {0};
+    size_t step = 0;
+    status = sampled_layout(layout, &target, &step);
+    if (status == ZCL_OK)
+        *packet_len = 5 + target.width * target.height;
+    return status;
+}
+
+static zcl_status pack_validated(const uint8_t *image, const zcl_qr_image *layout,
+                                  uint8_t *packet, size_t capacity, size_t *packet_len)
+{
+    zcl_qr_image target = {0};
+    size_t step = 0;
+    const zcl_status status = sampled_layout(layout, &target, &step);
+    if (status != ZCL_OK)
+        return status;
+    const size_t length = 5 + target.width * target.height;
     if (capacity < length)
         return ZCL_BUFFER_TOO_SMALL;
-    const zcl_qr_image target = {width, height, width, 1};
     sample_pixels(image, layout, packet + 5, &target, step);
     packet[0] = 1;
-    packet[1] = (uint8_t)(width & 255);
-    packet[2] = (uint8_t)(width >> 8);
-    packet[3] = (uint8_t)(height & 255);
-    packet[4] = (uint8_t)(height >> 8);
+    packet[1] = (uint8_t)(target.width & 255);
+    packet[2] = (uint8_t)(target.width >> 8);
+    packet[3] = (uint8_t)(target.height & 255);
+    packet[4] = (uint8_t)(target.height >> 8);
     *packet_len = length;
     return ZCL_OK;
 }

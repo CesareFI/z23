@@ -87,6 +87,10 @@ is no growing retry/thread queue if a driver does not respond.
 
 C validates the original plane, samples dimensions to at most 384 each, and
 produces an exact versioned luminance packet of at most 147461 bytes. The adapter
+asks the same C sampling geometry for its exact bounded allocation size before
+copying; a 640x480 input uses 76805 temporary bytes instead of the maximum.
+Packing independently rechecks source bounds and output capacity, and JNI clears
+the entire actual allocation before freeing it. The adapter
 selects a supported YUV camera size of at most 640*480 pixels and dimensions
 240..1024. Preview and decoding use the same sampled grayscale pixels, with the
 entire frame visible. Presentation samples at most four frames per second; this

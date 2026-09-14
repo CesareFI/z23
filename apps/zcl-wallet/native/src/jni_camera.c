@@ -37,15 +37,19 @@ static const uint8_t *direct_pixels(JNIEnv *env, jobject buffer, jint offset, ji
 static jbyteArray pack_pixels(JNIEnv *env, const uint8_t *pixels, size_t length,
                                 const zcl_qr_image *layout)
 {
-    /* Fixed, checked allocation. This invocation alone owns and clears it. */
-    uint8_t *packet = malloc(ZCL_CAMERA_PACKET_MAX);
+    size_t capacity = 0;
+    if (zcl_camera_frame_size(length, layout, &capacity) != ZCL_OK)
+        return NULL;
+    /* Exact bounded allocation; this invocation alone owns and clears it.
+     * Packing rechecks the layout and this capacity before any write. */
+    uint8_t *packet = malloc(capacity);
     if (packet == NULL)
         return NULL;
     jbyteArray output = NULL;
     size_t packet_len = 0;
-    if (zcl_camera_frame_pack(pixels, length, layout, packet, ZCL_CAMERA_PACKET_MAX, &packet_len) == ZCL_OK)
+    if (zcl_camera_frame_pack(pixels, length, layout, packet, capacity, &packet_len) == ZCL_OK)
         output = zcl_jni_new_bytes(env, packet, packet_len);
-    zcl_secure_zero(packet, ZCL_CAMERA_PACKET_MAX);
+    zcl_secure_zero(packet, capacity);
     free(packet);
     return output;
 }

@@ -3091,3 +3091,45 @@ Source, four pairs of mutation runs, diagnostic backtraces, measured test
 budgets and exact artifacts remain in `.cache/android-wallet/hmac-erasure-20260914/`.
 Origin main was fetched without new wallet changes. The development branch
 remains local after the earlier HTTP 403 remote push refusal.
+
+2026-09-14: camera JNI allocates and clears the exact packet size reported by
+the C sampler instead of the 147461-byte maximum for every frame. The shared
+sampling geometry supplies a bounded, failure-atomic size query; packing still
+independently validates source bounds and capacity before copying. No packet
+format, sample coordinate, decoder, pointer lifetime or camera-owner rule changes.
+
+The new allocator regression fails the old code and now observes six exact
+valid allocation sizes plus no allocation for two invalid sampled shapes.
+For 640x480, the measured request falls to 76805 bytes: 70656 fewer temporary
+bytes (47.915 percent). Full allocation erasure, failed allocation, pending JNI
+exceptions, partial VM copies, input preservation and guarded output still pass.
+An independent enumerating sampler also verifies the new size query across
+1200 layouts and malformed boundaries. The expanded camera fuzzer completes
+3831 runs in 121 seconds with no finding, under a 1048584-byte input cap,
+five-second cases and 512 MiB RSS cap (257 MiB observed).
+
+All 89 native ASan/UBSan/LSan groups pass in 64.56 seconds. Strict Clang/GCC
+analysis of production and edited fixtures, unchanged complexity caps, all 121
+JVM tests, Android builds/lint, fixture isolation, native alignment and
+architecture pass. All 14 selected preview/start-failure/QR/state tests and
+three real Camera2 background/recreation/cancellation tests pass on both
+isolated API 30 and API 36 emulators. A camera-vector executable linked against
+the exact release archives also passes on both; ARM64 is compiled only.
+
+Release-profile packing frames remain unchanged; JNI packing grows 16 bytes
+on ARM64 and remains unchanged on x86-64. Combined source object text grows
+216/287 bytes respectively. Fresh debug/release APKs grow 544/288 bytes to
+3560269/613415. The unsigned release SHA256 is
+`6002f632c3906183424c5f6e036656375ffb82e419be0c80117db0305bdb1985`.
+This measures temporary allocation/clearing bytes, not physical-phone RSS,
+latency, battery, optics or hardware custody. No new worker, cache or native
+handle is introduced.
+
+The full hazard review is in C_SAFETY_REVIEW.md. Baseline failure, an initial
+test compile diagnostic and its correction, final tests, native budgets,
+fuzz corpus and exact artifacts remain in
+`.cache/android-wallet/camera-allocation-20260914/`. Both owned emulators shut
+down gracefully with exit zero, leaving the original devices and 26 ADB zombies
+unchanged. The earlier dirty camera files remain byte-identical in their source
+worktree. Main was fetched without new wallet changes; work remains on the
+local development branch after the earlier HTTP 403 push refusal.

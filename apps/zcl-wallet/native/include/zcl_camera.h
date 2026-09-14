@@ -20,6 +20,11 @@ extern "C" {
 zcl_status zcl_camera_frame_pack(const uint8_t *image, size_t image_len,
                                   const zcl_qr_image *layout, uint8_t *packet,
                                   size_t capacity, size_t *packet_len);
+/* Exact allocation size with the same source/sampling bounds as pack. Reads
+ * no image bytes, allocates nothing and leaves packet_len unchanged on failure.
+ * Packing independently rechecks bounds/capacity before writing any pixels. */
+zcl_status zcl_camera_frame_size(size_t image_len, const zcl_qr_image *layout,
+                                  size_t *packet_len);
 /* Validates canonical packet length/dimensions, then decodes in C. */
 zcl_status zcl_camera_packet_scan(const uint8_t *packet, size_t packet_len,
                                    zcl_network network, zcl_scanned_request *result);

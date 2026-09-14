@@ -9,12 +9,16 @@
 static void compare(const uint8_t *image, size_t length, const zcl_qr_image *layout,
     uint8_t *guarded, size_t capacity)
 {
+    size_t measured = 17;
+    const zcl_status size_status = zcl_camera_frame_size(length, layout, &measured);
+    CHECK(camera_reference_size_matches(length, layout, size_status, measured));
     memset(guarded, 0xa5, ZCL_CAMERA_PACKET_MAX + 2);
     size_t written = 17;
     const zcl_status status = zcl_camera_frame_pack(image, length, layout,
         guarded + 1, capacity, &written);
     CHECK(camera_reference_matches(image, length, layout, capacity, status,
         guarded, ZCL_CAMERA_PACKET_MAX + 2, written));
+    if (status == ZCL_OK) CHECK(size_status == ZCL_OK && measured == written);
 }
 
 static void dimensions(const uint8_t *image, uint8_t *guarded)

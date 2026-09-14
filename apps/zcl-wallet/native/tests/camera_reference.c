@@ -51,6 +51,15 @@ static bool unchanged(const uint8_t *guarded, size_t start, size_t length)
     return true;
 }
 
+bool camera_reference_size_matches(size_t image_len, const zcl_qr_image *layout,
+    zcl_status status, size_t written)
+{
+    if (layout == NULL) return false;
+    struct sample_plan plan = {0};
+    if (status != plan_samples(image_len, layout, ZCL_CAMERA_PACKET_MAX, &plan)) return false;
+    return written == (status == ZCL_OK ? plan.length : 17);
+}
+
 static bool header_matches(const uint8_t *packet, const struct sample_plan *plan)
 {
     return packet[0] == 1 &&

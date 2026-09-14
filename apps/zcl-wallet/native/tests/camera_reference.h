@@ -9,4 +9,7 @@
 bool camera_reference_matches(const uint8_t *image, size_t image_len,
     const zcl_qr_image *layout, size_t capacity, zcl_status status,
     const uint8_t *guarded, size_t guarded_len, size_t written);
+/* Independently enumerates the size query, including unchanged failed output. */
+bool camera_reference_size_matches(size_t image_len, const zcl_qr_image *layout,
+    zcl_status status, size_t written);
 #endif

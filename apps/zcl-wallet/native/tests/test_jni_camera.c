@@ -26,7 +26,7 @@ static jlong direct_capacity;
 static bool pending, allocation_failure;
 static unsigned fault, calls, allocations;
 static uint8_t *owned;
-static size_t owned_length;
+static size_t owned_length, requested_length;
 
 void *zcl_jni_camera_test_malloc(size_t size);
 void zcl_jni_camera_test_free(void *pointer);
@@ -34,6 +34,7 @@ void zcl_jni_camera_test_free(void *pointer);
 void *zcl_jni_camera_test_malloc(size_t size)
 {
     CHECK(owned == NULL && size > 0 && size <= 8 * 1024 * 1024);
+    requested_length = size;
     ++allocations;
     if (allocation_failure) return NULL;
     owned = malloc(size);
@@ -148,6 +149,7 @@ static void reset(operation op, unsigned selected_fault)
     CHECK(owned == NULL);
     pending = false; allocation_failure = false;
     fault = selected_fault; calls = 0; allocations = 0;
+    requested_length = 0;
     input = op == PACKET ? (fake_array){(jsize)packet_length, sizeof(packet), packet}
                         : (fake_array){(jsize)image_length, sizeof(image), image};
     direct_capacity = (jlong)image_length;
@@ -239,6 +241,39 @@ static void invalid_lengths(void)
     }
 }
 
+static void exact_pack_allocation(void)
+{
+    static const struct { jint width, height; size_t packet_bytes; } cases[] = {
+        {21, 21, 446}, {384, 384, 147461}, {640, 480, 76805}, {480, 640, 76805},
+        {385, 383, 37061}, {1024, 1024, 116969}, {21, 1024, 0}, {1024, 21, 0}
+    };
+    uint8_t *pixels = malloc(1024 * 1024);
+    CHECK(pixels != NULL);
+    memset(pixels, 93, 1024 * 1024); /* Public fixture, never an OS camera plane. */
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reset(PACK, 0);
+        const jint width = cases[i].width, height = cases[i].height;
+        const jint length = width * height; /* Both are in 21..1024. */
+        input = (fake_array){length, (size_t)length, pixels};
+        direct_capacity = length;
+        const jbyteArray output = API(packCameraPlane)(&environment, NULL, (jobject)&input,
+            0, length, width, height, width, 1);
+        CHECK(!pending && owned == NULL);
+        CHECK(requested_length == cases[i].packet_bytes);
+        if (cases[i].packet_bytes == 0) {
+            CHECK(output == NULL && allocations == 0);
+        } else {
+            CHECK(output == (jbyteArray)&result && allocations == 1);
+            CHECK((size_t)result.length == cases[i].packet_bytes);
+            for (size_t j = 5; j < cases[i].packet_bytes; ++j) CHECK(result.bytes[j] == 93);
+        }
+        CHECK(result_box.before == UINT64_C(0xa5a5a5a5a5a5a5a5) && result_box.after == result_box.before);
+    }
+    for (size_t i = 0; i < 1024 * 1024; ++i) CHECK(pixels[i] == 93);
+    input = (fake_array){0}; /* Retire the borrowed fixture pointer before free. */
+    free(pixels);
+}
+
 int main(void)
 {
     initialize();
@@ -247,6 +282,7 @@ int main(void)
         exception_and_allocation_faults(op);
     }
     invalid_lengths();
+    exact_pack_allocation();
     puts("JNI camera/scan pending exceptions, exact public results and cleared allocations passed");
     return 0;
 }
