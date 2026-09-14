@@ -20,7 +20,7 @@ on the oldest supported API and a current supported API. Validate both device
 credential and strong-biometric paths where present. Provider metadata and
 host tests alone do not establish these outcomes.
 
-API30 and API35 emulator fixtures exercise refusal and non-custodial JNI/UI
+API30, API35 and API36 emulator fixtures exercise refusal and non-custodial JNI/UI
 behavior. Inability to pass the custody policy is an expected refusal, not
 permission for a software key or timed-authentication fallback.
 
@@ -45,7 +45,8 @@ Keystore refusal and pending-open cancellation. A chooser regression applies
 real system-bar insets to a compact viewport; scrolling preserves reachable
 network/start/close controls, capture cancellation and public review fields.
 Actual camera/recreation and background cleanup tests also pass with that
-shared layout. Complete API36 runtime qualification. Qualify physical camera
+shared layout. API36 passes eighteen public native, layout, lifecycle and camera
+tests, plus two complete minified permission/camera journeys. Qualify physical camera
 interoperability, cancellation under different driver behavior, and preview
 orientation and process recreation on different devices. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full

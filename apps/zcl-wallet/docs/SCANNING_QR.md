@@ -392,3 +392,22 @@ fixture fails before selecting a network because a Quickstep ANR covers the
 scanner; the view-tree metadata and subsequent UI dump identify the OS dialog.
 Normal Wait actions then expose a second System UI ANR. These startup failures
 are retained separately; they do not constitute API36 wallet acceptance.
+
+The final APK now passes the complete API36 minified permission-denial, retry,
+foreground grant and exact Camera2 review fixture twice, in 41.132 and 40.001
+seconds. A preceding attempt failed when input dispatch dropped the denial
+touch on a permission-dialog input sink with no input channel. The visible
+dialog and input-dispatch logs are retained; after a normal denial and reset
+of this disposable profile's permission flags, the unchanged fixture passes.
+No input-filter, permission assertion or OS watchdog was bypassed.
+
+Eighteen debug device tests pass together in 214.390 seconds on the same AOSP
+Android 16 x86_64 profile with 4096-byte pages: public keys, authenticated GCM
+record/storage, deadline boundaries, QR rendering/decoding, isolated Binder
+identity, unauthenticated Keystore refusal, pending-open cancellation, all
+three compact layouts, network recreation, and two actual Camera2 scans across
+Activity recreation. Hardware-authenticated custody and physical optics remain
+unqualified. The scanner fixture's no-wallet-directory guard passes throughout.
+The final minified APK is restored and the evidence is retained under
+`.cache/android-wallet/api36-20260914`; exact final artifacts remain bound by
+the camera directory's `compact-all-signing-proof/inputs.sha256`.

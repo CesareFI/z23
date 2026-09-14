@@ -1702,3 +1702,22 @@ before rerunning the final APK. No watchdog, permission assertion or overlay
 filter was relaxed. Continue with final API36 minified and native/JNI runtime
 acceptance, then the remaining security and usability work. Physical optics,
 hardware-authenticated custody and real-source networking remain unqualified.
+
+2026-09-14 API36 runtime acceptance: the final minified APK passes the complete
+permission denial/retry/grant and exact Camera2 public review twice in 41.132
+and 40.001 seconds. Eighteen debug native, layout, lifecycle and camera tests
+pass together in 214.390 seconds, including real GCM record/store fixtures,
+Keystore policy refusal, pending-open ownership, all compact states and actual
+camera review across Activity recreation. These are public fixtures on a fresh
+AOSP Android 16 x86_64 profile with 4096-byte pages; no wallet session was opened.
+
+After the retained startup ANRs, an initial final-APK attempt fails at injected
+permission denial: InputDispatcher reports a dropped touch on a permission
+input sink without an input channel. Normal denial and resetting this owned
+profile's permission flags permit the same unchanged test to pass; a second
+complete run passes after restoring the same minified APK. No permission,
+overlay or hardware-custody assertion changes. The no-wallet-directory guard
+remains enforced. Logs are under `.cache/android-wallet/api36-20260914`, with
+final input identities in the camera directory's compact-all signing proof.
+Continue native JNI exception and secret-cleanup coverage. Physical optics,
+hardware-authenticated custody and real-source networking remain unqualified.
