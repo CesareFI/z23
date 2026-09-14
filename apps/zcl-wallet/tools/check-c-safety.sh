@@ -45,6 +45,7 @@ fi
 (
     cd native/tests
     sha256sum -c zip243-reference.sha256
+    sha256sum -c chain-context-reference.sha256
 )
 (
     cd "$repo_root/vendor/android-quirc"

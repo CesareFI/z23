@@ -63,4 +63,33 @@ typedef struct {
  */
 zcl_status zcl_review_input_wallet_check(zcl_review_owner *owner, uint64_t id, uint64_t now_ms,
     size_t input_index, const zcl_review_wallet_input *claim);
+
+/* Invocation-only public candidate, not authenticated chain context or consent.
+ * height is the candidate block height, not a tip to increment implicitly.
+ * lock_time_cutoff is the already selected block/relay finality comparison time,
+ * <=INT64_MAX; never use an untrusted server timestamp or Android wall clock as
+ * verified chain evidence. Caller owns a stable, nonoverlapping object. */
+typedef struct {
+    zcl_network network;
+    uint32_t height;
+    uint64_t lock_time_cutoff;
+} zcl_review_block;
+
+/* Public-data P2PKH digest for this exact live review and explicit candidate.
+ * Match network; select the pinned v4 branch at its height; compare the owned
+ * expiry/lock/sequence fields with the candidate using original IsExpiredTx/
+ * IsFinalTx semantics. Zero expiry remains valid; equality is not expired.
+ * Lock equality is nonfinal unless EVERY input sequence is UINT32_MAX.
+ * Unsupported v4 epoch/network refuses; expired/nonfinal/out-of-domain context
+ * returns OUT_OF_RANGE. This is not complete contextual validation, mempool
+ * policy, chain authentication, ownership, maturity/unspentness or authority to
+ * sign. Caller must independently establish the chain source/currentness and
+ * consent; no cached digest becomes authorization. Same lock/ID/clock rules as
+ * other review reads; no completion-time deadline is promised. NULL arguments
+ * refuse before liveness. Capacity>=32; only32 bytes publish after all checks
+ * and hashing succeed; the whole private candidate clears on every work exit.
+ * No JNI, network request, implicit next-height calculation or retained handle.
+ */
+zcl_status zcl_review_sighash_context(zcl_review_owner *owner, uint64_t id, uint64_t now_ms,
+    size_t input_index, const zcl_review_block *block, uint8_t *digest, size_t capacity);
 #endif

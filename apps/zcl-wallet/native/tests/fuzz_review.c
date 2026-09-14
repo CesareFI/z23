@@ -2,6 +2,8 @@
 #include "assessment_fixture.h"
 #include "transaction_review_internal.h"
 #include "transaction_sighash.h"
+#include "transaction_context.h"
+#include "context_reference.h"
 #ifdef ZCL_SIGHASH_ORACLE
 #include "sighash_oracle.h"
 #endif
@@ -153,6 +155,18 @@ static void cancel_operation(zcl_review_owner *owner, review_model *model, uint6
     if (match) model->active = 0;
 }
 
+static void expected_digest(uint32_t branch, uint8_t *expected)
+{
+    const zcl_tx_output *previous = &fixture.previous[0].outputs[0];
+#ifdef ZCL_SIGHASH_ORACLE
+    zcl_test_sighash_all(draft, draft_length, 0, previous->script, previous->script_len,
+        previous->value, branch, expected, 32);
+#else
+    if (zcl_transaction_sighash_all(&fixture.spending, 0, previous->script, previous->script_len,
+        previous->value, branch, expected, 32) != ZCL_OK) abort();
+#endif
+}
+
 static void hash_operation(zcl_review_owner *owner, review_model *model, uint64_t id,
                            uint64_t now, const uint8_t *step)
 {
@@ -167,17 +181,74 @@ static void hash_operation(zcl_review_owner *owner, review_model *model, uint64_
     if (status == ZCL_OK && index == 1) status = ZCL_UNSUPPORTED;
     if (zcl_review_sighash_p2pkh(owner, id, now, index, branch, digest, capacity) != status) abort();
     if (status == ZCL_OK) {
-        const zcl_tx_output *previous = &fixture.previous[0].outputs[0];
-#ifdef ZCL_SIGHASH_ORACLE
-        zcl_test_sighash_all(draft, draft_length, 0, previous->script, previous->script_len,
-            previous->value, branch, expected, sizeof(expected));
-#else
-        if (zcl_transaction_sighash_all(&fixture.spending, 0, previous->script, previous->script_len,
-            previous->value, branch, expected, sizeof(expected)) != ZCL_OK) abort();
-#endif
+        expected_digest(branch, expected);
         if (memcmp(digest, expected, sizeof(expected)) != 0) abort();
     }
     for (size_t i = status == ZCL_OK ? 32 : 0; i < sizeof(digest); ++i) if (digest[i] != 0xa5) abort();
+}
+
+static bool model_final(const zcl_review_block *block)
+{
+    if (fixture.spending.inputs[0].sequence == UINT32_MAX && fixture.spending.inputs[1].sequence == UINT32_MAX)
+        return true;
+    const uint32_t lock = fixture.spending.lock_time;
+    if (lock == 0) return true;
+    if (lock >= UINT32_C(500000000)) return block->lock_time_cutoff > lock;
+    return block->height > lock;
+}
+
+static zcl_status model_context(const zcl_review_block *block, size_t index, uint32_t *branch)
+{
+    if (index >= 2) return ZCL_OUT_OF_RANGE;
+    if (block->network != ZCL_MAINNET) return ZCL_UNSUPPORTED;
+    if (block->lock_time_cutoff > INT64_MAX) return ZCL_OUT_OF_RANGE;
+    const zcl_status status = zcl_test_context_branch(block->network, block->height, branch);
+    if (status != ZCL_OK) return status;
+    const uint32_t expiry = fixture.spending.expiry_height;
+    if (expiry != 0 && expiry < block->height) return ZCL_OUT_OF_RANGE;
+    if (!model_final(block)) return ZCL_OUT_OF_RANGE;
+    return index == 1 ? ZCL_UNSUPPORTED : ZCL_OK;
+}
+
+static zcl_review_block candidate_block(const uint8_t *step)
+{
+    static const uint32_t heights[] = {19, 20, 476968, 476969, 585318, 585322, 78856};
+    const uint64_t raw = read_time(step + 2);
+    zcl_review_block block = {(zcl_network)(step[2] % 3), (uint32_t)(raw & UINT32_MAX), raw};
+    const size_t selection = step[4] % 8;
+    if (selection < 7) block.height = heights[selection];
+    if (step[5] % 3 == 0) block.lock_time_cutoff = 0;
+    if (step[5] % 3 == 1) block.lock_time_cutoff = INT64_MAX;
+    return block;
+}
+
+static void context_operation(zcl_review_owner *owner, review_model *model, uint64_t id,
+    uint64_t now, const uint8_t *step)
+{
+    uint8_t digest[64], expected[32];
+    memset(digest, 0xa5, sizeof(digest));
+    const size_t capacity = step[3] % 65;
+    const size_t index = step[6] == 255 ? SIZE_MAX : step[6] % 4;
+    const zcl_review_block block = candidate_block(step);
+    uint32_t branch = 0;
+    zcl_status status = read_model(model, id, now);
+    if (status == ZCL_OK && capacity < 32) status = ZCL_BUFFER_TOO_SMALL;
+    if (status == ZCL_OK) status = model_context(&block, index, &branch);
+    if (zcl_review_sighash_context(owner, id, now, index, &block, digest, capacity) != status) abort();
+    if (status == ZCL_OK) {
+        expected_digest(branch, expected);
+        if (memcmp(digest, expected, 32) != 0) abort();
+    }
+    for (size_t i = status == ZCL_OK ? 32 : 0; i < sizeof(digest); ++i) if (digest[i] != 0xa5) abort();
+}
+
+static void arbitrary_branch(uint64_t fields)
+{
+    const zcl_network network = (zcl_network)((fields >> 32) % 3);
+    const uint32_t height = (uint32_t)(fields & UINT32_MAX);
+    uint32_t branch = UINT32_MAX, expected = UINT32_MAX;
+    const zcl_status status = zcl_test_context_branch(network, height, &expected);
+    if (zcl_transaction_v4_branch(network, height, &branch) != status || branch != expected) abort();
 }
 
 static void invariant(const zcl_review_owner *owner, const review_model *model)
@@ -196,14 +267,15 @@ static void invariant(const zcl_review_owner *owner, const review_model *model)
 static void operation(zcl_review_owner *owner, review_model *model, const uint8_t *step)
 {
     const uint64_t now = selected_time(model, step[1], read_time(step + 2));
-    const uint64_t id = selected_id(model, step[0] / 7);
-    switch (step[0] % 7) {
+    const uint64_t id = selected_id(model, step[0] / 8);
+    switch (step[0] % 8) {
     case 0: open_operation(owner, model, now); break;
     case 1: snapshot_operation(owner, model, id, now); break;
     case 2: copy_operation(owner, model, id, now, ZCL_TX_WIRE_MAX); break;
     case 3: copy_operation(owner, model, id, now, step[2]); break;
     case 4: cancel_operation(owner, model, id); break;
     case 5: hash_operation(owner, model, id, now, step); break;
+    case 6: context_operation(owner, model, id, now, step); break;
     default: zcl_review_clear(owner); model->active = 0; break;
     }
     invariant(owner, model);
@@ -217,6 +289,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         initialized = true;
     }
     const uint64_t fields = size >= 8 ? read_time(data) : 0;
+    arbitrary_branch(fields);
     fixture.spending.lock_time = (uint32_t)(fields & UINT32_MAX);
     fixture.spending.expiry_height = (uint32_t)(fields % ZCL_TX_EXPIRY_LIMIT);
     fixture.spending.inputs[0].sequence = (uint32_t)(fields >> 32);

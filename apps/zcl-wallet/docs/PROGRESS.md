@@ -2201,3 +2201,45 @@ merging or pushing. Next: current branch/height and platform-authenticated
 context bound to the exact live review, then synthetic signing/cancellation.
 The owner-parked TLS investigation remains excluded and unqualified; software
 emulators do not supply positive hardware-custody acceptance.
+
+2026-09-14: internal candidate-context hashing now selects the pinned Zclassic
+v4 branch from an explicit candidate height, matches network, checks the owned
+review's expiry/lock/sequences, then computes its P2PKH digest. Expiry equality
+and zero expiry retain their original meaning; lock equality requires all
+input sequences to be final. All eight inputs participate in finality. No
+transaction field, next height, expiry horizon or relay policy is chosen
+implicitly. Candidate metadata copies before provider calls and private work
+clears after every entered path. This is public preflight data, not current
+chain authentication, user consent, ownership or authority to sign/broadcast.
+
+A bounded offline projector verifies four exact original Git objects at
+`14a83d510ffd109d3fa09bf74ebf8c28854a263f` and extracts all epoch IDs and both
+network schedules. A second projection matches the checked-in header/checksum;
+existing output directories refuse without changing their contents. Independent
+traversal compares1,600,002 consecutive network/height pairs plus integer edges.
+The original C++/node is not executed. Boundary/capacity/expiry/finality tests,
+all-eight-input and destroyed-source cases, dirty-provider/source-mutation
+faults, output preservation and live cleanup pass. Optional independent
+reader/libsodium digest comparisons also pass. All19 mutants fail intended
+assertions. The extended review fuzzer completes327,566 executions in121 seconds
+without a finding. All77 native ASan/UBSan/LSan groups pass in54.98 seconds,
+Clang/GCC analysis passes, and complexity caps stay10/15 (484/1027 functions).
+Optimized host frames are0 bytes for lookup and120 for the context wrapper.
+
+Android/JVM/lint, APK alignment/fixture isolation and architecture checks pass.
+Debug/unsigned-release/test APK bytes remain identical because no new JNI
+caller exists. Both standalone tests link the actual new release archives and
+pass on x86-64 API30/35/36. Runtime executable SHA256 values are
+`d5520a22c4755356ef7af995a172485c766f430e5ec35b10af445c09ee0e68e0`
+(branch traversal) and
+`b5a831c0c6d6393f3bd8848516642afbb56eb39b747043c73735f833cda11147`
+(review context). ARM64 is compiled only. All four standalone ELFs have16KiB
+alignment, RELRO/NOW and non-executable stacks. Public fixture tests access no
+app wallet, Keystore or endpoint. Complete evidence and source/archive/artifact
+hashes are in `.cache/android-wallet/review-context-20260914/`.
+
+Fetched origin/main advanced to `ee670af5225bd1f62822ec0459a42a0706a862f1`;
+there are no upstream Android app changes and the existing branch remains
+unmerged/unpushed. Next work remains platform-authenticated context/consent and
+synthetic signing/cancellation tied to the exact review. The owner-parked TLS
+investigation and positive hardware-custody acceptance remain unqualified.

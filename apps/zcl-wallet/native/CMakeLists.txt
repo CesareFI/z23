@@ -106,6 +106,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c src/transaction_sighash.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
     src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
+    src/transaction_context.c src/transaction_review_context.c
     src/transaction_draft.c src/transaction_draft_check.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
@@ -238,7 +239,7 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_draft PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow)
     target_link_options(fuzz_draft PRIVATE -fsanitize=fuzzer,address,undefined)
-    add_executable(fuzz_review tests/fuzz_review.c tests/assessment_fixture.c)
+    add_executable(fuzz_review tests/fuzz_review.c tests/assessment_fixture.c tests/context_reference.c)
     target_include_directories(fuzz_review PRIVATE src)
     target_link_libraries(fuzz_review PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_review PRIVATE -fsanitize=fuzzer,address,undefined
@@ -707,6 +708,30 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_review_sighash_failures COMMAND review_sighash_failure_tests)
     set_tests_properties(wallet_review_sighash_failures PROPERTIES TIMEOUT 15)
+    add_executable(transaction_context_tests tests/test_transaction_context.c tests/context_reference.c)
+    target_include_directories(transaction_context_tests PRIVATE src)
+    target_link_libraries(transaction_context_tests PRIVATE zcl_wallet_core)
+    target_compile_options(transaction_context_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_transaction_context COMMAND transaction_context_tests)
+    set_tests_properties(wallet_transaction_context PROPERTIES TIMEOUT 30)
+    add_executable(review_context_tests tests/test_review_context.c tests/context_reference.c)
+    target_include_directories(review_context_tests PRIVATE src)
+    target_link_libraries(review_context_tests PRIVATE assessment_test_fixture)
+    target_compile_options(review_context_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_context COMMAND review_context_tests)
+    set_tests_properties(wallet_review_context PROPERTIES TIMEOUT 30)
+    add_executable(review_context_failure_tests tests/test_review_context_failures.c src/transaction_review_context.c)
+    target_include_directories(review_context_failure_tests PRIVATE src)
+    target_link_libraries(review_context_failure_tests PRIVATE assessment_test_fixture)
+    target_compile_definitions(review_context_failure_tests PRIVATE
+        zcl_transaction_v4_branch=zcl_review_context_test_branch
+        zcl_review_sighash_p2pkh=zcl_review_context_test_hash zcl_secure_zero=zcl_review_context_test_zero)
+    target_compile_options(review_context_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_context_failures COMMAND review_context_failure_tests)
+    set_tests_properties(wallet_review_context_failures PROPERTIES TIMEOUT 15)
     add_executable(sync_history_tests tests/test_sync_history.c tests/sync_fixture.c)
     target_link_libraries(sync_history_tests PRIVATE zcl_wallet_core)
     target_compile_options(sync_history_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
@@ -777,6 +802,8 @@ if(NOT ANDROID)
         target_compile_definitions(sighash_tests PRIVATE ZCL_SIGHASH_ORACLE=1)
         target_link_libraries(review_sighash_tests PRIVATE sighash_oracle)
         target_compile_definitions(review_sighash_tests PRIVATE ZCL_SIGHASH_ORACLE=1)
+        target_link_libraries(review_context_tests PRIVATE sighash_oracle)
+        target_compile_definitions(review_context_tests PRIVATE ZCL_SIGHASH_ORACLE=1)
         target_include_directories(seed_sighash_vectors PRIVATE ${ZCL_SODIUM_INCLUDE})
         target_link_libraries(seed_sighash_vectors PRIVATE ${ZCL_SODIUM_LIBRARY})
         target_compile_options(seed_sighash_vectors PRIVATE -Wall -Wextra -Wpedantic -Werror

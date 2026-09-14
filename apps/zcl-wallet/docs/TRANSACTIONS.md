@@ -690,6 +690,98 @@ Focused checks: `ctest --test-dir native/build/safety-active -R
 '^wallet_review_wallet' --output-on-failure`. With `ZCL_FUZZ=ON`, run
 `fuzz_review_wallet` with max_len252, timeout5, RSS512MiB and a bounded duration.
 
+## Candidate branch, expiry and finality checks — 2026-09-14
+
+The internal `zcl_review_sighash_context` selects a v4 digest branch from an
+explicit candidate block and checks the exact owned review's expiry and finality
+fields first. It does not authenticate a current chain or authorize signing.
+Its candidate contains network, block height and an explicitly selected
+lock-time comparison cutoff. Height is already the candidate block's height,
+not a tip to increment silently. Supported height/time domains are0..INT32_MAX
+and0..INT64_MAX. The enclosing chain adapter must independently establish the
+source, currentness and appropriate block/relay time cutoff; server assertions
+and the Android wall clock are not chain evidence.
+
+`zcl_transaction_v4_branch` implements the pinned original schedule. Pre-Sapling
+heights refuse because this wallet codec supports only v4. Original Overwinter
+and Sapling activate together at476969 on mainnet and20 on testnet. Bubbles
+changes the branch at585318/6350. Bubbly activates at585322 on mainnet and is
+disabled on testnet; Buttercup at707000/78856 retains the same `0x930b540d`
+branch ID. No modern Zcash upgrade is substituted. The lookup describes the
+pinned source profile, not whether an external current-height claim is true.
+
+The context wrapper matches the candidate and reviewed networks, selects the
+branch, rejects a nonzero expiry below the candidate height, and applies the
+original `IsFinalTx` comparisons. Expiry equality passes, and zero expiry retains
+its wire meaning. Lock0 passes. A lock below500000000 compares with height;
+otherwise it compares with the supplied time cutoff. The comparison is strictly
+less-than. If it does not pass, every input sequence must be UINT32_MAX. The
+scan includes all eight possible inputs, independently of which input is being
+hashed. Expired, nonfinal and out-of-domain candidates return OUT_OF_RANGE.
+No expiry value, sequence, lock time or transaction byte is silently rewritten.
+
+The candidate is copied before any provider call. Shared review ID, inclusive
+expiry and rollback rules remain in force. After contextual checks, the existing
+P2PKH digest resolves exact wire/script/amount from that same owned review.
+Only32 digest bytes publish on complete success, and the entire private candidate
+clears on every entered exit. The result grants no ownership, user consent,
+unspentness/maturity or broadcast authority. This is not complete contextual
+validation or mempool policy; for example, it does not implement the original
+three-block expiring-soon relay policy or choose an expiry horizon. A future
+signer must independently bind authenticated context/consent and recheck its
+operation lifetime rather than caching this digest as authorization.
+
+`tools/project-original-context.sh <original-checkout> <new-directory>` extracts
+all seven epoch IDs and both complete activation schedules from exact Git
+objects at `14a83d510ffd109d3fa09bf74ebf8c28854a263f`. It verifies SHA256 of
+`chainparams.cpp`, `consensus/upgrades.cpp`, `consensus/params.h` and `main.cpp`
+before parsing; output uses a new private directory with a10-second CPU limit.
+A second projection reproduces the committed reference header/checksum exactly;
+an existing output directory refuses and its objects remain intact. The generated
+reference SHA256 is
+`46c9ae0fb6daf3300d6940c48b9c74f86046f578e3995d2c98e2d310ed83c918`.
+Normal safety checks verify that checksum. Tests independently traverse every
+projected epoch and compare1,600,002 consecutive network/height pairs, plus
+integer-domain edges. This projects source data and inspects original semantics;
+it does not execute the original C++ or claim original-node acceptance.
+
+Review tests cover every activation boundary on both networks, all65 capacities,
+destroyed borrowed sources, zero/equal/past expiry, height/time lock threshold
+and equality,64-bit time, all-eight-input finality, P2SH/index/NULL/network
+refusals and lifetime transitions. Oracle mode independently compares selected
+digests with the qualified reader/libsodium. Dirty-provider faults mutate the
+caller candidate after copying and return plausible branch/digest data with
+failure; output preservation and live private-work clearing still hold.
+All19 deliberate mutants fail intended assertions. The existing review fuzzer
+now models eight operations, including context-based hashing, and compares
+arbitrary-height branch lookup with the projected epoch traversal. It completes
+327,566 executions in121 seconds without a finding, with max_len640, timeout5
+and RSS512MiB. Its previous campaign artifacts remain separate.
+
+All77 native ASan/UBSan/LSan groups pass in54.98 seconds. Clang/GCC analysis,
+including new fault/oracle fixtures and both extended fuzzer modes, passes with
+unchanged10/15 complexity caps (484/1027 functions). Optimized host frame
+measurements are0 bytes for the scalar lookup and120 for contextual hashing;
+these do not measure the complete nested hash call chain.
+
+NDK ARM64/x86-64, JVM, Android lint, APK alignment/fixture isolation and
+architecture gates pass. APKs remain byte-identical because the new internal
+operations have no JNI caller. Separate tests linked to the actual new release
+archives pass on x86-64 API30/35/36. Executable SHA256 values are
+`d5520a22c4755356ef7af995a172485c766f430e5ec35b10af445c09ee0e68e0`
+(branch traversal) and
+`b5a831c0c6d6393f3bd8848516642afbb56eb39b747043c73735f833cda11147`
+(review context). ARM64 is compiled only. All four standalone ELFs have16KiB
+alignment, RELRO/NOW and non-executable stacks. They process public fixtures
+without app wallet, Keystore, endpoint or node access. Evidence and exact
+source/archive/artifact hashes are retained in
+`.cache/android-wallet/review-context-20260914/`.
+
+Focused checks use `ctest --test-dir native/build/safety-active -R
+'^wallet_(transaction_context|review_context)' --output-on-failure`.
+`ZCL_ORACLE=ON` adds independent digest comparisons; `ZCL_FUZZ=ON` builds the
+extended `fuzz_review`. Neither oracle dependency is included in Android.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
@@ -703,7 +795,9 @@ Focused checks: `ctest --test-dir native/build/safety-active -R
 2. Bind current branch/height and authenticated authorization to the exact
    live review. The internal P2PKH digest now obtains scriptCode, input amount
    and transaction bytes only from that review; it grants no signing authority.
-   Its explicit branch-value comparisons do not select a current chain branch.
+   The candidate-context wrapper above now selects the pinned branch and checks
+   owned expiry/finality against explicit height/time inputs; it does not
+   authenticate their source or establish current chain state.
    The [repaired BLAKE2b public-data helper](BLAKE2_REVIEW.md) now passes strict
    analysis, independent vectors, fault/sanitizer/fuzz and standalone Android
    checks. The narrow transparent v4 construction also has independent public
