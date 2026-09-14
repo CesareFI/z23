@@ -298,3 +298,31 @@ standalone permission fixture's no-wallet-directory guard remains unchanged
 and now refuses this used profile. This proves request disposal and public
 network restoration after background process death, not recovery of custody
 or cancellation while an OS camera-open request is outstanding.
+
+## Cancellation before camera-open callback delivery
+
+The opted-in `CameraOpenCancellationInstrumentedTest` qualifies one narrower
+callback boundary with real Camera2 requests. It posts a bounded gate onto the
+existing worker after open, requires the worker-owned `opening` flag, cancels
+the owner, and invokes its existing release operation on that same worker
+before allowing the real terminal callback through. Test-only reflection
+orders this race without adding a production hook or changing an OS deadline.
+At most five attempts may obtain the initial ordering; every unsuccessful
+attempt must close fully, and passing requires a witnessed pending callback.
+
+Release must retain that owner and its resources while the callback is pending.
+A competing capture must fail without another worker or frame. Releasing the
+gate must close the original worker without delivering cancelled pixels, then
+a fresh owner must obtain an actual nonempty camera packet and close. The test
+passes on the existing Google API35 emulator in 8.027 seconds and the disposable
+AOSP API35 image-camera profile in 4.103 seconds. The same test APK fails in
+1.226 seconds against an isolated mutant removing the `opening` release guard,
+at `Pending open lost its owner`. The normal minified APK is restored afterwards.
+
+Run only with granted CAMERA permission and `-e cameraFixture yes -e class
+org.zclassic.wallet.CameraOpenCancellationInstrumentedTest` through the normal
+debug instrumentation runner. It opens no wallet and uses no fake driver. This
+observes cancellation while delivery is pending; it does not simulate a driver
+that never replies or establish physical-device latency. Final lint, fixture
+isolation, APK alignment and architecture checks pass; exact APKs, the mutation
+and logs are retained under the camera evidence directory's `open-cancel-*`.

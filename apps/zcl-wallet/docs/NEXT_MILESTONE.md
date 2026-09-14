@@ -36,8 +36,11 @@ Activity recreation. The normal minified release also passes actual permission
 denial, retry, foreground grant, and exact public camera review with worker
 cleanup. Background process death also preserves only the selected network
 through normal task restoration and requires a new explicit capture, which
-decodes the same public request in the replacement process. Qualify physical
-camera interoperability, cancellation during camera open, and preview
+decodes the same public request in the replacement process. A real Camera2
+callback held on its worker also proves cancellation retains one bounded owner
+until callback delivery, rejects a competitor and permits a fresh frame after
+cleanup; removing the guard fails this fixture. Qualify physical camera
+interoperability, cancellation under different driver behavior, and preview
 orientation and process recreation on different devices. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full
 journey. Retain no secret scan/import route or automatic transaction authority.

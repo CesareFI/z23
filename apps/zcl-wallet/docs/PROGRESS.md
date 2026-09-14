@@ -1609,3 +1609,28 @@ OS task-restoration evidence, separate from debug Activity recreation fixtures.
 Continue with cancellation at the real camera-open callback boundary, bounded
 ownership under overlap, and recovery to a fresh capture. Physical-device and
 hardware-authenticated custody acceptance remain open.
+
+2026-09-14 pending camera-open delivery continuation: the new opt-in debug
+fixture uses a real Camera2 request and a bounded worker-queue gate. It observes
+`opening` on the camera worker, cancels on main, and orders the existing release
+operation before the terminal callback using test-only reflection. The pending
+owner/resources remain held, a competing capture is refused with one worker,
+the real late callback closes without pixels, and a fresh owner receives an
+actual frame before closing. No production hook, driver mock, timeout or
+ownership rule changes.
+
+Acceptance passes in 8.027 seconds on the existing Google API35 emulator and
+4.103 seconds on the disposable AOSP API35 profile. A separately archived mutant
+removing only the pending-open release guard fails the same test APK in 1.226
+seconds at the intended ownership assertion. The first mutant build lacked the
+pinned BIP39 provider in its selective archive; adding the unchanged provider
+completed the build. No production source was mutated in this checkout. The
+normal minified APK was restored on the disposable profile after both runs.
+Strict lint, final fixture isolation, native APK alignment and architecture
+pass. This slice changes test code only; there is no production C change.
+Evidence is under `.cache/android-wallet/camera-scene-20260914/open-cancel-*`.
+
+Continue with the oldest supported API30 runtime on a newly created, isolated
+Android 11 emulator profile. Its official system image and image-backed camera
+are prepared; boot and runtime acceptance are not yet complete. Hardware
+custody, physical optics and nonresponding-driver behavior remain unqualified.
