@@ -1833,3 +1833,30 @@ authentication or scanner behavior changes. Evidence is under
 restarting with four software-emulated cores for current runtime coverage.
 Continue lifecycle cleanup when UI teardown fails; physical custody and
 real-source networking remain unqualified.
+
+2026-09-14 pause cleanup continuation: a guarded activity fixture reproduces an
+open foreground worker after waiting-screen rendering throws, in 29.592 seconds
+on API36. Pause now detaches and closes the session before rendering, with nested
+finally blocks retaining timer/view cleanup and the framework pause call. Queued
+public marker input is discarded immediately; active work keeps its existing
+completion/finalizer path. No authentication or persistence authority changes.
+
+The same test APK passes on API30 in 18.498 seconds, API35 in 43.153 seconds and
+API36 in 27.355 seconds. It invokes the actual pause method inside a controlled
+instrumentation callback, holds one bounded worker task, checks cleared queued
+input/no queued execution and waits for cleanup. Its existing fresh-emulator
+guard and invocation-owned cleanup remain intact; no key or wallet is created.
+The preserved API30 profile also passes all twelve recent record/GCM, worker
+and secret-view tests in 24.218 seconds after a four-core boot of 260.778 seconds.
+
+Full JVM suites, debug/release builds, strict lint, fixture isolation and both
+ABI page alignment pass. All twenty unsigned release entries compare identically
+after local development signing, and exact saved input hashes recheck. The new
+minified API30 camera fixture first fails in 52.037 seconds because a System UI
+ANR covers the initial network selector; the window and hierarchy dumps identify
+com.android.systemui. A normal Wait action permits the unchanged complete
+permission/grant/Camera2/review fixture to pass in 28.745 seconds. No watchdog,
+permission check or test assertion was changed. Evidence is under
+`.cache/android-wallet/pause-cleanup-20260914` and the preceding secret-state
+directory. Continue bounded worker ownership and remaining resource/lifetime
+checks; hardware-authenticated custody and real-source networking remain open.

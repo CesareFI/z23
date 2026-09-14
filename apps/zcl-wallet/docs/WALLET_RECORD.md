@@ -157,8 +157,8 @@ Remaining locals on a refused call belong to the normal JNI return frame;
 temporary class/part references are otherwise released promptly. Three negative
 fixtures detect missing temporary releases and missing exception refusal.
 
-`NativeRecordInstrumentedTest` separately passes all ten profiles on API35 and
-API36 using the real VM and provider GCM. Mutating the parsed arrays leaves the
+`NativeRecordInstrumentedTest` separately passes all ten profiles on API30,
+API35 and API36 using the real VM and provider GCM. Mutating the parsed arrays leaves the
 input record and other arrays unchanged; malformed calls are followed by a
 successful authenticated recovery. A structurally valid record with a changed
 tag still parses and must then fail provider authentication. This in-memory test

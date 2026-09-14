@@ -5,6 +5,8 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.text.TextUtils
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -14,12 +16,19 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import java.lang.reflect.InvocationTargetException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.security.KeyStore
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -206,6 +215,70 @@ class WalletFlowInstrumentedTest {
         org.junit.Assert.assertThrows(IllegalStateException::class.java) {
             KeystoreWrappingKey.requirePolicy(key)
         }
+    }
+
+    @Test fun pauseRenderingFailureStillClosesTheForegroundWorker() {
+        lateinit var currentSession: WalletPlatformSession
+        lateinit var worker: OwnedExecutor
+        lateinit var preview: TextView
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val timedOut = AtomicBoolean(false)
+        val unexpectedRun = AtomicBoolean(false)
+        val queuedWords = charArrayOf('a', 'b', 'c') // Public input; no key or wallet setup.
+        val problem = IllegalStateException("Synthetic public pause-rendering failure")
+        val listener = object : TextWatcher {
+            private var fired = false
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+                if (!fired) { fired = true; throw problem }
+            }
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(text: Editable?) = Unit
+        }
+        onUi {
+            val sessionField = MainActivity::class.java.getDeclaredField("session").apply { isAccessible = true }
+            currentSession = sessionField.get(it) as WalletPlatformSession
+            worker = WalletPlatformSession::class.java.getDeclaredField("work").apply {
+                isAccessible = true
+            }.get(currentSession) as OwnedExecutor
+            val screens = MainActivity::class.java.getDeclaredField("screens").apply {
+                isAccessible = true
+            }.get(it) as WalletScreens
+            screens.enterRecovery(false, false, { words -> words.fill('\u0000') }, {})
+            val input = it.findViewById<RecoveryInputView>(R.id.recovery_input)
+            input.append('a')
+            preview = input.getChildAt(0) as TextView
+            preview.addTextChangedListener(listener)
+        }
+        try {
+            assertTrue(worker.submit({ finished.countDown() }) {
+                entered.countDown()
+                timedOut.set(!release.await(30, TimeUnit.SECONDS))
+            })
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertTrue(worker.submit({ queuedWords.fill('\u0000') }) { unexpectedRun.set(true) })
+            onUi {
+                val pause = MainActivity::class.java.getDeclaredMethod("onPause").apply { isAccessible = true }
+                assertSame(problem, assertThrows(InvocationTargetException::class.java) { pause.invoke(it) }.cause)
+                assertTrue("Foreground worker survived failed pause rendering", worker.isClosed)
+                assertTrue(queuedWords.all { word -> word == '\u0000' })
+                assertNull(MainActivity::class.java.getDeclaredField("session").apply {
+                    isAccessible = true
+                }.get(it))
+            }
+        } finally {
+            // Also recover the old implementation after its expected assertion
+            // failure, so the fixture never leaves its bounded worker blocked.
+            try { onUi { preview.removeTextChangedListener(listener); currentSession.close() } }
+            finally {
+                release.countDown()
+                queuedWords.fill('\u0000')
+            }
+            assertTrue(finished.await(5, TimeUnit.SECONDS))
+        }
+        assertFalse(timedOut.get())
+        assertFalse(unexpectedRun.get())
     }
 
     @Test fun restorePublicFixtureThenAuthenticateAgainToUnlock() {

@@ -123,9 +123,24 @@ The saving-disabled flag alone did not prevent a saved ordinary TextView record
 from populating a fresh recovery display with its 28-character public marker.
 Restoring a populated display also left its owned array uncleared; keyboard
 restoration retained its three existing input characters. The exact same ten
-device tests pass after the explicit guards on API35 and API36. The guards do
+device tests pass after the explicit guards on API30, API35 and API36. The guards do
 not read, reinterpret or migrate a supplied Parcelable, and do not make saved
 state an authorized recovery route.
+
+Foreground pause detaches and closes its session before attempting the waiting
+screen. Nested finally blocks still clear the setup timer/secret views and call
+the framework's pause method if earlier cleanup fails. A rendering failure can
+no longer skip worker closure or retain the activity's session reference. Active
+native/provider work still reaches its own cleanup; queued input is discarded.
+
+The guarded wallet-flow fixture invokes the actual pause method inside a
+controlled instrumentation callback, with a throwing text listener and a bounded
+worker gate. It observes an open worker on the prior code and closed ownership,
+zeroed queued public marker input, no queued execution and completed worker
+cleanup after the fix on API30, API35 and API36. It creates no wrapping key or
+wallet record and cleans only its invocation-owned scaffold. This establishes
+the injected method-failure contract, not physical-device rendering-failure
+behavior or positive hardware custody.
 
 On 2026-09-12 the API-35 development emulator reported key size 256,
 security level 0 (software), hardware-enforced authentication false, per-use

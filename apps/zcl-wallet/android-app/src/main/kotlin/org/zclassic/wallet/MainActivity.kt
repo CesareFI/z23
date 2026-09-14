@@ -49,12 +49,16 @@ class MainActivity : Activity() {
     override fun onPause() {
         resumed = false
         authentication.onPause()
-        clearSetupTimeout()
-        screens.waiting(R.string.wallet_backgrounded)
-        session?.close()
+        val previous = session
         session = null
         busy = true
-        super.onPause()
+        try { previous?.close() }
+        finally {
+            try {
+                clearSetupTimeout()
+                screens.waiting(R.string.wallet_backgrounded)
+            } finally { super.onPause() }
+        }
     }
 
     override fun onDestroy() {
