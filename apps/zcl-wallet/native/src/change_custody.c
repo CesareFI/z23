@@ -41,3 +41,15 @@ zcl_status zcl_change_custody_decode(const zcl_change_custody *wallet,
     zcl_secure_zero(blinding, sizeof(blinding));
     return status;
 }
+
+zcl_status zcl_change_custody_address(const zcl_change_custody *wallet,
+    uint32_t index, uint8_t *address, size_t capacity)
+{
+    uint8_t blinding[64] = {0};
+    zcl_status status = zcl_random_bytes(blinding, sizeof(blinding));
+    if (status == ZCL_OK)
+        status = zcl_wallet_recovered_change(wallet->record, 80, wallet->entropy, wallet->entropy_len,
+            index, blinding, sizeof(blinding), address, capacity);
+    zcl_secure_zero(blinding, sizeof(blinding));
+    return status;
+}

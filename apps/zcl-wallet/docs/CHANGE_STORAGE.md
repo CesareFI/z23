@@ -198,6 +198,103 @@ authentication receipt. The sending flow still needs exact review/authorization
 binding, cancellation/lifecycle checks and recovery/discovery acceptance. No
 signing/broadcast or hardware-policy relaxation is supplied here.
 
+## Reconstructing consumed change addresses
+
+`zcl_wallet_change_reserved_address` reconstructs an explicitly requested
+internal-chain address only when that index is below the authenticated observed
+head. It first copies the bounded wallet record, matches those exact committed
+bytes under the existing directory lock, validates a complete bounded journal
+tail, verifies its recovered-wallet identity and MAC, and requires its counter
+to equal its file position. A valid unused index returns NOT_FOUND. Missing,
+partial, corrupt, misplaced or wrong-wallet state never initializes or repairs
+itself. The accepted index range is 0..65534; an exhausted head still permits
+reconstruction of previously consumed indexes, without permitting growth.
+
+The platform must first authenticate the exact record/header/entropy using GCM
+and its per-use hardware policy. C checks recovered identity and the state MAC;
+it cannot prove that platform action. Only the observed head is authenticated,
+not every earlier record or a complete historical reservation trace. Malicious
+filesystem rollback protection, coin inclusion/unspentness, transaction
+approval, current branch/height and signing remain outside this operation.
+Consumed gaps and cancelled/lost reservations remain consumed. Returning their
+address provides no permission to reserve or reuse that index.
+
+Wallet and journal bytes are never written by this operation. It reuses the
+existing store-opening lifecycle, which may create the private directory/lock
+and syncs the parent directory even for observations. That durability check
+and every descriptor close must succeed before reconstruction. A parent-sync
+failure is a refusal; its bounded retry policy is unchanged. There is no wallet
+or journal creation, append, truncation, rename or recovery fallback.
+
+Address derivation is shared with the existing reservation path. It uses
+separate fresh OS blinding for head authentication and recovered address
+derivation, clearing the 32-byte and 64-byte buffers on every respective exit.
+The caller owns stable entropy and clears it after the synchronous call.
+New wrapper code allocates no heap; existing key routines retain their checked
+bounded transient EC allocation/cleanup. Public candidate output is private
+until all stages pass, then exactly 35 ASCII bytes publish without a terminator.
+No pointer, secret, descriptor or authorization handle is retained. Host
+optimized frames are 376 bytes for reconstruction and 104 bytes for the shared
+derivation wrapper, excluding the existing nested crypto/storage frames.
+
+Tests cover both networks and all five entropy widths, repeated reconstruction
+of actual consumed reservations, every output capacity 0..64, unused indexes,
+all partial lengths 0..159, every corrupted head byte, authentic misplaced
+heads, wrong entropy/wallet, argument extremes and the final consumed index.
+Maximum-file fixtures deliberately use an authenticated final head over sparse
+intervening bytes; they test head/position/capacity, not historical replay.
+Every result preserves the wallet/journal state; original reservation and
+recovery tests remain green. Faults include apparently valid output accompanied
+by observation/MAC failure, partial RNG/address writes, caller header/ciphertext
+mutation after the private copy, every reached metadata/close stage, read and
+parent-sync failures, bounded persistent interruptions and descriptor counts.
+Blinding cleanup is inspected only during live object lifetime.
+
+All twelve mutants fail their intended assertions: unused-index acceptance,
+omitted head-position/MAC checks, substituted index, exhausted-head refusal,
+ignored observation/decode status, failed publication, caller-record reread,
+accidental reservation, omitted wipe and partial wipe. The shared state-file
+fuzzer's reconstruction mode completes 28,364 executions in 121 seconds without
+a finding and checks full journal preservation on every outcome. After adding
+the Android fixture path, both current reconstruction and original reservation
+modes replay all 57 corpus files successfully (59 initialized executions each).
+The campaign executable and its original host fixture source remain preserved
+separately from the final rebuilt executable. No new cryptographic oracle is
+claimed; the existing independently qualified key/state primitives are reused.
+
+Final Clang/GCC checks, both shared fuzzer modes and both fixture-path branches
+pass. All 71 native ASan/UBSan/LSan groups pass in 49.93 seconds; unchanged
+production/test complexity caps are 10/15 (471/958 functions). Android/JVM/lint,
+APK alignment/fixture isolation and architecture pass. The fixture uses private
+mkdtemp directories beneath `/tmp` on host and `/data/local/tmp` on Android;
+its fixed path buffer and cleanup of only owned names remain unchanged.
+
+The final standalone tests link actual Android release archives and pass on
+x86-64 API 30/35/36, processing only published zero entropy/inert ciphertext in
+shell-owned temporary directories. The executable SHA256 is
+`79422cfad9d67c123b31f96f984380e99770cb29ce8a318a54b4fdb71635dc68`.
+ARM64 is compiled only. Both executables have 16KiB load alignment, RELRO,
+immediate binding and a non-executable stack. These fixtures do not access an
+app wallet, Keystore, real funds or the production node.
+
+The shared C refactor changes APK bytes. Fresh debug installations therefore
+pass all three real-JNI public record/storage tests on API 30/35/36, including
+paired creation, wallet-only restoration, both networks/all entropy widths,
+provider GCM refusal and independent arrays. Times are 3.908/17.267/9.150 seconds
+respectively. There is no JNI entry for consumed-address reconstruction.
+The locally signed minified APK has SHA256
+`bf83e34635bec4434ffc7121b03900d24f8128332e952f488836988c342483b7`;
+all 19 unsigned archive entries remain byte-identical after signing. API 30/36
+retain minified and API35 debug. No new camera-flow or hardware-custody result
+is claimed for this artifact. Evidence and reproduction scripts are retained
+under `.cache/android-wallet/change-ownership-20260914/`.
+
+Focused host checks use `ctest --test-dir native/build/safety-active
+-R '^wallet_change_ownership' --output-on-failure`. A separate Clang profile
+with `ZCL_FUZZ=ON`, `ZCL_SANITIZE=ON` builds `fuzz_change_ownership`. Its seed
+format is shared with `seed_change_reservation`; use a new private corpus and
+artifact directory, max_len246, timeout5, RSS512MiB and a bounded duration.
+
 ## Android fresh creation
 
 Fresh Android creation now reaches paired persistence through

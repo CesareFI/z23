@@ -96,6 +96,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
     src/change_state.c src/change_state_key.c src/change_custody.c src/change_reservation.c src/change_recovery.c
+    src/change_ownership.c
     src/storage_posix.c src/storage_read.c src/storage_write.c
     src/storage_change_read.c src/storage_change_write.c src/storage_change_repair.c
     src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
@@ -342,6 +343,13 @@ if(ZCL_FUZZ)
         target_compile_options(fuzz_change_reservation PRIVATE -fsanitize=fuzzer,address,undefined
             -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         target_link_options(fuzz_change_reservation PRIVATE -fsanitize=fuzzer,address,undefined)
+        add_executable(fuzz_change_ownership tests/fuzz_change_reservation.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(fuzz_change_ownership PRIVATE zcl_wallet_core)
+        target_compile_definitions(fuzz_change_ownership PRIVATE ZCL_CHANGE_RECONSTRUCT=1)
+        target_compile_options(fuzz_change_ownership PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow)
+        target_link_options(fuzz_change_ownership PRIVATE -fsanitize=fuzzer,address,undefined)
         add_executable(seed_change_reservation tests/seed_change_reservation.c
             tests/change_storage_fixture.c tests/storage_fixture.c)
         target_link_libraries(seed_change_reservation PRIVATE zcl_wallet_core)
@@ -967,6 +975,27 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         add_test(NAME wallet_change_reservation COMMAND change_reservation_tests)
         set_tests_properties(wallet_change_reservation PROPERTIES TIMEOUT 30)
+        add_executable(change_ownership_tests tests/test_change_ownership.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(change_ownership_tests PRIVATE zcl_wallet_core)
+        target_compile_options(change_ownership_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_change_ownership COMMAND change_ownership_tests)
+        set_tests_properties(wallet_change_ownership PROPERTIES TIMEOUT 60)
+        add_executable(change_ownership_failure_tests tests/test_change_ownership_failures.c
+            src/change_ownership.c src/change_custody.c
+            tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
+        target_link_libraries(change_ownership_failure_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(change_ownership_failure_tests PRIVATE
+            zcl_random_bytes=zcl_ownership_test_random zcl_secure_zero=zcl_ownership_test_zero
+            zcl_change_state_decode=zcl_ownership_test_decode zcl_wallet_recovered_change=zcl_ownership_test_derive)
+        target_compile_options(change_ownership_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+        target_link_options(change_ownership_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+            -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close -Wl,--wrap=fstat
+            -Wl,--wrap=zcl_storage_change_observe)
+        add_test(NAME wallet_change_ownership_failures COMMAND change_ownership_failure_tests)
+        set_tests_properties(wallet_change_ownership_failures PROPERTIES TIMEOUT 30)
         add_executable(change_reservation_failure_tests tests/test_change_reservation_failures.c
             src/change_reservation.c src/change_custody.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)

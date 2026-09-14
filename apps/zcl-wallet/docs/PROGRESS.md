@@ -2128,3 +2128,37 @@ retain minified and API35 debug. Evidence and exact hashes are retained under
 hazard review are in TRANSACTIONS.md and C_SAFETY_REVIEW.md. Next is authenticated
 key/change ownership and durable state binding; branch/height authentication
 and signing remain separate gates. TLS and hardware custody remain unqualified.
+
+2026-09-14 consumed change-address reconstruction: C can now reconstruct an
+explicit internal-chain address only below a complete authenticated observed
+journal head, matched to the exact recovered wallet and head position. Unused,
+missing, partial, corrupt, misplaced and wrong-wallet state refuses. Exhausted
+state still permits previously consumed addresses. No wallet/journal bytes
+change, no index is reserved again, and no key, signature or approval is returned.
+The platform's exact-record GCM/per-use hardware prerequisite remains mandatory.
+
+Both networks/all entropy widths, all 65 output capacities, 160 partial lengths,
+all 80 head-byte corruptions, argument extremes and the final consumed index
+pass. Dirty observation/MAC results, partial RNG/address output, caller-byte
+mutation, all reached metadata/close failures, parent-sync/read refusals and
+descriptor counts are tested. Blinding cleanup is observed only during live
+lifetime. All twelve mutants fail; fuzzing completes 28,364 executions in 121
+seconds without a finding and verifies journal preservation on every outcome.
+The final Android-capable fixture and original reservation mode replay all 57
+corpus files. Initial and rebuilt fuzz artifacts remain distinguished.
+
+Final Clang/GCC, all 71 native ASan/UBSan/LSan groups (49.93 seconds), unchanged
+10/15 complexity caps, Android/JVM/lint, artifact and architecture checks pass.
+Standalone tests linked from actual release archives pass on API 30/35/36 using
+shell-owned synthetic fixtures; ARM64 is compiled only. Three real-JNI public
+record/storage/GCM cases also pass on every API after fresh debug installation,
+including paired creation and wallet-only restoration. The minified artifact's
+19 original archive entries remain unchanged after local signing; API 30/36
+retain minified and API 35 debug. No new camera or hardware-custody result is
+claimed. Evidence is retained in `.cache/android-wallet/change-ownership-20260914/`.
+
+The next composition step matches authenticated receive/change ownership to
+the exact live review inputs. Current branch/height, authorization and signing
+remain separate gates. A fresh origin fetch advances main to 16fc6c6a1 without
+Android-wallet changes; this work remains on the existing agent branch and no
+push or merge occurs.

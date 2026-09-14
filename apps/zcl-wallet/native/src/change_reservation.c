@@ -12,17 +12,6 @@ static zcl_status read_index(const zcl_change_custody *wallet, const zcl_change_
     return status;
 }
 
-static zcl_status derive_change(const zcl_change_custody *wallet, uint32_t index, uint8_t *address)
-{
-    uint8_t blinding[64] = {0};
-    zcl_status status = zcl_random_bytes(blinding, sizeof(blinding));
-    if (status == ZCL_OK)
-        status = zcl_wallet_recovered_change(wallet->record, 80, wallet->entropy, wallet->entropy_len,
-            index, blinding, sizeof(blinding), address, 35);
-    zcl_secure_zero(blinding, sizeof(blinding));
-    return status;
-}
-
 zcl_status zcl_wallet_change_create(const uint8_t *directory, size_t directory_len,
     const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len)
 {
@@ -50,7 +39,8 @@ zcl_status zcl_wallet_change_reserve(const uint8_t *directory, size_t directory_
         status = zcl_storage_change_observe(directory, directory_len,
             wallet.record, wallet.record_len, &snapshot);
     if (status == ZCL_OK) status = read_index(&wallet, &snapshot, &candidate.index);
-    if (status == ZCL_OK) status = derive_change(&wallet, candidate.index, candidate.address);
+    if (status == ZCL_OK)
+        status = zcl_change_custody_address(&wallet, candidate.index, candidate.address, sizeof(candidate.address));
     /* read_index proved index<=65534 before this addition or derivation. */
     if (status == ZCL_OK) status = zcl_change_custody_encode(&wallet, candidate.index + 1, next);
     if (status == ZCL_OK)

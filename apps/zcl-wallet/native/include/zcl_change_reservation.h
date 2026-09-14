@@ -41,6 +41,25 @@ zcl_status zcl_wallet_change_reserve(const uint8_t *directory, size_t directory_
     const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len,
     zcl_change_reservation *reservation);
 
+/* Reconstruct an ALREADY CONSUMED internal-chain address without reserving,
+ * appending, repairing or reusing an index. The same exact-record GCM/hardware
+ * prerequisite and caller secret/span contracts above apply. Observe the exact
+ * committed wallet, authenticate its complete head and recovered identity,
+ * check head position, and require index < observed next_index. An unused index
+ * returns NOT_FOUND; missing/partial/corrupt/misplaced state refuses. Consumed
+ * indexes remain reconstructible when reservation capacity is exhausted.
+ * Writes exactly35 public ASCII bytes, no terminator, only after success; all
+ * output bytes stay unchanged on failure. OS blinding is generated/cleared
+ * internally. No index/address is inferred from a server or an unsigned review.
+ * This proves only derivation under the authenticated observed wallet/state.
+ * It supplies no fresh reservation, transaction approval, proof of funding,
+ * inclusion/unspentness, malicious-rollback protection or signing capability.
+ * Cancellation/burned gaps are consumed too; reconstruction cannot reuse them.
+ */
+zcl_status zcl_wallet_change_reserved_address(const uint8_t *directory, size_t directory_len,
+    const uint8_t *wallet_record, size_t wallet_len, const uint8_t *entropy, size_t entropy_len,
+    uint32_t index, uint8_t *address, size_t capacity);
+
 /* Explicit repair of a recognized damaged v1 suffix only. Authenticate current
  * and predecessor evidence against the recovered wallet. Healthy consistent
  * head returns ALREADY_EXISTS without mutation or a new durability claim.

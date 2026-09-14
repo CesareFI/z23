@@ -1232,3 +1232,39 @@ fuzzer completes 296,803 executions in 121 seconds without a finding. Its oracle
 mode uses the independently qualified reader/libsodium. Exact tests, scope and
 device evidence are recorded in [TRANSACTIONS.md](TRANSACTIONS.md) and
 `.cache/android-wallet/review-sighash-20260914/`.
+
+## Consumed change-address reconstruction — 2026-09-14
+
+Scope: a new C wrapper checks an already consumed index against authenticated
+observed state; reservation shares its existing derivation helper. Unit/fault
+tests, one conditional mode of the existing state-file fuzzer, and a bounded
+Android-specific test-directory template provide isolated qualification.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Output must be non-NULL with capacity>=35; requested index is below65535 before further work. Existing custody preparation checks record124..140 bytes before copying and checks entropy width against the parsed header. State must be a complete aligned head with tail80 and total size80..5242880 before decode; the decoder checks its own exact record and secret spans. Exactly35 candidate bytes copy only on complete success. Capacity0..64 guards/suffixes, all partial lengths0..159 and each head-byte corruption are tested. The shared fuzzer requires6..246 bytes before reading its fixed six-byte controls or copying payload<=240. Its successful-output checker bounds file size before tail subtraction. Both fixed fixture templates fit the existing29-byte path buffer by static assertion. |
+| Integer overflow/underflow; signed/unsigned conversions | MAX_RECORDS-1 is the fixed uint32 limit65535. The file-size lower bound precedes division and subtraction; the decoded counter must equal file_bytes/80-1, then requested<next. Full capacity remains readable while growth still refuses. No requested-index increment occurs. New fuzzer indexes combine two unsigned bytes with a checked-width8-bit shift; capacity uses bounded modulo65. Fixture maximum offsets cast fixed5MiB bounds to off_t, below signed32 limits. Test counters have explicit small bounds before loops; no signed-negative value becomes a length or index. |
+| Use-after-free; double-free; leaks; dangling pointers | The wrapper owns one copied public record, one snapshot and candidate address; entropy stays caller-owned and stable. No pointer/secret escapes. The shared derivation helper owns and clears its64-byte blinding until return; decode independently owns/clears32 bytes. Existing key routines own checked bounded EC allocations and release them through their established cleanup paths. Storage publishes only after closing all descriptors and never retries consumed close descriptors. Fault tests compare descriptor counts. Borrowed blinding pointers are inspected/retired within the live zero callback; post-return assertions use flags/NULL only. Fixture failures preserve evidence until process cleanup; successful cleanup touches only fixed names in its owned mkdtemp directory. |
+| NULL dereferences; uninitialized memory | Caller output is checked before access; existing preparation/path/codec checks reject NULL source spans. All local wallet/snapshot/candidate/counter/blinding objects initialize before use. Every preparation, observation, MAC and derivation status gates its successor and publication. Fault providers return plausible dirty head/counter data or partial blinding/address bytes with failure; no later authority step follows. Private copied header/ciphertext remains authoritative after adversarial caller-byte mutation. Internal shared custody helpers retain their successfully prepared-wallet precondition. |
+| Pointer arithmetic; format strings | Only bounded fixed arrays and existing validated storage/crypto spans are used. Tail offsets follow complete size checks, and source copies are at most140/240 bytes. No alignment cast, C-string secret, unchecked path concatenation or serialized pointer is introduced. The Android fixture merely selects a shorter compile-time template. Diagnostic text is fixed and contains only public fixture locations/line numbers; no source bytes become a format string. |
+| Stack usage; allocation limits; resource exhaustion | New code adds no heap, recursion, VLA, worker or retained handle. Measured optimized host frames are376 bytes for reconstruction and104 for shared derivation; nested crypto/storage costs remain separately bounded by existing gates. Successful reconstruction performs one bounded head observation, one authenticated decode and one recovered derivation, using sequential checked EC contexts rather than accumulating them. Storage reads only the tail, including at5MiB capacity; no history scan occurs. Parent fsync remains one normal call or at most16 retries; read/pread attempts remain<=256 and all handles close. Fuzzer inputs/time/RSS/per-case runtime are bounded; test descriptor enumeration caps at256. |
+| Malformed serialization; races; lifetimes | Missing/empty/partial/bad-MAC/misplaced state refuses without journal initialization or repair. Unused indexes cannot publish an address; consumed indexes remain reconstructible when exhausted. Existing store opening can establish its private directory/lock and syncs the parent, but this operation never writes wallet/journal bytes or reserves again. Observation matches the exact copied committed wallet under the same nonblocking lock and authenticates that owned snapshot after release. Later appends cannot make an already consumed index unused; concurrent fresh-wallet selection and platform authorization still require their existing enclosing lifetime rules. Historical-head checking supplies no malicious-rollback or complete-history proof. Callers serialize their own mutable spans; fuzz fixtures are serial and claim no concurrent platform-lock proof. |
+| Secret leakage, custody and authority | The platform must first authenticate the exact record/header/entropy with GCM and per-use hardware policy; C cannot prove that prerequisite. C checks recovered identity, head MAC/position and key derivation, returning only35 public address bytes. Existing seed/private-key/MAC-key cleanup remains unchanged; new shared OS blinding clears on every exit. Caller entropy must clear after use. No key export, signing, funding/unspentness claim, current branch/height, fresh reservation, index reuse, acceptance receipt or review approval is added. Burned/cancelled gaps remain consumed. All fixtures use published entropy and inert ciphertext; separate actual-provider GCM tests do not qualify hardware custody. |
+
+Final Clang/GCC analysis and all 71 native ASan/UBSan/LSan groups pass in 49.93
+seconds, with unchanged 10/15 complexity caps (471/958 functions). All twelve
+mutants fail their intended assertions. The bounded reconstruction fuzzer
+completes 28,364 executions in 121 seconds without a finding; final reconstruction
+and original reservation modes replay the 57-file corpus after the Android
+fixture-path addition. Original campaign binary/source and rebuilt replay
+binary are retained separately. The initial fault expectation that reads do
+not fsync was corrected to explicitly verify the existing parent-durability
+contract and its failures; no storage gate or assertion policy was weakened.
+
+Android/JVM/lint/artifact/architecture checks pass. Actual release-archive
+standalone tests pass on x86-64 API 30/35/36; ARM64 is compiled only. All three
+real-JNI record/storage/GCM tests pass on each API level after fresh debug
+installation. The new consumed-address operation has no JNI entry. Exact
+artifacts, evidence boundaries and reproduction are in
+[CHANGE_STORAGE.md](CHANGE_STORAGE.md) and
+`.cache/android-wallet/change-ownership-20260914/`.

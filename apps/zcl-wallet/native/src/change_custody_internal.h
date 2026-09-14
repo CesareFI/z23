@@ -21,4 +21,6 @@ zcl_status zcl_change_custody_prepare(const uint8_t *record, size_t record_len,
 zcl_status zcl_change_custody_encode(const zcl_change_custody *wallet, uint32_t index, uint8_t *state);
 zcl_status zcl_change_custody_decode(const zcl_change_custody *wallet,
     const uint8_t *state, size_t state_len, uint32_t *index);
+zcl_status zcl_change_custody_address(const zcl_change_custody *wallet,
+    uint32_t index, uint8_t *address, size_t capacity);
 #endif

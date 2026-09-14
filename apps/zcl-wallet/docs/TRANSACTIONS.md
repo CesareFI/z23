@@ -622,7 +622,11 @@ neither libsodium nor an oracle executable.
 
 1. Authenticated key/change ownership and durable index recovery, using the
    existing exact draft construction/assessment/review binding. A server balance
-   or history assertion cannot provide spending authority.
+   or history assertion cannot provide spending authority. The consumed-change
+   address operation in [CHANGE_STORAGE.md](CHANGE_STORAGE.md) now verifies
+   recovered wallet identity and the observed journal head without reserving
+   again; matching these addresses and the receive key to exact reviewed inputs
+   remains the next composition step.
 2. Bind current branch/height and authenticated authorization to the exact
    live review. The internal P2PKH digest now obtains scriptCode, input amount
    and transaction bytes only from that review; it grants no signing authority.

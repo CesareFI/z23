@@ -8,7 +8,11 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef __ANDROID__
+static const char fixture_template[] = "/data/local/tmp/zcl-XXXXXX";
+#else
 static const char fixture_template[] = "/tmp/zcl-storage-test-XXXXXX";
+#endif
 _Static_assert(sizeof(fixture_template) <= sizeof(((storage_fixture *)0)->path), "fixture path fits");
 
 size_t fixture_path_len(void) { return sizeof(fixture_template) - 1; }
