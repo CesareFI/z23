@@ -15,7 +15,8 @@ import org.zclassic.wallet.core.CameraFrames
  * request parsing or camera ownership. Called only on the UI thread. */
 internal class CameraPreviewView(context: Context) : View(context) {
     private var bitmap: Bitmap? = null
-    private var pixels = IntArray(0)
+    private val emptyPixels = IntArray(0)
+    private var pixels = emptyPixels
     private var sensorRotation = 0
     private var front = false
     private val paint = Paint()
@@ -29,6 +30,15 @@ internal class CameraPreviewView(context: Context) : View(context) {
     }
 
     fun show(packet: ByteArray, orientation: Int, facingFront: Boolean) {
+        try { update(packet, orientation, facingFront) }
+        catch (problem: Throwable) {
+            try { clear() }
+            catch (cleanup: Throwable) { if (cleanup !== problem) problem.addSuppressed(cleanup) }
+            throw problem
+        } finally { pixels.fill(0) }
+    }
+
+    private fun update(packet: ByteArray, orientation: Int, facingFront: Boolean) {
         require(packet.size in 5..CameraFrames.MAX_PACKET_BYTES && packet[0] == 1.toByte())
         val width = (packet[1].toInt() and 255) or ((packet[2].toInt() and 255) shl 8)
         val height = (packet[3].toInt() and 255) or ((packet[4].toInt() and 255) shl 8)
@@ -43,7 +53,6 @@ internal class CameraPreviewView(context: Context) : View(context) {
             pixels[index] = Color.rgb(gray, gray, gray)
         }
         bitmap?.setPixels(pixels, 0, width, 0, 0, width, height)
-        pixels.fill(0)
         sensorRotation = orientation
         front = facingFront
         invalidate()
@@ -74,15 +83,18 @@ internal class CameraPreviewView(context: Context) : View(context) {
     }
 
     fun clear() {
-        bitmap?.eraseColor(Color.BLACK)
+        val previous = bitmap
         bitmap = null // Let Android release any rendering references; do not recycle a queued bitmap.
         pixels.fill(0)
-        pixels = IntArray(0)
-        invalidate()
+        pixels = emptyPixels // Cleanup must not need a new allocation.
+        // Retire our references and clear copied pixels before a platform call
+        // can fail. Provider/rendering copies cannot all be guaranteed erased.
+        try { previous?.eraseColor(Color.BLACK) }
+        finally { invalidate() }
     }
 
     override fun onDetachedFromWindow() {
-        clear()
-        super.onDetachedFromWindow()
+        try { clear() }
+        finally { super.onDetachedFromWindow() }
     }
 }

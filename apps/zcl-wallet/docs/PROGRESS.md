@@ -2507,3 +2507,31 @@ API 30 in 9.382 seconds. Before/after artifacts and logs are retained in
 `.cache/android-wallet/camera-start-20260914/`. The isolated emulator uses the
 qualified ADB reaping wrapper; the original 26 zombies remain under their
 unchanged live parents, with none added by this validation.
+
+2026-09-14: camera preview failures now retire their image and clear copied
+pixels before Android bitmap cleanup can throw. Upload scratch clears on both
+success and failure; rejected packets remove the older preview. Cleanup reuses
+the view's existing empty buffer and still invokes framework detach cleanup.
+The app does not recycle a bitmap that rendering may still reference and does
+not claim erasure of every provider/rendering copy.
+
+Four regressions fail on the old code: rejected bitmap erase retains scratch,
+immutable bitmap upload retains copied pixels, malformed input retains an older
+image, and clearing allocates a fresh empty buffer. All four pass on API 35/36
+in 9.163/4.579 seconds. The fixtures use public pixels and real Android bitmap
+refusals in unattached views; they neither open a camera nor exhaust memory.
+Minimum/maximum frame dimensions, unchanged borrowed input, idempotent cleanup
+and successful retry are covered. On fresh API 30, those four cases plus exact
+camera QR review, background/restart cycles and recreation pass together:
+seven tests in 97.883 seconds.
+
+Android/JVM suites, debug/release/test builds, strict lint, fixture isolation,
+architecture and 16 KiB native alignment pass. Both ABI libraries remain
+byte-identical to the storage-link milestone; no C or consensus logic changed.
+The locally signed minified APK is
+`48c95b35f4c874c2c9c93e48aca5575fa18c5859c86d4baed9f5e97a7daa7b81`.
+Its full camera denial/retry/grant/public-review/resource-release acceptance
+passes on fresh API 30 in 9.371 seconds. All 20 unsigned entries remain identical
+after signing. Before/after source, artifacts and logs are retained in
+`.cache/android-wallet/preview-cleanup-20260914/`. The isolated emulator uses
+the qualified reaping adapter and adds no zombies to the original 26.

@@ -42,6 +42,11 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   errors. That failed lifetime cannot retry itself. Once an OS camera open is
   pending, cancellation retains admission until its real terminal callback;
   a timeout does not authorize a second owner.
+* Camera preview scratch pixels clear after upload or failure. Cleanup retires
+  the owned image reference and clears scratch before calling Android's bitmap
+  erase operation; it does not allocate a replacement buffer or recycle an image
+  that rendering may still reference. Android/provider rendering copies cannot
+  all be guaranteed erased. A rejected frame retires the earlier preview.
 
 ## Evidence required before custody release
 
