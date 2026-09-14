@@ -177,6 +177,7 @@ class MainActivity : Activity() {
         WalletProblem.PROTECTION -> R.string.protection_failed
         WalletProblem.STORAGE -> R.string.storage_failed
         WalletProblem.OPERATION -> R.string.operation_failed
+        WalletProblem.RESOURCES -> R.string.wallet_busy
     })
 
     private fun showFailure(message: Int) {

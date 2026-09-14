@@ -7,6 +7,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
@@ -17,14 +18,28 @@ import org.junit.runner.RunWith
 /** Controlled thread-factory faults only; no memory exhaustion or wallet state. */
 @RunWith(AndroidJUnit4::class)
 class OwnedExecutorInstrumentedTest {
+    private fun idleBackend(owner: OwnedExecutor, coreSize: Int): ThreadPoolExecutor {
+        val thread = AtomicReference<Thread>()
+        val ready = CountDownLatch(1)
+        assertTrue(owner.submit { thread.set(Thread.currentThread()); ready.countDown() })
+        assertTrue(ready.await(5, TimeUnit.SECONDS))
+        val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
+        val backend = field.get(owner) as ThreadPoolExecutor
+        backend.corePoolSize = 0
+        val previous = checkNotNull(thread.get())
+        previous.join(5000)
+        assertTrue(!previous.isAlive)
+        backend.corePoolSize = coreSize
+        return backend
+    }
+
     @Test fun androidWorkerStartFailureClearsInputAndAllowsAnIndependentRetry() {
         for (coreSize in listOf(0, 1)) verifyFailedHandoff(coreSize)
     }
 
     private fun verifyFailedHandoff(coreSize: Int) {
         val owner = OwnedExecutor()
-        val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
-        val backend = field.get(owner) as ThreadPoolExecutor
+        val backend = idleBackend(owner, coreSize)
         val originalFactory = backend.threadFactory
         val clears = AtomicInteger()
         val ran = CountDownLatch(1)
@@ -50,6 +65,7 @@ class OwnedExecutorInstrumentedTest {
             backend.threadFactory = originalFactory
             owner.close { finalized.countDown() }
             assertTrue(finalized.await(5, TimeUnit.SECONDS))
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
         }
         assertEquals(1, clears.get())
     }

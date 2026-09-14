@@ -11,7 +11,7 @@ import org.zclassic.wallet.core.WalletKeys
 import org.zclassic.wallet.core.WalletRecord
 import org.zclassic.wallet.core.WalletStorage
 
-internal enum class WalletProblem { STORAGE, PROTECTION, OPERATION }
+internal enum class WalletProblem { STORAGE, PROTECTION, OPERATION, RESOURCES }
 
 /** Platform action routing only. Restored entropy may have consumed historical
  * change indexes, so restoration must not initialize a fresh counter. */
@@ -42,7 +42,8 @@ internal class WalletPlatformSession(
     private val work = OwnedExecutor()
     private val phrases = RecoveryPhraseDelivery(ui)
     private val wrappingKey = KeystoreWrappingKey(context, storage)
-    private var setup: Setup? = null // Accessed only by the worker.
+    // Worker-owned; a rejected session can only clear its initial empty state.
+    private var setup: Setup? = null
 
     fun close() {
         phrases.close()
@@ -75,7 +76,7 @@ internal class WalletPlatformSession(
                 if (!completed || work.isClosed) clearSetup()
             }
         }
-        if (!accepted) post { failure(problem) }
+        if (!accepted) post { failure(WalletProblem.RESOURCES) }
     }
 
     fun inspect(result: (WalletStorage.ReadResult) -> Unit, failure: (WalletProblem) -> Unit) {

@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -14,10 +15,83 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class OwnedExecutorTest {
-    @Test fun threadCreationFailureClearsTransferredInputAndPreservesFailure() {
-        val owner = OwnedExecutor()
+    private fun idleBackend(owner: OwnedExecutor, coreSize: Int): ThreadPoolExecutor {
+        val thread = AtomicReference<Thread>()
+        val ready = CountDownLatch(1)
+        assertTrue(owner.submit { thread.set(Thread.currentThread()); ready.countDown() })
+        assertTrue(ready.await(5, TimeUnit.SECONDS))
         val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
         val backend = field.get(owner) as ThreadPoolExecutor
+        backend.corePoolSize = 0
+        val previous = checkNotNull(thread.get())
+        previous.join(5000)
+        assertFalse(previous.isAlive)
+        backend.corePoolSize = coreSize
+        return backend
+    }
+
+    private fun awaitClosed(owner: OwnedExecutor) {
+        val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
+        val backend = field.get(owner) as ThreadPoolExecutor?
+        if (backend != null) assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+    }
+
+    @Test fun closingWorkersRetainTheProcessBudgetUntilTheirTasksFinish() {
+        val first = OwnedExecutor()
+        val second = OwnedExecutor()
+        val entered = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val finalizing = CountDownLatch(2)
+        val finishCleanup = CountDownLatch(1)
+        val timedOut = AtomicInteger()
+        val clears = AtomicInteger()
+        var refused: OwnedExecutor? = null
+        try {
+            for (owner in listOf(first, second)) {
+                assertTrue(owner.submit {
+                    entered.countDown()
+                    if (!release.await(15, TimeUnit.SECONDS)) timedOut.incrementAndGet()
+                })
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            for (owner in listOf(first, second)) owner.close {
+                // Controlled public fixture; production cleanup never blocks.
+                finalizing.countDown()
+                if (!finishCleanup.await(15, TimeUnit.SECONDS)) timedOut.incrementAndGet()
+            }
+            val third = OwnedExecutor().also { refused = it }
+            val words = charArrayOf('a', 'b', 'c')
+            try {
+                assertFalse(third.submit({ words.fill('\u0000'); clears.incrementAndGet() }) {})
+                assertTrue(words.all { it == '\u0000' })
+                assertEquals(1, clears.get())
+                release.countDown()
+                assertTrue(finalizing.await(5, TimeUnit.SECONDS))
+                assertFalse(third.submit({ clears.incrementAndGet() }) {})
+                assertEquals(2, clears.get())
+            } finally { words.fill('\u0000') }
+        } finally {
+            refused?.close()
+            first.close()
+            second.close()
+            release.countDown()
+            finishCleanup.countDown()
+            awaitClosed(first)
+            awaitClosed(second)
+            refused?.let(::awaitClosed)
+        }
+        assertEquals(0, timedOut.get())
+        val replacement = OwnedExecutor()
+        val ran = CountDownLatch(1)
+        try {
+            assertTrue(replacement.submit { ran.countDown() })
+            assertTrue(ran.await(5, TimeUnit.SECONDS))
+        } finally { replacement.close(); awaitClosed(replacement) }
+    }
+
+    @Test fun threadCreationFailureClearsTransferredInputAndPreservesFailure() {
+        val owner = OwnedExecutor()
+        val backend = idleBackend(owner, 1)
         val originalFactory = backend.threadFactory
         val cleared = AtomicInteger()
         val finalized = CountDownLatch(1)
@@ -37,14 +111,14 @@ class OwnedExecutorTest {
             backend.threadFactory = originalFactory
             owner.close { finalized.countDown() }
             assertTrue(finalized.await(5, TimeUnit.SECONDS))
+            awaitClosed(owner)
         }
         assertEquals(1, cleared.get())
     }
 
     @Test fun failedWorkerStartRemovesAnAlreadyQueuedInputBeforeRetry() {
         val owner = OwnedExecutor()
-        val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
-        val backend = field.get(owner) as ThreadPoolExecutor
+        val backend = idleBackend(owner, 0)
         val originalFactory = backend.threadFactory
         val cleared = AtomicInteger()
         val completed = CountDownLatch(1)
@@ -65,6 +139,7 @@ class OwnedExecutorTest {
             backend.threadFactory = originalFactory
             owner.close { finalized.countDown() }
             assertTrue(finalized.await(5, TimeUnit.SECONDS))
+            awaitClosed(owner)
         }
         assertEquals(1, cleared.get())
     }
@@ -78,6 +153,7 @@ class OwnedExecutorTest {
         assertTrue(finalized.await(5, TimeUnit.SECONDS))
         assertEquals(1, cleared.get())
         executor.close { error("Session finalized twice") }
+        awaitClosed(executor)
     }
 
     @Test fun queueIsBoundedAndCancellationClearsAfterActiveWork() {
@@ -113,6 +189,7 @@ class OwnedExecutorTest {
         } finally {
             release.countDown()
             executor.close()
+            awaitClosed(executor)
         }
     }
 }

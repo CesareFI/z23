@@ -1860,3 +1860,37 @@ permission check or test assertion was changed. Evidence is under
 `.cache/android-wallet/pause-cleanup-20260914` and the preceding secret-state
 directory. Continue bounded worker ownership and remaining resource/lifetime
 checks; hardware-authenticated custody and real-source networking remain open.
+
+2026-09-14 process worker budget continuation: a host regression first proves
+that a third executor could start while two closed sessions still had active
+tasks. Admission is now limited to two process-wide owners, acquired lazily on
+first submission and retained through active work/final cleanup until pool
+termination. Per-owner limits remain one worker and four queued tasks. Admission
+never waits or automatically retries; rejected input clears immediately and
+the activity offers a busy message with explicit retry. Never-admitted owners
+have only empty session state and clear it directly on close.
+
+All five host executor tests pass, including capacity retained during finalizers,
+exactly-once input cleanup and reuse after termination. The full JVM suites,
+debug/release/test builds and strict lint pass. Three Android checks cover actual
+pause/resume with repeated busy retry and later welcome recovery, prior failed
+pause-rendering cleanup, and real ThreadPoolExecutor startup failures. They pass
+on API30 in 32.456 seconds, API35 in 85.439 seconds and API36 in 63.612 seconds.
+The guarded activity cases create no wallet/key and preserve fixture ownership.
+
+Fixture isolation and both ABI page alignment pass; twenty unsigned release
+entries compare identically after local development signing and saved hashes
+recheck. The minified API30 full permission/Camera2/public-review journey passes
+in 27.926 seconds. API36 attempts fail in 28.121 and 25.001 seconds at the grant
+touch: InputDispatcher identifies the permission ActivityRecordInputSink with
+NO_INPUT_CHANNEL and drops the injected ACTION_DOWN. Both failure logs, window
+state and public hierarchy are preserved; no permission guard/assertion changes.
+The normal denial action and owned-profile permission-flag reset precede the
+unchanged retry. This artifact's API36 full camera journey is not qualified by
+those attempts. Its separate worker/lifecycle tests pass as stated above.
+
+Evidence is under `.cache/android-wallet/worker-budget-20260914`. Parent Git
+fetch succeeds without recursive submodule fetching after Tor's referenced
+object is unavailable upstream; the newly fetched parent commits do not change
+this app. No merge, push, C, custody-policy or consensus change. Continue native
+public QR/payment JNI fault coverage and bounded resource/lifetime review.

@@ -22,6 +22,7 @@ import java.nio.file.LinkOption
 import java.security.KeyStore
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -215,6 +216,63 @@ class WalletFlowInstrumentedTest {
         org.junit.Assert.assertThrows(IllegalStateException::class.java) {
             KeystoreWrappingKey.requirePolicy(key)
         }
+    }
+
+    @Test fun closingWorkersBoundRepeatedResumeAndAllowExplicitRetry() {
+        lateinit var foreground: OwnedExecutor
+        val retiring = OwnedExecutor()
+        val entered = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val timedOut = AtomicBoolean(false)
+        onUi {
+            val session = MainActivity::class.java.getDeclaredField("session").apply {
+                isAccessible = true
+            }.get(it) as WalletPlatformSession
+            foreground = WalletPlatformSession::class.java.getDeclaredField("work").apply {
+                isAccessible = true
+            }.get(session) as OwnedExecutor
+        }
+        fun awaitClosed(owner: OwnedExecutor) {
+            val backend = OwnedExecutor::class.java.getDeclaredField("executor").apply {
+                isAccessible = true
+            }.get(owner) as ThreadPoolExecutor
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+        }
+        try {
+            for (owner in listOf(foreground, retiring)) assertTrue(owner.submit {
+                entered.countDown()
+                if (!release.await(60, TimeUnit.SECONDS)) timedOut.set(true)
+            })
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            checkNotNull(scenario).moveToState(Lifecycle.State.STARTED)
+            retiring.close()
+            assertTrue(foreground.isClosed)
+            checkNotNull(scenario).moveToState(Lifecycle.State.RESUMED)
+            awaitView(R.id.retry_wallet)
+            onUi {
+                assertEquals(it.getString(R.string.wallet_busy),
+                    it.findViewById<TextView>(R.id.status_message).text.toString())
+                assertNull(it.findViewById<View>(R.id.recovery_words))
+                assertNull(it.findViewById<View>(R.id.recovery_input))
+            }
+            // Retry remains bounded while both operations are still finishing.
+            click(R.id.retry_wallet)
+            awaitView(R.id.retry_wallet)
+            release.countDown()
+            awaitClosed(foreground)
+            awaitClosed(retiring)
+            click(R.id.retry_wallet)
+            awaitView(R.id.create_wallet)
+            assertEquals(CoreStatus.NOT_FOUND, WalletStorage(directory.absolutePath).read().status)
+            assertFalse(store().containsAlias(alias))
+        } finally {
+            release.countDown()
+            foreground.close()
+            retiring.close()
+            awaitClosed(foreground)
+            awaitClosed(retiring)
+        }
+        assertFalse(timedOut.get())
     }
 
     @Test fun pauseRenderingFailureStillClosesTheForegroundWorker() {

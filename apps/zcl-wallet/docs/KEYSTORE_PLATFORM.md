@@ -142,6 +142,25 @@ wallet record and cleans only its invocation-owned scaffold. This establishes
 the injected method-failure contract, not physical-device rendering-failure
 behavior or positive hardware custody.
 
+Platform work has a process-wide limit of two admitted executor owners, allowing
+a foreground session alongside one finishing operation. Each owner retains its
+existing one-worker/four-queued-task bound. Admission is nonblocking and lazy on
+first submission; an unused or failed parent constructor cannot reserve capacity.
+Closing retains its admission through active work and the session finalizer until
+pool termination. Rejected input is cleared immediately. The UI shows a busy
+message and explicit retry; repeated retries cannot start more retiring workers.
+An owner never admitted to a pool has only empty session state and clears it
+directly on close. No timeout, interruption or UI wait is used to claim that
+native/provider work has finished.
+
+The host regression previously admitted a third owner while two closed owners
+still had active tasks. It now also checks refusal while their finalizers run,
+exactly-once rejected-input cleanup and successful replacement after termination.
+Guarded API30, API35 and API36 activity fixtures hold public worker tasks across
+pause/resume, observe repeated busy retries, then release them and return to the
+welcome screen. They create no key or wallet. Thread-start failure and failed
+pause-rendering cleanup also pass on all three APIs with the lazy admission.
+
 On 2026-09-12 the API-35 development emulator reported key size 256,
 security level 0 (software), hardware-enforced authentication false, per-use
 duration 0 and authentication methods 3. The C policy rejects those actual
