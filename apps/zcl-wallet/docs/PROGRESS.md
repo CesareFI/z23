@@ -2624,3 +2624,44 @@ qualified reaping adapter; the original 26 ADB zombies and their live parents
 remain unchanged. Exact source, baseline failures, mutations, archives and
 artifacts are in `.cache/android-wallet/request-separators-20260914/`.
 The explicit hazard review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).
+
+2026-09-14: recovery displays and keyboard previews now conceal text before
+clearing, transfer or rendering, and reveal it only after a complete update.
+Android can retain its own text copy when a TextWatcher/platform operation
+refuses clearing, even after the owned character array has been wiped. Both
+direct clear/transfer failures and post-render failures now leave those copies
+hidden. The keyboard remains usable and a successful later update restores its
+preview. Existing bounds, ownership, zeroization and primary/cleanup failure
+propagation remain intact; no additional worker, timer or secret copy is added.
+This does not claim erasure of all framework/provider/GPU copies.
+
+Five original device regressions fail at the visibility assertion after first
+proving the public copied text survived and the owned array was cleared. A sixth
+regression also proves ordinary text callbacks must see the view concealed;
+all six fail on the old implementation. Final recovery-view suites pass all
+18 tests on API 35/36 in 29.018/17.466 seconds. Fresh API 30 passes those plus
+the actual MainActivity background-render-failure and worker-admission/retry
+tests: 20 tests in 2.453 seconds. The background test now explicitly requires
+the recovery preview to remain hidden after its failed clear. Public markers
+only are used; positive hardware custody is not claimed.
+
+Android/JVM tests, debug/release/test builds and strict lint pass, including
+a final test build/lint after the activity assertion was added. Five relevant
+native mnemonic, confirmation, custody-policy, secret-failure and JNI-key
+ASan/UBSan/LSan groups pass. Bounded mnemonic fuzzing completes 1605946 cases
+in 121 seconds without a finding (256-byte inputs, five-second cases, 512 MiB
+RSS cap; observed 248 MiB). Fuzzer SHA256 is
+`5d9686e46bcb5dbd5230b1b584e3dba1414e840cb6d1ed7f1db1ade2dd7ddb05`.
+Both production ABI libraries remain byte-identical to the request-separator
+milestone; no C or consensus logic changes.
+
+Fixture isolation, architecture and 16 KiB APK native alignment pass. The
+locally signed minified APK is
+`53094c7275614bca7b0a6f57655d3b01988d00ad3cec7992cb60da0699fcfacb`;
+every unsigned ZIP entry preserves its bytes after signing. Its full fresh
+API 30 camera acceptance passes in 9.416 seconds; this is scanner/startup
+regression evidence, not minified recovery or hardware-custody acceptance.
+The isolated emulator exits normally through the qualified reaping wrapper;
+the original 26 ADB zombies and their live parents remain unchanged. Baseline
+failures, exact source/APKs and all evidence are retained in
+`.cache/android-wallet/secret-concealment-20260914/`.

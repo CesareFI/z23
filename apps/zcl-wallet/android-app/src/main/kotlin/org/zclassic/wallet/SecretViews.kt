@@ -38,6 +38,7 @@ internal class RecoveryWordsView(context: Context) : TextView(context) {
             words = ownedWords
             require(ownedWords.size <= 215) { "Recovery display exceeds its bound" }
             setText(ownedWords, 0, ownedWords.size)
+            visibility = VISIBLE
         } catch (problem: Throwable) {
             // Ownership starts at entry, even if clearing the old display
             // fails before the incoming array can become this view's field.
@@ -51,7 +52,10 @@ internal class RecoveryWordsView(context: Context) : TextView(context) {
     fun clearSecret() {
         val previous = words
         words = null
-        try { text = "" } finally { previous?.fill('\u0000') }
+        // TextView may retain its own copy if clearing fails. Conceal it before
+        // calling the framework; only a complete later show may reveal it.
+        try { visibility = INVISIBLE; text = "" }
+        finally { previous?.fill('\u0000') }
     }
 
     override fun dispatchSaveInstanceState(container: SparseArray<Parcelable>) = Unit
@@ -118,7 +122,11 @@ internal class RecoveryInputView(context: Context) : LinearLayout(context) {
     }
 
     private fun updatePreview() {
-        try { preview.setText(characters, 0, length) }
+        try {
+            preview.visibility = INVISIBLE
+            preview.setText(characters, 0, length)
+            preview.visibility = VISIBLE
+        }
         catch (problem: Throwable) {
             try { clearSecret() }
             catch (cleanup: Throwable) { if (cleanup !== problem) problem.addSuppressed(cleanup) }
@@ -133,6 +141,7 @@ internal class RecoveryInputView(context: Context) : LinearLayout(context) {
             // Clear rendering before allocating a transferred copy. A failed
             // clear cannot strand that copy, and allocation failure still wipes
             // the original buffer through finally.
+            preview.visibility = INVISIBLE
             preview.text = ""
             return characters.copyOf(count)
         } finally { characters.fill('\u0000') }
@@ -140,7 +149,8 @@ internal class RecoveryInputView(context: Context) : LinearLayout(context) {
 
     fun clearSecret() {
         length = 0
-        try { preview.text = "" } finally { characters.fill('\u0000') }
+        try { preview.visibility = INVISIBLE; preview.text = "" }
+        finally { characters.fill('\u0000') }
     }
 
     override fun dispatchSaveInstanceState(container: SparseArray<Parcelable>) = Unit

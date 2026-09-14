@@ -320,6 +320,7 @@ class WalletFlowInstrumentedTest {
                 val pause = MainActivity::class.java.getDeclaredMethod("onPause").apply { isAccessible = true }
                 assertSame(problem, assertThrows(InvocationTargetException::class.java) { pause.invoke(it) }.cause)
                 assertTrue("Foreground worker survived failed pause rendering", worker.isClosed)
+                assertEquals("Failed background clear left the recovery preview visible", View.INVISIBLE, preview.visibility)
                 assertTrue(queuedWords.all { word -> word == '\u0000' })
                 assertNull(MainActivity::class.java.getDeclaredField("session").apply {
                     isAccessible = true

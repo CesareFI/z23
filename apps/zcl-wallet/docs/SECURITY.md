@@ -56,6 +56,11 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   failed clear still attempts its peer; a persistently refused text clear leaves
   both hidden. Primary and cleanup failures propagate without promoting stale
   values or an incomplete report. This does not qualify any network source.
+* Recovery displays and keyboard previews conceal their text before clearing,
+  transferring or rendering it. Only a complete update reveals the view again.
+  A refused Android text clear still wipes owned characters and leaves retained
+  framework copies hidden. Input failures preserve the usable keyboard and
+  original/cleanup errors. Concealment does not erase every framework or GPU copy.
 
 ## Evidence required before custody release
 
