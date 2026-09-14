@@ -1069,3 +1069,26 @@ exception check; each fails the intended fixture. Bounded record JNI fuzzing
 completes 376,843 runs in 121 seconds without a finding. Architecture passes.
 Android build/lint and real-VM observations are recorded in the progress log.
 Evidence is under `.cache/android-wallet/jni-record-20260914`.
+
+## Public QR/payment JNI fault fixtures — 2026-09-14
+
+Scope: add a single-threaded host fixture/fuzzer for the existing receiving QR
+and payment adapters, plus real Android public-packet tests. No production C,
+parser, provider, protocol, custody or consensus change.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Each fake array has 1682 backing bytes. Read callbacks require offset zero, count 0..1024 and exact agreement with the declared source length. Publication requires a positive count within the backing extent and exact agreement with allocation. The production QR/payment input caps remain 35/1024 and output caps 1682/449. Two uint64 canaries surround the fixed result; bytes beyond successful output retain their marker. Both networks/types, full 200-byte label/message fields and malformed declared lengths are exercised. |
+| Integer overflow/underflow; signed/unsigned conversions | Fuzz size is checked in 4..1029 before subtracting four, copying at most 1025 bytes or narrowing to jsize. Negative and INT32_MAX declared lengths never enter a copy. The fixed maximum-payment prefix is shorter than 64 bytes; adding two 200-byte fields and the nine-byte separator remains below 473 bytes and the 1024-byte input cap. Payment length is at most 449, QR side is checked in 1..41 before multiplication, and all successful sizes fit jsize. Independent amount decoding shifts uint64 by 0..56 bits only. |
+| Use-after-free; double-free; leaks; dangling pointers | No fixture heap allocation, free, retained external reference or asynchronous work. The fixed result represents one JNI return-frame local; each invocation resets the pool. Input snapshots and callback buffers are live for the synchronous call. Returned bytes are inspected only while that fixed object is current. Production returns copied public bytes, with no pinned array or native handle. |
+| NULL dereferences; uninitialized memory | NULL environment/input, preexisting exceptions, all four VM-call faults, NULL without exception and non-NULL with exception are tested. Every ordinary fake callback refuses pending exceptions. Source/result objects initialize completely, including padding. A C projection reference is inspected only after its successful status; stale reference state is never used for a rejected input. Partial reads/writes initialize one byte before raising the modeled exception. |
+| Pointer arithmetic; format strings | Copies and comparisons use checked fixed extents. Source mutation indexes are 0..34; fuzz control reads require four bytes. Payment offsets end at 49+200+200 and QR comparison ends at 1+41*41. No pointer is serialized or constructed from input. Diagnostics are fixed strings with line numbers. strlen reads only fixed NUL-terminated public literals, never a fuzz span. |
+| Stack usage; allocation limits; resource exhaustion | One fixed fake-array snapshot remains below the 4096-byte frame limit. Other fixture buffers/reference objects are fixed process-local storage. Every case has at most four ordinary VM calls; fault cases assert their exact stop ordinal. Fuzz input, time, per-case timeout and RSS are capped; no recursion, VLA, worker, file or network operation enters the harness. Production/test complexity caps remain 10/15, with 456/848 functions checked. |
+| Malformed serialization; races; native lifetime | Invalid lengths/networks, every address-byte NUL mutation, maximum payment projection and generated malformed UTF-8/URI input preserve source bytes and refuse invalid publication. QR module bytes and parsed payment fields are compared to the existing C result: this qualifies JNI projection, not independent parser correctness. All fixture mutable state is host-only and single-threaded. Four isolated source mutants alter QR width, amount byte order, message presence or allocation exception handling; each fails its intended assertion. |
+| Secret leakage and authority | All addresses are public original vectors or zero-hash fixtures; payment labels/messages/amounts are public markers. Device tests use in-memory input copies and Canvas pixels, with independent ZXing decoding, no screenshots/files/wallet/Keystore/camera/network access. They check exact maximum UTF-8 fields and successful calls after refusals. No recovery input, spending key, signature, source verification or payment approval is introduced. |
+
+All 63 native ASan/UBSan/LSan tests pass in 44.78 seconds. Enabled production
+and provider analysis, and separate Clang/GCC analysis of both fixture modes,
+pass without changed thresholds. All four mutation checks fail as intended.
+Bounded fuzz and Android observations are recorded in the progress log. Evidence
+is under `.cache/android-wallet/jni-public-20260914`.

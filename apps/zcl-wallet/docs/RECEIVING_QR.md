@@ -36,9 +36,19 @@ pass the normal QR checksum and decoding checks; no invalid decode is accepted.
 These tests establish standard symbol encoding and synthetic interoperability.
 They do not guarantee every external scanner's detector succeeds for every
 viewing condition. Real-device rendering and camera interoperability remain
-required. The app's C camera decoder and scanning UI are not implemented yet.
+required. The separate C camera decoder and scanning UI have their own
+[bounded capture and public-request acceptance](SCANNING_QR.md).
 
 The Android instrumentation adds Canvas rendering at square/portrait/landscape
 sizes and independent decoding of the resulting in-memory pixels. It uses only
 public fixtures, never an activity screenshot or file, and separately checks
 that an undersized view does not display a cropped QR.
+
+The host JNI fixture/fuzzer now checks the exact width/module projection for
+the original public P2PKH/P2SH address vectors on both networks. It injects
+partial reads/writes, NULL allocation with and without an exception, a returned
+reference with a pending exception, and an already-pending call. Input snapshots,
+fixed result canaries and exact VM-call counts check the adapter boundary; the
+C encoder supplies its projection reference, not an independent QR oracle.
+The Android Canvas oracle also includes both P2SH network vectors at all three
+aspect ratios, retaining the original P2PKH and too-small-view checks.

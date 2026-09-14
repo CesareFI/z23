@@ -1894,3 +1894,35 @@ fetch succeeds without recursive submodule fetching after Tor's referenced
 object is unavailable upstream; the newly fetched parent commits do not change
 this app. No merge, push, C, custody-policy or consensus change. Continue native
 public QR/payment JNI fault coverage and bounded resource/lifetime review.
+
+2026-09-14 public QR/payment JNI continuation: a new host fixture/fuzzer checks
+exact copied projections for both networks and original P2PKH/P2SH vectors,
+maximum 449-byte payment records, partial VM reads/publication, every VM fault
+ordinal, NULL allocations without exceptions, returned references with pending
+exceptions and pending-entry refusal. Fixed input snapshots, result canaries
+and stop counts bound the fake VM. The C result is its projection reference;
+independent symbol decoding remains a separate device/JVM claim.
+
+All 63 native ASan/UBSan/LSan tests pass in 44.78 seconds. Clang/GCC analysis
+passes for enabled code and separately for unit/fuzz fixture modes. All 456
+production and 848 fixture functions remain within the unchanged 10/15 caps.
+Four source mutants alter width, amount byte order, message presence or the
+allocation exception guard; all fail the new fixture. The bounded fuzzer
+completes 423,876 executions in 121 seconds without a finding. The new evidence
+directory was corrected before the first safety invocation could start.
+
+Four Android tests pass on API30 in 5.500 seconds, API35 in 32.611 seconds and
+API36 in 20.359 seconds. Public payment tests independently expect the maximum
+amount, a 200-byte UTF-8 label, a 200-byte message, copied ownership, malformed
+and wrong-network refusal followed by a successful request. Canvas decoding now
+includes P2SH on both networks at three aspect ratios while retaining both
+P2PKH cases and the undersized-view refusal. No wallet, key, camera or endpoint
+is accessed by these tests.
+
+The full JVM suites, debug/release/test builds, strict lint, fixture isolation,
+both ABI page alignment and architecture pass. The unsigned release is
+byte-identical to the prior worker-budget artifact; production code is unchanged.
+Exact saved APK/native fixture hashes recheck. Evidence and the explicit hazard
+review are retained under `.cache/android-wallet/jni-public-20260914` and
+`C_SAFETY_REVIEW.md`. Continue explicit secret ownership and lifecycle review;
+hardware-authenticated custody, physical optics and real networking remain open.

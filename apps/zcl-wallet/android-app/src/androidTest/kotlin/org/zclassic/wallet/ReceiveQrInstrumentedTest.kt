@@ -46,8 +46,10 @@ class ReceiveQrInstrumentedTest {
     }
 
     @Test fun independentDecoderReadsActualAndroidCanvasAtDifferentAspectRatios() {
-        for (network in Network.entries) {
-            val address = TransparentAddress.fromPublicKeyHash(ByteArray(20), network)
+        val addresses = Network.entries.map { TransparentAddress.fromPublicKeyHash(ByteArray(20), it) } +
+            listOf(TransparentAddress.parse("t3VDyGHn9mbyCf448m2cHTu5uXvsJpKHbiZ", Network.MAINNET),
+                TransparentAddress.parse("t2Fbo6DBKKVYw1SfrY8bEgz56hYEhywhEN6", Network.TESTNET))
+        for (address in addresses) {
             for ((width, height) in listOf(205 to 205, 513 to 617, 600 to 287)) {
                 val results = QRCodeMultiReader().decodeMultiple(render(address, width, height),
                     mapOf(DecodeHintType.TRY_HARDER to true))
