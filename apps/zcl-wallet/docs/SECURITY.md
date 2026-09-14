@@ -47,6 +47,11 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   erase operation; it does not allocate a replacement buffer or recycle an image
   that rendering may still reference. Android/provider rendering copies cannot
   all be guaranteed erased. A rejected frame retires the earlier preview.
+* Composite balance/history updates conceal both views before clearing or
+  formatting. Both become visible only after the entire update succeeds. A
+  failed clear still attempts its peer; a persistently refused text clear leaves
+  both hidden. Primary and cleanup failures propagate without promoting stale
+  values or an incomplete report. This does not qualify any network source.
 
 ## Evidence required before custody release
 

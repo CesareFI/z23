@@ -2535,3 +2535,32 @@ passes on fresh API 30 in 9.371 seconds. All 20 unsigned entries remain identica
 after signing. Before/after source, artifacts and logs are retained in
 `.cache/android-wallet/preview-cleanup-20260914/`. The isolated emulator uses
 the qualified reaping adapter and adds no zombies to the original 26.
+
+2026-09-14: composite balance/history rendering now conceals both views before
+any clearing or formatting, then reveals them only after the entire update
+succeeds. Initial clear failures and partial rendering errors attempt cleanup
+of both views. Persistent platform refusal leaves both hidden, and the original
+exception retains both cleanup failures. A later successful update restores
+visibility. No snapshot, source authority, worker, timer or network is added.
+
+Four public TextWatcher regressions fail on the old implementation, including
+retained earlier text, visible partial data and masked primary errors. All four
+pass on API 35/36 in 5.915/2.731 seconds. On API 30, those cases plus the existing
+balance/history lifecycle suites pass together: ten tests in 9.553 seconds,
+including repeated recreation past native registry capacity and cancellation of
+old attempts. No wallet, key, endpoint or authentication is involved.
+
+Android/JVM tests, debug/release/test builds, strict lint, fixture isolation,
+architecture and native alignment pass. Six relevant native sync/JNI/history
+ASan/UBSan/LSan groups pass in 0.17 seconds. The existing bounded sync-watch
+fuzzer completes 68,125 cases in 121 seconds with no finding (4096-byte inputs,
+five-second cases, 512 MiB RSS cap). Exact artifacts and before/after failure
+logs are in `.cache/android-wallet/report-rendering-20260914/`.
+
+The composite report adapter currently serves the debug public fixture; release
+shrinking removes it while live balance networking remains disabled. The entire
+unsigned release APK compares byte-identically to the preview-cleanup milestone,
+so that milestone's exact minified APK and runtime acceptance remain applicable.
+This is display failure acceptance, not network-source or custody qualification.
+The reused isolated emulator exits cleanly through the qualified reaping wrapper
+and leaves the original 26 ADB zombies unchanged.
