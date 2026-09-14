@@ -2994,3 +2994,37 @@ in `.cache/android-wallet/public-key-preflight-20260914/`. Owned emulators shut
 down gracefully; unrelated devices, dirty work and production state remain
 untouched. Work remains on the development branch, locally checkpointed after
 the earlier HTTP 403 remote push refusal.
+
+2026-09-14: platform sessions prepare their bound secret-clearing callback
+during construction, before owning secrets or admitting a worker. Previously
+`close()` allocated that callback before requesting executor shutdown. The
+change removes that allocation site from both ordinary and minified release
+bytecode. It adds one stored reference per session and replaces repeated
+close-time callback allocation with a single construction-time allocation.
+This is evidence of a removed failure point, not an observed real VM OOM or a
+claim that every framework shutdown operation is allocation-free.
+
+A new instrumented regression fails the old implementation because no prepared
+callback exists. It observes the actual callback identity, stages only public
+marker bytes while a worker is active, verifies repeated close preserves them
+until that worker finishes, and then verifies complete clearing and finalizer
+retirement. Its cipher is never initialized or used; the unique fixture path
+is never opened. No key creation, wallet access, authentication bypass or
+hardware custody claim is involved.
+
+All 121 JVM tests pass. Debug/release builds and lint, fixture isolation,
+native alignment and architecture gates pass. Both isolated API 30 and API 36
+emulators pass all 32 selected secret-lifecycle tests plus both existing
+pause/resume and cancellation journeys. The owned emulator launches shut down
+gracefully with exit zero. Both ABI libraries remain byte-identical to the
+preceding checkpoint in debug and release; its 89 native sanitizer groups,
+strict analysis and bounded JNI fuzz campaign remain applicable.
+
+Fresh debug/release APK sizes remain 3559725/613127 bytes. The unsigned release
+APK SHA256 is
+`bfad07116415f30f64110b6b5328f88b7ed27fca54001d8bfe3eb9cc965ddfb7`.
+Before/after bytecode, release mapping, baseline failure, tests and exact
+artifact hashes remain in `.cache/android-wallet/session-close-20260914/`.
+Origin main was fetched and has no new wallet changes. Work remains locally
+checkpointed on the development branch after the earlier HTTP 403 push refusal;
+existing devices, unrelated dirty work and production state remain untouched.

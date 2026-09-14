@@ -45,10 +45,13 @@ internal class WalletPlatformSession(
     // Worker-owned until pool termination. Final cleanup starts only when no
     // worker can access setup; a rejected session has only its empty state.
     private var setup: Setup? = null
+    // Allocate the bound callback while construction still owns no secret or
+    // admitted worker. close() must not need this allocation before shutdown.
+    private val finishSession: () -> Unit = ::clearSetup
 
     fun close() {
         phrases.close()
-        work.close(::clearSetup)
+        work.close(finishSession)
     }
 
     private fun clearSetup() {
