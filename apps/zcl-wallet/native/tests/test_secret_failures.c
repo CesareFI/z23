@@ -12,6 +12,15 @@ static size_t fail_at = SIZE_MAX, calls = 0, cleared_spans = 0;
 static bool key_live;
 static void *normalized_key;
 static size_t normalizations, key_erasures;
+enum { HMAC_CONTEXT, HMAC_BLOCK, HMAC_INNER, HMAC_RESULT, HMAC_SPANS };
+typedef struct {
+    uintptr_t address;
+    size_t length, acquired, erased;
+    bool live;
+} hmac_span;
+static hmac_span hmac_spans[HMAC_SPANS];
+static bool watching_hmac, long_hmac;
+static size_t hmac_hashes, hmac_updates;
 
 int __real_mbedtls_sha512_starts(mbedtls_sha512_context *, int);
 int __real_mbedtls_sha512_update(mbedtls_sha512_context *, const unsigned char *, size_t);
@@ -20,6 +29,83 @@ int __real_mbedtls_sha512(const unsigned char *, size_t, unsigned char *, int);
 int __real_mbedtls_sha256(const unsigned char *, size_t, unsigned char *, int);
 int __real_mbedtls_ripemd160(const unsigned char *, size_t, unsigned char *);
 void __real_mbedtls_platform_zeroize(void *, size_t);
+
+static void acquire_hmac_span(size_t slot, const void *buffer, size_t length)
+{
+    if (slot >= HMAC_SPANS || buffer == NULL) abort();
+    hmac_span *span = &hmac_spans[slot];
+    if (span->live) {
+        /* The same key block is consumed for both inner and outer hashing. */
+        if (slot != HMAC_BLOCK || span->address != (uintptr_t)buffer || span->length != length)
+            abort();
+        return;
+    }
+    /* Address stamps are metadata only. Never retain/dereference a pointer
+     * after the provider call; a missing clear may outlive its stack object. */
+    span->address = (uintptr_t)buffer;
+    span->length = length;
+    span->live = true;
+    ++span->acquired;
+}
+
+static void hmac_start(mbedtls_sha512_context *context)
+{
+    if (!watching_hmac) return;
+    ++hmac_hashes;
+    hmac_updates = 0;
+    if (hmac_hashes > (long_hmac ? 3u : 2u)) abort();
+    acquire_hmac_span(HMAC_CONTEXT, context, sizeof(*context));
+}
+
+static void hmac_update(const unsigned char *bytes, size_t length)
+{
+    if (!watching_hmac) return;
+    if (++hmac_updates > 2) abort();
+    if (long_hmac && hmac_hashes == 1) return; /* Borrowed long-key normalization. */
+    if (hmac_updates == 1) {
+        if (length != 128) abort();
+        acquire_hmac_span(HMAC_BLOCK, bytes, length);
+    } else if (hmac_hashes == (long_hmac ? 3u : 2u)) {
+        if (length != 64) abort();
+        acquire_hmac_span(HMAC_INNER, bytes, length);
+    }
+}
+
+static void hmac_clear(void *buffer, size_t length)
+{
+    if (!watching_hmac) return;
+    for (size_t i = 0; i < HMAC_SPANS; ++i) {
+        hmac_span *span = &hmac_spans[i];
+        if (!span->live || span->address != (uintptr_t)buffer) continue;
+        if (length != span->length) abort();
+        /* The outer observer has checked every byte of this live zeroizer
+         * argument after the real clear. Retire before the object can expire. */
+        span->live = false;
+        span->address = 0;
+        ++span->erased;
+    }
+}
+
+static bool hmac_erased(void)
+{
+    const size_t expected[HMAC_SPANS] = {(calls + 3) / 4,
+        calls >= (long_hmac ? 6u : 2u), calls >= (long_hmac ? 11u : 7u), calls / 4};
+    for (size_t i = 0; i < HMAC_SPANS; ++i) {
+        const hmac_span *span = &hmac_spans[i];
+        if (span->live || span->acquired != expected[i] || span->erased != expected[i])
+            return false;
+    }
+    return true;
+}
+
+static void watch_hmac(size_t key_length)
+{
+    if (watching_hmac) abort();
+    memset(hmac_spans, 0, sizeof(hmac_spans));
+    long_hmac = key_length > 128;
+    hmac_hashes = hmac_updates = 0;
+    watching_hmac = true;
+}
 
 static int fail_now(void)
 {
@@ -40,17 +126,22 @@ int __wrap_mbedtls_sha512(const unsigned char *input, size_t length, unsigned ch
 
 int __wrap_mbedtls_sha512_starts(mbedtls_sha512_context *context, int is384)
 {
+    hmac_start(context);
     return fail_now() ? -1 : __real_mbedtls_sha512_starts(context, is384);
 }
 
 int __wrap_mbedtls_sha512_update(mbedtls_sha512_context *context,
                                 const unsigned char *bytes, size_t length)
 {
+    hmac_update(bytes, length);
     return fail_now() ? -1 : __real_mbedtls_sha512_update(context, bytes, length);
 }
 
 int __wrap_mbedtls_sha512_finish(mbedtls_sha512_context *context, unsigned char *output)
 {
+    if (output == NULL) abort();
+    if (watching_hmac) acquire_hmac_span(HMAC_RESULT, output, 64);
+    memset(output, 0x42, 64); /* Failure may follow a partial secret write. */
     return fail_now() ? -1 : __real_mbedtls_sha512_finish(context, output);
 }
 
@@ -73,6 +164,7 @@ void __wrap_mbedtls_platform_zeroize(void *buffer, size_t length)
         if (bytes[i] != 0)
             abort();
     }
+    hmac_clear(buffer, length);
     if (key_live && buffer == normalized_key) {
         if (length != 64) abort();
         key_live = false;
@@ -103,10 +195,19 @@ static int hmac_failures(void)
         size_t steps = key_size == 32 ? 8 : 12;
         for (size_t fail = 1; fail <= steps; ++fail) {
             inject(fail);
+            watch_hmac(key_size);
             CHECK(zcl_hmac_sha512(key, key_size, input, sizeof(input), output, sizeof(output)) == ZCL_CRYPTO_FAILURE);
             CHECK(calls == fail && cleared_spans >= 4);
             CHECK(memcmp(output, before, sizeof(output)) == 0);
+            CHECK(hmac_erased());
+            watching_hmac = false;
         }
+        inject(SIZE_MAX);
+        watch_hmac(key_size);
+        CHECK(zcl_hmac_sha512(key, key_size, input, sizeof(input), output, sizeof(output)) == ZCL_OK);
+        CHECK(calls == steps && hmac_erased());
+        watching_hmac = false;
+        memcpy(output, before, sizeof(output));
     }
     return 0;
 }

@@ -1786,3 +1786,41 @@ and hash. These container measurements are separate from the source object's
 small code increase and make no phone CPU/RSS claim. Initial/final archives,
 entry hashes, stack reports and acceptance logs are retained in
 `.cache/android-wallet/public-key-preflight-20260914/` in the isolated worktree.
+
+## 2026-09-14: exact HMAC scratch-erasure evidence
+
+Reviewed the host-only `test_secret_failures.c` change. Production HMAC,
+providers, JNI and Android code are unchanged. Four variants shortening a
+key-block, inner-digest, hash-result or context clear by one byte pass the old
+fixture and abort at the new exact-span assertion. Bounded diagnostic
+backtraces identify that assertion without printing frame argument values.
+
+During direct short/long-key HMAC cases, provider start observes the context,
+update observes the reused key block and outer hash's inner digest, and finish
+observes the hash-result destination. The finish wrapper writes a public
+nonzero marker before a synthetic failure. Every observed object must retire
+through a complete real zeroizer call. Observations are limited to objects
+that reach those provider boundaries: an early failure can precede observation
+of the key block or inner digest. This fixture does not establish erasure of
+all provider temporaries, managed copies or hardware state.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Four fixed observation slots bind context size and 128/64/64-byte spans. Slot and non-NULL pointer checks precede acquisition. Update length checks distinguish the full HMAC key block and inner digest. The existing zeroizer wrapper reads only its live argument after real erasure; the new observer requires its length to equal the previously observed span. Finish writes exactly 64 bytes to the known SHA512 output destination, including synthetic failure. |
+| Integer overflow/underflow; signed/unsigned conversions | Integer address stamps use uintptr_t only for identity, never arithmetic or conversion back to a pointer. Direct HMAC cases have at most three hashes, two updates per hash and twelve counted provider calls. The bounded call count makes the expected-context `(calls + 3) / 4` calculation safe. Span counts reset between 22 finite cases; length constants and comparisons use size_t-compatible values. |
+| Use-after-free; double-free; leaks; dangling pointers | The new observer retains only integer address stamps, lengths, counts and flags. Missing cleanup leaves inspectable metadata, without any later expired-pointer access. A live context/result cannot be acquired again; the key block may be observed twice only at the same address and length before its final clear. Retirement clears its stamp. No allocation or new free is added; provider context cleanup can run twice without double-retiring an already cleared observation. |
+| NULL dereferences; uninitialized memory | All static metadata initializes to zero, and each direct case explicitly resets observation before use. Acquisition checks NULL. Existing key/input/output fixtures initialize before calls. The SHA512 finish wrapper rejects NULL output and writes a nonzero public marker, preventing failure checks from relying on a provider leaving untouched, already-zero scratch. |
+| Pointer arithmetic; format strings | The observer performs no pointer arithmetic, stores no borrowed pointer and copies no secret data. Existing zero validation indexes only the currently supplied live span. Diagnostics remain fixed text, source lines and public case status. Mutation backtraces hide frame arguments and never print observed bytes or address stamps. |
+| Stack usage; allocation limits; resource exhaustion | The four-slot table is 160 bytes on the measured 64-bit host; two size counters and two boolean flags are additional. Optimized protected host frames measure 664 bytes for main and 24 for the zeroizer wrapper, with provider/caller frames additional. No heap, VLA, recursion, worker, retry or external-input parser is added. The expanded focused sanitizer group completes in 0.83 seconds. APK and production memory budgets are unchanged. |
+| Malformed input; races; failure behavior | Twenty direct provider failure positions and two successful HMACs cover both a short key and a key requiring normalization. They require exact observed acquire/retire counts and unchanged caller output on failure. The existing mnemonic/seed/address failure matrix also receives partial finish writes. Mutable observation state belongs only to this single-threaded host executable and is disabled outside direct HMAC cases. Test complexity remains at most 15 without suppressions. |
+| Secret leakage and authority | Inputs are unfunded public fixtures. Actual erasure precedes byte inspection; captured secret contents are neither retained nor logged. All four deliberately incomplete clears pass the old fixture and fail the new owner/span assertion. No production cryptography, consensus, custody policy, wallet record, transaction validation, network, signing enablement or Android authority changes. |
+
+Strict Clang/GCC analysis of the edited fixture passes. Source, before/after
+mutants, diagnostic backtraces, measured budgets and exact artifacts remain in
+`.cache/android-wallet/hmac-erasure-20260914/` in the isolated development worktree.
+
+All 89 native ASan/UBSan/LSan groups pass in 63.84 seconds, including the expanded
+secret-failure group. Production/test complexity gates, all 121 JVM tests,
+Android builds/lint, fixture isolation, native alignment and architecture pass.
+All three APKs compare byte-identically to the preceding camera checkpoint,
+preserving its exact API 30/36 device evidence; native/fuzzer code is unchanged.

@@ -3063,3 +3063,31 @@ artifacts remain in `.cache/android-wallet/canvas-restore-20260914/`. Origin
 main was fetched without new wallet changes. The development branch remains
 local after the earlier HTTP 403 push refusal; production and unrelated work
 remain untouched.
+
+2026-09-14: HMAC failure tests now bind erasure to the actual observed key block,
+inner digest, hash-result destination and SHA512 context. The existing fixture
+counted clearing calls but accepted all four variants that shortened one of
+those clears by a byte. All four now abort at the exact-span assertion; bounded
+backtraces verify the intended site with argument values hidden.
+
+The observer stores only integer address stamps and counts, then checks the
+real zeroizer's live argument. It never reads expired stack memory or retains
+secret contents. Twenty failure positions plus short/long-key successful cases
+require exact acquire/retire counts. SHA512 finish now writes a public nonzero
+marker before a synthetic provider failure, and failed caller outputs remain
+unchanged. An early failure may precede provider observation of the block or
+inner digest; the claim covers the spans actually observed, not every possible
+provider/VM/hardware copy. No production implementation changes.
+
+The full hazard review is in C_SAFETY_REVIEW.md. Strict Clang/GCC fixture and
+production analysis, unchanged complexity caps and all 89 ASan/UBSan/LSan groups
+pass; the full registered run takes 63.84 seconds. All 121 JVM tests, Android
+builds/lint, fixture isolation, native alignment and architecture pass. All
+three APKs remain byte-identical to the preceding camera checkpoint, preserving
+its exact device evidence and the unchanged native fuzz evidence. No emulator
+or operator state is touched by this test-only change.
+
+Source, four pairs of mutation runs, diagnostic backtraces, measured test
+budgets and exact artifacts remain in `.cache/android-wallet/hmac-erasure-20260914/`.
+Origin main was fetched without new wallet changes. The development branch
+remains local after the earlier HTTP 403 remote push refusal.
