@@ -990,6 +990,23 @@ if(NOT ANDROID)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
         target_compile_options(receive_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         add_test(NAME wallet_receive_oracle COMMAND receive_oracle_tests)
+        add_executable(hmac_oracle_tests tests/test_hmac_oracle.c)
+        target_include_directories(hmac_oracle_tests PRIVATE src)
+        target_link_libraries(hmac_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
+        target_compile_options(hmac_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_hmac_oracle COMMAND hmac_oracle_tests)
+        set_tests_properties(wallet_hmac_oracle PROPERTIES TIMEOUT 15)
+        if(ZCL_FUZZ)
+            add_executable(fuzz_hmac tests/test_hmac_oracle.c)
+            target_include_directories(fuzz_hmac PRIVATE src)
+            target_compile_definitions(fuzz_hmac PRIVATE ZCL_HMAC_FUZZ=1)
+            target_link_libraries(fuzz_hmac PRIVATE zcl_wallet_core OpenSSL::Crypto)
+            target_compile_options(fuzz_hmac PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+                -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+            target_link_options(fuzz_hmac PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
         add_executable(mnemonic_seed_oracle_tests tests/test_mnemonic_seed_oracle.c)
         target_link_libraries(mnemonic_seed_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
         target_compile_options(mnemonic_seed_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror

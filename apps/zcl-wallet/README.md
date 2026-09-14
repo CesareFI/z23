@@ -109,6 +109,19 @@ LeakSanitizer needs a host that permits its process inspection. Do not disable
 it to call a restricted sandbox run successful. The manual pre-commit review is
 [C_SAFETY_REVIEW.md](docs/C_SAFETY_REVIEW.md).
 
+Independent host crypto comparisons use the optional `ZCL_ORACLE` profile,
+which requires OpenSSL 3 and libsodium development packages. For example:
+
+```sh
+cmake -S native -B native/build/oracle -DCMAKE_C_COMPILER=clang-20 -DZCL_SANITIZE=ON -DZCL_ORACLE=ON
+cmake --build native/build/oracle --target hmac_oracle_tests
+ctest --test-dir native/build/oracle -R '^wallet_hmac_oracle$' --output-on-failure
+```
+
+This compares bounded binary keys/messages against OpenSSL and checks input
+preservation and output guards. Adding `-DZCL_FUZZ=ON` builds the `fuzz_hmac`
+target for differential fuzzing. These test dependencies do not enter Android.
+
 ## Ordered milestones
 
 1. Exact money/address/QR parsing; on-device create/restore; authenticated

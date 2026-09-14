@@ -3133,3 +3133,33 @@ down gracefully with exit zero, leaving the original devices and 26 ADB zombies
 unchanged. The earlier dirty camera files remain byte-identical in their source
 worktree. Main was fetched without new wallet changes; work remains on the
 local development branch after the earlier HTTP 403 push refusal.
+
+2026-09-14: optional host HMAC verification now compares arbitrary bounded
+binary keys/messages with independent OpenSSL 3.0.13. The deterministic test
+covers every supported key length, nine message-length boundaries and three
+patterns: 6939 exact comparisons with input-preservation and output-canary
+checks. It shares no app normalization, padding or hash implementation when
+computing the expected MAC. Existing RFC vectors and erasure tests remain.
+
+Four temporary variants—incorrect normalization at 128 bytes, truncating a
+512-byte message or 256-byte key, and clearing a borrowed 256-byte key—pass the
+prior focused HMAC executable but fail the new oracle with its explicit mismatch
+result. This does not claim they all evade every existing wallet test. The new
+differential fuzzer completes 5824641 runs in 121 seconds without a finding,
+with a 770-byte input cap, five-second cases and 512 MiB RSS cap (279 MiB observed).
+The four independent HMAC/seed/address/change-state groups pass in 5.75 seconds.
+
+All 89 ordinary ASan/UBSan/LSan groups pass in 63.99 seconds. Strict Clang/GCC
+checks of both new compilation profiles, unchanged complexity caps, all 121 JVM
+tests, Android builds/lint, fixture isolation, native alignment and architecture
+pass. Production source and all three APKs remain unchanged, preserving the
+preceding device evidence and 613415-byte unsigned release. OpenSSL is linked
+only into the existing optional host oracle profile, never Android. README
+instructions expose the registered test and bounded fuzz target.
+
+The full hazard review, scope limits and measured stack frames are recorded in
+C_SAFETY_REVIEW.md. Source, four pairs of mutation runs, fuzz corpus, reports,
+exact test/fuzzer/libcrypto hashes and unchanged APK identities remain in
+`.cache/android-wallet/hmac-oracle-20260914/`. No emulator or operator state was
+touched. Main was fetched without new wallet changes; the branch remains local
+after the earlier HTTP 403 remote push refusal.
