@@ -33,6 +33,20 @@ the owner destroys, clears and frees it through one cleanup path. No live
 private-key native handle crosses JNI. Deterministic failure tests use published
 fixtures and test-only injected failure points, never production seeds.
 
+Secret JNI outputs acquire newly allocated array elements before copying any
+entropy or recovery text. Acquisition failure leaves the unpublished array
+empty. A directly pinned array is released once; a VM copy is committed,
+explicitly zeroized, then released with `JNI_ABORT` so the erased copy cannot
+overwrite the returned array. These short synchronous transfers hold at most
+32 bytes or 215 Java characters. No crypto, callback, blocking operation or
+retained native handle runs while elements are owned. Native input/scratch and
+the returned managed array keep their separate clearing obligations. This uses
+the documented [JNI release modes](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/functions.html#releaseprimitivetypearrayelements-routines)
+and [Android array ownership rules](https://developer.android.com/ndk/guides/jni-tips#primitive-arrays).
+Failure injection proves the adapter's handling; it does not establish that
+Android has exhibited a partially throwing region write, or that all internal
+VM/GC/provider copies can be erased.
+
 Read-only networking receives public address records only. It cannot call secret
 storage or a signer. Signing, when implemented, requires a separate authenticated
 operation and validates the complete transaction before authorization.

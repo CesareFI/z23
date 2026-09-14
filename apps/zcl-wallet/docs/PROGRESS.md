@@ -2730,3 +2730,48 @@ the original 26 ADB zombies and live parents remain unchanged. Standards,
 source, mutation/fuzz evidence and artifacts are in
 `.cache/android-wallet/utf8-reference-20260914/`. The full hazard review and
 primary source links are in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).
+
+2026-09-14: secret JNI outputs now complete array allocation/acquisition before
+writing entropy or recovery words. Previously an injected region-write exception
+after copying left secret data in an unpublished managed array, beyond the
+caller's cleanup. A new regression reproduces that fault-model gap; this is not
+an observed ART vulnerability. Copied elements are now committed, erased while
+owned, then released without overwriting the result. Direct elements release
+once. Original exceptions remain pending, and failed acquisition leaves only
+zero output storage. No JNI signature, key derivation, custody policy, disk
+format, network or consensus behavior changes.
+
+The existing fake-VM unit/fuzzer now checks both copy choices, NULL acquisition
+with and without exceptions, unexpected non-NULL acquisition with an exception,
+exact output, no surviving element pointer, complete VM-copy erasure and native
+encode/decode scratch cleanup. Eight removed-clear/release/commit mutations fail
+intended assertions. Bounded fuzzing completes 48393 cases in 121 seconds without
+a finding (217-byte input limit, five-second cases, 512 MiB RSS cap).
+
+Clang/GCC analysis and production/test complexity limits 10/15 pass without
+suppression. All 89 ASan/UBSan/LSan groups pass. All 118 JVM tests, Android debug
+and unsigned release builds, debug/release lint, fixture isolation, 16 KiB native
+alignment and architecture checks pass. Fresh API 30 and API 36 x86-64 emulators
+with CheckJNI enabled each pass 24 key/record/secret-view/authentication-window
+tests, including every supported entropy size with nonzero public fixtures.
+Two additional API 36 wallet lifecycle tests pass in 3.096 seconds: repeated
+foreground replacement remains bounded, and a pause-rendering failure still
+closes the worker and clears queued recovery input. These checks qualify neither
+physical ARM64 behavior nor successful hardware-authenticated custody.
+
+The 430-byte native character staging array is removed. With Clang 20 -Os and
+stack protection, the recoveryPhrase frame falls from 744 to 344 bytes. The
+translation unit's object text grows by 453 bytes to handle element ownership;
+this is not a total APK/RSS improvement claim. VM acquisition can allocate one
+bounded copy, at most 430 bytes, and its failure is checked. The detailed hazard
+review and JNI ownership sources are in C_SAFETY_REVIEW.md and KEY_DESIGN.md.
+
+Exact logs, initial failures, mutations, source, stack measurements and artifact
+hashes remain in the isolated development worktree's
+`.cache/android-wallet/jni-secret-transfer-20260914/`. The unsigned release APK
+SHA256 is `de0d00cf58f3d12019b17815e50f90c35785a1f18922f50d315259356acd63d2`.
+Both fresh emulators use the qualified reaping wrapper and receive graceful
+shutdown; the pre-existing emulators and unfinished camera/storage work remain
+untouched. The first instrumentation invocation used an incorrect test package
+name and refused before running tests; corrected explicit-package runs above
+passed. TLS remains quarantined and physical custody acceptance remains open.

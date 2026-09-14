@@ -1,6 +1,8 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #undef zcl_secure_zero
 #undef zcl_random_bytes
+#undef zcl_mnemonic_encode
+#undef zcl_mnemonic_decode
 #include "jni_support.h"
 #include "zcl_keys.h"
 #include "zcl_wallet_record.h"
@@ -31,6 +33,9 @@ static bool header_ready;
 static touched_span touched[8];
 static size_t touched_count;
 static bool pending, fail_random, null_without_exception;
+static bool copy_elements = true, committed, nonnull_elements;
+static fake_array element_copy;
+static void *active_elements;
 static unsigned fail_call, vm_calls, random_calls, active_operation;
 #define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -47,6 +52,20 @@ static void track(const void *pointer, size_t length)
     }
     CHECK(touched_count < sizeof(touched) / sizeof(touched[0]));
     touched[touched_count++] = (touched_span){pointer, length, false};
+}
+
+zcl_status zcl_jni_key_test_encode(const uint8_t *input, size_t length,
+    uint8_t *output, size_t capacity, size_t *used)
+{
+    track(output, capacity);
+    return zcl_mnemonic_encode(input, length, output, capacity, used);
+}
+
+zcl_status zcl_jni_key_test_decode(const uint8_t *input, size_t length,
+    uint8_t *output, size_t capacity, size_t *used)
+{
+    track(output, capacity);
+    return zcl_mnemonic_decode(input, length, output, capacity, used);
 }
 
 void zcl_jni_key_test_zero(void *pointer, size_t length)
@@ -168,11 +187,73 @@ static void JNICALL set_chars(JNIEnv *env, jcharArray input, jsize start, jsize 
     (void)vm_fault();
 }
 
+static void *get_elements(jarray input, jboolean *copied, array_kind kind)
+{
+    CHECK(input == (jarray)&result_array && copied != NULL && active_elements == NULL);
+    CHECK(result_array.kind == kind);
+    if (vm_fault() && !nonnull_elements) {
+        if (null_without_exception) pending = false;
+        return NULL;
+    }
+    *copied = copy_elements ? JNI_TRUE : JNI_FALSE;
+    element_copy = result_array;
+    committed = false;
+    fake_array *array = copy_elements ? &element_copy : &result_array;
+    active_elements = kind == BYTES ? (void *)array->data.bytes : (void *)array->data.chars;
+    return active_elements;
+}
+
+static jbyte *JNICALL get_byte_elements(JNIEnv *env, jbyteArray input, jboolean *copied)
+{
+    (void)env;
+    return get_elements(input, copied, BYTES);
+}
+
+static jchar *JNICALL get_char_elements(JNIEnv *env, jcharArray input, jboolean *copied)
+{
+    (void)env;
+    return get_elements(input, copied, CHARS);
+}
+
+static void release_elements(jarray input, void *elements, jint mode, array_kind kind)
+{
+    CHECK(input == (jarray)&result_array && result_array.kind == kind);
+    CHECK(elements != NULL && elements == active_elements);
+    if (copy_elements) {
+        if (mode == JNI_COMMIT) {
+            CHECK(!committed && !pending);
+            result_array = element_copy;
+            committed = true;
+            return;
+        }
+        CHECK(mode == JNI_ABORT);
+        const uint8_t *bytes = (const uint8_t *)&element_copy.data;
+        for (size_t i = 0; i < sizeof(element_copy.data); ++i) CHECK(bytes[i] == 0);
+    } else {
+        CHECK(mode == 0 || mode == JNI_ABORT);
+    }
+    active_elements = NULL;
+}
+
+static void JNICALL release_bytes(JNIEnv *env, jbyteArray input, jbyte *elements, jint mode)
+{
+    (void)env;
+    release_elements(input, elements, mode, BYTES);
+}
+
+static void JNICALL release_chars(JNIEnv *env, jcharArray input, jchar *elements, jint mode)
+{
+    (void)env;
+    release_elements(input, elements, mode, CHARS);
+}
+
 static const struct JNINativeInterface_ table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length,
     .GetByteArrayRegion = get_bytes, .GetCharArrayRegion = get_chars,
     .NewByteArray = new_bytes, .NewCharArray = new_chars,
-    .SetByteArrayRegion = set_bytes, .SetCharArrayRegion = set_chars
+    .SetByteArrayRegion = set_bytes, .SetCharArrayRegion = set_chars,
+    .GetByteArrayElements = get_byte_elements, .GetCharArrayElements = get_char_elements,
+    .ReleaseByteArrayElements = release_bytes, .ReleaseCharArrayElements = release_chars
 };
 static JNIEnv environment = &table;
 
@@ -190,9 +271,11 @@ static void prepare_header(void)
 
 static void prepare(void)
 {
+    CHECK(active_elements == NULL);
     touched_count = 0;
     memset(touched, 0, sizeof(touched));
     pending = fail_random = null_without_exception = false;
+    nonnull_elements = false;
     fail_call = vm_calls = random_calls = 0;
     active_operation = 0;
     entropy = (fake_array){.kind = BYTES, .length = 16};
@@ -204,6 +287,7 @@ static void prepare(void)
 
 static void verify_cleanup(void)
 {
+    CHECK(active_elements == NULL);
     for (size_t i = 0; i < touched_count; ++i) CHECK(touched[i].cleared);
 }
 
@@ -232,6 +316,11 @@ static bool run(unsigned operation)
     memcpy(&inputs[2], &header, sizeof(header));
     const bool accepted = invoke(operation, &environment, (jbyteArray)&entropy, (jcharArray)&phrase, 0, 0);
     verify_cleanup();
+    /* An unpublished VM result has no managed caller to clear its secrets. */
+    if (!accepted && operation < 3) {
+        const uint8_t *bytes = (const uint8_t *)&result_array.data;
+        for (size_t i = 0; i < sizeof(result_array.data); ++i) CHECK(bytes[i] == 0);
+    }
     CHECK(memcmp(&inputs[0], &entropy, sizeof(entropy)) == 0);
     CHECK(memcmp(&inputs[1], &phrase, sizeof(phrase)) == 0);
     CHECK(memcmp(&inputs[2], &header, sizeof(header)) == 0);
@@ -332,6 +421,17 @@ static void vm_failures(void)
     }
 }
 
+static void element_acquisition_failures(void)
+{
+    const unsigned calls[] = {2, 4, 4};
+    for (unsigned operation = 0; operation < 3; ++operation) {
+        prepare(); fail_call = calls[operation]; null_without_exception = true;
+        CHECK(!run(operation) && !pending && vm_calls == calls[operation]);
+        prepare(); fail_call = calls[operation]; nonnull_elements = true;
+        CHECK(!run(operation) && pending && vm_calls == calls[operation]);
+    }
+}
+
 static void invalid_inputs(void)
 {
     const jsize invalid[] = {-1, 0, 33, 216, INT32_MAX};
@@ -380,7 +480,11 @@ static void invalid_headers(void)
 
 int main(void)
 {
-    pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures(); invalid_inputs(); invalid_headers();
+    for (unsigned copied = 0; copied < 2; ++copied) {
+        copy_elements = copied != 0;
+        pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures(); invalid_inputs(); invalid_headers();
+        element_acquisition_failures();
+    }
     puts("JNI key exception and secret cleanup checks passed");
     return 0;
 }
@@ -441,6 +545,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size < 2 || size > 217) return 0;
     prepare();
+    copy_elements = (data[1] & 0x10) != 0;
+    nonnull_elements = (data[1] & 0x08) != 0;
     const unsigned operation = data[0] % OPERATION_COUNT;
     fail_call = data[1] % 8;
     pending = (data[1] & 0x80) != 0;

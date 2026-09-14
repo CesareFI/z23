@@ -1595,3 +1595,38 @@ pass. All three application/test APKs compare byte-identically with the prior
 review-concealment milestone, retaining that exact device evidence. All source,
 standards, mutants, seeds and artifacts are in
 `.cache/android-wallet/utf8-reference-20260914/`.
+
+## 2026-09-14: secret JNI output ownership
+
+Reviewed `jni_keys.c`, its existing fake-VM unit/fuzzer, and the public Android
+key fixture. Injecting a region-write exception after copying previously left
+an unpublished managed entropy/phrase array containing secrets. The caller had
+no result to clear. The new regression fails the prior adapter. This is a
+fault-model finding, not an observed ART exploit or a claim that valid region
+indexes normally throw.
+
+The three secret-output operations now acquire their exact new array's elements
+before copying. JNI release has no specified exception result. Copies use
+COMMIT, explicit zeroization, then ABORT; directly pinned elements release once.
+There is no added JNI export, key scheme, authentication policy, storage format,
+network connection, signature or consensus predicate.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Private factories check non-NULL input/environment and fixed maxima of 32 bytes or 215 characters before narrowing lengths or allocating. The array has exactly that length. Byte copying and the character loop stay in that span. Existing input region bounds remain unchanged. Fake arrays have 216 elements and enforce array identity, element type, mode and complete-span erasure. |
+| Integer overflow/underflow; signed/unsigned conversions | Length is at most 215 before conversion to jsize. Character erasure is at most 215 times sizeof(jchar), 430 bytes on JNI. No unchecked external arithmetic, negative size, variable-length array or offset is introduced. Unit/fuzzer selectors remain bounded unsigned values. |
+| Use-after-free; double-free; leaks; dangling pointers | The VM owns allocation. A checked successful acquisition has one terminal release on every path, including an unexpected pending exception. A copied span remains owned through COMMIT, is erased while live, and is freed only by final ABORT. A direct span is never erased or released twice. No pointer escapes. The fixture checks release identity/mode, absence of a live pointer on return, and zero copies before simulated free. Native secret observers retire borrowed pointers during live zero callbacks; post-return checks inspect flags only. |
+| NULL dereferences; uninitialized memory | NULL allocation/acquisition results refuse with or without an exception. Pending exceptions stay pending. A non-NULL acquisition with an injected pending exception releases untouched zero elements. JNI-created arrays start zeroed; the isCopy flag initializes false and is supplied to the VM. Native entropy/text scratch retains its unconditional cleanup. |
+| Pointer arithmetic; format strings | Byte memcpy and indexed jchar stores use the exact bounded allocation. Typed JNI accessors supply correctly aligned pointers; no cast to an incompatible element type or serialized pointer exists. Fixtures use aligned union storage. No production formatting/logging is added. Test diagnostics print only a fixed message and source line. |
+| Stack usage; allocation limits; resource exhaustion | The 430-byte automatic character staging array is removed. Clang 20, -Os, stack protection measures recoveryPhrase at 344 bytes versus 744 before; unchanged read_phrase remains 488 bytes. The new entropy helper is 72 bytes, additional to its caller and VM/provider frames. This translation unit's object text grows 2129 to 2582 bytes; this is not an APK-size or total RSS measurement. The existing single output array remains; VM element acquisition may add one checked copy of at most 430 bytes. No app heap allocator, loop retry, queue, thread, recursion or retained pool is added. |
+| Malformed input; races; lifetimes | Existing mnemonic validation still precedes publication. Only fresh unshared output arrays are pinned/copied, briefly and synchronously. No crypto, UI callback, blocking work or critical-array region is introduced. Failures cannot transfer array ownership to a caller; successful arrays must still be cleared by that caller. Fake-VM tests cover both copy choices, all acquisition faults, NULL without exception, unexpected non-NULL with exception, invalid lengths/characters and continued VM usability. |
+| Secret leakage and authority | Every copied VM element span is erased before release, while the committed managed result remains exact. Entropy and encoded/decoded scratch clearing is independently observed through test-only provider wrappers. Eight removed-clear/release/commit mutations fail assertions. No secret string, log, crash attachment, clipboard or temporary wallet is introduced. VM/GC/provider internals can retain copies outside these accessible spans; no comprehensive erasure or hardware custody claim is made. |
+
+The JNI [specification's array release contract](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/functions.html#releaseprimitivetypearrayelements-routines)
+and [Android JNI ownership guidance](https://developer.android.com/ndk/guides/jni-tips#primitive-arrays)
+were checked before implementation. Existing production/test complexity limits
+remain 10/15, with no warnings suppressed. Exact failures, mutations, source,
+stack reports and accepted artifacts are retained in this worktree's
+`.cache/android-wallet/jni-secret-transfer-20260914/`. Device/suite results are
+recorded in `PROGRESS.md`; emulator evidence does not qualify physical ARM64
+custody or eliminate the separate hardware acceptance gate.

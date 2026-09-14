@@ -445,6 +445,7 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_include_directories(jni_key_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_key_tests PRIVATE zcl_wallet_core)
         target_compile_definitions(jni_key_tests PRIVATE
+            zcl_mnemonic_encode=zcl_jni_key_test_encode zcl_mnemonic_decode=zcl_jni_key_test_decode
             zcl_secure_zero=zcl_jni_key_test_zero zcl_random_bytes=zcl_jni_key_test_random)
         target_compile_options(jni_key_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
@@ -496,6 +497,7 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_include_directories(fuzz_jni_keys PRIVATE src ${JNI_INCLUDE_DIRS})
             target_link_libraries(fuzz_jni_keys PRIVATE zcl_wallet_core)
             target_compile_definitions(fuzz_jni_keys PRIVATE ZCL_JNI_KEYS_FUZZ=1
+                zcl_mnemonic_encode=zcl_jni_key_test_encode zcl_mnemonic_decode=zcl_jni_key_test_decode
                 zcl_secure_zero=zcl_jni_key_test_zero zcl_random_bytes=zcl_jni_key_test_random)
             target_compile_options(fuzz_jni_keys PRIVATE -fsanitize=fuzzer,address,undefined
                 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)

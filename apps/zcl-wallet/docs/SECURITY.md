@@ -24,6 +24,11 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   material receives explicit clearing. Kotlin/JNI only adapts Android platform
   services. Managed runtime and cryptographic provider copies require explicit
   review. Do not describe Keystore wrapping as hardware secp256k1 signing.
+* JNI secret output allocation and element acquisition precede secret copying.
+  VM-owned copies are committed, explicitly erased, and released without
+  copying the erased bytes back. Direct arrays are unpinned once. Failed
+  acquisition publishes no secret; successful arrays remain caller-owned and
+  require clearing. No element pointer survives the synchronous transfer.
 * Read-only network code receives only public addresses and configuration.
   Endpoint responses are untrusted, bounded, tied to a network and displayed
   with their actual verification level. Unknown or stale balance is not zero.
