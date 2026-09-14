@@ -1092,3 +1092,32 @@ and provider analysis, and separate Clang/GCC analysis of both fixture modes,
 pass without changed thresholds. All four mutation checks fail as intended.
 Bounded fuzz and Android observations are recorded in the progress log. Evidence
 is under `.cache/android-wallet/jni-public-20260914`.
+
+## Bounded public BLAKE2b-256 provider and wrapper — 2026-09-14
+
+Scope: the official reference provider with two complete-parameter initialization
+lines; one internal public-data-only hash helper; independent vector generator,
+unit/fuzz fixture and separately compiled provider-failure fixture. No JNI,
+secret-key input, transaction signature hash or signing entry is introduced.
+The original analyzer finding and its source are preserved separately.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Wrapper rejects input above 4096, personalization lengths other than 16 and output capacity below 32 before any provider access. Parameters are exactly 64 bytes with personalization at 48, enforced at compile time. Provider init reads eight complete uint64 words; update's buffer length remains 0..128, fills/subtracts only proven extents and compresses complete128-byte blocks. Final pads the bounded remainder and writes 32 digest bytes through a private64-byte provider buffer. Fixed eight-word state, sixteen-word compression arrays and the twelve 16-entry permutations keep every round index within bounds. Output is copied only on successful finalization. Tests check all 65 capacities per vector, red zones, unchanged suffixes, SIZE_MAX and oversize claims backed by one-byte objects. |
+| Integer overflow/underflow; signed/unsigned conversions | Wrapper lengths are size_t and no untrusted multiplication, narrowing or allocation arithmetic is added. A single bounded update consumes at most 4096 bytes, so byte counters do not overflow in this profile. Compression's uint64 addition intentionally wraps modulo2^64; rotations use fixed nonzero shifts 32/24/16/63. Byte load/store operations use unsigned values and explicit little-endian assembly or memcpy. Provider update subtracts only checked available bytes. Test fuzzer checks 17..4114 before subtraction and copies at most 4097; capacity is0..64. Fixed generator arithmetic fits even32-bit size_t. |
+| Use-after-free; double-free; leaks; dangling pointers | Production allocates and frees nothing, retains no caller pointer and has no handle or asynchronous callback. Parameter/state/digest objects live through one cleanup sequence. Existing zcl_secure_zero owns no allocation. Fault hooks inspect/clear only live scratch and retain only counters after return, never expired pointers. Generator and fixtures have no heap/file ownership; stdout operations are checked. |
+| NULL dereferences; uninitialized memory | All three caller pointers are rejected if NULL, including empty input. Complete state/parameter object representations and digest initialize before use; original generic init/init_key now also clear the whole parameter block before field assignments and byte loads. No NULL/invalid state is passed to raw provider APIs. Each provider return is checked and stops subsequent stages on failure. The final output is never inspected or published after a failed stage. Faults dirty scratch and check initial parameter bytes, state and digest, eliminating dependence on zero-filled incidental stack memory. |
+| Pointer arithmetic; format strings | Wrapper uses fixed bounded memcpy spans, never alignment-sensitive casts or addresses derived from input. Provider arithmetic stays inside the validated message and its fixed arrays; no pointer moves before the object. Personalization is raw bytes, not an implicit C string. Diagnostics contain only fixed messages/line numbers. Generator formatting uses fixed formats and public bytes/version text; no input becomes a format string. |
+| Stack usage; allocation limits; resource exhaustion | The wrapper owns a 64-byte parameter block, 32-byte digest and 248-byte state on the measured64-bit builds. Host optimized frames are 376 bytes for the wrapper and 24/40/104/216 for its directly used provider functions; each remains below the unchanged4096-byte warning gate. No recursion, VLA, heap, lock, network, file or worker exists. At most 32 message-block compressions occur for a 4096-byte message. Public test input snapshots are fixed4097-byte serial fixture globals, never app state. Fuzz time, input, RSS and per-case timeout are bounded. |
+| Malformed serialization; races; explicit lifetimes | The helper hashes public bytes without interpreting transaction serialization or accepting a branch/height. Exact16-byte personalization is required, with no truncation/implicit padding. Callers must own stable nonoverlapping spans for the synchronous call; all mutable production state is invocation-local, with immutable provider tables. Host fixtures are single-threaded; their mutable global counters/buffers are not linked into Android. Raw keyed/tree/general provider interfaces are not exposed as wallet APIs. |
+| Secret leakage, cleanup and authority | This profile excludes keys, entropy, passwords and keyed hashing. The wrapper still clears its state/parameters/digest through the existing non-elidable zeroizer on every provider exit. Provider compression temporaries remain public and carry no secret-erasure claim. The upstream keyed self-test is supporting provider evidence, not permission to add secret hashing. No APK/JNI symbol, custody policy, wallet persistence, sealed core, endpoint, signing or consensus predicate changes. Original branch-specific signature-hash and authenticated review/key ownership remain separate acceptance gates. |
+
+Clang/GCC analysis, strict host/NDK builds, independent vectors and all 65 native
+ASan/UBSan/LSan tests pass. Six isolated mutants fail their intended assertions:
+each of three omitted wipes, omitted personalization, ignored init failure and
+publication after failed finalization. Separate provider/wrapper differential
+fuzz campaigns and actual API 30/35/36 standalone execution are recorded in
+[BLAKE2_REVIEW.md](BLAKE2_REVIEW.md). Production/test complexity caps stay 10/15.
+The exact debug, test and unsigned release APK bytes are unchanged because the
+new internal helper is not yet reached by JNI. This is bounded public-hash
+qualification; no transaction signing or hardware custody acceptance is claimed.

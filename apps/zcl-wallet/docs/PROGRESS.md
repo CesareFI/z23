@@ -1974,3 +1974,39 @@ for byte. Production C/Kotlin and custody rules are unchanged. Evidence is under
 `.cache/android-wallet/android-storage-20260914`. This is native Android
 file/JNI evidence using public ciphertext, not hardware custody, malicious
 rollback resistance or physical power-loss qualification.
+
+2026-09-14 bounded public BLAKE2b-256 qualification: the preserved reference
+candidate now has a separate two-line full-parameter initialization repair.
+The untouched source still reproduces the original Clang finding; the exact
+repair passes both Clang/GCC analyzers without suppression or changed gates.
+Upstream keyed sanitizer self-tests and separate unkeyed/personalized libsodium
+comparisons pass. Pre-integration provider fuzzing completes 4,085,206 executions
+in 121 seconds. Original source, finding and evidence archive remain preserved.
+
+The integrated helper accepts only public input up to 4096 bytes, exactly 16
+personalization bytes, unkeyed sequential32-byte output and zero salt. It checks
+all provider results, leaves output unchanged on failure and clears all owned
+scratch. The normal suite now passes 65 tests under ASan/UBSan/LSan in 45.68
+seconds. Clang/GCC fixture analysis passes in all four unit/fuzz/oracle modes;
+production/test complexity remains within 10/15 (458/863 functions). Independent
+56-vector generation reproduces exact committed bytes. Fault fixtures reject
+six mutants, covering all three omitted wipes, missing personalization, ignored
+init failure and publication after failed finalization. Wrapper fuzzing with
+live libsodium comparison completes 6,676,084 executions in 121 seconds without
+a finding. The explicit host oracle target also passes.
+
+NDK ARM64/x86-64 build, JVM tests, Android lint, APK alignment/fixture isolation
+and architecture pass. Standalone x86-64 tests linked from the actual Android
+release core/provider archives pass 56 vectors at all 65 output capacities plus
+span refusals on API 30,35,36; ARM64 is compiled only. Provider-only known-answer
+and chunk fixtures also pass on all three. Shell fixtures contain only public
+bytes and access no wallet/Keystore. Debug/test/unsigned release APK bytes are
+unchanged from the preceding checkpoint because JNI does not reach the helper.
+No redundant installation or camera rerun is represented as new evidence.
+
+Full scope, hashes, reproduction and required hazard review are in
+[BLAKE2_REVIEW.md](BLAKE2_REVIEW.md) and [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).
+Evidence is retained under `.cache/android-wallet/blake2-init-20260914/` and
+`.cache/android-wallet/blake2-wrapper-20260914/`. Original Zclassic branch-specific
+signature hashes, authenticated review/key ownership and hardware custody remain
+open. TLS quarantine and all consensus/custody boundaries remain unchanged.

@@ -208,7 +208,7 @@ unspentness or maturity. P2SH recognition is not redeem-script ownership.
 Change classification, chain/branch context, hardware authentication and
 original signature hashes are separate gates. Review Activity acceptance uses
 only a nonexported debug fixture host; no wallet sending route is wired yet;
-the review cannot enable the quarantined transport or BLAKE2 candidate.
+the review cannot enable the quarantined transport or transaction signing.
 
 Deterministic cases cover caller/copy mutation, every draft truncation and
 undersized copy capacity, late callbacks after repeated replacements, exact
@@ -400,9 +400,10 @@ background/recreation/close continue to cancel the same C owner.
 2. Independently qualify the exact original serialization and branch-specific
    signature-hash construction with offline public fixtures. No signing until
    scriptCode, input amount, branch/height, outputs and authorization are bound.
-   The first standalone BLAKE2 reference candidate is
-   [blocked for further security review](BLAKE2_REVIEW.md) and is not in builds;
-   continue immutable review work independently of this candidate.
+   The [repaired BLAKE2b public-data helper](BLAKE2_REVIEW.md) now passes strict
+   analysis, independent vectors, fault/sanitizer/fuzz and standalone Android
+   checks. This qualifies its bounded hash profile only; original Zclassic
+   signature-hash construction and authenticated authorization remain open.
 3. Synthetic signing and explicit review/cancellation, then qualified broadcast
    lifecycle and restart recovery. Real funds remain outside development tests.
 4. Shielded wire/proof/witness/value/recovery qualification before exposing it.

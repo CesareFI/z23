@@ -21,7 +21,7 @@ set_target_properties(zcl_json_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
 option(ZCL_SANITIZE "Enable host ASan and UBSan" OFF)
 option(ZCL_FUZZ "Build Clang libFuzzer harnesses" OFF)
 option(ZCL_JNI "Build the thin JNI bridge" OFF)
-option(ZCL_ORACLE "Build host-only OpenSSL differential tests" OFF)
+option(ZCL_ORACLE "Build host-only OpenSSL/libsodium differential tests" OFF)
 option(ZCL_TLS_REVIEW "Build quarantined TLS candidate for explicit host security review only" OFF)
 if(ZCL_TLS_REVIEW AND (ANDROID OR ZCL_JNI))
     message(FATAL_ERROR "TLS is BLOCKED — REQUIRES FURTHER SECURITY REVIEW; no Android/JNI binding is permitted")
@@ -52,6 +52,13 @@ target_compile_definitions(zcl_hash_provider PUBLIC MBEDTLS_CONFIG_FILE="zcl_mbe
 target_compile_options(zcl_hash_provider PRIVATE -Wall -Wextra -Wpedantic -Werror
     -Os -fstack-protector-strong)
 set_target_properties(zcl_hash_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+set(ZCL_BLAKE2_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-blake2")
+add_library(zcl_blake2_provider STATIC ${ZCL_BLAKE2_SOURCE}/blake2b-ref.c)
+target_include_directories(zcl_blake2_provider PUBLIC ${ZCL_BLAKE2_SOURCE})
+target_compile_options(zcl_blake2_provider PRIVATE -Wall -Wextra -Wpedantic -Werror
+    -Os -fstack-protector-strong)
+set_target_properties(zcl_blake2_provider PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(ZCL_QR_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-qrcodegen")
 add_library(zcl_qr_provider STATIC ${ZCL_QR_SOURCE}/qrcodegen.c)
@@ -85,7 +92,7 @@ set(SECP256K1_ECMULT_GEN_KB 22 CACHE STRING "Bounded mobile signing table" FORCE
 add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 
 add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
-    src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c
+    src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c src/blake2_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
     src/change_state.c src/change_state_key.c src/change_custody.c src/change_reservation.c src/change_recovery.c
@@ -108,7 +115,7 @@ if(ZCL_TLS_REVIEW)
 endif()
 target_include_directories(zcl_wallet_core PUBLIC include)
 target_include_directories(zcl_wallet_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/android-bip39")
-target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider secp256k1 zcl_qr_provider zcl_scan_provider zcl_json_provider)
+target_link_libraries(zcl_wallet_core PRIVATE zcl_hash_provider zcl_blake2_provider secp256k1 zcl_qr_provider zcl_scan_provider zcl_json_provider)
 set_target_properties(zcl_wallet_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(zcl_wallet_core PRIVATE
     -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
@@ -123,6 +130,7 @@ if(ZCL_SANITIZE)
     endif()
     target_compile_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(zcl_hash_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_compile_options(zcl_blake2_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(zcl_qr_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(zcl_json_provider PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
@@ -158,6 +166,14 @@ if(ZCL_FUZZ)
     target_compile_options(zcl_scan_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_json_provider PRIVATE -fsanitize=fuzzer-no-link)
     target_compile_options(zcl_hash_provider PRIVATE -fsanitize=fuzzer-no-link)
+    target_compile_options(zcl_blake2_provider PRIVATE -fsanitize=fuzzer-no-link)
+    add_executable(fuzz_blake2 tests/test_blake2.c)
+    target_include_directories(fuzz_blake2 PRIVATE src)
+    target_link_libraries(fuzz_blake2 PRIVATE zcl_wallet_core)
+    target_compile_definitions(fuzz_blake2 PRIVATE ZCL_BLAKE2_FUZZ=1)
+    target_compile_options(fuzz_blake2 PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+    target_link_options(fuzz_blake2 PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_authentication_window tests/fuzz_authentication_window.c)
     target_link_libraries(fuzz_authentication_window PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_authentication_window PRIVATE -fsanitize=fuzzer,address,undefined
@@ -506,6 +522,29 @@ endif()
 
 if(NOT ANDROID)
     enable_testing()
+    add_executable(blake2_tests tests/test_blake2.c)
+    target_include_directories(blake2_tests PRIVATE src)
+    target_link_libraries(blake2_tests PRIVATE zcl_wallet_core)
+    target_compile_options(blake2_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_blake2 COMMAND blake2_tests)
+    set_tests_properties(wallet_blake2 PROPERTIES TIMEOUT 15)
+    # Compile this wrapper separately: no replacement provider or wipe symbols
+    # enter zcl_wallet_core, the real provider, or any Android shared library.
+    add_executable(blake2_failure_tests tests/test_blake2_failures.c src/blake2_hash.c)
+    target_include_directories(blake2_failure_tests PRIVATE src include ${ZCL_BLAKE2_SOURCE})
+    target_compile_definitions(blake2_failure_tests PRIVATE
+        blake2b_init_param=zcl_blake2_test_init blake2b_update=zcl_blake2_test_update
+        blake2b_final=zcl_blake2_test_final zcl_secure_zero=zcl_blake2_test_zero)
+    target_compile_options(blake2_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    if(ZCL_SANITIZE)
+        target_compile_options(blake2_failure_tests PRIVATE -fsanitize=address,undefined
+            -fno-sanitize-recover=all -fno-omit-frame-pointer)
+        target_link_options(blake2_failure_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME wallet_blake2_failures COMMAND blake2_failure_tests)
+    set_tests_properties(wallet_blake2_failures PROPERTIES TIMEOUT 15)
     # Explicit host-only camera scene generator; no node or wallet authority.
     add_executable(seed_camera_scene tests/seed_camera_scene.c)
     target_link_libraries(seed_camera_scene PRIVATE zcl_qr_provider)
@@ -651,6 +690,25 @@ if(NOT ANDROID)
     target_compile_options(receive_qr_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_receive_qr COMMAND receive_qr_tests)
     if(ZCL_ORACLE)
+        find_path(ZCL_SODIUM_INCLUDE sodium.h REQUIRED)
+        find_library(ZCL_SODIUM_LIBRARY sodium REQUIRED)
+        target_include_directories(blake2_tests PRIVATE ${ZCL_SODIUM_INCLUDE})
+        target_link_libraries(blake2_tests PRIVATE ${ZCL_SODIUM_LIBRARY})
+        target_compile_definitions(blake2_tests PRIVATE ZCL_BLAKE2_ORACLE=1)
+        add_executable(seed_blake2_vectors tests/seed_blake2_vectors.c)
+        target_include_directories(seed_blake2_vectors PRIVATE ${ZCL_SODIUM_INCLUDE})
+        target_link_libraries(seed_blake2_vectors PRIVATE ${ZCL_SODIUM_LIBRARY})
+        target_compile_options(seed_blake2_vectors PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        if(ZCL_SANITIZE)
+            target_compile_options(seed_blake2_vectors PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
+            target_link_options(seed_blake2_vectors PRIVATE -fsanitize=address,undefined)
+        endif()
+        if(ZCL_FUZZ)
+            target_include_directories(fuzz_blake2 PRIVATE ${ZCL_SODIUM_INCLUDE})
+            target_link_libraries(fuzz_blake2 PRIVATE ${ZCL_SODIUM_LIBRARY})
+            target_compile_definitions(fuzz_blake2 PRIVATE ZCL_BLAKE2_ORACLE=1)
+        endif()
         find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)

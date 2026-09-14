@@ -39,6 +39,10 @@ fi
     sha256sum -c SHA256SUMS
 )
 (
+    cd "$repo_root/vendor/android-blake2"
+    sha256sum -c SHA256SUMS
+)
+(
     cd "$repo_root/vendor/android-quirc"
     sha256sum -c SHA256SUMS
 )
@@ -53,6 +57,7 @@ common=(-std=c17 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
     -I native/include -I "$repo_root/vendor/android-mbedtls/include"
     -I "$repo_root/vendor/android-bip39" -I "$repo_root/vendor/android-secp256k1/include"
     -I "$repo_root/vendor/android-qrcodegen" -I "$repo_root/vendor/android-quirc"
+    -I "$repo_root/vendor/android-blake2"
     -I "$repo_root/contexts/commons/packages/zjsonp/include"
     -I "$repo_root/contexts/commons/packages/zutf8/include")
 javac_path=$(command -v javac)
@@ -73,6 +78,12 @@ done
 
 # Provider internals participate in static analysis as well as sanitizers.
 # Their reviewed upstream compiler warnings are separate from analyzer findings.
+"$clang_bin" --analyze -Xanalyzer -analyzer-werror -std=c17 \
+    -Wall -Wextra -Wpedantic -Werror "$repo_root/vendor/android-blake2/blake2b-ref.c" \
+    -o "$analysis_dir/blake2b-ref.plist"
+"$gcc_bin" -fanalyzer -std=c17 -Wall -Wextra -Wpedantic -Werror \
+    -c "$repo_root/vendor/android-blake2/blake2b-ref.c" -o "$analysis_dir/blake2b-ref.o"
+
 for unit in quirc identify decode version_db; do
     "$clang_bin" --analyze -Xanalyzer -analyzer-werror -std=c17 \
         -I "$repo_root/vendor/android-quirc" "$repo_root/vendor/android-quirc/$unit.c" \
