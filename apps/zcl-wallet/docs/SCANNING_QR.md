@@ -257,5 +257,17 @@ The same fixture fails before the fix in 62.253 seconds and passes afterwards
 in 22.042 seconds. It verifies the explanation and mainnet selection with
 permission still denied and no preview, request, worker or wallet directory.
 The debug Activity recreation/network-state fixture also passes in 57.579
-seconds. This is minified permission-denial acceptance; the full permission-grant
-and image-to-review journey in that artifact remains the next check.
+seconds. This establishes minified permission-denial acceptance.
+
+The fixture's additional `qrCameraFixture` opt-in continues from that denial
+through a second permission request, a real foreground grant and Camera2 scan.
+The normal minified APK passes in 33.958 seconds with the fixed public image,
+then again in 32.714 seconds after resetting the disposable permission state.
+The exact address, amount, label, review notice and Scan again control are
+observed through Android's public view tree. Permission is granted, preview is
+absent, and the camera worker exits before closing the scanner. The fixture
+neither references obfuscated app classes nor adds production R8 keep rules.
+Its gesture timing follows the AOSP UIAutomator 100 ms press duration, with
+Android UI idleness and current bounds before injection. This qualifies the
+emulator image/permission/review path in that exact minified APK; it still does
+not establish physical optics, hardware custody or process-relaunch behavior.

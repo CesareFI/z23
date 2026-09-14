@@ -1563,3 +1563,26 @@ exact APK hashes are under `.cache/android-wallet/camera-scene-20260914`.
 Continue with reliable touch timing and the minified permission-grant to exact
 camera-review journey. Hardware custody, physical optics, network integration,
 TLS qualification and sending remain separate unfinished gates.
+
+2026-09-14 minified camera continuation: the standalone fixture now optionally
+continues after denial with a fresh permission request, actual foreground grant,
+Camera2 capture and exact public review. It observes the fixed address, 1.25
+amount, CameraFixture label, review notice and Scan again control through the
+Android view tree, then requires no preview/camera worker and closes the scanner.
+Every run still refuses a wallet directory. Touches now use the platform
+UIAutomator's 100 ms press duration after UI idleness and fresh bounds; Android
+touch filtering and production scanner deadlines are unchanged.
+
+The normal minified APK passes the whole journey in 33.958 seconds and again in
+32.714 seconds after resetting only the disposable profile's permission state.
+The exact same fixture APK, signed target APK and PNG hashes recheck after both
+runs. The normal release's twenty entries remain byte-identical after local
+development signing; no keep rule, test mapping or production dependency was
+added. Standalone debug/release compilation and strict lint pass. There is no
+production C change in this slice. Evidence is under
+`.cache/android-wallet/camera-scene-20260914/minified-*`.
+
+Continue with real background process death/relaunch while the public review
+is present, then explicit new capture in the replacement process. This will
+test Android's process boundary separately from the existing Activity recreation
+fixtures. Physical camera and hardware-authenticated custody remain unqualified.

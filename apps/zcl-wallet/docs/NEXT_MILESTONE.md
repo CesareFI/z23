@@ -32,9 +32,10 @@ emulator proves separate Binder identity, public request round-trip, permission
 refusal, actual captured frames and three background/resume cleanup cycles.
 An opted-in image-backed AOSP API35 emulator also passes the full Camera2 to
 isolated-decoder to exact-review path, including an explicit fresh scan after
-Activity recreation. Qualify physical camera interoperability, the runtime
-permission dialog, cancellation during camera open, process recreation, preview
-orientation on different devices, and the minified release at runtime. A
+Activity recreation. The normal minified release also passes actual permission
+denial, retry, foreground grant, and exact public camera review with worker
+cleanup. Qualify physical camera interoperability, cancellation during camera
+open, process recreation and preview orientation on different devices. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full
 journey. Retain no secret scan/import route or automatic transaction authority.
 

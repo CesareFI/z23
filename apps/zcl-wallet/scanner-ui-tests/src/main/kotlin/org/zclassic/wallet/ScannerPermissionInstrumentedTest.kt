@@ -102,6 +102,8 @@ class ScannerPermissionInstrumentedTest {
         down.source = InputDevice.SOURCE_TOUCHSCREEN
         try {
             assertTrue(ui.injectInputEvent(down, true))
+            // Use the platform UIAutomator's normal 100 ms press duration.
+            SystemClock.sleep(100)
             val up = MotionEvent.obtain(started, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP,
                 bounds.centerX().toFloat(), bounds.centerY().toFloat(), 0)
             up.source = InputDevice.SOURCE_TOUCHSCREEN
@@ -111,10 +113,29 @@ class ScannerPermissionInstrumentedTest {
     }
 
     @SuppressLint("DiscouragedApi") // IDs differ between debug and minified APKs.
-    private fun publicString(name: String): String {
+    private fun publicString(name: String, vararg arguments: Any): String {
         val identifier = context.resources.getIdentifier(name, "string", context.packageName)
         assertNotEquals(0, identifier)
-        return context.getString(identifier)
+        return context.getString(identifier, *arguments)
+    }
+
+    private fun grantAndReviewPublicCamera() {
+        click(appId("scan_start"))
+        click("com.android.permissioncontroller:id/permission_allow_foreground_only_button")
+        await("Granted camera did not reach the exact public request") {
+            node(appId("scan_address")) { it.text?.toString() == "t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF" }
+        }
+        assertEquals(PackageManager.PERMISSION_GRANTED,
+            context.checkSelfPermission(Manifest.permission.CAMERA))
+        assertTrue(node(appId("scan_amount")) { it.text?.toString() == publicString("scan_amount", "1.25") })
+        assertTrue(node(appId("scan_label")) { it.text?.toString() == publicString("scan_label", "CameraFixture") })
+        assertTrue(node(appId("status_message")) { it.text?.toString() == publicString("scan_review_notice") })
+        assertTrue(node(appId("scan_start")) { it.text?.toString()?.equals(publicString("scan_again"), true) == true })
+        assertFalse(node(appId("scan_preview")) { true })
+        await("Review retained a camera worker") {
+            Thread.getAllStackTraces().keys.none { it.name == "WalletCamera" && it.isAlive }
+        }
+        assertFalse(File(context.noBackupFilesDir, "wallet-v1").exists())
     }
 
     @Test fun actualPermissionDenialRetainsItsExplanationAndSelectedNetwork() {
@@ -140,6 +161,8 @@ class ScannerPermissionInstrumentedTest {
                 context.checkSelfPermission(Manifest.permission.CAMERA))
             assertTrue(Thread.getAllStackTraces().keys.none { it.name == "WalletCamera" && it.isAlive })
             assertFalse(File(context.noBackupFilesDir, "wallet-v1").exists())
+            if (InstrumentationRegistry.getArguments().getString("qrCameraFixture") == "yes")
+                grantAndReviewPublicCamera()
             click(appId("scan_close"))
         } finally { instrumentation.runOnMainSync { activity.finish() } }
     }

@@ -38,5 +38,19 @@ adb -s "$fixture_serial" shell am instrument -w \
 Android UI idleness, injects actual touches, denies the real permission dialog,
 and requires its explanation and selected network on return. It also requires
 no preview, decoded address, camera worker or wallet directory. A skipped test
-or a run blocked by a system dialog is not acceptance. This test does not qualify
-camera image decoding, hardware custody or production signing.
+or a run blocked by a system dialog is not acceptance. Without the camera opt-in
+below, this qualifies denial handling only. It does not qualify hardware custody
+or production signing.
+
+To continue the same test through a new permission request, foreground camera
+grant and exact review, add `-e qrCameraFixture yes`. This additionally requires
+the [documented public PNG camera scene](../docs/SCANNING_QR.md) on the disposable
+emulator. It must observe the fixed address, 1.25 amount and CameraFixture label,
+review notice, Scan again control, and released camera/preview. The test starts
+with denied permission; reset only that disposable profile's permission state
+before each complete run. Physical optics and hardware custody remain separate.
+
+Touches use the [AOSP UIAutomator 100 ms press duration](https://android.googlesource.com/platform/frameworks/base/+/4becfb4/cmds/uiautomator/library/core-src/com/android/uiautomator/core/InteractionController.java),
+with UI idleness and freshly queried bounds before each gesture. The fixture
+does not disable Android's touch filtering or replace the permission dialog
+with a direct package-manager grant.
