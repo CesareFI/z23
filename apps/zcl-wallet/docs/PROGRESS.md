@@ -2479,3 +2479,31 @@ creation and removes only its own three fixed names/directory. Final ADB zombie
 count remains26 under the original unrelated emulators. Current origin/main
 remains `9bc54830ad4bcd7a9a0959aaf4ffc53ec0726db2`; no upstream Android app
 commits, push or merge are involved.
+
+2026-09-14: camera worker construction/start failure now returns camera admission
+through a pre-handler `finally` guard. Synthetic OutOfMemoryError cases reproduce
+both leaks on the old implementation. The failed owner closes permanently, idle
+worker shutdown is requested, and fatal errors still propagate. Ordinary
+SecurityException failures still report once. An immutable internal worker
+factory permits controlled construction/start faults without exhausting memory
+or opening an OS camera; existing production call sites keep their constructor.
+The handler-published and pending OS-open lifetime rules are unchanged.
+
+Both regression tests pass on API 35 and 36 in 1.260/0.468 seconds. On fresh API 30,
+the same cases plus real pending-open cancellation, three background/restart
+cycles, and recreation pass together (five tests, 52.053 seconds). The separate
+denied-permission worker cleanup test passes in 0.012 seconds. No test opens a
+wallet, obtains a key, changes a custody policy, or weakens a camera timeout.
+
+Android/JVM tests, debug/release/test builds, strict lint, fixture isolation,
+architecture placement and 16 KiB native APK alignment pass. Both native ABI
+libraries are byte-identical to the storage-link milestone, whose 87 sanitizer
+groups and bounded storage fuzzer remain the applicable native evidence.
+The locally signed minified APK is
+`25b29ca27bf7e522d3255cebd08263906166377776c02200894188f44df7956a`;
+all 20 unsigned entries compare exactly after signing. Its complete camera
+denial/retry/grant/public-review/resource-release acceptance passes on fresh
+API 30 in 9.382 seconds. Before/after artifacts and logs are retained in
+`.cache/android-wallet/camera-start-20260914/`. The isolated emulator uses the
+qualified ADB reaping wrapper; the original 26 zombies remain under their
+unchanged live parents, with none added by this validation.

@@ -37,6 +37,11 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   the closing thread only after no worker can access that state; it must clear
   owned data without blocking or calling UI/provider code. It releases retained
   callback references, and even a failing finalizer returns admission once.
+* Camera startup returns its single process admission if worker construction or
+  startup fails before publishing a handler, including on fatal allocation
+  errors. That failed lifetime cannot retry itself. Once an OS camera open is
+  pending, cancellation retains admission until its real terminal callback;
+  a timeout does not authorize a second owner.
 
 ## Evidence required before custody release
 

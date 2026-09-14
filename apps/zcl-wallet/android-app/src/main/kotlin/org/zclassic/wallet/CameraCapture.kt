@@ -32,7 +32,12 @@ internal class CameraCapture(
     context: Context,
     private val onFrame: (CameraCapture, ByteArray, Int, Boolean) -> Unit,
     private val onFailure: (CameraCapture) -> Unit,
+    private val newWorker: () -> HandlerThread,
 ) : AutoCloseable {
+    constructor(context: Context, onFrame: (CameraCapture, ByteArray, Int, Boolean) -> Unit,
+                onFailure: (CameraCapture) -> Unit) :
+        this(context, onFrame, onFailure, { HandlerThread("WalletCamera") })
+
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean()
@@ -64,18 +69,23 @@ internal class CameraCapture(
         if (!cameraOwner.compareAndSet(false, true)) { fail(); return }
         ownsCamera.set(true)
         try {
-            val worker = HandlerThread("WalletCamera")
+            val worker = newWorker()
             thread = worker
             worker.start()
             val queue = Handler(worker.looper)
             handler = queue
             if (!main.postDelayed(startupTimeout, 15_000) || !queue.post { open() }) fail()
         } catch (_: Exception) {
-            if (handler == null) {
-                thread?.quitSafely()
-                releaseOwnership()
-            }
             fail()
+        } finally {
+            // Until the handler is published no OS camera open can be queued.
+            // Return admission even if worker construction/start throws Error;
+            // fatal errors still propagate after the failed lifetime is closed.
+            if (handler == null) {
+                closed.set(true)
+                try { thread?.quitSafely() }
+                finally { releaseOwnership() }
+            }
         }
     }
 
