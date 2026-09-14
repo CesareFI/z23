@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_camera.h"
+#include "camera_reference.h"
 #include <stdlib.h>
 #include <string.h>
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
@@ -34,13 +35,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     size_t written = 17;
     const size_t capacity = (data[7] & 2) ? (size_t)data[0] : ZCL_CAMERA_PACKET_MAX;
     const zcl_status status = zcl_camera_frame_pack(data + 8, size - 8, &layout, packet + 1, capacity, &written);
-    if (status == ZCL_OK) {
-        if (written > capacity || packet[0] != 0xa5 || packet[written + 1] != 0xa5) abort();
-        scan_packet(packet + 1, written, network);
-    } else {
-        if (written != 17) abort();
-        for (size_t i = 0; i < ZCL_CAMERA_PACKET_MAX + 2; ++i) if (packet[i] != 0xa5) abort();
-    }
+    if (!camera_reference_matches(data + 8, size - 8, &layout, capacity, status,
+        packet, ZCL_CAMERA_PACKET_MAX + 2, written)) abort();
+    /* The reference subsumes the former length/guard/failure checks and also
+     * checks exact status, header, every pixel and the complete untouched tail. */
+    if (status == ZCL_OK) scan_packet(packet + 1, written, network);
     free(packet);
     return 0;
 }

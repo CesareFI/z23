@@ -2564,3 +2564,30 @@ so that milestone's exact minified APK and runtime acceptance remain applicable.
 This is display failure acceptance, not network-source or custody qualification.
 The reused isolated emulator exits cleanly through the qualified reaping wrapper
 and leaves the original 26 ADB zombies unchanged.
+
+2026-09-14: camera packing now has an independent test reference that enumerates
+source occupancy and sampling strides instead of calling production helpers or
+copying their ceiling-division calculation. It checks exact status, header,
+every sampled pixel, length and the entire untouched output span. The existing
+fuzzer uses it in place of its narrower length/canary checks. A new mandatory
+unit group covers 1200 dimension/stride/padding layouts, capacity and malformed
+metadata boundaries, and corruption of every header/pixel byte plus distant
+tail positions. No production sampling, packet format or allocation changes.
+
+All 88 final sanitizer groups pass in 63.40 seconds. Clang/GCC analysis and the
+unchanged 10/15 complexity caps pass. Twelve production-sampler mutants and
+four reference mutants fail intended assertions. Public QR fuzzing completes
+4020 cases in 121 seconds; an additional wide-frame campaign completes 1656 in
+61 seconds, including stride-two/three and capacity-refusal seeds. Neither
+campaign finds a defect; both retain five-second case and 512 MiB RSS limits.
+
+The exact release-archive sampling executable passes on x86-64 API 30/35/36;
+ARM64 is compiled only. Its runtime SHA256 is
+`bdaae04da7ab4ac0d2b461760e32fb1c942e62477669f3a1c803128eb3ef4fa6`.
+Both ABI executables pass ELF protection/alignment inspection. Android/JVM,
+build/lint, fixture isolation, native APK alignment and architecture checks pass.
+The unsigned release APK remains byte-identical to the preview-cleanup
+milestone, whose minified camera acceptance still applies. The full hazard
+review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact artifacts and evidence
+are in `.cache/android-wallet/camera-sampling-20260914/`. Original ADB zombie
+count remains 26, with their live parents preserved.

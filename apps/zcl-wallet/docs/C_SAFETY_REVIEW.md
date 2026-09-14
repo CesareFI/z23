@@ -1480,3 +1480,41 @@ API in1.889/18.396/5.302 seconds. Final Clang/GCC analyses,10/15 complexity caps
 (500/1160 functions), Android/JVM/build/lint, APK fixture isolation and alignment
 checks pass. Exact identities and results remain in
 `.cache/android-wallet/storage-links-20260914/`.
+
+## Independent camera sampling reference — 2026-09-14
+
+Scope: test-only `camera_reference.c/.h`, `test_camera_sampling.c`, the existing
+camera fuzzer and their CMake registration. Production sampling, IPC bytes,
+native libraries and consensus are unchanged. The reference enumerates occupied
+source bytes and candidate strides without calling a production bounds/sampling
+helper or reusing its ceiling-division calculation. It verifies exact status,
+header, every sampled byte, returned length and the entire unused output span.
+The former fuzzer guard/length assertions are subsumed by these stronger checks.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The reference first requires non-NULL pointers and exactly 147463 guarded bytes. Input width/height are 21..1024, pixel stride 1..4 and row stride at most 8192 before enumeration. The occupied final byte must fit the supplied input length, itself at most 8 MiB. Only a successful independently validated plan permits header/pixel reads. Output dimensions are 21..384 and returned length must equal the independently computed 5+columns*rows before tail arithmetic. Failure checks preserve all output bytes and the original length 17. The deterministic fixture corrupts every prefix/header/pixel byte and four near/distant tail bytes to test the reference itself. |
+| Integer overflow/underflow; signed/unsigned conversions | Occupied-row enumeration is at most 4093; adding at most 1023 row strides stays below 8 MiB. Candidate strides are the finite nonzero values 1..3. Sample counts are bounded by 1024 before output validation and their accepted product by 147456. Post-sample integer increments can reach at most 1026*8192, still representable on supported 32/64-bit targets; no pointer is formed from an unused terminal offset. Header byte promotion uses size_t and values at most 255. Fixture pattern shifts/XOR operate on size_t, with explicit masked conversion to uint8_t. SIZE_MAX input/metadata/returned-length cases refuse before unsafe access or addition. |
+| Use-after-free; double-free; leaks; dangling pointers | Reference helpers allocate nothing and retain no pointer. The unit fixture owns two constant checked allocations, frees both on allocation failure and once each after validation. A failing assertion aborts the isolated process. The fuzzer retains its existing one checked packet allocation and frees it after each successful check/decode; no second image copy or new owner is added. Caller input and output remain alive and disjoint for each call. |
+| NULL dereferences; uninitialized memory | Reference entry guards all borrowed pointers. Each plan initializes to zero and becomes usable only after independent validation. The fixture initializes all 8 MiB of source markers, the entire guarded output span and the output-length sentinel. Allocation failure is checked before access. No returned production header or length is trusted to size a read. |
+| Pointer arithmetic; format strings | Source indices advance only within independently validated sampled coordinates. Pixel/output offsets are bounded by the plan rather than production-returned metadata. Tail scans stay within the exact caller allocation. Diagnostics use fixed public strings and a source line number; no input becomes a format string. The unit/reference have no path, descriptor or file operation. |
+| Stack usage; allocation limits; resource exhaustion | Optimized host frames with stack protection measure 88 bytes for reference matching, 40 for its pixel helper, 648 for the deterministic main, 104 for the fuzzer entry and 3592 for its existing packet decoder check; nested provider costs are separate. No recursion, VLA or new global mutable state exists. The unit's two allocations total 8536071 bytes. Its layout matrix has exactly 1200 cases plus fixed boundary/corruption cases; the registered timeout is 20 seconds. Reference checking adds no heap allocation to fuzzing. Campaigns use 147461-byte maximum input, five-second cases, 512 MiB RSS cap and explicit outer timeouts. |
+| Malformed serialization; races; explicit lifetimes | Exact v1 dimension/packet caps are compile-time asserted. Invalid input geometry, insufficient input, too-small output, wrong status/header/length, altered sampled pixels and any untouched-region write fail. The reference chooses the first fitting stride and refuses over-thin results, matching the stated point-sampling contract. It is pure per-call test code; fixtures run with owned buffers and no asynchronous callback or camera driver. It independently models packing, not QR decoding or network authentication. |
+| Secret leakage, custody and authority | Source images are coordinate markers or published unfunded QR fixtures. No camera, wallet, key, entropy, Keystore, network peer or canonical file is opened by the new unit/reference. Android tests execute an isolated public test executable against actual release archives. Test/reference sources are excluded from production Android libraries; no consensus predicate, custody rule or packet format changes. |
+
+All 88 final ASan/UBSan/LSan groups pass in 63.40 seconds. Clang/GCC analysis,
+strict warnings and unchanged 10/15 complexity caps pass (500 production and
+1172 test functions). All 12 sampler mutations and four reference mutations
+fail intended assertions. The public-QR fuzz campaign completes 4020 cases in
+121 seconds (observed 262 MiB); a further 1656 cases in 61 seconds include
+explicit stride-two/three and capacity-refusal seeds (observed 259 MiB).
+Neither campaign reports a finding.
+
+The release-archive test passes on x86-64 API 30/35/36 with identical SHA256
+`bdaae04da7ab4ac0d2b461760e32fb1c942e62477669f3a1c803128eb3ef4fa6`.
+ARM64 is compiled only, SHA256
+`3c72cc9dc9c7423f5a959605c2b9c784931ff6d29e3ae53ae197c8f84d68dde9`.
+Both executables have 16 KiB load alignment, RELRO, immediate binding and a
+nonexecutable stack. Android/JVM/build/lint checks pass; the unsigned release
+APK is byte-identical to the preview-cleanup milestone. Exact sources, archives,
+mutants, seeds and evidence are in `.cache/android-wallet/camera-sampling-20260914/`.
