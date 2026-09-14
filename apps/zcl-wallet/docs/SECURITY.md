@@ -66,6 +66,10 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   A refused Android text clear still wipes owned characters and leaves retained
   framework copies hidden. Input failures preserve the usable keyboard and
   original/cleanup errors. Concealment does not erase every framework or GPU copy.
+* Backup-screen construction finishes its confirmation and cancellation controls
+  before publishing recovery words. It owns incoming characters from entry and
+  clears them if the previous screen or any construction step fails. The final
+  secret render retains the recovery view's existing concealment/cleanup rules.
 * Unsigned-review text replacements remain concealed until complete. If expiry
   or cancellation text cannot be rendered, earlier transaction details stay
   hidden even when Android refuses clearing. Native review closure and display

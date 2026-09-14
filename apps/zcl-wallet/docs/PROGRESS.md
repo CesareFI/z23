@@ -2810,3 +2810,32 @@ the configured remote account's development-branch push was rejected with HTTP
 the independent unfinished camera/storage worktrees. Continue security and
 bounded-memory qualification locally; TLS remains quarantined, physical custody
 is unqualified, and signing/broadcast remain disabled in the launcher.
+
+2026-09-14: backup words are published only after both confirmation and cancel
+controls exist. The screen builder now owns incoming characters from entry and
+clears them if the previous screen cannot clear or construction throws. The
+recovery view's existing concealed-render and cleanup contract handles the final
+word publication. Normal layout, key handling, authentication and native code
+are unchanged; no extra view, array, callback, timer or background owner is added.
+
+Four instrumented regressions fail against the prior builder: failure while
+adding either control, failure while clearing the previous display, and a text
+observer seeing recovery words before the controls exist. Final tests also
+verify a retry after construction failure and actual Activity recreation: the
+old owned characters clear and the replacement does not restore the backup.
+All 26 backup/secret-view/native-key cases pass on isolated API 30 and API 36
+x86-64 emulators. The fixtures use three-character public markers in the
+nonexported debug display host; they do not open a wallet or bypass hardware
+custody. This is debug screen/lifetime evidence, not a hardware-authenticated
+create/restore acceptance or physical-device qualification.
+
+Android/JVM, debug/release builds and lint, fixture isolation, native alignment
+and architecture checks pass. Four relevant native sanitizer groups pass in
+0.75 seconds. Both native libraries compare byte-identically to the prior
+checkpoint; no native fuzzer rerun is needed for the Kotlin-only production
+change. The debug APK remains 3940610 bytes. The new unsigned release APK SHA256
+is `506978f30d8249c196a78c4ce97d80083d3c146799913da479f0fb015a1aefdc`.
+Source, before/after failures, APKs and logs remain in the isolated worktree's
+`.cache/android-wallet/backup-publication-20260914/`. The two owned emulator
+launches complete graceful shutdown through the qualified reaping wrapper;
+existing emulators and unrelated dirty camera work remain preserved.
