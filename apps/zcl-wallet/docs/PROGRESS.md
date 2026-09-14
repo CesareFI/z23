@@ -1926,3 +1926,27 @@ Exact saved APK/native fixture hashes recheck. Evidence and the explicit hazard
 review are retained under `.cache/android-wallet/jni-public-20260914` and
 `C_SAFETY_REVIEW.md`. Continue explicit secret ownership and lifecycle review;
 hardware-authenticated custody, physical optics and real networking remain open.
+
+2026-09-14 recovery-display handoff continuation: two real-Android regressions
+fail on the prior APK in 1.170 seconds. A failure clearing the old display leaves
+the incoming owned array untouched, and a second cleanup error replaces the
+original rendering error. The view now consumes ownership at method entry,
+clears incoming words on every failed replacement and retries empty rendering.
+Secondary cleanup failure is retained with the original after array clearing.
+The existing delivery callback guard already clears failed handoffs and remains
+unchanged; this closes the view's own ownership gap.
+
+The exact same test APK passes all twelve secret-view tests on API30 in 5.901
+seconds, API35 in 23.216 seconds and API36 in 11.112 seconds. This includes saved
+state refusal, keyboard/transfer cleanup, queue closure, both new display
+regressions and successful fresh display after refusal. Public markers only;
+no wallet/key, IME, clipboard, saved phrase or new secret owner is introduced.
+
+Full JVM suites, debug/release builds, strict lint, fixture isolation and both
+ABI page alignment pass. Twenty unsigned release entries compare identically
+after local development signing; saved input hashes recheck. The final minified
+API30 full permission/camera/public-review journey passes in 26.887 seconds, and
+the same minified artifact is restored on API36. There is no C or custody-policy
+change. Evidence is under `.cache/android-wallet/secret-display-20260914`.
+Continue actual Android private-file refusal and authenticated pending-record
+promotion in isolated public fixtures, preserving the hardware-custody gate.

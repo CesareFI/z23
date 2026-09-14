@@ -95,6 +95,67 @@ class SecretViewsInstrumentedTest {
 
     @Test fun appendRenderingFailureClearsInputAndPreservesTheOriginalFailure() = verifyRenderFailure(false)
 
+    @Test fun failedPreviousDisplayClearStillClearsTheIncomingOwnedWords() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = RecoveryWordsView(instrumentation.targetContext)
+            val previous = charArrayOf('a', 'b', 'c')
+            val incoming = charArrayOf('d', 'e', 'f')
+            val problem = IllegalStateException("Synthetic public old-display clear failure")
+            val listener = RenderFailure(problem)
+            try {
+                view.show(previous)
+                view.addTextChangedListener(listener)
+                assertSame(problem, assertThrows(IllegalStateException::class.java) { view.show(incoming) })
+                assertTrue(previous.all { it == '\u0000' })
+                assertTrue("Failed replacement retained incoming words", incoming.all { it == '\u0000' })
+                assertEquals(0, view.text.length)
+            } finally {
+                view.removeTextChangedListener(listener)
+                view.clearSecret()
+                previous.fill('\u0000')
+                incoming.fill('\u0000')
+            }
+        }
+    }
+
+    @Test fun failedDisplayRenderingPreservesItsOriginalAndCleanupFailures() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = RecoveryWordsView(instrumentation.targetContext)
+            val words = charArrayOf('a', 'b', 'c')
+            val problem = OutOfMemoryError("Synthetic public new-display failure")
+            val cleanup = IllegalArgumentException("Synthetic public display-cleanup failure")
+            val listener = object : TextWatcher {
+                private var started = false
+                override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+                    if (after > 0) { started = true; throw problem }
+                    if (started) throw cleanup
+                }
+                override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(text: Editable?) = Unit
+            }
+            try {
+                view.addTextChangedListener(listener)
+                assertSame(problem, assertThrows(OutOfMemoryError::class.java) { view.show(words) })
+                assertEquals(listOf(cleanup), problem.suppressed.toList())
+                assertTrue(words.all { it == '\u0000' })
+                view.removeTextChangedListener(listener)
+                val retry = charArrayOf('z')
+                try {
+                    view.show(retry)
+                    assertEquals(1, view.text.length)
+                    view.clearSecret()
+                    assertTrue(retry.all { it == '\u0000' })
+                } finally { retry.fill('\u0000') }
+            } finally {
+                view.removeTextChangedListener(listener)
+                view.clearSecret()
+                words.fill('\u0000')
+            }
+        }
+    }
+
     @Test fun deleteRenderingFailureClearsInputAndPreservesTheOriginalFailure() = verifyRenderFailure(true)
 
     private fun verifyRenderFailure(deleting: Boolean) {

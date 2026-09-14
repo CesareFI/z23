@@ -110,6 +110,15 @@ Thus a preview-clear failure cannot strand a newly allocated outgoing copy,
 and a copy-allocation failure still clears the source. No phrase String, input
 connection, clipboard route or additional retained secret is introduced.
 
+Recovery display ownership begins when show is called. If clearing an older
+display fails before the new array reaches the view field, the incoming array
+still clears. Failed replacement retries empty rendering, and a second cleanup
+exception is attached to the original error after owned arrays clear. The
+existing worker-to-UI delivery failure guard remains in place. Two controlled
+device regressions first observe the uncleared incoming array and replacement
+of an original rendering error; all twelve secret-view tests pass after the
+view guard on API30, API35 and API36.
+
 Real Android fixtures inject throwing text listeners on public markers. The
 prior implementation retained four characters after failed append and two
 after failed delete, and did not attempt the cleanup callback. The same test

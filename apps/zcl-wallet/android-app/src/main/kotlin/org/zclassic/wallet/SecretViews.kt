@@ -33,15 +33,18 @@ internal class RecoveryWordsView(context: Context) : TextView(context) {
     }
 
     fun show(ownedWords: CharArray) {
-        clearSecret()
-        words = ownedWords
-        var shown = false
         try {
+            clearSecret()
+            words = ownedWords
             require(ownedWords.size <= 215) { "Recovery display exceeds its bound" }
             setText(ownedWords, 0, ownedWords.size)
-            shown = true
-        } finally {
-            if (!shown) clearSecret()
+        } catch (problem: Throwable) {
+            // Ownership starts at entry, even if clearing the old display
+            // fails before the incoming array can become this view's field.
+            ownedWords.fill('\u0000')
+            try { clearSecret() }
+            catch (cleanup: Throwable) { if (cleanup !== problem) problem.addSuppressed(cleanup) }
+            throw problem
         }
     }
 
