@@ -30,15 +30,29 @@ internal class ReviewView(context: Context) : TextView(context) {
         showUnavailable()
     }
 
-    fun showUnavailable(status: CoreStatus = CoreStatus.OK) {
-        text = ""
+    private inline fun replaceText(render: () -> String) {
+        // Clearing itself may be refused by Android. Retained or partially
+        // replaced text must stay concealed until a complete update succeeds.
+        visibility = INVISIBLE
+        try {
+            text = ""
+            text = render()
+            visibility = VISIBLE
+        } catch (problem: Throwable) {
+            try { visibility = INVISIBLE; text = "" }
+            catch (cleanup: Throwable) { if (cleanup !== problem) problem.addSuppressed(cleanup) }
+            throw problem
+        }
+    }
+
+    fun showUnavailable(status: CoreStatus = CoreStatus.OK) = replaceText {
         val reason = when (status) {
             CoreStatus.OK -> R.string.review_waiting
             CoreStatus.TIMED_OUT -> R.string.review_expired
             CoreStatus.CANCELLED -> R.string.review_cancelled
             else -> R.string.review_failed
         }
-        text = context.getString(R.string.review_status_lines,
+        context.getString(R.string.review_status_lines,
             context.getString(R.string.review_unavailable), context.getString(reason))
     }
 
@@ -70,7 +84,7 @@ internal class ReviewView(context: Context) : TextView(context) {
                 hash(input.previousTransactionId), uint32(input.previousIndex), uint32(input.sequence),
                 address(input.destination, snapshot.network), input.destination.value.format()))
         }
-        text = lines.joinToString("\n\n")
+        replaceText { lines.joinToString("\n\n") }
     }
 
     private fun address(destination: UnsignedReview.Destination, network: Network): String {

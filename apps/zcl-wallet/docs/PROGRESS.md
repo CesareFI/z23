@@ -2665,3 +2665,39 @@ The isolated emulator exits normally through the qualified reaping wrapper;
 the original 26 ADB zombies and their live parents remain unchanged. Baseline
 failures, exact source/APKs and all evidence are retained in
 `.cache/android-wallet/secret-concealment-20260914/`.
+
+2026-09-14: unsigned-review text replacements now stay concealed until complete.
+Expired/cancelled or partially rendered transaction text remains hidden if
+Android refuses clearing. A normal later update restores visibility; malformed
+formatting retains the existing unavailable-state behavior. The inline wrapper
+adds no closure allocation, owner, timer or authority. Original and cleanup
+exceptions remain available for diagnosis.
+
+Four public regressions fail before the fix, including real C expiry through
+ReviewPresentation: the native owner closes and its single slot is returned,
+but the framework still holds visible transaction details. Final view and
+lifecycle suites pass all 14 cases on API 30/36 in 6.285/119.486 seconds. The
+API 35 combined host command reaches its 180-second capture timeout during
+the last case; the device TestRunner subsequently reports 14 tests, zero failed
+and zero ignored. No job is hung or emulator terminated. Two smaller reruns
+capture clean command completion: four lifecycle cases in 122.583 seconds and
+ten view cases in 14.626 seconds, with every assertion/deadline unchanged.
+Recreation, background rejection, explicit close, queued updates, formatting,
+failure visibility and native slot reuse are covered.
+
+Android/JVM, debug/release/test builds, strict lint, fixture isolation, native
+alignment and architecture checks pass. Four relevant native review/JNI/context/
+sighash sanitizer groups pass in 0.13 seconds. The independent existing review
+state fuzzer completes 325099 executions in 121 seconds without a finding
+(640-byte inputs, five-second cases, 512 MiB RSS cap; observed 243 MiB).
+Its SHA256 is `50a6e0c82773272d7a87b5276ceb2f564505bb7e2a04f7853425cceaf950f676`.
+
+The unsigned-review UI remains disabled in the launcher and is removed by
+release shrinking. The entire unsigned release APK is byte-identical to the
+secret-concealment milestone; its exact minified artifact/runtime evidence still
+applies. This is debug public-fixture display acceptance, not authenticated
+funding, consent, signing or broadcast qualification. The reused isolated API 30
+emulator exits normally through the qualified reaping wrapper, leaving the
+original 26 ADB zombies and their live parents unchanged. Exact source, baseline
+failures, timeout evidence, retries and artifacts remain in
+`.cache/android-wallet/review-concealment-20260914/`.
