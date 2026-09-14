@@ -270,4 +270,31 @@ neither references obfuscated app classes nor adds production R8 keep rules.
 Its gesture timing follows the AOSP UIAutomator 100 ms press duration, with
 Android UI idleness and current bounds before injection. This qualifies the
 emulator image/permission/review path in that exact minified APK; it still does
-not establish physical optics, hardware custody or process-relaunch behavior.
+not establish physical optics or hardware custody.
+
+## Background process death and task restoration
+
+The same minified APK and public image also pass a separate manual OS process
+boundary on the disposable AOSP API35 profile. Starting from the normal testnet
+welcome screen, the scanner selects mainnet and decodes the exact public
+request. After Home, `am kill org.zclassic.wallet.dev` terminates the background
+process. Android retains the scanner's task and saved state; exit-info reports
+the background-kill reason, and the original PID disappears. This uses normal
+task restoration, without force-stop or instrumentation relaunch.
+
+Launching the normal launcher intent restores the same scanner Activity record
+in a different process. Mainnet remains selected even though the original
+scanner intent selected testnet. The chooser has Start camera and no request
+or preview. The camera service reports no active client before a new action.
+An explicit Start camera then produces the exact address, 1.25 amount and
+CameraFixture label in the replacement process; the camera service records its
+connect/disconnect and again has no active client at review. The APK and PNG
+hashes still match the earlier minified acceptance.
+
+Evidence is under `.cache/android-wallet/camera-scene-20260914/process-*`.
+Opening the ordinary welcome screen creates its empty storage directory on
+this disposable profile; no create, restore or unlock action was used. The
+standalone permission fixture's no-wallet-directory guard remains unchanged
+and now refuses this used profile. This proves request disposal and public
+network restoration after background process death, not recovery of custody
+or cancellation while an OS camera-open request is outstanding.

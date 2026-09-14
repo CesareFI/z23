@@ -34,8 +34,11 @@ An opted-in image-backed AOSP API35 emulator also passes the full Camera2 to
 isolated-decoder to exact-review path, including an explicit fresh scan after
 Activity recreation. The normal minified release also passes actual permission
 denial, retry, foreground grant, and exact public camera review with worker
-cleanup. Qualify physical camera interoperability, cancellation during camera
-open, process recreation and preview orientation on different devices. A
+cleanup. Background process death also preserves only the selected network
+through normal task restoration and requires a new explicit capture, which
+decodes the same public request in the replacement process. Qualify physical
+camera interoperability, cancellation during camera open, and preview
+orientation and process recreation on different devices. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full
 journey. Retain no secret scan/import route or automatic transaction authority.
 

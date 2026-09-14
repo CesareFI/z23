@@ -1586,3 +1586,26 @@ Continue with real background process death/relaunch while the public review
 is present, then explicit new capture in the replacement process. This will
 test Android's process boundary separately from the existing Activity recreation
 fixtures. Physical camera and hardware-authenticated custody remain unqualified.
+
+2026-09-14 actual background process-death continuation: the same minified APK
+passes normal Android task restoration after an explicit background kill. The
+scanner first changes its launch intent's testnet selection to mainnet and
+displays the public camera request. Android saves the stopped Activity state;
+`am kill` removes PID 4854 with exit-info's background-kill reason while task 32
+and its scanner Activity record remain. The normal launcher restores that
+record in PID 5119 with mainnet selected, no request or preview, and Start camera
+present. The camera service has no active client before the new action.
+
+A fresh Start camera in the replacement process reaches the exact public
+address, 1.25 amount and CameraFixture label. The service records that process's
+connect/disconnect and is closed again at review. The signed target, standalone
+fixture and PNG hashes still match. Evidence is retained in
+`.cache/android-wallet/camera-scene-20260914/process-*`. The normal welcome
+screen created an empty storage directory on this previously empty disposable
+profile; no create, restore or unlock action ran, and the standalone fixture's
+strict no-directory guard was not changed or bypassed. This is manual minified
+OS task-restoration evidence, separate from debug Activity recreation fixtures.
+
+Continue with cancellation at the real camera-open callback boundary, bounded
+ownership under overlap, and recovery to a fresh capture. Physical-device and
+hardware-authenticated custody acceptance remain open.
