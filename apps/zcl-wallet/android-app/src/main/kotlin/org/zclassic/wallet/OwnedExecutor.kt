@@ -22,7 +22,8 @@ internal class OwnedExecutor {
     val isClosed: Boolean get() = closed.get()
 
     fun submit(cleanup: () -> Unit = {}, action: () -> Unit): Boolean = synchronized(control) {
-        val task = OwnedTask(closed, cleanup, action)
+        val task = try { OwnedTask(closed, cleanup, action) }
+        catch (problem: Throwable) { cleanup(); throw problem }
         if (closed.get()) {
             task.discard()
             return false
@@ -30,17 +31,22 @@ internal class OwnedExecutor {
         try {
             executor.execute(task)
             true
-        } catch (_: RejectedExecutionException) {
+        } catch (problem: Throwable) {
+            // execute may enqueue before starting a worker. A failed handoff
+            // must release both its queue slot and its transferred input.
+            executor.remove(task)
             task.discard()
-            false
+            if (problem is RejectedExecutionException) return false
+            throw problem
         }
     }
 
     fun close(clearSession: () -> Unit = {}) = synchronized(control) {
         if (!closed.compareAndSet(false, true)) return
-        val abandoned = ArrayList<Runnable>(4)
-        executor.queue.drainTo(abandoned)
-        for (task in abandoned) (task as OwnedTask).discard()
+        while (true) {
+            val task = executor.queue.poll() ?: break
+            (task as OwnedTask).discard()
+        }
         // submit/close share this short control lock. The queue is empty and
         // the executor is not shut down, so this finalizer has reserved space.
         executor.execute(clearSession)

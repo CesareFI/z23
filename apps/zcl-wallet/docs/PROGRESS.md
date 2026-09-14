@@ -1769,3 +1769,29 @@ Evidence is under `.cache/android-wallet/jni-record-20260914`; the complete
 hazard review is in `C_SAFETY_REVIEW.md`. Continue wallet lifetime and foreground
 review safety. Physical optics, hardware-authenticated custody and real-source
 networking remain unqualified.
+
+2026-09-14 worker-submission cleanup continuation: two new host regressions
+prove that thread-factory failure previously left transferred input uncleared,
+including a task already inserted into the queue. `OwnedExecutor` now clears
+input if task construction fails, and removes/discards failed handoffs before
+preserving the original unexpected exception. Ordinary rejection still returns
+false. Close polls its bounded queue directly without allocating a drain list.
+The per-task claim still prevents execution or duplicate cleanup after discard.
+
+Both regressions fail on the old code and all four executor tests pass after
+the fix. The full JVM suites, debug/release/test builds and strict lint pass.
+Real Android thread-factory fixtures cover both direct-start and queued-start
+branches on API35 in 1.089 seconds and API36 in 0.406 seconds, including an
+independent successful retry. They inject a synthetic exception without actual
+memory exhaustion; production has no injection hook. The guarded API35 custody
+refusal flow also passes in 34.957 seconds: its generated key is rejected, no
+wallet is created and no recovery view appears. Its own fixture state is cleaned.
+
+The new normal minified APK passes the full API36 permission denial/retry/grant
+and public camera review in 38.683 seconds. All twenty unsigned release entries
+are identical after local development signing. Saved device/minified inputs
+recheck, and fixture isolation, both ABI page alignment and architecture pass.
+There is no C or custody-policy change. Evidence is under
+`.cache/android-wallet/worker-submission-20260914`. Continue secret-view input
+transfer failure cleanup; physical custody and real-source networking remain
+separate unfinished acceptance gates.

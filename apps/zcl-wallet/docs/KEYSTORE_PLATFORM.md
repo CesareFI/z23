@@ -58,6 +58,22 @@ Closing cancels queued work, permits active native/provider code to complete its
 cleanup, then clears worker-owned session state on the same thread. It never
 waits for filesystem/keystore work on the UI thread.
 
+Failed submission also clears its transferred input if task construction or
+worker creation throws. A failure after queue insertion removes that task before
+discarding it; a later healthy worker cannot run it or inherit its occupied
+queue slot. Ordinary rejection still returns false, and unexpected/fatal failures
+propagate as the original exception after cleanup. Close drains queued tasks
+without allocating a temporary list. Cleanup callbacks retain their contract to
+clear owned data without throwing or blocking.
+
+Two host regressions fail on the previous implementation and pass on the fix.
+They inject thread-factory allocation/start failures directly, including the
+enqueue-before-start branch, without exhausting system memory. The separate
+Android fixture exercises both executor branches on API35 and API36, observes
+zeroed public marker arrays, one cleanup, an empty failed queue and a successful
+independent retry. These fixtures inspect the existing private executor only in
+test code; no shipped injection hook or custody-policy exception is added.
+
 `RecoveryPhraseDelivery` separately owns the one bounded phrase awaiting the UI
 queue. Closing the foreground session clears that array immediately, including
 while the worker is submitting its callback. A late callback cannot deliver it.
