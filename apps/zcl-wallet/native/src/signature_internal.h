@@ -30,4 +30,21 @@ typedef struct {
  * Current callers are isolated public synthetic tests only. */
 zcl_status zcl_signature_create(const uint8_t *secret, size_t secret_len,
     const uint8_t *digest, size_t digest_len, zcl_signature *output);
+
+#define ZCL_SIGNATURE_SCRIPT_MAX ((size_t)107)
+/* Public-data verifier/encoder only, no secret or signing authority. Accept
+ * strict DER/low-S and compressed33-byte keys; independently match HASH160 of
+ * that key against the supplied20-byte P2PKH destination and verify the exact
+ * supplied32-byte digest. Append SIGHASH_ALL and use two minimal direct pushes.
+ * The digest's transaction/branch/amount and the funding hash MUST come from
+ * the same owned review in a wallet caller. This helper proves no source,
+ * current chain, consent, unspentness or completion-time freshness.
+ * All inputs copy before provider work, remain stable/caller-owned and do not
+ * overlap outputs. No heap, RNG, retained pointer or JNI. Capacity must fit
+ * DER length+36 (44..107). Only that prefix and length publish on complete
+ * success; every failure preserves both outputs. Work clears on every exit.
+ * Unused signature bytes/padding are ignored and never enter the script. */
+zcl_status zcl_signature_p2pkh(const zcl_signature *signature,
+    const uint8_t *digest, size_t digest_len, const uint8_t *key_hash, size_t key_hash_len,
+    uint8_t *script, size_t capacity, size_t *length);
 #endif

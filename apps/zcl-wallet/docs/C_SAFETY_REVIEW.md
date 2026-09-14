@@ -1356,3 +1356,35 @@ nonnull-annotation conflict and its provider-implementation-mode fix; no warning
 or assertion is disabled. Exact Android artifact/device acceptance and boundaries
 are in [TRANSACTIONS.md](TRANSACTIONS.md) and
 `.cache/android-wallet/signature-core-20260914/`.
+
+## Public signature verification and canonical input scripts — 2026-09-14
+
+Scope: an internal public-data verifier/encoder, real-provider and substituted
+fault tests, an extended host OpenSSL oracle and a new differential fuzzer.
+No private keys, JNI, custody policy, wallet data, sealed core or vendor bytes
+are changed.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Five pointers and exact digest32/hash20 lengths are checked before work. Copied DER length must be8..71 before source access or capacity arithmetic. Only that bounded DER and33 key bytes copy. The static provider consumes these exact spans. Its canonical output has72-byte capacity, and its returned length must equal the already bounded input before memcmp. Script offsets derive only from8..71, so two pushes fit107 bytes. Tests cover129 capacities, SIZE_MAX, guards, all source-byte corruptions and dirty SIZE_MAX provider lengths. Fuzzer requires exactly160 bytes before reading fixed3/72/33/32/20 spans. |
+| Integer overflow/underflow; signed/unsigned conversions | DER+36 is computed only after8..71 validation; direct push length<=72 converts safely to uint8. No untrusted allocation arithmetic, signed length, offset multiplication or counter increment is used. Provider canonical length equality precedes byte comparisons. Fuzzer acceptance independently checks NULL/DER bounds before arithmetic, even though the external oracle also refuses them. High-S fixtures subtract fixed32-byte unsigned scalars with explicit byte masking and bounded borrow; no signed underflow is used. |
+| Use-after-free; double-free; leaks; dangling pointers | Production owns one fixed stack work object, borrows immutable secp256k1_context_static, and allocates/frees no heap or handle. All public source metadata/bytes copy before the first provider; no source pointer survives. Fault providers mutate originals after copying and inspect/retire captures while work is live. OpenSSL object lifecycles remain in their existing one-cleanup helpers; the new hash comparison owns only bounded local arrays. Seeds use exclusive creation inside an owned private directory and check writes/close once. |
+| NULL dereferences; uninitialized memory | NULL signature/digest/hash/output/length refuse before access. Whole work initializes, including unused arrays and provider outputs. Every parse/hash/normalize/serialize/verify result gates its successor. Dirty output on failure cannot publish. Invalid lengths/capacities still clear entered work. The fuzzer explicitly checks signature NULL/length locally instead of assuming an external oracle's postcondition. Fixture provider definitions preserve upstream runtime NULL assertions and match the exact RIPEMD160 array declaration. |
+| Pointer arithmetic; format strings | Fixed offsets and lengths are checked before all source copies, tail access, canonical comparison and script pushes. No alignment cast, serialized pointer, variable production path or source string is introduced. Inputs and outputs must not overlap. Fault callbacks use captured live addresses, never reconstructed stack offsets. Diagnostics use fixed public text and line numbers. Public seed names use checked snprintf into32 bytes with a fixed16-file limit; no secret or user value becomes a format string. |
+| Stack usage; allocation limits; resource exhaustion | Optimized host entry frame is600 bytes; nested provider costs remain separate under existing authored4096-byte frame checks. No recursion/VLA, production heap, RNG, worker, I/O or mutable global is added. One invocation performs fixed bounded key parsing, two public hashes, DER parse/re-encode and one verification. Inputs remain8..71/33/32/20; no externally selected hash algorithm or retry exists. Fuzzer input160, per-case5 seconds,121-second campaigns and512MiB RSS cap bound fixture work. Test globals are isolated and serial. |
+| Malformed serialization; races; explicit lifetimes | Only compressed keys, exact HASH160 matches, strict canonical DER/low-S and the supplied verified digest can produce the two minimal direct pushes with fixed SIGHASH_ALL. High-S, padding/long-form/trailing/zero/changed data refuse. The helper checks public signature consistency, not arbitrary scripts. The original source ordering/direct-push rules were inspected without executing its interpreter. Caller spans remain stable through the synchronous invocation; no authorization or completion-time freshness is retained. Future wallet composition must use the same owned review's digest and P2PKH destination under its existing exclusive lock. |
+| Secret leakage, custody and authority | Only public signatures, digest, key and hash enter or leave. Complete work clears after every entered exit and unused source DER bytes/padding cannot leak into output. No secret, entropy, wallet path, authorization token or JNI capability is added. The tests sign only public synthetic scalars through the previously qualified primitive, then clear their owned scalar storage. Matching these supplied public objects proves no wallet custody, consent, network/current chain, unspentness, signed whole transaction or broadcast authority. |
+
+All81 native ASan/UBSan/LSan groups pass in58.04 seconds; Clang/GCC production
+and all new fixtures/oracle/fuzzer analysis pass. Complexity caps stay10/15
+(495/1095 functions). All24 mutants are caught, including ASan's SIZE_MAX
+comparison interception and23 intended fixture assertions. Test-only initial
+declaration, complexity and local-bound findings were fixed without disabling
+checks. Final release-archive tests pass on x86-64 API30/35/36; ARM64 is compiled
+only. Exact evidence and limits are in [TRANSACTIONS.md](TRANSACTIONS.md) and
+`.cache/android-wallet/signature-script-20260914/`.
+
+The final independently checked script fuzzer completes1,792,794 executions
+in121 seconds without a finding, with max_len160, timeout5 and RSS512MiB
+(observed274MiB). The initial698,807-run campaign's source/binary/log remain
+separate from the final harness after complexity and local-bound fixes.

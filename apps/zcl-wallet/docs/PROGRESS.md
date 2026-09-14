@@ -2282,3 +2282,43 @@ upstream Android-wallet changes. The existing branch remains unmerged/unpushed.
 Next: canonical signed wire and live-review completion/cancellation composition,
 with platform-authenticated context/consent still required before any wallet
 signing adapter. TLS stays owner-parked; real funds remain outside fixtures.
+
+2026-09-14: public signature verification now produces canonical P2PKH input
+scripts only after matching the compressed key's HASH160, strict DER/low-S and
+the exact supplied digest. All inputs copy before provider work; only complete
+success publishes the two minimal direct pushes and length. The fixed
+SIGHASH_ALL byte and33-byte key give DER+36 bytes, bounded44..107. No heap,
+private key, RNG, JNI or authorization is introduced. Original Zclassic
+signature-byte/stack-order/direct-push source rules were inspected at the pinned
+commit; no original node or script interpreter is executed.
+
+The64-profile suite passes129 capacities plus SIZE_MAX, known generator hash,
+all used-byte mutations, scalar/DER/length/NULL errors and guard checks. OpenSSL
+independently verifies the hash/DER/low-S/digest relation. Dirty-provider and
+source-mutation tests preserve both outputs and clear captured live work.
+All24 mutants are detected (23 assertions, one ASan SIZE_MAX comparison).
+All81 native ASan/UBSan/LSan groups pass in58.04 seconds; Clang/GCC analysis and
+unchanged10/15 complexity caps pass (495/1095 functions). The optimized host
+entry frame is600 bytes. GCC's test-provider array declaration mismatch and
+the fuzzer's complexity/local-bound findings were fixed while retaining every
+warning, assertion and cap. Initial/final evidence remains separate.
+
+Android/JVM/lint, APK alignment/fixture isolation and architecture gates pass.
+APKs remain identical because no JNI caller exists. Actual release-archive
+tests pass on x86-64 API30/35/36; ARM64 is compiled only. Runtime executable
+SHA256 is `e5f518f3120cbe9e96d24676d708c454ab6d35df656a35634d3581cc8cc34477`.
+Both ELFs have16KiB alignment, RELRO/NOW and non-executable stacks. Public
+synthetic tests access no app wallet, Keystore, endpoint or node. Evidence and
+source/archive/artifact identities are in
+`.cache/android-wallet/signature-script-20260914/`.
+
+Fetched origin/main remains `7f5fe466b6da49b62343859068dc2872c7f43d79`, with no
+Android app changes; the existing branch is unmerged/unpushed. Next is complete
+signed wire bound to the exact live review, followed by platform-authenticated
+context/consent and completion/cancellation. TLS remains owner-parked, and no
+positive hardware-custody or real-funds acceptance is claimed.
+
+The final OpenSSL differential script fuzzer completes1,792,794 cases in121
+seconds without a finding, with max_len160, timeout5 and RSS512MiB
+(peak274MiB). Initial698,807-run evidence remains separately attributable to
+the earlier harness; the final binary and source identity are checked explicitly.

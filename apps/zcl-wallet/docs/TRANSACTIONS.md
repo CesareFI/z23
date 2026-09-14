@@ -855,6 +855,80 @@ Focused checks use `ctest --test-dir native/build/safety-active -R
 '^wallet_signature' --output-on-failure`. `ZCL_ORACLE=ON` adds independent
 OpenSSL verification, and `ZCL_FUZZ=ON` builds `fuzz_signature`.
 
+## Verified canonical P2PKH input scripts — 2026-09-14
+
+Internal `zcl_signature_p2pkh` accepts only public signature/digest/key-hash
+data. It requires strict DER8..71, low-S, a compressed33-byte public key,
+exact32-byte digest and20-byte P2PKH hash. After copying all inputs, it parses
+the key, compares SHA256/RIPEMD160 with the supplied destination, parses and
+re-encodes the signature to establish exact canonical DER, and verifies the
+supplied digest. It then emits two minimal direct pushes: DER plus the one-byte
+SIGHASH_ALL selector, followed by the compressed key. Total length is DER+36,
+bounded44..107. It never adds a transaction vector length or terminator.
+
+Every provider status and returned length is checked before use. Only the
+successful prefix and length publish; both outputs remain untouched on every
+failure. Unused signature bytes/padding are ignored. The complete private work
+clears after every entered path, with no new heap, RNG, secret or retained
+pointer. The caller must keep all inputs stable and nonoverlapping during the
+synchronous call. The helper has no network/chain/ownership/consent semantics;
+its future wallet caller must obtain the digest and P2PKH hash from the same
+exact owned review and recheck its own operation/completion lifetime.
+
+The original Zclassic `script/sign.cpp` and `script/script.h` at
+`14a83d510ffd109d3fa09bf74ebf8c28854a263f` were inspected directly from Git
+objects. They establish signature-hash-byte appending, P2PKH signature/key stack
+order, and direct pushes below OP_PUSHDATA1. Exact source SHA256 values are
+`bd433d4a7886384af1f1a4a11dd2c49a1cd2ea7a7d251cc59048301b28e44351`
+and `f91b4462713a3df7d1bdd665c71bf3c86a743039baa9d2a2f1b8182dae460af0`.
+No original node/script interpreter is executed, and this narrow wallet profile
+does not claim general script or consensus acceptance.
+
+Tests cover64 signing profiles across129 capacities plus SIZE_MAX capacity,
+known generator HASH160, ignored DER tails, every used signature/key/digest/hash
+byte mutation, all lengths0..73 and SIZE_MAX, actual high-S, nonminimal DER,
+trailing bytes, zero scalars, NULLs and both output guards. The two direct pushes
+are independently read and checked for exact consumption. OpenSSL separately
+checks the public key hash, canonical DER/low-S and exact-digest verification.
+Fault providers mutate the original signature/length/key/digest/hash after the
+first private copy and return dirty failure data, mismatching hashes, malformed
+lengths or changed canonical bytes. Captured work spans are inspected and
+retired only inside the live zero callback. Both returned outputs remain atomic.
+
+All24 deliberate mutants are detected:23 by intended fixture assertions, and
+the removed canonical-length check by ASan intercepting a SIZE_MAX memcmp.
+All81 native ASan/UBSan/LSan groups pass in58.04 seconds. Clang/GCC production,
+fixture/fault/oracle/fuzzer analysis passes with unchanged10/15 complexity caps
+(495/1095 functions). The optimized host entry frame measures600 bytes.
+GCC caught a test-provider array declaration mismatch, fixed to match the
+RIPEMD160 header. The fuzzer's result checks were split to meet the existing
+complexity cap, and local NULL/DER bounds now precede oracle-dependent arithmetic.
+No warning, assertion or acceptance cap was disabled; initial/final logs remain.
+
+Android/JVM/lint, APK alignment/fixture isolation and architecture gates pass.
+APKs remain byte-identical because the helper has no JNI caller. Standalone
+tests linked against the actual new release archives pass on x86-64
+API30/35/36 (SHA256
+`e5f518f3120cbe9e96d24676d708c454ab6d35df656a35634d3581cc8cc34477`).
+ARM64 is compiled only (SHA256
+`584b50d27accf28f594386fc2aac160ce7c4c413c3a9e1d59f3aa4a80308c006`).
+Both ELFs have16KiB alignment, RELRO/NOW and non-executable stacks. These public
+synthetic fixtures access no app wallet, Keystore, endpoint or node.
+
+The final OpenSSL differential fuzzer completes1,792,794 executions in121
+seconds without a finding, with max_len160, timeout5 and RSS512MiB (observed
+peak274MiB). It compares arbitrary signature/key/digest/hash tuples, malformed
+lengths, NULLs, capacities, both-output preservation and exact script contents.
+The initial698,807-execution campaign remains separate from the final refactored
+and locally bounded harness; original/final binaries, source and logs are retained.
+
+Focused checks use `ctest --test-dir native/build/safety-active -R
+'^wallet_signature_script' --output-on-failure`. Both `ZCL_ORACLE=ON` and
+`ZCL_FUZZ=ON` are required for `fuzz_signature_script`, which compares arbitrary
+public signatures with the independent OpenSSL oracle. Evidence and exact
+source/archive/artifact hashes are retained in
+`.cache/android-wallet/signature-script-20260914/`.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
@@ -878,7 +952,8 @@ OpenSSL verification, and `ZCL_FUZZ=ON` builds `fuzz_signature`.
 3. Synthetic signing and explicit review/cancellation, then qualified broadcast
    lifecycle and restart recovery. The bounded raw-digest primitive above now
    has independent host verification and real release-library Android evidence;
-   canonical signed wire and authorized live-review completion remain open.
+   canonical P2PKH input scripts now also have strict public verification.
+   Complete signed wire and authorized live-review completion remain open.
    Real funds remain outside development tests.
 4. Shielded wire/proof/witness/value/recovery qualification before exposing it.
 

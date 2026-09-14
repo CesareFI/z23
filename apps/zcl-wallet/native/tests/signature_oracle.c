@@ -97,3 +97,22 @@ int zcl_test_signature_oracle(const uint8_t *secret, size_t secret_len,
     if (signature->der_len < 8 || signature->der_len > 72) return 0;
     return public_matches(secret, signature->public_key) && canonical_low_s(signature) && verify_digest(digest, signature);
 }
+
+static int hash_matches(const uint8_t *public_key, const uint8_t *expected)
+{
+    uint8_t sha[32] = {0}, hash[20] = {0};
+    unsigned int length = 0;
+    if (EVP_Digest(public_key, 33, sha, &length, EVP_sha256(), NULL) != 1 || length != 32) return 0;
+    if (EVP_Digest(sha, sizeof(sha), hash, &length, EVP_ripemd160(), NULL) != 1 || length != 20) return 0;
+    return memcmp(hash, expected, sizeof(hash)) == 0;
+}
+
+int zcl_test_signature_script_oracle(const zcl_signature *signature,
+    const uint8_t *digest, size_t digest_len, const uint8_t *hash, size_t hash_len)
+{
+    if (signature == NULL || digest == NULL || hash == NULL) return 0;
+    if (digest_len != 32 || hash_len != 20) return 0;
+    if (signature->der_len < 8 || signature->der_len > 71) return 0;
+    if (signature->public_key[0] != 2 && signature->public_key[0] != 3) return 0;
+    return hash_matches(signature->public_key, hash) && canonical_low_s(signature) && verify_digest(digest, signature);
+}

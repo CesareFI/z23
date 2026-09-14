@@ -94,7 +94,7 @@ add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c src/blake2_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
-    src/signature.c
+    src/signature.c src/signature_script.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
     src/change_state.c src/change_state_key.c src/change_custody.c src/change_reservation.c src/change_recovery.c
     src/change_ownership.c
@@ -746,6 +746,27 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_signature COMMAND signature_tests)
     set_tests_properties(wallet_signature PROPERTIES TIMEOUT 30)
+    add_executable(signature_script_tests tests/test_signature_script.c)
+    target_include_directories(signature_script_tests PRIVATE src)
+    target_link_libraries(signature_script_tests PRIVATE zcl_wallet_core secp256k1 zcl_hash_provider)
+    target_compile_options(signature_script_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_signature_script COMMAND signature_script_tests)
+    set_tests_properties(wallet_signature_script PROPERTIES TIMEOUT 30)
+    add_executable(signature_script_failure_tests tests/test_signature_script_failures.c src/signature_script.c)
+    target_include_directories(signature_script_failure_tests PRIVATE src)
+    target_link_libraries(signature_script_failure_tests PRIVATE zcl_wallet_core secp256k1 zcl_hash_provider)
+    target_compile_definitions(signature_script_failure_tests PRIVATE
+        zcl_secure_zero=zcl_script_test_zero mbedtls_sha256=zcl_script_test_sha256
+        mbedtls_ripemd160=zcl_script_test_ripemd160 secp256k1_ec_pubkey_parse=zcl_script_test_key
+        secp256k1_ecdsa_signature_parse_der=zcl_script_test_parse
+        secp256k1_ecdsa_signature_normalize=zcl_script_test_normalize
+        secp256k1_ecdsa_signature_serialize_der=zcl_script_test_serialize
+        secp256k1_ecdsa_verify=zcl_script_test_verify)
+    target_compile_options(signature_script_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_signature_script_failures COMMAND signature_script_failure_tests)
+    set_tests_properties(wallet_signature_script_failures PROPERTIES TIMEOUT 15)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(signature_failure_tests tests/test_signature_failures.c src/signature.c)
     target_include_directories(signature_failure_tests PRIVATE src)
@@ -868,10 +889,18 @@ if(NOT ANDROID)
         endif()
         target_link_libraries(signature_tests PRIVATE signature_oracle)
         target_compile_definitions(signature_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
+        target_link_libraries(signature_script_tests PRIVATE signature_oracle)
+        target_compile_definitions(signature_script_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
         if(ZCL_FUZZ)
             target_compile_options(signature_oracle PRIVATE -fsanitize=fuzzer-no-link)
             target_link_libraries(fuzz_signature PRIVATE signature_oracle)
             target_compile_definitions(fuzz_signature PRIVATE ZCL_SIGNATURE_ORACLE=1)
+            add_executable(fuzz_signature_script tests/fuzz_signature_script.c)
+            target_include_directories(fuzz_signature_script PRIVATE src)
+            target_link_libraries(fuzz_signature_script PRIVATE zcl_wallet_core signature_oracle)
+            target_compile_options(fuzz_signature_script PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wframe-larger-than=4096)
+            target_link_options(fuzz_signature_script PRIVATE -fsanitize=fuzzer,address,undefined)
         endif()
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
