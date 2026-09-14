@@ -1741,3 +1741,48 @@ checkpoint, retaining its exact API 30/36 evidence. Native/fuzzer bytes remain
 unchanged, so their prior campaigns remain applicable. Source, mutations,
 backtraces, initial complexity failure, final reports and hashes are retained in
 `.cache/android-wallet/bip32-erasure-20260914/` in the isolated worktree.
+
+## 2026-09-14: public-key structural validation before context creation
+
+Reviewed `ec_context.c` and the added key-failure cases. The public conversion
+entry previously allocated/randomized an EC context before rejecting NULL
+secret/output pointers, a non-32-byte secret claim or output capacity below 33.
+A shared private argument check now precedes context creation and remains at
+the internal conversion boundary. Scalar validity, blinding, serialization and
+cleanup still use the existing provider and predicates. Structurally invalid
+calls now return their argument/range error even under a simultaneous provider
+failure; structurally valid calls retain the prior provider-error behavior.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The shared check reads no caller bytes. It checks both pointers before accepting exactly 32 secret bytes and at least 33 output bytes. Context validation still precedes internal use. The unchanged provider serializes into a fixed 33-byte temporary and must report exactly that length before caller publication. Fixtures surround the writable output with canaries and include NULL, zero/31/33/SIZE_MAX secret claims and 0/1/32 output capacities. |
+| Integer overflow/underflow; signed/unsigned conversions | New production logic uses only fixed comparisons, without addition, multiplication, narrowing conversion or pointer offset. Tests use a nine-entry fixed case table and six bounded failure modes; their context-request counter is bounded by this finite registered run. SIZE_MAX remains a rejected secret-length claim, never an allocation size. |
+| Use-after-free; double-free; leaks; dangling pointers | Rejected structural arguments acquire no resource and retain no pointer. Accepted calls keep the existing invocation-local context, checked allocation and unconditional end/clear/free path, including failed creation or randomization. No new owner, allocation, retained callback or provider handle is introduced. |
+| NULL dereferences; uninitialized memory | Validation occurs before any provider call or caller-byte read. The internal function independently rejects a NULL context. Valid-operation point/encoded scratch still initializes before use and clears through the same cleanup path. All fixture inputs/canaries initialize before calls; deliberately oversized claims designate bounded public arrays and must refuse before access. |
+| Pointer arithmetic; format strings | No new production pointer arithmetic, cast, serialization or format operation. Test output+1 is within a 35-byte object with a 33-byte writable middle. Diagnostics expose only fixed check messages and source lines. |
+| Stack usage; allocation limits; resource exhaustion | No new production array, context cache, thread, retry or heap object. All 54 structural-refusal cases make zero context-provider requests/allocations across normal operation and injected memory/size/create/blinding failures. NDK release-profile frames remain 120/128 bytes for public conversion and 168/192 for internal conversion on x86-64/ARM64 respectively; caller/provider frames are additional. Object text grows 57/52 bytes. Existing valid-operation allocation remains checked nonzero and at most 1024 bytes. |
+| Malformed input; races; failure behavior | The new regression fails against the old entry because an invalid request reaches the context provider. The same structural checks now serve both entry points. Failed output stays byte-identical and valid public keys retain all 17 published BIP32 paths and blinding-independence checks. There is no production mutable global or concurrency change; observation counters exist only in the host fixture. |
+| Secret leakage and authority | Malformed calls generate no context secret. Valid calls retain full blinding, scalar checks, exact compressed-key length and native scratch/context erasure. No secret logging, temporary wallet, JNI surface, authentication policy, signing enablement, transaction validity or consensus rule changes. Resource refusal is earlier, not a shortcut through cryptographic validation for valid requests. |
+
+All 89 ASan/UBSan/LSan groups pass in 64.61 seconds. Strict Clang/GCC analysis,
+unchanged 10/15 complexity caps, JVM tests, Android builds/lint, fixture
+isolation, native alignment and architecture checks pass. The existing JNI key
+fuzzer completes 51607 runs in 121 seconds without a finding, with 217-byte
+inputs, five-second cases and a 512 MiB RSS cap (52 MiB observed). Its SHA256 is
+`b1620576339b04b077bc94593a66cd94f95d71c7a648f0d3d582663344ca821d`.
+
+The release-archive BIP32 executable passes on isolated x86-64 API 30 and API 36,
+SHA256 `0bd52273d6ea9e97dc0fc330f0b5182557df53a3117c1d8d3a9c943a6290582a`.
+ARM64 is compiled only. Both Android versions also pass all 31 selected key,
+record, secret-display, backup, authentication-window and worker tests on the
+final debug artifact. Owned emulators shut down through the qualified wrapper.
+This does not qualify physical hardware custody or production wallet release.
+
+An oversized incremental debug APK was traced to unused ZIP space: fresh
+packaging reduced 4334210 bytes to 3559725 while every entry's content hash
+remained identical. The final compact artifact was reinstalled/retested on both
+emulators. Fresh release packaging retained the exact existing 613127-byte APK
+and hash. These container measurements are separate from the source object's
+small code increase and make no phone CPU/RSS claim. Initial/final archives,
+entry hashes, stack reports and acceptance logs are retained in
+`.cache/android-wallet/public-key-preflight-20260914/` in the isolated worktree.

@@ -2953,3 +2953,44 @@ before/after mutation runs, backtraces, stack/metadata budgets, the initial
 complexity failure and final hashes remain in
 `.cache/android-wallet/bip32-erasure-20260914/`. The development branch remains
 local after the earlier HTTP 403 push refusal; main was fetched and left intact.
+
+2026-09-14: native public-key conversion rejects structurally malformed calls
+before allocating or randomizing an EC context. A shared private check retains
+the same NULL/32-byte-secret/33-byte-output rules at both conversion boundaries.
+Valid requests still use the full existing blinding, scalar, serialization and
+cleanup paths. A malformed argument now wins over a simultaneous injected
+provider fault, avoiding both needless work and a misleading resource error.
+
+The new regression fails against the old entry. All 54 NULL/length/capacity
+cases now observe zero context-provider requests and unchanged output across
+normal and five failing provider modes. Existing allocation/erasure, provider
+failure and BIP32 vector checks remain green. All 89 ASan/UBSan/LSan groups pass
+in 64.61 seconds; Clang/GCC analysis, unchanged 10/15 complexity caps, JVM tests,
+Android builds/lint, fixture isolation, alignment and architecture gates pass.
+The JNI key fuzzer completes 51607 cases in 121 seconds without a finding
+(217-byte input cap, five-second cases, 512 MiB RSS cap; 52 MiB observed).
+
+All 31 selected Android tests pass on both API 30 and API 36 isolated emulators.
+The exact release-archive native BIP32 executable also passes its 17 published
+paths, bounds and blinding checks on both. ARM64 is compiled only. NDK release
+stack budgets are unchanged; source object text grows 57 bytes on x86-64 and
+52 on ARM64. This proves avoided provider work for invalid native API calls,
+not a measured improvement in ordinary wallet latency or phone battery use.
+
+The incremental debug APK unexpectedly reached 4334210 bytes although native
+payload growth was only 400 bytes across both ABIs. Its prior package output
+and incremental state were preserved, then regenerated through the normal
+Gradle packaging task. Fresh debug packaging is 3559725 bytes, with every entry
+byte-identical to the larger archive; the size difference was unused ZIP space.
+The compact artifact passed all 31 Android tests again on both emulators.
+Fresh release packaging retained its exact 613127-byte APK, SHA256
+`8ce4c1bf523296e0497b3ab7e1ede0a0c8135f4b3467bc5fe8ba06a36dbdebc7`.
+Use fresh packaging or compare payloads before attributing incremental APK
+size changes to source changes. No packaging rule or app behavior was weakened.
+
+The full hazard review is in C_SAFETY_REVIEW.md. Initial/final APKs, content
+hashes, baseline failure, budgets, fuzz evidence and accepted artifacts remain
+in `.cache/android-wallet/public-key-preflight-20260914/`. Owned emulators shut
+down gracefully; unrelated devices, dirty work and production state remain
+untouched. Work remains on the development branch, locally checkpointed after
+the earlier HTTP 403 remote push refusal.
