@@ -128,7 +128,26 @@ Twelve competing processes must produce exactly one successful creator. These
 tests observe process/filesystem behavior; they do not simulate physical power
 loss or qualify every device filesystem. The Android instrumentation test uses
 a public test AES key to check GCM/AAD and native storage on an emulator. It does
-not qualify hardware Keystore custody; that platform adapter is the next step.
+not qualify hardware Keystore custody; positive hardware acceptance remains open.
+
+Eight additional native Android storage cases pass on API30, API35 and API36.
+Each exclusively creates a temporary private root, uses a public AES-GCM record
+and deletes only its fixed invocation-owned entries without following links.
+They check exact authenticated pending promotion, mismatch refusal, idempotent
+committed retries, no replacement of a different record, corrupt-committed
+precedence and preservation of truncated/oversized pending files. A complete
+pending record with a bad tag remains structurally readable but fails provider
+authentication; the fixture does not promote it or overwrite it by creation.
+
+Real final-directory/file symlinks, group/other permission bits and a nonempty
+lock all refuse under native policy. A subsequent valid call still works after
+the fixture repairs its own deliberately unsafe metadata. `/proc/self/fd`
+checks find no references to the fixture root or its children after synchronous
+calls. Four concurrently released Android creator threads produce exactly one
+complete record; other results are BUSY or ALREADY_EXISTS, and the winner's
+exact bytes are retained with no pending file. These observations qualify the
+stated local filesystem/JNI contracts, not malicious same-UID rollback,
+physical power loss, production wallet recovery or hardware authentication.
 
 Fresh Android creation additionally persists authenticated change state before
 the wallet commit through the existing paired C storage owner. Restoration

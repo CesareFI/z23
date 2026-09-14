@@ -1950,3 +1950,27 @@ the same minified artifact is restored on API36. There is no C or custody-policy
 change. Evidence is under `.cache/android-wallet/secret-display-20260914`.
 Continue actual Android private-file refusal and authenticated pending-record
 promotion in isolated public fixtures, preserving the hardware-custody gate.
+
+2026-09-14 Android private-storage continuation: eight new device cases exercise
+the existing C filesystem adapter in exclusively created temporary directories.
+Public provider-GCM authentication and recovered-address validation precede
+successful exact-byte pending promotion. Competing authenticated records refuse;
+idempotent promotion rechecks committed bytes. Bad tags fail authentication,
+corrupt committed files retain precedence, and nine truncated/oversized pending
+lengths remain preserved recovery conditions rather than new-wallet permission.
+
+Directory/file symlinks, unsafe permission bits and nonempty locks all refuse
+without target writes. Correcting only fixture-owned metadata permits a fresh
+valid call. Descriptor scans cover both the temporary root and its children
+after calls. Four simultaneous Android creators yield exactly one complete
+winner and only BUSY/ALREADY_EXISTS competitors, with exact retained winner
+bytes and no pending file. Worker completion precedes fixture cleanup.
+
+All eight tests pass on API30 in 4.162 seconds, API35 in 15.137 seconds and API36
+in 8.124 seconds. Test build, strict Android lint, fixture isolation, architecture
+and whitespace checks pass. Exact test/application APKs are saved and hashes
+recheck; the application matches the already tested recovery-display APK byte
+for byte. Production C/Kotlin and custody rules are unchanged. Evidence is under
+`.cache/android-wallet/android-storage-20260914`. This is native Android
+file/JNI evidence using public ciphertext, not hardware custody, malicious
+rollback resistance or physical power-loss qualification.
