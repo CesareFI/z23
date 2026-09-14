@@ -2037,3 +2037,27 @@ Android builds, JVM tests and lint also pass; debug/test/unsigned release APKs
 remain byte-identical to the prior qualified artifacts. Architecture and
 whitespace checks pass. No new Android instrumentation or custody result is
 claimed for this host-only fixture milestone.
+
+2026-09-14 independent nonzero-amount qualification: the oracle now requires
+both published ZIP 243 transparent-input records in addition to all 130 pinned
+original v4 vectors before emitting derived expectations. Exact selected TSV,
+upstream MIT notice and source/extraction identities are committed; no Python
+source or toolchain is fetched or invoked. The two published amounts exceed
+uint32, and their expected digest bytes compare directly. Eight NOT_AN_INPUT
+cases are explicitly outside this transparent-input fixture scope.
+
+Three mutants reverse the amount bytes, truncate to uint32 or replace the
+amount with zero. Each passes all 130 original zero-amount cases and is then
+refused by the added independent comparisons with no generated output. Ten
+malformed ZIP cases and all ten original refusal cases also withhold output.
+The existing 144 projected digest values remain byte-identical; only their
+provenance comment changes. Strict Clang/GCC analysis, ASan/UBSan/LSan, exact
+regeneration and existing-report preservation pass. The full native suite
+passes 65 tests in 45.09 seconds, with 887 test functions within the unchanged
+complexity cap. Architecture passes. No Android production source changes or
+new device acceptance claims occur in this host-only slice.
+
+Evidence is preserved in `.cache/android-wallet/zip243-oracle-20260914/`.
+The next gate is the bounded wallet signature-hash constructor against these
+independent expected values, then exact authenticated review/key ownership.
+Hash compatibility alone still does not grant signing or spending authority.

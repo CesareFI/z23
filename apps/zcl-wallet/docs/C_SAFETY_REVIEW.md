@@ -1145,3 +1145,29 @@ and eight oracle mutants refuse before writing any expected bytes. Both static
 analyzers and ASan/UBSan/LSan pass. All 65 normal native tests remain green in
 45.26 seconds; 884 test functions remain within the unchanged complexity cap
 of 15. Reproduction and exact evidence scope are in [TRANSACTIONS.md](TRANSACTIONS.md).
+
+## Independent nonzero-amount oracle gate — 2026-09-14
+
+Scope: require two exact published ZIP 243 transparent-input records in addition
+to the original 130 zero-amount records before fixture generation. Only host
+fixture C, copied public data/license and bounded extraction glue change.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The shared field splitter accepts only seven/eight fields and writes to matching fixed caller arrays. It finds each separator before advancing and rejects trailing fields. The ZIP reader reuses the existing 11000-byte wire, 128-byte script, exact 32-byte result and bounded structural parser; no serialization limit grows. All reads occur within one checked complete NUL-terminated line. Source records are checksum-pinned before the wrapper script invokes the oracle. |
+| Integer overflow/underflow; signed/unsigned conversions | Input index is checked in 0..7, type in 1..0x83, branch in 0..UINT32_MAX and amount in 1..2100000000000000 through checked strtoimax before conversion. Negative/overflow amounts and NOT_AN_INPUT are refused in this deliberately transparent fixture. Little-endian amount serialization remains eight bytes, with shifts at most 56. Both published amounts exceed uint32; reversal/truncation/zeroing mutations fail independently of the original zero-amount records. |
+| Use-after-free; double-free; leaks; dangling pointers | New file-loop reuse owns one checked fopen/fclose at a time. Its row callback is a fixed local function pointer, checked non-NULL and never retained. Every ZIP view borrows the current fixed wire only for its synchronous comparison. Original projections already own their copied bytes, so reusing wire for ZIP cannot mutate them. No new heap ownership or delayed reference exists. Assertion failures terminate only the isolated fixture process, which releases its descriptors. |
+| NULL dereferences; uninitialized memory | argc must be three before either path is used. Field arrays, parsed view, script/expected/digest buffers initialize; all fields are assigned by the checked splitter before conversion. The generic loop checks path/callback and accepts only expected row counts 130/2. Provider and I/O statuses remain checked. Row-order state resets before each dataset; exactly two strictly ordered ZIP rows must finish before any expected header bytes publish. |
+| Pointer arithmetic; format strings | Only validated field separators and bounded slices are added; no integer-derived pointer or unaligned load. Expected ZIP bytes compare directly, without the separate original uint256 display reversal. Diagnostics retain fixed text/public row and line numbers. New fields never become printf formats. |
+| Stack usage; allocation limits; resource exhaustion | ZIP verification uses the existing fixed globals, one fixed view and three small local byte buffers. No cap, recursion, VLA, thread or heap allocation is added. Per-frame warning limit remains 4096 bytes. Two additional bounded records are read under the existing 30-second extraction CPU limit; generated case count remains 144. The checksum file identifies copied data/license; it grants no source execution or wallet authority. |
+| Malformed serialization; races; lifetimes | Ten original refusals still fail. Ten ZIP cases cover changed/zero/negative/overflowing amount, unsupported index, invalid hex, changed digest, duplicate/missing rows and an extra field. Every ZIP refusal occurs after all original rows match and before any expected output. Mutable fixture buffers/row state have one serial owner and are not Android runtime state. |
+| Secret leakage, cryptography and authority | Only published public transaction/script/proof bytes and amounts are processed. No Python source is fetched or executed; data is selected from exact JSON bytes. The two reference hashes qualify amount serialization for this independent oracle; no Zcash-to-Zclassic chain validity, current branch, proof validity, funding, key, signing or custody claim follows. All 144 prior projected digest values remain byte-identical; only their provenance comment changes. Original wallet-constructor and authenticated authorization gates remain open. |
+
+Both static analyzers pass the final oracle. All 130 original comparisons and
+both ZIP comparisons pass under ASan/UBSan/LSan, followed by byte-identical
+regeneration of the existing 144 digest values. Ten original and ten ZIP
+refusals withhold expected output; all three amount mutations are caught only
+by the added nonzero gate. All 65 native tests pass in 45.09 seconds and all
+887 test functions remain within the unchanged cap of 15. Architecture and
+existing-report preservation pass. No Android production source changes in
+this slice; the previous APK and device evidence remain the applicable scope.

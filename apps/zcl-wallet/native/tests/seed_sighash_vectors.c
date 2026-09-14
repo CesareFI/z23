@@ -222,15 +222,22 @@ static void capture_projection(const transaction_view *view, span script)
     }
 }
 
-static void check_row(char *text)
+static void split_fields(char *text, char **fields, size_t field_count)
 {
-    char *fields[7] = {text};
-    for (size_t i = 1; i < 7; ++i) {
+    CHECK(field_count == 7 || field_count == 8);
+    fields[0] = text;
+    for (size_t i = 1; i < field_count; ++i) {
         char *separator = strchr(fields[i - 1], '\t');
         CHECK(separator != NULL);
         *separator = '\0'; fields[i] = separator + 1;
     }
-    CHECK(strchr(fields[6], '\t') == NULL);
+    CHECK(strchr(fields[field_count - 1], '\t') == NULL);
+}
+
+static void check_row(char *text)
+{
+    char *fields[7] = {0};
+    split_fields(text, fields, 7);
     const size_t original_row = (size_t)number(fields[0], 1, 503);
     CHECK(original_row > row_number);
     row_number = original_row;
@@ -248,6 +255,29 @@ static void check_row(char *text)
     signature_hash(&view, input_index, type, branch, (span){script, script_length}, 0, digest);
     for (size_t i = 0; i < 32; ++i) CHECK(digest[i] == expected[31 - i]);
     capture_projection(&view, (span){script, script_length});
+}
+
+static void check_zip_row(char *text)
+{
+    char *fields[8] = {0};
+    split_fields(text, fields, 8);
+    const size_t next_row = (size_t)number(fields[0], 1, 14);
+    CHECK(next_row > row_number);
+    row_number = next_row;
+    const size_t input_index = (size_t)number(fields[1], 0, 7);
+    const uint32_t type = (uint32_t)number(fields[2], 1, 0x83);
+    const uint64_t amount = (uint64_t)number(fields[3], 1, INT64_C(2100000000000000));
+    const uint32_t branch = (uint32_t)number(fields[4], 0, UINT32_MAX);
+    const size_t length = unhex(fields[5], wire, sizeof(wire));
+    uint8_t script[128] = {0}, expected[32] = {0}, digest[32] = {0};
+    const size_t script_length = unhex(fields[6], script, sizeof(script));
+    CHECK(unhex(fields[7], expected, sizeof(expected)) == sizeof(expected));
+    transaction_view view = {0};
+    cursor reader = {wire, length, 0};
+    parse_transparent(&reader, &view);
+    parse_shielded(&reader, &view);
+    signature_hash(&view, input_index, type, branch, (span){script, script_length}, amount, digest);
+    CHECK(memcmp(digest, expected, sizeof(digest)) == 0); /* ZIP results are raw digest bytes. */
 }
 
 static void emit_bytes(const uint8_t *bytes, size_t length)
@@ -281,6 +311,7 @@ static void emit_vectors(void)
         " * Public projected v4 SIGHASH_ALL fixtures, not original transactions.\n"
         " * Original 14a83d510ffd109d3fa09bf74ebf8c28854a263f rows 203/208/296.\n"
         " * Generated only after matching all 130 untouched original v4 hashes.\n"
+        " * Also matches both published ZIP 243 transparent-input hashes with nonzero amounts.\n"
         " * Uses libsodium %s; no wallet C parser, serializer or hash provider.\n"
         " * Branches are explicit test values, not a current-network assertion.\n"
         " * Script profile 0: original row script; profile 1: P2PKH hash bytes 0..19.\n"
@@ -309,21 +340,30 @@ static void emit_vectors(void)
     CHECK(printf("};\n") >= 0 && fflush(stdout) == 0);
 }
 
-int main(int argc, char **argv)
+static void check_file(const char *path, size_t expected_rows, void (*check)(char *))
 {
-    CHECK(argc == 2 && sodium_init() >= 0);
-    FILE *input = fopen(argv[1], "rb");
+    CHECK(path != NULL && check != NULL && (expected_rows == 130 || expected_rows == 2));
+    row_number = 0;
+    FILE *input = fopen(path, "rb");
     CHECK(input != NULL);
     size_t rows = 0;
     while (fgets(line, sizeof(line), input) != NULL) {
         const size_t length = strlen(line);
-        CHECK(length > 0 && line[length - 1] == '\n' && rows < 130);
+        CHECK(length > 0 && line[length - 1] == '\n' && rows < expected_rows);
         line[length - 1] = '\0';
-        check_row(line); ++rows;
+        check(line); ++rows;
     }
     CHECK(ferror(input) == 0);
-    CHECK(fclose(input) == 0 && rows == 130);
+    CHECK(fclose(input) == 0 && rows == expected_rows);
+}
+
+int main(int argc, char **argv)
+{
+    CHECK(argc == 3 && sodium_init() >= 0);
+    check_file(argv[1], 130, check_row);
     CHECK(fputs("130 untouched original v4 signature-hash vectors matched with libsodium\n", stderr) >= 0);
+    check_file(argv[2], 2, check_zip_row);
+    CHECK(fputs("Both published ZIP 243 transparent-input hashes matched, including nonzero 64-bit amounts\n", stderr) >= 0);
     emit_vectors();
     return 0;
 }

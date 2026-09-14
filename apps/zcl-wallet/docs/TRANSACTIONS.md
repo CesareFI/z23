@@ -91,6 +91,15 @@ node execution. Original `interpreter.cpp` SHA256 is
 The original fixture calls SignatureHash with amount zero. Its expected uint256
 display is reversed for comparison with raw digest bytes.
 
+Generation also requires both published ZIP 243 transparent-input records to
+match, covering independently specified nonzero 64-bit amounts with NONE and
+SINGLE flags. Their raw digest byte order is compared directly. The selected
+records, pinned source identity, complete license and extraction recipe are in
+[zip243-reference.md](../native/tests/zip243-reference.md). No original expected
+hash or derived digest changes: this closes the amount-evidence gap before
+using the fixtures to qualify wallet code. Three mutants reverse, truncate or
+zero the amount; each passes all original zero-amount cases and fails this gate.
+
 This oracle reads only the bounded shapes present in the reference data:
 v4 header/group, at most 8 inputs/16 outputs, short canonical lengths, up to
 4 spends/4 shielded outputs/3 Groth JoinSplits and exact trailing signatures.
@@ -105,7 +114,7 @@ scriptCode spans. SINGLE+ANYONECANPAY and absent matching SINGLE output are
 not covered by that dataset. The generator does not infer current branch
 selection from these historical values.
 
-After all 130 original comparisons succeed, the generator projects only the
+After all 130 original and two ZIP comparisons succeed, the generator projects only the
 same rows 203/208/296 described above. It preserves their exact transparent
 prefixes and replaces the shielded tail with eleven zero bytes. The resulting
 144 SIGHASH_ALL cases cover every selected input, four explicit branch values,

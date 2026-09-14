@@ -2,6 +2,7 @@
  * Public projected v4 SIGHASH_ALL fixtures, not original transactions.
  * Original 14a83d510ffd109d3fa09bf74ebf8c28854a263f rows 203/208/296.
  * Generated only after matching all 130 untouched original v4 hashes.
+ * Also matches both published ZIP 243 transparent-input hashes with nonzero amounts.
  * Uses libsodium 1.0.18; no wallet C parser, serializer or hash provider.
  * Branches are explicit test values, not a current-network assertion.
  * Script profile 0: original row script; profile 1: P2PKH hash bytes 0..19.
