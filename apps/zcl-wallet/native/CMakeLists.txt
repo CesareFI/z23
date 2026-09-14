@@ -102,7 +102,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
     src/electrum_identity.c src/electrum_header.c src/electrum_history.c
     src/sync.c src/sync_watch.c src/sync_owners.c
-    src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c
+    src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c src/transaction_sighash.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
     src/transaction_review_prepare.c src/transaction_draft.c src/transaction_draft_check.c)
 # The TLS candidate remains confined to defensive host fixtures until the
@@ -174,6 +174,12 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_blake2 PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
     target_link_options(fuzz_blake2 PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_sighash tests/fuzz_sighash.c)
+    target_include_directories(fuzz_sighash PRIVATE src)
+    target_link_libraries(fuzz_sighash PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_sighash PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
+    target_link_options(fuzz_sighash PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_authentication_window tests/fuzz_authentication_window.c)
     target_link_libraries(fuzz_authentication_window PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_authentication_window PRIVATE -fsanitize=fuzzer,address,undefined
@@ -545,6 +551,22 @@ if(NOT ANDROID)
     endif()
     add_test(NAME wallet_blake2_failures COMMAND blake2_failure_tests)
     set_tests_properties(wallet_blake2_failures PROPERTIES TIMEOUT 15)
+    add_executable(sighash_tests tests/test_sighash.c)
+    target_include_directories(sighash_tests PRIVATE src)
+    target_link_libraries(sighash_tests PRIVATE zcl_wallet_core)
+    target_compile_options(sighash_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_sighash COMMAND sighash_tests)
+    set_tests_properties(wallet_sighash PROPERTIES TIMEOUT 15)
+    add_executable(sighash_failure_tests tests/test_sighash_failures.c src/transaction_sighash.c)
+    target_include_directories(sighash_failure_tests PRIVATE src)
+    target_link_libraries(sighash_failure_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(sighash_failure_tests PRIVATE
+        zcl_blake2b256=zcl_sighash_test_hash zcl_secure_zero=zcl_sighash_test_zero)
+    target_compile_options(sighash_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_sighash_failures COMMAND sighash_failure_tests)
+    set_tests_properties(wallet_sighash_failures PROPERTIES TIMEOUT 15)
     # Explicit host-only camera scene generator; no node or wallet authority.
     add_executable(seed_camera_scene tests/seed_camera_scene.c)
     target_link_libraries(seed_camera_scene PRIVATE zcl_qr_provider)
@@ -712,6 +734,14 @@ if(NOT ANDROID)
         # This reference-fixture oracle uses libsodium and its own bounded
         # byte reader; it includes and links no wallet parser/hash provider.
         add_executable(seed_sighash_vectors tests/seed_sighash_vectors.c)
+        add_library(sighash_oracle STATIC tests/seed_sighash_vectors.c)
+        target_compile_definitions(sighash_oracle PRIVATE ZCL_SIGHASH_ORACLE_LIBRARY=1)
+        target_include_directories(sighash_oracle PRIVATE ${ZCL_SODIUM_INCLUDE})
+        target_link_libraries(sighash_oracle PUBLIC ${ZCL_SODIUM_LIBRARY})
+        target_compile_options(sighash_oracle PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_libraries(sighash_tests PRIVATE sighash_oracle)
+        target_compile_definitions(sighash_tests PRIVATE ZCL_SIGHASH_ORACLE=1)
         target_include_directories(seed_sighash_vectors PRIVATE ${ZCL_SODIUM_INCLUDE})
         target_link_libraries(seed_sighash_vectors PRIVATE ${ZCL_SODIUM_LIBRARY})
         target_compile_options(seed_sighash_vectors PRIVATE -Wall -Wextra -Wpedantic -Werror
@@ -719,6 +749,13 @@ if(NOT ANDROID)
         if(ZCL_SANITIZE)
             target_compile_options(seed_sighash_vectors PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
             target_link_options(seed_sighash_vectors PRIVATE -fsanitize=address,undefined)
+            target_compile_options(sighash_oracle PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
+            target_link_options(sighash_oracle PUBLIC -fsanitize=address,undefined)
+        endif()
+        if(ZCL_FUZZ)
+            target_compile_options(sighash_oracle PRIVATE -fsanitize=fuzzer-no-link)
+            target_link_libraries(fuzz_sighash PRIVATE sighash_oracle)
+            target_compile_definitions(fuzz_sighash PRIVATE ZCL_SIGHASH_ORACLE=1)
         endif()
         find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)

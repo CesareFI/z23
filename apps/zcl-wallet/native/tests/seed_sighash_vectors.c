@@ -10,16 +10,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sighash_oracle.h"
 
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "Original hash oracle failed at %d (row %zu)\n", __LINE__, row_number); abort(); } } while (0)
+#define ORACLE_WIRE_MAX ((size_t)11000)
+#ifdef ZCL_SIGHASH_ORACLE_LIBRARY
+static const size_t row_number = 0;
+#else
 static size_t row_number;
 static char line[32768];
-static uint8_t wire[11000];
+static uint8_t wire[ORACLE_WIRE_MAX];
 static struct {
     uint8_t wire[1925], script[128];
     size_t wire_length, script_length;
 } projections[3];
 static unsigned projection_mask;
+#endif
 typedef struct { const uint8_t *data; size_t length; } span;
 typedef struct { const uint8_t *data; size_t length, position; } cursor;
 typedef struct {
@@ -104,7 +110,7 @@ static void start(crypto_generichash_blake2b_state *state, const uint8_t *person
 
 static void append(crypto_generichash_blake2b_state *state, span bytes)
 {
-    CHECK(bytes.data != NULL && bytes.length <= sizeof(wire));
+    CHECK(bytes.data != NULL && bytes.length <= ORACLE_WIRE_MAX);
     CHECK(crypto_generichash_blake2b_update(state, bytes.data, (unsigned long long)bytes.length) == 0);
 }
 
@@ -178,6 +184,22 @@ static void signature_hash(const transaction_view *view, size_t input_index, uin
     finish(&state, output);
 }
 
+void zcl_test_sighash_all(const uint8_t *bytes, size_t wire_length, size_t input_index,
+    const uint8_t *script, size_t script_length, uint64_t amount, uint32_t branch,
+    uint8_t *digest, size_t capacity)
+{
+    CHECK(bytes != NULL && script != NULL && digest != NULL);
+    CHECK(wire_length <= ORACLE_WIRE_MAX && script_length <= 128 && capacity >= 32);
+    CHECK(amount <= UINT64_C(2100000000000000));
+    CHECK(sodium_init() >= 0);
+    transaction_view view = {0};
+    cursor reader = {bytes, wire_length, 0};
+    parse_transparent(&reader, &view);
+    parse_shielded(&reader, &view);
+    signature_hash(&view, input_index, 1, branch, (span){script, script_length}, amount, digest);
+}
+
+#ifndef ZCL_SIGHASH_ORACLE_LIBRARY
 static uint8_t digit(char value)
 {
     if (value >= '0' && value <= '9') return (uint8_t)(value - '0');
@@ -367,3 +389,4 @@ int main(int argc, char **argv)
     emit_vectors();
     return 0;
 }
+#endif

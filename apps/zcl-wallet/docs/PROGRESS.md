@@ -2061,3 +2061,34 @@ Evidence is preserved in `.cache/android-wallet/zip243-oracle-20260914/`.
 The next gate is the bounded wallet signature-hash constructor against these
 independent expected values, then exact authenticated review/key ownership.
 Hash compatibility alone still does not grant signing or spending authority.
+
+2026-09-14 bounded transparent SIGHASH_ALL: the internal C constructor now
+matches all 144 independent expected values at every output capacity0..64.
+Maximum 8-input/16-output profiles exercise 544-byte output components and
+397-byte final preimages; scriptSig changes intentionally leave the v4 digest
+unchanged. Amount, scriptCode, input index and branch are explicit caller data.
+This computes raw hash bytes only, with no key, JNI, signature, branch selection,
+wallet mutation or send action. It checks the complete existing transaction
+profile before copying, checks all four provider results and clears its work
+while preserving output on failure.
+
+All 67 native ASan/UBSan/LSan groups pass in 45.23 seconds. Clang/GCC analysis and
+unchanged 10/15 production/test complexity caps pass (467/912 functions).
+The host oracle is shared without CLI globals in its library mode and still
+reproduces all 130 original plus 2 ZIP comparisons and the exact 144-case header.
+Four dirty provider failures prove stopped calls, unchanged output and cleanup
+observed only during live object lifetime. Eleven mutants of hash context,
+serialization, failure propagation, publication and full/partial cleanup fail
+as intended. Bounded malformed-object/preimage fuzzing with the independent
+reader/libsodium oracle completes 1,116,954 executions in 121 seconds without
+a finding; explicit maximum-profile seeds participate.
+
+NDK ARM64/x86-64 build, JVM tests, Android lint, APK/fixture isolation and
+architecture gates pass. Standalone tests linked from actual Android release
+archives pass all vectors, max profiles, capacities and refusals on API 30,35,36.
+ARM64 is compiled only. ELF load alignment is 16 KiB with RELRO, immediate binding
+and non-executable stack. Debug/test/unsigned release APK bytes are unchanged
+because the new internal constructor has no JNI caller; these are standalone
+C observations, not a new APK sending feature. Evidence is retained under
+`.cache/android-wallet/sighash-core-20260914/`. Exact authenticated review/key
+ownership and current branch/height binding remain the next acceptance gates.

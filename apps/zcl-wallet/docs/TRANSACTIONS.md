@@ -121,7 +121,8 @@ prefixes and replaces the shielded tail with eleven zero bytes. The resulting
 amounts zero/one/max-money, original opaque scriptCode and a public P2PKH script
 whose hash bytes are 0..19. Digests are raw 32-byte values in
 `native/tests/sighash_vectors.h`; these are derived expected values, not
-untouched original transactions or a production signature-hash implementation.
+untouched original transactions. The bounded constructor's separate
+qualification is described below.
 
 From `apps/zcl-wallet`, build the host oracle and create a new evidence directory:
 
@@ -142,8 +143,8 @@ refused with its bytes preserved. Ten malformed-input cases and eight oracle
 mutants fail before emitting expected bytes. Clang/GCC analysis, strict C17
 compilation and ASan/UBSan/LSan verification pass. Evidence is retained under
 `.cache/android-wallet/sighash-oracle-20260914/`. Android production is unchanged;
-using these fixtures to qualify the actual wallet signature-hash constructor
-and authenticated authorization remains the next gate.
+the bounded constructor now has separate qualification below. Authenticated
+authorization and current branch/height selection remain open.
 
 Deterministic tests cover all three byte/ID fixtures, every truncation and
 undersized output capacity, max-size objects, high-bit IDs and uint32 fields,
@@ -455,18 +456,91 @@ bytes to the exact public draft fixture on both networks. The actual debug
 review Activity lifecycle fixture now prepares its drafts through this factory;
 background/recreation/close continue to cancel the same C owner.
 
+## Bounded SIGHASH_ALL construction
+
+`native/src/transaction_sighash.h` exposes one internal public-data operation,
+`zcl_transaction_sighash_all`. It uses the existing complete transparent v4
+object validator and the reviewed bounded BLAKE2b-256 helper. It has no JNI,
+key, signing, persistence, endpoint or send-screen caller.
+
+The caller supplies an existing input index, exact scriptCode bytes (0..128),
+input amount (0..MAX_MONEY) and explicit uint32 branch value. Only SIGHASH_ALL
+without ANYONECANPAY is constructed. Other hash modes, NOT_AN_INPUT, legacy,
+v3, shielded and larger wallet profiles remain outside this API. Branch values
+are data for domain separation; this function does not select or authenticate
+the current chain branch. ScriptCode is supplied explicitly, without inferring
+a previous or redeem script. A successful hash does not prove ownership,
+script validity, funding/unspentness, maturity, review or user consent.
+
+The method hashes all outpoints, sequences and outputs under their exact
+original domains, then constructs the v4 final preimage with three zero
+shielded/JoinSplit component hashes, exact lock/expiry/valueBalance/type and
+the selected outpoint/scriptCode/amount/sequence. It reverses displayed
+outpoint IDs back to wire order and emits raw digest bytes, unlike the reversed
+display order of transaction IDs. Input scriptSig bytes are excluded by v4;
+changing them can change a transaction ID without changing this signature
+hash. Future signing must still bind the exact reviewed unsigned bytes.
+
+Every field is checked before iteration/copy. A fixed 544-byte writer covers
+the largest output component; the final preimage is at most 397 bytes. The
+800-byte work object on measured 64-bit builds owns all component hashes,
+the final domain and digest. Every provider result is checked; later hash
+steps stop after failure, output remains untouched and the work object clears.
+Small public endian/outpoint helper temporaries and provider compression
+temporaries receive no secret-erasure claim. The interface accepts no secrets.
+There is no allocation, retained pointer, mutable production global, timer,
+thread or I/O. Callers must own stable nonoverlapping objects for the call.
+
+All 144 independent expected digests pass at every output capacity 0..64.
+Maximum 8-input/16-output, 128-byte scriptCode and 25-byte output-script cases
+pass, including unchanged digests after changing every scriptSig. The optional
+host oracle independently parses serialized fixtures with libsodium and
+compares their values. Invalid spans/objects preserve output and input bytes.
+Each of the four hash-step faults dirties private output before refusal; live
+cleanup observations prove that work spans clear without post-lifetime reads.
+Eleven mutants alter branch, amount, sequence, outpoint byte order, scriptSig
+inclusion, output domain, empty component bytes, failure propagation,
+publication or full/partial cleanup; each fails its intended assertion.
+
+Bounded malformed-object/preimage fuzzing with the independent oracle completes
+1,116,954 executions in 121 seconds without a finding, including explicit
+maximum-profile seeds. The status comparison reuses the wallet's existing
+validator/serializer; digest comparison uses the separate reader/libsodium.
+This does not claim independent transaction-validity or proof verification.
+The generator still matches all 130 original plus two published nonzero-amount
+records, and its expected header reproduces byte-for-byte after adding its
+shared host oracle mode. All 67 native ASan/UBSan/LSan groups pass in 45.23
+seconds. Clang/GCC and unchanged production/test complexity caps pass.
+
+NDK ARM64/x86-64 builds and Android/JVM/lint/artifact gates pass. The final test
+executable links the actual Android release archives; all 144 vectors, maximum
+profiles, capacities and refusals pass on x86-64 API30/35/36. Its exact SHA256 is
+`6e45587aaf4b4294acc47293c150dcb801f193137022d5ce36a6e2f985ee9517`.
+ARM64 is compiled only. Standalone ELF load alignment is 16KiB, with RELRO,
+immediate binding and non-executable stack. Debug/test/unsigned release APKs
+remain byte-identical because this internal operation is not pulled into JNI.
+These are standalone public C observations, not a new APK sending feature.
+
+Evidence is retained in `.cache/android-wallet/sighash-core-20260914/`.
+For focused host checks, use `ctest --test-dir native/build/safety-active
+-R '^wallet_sighash' --output-on-failure`; the optional `ZCL_ORACLE=ON` profile
+adds the independent reader/libsodium comparison. A separate Clang build with
+`ZCL_FUZZ=ON`, `ZCL_SANITIZE=ON`, `ZCL_ORACLE=ON` provides `fuzz_sighash`;
+use private corpus/artifact directories, input max4096, timeout5, RSS512MiB and
+a bounded duration. Normal production and Android builds never need libsodium.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
    existing exact draft construction/assessment/review binding. A server balance
    or history assertion cannot provide spending authority.
-2. Independently qualify the exact original serialization and branch-specific
-   signature-hash construction with offline public fixtures. No signing until
-   scriptCode, input amount, branch/height, outputs and authorization are bound.
+2. Bind the qualified bounded SIGHASH_ALL constructor to exact scriptCode,
+   input amount, current branch/height, outputs and authenticated authorization.
+   Its explicit branch-value comparisons do not select a current chain branch.
    The [repaired BLAKE2b public-data helper](BLAKE2_REVIEW.md) now passes strict
    analysis, independent vectors, fault/sanitizer/fuzz and standalone Android
-   checks. This qualifies its bounded hash profile only; original Zclassic
-   signature-hash construction and authenticated authorization remain open.
+   checks. The narrow transparent v4 construction also has independent public
+   hash evidence above; authenticated authorization remains open.
 3. Synthetic signing and explicit review/cancellation, then qualified broadcast
    lifecycle and restart recovery. Real funds remain outside development tests.
 4. Shielded wire/proof/witness/value/recovery qualification before exposing it.
