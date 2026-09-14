@@ -529,13 +529,103 @@ adds the independent reader/libsodium comparison. A separate Clang build with
 use private corpus/artifact directories, input max4096, timeout5, RSS512MiB and
 a bounded duration. Normal production and Android builds never need libsodium.
 
+## Digest binding to a live unsigned review
+
+The internal `zcl_review_sighash_p2pkh` operation now resolves input amount and
+scriptCode exclusively from the review's owned assessment, which already
+matched each exact previous transaction hash/index. It reconstructs the exact
+standard P2PKH script and parses only the review's owned canonical unsigned
+wire. Its arguments contain no replacement transaction, amount, script or
+previous-source pointer. P2SH selected inputs refuse because their redeem
+scripts require a separate ownership and script contract. Other inputs and
+all outputs remain bound by SIGHASH_ALL.
+
+This is a public-data operation with no JNI or signing caller. The caller's
+explicit branch value remains data, without current-chain/height authority.
+The digest itself does not bind network, fee policy or approval: those remain
+properties of the exact live review and future authenticated authorization.
+Computing or retaining a digest cannot extend consent across callbacks,
+backgrounding, cancellation or replacement. No key or signature is introduced.
+
+The existing lifetime transition is shared unchanged with snapshot/wire reads.
+An exact live ID is required; stale IDs cannot mutate a replacement. Inclusive
+expiry and monotonic-clock rollback clear retained review bytes. Valid live
+calls advance the observed clock even if capacity/index/script kind refuses,
+and never extend the fixed deadline. NULL owner/output refuses before a state
+transition. All access still requires the adapter's same serialized lock.
+
+The invocation owns one fixed 2272-byte public work object on measured 64-bit
+builds; its optimized host frame is 2328 bytes, not a whole-call-chain bound.
+It checks parsing, script construction and digest statuses in order, publishes
+only 32 bytes on complete success, then clears the whole object on every work
+exit. Early refusals skip parsing and hashing. There is no heap, secret, retained
+pointer, global production state, I/O or new worker. Provider and parser frames
+remain separately bounded by the unchanged native build gates.
+
+Unit checks cover both networks, four explicit branch values, all 65 output
+capacities, amount 0/1/MAX_MONEY, maximum 8-input/16-output drafts, every selected
+maximum input, P2SH/index/NULL refusals, immutable copied/source bytes, exact
+expiry, rollback, cancellation and stale IDs. The optional independent
+reader/libsodium oracle matches the expected digests. Three dirty stage faults
+on two distinct P2PKH inputs prove stopped work, unchanged output/owner and
+cleanup observed during live object lifetime. Thirteen mutations of funding
+row, index, branch, script source, P2SH handling, liveness, parse/script failure,
+publication, full/partial cleanup, deadline extension and stale-ID checking are
+all caught by their intended assertions.
+
+The existing review state-machine fuzzer now includes hash calls under its
+independent lifetime model, with optional independent digest comparison.
+It completes 296,803 executions in 121 seconds without a finding. This models
+serialized calls, not concurrent adapter-lock correctness. Final Clang/GCC
+analysis and all 69 native ASan/UBSan/LSan tests pass in 45.92 seconds, with
+unchanged 10/15 complexity caps (469 production/932 test functions). A new fault
+observer bound is checked explicitly before iterating its four captured spans;
+the initial GCC fixture finding and corrected evidence are both preserved.
+
+NDK ARM64/x86-64 builds, JVM tests, Android lint, APK alignment/fixture isolation
+and architecture gates pass. Unlike the previous hash-only additions, extracting
+the shared review lifetime helper changes APK bytes. Fresh debug installations
+therefore exercise all five real-JNI unsigned-review and four Activity-lifecycle
+cases on API 30/35/36. API 30 completes the combined nine in 67.921 seconds.
+The initial API 35/36 combined clients hit their 90-second host limit; retained
+Android logs subsequently record all nine completing with zero failures and a
+disconnected instrumentation watcher. Process inspection confirms teardown.
+Separate complete reports then pass all five native-review cases in 5.326/3.659
+seconds and all four lifecycle cases in 132.196/114.592 seconds on API 35/36.
+The bounded retry allowance is 180 seconds per group, with every original
+fixture assertion and timeout unchanged.
+
+The final standalone C tests link the actual release archives and pass on
+x86-64 API 30/35/36, including all capacities, maximum profiles and lifetime
+refusals. Their exact executable SHA256 is
+`d921a37ba9bb2c18bdd2e6270fbb6a14285f31c2544d92825d6bfeddeddef2ab`.
+ARM64 is compiled only; both standalone ELFs have 16KiB load alignment, RELRO,
+immediate binding and a non-executable stack. The shell-owned fixtures process
+public bytes without opening app/Keystore/wallet storage.
+
+The locally signed minified APK has SHA256
+`3ffb40ee16debf3c0f871f7e790fc05deae7ac673fc5f54fdde25b1c42424af3`;
+all unsigned archive entries compare byte-identically after signing. It passes
+the complete API 30 camera denial/grant/public-QR/review/worker-cleanup fixture
+in 25.735 seconds. API 30 and36 retain this minified build; API35 retains debug.
+These checks do not expose the new internal digest as a JNI or sending feature,
+and do not qualify hardware custody or current-chain authentication.
+
+Evidence is retained in `.cache/android-wallet/review-sighash-20260914/`.
+Focused checks use `ctest --test-dir native/build/safety-active
+-R '^wallet_review_sighash' --output-on-failure`. `ZCL_ORACLE=ON` adds host-only
+independent comparisons; `ZCL_FUZZ=ON` provides the extended `fuzz_review` with
+max_len 640, timeout 5, RSS 512MiB and a bounded duration. Android builds use
+neither libsodium nor an oracle executable.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
    existing exact draft construction/assessment/review binding. A server balance
    or history assertion cannot provide spending authority.
-2. Bind the qualified bounded SIGHASH_ALL constructor to exact scriptCode,
-   input amount, current branch/height, outputs and authenticated authorization.
+2. Bind current branch/height and authenticated authorization to the exact
+   live review. The internal P2PKH digest now obtains scriptCode, input amount
+   and transaction bytes only from that review; it grants no signing authority.
    Its explicit branch-value comparisons do not select a current chain branch.
    The [repaired BLAKE2b public-data helper](BLAKE2_REVIEW.md) now passes strict
    analysis, independent vectors, fault/sanitizer/fuzz and standalone Android

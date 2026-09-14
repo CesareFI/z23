@@ -2092,3 +2092,39 @@ because the new internal constructor has no JNI caller; these are standalone
 C observations, not a new APK sending feature. Evidence is retained under
 `.cache/android-wallet/sighash-core-20260914/`. Exact authenticated review/key
 ownership and current branch/height binding remain the next acceptance gates.
+
+2026-09-14 live unsigned-review digest binding: internal P2PKH SIGHASH_ALL now
+takes the amount and exact standard script only from the owned assessment and
+transaction bytes only from the owned canonical draft. Callers cannot replace
+funding bytes, amount or script during hashing. P2SH selected inputs refuse.
+The operation shares the existing exact-ID, fixed-deadline, rollback and clear
+rules. It still has no key, JNI, signature, current-branch/height selection or
+authenticated transaction approval. A digest alone cannot become authority.
+
+Both networks, four explicit branch values, all 65 capacities, amount 0/1/MAX,
+maximum 8-input/16-output profiles, caller-source destruction, mutable public
+copies and every lifetime/refusal case pass. Independent reader/libsodium
+comparisons agree. Three dirty provider-stage failures on two distinct inputs
+preserve caller output and owner, stop subsequent work and clear live private
+spans. All thirteen source/lifetime/cleanup mutants fail. The extended review
+state-machine fuzzer completes 296,803 executions in 121 seconds without a
+finding. Final Clang/GCC and all 69 native ASan/UBSan/LSan tests pass in 45.92
+seconds, with unchanged 10/15 complexity limits. The initial GCC test-observer
+count finding is preserved and repaired with an explicit bound before access.
+
+Android/JVM/lint, APK/fixture isolation and architecture pass. Shared lifetime
+extraction changes APK bytes, so fresh debug installations exercise all nine
+native-review/lifecycle cases on API 30/35/36. Two initial combined clients hit
+their 90-second host budgets; Android logs later record zero failures, and
+separate complete reports pass all five/four cases within bounded 180-second
+group runs. Original fixture assertions/timeouts remain unchanged. Actual
+release-archive standalone C tests pass on all three x86-64 API levels; ARM64
+is compiled only, with 16KiB ELF alignment and existing hardening on both ABIs.
+
+The new locally signed minified APK passes API 30's complete permission-denial,
+grant, public QR, review and camera-worker cleanup in 25.735 seconds. API 30/36
+retain minified and API35 debug. Evidence and exact hashes are retained under
+`.cache/android-wallet/review-sighash-20260914/`; full boundaries and manual
+hazard review are in TRANSACTIONS.md and C_SAFETY_REVIEW.md. Next is authenticated
+key/change ownership and durable state binding; branch/height authentication
+and signing remain separate gates. TLS and hardware custody remain unqualified.

@@ -1,6 +1,10 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "assessment_fixture.h"
-#include "zcl_transaction_review.h"
+#include "transaction_review_internal.h"
+#include "transaction_sighash.h"
+#ifdef ZCL_SIGHASH_ORACLE
+#include "sighash_oracle.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -149,6 +153,33 @@ static void cancel_operation(zcl_review_owner *owner, review_model *model, uint6
     if (match) model->active = 0;
 }
 
+static void hash_operation(zcl_review_owner *owner, review_model *model, uint64_t id,
+                           uint64_t now, const uint8_t *step)
+{
+    uint8_t digest[64], expected[32];
+    memset(digest, 0xa5, sizeof(digest));
+    const size_t index = step[2] == 255 ? SIZE_MAX : step[2] % 4;
+    const size_t capacity = step[3] % 65;
+    const uint32_t branch = (uint32_t)(read_time(step + 2) & UINT32_MAX);
+    zcl_status status = read_model(model, id, now);
+    if (status == ZCL_OK && capacity < 32) status = ZCL_BUFFER_TOO_SMALL;
+    if (status == ZCL_OK && index >= 2) status = ZCL_OUT_OF_RANGE;
+    if (status == ZCL_OK && index == 1) status = ZCL_UNSUPPORTED;
+    if (zcl_review_sighash_p2pkh(owner, id, now, index, branch, digest, capacity) != status) abort();
+    if (status == ZCL_OK) {
+        const zcl_tx_output *previous = &fixture.previous[0].outputs[0];
+#ifdef ZCL_SIGHASH_ORACLE
+        zcl_test_sighash_all(draft, draft_length, 0, previous->script, previous->script_len,
+            previous->value, branch, expected, sizeof(expected));
+#else
+        if (zcl_transaction_sighash_all(&fixture.spending, 0, previous->script, previous->script_len,
+            previous->value, branch, expected, sizeof(expected)) != ZCL_OK) abort();
+#endif
+        if (memcmp(digest, expected, sizeof(expected)) != 0) abort();
+    }
+    for (size_t i = status == ZCL_OK ? 32 : 0; i < sizeof(digest); ++i) if (digest[i] != 0xa5) abort();
+}
+
 static void invariant(const zcl_review_owner *owner, const review_model *model)
 {
     static const zcl_review_data zero;
@@ -165,13 +196,14 @@ static void invariant(const zcl_review_owner *owner, const review_model *model)
 static void operation(zcl_review_owner *owner, review_model *model, const uint8_t *step)
 {
     const uint64_t now = selected_time(model, step[1], read_time(step + 2));
-    const uint64_t id = selected_id(model, step[0] / 6);
-    switch (step[0] % 6) {
+    const uint64_t id = selected_id(model, step[0] / 7);
+    switch (step[0] % 7) {
     case 0: open_operation(owner, model, now); break;
     case 1: snapshot_operation(owner, model, id, now); break;
     case 2: copy_operation(owner, model, id, now, ZCL_TX_WIRE_MAX); break;
     case 3: copy_operation(owner, model, id, now, step[2]); break;
     case 4: cancel_operation(owner, model, id); break;
+    case 5: hash_operation(owner, model, id, now, step); break;
     default: zcl_review_clear(owner); model->active = 0; break;
     }
     invariant(owner, model);
