@@ -3028,3 +3028,38 @@ artifact hashes remain in `.cache/android-wallet/session-close-20260914/`.
 Origin main was fetched and has no new wallet changes. Work remains locally
 checkpointed on the development branch after the earlier HTTP 403 push refusal;
 existing devices, unrelated dirty work and production state remain untouched.
+
+2026-09-14: recovered the unfinished camera canvas-restoration patch and its
+two public instrumented regressions from the earlier Android worktree. The
+original dirty files remain unchanged, verified by before/after SHA256; their
+exact diff is retained with this checkpoint. The isolated development branch
+now restores the caller's canvas in finally after applying preview transforms.
+No drawing exception is swallowed, and no image allocation, camera owner,
+frame bound or normal rendering transform changes.
+
+The recovered failure test first runs against the preceding debug APK and fails
+with save count 3 instead of 2 after Android's actual recycled-bitmap refusal.
+The fixture uses an unattached view and owned software canvas with an existing
+save level, translation and clip. The fixed code restores all three. Its
+success companion checks four rotations and both facing modes, uploaded public
+pixels, untouched pixels outside the clip, and erased upload scratch. This
+does not independently qualify physical camera orientation or optics.
+
+All 14 selected preview, camera-start failure, QR and scanner-state tests pass
+on both isolated API 30 and API 36 emulators. Both also pass three real Camera2
+tests: three background/resume cycles, Activity recreation with explicit
+restart, and cancellation while an open callback is pending. These groups
+complete in 50.842/51.554 seconds respectively. The ordinary and minified release
+bytecode both retain canvas restoration on the exception path; no new draw-time
+object allocation appears. The owned emulators shut down gracefully.
+
+All 121 JVM tests, debug/release builds and lint, fixture isolation, native
+alignment and architecture checks pass. Both ABI libraries are byte-identical
+to the preceding checkpoint, retaining its native sanitizer and fuzz evidence.
+Fresh debug/release APK sizes remain 3559725/613127 bytes; the unsigned release
+SHA256 is `843ed50500f3f071aab2f9692905865df24998eefd9e532c5087f2f8a2754672`.
+The recovered diff, baseline failure, final tests, bytecode, mapping and exact
+artifacts remain in `.cache/android-wallet/canvas-restore-20260914/`. Origin
+main was fetched without new wallet changes. The development branch remains
+local after the earlier HTTP 403 push refusal; production and unrelated work
+remain untouched.

@@ -60,6 +60,9 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   erase operation; it does not allocate a replacement buffer or recycle an image
   that rendering may still reference. Android/provider rendering copies cannot
   all be guaranteed erased. A rejected frame retires the earlier preview.
+  Preview drawing restores the caller's canvas save level, transform and clip
+  on success or an exception; rotation/mirroring cannot strand that shared
+  rendering state when Android refuses a bitmap draw.
 * Composite balance/history updates conceal both views before clearing or
   formatting. Both become visible only after the entire update succeeds. A
   failed clear still attempts its peer; a persistently refused text clear leaves

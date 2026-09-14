@@ -75,11 +75,12 @@ internal class CameraPreviewView(context: Context) : View(context) {
         val rotatedHeight = if (sideways) image.width else image.height
         val scale = min(width.toFloat() / rotatedWidth, height.toFloat() / rotatedHeight)
         val saved = canvas.save()
-        canvas.translate(width / 2f, height / 2f)
-        canvas.scale(if (front) -scale else scale, scale)
-        canvas.rotate(rotation.toFloat())
-        canvas.drawBitmap(image, -image.width / 2f, -image.height / 2f, paint)
-        canvas.restoreToCount(saved)
+        try {
+            canvas.translate(width / 2f, height / 2f)
+            canvas.scale(if (front) -scale else scale, scale)
+            canvas.rotate(rotation.toFloat())
+            canvas.drawBitmap(image, -image.width / 2f, -image.height / 2f, paint)
+        } finally { canvas.restoreToCount(saved) }
     }
 
     fun clear() {
