@@ -327,6 +327,12 @@ if(ZCL_FUZZ)
         target_compile_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined
             -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         target_link_options(fuzz_change_storage PRIVATE -fsanitize=fuzzer,address,undefined)
+        add_executable(fuzz_wallet_storage tests/fuzz_wallet_storage.c tests/storage_fixture.c)
+        target_link_libraries(fuzz_wallet_storage PRIVATE zcl_wallet_core)
+        target_compile_options(fuzz_wallet_storage PRIVATE -fsanitize=fuzzer,address,undefined
+            -fno-sanitize-recover=all -Wall -Wextra -Wpedantic -Werror -Wconversion
+            -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(fuzz_wallet_storage PRIVATE -fsanitize=fuzzer,address,undefined)
         add_executable(fuzz_change_probe tests/fuzz_change_probe.c
             tests/change_storage_fixture.c tests/storage_fixture.c)
         target_link_libraries(fuzz_change_probe PRIVATE zcl_wallet_core)
@@ -1067,6 +1073,19 @@ if(NOT ANDROID)
         target_compile_options(storage_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         add_test(NAME wallet_storage COMMAND storage_tests)
         set_tests_properties(wallet_storage PROPERTIES TIMEOUT 30)
+        add_executable(storage_link_tests tests/test_storage_links.c tests/storage_fixture.c)
+        target_link_libraries(storage_link_tests PRIVATE zcl_wallet_core)
+        target_compile_options(storage_link_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(storage_link_tests PRIVATE -Wl,--wrap=fstat)
+        add_test(NAME wallet_storage_links COMMAND storage_link_tests)
+        set_tests_properties(wallet_storage_links PROPERTIES TIMEOUT 30)
+        add_executable(storage_alias_tests tests/test_storage_aliases.c tests/storage_fixture.c)
+        target_link_libraries(storage_alias_tests PRIVATE zcl_wallet_core)
+        target_compile_options(storage_alias_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_storage_aliases COMMAND storage_alias_tests)
+        set_tests_properties(wallet_storage_aliases PROPERTIES TIMEOUT 30)
         add_executable(change_storage_tests tests/test_change_storage.c
             tests/change_storage_fixture.c tests/storage_fixture.c)
         target_link_libraries(change_storage_tests PRIVATE zcl_wallet_core)

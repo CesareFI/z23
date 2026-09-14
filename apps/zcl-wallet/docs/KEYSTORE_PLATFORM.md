@@ -208,3 +208,20 @@ The software-protection refusal UI case passes: the actual newly generated key
 is rejected by the C predicate, no recovery view is shown and no wallet record
 is created. The fixture preserves preexisting empty storage scaffolding and
 removes only its own files/alias. Two secret-view lifecycle tests also pass.
+
+## Wallet record link ownership — 2026-09-14
+
+Committed `wallet.zcl` and recoverable `.wallet.pending` records now require
+exactly one filesystem link, in addition to the existing regular-file, effective
+UID, private-permission and bounded-size checks. The check uses the already open
+descriptor before reading. Both reads and authenticated promotion refuse extra
+links or detached metadata without altering caller outputs or stored data.
+Lock and change-journal files already enforce a single-link rule.
+
+The app does not remove an alias or repair these files automatically. A valid
+GCM record is still required before promotion/use. Descriptor metadata is an
+observation under the trusted private-directory/cooperating-lock contract; this
+does not claim protection against an attacker already controlling the app UID
+or filesystem after that observation. The registered real/fault regression and
+bounded storage fuzzer exercise fixed names inside their own temporary folders.
+Evidence is in `.cache/android-wallet/storage-links-20260914/`.

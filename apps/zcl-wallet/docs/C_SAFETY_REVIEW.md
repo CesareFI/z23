@@ -1446,3 +1446,37 @@ explicit CMake regeneration fixes it without changing source or build checks.
 Real SDK traces, exact identities, shutdown fixture findings and minified APK
 camera acceptance are recorded in [EMULATOR_REAPING.md](EMULATOR_REAPING.md)
 and `.cache/android-wallet/adb-reaping-20260914/`.
+
+## Single-link wallet ciphertext records — 2026-09-14
+
+Scope: one additional descriptor metadata predicate in `storage_read.c`, its
+public contract, dedicated real/fault storage tests and a bounded filesystem
+fuzzer. Existing lock/journal link rules, GCM, record bytes and consensus stay
+unchanged. The initial real-alias regression failed before this predicate.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Production retains its124..140-byte size bound,140-byte private read buffer, bounded read/EOF loops and publish-only-on-success contract. The new link predicate runs before reading. Tests preserve guarded output bytes, SIZE_MAX length and both pending flag states on refusal. Fuzzer input must be2..142 bytes; body offsets cover at most140 bytes, capacity is0..140 within its142-byte guarded array, and tail comparisons follow successful checked record length. Real fixture reads use141 bytes to catch unwanted suffixes. |
+| Integer overflow/underflow; signed/unsigned conversions | The production comparison uses native nlink_t against1 with no narrowing/arithmetic. Fault tests cover0/1/2 and an explicitly cast negative-one value in that native type. Counts never control allocation or a loop. Bounded fixture lengths<=140 convert safely to off_t for metadata comparison; negative read results are rejected before size_t conversion. Fuzzer subtraction follows its2-byte floor and all source/output tail offsets stay within fixed arrays. |
+| Use-after-free; double-free; leaks; dangling pointers | The existing read helper consumes each opened record descriptor once before returning, including metadata refusal; store cleanup closes its own lock/directory. Production adds no allocation, pointer, descriptor or retained state. Every real fixture owns one mkdtemp directory and only fixed names beneath its descriptor. Fuzzer owns one directory until checked atexit cleanup, replaces at most three fixed record/alias names per case and closes every raw verification descriptor. Ten thousand additional executions pass with a64-descriptor process limit. |
+| NULL dereferences; uninitialized memory | Existing argument and syscall success guards precede metadata access. struct stat initializes before fstat; a failed syscall cannot authorize a read. Tests initialize every public/ciphertext/output object. The fault wrapper requires non-NULL metadata and changes only a successful regular-record result; its observed count must be exactly one for each targeted read/promotion. Its directory/empty-lock metadata remains real. |
+| Pointer arithmetic; format strings | No production pointer arithmetic or format string changes. Fixture names are fixed literals and paths come only from their bounded owned mkdtemp template. Public diagnostics identify source lines, not wallet input. Fuzzer source mutation and guard/tail comparisons use validated spans; it never fuzzes an ambient locator, directory prefix or operator path. |
+| Stack usage; allocation limits; resource exhaustion | Optimized host read-file/storage-read frames with the stack protector measure376/424 bytes; nested unchanged helpers remain separate. No new production buffer, recursion, VLA, worker, retry or heap exists. Existing syscall retry and140-byte record bounds remain intact. New host fixtures pass strict warnings, both analyzers and unchanged10/15 complexity caps. Fuzzing has142-byte inputs,5-second cases,121-second campaign and512MiB RSS cap; malformed/aliased files never expand the read bound. |
+| Malformed serialization; races; explicit lifetimes | Exactly one link is mandatory for committed and pending record descriptors. Extra names and detached metadata refuse both read and promotion; failed read outputs, inode identities, bytes and names remain unchanged. Only the fixture removes its own extra alias before proving a normal retry. This is a metadata snapshot, not proof against a malicious same-UID actor changing the private directory after fstat; trusted path ownership and cooperating locks remain prerequisites. Normal codec validation and authenticated promotion requirements are unchanged. The fuzzer models metadata/capacity/pending policy and reuses the separately tested record parser for content status; it is not an independent parser oracle. |
+| Secret leakage, custody and authority | Storage receives bounded ciphertext/public metadata only. Fixtures use published all-zero entropy and inert ciphertext; Android JNI round trips use a public test AES key in a new invocation-owned directory. No operator wallet, Keystore alias, signing capability, seed export, repair, unlink or overwrite is added to production. Refusal does not silently remove an alias or claim GCM authentication, rollback protection or chain compatibility evidence. |
+
+All87 final sanitizer groups pass in61.38 seconds. All four link-rule mutants
+fail intended assertions, including zero-link acceptance. The filesystem fuzzer
+completes305,619 executions in121 seconds without a finding (observed77MiB),
+followed by10,000 cases under the descriptor bound. Real aliases and controlled
+metadata have separate mandatory registered tests, preserving the broader Linux
+suite's FIFO and other filesystem assertions. Android refuses creation of FIFOs
+and actual hard links in the attempted fixtures; those failed invocations remain
+recorded rather than counted as device acceptance. The unmodified descriptor
+metadata executable from the actual release archive passes on x86-64 API30/35/36,
+SHA256 `6528afa300ba461c2029ba8e93af5728c2117bf38dcf6d830c740192fe211667`.
+ARM64 is compiled only. Two real JNI/storage/GCM round trips also pass on each
+API in1.889/18.396/5.302 seconds. Final Clang/GCC analyses,10/15 complexity caps
+(500/1160 functions), Android/JVM/build/lint, APK fixture isolation and alignment
+checks pass. Exact identities and results remain in
+`.cache/android-wallet/storage-links-20260914/`.

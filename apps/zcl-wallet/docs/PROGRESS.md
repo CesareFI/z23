@@ -2434,3 +2434,48 @@ changing an assertion. Both new launches use the qualified ADB reaping adapter,
 exit0 through console shutdown, and leave the original26 zombies unchanged.
 Current origin/main is `9bc54830ad4bcd7a9a0959aaf4ffc53ec0726db2`, with no
 upstream Android app commits. No push, merge or hardware-custody claim is made.
+
+2026-09-14: wallet record reads and promotion now require exactly one filesystem
+link, matching the existing lock/change-journal policy. A real-alias regression
+fails on the old code. The descriptor check now refuses aliases and detached
+metadata before reading, preserving all caller outputs and stored bytes/names.
+No repair, deletion, overwrite, allocation, new retry or consensus change is
+introduced. The private-directory/cooperating-lock and GCM prerequisites remain.
+
+The two new mandatory native groups cover real linked committed/pending records
+and controlled0/1/2/native negative-one link metadata, with exact output/inode
+preservation and successful single-link retries. All87 ASan/UBSan/LSan groups
+pass in61.38 seconds. Clang/GCC analysis and unchanged10/15 complexity limits
+pass (500/1160 functions). Four link-rule mutants fail intended assertions.
+The new bounded filesystem fuzzer completes305,619 cases in121 seconds without
+a finding, with142-byte inputs,5-second cases and512MiB RSS cap (observed77MiB).
+Another10,000 cases pass with a64-descriptor limit. It models storage policy and
+reuses the record parser for content status; it is not an independent codec oracle.
+
+The exact release-archive metadata executable passes on x86-64 API30/35/36;
+ARM64 is compiled only. Runtime SHA256 is
+`6528afa300ba461c2029ba8e93af5728c2117bf38dcf6d830c740192fe211667`.
+Attempts to construct a FIFO and real hard links on Android fail at the kernel
+fixture boundary. The complete Linux assertions remain mandatory; Android
+metadata evidence is stated separately and no platform policy is disabled.
+Two invocation-owned JNI storage/provider-GCM tests pass on each API in
+1.889/18.396/5.302 seconds. No operator wallet or Keystore alias is touched.
+
+Android/JVM, debug/release/test builds, strict lint, fixture isolation and16KiB
+native APK alignment pass. The current locally signed minified APK is
+`5a9e8f8db1d07307a9ed17cb5f65aab7e9cf620f7343fdecbab45f296bdb6ddf`.
+Evidence, initial failures and final source/archive/artifact identities are in
+`.cache/android-wallet/storage-links-20260914/`; the full hazard review is in
+[C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Continue custody/lifetime review and
+authenticated transaction composition; hardware custody and real-source
+networking remain unqualified, with TLS owner-parked.
+
+All20 unsigned release entries remain identical after development signing. The
+exact minified APK starts through its normal exported launcher on API30/36.
+An initial external launch of the private scanner Activity is refused by its
+existing nonexported boundary; no manifest change is made. A separate owned
+shell fixture confirms Permission denied for Android FIFO and hard-link
+creation and removes only its own three fixed names/directory. Final ADB zombie
+count remains26 under the original unrelated emulators. Current origin/main
+remains `9bc54830ad4bcd7a9a0959aaf4ffc53ec0726db2`; no upstream Android app
+commits, push or merge are involved.

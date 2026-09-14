@@ -14,6 +14,10 @@ extern "C" {
  * Its final component is created mode 0700 if absent; parents must exist.
  * C owns every file descriptor for one call and retains no state. No secrets
  * enter this interface, only the bounded ciphertext record. No overwrite/erase.
+ * Committed and pending records must be private regular files with exactly one
+ * link. Aliased or detached records refuse without reading/promoting their data.
+ * This metadata check does not authorize repairing/removing an extra name or
+ * replace the trusted private-directory/cooperating-lock requirements.
  * Read outputs remain unchanged on error. A pending result requires platform
  * GCM authentication and zcl_wallet_recovered_address before promotion/use.
  */

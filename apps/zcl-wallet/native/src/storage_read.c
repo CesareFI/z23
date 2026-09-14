@@ -13,7 +13,8 @@ static zcl_status file_size(int fd, size_t *length)
     struct stat info = {0};
     if (fstat(fd, &info) != 0)
         return ZCL_IO_FAILURE;
-    if (!S_ISREG(info.st_mode) || info.st_uid != geteuid() || (info.st_mode & 077) != 0)
+    if (!S_ISREG(info.st_mode) || info.st_uid != geteuid() || (info.st_mode & 077) != 0
+        || info.st_nlink != 1)
         return ZCL_IO_FAILURE;
     if (info.st_size < 124 || info.st_size > 140)
         return ZCL_INVALID_ENCODING;
