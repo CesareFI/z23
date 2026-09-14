@@ -15,6 +15,22 @@ import org.zclassic.wallet.core.Zatoshi
 
 @RunWith(AndroidJUnit4::class)
 class ScanQrInstrumentedTest {
+    @Test fun unicodeLayoutSeparatorsCannotEnterARequestThroughQrDecoding() {
+        val address = "t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF"
+        var accepted = 0
+        for (field in listOf("label", "message")) {
+            for (separator in listOf("%E2%80%A8", "%E2%80%A9")) {
+                val matrix = QRCodeWriter().encode("zclassic:$address?$field=Public${separator}Amount:%20999",
+                    BarcodeFormat.QR_CODE, 333, 333)
+                val pixels = ByteArray(333 * 333) { index -> if (matrix[index % 333, index / 333]) 0 else -1 }
+                try {
+                    if (ScanQr.decode(pixels, 333, 333, 333, 1, Network.MAINNET) != null) ++accepted
+                } finally { pixels.fill(0) }
+            }
+        }
+        assertEquals("All four separator/field combinations must be refused", 0, accepted)
+    }
+
     @Test fun publicRequestCrossesRealAndroidJni() {
         val address = "t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF"
         val matrix = QRCodeWriter().encode("zclassic:$address?amount=1.25&label=Fixture",

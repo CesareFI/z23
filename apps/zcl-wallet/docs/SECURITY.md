@@ -30,6 +30,10 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
 * Authentication gates key operations. A QR scan never authorizes a payment.
   Send and shielded features remain unavailable until their acceptance gates
   pass; unsupported chain formats must fail closed.
+* Untrusted request labels and messages reject Unicode 17 control/format
+  characters and the line/paragraph separators U+2028/U+2029. Mandatory text
+  breaks cannot introduce another apparent review field. Ordinary spaces and
+  visible Unicode remain supported; this is not a complete spoof detector.
 * Platform workers have at most two process owners, one worker and four queued
   inputs per owner. Closing clears queued inputs and lets an active operation
   finish its cleanup. Pool termination clears the session before returning its

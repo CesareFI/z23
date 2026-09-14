@@ -114,10 +114,55 @@ static bool rejects_unicode_format_characters(void)
     return true;
 }
 
+static bool rejects_layout_separators(void)
+{
+    /* UnicodeData 17.0.0 has exactly these Zl/Zp code points. Both can force a
+     * new display line, even though neither belongs to the Cf/Cc table. */
+    const uint32_t separators[] = {0x2028, 0x2029};
+    for (size_t i = 0; i < sizeof(separators) / sizeof(separators[0]); ++i) {
+        uint8_t encoded[4] = {0};
+        const size_t length = encode_codepoint(separators[i], encoded, sizeof(encoded));
+        CHECK(length == 3);
+        CHECK(zcl_utf8_visible_text(encoded, length) == ZCL_INVALID_ENCODING);
+    }
+    static const struct { const char *text; size_t length; } invalid[] = {
+#define CASE(s) {s, sizeof(s) - 1}
+        CASE(REQUEST "?label=Public%E2%80%A8Amount:%20999"),
+        CASE(REQUEST "?label=Public%E2%80%A9Amount:%20999"),
+        CASE(REQUEST "?message=Public%E2%80%A8Amount:%20999"),
+        CASE(REQUEST "?message=Public%E2%80%A9Amount:%20999")
+#undef CASE
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        zcl_payment_request request, before;
+        memset(&request, 0xa5, sizeof(request));
+        memcpy(&before, &request, sizeof(before));
+        CHECK(zcl_payment_parse((const uint8_t *)invalid[i].text, invalid[i].length,
+            ZCL_MAINNET, &request) == ZCL_INVALID_ENCODING);
+        CHECK(memcmp(&request, &before, sizeof(request)) == 0);
+    }
+    return true;
+}
+
+static bool preserves_visible_unicode_neighbors(void)
+{
+    const uint32_t visible[] = {0x20, 0xa0, 0x2027, 0x202f, 0x4e2d, 0x1f642};
+    for (size_t i = 0; i < sizeof(visible) / sizeof(visible[0]); ++i) {
+        uint8_t encoded[4] = {0};
+        size_t length = 1;
+        if (visible[i] < 0x80) encoded[0] = (uint8_t)visible[i];
+        else length = encode_codepoint(visible[i], encoded, sizeof(encoded));
+        CHECK(length > 0);
+        CHECK(zcl_utf8_visible_text(encoded, length) == ZCL_OK);
+    }
+    return true;
+}
+
 int main(void)
 {
     if (!accepts_public_requests() || !rejects_unsafe_requests() || !field_and_argument_bounds() ||
-        !rejects_unicode_format_characters())
+        !rejects_unicode_format_characters() || !rejects_layout_separators() ||
+        !preserves_visible_unicode_neighbors())
         return 1;
-    return puts("wallet-core: 4 payment test groups passed") == EOF ? 1 : 0;
+    return puts("wallet-core: 6 payment test groups passed") == EOF ? 1 : 0;
 }

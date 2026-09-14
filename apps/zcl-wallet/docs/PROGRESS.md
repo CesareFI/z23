@@ -2591,3 +2591,36 @@ milestone, whose minified camera acceptance still applies. The full hazard
 review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact artifacts and evidence
 are in `.cache/android-wallet/camera-sampling-20260914/`. Original ADB zombie
 count remains 26, with their live parents preserved.
+
+2026-09-14: request metadata now refuses U+2028 LINE SEPARATOR and U+2029
+PARAGRAPH SEPARATOR, the two Unicode 17 Zl/Zp characters. Both were accepted
+despite the existing refusal of controls and formatting characters, allowing
+mandatory breaks inside an untrusted label/message. The production change
+extends one existing table range; it adds no allocation, buffer or parsing
+pass. Addresses, amounts, request bytes and Zclassic consensus remain unchanged.
+This is a conservative display policy, not comprehensive spoof detection.
+Classification and break behavior were checked against the pinned
+[UnicodeData 17.0.0](https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt)
+and [Unicode 17 line-breaking specification](https://www.unicode.org/reports/tr14/tr14-55.html).
+
+Before the fix, the native regression and independent fuzzer invariant fail;
+actual Android QR/JNI decoding accepts all four separator/field combinations.
+Afterward, all 88 ASan/UBSan/LSan groups pass in 63.63 seconds, with strict
+Clang/GCC analyses and unchanged complexity caps. Six mutations fail intended
+assertions, including removal of existing bidi checks and rejection of ordinary
+Unicode neighbors. Bounded fuzzing completes 179701 cases in 121 seconds without
+a finding (1024-byte input limit, five-second cases, 512 MiB RSS cap; observed
+110 MiB). The exact release-archive native payment test passes on x86-64 API
+30/35/36; ARM64 is compiled and inspected only.
+
+Three real QR/JNI tests pass on each of API 30/35/36. Full Android/JVM tests,
+debug/release/test builds, strict lint, fixture isolation, architecture and
+16 KiB APK alignment pass. The new locally signed minified APK is
+`4cb1c5b565d8df01cea5cbcab98a000a685022f8ea374994b2f56d70bb08e004`;
+all unsigned ZIP entries retain their bytes after signing. Its full camera
+denial/retry/grant/public-review/resource-release acceptance passes on fresh
+API 30 in 9.385 seconds. The isolated emulator exits normally through the
+qualified reaping adapter; the original 26 ADB zombies and their live parents
+remain unchanged. Exact source, baseline failures, mutations, archives and
+artifacts are in `.cache/android-wallet/request-separators-20260914/`.
+The explicit hazard review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).

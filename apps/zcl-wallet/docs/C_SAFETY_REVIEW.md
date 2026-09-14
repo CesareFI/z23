@@ -1518,3 +1518,38 @@ Both executables have 16 KiB load alignment, RELRO, immediate binding and a
 nonexecutable stack. Android/JVM/build/lint checks pass; the unsigned release
 APK is byte-identical to the preview-cleanup milestone. Exact sources, archives,
 mutants, seeds and evidence are in `.cache/android-wallet/camera-sampling-20260914/`.
+
+## Refuse mandatory separators in request metadata — 2026-09-14
+
+Scope: one existing range in `utf8_text.c`, two payment unit groups, one
+independent fuzzer property and a public Android QR/JNI regression. Unicode
+17.0.0 defines exactly U+2028/U+2029 as Zl/Zp. The downloaded UnicodeData has
+SHA256 `2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c`.
+This extends display refusal, without changing consensus or URI serialization.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Production changes only the lower bound of one constant range; the existing checked UTF-8 decoder and 200-byte field bound are unchanged. Four URI fixtures require the entire caller output representation to remain unchanged on refusal. The independent fuzzer byte scan runs only after both successful output lengths are checked at most 200, and reads three bytes only when i+2 is below that length. New direct fixtures use a four-byte initialized buffer and check the encoder's returned length. |
+| Integer overflow/underflow; signed/unsigned conversions | Range endpoints and decoded codepoints remain uint32_t. No production arithmetic or conversion changes. Fuzzer indices and lengths are size_t bounded by 200, so i+2 cannot overflow. Fixed codepoint arrays use bounded size_t iteration; the only new narrowing conversion handles explicitly checked ASCII below 0x80. URI lengths are compile-time sizeof minus one. |
+| Use-after-free; double-free; leaks; dangling pointers | The change adds no production allocation, ownership transfer or retained pointer. Native fixtures and new fuzzer helpers use fixed automatic/constant arrays only. Android owns each public pixel array for one synchronous decode and clears it in finally. Existing JNI/native lifetime and output publication contracts remain intact. |
+| NULL dereferences; uninitialized memory | Existing entry guards and checked UTF-8 results precede table lookup. Native output and its saved byte representation initialize with memset/memcpy before any comparison, including padding. All encoded buffers initialize to zero and nonzero/expected lengths are checked. The fuzzer reads decoded fields only after successful parsing and checked lengths. |
+| Pointer arithmetic; format strings | No production pointer or diagnostic changes. Fuzzer offsets are bounded by independently checked decoded lengths. Fixtures use only fixed public addresses and metadata; no attacker text becomes a format string or locator. |
+| Stack usage; allocation limits; resource exhaustion | The production range table has the same size and iteration count, with no new buffer, loop, recursion, VLA, worker or allocation. Optimized host visible-text frame remains 24 bytes with stack protection; decoder/provider nested costs are separate. New fixtures pass strict Clang/GCC warnings and analysis, plus unchanged 10/15 complexity caps. The fuzzer uses 1024-byte maximum inputs, five-second cases, a 120-second campaign budget, 512 MiB RSS cap and an outer timeout. |
+| Malformed serialization; races; explicit lifetimes | Raw UTF-8 separators and all four percent-encoded label/message combinations refuse. Existing malformed UTF-8 and full Cf coverage remain; ordinary space, NBSP, U+2027, narrow NBSP, CJK and emoji acceptance are retained. Six mutants prove both separators, prior bidi checks and permitted neighboring characters are enforced. The byte-pattern fuzzer property does not call the production classification predicate. No asynchronous state, normalization, wire rewrite or request authority is introduced. |
+| Secret leakage, custody and authority | Every fixture uses published unfunded addresses and public text/images. No wallet, key, signing capability, entropy, authentication or network source is used. Refusing mandatory text breaks makes request display stricter; it does not claim all Unicode confusables are safe or authorize any payment. Consensus predicates, address/amount encoding and chain/network compatibility are unchanged. |
+
+The baseline native assertion, independent fuzzer invariant and real QR/JNI
+test all reproduce the defect, with all four device combinations accepted.
+Final validation passes 88 sanitizer groups in 63.63 seconds, Clang/GCC analysis,
+strict warnings and unchanged complexity caps. All six mutants fail intended
+assertions. Fuzzing completes 179701 cases in 121 seconds without a finding,
+observing 110 MiB; fuzzer SHA256 is
+`319910eca5593c2fb6a5b0d9eb75b08370c24320a22d67e0d4dfdddd09d06fb5`.
+
+Actual release-archive native payment tests pass on x86-64 API 30/35/36;
+ARM64 is compiled only. Both executables retain 16 KiB alignment, RELRO,
+immediate binding and nonexecutable stack. Three QR/JNI tests pass on each API,
+and fresh API 30 minified camera acceptance passes in 9.385 seconds. Android/JVM,
+build/lint, fixture isolation, native alignment and architecture checks pass.
+Exact identities and evidence remain in
+`.cache/android-wallet/request-separators-20260914/`.
