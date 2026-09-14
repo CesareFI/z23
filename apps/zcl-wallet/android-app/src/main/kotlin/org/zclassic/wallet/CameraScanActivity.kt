@@ -20,6 +20,7 @@ class CameraScanActivity : Activity() {
     private var resumed = false
     private var permissionPending = false
     private var startAfterPermission = false
+    private var permissionDenied = false
     private var decoder: ScanDecodeClient? = null
     private var camera: CameraCapture? = null
 
@@ -46,7 +47,7 @@ class CameraScanActivity : Activity() {
         if (startAfterPermission) {
             startAfterPermission = false
             start(network)
-        } else choose()
+        } else choose(if (permissionDenied) R.string.scan_permission_denied else R.string.scan_description)
     }
 
     override fun onPause() {
@@ -76,6 +77,7 @@ class CameraScanActivity : Activity() {
     private fun start(selected: Network) {
         if (!resumed || permissionPending || decoder != null || camera != null) return
         network = selected
+        permissionDenied = false
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             permissionPending = true
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
@@ -95,7 +97,13 @@ class CameraScanActivity : Activity() {
         permissionPending = false
         val granted = grantResults.size == 1 && grantResults[0] == PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        if (!granted) { if (resumed) choose(R.string.scan_permission_denied); return }
+        if (!granted) {
+            // Android may deliver the result before onResume. Keep this public
+            // explanation until a new attempt; it grants no capture continuation.
+            permissionDenied = true
+            if (resumed) choose(R.string.scan_permission_denied)
+            return
+        }
         if (resumed) start(network) else startAfterPermission = true
     }
 

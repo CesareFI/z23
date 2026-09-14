@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:testOnly="true" android:allowBackup="false"
+        android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@android:drawable/ic_menu_camera" android:label="Public scanner test fixture" />
+    <instrumentation android:name="androidx.test.runner.AndroidJUnitRunner"
+        android:targetPackage="org.zclassic.wallet.dev" android:functionalTest="true" />
+</manifest>

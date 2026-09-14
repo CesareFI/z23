@@ -243,3 +243,19 @@ validation. A temporary public-frame diagnostic established the rotation/crop;
 it was removed before the final APK was built and run. Its temporary captured
 files were removed from the disposable profile. Evidence and exact scene/APK
 hashes remain under `.cache/android-wallet/camera-scene-20260914`.
+
+## Actual permission denial in the minified app
+
+The separate [public UI fixture](../scanner-ui-tests/README.md) runs against the
+normal locally development-signed release APK. It observes the real Android
+permission dialog and the scanner's return to its chooser. The previous app
+lost the denial explanation when the result arrived before `onResume`; the
+public in-memory result now survives that callback ordering and is cleared by
+a new scan attempt. It neither authorizes capture nor enters saved state.
+
+The same fixture fails before the fix in 62.253 seconds and passes afterwards
+in 22.042 seconds. It verifies the explanation and mainnet selection with
+permission still denied and no preview, request, worker or wallet directory.
+The debug Activity recreation/network-state fixture also passes in 57.579
+seconds. This is minified permission-denial acceptance; the full permission-grant
+and image-to-review journey in that artifact remains the next check.

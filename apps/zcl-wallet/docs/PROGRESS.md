@@ -1527,3 +1527,39 @@ signed minified APK already launches on the 16 KiB emulator and reaches its
 public scanner, but a real permission denial returns to the generic chooser
 message instead of its denial explanation. Reproduce that Android callback
 ordering in an opt-in UI regression and preserve the existing camera gates.
+
+2026-09-14 actual permission-denial continuation: Android can deliver denial
+while the scanner is paused, then resume it. Previously that resume replaced
+the result with the generic chooser message. An in-memory public denial flag
+now preserves the explanation until a new scan attempt. Permission checks,
+capture continuation, decoded-request clearing and saved-state contents are
+unchanged.
+
+The standalone `scanner-ui-tests` APK supplies its own pinned Kotlin/JUnit
+runtime and uses only Android framework APIs and public view identifiers.
+Reusing the debug instrumentation APK against R8 output failed because its
+shared Kotlin classes had been removed from the target; no production keep
+rule was added. The final fixture manifest is test-only, targets only the dev
+package, and has no activity, service, provider or requested permission. It
+refuses an existing wallet directory and opens only the private scanner.
+
+The exact same fixture APK fails on the previous minified app in 62.253 seconds
+after Android closes the denial dialog and the scanner regains focus. With the
+fix, it passes in 22.042 seconds, observing the denial explanation, selected
+mainnet, denied permission, and absence of preview, request, camera worker and
+wallet directory. The debug scanner's network/recreation/background test also
+passes in 57.579 seconds. Local development signing preserves all twenty entries
+of the normal unsigned release APK, checked byte-for-byte; no test-driven R8
+mapping or app dependency was introduced.
+
+Both ABI builds, JVM tests, debug/release lint, standalone fixture checks,
+fixture isolation, native alignment and architecture pass. Earlier attempts
+encountered stacked system ANR dialogs and an unconsumed permission tap. Those
+failures remain in the evidence; normal Wait actions cleared the system dialogs,
+and the unchanged fixed-app retry passed. The fixture explicitly distinguishes
+an undismissed permission dialog from a missing app explanation. Evidence and
+exact APK hashes are under `.cache/android-wallet/camera-scene-20260914`.
+
+Continue with reliable touch timing and the minified permission-grant to exact
+camera-review journey. Hardware custody, physical optics, network integration,
+TLS qualification and sending remain separate unfinished gates.

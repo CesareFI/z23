@@ -14,4 +14,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "ZclassicWallet"
-include(":wallet-core", ":android-app")
+include(":wallet-core", ":android-app", ":scanner-ui-tests")

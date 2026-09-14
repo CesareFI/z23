@@ -87,6 +87,9 @@ and a public request review; see [scanner scope](docs/SCANNING_QR.md). Actual
 camera capture/lifecycle passes on the emulator; physical QR interoperability,
 hardware custody, sync, sending, shielded support and mobile validation remain
 unqualified or unfinished. See [the next milestone](docs/NEXT_MILESTONE.md).
+The separate [scanner UI fixture](scanner-ui-tests/README.md) exercises the
+actual permission dialog against a normal locally signed minified APK, with
+its own test runtime and no production keep rules.
 The offline [transparent transaction codec](docs/TRANSACTIONS.md) now has
 bounded C parsing/serialization and independent SHA256d fixtures; it grants no
 funding, signing or broadcast authority.

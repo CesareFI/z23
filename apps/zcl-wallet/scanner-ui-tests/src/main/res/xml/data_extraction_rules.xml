@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="root" path="." />
+        <exclude domain="device_root" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="device_root" path="." />
+    </device-transfer>
+</data-extraction-rules>
