@@ -137,3 +137,12 @@ requires independent discovery. JNI uses bounded private copies and clears its
 native entropy buffer on every exit; the platform worker retains its existing
 managed cleanup and per-use hardware requirements. See
 [change storage](CHANGE_STORAGE.md) for ordering, interruption and refusal rules.
+
+The host JNI key fixture also exercises header creation and recovered-address
+derivation through every VM read/allocation/publication fault, pending and NULL
+arguments, partial RNG failure, malformed headers and mismatched entropy. It
+checks caller input preservation and clearing of all touched entropy/blinding
+spans before their lifetimes end. Removing either clear from either entry is
+detected by separately compiled negative fixtures. This proves the stated JNI
+cleanup contract on public host inputs; it does not authenticate GCM or qualify
+hardware custody. Object-array record unpacking has a separate JNI boundary.

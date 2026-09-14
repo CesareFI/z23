@@ -1022,3 +1022,25 @@ qualified by the fixed-size experiment. The analyzer traces are retained in
 was suppressed and no platform provider source changed. The PPM alternative was
 rejected by the emulator, which substituted a default scene; the final writer
 emits only this fixed PNG fixture, not a general image-encoding API.
+
+## Wallet-header JNI secret cleanup fixtures — 2026-09-14
+
+Scope: extend the existing host key-entry fault harness and fuzzer to
+`createWalletHeader` and `recoveredWalletAddress`. Production C, serialized
+records, RNG and custody policy are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Fake arrays retain 216-byte/216-jchar backing storage. Region access checks signed start/length, declared extent and physical extent before copying. Fuzz input is 2..217 bytes, so header copies are at most 215 bytes; the existing JNI 80-byte capacity refuses oversized headers. Entropy mutation remains at most 33 bytes with source bytes available. Input snapshots compare fixed complete objects, including on deliberately invalid declared lengths. |
+| Integer overflow/underflow; signed/unsigned conversions | Fuzzer size is checked before subtracting two or narrowing to jsize. Operation modulo is bounded by seven. Header offsets are fixed below 80. Signed malformed lengths never determine a host copy without region validation. No new production arithmetic, format or length rule. |
+| Use-after-free; double-free; leaks; dangling pointers | No new heap allocation or release. Three fake input snapshots live only in the synchronous runner. Secret span observations are retired while the zero hook still has a live pointer; post-return verification reads only cleared flags. Four separately compiled mutants omit one entropy/blinding clear in each entry and fail that assertion without dereferencing expired stack pointers. |
+| NULL dereferences; uninitialized memory | NULL environment, NULL entropy/header, pending exception, every VM fault ordinal and failed allocation without an exception are exercised. Fake inputs/results and the cached public header initialize completely. RNG failure now dirties one output byte before refusing, so cleanup also covers partial provider output. Ordinary fake VM calls reject a pending exception. |
+| Pointer arithmetic; format strings | Only validated fake-array offsets and bounded input slices are added. Diagnostics remain fixed public strings and line numbers. No pointer is constructed from an integer or serialized field. |
+| Stack usage; allocation limits; resource exhaustion | The runner adds three fixed fake-array snapshots (1320 bytes on this host), below the unchanged 4096-byte frame warning limit. The public zero-entropy header is derived once per single-threaded fixture process, then copied from an 80-byte cache. No recursion, worker, VLA or production allocation. Fuzz input, per-case deadline and RSS limits remain explicit. Production/test complexity caps remain 10/15; result checks were split when the extended helper first exceeded the fixture cap. |
+| Malformed serialization; races; native lifetime | Header length/field damage, mismatched entropy, invalid network, partial JNI reads/publication and RNG refusal all preserve caller inputs and clear touched secret spans. Cached fixture state is host-only and used synchronously; production receives no new mutable state or retained owner. The object-array pack/unpack entries are linked but are not claimed as covered by this key-entry harness. |
+| Secret leakage and authority | Entropy and blinding are observed separately from public header/address bytes; the five existing key entries retain their prior scratch-clearing checks. Only fixed public vectors and generated fuzz bytes enter the harness or its snapshots. No real wallet, key, datadir, device authentication, signing or consensus authority is exercised. Header consistency tests do not establish GCM authentication; actual Android record tests remain a separate claim. |
+
+All 61 native ASan/UBSan/LSan tests pass in 44.49 seconds. Enabled-provider and
+authored-source analysis pass; the changed fixture separately passes Clang and
+GCC analysis in both unit and fuzz modes. All four omitted-cleanup mutants are
+rejected. Evidence is under `.cache/android-wallet/jni-header-20260914`.

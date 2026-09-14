@@ -1721,3 +1721,22 @@ remains enforced. Logs are under `.cache/android-wallet/api36-20260914`, with
 final input identities in the camera directory's compact-all signing proof.
 Continue native JNI exception and secret-cleanup coverage. Physical optics,
 hardware-authenticated custody and real-source networking remain unqualified.
+
+2026-09-14 wallet-header JNI cleanup continuation: the existing key-entry host
+harness and fuzzer now include header creation and recovered-address derivation.
+They check exact public results, caller input preservation, every VM exception
+ordinal, allocation refusal without an exception, pending/NULL inputs, malformed
+headers, mismatched entropy and RNG failure after partial output. Touched entropy
+and blinding spans must be cleared while live. Public header/address bytes have
+separate obligations; the five existing key entries retain their prior checks.
+
+All 61 native ASan/UBSan/LSan tests pass in 44.49 seconds. Clang/GCC analysis
+passes, including both modes of the changed fixture, with unchanged 10/15
+complexity caps. Bounded JNI fuzzing completes 32,362 executions in 121 seconds
+without a finding. Four isolated mutants, each omitting one entropy or blinding
+clear from one wallet-header entry, all fail the cleanup assertion. The first
+safety invocation met the script's non-executable mode; explicit bash ran the
+unchanged script successfully. Production C and custody policy do not change.
+Evidence is under `.cache/android-wallet/jni-header-20260914`, and the explicit
+hazard review is in `C_SAFETY_REVIEW.md`. Continue with the record object-array
+JNI boundary and its bounded references/exception paths.

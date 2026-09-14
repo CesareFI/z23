@@ -3,6 +3,7 @@
 #undef zcl_random_bytes
 #include "jni_support.h"
 #include "zcl_keys.h"
+#include "zcl_wallet_record.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,8 @@ JNIEXPORT jcharArray JNICALL API(recoveryPhrase)(JNIEnv *, jclass, jbyteArray);
 JNIEXPORT jbyteArray JNICALL API(restoreEntropy)(JNIEnv *, jclass, jcharArray);
 JNIEXPORT jboolean JNICALL API(confirmRecoveryPhrase)(JNIEnv *, jclass, jbyteArray, jcharArray);
 JNIEXPORT jbyteArray JNICALL API(receivingAddress)(JNIEnv *, jclass, jbyteArray, jint, jint);
+JNIEXPORT jbyteArray JNICALL API(createWalletHeader)(JNIEnv *, jclass, jbyteArray, jint);
+JNIEXPORT jbyteArray JNICALL API(recoveredWalletAddress)(JNIEnv *, jclass, jbyteArray, jbyteArray);
 
 typedef enum { BYTES, CHARS } array_kind;
 typedef struct {
@@ -22,11 +25,14 @@ typedef struct {
     union { uint8_t bytes[216]; jchar chars[216]; } data;
 } fake_array;
 typedef struct { const void *pointer; size_t length; bool cleared; } touched_span;
-static fake_array entropy, phrase, result_array;
+static fake_array entropy, phrase, header, result_array;
+static uint8_t known_header[80];
+static bool header_ready;
 static touched_span touched[8];
 static size_t touched_count;
 static bool pending, fail_random, null_without_exception;
-static unsigned fail_call, vm_calls, random_calls;
+static unsigned fail_call, vm_calls, random_calls, active_operation;
+#define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 static void track(const void *pointer, size_t length)
@@ -63,6 +69,7 @@ zcl_status zcl_jni_key_test_random(uint8_t *output, size_t length)
     CHECK(output != NULL && length == 32 && !pending);
     ++random_calls;
     track(output, length);
+    output[0] = 0x42; /* Even a failed provider may have touched its output. */
     if (fail_random) return ZCL_IO_FAILURE;
     memset(output, 0x42, length); /* Public test bytes, never the shipped RNG. */
     return ZCL_OK;
@@ -103,7 +110,8 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
 {
     (void)env;
     const fake_array *array = region(input, start, length, BYTES);
-    track(output, (size_t)length);
+    /* Header bytes are public; only entropy input is a secret obligation. */
+    if (array != &header) track(output, (size_t)length);
     if (vm_fault()) { if (length > 0) output[0] = 42; return; }
     memcpy(output, array->data.bytes + (size_t)start, (size_t)length);
 }
@@ -144,7 +152,9 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
 {
     (void)env;
     fake_array *array = region(input, start, length, BYTES);
-    track(bytes, (size_t)length);
+    /* These two entries publish only public metadata/address bytes. Keep all
+     * existing key-entry scratch obligations, including their public output. */
+    if (active_operation < 5) track(bytes, (size_t)length);
     memcpy(array->data.bytes + (size_t)start, bytes, (size_t)length);
     (void)vm_fault();
 }
@@ -166,16 +176,30 @@ static const struct JNINativeInterface_ table = {
 };
 static JNIEnv environment = &table;
 
+static void prepare_header(void)
+{
+    if (!header_ready) {
+        const uint8_t zero_entropy[16] = {0}, blinding[32] = {1};
+        CHECK(zcl_wallet_header_create(zero_entropy, sizeof(zero_entropy), ZCL_MAINNET,
+            blinding, sizeof(blinding), known_header, sizeof(known_header)) == ZCL_OK);
+        header_ready = true;
+    }
+    header = (fake_array){.kind = BYTES, .length = (jsize)sizeof(known_header)};
+    memcpy(header.data.bytes, known_header, sizeof(known_header));
+}
+
 static void prepare(void)
 {
     touched_count = 0;
     memset(touched, 0, sizeof(touched));
     pending = fail_random = null_without_exception = false;
     fail_call = vm_calls = random_calls = 0;
+    active_operation = 0;
     entropy = (fake_array){.kind = BYTES, .length = 16};
     phrase = (fake_array){.kind = CHARS, .length = (jsize)(sizeof(known_phrase) - 1)};
     for (size_t i = 0; i < sizeof(known_phrase) - 1; ++i) phrase.data.chars[i] = (jchar)known_phrase[i];
     memset(&result_array, 0, sizeof(result_array));
+    prepare_header();
 }
 
 static void verify_cleanup(void)
@@ -187,19 +211,30 @@ static void verify_cleanup(void)
  * cleanup/fault runner without manufacturing an array reference. */
 static bool invoke(unsigned operation, JNIEnv *env, jbyteArray bytes, jcharArray chars, jint network, jint index)
 {
+    CHECK(operation < OPERATION_COUNT);
+    active_operation = operation;
     switch (operation) {
     case 0: return API(createEntropy)(env, NULL) != NULL;
     case 1: return API(recoveryPhrase)(env, NULL, bytes) != NULL;
     case 2: return API(restoreEntropy)(env, NULL, chars) != NULL;
     case 3: return API(confirmRecoveryPhrase)(env, NULL, bytes, chars) == JNI_TRUE;
-    default: return API(receivingAddress)(env, NULL, bytes, network, index) != NULL;
+    case 4: return API(receivingAddress)(env, NULL, bytes, network, index) != NULL;
+    case 5: return API(createWalletHeader)(env, NULL, bytes, network) != NULL;
+    default: return API(recoveredWalletAddress)(env, NULL, (jbyteArray)&header, bytes) != NULL;
     }
 }
 
 static bool run(unsigned operation)
 {
+    fake_array inputs[3];
+    memcpy(&inputs[0], &entropy, sizeof(entropy));
+    memcpy(&inputs[1], &phrase, sizeof(phrase));
+    memcpy(&inputs[2], &header, sizeof(header));
     const bool accepted = invoke(operation, &environment, (jbyteArray)&entropy, (jcharArray)&phrase, 0, 0);
     verify_cleanup();
+    CHECK(memcmp(&inputs[0], &entropy, sizeof(entropy)) == 0);
+    CHECK(memcmp(&inputs[1], &phrase, sizeof(phrase)) == 0);
+    CHECK(memcmp(&inputs[2], &header, sizeof(header)) == 0);
     return accepted;
 }
 
@@ -219,7 +254,7 @@ static void pending_helpers(void)
 
 static void pending_and_null_entries(void)
 {
-    for (unsigned operation = 0; operation < 5; ++operation) {
+    for (unsigned operation = 0; operation < OPERATION_COUNT; ++operation) {
         prepare(); pending = true;
         CHECK(!run(operation) && pending && vm_calls == 0 && random_calls == 0);
         prepare();
@@ -230,8 +265,11 @@ static void pending_and_null_entries(void)
         prepare();
         CHECK(!invoke(operation, &environment, NULL, NULL, 0, 0));
         verify_cleanup();
-        CHECK(vm_calls == 0 && random_calls == 0);
+        CHECK(vm_calls == (operation == 6 ? 2u : 0u) && random_calls == 0);
     }
+    prepare();
+    CHECK(API(recoveredWalletAddress)(&environment, NULL, NULL, (jbyteArray)&entropy) == NULL);
+    verify_cleanup(); CHECK(vm_calls == 0 && random_calls == 0);
 }
 
 static void check_receive_result(void)
@@ -244,43 +282,53 @@ static void check_receive_result(void)
     CHECK(length == 35 && memcmp(result_array.data.bytes, expected, 35) == 0);
 }
 
+static void check_exact_result(unsigned operation)
+{
+    if (operation == 0) {
+        CHECK(result_array.kind == BYTES && result_array.length == 32 && random_calls == 1);
+        for (size_t i = 0; i < 32; ++i) CHECK(result_array.data.bytes[i] == 0x42);
+    } else if (operation == 1) {
+        CHECK(result_array.kind == CHARS && result_array.length == phrase.length);
+        CHECK(memcmp(result_array.data.chars, phrase.data.chars, (size_t)phrase.length * sizeof(jchar)) == 0);
+    } else if (operation == 2) {
+        CHECK(result_array.kind == BYTES && result_array.length == 16);
+        for (size_t i = 0; i < 16; ++i) CHECK(result_array.data.bytes[i] == 0);
+    } else if (operation == 4 || operation == 6) {
+        check_receive_result();
+    } else if (operation == 5) {
+        CHECK(result_array.kind == BYTES && result_array.length == 80);
+        CHECK(memcmp(result_array.data.bytes, known_header, sizeof(known_header)) == 0);
+    }
+}
+
 static void exact_results(void)
 {
-    for (unsigned operation = 0; operation < 5; ++operation) {
+    for (unsigned operation = 0; operation < OPERATION_COUNT; ++operation) {
         prepare(); CHECK(run(operation));
-        if (operation == 0) {
-            CHECK(result_array.kind == BYTES && result_array.length == 32 && random_calls == 1);
-            for (size_t i = 0; i < 32; ++i) CHECK(result_array.data.bytes[i] == 0x42);
-        } else if (operation == 1) {
-            CHECK(result_array.kind == CHARS && result_array.length == phrase.length);
-            CHECK(memcmp(result_array.data.chars, phrase.data.chars, (size_t)phrase.length * sizeof(jchar)) == 0);
-        } else if (operation == 2) {
-            CHECK(result_array.kind == BYTES && result_array.length == 16);
-            for (size_t i = 0; i < 16; ++i) CHECK(result_array.data.bytes[i] == 0);
-        } else if (operation == 4) {
-            check_receive_result();
-        }
+        check_exact_result(operation);
         CHECK(entropy.length == 16 && phrase.length == (jsize)(sizeof(known_phrase) - 1));
         for (size_t i = 0; i < sizeof(entropy.data.bytes); ++i) CHECK(entropy.data.bytes[i] == 0);
+        CHECK(header.length == 80 && memcmp(header.data.bytes, known_header, sizeof(known_header)) == 0);
     }
 }
 
 static void vm_failures(void)
 {
-    const unsigned calls[] = {2, 4, 4, 4, 4};
-    for (unsigned operation = 0; operation < 5; ++operation) {
+    const unsigned calls[] = {2, 4, 4, 4, 4, 4, 6};
+    for (unsigned operation = 0; operation < OPERATION_COUNT; ++operation) {
         for (unsigned failure = 1; failure <= calls[operation]; ++failure) {
             prepare(); fail_call = failure;
             CHECK(!run(operation) && pending && vm_calls == failure);
         }
         if (operation == 3) continue;
-        prepare(); fail_call = operation == 0 ? 1 : 3;
+        prepare(); fail_call = operation == 0 ? 1 : (operation == 6 ? 5 : 3);
         null_without_exception = true;
         CHECK(!run(operation) && !pending);
     }
-    for (unsigned operation = 0; operation < 5; operation += 4) {
+    const unsigned random_operations[] = {0, 4, 5, 6};
+    for (size_t i = 0; i < sizeof(random_operations) / sizeof(random_operations[0]); ++i) {
         prepare(); fail_random = true;
-        CHECK(!run(operation) && random_calls == 1 && !pending);
+        CHECK(!run(random_operations[i]) && random_calls == 1 && !pending);
     }
 }
 
@@ -288,7 +336,7 @@ static void invalid_inputs(void)
 {
     const jsize invalid[] = {-1, 0, 33, 216, INT32_MAX};
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
-        for (unsigned operation = 1; operation < 5; ++operation) {
+        for (unsigned operation = 1; operation < OPERATION_COUNT; ++operation) {
             prepare();
             if (operation == 2) phrase.length = invalid[i];
             else entropy.length = invalid[i];
@@ -307,14 +355,32 @@ static void invalid_inputs(void)
         CHECK(!invoke(4, &environment, (jbyteArray)&entropy, NULL, 0, indexes[i]));
         verify_cleanup(); CHECK(vm_calls == 0 && random_calls == 0);
     }
-    prepare();
-    CHECK(!invoke(4, &environment, (jbyteArray)&entropy, NULL, 2, 0));
-    verify_cleanup(); CHECK(vm_calls == 0 && random_calls == 0);
+    for (unsigned operation = 4; operation <= 5; ++operation) {
+        prepare();
+        CHECK(!invoke(operation, &environment, (jbyteArray)&entropy, NULL, 2, 0));
+        verify_cleanup(); CHECK(vm_calls == 0 && random_calls == 0);
+    }
+}
+
+static void invalid_headers(void)
+{
+    const jsize lengths[] = {-1, 0, 79, 81, 216, INT32_MAX};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        prepare(); header.length = lengths[i];
+        CHECK(!run(6) && !pending);
+    }
+    const size_t offsets[] = {0, 8, 9, 10, 11, 12, 44, 79};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+        prepare(); header.data.bytes[offsets[i]] ^= 0xff;
+        CHECK(!run(6) && !pending);
+    }
+    prepare(); entropy.data.bytes[0] = 1;
+    CHECK(!run(6) && random_calls == 1 && !pending);
 }
 
 int main(void)
 {
-    pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures(); invalid_inputs();
+    pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures(); invalid_inputs(); invalid_headers();
     puts("JNI key exception and secret cleanup checks passed");
     return 0;
 }
@@ -346,6 +412,21 @@ static void verify_accepted(unsigned operation)
     case 1: verify_phrase(&result_array, &entropy); break;
     case 2: verify_phrase(&phrase, &result_array); break;
     case 3: verify_phrase(&phrase, &entropy); break;
+    case 5: {
+        zcl_wallet_info info;
+        CHECK(result_array.kind == BYTES && result_array.length == 80);
+        CHECK(zcl_wallet_header_parse(result_array.data.bytes, 80, &info) == ZCL_OK);
+        CHECK(info.network == ZCL_MAINNET && info.entropy_len == (size_t)entropy.length);
+        break;
+    }
+    case 6: {
+        zcl_wallet_info info;
+        CHECK(zcl_wallet_header_parse(header.data.bytes, (size_t)header.length, &info) == ZCL_OK);
+        CHECK(info.entropy_len == (size_t)entropy.length);
+        CHECK(result_array.kind == BYTES && result_array.length == 35);
+        CHECK(memcmp(info.address, result_array.data.bytes, sizeof(info.address)) == 0);
+        break;
+    }
     default: {
         zcl_address address;
         CHECK(result_array.kind == BYTES && result_array.length == 35);
@@ -360,7 +441,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size < 2 || size > 217) return 0;
     prepare();
-    const unsigned operation = data[0] % 5;
+    const unsigned operation = data[0] % OPERATION_COUNT;
     fail_call = data[1] % 8;
     pending = (data[1] & 0x80) != 0;
     fail_random = (data[1] & 0x40) != 0;
@@ -373,6 +454,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if ((data[0] & 0x20) != 0) {
         entropy.length = (jsize)((size - 2) % 34);
         for (size_t i = 0; i < (size_t)entropy.length; ++i) entropy.data.bytes[i] = data[2 + i];
+    }
+    if (operation == 6 && (data[0] & 0x10) != 0) {
+        header.length = (jsize)(size - 2);
+        memcpy(header.data.bytes, data + 2, size - 2);
     }
     const bool accepted = run(operation);
     if (accepted) verify_accepted(operation);
