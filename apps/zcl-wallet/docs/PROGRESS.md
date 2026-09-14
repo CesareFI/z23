@@ -2839,3 +2839,50 @@ Source, before/after failures, APKs and logs remain in the isolated worktree's
 `.cache/android-wallet/backup-publication-20260914/`. The two owned emulator
 launches complete graceful shutdown through the qualified reaping wrapper;
 existing emulators and unrelated dirty camera work remain preserved.
+
+2026-09-14: long mnemonic keys are normalized once before PBKDF2 instead of
+repeating the same SHA-512 normalization in every HMAC. All 2048 rounds, the
+exact 64-byte seed, checksum/ASCII rules and recovery profile remain unchanged.
+The new 64-byte native scratch is always erased, including a provider failure
+after a partial write. There is no new allocation, managed secret, cached state
+or API. The change uses the existing reviewed SHA-512 provider.
+
+Three mandatory fixed vectors cover 127/128/129-byte mnemonics. The old tests
+miss an exactly-128-byte normalization mutation; the new tests reject it.
+Seven targeted mutations are detected, including omitted/partial erasure and
+altered rounds. The optional OpenSSL oracle independently checks 81 seeds with
+empty, six-byte and maximum-length passphrases; the existing independent oracle
+also checks 96 complete receive/change addresses. The new oracle fuzzer compares
+seeds from original mnemonic bytes and checks failure atomicity for unsupported
+passphrases. It completes 9532 runs in 121 seconds without a finding, using a
+161-byte input cap, five-second cases and 512 MiB RSS cap (333 MiB observed).
+An initial GCC staging-copy finding led to removing that temporary array;
+final unit/fuzz profiles pass strict Clang/GCC analysis without suppressions.
+
+All 89 native sanitizer groups pass in 63.98 seconds. All 118 JVM tests,
+Android debug/release builds and lint, fixture isolation, native alignment and
+architecture checks pass. All 29 selected key/record/secret-display/authentication
+tests pass on both isolated API 30 and API 36 emulators. The release native
+mnemonic-vector executable also passes on both. ARM64 is compiled, not executed;
+no physical-device custody or full-wallet acceptance is inferred.
+
+On the isolated x86-64 API 36 emulator, a release-code benchmark interleaves
+before/after/after/before runs, using 14 samples of 128 operations per profile
+and phrase length. Median thread CPU per 179-byte phrase falls from 4794644 ns
+to 3195572 ns (33.35%); the 89-byte phrase is essentially unchanged at 3241132 ns
+versus 3213382 ns. Each iteration checks its exact deterministic seed. This is
+an emulator microbenchmark, not physical-phone latency, battery or UI evidence.
+NDK release-profile combined mnemonic/PBKDF2 frames grow 120 bytes on x86-64
+and 144 bytes on ARM64; provider/caller frames are additional. Object text grows
+163/236 bytes. The debug APK grows 7136 bytes to 3947746; the unsigned release
+APK is 613111 bytes, SHA256
+`d65265def068e44a7fac6c67745012af6503a4e7d16925b57d319de8e2d761f0`.
+
+The full hazard review is in C_SAFETY_REVIEW.md. Source, benchmarks, boundary
+generation, failed mutations and exact APK/native hashes are retained under
+`.cache/android-wallet/seed-profile-20260914/` in the development worktree.
+Both owned emulators shut down gracefully; existing devices and unrelated dirty
+work remain untouched. Origin main was fetched and has no new wallet changes.
+Work remains local because the earlier development-ref push was rejected with
+HTTP 403; no main push or merge occurred. TLS remains quarantined and hardware
+custody qualification remains open.

@@ -1659,3 +1659,47 @@ old-unit missed mutant and final mutation evidence are retained in
 `.cache/android-wallet/random-erasure-20260914/` in the isolated development
 worktree. These are erasure/error-path observations, not physical-device custody
 or a statistical proof of the operating system's randomness.
+
+## 2026-09-14: normalize long mnemonic HMAC keys once
+
+Reviewed `mnemonic_seed.c`, the provider-failure fixture, the mandatory boundary
+vectors, the host-only seed oracle/fuzzer and their CMake wiring. Previously,
+each of the 2048 HMAC operations independently hashed a mnemonic longer than
+128 bytes to normalize its key. The operation now performs that exact SHA-512
+normalization once and erases its 64-byte scratch before returning. All rounds,
+salt bytes, checksum/ASCII validation and the final 64-byte seed remain exact.
+The existing general HMAC implementation is unchanged.
+
+The rule follows [RFC 2104 section 2](https://www.rfc-editor.org/rfc/rfc2104.html#section-2)
+and retains the [PBKDF2 construction](https://www.rfc-editor.org/rfc/rfc8018.html#section-5.2).
+The strict greater-than comparison matters: the prior mnemonic tests miss a
+mutation which also hashes exactly 128 bytes; the new fixed vectors reject it.
+These standards support the mathematical equivalence, not a blanket security
+claim about the wallet or provider.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Existing pointer, seed-capacity, passphrase and canonical mnemonic validation precedes preprocessing. The decoder bounds mnemonic text to 215 bytes. SHA-512 receives a fixed 64-byte output and its SHA-512 selector, never SHA-384. Salt remains 140 bytes: 8-byte prefix, at most 128 passphrase bytes and the four-byte block number. HMAC receives either the validated original span or the entire initialized digest. Oracle outputs have a guard byte on each side and compare all 66 bytes. |
+| Integer overflow/underflow; signed/unsigned conversions | Production adds no external arithmetic. Length is compared directly to 128 and replaced by sizeof the digest only after validation. Existing bounded salt additions top out at 140. Oracle narrowing to OpenSSL int occurs only after explicit 215/128 bounds; salt length is at most 136. Fuzzer size must be 33..161 before subtraction, entropy selection is 16..32 and reads fit its first 33 bytes. |
+| Use-after-free; double-free; leaks; dangling pointers | No production allocation, free, retained handle or global state is added. Key pointers borrow either caller input or the synchronous owner's automatic digest. Both remain live through PBKDF2. The host observer records the provider's output pointer, verifies complete zeroization while live, and retires it in the zero callback. Missing cleanup is detected from a flag without inspecting the expired pointer. OpenSSL's one-shot host API owns its internal allocations and its result is checked. |
+| NULL dereferences; uninitialized memory | Existing invalid-argument refusals precede any new access. The digest initializes entirely before the provider call. A provider error skips PBKDF2, clears scratch even after a partial write, and preserves caller output. Test output canaries initialize before every fault. The initial GCC analyzer finding on transformed fuzzer passphrase staging was resolved by removing that array/copy; the final harness borrows bounded raw input and also checks unsupported ASCII refusal. Both final unit/fuzz profiles pass Clang/GCC analysis without suppressions. |
+| Pointer arithmetic; format strings | No new production pointer arithmetic is introduced. Oracle salt/output offsets fit their fixed objects; a zero-length passphrase may use the valid end pointer of a 33-byte fuzz input without a read. Test-only fault pointers are compared only while their owner is live. Diagnostics report fixed messages, line numbers or public benchmark lengths/timing; no secret is a format string or log argument. |
+| Stack usage; allocation limits; resource exhaustion | One fixed 64-byte secret array is added; no heap, VLA, recursion, thread, retry or cached provider context. NDK release-profile measurements show x86-64 mnemonic/PBKDF2 frames of 280+248 bytes versus an earlier inlined 408-byte frame; ARM64 is 320+272 versus 448. Thus the combined wallet frames grow 120/144 bytes, with caller/provider frames additional. Object text grows 163/236 bytes respectively. The oracle unit has a 15-second limit; fuzz cases cap input at 161 bytes, five seconds and 512 MiB RSS, with a bounded outer campaign. |
+| Malformed input; races; failure behavior | Existing invalid length, checksum, encoding and short-output tests remain mandatory. Three independent fixed seeds cover exact 127/128/129-byte phrases. The optional oracle compares original mnemonic bytes through OpenSSL PBKDF2 across 27 vectors and empty, six-byte and maximum 128-byte passphrases. Fourteen long-key fault positions include checksum, preprocessing, first/middle/final HMAC operations; caller bytes remain unchanged and any normalized key is erased exactly once. Test fault globals are confined to a synchronous host executable. Production retains no shared mutable state. |
+| Secret leakage and authority | Every new accessible digest byte is cleared on success and failure. The unchanged PBKDF2 cleanup clears its intermediates and publishes only the complete result. Seven mutants change the boundary, skip/shorten clearing, ignore failure, alter key length/round count or omit normalization; all fail intended assertions. Public fixture seeds are unfunded. OpenSSL, fault wrapping and fuzz state are excluded from APKs. No JNI API, managed secret object, entropy policy, authentication, network, signing, consensus or storage format changes. This adds no claim about full provider/compiler/VM erasure or physical hardware custody. |
+
+All 89 ASan/UBSan/LSan groups pass in 63.98 seconds. The independent seed and
+receive/change oracle groups pass, covering 81 seed and 96 full address
+comparisons. Production/test complexity caps remain 10/15. Differential seed
+fuzzing completes 9532 runs in 121 seconds without a finding, observing 333 MiB
+under its 512 MiB cap; fuzzer SHA256 is
+`ae3e6e9a285bfe0d0a15ed2191ca67280b7f8e13b6933c1b4194faf962691558`.
+
+All 29 selected Android key/record/secret-display/authentication-window tests
+pass on isolated API 30 and API 36 x86-64 emulators with CheckJNI enabled. The
+exact release-archive mnemonic-vector executable also passes on both; its
+SHA256 is `f9ad19783841f47eda647d98c129f6fc8ad32771a0d731c11e57b0a06117e2f0`.
+ARM64 is compiled only. Both emulator launches shut down gracefully through the
+qualified reaping wrapper. JVM/build/lint, fixture isolation, native alignment
+and architecture gates pass. Detailed measurements and exact artifacts remain
+in `.cache/android-wallet/seed-profile-20260914/` in the isolated worktree.

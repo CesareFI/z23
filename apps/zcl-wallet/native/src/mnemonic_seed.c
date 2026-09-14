@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "secret_hash.h"
 
+#include <mbedtls/sha512.h>
 #include <string.h>
 
 static zcl_status validate_passphrase(const uint8_t *phrase, size_t length)
@@ -25,7 +26,7 @@ static zcl_status validate_mnemonic(const uint8_t *text, size_t text_len)
     return status;
 }
 
-static zcl_status pbkdf2(const uint8_t *text, size_t text_len,
+static zcl_status pbkdf2(const uint8_t *key, size_t key_len,
                          const uint8_t *salt, size_t salt_len,
                          uint8_t *seed, size_t capacity)
 {
@@ -33,12 +34,12 @@ static zcl_status pbkdf2(const uint8_t *text, size_t text_len,
     zcl_status status = ZCL_BUFFER_TOO_SMALL;
     if (capacity < sizeof(result))
         goto cleanup;
-    status = zcl_hmac_sha512(text, text_len, salt, salt_len, current, sizeof(current));
+    status = zcl_hmac_sha512(key, key_len, salt, salt_len, current, sizeof(current));
     if (status != ZCL_OK)
         goto cleanup;
     memcpy(result, current, sizeof(result));
     for (size_t iteration = 1; iteration < 2048; ++iteration) {
-        status = zcl_hmac_sha512(text, text_len, current, sizeof(current), next, sizeof(next));
+        status = zcl_hmac_sha512(key, key_len, current, sizeof(current), next, sizeof(next));
         if (status != ZCL_OK)
             goto cleanup;
         for (size_t i = 0; i < sizeof(result); ++i)
@@ -68,10 +69,23 @@ zcl_status zcl_mnemonic_seed(const uint8_t *text, size_t text_len,
     if (status != ZCL_OK)
         return status;
     uint8_t salt[140] = {'m', 'n', 'e', 'm', 'o', 'n', 'i', 'c'};
+    uint8_t normalized_key[64] = {0};
     memcpy(salt + 8, passphrase, passphrase_len);
     /* The only PBKDF2 block is numbered one, encoded as uint32 big-endian. */
     salt[8 + passphrase_len + 3] = 1;
-    status = pbkdf2(text, text_len, salt, 8 + passphrase_len + 4, seed, seed_capacity);
+    const uint8_t *key = text;
+    size_t key_len = text_len;
+    /* RFC2104: normalize a key longer than SHA512's 128-byte block once.
+     * PBKDF2 uses this same key for all 2048 HMACs. Shorter keys stay unhashed. */
+    if (text_len > 128) {
+        if (mbedtls_sha512(text, text_len, normalized_key, 0) != 0)
+            status = ZCL_CRYPTO_FAILURE;
+        key = normalized_key;
+        key_len = sizeof(normalized_key);
+    }
+    if (status == ZCL_OK)
+        status = pbkdf2(key, key_len, salt, 8 + passphrase_len + 4, seed, seed_capacity);
+    zcl_secure_zero(normalized_key, sizeof(normalized_key));
     zcl_secure_zero(salt, sizeof(salt));
     return status;
 }

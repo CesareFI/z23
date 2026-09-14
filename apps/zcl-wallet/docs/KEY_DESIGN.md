@@ -33,6 +33,15 @@ the owner destroys, clears and frees it through one cleanup path. No live
 private-key native handle crosses JNI. Deterministic failure tests use published
 fixtures and test-only injected failure points, never production seeds.
 
+Mnemonic seed derivation normalizes an HMAC key longer than SHA-512's 128-byte
+block once per operation, as specified by [RFC 2104 section 2](https://www.rfc-editor.org/rfc/rfc2104.html#section-2).
+Keys of exactly 128 bytes remain unhashed. The same normalized key feeds all
+2048 PBKDF2 rounds; the 64-byte seed, salt and recovery profile remain exact.
+Its fixed 64-byte native scratch is cleared on success and provider failure,
+including a partial provider write. No cached key or additional heap owner is
+introduced. Pinned 127/128/129-byte mnemonic vectors, independent host OpenSSL
+comparisons and observed cleanup qualify this boundary; see C_SAFETY_REVIEW.md.
+
 Secret JNI outputs acquire newly allocated array elements before copying any
 entropy or recovery text. Acquisition failure leaves the unpublished array
 empty. A directly pinned array is released once; a VM copy is committed,

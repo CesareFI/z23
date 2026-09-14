@@ -990,6 +990,21 @@ if(NOT ANDROID)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
         target_compile_options(receive_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         add_test(NAME wallet_receive_oracle COMMAND receive_oracle_tests)
+        add_executable(mnemonic_seed_oracle_tests tests/test_mnemonic_seed_oracle.c)
+        target_link_libraries(mnemonic_seed_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
+        target_compile_options(mnemonic_seed_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_mnemonic_seed_oracle COMMAND mnemonic_seed_oracle_tests)
+        set_tests_properties(wallet_mnemonic_seed_oracle PROPERTIES TIMEOUT 15)
+        if(ZCL_FUZZ)
+            add_executable(fuzz_mnemonic_seed tests/test_mnemonic_seed_oracle.c)
+            target_compile_definitions(fuzz_mnemonic_seed PRIVATE ZCL_SEED_FUZZ=1)
+            target_link_libraries(fuzz_mnemonic_seed PRIVATE zcl_wallet_core OpenSSL::Crypto)
+            target_compile_options(fuzz_mnemonic_seed PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+                -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+            target_link_options(fuzz_mnemonic_seed PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
         add_executable(change_state_oracle_tests tests/test_change_state_oracle.c)
         target_link_libraries(change_state_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
         target_compile_options(change_state_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
@@ -1295,7 +1310,8 @@ if(NOT ANDROID)
         target_compile_options(secret_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
         target_link_options(secret_failure_tests PRIVATE
             -Wl,--wrap=mbedtls_sha512_starts -Wl,--wrap=mbedtls_sha512_update
-            -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha256 -Wl,--wrap=mbedtls_ripemd160
+            -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha512
+            -Wl,--wrap=mbedtls_sha256 -Wl,--wrap=mbedtls_ripemd160
             -Wl,--wrap=mbedtls_platform_zeroize)
         add_test(NAME wallet_secret_failures COMMAND secret_failure_tests)
         add_executable(random_tests tests/test_random.c)

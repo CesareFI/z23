@@ -17,6 +17,7 @@ typedef struct {
 } mnemonic_fixture;
 static const mnemonic_fixture fixtures[] = {
 #include "bip39_vectors.inc"
+#include "seed_boundary_vectors.inc"
 };
 
 static unsigned hex_digit(uint8_t value)
@@ -40,7 +41,7 @@ static int read_hex(const uint8_t *text, size_t length, uint8_t *out, size_t cap
 static int known_vectors(void)
 {
     static const uint8_t passphrase[] = "TREZOR";
-    CHECK(sizeof(fixtures) / sizeof(fixtures[0]) == 24);
+    CHECK(sizeof(fixtures) / sizeof(fixtures[0]) == 27);
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); ++i) {
         const mnemonic_fixture *fixture = &fixtures[i];
         uint8_t entropy[32] = {0}, restored[32] = {0}, text[215] = {0};
@@ -153,6 +154,6 @@ int main(void)
 {
     if (known_vectors() || all_entropy_sizes() || capacity_failures() || invalid_inputs())
         return 1;
-    puts("mnemonic: 24 published vectors and 4 test sections passed");
+    puts("mnemonic: 24 published and 3 HMAC-boundary vectors; 4 test sections passed");
     return 0;
 }
