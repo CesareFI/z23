@@ -2162,3 +2162,42 @@ the exact live review inputs. Current branch/height, authorization and signing
 remain separate gates. A fresh origin fetch advances main to 16fc6c6a1 without
 Android-wallet changes; this work remains on the existing agent branch and no
 push or merge occurs.
+
+2026-09-14: the internal live-review wallet comparison now matches an exact
+reviewed P2PKH input to the committed recovered wallet's v1 receive0 or a
+previously consumed change key. It checks network and exact record identity,
+refuses pending/unused/wrong-key claims, and clears its owned entropy/path/
+record/comparison work on every entered exit. Platform GCM and per-use hardware
+policy remain prerequisites; this internal check adds no JNI, key export,
+signing or reusable authorization token. Its supplied-time check cannot stand
+in for a future signer's completion-time lifetime and chain-context checks.
+
+Both networks/all five entropy widths, maximum eight inputs, destroyed borrowed
+sources, altered wallet/entropy, corrupted/truncated state, bounds/P2SH and
+lifetime cases pass. Dirty-provider faults prove error propagation, private
+source copying despite mutation, and live entropy/blinding cleanup. All15
+mutants fail intended assertions. The independent lifetime/file-preservation
+fuzzer completes21,928 executions in121 seconds without a finding; its110-case
+regression is registered. Clang/GCC analysis and all74 ASan/UBSan/LSan groups
+pass in55.23 seconds; complexity caps stay10/15 (479/1001 functions). Optimized
+host frame evidence is1608 bytes. The initial exclusive fixture-writer error
+was corrected by unlinking only the owned synthetic journal before recreation,
+without weakening that writer's guard. Initial/final evidence remains intact.
+
+Android/JVM/lint, APK alignment/fixture isolation and architecture gates pass.
+The debug/unsigned-release/test APK hashes are byte-identical to the preceding
+consumed-change milestone because the added operation is unused by JNI.
+Actual release-archive standalone tests pass on x86-64 API30/35/36; no app
+wallet, Keystore or preferences are touched. Executable SHA256 is
+`3c410fb79d1f4b1ee7ebb9f27d37c24c5e8b9e09d0dde3293332a3b352971375`.
+ARM64 is compiled only; both standalone ELFs satisfy16KiB alignment, RELRO/NOW
+and non-executable stack checks. Exact source/archive/artifact/device evidence
+is in `.cache/android-wallet/review-ownership-20260914/`; review and scope are
+in `C_SAFETY_REVIEW.md` and `TRANSACTIONS.md`.
+
+Fetched origin/main remains `16fc6c6a13135950e450c5b3156a125ba8682728`, with no
+upstream Android app changes; the existing working branch is preserved without
+merging or pushing. Next: current branch/height and platform-authenticated
+context bound to the exact live review, then synthetic signing/cancellation.
+The owner-parked TLS investigation remains excluded and unqualified; software
+emulators do not supply positive hardware-custody acceptance.

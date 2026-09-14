@@ -105,7 +105,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/sync.c src/sync_watch.c src/sync_owners.c
     src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c src/transaction_sighash.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
-    src/transaction_review_prepare.c src/transaction_review_sighash.c
+    src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
     src/transaction_draft.c src/transaction_draft_check.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
@@ -982,6 +982,43 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_change_ownership COMMAND change_ownership_tests)
         set_tests_properties(wallet_change_ownership PROPERTIES TIMEOUT 60)
+        add_library(review_wallet_test_fixture STATIC tests/review_wallet_fixture.c
+            tests/assessment_fixture.c tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_include_directories(review_wallet_test_fixture PUBLIC src)
+        target_link_libraries(review_wallet_test_fixture PUBLIC zcl_wallet_core)
+        target_compile_options(review_wallet_test_fixture PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+        add_executable(review_wallet_tests tests/test_review_wallet.c)
+        target_link_libraries(review_wallet_tests PRIVATE review_wallet_test_fixture)
+        target_compile_options(review_wallet_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_wallet COMMAND review_wallet_tests)
+        set_tests_properties(wallet_review_wallet PROPERTIES TIMEOUT 60)
+        add_executable(review_wallet_failure_tests tests/test_review_wallet_failures.c src/transaction_review_wallet.c)
+        target_link_libraries(review_wallet_failure_tests PRIVATE review_wallet_test_fixture)
+        target_compile_definitions(review_wallet_failure_tests PRIVATE
+            zcl_change_custody_prepare=zcl_review_wallet_test_prepare zcl_address_encode=zcl_review_wallet_test_encode
+            zcl_storage_read=zcl_review_wallet_test_read zcl_random_bytes=zcl_review_wallet_test_random
+            zcl_wallet_recovered_address=zcl_review_wallet_test_receive
+            zcl_wallet_change_reserved_address=zcl_review_wallet_test_change zcl_secure_zero=zcl_review_wallet_test_zero)
+        target_compile_options(review_wallet_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_wallet_failures COMMAND review_wallet_failure_tests)
+        set_tests_properties(wallet_review_wallet_failures PROPERTIES TIMEOUT 30)
+        add_executable(review_wallet_fuzz_tests tests/fuzz_review_wallet.c)
+        target_link_libraries(review_wallet_fuzz_tests PRIVATE review_wallet_test_fixture)
+        target_compile_definitions(review_wallet_fuzz_tests PRIVATE ZCL_REVIEW_WALLET_REGRESSION=1)
+        target_compile_options(review_wallet_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_wallet_fuzz_regression COMMAND review_wallet_fuzz_tests)
+        set_tests_properties(wallet_review_wallet_fuzz_regression PROPERTIES TIMEOUT 30)
+        if(ZCL_FUZZ)
+            add_executable(fuzz_review_wallet tests/fuzz_review_wallet.c)
+            target_link_libraries(fuzz_review_wallet PRIVATE review_wallet_test_fixture)
+            target_compile_options(fuzz_review_wallet PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wframe-larger-than=4096)
+            target_link_options(fuzz_review_wallet PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
         add_executable(change_ownership_failure_tests tests/test_change_ownership_failures.c
             src/change_ownership.c src/change_custody.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)

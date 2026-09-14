@@ -618,6 +618,78 @@ independent comparisons; `ZCL_FUZZ=ON` provides the extended `fuzz_review` with
 max_len 640, timeout 5, RSS 512MiB and a bounded duration. Android builds use
 neither libsodium nor an oracle executable.
 
+## Input key ownership within a live review — 2026-09-14
+
+The internal `zcl_review_input_wallet_check` compares one exact reviewed P2PKH
+input with a recovered wallet key location. The supported v1 locations are the
+existing receive key at external index0 and previously consumed change indexes
+0..65534. It requires the exact committed wallet record and matching network.
+Receive0 works without a change journal but refuses a pending wallet. Change
+uses the authenticated head/position and recovered derivation qualified in
+[CHANGE_STORAGE.md](CHANGE_STORAGE.md); it never reserves another index.
+
+The caller must first authenticate the exact wallet record/header/entropy using
+GCM and the platform's per-use hardware policy. C cannot establish that platform
+prerequisite. The claim carries bounded spans and a candidate key location; it
+is not an ownership assertion. The wrapper copies its scalars, path, record and
+entropy before storage/provider work, encodes only the selected owned assessment
+row, and compares the derived address. Every entered private-work path clears
+the whole work, including its entropy copy. The caller retains responsibility
+for its own entropy. No key, pointer, digest, reusable approval token or JNI
+entry is returned or added.
+
+Calls require the same exclusive adapter lock and stable, nonoverlapping spans
+as other review operations. Stale ID, inclusive expiry and clock rollback use
+the shared lifetime transition. A live failed check advances the observed clock
+without extending the fixed deadline. Success describes this input at the
+supplied time, not completion-time freshness, user consent, other inputs,
+funding/unspentness or current branch/height. Storage can block; use a worker.
+A future signer must recheck the exact review and authenticated context within
+its own operation and cannot cache this result as authority. The existing store
+opener can establish its private directory/lock and syncs the parent; no wallet
+or journal bytes are changed by this comparison.
+
+Real-provider tests cover both networks and all five entropy widths; correct,
+unused and wrong consumed keys; the maximum eight reviewed inputs after their
+original borrowed sources are destroyed; receive-only and pending wallets;
+altered ciphertext/entropy, every corrupted head byte, truncated state, NULL
+and size/index bounds, P2SH refusal and review lifetime transitions. Separate
+dirty-provider tests cover preparation, encoding, bogus lengths, storage,
+pending selection, RNG and derivation failures. They mutate every caller span
+and the claim metadata after copying, inspect private entropy and blinding
+clearing while those objects remain live, and verify the owner stays unchanged
+at the same clock. Fifteen deliberately broken variants fail their intended
+assertions, including ignored errors, stale-source reuse and omitted wipes.
+
+All 74 native ASan/UBSan/LSan groups pass in 55.23 seconds. Clang/GCC production
+and new fixture analysis pass, with unchanged complexity caps10/15 (479/1001
+functions). The measured optimized host frame is1608 bytes; that is per-frame
+evidence rather than a whole call-chain stack measurement. The new bounded
+fuzzer completes21,928 executions in121 seconds without a finding. It models
+the review clock independently, mutates bounded wallet/secret/journal claims,
+and checks complete wallet/journal byte and size preservation. Every case owns
+and removes its own synthetic directory; fuzzed bytes never choose a path.
+The registered fuzz regression exercises110 profile/lifetime cases.
+
+NDK ARM64/x86-64, JVM, Android lint, APK alignment/fixture isolation and
+architecture gates pass. This internal operation is unused by JNI, so the
+rebuilt debug/unsigned-release/test APK bytes remain identical to the consumed
+change milestone. Existing installed APK evidence is not relabeled as a fresh
+device run. Standalone C qualification links the actual new release archives
+and passes on x86-64 API30/35/36. Its executable SHA256 is
+`3c410fb79d1f4b1ee7ebb9f27d37c24c5e8b9e09d0dde3293332a3b352971375`.
+ARM64 is compiled only, with executable SHA256
+`ce8660d59eedcce175a95c1f742e469278ba5e66c0f4846326f0cd54bc65a703`.
+Both ELFs have16KiB load alignment, RELRO, immediate binding and non-executable
+stacks. Exact device results and source/artifact hashes are retained in
+`.cache/android-wallet/review-ownership-20260914/`. The test uses published
+entropy and inert ciphertext in shell-owned isolated directories and provides
+no GCM/hardware-custody qualification.
+
+Focused checks: `ctest --test-dir native/build/safety-active -R
+'^wallet_review_wallet' --output-on-failure`. With `ZCL_FUZZ=ON`, run
+`fuzz_review_wallet` with max_len252, timeout5, RSS512MiB and a bounded duration.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
@@ -625,8 +697,9 @@ neither libsodium nor an oracle executable.
    or history assertion cannot provide spending authority. The consumed-change
    address operation in [CHANGE_STORAGE.md](CHANGE_STORAGE.md) now verifies
    recovered wallet identity and the observed journal head without reserving
-   again; matching these addresses and the receive key to exact reviewed inputs
-   remains the next composition step.
+   again. The internal live-review comparison above now matches these keys to
+   exact reviewed inputs. Platform-authenticated composition with current-chain
+   context and consent remains open; no checked result is an approval token.
 2. Bind current branch/height and authenticated authorization to the exact
    live review. The internal P2PKH digest now obtains scriptCode, input amount
    and transaction bytes only from that review; it grants no signing authority.
