@@ -1,12 +1,17 @@
 // Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 package org.zclassic.wallet
 
+import android.text.Editable
+import android.text.TextWatcher
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,6 +19,93 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SecretViewsInstrumentedTest {
+    private class RenderFailure(private vararg val problems: Throwable) : TextWatcher {
+        private var calls = 0
+        override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+            if (calls < problems.size) throw problems[calls++]
+        }
+        override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+        override fun afterTextChanged(text: Editable?) = Unit
+    }
+
+    @Test fun appendRenderingFailureClearsInputAndPreservesTheOriginalFailure() = verifyRenderFailure(false)
+
+    @Test fun deleteRenderingFailureClearsInputAndPreservesTheOriginalFailure() = verifyRenderFailure(true)
+
+    private fun verifyRenderFailure(deleting: Boolean) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = RecoveryInputView(instrumentation.targetContext)
+            val preview = view.getChildAt(0) as TextView
+            val problem = OutOfMemoryError("Synthetic public rendering failure")
+            val listener = RenderFailure(problem)
+            try {
+                for (letter in "abc") view.append(letter)
+                preview.addTextChangedListener(listener)
+                assertSame(problem, assertThrows(OutOfMemoryError::class.java) {
+                    if (deleting) {
+                        val controls = view.getChildAt(view.childCount - 1) as LinearLayout
+                        assertTrue(controls.getChildAt(1).performClick())
+                    } else view.append('d')
+                })
+                preview.removeTextChangedListener(listener)
+                val input = view.takeInput()
+                try { assertEquals(0, input.size) } finally { input.fill('\u0000') }
+                assertEquals(0, preview.text.length)
+            } finally {
+                preview.removeTextChangedListener(listener)
+                view.clearSecret()
+            }
+        }
+    }
+
+    @Test fun failedPreviewCleanupStillClearsKeyboardAndPreservesBothFailures() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = RecoveryInputView(instrumentation.targetContext)
+            val preview = view.getChildAt(0) as TextView
+            val problem = IllegalStateException("Synthetic public rendering failure")
+            val cleanup = IllegalArgumentException("Synthetic public clearing failure")
+            val listener = RenderFailure(problem, cleanup)
+            try {
+                for (letter in "abc") view.append(letter)
+                preview.addTextChangedListener(listener)
+                assertSame(problem, assertThrows(IllegalStateException::class.java) { view.append('d') })
+                assertEquals(listOf(cleanup), problem.suppressed.toList())
+                preview.removeTextChangedListener(listener)
+                val input = view.takeInput()
+                try { assertEquals(0, input.size) } finally { input.fill('\u0000') }
+            } finally {
+                preview.removeTextChangedListener(listener)
+                view.clearSecret()
+            }
+        }
+    }
+
+    @Test fun failedInputTransferClearsItsSourceAndLeavesTheKeyboardUsable() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = RecoveryInputView(instrumentation.targetContext)
+            val preview = view.getChildAt(0) as TextView
+            val problem = IllegalStateException("Synthetic public preview-clear failure")
+            val listener = RenderFailure(problem)
+            try {
+                for (letter in "abc") view.append(letter)
+                preview.addTextChangedListener(listener)
+                assertSame(problem, assertThrows(IllegalStateException::class.java) { view.takeInput().fill('\u0000') })
+                preview.removeTextChangedListener(listener)
+                val empty = view.takeInput()
+                try { assertEquals(0, empty.size) } finally { empty.fill('\u0000') }
+                view.append('z')
+                val retry = view.takeInput()
+                try { assertEquals(listOf('z'), retry.toList()) } finally { retry.fill('\u0000') }
+            } finally {
+                preview.removeTextChangedListener(listener)
+                view.clearSecret()
+            }
+        }
+    }
+
     @Test fun closingDeliveryClearsWordsBeforeTheMainQueueDrains() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val delivered = AtomicBoolean(false)

@@ -1795,3 +1795,21 @@ There is no C or custody-policy change. Evidence is under
 `.cache/android-wallet/worker-submission-20260914`. Continue secret-view input
 transfer failure cleanup; physical custody and real-source networking remain
 separate unfinished acceptance gates.
+
+2026-09-14 secret-view failure cleanup continuation: public text-listener faults
+reproduce three failures on the existing Android 16 APK in 9.130 seconds. Failed
+append retains four input characters, failed delete retains two, and a rendering
+failure does not attempt preview cleanup. Recovery input now clears its entire
+owned buffer after either rendering failure and preserves any secondary cleanup
+exception with the original. Input transfer clears the preview before allocating
+the outgoing copy, with source clearing in finally even if allocation fails.
+No secret String, IME, clipboard or new retained owner is introduced.
+
+The same seven-test APK passes after the fix on API36 in 9.010 seconds and API35
+in 18.072 seconds, including original secret-view/queue coverage, retry after
+failed transfer and the three regressions. The full JVM suites, debug/release
+builds and strict lint pass; fixture isolation and both ABI page alignment pass.
+Exact debug/test APKs and the new unsigned release are retained under
+`.cache/android-wallet/secret-view-20260914`, with hashes rechecked. This slice
+has no C or custody-policy change. Continue testing stale framework hierarchy
+restoration of recovery views; physical custody and networking remain separate.

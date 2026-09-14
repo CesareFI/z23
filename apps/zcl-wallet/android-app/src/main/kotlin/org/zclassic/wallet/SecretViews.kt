@@ -100,16 +100,35 @@ internal class RecoveryInputView(context: Context) : LinearLayout(context) {
         if (character !in 'a'..'z' && character != ' ') return
         if (length == characters.size) return
         characters[length++] = character
-        preview.setText(characters, 0, length)
+        updatePreview()
     }
 
     private fun deleteLast() {
         if (length == 0) return
         characters[--length] = '\u0000'
-        preview.setText(characters, 0, length)
+        updatePreview()
     }
 
-    fun takeInput(): CharArray = characters.copyOf(length).also { clearSecret() }
+    private fun updatePreview() {
+        try { preview.setText(characters, 0, length) }
+        catch (problem: Throwable) {
+            try { clearSecret() }
+            catch (cleanup: Throwable) { if (cleanup !== problem) problem.addSuppressed(cleanup) }
+            throw problem
+        }
+    }
+
+    fun takeInput(): CharArray {
+        val count = length
+        length = 0
+        try {
+            // Clear rendering before allocating a transferred copy. A failed
+            // clear cannot strand that copy, and allocation failure still wipes
+            // the original buffer through finally.
+            preview.text = ""
+            return characters.copyOf(count)
+        } finally { characters.fill('\u0000') }
+    }
 
     fun clearSecret() {
         length = 0

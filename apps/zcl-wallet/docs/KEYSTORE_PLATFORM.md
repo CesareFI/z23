@@ -101,6 +101,22 @@ and rejects obscured touches. Android rendering/GC copies cannot all be erased;
 these measures do not defend against a compromised OS or authorized hostile
 accessibility service. The application has no recovery export/logging path.
 
+Recovery input rendering failures now clear the complete owned buffer and reset
+its length after either append or delete. Cleanup is attempted even for a fatal
+rendering error; a second clearing failure is preserved alongside the original
+exception after the buffer's finally block runs. Submission clears the preview
+before allocating its outgoing char array and clears the original in finally.
+Thus a preview-clear failure cannot strand a newly allocated outgoing copy,
+and a copy-allocation failure still clears the source. No phrase String, input
+connection, clipboard route or additional retained secret is introduced.
+
+Real Android fixtures inject throwing text listeners on public markers. The
+prior implementation retained four characters after failed append and two
+after failed delete, and did not attempt the cleanup callback. The same test
+APK checks refusal, original/cleanup exception preservation, empty subsequent
+input and a successful fresh input transfer after the fix. This observes owned
+array handling, not complete erasure of Android rendering/runtime copies.
+
 On 2026-09-12 the API-35 development emulator reported key size 256,
 security level 0 (software), hardware-enforced authentication false, per-use
 duration 0 and authentication methods 3. The C policy rejects those actual
