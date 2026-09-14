@@ -367,3 +367,28 @@ Evidence is under `.cache/android-wallet/api30-20260914` and the camera evidence
 directory's `compact-*` files. First boot took 417 seconds; a startup System UI
 ANR was cleared with the normal Wait action before wallet acceptance. The
 Android 16/API36 profile is still being qualified separately.
+
+The compact-window continuation also reproduced hidden capture cancellation
+and an unreachable review address: two of the three final layout fixtures
+failed on the chooser-only fix. All scanner states now use the same scrollable
+body. Capture has a 160 dp base preview height that expands when space permits;
+Cancel remains reachable by scrolling in a short window. Review scrolls its
+complete public request and actions together. Preview packets, camera ownership,
+decode deadlines, overlay filtering and saved-state refusal are unchanged.
+
+The same three-test APK passes in 27.813 seconds on API30. Actual Camera2 review,
+Activity recreation and a second explicit scan pass in 70.541 seconds, including
+cleared preview pixels and terminated camera workers. The final minified APK
+passes the real API30 denial/retry/grant/review journey in 25.220 seconds.
+API35 passes all three compact layouts, network recreation/background state
+and three real frame/background/resume cycles together in 177.764 seconds.
+Strict lint, both ABI builds, JVM tests, fixture isolation, native alignment and
+architecture pass. All twenty unsigned release entries remain identical after
+local development signing, and the bound input hashes recheck. Evidence is in
+the camera directory's `compact-all-*` files and the API30 evidence directory.
+
+The API36 four-core retry completes boot in 513 seconds. Its first minified
+fixture fails before selecting a network because a Quickstep ANR covers the
+scanner; the view-tree metadata and subsequent UI dump identify the OS dialog.
+Normal Wait actions then expose a second System UI ANR. These startup failures
+are retained separately; they do not constitute API36 wallet acceptance.

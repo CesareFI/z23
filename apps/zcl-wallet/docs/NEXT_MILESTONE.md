@@ -43,8 +43,9 @@ cleanup; removing the guard fails this fixture. The oldest supported API30 also
 passes the minified permission/camera journey, public native/JNI fixtures,
 Keystore refusal and pending-open cancellation. A chooser regression applies
 real system-bar insets to a compact viewport; scrolling preserves reachable
-network/start/close controls. Complete API36 runtime qualification and the
-remaining compact scanner states. Qualify physical camera
+network/start/close controls, capture cancellation and public review fields.
+Actual camera/recreation and background cleanup tests also pass with that
+shared layout. Complete API36 runtime qualification. Qualify physical camera
 interoperability, cancellation under different driver behavior, and preview
 orientation and process recreation on different devices. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full

@@ -1673,3 +1673,32 @@ pressure before any wallet APK was installed, then its emulator process faulted
 during requested shutdown. Logs and the profile are preserved; a four-core
 restart is in progress without changing watchdog or security policy. Physical
 optics and hardware-authenticated custody remain separate unfinished gates.
+
+2026-09-14 compact capture/review continuation: extending the same insets-aware
+fixture proves two more failures in 25.918 seconds: capture Cancel is hidden,
+and the public review address is unreachable. The chooser fixture stays green.
+All three states now reuse one scrollable body. Capture retains a 160 dp base
+preview, expanding in tall windows, while review scrolls its request and actions
+together. The camera/decoder ownership, C packets, deadlines, overlay refusal,
+network choice and saved-state policy do not change.
+
+The exact same three-test APK passes in 27.813 seconds on API30. Real Camera2
+review, Activity recreation and explicit rescan pass in 70.541 seconds with
+preview/worker cleanup. The final minified API30 permission and public-camera
+journey passes in 25.220 seconds. The existing API35 profile passes the three
+compact layouts, network recreation/background state and three actual camera
+frame/background/resume cycles together in 177.764 seconds. Both ABI builds,
+JVM tests, strict lint, fixture isolation, native alignment and architecture
+pass. Twenty unsigned release entries compare identically after local signing;
+final APK, both fixture APKs and PNG hashes recheck. There is no C change.
+Evidence is under the camera directory's `compact-all-*` files and
+`.cache/android-wallet/api30-20260914`.
+
+API36's preserved profile completes the four-core boot in 513 seconds. Its
+first minified test fails in 71.296 seconds at the initial network selector
+because Quickstep's ANR is the foreground Android window. A normal Wait action
+then reveals a stacked System UI ANR; that startup condition is being cleared
+before rerunning the final APK. No watchdog, permission assertion or overlay
+filter was relaxed. Continue with final API36 minified and native/JNI runtime
+acceptance, then the remaining security and usability work. Physical optics,
+hardware-authenticated custody and real-source networking remain unqualified.

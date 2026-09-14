@@ -56,13 +56,17 @@ internal class ScanScreens(private val activity: Activity) {
         parent.addView(this)
     }
 
-    private fun begin(message: Int, scrollable: Boolean = false): LinearLayout {
+    private fun begin(message: Int): LinearLayout {
         clear()
-        val body = if (scrollable) LinearLayout(activity).apply {
+        val body = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             isSaveEnabled = false
-        } else root
-        if (scrollable) root.addView(ScrollView(activity).apply { isSaveEnabled = false; addView(body) },
+        }
+        root.addView(ScrollView(activity).apply {
+            isSaveEnabled = false
+            isFillViewport = true
+            addView(body)
+        },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT))
         text(body, activity.getString(R.string.scan_request), R.id.screen_title, 26f)
         text(body, activity.getString(message), R.id.status_message)
@@ -74,7 +78,7 @@ internal class ScanScreens(private val activity: Activity) {
 
     fun choose(network: Network, message: Int, selected: (Network) -> Unit,
                start: (Network) -> Unit, close: () -> Unit) {
-        val body = begin(message, scrollable = true)
+        val body = begin(message)
         val group = RadioGroup(activity)
         for (chain in listOf(Network.TESTNET, Network.MAINNET)) group.addView(RadioButton(activity).apply {
             id = if (chain == Network.MAINNET) R.id.network_mainnet else R.id.network_testnet
@@ -97,12 +101,15 @@ internal class ScanScreens(private val activity: Activity) {
     }
 
     fun scanning(network: Network, cancel: () -> Unit) {
-        begin(R.string.scan_position)
-        text(root, networkLabel(network))
+        val body = begin(R.string.scan_position)
+        text(body, networkLabel(network))
         val view = CameraPreviewView(activity)
         preview = view
-        root.addView(view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        button(root, R.string.scan_cancel, R.id.scan_cancel, cancel)
+        // Fill a tall window, but retain a usable preview and scroll to Cancel
+        // when the header and system bars leave little vertical room.
+        val previewHeight = (160 * activity.resources.displayMetrics.density).toInt()
+        body.addView(view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, previewHeight, 1f))
+        button(body, R.string.scan_cancel, R.id.scan_cancel, cancel)
     }
 
     fun frame(packet: ByteArray, orientation: Int, front: Boolean) {
@@ -110,17 +117,14 @@ internal class ScanScreens(private val activity: Activity) {
     }
 
     fun review(request: PaymentRequest, again: () -> Unit, close: () -> Unit) {
-        begin(R.string.scan_review_notice)
-        val body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; isSaveEnabled = false }
-        root.addView(ScrollView(activity).apply { isSaveEnabled = false; addView(body) },
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        val body = begin(R.string.scan_review_notice)
         text(body, networkLabel(request.address.network))
         text(body, request.address.encoded, R.id.scan_address, 21f)
         text(body, request.amount?.let { activity.getString(R.string.scan_amount, it.format()) }
             ?: activity.getString(R.string.scan_no_amount), R.id.scan_amount)
         request.label?.let { text(body, activity.getString(R.string.scan_label, it), R.id.scan_label) }
         request.message?.let { text(body, activity.getString(R.string.scan_message, it), R.id.scan_message) }
-        button(root, R.string.scan_again, R.id.scan_start, again)
-        button(root, R.string.scan_close, R.id.scan_close, close)
+        button(body, R.string.scan_again, R.id.scan_start, again)
+        button(body, R.string.scan_close, R.id.scan_close, close)
     }
 }
