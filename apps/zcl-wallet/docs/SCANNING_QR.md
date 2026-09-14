@@ -326,3 +326,44 @@ observes cancellation while delivery is pending; it does not simulate a driver
 that never replies or establish physical-device latency. Final lint, fixture
 isolation, APK alignment and architecture checks pass; exact APKs, the mutation
 and logs are retained under the camera evidence directory's `open-cancel-*`.
+
+## Oldest supported API and compact chooser
+
+A fresh AOSP Android 11/API30 x86_64 profile passes the minified permission,
+Camera2 and exact public-review journey in 29.961 seconds. Eleven debug device
+tests covering keys, authenticated record round trips, deadlines, QR rendering,
+JNI decoding and isolated Binder identity pass in 8.185 seconds. Unauthenticated
+Keystore policy refusal and pending-open cancellation pass together in 2.110
+seconds. These tests use public vectors and invocation-owned storage/aliases;
+they do not establish hardware-authenticated custody.
+
+The new `ScanLayoutInstrumentedTest` measures the real chooser at 320x240 dp
+with the Activity's actual system-bar insets. On API30 that is 840x630 pixels
+with padding 42,105,42,168; the original network selector is unreachable.
+The chooser now scrolls its title, explanation, network and actions together.
+The same test APK then reaches each whole control, selects mainnet, starts with
+that network and closes, passing in 9.597 seconds. This is constrained layout
+evidence, not a complete physical multiwindow-device qualification. Capture,
+request parsing, overlay filtering and saved-state policy are unchanged.
+
+The fixture first needed two corrections: Android mutates the rectangle passed
+to `requestRectangleOnScreen`, and a RadioButton's click return value does not
+report its checked-state listener. It now preserves the expected rectangle,
+checks selection itself and asserts containment in the actual padded viewport.
+The run without applied insets passed; the final insets-aware fixture fails on
+the original app and passes on the fix. Both earlier harness failures remain
+in the evidence.
+
+The fixed chooser and network/recreation fixture pass together on API35 in
+58.670 seconds. Its normal minified APK also passes the full API30 permission
+and camera journey in 25.362 seconds. Local development signing preserves all
+twenty entries of the normal unsigned release, and all bound input hashes
+recheck. API30 lacks the newer per-permission flag-reset command; its fresh
+disposable profile's runtime permissions were reset through the supported
+package-manager command. The fixture still refuses any wallet directory.
+No app data, key, directory or test assertion was removed to reset permissions.
+
+Evidence is under `.cache/android-wallet/api30-20260914` and the camera evidence
+directory's `compact-*` files. First boot took 417 seconds; a startup System UI
+ANR was cleared with the normal Wait action before wallet acceptance. The
+Android 16/API36 profile is still being qualified separately.

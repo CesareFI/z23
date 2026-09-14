@@ -20,8 +20,8 @@ on the oldest supported API and a current supported API. Validate both device
 credential and strong-biometric paths where present. Provider metadata and
 host tests alone do not establish these outcomes.
 
-The software-only API-35 emulator can exercise refusal and non-custodial JNI/UI
-behavior. Its inability to pass the custody policy is an expected refusal, not
+API30 and API35 emulator fixtures exercise refusal and non-custodial JNI/UI
+behavior. Inability to pass the custody policy is an expected refusal, not
 permission for a software key or timed-authentication fallback.
 
 ## Complete phase 1
@@ -39,7 +39,12 @@ through normal task restoration and requires a new explicit capture, which
 decodes the same public request in the replacement process. A real Camera2
 callback held on its worker also proves cancellation retains one bounded owner
 until callback delivery, rejects a competitor and permits a fresh frame after
-cleanup; removing the guard fails this fixture. Qualify physical camera
+cleanup; removing the guard fails this fixture. The oldest supported API30 also
+passes the minified permission/camera journey, public native/JNI fixtures,
+Keystore refusal and pending-open cancellation. A chooser regression applies
+real system-bar insets to a compact viewport; scrolling preserves reachable
+network/start/close controls. Complete API36 runtime qualification and the
+remaining compact scanner states. Qualify physical camera
 interoperability, cancellation under different driver behavior, and preview
 orientation and process recreation on different devices. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full

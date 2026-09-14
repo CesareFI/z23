@@ -1634,3 +1634,42 @@ Continue with the oldest supported API30 runtime on a newly created, isolated
 Android 11 emulator profile. Its official system image and image-backed camera
 are prepared; boot and runtime acceptance are not yet complete. Hardware
 custody, physical optics and nonresponding-driver behavior remain unqualified.
+
+2026-09-14 oldest-API and compact chooser continuation: a fresh AOSP API30
+x86_64 image passes the normal minified permission-denial/retry/grant/Camera2
+journey in 29.961 seconds, all eleven selected public native/JNI tests in 8.185
+seconds, and unauthenticated Keystore refusal plus camera-open cancellation in
+2.110 seconds. The native tests include both authenticated GCM record/store
+paths, deadline boundaries, QR rendering and isolated Binder identity. They
+create only invocation-owned fixture records and aliases, not a wallet session.
+
+A 320x240 dp chooser with actual system-bar insets exposed an unreachable
+network selector. Its title, explanation, network and actions now share a
+scrollable body with saved view state disabled. The final exact same layout
+test APK fails before this change and passes after it in 9.597 seconds, checking
+whole-control reachability and the selected network delivered to Start. Initial
+fixture failures came from Android mutating a supplied rectangle and a radio
+button's click-return semantics; both are corrected without changing app code
+for those false failures. The no-insets run passed, so the final fixture applies
+the actual insets and checks the padded viewport explicitly.
+
+The compact chooser and Activity network/recreation tests also pass together
+on the existing API35 emulator in 58.670 seconds. The final minified APK passes
+the full API30 public camera journey in 25.362 seconds. Its twenty unsigned
+release entries remain identical after local development signing; final APK,
+fixture and PNG hashes recheck. The newer per-permission flag reset is absent
+on API30, so only this newly created disposable profile used the supported
+runtime-permission reset. The no-wallet-directory guard remains enforced; no
+app data, key, directory or assertion was removed for the reset. First boot
+took 417 seconds and its System UI ANR required a normal Wait action before
+acceptance. Evidence is in `.cache/android-wallet/api30-20260914` and the camera
+evidence directory's `compact-*` files.
+
+Both ABI builds, JVM tests, strict debug/release lint, final fixture isolation,
+APK alignment and architecture pass. No production C changes in this slice.
+Continue API36 runtime qualification and compact capture/review reachability.
+The first one-core API36 boot hit a system-server watchdog under 99% guest CPU
+pressure before any wallet APK was installed, then its emulator process faulted
+during requested shutdown. Logs and the profile are preserved; a four-core
+restart is in progress without changing watchdog or security policy. Physical
+optics and hardware-authenticated custody remain separate unfinished gates.

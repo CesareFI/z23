@@ -56,10 +56,17 @@ internal class ScanScreens(private val activity: Activity) {
         parent.addView(this)
     }
 
-    private fun begin(message: Int) {
+    private fun begin(message: Int, scrollable: Boolean = false): LinearLayout {
         clear()
-        text(root, activity.getString(R.string.scan_request), R.id.screen_title, 26f)
-        text(root, activity.getString(message), R.id.status_message)
+        val body = if (scrollable) LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            isSaveEnabled = false
+        } else root
+        if (scrollable) root.addView(ScrollView(activity).apply { isSaveEnabled = false; addView(body) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT))
+        text(body, activity.getString(R.string.scan_request), R.id.screen_title, 26f)
+        text(body, activity.getString(message), R.id.status_message)
+        return body
     }
 
     private fun networkLabel(network: Network) = activity.getString(
@@ -67,7 +74,7 @@ internal class ScanScreens(private val activity: Activity) {
 
     fun choose(network: Network, message: Int, selected: (Network) -> Unit,
                start: (Network) -> Unit, close: () -> Unit) {
-        begin(message)
+        val body = begin(message, scrollable = true)
         val group = RadioGroup(activity)
         for (chain in listOf(Network.TESTNET, Network.MAINNET)) group.addView(RadioButton(activity).apply {
             id = if (chain == Network.MAINNET) R.id.network_mainnet else R.id.network_testnet
@@ -82,11 +89,11 @@ internal class ScanScreens(private val activity: Activity) {
                 R.id.network_testnet -> selected(Network.TESTNET)
             }
         }
-        root.addView(group)
-        button(root, R.string.scan_start, R.id.scan_start) {
+        body.addView(group)
+        button(body, R.string.scan_start, R.id.scan_start) {
             start(if (group.checkedRadioButtonId == R.id.network_mainnet) Network.MAINNET else Network.TESTNET)
         }
-        button(root, R.string.scan_close, R.id.scan_close, close)
+        button(body, R.string.scan_close, R.id.scan_close, close)
     }
 
     fun scanning(network: Network, cancel: () -> Unit) {
