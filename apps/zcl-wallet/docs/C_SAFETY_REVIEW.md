@@ -1416,3 +1416,33 @@ fuzzer completes 74,095 cases in 121 seconds without a finding. Release-archive
 tests pass on x86-64 API 30/35/36; ARM64 is compiled only. See
 [TRANSACTIONS.md](TRANSACTIONS.md) and
 `.cache/android-wallet/review-signed-wire-20260914/` for exact evidence scope.
+
+## Qualified host emulator child reaping — 2026-09-14
+
+Scope: a Linux x86-64 host SDK launcher, two small C17 adapter units, native
+wait/loader tests and a differential site classifier fuzzer. These objects are
+excluded from Android builds and never link into the wallet or consensus code.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The classifier rejects NULL before access and rejects lengths >=4096 before reading. A readable caller span must be at least the fixed module suffix length before subtraction/comparison; embedded NUL refuses. The ELF adapter bounds its loader-owned string scan at4096. Tests exercise exact4095/4096, SIZE_MAX, short/NULL/nonterminated strings, suffix corruption and embedded NUL. The fuzzer checks17..4113 bytes before fixed controls/64-bit words and passes only its actual bounded body unless testing a length that must refuse before access. |
+| Integer overflow/underflow; signed/unsigned conversions | Caller address must be >=nonzero base before subtraction and must differ by the exact measured return offset. Tests include wraparound aliases and UINTPTR_MAX; the independent reference uses checked addition instead. Module subtraction follows the suffix floor. The libc pid_t/status/options types are preserved without narrowing; only a positive exact child may qualify. Function/data pointer representation is explicitly restricted to the measured Linux ELF ABI and checked for equal size before memcpy. |
+| Use-after-free; double-free; leaks; dangling pointers | Production allocates no heap, descriptor, worker or PID registry and retains no child or borrowed module pointer. The one libc function pointer initializes during loading and remains immutable for process lifetime. The measured SDK owns the exact child through kill/wait and will not revisit it; ordinary owners are never reaped opportunistically. Native fixture children set parent-death SIGKILL with a parent identity recheck; each owner collects its exact child, and concurrent workers are joined. Failed mutation paths clean a still-live owned child before asserting. |
+| NULL dereferences; uninitialized memory | Missing libc symbol fails with fixed text and exit125 before SDK execution; a defensive wait entry guard covers constructor ordering. Dl_info is fully initialized, lookup success and filename non-NULL gate inspection, and the loader pointer is copied only through a size-checked representation. The pure helper reports ENOSYS for a missing provider. Dirty/failed lookup and NULL-base/name tests preserve ordinary wait behavior. Fixture implementation definitions remove only inherited mock-name nonnull declarations; their runtime assertions and production declarations stay intact. |
+| Pointer arithmetic; format strings | Only validated module suffix arithmetic is performed; code addresses are compared as uintptr_t rather than dereferenced or reconstructed. The return address uses the current frame only. No input becomes a format string; diagnostics contain fixed public text. The private launch report uses exclusive mkdir and rejects loader separators. Full SDK library SHA256 qualification precedes compilation/launch; the trusted local SDK must remain stable through launch. No permanent SDK patch or global loader setting exists. |
+| Stack usage; allocation limits; resource exhaustion | Final optimized host frames with the launcher's stack protector measure24 bytes for site classification,24 for wait delegation,104 for the ELF wait entry and8 for initialization. Nested libc costs are separate. There is no recursion/VLA, production allocation or added thread. Exactly the qualified post-SIGKILL wait blocks on its owned PID and retries EINTR; other errors return immediately. Uninterruptible kernel cleanup has no wall-clock guarantee, so disposable runs retain an outer timeout. The bounded stand-in fixture also has parent-death handling and a30-second alarm. Fuzz input4113, per-case5 seconds and RSS512MiB bound its121-second campaign. |
+| Malformed metadata; races; explicit lifetimes | A different SDK library, caller offset, module suffix, nonpositive PID, status pointer or options value cannot enable the workaround. Unqualified calls delegate once with original arguments; ordinary EINTR is not swallowed. Incoming errno survives loader inspection and provider return/error semantics are preserved. The exact SDK timeout releases its bookkeeping lock before kill/wait and exclusively owns this child. Initialization precedes workers; concurrent child tests exercise four independent owners. This is qualified emulator test equipment, not an async-signal-safe or portable libc replacement. |
+| Secret leakage, custody and authority | No wallet, key, entropy, JNI, chain predicate, network protocol or persistent app data is accessed. Stand-in commands are inert; real-device checks use synthetic public fixtures. The adapter cannot collect old zombies owned by an unrelated live emulator. Those parents and their data are preserved; no process-wide kill or wildcard wait is introduced. Fuzzers and fault providers remain host-only. |
+
+All85 native ASan/UBSan/LSan groups pass in61.37 seconds, including both newly
+registered host groups. Android/JVM, debug/release lint and scanner fixture
+checks pass. Production and all new fixtures pass Clang/GCC analysis; separate
+complexity reports enforce unchanged10/15 caps over5/23 functions. All16
+mutants are detected (15 intended assertions, one NULL-access sanitizer).
+The independent classifier fuzzer completes71,385,647 cases in121 seconds
+without a finding; the registered CMake target also builds and replays its
+accepted seed. An initial unknown-target build used a stale generated Makefile;
+explicit CMake regeneration fixes it without changing source or build checks.
+Real SDK traces, exact identities, shutdown fixture findings and minified APK
+camera acceptance are recorded in [EMULATOR_REAPING.md](EMULATOR_REAPING.md)
+and `.cache/android-wallet/adb-reaping-20260914/`.

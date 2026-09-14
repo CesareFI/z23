@@ -790,6 +790,36 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_review_wire_failures COMMAND review_wire_failure_tests)
     set_tests_properties(wallet_review_wire_failures PROPERTIES TIMEOUT 30)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+        # Host SDK reaping equipment never links into the wallet or Android.
+        find_package(Threads REQUIRED)
+        add_executable(emulator_reap_tests ../tools/emulator_reap.c ../tools/test_emulator_reap.c)
+        target_link_libraries(emulator_reap_tests PRIVATE Threads::Threads)
+        add_executable(emulator_reap_adapter_tests ../tools/emulator_reap.c
+            ../tools/emulator_reap_preload.c ../tools/test_emulator_reap_preload.c)
+        target_compile_definitions(emulator_reap_adapter_tests PRIVATE
+            dlsym=zcl_fixture_dlsym dladdr=zcl_fixture_dladdr)
+        target_link_libraries(emulator_reap_adapter_tests PRIVATE ${CMAKE_DL_LIBS})
+        foreach(target emulator_reap_tests emulator_reap_adapter_tests)
+            target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror
+                -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+            if(ZCL_SANITIZE)
+                target_compile_options(${target} PRIVATE -fsanitize=address,undefined
+                    -fno-sanitize-recover=all -fno-omit-frame-pointer)
+                target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+            endif()
+        endforeach()
+        add_test(NAME wallet_emulator_reap COMMAND emulator_reap_tests)
+        add_test(NAME wallet_emulator_reap_adapter COMMAND emulator_reap_adapter_tests)
+        set_tests_properties(wallet_emulator_reap wallet_emulator_reap_adapter PROPERTIES TIMEOUT 30)
+        if(ZCL_FUZZ)
+            add_executable(fuzz_emulator_reap ../tools/emulator_reap.c ../tools/fuzz_emulator_reap.c)
+            target_compile_options(fuzz_emulator_reap PRIVATE -fsanitize=fuzzer,address,undefined
+                -fno-sanitize-recover=all -Wall -Wextra -Wpedantic -Werror -Wconversion
+                -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+            target_link_options(fuzz_emulator_reap PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(signature_failure_tests tests/test_signature_failures.c src/signature.c)
     target_include_directories(signature_failure_tests PRIVATE src)

@@ -2366,3 +2366,31 @@ context/consent and completion/cancellation composition. The observed 26 old
 ADB zombies belong to the three running emulators; signed-wire device runs add
 none. Existing emulator data remains intact. TLS stays owner-parked and real
 funds stay outside all development fixtures.
+
+2026-09-14: the emulator ADB zombie cause is reproduced and repaired for the
+exact measured Linux x86-64 SDK37.1.11. Its private timeout path kills its child
+then polls once with WNOHANG, which can return before the kernel releases the
+child. A hash-qualified local launcher enables an isolated C17 ELF adapter
+that completes only that precise owned post-SIGKILL wait. Other child owners,
+options, status and errno semantics stay intact. SDK files, Android binaries,
+wallet data and consensus remain untouched.
+
+Final traces prove27 completed forced timeout reaps plus12 in a second run
+that also exercises shutdown with an in-flight child and exits0. Two real-ADB
+cycles exit0. An intentionally infinite stand-in initially outlived an exiting
+SDK and kept strace alive; its final fixture has parent-death handling and a
+30-second alarm. Initial escalation results remain recorded separately.
+The26 old zombies belong to unrelated live emulators; their processes and data
+are preserved, and the new cycles add none.
+
+All85 native sanitizer groups pass in61.37 seconds. Clang/GCC analysis,
+unchanged10/15 complexity caps, all16 mutation checks, Android/JVM, lint,
+scanner fixture and architecture checks pass. A bounded differential fuzzer
+completes71,385,647 cases in121 seconds without a finding. The current minified
+APK passes the full public camera permission/retry/review/resource-release
+fixture on isolated API30 in9.864 seconds; the release-archive signed-wire C
+test also passes there. No hardware custody or physical-camera claim is made.
+Exact identities, measured boundaries and source review are in
+[EMULATOR_REAPING.md](EMULATOR_REAPING.md), [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md)
+and `.cache/android-wallet/adb-reaping-20260914/`. Continue with wallet
+authorization/context and delivery lifetime safety; TLS remains owner-parked.
