@@ -82,6 +82,60 @@ and contextual transaction acceptance remain additional independent gates.
 The projection source retains the original MIT notice in
 [`transaction-reference.LICENSE`](transaction-reference.LICENSE).
 
+The separate host `seed_sighash_vectors` now matches all 130 untouched v4
+signature-hash results in that pinned original dataset before generating any
+new expected values. It uses its own bounded byte reader and libsodium, with
+no wallet parser, serializer, BLAKE2 provider, JNI, original C++ compilation or
+node execution. Original `interpreter.cpp` SHA256 is
+`d13b7b9590e5ae8d992d731f1436f9f60e1c21ed21b45b7e09e4dbbc668c35c8`.
+The original fixture calls SignatureHash with amount zero. Its expected uint256
+display is reversed for comparison with raw digest bytes.
+
+This oracle reads only the bounded shapes present in the reference data:
+v4 header/group, at most 8 inputs/16 outputs, short canonical lengths, up to
+4 spends/4 shielded outputs/3 Groth JoinSplits and exact trailing signatures.
+Spend authorization signatures, JoinSplit signatures and the binding signature
+are consumed but excluded from their specified component hashes. Proof bytes
+are opaque. No proof, script, funding, branch-at-height or chain-validity claim
+comes from this byte comparison. It does not add shielded wallet support.
+
+Observed original cases include ALL-like, NONE and SINGLE base behavior,
+ANYONECANPAY with ALL-like/NONE, four explicit branch values and nine empty
+scriptCode spans. SINGLE+ANYONECANPAY and absent matching SINGLE output are
+not covered by that dataset. The generator does not infer current branch
+selection from these historical values.
+
+After all 130 original comparisons succeed, the generator projects only the
+same rows 203/208/296 described above. It preserves their exact transparent
+prefixes and replaces the shielded tail with eleven zero bytes. The resulting
+144 SIGHASH_ALL cases cover every selected input, four explicit branch values,
+amounts zero/one/max-money, original opaque scriptCode and a public P2PKH script
+whose hash bytes are 0..19. Digests are raw 32-byte values in
+`native/tests/sighash_vectors.h`; these are derived expected values, not
+untouched original transactions or a production signature-hash implementation.
+
+From `apps/zcl-wallet`, build the host oracle and create a new evidence directory:
+
+```sh
+cmake -S native -B native/build/sighash-oracle -DCMAKE_C_COMPILER=clang-20 \
+  -DZCL_SANITIZE=ON -DZCL_ORACLE=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build native/build/sighash-oracle --target seed_sighash_vectors -j4
+bash tools/project-original-sighashes.sh /path/to/original-checkout \
+  native/build/sighash-oracle/seed_sighash_vectors /path/to/new-report
+cmp native/tests/sighash_vectors.h /path/to/new-report/sighash-vectors.h
+```
+
+The script reads pinned Git objects, checks the original dataset hash and
+records source/binary/output identities. The C oracle bounds lines, counts,
+spans and row order, checks every provider/IO result and emits expected values
+only after complete original verification. An existing report directory is
+refused with its bytes preserved. Ten malformed-input cases and eight oracle
+mutants fail before emitting expected bytes. Clang/GCC analysis, strict C17
+compilation and ASan/UBSan/LSan verification pass. Evidence is retained under
+`.cache/android-wallet/sighash-oracle-20260914/`. Android production is unchanged;
+using these fixtures to qualify the actual wallet signature-hash constructor
+and authenticated authorization remains the next gate.
+
 Deterministic tests cover all three byte/ID fixtures, every truncation and
 undersized output capacity, max-size objects, high-bit IDs and uint32 fields,
 empty scripts, malformed/nonminimal lengths, trailing bytes, unsupported tails,

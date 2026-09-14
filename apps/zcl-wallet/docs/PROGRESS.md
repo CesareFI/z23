@@ -2010,3 +2010,30 @@ Evidence is retained under `.cache/android-wallet/blake2-init-20260914/` and
 `.cache/android-wallet/blake2-wrapper-20260914/`. Original Zclassic branch-specific
 signature hashes, authenticated review/key ownership and hardware custody remain
 open. TLS quarantine and all consensus/custody boundaries remain unchanged.
+
+2026-09-14 original signature-hash reference fixtures: a separate host C17
+oracle matches all 130 untouched v4 expected hashes from pinned original
+Zclassic commit 14a83d510ffd109d3fa09bf74ebf8c28854a263f. It uses an independent
+bounded reader and host libsodium, including no wallet parser/serializer/hash
+provider and compiling no original C++. It validates original signature-hash
+bytes only; opaque proof/script data and historical branch values do not prove
+transaction or current-chain validity.
+
+Only after all original rows match does it emit 144 explicitly projected
+SIGHASH_ALL cases using the existing rows 203/208/296, every selected input,
+two public script profiles, three amounts and four explicit branch values.
+The original dataset's amount is always zero; further independent nonzero
+comparisons remain before wallet-code qualification. No actual wallet
+signature-hash constructor, key or signing path is introduced in this slice.
+
+Strict Clang/GCC analysis, ASan/UBSan/LSan and exact generated-header
+reproduction pass. Ten malformed inputs and eight oracle mutations fail with
+no expected output emitted. Existing-report refusal preserves all bytes and
+its manifest. The full native safety suite passes 65 tests in 45.26 seconds,
+with unchanged complexity caps (458 production/884 test functions). Host oracle
+source, pinned originals, generated header, binary hashes, refusals and mutation
+logs are retained in `.cache/android-wallet/sighash-oracle-20260914/`.
+Android builds, JVM tests and lint also pass; debug/test/unsigned release APKs
+remain byte-identical to the prior qualified artifacts. Architecture and
+whitespace checks pass. No new Android instrumentation or custody result is
+claimed for this host-only fixture milestone.

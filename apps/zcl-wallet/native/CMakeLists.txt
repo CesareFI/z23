@@ -709,6 +709,17 @@ if(NOT ANDROID)
             target_link_libraries(fuzz_blake2 PRIVATE ${ZCL_SODIUM_LIBRARY})
             target_compile_definitions(fuzz_blake2 PRIVATE ZCL_BLAKE2_ORACLE=1)
         endif()
+        # This reference-fixture oracle uses libsodium and its own bounded
+        # byte reader; it includes and links no wallet parser/hash provider.
+        add_executable(seed_sighash_vectors tests/seed_sighash_vectors.c)
+        target_include_directories(seed_sighash_vectors PRIVATE ${ZCL_SODIUM_INCLUDE})
+        target_link_libraries(seed_sighash_vectors PRIVATE ${ZCL_SODIUM_LIBRARY})
+        target_compile_options(seed_sighash_vectors PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        if(ZCL_SANITIZE)
+            target_compile_options(seed_sighash_vectors PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
+            target_link_options(seed_sighash_vectors PRIVATE -fsanitize=address,undefined)
+        endif()
         find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
