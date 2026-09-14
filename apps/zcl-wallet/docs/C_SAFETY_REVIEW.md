@@ -1630,3 +1630,32 @@ stack reports and accepted artifacts are retained in this worktree's
 `.cache/android-wallet/jni-secret-transfer-20260914/`. Device/suite results are
 recorded in `PROGRESS.md`; emulator evidence does not qualify physical ARM64
 custody or eliminate the separate hardware acceptance gate.
+
+## 2026-09-14: OS entropy failure and erasure qualification
+
+Reviewed the expanded `test_random.c` fixture and host-only CMake wiring.
+`random.c` and all production bytes are unchanged. The old unit accepts a
+mutant with the scratch clear removed; the strengthened unit rejects it. The
+new observation binds the OS destination to its live 64-byte scratch object,
+checks full zeroization during cleanup, and retires the borrowed pointer before
+return. A missing cleanup fails on the live flag without reading an expired
+pointer. No claim about entropy quality follows from these memory/lifetime tests.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | OS spans must be non-NULL, nonempty, at most 64 bytes, and exactly the remaining requested range. Script length is 1..128. The reference writes at most 64 bytes into the middle of a 66-byte guarded expected array; the entire output is compared. Invalid/NULL calls perform no reads or erasures. |
+| Integer overflow/underflow; signed/unsigned conversions | Input length claims are explicitly masked to 0..127 before use; reference execution requires 1..64. Unsigned script selectors cover all 256 values. Positive provider counts advance observed offsets only after checking against the remaining length. Over-reported counts are at most 65. At most 128 reads occur; every multiplication, narrowing conversion and modulo operand is bounded and nonzero where required. SIZE_MAX remains covered by the pre-existing invalid-input case. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation/free is added. Script bytes are borrowed for one synchronous invocation and the reference is retired on return. Scratch pointers are observed only while random.c owns the object, checked/retired inside its live zero callback, and never examined after missing cleanup. There is no retained production state. Host fixture globals are single-threaded and reset only after verifying the previous invocation retired its scratch. |
+| NULL dereferences; uninitialized memory | Every observer checks its input and state before access. Output/expected spans are initialized, failures discard all speculative expected bytes, and cleanup calls the real zeroizer before checking every scratch byte. The initial GCC analyzer finding at the reference's staging memcpy is preserved; removing the redundant staging array/copy makes both unit and fuzz profiles pass Clang/GCC analysis without suppressions. |
+| Pointer arithmetic; format strings | Observed offsets stay within the original allocation; every later OS pointer and remaining length must match. Byte pointers are used only for byte spans. Diagnostics contain fixed text and line numbers, not input or random bytes. |
+| Stack usage; allocation limits; resource exhaustion | No heap, VLA, recursion, thread or unbounded input appears. The script is capped at 128 actions and the model/reader at 128 attempts. The unit enumerates 65603 synthetic cases plus the existing actual-OS and mode fixtures under a 15-second test limit; final focused sanitizer time is 0.08 seconds. Optimized protected host frames measure 264 bytes for main, 248 for random_case, 40 for the OS wrapper and 8 for the zero observer; nested calls are separate. Fuzzing has a 129-byte input cap, five-second case deadline, 512 MiB RSS cap and bounded campaign. |
+| Malformed input; races; failure behavior | The independent model checks exact return status, read count, all caller bytes, full erasure and no lingering owner across positive partial reads, interruptions, unavailable/error reads, zero/oversized returns, invalid lengths and NULL. Explicit fixtures distinguish success on attempt 128 from an unfinished request at that bound. Eight mutants remove/shorten erasure, omit failure cleanup, shorten/extend retry limits, allow blocking, publish partial output or accept oversized input; all fail intended assertions. |
+| Secret leakage and authority | Synthetic fuzzing never reads OS entropy; public script markers are its only data. The original OS smoke tests still clear both local random scratch and their caller output. Linker wrapping and mutable fault state are confined to Linux host test targets and excluded from JNI/Android production. No storage, key, wallet, network, authentication, signing or consensus authority changes. |
+
+Debug, test and unsigned release APKs compare byte-identically to the JNI secret
+transfer checkpoint, so its exact API 30/36 CheckJNI and lifecycle evidence
+continues to apply. Detailed results, source/binary hashes, the analyzer finding,
+old-unit missed mutant and final mutation evidence are retained in
+`.cache/android-wallet/random-erasure-20260914/` in the isolated development
+worktree. These are erasure/error-path observations, not physical-device custody
+or a statistical proof of the operating system's randomness.

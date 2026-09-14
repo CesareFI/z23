@@ -2775,3 +2775,38 @@ shutdown; the pre-existing emulators and unfinished camera/storage work remain
 untouched. The first instrumentation invocation used an incorrect test package
 name and refused before running tests; corrected explicit-package runs above
 passed. TLS remains quarantined and physical custody acceptance remains open.
+
+2026-09-14: OS entropy-source qualification now observes the full native scratch
+lifetime and clearing, in addition to exact output and bounded syscall behavior.
+The old tests pass when scratch erasure is deliberately removed; the updated
+suite rejects that mutation. Production randomness and every shipped byte remain
+unchanged. The test-only reader/model enumerates 65603 synthetic cases, including
+all byte-sized input claims/actions and the exact final permitted read attempt.
+Partial/error writes cannot publish caller bytes or leave an unretired scratch
+owner. The existing actual-OS read smoke tests remain in the unit.
+
+Eight production mutants fail intended assertions. Clang/GCC static analysis
+passes both unit/fuzz profiles, and the production/test complexity caps stay
+10/15. An initial GCC finding on a redundant reference staging copy was resolved
+by simplifying the reference; the finding remains in the evidence directory.
+All 89 sanitizer groups pass in 64.75 seconds; the final focused RNG group
+passes in 0.08 seconds. The final bounded fuzzer completes 16082900 cases in
+121 seconds without a finding (129-byte input cap, five-second cases, 512 MiB
+RSS cap; observed 269 MiB). Its SHA256 is
+`6432d291fad35dd98f79c398d07b5ea138827cab2a1722bf68600d5d6ea9b609`.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation, native alignment
+and architecture checks pass. Debug, instrumented-test and unsigned release
+APKs compare byte-identically to the JNI transfer checkpoint. Its exact API
+30/36 device tests remain applicable; no new emulator was required. The original
+three emulators and 26 ADB zombies remain untouched. Exact source, logs, analyzer
+finding and mutation/fuzz evidence are in the isolated worktree's
+`.cache/android-wallet/random-erasure-20260914/`.
+
+Continuation: work remains on `agent/android-security-hardening-20260914` in
+`/tmp/z23-android-security-hardening-20260914`. JNI checkpoint `a86fe1322` is local;
+the configured remote account's development-branch push was rejected with HTTP
+403. Main was never pushed, and no remote identity or hook was changed. Preserve
+the independent unfinished camera/storage worktrees. Continue security and
+bounded-memory qualification locally; TLS remains quarantined, physical custody
+is unqualified, and signing/broadcast remain disabled in the launcher.
