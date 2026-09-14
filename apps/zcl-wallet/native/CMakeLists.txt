@@ -94,6 +94,7 @@ add_subdirectory("${ZCL_SECP_SOURCE}" "secp256k1" EXCLUDE_FROM_ALL)
 add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/payment.c src/uri_text.c src/utf8_text.c src/secret_hash.c src/blake2_hash.c
     src/mnemonic.c src/mnemonic_words.c src/mnemonic_seed.c src/mnemonic_confirm.c src/ec_context.c src/bip32.c
+    src/signature.c
     src/random.c src/receive_key.c src/network.c src/wallet_header.c src/wallet_record.c src/wallet_change.c
     src/change_state.c src/change_state_key.c src/change_custody.c src/change_reservation.c src/change_recovery.c
     src/change_ownership.c
@@ -245,6 +246,12 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_review PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow)
     target_link_options(fuzz_review PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_signature tests/fuzz_signature.c)
+    target_include_directories(fuzz_signature PRIVATE src)
+    target_link_libraries(fuzz_signature PRIVATE zcl_wallet_core secp256k1)
+    target_compile_options(fuzz_signature PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wframe-larger-than=4096)
+    target_link_options(fuzz_signature PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_change tests/fuzz_change.c)
     target_link_libraries(fuzz_change PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_change PRIVATE -fsanitize=fuzzer,address,undefined
@@ -732,6 +739,34 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_review_context_failures COMMAND review_context_failure_tests)
     set_tests_properties(wallet_review_context_failures PROPERTIES TIMEOUT 15)
+    add_executable(signature_tests tests/test_signature.c)
+    target_include_directories(signature_tests PRIVATE src)
+    target_link_libraries(signature_tests PRIVATE zcl_wallet_core secp256k1)
+    target_compile_options(signature_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_signature COMMAND signature_tests)
+    set_tests_properties(wallet_signature PROPERTIES TIMEOUT 30)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(signature_failure_tests tests/test_signature_failures.c src/signature.c)
+    target_include_directories(signature_failure_tests PRIVATE src)
+    target_link_libraries(signature_failure_tests PRIVATE zcl_wallet_core secp256k1)
+    target_compile_definitions(signature_failure_tests PRIVATE
+        zcl_random_bytes=zcl_signature_test_random zcl_secure_zero=zcl_signature_test_zero
+        secp256k1_ec_pubkey_create=zcl_signature_test_public
+        secp256k1_ecdsa_sign=zcl_signature_test_sign secp256k1_ecdsa_signature_normalize=zcl_signature_test_normalize
+        secp256k1_ec_pubkey_serialize=zcl_signature_test_public_serialize
+        secp256k1_ecdsa_signature_serialize_der=zcl_signature_test_der_serialize
+        secp256k1_ec_pubkey_parse=zcl_signature_test_public_parse secp256k1_ec_pubkey_cmp=zcl_signature_test_compare
+        secp256k1_ecdsa_signature_parse_der=zcl_signature_test_der_parse secp256k1_ecdsa_verify=zcl_signature_test_verify
+        secp256k1_nonce_function_rfc6979=zcl_signature_test_nonce)
+    target_compile_options(signature_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    target_link_options(signature_failure_tests PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free
+        -Wl,--wrap=secp256k1_context_preallocated_size -Wl,--wrap=secp256k1_context_preallocated_create
+        -Wl,--wrap=secp256k1_context_randomize)
+    add_test(NAME wallet_signature_failures COMMAND signature_failure_tests)
+    set_tests_properties(wallet_signature_failures PROPERTIES TIMEOUT 30)
+    endif()
     add_executable(sync_history_tests tests/test_sync_history.c tests/sync_fixture.c)
     target_link_libraries(sync_history_tests PRIVATE zcl_wallet_core)
     target_compile_options(sync_history_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
@@ -822,6 +857,22 @@ if(NOT ANDROID)
             target_compile_definitions(fuzz_review PRIVATE ZCL_SIGHASH_ORACLE=1)
         endif()
         find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+        add_library(signature_oracle STATIC tests/signature_oracle.c)
+        target_include_directories(signature_oracle PUBLIC include src)
+        target_link_libraries(signature_oracle PUBLIC OpenSSL::Crypto)
+        target_compile_options(signature_oracle PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        if(ZCL_SANITIZE)
+            target_compile_options(signature_oracle PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
+            target_link_options(signature_oracle PUBLIC -fsanitize=address,undefined)
+        endif()
+        target_link_libraries(signature_tests PRIVATE signature_oracle)
+        target_compile_definitions(signature_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
+        if(ZCL_FUZZ)
+            target_compile_options(signature_oracle PRIVATE -fsanitize=fuzzer-no-link)
+            target_link_libraries(fuzz_signature PRIVATE signature_oracle)
+            target_compile_definitions(fuzz_signature PRIVATE ZCL_SIGNATURE_ORACLE=1)
+        endif()
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
         target_compile_options(receive_oracle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)

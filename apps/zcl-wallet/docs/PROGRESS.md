@@ -2243,3 +2243,42 @@ there are no upstream Android app changes and the existing branch remains
 unmerged/unpushed. Next work remains platform-authenticated context/consent and
 synthetic signing/cancellation tied to the exact review. The owner-parked TLS
 investigation and positive hardware-custody acceptance remain unqualified.
+
+2026-09-14: internal synthetic signing now copies exactly32-byte secret/digest
+inputs before OS/provider work, obtains fresh OS blinding, and produces
+deterministic RFC6979 low-S DER with a compressed public key. Nonce work is
+bounded to eight candidates. Parsed output and exact-digest verification precede
+whole-output publication; every failure preserves output and all entered paths
+clear private work and the checked transient EC allocation. No JNI, wallet
+unlock, script/wire publication or authorization token is added.
+
+The64 profile/repetition suite, scalar/message-order edges, changed-digest and
+all argument/guard checks pass. OpenSSL independently derives the key, validates
+strict DER/low-S and verifies the raw digest. Dirty stage failures, caller-source
+mutation, RNG/OOM/context errors, nonce bounds and live zeroization pass.
+All24 deliberate defects are detected:23 intended assertions and one UBSan
+nonnull call interception. The mutation runner's initial assertion-only
+expectation was corrected to record that earlier detection. GCC's initial test
+provider annotation conflict was fixed using upstream's implementation mode,
+preserving runtime NULL checks and production caller annotations. No security
+assertion, warning or sanitizer is suppressed; all initial logs are retained.
+
+The OpenSSL-enabled fuzzer completes36,242 runs in121 seconds without a finding.
+All79 native ASan/UBSan/LSan groups pass in55.70 seconds; Clang/GCC analysis and
+unchanged10/15 complexity caps pass (490/1066 functions). Optimized host entry
+and nonce-callback frames measure552/8 bytes. Android/JVM/lint, APK
+alignment/fixture isolation and architecture checks pass. Actual new release
+archive tests pass on x86-64 API30/35/36; ARM64 is compiled only. Runtime
+executable SHA256 is
+`0f2c40db0e05547cd3e00f0897b3d59877aa0fcdcd0490f2a71e165d80f32ce2`.
+Both standalone ELFs have16KiB alignment, RELRO/NOW and non-executable stacks.
+APK bytes remain unchanged because the primitive has no JNI caller; no fresh
+camera or hardware-custody claim is made. Public synthetic device fixtures touch
+no app wallet, Keystore, endpoint or node. Full evidence and source/archive/
+artifact identities are in `.cache/android-wallet/signature-core-20260914/`.
+
+Fetched origin/main is `7f5fe466b6da49b62343859068dc2872c7f43d79`, with no
+upstream Android-wallet changes. The existing branch remains unmerged/unpushed.
+Next: canonical signed wire and live-review completion/cancellation composition,
+with platform-authenticated context/consent still required before any wallet
+signing adapter. TLS stays owner-parked; real funds remain outside fixtures.

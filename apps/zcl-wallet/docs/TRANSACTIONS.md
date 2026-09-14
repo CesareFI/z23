@@ -782,6 +782,79 @@ Focused checks use `ctest --test-dir native/build/safety-active -R
 `ZCL_ORACLE=ON` adds independent digest comparisons; `ZCL_FUZZ=ON` builds the
 extended `fuzz_review`. Neither oracle dependency is included in Android.
 
+## Bounded synthetic ECDSA primitive — 2026-09-14
+
+Internal `zcl_signature_create` takes exactly32 secret and32 already computed
+digest bytes. It returns only public low-S DER and a compressed33-byte public
+key, with zero unused bytes/padding. This operation has no JNI, wallet unlock,
+script pushes, sighash-type byte or transaction publication. Its current
+callers are isolated synthetic tests. A future wallet signer must bind
+platform-authenticated wallet/key ownership, current chain context, the exact
+live review and explicit consent within its own operation, then recheck
+cancellation/completion before publishing. A raw signature is not authorization.
+
+The primitive copies both inputs before OS randomness or provider work, obtains
+fresh32-byte OS blinding, and uses the existing checked1..1024-byte transient
+secp256k1 context. It uses the pinned RFC6979/HMAC-SHA256 nonce function with at
+most eight candidates and no fallback or key retry. The cap is wallet resource
+policy; normal signatures match the provider's default deterministic output
+exactly. It checks every provider result, rejects non-low-S output, serializes,
+parses both public encodings, compares the parsed key and verifies the exact
+digest before publication. Only complete success copies the entire output.
+Every entered path releases/clears the context and clears the whole private
+work, including secret, digest and blinding copies. The caller must clear its
+own secret. Inputs remain caller-owned and stable during the synchronous call.
+
+Tests cover64 scalar/digest profiles with repeated fresh blinding, the known
+generator, zero/order/maximum scalar refusals, order-minus-one success, message
+reduction at the order, strict minimal DER/low-S, changed-digest rejection,
+NULL/length/SIZE_MAX bounds, guards and whole-output failure preservation.
+Optional host-only OpenSSL3 independently derives the public key, parses and
+re-encodes strict DER, checks low-S, and verifies the supplied digest through
+EVP_PKEY_verify. It does not rehash the digest or replace Zclassic's BLAKE2
+signature-hash domain. No OpenSSL dependency enters Android.
+
+Linux fault fixtures retain real context allocation while substituting signing
+providers. They cover every stage, dirty error outputs, oversized returned
+lengths, RNG/OOM/context failures, mutation of both caller inputs after copying,
+all eight allowed nonce attempts, cap/UINT_MAX/algorithm/data refusals, and live
+nonce/secret/context clearing with exactly one release. The24 deliberate
+mutants are all detected:23 by intended fixture assertions, and the skipped
+context-error mutant by UBSan at its invalid nonnull provider call. No compiler
+or sanitizer failure is counted as a successful build. The original mutation
+runner expected every defect to reach an assertion; its preserved initial log
+instead shows UBSan correctly intercepting that call earlier.
+
+The new OpenSSL-enabled fuzzer completes36,242 executions in121 seconds without
+a finding, with max_len66, timeout5 and RSS512MiB (observed peak267MiB). It checks
+output guards/preservation, scalar validity, public signature verification and
+determinism under fresh OS blinding. All79 native ASan/UBSan/LSan groups pass
+in55.70 seconds. Clang/GCC production/fixture/oracle analysis passes; complexity
+caps remain10/15 (490/1066 functions). Optimized host frames are552 bytes for
+the entry and8 for its nonce callback; these are not whole-call-chain totals.
+
+GCC initially rejected the test provider's NULL assertions because its function
+definitions inherited caller-side nonnull annotations. That fixture translation
+unit now uses the provider's own SECP256K1_BUILD mode, preserving runtime NULL
+assertions while production callers retain their normal annotations. No warning
+or security check is suppressed. Initial/final logs remain available.
+
+NDK ARM64/x86-64, JVM, Android lint, APK alignment/fixture isolation and
+architecture checks pass. APK bytes remain unchanged because this primitive
+has no JNI caller. A standalone test linked against the actual new release
+archives passes on x86-64 API30/35/36; its SHA256 is
+`0f2c40db0e05547cd3e00f0897b3d59877aa0fcdcd0490f2a71e165d80f32ce2`.
+ARM64 is compiled only (SHA256
+`2cef86867587df2b78a4bcb2b9d978dc270849c9b329f4ecd693578f07e08715`).
+Both ELFs have16KiB alignment, RELRO/NOW and non-executable stacks. These public
+synthetic tests access no app wallet, Keystore, endpoint or node. Evidence and
+source/archive/artifact hashes are in
+`.cache/android-wallet/signature-core-20260914/`.
+
+Focused checks use `ctest --test-dir native/build/safety-active -R
+'^wallet_signature' --output-on-failure`. `ZCL_ORACLE=ON` adds independent
+OpenSSL verification, and `ZCL_FUZZ=ON` builds `fuzz_signature`.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
@@ -803,7 +876,10 @@ extended `fuzz_review`. Neither oracle dependency is included in Android.
    checks. The narrow transparent v4 construction also has independent public
    hash evidence above; authenticated authorization remains open.
 3. Synthetic signing and explicit review/cancellation, then qualified broadcast
-   lifecycle and restart recovery. Real funds remain outside development tests.
+   lifecycle and restart recovery. The bounded raw-digest primitive above now
+   has independent host verification and real release-library Android evidence;
+   canonical signed wire and authorized live-review completion remain open.
+   Real funds remain outside development tests.
 4. Shielded wire/proof/witness/value/recovery qualification before exposing it.
 
 TLS remains **BLOCKED — REQUIRES FURTHER SECURITY REVIEW** and excluded from
