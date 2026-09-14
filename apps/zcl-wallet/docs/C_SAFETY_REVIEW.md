@@ -1920,3 +1920,49 @@ and lint, fixture isolation, native alignment and architecture pass. Debug,
 test and unsigned release APKs remain byte-identical to the camera-allocation
 checkpoint and retain its exact device evidence. No emulator was needed or
 modified for this host-only test change.
+
+## 2026-09-14: storage JNI environment refusal and full entropy erasure fixture
+
+Reviewed `jni_storage.c` and `test_jni_storage.c`. A direct call with NULL env
+previously dereferenced it after the byte reader had refused it. The new test
+reproduces that load under UBSan. The entry now refuses before dereferencing
+env, and preserves an existing exception before array work. Normal JVM calls
+supply an environment; this is defensive native-call coverage, not evidence
+of an Android exploit. A non-NULL env still requires a valid JNI function table.
+
+Recovered the unfinished full-width entropy fixture from the isolated
+`agent/android-jni-erasure-20260914` worktree, adapting explicit input length
+and retiring the borrowed local record reference. The original dirty file is
+byte-identical. Every byte of the public 32-byte entropy is nonzero: variants
+clearing only 16 or 31 bytes pass the old fixture but fail the new post-zeroizer
+byte assertion. The observer reads the actual JNI copy while live, then retires
+its pointer. This does not establish erasure inside the JVM or other providers.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Production sizes and bounds are unchanged: path 1024, read packet 142, record 140, entropy 32 bytes. The new helper requires exactly 32 input bytes and supplies explicit capacities for header, record and change state. The observer checks only the live 32-byte native span. |
+| Integer overflow/underflow; signed/unsigned conversions | No production arithmetic added. Test indices 0..31 produce values 1..32 before explicit narrowing. The positive fake JVM length 32 fits jsize and matches the core's validated size_t length. Existing negative/INT32_MAX length refusals remain. |
+| Use-after-free; double-free; leaks; dangling pointers | The guard allocates and retains nothing. Test arrays are automatic or existing fixed globals; the new borrowed local record reference clears after the synchronous call, and secret_pointer clears inside its live zeroizer callback. Each fixture owns its directory/descriptor and fixed filenames. Aborted mutation runs stay inside a separate owned root, preserved as evidence. |
+| NULL dereferences; uninitialized memory | Short-circuit refusal precedes env use. Tests supply NULL/non-NULL dummy arrays with NULL env, then verify pending-exception refusal without reading fields. All new entropy, header, IV, ciphertext and record state initializes before use. |
+| Pointer arithmetic; format strings | No production offsets change. Test loops use bounded array indices and existing typed fake-array operations. Diagnostics contain fixed text and locations, never entropy or record bytes. |
+| Stack usage; allocation limits; resource exhaustion | Release read frames stay 1240 bytes on x86-64 and 1280 on ARM64; all other storage JNI frames also stay unchanged, with caller/provider frames additional. Object text grows 26/28 bytes respectively, with no new data/BSS, allocation, worker or persistent state. The optimized protected host test main is 1064 bytes. |
+| Malformed input; races; failure behavior | Pending exceptions remain pending without byte-array calls; NULL env reaches no storage call. Existing six VM faults, partial secret reads, invalid lengths, core failure, paired creation and no-overwrite checks remain. The full-width case also preserves borrowed managed input and verifies change-state bytes. No concurrency, permissions, authentication or publication policy changes. |
+| Secret leakage and authority | Entropy bytes 1..32 are public and unfunded; ciphertext is inert. This native fixture proves structure/paired storage, not GCM authentication. Fixture-owned entropy copies clear afterward. Android provider-GCM tests authenticate separate public records in uniquely owned directories, using no real wallet or key alias. Consensus, transaction validity, networking, signing and custody authority are unchanged. |
+
+All 89 ASan/UBSan/LSan groups pass in 63.75 seconds. Strict Clang/GCC checks,
+unchanged complexity caps, all 121 JVM tests, Android builds/lint, fixture
+isolation, native alignment and architecture pass. The fresh-storage JNI fuzzer
+completes 27465 runs in 121 seconds without a finding, under an eight-byte input
+cap, five-second cases and 512 MiB RSS cap (46 MiB observed). It covers fresh
+creation faults; the read-environment guard has explicit unit coverage.
+
+All 42 selected storage, corruption, authentication and secret-lifecycle cases
+plus two Activity shutdown/retry tests pass on both isolated API 30/36 emulators
+with CheckJNI. Both owned emulators exit zero; original devices and 26 existing
+ADB zombies are unchanged. ARM64 is compiled only. Hardware custody and physical
+storage power-loss behavior remain unqualified. Fresh debug/release APKs grow
+64/32 bytes to 3560333/613447. Unsigned release SHA256 is
+`ccb6d3e05e5b4a079083c5b5d3b8b62cae4ea2fc3e57fdad1361088f1a6eda7d`.
+Baseline failure, recovered patch identity, two pairs of mutation runs, owned
+mutation files, fuzz corpus, budgets and exact artifacts remain in
+`.cache/android-wallet/storage-entropy-20260914/` in the isolated worktree.

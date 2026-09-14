@@ -3163,3 +3163,36 @@ exact test/fuzzer/libcrypto hashes and unchanged APK identities remain in
 `.cache/android-wallet/hmac-oracle-20260914/`. No emulator or operator state was
 touched. Main was fetched without new wallet changes; the branch remains local
 after the earlier HTTP 403 remote push refusal.
+
+2026-09-14: storage JNI reads now refuse a missing environment before any
+dereference and preserve an existing exception before array work. The new test
+reproduced the old NULL load under UBSan. Normal JVM calls supply env; this
+hardens the direct native-call contract without claiming an Android exploit.
+Storage, authentication and publication semantics remain unchanged.
+
+Recovered the unfinished 32-byte nonzero entropy fixture from the JNI-erasure
+development worktree, leaving its original dirty source byte-identical. The
+actual native copy is checked while live after erasure; borrowed managed input
+must remain unchanged. Variants clearing only 16 or 31 bytes pass the old
+fixture but fail the strengthened byte assertion. These public inert records
+establish paired storage; separate Android provider-GCM tests authenticate
+their own public fixtures. Full hazard review is in C_SAFETY_REVIEW.md.
+
+All 89 ASan/UBSan/LSan groups pass in 63.75 seconds. Strict Clang/GCC checks,
+unchanged complexity limits, all 121 JVM tests, Android builds/lint, fixture
+isolation, native alignment and architecture pass. The fresh-storage JNI fuzzer
+completes 27465 runs in 121 seconds with no finding, under an eight-byte cap,
+five-second cases and 512 MiB RSS cap (46 MiB observed). All 42 selected storage,
+corruption, authentication and secret-lifecycle cases plus two Activity shutdown
+tests pass on each isolated API 30/36 emulator with CheckJNI. ARM64 is compiled
+only; hardware custody remains unqualified.
+
+Storage stack frames are unchanged. Object text grows 26/28 bytes on
+x86-64/ARM64, with no allocation, persistent memory or worker added. Fresh
+debug/release APKs grow 64/32 bytes to 3560333/613447; unsigned release SHA256 is
+`ccb6d3e05e5b4a079083c5b5d3b8b62cae4ea2fc3e57fdad1361088f1a6eda7d`.
+Failure evidence, recovered-source identity, mutation fixtures, budgets, tests,
+fuzz corpus and artifacts remain in `.cache/android-wallet/storage-entropy-20260914/`.
+Owned emulators exit zero with no additional ADB zombies; original devices and
+dirty work remain untouched. Main was fetched without wallet changes; work stays
+on the local development branch after the earlier HTTP 403 remote push refusal.
