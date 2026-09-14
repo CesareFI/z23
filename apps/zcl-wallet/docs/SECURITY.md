@@ -30,6 +30,13 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
 * Authentication gates key operations. A QR scan never authorizes a payment.
   Send and shielded features remain unavailable until their acceptance gates
   pass; unsupported chain formats must fail closed.
+* Platform workers have at most two process owners, one worker and four queued
+  inputs per owner. Closing clears queued inputs and lets an active operation
+  finish its cleanup. Pool termination clears the session before returning its
+  admission slot, without allocating another worker. Session cleanup may run on
+  the closing thread only after no worker can access that state; it must clear
+  owned data without blocking or calling UI/provider code. It releases retained
+  callback references, and even a failing finalizer returns admission once.
 
 ## Evidence required before custody release
 

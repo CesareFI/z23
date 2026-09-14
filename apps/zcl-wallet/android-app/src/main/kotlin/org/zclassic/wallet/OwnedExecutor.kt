@@ -13,23 +13,34 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Each submitted input has exactly one cleanup, including rejection and
  * cancellation. close() does not block the UI:
  * it discards queued work, lets the active operation reach its finally block,
- * then clears worker-owned session state on that same thread and shuts down.
+ * then clears session state after all worker operations have ended. Termination
+ * runs cleanup on the last worker, or directly if no worker remains. Cleanup
+ * needs no new worker allocation and finishes before admission is released.
  * An owner that never obtained a pool has no worker state; its empty-state
  * finalizer runs directly in close(). Admission never waits or retries itself.
  * Cleanup callbacks must only clear owned data and must not throw or block.
  */
 internal class OwnedExecutor {
+    private class SessionExecutor : ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(4),
+        { task -> Thread(task, "WalletPlatform") }, AbortPolicy()) {
+        @Volatile var clearSession: (() -> Unit)? = null
+
+        override fun terminated() {
+            val cleanup = clearSession
+            clearSession = null
+            try { cleanup?.invoke() }
+            finally { owners.release() }
+        }
+    }
+
     private companion object {
         val owners = Semaphore(2) // Foreground work plus one retiring operation.
 
-        fun reserveExecutor(): ThreadPoolExecutor? {
+        fun reserveExecutor(): SessionExecutor? {
             if (!owners.tryAcquire()) return null
             var transferred = false
             try {
-                val executor = object : ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(4),
-                    { task -> Thread(task, "WalletPlatform") }, AbortPolicy()) {
-                    override fun terminated() { owners.release() }
-                }
+                val executor = SessionExecutor()
                 transferred = true
                 return executor
             } finally { if (!transferred) owners.release() }
@@ -39,7 +50,7 @@ internal class OwnedExecutor {
     private val control = Any()
     private val closed = AtomicBoolean(false)
     // Reserve lazily: an abandoned/failed parent constructor cannot leak a slot.
-    private var executor: ThreadPoolExecutor? = null
+    private var executor: SessionExecutor? = null
 
     val isClosed: Boolean get() = closed.get()
 
@@ -74,10 +85,10 @@ internal class OwnedExecutor {
             val task = current.queue.poll() ?: break
             (task as OwnedTask).discard()
         }
-        // submit/close share this short control lock. The queue is empty and
-        // the executor is not shut down, so this finalizer has reserved space.
-        try { current.execute(clearSession) }
-        finally { current.shutdown() }
+        // No new worker or queued finalizer is needed. Shutdown waits for the
+        // active task's finally block, then termination owns session cleanup.
+        current.clearSession = clearSession
+        current.shutdown()
     }
 
     private class OwnedTask(

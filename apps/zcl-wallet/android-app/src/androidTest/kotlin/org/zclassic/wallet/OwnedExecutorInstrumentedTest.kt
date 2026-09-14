@@ -37,6 +37,74 @@ class OwnedExecutorInstrumentedTest {
         for (coreSize in listOf(0, 1)) verifyFailedHandoff(coreSize)
     }
 
+    @Test fun androidCloseNeedsNoWorkerAndReturnsBothProcessAdmissions() {
+        for (coreSize in listOf(0, 1)) {
+            for (mode in 0..2) verifyCloseWithoutWorker(coreSize, mode)
+        }
+    }
+
+    private fun verifyCloseWithoutWorker(coreSize: Int, mode: Int) {
+        val owner = OwnedExecutor()
+        val backend = idleBackend(owner, coreSize)
+        val originalFactory = backend.threadFactory
+        val attempts = AtomicInteger()
+        val clears = AtomicInteger()
+        val words = charArrayOf('a', 'b', 'c')
+        try {
+            backend.threadFactory = ThreadFactory {
+                attempts.incrementAndGet()
+                when (mode) {
+                    0 -> null
+                    1 -> throw OutOfMemoryError("Synthetic public close allocation failure")
+                    else -> throw SecurityException("Synthetic public close thread refusal")
+                }
+            }
+            owner.close { words.fill('\u0000'); clears.incrementAndGet() }
+            assertTrue(owner.isClosed)
+            assertEquals(0, attempts.get())
+            assertEquals(1, clears.get())
+            assertTrue(words.all { it == '\u0000' })
+            assertTrue(backend.queue.isEmpty())
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            owner.close { error("Session finalized twice") }
+            assertTrue(!owner.submit { error("Closed task ran") })
+        } finally {
+            // Bound the public fixture even if the regression fails.
+            backend.threadFactory = originalFactory
+            while (true) (backend.queue.poll() ?: break).run()
+            owner.close()
+            backend.shutdown()
+            words.fill('\u0000')
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+        }
+        assertEquals(1, clears.get())
+        assertBothAdmissionsAvailable()
+    }
+
+    private fun assertBothAdmissionsAvailable() {
+        val first = OwnedExecutor()
+        val second = OwnedExecutor()
+        val entered = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val pools = mutableListOf<ThreadPoolExecutor>()
+        try {
+            for (owner in listOf(first, second)) {
+                assertTrue(owner.submit {
+                    entered.countDown()
+                    check(release.await(10, TimeUnit.SECONDS))
+                })
+                val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
+                pools.add(field.get(owner) as ThreadPoolExecutor)
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+            first.close()
+            second.close()
+            for (pool in pools) assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
     private fun verifyFailedHandoff(coreSize: Int) {
         val owner = OwnedExecutor()
         val backend = idleBackend(owner, coreSize)

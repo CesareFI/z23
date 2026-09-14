@@ -156,6 +156,88 @@ class OwnedExecutorTest {
         awaitClosed(executor)
     }
 
+    @Test fun closingAnIdlePoolNeedsNoReplacementThreadAndAlwaysClearsItsSession() {
+        for (coreSize in listOf(0, 1)) {
+            for (mode in 0..2) verifyCloseWithoutWorker(coreSize, mode)
+        }
+    }
+
+    @Test fun aFailingFinalizerStillTerminatesAndReleasesAdmission() {
+        val owner = OwnedExecutor()
+        val backend = idleBackend(owner, 1)
+        val clears = AtomicInteger()
+        val problem = OutOfMemoryError("Synthetic public finalizer failure")
+        try {
+            assertSame(problem, assertFailsWith<OutOfMemoryError> {
+                owner.close { clears.incrementAndGet(); throw problem }
+            })
+            assertTrue(owner.isClosed)
+            assertEquals(1, clears.get())
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            owner.close { error("Failed finalizer retried") }
+        } finally { owner.close(); awaitClosed(owner) }
+        assertBothAdmissionsAvailable()
+    }
+
+    private fun verifyCloseWithoutWorker(coreSize: Int, mode: Int) {
+        val owner = OwnedExecutor()
+        val backend = idleBackend(owner, coreSize)
+        val originalFactory = backend.threadFactory
+        val attempts = AtomicInteger()
+        val clears = AtomicInteger()
+        val words = charArrayOf('a', 'b', 'c')
+        try {
+            backend.threadFactory = ThreadFactory {
+                attempts.incrementAndGet()
+                when (mode) {
+                    0 -> null
+                    1 -> throw OutOfMemoryError("Synthetic public close allocation failure")
+                    else -> throw SecurityException("Synthetic public close thread refusal")
+                }
+            }
+            owner.close { words.fill('\u0000'); clears.incrementAndGet() }
+            assertTrue(owner.isClosed)
+            assertEquals(0, attempts.get(), "Closing must not request a replacement thread")
+            assertEquals(1, clears.get())
+            assertTrue(words.all { it == '\u0000' })
+            assertTrue(backend.queue.isEmpty())
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            owner.close { error("Session finalized twice") }
+            assertFalse(owner.submit { error("Closed task ran") })
+        } finally {
+            // Keep even a failing regression/mutant fixture locally bounded.
+            // Any retained task here is only this test's public cleanup.
+            backend.threadFactory = originalFactory
+            while (true) (backend.queue.poll() ?: break).run()
+            owner.close()
+            backend.shutdown()
+            words.fill('\u0000')
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+        }
+        assertEquals(1, clears.get())
+        assertBothAdmissionsAvailable()
+    }
+
+    private fun assertBothAdmissionsAvailable() {
+        val first = OwnedExecutor()
+        val second = OwnedExecutor()
+        val entered = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        try {
+            for (owner in listOf(first, second)) assertTrue(owner.submit {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+            })
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+            first.close()
+            second.close()
+            awaitClosed(first)
+            awaitClosed(second)
+        }
+    }
+
     @Test fun queueIsBoundedAndCancellationClearsAfterActiveWork() {
         val executor = OwnedExecutor()
         val entered = CountDownLatch(1)

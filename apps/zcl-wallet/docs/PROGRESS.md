@@ -2394,3 +2394,43 @@ Exact identities, measured boundaries and source review are in
 [EMULATOR_REAPING.md](EMULATOR_REAPING.md), [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md)
 and `.cache/android-wallet/adb-reaping-20260914/`. Continue with wallet
 authorization/context and delivery lifetime safety; TLS remains owner-parked.
+
+2026-09-14: wallet session close no longer submits a new worker task solely for
+cleanup. A public regression reproduces the old failure: a thread factory that
+refuses a replacement can leave cleanup queued forever; a throwing factory can
+skip it. The private pool now owns cleanup in its termination hook, after all
+active input cleanup and before releasing process admission. An idle pool with
+no remaining worker clears directly. The callback reference retires before
+invocation; no new thread, queue slot, retry, secret copy or authority is added.
+`WalletPlatformSession` documents that exclusive final ownership explicitly.
+
+All seven executor unit tests pass, including both idle-pool start modes,
+NULL/OutOfMemoryError/SecurityException thread-factory faults, idempotent close,
+failed finalization, both process admissions, queued input clearing and admission
+held through active/final cleanup. An isolated Kotlin/JUnit build with warnings
+as errors also passes; five mutations (missing/double cleanup, early/missing
+admission release and the old close implementation) fail intended assertions.
+No production injection hook or weakened test is introduced.
+
+The real Android executor cases pass on API30/35/36 in0.025/2.327/1.144 seconds.
+The isolated API30 Activity cases also pass in3.358 seconds: repeated busy
+pause/resume with explicit retry, and a thrown pause-rendering callback with
+worker/input cleanup preserved. They create no wallet/key. Full Android/JVM,
+debug/release/test builds, strict lint, fixture isolation and16KiB native APK
+alignment pass. Both ABI native libraries remain byte-identical to the previous
+signed-wire milestone; this slice changes only managed platform lifetimes.
+Evidence is in `.cache/android-wallet/executor-close-20260914/`.
+
+The current locally signed minified APK is
+`8ed2a06c7cf316291c11c22bca84e015d33d153eb6ce4555fce77efd0398c8f1`;
+all20 unsigned release entries compare byte-for-byte after signing. Its complete
+camera denial/retry/grant/public-review/resource-release fixture passes in9.455
+seconds on a fresh isolated API30 profile. An earlier reused profile failed
+because its actual dialog offered `permission_deny_and_dont_ask_again_button`,
+instead of the fixture's required first denial; the hierarchy is retained.
+API30 lacks the requested `clear-permission-flags` shell command. A new separate
+AVD provides clean initial permission state without erasing the old profile or
+changing an assertion. Both new launches use the qualified ADB reaping adapter,
+exit0 through console shutdown, and leave the original26 zombies unchanged.
+Current origin/main is `9bc54830ad4bcd7a9a0959aaf4ffc53ec0726db2`, with no
+upstream Android app commits. No push, merge or hardware-custody claim is made.

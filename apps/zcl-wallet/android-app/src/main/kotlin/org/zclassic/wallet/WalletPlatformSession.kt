@@ -42,7 +42,8 @@ internal class WalletPlatformSession(
     private val work = OwnedExecutor()
     private val phrases = RecoveryPhraseDelivery(ui)
     private val wrappingKey = KeystoreWrappingKey(context, storage)
-    // Worker-owned; a rejected session can only clear its initial empty state.
+    // Worker-owned until pool termination. Final cleanup starts only when no
+    // worker can access setup; a rejected session has only its empty state.
     private var setup: Setup? = null
 
     fun close() {
