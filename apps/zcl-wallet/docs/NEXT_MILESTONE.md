@@ -30,7 +30,9 @@ The C QR decoder, bounded camera adapter, isolated decoding service and public
 request review are present; see [`SCANNING_QR.md`](SCANNING_QR.md). The API-35
 emulator proves separate Binder identity, public request round-trip, permission
 refusal, actual captured frames and three background/resume cleanup cycles.
-Qualify QR-to-review interoperability through an actual camera, the runtime
+An opted-in image-backed AOSP API35 emulator also passes the full Camera2 to
+isolated-decoder to exact-review path, including an explicit fresh scan after
+Activity recreation. Qualify physical camera interoperability, the runtime
 permission dialog, cancellation during camera open, process recreation, preview
 orientation on different devices, and the minified release at runtime. A
 synthetic QR round-trip and a separate camera-frame test do not prove that full

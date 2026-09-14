@@ -1496,3 +1496,34 @@ refused; no property bypass was used or claimed. The old-library failure and
 fixed-library success are observed runtime evidence, not a claim about a forced
 compatibility setting. This qualifies x86_64 emulator JNI behavior at 16 KiB;
 arm64 hardware, hardware-authenticated custody and physical optics remain open.
+
+2026-09-14 complete emulator camera-to-review path: the host-only
+`seed_camera_scene` reuses the pinned QR encoder and emits a fixed 640x480 PNG
+using one checked allocation and a bounded stored-DEFLATE writer. Exclusive
+creation refuses existing files; all writes/close are checked. Standalone
+Clang/GCC analysis, ASan/UBSan/LSan, exact repeated output and forced short-write
+refusal pass. The explicit C hazard review is recorded before commit.
+
+The final opt-in CameraRequestInstrumentedTest passes in 88.517 seconds on a
+fresh AOSP API35 x86_64 profile. Two actual Camera2 scans reach the exact public
+address, 1.25 amount and CameraFixture label through the isolated decoder.
+Preview pixels and the camera worker clear on review; Activity recreation
+discards the request and requires the second explicit scan. The imagefile
+backend rejects PPM and rotates/crops landscape PNG input; captured public
+diagnostics established a safe target position. No decoder threshold, deadline
+or production camera behavior changed to accommodate the fixture. Temporary
+capture code and device files were removed before final acceptance.
+
+All 61 native sanitizer tests pass in 44.72 seconds. Strict analysis, both ABI
+builds, JVM tests, debug/release lint, fixture isolation, native APK alignment
+and architecture pass; the two diagnosed repository lint environment failures
+remain visible. Scene-fuzz evidence includes 4,335 executions in 121 seconds
+with no finding; it used the initial public scene pixels, not the later
+emulator framing adjustment. Evidence is under
+`.cache/android-wallet/camera-scene-20260914`.
+
+Continue with the actual permission dialog and minified runtime. A locally
+signed minified APK already launches on the 16 KiB emulator and reaches its
+public scanner, but a real permission denial returns to the generic chooser
+message instead of its denial explanation. Reproduce that Android callback
+ordering in an opt-in UI regression and preserve the existing camera gates.

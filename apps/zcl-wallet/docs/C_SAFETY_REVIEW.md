@@ -993,3 +993,32 @@ refuse pending exceptions before either sync snapshot reads its native owner.
 Both new regressions fail on the preceding JNI implementations and pass after
 the changes. Final native, VM/device and fuzz observations are recorded in the
 progress log; no broader wallet or hardware qualification is inferred.
+
+## Public camera scene generator — 2026-09-14
+
+Scope: host-only fixed PNG scene for actual emulator camera-to-review testing.
+No Android production C source or provider changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Rendering requires exactly 921600 bytes. The QR side is checked in 1..49 before scale-six loops. Center x=180 bounds columns to 33..326; vertical centering bounds rows to 93..386, within 640x480 RGB. Each black module writes three bytes per proven pixel. The writer takes an explicit length and requires the same extent. |
+| Integer overflow/underflow; signed/unsigned conversions | All dimensions and scale are fixed. The checked side keeps signed products and centered offsets nonnegative and below 640/480; only these values convert to size_t. Fixed allocation and row products fit both 32-bit and 64-bit size_t. The 924486-byte IDAT length fits uint32; a chunk's length is checked before subtraction/narrowing. Adler residues stay below 65521, so each addition is below 131041 and the final shift fits uint32. CRC operations use unsigned shifts/XOR. No input-supplied dimension or arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | Main owns the one pixel allocation and frees it once after the synchronous renderer/writer. QR arrays are borrowed only during that invocation. A successful exclusive fopen has exactly one fclose even after a short write. No retained pointer or asynchronous generator operation. |
+| NULL dereferences; uninitialized memory | Allocation and arguments are checked before access. QR work arrays initialize to zero. The complete RGB extent initializes white before module painting; only a successful render reaches the writer. The complete row scratch initializes; each row replaces exactly its 1920 RGB bytes, preserving its fixed block/filter bytes. CRC/Adler words initialize and remain invocation-owned; helper pointers borrow these proven live objects. |
+| Pointer arithmetic; format strings | Pixel offsets use the established fixed dimension bounds. Header and diagnostics are fixed strings; neither argv nor pixels are format strings. argv[1] is read only after argc==2. |
+| Stack usage; allocation limits; resource exhaustion | Two version-eight QR work arrays and the separate writer's 1926-byte row scratch fit the 4096-byte compiler frame limit. Rendering, 480 row writes and eight CRC bit steps per byte have fixed finite bounds and no recursion/VLA. The only heap allocation is 921600 bytes. No intermediate codec allocation. File writes and close are checked; a file-size-limit fixture forces a short write and observes failure. |
+| Malformed input; races; secret leakage | The only external input is an explicit new output path. Exclusive creation refuses existing paths, including symlinks, without deleting or overwriting anything. Public address/amount/label are fixed unfunded fixtures. The single-threaded generator never opens a wallet, node, network connection or Android resource. No parser, key material, mutable shared state or new authority. |
+
+Strict compilation, separate Clang/GCC analysis, ASan/UBSan/LSan execution,
+identical repeated output, existing-file refusal and forced short-write refusal
+pass. An independent image reader decodes the PNG, and its signature/IHDR match
+the original encoder's fixed reference. All 61 native tests pass in 44.72 seconds
+with the unchanged safety caps.
+An initial PNG experiment was removed after standalone analysis reported two
+possible zero-allocation writes in the general repository PNG provider. That
+provider is not part of this generator or APK; its generic API has not been
+qualified by the fixed-size experiment. The analyzer traces are retained in
+`.cache/android-wallet/camera-scene-20260914/png-analysis-paths.txt`. No finding
+was suppressed and no platform provider source changed. The PPM alternative was
+rejected by the emulator, which substituted a default scene; the final writer
+emits only this fixed PNG fixture, not a general image-encoding API.

@@ -196,3 +196,50 @@ build removing only the two reply-delivery checks fails the expiry regression
 in 20.344 seconds by delivering the late reply. The fixed source was restored
 immediately after that build. This models elapsed time with an injected clock;
 it is not a physical device-sleep or camera interoperability qualification.
+
+## Public image through the emulator camera
+
+`CameraRequestInstrumentedTest` opts in with `-e qrCameraFixture yes`. Run it
+only on a separately created disposable API35 x86_64 emulator with CAMERA
+granted to `org.zclassic.wallet.dev`. It opens only the private scanner and
+expects the fixed unfunded request below. It checks exact address, amount and
+label after real Camera2 capture and isolated decoding, preview clearing and
+worker shutdown, then Activity recreation followed by an explicit fresh scan.
+No wallet or setup Activity is opened. The existing emulator profile need not
+be copied, wiped or reconfigured.
+
+Build `seed_camera_scene` in the host native CMake build and pass a new absolute
+output filename ending in `.png`. The generator reuses the pinned QR encoder
+and writes a fixed 640x480 PNG with one checked 921600-byte heap allocation.
+Each row is one stored DEFLATE block; row scratch is 1926 bytes. Dimensions,
+layout and chunk sizes are fixed, with checked file writes and close. Its request is
+`zclassic:t1T8yaLVhNqxA5KJcmiqqFN88e8DNp2PBfF?amount=1.25&label=CameraFixture`.
+Existing output files are refused. The generator is host-only and never linked
+into an APK.
+
+Create a fresh AVD using the API35 AOSP default x86_64 image,
+a separate `ANDROID_AVD_HOME`, a new profile path and a free emulator port.
+Launch with `-camera-back imagefile:/absolute/path/public-camera.png` and
+`-no-snapshot`. Software emulation may require substantial first-boot time;
+wait for `sys.boot_completed=1` and a working package service. Install the debug
+and Android-test APKs sequentially, grant CAMERA on that disposable profile,
+then select `org.zclassic.wallet.CameraRequestInstrumentedTest` with the opt-in
+above and the usual instrumentation component. A skipped test is not evidence.
+An image-backed emulator camera still does not qualify physical optics, focus,
+orientation, hardware custody or minified-release runtime behavior.
+
+The observed emulator rejects PPM input and silently substitutes its default
+scene. Use the generated PNG and inspect the emulator's camera initialization
+log; merely receiving frames does not establish that the requested image loaded.
+The observed backend also rotates and crops landscape source images: a centered
+QR lost one finder pattern. The fixed scale-six target is vertically centered
+with center x=180 to place the code inside that crop. This fixture placement
+accounts for the emulator backend; production sampling and decoding are unchanged.
+
+The final test APK passes this complete journey in 88.517 seconds on the API35
+AOSP x86_64 image with the final PNG. Both scans traverse real Camera2 capture,
+the production native sampler, isolated Binder decoding and native request
+validation. A temporary public-frame diagnostic established the rotation/crop;
+it was removed before the final APK was built and run. Its temporary captured
+files were removed from the disposable profile. Evidence and exact scene/APK
+hashes remain under `.cache/android-wallet/camera-scene-20260914`.
