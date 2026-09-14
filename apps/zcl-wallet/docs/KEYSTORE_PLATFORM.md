@@ -117,6 +117,16 @@ APK checks refusal, original/cleanup exception preservation, empty subsequent
 input and a successful fresh input transfer after the fix. This observes owned
 array handling, not complete erasure of Android rendering/runtime copies.
 
+Both recovery views explicitly omit hierarchy saving and discard all supplied
+hierarchy state on restoration, clearing their current owned material instead.
+The saving-disabled flag alone did not prevent a saved ordinary TextView record
+from populating a fresh recovery display with its 28-character public marker.
+Restoring a populated display also left its owned array uncleared; keyboard
+restoration retained its three existing input characters. The exact same ten
+device tests pass after the explicit guards on API35 and API36. The guards do
+not read, reinterpret or migrate a supplied Parcelable, and do not make saved
+state an authorized recovery route.
+
 On 2026-09-12 the API-35 development emulator reported key size 256,
 security level 0 (software), hardware-enforced authentication false, per-use
 duration 0 and authentication methods 3. The C policy rejects those actual

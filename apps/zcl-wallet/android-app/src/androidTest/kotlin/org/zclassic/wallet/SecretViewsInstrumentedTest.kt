@@ -1,8 +1,11 @@
 // Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 package org.zclassic.wallet
 
+import android.content.Context
+import android.os.Parcelable
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.SparseArray
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -19,6 +22,68 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SecretViewsInstrumentedTest {
+    private fun oldTextState(context: Context, identifier: Int): SparseArray<Parcelable> {
+        val saved = SparseArray<Parcelable>()
+        TextView(context).apply {
+            id = identifier
+            freezesText = true
+            text = "public saved recovery marker"
+        }.saveHierarchyState(saved)
+        assertTrue(saved.size() > 0)
+        return saved
+    }
+
+    @Test fun oldFrameworkStateCannotPopulateAFreshRecoveryDisplay() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val context = instrumentation.targetContext
+            val saved = oldTextState(context, R.id.recovery_words)
+            val view = RecoveryWordsView(context).apply { id = R.id.recovery_words }
+            try {
+                view.restoreHierarchyState(saved)
+                assertEquals(0, view.text.length)
+                val outgoing = SparseArray<Parcelable>()
+                view.saveHierarchyState(outgoing)
+                assertEquals(0, outgoing.size())
+            } finally { view.clearSecret() }
+        }
+    }
+
+    @Test fun frameworkRestoreClearsExistingOwnedRecoveryWords() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val context = instrumentation.targetContext
+            val saved = oldTextState(context, R.id.recovery_words)
+            val words = charArrayOf('a', 'b', 'c')
+            val view = RecoveryWordsView(context).apply { id = R.id.recovery_words }
+            try {
+                view.show(words)
+                view.restoreHierarchyState(saved)
+                assertTrue(words.all { it == '\u0000' })
+                assertEquals(0, view.text.length)
+            } finally { view.clearSecret(); words.fill('\u0000') }
+        }
+    }
+
+    @Test fun keyboardRestoreDiscardsForeignFrameworkStateAndCurrentInput() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val context = instrumentation.targetContext
+            val saved = oldTextState(context, R.id.recovery_input)
+            val view = RecoveryInputView(context).apply { id = R.id.recovery_input }
+            try {
+                for (letter in "abc") view.append(letter)
+                val outgoing = SparseArray<Parcelable>()
+                view.saveHierarchyState(outgoing)
+                assertEquals(0, outgoing.size())
+                view.restoreHierarchyState(saved)
+                val input = view.takeInput()
+                try { assertEquals(0, input.size) } finally { input.fill('\u0000') }
+                assertEquals(0, (view.getChildAt(0) as TextView).text.length)
+            } finally { view.clearSecret() }
+        }
+    }
+
     private class RenderFailure(private vararg val problems: Throwable) : TextWatcher {
         private var calls = 0
         override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {

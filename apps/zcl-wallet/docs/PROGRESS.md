@@ -1813,3 +1813,23 @@ Exact debug/test APKs and the new unsigned release are retained under
 `.cache/android-wallet/secret-view-20260914`, with hashes rechecked. This slice
 has no C or custody-policy change. Continue testing stale framework hierarchy
 restoration of recovery views; physical custody and networking remain separate.
+
+2026-09-14 recovery hierarchy refusal continuation: the final ten-test fixture
+reproduces three failures on API36 in 10.402 seconds. A saved ordinary TextView
+record populates a fresh recovery display with 28 public marker characters;
+restoring a populated display retains its owned words; keyboard restoration
+leaves three current input characters. The keyboard observation is retained
+input, not a framework exception. Both recovery views now explicitly omit
+hierarchy saving and clear current material without reading any supplied state.
+
+The same exact ten-test APK passes after the guards on API36 in 10.325 seconds
+and API35 in 21.881 seconds. The full JVM suites, debug/release builds and strict
+lint pass, along with fixture isolation and both ABI page alignment. Twenty
+unsigned release entries compare identically after local development signing;
+saved input hashes recheck. The final minified APK passes the full API36 real
+permission and Camera2 review flow in 37.921 seconds. No C, custody-policy,
+authentication or scanner behavior changes. Evidence is under
+`.cache/android-wallet/secret-state-20260914`. The preserved API30 fixture is
+restarting with four software-emulated cores for current runtime coverage.
+Continue lifecycle cleanup when UI teardown fails; physical custody and
+real-source networking remain unqualified.

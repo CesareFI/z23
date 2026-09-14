@@ -3,6 +3,8 @@ package org.zclassic.wallet
 
 import android.content.Context
 import android.os.Build
+import android.os.Parcelable
+import android.util.SparseArray
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -48,6 +50,9 @@ internal class RecoveryWordsView(context: Context) : TextView(context) {
         words = null
         try { text = "" } finally { previous?.fill('\u0000') }
     }
+
+    override fun dispatchSaveInstanceState(container: SparseArray<Parcelable>) = Unit
+    override fun dispatchRestoreInstanceState(container: SparseArray<Parcelable>) { clearSecret() }
 
     override fun onDetachedFromWindow() {
         clearSecret()
@@ -134,6 +139,9 @@ internal class RecoveryInputView(context: Context) : LinearLayout(context) {
         length = 0
         try { preview.text = "" } finally { characters.fill('\u0000') }
     }
+
+    override fun dispatchSaveInstanceState(container: SparseArray<Parcelable>) = Unit
+    override fun dispatchRestoreInstanceState(container: SparseArray<Parcelable>) { clearSecret() }
 
     override fun onDetachedFromWindow() {
         clearSecret()
