@@ -2,6 +2,7 @@
 #ifndef ZCL_TRANSACTION_REVIEW_INTERNAL_H
 #define ZCL_TRANSACTION_REVIEW_INTERNAL_H
 #include "zcl_transaction_review.h"
+#include "signature_internal.h"
 
 /* Separate unit keeps the owned parsed transaction out of the publisher's
  * optimized stack frame. Caller supplies private, initialized candidate data. */
@@ -92,4 +93,31 @@ typedef struct {
  */
 zcl_status zcl_review_sighash_context(zcl_review_owner *owner, uint64_t id, uint64_t now_ms,
     size_t input_index, const zcl_review_block *block, uint8_t *digest, size_t capacity);
+
+/* Internal public-data assembly, no key, JNI, signing/consent or send operation.
+ * Copy exactly one detached signature per reviewed input (1..8) and the explicit
+ * candidate before provider work. Derive every digest and P2PKH hash from the
+ * same owned review; verify every public signature before replacing its empty
+ * input script. Preserve all other transaction fields and canonical wire order.
+ * Recheck the live ID after verification; this does NOT establish completion-
+ * time freshness because now_ms is the supplied invocation time. It is not an
+ * approval or consumable authorization token. The enclosing wallet operation
+ * MUST authenticate current context and consent and recheck lifetime at actual
+ * completion/delivery. Success does not consume or extend the unsigned review.
+ * Same exclusive lock/no reentrancy/nonoverlap requirements as other review
+ * operations. Signature array has exactly signature_count readable entries,
+ * stable/caller-owned. All private copied work clears on every entered exit.
+ * Canonical signed bytes and length publish only after all checks; failures
+ * preserve both outputs. No funding, ownership, unspentness or broadcast claim.
+ */
+zcl_status zcl_review_p2pkh_wire(zcl_review_owner *owner, uint64_t id, uint64_t now_ms,
+    const zcl_review_block *block, const zcl_signature *signatures, size_t signature_count,
+    uint8_t *wire, size_t capacity, size_t *length);
+/* Assembly-only private publication phase. Separate translation unit keeps its
+ * staged1925-byte wire out of the parsed transaction/signature owner's frame.
+ * Caller supplies validated non-NULL stable objects under the same owner lock;
+ * it has already verified every signature against that exact reviewed draft.
+ * This function itself supplies no signature, consent or current-time proof. */
+zcl_status zcl_review_wire_encode(zcl_review_owner *owner, uint64_t id, uint64_t now_ms,
+    const zcl_transparent_tx *transaction, uint8_t *wire, size_t capacity, size_t *length);
 #endif

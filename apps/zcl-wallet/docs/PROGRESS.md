@@ -2322,3 +2322,47 @@ The final OpenSSL differential script fuzzer completes1,792,794 cases in121
 seconds without a finding, with max_len160, timeout5 and RSS512MiB
 (peak274MiB). Initial698,807-run evidence remains separately attributable to
 the earlier harness; the final binary and source identity are checked explicitly.
+
+2026-09-14: complete public signed-wire assembly now binds every P2PKH
+signature to its exact owned review input and explicit candidate. It preserves
+all original transaction fields except input scripts, stages bounded wire
+privately, rechecks liveness around encoding and publishes bytes/length only
+on complete success. All copied work clears. No secret, RNG, heap, JNI, consent,
+current-chain authentication or broadcast authority is added. Completion-time
+freshness remains the future authorized adapter's responsibility.
+
+Real-provider and independent host tests cover both networks, 1..8 inputs,
+1/16 outputs, capacities, source destruction, altered signatures and review
+lifetime transitions. The 20-mode dirty-provider suite also covers cancellation,
+replacement, expiry and rollback during encoding. All 26 mutants are detected
+(25 assertions and one ASan negative-size copy). All 83 ASan/UBSan/LSan groups
+pass in 61.24 seconds; Clang/GCC analyses and unchanged 10/15 complexity caps
+pass (500/1145 functions). The independent wire/state fuzzer completes 74,095
+cases in 121 seconds without a finding. Individual optimized entry/publication
+frames measure 3304/2040 bytes, within the existing 4096-byte per-frame gate.
+
+Android/JVM/lint, alignment/fixture isolation and architecture checks pass.
+Actual release-archive tests pass on x86-64 API 30/35/36; ARM64 is compiled only.
+Runtime executable SHA256 is
+`1e2976628ef3c505fc3cc19d7fb72392b60dc7bb5909ec00153a7954f91c9a4c`.
+Debug and test APKs remain identical. Both release libraries differ only in
+GNU build ID notes; comparison copies with just those notes removed match
+byte-for-byte. The unsigned release SHA256 is
+`1126be153726695456f32138d75da8b7b7328fab3b4b958ec7718cb133cbb402`,
+and its locally signed minified APK is
+`5d7beeb5c95b435e4f031ecd67a19071a735287934a5afb1aa4b8f7fa9bd30c0`.
+An extra attempt to run debug instrumentation against minified release failed
+because its direct Kotlin-class dependencies were removed by shrinking. This
+was a test-target mismatch; no production keep rule or security check was
+weakened. Corrected evidence distinguishes debug JNI tests and minified startup
+from the standalone release C acceptance. No fresh camera or positive hardware
+custody acceptance is claimed. Exact logs, sources and artifacts remain in
+`.cache/android-wallet/review-signed-wire-20260914/`.
+
+Fetched origin/main is `b240f40c77bb56f172b0223d0eb2a074cf8409a3`, with no new
+upstream Android app commits. The existing branch remains unmerged/unpushed.
+Next is the user-requested emulator ADB reaping repair, followed by authenticated
+context/consent and completion/cancellation composition. The observed 26 old
+ADB zombies belong to the three running emulators; signed-wire device runs add
+none. Existing emulator data remains intact. TLS stays owner-parked and real
+funds stay outside all development fixtures.

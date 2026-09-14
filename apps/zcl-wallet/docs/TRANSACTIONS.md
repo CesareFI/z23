@@ -929,6 +929,76 @@ public signatures with the independent OpenSSL oracle. Evidence and exact
 source/archive/artifact hashes are retained in
 `.cache/android-wallet/signature-script-20260914/`.
 
+## Complete public signed wire from an owned review — 2026-09-14
+
+`zcl_review_p2pkh_wire` copies the supplied candidate context and all1..8 public
+signatures before provider work. It parses only the live owner's unsigned
+transaction, requires every original input script to be empty, derives each
+digest from that exact review and candidate, and verifies each canonical P2PKH
+signature against its assessed input hash. Only the input scripts change.
+The ordinary bounded transaction checker and serializer produce at most1925
+bytes into private storage. Length equality and live-ID checks before and after
+serialization precede publication of both bytes and length. Every failure
+preserves both caller outputs. All entered work and per-row digests clear.
+
+This internal public-data assembler has no secret, RNG, heap, JNI, signing or
+consent capability. It does not consume or extend the review. The existing
+exclusive adapter lock and stable, nonoverlapping input/output spans are required.
+Its supplied `now_ms` is invocation time: repeated checks do not obtain a fresh
+completion clock. A future authorized operation must authenticate current chain
+context and consent, then recheck actual completion/delivery time. A successful
+public assembly is never a cached authorization token or unspentness proof.
+
+Real-provider tests cover both networks, every input count1..8 and1/16 outputs,
+all capacities for one profile, exact boundary/SIZE_MAX capacities for32
+profiles, every selected row's altered/swapped/wrong-digest signature, malformed
+lengths, P2SH refusal, NULLs, stale IDs, rollback, expiry and replacement reviews.
+Destroying the original source buffers leaves the owned review authoritative.
+Independent reading verifies exact two-push consumption and every preserved
+transaction field. The host oracle hashes the completed signed wire with the
+qualified independent reader/libsodium and verifies its public signatures with
+OpenSSL. The bounded differential fuzzer manually splices expected wire without
+using the wallet parser, serializer or signer, and models complete owner state
+and output preservation. Its synthetic fixture reference is deliberately limited
+to its declared final-sequence/zero-lock profiles; it is not general consensus.
+
+The20-mode failure suite covers dirty parser/hash/script/check/serializer output,
+SIZE_MAX counts and lengths, copied-source mutation, short capacity, cancellation
+before/during encoding, replacement ownership, rollback and expiry before final
+publication. Live zero callbacks inspect and retire captures; cleanup counters
+fail before any post-lifetime pointer-marker check. All26 deliberate mutants are
+detected:25 intended assertions and one ASan negative-size copy interception.
+Initial fixture complexity findings were fixed by named operations and an exact
+stage table, retaining every assertion and the existing caps.
+
+All83 ASan/UBSan/LSan groups pass in61.24 seconds; focused real/fault tests and
+the independent oracle pass. Clang/GCC production and new fixture analysis pass
+with unchanged complexity caps10/15 (500/1145 functions). Optimized host frames
+are3304 bytes for assembly and2040 for private publication, each below4096;
+these are individual frames, not the nested call-chain total. The final fuzzer
+completes74,095 cases in121 seconds without a finding (max_len144, timeout5,
+RSS limit512MiB).
+
+Android/JVM/lint, APK alignment/fixture isolation and architecture gates pass.
+Debug and test APKs remain byte-identical. The release APK changes only because
+both native libraries' GNU build ID notes change; removing just those notes from
+comparison copies yields exact byte equality. The unsigned release SHA256 is
+`1126be153726695456f32138d75da8b7b7328fab3b4b958ec7718cb133cbb402`.
+No new JNI caller exists. Standalone tests against
+the actual new release archives pass on x86-64 API30/35/36, executable SHA256
+`1e2976628ef3c505fc3cc19d7fb72392b60dc7bb5909ec00153a7954f91c9a4c`.
+ARM64 is compiled only, SHA256
+`befe9e7793ddbeb964d8ea388515428ed518e64a951bf2cdad1a9ed90bcfa42a`.
+Both ELFs have16KiB alignment, RELRO/NOW and non-executable stacks. These public
+synthetic fixtures access no app wallet, Keystore, endpoint or node. This adds
+no fresh camera or positive hardware-custody claim. Fresh debug API35
+storage/record JNI tests pass (three tests, 13.859 seconds); the exact new
+locally signed minified APK starts successfully on API30/36. Debug instrumentation
+cannot run against release's removed Kotlin classes; the initial mismatched
+attempts are retained as failures, not counted as release JNI acceptance.
+Exact evidence and hashes
+are in `.cache/android-wallet/review-signed-wire-20260914/`.
+
 ## Ordered continuation
 
 1. Authenticated key/change ownership and durable index recovery, using the
@@ -953,7 +1023,8 @@ source/archive/artifact hashes are retained in
    lifecycle and restart recovery. The bounded raw-digest primitive above now
    has independent host verification and real release-library Android evidence;
    canonical P2PKH input scripts now also have strict public verification.
-   Complete signed wire and authorized live-review completion remain open.
+   Complete public signed wire now has exact-review and independent host/device
+   evidence above. Authorized live-review completion remains open.
    Real funds remain outside development tests.
 4. Shielded wire/proof/witness/value/recovery qualification before exposing it.
 

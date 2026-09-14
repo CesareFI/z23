@@ -1388,3 +1388,31 @@ The final independently checked script fuzzer completes1,792,794 executions
 in121 seconds without a finding, with max_len160, timeout5 and RSS512MiB
 (observed274MiB). The initial698,807-run campaign's source/binary/log remain
 separate from the final harness after complexity and local-bound fixes.
+
+## Complete public signed wire from an owned review — 2026-09-14
+
+Scope: two internal C assembly/publication units, a reusable synthetic fixture,
+real-provider and failure tests, an independent reference and a bounded fuzzer.
+No JNI, private key, wallet persistence, consent or consensus predicate changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | NULL spans refuse first. Signature count must be 1..8 and match the assessed count before multiplication/copy/indexing. Parsed input count must match that checked count. Original scripts must be empty. Each completed script length is checked against 44..107 even after helper success. The ordinary checker must return 1..1925, within private publication storage and caller capacity; serialized length must equal that checked value before copying. Tests exercise every input count, maximum outputs, all single-profile capacities, SIZE_MAX counts/lengths, guards and dirty provider output. |
+| Integer overflow/underflow; signed/unsigned conversions | Production uses bounded size_t counts and lengths; count times the fixed signature size is bounded by eight entries. No untrusted offset or allocation arithmetic is added. Fuzzer controls require 16..144 bytes, read fixed-width words after the floor, and process only complete four-byte mutations. Reference append subtracts only after validating the used capacity; script arithmetic follows DER 8..71 checks. Candidate height/cutoff conversions and branch selection stay in previously qualified helpers. |
+| Use-after-free; double-free; leaks; dangling pointers | Work owns all eight copied signatures, candidate and parsed transaction for one synchronous invocation; publication owns its separate private wire. No production heap/free/descriptor is added. Owner rows are borrowed under the same exclusive adapter lock. Fault observers inspect and retire captures inside live zero callbacks; expected cleanup counts fail before post-lifetime pointer-marker comparisons. Independent OpenSSL/libsodium helpers retain their checked cleanup paths. Large serial fixtures have static storage and no pointer escapes a case. |
+| NULL dereferences; uninitialized memory | Whole work representations initialize, including padding and unused signature tails; each digest starts zeroed. Every parse/hash/script/check/encode status gates the successor. Valid-looking dirty failure data cannot publish. NULL arguments cannot advance liveness. Separate publication is internal and requires its already validated non-NULL stable caller objects. All entered work and every nonempty row digest clear on success/failure. |
+| Pointer arithmetic; format strings | Production accesses only fixed typed objects and checked row spans. No alignment cast, raw serialized pointer, path or variable format string is introduced. Inputs/outputs must remain stable and nonoverlapping. Independent reference traversal bounds fixed unsigned input spans and every destination append; it never uses a production parser/serializer to create expected bytes. Test diagnostics expose fixed text and public line identifiers only. |
+| Stack usage; allocation limits; resource exhaustion | Measured optimized host frames are 3304 bytes for assembly and 2040 for publication, individually below the unchanged 4096-byte cap. Nested codec/hash/provider frames remain separate; no whole-call-chain 4096-byte claim is made. No recursion/VLA/production heap, RNG, mutable global or worker exists. Work is bounded by eight public signature verifications and one 1925-byte serialization. Fuzzer input 144, per-case five seconds, campaign 121 seconds and RSS 512 MiB bound synthetic testing. |
+| Malformed serialization; races; explicit lifetimes | Only owned unsigned bytes and assessed P2PKH input hashes select what is signed. Every original field except input scripts survives. P2SH, altered signatures, wrong candidate domains and unsupported context refuse. Shared liveness checks surround private encoding; cancellation, replacement, rollback and expiry faults preserve both outputs and cannot clear an unrelated new owner. The operation requires exclusive access and does not model concurrent lock correctness. Reusing supplied invocation time does not prove completion-time freshness; the future authorized adapter must obtain and validate an actual completion/delivery clock. |
+| Secret leakage, cryptography and authority | Only public context/signatures/transaction data enter the assembler. It creates no signature, key, entropy, storage or JNI capability, consumes no consent and extends no deadline. Complete owned work clears; synthetic signing fixtures use public scalars and clear their copies. Independent host verification of completed bytes and exact manual wire construction complement the pinned provider checks, without claiming a general script interpreter, current chain, unspentness, wallet ownership, hardware custody or broadcast authority. |
+
+All 83 native ASan/UBSan/LSan groups pass in 61.24 seconds. Production and new
+fixture/fault/reference/oracle/fuzzer Clang/GCC analyses pass, with unchanged
+10/15 complexity caps (500/1145 functions). All 26 mutants are detected: 25
+intended assertions and one ASan negative-size copy interception. Initial test
+complexity failures were repaired by bounded named operations and an exact
+stage table; no warning, assertion or threshold was weakened. The differential
+fuzzer completes 74,095 cases in 121 seconds without a finding. Release-archive
+tests pass on x86-64 API 30/35/36; ARM64 is compiled only. See
+[TRANSACTIONS.md](TRANSACTIONS.md) and
+`.cache/android-wallet/review-signed-wire-20260914/` for exact evidence scope.

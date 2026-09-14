@@ -107,7 +107,8 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c src/transaction_sighash.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
     src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
-    src/transaction_context.c src/transaction_review_context.c
+    src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
+    src/transaction_review_wire_encode.c
     src/transaction_draft.c src/transaction_draft_check.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
@@ -767,6 +768,28 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_signature_script_failures COMMAND signature_script_failure_tests)
     set_tests_properties(wallet_signature_script_failures PROPERTIES TIMEOUT 15)
+    add_library(signed_review_test_fixture STATIC tests/signed_review_fixture.c)
+    target_include_directories(signed_review_test_fixture PUBLIC src)
+    target_link_libraries(signed_review_test_fixture PUBLIC zcl_wallet_core zcl_hash_provider)
+    target_compile_options(signed_review_test_fixture PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_executable(review_wire_tests tests/test_review_wire.c)
+    target_link_libraries(review_wire_tests PRIVATE signed_review_test_fixture secp256k1)
+    target_compile_options(review_wire_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_wire COMMAND review_wire_tests)
+    set_tests_properties(wallet_review_wire PROPERTIES TIMEOUT 30)
+    add_executable(review_wire_failure_tests tests/test_review_wire_failures.c
+        src/transaction_review_wire.c src/transaction_review_wire_encode.c)
+    target_link_libraries(review_wire_failure_tests PRIVATE signed_review_test_fixture)
+    target_compile_definitions(review_wire_failure_tests PRIVATE
+        zcl_transaction_parse=zcl_wire_test_parse zcl_review_sighash_context=zcl_wire_test_hash
+        zcl_signature_p2pkh=zcl_wire_test_script zcl_transaction_check=zcl_wire_test_check
+        zcl_transaction_serialize=zcl_wire_test_serialize zcl_secure_zero=zcl_wire_test_zero)
+    target_compile_options(review_wire_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_wire_failures COMMAND review_wire_failure_tests)
+    set_tests_properties(wallet_review_wire_failures PROPERTIES TIMEOUT 30)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(signature_failure_tests tests/test_signature_failures.c src/signature.c)
     target_include_directories(signature_failure_tests PRIVATE src)
@@ -891,6 +914,17 @@ if(NOT ANDROID)
         target_compile_definitions(signature_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
         target_link_libraries(signature_script_tests PRIVATE signature_oracle)
         target_compile_definitions(signature_script_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
+        target_link_libraries(review_wire_tests PRIVATE signature_oracle sighash_oracle)
+        target_compile_definitions(review_wire_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
+        add_library(signed_review_reference STATIC tests/signed_review_reference.c tests/context_reference.c)
+        target_include_directories(signed_review_reference PUBLIC src)
+        target_link_libraries(signed_review_reference PUBLIC signature_oracle sighash_oracle)
+        target_compile_options(signed_review_reference PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        if(ZCL_SANITIZE)
+            target_compile_options(signed_review_reference PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
+            target_link_options(signed_review_reference PUBLIC -fsanitize=address,undefined)
+        endif()
         if(ZCL_FUZZ)
             target_compile_options(signature_oracle PRIVATE -fsanitize=fuzzer-no-link)
             target_link_libraries(fuzz_signature PRIVATE signature_oracle)
@@ -901,6 +935,12 @@ if(NOT ANDROID)
             target_compile_options(fuzz_signature_script PRIVATE -fsanitize=fuzzer,address,undefined
                 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wframe-larger-than=4096)
             target_link_options(fuzz_signature_script PRIVATE -fsanitize=fuzzer,address,undefined)
+            target_compile_options(signed_review_reference PRIVATE -fsanitize=fuzzer-no-link)
+            add_executable(fuzz_review_wire tests/fuzz_review_wire.c)
+            target_link_libraries(fuzz_review_wire PRIVATE signed_review_test_fixture signed_review_reference)
+            target_compile_options(fuzz_review_wire PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wshadow -Wframe-larger-than=4096)
+            target_link_options(fuzz_review_wire PRIVATE -fsanitize=fuzzer,address,undefined)
         endif()
         add_executable(receive_oracle_tests tests/test_receive_oracle.c)
         target_link_libraries(receive_oracle_tests PRIVATE zcl_wallet_core OpenSSL::Crypto)
