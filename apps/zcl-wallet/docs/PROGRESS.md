@@ -1740,3 +1740,32 @@ unchanged script successfully. Production C and custody policy do not change.
 Evidence is under `.cache/android-wallet/jni-header-20260914`, and the explicit
 hazard review is in `C_SAFETY_REVIEW.md`. Continue with the record object-array
 JNI boundary and its bounded references/exception paths.
+
+2026-09-14 wallet-record JNI continuation: a separate registered fixture now
+checks pack/unpack's eight/sixteen VM call ordinals, both networks and all five
+entropy sizes, exact component copies, malformed records, caller input
+preservation and a peak of two live locals. It covers pending/NULL arguments,
+partial reads/publication, NULL allocations without an exception and returned
+references with a pending exception. JNI return-frame cleanup is distinguished
+from prompt temporary-local deletion. No production C changes.
+
+All 62 native ASan/UBSan/LSan tests pass in 44.69 seconds. Enabled-code analysis
+and separate unit/fuzz fixture analysis pass in Clang and GCC, with all 832
+fixture functions within the unchanged cap. Three isolated mutants remove the
+class-local release, part-local release or object-publication exception check;
+all are rejected. Bounded fuzzing completes 376,843 executions in 121 seconds
+without a finding. The first attempt to build the new Makefile target required
+explicit CMake regeneration; the configured target then builds and passes.
+
+The new in-memory Android test passes all ten record profiles on API35 in
+11.708 seconds and API36 in 4.674 seconds. It checks independent JNI arrays,
+malformed-call recovery, real GCM and changed-tag refusal without a wallet
+directory or Keystore alias. API35 output was initially delayed, then the
+unchanged invocation completed successfully. Debug/test builds, strict
+debug/release lint, fixture isolation, native APK alignment and architecture
+pass. Exact device APKs are saved and their hashes recheck; the prior final
+minified artifact identities also recheck, and that APK is restored on API36.
+Evidence is under `.cache/android-wallet/jni-record-20260914`; the complete
+hazard review is in `C_SAFETY_REVIEW.md`. Continue wallet lifetime and foreground
+review safety. Physical optics, hardware-authenticated custody and real-source
+networking remain unqualified.

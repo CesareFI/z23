@@ -1044,3 +1044,28 @@ All 61 native ASan/UBSan/LSan tests pass in 44.49 seconds. Enabled-provider and
 authored-source analysis pass; the changed fixture separately passes Clang and
 GCC analysis in both unit and fuzz modes. All four omitted-cleanup mutants are
 rejected. Evidence is under `.cache/android-wallet/jni-header-20260914`.
+
+## Wallet-record JNI arrays and references — 2026-09-14
+
+Scope: a host fault fixture/fuzzer for record pack/unpack, plus an in-memory
+Android record/GCM fixture. Production C and record/custody rules are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Fake objects contain 141 bytes and exactly four child slots. Byte-region callbacks validate signed offsets/counts against both declared and physical bounds. Object writes require an index in 0..3. Fuzz size is 2..143 before any payload copy, bounding it to 141 bytes. JNI capacities remain 80/12/48/140. All ten network/entropy profiles have exact byte and component checks. |
+| Integer overflow/underflow; signed/unsigned conversions | Checked positive input size precedes subtraction/narrowing. Profiles are bounded by ten and derive only 16..32-byte entropy / 32..48-byte ciphertext sizes. Negative, zero, adjacent and INT32_MAX fake lengths are deliberate unit inputs; no unchecked count reaches a callback copy. Result verification checks positive lengths/capacity before byte comparisons. No new production arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers | Six fixed fake objects model one class, one container and four byte arrays without a heap. Live local handles are distinguished from child objects retained by the returned container. Deleting a temporary does not destroy its retained child bytes. Every JNI use requires a live handle; duplicate/foreign deletion fails. At most two new locals may coexist and success leaves only the returned root. Remaining exception-path locals belong to the JNI return frame, modeled by resetting the fixed pool before the next invocation. No native pointer escapes. |
+| NULL dereferences; uninitialized memory | Fake state, inputs, references and cached public headers initialize. NULL environment and each NULL input refuse; pending entries make no ordinary VM call. Every VM fault ordinal is injected, including NULL without exception and non-NULL with exception at class/array allocation. Partial read/publication faults are modeled. An output is inspected only after a non-NULL result. |
+| Pointer arithmetic; format strings | All offsets use proven backing-array bounds. Reference identity is compared against each occupied slot, without relational arithmetic on unrelated pointers. Diagnostics are fixed strings/line numbers. No input is treated as a format string or address. |
+| Stack usage; allocation limits; resource exhaustion | Four fixed input snapshots fit the unchanged 4096-byte frame limit. The six-reference pool and ten 80-byte header fixtures are fixed process-local host state. Header derivation runs once per profile in a single-threaded process. No new heap, recursive parser, VLA, native worker or unbounded loop. VM-call expectations are eight for pack and sixteen for unpack; no calls continue after a pending fault. Complexity caps stay 10/15. |
+| Malformed serialization; races; native lifetime | Unit cases cover every supported profile, malformed lengths/header fields, all JNI callback failures and exact component/network projection. Input snapshots remain byte-identical on success/refusal. The fuzzer bounds every packet/operation and checks accepted projections against the C codec. No fixture uses shared concurrent writers or changes production serialization. |
+| Secret leakage and authority | Header fixtures use public zero entropy and fixed blinding. Host ciphertext bytes are structural test data, not authenticated records. The separate Android fixture uses a public AES test key, actual provider IVs/GCM, clears recovered entropy in finally and opens no wallet directory/Keystore alias. It proves tag refusal separately from structural parsing. No custody policy, signing, real funds, endpoint or consensus predicate changes. |
+
+All 62 native ASan/UBSan/LSan tests pass in 44.69 seconds. Clang/GCC analysis
+passes for enabled production code and separately for both modes of the new
+fixture; all 832 fixture functions remain within the existing cap. Three
+isolated mutants omit the class-local release, part-local release, or pending
+exception check; each fails the intended fixture. Bounded record JNI fuzzing
+completes 376,843 runs in 121 seconds without a finding. Architecture passes.
+Android build/lint and real-VM observations are recorded in the progress log.
+Evidence is under `.cache/android-wallet/jni-record-20260914`.

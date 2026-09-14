@@ -146,3 +146,20 @@ spans before their lifetimes end. Removing either clear from either entry is
 detected by separately compiled negative fixtures. This proves the stated JNI
 cleanup contract on public host inputs; it does not authenticate GCM or qualify
 hardware custody. Object-array record unpacking has a separate JNI boundary.
+
+The separate host `wallet_jni_record` fixture covers pack/unpack through all
+eight/sixteen ordinary VM call ordinals. It checks exact components for both
+networks and all five entropy sizes, immutable caller inputs, refusal before
+allocation for malformed records, at most two simultaneous local references,
+and no returned partial result after an exception. NULL allocations without
+exceptions and allocated references with pending exceptions are both injected.
+Remaining locals on a refused call belong to the normal JNI return frame;
+temporary class/part references are otherwise released promptly. Three negative
+fixtures detect missing temporary releases and missing exception refusal.
+
+`NativeRecordInstrumentedTest` separately passes all ten profiles on API35 and
+API36 using the real VM and provider GCM. Mutating the parsed arrays leaves the
+input record and other arrays unchanged; malformed calls are followed by a
+successful authenticated recovery. A structurally valid record with a changed
+tag still parses and must then fail provider authentication. This in-memory test
+uses public vectors and opens no wallet directory or Keystore alias.
