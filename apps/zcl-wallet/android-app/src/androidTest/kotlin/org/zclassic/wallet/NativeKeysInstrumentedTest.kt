@@ -11,6 +11,25 @@ import org.zclassic.wallet.core.WalletKeys
 /** Local test material only. No wallet file, hardware-policy bypass or funds. */
 @RunWith(AndroidJUnit4::class)
 class NativeKeysInstrumentedTest {
+    @Test fun publicSecretDestinationsPreserveAllSupportedEntropyLengths() {
+        for (length in listOf(16, 20, 24, 28, 32)) {
+            val entropy = ByteArray(length) { it.toByte() } // Public synthetic vector.
+            val words = WalletKeys.recoveryPhrase(entropy)
+            try {
+                assertTrue(words.isNotEmpty() && words.size <= 215)
+                assertTrue(words.none { it == '\u0000' })
+                assertEquals(length * 3 / 4, words.count { it == ' ' } + 1)
+                val restored = WalletKeys.restoreEntropy(words)
+                try {
+                    assertEquals(length, restored.size)
+                    assertTrue(entropy.contentEquals(restored))
+                    assertTrue(WalletKeys.confirmRecoveryPhrase(entropy, words))
+                } finally { restored.fill(0) }
+                assertTrue(entropy.indices.all { entropy[it] == it.toByte() })
+            } finally { entropy.fill(0); words.fill('\u0000') }
+        }
+    }
+
     @Test fun publicMnemonicCopiesAndRefusalsLeaveTheVmUsable() {
         val entropy = ByteArray(16)
         val phrase = WalletKeys.recoveryPhrase(entropy)

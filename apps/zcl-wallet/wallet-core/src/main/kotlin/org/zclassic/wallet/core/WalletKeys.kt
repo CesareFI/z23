@@ -7,15 +7,19 @@ package org.zclassic.wallet.core
  * This API implements the documented English BIP39, empty-passphrase profile.
  */
 object WalletKeys {
-    fun createEntropy(): ByteArray = checkNotNull(NativeCore.createEntropy()) {
-        "Secure randomness unavailable"
+    fun createEntropy(): ByteArray = SecretOutput.bytes(32) { output ->
+        NativeCore.createEntropy(output).also { check(it == 32) { "Secure randomness unavailable" } }
     }
 
-    fun recoveryPhrase(entropy: ByteArray): CharArray =
-        requireNotNull(NativeCore.recoveryPhrase(entropy)) { "Unsupported recovery entropy" }
+    fun recoveryPhrase(entropy: ByteArray): CharArray = SecretOutput.characters(215) { output ->
+        NativeCore.recoveryPhrase(entropy, output).also { require(it > 0) { "Unsupported recovery entropy" } }
+    }
 
-    fun restoreEntropy(phrase: CharArray): ByteArray =
-        requireNotNull(NativeCore.restoreEntropy(phrase)) { "Invalid or unsupported recovery phrase" }
+    fun restoreEntropy(phrase: CharArray): ByteArray = SecretOutput.bytes(32) { output ->
+        NativeCore.restoreEntropy(phrase, output).also {
+            require(it > 0) { "Invalid or unsupported recovery phrase" }
+        }
+    }
 
     fun confirmRecoveryPhrase(entropy: ByteArray, phrase: CharArray): Boolean =
         NativeCore.confirmRecoveryPhrase(entropy, phrase)

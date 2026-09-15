@@ -1891,3 +1891,66 @@ quarantined; authenticated chain context, per-use custody and send gates remain.
 The exact public-vector JNI mnemonic/refusal/receive method also passes on
 API30/35/36 in 0.422/1.410/0.635 seconds. No fresh entropy-generation method
 was invoked; all device-native fixture copies were removed after success.
+
+## Managed ownership before secret JNI output — 2026-09-15
+
+Reviewed `jni_keys.c`, the public-only output note in `jni_support.h`, the
+three internal `NativeCore` signatures, `WalletKeys`, `SecretOutput`, C/JVM/device
+regressions and host-only exception-bridge wiring. The preserved old fixture
+copies public entropy/phrase bytes into a native-created Java result and then
+raises an injected VM exception. The native entry returns no array, so its
+caller cannot clear that managed copy; the earlier native-scratch checks still
+passed. This is a reproduced failure-model ownership gap, not evidence of an
+observed spontaneous Android VM failure or exposure of a real wallet.
+
+The managed caller now owns the bounded destination before JNI starts. Native
+entries return a checked written length and never allocate a secret result.
+Managed finally clears the complete destination on refusal/exception and after
+copying a shorter prefix; an exact-capacity success transfers that one array.
+The public `WalletKeys` signatures, exact lengths, error messages and mnemonic
+profile remain unchanged. Only its private JNI calling convention changes;
+matching managed/native artifacts must ship together.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Native destinations must have exactly 32 bytes or 215 characters. Both declared source lengths and actual VM capacity are checked before region writes; native loops remain bounded by 215. Negative, empty, undersized and oversized VM lengths through INT32_MAX and NULL destinations refuse. The managed owner checks 1..capacity before copying a prefix or transferring ownership. Tests retain complete backing arrays and output guards, including partial VM copies before failure. |
+| Integer overflow/underflow; signed/unsigned conversion | JNI lengths are narrowed only after bounds of 32/215. VM jsize values are compared to those positive fixed capacities, with no unchecked arithmetic or allocation multiplication. Native tests use bounded copied-element counts and size_t conversion only after region bounds. Managed allocations reject capacities outside 1..32 or 1..215 before invoking their writer. Strict conversion warnings remain errors. |
+| NULL dereferences; uninitialized memory | Native entry/helper pointers and pending exceptions are checked before access; all native secret buffers and managed arrays start zeroed. Invalid output capacity never publishes a positive count. The host bridge accepts only a non-NULL fixture Throwable and bounded prefix, forwards each call with the original real JNIEnv and keeps its wrapper table as the first member of an invocation-local owner. |
+| Use-after-free; double-free; leaks; dangling pointers | No JNI pins, GetArrayElements, direct buffers, native heap allocation, new global/local result references or retained output handle are introduced. The caller holds the managed array across JNI and finally, including after a failed transfer. Native scratch retains unconditional erasure. The fixture bridge borrows the actual VM environment, input/output references and exception only until that one call returns; nothing survives in global state. Its real VM test observes copied bytes before rethrow, then observes the same owned array fully cleared after finally. |
+| Stack usage; allocation limits; resource exhaustion | Native storage stays fixed and below the 4096-byte frame gate. The fake-VM fixture's measured GCC-O2 maximum frame is 1408 bytes; the real-VM bridge's is 112. Native secret-result allocation is removed. Managed create/32-byte restoration can transfer its sole array; shorter results use one additional bounded prefix allocation, with the entire 32-byte/215-character scratch cleared afterward. This trades at most one bounded temporary array for retained cleanup ownership, not a measured RAM saving. No retry, growing collection, worker or KDF change is introduced. |
+| Malformed input; provider/VM failures; error handling | Existing mnemonic/entropy validation stays in C. Native code stops after observing any pending exception and returns no successful length. Input/result snapshots, provider failure, every modeled VM boundary and 30 prefix-transfer cases verify native cleanup/refusal. Managed tests cover every shorter result length, invalid lengths/capacities, original exception identity and complete erasure after partial output. A host-only bridge executes actual production C and real JNI region writes before raising the supplied OutOfMemoryError; ten real VM prefix cases prove the managed finally behavior. It injects an exception, not actual process-wide memory exhaustion. |
+| Races; ownership; lifecycle | The three private native methods receive fresh destinations allocated inside one serialized call's managed owner. They retain no reference and expose no persistent unlocked state. Inline ownership helpers add no worker or shared mutable state; external callers still own and clear returned arrays. No Activity/process, authentication, Keystore, storage or transaction-authority gate changes. The test bridge is compiled only for host JNI builds and is absent from Android native inventories and export tables. |
+| Secret leakage; format strings | Native entropy, UTF-8 mnemonic and jchar scratch still wipe on all admitted exits. Returned managed arrays remain explicitly caller-owned; shorter-prefix scratch and failed outputs now retain a finally owner. Diagnostics contain only fixed text/assertions. Native and real-VM fault fixtures use public synthetic material and no fresh entropy source. Four managed and six native mutations reject omitted/short cleanup, premature transfer, wrong capacities, ignored exceptions or reintroduced native secret allocation. VM/provider/UI copies and abrupt process termination remain outside complete erasure guarantees; no claim is made to erase every runtime copy. |
+
+Android's [JNI exception rules](https://developer.android.com/ndk/guides/jni-tips#exceptions)
+require returning or handling a pending exception before most further JNI calls.
+The implementation leaves the original exception pending and clears only native
+scratch until managed finally executes. The [JNI array-region contract](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/functions.html#setprimitivetypearrayregion-routines)
+provides the bounded copy operation; the fault fixture deliberately tests the
+stronger case of a partial copy followed by an exception.
+
+All 90 default sanitizer groups pass in 49.78 seconds. Final focused native
+checks and Clang/GCC analysis pass after accommodating the NDK/JDK names for the
+JNI table type in the standalone test. Production/fixture complexity caps remain
+10/15 (511 functions/91 files and 1276 functions/152 files), and architecture
+placement passes. The JNI fuzzer completes 125794 cases in 121 seconds without
+a finding, with max_len217, timeout5, RSS cap512 MiB and 68 MiB observed. Its
+host table declaration precedes that type-name-only portability adjustment.
+The native mutation control and all six mutants, plus the separately compiled
+managed control and all four mutants, behave as expected. JVM tests run with
+-Xcheck:jni, including the real VM exception/cleanup proof.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation, two-library ABI
+inventory and 16 KiB alignment pass. The unsigned release APK is 613351 bytes,
+SHA256 `5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+Exact source, reproduced old behavior, mutation controls, native/JVM binaries,
+initial NDK table-name diagnostic, fuzz and device evidence are retained in
+`.cache/android-wallet/resume-20260915/jni-secret-output/`. TLS remains quarantined;
+this change does not qualify positive hardware custody or real-fund usage.
+Public JNI vector/refusal and all-five-entropy-length tests pass on x86-64
+API30/35/36 in 0.839/3.756/0.897 seconds. The release-core-linked native exception
+fixture passes on all three, with ARM64 compile-only; its x86 SHA256 is
+`30e38edaa36365798f14efd67c3d38f757f8ffda337c09315bebe134410bf974`.
+All owned device fixture copies were removed. The final host fuzzer rebuild
+replays the complete retained corpus after the type-name adjustment. No fresh
+entropy-generation method was invoked on the devices.

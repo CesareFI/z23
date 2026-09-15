@@ -2,62 +2,73 @@
 #include "jni_support.h"
 #include "zcl_keys.h"
 
-/* Only newly allocated Java arrays cross this adapter. The VM owns returned
- * arrays; its caller clears them. Every native secret buffer is cleared before
- * return, including allocation failure or a pending Java exception. */
-JNIEXPORT jbyteArray JNICALL
-Java_org_zclassic_wallet_core_NativeCore_createEntropy(JNIEnv *env, jclass type)
+/* The managed caller allocates and owns every secret destination BEFORE entry,
+ * and clears it in finally on refusal/exception. Thus a failing VM transfer
+ * cannot orphan a partially filled secret array. Native scratch is always
+ * cleared; no JNI operation follows an observed pending exception. */
+static bool secret_destination(JNIEnv *env, jarray output, jsize capacity)
+{
+    if (env == NULL || output == NULL) return false;
+    if ((*env)->ExceptionCheck(env)) return false;
+    const jsize length = (*env)->GetArrayLength(env, output);
+    if ((*env)->ExceptionCheck(env)) return false;
+    return length == capacity;
+}
+
+static jint write_secret_bytes(JNIEnv *env, jbyteArray output, const uint8_t *bytes, size_t length)
+{
+    if (bytes == NULL || length == 0 || length > 32) return 0;
+    if (!secret_destination(env, output, 32)) return 0;
+    (*env)->SetByteArrayRegion(env, output, 0, (jsize)length, (const jbyte *)bytes);
+    return (*env)->ExceptionCheck(env) ? 0 : (jint)length;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_zclassic_wallet_core_NativeCore_createEntropy(JNIEnv *env, jclass type, jbyteArray output)
 {
     (void)type;
-    if (env == NULL) return NULL;
-    if ((*env)->ExceptionCheck(env)) return NULL;
+    if (!secret_destination(env, output, 32)) return 0;
     uint8_t entropy[32] = {0};
-    jbyteArray output = NULL;
-    if (zcl_random_bytes(entropy, sizeof(entropy)) == ZCL_OK)
-        output = zcl_jni_new_bytes(env, entropy, sizeof(entropy));
+    jint length = 0;
+    if (zcl_random_bytes(entropy, sizeof(entropy)) == ZCL_OK) {
+        (*env)->SetByteArrayRegion(env, output, 0, 32, (const jbyte *)entropy);
+        if (!(*env)->ExceptionCheck(env)) length = 32;
+    }
     zcl_secure_zero(entropy, sizeof(entropy));
-    return output;
+    return length;
 }
 
-static jcharArray new_phrase(JNIEnv *env, const uint8_t *text, size_t length)
+static jint write_phrase(JNIEnv *env, jcharArray output, const uint8_t *text, size_t length)
 {
-    if (env == NULL || text == NULL || length > 215)
-        return NULL;
-    if ((*env)->ExceptionCheck(env))
-        return NULL;
+    if (text == NULL || length == 0 || length > 215) return 0;
+    if (!secret_destination(env, output, 215)) return 0;
     jchar chars[215] = {0};
-    jcharArray output = NULL;
+    jint written = 0;
     for (size_t i = 0; i < length; ++i)
         chars[i] = (jchar)text[i];
-    output = (*env)->NewCharArray(env, (jsize)length);
-    if (output == NULL || (*env)->ExceptionCheck(env)) {
-        output = NULL;
-        goto cleanup;
-    }
     (*env)->SetCharArrayRegion(env, output, 0, (jsize)length, chars);
-    if ((*env)->ExceptionCheck(env))
-        output = NULL;
-cleanup:
+    if (!(*env)->ExceptionCheck(env)) written = (jint)length;
     zcl_secure_zero(chars, sizeof(chars));
-    return output;
+    return written;
 }
 
-JNIEXPORT jcharArray JNICALL
-Java_org_zclassic_wallet_core_NativeCore_recoveryPhrase(JNIEnv *env, jclass type, jbyteArray input)
+JNIEXPORT jint JNICALL
+Java_org_zclassic_wallet_core_NativeCore_recoveryPhrase(JNIEnv *env, jclass type,
+    jbyteArray input, jcharArray output)
 {
     (void)type;
     uint8_t entropy[32] = {0}, text[215] = {0};
     size_t entropy_len = 0, text_len = 0;
-    jcharArray output = NULL;
+    jint written = 0;
     if (zcl_jni_read_bytes(env, input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;
     if (zcl_mnemonic_encode(entropy, entropy_len, text, sizeof(text), &text_len) != ZCL_OK)
         goto cleanup;
-    output = new_phrase(env, text, text_len);
+    written = write_phrase(env, output, text, text_len);
 cleanup:
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(text, sizeof(text));
-    return output;
+    return written;
 }
 
 static zcl_status phrase_size(JNIEnv *env, jcharArray input, size_t capacity, jsize *length)
@@ -101,22 +112,23 @@ cleanup:
     return status;
 }
 
-JNIEXPORT jbyteArray JNICALL
-Java_org_zclassic_wallet_core_NativeCore_restoreEntropy(JNIEnv *env, jclass type, jcharArray input)
+JNIEXPORT jint JNICALL
+Java_org_zclassic_wallet_core_NativeCore_restoreEntropy(JNIEnv *env, jclass type,
+    jcharArray input, jbyteArray output)
 {
     (void)type;
     uint8_t entropy[32] = {0}, text[215] = {0};
     size_t entropy_len = 0, text_len = 0;
-    jbyteArray output = NULL;
+    jint written = 0;
     if (read_phrase(env, input, text, sizeof(text), &text_len) != ZCL_OK)
         goto cleanup;
     if (zcl_mnemonic_decode(text, text_len, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;
-    output = zcl_jni_new_bytes(env, entropy, entropy_len);
+    written = write_secret_bytes(env, output, entropy, entropy_len);
 cleanup:
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(text, sizeof(text));
-    return output;
+    return written;
 }
 
 JNIEXPORT jboolean JNICALL

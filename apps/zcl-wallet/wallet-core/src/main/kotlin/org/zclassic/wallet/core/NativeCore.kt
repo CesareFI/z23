@@ -22,9 +22,10 @@ internal object NativeCore {
         width: Int, height: Int, rowStride: Int, pixelStride: Int): ByteArray?
     @JvmStatic external fun scanCameraPacket(packet: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun parsePayment(text: ByteArray, network: Int): ByteArray?
-    @JvmStatic external fun createEntropy(): ByteArray?
-    @JvmStatic external fun recoveryPhrase(entropy: ByteArray): CharArray?
-    @JvmStatic external fun restoreEntropy(phrase: CharArray): ByteArray?
+    // Secret destinations are managed-owned before JNI and cleared on any failure.
+    @JvmStatic external fun createEntropy(output: ByteArray): Int
+    @JvmStatic external fun recoveryPhrase(entropy: ByteArray, output: CharArray): Int
+    @JvmStatic external fun restoreEntropy(phrase: CharArray, output: ByteArray): Int
     @JvmStatic external fun confirmRecoveryPhrase(entropy: ByteArray, phrase: CharArray): Boolean
     @JvmStatic external fun receivingAddress(entropy: ByteArray, network: Int, index: Int): ByteArray?
     @JvmStatic external fun createWalletHeader(entropy: ByteArray, network: Int): ByteArray?

@@ -24,6 +24,12 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   material receives explicit clearing. Kotlin/JNI only adapts Android platform
   services. Managed runtime and cryptographic provider copies require explicit
   review. Do not describe Keystore wrapping as hardware secp256k1 signing.
+* Secret JNI output destinations have a managed owner before native execution.
+  C returns a checked length and clears native scratch; managed finally clears
+  failed/partial output and temporary prefix-copy buffers while preserving the
+  original exception. Full-capacity success transfers the sole array to its
+  caller. No native-created secret result may become unreachable on VM failure.
+  This ownership rule does not erase every managed runtime/provider/UI copy.
 * Read-only network code receives only public addresses and configuration.
   Endpoint responses are untrusted, bounded, tied to a network and displayed
   with their actual verification level. Unknown or stale balance is not zero.

@@ -3022,3 +3022,61 @@ The public-vector JNI mnemonic/refusal/receive test also passes on API30/35/36
 in 0.422/1.410/0.635 seconds. It exercises the real VM/native path without
 creating fresh entropy, persisting a wallet or invoking hardware-authentication
 fallbacks. All temporary native fixture executables were removed after success.
+
+2026-09-15: recovered-change seed reuse commit
+`22312b55101cafa3719bd4a193099008d05c9d2b` is remotely verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, with a clean tree, correct upstream and 0/0 ahead/behind. All 113 wallet
+commits remain preserved, including the initial 108-commit checkpoint. `origin`
+remains unchanged; only the development branch was pushed.
+
+2026-09-15: secret JNI output now has a managed cleanup owner before native
+execution. The old fault model copied public secret bytes into a native-created
+Java array and then raised a VM exception, losing the return reference while
+still passing its native-scratch checks. The preserved reproduction establishes
+that ownership gap; it does not claim an observed real-device leak.
+
+`WalletKeys` now allocates a fixed destination before calling the private JNI
+entry. C returns a checked length and clears its own scratch. Managed finally
+clears the destination after any refusal/exception and after extracting a shorter
+prefix; exact-capacity success transfers that same owned array. Public methods,
+lengths, errors and BIP39 behavior stay unchanged. The private JNI signatures
+change together with their only managed caller. No new key cache, provider
+fallback, authentication or transaction authority is introduced.
+
+All 90 default sanitizer groups pass in 49.78 seconds, followed by final focused
+native checks after a test-only NDK/JDK table-name portability correction.
+Clang/GCC production/fixture analysis, strict warnings, architecture and unchanged
+10/15 complexity caps pass. JNI fuzzing completes 125794 cases in 121 seconds,
+max_len217, timeout5 and RSS cap512 MiB (68 MiB observed), without a finding.
+Six native and four managed mutations fail intended cleanup/bounds/exception
+assertions; their unmodified controls pass. Managed tests cover bounded capacities,
+every shorter prefix, complete scratch cleanup and original error identity.
+
+A separate host test library forwards the actual production JNI code's array
+operations to the real JVM, copies a selected public prefix and raises a supplied
+OutOfMemoryError. The tests observe the copied prefix before rethrowing and the
+same complete array erased after managed finally, with the same Throwable.
+Ten such prefix cases pass under -Xcheck:jni. The bridge is excluded from Android
+builds, and APK library inventory/export checks confirm its absence. This proves
+cleanup for an injected exception, not actual memory-exhaustion behavior or
+erasure of every VM/provider/UI copy.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and native
+alignment pass. The unsigned release APK is 613351 bytes, SHA256
+`5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+A shorter secret result adds at most one bounded temporary managed array, which
+is explicitly cleared; full-capacity results reuse their sole destination. There
+is no RAM-saving claim for this custody improvement. TLS remains quarantined;
+hardware-positive custody remains unqualified. Full review:
+[C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Reproduction, exact sources/hashes,
+mutations, initial diagnostics and acceptance evidence remain in
+`.cache/android-wallet/resume-20260915/jni-secret-output/`.
+The public JNI vector/refusal test and the new all-five-entropy-length test pass
+on API30/35/36 in 0.839/3.756/0.897 seconds. The exact release-core-linked
+native exception fixture also passes on all three x86-64 emulators; ARM64 is
+compile-only. Its x86 executable SHA256 is
+`30e38edaa36365798f14efd67c3d38f757f8ffda337c09315bebe134410bf974`.
+Owned device executables were removed. No fresh device entropy-generation test
+was invoked. The final host fuzzer rebuild replays its complete retained corpus
+successfully after the test table-type portability adjustment.

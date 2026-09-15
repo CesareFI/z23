@@ -16,7 +16,7 @@ tasks.test {
     systemProperty("java.library.path", rootProject.file("native/build/jni").absolutePath)
     jvmArgs("-Xcheck:jni")
     inputs.files(rootProject.fileTree("native") {
-        include("src/**", "include/**", "vendor/**", "CMakeLists.txt")
+        include("src/**", "include/**", "vendor/**", "tests/jni_secret_output_fixture.c", "CMakeLists.txt")
     }).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-mbedtls")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree("../../vendor/android-bip39")).withPathSensitivity(PathSensitivity.RELATIVE)

@@ -10,9 +10,9 @@
 
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "JNI key check failed at %d\n", __LINE__); abort(); } } while (0)
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
-JNIEXPORT jbyteArray JNICALL API(createEntropy)(JNIEnv *, jclass);
-JNIEXPORT jcharArray JNICALL API(recoveryPhrase)(JNIEnv *, jclass, jbyteArray);
-JNIEXPORT jbyteArray JNICALL API(restoreEntropy)(JNIEnv *, jclass, jcharArray);
+JNIEXPORT jint JNICALL API(createEntropy)(JNIEnv *, jclass, jbyteArray);
+JNIEXPORT jint JNICALL API(recoveryPhrase)(JNIEnv *, jclass, jbyteArray, jcharArray);
+JNIEXPORT jint JNICALL API(restoreEntropy)(JNIEnv *, jclass, jcharArray, jbyteArray);
 JNIEXPORT jboolean JNICALL API(confirmRecoveryPhrase)(JNIEnv *, jclass, jbyteArray, jcharArray);
 JNIEXPORT jbyteArray JNICALL API(receivingAddress)(JNIEnv *, jclass, jbyteArray, jint, jint);
 JNIEXPORT jbyteArray JNICALL API(createWalletHeader)(JNIEnv *, jclass, jbyteArray, jint);
@@ -32,6 +32,7 @@ static touched_span touched[8];
 static size_t touched_count;
 static bool pending, fail_random, null_without_exception, array_with_exception;
 static unsigned fail_call, vm_calls, random_calls, active_operation;
+static size_t transfer_prefix = SIZE_MAX;
 #define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
@@ -127,6 +128,7 @@ static void JNICALL get_chars(JNIEnv *env, jcharArray input, jsize start, jsize 
 
 static fake_array *new_array(jsize length, array_kind kind)
 {
+    CHECK(active_operation >= 4); /* Secret results must be caller-owned before entry. */
     CHECK(length >= 0 && length <= 215);
     if (vm_fault()) {
         if (null_without_exception) pending = false;
@@ -155,7 +157,9 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
     /* These two entries publish only public metadata/address bytes. Keep all
      * existing key-entry scratch obligations, including their public output. */
     if (active_operation < 5) track(bytes, (size_t)length);
-    memcpy(array->data.bytes + (size_t)start, bytes, (size_t)length);
+    size_t copied = (size_t)length;
+    if (vm_calls + 1 == fail_call && copied > transfer_prefix) copied = transfer_prefix;
+    memcpy(array->data.bytes + (size_t)start, bytes, copied);
     (void)vm_fault();
 }
 
@@ -164,11 +168,18 @@ static void JNICALL set_chars(JNIEnv *env, jcharArray input, jsize start, jsize 
     (void)env;
     fake_array *array = region(input, start, length, CHARS);
     track(chars, (size_t)length * sizeof(*chars));
-    memcpy(array->data.chars + (size_t)start, chars, (size_t)length * sizeof(*chars));
+    size_t copied = (size_t)length;
+    if (vm_calls + 1 == fail_call && copied > transfer_prefix) copied = transfer_prefix;
+    memcpy(array->data.chars + (size_t)start, chars, copied * sizeof(*chars));
     (void)vm_fault();
 }
 
-static const struct JNINativeInterface_ table = {
+#if defined(__ANDROID__)
+typedef struct JNINativeInterface key_jni_interface;
+#else
+typedef struct JNINativeInterface_ key_jni_interface;
+#endif
+static const key_jni_interface table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length,
     .GetByteArrayRegion = get_bytes, .GetCharArrayRegion = get_chars,
     .NewByteArray = new_bytes, .NewCharArray = new_chars,
@@ -194,6 +205,7 @@ static void prepare(void)
     memset(touched, 0, sizeof(touched));
     pending = fail_random = null_without_exception = array_with_exception = false;
     fail_call = vm_calls = random_calls = 0;
+    transfer_prefix = SIZE_MAX;
     active_operation = 0;
     entropy = (fake_array){.kind = BYTES, .length = 16};
     phrase = (fake_array){.kind = CHARS, .length = (jsize)(sizeof(known_phrase) - 1)};
@@ -207,6 +219,26 @@ static void verify_cleanup(void)
     for (size_t i = 0; i < touched_count; ++i) CHECK(touched[i].cleared);
 }
 
+static jint secret_to(unsigned operation, JNIEnv *env, jbyteArray bytes, jcharArray chars, jarray output)
+{
+    if (operation == 0) return API(createEntropy)(env, NULL, (jbyteArray)output);
+    if (operation == 1) return API(recoveryPhrase)(env, NULL, bytes, (jcharArray)output);
+    return API(restoreEntropy)(env, NULL, chars, (jbyteArray)output);
+}
+
+static bool secret_entry(unsigned operation, JNIEnv *env, jbyteArray bytes, jcharArray chars)
+{
+    CHECK(operation <= 2);
+    result_array = (fake_array){.kind = operation == 1 ? CHARS : BYTES,
+        .length = operation == 1 ? 215 : 32};
+    const jint written = secret_to(operation, env, bytes, chars, (jarray)&result_array);
+    CHECK(written >= 0 && written <= result_array.length);
+    if (written == 0) return false;
+    /* Model the managed caller's bounded result view, retaining full backing. */
+    result_array.length = written;
+    return true;
+}
+
 /* Confirmation is the only boolean entry; translate its result for the common
  * cleanup/fault runner without manufacturing an array reference. */
 static bool invoke(unsigned operation, JNIEnv *env, jbyteArray bytes, jcharArray chars, jint network, jint index)
@@ -214,9 +246,7 @@ static bool invoke(unsigned operation, JNIEnv *env, jbyteArray bytes, jcharArray
     CHECK(operation < OPERATION_COUNT);
     active_operation = operation;
     switch (operation) {
-    case 0: return API(createEntropy)(env, NULL) != NULL;
-    case 1: return API(recoveryPhrase)(env, NULL, bytes) != NULL;
-    case 2: return API(restoreEntropy)(env, NULL, chars) != NULL;
+    case 0: case 1: case 2: return secret_entry(operation, env, bytes, chars);
     case 3: return API(confirmRecoveryPhrase)(env, NULL, bytes, chars) == JNI_TRUE;
     case 4: return API(receivingAddress)(env, NULL, bytes, network, index) != NULL;
     case 5: return API(createWalletHeader)(env, NULL, bytes, network) != NULL;
@@ -320,7 +350,7 @@ static void vm_failures(void)
             prepare(); fail_call = failure;
             CHECK(!run(operation) && pending && vm_calls == failure);
         }
-        if (operation == 3) continue;
+        if (operation <= 3) continue; /* No VM allocation in secret/boolean entries. */
         prepare(); fail_call = operation == 0 ? 1 : (operation == 6 ? 5 : 3);
         null_without_exception = true;
         CHECK(!run(operation) && !pending);
@@ -334,7 +364,7 @@ static void vm_failures(void)
 
 static void allocation_with_exception(void)
 {
-    const unsigned allocation_calls[] = {1, 3, 3, 0, 3, 3, 5};
+    const unsigned allocation_calls[] = {0, 0, 0, 0, 3, 3, 5};
     for (unsigned operation = 0; operation < OPERATION_COUNT; ++operation) {
         if (allocation_calls[operation] == 0) continue; /* Boolean confirmation has no allocation. */
         prepare();
@@ -393,10 +423,54 @@ static void invalid_headers(void)
     CHECK(!run(6) && random_calls == 1 && !pending);
 }
 
+static void destination_refusals(void)
+{
+    const jsize lengths[] = {INT32_MIN, -1, 0, 1, 31, 33, 214, 216, INT32_MAX};
+    for (unsigned operation = 0; operation <= 2; ++operation) {
+        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+            prepare(); active_operation = operation;
+            result_array.kind = operation == 1 ? CHARS : BYTES;
+            result_array.length = lengths[i];
+            memset(&result_array.data, 0xa5, sizeof(result_array.data));
+            const fake_array before = result_array;
+            CHECK(secret_to(operation, &environment, (jbyteArray)&entropy, (jcharArray)&phrase,
+                (jarray)&result_array) == 0);
+            CHECK(!pending && random_calls == 0 && memcmp(&before, &result_array, sizeof(before)) == 0);
+            verify_cleanup();
+        }
+        prepare(); active_operation = operation;
+        CHECK(secret_to(operation, &environment, (jbyteArray)&entropy, (jcharArray)&phrase, NULL) == 0);
+        CHECK(!pending && random_calls == 0);
+        verify_cleanup();
+    }
+}
+
+static void transfer_failures(void)
+{
+    /* The fake VM copies a selected prefix BEFORE raising its exception.
+     * Output remains in this caller-owned object, so managed finally can erase
+     * it without a JNI call under the pending exception. JVM tests prove that
+     * finally; this fixture proves native cleanup and unchanged VM exception. */
+    const size_t prefixes[] = {0, 1, 7, 16, 31, 32, 46, 92, 93, 215};
+    for (unsigned operation = 0; operation <= 2; ++operation) {
+        for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+            prepare(); fail_call = operation == 0 ? 2 : 4; transfer_prefix = prefixes[i];
+            CHECK(!run(operation) && pending && vm_calls == fail_call);
+            CHECK(result_array.length == (operation == 1 ? 215 : 32));
+            CHECK(result_array.kind == (operation == 1 ? CHARS : BYTES));
+            if (operation == 0 && prefixes[i] > 0) CHECK(result_array.data.bytes[0] == 0x42);
+            if (operation == 1 && prefixes[i] > 0) CHECK(result_array.data.chars[0] == 'a');
+            zcl_secure_zero(&result_array.data, sizeof(result_array.data));
+            CHECK(pending && vm_calls == fail_call); /* Native did not clear the exception. */
+        }
+    }
+}
+
 int main(void)
 {
     pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures();
     allocation_with_exception(); invalid_inputs(); invalid_headers();
+    destination_refusals(); transfer_failures();
     puts("JNI key exception and secret cleanup checks passed");
     return 0;
 }

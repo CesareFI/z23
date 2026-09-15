@@ -156,6 +156,13 @@ if(ZCL_JNI OR ANDROID)
     if(NOT ANDROID)
         find_package(JNI REQUIRED COMPONENTS JVM)
         target_include_directories(zclwallet_jni PRIVATE ${JNI_INCLUDE_DIRS})
+        # Real-VM exception bridge used only by host JVM tests. It calls the
+        # production JNI library; no fault interface is compiled for Android.
+        add_library(zclwallet_secret_fixture SHARED tests/jni_secret_output_fixture.c)
+        target_include_directories(zclwallet_secret_fixture PRIVATE ${JNI_INCLUDE_DIRS})
+        target_link_libraries(zclwallet_secret_fixture PRIVATE zclwallet_jni)
+        target_compile_options(zclwallet_secret_fixture PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     endif()
     find_package(Threads REQUIRED)
     target_link_libraries(zclwallet_jni PRIVATE Threads::Threads)
