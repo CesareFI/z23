@@ -3193,3 +3193,47 @@ Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Initial scope/log-format
 corrections, exact old/new commands and symbols, manifest mutations, public corpus
 and acceptance are preserved in
 `.cache/android-wallet/resume-20260915/fuzz-coverage/`.
+
+2026-09-15: native fuzz coverage checkpoint
+`44df891d7056546264457d4c2a0852e2de911684` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean, upstream correct and ahead/behind 0/0. All 117 wallet
+commits remain preserved, including the original 108-commit checkpoint. Origin
+remains unchanged; only the same-named development branch was pushed.
+
+2026-09-15: backup-screen construction now owns incoming words from entry and
+clears/conceals the screen after any construction failure, including fatal errors.
+Previously, a failure while adding an action button after displaying words could
+leave the view visible: the phrase-delivery owner cleared its character array,
+but did not clear or conceal the screen. An API30 public-marker fixture reproduced
+that incomplete visible screen before the fix. The screen method now clears the
+incoming array, attempts view cleanup and preserves the original error with any
+cleanup failure attached. A successful construction retains the existing view
+ownership and lifecycle behavior; no extra worker, buffer or secret copy is added.
+
+Four instrumented regressions cover failure before view ownership, either action
+button, and a separately retained framework buffer whose cleanup also throws.
+The latter attaches its watcher before rendering; an initial fixture attached it
+after rendering and incorrectly expected a separate copy even though Android was
+still using the already-wiped character array. That failed assumption and the
+corrected fixture are preserved. Assertions still require hidden failed output,
+exact ownership cleanup, error identity, cleanup-error preservation and a usable
+subsequent screen. Only public marker text and the existing storage-free debug
+host are used; no authentication, wallet creation or real seed is involved.
+
+The four new checks plus the existing secret-view and concealment checks pass
+as 22-test suites on x86-64 API30/API35/API36 emulators in
+53.857/121.338/122.097 seconds. These exercise the actual Android debug views
+with injected errors; they do not prove global-OOM behavior, physical-device
+custody or erasure of every framework/GPU copy. Existing emulator profiles are
+preserved. Android/JVM builds/tests, debug/release lint, fixture isolation,
+architecture and 16 KiB native alignment pass. C/JNI/providers are unchanged,
+and both debug native libraries are byte-identical to their baseline.
+
+The unsigned release APK is 613351 bytes, SHA256
+`0a0de7c5b92c04a426f5351f2b14116f35661a6afb71f466754fd445d80f0311`.
+The instrumented test uses the existing nonexported debug host, which remains
+absent from release. No minified backup-screen runtime or positive hardware
+custody qualification is claimed. TLS remains quarantined. Exact source/APK
+identities, the failing baseline, initial/corrected test fixtures and validation
+are preserved in `.cache/android-wallet/resume-20260915/backup-screen/`.

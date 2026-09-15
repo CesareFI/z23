@@ -106,14 +106,23 @@ internal class WalletScreens(private val activity: Activity) {
     }
 
     fun backup(ownedWords: CharArray, next: () -> Unit, cancel: () -> Unit) {
-        begin(R.string.backup_title, R.string.backup_description)
-        val view = RecoveryWordsView(activity)
-        recoveryWords = view
-        view.id = R.id.recovery_words
-        content.addView(view)
-        view.show(ownedWords)
-        button(R.string.backup_written, R.id.backup_written, next)
-        button(R.string.cancel_setup, R.id.cancel_setup, cancel)
+        try {
+            begin(R.string.backup_title, R.string.backup_description)
+            val view = RecoveryWordsView(activity)
+            recoveryWords = view
+            view.id = R.id.recovery_words
+            content.addView(view)
+            view.show(ownedWords)
+            button(R.string.backup_written, R.id.backup_written, next)
+            button(R.string.cancel_setup, R.id.cancel_setup, cancel)
+        } catch (problem: Throwable) {
+            // Ownership starts at entry. A later control/layout failure must
+            // also conceal any framework copy already displayed by the view.
+            ownedWords.fill('\u0000')
+            try { clearSecrets() }
+            catch (cleanup: Throwable) { if (cleanup !== problem) problem.addSuppressed(cleanup) }
+            throw problem
+        }
     }
 
     fun enterRecovery(confirming: Boolean, retry: Boolean, submit: (CharArray) -> Unit, cancel: () -> Unit) {
