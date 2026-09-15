@@ -81,7 +81,15 @@ internal class ScanDecodeClient(
             if (text != null && text.size > 1024) { text.fill(0); fail(); return }
             request.bytes.set(text ?: ByteArray(0))
             if (closed.get() || pending.get() !== request) { request.clear(); return }
-            if (!main.post { deliver(request) }) { request.clear(); fail() }
+            try {
+                if (!main.post { deliver(request) }) { request.clear(); fail() }
+            } catch (problem: Throwable) {
+                // A post may enqueue before throwing. Retire the request and
+                // its bytes so that a late callback cannot deliver it. Failure
+                // notification is best-effort; preserve the original exception.
+                request.clear()
+                try { fail() } finally { throw problem }
+            }
         }
     }
 

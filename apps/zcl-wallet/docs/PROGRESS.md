@@ -3879,3 +3879,31 @@ both-ABI builds, lint, isolation and alignment pass. The entire unsigned release
 APK remains byte-identical to the prior slice. Safety review and evidence are
 under [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md) and
 `.cache/android-wallet/resume-20260915/jni-camera-fuzz/`.
+
+2026-09-15: decoded QR replies now retire their text and request if posting to
+the main queue throws, including a post that enqueued before throwing. The
+existing failure path closes the client and attempts one UI notification; a
+secondary notification exception cannot replace the original handoff error.
+An already-queued reply observes a retired request and cannot deliver it.
+Caller identity, request IDs, native parsing, elapsed deadlines and ordinary
+successful/false-post behavior are unchanged.
+
+The baseline fails three new exceptional-handoff tests while false-post and
+successful delivery controls pass. The final five-test fixture covers runtime
+and injected OOM failures before/after enqueue, a failing error notification,
+complete byte erasure, request retirement and one successful delivery. It uses
+a private Handler on the real main Looper with public decoded text; its
+synthetic pending request/UID does not claim Binder isolation. Separate real
+isolated-service, deadline and QR checks run alongside it: all 12 selected
+tests pass x86-64 API30/35/36 in 13.541/63.530/43.345 seconds.
+
+Android/JVM, both-ABI builds, debug/release lint, fixture isolation and alignment
+pass. Native libraries remain byte-identical, retaining the preceding native
+safety evidence. Unsigned release remains 612,647 bytes, SHA256
+`02439fbb59352322e6f4f481f5d55127d8953d6b50c2290708cf7a2d9000d797`.
+Reviewed atomic claim/close races, clearing before notification, late callbacks
+and preservation of the primary exception. A callback that already completed
+delivery cannot be undone; the queued-callback tests hold the main thread until
+retirement to observe the specific stated invariant. No camera, secret input,
+wallet or actual OOM is involved. Evidence is retained in
+`.cache/android-wallet/resume-20260915/scan-reply-handoff/`.
