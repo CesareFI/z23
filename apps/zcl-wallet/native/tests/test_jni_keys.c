@@ -30,7 +30,7 @@ static uint8_t known_header[80];
 static bool header_ready;
 static touched_span touched[8];
 static size_t touched_count;
-static bool pending, fail_random, null_without_exception;
+static bool pending, fail_random, null_without_exception, array_with_exception;
 static unsigned fail_call, vm_calls, random_calls, active_operation;
 #define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -130,7 +130,7 @@ static fake_array *new_array(jsize length, array_kind kind)
     CHECK(length >= 0 && length <= 215);
     if (vm_fault()) {
         if (null_without_exception) pending = false;
-        return NULL;
+        if (!array_with_exception) return NULL;
     }
     result_array = (fake_array){.kind = kind, .length = length};
     return &result_array;
@@ -192,7 +192,7 @@ static void prepare(void)
 {
     touched_count = 0;
     memset(touched, 0, sizeof(touched));
-    pending = fail_random = null_without_exception = false;
+    pending = fail_random = null_without_exception = array_with_exception = false;
     fail_call = vm_calls = random_calls = 0;
     active_operation = 0;
     entropy = (fake_array){.kind = BYTES, .length = 16};
@@ -332,6 +332,21 @@ static void vm_failures(void)
     }
 }
 
+static void allocation_with_exception(void)
+{
+    const unsigned allocation_calls[] = {1, 3, 3, 0, 3, 3, 5};
+    for (unsigned operation = 0; operation < OPERATION_COUNT; ++operation) {
+        if (allocation_calls[operation] == 0) continue; /* Boolean confirmation has no allocation. */
+        prepare();
+        fail_call = allocation_calls[operation];
+        array_with_exception = true;
+        CHECK(!run(operation));
+        CHECK(pending && vm_calls == fail_call);
+        const uint8_t *bytes = (const uint8_t *)&result_array.data;
+        for (size_t i = 0; i < sizeof(result_array.data); ++i) CHECK(bytes[i] == 0);
+    }
+}
+
 static void invalid_inputs(void)
 {
     const jsize invalid[] = {-1, 0, 33, 216, INT32_MAX};
@@ -380,7 +395,8 @@ static void invalid_headers(void)
 
 int main(void)
 {
-    pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures(); invalid_inputs(); invalid_headers();
+    pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures();
+    allocation_with_exception(); invalid_inputs(); invalid_headers();
     puts("JNI key exception and secret cleanup checks passed");
     return 0;
 }
@@ -445,7 +461,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     fail_call = data[1] % 8;
     pending = (data[1] & 0x80) != 0;
     fail_random = (data[1] & 0x40) != 0;
-    null_without_exception = (data[1] & 0x20) != 0;
+    array_with_exception = (data[1] & 0x10) != 0;
+    null_without_exception = (data[1] & 0x20) != 0 && !array_with_exception;
     if ((data[0] & 0x80) != 0) {
         phrase.length = (jsize)(size - 2);
         for (size_t i = 2; i < size; ++i) phrase.data.chars[i - 2] = (jchar)data[i];

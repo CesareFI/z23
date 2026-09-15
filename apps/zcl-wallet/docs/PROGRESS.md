@@ -2770,3 +2770,23 @@ Android/JVM/build/lint, fixture isolation and 16 KiB native alignment pass. The
 release APK remains byte-identical to the canvas checkpoint. Full hazard review
 is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact evidence and mutations are
 in `.cache/android-wallet/resume-20260915/random/`.
+
+2026-09-15: the JNI phrase adapter now returns NULL when an allocation callback
+supplies an array with an exception pending. Its native return contract now
+matches the shared byte-array adapter; pending exceptions and secret cleanup
+are preserved. This is a reproduced fake-VM inconsistency, not an observed
+Android runtime disclosure or exception bypass. The regression covers all six
+array-producing key/header entries and verifies no copied output or further
+ordinary VM operation is published on refusal.
+
+Both the native regression and seeded fuzzer fail on the preserved old source.
+All 89 corrected sanitizer groups pass in 64.56 seconds, with Clang/GCC analysis
+of production and unit/fuzzer modes and unchanged 10/15 complexity caps. Bounded
+fuzzing completes 52726 cases in 121 seconds without a new finding. Android/JVM,
+build/lint, fixture isolation and native alignment pass. The public-vector JNI
+test passes on API 30/35/36 in 0.334/2.147/0.700 seconds. Initial API 35 command
+delivery was delayed but completed within the original timeout; no emulator
+restart or timeout relaxation was needed. Hardware custody remains unqualified.
+The explicit review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); baseline
+assertions, source, fuzz corpus and APK identities are preserved in
+`.cache/android-wallet/resume-20260915/jni-phrase/`.

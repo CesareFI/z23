@@ -1627,3 +1627,35 @@ hardware execution remains unobserved. Android/JVM/build/lint, fixture isolation
 and native alignment pass. The release APK remains identical to the canvas
 checkpoint. Source, mutants, hashes, analysis and device evidence are retained
 in `.cache/android-wallet/resume-20260915/random/`.
+
+## Refuse a phrase allocation accompanied by a JNI exception — 2026-09-15
+
+Scope: `new_phrase` in `jni_keys.c`, the existing fake-VM regression and its
+shared fuzzer. If an allocation callback supplies both an array and a pending
+exception, the native helper now returns NULL, matching the byte-array helper.
+The old helper retained the array as its native return value while skipping
+the copy. This is a synthetic VM fault-contract test; no production Android
+occurrence, exception bypass or disclosure of phrase contents is claimed.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Production adds only a NULL assignment in the existing refusal branch. The 215-character bound, checked JNI copy and 430-byte native wipe remain unchanged. The fixture initializes the full fake-array union before allocation return and checks every byte remains zero when copying is refused. |
+| Integer overflow/underflow; signed/unsigned conversions | No production arithmetic or conversions change. Six allocation ordinals are fixed unsigned values 1..5, indexed only by an operation below the existing seven-operation cap. The union inspection uses size_t and sizeof. The fuzzer consumes a previously unused bit of its already-checked two-byte control prefix. |
+| Use-after-free; double-free; leaks; dangling pointers | The native array remains a local JNI reference released with the invocation; no new pin, global reference, allocation or owner is introduced. Native scratch retains its existing cleanup path. Fake arrays have static fixture storage, reset between synchronous cases; tracked scratch pointers are still retired during their live wipe. |
+| NULL dereferences; uninitialized memory | NULL and pending-exception allocation paths both force NULL return before any region copy. The test supplies an initialized non-NULL fake array together with a pending exception, then verifies no later forbidden VM call occurs. Existing NULL-without-exception and ordinary allocation-failure cases remain. |
+| Pointer arithmetic; format strings | No production pointer arithmetic or diagnostics change. Fixture byte inspection stays within the initialized result union. Failure diagnostics print only fixed text and source lines. |
+| Stack usage; allocation limits; resource exhaustion | Production adds no storage, loop, recursion, task or allocation. The unit adds six bounded cases. Unit/fuzzer and production retain strict warnings, 4096-byte frame checks and 10/15 complexity limits. Fuzzing uses at most 217 input bytes, five-second cases, 512 MiB RSS and a bounded campaign with an outer timeout. |
+| Malformed input; races; explicit lifetimes | The fake VM checks that allocation is its final ordinary call while the exception is pending, all touched native secret spans are cleared, and borrowed inputs remain intact. All six array-producing key/header adapters share the new scenario. The boolean confirmation entry has no allocation. Fuzzer NULL-only and array-plus-exception modes are mutually exclusive. No concurrency or lifecycle state changes. |
+| Secret leakage, custody and authority | Fixtures use published unfunded mnemonic material and deterministic marker RNG bytes. The Android check selects only the existing public-vector method. No wallet, Keystore policy, production seed, network, transaction authority or consensus predicate changes. Pending exceptions remain pending; this defensive native return contract does not claim erasure of every managed/provider copy. |
+
+The preserved native regression and seeded fuzzer both fail intended assertions
+on the old source. The corrected source passes all 89 ASan/UBSan/LSan groups in
+64.56 seconds, strict Clang/GCC analysis of production and both fixture modes,
+and unchanged complexity caps. Seeded fuzzing completes 52726 cases in 121
+seconds without a new finding; fuzzer SHA256 is
+`14be9d33108cd52162bc41d2dc36926f1861489ac2e82de7342bf16d07b18158`.
+Android/JVM/build/lint, fixture isolation and native alignment pass. The public
+mnemonic/JNI method passes on API 30/35/36 in 0.334/2.147/0.700 seconds. No
+hardware-custody or physical-camera acceptance is added. Source, baseline
+assertions, corpus and exact APK identities are retained in
+`.cache/android-wallet/resume-20260915/jni-phrase/`.

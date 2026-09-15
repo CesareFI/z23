@@ -30,8 +30,10 @@ static jcharArray new_phrase(JNIEnv *env, const uint8_t *text, size_t length)
     for (size_t i = 0; i < length; ++i)
         chars[i] = (jchar)text[i];
     output = (*env)->NewCharArray(env, (jsize)length);
-    if (output == NULL || (*env)->ExceptionCheck(env))
+    if (output == NULL || (*env)->ExceptionCheck(env)) {
+        output = NULL;
         goto cleanup;
+    }
     (*env)->SetCharArrayRegion(env, output, 0, (jsize)length, chars);
     if ((*env)->ExceptionCheck(env))
         output = NULL;
