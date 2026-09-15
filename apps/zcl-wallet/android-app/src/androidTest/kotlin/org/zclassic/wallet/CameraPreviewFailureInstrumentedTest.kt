@@ -2,10 +2,13 @@
 package org.zclassic.wallet
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.atomic.AtomicReference
+import java.lang.reflect.InvocationTargetException
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,6 +41,85 @@ class CameraPreviewFailureInstrumentedTest {
 
     private fun image(view: CameraPreviewView) = field("bitmap").get(view) as Bitmap
     private fun pixels(view: CameraPreviewView) = field("pixels").get(view) as IntArray
+
+    private fun draw(view: CameraPreviewView, canvas: Canvas) {
+        CameraPreviewView::class.java.getDeclaredMethod("onDraw", Canvas::class.java).apply {
+            isAccessible = true
+        }.invoke(view, canvas)
+    }
+
+    @Suppress("DEPRECATION") // Exact matrix checks on an owned software Canvas only.
+    private fun transform(canvas: Canvas) = FloatArray(9).also { values ->
+        val matrix = Matrix()
+        canvas.getMatrix(matrix)
+        matrix.getValues(values)
+    }
+
+    private fun parentCanvas(target: Bitmap) = Canvas(target).apply {
+        save() // Preserve an existing caller stack level, transform and clip.
+        translate(5f, 7f)
+        clipRect(3f, 4f, 55f, 68f)
+    }
+
+    @Test fun failedBitmapDrawRestoresTheCallerCanvasState() = onMain {
+        val view = CameraPreviewView(instrumentation.targetContext)
+        val input = packet()
+        val target = Bitmap.createBitmap(64, 80, Bitmap.Config.ARGB_8888)
+        val canvas = parentCanvas(target)
+        val count = canvas.saveCount
+        val matrix = transform(canvas)
+        val clip = canvas.clipBounds
+        try {
+            view.layout(0, 0, 64, 80)
+            view.show(input, 90, true)
+            image(view).recycle() // This fixture never attaches or queues the image.
+            val problem = assertThrows(InvocationTargetException::class.java) { draw(view, canvas) }.cause
+            assertTrue(problem is RuntimeException)
+            assertTrue("Expected the real Android recycled-bitmap refusal", problem?.message?.contains("recycled") == true)
+            assertEquals("Failed preview draw leaked a canvas save", count, canvas.saveCount)
+            assertArrayEquals(matrix, transform(canvas), 0f)
+            assertEquals(clip, canvas.clipBounds)
+        } finally {
+            canvas.restoreToCount(count) // Recover this owned canvas on the old failure path.
+            canvas.setBitmap(null)
+            field("bitmap").set(view, null)
+            view.clear()
+            target.eraseColor(Color.BLACK)
+            target.recycle()
+            input.fill(0)
+        }
+    }
+
+    @Test fun rotatedAndMirroredDrawingPreservesCallerStateAndUploadsPixels() = onMain {
+        val view = CameraPreviewView(instrumentation.targetContext)
+        val input = packet()
+        val target = Bitmap.createBitmap(64, 80, Bitmap.Config.ARGB_8888)
+        val canvas = parentCanvas(target)
+        val count = canvas.saveCount
+        val matrix = transform(canvas)
+        val clip = canvas.clipBounds
+        try {
+            view.layout(0, 0, 64, 80)
+            for (rotation in listOf(0, 90, 180, 270)) for (front in listOf(false, true)) {
+                target.eraseColor(Color.MAGENTA)
+                view.show(input, rotation, front)
+                draw(view, canvas)
+                assertEquals(count, canvas.saveCount)
+                assertArrayEquals(matrix, transform(canvas), 0f)
+                assertEquals(clip, canvas.clipBounds)
+                assertEquals(Color.rgb(93, 93, 93), target.getPixel(37, 47))
+                assertEquals(Color.MAGENTA, target.getPixel(0, 0))
+                assertTrue(pixels(view).all { it == 0 })
+            }
+        } finally {
+            canvas.restoreToCount(count)
+            canvas.setBitmap(null)
+            view.clear()
+            target.eraseColor(Color.BLACK)
+            target.recycle()
+            input.fill(0)
+        }
+    }
 
     @Test fun failedBitmapEraseStillClearsAndRetiresOwnedBuffers() = onMain {
         val view = CameraPreviewView(instrumentation.targetContext)

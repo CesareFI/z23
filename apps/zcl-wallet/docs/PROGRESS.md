@@ -2730,3 +2730,25 @@ the original 26 ADB zombies and live parents remain unchanged. Standards,
 source, mutation/fuzz evidence and artifacts are in
 `.cache/android-wallet/utf8-reference-20260914/`. The full hazard review and
 primary source links are in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).
+
+2026-09-15: completed the pending camera canvas cleanup. Preview drawing now
+restores the caller's save depth, transform and clip even when Android rejects
+the bitmap draw. The existing failure fixture uses a recycled public bitmap in
+an unattached view; its recorded baseline fails because the save depth grows
+from two to three. A successful-draw fixture also checks all four sensor
+orientations and both facing modes, public pixels and untouched caller state.
+This does not qualify physical camera orientation or hardware custody.
+
+All six preview regressions pass on API 30/35/36 in 0.977/12.920/4.235 seconds.
+API 35/36 results and the seven relevant native sanitizer groups are preserved
+in `.cache/android-wallet/canvas-cleanup-20260914/`; API 30 and current-build
+evidence are in `.cache/android-wallet/resume-20260915/canvas/`. Current Android
+and JVM builds/tests, debug/release lint, fixture isolation and 16 KiB native
+alignment pass. The unsigned release APK matches the saved candidate exactly,
+SHA256 `16e232b8684a6b924833251d2b1ab61d680b73cc81a0a683b67491874c7fbeda`.
+Its locally signed minified APK has SHA256
+`66f4cc487d8e0de0317428b81f96a794a578b980533cfc5f4435af22e72391d5` and passes
+the full public permission-denial/retry/grant/camera-review/cleanup fixture on
+the isolated API 30 profile in 9.318 seconds. No C, wallet or consensus behavior
+changes. The owned emulator uses the qualified reaping adapter and exits by
+normal console shutdown; the pre-existing emulator profiles remain intact.
