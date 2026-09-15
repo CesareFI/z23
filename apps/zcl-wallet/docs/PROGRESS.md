@@ -2177,7 +2177,7 @@ sources, altered wallet/entropy, corrupted/truncated state, bounds/P2SH and
 lifetime cases pass. Dirty-provider faults prove error propagation, private
 source copying despite mutation, and live entropy/blinding cleanup. All15
 mutants fail intended assertions. The independent lifetime/file-preservation
-fuzzer completes21,928 executions in121 seconds without a finding; its110-case
+fuzzer completes21,928 executions in 121 seconds without a finding; its110-case
 regression is registered. Clang/GCC analysis and all74 ASan/UBSan/LSan groups
 pass in55.23 seconds; complexity caps stay10/15 (479/1001 functions). Optimized
 host frame evidence is1608 bytes. The initial exclusive fixture-writer error
@@ -2221,7 +2221,7 @@ The original C++/node is not executed. Boundary/capacity/expiry/finality tests,
 all-eight-input and destroyed-source cases, dirty-provider/source-mutation
 faults, output preservation and live cleanup pass. Optional independent
 reader/libsodium digest comparisons also pass. All19 mutants fail intended
-assertions. The extended review fuzzer completes327,566 executions in121 seconds
+assertions. The extended review fuzzer completes327,566 executions in 121 seconds
 without a finding. All77 native ASan/UBSan/LSan groups pass in54.98 seconds,
 Clang/GCC analysis passes, and complexity caps stay10/15 (484/1027 functions).
 Optimized host frames are0 bytes for lookup and120 for the context wrapper.
@@ -2263,7 +2263,7 @@ provider annotation conflict was fixed using upstream's implementation mode,
 preserving runtime NULL checks and production caller annotations. No security
 assertion, warning or sanitizer is suppressed; all initial logs are retained.
 
-The OpenSSL-enabled fuzzer completes36,242 runs in121 seconds without a finding.
+The OpenSSL-enabled fuzzer completes36,242 runs in 121 seconds without a finding.
 All79 native ASan/UBSan/LSan groups pass in55.70 seconds; Clang/GCC analysis and
 unchanged10/15 complexity caps pass (490/1066 functions). Optimized host entry
 and nonce-callback frames measure552/8 bytes. Android/JVM/lint, APK
@@ -2318,7 +2318,7 @@ signed wire bound to the exact live review, followed by platform-authenticated
 context/consent and completion/cancellation. TLS remains owner-parked, and no
 positive hardware-custody or real-funds acceptance is claimed.
 
-The final OpenSSL differential script fuzzer completes1,792,794 cases in121
+The final OpenSSL differential script fuzzer completes1,792,794 cases in 121
 seconds without a finding, with max_len160, timeout5 and RSS512MiB
 (peak274MiB). Initial698,807-run evidence remains separately attributable to
 the earlier harness; the final binary and source identity are checked explicitly.
@@ -2386,7 +2386,7 @@ are preserved, and the new cycles add none.
 All85 native sanitizer groups pass in61.37 seconds. Clang/GCC analysis,
 unchanged10/15 complexity caps, all16 mutation checks, Android/JVM, lint,
 scanner fixture and architecture checks pass. A bounded differential fuzzer
-completes71,385,647 cases in121 seconds without a finding. The current minified
+completes71,385,647 cases in 121 seconds without a finding. The current minified
 APK passes the full public camera permission/retry/review/resource-release
 fixture on isolated API30 in9.864 seconds; the release-archive signed-wire C
 test also passes there. No hardware custody or physical-camera claim is made.
@@ -2447,7 +2447,7 @@ and controlled0/1/2/native negative-one link metadata, with exact output/inode
 preservation and successful single-link retries. All87 ASan/UBSan/LSan groups
 pass in61.38 seconds. Clang/GCC analysis and unchanged10/15 complexity limits
 pass (500/1160 functions). Four link-rule mutants fail intended assertions.
-The new bounded filesystem fuzzer completes305,619 cases in121 seconds without
+The new bounded filesystem fuzzer completes305,619 cases in 121 seconds without
 a finding, with142-byte inputs,5-second cases and512MiB RSS cap (observed77MiB).
 Another10,000 cases pass with a64-descriptor limit. It models storage policy and
 reuses the record parser for content status; it is not an independent codec oracle.
@@ -3080,3 +3080,43 @@ compile-only. Its x86 executable SHA256 is
 Owned device executables were removed. No fresh device entropy-generation test
 was invoked. The final host fuzzer rebuild replays its complete retained corpus
 successfully after the test table-type portability adjustment.
+
+2026-09-15: JNI secret-output ownership commit
+`07b26ec0c1348532b53b776b00314847947047a8` is remotely verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, with a clean tree, correct upstream and 0/0 ahead/behind. All 114 wallet
+commits remain preserved; `origin` remains unchanged. Only the same-named
+private development branch was pushed.
+
+2026-09-15: authenticated change-state fuzzing now optionally compares complete
+records against the existing independent OpenSSL HKDF/HMAC backend. That backend
+is extracted into a shared host-only fixture, with checked spans and atomic
+output on failure; the fixed-vector driver reuses it. The original 40 combinations
+remain, augmented to 120 with nonuniform counter patterns and both implementations'
+output guards. Its oracle treats the wallet header as public context, without
+requalifying address derivation, hardware/GCM authentication or record freshness.
+
+On the same public input, the old round-trip harness accepts six isolated defects
+that the oracle-enabled harness rejects: changed HKDF salt/label/block/context,
+changed record profile and a counter byte-order change shared by encoder and
+decoder. Both unchanged controls pass. This shows why matching one implementation's
+own encode/decode is insufficient to establish exact serialized authentication.
+Production code, provider dependencies, record format and all custody gates remain
+unchanged; no new cryptographic implementation enters the app.
+
+All 90 default sanitizer groups pass in 48.56 seconds. Oracle-only and fuzz/oracle
+profiles pass all 120 comparisons and new oracle bounds in 1.57/2.01 seconds.
+Clang/GCC analysis, strict warnings, architecture and unchanged complexity caps
+10/15 pass. The oracle-enabled fuzzer completes 3778 cases in 121 seconds without
+a finding, with max_len118, timeout5 and RSS cap512 MiB (97 MiB observed).
+Maximum measured authored GCC-O2 frames are 352/688/576 bytes for the reference,
+harness and fixed driver. No whole-stack or production-memory claim is implied.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and native
+alignment pass. All three APKs are byte-identical to the accepted JNI-owner
+milestone; release SHA256 remains
+`5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+TLS remains quarantined; hardware-positive custody remains unqualified. Full
+review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact source/binary identities,
+old-harness mutation acceptance, new differential failures, corpus and validation
+are preserved in `.cache/android-wallet/resume-20260915/change-state-fuzz/`.

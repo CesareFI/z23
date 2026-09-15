@@ -1289,7 +1289,7 @@ No JNI, signing, platform authentication or chain predicate is added.
 All74 native ASan/UBSan/LSan groups pass in55.23 seconds; Clang/GCC production
 and new fixture/regression/fault analysis pass. Complexity caps stay10/15
 (479 production/1001 test functions). All15 deliberate mutants fail intended
-assertions. The bounded fuzzer completes21,928 executions in121 seconds without
+assertions. The bounded fuzzer completes21,928 executions in 121 seconds without
 a finding, checking independent lifetime transitions and exact file preservation.
 The initial test tried to recreate an existing fixture using its exclusive
 writer; it was corrected to unlink only its owned synthetic journal before
@@ -1319,7 +1319,7 @@ platform custody policy or wallet persistence changes.
 Clang/GCC production and new fixture/fault/oracle analysis pass; all77 native
 ASan/UBSan/LSan groups pass in54.98 seconds, with unchanged10/15 complexity caps
 (484/1027 functions). All19 mutants fail intended assertions. The extended
-independently modeled review fuzzer completes327,566 executions in121 seconds
+independently modeled review fuzzer completes327,566 executions in 121 seconds
 without a finding; independent reader/libsodium comparisons also pass. Both
 release-archive standalone tests pass on x86-64 API30/35/36; ARM64 is compiled
 only. APK bytes remain unchanged because these operations are internal and
@@ -1351,7 +1351,7 @@ fixture/fault/oracle Clang/GCC analysis pass with unchanged10/15 complexity caps
 one by UBSan at the invalid provider call after bypassed context failure. The
 mutation runner records that precise sanitizer interception instead of requiring
 it to reach a later assertion. The OpenSSL-enabled fuzzer completes36,242 runs
-in121 seconds without a finding. Initial/final GCC fixture logs retain the
+in 121 seconds without a finding. Initial/final GCC fixture logs retain the
 nonnull-annotation conflict and its provider-implementation-mode fix; no warning
 or assertion is disabled. Exact Android artifact/device acceptance and boundaries
 are in [TRANSACTIONS.md](TRANSACTIONS.md) and
@@ -1385,7 +1385,7 @@ only. Exact evidence and limits are in [TRANSACTIONS.md](TRANSACTIONS.md) and
 `.cache/android-wallet/signature-script-20260914/`.
 
 The final independently checked script fuzzer completes1,792,794 executions
-in121 seconds without a finding, with max_len160, timeout5 and RSS512MiB
+in 121 seconds without a finding, with max_len160, timeout5 and RSS512MiB
 (observed274MiB). The initial698,807-run campaign's source/binary/log remain
 separate from the final harness after complexity and local-bound fixes.
 
@@ -1439,7 +1439,7 @@ registered host groups. Android/JVM, debug/release lint and scanner fixture
 checks pass. Production and all new fixtures pass Clang/GCC analysis; separate
 complexity reports enforce unchanged10/15 caps over5/23 functions. All16
 mutants are detected (15 intended assertions, one NULL-access sanitizer).
-The independent classifier fuzzer completes71,385,647 cases in121 seconds
+The independent classifier fuzzer completes71,385,647 cases in 121 seconds
 without a finding; the registered CMake target also builds and replays its
 accepted seed. An initial unknown-target build used a stale generated Makefile;
 explicit CMake regeneration fixes it without changing source or build checks.
@@ -1467,7 +1467,7 @@ unchanged. The initial real-alias regression failed before this predicate.
 
 All87 final sanitizer groups pass in61.38 seconds. All four link-rule mutants
 fail intended assertions, including zero-link acceptance. The filesystem fuzzer
-completes305,619 executions in121 seconds without a finding (observed77MiB),
+completes305,619 executions in 121 seconds without a finding (observed77MiB),
 followed by10,000 cases under the descriptor bound. Real aliases and controlled
 metadata have separate mandatory registered tests, preserving the broader Linux
 suite's FIFO and other filesystem assertions. Android refuses creation of FIFOs
@@ -1954,3 +1954,44 @@ fixture passes on all three, with ARM64 compile-only; its x86 SHA256 is
 All owned device fixture copies were removed. The final host fuzzer rebuild
 replays the complete retained corpus after the type-name adjustment. No fresh
 entropy-generation method was invoked on the devices.
+
+## Independent change-state fuzz comparison — 2026-09-15
+
+Reviewed the extraction of existing `test_change_state_oracle.c` HKDF/HMAC code
+into `change_state_oracle.c/.h`, its reuse by the fixed-vector test and optional
+`fuzz_change_state`, and host-only CMake wiring. The original 40 combinations
+remain; 80 additional combinations use nonuniform counter bytes. Production
+change-state/key derivation, storage, JNI, providers and record format do not
+change. The reference treats the supplied header as public context, without
+independently deriving an address or authorizing recovered-wallet ownership.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | The shared oracle validates non-NULL pointers, entropy lengths 16/20/24/28/32, exact80-byte header, output capacity at least80 and counter at most0x80000000. Its fixed info buffer receives only the constant label and80 header bytes; explicit byte stores address offsets8..11. HMAC-SHA512 writes64 bytes into candidate offsets16..79. Guarded82-byte outputs verify both implementations' exact publication; NULLs, invalid lengths through SIZE_MAX and every capacity0..79 leave the oracle output unchanged. |
+| Integer overflow/underflow; signed/unsigned conversion | Counter bytes use independent explicit uint32 shifts0/8/16/24 and masks, rather than the wallet's loop. No shift exceeds31 and the final byte is bounded by the admitted counter. Provider int lengths are fixed or checked at most32. Fixture counters are constants, input expansion is bounded and the original fuzzer's length/index checks remain. Strict conversion warnings pass. |
+| NULL dereferences; uninitialized memory | The reference checks spans before any copy or provider use, tests every EVP/HMAC result and initializes key/candidate/tag length. The public context buffer is fully initialized by its two exact copies. Tests initialize complete sentinel-backed outputs and decode counters before every call. No failure publishes a partially derived record. |
+| Use-after-free; double-free; leaks; dangling pointers | Each optional OpenSSL EVP_PKEY_CTX has one owner and matching free on every provider path. Local key/candidate storage never escapes; the complete key and candidate are cleansed after success/failure. There are no JNI references, file descriptors or retained input pointers. The new library includes/links no wallet implementation; only its executable callers link both implementations for comparison. |
+| Stack usage; allocation limits; resource exhaustion | The existing host backend retains one checked OpenSSL context per invocation and fixed-size scratch. GCC-O2 maximum authored frames are 352 bytes for the oracle,688 for the fuzzer and576 for the fixed driver, below4096; these are per-function, not whole-provider-stack measurements. Input remains6..118 bytes. The campaign uses120 seconds, five-second cases and512 MiB RSS limit. No application allocation, KDF iteration or APK dependency is added. |
+| Malformed serialization/input; errors | The default fuzzer retains its existing record mutation, truncation, invalid capacity/entropy, output-guard and unchanged-input assertions. Oracle mode additionally checks every complete generated record and any accepted decode against independently produced80 bytes. Explicit fixed-vector counter patterns exercise each byte position and mixed bits. Provider failure aborts the public test with a separate fixed diagnostic; mismatching records fail the intended differential assertion. |
+| Races; ownership; lifecycle | Only test-private immutable labels are shared. Provider owners, entropy, headers, records and reference candidates remain local to one invocation. The reference is compiled inside host-only ZCL_ORACLE; fuzzer linkage additionally requires ZCL_FUZZ and its sanitized profile. No worker, unlocked state, filesystem, consent, reservation or lifecycle authority is introduced. |
+| Secret leakage; format strings | Inputs are deterministic public fixtures or fuzz bytes. Owned reference keys/candidates and harness entropy copies are explicitly cleared; diagnostics identify failures without printing bytes. Six isolated HKDF/format/byte-order mutations are accepted by the old round-trip harness on the same fixed public input and rejected by the new independent comparison. This validates the additional assertion, not arbitrary-code safety or every OpenSSL internal erasure path. |
+
+All 90 default sanitizer groups pass in 48.56 seconds. The 120 guarded independent
+comparisons and oracle bounds pass in the oracle-only and fuzz/oracle profiles
+(1.57/2.01 seconds). Clang/GCC analysis of all changed fixture modes, strict
+warnings, architecture placement and unchanged complexity caps 10/15 pass
+(511 production functions/91 files; 1278 fixture functions/153 files).
+The oracle-enabled fuzzer completes 3778 cases in 121 seconds without a finding,
+observing 97 MiB under its 512 MiB RSS cap. Both unchanged mutation controls pass;
+all six deliberately wrong implementations fail the exact independent-record
+assertion after the old round-trip probe accepted them.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and native
+alignment pass. All three APKs remain byte-identical to the accepted JNI-owner
+milestone; the unsigned release SHA256 remains
+`5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+No new device behavior or hardware-custody claim is made. Exact source, binary
+hashes, mutation controls/old-harness acceptances, fuzz corpus and acceptance
+logs remain in `.cache/android-wallet/resume-20260915/change-state-fuzz/`.
+TLS remains quarantined; the same custody and transaction-authorization gates
+remain in effect.

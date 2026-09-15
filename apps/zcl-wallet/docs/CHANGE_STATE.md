@@ -82,10 +82,20 @@ hardware policy and the immutable wallet record format remain unchanged.
 ## Evidence scope
 
 Independent host OpenSSL3.0.13 HKDF/HMAC produced matching complete records for
-40 network/entropy-width/counter combinations. That oracle takes a public wallet
+120 network/entropy-width/counter combinations, including nonuniform counter
+byte patterns. That oracle takes a public wallet
 header as context and does not requalify address derivation. Deterministic tests
 cover all640 single-bit record edits, truncations, changed headers, another
 wallet/network, invalid bounds, sentinel handling, canaries and old valid
 content. Separate faults at extract, expand and MAC production observe live
 key cleanup and unchanged caller outputs. OpenSSL and these fixtures are
 host-only and never linked into the Android app.
+
+With both `ZCL_FUZZ` and `ZCL_ORACLE`, the change-state fuzzer reuses that same
+OpenSSL backend to compare complete generated and accepted records. It retains
+the existing malformed-input, mutation, output-guard and input-preservation
+checks. On a fixed public input, the earlier round-trip harness accepted six
+isolated paired/profile defects that the independent record comparison rejects:
+changed HKDF salt, label, block/context, record profile and counter byte order.
+The oracle qualifies record bytes and authentication under the supplied public
+header; it grants no freshness, reservation, GCM or hardware-custody authority.

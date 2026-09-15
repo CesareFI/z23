@@ -2,8 +2,26 @@
 #include "zcl_change_state.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef ZCL_CHANGE_STATE_ORACLE
+#include "change_state_oracle.h"
+#include <stdio.h>
+#endif
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+
+#ifdef ZCL_CHANGE_STATE_ORACLE
+static void checked_reference(const uint8_t header[80], const uint8_t *entropy,
+    size_t entropy_len, uint32_t index, const uint8_t record[80])
+{
+    uint8_t expected[80] = {0};
+    if (!change_state_oracle_record(entropy, entropy_len, header, 80, index, expected, sizeof(expected))) {
+        fputs("Change state reference provider failed\n", stderr); abort();
+    }
+    if (memcmp(expected, record, sizeof(expected)) != 0) {
+        fputs("Change state differential record mismatch\n", stderr); abort();
+    }
+}
+#endif
 
 static void checked_decode(const uint8_t *header, const uint8_t *entropy, size_t entropy_len,
                             const uint8_t *blinding, const uint8_t *record, size_t record_len)
@@ -17,6 +35,9 @@ static void checked_decode(const uint8_t *header, const uint8_t *entropy, size_t
     if (zcl_change_state_encode(header, 80, entropy, entropy_len, blinding, 32,
         result, repeated, sizeof(repeated)) != ZCL_OK) abort();
     if (memcmp(repeated, record, sizeof(repeated)) != 0) abort();
+#ifdef ZCL_CHANGE_STATE_ORACLE
+    checked_reference(header, entropy, entropy_len, result, record);
+#endif
 }
 
 static void check_capacity(const uint8_t *header, const uint8_t *entropy,
@@ -52,6 +73,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const uint32_t valid = (data[0] & 0x80) != 0 ? ZCL_CHANGE_INDEX_EXHAUSTED : value & UINT32_C(0x7fffffff);
     if (zcl_wallet_header_create(entropy, entropy_len, network, blinding, 32, header, 80) != ZCL_OK) abort();
     if (zcl_change_state_encode(header, 80, entropy, entropy_len, blinding, 32, valid, record, 80) != ZCL_OK) abort();
+#ifdef ZCL_CHANGE_STATE_ORACLE
+    checked_reference(header, entropy, entropy_len, valid, record);
+#endif
     uint32_t index = UINT32_MAX;
     if (zcl_change_state_decode(header, 80, entropy, entropy_len, blinding, 32, record, 80, &index) != ZCL_OK || index != valid) abort();
     memcpy(changed, record, sizeof(changed));
