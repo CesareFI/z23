@@ -59,6 +59,10 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   Its release callback is prepared before admission and reused by close();
   shutdown does not first allocate that callback while retaining camera
   resources. Handler internals may still allocate their queue messages.
+* Scanner shutdown attempts camera, isolated-decoder and preview cleanup even
+  if another owner throws. It preserves the first failure and retains failed
+  owners for a later lifecycle cleanup attempt. Android's pause/destroy cleanup
+  still runs; one component's exception cannot skip retirement of its peers.
 * Camera preview scratch pixels clear after upload or failure. Cleanup retires
   the owned image reference and clears scratch before calling Android's bitmap
   erase operation; it does not allocate a replacement buffer or recycle an image

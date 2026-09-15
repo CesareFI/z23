@@ -53,15 +53,11 @@ class CameraScanActivity : Activity() {
     override fun onPause() {
         resumed = false
         startAfterPermission = false
-        stop()
-        screens.clear()
-        super.onPause()
+        try { stop() } finally { super.onPause() }
     }
 
     override fun onDestroy() {
-        stop()
-        screens.clear()
-        super.onDestroy()
+        try { stop() } finally { super.onDestroy() }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -136,9 +132,16 @@ class CameraScanActivity : Activity() {
     }
 
     private fun stop() {
-        camera?.close()
-        camera = null
-        decoder?.close()
-        decoder = null
+        // Each owner must be retired even if another close fails. Keep failed
+        // owners available for a later lifecycle retry and rethrow the first
+        // failure without allocating suppressed-exception storage.
+        var failure: Throwable? = null
+        try { camera?.close(); camera = null }
+        catch (problem: Throwable) { failure = problem }
+        try { decoder?.close(); decoder = null }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        try { screens.clear() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        if (failure != null) throw failure
     }
 }

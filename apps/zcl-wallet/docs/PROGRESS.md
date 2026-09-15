@@ -4313,3 +4313,43 @@ Evidence: `.cache/android-wallet/resume-20260916/camera-release-callback/`.
 
 Next: verify scanner Activity cleanup still attempts its decoder and preview
 when one component's close or clear operation throws.
+
+2026-09-16: scanner Activity shutdown now attempts all three independent owners:
+camera, isolated decoder and preview. Previously a camera close exception could
+skip the live decoder binding and preview; a decoder unbind exception could
+skip the preview. The first failure propagates after all attempts, without
+allocating suppressed-exception storage. Failed camera/decoder references remain
+available for a later lifecycle cleanup; successful closes release references.
+Pause and destruction call their Android superclass cleanup in finally blocks.
+All stop paths now explicitly retire the preview as well.
+
+Five new emulator-only tests use an actual isolated decoder binding, a public
+bitmap and an unstarted CameraCapture with a private fault-injecting Handler.
+They exercise Exception/Error before and after release enqueue, failure after
+actual unbinding, secondary unbind/view-clear errors, and an ordinary-pause
+control. Four of five fail on the original implementation (5.103 seconds).
+The fixed tests observe decoder retirement/unbinding, queued-packet erasure,
+blackened preview pixels, inert late frame callbacks, retained failed owners
+and original-error identity. No camera/worker admission is forged or reset;
+no wallet, key, seed, storage operation or actual memory pressure is involved.
+
+All seven selected tests pass on each x86-64 API30/35/36, with no skips. The five
+cleanup tests take 78.457/6.257/146.517 seconds; actual pending-open cancellation
+and public-image review/recreation/rescan take 70.488/47.143/95.926 seconds.
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+architecture and alignment pass. Both native libraries remain byte-identical.
+Minified DEX inspection confirms the three cleanup catch paths, retention of
+the first error and superclass calls on normal/exceptional pause/destruction.
+
+A source-only build from tree 43bdfb2693e9b35c7a6d52518916fdca447482ec reproduces
+the complete unsigned APK in a separate directory. This commit's app source
+matches that tree except for security/progress notes. Same-host/toolchain
+reproduction does not qualify physical hardware, custody or all Android/driver
+copies. Existing root-lint failures and parked TLS limits remain. The release
+remains 612,823 bytes, SHA256
+`e1713f307ebec4affe7b870aaeec4f4c736eb3be83039a701e17938e12d77c19`.
+Evidence: `.cache/android-wallet/resume-20260916/scanner-cleanup-failure/`.
+
+Next: check whether the decoder service retires its managed camera frame before
+handing the decoded result back through Binder; preserve its single-input bound
+and queued-input cancellation cleanup.
