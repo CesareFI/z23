@@ -50,17 +50,26 @@ internal class WalletAuthentication(
         cancel()
         val request = Pending(prepared)
         pending = request
-        val timeout = Runnable { fail(request) }.also { request.timeout = it }
-        if (!windowOpen(request) || !handler.postDelayed(timeout, WrappingPolicy.authenticationWindowMillis)) {
-            fail(request)
-            return
-        }
-        try {
-            prompt().authenticate(BiometricPrompt.CryptoObject(prepared.cipher), request.signal,
-                activity.mainExecutor, callback(request))
+        val started = try {
+            start(request)
         } catch (_: RuntimeException) {
-            fail(request)
+            false
+        } catch (problem: Throwable) {
+            // A timeout can be enqueued before setup throws. Retire the
+            // request even if reporting failure also throws; preserve Error.
+            try { fail(request) } catch (_: Throwable) { /* Preserve the setup error. */ }
+            throw problem
         }
+        if (!started) fail(request)
+    }
+
+    private fun start(request: Pending): Boolean {
+        val timeout = Runnable { fail(request) }.also { request.timeout = it }
+        if (!windowOpen(request) || !handler.postDelayed(timeout, WrappingPolicy.authenticationWindowMillis))
+            return false
+        prompt().authenticate(BiometricPrompt.CryptoObject(request.prepared.cipher), request.signal,
+            activity.mainExecutor, callback(request))
+        return true
     }
 
     private fun prompt(): BiometricPrompt = BiometricPrompt.Builder(activity)

@@ -4043,3 +4043,39 @@ Next: WalletAuthentication.begin currently registers its timeout outside the
 protected prompt block. Its existing AuthenticationWindow tests cover C/JNI
 timestamps only. Add deterministic scheduling-failure coverage for pending
 prompt cleanup without requesting authentication or weakening custody policy.
+
+2026-09-15: authentication setup now protects timeout construction/registration
+as well as prompt startup. Runtime setup failures retire the pending request,
+remove any queued timeout and cancel its signal. Errors perform the same cleanup
+and propagate unchanged even if failure notification throws. Failure notification
+for an ordinary false return stays outside the setup catch so its own exception
+keeps the existing behavior. Background failure retains only a deferred failure
+notification, delivered once on resume.
+
+The new fixture fails four of six tests on the baseline because a scheduling
+failure retains the pending request. Fixed coverage includes exceptions/errors
+before and after enqueue, cancellation, removed deadlines, zero approvals,
+secondary errors, false-post behavior and deferred notification. It uses an
+unattached Activity and an uninitialized public cipher handle; no prompt,
+authentication, wallet or key is opened by this new fixture. The existing native
+deadline and isolated Keystore-refusal controls run alongside it. All 10 tests
+pass without skips on x86-64 API30/35/36 in 1.212/6.113/2.280 seconds. The Keystore
+controls use only their own fresh temporary aliases and remove them afterward.
+Positive hardware-backed authentication remains unqualified.
+
+Android/JVM tests, both-ABI builds, Android lint, fixture isolation, architecture
+and 16 KiB alignment pass. Reviewed main-thread ownership, cancellation before
+reporting, late-callback identity, original-error preservation, no new queues or
+secret copies and unchanged per-use authentication policy. The two native
+libraries remain byte-identical to the preceding validated checkpoint. A fresh
+source-only build in a separate directory reproduces the complete unsigned APK;
+the same-host/toolchain limit still applies. Existing root-lint failures remain.
+Unsigned release remains 612,807 bytes, SHA256
+`319a9b13c856ec07d11584fb0cba7eaf8d04c74d02d90d2bf91e0d5f34d3a008`.
+Evidence: `.cache/android-wallet/resume-20260915/auth-timeout-failure/`.
+
+Next: CameraCapture.start publishes its worker Handler before posting its
+startup timeout/open operation. Its Error cleanup currently covers only the
+pre-Handler stage, and CameraStartFailureInstrumentedTest exercises construction
+and worker-start failures only. Verify failures after Handler publication using
+bounded synthetic posts and real worker shutdown, without opening a camera.
