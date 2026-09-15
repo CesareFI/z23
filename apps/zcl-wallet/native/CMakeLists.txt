@@ -7,6 +7,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 
+# Keep Android debug paths and content-derived build IDs independent of the
+# checkout location, including sources compiled by provider subdirectories.
+if(ANDROID)
+    get_filename_component(ZCL_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+    add_compile_options("-ffile-prefix-map=${ZCL_SOURCE_ROOT}=.")
+endif()
+
 # Reuse the existing allocation-free JSON/UTF-8 packages as C17 providers.
 # Only the bounded lexer and escape checker are used, never floating-point
 # conversion or Unicode display decoding. See docs/READ_ONLY_SYNC.md.

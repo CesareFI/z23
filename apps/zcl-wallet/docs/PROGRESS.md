@@ -3394,3 +3394,44 @@ Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Baseline/candidate ZIP layouts
 library/export identities, negative sources, public corpus, APK hashes and all
 acceptance logs are preserved in
 `.cache/android-wallet/resume-20260915/setup-apk-size/`.
+
+2026-09-15: shared-clock checkpoint
+`2f217d537cfbd344d9ad3f341eef1cc6ead9ed11` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, upstream is correct and the tree is clean with ahead/behind 0/0. All 121
+wallet commits remain preserved; origin is unchanged.
+
+2026-09-15: the unsigned Android release now reproduces across checkout paths
+on the same host. Before this change, an exact tracked-source archive rebuilt
+in an isolated cache directory produced a different APK. Only the two native
+libraries differed, each exactly in the 20-byte ELF build-ID payload at file
+bytes 793–812. Absolute debug paths affected the content-derived IDs even though
+those debug sections were stripped from the packaged libraries. No other APK
+entry differed. The baseline source, APKs and byte comparisons are preserved.
+
+CMake now applies one Android-only `-ffile-prefix-map=<checkout>=.` option before
+all targets, including provider subdirectories. The actual release compilation
+manifests contain the mapping for all 98 translation units in each ABI and each
+build directory. The link still uses `--build-id=sha1`; IDs are neither removed
+nor assigned a constant. Host sanitizer/fuzz settings and Android hardening,
+visibility and 16 KiB alignment remain unchanged.
+
+The ordinary build and a fresh relocated build now produce byte-identical
+613415-byte unsigned APKs, SHA256
+`6f9b9641dfeecd36cca4b110dc3aba506bcef4d1aef8fd7bea2d0390bb567a1f`.
+Relative to the prior release, both libraries change only within the build-ID
+payload; every other library byte and every other APK entry remains identical.
+The complete Android/JVM build/test/lint, fixture isolation and native-alignment
+run passes; the relocated offline release executes all 57 tasks successfully.
+The earlier path-dependent build is the preserved negative control.
+
+All 92 default native sanitizer groups pass in 57.34 seconds, together with
+strict Clang/GCC analysis, unchanged complexity caps 10/15 and architecture.
+The Android native code bytes are unchanged outside build IDs, so this build
+qualification does not claim new runtime or device-custody acceptance. The
+measured scope is same-host, same-toolchain path independence; signed APKs,
+different hosts/toolchains and positive hardware custody remain unqualified.
+TLS remains quarantined. Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).
+Source archives, exact CMake patch, negative/positive APKs, compilation manifests,
+byte comparisons and validation logs remain in
+`.cache/android-wallet/resume-20260915/apk-reproduction/`.

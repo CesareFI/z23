@@ -2217,3 +2217,33 @@ It uses no VM calls, wallet path, key generation or hardware authentication.
 Evidence remains in `.cache/android-wallet/resume-20260915/setup-apk-size/`.
 TLS remains quarantined; positive hardware custody and minified setup UI are
 not newly qualified by these scalar release-library results.
+
+## Android checkout-path reproduction — 2026-09-15
+
+Reviewed the Android-only CMake file-prefix mapping and its placement before
+all authored/provider targets. No C/Kotlin implementation or provider source is
+edited. NDK 27 Clang's documented flag remaps debug paths and file macros. The
+link retains content-derived SHA1 build IDs, existing hardening and alignment.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffers; out-of-bounds access; pointer arithmetic; NULL/uninitialized memory | The CMake option introduces no runtime operation. Both packaged libraries differ from the prior release only in the 20-byte build-ID payload; all other bytes are identical. Existing checks and failure outputs retain their compiled code. |
+| Integer overflow/underflow; signed/unsigned conversions; malformed input | No arithmetic, parser, serialization or conversion changes. Actual manifests show all 98 translation units per ABI carry the mapping. Host flags remain outside the Android-only condition; 92 sanitizer groups pass. |
+| Use-after-free; double-free; leaks; dangling pointers; races | No owner, pointer lifetime, JNI reference, synchronization or cancellation behavior changes. Existing strict analysis and complexity caps 10/15 pass. |
+| Stack; allocation limits; resource exhaustion; format strings; secret leakage | No runtime allocation, stack frame or formatting operation is introduced. Predefined file macros may use a relative public source path; their format behavior is unchanged. No secret, signing or wallet data is part of the source export. Ordinary and relocated full APKs compare byte-for-byte; no ZIP entry is removed to obtain equality. |
+
+The baseline exact-source relocated build fails the whole-APK comparison, with
+only native build IDs differing. With the mapping, fresh relocated and ordinary
+builds both produce SHA256
+`6f9b9641dfeecd36cca4b110dc3aba506bcef4d1aef8fd7bea2d0390bb567a1f`
+at 613415 bytes. All other library bytes and all other APK entry contents remain
+identical to baseline. Android/JVM tests/builds, debug/release lint, isolation,
+16 KiB alignment, strict C analysis and architecture pass. The 92 default native
+groups pass in 57.34 seconds. No new instrumentation or fuzz acceptance is
+claimed for this build-only change; runtime code is unchanged.
+
+This establishes checkout-path independence on one Linux host using the same
+installed toolchain/dependencies. It does not establish cross-host/toolchain or
+signed-APK reproducibility, hardware custody, or arbitrary source safety. TLS
+remains quarantined. Exact artifacts and negative controls are preserved under
+`.cache/android-wallet/resume-20260915/apk-reproduction/`.

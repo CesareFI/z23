@@ -55,6 +55,28 @@ JNI/storage/QR tests also pass on an API35 x86_64 16 KiB emulator; the preserved
 4 KiB library fails to load there. This does not qualify arm64 hardware or
 hardware-authenticated custody. Runtime details are in the work log.
 
+### Unsigned release reproduction
+
+Android native compilation maps the checkout root to `.` in debug information
+and file macros, including provider sources. This preserves content-derived ELF
+build IDs while removing checkout-location differences from their inputs.
+Two builds of the same source with the same installed toolchain, dependencies
+and build settings should produce identical unsigned release APKs:
+
+```sh
+./gradlew --offline :android-app:assembleRelease
+sha256sum android-app/build/outputs/apk/release/android-app-release-unsigned.apk
+```
+
+Build each copy from its own source directory without copying `build/`, `.cxx/`
+or project `.gradle/` outputs. Compare the complete APK bytes with `cmp`, not
+only extracted code or a rewritten ZIP. A local source archive in an isolated
+cache directory is sufficient to check checkout-path independence. Preserve the
+source commit, toolchain versions, both hashes and any differing artifacts.
+The measured acceptance uses two paths on one Linux host; different hosts,
+toolchain versions and signed APK reproduction remain unqualified. An equal
+hash establishes byte identity, not wallet or hardware-custody safety.
+
 The C core currently covers checked amounts/addresses/payment URIs, English
 BIP39 recovery, BIP32/BIP44 Zclassic receiving keys, authenticated-record
 serialization, private storage that refuses overwrite, backup confirmation,
