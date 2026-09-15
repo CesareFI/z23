@@ -53,6 +53,20 @@ replace_flag(zcl_wallet_core
     "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change"
     ""
     "Required authored integer checks missing")
+# Text inside a macro value is not an enabling compiler argument.
+foreach(flag -fsanitize=address,undefined -fno-sanitize-recover=all)
+    replace_flag(zcl_wallet_core "${flag}" "-DZCL_TEST_LABEL='${flag}'"
+        "Required sanitizer or fail-on-finding flags missing")
+endforeach()
+replace_flag(zcl_wallet_core "-fsanitize=fuzzer-no-link" "-DZCL_TEST_LABEL='-fsanitize=fuzzer-no-link'"
+    "Required fuzz coverage instrumentation missing")
+replace_flag(zcl_wallet_core
+    "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change"
+    "-DZCL_TEST_LABEL='-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change'"
+    "Required authored integer checks missing")
+# Quoting the actual option still passes the same compiler argument.
+replace_flag(zcl_wallet_core "-fsanitize=address,undefined" "\"-fsanitize=address,undefined\"" "")
+replace_flag(zcl_wallet_core "-fsanitize=fuzzer-no-link" "'-fsanitize=fuzzer-no-link'" "")
 # A positive flag earlier in a command must not conceal an overriding opt-out.
 # Mutate emitted manifests only; never compile or execute a weakened target.
 foreach(target zcl_wallet_core zcl_scan_provider)

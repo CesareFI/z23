@@ -16,23 +16,31 @@ foreach(index RANGE 0 ${last})
         # Inspect actual arguments so quoted flags cannot evade this check,
         # and a macro value containing similar text is not mistaken for a flag.
         separate_arguments(arguments UNIX_COMMAND "${command}")
+        set(has_coverage FALSE)
         foreach(argument IN LISTS arguments)
             if(argument MATCHES "^-f(no-sanitize=|sanitize-recover=|no-sanitize-coverage=)")
                 message(FATAL_ERROR "Sanitizer or coverage opt-out is forbidden for ${source}: ${argument}")
             endif()
+            if(argument MATCHES "^-fsanitize=fuzzer(-no-link)?(,|$)")
+                set(has_coverage TRUE)
+            endif()
         endforeach()
-        if(NOT command MATCHES "-fsanitize=address,undefined" OR NOT command MATCHES "-fno-sanitize-recover=all")
+        list(FIND arguments "-fsanitize=address,undefined" sanitizer_position)
+        list(FIND arguments "-fno-sanitize-recover=all" failure_position)
+        list(FIND arguments
+            "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change"
+            integer_position)
+        if(sanitizer_position LESS 0 OR failure_position LESS 0)
             message(FATAL_ERROR "Required sanitizer or fail-on-finding flags missing for ${source}")
         endif()
-        if(source MATCHES "/native/src/" AND NOT command MATCHES
-            "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change")
+        if(source MATCHES "/native/src/" AND integer_position LESS 0)
             message(FATAL_ERROR "Required authored integer checks missing for ${source}")
         endif()
         # Registered standalone unit tests compile some provider/source copies
         # for fault substitution. Those copies need sanitizers; coverage is
         # required on the libraries and source copies linked into fuzz targets.
         if(NOT command MATCHES "CMakeFiles/[^/ ]+_tests\\.dir/")
-            if(NOT command MATCHES "-fsanitize=fuzzer(-no-link|,| |$)")
+            if(NOT has_coverage)
                 message(FATAL_ERROR "Required fuzz coverage instrumentation missing for ${source}")
             endif()
             math(EXPR covered "${covered} + 1")

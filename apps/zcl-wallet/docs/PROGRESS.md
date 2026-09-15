@@ -3974,3 +3974,13 @@ and alignment pass; the unsigned APK remains byte-identical to b8bc5395c.
 Reviewed token boundaries, quote handling, source scope, mutation selection and
 failure diagnostics. Evidence:
 `.cache/android-wallet/resume-20260915/fuzz-flag-overrides/`.
+
+2026-09-15: the same fuzz gate now requires enabling flags to be actual compiler
+arguments too. The baseline incorrectly qualified a command whose sanitizer
+flag had been replaced by a macro value containing the flag's text. Exact
+argument lookup closes this gap for ASan/UBSan, failure recovery and authored
+integer checks; coverage is recognized only in a sanitizer argument. Quoted
+real options remain accepted. All 35 refusal mutations and four positive
+controls pass; the registered profile check passes in 19.54 seconds with the
+same 156/106 actual compilation counts. No source, compiler command or APK
+bytes change. Evidence: `.cache/android-wallet/resume-20260915/fuzz-flag-tokens/`.
