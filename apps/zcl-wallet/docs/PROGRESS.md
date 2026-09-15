@@ -4272,3 +4272,44 @@ camera-driver or provider copies.
 
 Next: audit the remaining JNI result handoffs for unnecessary native input
 retention and reuse their existing fault-injection fixtures for any real gap.
+
+2026-09-16: the remaining JNI heap-backed draft, review and sync inputs already
+retire before their result handoffs. No further native change was needed.
+CameraCapture now prepares its release Runnable during construction, before
+worker/camera admission, and reuses it in close(). This applies the same
+prepared-callback pattern as the wallet session. Handler internals may still
+allocate queue messages; this is not allocation-free Android shutdown.
+
+The added regression captures the owner's Runnable identities before start(),
+then refuses the startup timer before any camera open can be queued. An
+observing Handler delegates release to the real worker and records two close
+requests. The old implementation fails the prepared-identity assertion in
+0.254 seconds. The fix uses the same prepared callback for both requests,
+terminates the worker and returns admission; a fresh owner can then enter.
+Cleanup never resets the global guard or quits the worker outside its owner.
+No camera, permission, wallet, key or actual memory pressure is used by this
+new test.
+
+All 12 selected tests pass on each x86-64 API30/35/36. Ten synthetic startup,
+shutdown and dispatch tests complete in 1.191/0.049/2.655 seconds; actual
+pending-open cancellation and public-image review/recreation/rescan complete
+in 70.623/47.415/106.282 seconds. No camera test is skipped and existing
+deadlines remain unchanged. The API35 run uses the isolated KVM profile with
+the same public camera image and the reviewed child-reaping launcher.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+architecture and alignment pass. Both native libraries remain byte-identical.
+Minified DEX inspection shows the constructor storing releaseRequest and
+close() loading it before Handler.post, with no new-instance in close(). A
+source-only snapshot, tree 3196ff4d5fbbc4d03d0755735d0e749a41962ca4, reproduces
+the complete unsigned APK in a separate directory. This commit matches that
+app source except for the security/progress notes. Same-host/toolchain limits
+remain. Reviewed pre-admission construction, idempotent worker release, pending
+OS-open ownership, callback lifetime and unchanged frame erasure. Hardware
+custody and existing root-lint limits remain unqualified/unresolved.
+Unsigned release remains 612,823 bytes, SHA256
+`f78b6c59bea02d1356b8b60cf0886aad11240875137ac72d69a08ba5f8197a7b`.
+Evidence: `.cache/android-wallet/resume-20260916/camera-release-callback/`.
+
+Next: verify scanner Activity cleanup still attempts its decoder and preview
+when one component's close or clear operation throws.

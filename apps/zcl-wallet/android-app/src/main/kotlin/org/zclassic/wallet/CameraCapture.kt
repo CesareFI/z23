@@ -57,6 +57,9 @@ internal class CameraCapture(
     private var autofocus = false
     private var nextFrame = 0L
     private val startupTimeout = Runnable { fail() }
+    // Prepare before admission: shutdown must not first allocate its callback
+    // while this owner retains a worker or camera resources.
+    private val releaseRequest = Runnable { release() }
 
     companion object {
         // A pending OS open must finish before another capture owner starts.
@@ -237,7 +240,7 @@ internal class CameraCapture(
         main.removeCallbacks(startupTimeout)
         queuedPacket.getAndSet(null)?.fill(0)
         // If posting refuses, this owner's looper has already completed release.
-        handler?.let { if (!it.post { release() }) frameDone() }
+        handler?.let { if (!it.post(releaseRequest)) frameDone() }
     }
 
     private fun release() {
