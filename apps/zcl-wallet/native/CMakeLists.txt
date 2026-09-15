@@ -529,6 +529,16 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME wallet_jni_draft COMMAND jni_draft_tests)
         set_tests_properties(wallet_jni_draft PROPERTIES TIMEOUT 15)
         if(ZCL_FUZZ)
+            add_executable(fuzz_jni_camera tests/test_jni_camera.c src/jni_camera.c src/jni_scan.c
+                src/jni_payment.c src/jni_support.c)
+            target_include_directories(fuzz_jni_camera PRIVATE src ${JNI_INCLUDE_DIRS})
+            target_link_libraries(fuzz_jni_camera PRIVATE zcl_wallet_core)
+            target_compile_definitions(fuzz_jni_camera PRIVATE ZCL_JNI_CAMERA_FUZZ=1
+                malloc=zcl_jni_camera_test_malloc free=zcl_jni_camera_test_free)
+            target_compile_options(fuzz_jni_camera PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+                -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+            target_link_options(fuzz_jni_camera PRIVATE -fsanitize=fuzzer,address,undefined)
             add_executable(fuzz_jni_keys tests/test_jni_keys.c src/jni_wallet_record.c src/jni_keys.c src/jni_support.c)
             target_include_directories(fuzz_jni_keys PRIVATE src ${JNI_INCLUDE_DIRS})
             target_link_libraries(fuzz_jni_keys PRIVATE zcl_wallet_core)

@@ -27,7 +27,7 @@ static jlong direct_capacity;
 static bool pending, allocation_failure;
 static unsigned fault, calls, allocations, new_arrays;
 static uint8_t *owned;
-static size_t owned_length, allocation_bytes;
+static size_t owned_length, allocation_bytes, failure_prefix;
 
 void *zcl_jni_camera_test_malloc(size_t size);
 void zcl_jni_camera_test_free(void *pointer);
@@ -118,7 +118,7 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray array, jsize offset, jsize
     CHECK(array == (jbyteArray)&result && offset == 0 && count == result.length);
     CHECK(count > 0 && (size_t)count <= result.capacity && bytes != NULL);
     if (vm_failure()) {
-        const size_t prefix = (size_t)count < 6 ? (size_t)count : 6;
+        const size_t prefix = (size_t)count < failure_prefix ? (size_t)count : failure_prefix;
         memcpy(result.bytes, bytes, prefix);
         return;
     }
@@ -160,6 +160,7 @@ static void reset(operation op, unsigned selected_fault)
     CHECK(owned == NULL);
     pending = false; allocation_failure = false;
     fault = selected_fault; calls = 0; allocations = 0; allocation_bytes = 0; new_arrays = 0;
+    failure_prefix = 6;
     input = op == PACKET ? (fake_array){(jsize)packet_length, sizeof(packet), packet}
                         : (fake_array){(jsize)image_length, sizeof(image), image};
     direct_capacity = (jlong)image_length;
@@ -341,7 +342,111 @@ static void destination_refusals(void)
     }
 }
 
-int main(void)
+/* Single-threaded fuzz fixtures: the advertised direct capacity never exceeds
+ * real backing storage. A fake VM must not manufacture an out-of-bounds source
+ * by lying about its allocation. No image or reference escapes an invocation. */
+typedef struct {
+    jint offset, length, width, height, row, pixel;
+    size_t backing;
+    jlong capacity;
+} fuzz_plane;
+static uint8_t fuzz_pixels[1024 * 1024 + 32], fuzz_expected[ZCL_CAMERA_PACKET_MAX];
+
+static jint boundary_value(uint8_t selector, jint normal)
+{
+    CHECK(normal >= 0 && normal < INT32_MAX);
+    const jint values[] = {normal, normal, normal, normal, -1, INT32_MIN, INT32_MAX,
+        0, normal - 1, normal + 1};
+    return values[selector % (sizeof(values) / sizeof(values[0]))];
+}
+
+static fuzz_plane prepare_fuzz_plane(const uint8_t data[13])
+{
+    static const jint layouts[][2] = {{21, 21}, {640, 480}, {384, 384}, {385, 385},
+        {480, 640}, {320, 240}, {1024, 1024}, {21, 1024}};
+    const size_t selected = data[0] % (sizeof(layouts) / sizeof(layouts[0]));
+    const jint width = layouts[selected][0], height = layouts[selected][1];
+    const jint length = width * height; /* Fixed table proves <= 1048576. */
+    const size_t backing = (size_t)length + 32;
+    CHECK(backing <= sizeof(fuzz_pixels));
+    const jlong capacities[] = {(jlong)backing, -1, 0, 10, (jlong)length + 10, (jlong)backing - 1};
+    const fuzz_plane plane = {boundary_value(data[1], 11), boundary_value(data[2], length),
+        boundary_value(data[3], width), boundary_value(data[4], height),
+        boundary_value(data[5], width), boundary_value(data[6], 1), backing,
+        capacities[data[8] % (sizeof(capacities) / sizeof(capacities[0]))]};
+    memset(fuzz_pixels, data[11], backing);
+    return plane;
+}
+
+static void bind_fuzz_plane(const fuzz_plane *plane)
+{
+    input = (fake_array){(jsize)plane->backing, plane->backing, fuzz_pixels};
+    direct_capacity = plane->capacity;
+}
+
+static jint expected_fuzz_packet(const fuzz_plane *plane)
+{
+    reset(PACK, 0);
+    bind_fuzz_plane(plane);
+    const jint expected = API(cameraPlanePacketSize)(&environment, NULL, (jobject)&input,
+        plane->offset, plane->length, plane->width, plane->height, plane->row, plane->pixel);
+    CHECK(calls <= 2 && allocations == 0 && new_arrays == 0 && !pending);
+    if (expected == 0) return 0;
+    CHECK(expected >= 446 && expected <= (jint)sizeof(fuzz_expected));
+    CHECK(plane->offset >= 0 && plane->length >= 0 && plane->width >= 0 && plane->height >= 0);
+    CHECK(plane->row >= 0 && plane->pixel >= 0);
+    CHECK((size_t)plane->offset <= plane->backing);
+    CHECK((size_t)plane->length <= plane->backing - (size_t)plane->offset);
+    const zcl_qr_image layout = {(size_t)plane->width, (size_t)plane->height,
+        (size_t)plane->row, (size_t)plane->pixel};
+    size_t written = 0;
+    /* C packing is the JNI transport oracle. Independent pixel/reference
+     * checks remain in the existing C camera tests and C camera fuzzer. */
+    CHECK(zcl_camera_frame_pack(fuzz_pixels + (size_t)plane->offset, (size_t)plane->length,
+        &layout, fuzz_expected, sizeof(fuzz_expected), &written) == ZCL_OK);
+    CHECK(written == (size_t)expected);
+    return expected;
+}
+
+static void check_fuzz_result(const fuzz_plane *plane, jint expected, jint written, uint8_t marker)
+{
+    CHECK(calls <= 4 && allocations <= 1 && new_arrays == 0 && owned == NULL);
+    CHECK(allocations == 0 || allocation_bytes == (size_t)expected);
+    size_t touched = 0;
+    if (written != 0) {
+        CHECK(!pending && written == expected && written == result.length && written > 0);
+        touched = (size_t)written;
+        CHECK(memcmp(result.bytes, fuzz_expected, touched) == 0);
+    } else if (pending && calls == 4) {
+        CHECK(result.length > 0);
+        touched = failure_prefix < (size_t)result.length ? failure_prefix : (size_t)result.length;
+        CHECK(memcmp(result.bytes, fuzz_expected, touched) == 0);
+    }
+    for (size_t i = touched; i < result.capacity; ++i) CHECK(result.bytes[i] == 0xa5);
+    for (size_t i = 0; i < plane->backing; ++i) CHECK(fuzz_pixels[i] == marker);
+    CHECK(result_box.before == UINT64_C(0xa5a5a5a5a5a5a5a5) && result_box.after == result_box.before);
+}
+
+static void fuzz_camera_case(const uint8_t data[13])
+{
+    const fuzz_plane plane = prepare_fuzz_plane(data);
+    const jint expected = expected_fuzz_packet(&plane);
+    reset(PACK, data[9] % 5U);
+    bind_fuzz_plane(&plane);
+    result.length = boundary_value(data[7], expected);
+    const size_t prefixes[] = {0, 1, 5, 6, (size_t)expected / 2, (size_t)expected};
+    failure_prefix = prefixes[data[12] % (sizeof(prefixes) / sizeof(prefixes[0]))];
+    allocation_failure = (data[10] & 1U) != 0;
+    pending = (data[10] & 2U) != 0;
+    const jint written = API(packCameraPlane)((data[10] & 4U) != 0 ? NULL : &environment,
+        NULL, (data[10] & 8U) != 0 ? NULL : (jobject)&input,
+        plane.offset, plane.length, plane.width, plane.height, plane.row, plane.pixel,
+        (data[10] & 16U) != 0 ? NULL : (jbyteArray)&result);
+    check_fuzz_result(&plane, expected, written, data[11]);
+    if (result.length == expected && fault == 0 && (data[10] & 31U) == 0) CHECK(written == expected);
+}
+
+static void regressions(void)
 {
     initialize();
     sizing_refusals();
@@ -352,6 +457,31 @@ int main(void)
     }
     invalid_lengths();
     exact_pack_allocations();
+}
+
+#if defined(ZCL_JNI_CAMERA_FUZZ)
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    static bool initialized;
+    if (!initialized) { regressions(); initialized = true; }
+    if (size == 13) fuzz_camera_case(data);
+    return 0;
+}
+#else
+int main(void)
+{
+    regressions();
+    static const uint8_t values[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 31, 32, 63, 64, 127, 128, 255};
+    uint8_t data[13] = {0};
+    for (size_t field = 0; field < sizeof(data); ++field) {
+        for (size_t value = 0; value < sizeof(values); ++value) {
+            memset(data, 0, sizeof(data));
+            data[field] = values[value];
+            fuzz_camera_case(data);
+        }
+    }
     puts("JNI camera/scan pending exceptions, exact public results and cleared allocations passed");
     return 0;
 }
+#endif

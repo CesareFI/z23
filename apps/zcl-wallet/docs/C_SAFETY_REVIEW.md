@@ -2422,3 +2422,31 @@ archives remain byte-identical. Device acceptance and the retained API35
 timeout are detailed in PROGRESS.md. Evidence remains under
 `.cache/android-wallet/resume-20260915/camera-jni-output/`. Positive hardware
 custody and physical ARM64 runtime acceptance remain unqualified.
+
+## Camera JNI fuzz boundary — 2026-09-15
+
+This change adds host-only fuzz registration and extends the existing native
+fake-VM fixture. Production C, JNI and APK bytes remain unchanged.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Overflow/underflow; conversions | Fixed layout products are at most 1,048,576; adding 32 fits the static backing array. Boundary mutation checks its normal value before +/-1. Signed minima/maxima remain jint values until validation. Modulo indexes are bounded by their literal arrays. Packet results must be 446..147461 before conversion or comparison. |
+| Bounds; pointer arithmetic; malformed input | Fuzz control input is exactly 13 bytes. The fake VM advertises only capacities within real backing storage or a negative unavailable result. Successful sizing must prove nonnegative spans and offset/length within the backing allocation before the fixture itself constructs a pointer. C packing supplies the transport comparison; independent C pixel tests retain algorithm coverage. Destination capacity, trailing sentinels and all source bytes are checked. |
+| Ownership; UAF; double-free; leaks; dangling pointers | The existing one-allocation observer checks every scratch byte before free. Input, output and comparison arrays are static single-threaded fixture storage; no saved automatic pointer is read after return. Each case resets VM state and requires no remaining heap owner. No borrowed pointer escapes to a worker. |
+| NULL; initialization; races; resource exhaustion | Missing env/input/output and pending exceptions are explicit controls. Arrays and state initialize before use. One process owns each fixture; libFuzzer workers do not share mutable address spaces. Maximum new fixture backing is 1 MiB + 32 bytes plus one maximum packet. No new production allocation, queue, thread or recursion. NDK main frames are 1896/2080 bytes on x86-64/ARM64, below the unchanged 4096-byte gate. |
+| Format strings; secret leakage | All inputs are generated public pixel markers. Fixed diagnostics contain no wallet material. The partial-write observer varies zero, header-only, pixel, half and full prefixes; cleanup assertions preserve the existing complete native wipe contract. No RNG, keys, wallet filesystem or network is used by the new cases. |
+
+The normal registered JNI group includes 273 deterministic control mutations
+and passes in 0.54 s with sanitizers. All 92 default groups pass in 57.82 s;
+strict source/provider analysis and unchanged complexity caps 10/15 pass.
+Both normal and fuzz fixture profiles pass Clang analysis and GCC -fanalyzer.
+The actual manifest verifies sanitizer/fail-on-finding flags on 156 compiled
+authored/provider units and fuzz coverage on 106 library/fuzz units.
+
+The new libFuzzer target completes 15,230 executions in 121 seconds without a
+finding: max_len 13, per-input timeout 5 seconds, RSS cap 512 MiB, observed 95 MiB.
+ASan/UBSan, authored integer checks, stack-use-after-return, leaks and strict
+strings remain enabled. Native fixtures pass x86-64 API30/35/36 after exact
+transfer hashes; ARM64 compiles. Android/JVM/build/lint/isolation/alignment pass,
+and the complete unsigned release APK is byte-identical to the previous slice.
+Evidence: `.cache/android-wallet/resume-20260915/jni-camera-fuzz/`.

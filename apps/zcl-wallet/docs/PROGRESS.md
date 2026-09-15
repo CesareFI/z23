@@ -3859,3 +3859,23 @@ phrase lifetime; it makes no claim about all VM/UI copies or hardware custody.
 Evidence: `.cache/android-wallet/resume-20260915/phrase-retirement/`.
 Next: dedicated fuzz coverage for the camera JNI size/fill boundary, preserving
 the existing independent C pixel/reference and real-VM erasure checks.
+
+2026-09-15: added the dedicated `fuzz_jni_camera` host target, reusing the real
+JNI adapters and existing allocation/exception observer. Thirteen public
+control bytes vary geometry, direct offsets/capacities, output lengths, missing
+arguments, allocation refusal, pending VM exceptions and partial-write prefixes.
+The fake VM never advertises more backing memory than it owns. Exact C/JNI
+packet comparison, immutable inputs, output sentinels and full scratch erasure
+are checked; the independent C pixel oracle and real-JVM ownership tests remain.
+The ordinary JNI test also runs 273 deterministic control mutations.
+
+All 92 native sanitizer groups pass in 57.82 s. Strict Clang/GCC source analysis,
+both fixture profiles and unchanged complexity caps 10/15 pass. Actual compile
+manifests verify coverage and ASan/UBSan/authored-integer instrumentation.
+The bounded fuzzer completes 15,230 executions in 121 s without a finding,
+max_len 13, timeout 5 s, RSS cap 512 MiB, observed 95 MiB. Native fixture runs
+pass x86-64 API30/35/36 with exact transfer hashes; ARM64 compiles. Android/JVM,
+both-ABI builds, lint, isolation and alignment pass. The entire unsigned release
+APK remains byte-identical to the prior slice. Safety review and evidence are
+under [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md) and
+`.cache/android-wallet/resume-20260915/jni-camera-fuzz/`.
