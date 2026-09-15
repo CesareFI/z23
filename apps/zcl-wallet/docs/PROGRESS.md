@@ -4155,3 +4155,36 @@ fresh-emulator launch evidence: the sibling `api35-kvm/` directory.
 
 Next: integrate the independently tested prepared-session finalizer, then
 retire restored entropy before the public-address UI handoff.
+
+2026-09-15: reused the prepared-session finalizer from 6227d2d9740f96cc47bab32ef0f8674bec9c3912.
+The session now allocates its bound cleanup callback during empty construction,
+before secret ownership or worker admission. close() selects that existing
+callback before asking the worker to shut down. Active work still owns setup
+until pool termination. This removes the session's close-time callback
+allocation; it does not make framework shutdown allocation-free.
+
+The original regression was adapted to the current four-argument Setup model
+and forwards main-thread assertion failures to the test runner. On the baseline
+it fails because no prepared callback exists. The fixed test observes callback
+identity across repeated close(), retained public marker entropy during active
+work, erasure after termination and removal of the pool's callback reference.
+It creates no wallet, key or storage directory. Debug bytecode independently
+shows close() loading finishSession without its previous callback allocation.
+
+The finalizer and five worker-expiry tests pass on each x86-64 API30/35/36;
+API30 also runs all seven controller scheduling regressions in that batch
+(13 tests, 95.219 seconds). The six-test API35/36 groups take 0.057/1.683 seconds.
+No test is skipped and worker/admission bounds remain unchanged. Android/JVM,
+both-ABI builds, lint, fixture isolation, architecture and alignment pass.
+Native libraries are byte-identical to the preceding checkpoint. A source-only
+snapshot identified by tree 3a6d13cca4a8629af0afab1ff8708ed9dd573ffd reproduces
+the full APK in a separate directory; the commit's app source matches that
+tree except for this progress log. The same-host/toolchain limit remains.
+
+Reviewed construction failure before admission, callback lifetime, idempotent
+closure and worker-owned erasure. Hardware-custody and existing root-lint limits
+remain. Unsigned release is 612,807 bytes, SHA256
+`7fae1dc8bcd8d79aaa1d3f26b85f4398eae9c0259637aa75e082631630d13285`.
+Fresh evidence: `.cache/android-wallet/resume-20260915/session-finalizer-reuse/`.
+
+Next: commit the demonstrated restoration entropy retirement before UI dispatch.

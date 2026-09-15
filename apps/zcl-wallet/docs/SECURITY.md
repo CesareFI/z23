@@ -47,6 +47,10 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   the closing thread only after no worker can access that state; it must clear
   owned data without blocking or calling UI/provider code. It releases retained
   callback references, and even a failing finalizer returns admission once.
+  The session prepares its bound finalizer during empty construction, before
+  any secret or worker admission, so requesting shutdown does not first need
+  to allocate that callback. Active workers still retain cleanup ownership
+  until termination; this does not make all framework shutdown allocation-free.
 * Camera startup returns its single process admission if worker construction or
   startup fails before publishing a handler, including on fatal allocation
   errors. That failed lifetime cannot retry itself. Once an OS camera open is
