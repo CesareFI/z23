@@ -3161,3 +3161,35 @@ No new hardware-custody or production-device behavior is claimed; TLS stays
 quarantined. Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Public mutation,
 fuzz, source and validation evidence is preserved in
 `.cache/android-wallet/resume-20260915/hmac-fuzz/`.
+
+2026-09-15: direct HMAC differential checkpoint
+`19c5159e484ada9533ec99bfab225e0ec32acefa` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean, upstream correct and ahead/behind 0/0. All 116 wallet
+commits remain preserved, including the original 108-commit checkpoint. Origin
+remains unchanged; private backup permissions report push:true/admin:true.
+
+2026-09-15: the host fuzz build now instruments both secp256k1 targets for
+coverage feedback. They already had ASan/UBSan; wallet core and the other enabled
+providers already had coverage instrumentation. The old gate passed without the
+curve coverage flags. The strengthened gate checks the actual emitted commands:
+sanitisers/fail-on-finding on 151 authored/provider compilations and coverage on
+102 library/fuzz compilations, while standalone fault-test copies retain their
+sanitizer checks. Twelve manifest mutations and a separate removed-assertion
+mutation validate refusal. Rebuilt curve object symbols independently confirm
+coverage hooks that were absent from the baseline.
+
+All 94 tests in the complete fuzz/oracle build pass in 114.54 seconds; all 90
+default sanitizer groups pass in 54.65 seconds. The strengthened profile and its
+12 manifest mutations pass in 8.13 seconds. BIP32/signature oracle checks pass,
+and a bounded BIP32 campaign completes 8,367 cases in 121 seconds without a
+finding (max_len104, timeout5, RSS cap512 MiB, observed264 MiB). Strict native
+analysis, architecture and unchanged complexity caps10/15 pass. Android/JVM
+builds/tests, debug/release lint, fixture isolation and alignment pass; all three
+APKs remain byte-identical to the prior checkpoint. Production C, cryptography,
+Android options and custody gates are unchanged. TLS remains quarantined.
+
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Initial scope/log-format
+corrections, exact old/new commands and symbols, manifest mutations, public corpus
+and acceptance are preserved in
+`.cache/android-wallet/resume-20260915/fuzz-coverage/`.

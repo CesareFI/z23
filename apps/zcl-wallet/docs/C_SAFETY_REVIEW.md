@@ -2037,3 +2037,57 @@ release SHA256 remains
 `5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
 No new device behavior is claimed. TLS remains quarantined and positive hardware
 custody remains unqualified.
+
+## Host fuzz coverage enforcement — 2026-09-15
+
+Reviewed CMake-only instrumentation and build-manifest validation changes.
+The existing host fuzz profile already supplied ASan/UBSan to secp256k1, but its
+curve and precomputed-object targets lacked coverage feedback. Wallet core,
+hash, QR, scanner, JSON and BLAKE2 providers already had it. Both curve targets
+now also compile with `-fsanitize=fuzzer-no-link` in ZCL_FUZZ builds. This supplies
+[coverage instrumentation without a replacement main](https://llvm.org/docs/LibFuzzer.html#fuzzer-usage),
+keeping the existing driver/link rules. No vendor or wallet C implementation,
+cryptographic algorithm, consensus predicate or Android build option changes.
+
+The old profile check passed the preserved baseline compile commands. It checked
+sanitizers and fail-on-finding flags, but did not require fuzz coverage. The new
+shared manifest checker retains those checks on all 151 authored/provider
+compilations and additionally verifies coverage on the 102 library/fuzz
+compilations. Standalone registered unit-test copies used for fault substitution
+remain under sanitizer checks; they are separate from the libraries and source
+copies linked into fuzz targets. Empty and unrelated manifests refuse. The
+actual rebuilt secp256k1 object now references sanitizer coverage hooks, which
+were absent from its saved baseline symbol table.
+
+Twelve deliberately altered manifests exercise missing coverage for each of
+eight library targets, missing sanitizer/fail-on-finding flags and empty/unrelated
+scope. All must fail for the intended diagnostic after the real emitted manifest
+passes. A separate isolated mutation removing the coverage assertion itself is
+rejected by this regression. These tests mutate only owned generated manifests,
+never compiler configuration or application source. Initial evidence is retained
+for a too-broad candidate check on standalone unit-test copies and a scratch
+log-matching script that did not normalize CMake line wrapping; both were
+corrected without weakening the required library/fuzzer or sanitizer checks.
+
+No authored C buffer arithmetic, signed/unsigned conversion, pointer, allocation,
+secret lifetime, format-string, serialization, stack or concurrency behavior is
+changed. The CMake JSON reader fails on missing/malformed fields; generated
+commands are inspected as data and never executed. Each child verifier has a
+bounded timeout; the existing outer profile timeout remains 120 seconds. Public
+fixture manifests remain in the owned build/evidence directories and are excluded
+from commits. Coverage instrumentation adds host fuzz work only; it does not
+establish arbitrary-code safety, provider erasure or positive hardware custody.
+
+All 94 registered tests in the complete fuzz/oracle build pass in 114.54 seconds;
+all 90 default sanitizer groups pass in 54.65 seconds. The standalone strengthened
+profile check and its 12 manifest mutations pass in 8.13 seconds. BIP32/signature
+oracle checks pass with the instrumented curve, followed by 8,367 BIP32 fuzz cases
+in 121 seconds, max_len104, timeout5 and RSS cap512 MiB (264 MiB observed), without
+a finding. Strict native analysis, existing 10/15 complexity limits and architecture
+pass. Android/JVM builds/tests, debug/release lint, fixture isolation and native
+alignment pass; all three APKs remain byte-identical. The release SHA256 remains
+`5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+Exact commands, old/new symbol tables, negative manifests, source identities and
+acceptance evidence are preserved in
+`.cache/android-wallet/resume-20260915/fuzz-coverage/`. TLS remains quarantined;
+no hardware-positive custody or new Android-device claim is made.
