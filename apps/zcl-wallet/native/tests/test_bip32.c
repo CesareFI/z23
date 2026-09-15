@@ -1,5 +1,8 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_keys.h"
+#ifdef ZCL_BIP32_ORACLE
+#include "bip32_oracle.h"
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +40,29 @@ static int fixture_seed(const bip32_fixture *fixture, uint8_t *seed, size_t capa
     return 0;
 }
 
+#ifdef ZCL_BIP32_ORACLE
+static int independent_node(const bip32_fixture *fixture, const uint8_t *seed,
+    const zcl_extended_private *expected)
+{
+    zcl_extended_private node = {0}, child = {0};
+    uint8_t public_key[33] = {0}, decoded[78] = {0};
+    size_t length = 0;
+    CHECK(zcl_test_bip32_master(seed, fixture->seed_len, &node) == ZCL_OK);
+    CHECK(fixture->depth <= 5);
+    for (size_t i = 0; i < fixture->depth; ++i) {
+        CHECK(zcl_test_bip32_child(&node, fixture->path[i], &child) == ZCL_OK);
+        node = child;
+        zcl_secure_zero(&child, sizeof(child));
+    }
+    CHECK(memcmp(&node, expected, sizeof(node)) == 0);
+    CHECK(zcl_test_bip32_public(node.secret, 32, public_key, sizeof(public_key)));
+    CHECK(zcl_base58check_decode(fixture->public_text, 111, decoded, sizeof(decoded), &length) == ZCL_OK);
+    CHECK(length == 78 && memcmp(public_key, decoded + 45, sizeof(public_key)) == 0);
+    zcl_secure_zero(&node, sizeof(node));
+    return 0;
+}
+#endif
+
 static int known_vectors(void)
 {
     uint8_t blinding[32] = {1};
@@ -68,6 +94,9 @@ static int known_vectors(void)
         CHECK(zcl_public_key(node.secret, sizeof(node.secret), blinding, sizeof(blinding),
                              public_key, sizeof(public_key)) == ZCL_OK);
         CHECK(memcmp(public_key, expected_public + 45, 33) == 0);
+#ifdef ZCL_BIP32_ORACLE
+        CHECK(independent_node(fixture, seed, &node) == 0);
+#endif
         zcl_secure_zero(seed, sizeof(seed));
         zcl_secure_zero(&node, sizeof(node));
         zcl_secure_zero(&child, sizeof(child));

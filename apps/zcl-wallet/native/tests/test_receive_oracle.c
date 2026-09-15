@@ -1,11 +1,8 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
-#include "zcl_keys.h"
+#include "bip32_oracle.h"
 
 #include <openssl/bn.h>
-#include <openssl/ec.h>
 #include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/obj_mac.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -20,80 +17,26 @@ static const fixture fixtures[] = {
 #include "bip39_vectors.inc"
 };
 
-static int oracle_public(const uint8_t *secret, size_t secret_len, uint8_t *out, size_t capacity)
-{
-    if (secret_len != 32 || capacity < 33)
-        return 0;
-    int okay = 0;
-    EC_GROUP *group = EC_GROUP_new_by_curve_name(NID_secp256k1);
-    BN_CTX *context = BN_CTX_new();
-    BIGNUM *scalar = BN_bin2bn(secret, 32, NULL);
-    EC_POINT *point = group == NULL ? NULL : EC_POINT_new(group);
-    if (group == NULL || context == NULL || scalar == NULL || point == NULL)
-        goto cleanup;
-    if (EC_POINT_mul(group, point, scalar, NULL, NULL, context) != 1)
-        goto cleanup;
-    okay = EC_POINT_point2oct(group, point, POINT_CONVERSION_COMPRESSED, out, capacity, context) == 33;
-cleanup:
-    EC_POINT_clear_free(point);
-    BN_clear_free(scalar);
-    BN_CTX_free(context);
-    EC_GROUP_free(group);
-    return okay;
-}
-
-static int oracle_add(uint8_t *secret, size_t secret_len, const uint8_t *tweak, size_t tweak_len)
-{
-    if (secret_len != 32 || tweak_len != 32)
-        return 0;
-    int okay = 0;
-    BN_CTX *context = BN_CTX_new();
-    BIGNUM *left = BN_bin2bn(secret, 32, NULL), *right = BN_bin2bn(tweak, 32, NULL), *order = NULL;
-    int digits = BN_hex2bn(&order, "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
-    if (context == NULL || left == NULL || right == NULL || order == NULL || digits != 64)
-        goto cleanup;
-    if (BN_cmp(right, order) >= 0 || BN_mod_add(left, left, right, order, context) != 1 || BN_is_zero(left))
-        goto cleanup;
-    okay = BN_bn2binpad(left, secret, 32) == 32;
-cleanup:
-    BN_clear_free(left);
-    BN_clear_free(right);
-    BN_free(order);
-    BN_CTX_free(context);
-    return okay;
-}
-
 static int oracle_derive(const uint8_t *seed, size_t seed_len, const uint32_t *path, size_t depth,
                           uint8_t *secret, size_t capacity)
 {
     if (seed_len != 64 || depth != 5 || capacity < 32)
         return 0;
-    uint8_t node[64] = {0}, digest[64] = {0}, data[37] = {0};
-    unsigned int length = 0;
+    zcl_extended_private node = {0}, child = {0};
     int okay = 0;
-    if (HMAC(EVP_sha512(), "Bitcoin seed", 12, seed, seed_len, node, &length) == NULL || length != 64)
+    if (zcl_test_bip32_master(seed, seed_len, &node) != ZCL_OK)
         goto cleanup;
     for (size_t i = 0; i < depth; ++i) {
-        if (path[i] >= UINT32_C(0x80000000)) {
-            data[0] = 0;
-            memcpy(data + 1, node, 32);
-        } else if (!oracle_public(node, 32, data, sizeof(data))) {
+        if (zcl_test_bip32_child(&node, path[i], &child) != ZCL_OK)
             goto cleanup;
-        }
-        for (size_t j = 0; j < 4; ++j)
-            data[33 + j] = (uint8_t)(path[i] >> (24U - (unsigned)j * 8U));
-        if (HMAC(EVP_sha512(), node + 32, 32, data, sizeof(data), digest, &length) == NULL || length != 64)
-            goto cleanup;
-        if (!oracle_add(node, 32, digest, 32))
-            goto cleanup;
-        memcpy(node + 32, digest + 32, 32);
+        node = child;
+        OPENSSL_cleanse(&child, sizeof(child));
     }
-    memcpy(secret, node, 32);
+    memcpy(secret, node.secret, 32);
     okay = 1;
 cleanup:
-    OPENSSL_cleanse(node, sizeof(node));
-    OPENSSL_cleanse(digest, sizeof(digest));
-    OPENSSL_cleanse(data, sizeof(data));
+    OPENSSL_cleanse(&node, sizeof(node));
+    OPENSSL_cleanse(&child, sizeof(child));
     return okay;
 }
 
@@ -129,7 +72,7 @@ static int oracle_address(const uint8_t *secret, size_t secret_len,
 {
     uint8_t public_key[33] = {0}, hash[32] = {0}, checksum[32] = {0}, payload[26] = {0};
     unsigned int length = 0;
-    if (!oracle_public(secret, secret_len, public_key, sizeof(public_key)))
+    if (!zcl_test_bip32_public(secret, secret_len, public_key, sizeof(public_key)))
         return 0;
     payload[0] = network == ZCL_MAINNET ? 0x1c : 0x1d;
     payload[1] = network == ZCL_MAINNET ? 0xb8 : 0x25;

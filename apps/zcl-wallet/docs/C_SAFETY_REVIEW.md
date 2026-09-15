@@ -1794,3 +1794,43 @@ No production implementation, APK, provider or JNI change is part of this slice.
 TLS and hardware-positive custody remain unqualified. Evidence and accepted
 source/archive hashes are under
 `.cache/android-wallet/resume-20260915/ec-lifetime/`.
+
+## Independent BIP32 differential fuzzing — 2026-09-15
+
+Reviewed the new `bip32_oracle.c/.h`, `fuzz_bip32.c`, deterministic replay/corpus
+driver, the two adapted fixed-vector fixtures and host-only CMake registration.
+The OpenSSL reference is extracted from the existing receive/change oracle;
+master/child byte operations now serve both the existing fixtures and fuzzing.
+Production key, provider, custody and consensus implementations are unchanged.
+
+| Hazard | Review and evidence |
+|---|---|
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Fuzz input is 1..104 bytes, expanded into one fixed 104-byte array. Separate controls precede 64 seed/parent bytes and 32 blinding bytes. Parent secret/chain offsets are 8/40, blinding starts at 72, and all five four-byte path reads end before offset 24. Seed lengths outside 16..64 refuse before provider reads. Oracle child material is exactly 37 bytes, HMAC output 64, and public output 33. Guarded typed nodes compare all output bytes plus both eight-byte guards. Corpus paths use checked snprintf into 1024 bytes. |
+| Integer overflow/underflow; signed/unsigned conversions | All generated counters/lengths are bounded, with explicit SIZE_MAX refusal cases. Path indexes are assembled from four uint32_t byte shifts; the oracle uses explicit serialization bytes independently of the wallet loop. Provider integer lengths are constants 12/32 or checked spans <=64. The scalar boundary fixture adjusts only the final public order byte, without borrow/carry. Strict conversion warnings pass. |
+| NULL dereferences; uninitialized memory | Oracle public entry points check pointers and size/profile before dereference; every allocated BN/EC object and provider result is checked. Typed oracle/actual outputs begin with identical sentinels, and all scratch is initialized before use. Fuzzer control bytes independently select NULL seed/parent/output/blinding without constraining the scalar's bytes. Each generated pointer still designates its full fixture allocation even when a deliberately invalid length is supplied. |
+| Use-after-free; double-free; leaks; dangling pointers | Each OpenSSL owner has one matching BN_clear_free, BN_free, EC_POINT_clear_free, EC_GROUP_free or BN_CTX_free cleanup path, including allocation/provider refusal. No reference retains a pointer across calls. Candidate nodes and complete parent/seed/blinding snapshots are local values and cleared after comparison. The corpus writer closes its one FILE on short write and normal completion; exclusive mode never truncates existing files. |
+| Stack usage; allocation limits; resource exhaustion | Maximum depth is five, scalar arithmetic is fixed to 32-byte values and HMAC input to 37/64 bytes. No recursion or persistent provider context is introduced. The oracle's bounded OpenSSL allocations belong only to host fixtures. GCC-O2 per-function maxima are 880 bytes for the harness and 1104 for the optional path-formatting writer, below 4096; these are not whole-call-stack measurements. Fuzzing uses max_len104, timeout5, a 120-second campaign and RSS512MiB. The ordinary replay is fixed to 860 cases. |
+| Malformed serialization/input; error handling | Master lengths 0..66/SIZE_MAX and child parent/argument/blinding refusals compare exact statuses and preserved outputs with an independent reference. Success compares both private key and chain code; final public keys must match OpenSSL and two independent fixture blinding inputs. Zero/order/order+1/all-ones parents refuse; one/order-1 and normal/hardened boundary indexes derive deterministically. No implicit index retry is added. Existing rare invalid-tweak provider tests remain in the default suite. |
+| Races; ownership; cancellation | The reference, harness and deterministic replay have no shared mutable wallet state, worker, JNI handle or external endpoint. Borrowed input snapshots must remain unchanged after both implementations run. OpenSSL and new test entry points are registered only inside NOT ANDROID and ZCL_ORACLE; fuzzing additionally requires the existing fully sanitized profile. |
+| Secret leakage; format strings; cryptographic behavior | Only published vectors and deterministically generated public fuzz bytes are used. Owned nodes, HMAC state/digests and test seed/blinding copies are explicitly cleared. Constant diagnostics report case counts/status failures without byte values. OpenSSL reference arithmetic is for public host fixtures, with no constant-time custody claim. Fuzzer failures abort the public fixture process; no real key, wallet or production RNG is involved. No new algorithm or primitive is linked into the app. |
+
+Validation: default 90 ASan/UBSan/LSan groups pass in 48.93 seconds. Both host
+oracle-only and oracle/fuzz profiles pass the 860-case replay, 17 published
+BIP32 paths and 96 receive/change comparisons (4.21/4.65 seconds). The fuzzer
+completes 37985 executions in 121 seconds without a finding, observing 264 MiB
+under its 512 MiB cap. The initial 852-case corpus and later eight exact scalar
+cases are separately recorded; the harness/oracle source and binary did not
+change when those replay cases were added. All nine deliberate wallet mutations
+fail the exact differential assertion. Two isolated oracle admission-bound
+mutations fail specifically in the exact scalar cases. A prior whole-order
+mutation already failed on ordinary derivation before reaching those cases;
+that broader experiment remains preserved, not claimed as boundary evidence.
+
+Clang/GCC analysis and strict warnings pass on all affected fixture modes;
+complexity remains capped at 10/15 (1245 fixture functions, 150 files, none over
+15). Architecture, Android/JVM build/test/lint, fixture isolation and 16 KiB
+alignment pass. The release APK is byte-identical to the accepted seed milestone,
+SHA256 `8d88ec9944e4ac00e2ba3222e17f53ac2725e2487680ef6da7128688c5847d4d`.
+No new device custody, physical camera, TLS or transaction-authorization claim.
+Source/artifact hashes, failures, mutations, generated public corpus and logs
+are preserved in `.cache/android-wallet/resume-20260915/bip32-fuzz/`.

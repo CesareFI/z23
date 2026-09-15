@@ -2913,3 +2913,51 @@ blinding and owned temporary executables. No APK, provider, JNI or TLS source is
 changed. The full review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); old-test
 acceptance, mutations, hashes, analysis and device evidence are preserved in
 `.cache/android-wallet/resume-20260915/ec-lifetime/`.
+
+2026-09-15 11:33 UTC: EC lifetime regression commit
+`d200dfa09146746eb1383e200c0f8ae0f30e3c9a` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, the tree was clean with 0/0 ahead/behind, and all 110 wallet commits
+remain preserved. The original 108-commit checkpoint is still an ancestor.
+`origin` is unchanged; only the same-named development branch was pushed.
+
+2026-09-15: BIP32 now has an optional host differential fuzzer, using a shared
+OpenSSL reference extracted from the existing receive/change oracle. The
+reference independently computes master and child private-key/chain-code bytes,
+validates scalar bounds and derives compressed public keys. Existing public
+vectors and the fuzzer reuse that reference; no second wallet implementation
+or dependency enters the APK.
+
+`wallet_bip32_differential` replays 860 deterministic public cases and can write
+them to a fresh corpus directory through exclusive file creation. Cases cover
+seed lengths 0..66/SIZE_MAX; normal/hardened index boundaries; scalar zero, one,
+order-1, order, order+1 and all-ones; NULL arguments and invalid blinding lengths.
+The fuzzer explores up to five child steps, arbitrary parent/chain-code bytes,
+output guards, both derived fields, unchanged inputs on refusal and public-key
+independence from two fixture blinding values. It accepts at most 104 input bytes
+and uses no real wallet material, entropy source, filesystem or network itself.
+
+All 90 default sanitizer groups pass in 48.93 seconds. In both oracle-only and
+oracle/fuzz builds, the final 860-case replay, all 17 published BIP32 paths and
+all 96 receive/change comparisons pass (three focused groups, 4.21/4.65 seconds).
+The exact fuzzer completes 37985 cases in 121 seconds without a finding, with
+five-second case and 512 MiB RSS bounds (264 MiB observed). Its initial corpus
+contains 852 deterministic cases; eight additional exact scalar-boundary cases
+were then qualified by the final replay against the same unchanged harness.
+Nine wallet-derivation mutations fail the intended differential assertion.
+Two oracle scalar-admission mutations fail specifically in the added boundary
+cases. An earlier mutation of the entire oracle curve order failed sooner on
+ordinary derivations; its log is retained separately.
+
+Clang/GCC analysis of the reference, harness, driver and both fixed-vector modes
+passes, together with strict warnings, unchanged 10/15 complexity caps and
+architecture placement. The largest measured GCC-O2 harness frame is 880 bytes;
+the optional corpus writer uses 1104 bytes. Android/JVM builds/tests, lint,
+fixture isolation and native alignment pass. The unsigned release APK remains
+byte-identical at SHA256
+`8d88ec9944e4ac00e2ba3222e17f53ac2725e2487680ef6da7128688c5847d4d`.
+No production native/JNI/provider implementation changes. TLS stays quarantined;
+this host-only milestone grants no hardware-custody or physical-device claim.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact sources, binary hashes,
+corpus, mutation controls and validation logs remain in
+`.cache/android-wallet/resume-20260915/bip32-fuzz/`.
