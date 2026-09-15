@@ -1761,3 +1761,36 @@ These are emulator CPU/size measurements, not physical-device, battery,
 hardware-custody or TLS acceptance. Exact source/archive/fixture identities,
 baseline and candidate samples, failure logs and mutant sources are preserved
 in `.cache/android-wallet/resume-20260915/seed-measure/`.
+
+## EC context lifetime regression — 2026-09-15
+
+Reviewed `native/tests/test_ec_lifetime.c` and its host-only CMake registration.
+Production `ec_context.c` and the pinned provider remain unchanged. The previous
+key-failure fixture accepted removal of context destruction; the new fixture
+independently observes the contract rather than assuming that a zeroed free
+alone establishes correct provider teardown.
+
+| Hazard | Review and evidence |
+|---|---|
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Fixture allocations are checked nonzero and at most 1024 bytes. Poisoning/inspection covers exactly the recorded allocation; provider point/encoding writes use their declared 64/33-byte spans. A 35-byte caller array supplies a 33-byte interior output with two guards. No provider writes through a reported oversized length; SIZE_MAX and short lengths are returned only after the bounded real serialization. |
+| Integer overflow/underflow; signed/unsigned conversions | Twelve enum cases and five invalid blinding lengths bound iteration. Counters are size_t and reset per case. The fault-loop cast follows a bounded unsigned increment. Zero, 1024, 1025 and SIZE_MAX context-size cases distinguish admission/refusal without performing allocation arithmetic. Strict conversion warnings pass. |
+| NULL dereferences; uninitialized memory | All wrapper arguments are checked before dereference. Fixture source uses provider implementation mode to prevent caller-only nonnull annotations from deleting those assertions. Caller buffers and owner state are initialized; successful allocation is deliberately filled before provider construction. Failed construction and failed serialization may leave dirty bytes which must still be erased. |
+| Use-after-free; double-free; leaks; dangling pointers | The wrapper records the sole live allocation until free; construction establishes a live provider handle and destruction retires its integer identity. Destruction must precede full erasure, and erasure must precede free. A test poison after real provider destruction ensures provider cleanup cannot mask omission of the application's wipe. Stack scratch is tracked by integer identity and inspected only through a current live zeroization argument. No dead stack pointer is inspected. A second begin refuses without losing the live owner; cleanup and reuse verify cleared fields without double-destroy/free. |
+| Stack usage; allocation limits; resource exhaustion | Fixed arrays and twelve deterministic cases; no recursion, unbounded queue, network operation or test-owned secret heap object. Test allocations are exactly those of the existing bounded context; no extra allocation is introduced into production. Largest measured GCC-O2 fixture frame is 224 bytes, below 4096. Sanitizer and mutation jobs are local and finite. |
+| Malformed serialization/input; error handling | Failures cover allocation, zero/oversized provider sizes, dirty failed construction, dirty failed randomization, partial point output and partial encoding. Successful encoding with length 32 or SIZE_MAX also refuses. Provider-stop assertions reject further point/encoding work after an earlier failure. Every refused public call preserves the complete caller output; success matches the published compressed generator exactly. |
+| Races; ownership; cancellation | Observation state is confined to one standalone sequential fixture process. No provider overrides, mutable test globals or handles enter the Android library. Existing per-operation owner lifetime, JNI and Activity behavior are unchanged. Device runs upload and remove only each invocation's owned public-test executable. |
+| Secret leakage; format strings | Tests use only publicly known scalar one and fixed fixture blinding. Inputs are explicitly cleared after their unchanged-value checks. Diagnostics use constant format strings and assertion source text, never key bytes. The observer requires all live context allocation, owner, point and encoding cleanup; ten deliberate regressions fail intended assertions. No new secret logging or custody authority is introduced. |
+
+Validation: 90 ASan/UBSan/LSan groups pass (49.08 seconds); final focused
+sanitizers pass after two additional provider-stop assertions and a serialization
+failure retaining a plausible length. Clang/GCC fixture analysis, production and
+fixture complexity caps 10/15, strict warnings and architecture placement pass.
+The old key-failure executable accepts the preserved missing-destroy mutation;
+the new fixture's unmodified control passes and all ten mutants fail at their
+intended assertions. Exact release-linked execution passes x86-64 API 30/35/36,
+with ARM64 compiled only. The x86 fixture SHA256 is
+`b8b815c74147e99077e49d084d2d45aa3b1187d05c9280d4bf82f0eda1c76f2f`.
+No production implementation, APK, provider or JNI change is part of this slice.
+TLS and hardware-positive custody remain unqualified. Evidence and accepted
+source/archive hashes are under
+`.cache/android-wallet/resume-20260915/ec-lifetime/`.

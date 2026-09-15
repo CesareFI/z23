@@ -2880,3 +2880,36 @@ TLS remains quarantined and hardware-positive custody remains unqualified.
 The full hazard review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact
 sources, archives, measurements, failure logs and mutations are preserved in
 `.cache/android-wallet/resume-20260915/seed-measure/`.
+
+2026-09-15 11:22 UTC: the prepared-HMAC seed milestone is remotely checkpointed
+at `24a6886841cf0711d19967022d99fcbf4b9228d1`. Local HEAD, direct Git
+advertisement and GitHub's reference API agree. The private repository retains
+the original 108-commit checkpoint as an ancestor, plus this milestone; the
+worktree was clean with 0/0 ahead/behind and the intended `wallet-backup`
+development upstream. `origin` remains unchanged. Verified receipt and commit
+lists remain in the ignored `wallet-backup-checkpoint/` evidence directory.
+
+2026-09-15: native EC context lifetime now has an independent failure fixture.
+The existing key-failure test accepted a deliberate removal of provider-context
+destruction; the implementation already contained the correct cleanup. The new
+test observes destroy-before-wipe-before-free, exact full-allocation erasure,
+point/encoding scratch erasure and cleared-owner reuse. It also rejects partial
+provider output and incorrect successful output lengths while preserving caller
+inputs and output guards. Context-size cases include 0, 1024, 1025 and SIZE_MAX;
+allocation, construction, blinding, point and serialization refusals are covered.
+
+All 90 sanitizer groups pass in 49.08 seconds. The final fixture passes focused
+sanitizers after strengthening two provider-stop assertions, Clang/GCC analysis,
+strict warnings and the unchanged 10/15 complexity caps. Architecture placement
+passes. Its measured GCC-O2 maximum frame is 224 bytes. An unchanged mutation
+control passes; ten deliberate destruction, erasure, provider-result and length
+defects fail their intended assertions. The exact fixture linked against the
+existing release archives passes on x86-64 API 30/35/36; ARM64 is compile-only.
+The x86 fixture SHA256 is
+`b8b815c74147e99077e49d084d2d45aa3b1187d05c9280d4bf82f0eda1c76f2f`.
+This adds regression evidence without changing production code or claiming
+hardware custody. Test inputs use the public scalar-one generator, fixed fixture
+blinding and owned temporary executables. No APK, provider, JNI or TLS source is
+changed. The full review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); old-test
+acceptance, mutations, hashes, analysis and device evidence are preserved in
+`.cache/android-wallet/resume-20260915/ec-lifetime/`.
