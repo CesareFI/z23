@@ -2819,3 +2819,64 @@ test and deadlines pass on the fresh profile. Owned emulators use the qualified
 reaping wrapper and normal shutdown. Full review is in
 [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact artifacts and all evidence are
 in `.cache/android-wallet/resume-20260915/camera-allocation/`.
+
+2026-09-15: the complete 108-commit Android development checkpoint at
+`9c0e6671789f93cf0970e7cbe4daa3ec52be85ec` is preserved in the user-authorized
+private `CesareFI/zclassic-android-wallet` repository, branch
+`agent/android-wallet-20260911`. Direct Git advertisement and GitHub's reference
+API both match local HEAD; the saved commit lists match, ahead/behind is 0/0,
+and the working tree was clean. `wallet-backup` is the development upstream;
+`origin` remains `https://github.com/z23c/z23.git` for fetching. Cache, APK,
+emulator, credential and wallet-state artifacts are excluded. Existing Gradle
+bootstrap and documented public unsigned transaction fixtures remain tracked
+inputs. The main-only hook required a one-command exception for this private
+backup after the wallet gates and exact source hashes passed; installed hooks
+and source history were unchanged. This records a source checkpoint, with no
+main integration, deployment or new custody claim. Evidence is in
+`.cache/android-wallet/resume-20260915/wallet-backup-checkpoint/`.
+
+2026-09-15: BIP39 seed derivation now prepares its HMAC-SHA512 key pads once
+per call and clones the vendored provider state for each round. One-shot HMAC
+shares the same bounded implementation. BIP39 still performs exactly 2048 rounds
+and publishes the same 64-byte seed; all prepared state, intermediate digests
+and accumulators are cleared before returning. No heap allocation is added.
+
+The public-vector benchmark is retained as `native/tests/bench_mnemonic_seed.c`
+and explicit host target `bench_mnemonic_seed`. It checks every result while
+timing five batches of 200 derivations after warm-up. Against exact release
+archives on the API 30 x86-64 emulator, median thread CPU time changed from
+20.523340 to 11.640076 ms for the 93-byte/12-word vector (43.28% lower), and
+30.425060 to 11.726748 ms for the 187-byte/24-word vector (61.46% lower). These
+are emulator CPU measurements, not physical-device latency or battery claims.
+The benchmarked archive matches the archive subsequently packaged and tested.
+The measured GCC-O2 KDF frame is 704 bytes; the one-shot HMAC frame grows from
+288 to 480 bytes. These are per-function frames, not whole-call-stack or RSS
+measurements. The unsigned release APK grows by 672 bytes to 612903 bytes.
+
+All 89 sanitizer groups pass in 48.93 seconds. Clang/GCC analysis, strict warnings,
+10/15 complexity caps and the architecture placement gate pass. The standalone
+benchmark also passes its sanitizer execution and analysis. Independent OpenSSL
+checks cover 63 key/salt boundary combinations and 96 complete receive/change
+derivations. Provider fault tests cover every preparation step and every digest
+step in five selected rounds, including the final round, for short/long keys.
+They require at most three live SHA512 contexts, full erasure before release,
+exact scratch wipe counts, preserved caller inputs and unchanged output on
+failure even when a provider partially writes its output. All 13 deliberate
+cleanup, publication, round-count, accumulation, pad and normalization defects
+are rejected by their intended assertions.
+
+The new optional host `fuzz_mnemonic_seed` target requires `ZCL_FUZZ=ON`,
+`ZCL_SANITIZE=ON` and `ZCL_ORACLE=ON`; it compares the public mnemonic/ASCII
+passphrase path against OpenSSL and checks refusal of short output capacities.
+It completes 7842 cases in 121 seconds without a finding, with a five-second
+case limit and 512 MiB RSS cap (403 MiB observed). Release-archive HMAC, all
+24 published mnemonic vectors and cleanup/failure fixtures pass on x86-64
+API 30/35/36; ARM64 is compiled only. The public-vector JNI test passes on
+API 30/35/36 in 0.306/1.200/0.588 seconds. Android/JVM builds and tests,
+debug/release lint, fixture isolation and native alignment pass. The unsigned
+release APK SHA256 is
+`8d88ec9944e4ac00e2ba3222e17f53ac2725e2487680ef6da7128688c5847d4d`.
+TLS remains quarantined and hardware-positive custody remains unqualified.
+The full hazard review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact
+sources, archives, measurements, failure logs and mutations are preserved in
+`.cache/android-wallet/resume-20260915/seed-measure/`.

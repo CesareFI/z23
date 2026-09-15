@@ -25,34 +25,6 @@ static zcl_status validate_mnemonic(const uint8_t *text, size_t text_len)
     return status;
 }
 
-static zcl_status pbkdf2(const uint8_t *text, size_t text_len,
-                         const uint8_t *salt, size_t salt_len,
-                         uint8_t *seed, size_t capacity)
-{
-    uint8_t current[64] = {0}, next[64] = {0}, result[64] = {0};
-    zcl_status status = ZCL_BUFFER_TOO_SMALL;
-    if (capacity < sizeof(result))
-        goto cleanup;
-    status = zcl_hmac_sha512(text, text_len, salt, salt_len, current, sizeof(current));
-    if (status != ZCL_OK)
-        goto cleanup;
-    memcpy(result, current, sizeof(result));
-    for (size_t iteration = 1; iteration < 2048; ++iteration) {
-        status = zcl_hmac_sha512(text, text_len, current, sizeof(current), next, sizeof(next));
-        if (status != ZCL_OK)
-            goto cleanup;
-        for (size_t i = 0; i < sizeof(result); ++i)
-            result[i] ^= next[i];
-        memcpy(current, next, sizeof(current));
-    }
-    memcpy(seed, result, sizeof(result));
-cleanup:
-    zcl_secure_zero(current, sizeof(current));
-    zcl_secure_zero(next, sizeof(next));
-    zcl_secure_zero(result, sizeof(result));
-    return status;
-}
-
 zcl_status zcl_mnemonic_seed(const uint8_t *text, size_t text_len,
                             const uint8_t *passphrase, size_t passphrase_len,
                             uint8_t *seed, size_t seed_capacity)
@@ -71,7 +43,8 @@ zcl_status zcl_mnemonic_seed(const uint8_t *text, size_t text_len,
     memcpy(salt + 8, passphrase, passphrase_len);
     /* The only PBKDF2 block is numbered one, encoded as uint32 big-endian. */
     salt[8 + passphrase_len + 3] = 1;
-    status = pbkdf2(text, text_len, salt, 8 + passphrase_len + 4, seed, seed_capacity);
+    status = zcl_pbkdf2_sha512_block(text, text_len, salt,
+        8 + passphrase_len + 4, seed, seed_capacity);
     zcl_secure_zero(salt, sizeof(salt));
     return status;
 }

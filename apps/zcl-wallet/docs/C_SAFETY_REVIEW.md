@@ -1706,3 +1706,58 @@ assertion or deadline was relaxed. Both owned launches use the qualified reaping
 adapter and normal console shutdown. All source, baseline measurements,
 mutations, archives and evidence remain in
 `.cache/android-wallet/resume-20260915/camera-allocation/`.
+
+## Prepared HMAC state for mnemonic seed derivation — 2026-09-15
+
+Reviewed `secret_hash.c`, its private header and `mnemonic_seed.c`, the HMAC
+and provider-failure fixtures, the public seed benchmark, the optional OpenSSL
+seed fuzzer and their CMake registration. Key preparation and each digest use
+the existing vendored SHA512 provider. Its initialized inner/outer pad contexts
+belong to one call; each digest clones those contexts into one working context.
+The BIP39 profile remains exactly 2048 HMAC rounds and a 64-byte result. The
+one-shot HMAC path shares preparation/digest/cleanup instead of maintaining a
+second HMAC implementation. This changes no blockchain or transaction rule.
+
+| Hazard | Review and evidence |
+|---|---|
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | HMAC/KDF inputs are bounded to 256 key bytes, 512 data bytes and 64 output bytes before preparation. Normalization writes 64 bytes into an initialized 128-byte key block; pad loops cover 128 bytes, digest/XOR/copy operations cover 64. Public mnemonic validation retains the 215-byte text, 128-byte passphrase and 140-byte salt bounds. The private KDF block helper receives the caller-appended counter; the public seed caller still appends big-endian block 1. Canary, all-capacity refusal, published-vector and 63 independent OpenSSL boundary cases cover the exact spans. |
+| Integer overflow/underflow; signed/unsigned conversions | All lengths are size_t; iterations are fixed at 2048 and XOR indices at 64. No allocation multiplication or input-controlled iteration count is introduced. Passphrase length is checked before salt-offset additions. Fixture integer casts into OpenSSL are preceded by bounds <=256/508 or <=215/136. Native builds retain conversion/sign warnings as errors. |
+| NULL dereferences; uninitialized memory | External spans pass the existing HMAC/public-seed validation before any provider access. Both prepared contexts are initialized before normalization can fail. Working contexts are initialized before cloning; clones are only reached after successful pad preparation. Key, digest and KDF arrays start cleared. Every fallible provider operation is checked before dependent work or output publication. |
+| Use-after-free; double-free; leaks; dangling pointers | Prepared contexts never escape the owning C call. One-shot HMAC and KDF free both contexts on every admitted exit; each working/normalization context is freed by its own helper. The test observer admits at most three live SHA512 contexts, rejects duplicate initialization or access to unowned/released contexts, inspects erasure while the real object is alive, and retires its integer identity. It retains no pointer after a potentially faulty owner's frame has ended. Every observed context must close exactly once before the caller returns. |
+| Stack usage; allocation limits; resource exhaustion | The core introduces no heap allocation, cache, global key state, recursion, worker or extra KDF round. Measured GCC-O2 authored frames are 704 bytes for the KDF, 480 for preparation/one-shot HMAC, 336 for a digest and 256 for the public seed entry. Prior one-shot/public-seed frames were 288/464 bytes; prepared state trades fixed stack storage for fewer hashes. All authored frames pass the 4096-byte gate. These figures are per-function measurements, not a whole-call-stack or process-RSS claim. The new host fuzzer has max_len=160, five-second cases, a 120-second campaign and a 512 MiB RSS cap. |
+| Malformed serialization/input; error handling | Canonical English mnemonic checksum and printable-ASCII passphrase rules remain in the public entry. Invalid pointers, oversize lengths and all output capacities 0..63 refuse atomically. Provider failures are injected during every key-preparation step and all four digest steps in rounds 1, 2, 1024, 2047 and 2048 for both short and long keys. Tests also force a provider to overwrite its context and/or partial digest before failing; caller output and borrowed inputs remain unchanged. Error statuses propagate through existing JNI/receiving-address boundaries. |
+| Races; cancellation; ownership | All added state is automatic and call-local. There is no shared prepared-key object or borrowed pointer retained across calls, JNI returns, worker cancellation or Activity transitions. Existing JNI and lifecycle ownership contracts remain in effect; reducing bounded derivation work shortens that operation without adding a new cancellation or authority mechanism. |
+| Secret leakage; format strings; cryptographic behavior | Both pad contexts, every working context/digest, normalized key block and current/next/accumulator arrays are wiped on success and failure. Fixtures require one key-block wipe and exact digest/KDF scratch wipe counts, not only a lower bound on total cleanup calls. Omitted wipes and either omitted pad-context cleanup fail their intended assertions. The existing vendored SHA512 primitives and optimization-resistant erasure remain in use; there is no new primitive or changed KDF work factor. Timing fixtures use only published BIP39 vectors and constant diagnostic formats; they print durations, lengths and counts, never seed/key bytes. |
+
+Validation: all 89 ASan/UBSan/LSan groups pass (48.93 seconds), with Clang/GCC
+analysis and unchanged production/test complexity caps 10/15. The added
+standalone benchmark separately passes its sanitizer execution and analysis;
+its source bytes match the measured Android benchmark exactly. The architecture
+placement gate passes. OpenSSL independently checks 63 key/salt boundary cases
+and 96 complete receive/change derivations; the existing 24 published mnemonic
+vectors remain exact. Three unmodified mutation controls pass, then all 13
+deliberate cleanup/publication/round/XOR/pad/normalization defects fail intended
+assertions. The initial mutation harness used an absent archive path; its
+log is retained and the corrected path comes from the canonical linker inputs.
+
+The seed oracle fuzzer completes 7842 cases in 121 seconds without a finding,
+observing 403 MiB under its 512 MiB cap. Full core/provider sanitizer instrumentation
+remains enabled. Android/JVM builds/tests, debug/release lint, fixture isolation
+and 16 KiB alignment pass. Release-linked HMAC, mnemonic and failure fixtures
+pass on x86-64 API 30/35/36; ARM64 is compile-only. The public-vector JNI fixture
+passes on API 30/35/36 in 0.306/1.200/0.588 seconds. An initial invocation named a
+nonexistent instrumentation component; installed metadata established the
+correct `org.zclassic.wallet.dev.test` component, and the same test/deadline
+then passed. Existing emulator profiles and wallet state were preserved.
+
+Performance acceptance uses the exact before/after release archives on the same
+API 30 x86-64 emulator, five 200-call batches after ten warm-ups for each public
+vector. Median thread CPU milliseconds per seed change 20.523340→11.640076 for
+12 words and 30.425060→11.726748 for 24 words (43.28%/61.46% lower). All computed
+seeds are checked inside the timing loop. The packaged/tested archive matches
+the benchmarked candidate. The unsigned release APK grows 672 bytes to 612903,
+SHA256 `8d88ec9944e4ac00e2ba3222e17f53ac2725e2487680ef6da7128688c5847d4d`.
+These are emulator CPU/size measurements, not physical-device, battery,
+hardware-custody or TLS acceptance. Exact source/archive/fixture identities,
+baseline and candidate samples, failure logs and mutant sources are preserved
+in `.cache/android-wallet/resume-20260915/seed-measure/`.

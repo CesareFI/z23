@@ -943,6 +943,14 @@ if(NOT ANDROID)
             target_compile_definitions(fuzz_review PRIVATE ZCL_SIGHASH_ORACLE=1)
         endif()
         find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+        if(ZCL_FUZZ)
+            add_executable(fuzz_mnemonic_seed tests/fuzz_mnemonic_seed.c)
+            target_link_libraries(fuzz_mnemonic_seed PRIVATE zcl_wallet_core OpenSSL::Crypto)
+            target_compile_options(fuzz_mnemonic_seed PRIVATE -fsanitize=fuzzer,address,undefined
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+                -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+            target_link_options(fuzz_mnemonic_seed PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
         add_library(signature_oracle STATIC tests/signature_oracle.c)
         target_include_directories(signature_oracle PUBLIC include src)
         target_link_libraries(signature_oracle PUBLIC OpenSSL::Crypto)
@@ -1028,8 +1036,20 @@ if(NOT ANDROID)
     add_executable(hmac_tests tests/test_hmac.c)
     target_link_libraries(hmac_tests PRIVATE zcl_wallet_core)
     target_include_directories(hmac_tests PRIVATE src)
-    target_compile_options(hmac_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+    target_compile_options(hmac_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+        -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    if(ZCL_ORACLE)
+        target_compile_definitions(hmac_tests PRIVATE ZCL_HMAC_ORACLE=1)
+        target_link_libraries(hmac_tests PRIVATE OpenSSL::Crypto)
+    endif()
     add_test(NAME wallet_hmac COMMAND hmac_tests)
+    if(UNIX)
+        # Explicit public-vector timing tool, not a ctest runtime threshold.
+        add_executable(bench_mnemonic_seed tests/bench_mnemonic_seed.c)
+        target_link_libraries(bench_mnemonic_seed PRIVATE zcl_wallet_core)
+        target_compile_options(bench_mnemonic_seed PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    endif()
     add_executable(bip32_tests tests/test_bip32.c)
     target_link_libraries(bip32_tests PRIVATE zcl_wallet_core)
     target_compile_options(bip32_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
@@ -1290,8 +1310,10 @@ if(NOT ANDROID)
         add_executable(secret_failure_tests tests/test_secret_failures.c)
         target_link_libraries(secret_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
         target_include_directories(secret_failure_tests PRIVATE src)
-        target_compile_options(secret_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
+        target_compile_options(secret_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+            -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         target_link_options(secret_failure_tests PRIVATE
+            -Wl,--wrap=mbedtls_sha512_init -Wl,--wrap=mbedtls_sha512_free -Wl,--wrap=mbedtls_sha512_clone
             -Wl,--wrap=mbedtls_sha512_starts -Wl,--wrap=mbedtls_sha512_update
             -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha256 -Wl,--wrap=mbedtls_ripemd160
             -Wl,--wrap=mbedtls_platform_zeroize)
