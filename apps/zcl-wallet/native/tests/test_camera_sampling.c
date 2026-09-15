@@ -15,6 +15,15 @@ static void compare(const uint8_t *image, size_t length, const zcl_qr_image *lay
         guarded + 1, capacity, &written);
     CHECK(camera_reference_matches(image, length, layout, capacity, status,
         guarded, ZCL_CAMERA_PACKET_MAX + 2, written));
+    size_t measured = 17;
+    const zcl_status sizing = zcl_camera_frame_size(length, layout, &measured);
+    if (status == ZCL_OK) {
+        CHECK(sizing == ZCL_OK && measured == written);
+    } else if (status == ZCL_BUFFER_TOO_SMALL) {
+        CHECK(sizing == ZCL_OK && measured > capacity && measured <= ZCL_CAMERA_PACKET_MAX);
+    } else {
+        CHECK(sizing == status && measured == 17);
+    }
 }
 
 static void dimensions(const uint8_t *image, uint8_t *guarded)
@@ -38,6 +47,10 @@ static void dimensions(const uint8_t *image, uint8_t *guarded)
 static void refusal_boundaries(const uint8_t *image, uint8_t *guarded)
 {
     const zcl_qr_image layout = {385, 383, 1555, 4};
+    size_t measured = 17;
+    CHECK(zcl_camera_frame_size(ZCL_SCAN_INPUT_MAX, NULL, &measured) == ZCL_INVALID_ARGUMENT);
+    CHECK(measured == 17);
+    CHECK(zcl_camera_frame_size(ZCL_SCAN_INPUT_MAX, &layout, NULL) == ZCL_INVALID_ARGUMENT);
     const size_t needed = 382 * (size_t)1555 + 384 * (size_t)4 + 1;
     /* Enumerated: 193 columns and 192 rows, so a 37061-byte packet. */
     const size_t capacities[] = {0, 4, 5, 37060, 37061, 37062, ZCL_CAMERA_PACKET_MAX};

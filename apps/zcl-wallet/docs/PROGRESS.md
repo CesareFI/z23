@@ -2790,3 +2790,32 @@ restart or timeout relaxation was needed. Hardware custody remains unqualified.
 The explicit review is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); baseline
 assertions, source, fuzz corpus and APK identities are preserved in
 `.cache/android-wallet/resume-20260915/jni-phrase/`.
+
+2026-09-15: camera JNI now allocates and clears the exact packet size from a
+shared bounded C geometry calculation. A measured 640x480 input requests 76805
+native scratch bytes instead of 147461: 70656 fewer, about 48%. This is buffer
+allocation/erasure evidence, not a claim about whole-process RSS or CPU time.
+Sampling and packet bytes remain unchanged. Invalid sampled dimensions refuse
+before VM buffer access or allocation, and all failure paths still clear the
+entire owned allocation.
+
+The old allocation regression fails with both byte counts recorded. Eight
+dimension cases, all 1200 independent sampling layouts and three deliberate
+mutations pass their acceptance checks. All 89 sanitizer groups pass in 64.98
+seconds; strict Clang/GCC production/fixture analysis and unchanged complexity
+caps pass. Seeded camera fuzzing completes 3231 cases in 121 seconds without a
+finding (five-second cases, 512 MiB RSS cap; observed 258 MiB). The JNI allocation
+fixture linked against release archives passes on x86-64 API 30/35/36; ARM64
+is compiled only. Its NDK/OpenJDK JNI table-tag adaptation is test-only.
+
+Android/JVM/build/lint, fixture isolation and native alignment pass. The locally
+signed minified APK is
+`ed509f52527502c8278e3e2e303da95cebe129dcf2558eb88f99d3b6359a50fb`, with all
+unsigned entry bytes preserved. Full permission-denial/retry/grant/exact-review/
+cleanup acceptance passes on fresh API 30 in 9.379 seconds. A prior reused-profile
+run failed to locate the permission Deny control before capture; the visible
+dialog, logs and state are retained without claiming a root cause. The same
+test and deadlines pass on the fresh profile. Owned emulators use the qualified
+reaping wrapper and normal shutdown. Full review is in
+[C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact artifacts and all evidence are
+in `.cache/android-wallet/resume-20260915/camera-allocation/`.

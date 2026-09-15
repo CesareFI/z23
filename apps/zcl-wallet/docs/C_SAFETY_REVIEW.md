@@ -1659,3 +1659,50 @@ mnemonic/JNI method passes on API 30/35/36 in 0.334/2.147/0.700 seconds. No
 hardware-custody or physical-camera acceptance is added. Source, baseline
 assertions, corpus and exact APK identities are retained in
 `.cache/android-wallet/resume-20260915/jni-phrase/`.
+
+## Allocate only the measured camera packet span — 2026-09-15
+
+Scope: shared C camera geometry, the new no-pixel-read sizing API, camera JNI
+allocation and existing native/sampling/fuzz tests. The prior JNI path requested
+and cleared 147461 bytes per frame. Its captured 640x480 fixture produces a
+76805-byte packet. The new path requests and clears exactly those 76805 bytes,
+70656 fewer (about 48%). These are observed allocation requests and wipe spans;
+allocator overhead, process RSS, camera-driver storage and CPU time are not
+measured. No packet, pixel-sampling, QR policy or Zclassic wire format changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Sizing and packing share one geometry function and the existing source-span validator. Input width/height 21..1024, pixel stride 1..4, row stride at most 8192 and total span at most 8 MiB precede arithmetic. Sampling retains the same proven coordinates. JNI allocates the measured 446..147461 bytes and passes that exact capacity to the independently guarded pack call. Eight allocation cases check all output pixels, header dimensions and unused output; existing full-wipe checks inspect every allocated byte before free. |
+| Integer overflow/underflow; signed/unsigned conversions | The unchanged ceiling divisions produce a sampling step of 1..3 and accepted target dimensions 21..384. Products are at most 147456, and adding the five-byte header is safe on 32-bit size_t. JNI signs/ranges and direct-buffer capacity/offset checks remain before pointer access. Fixture source products use positive jint dimensions at most 1024; known expected output dimensions are independent constants. SIZE_MAX and malformed layout bounds retain explicit tests. |
+| Use-after-free; double-free; leaks; dangling pointers | One synchronous JNI invocation owns its checked allocation and its single wipe/free path. The stack-owned layout cannot change between sizing and packing. The Android caller retains the Image and direct buffer through that call. No cache, reusable global buffer, pin, handle, retained pointer or additional allocation is introduced. Allocation failures and all existing VM failure points retain cleanup tests. |
+| NULL dereferences; uninitialized memory | Sizing refuses a NULL result pointer and delegates NULL-layout refusal to the existing validator. It publishes length only on success. Target layouts and local lengths initialize before use. JNI reaches malloc only after successful size and direct-buffer checks. The fixture initializes public pixels and allocation memory, and verifies malformed sampled dimensions reach neither the VM buffer nor allocator. |
+| Pointer arithmetic; format strings | All pixel offsets remain covered by the original image-span proof. Pack capacity is checked before packet+5 or any write. The sizing function has no image pointer and cannot read pixels. New diagnostics contain only public dimensions, allocation/packet byte counts and source lines. |
+| Stack usage; allocation limits; resource exhaustion | Production adds only small fixed geometry locals and no VLA, recursion, worker or retained state. Optimized host frames measure 32 bytes for sizing, 64 for packing and 128 for camera-plane JNI; decoder costs remain separate. The largest new public source fixture is a fixed 1 MiB test-only static array. Clang/GCC warnings/analysis and 4096-byte per-frame/10-and-15 complexity caps pass. Fuzzing retains five-second cases, a 512 MiB RSS cap and a bounded 120-second campaign. |
+| Malformed serialization; races; explicit lifetimes | Independent reference comparison still checks 1200 layouts and every sampled byte. Unit/fuzzer checks now bind the size query to that independently checked packet result, including output preservation and insufficient capacity. Three isolated mutations for maximum allocation, missing wipe and wrong size fail intended assertions. Camera ownership, cancellation, request review and source-memory lifetimes are unchanged. |
+| Secret leakage, custody and authority | Fixtures use constant grayscale markers and published unfunded QR requests. No wallet, recovery key, authentication policy, signing, endpoint or consensus code changes. The complete allocated scratch span is still wiped on every exit. This does not claim erasure of all camera/framework/GPU copies or physical-device qualification. |
+
+All 89 ASan/UBSan/LSan groups pass in 64.98 seconds. Changed production and all
+three fixture sources pass strict Clang/GCC analysis; complexity remains within
+10/15. The seeded camera fuzzer completes 3231 executions in 121 seconds with
+no finding, observing 258 MiB RSS. Its SHA256 is
+`624971af0fb7fec6661e868a315d5de56cc47f626b3c83e506e9f9f8adf3a181`.
+The JNI fixture linked against the exact release archives passes on x86-64
+API 30/35/36, SHA256
+`b7ba84a3ee5a716b856e06fcb2d2483b5da5bf2518222b1b86ea458193f82ff8`.
+ARM64 compiles only. Its initial harness build exposed the NDK/OpenJDK JNI
+table-tag naming difference; a test compile-time tag mapping fixes that build
+without changing assertions or production headers.
+
+Android/JVM/build/lint, fixture isolation and 16 KiB native alignment pass.
+The locally signed minified APK has SHA256
+`ed509f52527502c8278e3e2e303da95cebe129dcf2558eb88f99d3b6359a50fb`;
+all unsigned ZIP entries retain their bytes. The full permission-denial/retry/
+grant/exact-camera-review/cleanup fixture passes on a fresh isolated API 30
+profile in 9.379 seconds. The initial reused profile failed before camera
+capture because instrumentation could not find its expected Deny control;
+the screenshot still shows the permission dialog. The exact cause is not
+established. Its log, screenshot and permission state are retained, and no
+assertion or deadline was relaxed. Both owned launches use the qualified reaping
+adapter and normal console shutdown. All source, baseline measurements,
+mutations, archives and evidence remain in
+`.cache/android-wallet/resume-20260915/camera-allocation/`.

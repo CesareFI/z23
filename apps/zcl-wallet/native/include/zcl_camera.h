@@ -10,6 +10,13 @@ extern "C" {
 #define ZCL_CAMERA_SIDE_MAX ((size_t)384)
 #define ZCL_CAMERA_PACKET_MAX ((size_t)147461)
 
+/* Exact v1 packet capacity for a validated source layout and span length.
+ * Reads no pixels and allocates nothing. Failure leaves packet_len unchanged.
+ * Source layout and output must not overlap and remain stable during the call.
+ * Use the same stable source layout/span for the subsequent pack operation. */
+zcl_status zcl_camera_frame_size(size_t image_len, const zcl_qr_image *layout,
+                                  size_t *packet_len);
+
 /* Camera IPC packet v1: version byte, width/height as LE16, then tightly packed
  * luminance. This is an app adapter format, never a Zclassic wire format.
  * Input uses zcl_scan_image_bounds. Integer point sampling preserves aspect

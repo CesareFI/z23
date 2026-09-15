@@ -87,6 +87,11 @@ is no growing retry/thread queue if a driver does not respond.
 
 C validates the original plane, samples dimensions to at most 384 each, and
 produces an exact versioned luminance packet of at most 147461 bytes. The adapter
+uses the shared C sizing calculation to allocate and clear only the required
+native packet span. A 640x480 plane requests 76805 scratch bytes instead of
+147461, a 70656-byte reduction; this measures requested buffer and erasure
+sizes, not process RSS or total camera memory. Pixel sampling and packet bytes
+are unchanged. Invalid sampled dimensions refuse before allocation. The adapter
 selects a supported YUV camera size of at most 640*480 pixels and dimensions
 240..1024. Preview and decoding use the same sampled grayscale pixels, with the
 entire frame visible. Presentation samples at most four frames per second; this

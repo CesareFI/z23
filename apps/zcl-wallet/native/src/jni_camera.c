@@ -19,11 +19,11 @@ static bool direct_range(jlong capacity, jint offset, jint length)
 }
 
 static const uint8_t *direct_pixels(JNIEnv *env, jobject buffer, jint offset, jint length,
-                                      const zcl_qr_image *layout)
+                                      const zcl_qr_image *layout, size_t *packet_size)
 {
     if (buffer == NULL || length < 0)
         return NULL;
-    if (zcl_scan_image_bounds((size_t)length, layout) != ZCL_OK)
+    if (zcl_camera_frame_size((size_t)length, layout, packet_size) != ZCL_OK)
         return NULL;
     const jlong capacity = (*env)->GetDirectBufferCapacity(env, buffer);
     if ((*env)->ExceptionCheck(env) || !direct_range(capacity, offset, length))
@@ -35,17 +35,18 @@ static const uint8_t *direct_pixels(JNIEnv *env, jobject buffer, jint offset, ji
 }
 
 static jbyteArray pack_pixels(JNIEnv *env, const uint8_t *pixels, size_t length,
-                                const zcl_qr_image *layout)
+                                const zcl_qr_image *layout, size_t packet_size)
 {
-    /* Fixed, checked allocation. This invocation alone owns and clears it. */
-    uint8_t *packet = malloc(ZCL_CAMERA_PACKET_MAX);
+    /* C sizing proves 446..147461 bytes. This invocation alone owns and clears
+     * exactly that allocation; layout and borrowed pixels stay stable. */
+    uint8_t *packet = malloc(packet_size);
     if (packet == NULL)
         return NULL;
     jbyteArray output = NULL;
     size_t packet_len = 0;
-    if (zcl_camera_frame_pack(pixels, length, layout, packet, ZCL_CAMERA_PACKET_MAX, &packet_len) == ZCL_OK)
+    if (zcl_camera_frame_pack(pixels, length, layout, packet, packet_size, &packet_len) == ZCL_OK)
         output = zcl_jni_new_bytes(env, packet, packet_len);
-    zcl_secure_zero(packet, ZCL_CAMERA_PACKET_MAX);
+    zcl_secure_zero(packet, packet_size);
     free(packet);
     return output;
 }
@@ -61,12 +62,13 @@ Java_org_zclassic_wallet_core_NativeCore_packCameraPlane(JNIEnv *env, jclass typ
     zcl_qr_image layout = {0};
     if (!camera_layout(width, height, row, pixel, &layout))
         return NULL;
-    const uint8_t *pixels = direct_pixels(env, buffer, offset, length, &layout);
+    size_t packet_size = 0;
+    const uint8_t *pixels = direct_pixels(env, buffer, offset, length, &layout, &packet_size);
     if (pixels == NULL)
         return NULL;
     /* The Android caller keeps the Image and direct ByteBuffer alive until
      * this synchronous copy returns. No pointer or buffer reference escapes. */
-    return pack_pixels(env, pixels, (size_t)length, &layout);
+    return pack_pixels(env, pixels, (size_t)length, &layout, packet_size);
 }
 
 static jbyteArray decode_packet(JNIEnv *env, jbyteArray input, size_t length, zcl_network network)

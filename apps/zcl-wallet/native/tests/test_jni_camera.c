@@ -26,7 +26,7 @@ static jlong direct_capacity;
 static bool pending, allocation_failure;
 static unsigned fault, calls, allocations;
 static uint8_t *owned;
-static size_t owned_length;
+static size_t owned_length, allocation_bytes;
 
 void *zcl_jni_camera_test_malloc(size_t size);
 void zcl_jni_camera_test_free(void *pointer);
@@ -35,6 +35,7 @@ void *zcl_jni_camera_test_malloc(size_t size)
 {
     CHECK(owned == NULL && size > 0 && size <= 8 * 1024 * 1024);
     ++allocations;
+    allocation_bytes = size;
     if (allocation_failure) return NULL;
     owned = malloc(size);
     CHECK(owned != NULL);
@@ -147,7 +148,7 @@ static void reset(operation op, unsigned selected_fault)
 {
     CHECK(owned == NULL);
     pending = false; allocation_failure = false;
-    fault = selected_fault; calls = 0; allocations = 0;
+    fault = selected_fault; calls = 0; allocations = 0; allocation_bytes = 0;
     input = op == PACKET ? (fake_array){(jsize)packet_length, sizeof(packet), packet}
                         : (fake_array){(jsize)image_length, sizeof(image), image};
     direct_capacity = (jlong)image_length;
@@ -239,6 +240,41 @@ static void invalid_lengths(void)
     }
 }
 
+static void exact_pack_allocations(void)
+{
+    static uint8_t pixels[1024 * 1024]; /* Public fixture pixels, never an application buffer. */
+    static const struct { jint width, height; size_t sampled_width, sampled_height; } layouts[] = {
+        {640, 480, 320, 240}, {480, 640, 240, 320}, {320, 240, 320, 240},
+        {240, 240, 240, 240}, {384, 384, 384, 384}, {385, 385, 193, 193},
+        {1024, 1024, 342, 342}, {21, 21, 21, 21}
+    };
+    memset(pixels, 93, sizeof(pixels));
+    for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); ++i) {
+        reset(PACK, 0);
+        const jint width = layouts[i].width, height = layouts[i].height;
+        const jint length = width * height; /* Both are positive and at most 1024. */
+        const size_t expected = 5 + layouts[i].sampled_width * layouts[i].sampled_height;
+        input = (fake_array){length, sizeof(pixels), pixels};
+        direct_capacity = sizeof(pixels);
+        CHECK(API(packCameraPlane)(&environment, NULL, (jobject)&input, 0, length,
+            width, height, width, 1) == (jbyteArray)&result);
+        printf("JNI camera %dx%d: allocation=%zu packet=%zu\n", width, height, allocation_bytes, expected);
+        CHECK(allocations == 1 && allocation_bytes == expected && owned == NULL);
+        CHECK(calls == 4 && !pending);
+        CHECK((size_t)result.length == expected && result.bytes[0] == 1);
+        CHECK((size_t)result.bytes[1] + (size_t)result.bytes[2] * 256 == layouts[i].sampled_width);
+        CHECK((size_t)result.bytes[3] + (size_t)result.bytes[4] * 256 == layouts[i].sampled_height);
+        for (size_t j = 5; j < result.capacity; ++j) CHECK(result.bytes[j] == (j < expected ? 93 : 0xa5));
+    }
+    for (size_t i = 0; i < sizeof(pixels); ++i) CHECK(pixels[i] == 93);
+    reset(PACK, 0);
+    input = (fake_array){21 * 1024, sizeof(pixels), pixels};
+    direct_capacity = sizeof(pixels);
+    CHECK(API(packCameraPlane)(&environment, NULL, (jobject)&input, 0, input.length,
+        21, 1024, 21, 1) == NULL); /* Valid input dimensions, unsupported sampled width. */
+    CHECK(calls == 0 && allocations == 0 && owned == NULL && !pending);
+}
+
 int main(void)
 {
     initialize();
@@ -247,6 +283,7 @@ int main(void)
         exception_and_allocation_faults(op);
     }
     invalid_lengths();
+    exact_pack_allocations();
     puts("JNI camera/scan pending exceptions, exact public results and cleared allocations passed");
     return 0;
 }

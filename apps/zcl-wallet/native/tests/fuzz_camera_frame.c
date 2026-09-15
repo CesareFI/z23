@@ -20,6 +20,20 @@ static void scan_packet(const uint8_t *data, size_t size, zcl_network network)
     }
 }
 
+static void check_sizing(size_t length, const zcl_qr_image *layout, size_t capacity,
+    zcl_status packing, size_t written)
+{
+    size_t measured = 17;
+    const zcl_status sizing = zcl_camera_frame_size(length, layout, &measured);
+    if (packing == ZCL_OK) {
+        if (sizing != ZCL_OK || measured != written) abort();
+    } else if (packing == ZCL_BUFFER_TOO_SMALL) {
+        if (sizing != ZCL_OK || measured <= capacity || measured > ZCL_CAMERA_PACKET_MAX) abort();
+    } else if (sizing != packing || measured != 17) {
+        abort();
+    }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size < 8 || size > ZCL_SCAN_INPUT_MAX + 8) return 0;
@@ -37,6 +51,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const zcl_status status = zcl_camera_frame_pack(data + 8, size - 8, &layout, packet + 1, capacity, &written);
     if (!camera_reference_matches(data + 8, size - 8, &layout, capacity, status,
         packet, ZCL_CAMERA_PACKET_MAX + 2, written)) abort();
+    check_sizing(size - 8, &layout, capacity, status, written);
     /* The reference subsumes the former length/guard/failure checks and also
      * checks exact status, header, every pixel and the complete untouched tail. */
     if (status == ZCL_OK) scan_packet(packet + 1, written, network);
