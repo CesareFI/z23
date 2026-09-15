@@ -3237,3 +3237,47 @@ absent from release. No minified backup-screen runtime or positive hardware
 custody qualification is claimed. TLS remains quarantined. Exact source/APK
 identities, the failing baseline, initial/corrected test fixtures and validation
 are preserved in `.cache/android-wallet/resume-20260915/backup-screen/`.
+
+2026-09-15: backup-screen checkpoint
+`b6d68e57cfbb500ed2adb5d65c947862ba0ee040` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean, upstream correct and ahead/behind 0/0. All 118 wallet
+commits remain preserved, including the original 108-commit checkpoint. Origin
+remains unchanged; only the same-named development branch was pushed.
+
+2026-09-15: host Clang sanitizer builds now check unsigned integer overflow and
+implicit integer truncation/sign changes throughout authored native C, including
+JNI and fault-test copies. Ordinary UBSan does not include these checks. An
+isolated audit of the unchanged checkpoint first passed all 94 baseline tests
+in 70.92 seconds. No production arithmetic defect was found or suppressed.
+Provider arithmetic retains ASan/UBSan; GCC retains the existing sanitizer
+profile, and Android compilation is unaffected.
+
+Three process-isolated compiler probes verify that the extra instrumentation
+stops faults accepted by an ordinary-UBSan control. The checker requires both
+a numeric failure exit and the expected diagnostic; timeout/signal outcomes do
+not qualify. Cache-only mutations verify rejection of disabled instrumentation,
+recovering diagnostics, unrelated failure and timeout with a misleading expected
+diagnostic. The fuzz compile-command gate now also requires the added checks;
+all 13 manifest mutations are refused. Independent inspection confirms the extra
+flags on all 133 authored compilations in the promoted fuzz build, while its
+18 provider compilations retain their existing sanitizer profile.
+
+All 95 fuzz/oracle test groups pass in 113.34 seconds, and all 91 default native
+groups pass in 57.45 seconds. The runtime probe check passes again after tightening
+timeout rejection. Bounded campaigns complete 3,193,474 amount cases and 101,189
+synchronization cases in 121 seconds each without a finding. Limits are 120 seconds
+per campaign, five seconds per case and 512 MiB RSS; observed peaks are 257/93 MiB.
+Amount max_len is 64; synchronization permits 16385 bytes, though this short run
+only grew its mutation length limit to 205 bytes. Existing deterministic boundary
+tests remain required; this run does not claim exhaustive input coverage.
+
+Strict Clang/GCC compilation and analysis, unchanged complexity caps 10/15,
+architecture, Android/JVM builds/tests, debug/release lint, fixture isolation and
+native alignment pass. All three APKs are byte-identical to the backup-screen
+checkpoint; release SHA256 remains
+`0a0de7c5b92c04a426f5351f2b14116f35661a6afb71f466754fd445d80f0311`.
+No new device or hardware-custody qualification is claimed. TLS stays quarantined.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact baseline/promoted manifests,
+public probes, negative evidence, corpus and logs are preserved in
+`.cache/android-wallet/resume-20260915/integer-safety/`.

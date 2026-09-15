@@ -142,6 +142,15 @@ if(ZCL_SANITIZE)
     target_compile_options(secp256k1 PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_compile_options(secp256k1_precomputed PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
     target_link_options(zcl_wallet_core PUBLIC -fsanitize=address,undefined)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        set(ZCL_AUTHORED_INTEGER_CHECKS
+            -fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change)
+        # Source properties also cover JNI/fault-test copies of authored C.
+        # Providers retain ASan/UBSan; their modular arithmetic is separate.
+        file(GLOB ZCL_AUTHORED_C CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c")
+        set_property(SOURCE ${ZCL_AUTHORED_C} APPEND PROPERTY COMPILE_OPTIONS ${ZCL_AUTHORED_INTEGER_CHECKS})
+        target_link_options(zcl_wallet_core PUBLIC ${ZCL_AUTHORED_INTEGER_CHECKS})
+    endif()
 endif()
 
 if(ZCL_JNI OR ANDROID)
@@ -627,6 +636,22 @@ if(NOT ANDROID)
         "-DPOSITIVE_BUILD=${CMAKE_CURRENT_BINARY_DIR}/verify-sanitized-fuzz"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_fuzz_profile.cmake")
     set_tests_properties(wallet_fuzz_profile PROPERTIES TIMEOUT 120)
+    if(ZCL_SANITIZE AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+        foreach(profile control probe)
+            add_executable(integer_sanitizer_${profile} tests/test_integer_sanitizers.c)
+            target_compile_options(integer_sanitizer_${profile} PRIVATE
+                -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+                -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096
+                -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+            target_link_options(integer_sanitizer_${profile} PRIVATE -fsanitize=address,undefined)
+        endforeach()
+        target_compile_options(integer_sanitizer_probe PRIVATE ${ZCL_AUTHORED_INTEGER_CHECKS})
+        target_link_options(integer_sanitizer_probe PRIVATE ${ZCL_AUTHORED_INTEGER_CHECKS})
+        add_test(NAME wallet_integer_sanitizers COMMAND ${CMAKE_COMMAND}
+            -DCONTROL=$<TARGET_FILE:integer_sanitizer_control> -DPROBE=$<TARGET_FILE:integer_sanitizer_probe>
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_integer_sanitizers.cmake")
+        set_tests_properties(wallet_integer_sanitizers PROPERTIES TIMEOUT 30)
+    endif()
     if(NOT ZCL_TLS_REVIEW)
         add_test(NAME wallet_tls_quarantine COMMAND ${CMAKE_COMMAND}
             -DNM=${CMAKE_NM} -DCORE=$<TARGET_FILE:zcl_wallet_core>

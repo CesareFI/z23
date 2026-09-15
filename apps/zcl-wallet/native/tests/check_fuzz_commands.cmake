@@ -15,6 +15,10 @@ foreach(index RANGE 0 ${last})
         if(NOT command MATCHES "-fsanitize=address,undefined" OR NOT command MATCHES "-fno-sanitize-recover=all")
             message(FATAL_ERROR "Required sanitizer or fail-on-finding flags missing for ${source}")
         endif()
+        if(source MATCHES "/native/src/" AND NOT command MATCHES
+            "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change")
+            message(FATAL_ERROR "Required authored integer checks missing for ${source}")
+        endif()
         # Registered standalone unit tests compile some provider/source copies
         # for fault substitution. Those copies need sanitizers; coverage is
         # required on the libraries and source copies linked into fuzz targets.

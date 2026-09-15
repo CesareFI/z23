@@ -45,7 +45,10 @@ foreach(target zcl_wallet_core zcl_hash_provider zcl_blake2_provider zcl_qr_prov
 endforeach()
 without_flag(zcl_wallet_core "-fsanitize=address,undefined" "Required sanitizer or fail-on-finding flags missing")
 without_flag(zcl_wallet_core "-fno-sanitize-recover=all" "Required sanitizer or fail-on-finding flags missing")
+without_flag(zcl_wallet_core
+    "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change"
+    "Required authored integer checks missing")
 refuses(empty "[]" "No authored/provider compile commands were checked")
 refuses(unrelated "[{\"file\":\"/fixture/test.c\",\"command\":\"cc /fixture/test.c\"}]"
     "No authored/provider compile commands were checked")
-message(STATUS "All 12 sanitizer/coverage/empty-scope manifest mutations refused")
+message(STATUS "All 13 sanitizer/coverage/empty-scope manifest mutations refused")

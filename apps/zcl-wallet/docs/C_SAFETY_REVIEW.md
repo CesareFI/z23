@@ -2091,3 +2091,43 @@ Exact commands, old/new symbol tables, negative manifests, source identities and
 acceptance evidence are preserved in
 `.cache/android-wallet/resume-20260915/fuzz-coverage/`. TLS remains quarantined;
 no hardware-positive custody or new Android-device claim is made.
+
+## Authored integer sanitizer enforcement — 2026-09-15
+
+Reviewed host CMake instrumentation, its manifest gate and the isolated
+`test_integer_sanitizers.c` compiler probes. Production algorithms, provider
+source, JNI signatures and Android compilation remain unchanged. Clang's
+[UBSan documentation](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)
+distinguishes the added unsigned-overflow and implicit-conversion checks from
+the default undefined-behavior group. Unsigned wrap is defined C behavior; these
+checks identify potentially unintended arithmetic, not a consensus rule.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic; NULL | Probes accept exactly one nonempty single-character process argument. argc and the first character are checked before the second character is read. No external buffer, wallet API or provider is involved. Production authored source properties append instrumentation without changing source behavior. |
+| Integer overflow/underflow; signed/unsigned conversions | Three deliberately faulty volatile operations model size_t wrap, promoted unsigned-char truncation and signed-char conversion. They are confined to separate host test processes. The ordinary UBSan control must accept each; the extra checks must diagnose and terminate each. Host Clang 20 passes this contract. These probes introduce no application arithmetic. |
+| Use-after-free; double-free; leaks; dangling pointers; allocation limits | Probes allocate no heap and retain no pointers. No application ownership changes. Runtime sanitizer allocation stays in bounded host test processes. Added source options cover authored JNI/fault-test copies as well as the main library; provider source keeps its ASan/UBSan coverage without new suppression. |
+| Uninitialized memory; malformed input; format strings | Each probe initializes its scalar. Invalid modes report one fixed string and return 2. CMake treats compiler manifests as JSON data, never executable text. The runtime checker requires an expected diagnostic and a numeric nonzero exit, rejecting unrelated errors and timeouts. |
+| Stack usage; resource exhaustion | GCC-O2 reports a maximum 32-byte authored frame for the inlined probe executable; this is not the sanitizer runtime's stack bound. Each child has a five-second limit, the registered test 30 seconds. Fuzz campaigns retain five-second per-case and 512 MiB RSS limits. No application allocation, worker or buffer size changes. |
+| Races; secret leakage | Test inputs are public mode characters and generated public fuzz bytes. There are no secrets or global mutable state in the probes. Diagnostics contain no wallet material. Native release bytes are unchanged; no custody, provider-erasure or global-OOM claim follows from these compiler tests. |
+
+Before promotion, the unchanged checkpoint passed 94 tests in 70.92 seconds
+under an isolated source-option audit. The actual promoted fuzz manifest has
+the extra flags on all 133 authored compilations and no such added flags on its
+18 provider compilations. All 95 promoted fuzz/oracle groups pass in 113.34
+seconds; all 91 default sanitizer groups pass in 57.45 seconds. Strict Clang/GCC
+compilation and analysis, the unchanged 10/15 complexity limits and architecture
+pass. The three runtime controls/probes pass, including after tightening timeout
+rejection. Four cache-only mutations confirm the runtime gate rejects disabled
+checks, recovering diagnostics, unrelated failure and a timeout that prints the
+expected diagnostic. All 13 compile-manifest mutations refuse.
+
+Amount and synchronization campaigns complete 3,193,474/101,189 cases in 121
+seconds each without a finding; peak observed RSS is 257/93 MiB. Amount max_len64
+and sync max_len16385 are caps, not claims that every length was exercised; the
+sync campaign's mutation length limit only reached 205. Existing boundary fixtures
+and independent cryptographic oracles remain required. Android/JVM/build/lint,
+fixture isolation and 16 KiB alignment pass. All three APKs remain byte-identical
+to the backup-screen checkpoint. Evidence is preserved in
+`.cache/android-wallet/resume-20260915/integer-safety/`. TLS remains quarantined;
+hardware-positive custody remains unqualified.

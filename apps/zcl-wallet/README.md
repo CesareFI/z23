@@ -105,6 +105,14 @@ For C safety checks on a Linux development host with Clang 20 and GCC:
 bash tools/check-c-safety.sh
 ```
 
+Host Clang sanitizer builds also check unsigned integer overflow and implicit
+integer truncation/sign changes in authored native C, including JNI and fault-test
+copies. Provider code keeps ASan/UBSan; its modular arithmetic is outside these
+additional checks. GCC retains the ASan/UBSan profile. Three isolated compiler
+probes verify that the extra checks stop faults ordinary UBSan permits, and the
+fuzz-profile gate verifies the actual authored compile commands. These checks
+do not replace explicit bounds/conversion review or instrument Android releases.
+
 LeakSanitizer needs a host that permits its process inspection. Do not disable
 it to call a restricted sandbox run successful. The manual pre-commit review is
 [C_SAFETY_REVIEW.md](docs/C_SAFETY_REVIEW.md).
