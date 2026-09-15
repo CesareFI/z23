@@ -3984,3 +3984,27 @@ real options remain accepted. All 35 refusal mutations and four positive
 controls pass; the registered profile check passes in 19.54 seconds with the
 same 156/106 actual compilation counts. No source, compiler command or APK
 bytes change. Evidence: `.cache/android-wallet/resume-20260915/fuzz-flag-tokens/`.
+
+2026-09-15: three public-result JNI entries now erase their native entropy and
+blinding before Java allocation: receivingAddress, createWalletHeader and
+recoveredWalletAddress. One cleanup path retains failure erasure; only the public
+address/header survives the VM call. Derivation and authenticated recovery are
+unchanged. The new boundary assertion fails on the original code, then passes
+with all five entropy lengths, both networks, RNG refusal and VM fault cases.
+
+All92 sanitizer groups pass69.07s; strict Clang/GCC source and fixture analysis
+and unchanged complexity caps10/15 pass. The bounded JNI fuzzer completes77,539
+cases/121s without a finding (peak63 MiB, cap512 MiB). The erasure observer runs
+on x86-64 API30/35/36; ARM64 compiles. Four real-VM key/header/GCM recovery tests
+pass each API in2.047/10.036/3.628s. Android/JVM, both-ABI builds, Android lint,
+fixture isolation and alignment pass. Root lint has separate pre-existing
+failures: empty .agents/.codex root entries and the unchanged flag-registry
+selftest. Wallet validation remains scoped; no global lint success is claimed.
+
+Unsigned release is612,807 bytes, SHA256
+`c5934e13a57e290fbe0ae0973f87c68005b4a4efa7e12263f4b4dea76ede6d21`.
+This bounds our native scratch lifetime, not all VM/provider copies or hardware
+custody. Full review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Evidence:
+`.cache/android-wallet/resume-20260915/jni-secret-retirement/`.
+Next: verify scan submission retires a claimed request when scheduling its
+timeout throws, including an exception after enqueue.

@@ -37,6 +37,7 @@ static unsigned fail_call, vm_calls, random_calls, active_operation;
 static size_t transfer_prefix = SIZE_MAX;
 #define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+static void verify_cleanup(void);
 
 static void track(const void *pointer, size_t length)
 {
@@ -115,8 +116,9 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
 {
     (void)env;
     const fake_array *array = region(input, start, length, BYTES);
-    /* Header bytes are public; only entropy input is a secret obligation. */
-    if (array != &header) track(output, (size_t)length);
+    /* Header bytes are public. Every entropy destination in these adapters
+     * owns 32 bytes, including the tail beyond a shorter supported input. */
+    if (array != &header) { CHECK(length <= 32); track(output, 32); }
     if (vm_fault()) { if (length > 0) output[0] = 42; return; }
     memcpy(output, array->data.bytes + (size_t)start, (size_t)length);
 }
@@ -134,6 +136,11 @@ static fake_array *new_array(jsize length, array_kind kind)
 {
     CHECK(active_operation >= 4); /* Secret results must be caller-owned before entry. */
     CHECK(length >= 0 && length <= 215);
+    /* Public results need no secret scratch across a VM allocation, including
+     * one that fails or returns an array with a pending exception. Both the
+     * entropy copy and RNG blinding must already have been fully erased. */
+    CHECK(touched_count == 2);
+    verify_cleanup();
     if (vm_fault()) {
         if (null_without_exception) pending = false;
         if (!array_with_exception) return NULL;
@@ -346,6 +353,37 @@ static void exact_results(void)
     }
 }
 
+static void public_result(unsigned operation, zcl_network network, size_t entropy_len)
+{
+    prepare();
+    entropy.length = (jsize)entropy_len;
+    for (size_t i = 0; i < entropy_len; ++i) entropy.data.bytes[i] = (uint8_t)(i + 1);
+    const fake_array before = entropy;
+    const uint8_t blinding[32] = {1};
+    uint8_t expected[80];
+    CHECK(zcl_wallet_header_create(entropy.data.bytes, entropy_len, network,
+        blinding, sizeof(blinding), expected, sizeof(expected)) == ZCL_OK);
+    memcpy(header.data.bytes, expected, sizeof(expected));
+    CHECK(invoke(operation, &environment, (jbyteArray)&entropy, NULL, (jint)network, 0));
+    verify_cleanup();
+    CHECK(memcmp(&entropy, &before, sizeof(entropy)) == 0);
+    CHECK(memcmp(header.data.bytes, expected, sizeof(expected)) == 0);
+    const jsize length = operation == 5 ? 80 : 35;
+    const size_t offset = operation == 5 ? 0 : 44;
+    CHECK(result_array.kind == BYTES && result_array.length == length);
+    CHECK(memcmp(result_array.data.bytes, expected + offset, (size_t)length) == 0);
+}
+
+static void public_results(void)
+{
+    const zcl_network networks[] = {ZCL_MAINNET, ZCL_TESTNET};
+    const size_t lengths[] = {16, 20, 24, 28, 32};
+    for (size_t n = 0; n < sizeof(networks) / sizeof(networks[0]); ++n)
+        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i)
+            for (unsigned operation = 4; operation < OPERATION_COUNT; ++operation)
+                public_result(operation, networks[n], lengths[i]);
+}
+
 static void vm_failures(void)
 {
     const unsigned calls[] = {2, 4, 4, 4, 4, 4, 6};
@@ -490,7 +528,7 @@ static void transfer_failures(void)
 
 int main(void)
 {
-    pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures();
+    pending_helpers(); pending_and_null_entries(); exact_results(); public_results(); vm_failures();
     allocation_with_exception(); invalid_inputs(); invalid_headers(); full_phrase_inputs();
     destination_refusals(); transfer_failures();
     puts("JNI key exception and secret cleanup checks passed");

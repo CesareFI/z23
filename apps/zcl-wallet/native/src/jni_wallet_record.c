@@ -10,7 +10,7 @@ Java_org_zclassic_wallet_core_NativeCore_createWalletHeader(JNIEnv *env, jclass 
     uint8_t entropy[32] = {0}, blinding[32] = {0}, header[80] = {0};
     size_t entropy_len = 0;
     zcl_network network;
-    jbyteArray result = NULL;
+    bool ready = false;
     if (zcl_jni_network(chain, &network) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
@@ -20,11 +20,11 @@ Java_org_zclassic_wallet_core_NativeCore_createWalletHeader(JNIEnv *env, jclass 
     if (zcl_wallet_header_create(entropy, entropy_len, network, blinding, sizeof(blinding),
                                  header, sizeof(header)) != ZCL_OK)
         goto cleanup;
-    result = zcl_jni_new_bytes(env, header, sizeof(header));
+    ready = true;
 cleanup:
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(blinding, sizeof(blinding));
-    return result;
+    return ready ? zcl_jni_new_bytes(env, header, sizeof(header)) : NULL;
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -34,7 +34,7 @@ Java_org_zclassic_wallet_core_NativeCore_recoveredWalletAddress(JNIEnv *env, jcl
     (void)type;
     uint8_t entropy[32] = {0}, blinding[32] = {0}, header[80] = {0}, address[35] = {0};
     size_t entropy_len = 0, header_len = 0;
-    jbyteArray result = NULL;
+    bool ready = false;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, entropy_input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
@@ -44,11 +44,11 @@ Java_org_zclassic_wallet_core_NativeCore_recoveredWalletAddress(JNIEnv *env, jcl
     if (zcl_wallet_recovered_address(header, header_len, entropy, entropy_len, blinding, sizeof(blinding),
                                      address, sizeof(address)) != ZCL_OK)
         goto cleanup;
-    result = zcl_jni_new_bytes(env, address, sizeof(address));
+    ready = true;
 cleanup:
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(blinding, sizeof(blinding));
-    return result;
+    return ready ? zcl_jni_new_bytes(env, address, sizeof(address)) : NULL;
 }
 
 JNIEXPORT jbyteArray JNICALL

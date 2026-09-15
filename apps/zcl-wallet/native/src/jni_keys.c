@@ -162,6 +162,7 @@ Java_org_zclassic_wallet_core_NativeCore_receivingAddress(JNIEnv *env, jclass ty
     size_t entropy_len = 0, text_len = 0;
     zcl_network network;
     jbyteArray output = NULL;
+    bool ready = false;
     if (index < 0 || zcl_jni_network(chain, &network) != ZCL_OK)
         goto cleanup;
     if (zcl_jni_read_bytes(env, input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
@@ -171,10 +172,12 @@ Java_org_zclassic_wallet_core_NativeCore_receivingAddress(JNIEnv *env, jclass ty
     if (zcl_receive_from_entropy(entropy, entropy_len, network, (uint32_t)index,
                                  blinding, sizeof(blinding), text, sizeof(text), &text_len) != ZCL_OK)
         goto cleanup;
-    output = zcl_jni_new_bytes(env, text, text_len);
+    ready = true;
 cleanup:
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(blinding, sizeof(blinding));
+    /* Only public bytes survive a potentially blocking/failing VM allocation. */
+    if (ready) output = zcl_jni_new_bytes(env, text, text_len);
     zcl_secure_zero(text, sizeof(text));
     return output;
 }

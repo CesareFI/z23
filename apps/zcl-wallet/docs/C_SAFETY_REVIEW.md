@@ -2450,3 +2450,34 @@ strings remain enabled. Native fixtures pass x86-64 API30/35/36 after exact
 transfer hashes; ARM64 compiles. Android/JVM/build/lint/isolation/alignment pass,
 and the complete unsigned release APK is byte-identical to the previous slice.
 Evidence: `.cache/android-wallet/resume-20260915/jni-camera-fuzz/`.
+
+## Erase native secrets before public JNI allocation — 2026-09-15
+
+Reviewed receivingAddress, createWalletHeader and recoveredWalletAddress.
+Their single cleanup path now erases entropy and blinding before allocating
+or writing the Java array containing the derived public result. No derivation,
+authentication, record format or caller-owned input changes.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds; pointer arithmetic | Existing 32-byte entropy/blinding and 35/80-byte public buffers retain their bounds. The fixture observes both complete 32-byte erasures, including short-input tails, before any public result allocation. All five entropy lengths and both networks match the existing C results and preserve input bytes. |
+| Integer overflow/underflow; signed/unsigned conversions | No production size arithmetic or conversion changes. Fixture loops are fixed at two networks, five lengths and three entries; offsets select either the complete 80-byte header or its 35-byte address at offset44. |
+| Use-after-free; double-free; leaks; dangling pointers | The same automatic arrays and one cleanup path remain. No new allocation, owner or retained pointer. The observer records integer identities and reads memory only within the live zeroizer invocation; it never dereferences expired stack storage. |
+| NULL; uninitialized memory; malformed input | A false-initialized ready flag permits public transfer only after successful native derivation/verification. Earlier NULL, malformed-input, RNG and pending-exception failures erase scratch and return without further VM calls. Allocation failure and allocation-plus-exception remain refusals. |
+| Stack; allocation limits; resource exhaustion | No new buffer, heap allocation, loop or retry in production. Measured release-profile frames for receiving/header/recovered are184/216/248 bytes on x86-64 and208/224/272 on ARM64, excluding callees. Java allocation can no longer prolong these native secrets' lifetime. APK size increases160 bytes. |
+| Races; format strings; secret leakage | All state remains invocation-local; no asynchronous access, logs or format strings are added. Public bytes remain valid through VM copying. The caller still owns its entropy array; this bounds native scratch lifetime and does not claim to erase internal VM/provider copies. |
+
+The new allocation-boundary assertion fails on the original source. All92
+native ASan/UBSan/integer groups pass in69.07s, with strict Clang/GCC analysis
+and unchanged source/test complexity caps10/15. The changed fixture also passes
+both analyzers in normal/fuzz profiles. The bounded JNI key fuzzer completes
+77,539 cases/121s with no finding, max_len217, timeout5s, RSS cap512 MiB and
+peak63 MiB; UAR, leaks and strict-string checks remain enabled. Actual compile
+commands qualify156 sanitized and106 covered authored/provider compilations.
+The native observer fixture passes x86-64 API30/35/36 with exact transfer
+hashes; ARM64 is compile-only. Four real-VM key/header/GCM recovery tests pass
+each API in2.047/10.036/3.628s. Android/JVM tests, both-ABI builds, Android lint,
+fixture isolation and16 KiB alignment pass. Root lint separately reports
+pre-existing empty .agents/.codex root directories and an unchanged flag-registry
+selftest failure; no gate is waived or weakened. Hardware custody remains
+unqualified. Evidence: `.cache/android-wallet/resume-20260915/jni-secret-retirement/`.
