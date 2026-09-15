@@ -2317,3 +2317,37 @@ The existing JNI fuzzer completes78,049 cases/121s without a finding at max_len2
 timeout5 and RSS cap512 MiB (observed57 MiB), with stack-use-after-return, leak and
 strict-string checks enabled. Exact evidence and preserved baseline artifacts are
 under `.cache/android-wallet/resume-20260915/jni-destination-preflight/`.
+
+## Measured Android JNI size profile — 2026-09-15
+
+Reviewed the Android-only CMake optimization change: -Os for the JNI target,
+with source-level -O2 for `jni_keys.c`. No C/Kotlin algorithm or interface is
+changed. The early secret-destination checks remain intact. Core/provider
+archives are byte-identical across both ABIs, and normal host flags are unchanged.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffers; out-of-bounds access; pointer arithmetic; NULL/uninitialized memory | No capacity, layout, argument check or initialization changes. All 12 JNI sanitizer groups pass with the selected per-source optimization and preserved ASan/UBSan/integer checks. Existing malformed inputs, partial VM copies and failed allocations remain asserted. |
+| Integer overflow/underflow; signed/unsigned conversions | No arithmetic or cast changes. All 51 JNI compilations in the isolated host profile retain nonrecovering authored integer instrumentation. Android strict conversion and frame warnings remain enabled. |
+| Use-after-free; double-free; leaks; dangling pointers | No ownership or cleanup changes. Optimized native secret-erasure fixtures pass all three x86-64 Android APIs. Real-VM tests cover JNI transfer, isolated storage/recovery, asynchronous review and scan-service ownership. No new reference, allocation or background operation is introduced. |
+| Stack; allocation limits; resource exhaustion | Existing 4096-byte authored frame warning and fixed capacities remain. No whole-stack or RAM claim is made. APK size decreases 18080 bytes with unchanged ELF/ZIP alignment. The broader initial -Os candidate slowed secret conversion, so the accepted profile retains that source's byte-identical -O2 object. Repeated public conversion measurements show no observed regression, not a general speedup. |
+| Malformed input; races; format strings; secret leakage | No parsing, threading, logging or secret policy changes. Full-input erasure and pending-exception refusals remain covered under the chosen optimization. Tests use public vectors and owned fixture directories. Provider algorithms, authentication gates, persistence durability and TLS quarantine are unchanged. |
+
+All 92 default native groups pass 57.22s; strict analysis and complexity caps10/15
+pass. Optimized host JNI groups pass 12/12 in 2.60s. The 36 selected real-JNI tests
+pass API30/API35/API36; the native erasure fixture passes those x86-64 APIs with
+ARM64 compile-only. Android/JVM tests/builds, lint, isolation, architecture and
+16 KiB alignment pass. The unsigned APK is 611783 bytes and reproduces exactly
+from the isolated source export. All 18 non-native APK entries remain identical.
+
+The optimized JNI key/storage fuzzers complete 73499/29196 cases in 121 seconds
+each without a finding, at max_len217/8 and observed RSS58/47 MiB. Both retain
+per-input timeout5, RSS cap512 MiB, stack-use-after-return, leak and strict-string
+checks. Storage paths stay confined to the existing public fixture.
+
+The CPU probe calls the exact release DSO through a fixed fake-JNI environment
+on API30, with public mnemonic conversion only. It does not qualify real-VM,
+hardware, startup or battery performance. Baseline, rejected all-JNI -Os candidate,
+accepted mixed profile and raw results remain under
+`.cache/android-wallet/resume-20260915/jni-size/`. Positive hardware custody
+remains unqualified; no consensus or network boundary changes.

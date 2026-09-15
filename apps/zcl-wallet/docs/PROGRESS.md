@@ -3594,3 +3594,68 @@ independently delayed-validation mutants, public corpus, exact artifact sizes
 and all acceptance logs remain in
 `.cache/android-wallet/resume-20260915/jni-destination-preflight/`.
 TLS remains quarantined; positive hardware custody remains unqualified.
+
+2026-09-15: early-destination-validation checkpoint
+`5b13b32e03e8b3be6cce15fd0e0088dad2d4c772` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, upstream is correct and the tree is clean with ahead/behind 0/0. All 125
+wallet commits remain preserved; origin is unchanged.
+
+2026-09-15: Android JNI adapters now compile with -Os, retaining -O2 for
+`jni_keys.c`. This measured profile preserves the previous milestone's early
+secret-destination refusal and reduces the unsigned APK from 629863 to 611783
+bytes (-18080). ARM64/x86-64 libraries are 228176/257376 bytes (-1152/-1696).
+All 18 non-native APK entry contents and all seven C core/provider archives per
+ABI remain byte-identical. ELF hardening and 16 KiB ELF/ZIP alignment remain
+intact. No source algorithm, cryptographic provider, host-build flag or ABI
+changes. The actual Android manifests contain 17 JNI units per ABI; only the
+key adapter retains effective -O2 within that target.
+
+The first isolated candidate applied -Os to every JNI source. Its APK was
+611367 bytes, but a public phrase-conversion CPU probe measured encode/decode
+median increases of 19.24%/4.11%. That candidate is preserved and not promoted.
+Keeping the key adapter at -O2 costs 416 APK bytes and restores its original
+object bytes for both ABIs. The repeated probe observes no regression: baseline
+encode/restore medians 569114410/1561742523 ns per 100000 calls, accepted profile
+557956084/1502616776 ns. Ranges overlap; this is not a general speedup claim.
+
+Both probes use the same NDK executable, a fixed fake-JNI environment and the
+exact packaged release libraries on an x86-64 API30 emulator. Public zero-entropy
+mnemonic conversion only: no RNG, seed derivation, wallet file, authentication
+or actual VM. Each variant has ten CPU-time samples per operation, collected
+in ABBA process order after 2000 warmups, with byte/length/guard checks. No
+physical ARM, startup, RAM, battery or end-to-end performance claim is made.
+
+All 92 default native sanitizer groups pass in 57.22 seconds; strict Clang/GCC
+analysis and unchanged complexity caps10/15 pass. A separate cache-only host
+profile applies the same JNI optimization choices without removing ASan, UBSan
+or authored integer checks. All 12 JNI groups pass in 2.60 seconds with stack-
+use-after-return, leak and strict-string checks. Its manifest confirms all 51
+JNI source compilations retain those sanitizer flags and the intended final
+optimization flag; normal host profiles remain unchanged.
+
+Under that optimized sanitizer profile, the existing JNI key and storage
+fuzzers complete 73499/29196 cases respectively in 121 seconds each without
+a finding. Maximum inputs are 217/8 bytes, per-input timeout5 and RSS cap512
+MiB; observed peaks are 58/47 MiB. Public corpora and failure artifacts remain
+in the owned cache directory. Storage fuzzing uses only its isolated fixture.
+
+The 36 selected real-JNI instrumented tests pass on API30/API35/API36 in
+16.464/66.175/37.426 seconds, covering public secret conversion, records,
+isolated storage/recovery, QR decoding/isolation, payment input, offline
+sync/history, unsigned review, authentication timing and setup-seal failures.
+The native fake-JNI secret-erasure fixture also passes all three x86-64 APIs
+with the selected per-source optimization and current C/provider archives;
+transferred executable hashes agree. ARM64 is compile-only. This instrumented
+fixture uses synthetic RNG and a wipe observer, rather than the exact packaged
+JNI object; real-VM tests and the CPU probe cover the packaged libraries.
+
+Android/JVM tests, debug/release builds and lint, fixture isolation, architecture
+and alignment pass. The ordinary and relocated exact-source builds produce
+the same unsigned APK SHA256:
+`67da00892ae1dcedfc72a1f66997b7d1630d7075ac2d3cfcfbcee1a60b974120`.
+This remains same-host/toolchain path-independence evidence. Review:
+[C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Baseline and both candidates, raw CPU
+samples, source archive, compile manifests and acceptance logs remain under
+`.cache/android-wallet/resume-20260915/jni-size/`.
+TLS remains quarantined; positive hardware custody remains unqualified.
