@@ -3831,3 +3831,31 @@ device logs and byte comparisons are retained in
 `.cache/android-wallet/resume-20260915/unlock-output/`.
 Next: shorten submitted recovery-phrase lifetime after native confirmation or
 decoding, before subsequent encryption and persistence work.
+
+2026-09-15: submitted recovery words are now erased immediately after native
+confirmation or decoding. Subsequent derivation, GCM and disk IO retain only
+the entropy they require. The existing submission cleanup still erases words
+for queued cancellation, refusal and failures before the native call; repeated
+erasure is allocation-free and idempotent. Invalid restoration clears its words
+before posting the invalid-input callback. No decoding, confirmation, seed,
+address, authentication or persistence behavior changes.
+
+Both creation and restoration baseline regressions observed nonzero consumed
+words at the GCM boundary, then injected a provider refusal and verified final
+cleanup without storage. Both now observe erased words while the active entropy
+is intact. A new successful restoration control commits the same public address
+and observes the decoded entropy's cleanup. Existing creation, seal failure,
+expiry, unlock and worker cancellation controls remain intact. The 21 selected
+instrumented tests pass x86-64 API30/35/36 in 4.895/16.424/9.899 seconds.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation and
+alignment pass. Native source and both packaged native libraries are unchanged,
+retaining the preceding sanitizer/fuzz/complexity evidence. Unsigned release
+remains 612,647 bytes, SHA256
+`040773ce811d30d014f3c29c595fb126e15b13c7bf1d2352b8dee26bd6c69805`.
+Reviewed last-use ownership, no copy/queue growth, failure and callback order,
+and unchanged entropy lifetime during provider writes. This bounds our managed
+phrase lifetime; it makes no claim about all VM/UI copies or hardware custody.
+Evidence: `.cache/android-wallet/resume-20260915/phrase-retirement/`.
+Next: dedicated fuzz coverage for the camera JNI size/fill boundary, preserving
+the existing independent C pixel/reference and real-VM erasure checks.

@@ -46,7 +46,8 @@ class SetupSealInstrumentedTest {
         assertEquals(1, calls.finalCalls)
     }
 
-    private class Fixture(private val permitsStorage: Boolean = false) : AutoCloseable {
+    private class Fixture(private val permitsStorage: Boolean = false,
+                          private val action: WalletAction = WalletAction.CREATE) : AutoCloseable {
         private val context = ApplicationProvider.getApplicationContext<Context>()
         private val parent = Files.createTempDirectory(context.cacheDir.toPath(), "public-setup-seal-").toFile()
         private val directory = File(parent, "fixture")
@@ -66,16 +67,22 @@ class SetupSealInstrumentedTest {
         init {
             val cipher = calls.create()
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(ByteArray(32), "AES"), GCMParameterSpec(128, ByteArray(12)))
-            val prepared = PreparedWalletAction(WalletAction.CREATE, cipher, Network.TESTNET)
+            val prepared = PreparedWalletAction(action, cipher, Network.TESTNET)
             val type = WalletPlatformSession::class.java.declaredClasses.single { it.simpleName == "Setup" }
             val constructor = type.declaredConstructors.single { it.parameterCount == 4 }.apply { isAccessible = true }
-            setupField.set(session, constructor.newInstance(prepared, SetupWindow(clock::get), entropy,
+            setupField.set(session, constructor.newInstance(prepared, SetupWindow(clock::get),
+                if (action == WalletAction.CREATE) entropy else null,
                 WalletRecord.createHeader(entropy, Network.TESTNET)))
         }
 
-        fun confirm() {
-            session.confirmCreation(words, { error("Canonical public confirmation was refused") },
-                { address = it }, { failure = it })
+        fun submit() {
+            if (action == WalletAction.CREATE) {
+                session.confirmCreation(words, { error("Canonical public confirmation was refused") },
+                    { address = it }, { failure = it })
+            } else {
+                session.restore(words, { error("Canonical public restoration was refused") },
+                    { address = it }, { failure = it })
+            }
             val idle = CountDownLatch(1)
             assertTrue(worker.submit { idle.countDown() })
             assertTrue(idle.await(10, TimeUnit.SECONDS))
@@ -84,7 +91,11 @@ class SetupSealInstrumentedTest {
 
         fun assertCleared() {
             assertNull(setupField.get(session))
-            assertTrue(entropy.all { it == 0.toByte() })
+            if (action == WalletAction.CREATE) assertTrue(entropy.all { it == 0.toByte() })
+            else {
+                assertTrue(entropy.all { it == 0x61.toByte() }) // Original public marker was borrowed by the fixture.
+                assertTrue(checkNotNull(calls.input).all { it == 0.toByte() })
+            }
             assertTrue(words.all { it == '\u0000' })
         }
 
@@ -101,6 +112,7 @@ class SetupSealInstrumentedTest {
                 .get(worker) as ThreadPoolExecutor?
             if (backend != null) assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
             entropy.fill(0)
+            calls.input?.fill(0)
             words.fill('\u0000')
             if (permitsStorage) {
                 // Only the success fixture's known files. Unexpected data is
@@ -118,7 +130,7 @@ class SetupSealInstrumentedTest {
     @Test fun expiryAfterGcmCompletionRefusesPersistenceAndClearsOwners() {
         Fixture().use { fixture ->
             fixture.calls.afterFinal = { fixture.clock.set(600_100) }
-            fixture.confirm()
+            fixture.submit()
             assertEquals(1, fixture.calls.aadCalls)
             assertEquals(1, fixture.calls.finalCalls)
             assertSame(fixture.entropy, fixture.calls.input)
@@ -129,7 +141,7 @@ class SetupSealInstrumentedTest {
     @Test fun aadFailureClearsSetupAndSubmittedWordsWithoutFinalizing() {
         Fixture().use { fixture ->
             fixture.calls.afterAad = { throw IllegalStateException("Injected public AAD failure") }
-            fixture.confirm()
+            fixture.submit()
             assertEquals(1, fixture.calls.aadCalls)
             assertEquals(0, fixture.calls.finalCalls)
             fixture.assertRefused()
@@ -139,7 +151,7 @@ class SetupSealInstrumentedTest {
     @Test fun finalizationFailureClearsBorrowedEntropyAndSubmittedWords() {
         Fixture().use { fixture ->
             fixture.calls.beforeFinal = { throw IllegalStateException("Injected public GCM failure") }
-            fixture.confirm()
+            fixture.submit()
             assertEquals(1, fixture.calls.finalCalls)
             assertSame(fixture.entropy, fixture.calls.input)
             fixture.assertRefused()
@@ -149,12 +161,44 @@ class SetupSealInstrumentedTest {
     @Test fun liveSealCommitsThePublicFixtureAndClearsOwners() {
         Fixture(permitsStorage = true).use { fixture ->
             val expected = WalletKeys.receivingAddress(fixture.entropy, Network.TESTNET)
-            fixture.confirm()
+            fixture.submit()
             assertNull(fixture.failure)
             assertEquals(expected, fixture.address)
             assertEquals(CoreStatus.OK, fixture.storage.read().status)
             assertSame(fixture.entropy, fixture.calls.input)
             fixture.assertCleared()
+        }
+    }
+
+    @Test fun confirmedWordsAreErasedBeforeEncryptionBegins() = checkPhraseRetirement(WalletAction.CREATE)
+
+    @Test fun restoredWordsAreErasedBeforeEncryptionBegins() = checkPhraseRetirement(WalletAction.RESTORE)
+
+    @Test fun liveRestoreCommitsTheSamePublicAddressAndClearsDecodedEntropy() {
+        Fixture(permitsStorage = true, action = WalletAction.RESTORE).use { fixture ->
+            val expected = WalletKeys.receivingAddress(fixture.entropy, Network.TESTNET)
+            fixture.submit()
+            assertNull(fixture.failure)
+            assertEquals(expected, fixture.address)
+            assertEquals(CoreStatus.OK, fixture.storage.read().status)
+            fixture.assertCleared()
+        }
+    }
+
+    private fun checkPhraseRetirement(action: WalletAction) {
+        Fixture(action = action).use { fixture ->
+            var wordsClearedAtCipher = false
+            var entropyPresentAtCipher = false
+            fixture.calls.beforeFinal = {
+                wordsClearedAtCipher = fixture.words.all { it == '\u0000' }
+                entropyPresentAtCipher = checkNotNull(fixture.calls.input).all { it == 0x61.toByte() }
+                throw IllegalStateException("Public injected failure after observing input ownership")
+            }
+            fixture.submit()
+            assertEquals(1, fixture.calls.finalCalls)
+            fixture.assertRefused()
+            assertTrue("Consumed recovery words remained live during encryption", wordsClearedAtCipher)
+            assertTrue("Encryption lost its active entropy", entropyPresentAtCipher)
         }
     }
 }

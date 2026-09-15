@@ -153,7 +153,11 @@ internal class WalletPlatformSession(
             val current = checkNotNull(setup)
             current.window.requireOpen()
             val entropy = checkNotNull(current.entropy)
-            if (!WalletKeys.confirmRecoveryPhrase(entropy, ownedPhrase)) {
+            // Retire words at their last use; later encryption and disk IO
+            // need only entropy. Submission cleanup still covers cancellation.
+            val confirmed = try { WalletKeys.confirmRecoveryPhrase(entropy, ownedPhrase) }
+                finally { ownedPhrase.fill('\u0000') }
+            if (!confirmed) {
                 post(mismatch)
                 return@launch
             }
@@ -169,7 +173,8 @@ internal class WalletPlatformSession(
             current.window.requireOpen()
             check(current.prepared.action == WalletAction.RESTORE)
             val entropy = try {
-                WalletKeys.restoreEntropy(ownedPhrase)
+                try { WalletKeys.restoreEntropy(ownedPhrase) }
+                finally { ownedPhrase.fill('\u0000') }
             } catch (_: IllegalArgumentException) {
                 post(invalid)
                 return@launch
