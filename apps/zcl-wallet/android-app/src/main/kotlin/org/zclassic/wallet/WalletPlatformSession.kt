@@ -33,6 +33,7 @@ internal class WalletPlatformSession(
 ) {
     private class Setup(
         val prepared: PreparedWalletAction,
+        val window: SetupWindow,
         val entropy: ByteArray? = null,
         val header: ByteArray? = null,
     ) {
@@ -112,17 +113,19 @@ internal class WalletPlatformSession(
         phrases.post(words, result)
     }
 
-    fun createAfterAuthentication(prepared: PreparedWalletAction, words: (CharArray) -> Unit,
+    fun createAfterAuthentication(prepared: PreparedWalletAction, window: SetupWindow, words: (CharArray) -> Unit,
                                   failure: (WalletProblem) -> Unit) {
         launch(WalletProblem.OPERATION, failure) {
             clearSetup()
+            window.requireOpen()
             check(prepared.action == WalletAction.CREATE)
             check(storage.read().status == CoreStatus.NOT_FOUND)
             val entropy = WalletKeys.createEntropy()
             var retained = false
             try {
                 val header = WalletRecord.createHeader(entropy, prepared.network)
-                setup = Setup(prepared, entropy, header)
+                window.requireOpen()
+                setup = Setup(prepared, window, entropy, header)
                 retained = true
                 postWords(WalletKeys.recoveryPhrase(entropy), words)
             } finally {
@@ -131,13 +134,15 @@ internal class WalletPlatformSession(
         }
     }
 
-    fun restoreAfterAuthentication(prepared: PreparedWalletAction, ready: () -> Unit,
+    fun restoreAfterAuthentication(prepared: PreparedWalletAction, window: SetupWindow, ready: () -> Unit,
                                    failure: (WalletProblem) -> Unit) {
         launch(WalletProblem.OPERATION, failure) {
             clearSetup()
+            window.requireOpen()
             check(prepared.action == WalletAction.RESTORE)
             check(storage.read().status == CoreStatus.NOT_FOUND)
-            setup = Setup(prepared)
+            window.requireOpen()
+            setup = Setup(prepared, window)
             post(ready)
         }
     }
@@ -146,6 +151,7 @@ internal class WalletPlatformSession(
                         ready: (TransparentAddress) -> Unit, failure: (WalletProblem) -> Unit) {
         launch(WalletProblem.OPERATION, failure, { ownedPhrase.fill('\u0000') }) {
             val current = checkNotNull(setup)
+            current.window.requireOpen()
             val entropy = checkNotNull(current.entropy)
             if (!WalletKeys.confirmRecoveryPhrase(entropy, ownedPhrase)) {
                 post(mismatch)
@@ -160,6 +166,7 @@ internal class WalletPlatformSession(
                 ready: (TransparentAddress) -> Unit, failure: (WalletProblem) -> Unit) {
         launch(WalletProblem.OPERATION, failure, { ownedPhrase.fill('\u0000') }) {
             val current = checkNotNull(setup)
+            current.window.requireOpen()
             check(current.prepared.action == WalletAction.RESTORE)
             val entropy = try {
                 WalletKeys.restoreEntropy(ownedPhrase)
@@ -179,11 +186,15 @@ internal class WalletPlatformSession(
 
     private fun seal(current: Setup, entropy: ByteArray, header: ByteArray): TransparentAddress {
         try {
+            current.window.requireOpen()
             val cipher = current.prepared.cipher
             val parameters = checkNotNull(cipher.parameters).getParameterSpec(GCMParameterSpec::class.java)
             check(parameters.tLen == 128 && parameters.iv.size == 12)
             cipher.updateAAD(header)
             val encoded = WalletRecord.pack(header, parameters.iv, cipher.doFinal(entropy))
+            // Refuse an expired operation before beginning persistence. Once
+            // admitted, the C store must finish its bounded durability protocol.
+            current.window.requireOpen()
             check(commitPreparedWallet(storage, current.prepared.action, encoded, entropy) == CoreStatus.OK) {
                 "Wallet commit requires recovery"
             }

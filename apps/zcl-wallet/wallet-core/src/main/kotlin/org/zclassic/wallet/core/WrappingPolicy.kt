@@ -21,6 +21,11 @@ object WrappingPolicy {
     fun authenticationWindowOpen(startedMillis: Long, nowMillis: Long): Boolean =
         NativeCore.authenticationWindowOpen(startedMillis, nowMillis)
 
+    /** Positive cleanup delay while setup is live; zero refuses an expired or
+     * invalid clock. Resample at each use, including after queued delivery. */
+    fun setupWindowRemainingMillis(startedMillis: Long, nowMillis: Long): Long =
+        NativeCore.setupWindowRemainingMillis(startedMillis, nowMillis)
+
     fun accepts(keyBits: Int, hardware: Int, flags: Int, authenticationSeconds: Int, methods: Int): Boolean =
         NativeCore.acceptWrappingPolicy(keyBits, hardware, flags, authenticationSeconds, methods)
 }

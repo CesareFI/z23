@@ -33,3 +33,17 @@ Java_org_zclassic_wallet_core_NativeCore_acceptWrappingPolicy(JNIEnv *env, jclas
                                   (int32_t)seconds, (uint32_t)methods};
     return zcl_wrapping_policy_check(&policy) == ZCL_OK ? JNI_TRUE : JNI_FALSE;
 }
+
+JNIEXPORT jlong JNICALL
+Java_org_zclassic_wallet_core_NativeCore_setupWindowRemainingMillis(JNIEnv *env, jclass type,
+    jlong started, jlong now)
+{
+    (void)env;
+    (void)type;
+    _Static_assert(ZCL_SETUP_WINDOW_MS <= INT64_MAX, "Setup delay must fit Java long");
+    if (started < 0 || now < 0) return 0;
+    uint64_t remaining = 0;
+    if (zcl_setup_window_remaining((uint64_t)started, (uint64_t)now, &remaining) != ZCL_OK)
+        return 0;
+    return (jlong)remaining;
+}

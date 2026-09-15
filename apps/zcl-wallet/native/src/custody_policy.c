@@ -8,6 +8,17 @@ zcl_status zcl_authentication_window_check(uint64_t started_ms, uint64_t now_ms)
     return ZCL_OK;
 }
 
+zcl_status zcl_setup_window_remaining(uint64_t started_ms, uint64_t now_ms,
+                                     uint64_t *remaining_ms)
+{
+    if (remaining_ms == NULL) return ZCL_INVALID_ARGUMENT;
+    if (now_ms < started_ms) return ZCL_IO_UNCERTAIN;
+    const uint64_t elapsed = now_ms - started_ms;
+    if (elapsed >= ZCL_SETUP_WINDOW_MS) return ZCL_TIMED_OUT;
+    *remaining_ms = ZCL_SETUP_WINDOW_MS - elapsed;
+    return ZCL_OK;
+}
+
 zcl_status zcl_wrapping_policy_check(const zcl_wrapping_policy *policy)
 {
     if (policy == NULL)

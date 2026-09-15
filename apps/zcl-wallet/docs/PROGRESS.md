@@ -3281,3 +3281,60 @@ No new device or hardware-custody qualification is claimed. TLS stays quarantine
 Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact baseline/promoted manifests,
 public probes, negative evidence, corpus and logs are preserved in
 `.cache/android-wallet/resume-20260915/integer-safety/`.
+
+2026-09-15: integer-safety checkpoint
+`ec15d585743418d89f4716670c570a2646bd2c7d` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean, upstream correct and ahead/behind 0/0. All 119 wallet
+commits remain preserved, including the original 108-commit checkpoint. Origin
+remains unchanged; only the same-named development branch was pushed.
+
+2026-09-15: setup expiry now checks elapsed time at use. Previously, the only
+ten-minute setup limit was a delayed Handler callback. Recovery entry/retry and
+queued worker operations could proceed without checking their age. Two API30
+regressions against unchanged Activity routing reproduced expired entry/retry
+displaying a recovery keyboard. The fixture injects public clock values on the
+storage-free debug host; it does not wait ten real minutes or mutate device time.
+
+C now computes a bounded positive remaining delay, refuses backward/expired
+timestamps and preserves the output on failure. JNI rejects negative signed
+timestamps. One immutable public clock origin is created after authentication
+approval, before secret work, and shared by the UI and worker. Display, retries,
+submission and actual worker processing recheck it. Sealing checks again before
+encryption and before starting persistence. An already-admitted C persistence
+operation completes its existing durability protocol; no unsafe partial-write
+cancellation is introduced. Timers schedule cleanup when Android can run them;
+this does not claim instantaneous secret erasure during suspension or queue stalls.
+
+Eight new instrumentation checks cover expired recovery entry/retry/submission,
+queued confirmation/restoration/admission and live malformed-input controls one
+millisecond before expiry. They use public marker arrays, an uninitialized cipher
+and unique empty cache parents, with no wallet creation, key generation, prompt
+or authentication bypass. The worker fixtures hold the actual queue, advance the
+public clock and then release it. Expired owners are cleared before persistence
+or phrase decoding; live malformed input retains setup with its original deadline.
+Together with the four backup-screen failure tests, all 12 checks pass on x86-64
+API30/API35/API36 emulators in 74.342/164.773/135.394 seconds. Existing profiles
+remain intact. These debug fixtures do not qualify successful hardware custody,
+minified setup UI behavior or elapsed expiry during a real provider operation.
+
+All 95 native fuzz/oracle groups pass in 113.91 seconds. The C gate first refused
+a fuzzer function with complexity 16; splitting its setup translation checks
+preserved every assertion and restored the unchanged 10/15 caps. The final C
+safety gate passes all 91 groups in 57.52 seconds, plus strict Clang/GCC compilation
+and analysis. The expanded time fuzzer completes 69,360,514 cases in 121 seconds
+without a finding (max_len24, timeout5, RSS cap512 MiB, observed303 MiB). Five
+isolated C mutations exercise late/early expiry, missing backward-clock refusal,
+incorrect remaining delay and premature output publication; all refuse for their
+intended invariant. Native/JVM tests also cover exact limits and negative-equal
+JNI timestamps that unsigned conversion could otherwise reopen.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation, architecture and
+16 KiB native alignment pass. The unsigned release APK is 630055 bytes, 16704
+bytes larger than the prior checkpoint; SHA256 is
+`2536e39993caffff70f27dce19178d559f684b3a82b6e0d78fca972339ee72d8`.
+This is an artifact-size observation, not a RAM/startup performance claim.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Baseline source/APKs/failures,
+public fixtures, complexity refusal, mutations and exact final acceptance remain
+in `.cache/android-wallet/resume-20260915/setup-expiry/`. TLS remains quarantined;
+positive hardware custody remains unqualified.

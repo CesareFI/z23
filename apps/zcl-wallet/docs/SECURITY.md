@@ -71,6 +71,14 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   action control fails after the words have been displayed, it clears the owned
   array and conceals/clears the view before propagating the original error.
   A failed framework clear remains hidden and is retained as a cleanup error.
+* Create/restore setup shares one immutable elapsed-clock origin between its UI
+  and worker, sampled after prompt approval and before secret work. C enforces
+  the ten-minute bound at actual recovery display/retry/submission, worker use
+  and persistence admission. Retries cannot restart that origin. A delayed
+  Handler callback schedules cleanup; it does not grant authority after expiry.
+  Already-admitted persistence must finish its bounded durability protocol.
+  This does not guarantee instantaneous erasure while Android suspends a process
+  or stalls its queues, or cancel a provider call already in progress.
 * Unsigned-review text replacements remain concealed until complete. If expiry
   or cancellation text cannot be rendered, earlier transaction details stay
   hidden even when Android refuses clearing. Native review closure and display

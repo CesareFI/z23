@@ -39,6 +39,14 @@ zcl_status zcl_wrapping_policy_check(const zcl_wrapping_policy *policy);
  * Subtraction follows ordering checks; no absolute deadline addition occurs. */
 zcl_status zcl_authentication_window_check(uint64_t started_ms, uint64_t now_ms);
 
+#define ZCL_SETUP_WINDOW_MS UINT64_C(600000)
+/* One create/restore session, measured from authenticated setup admission.
+ * Same monotonic clock contract as above. On success publish a positive delay
+ * for cleanup scheduling; failure leaves remaining_ms untouched. Call again
+ * at actual UI/worker use: a queued timer alone does not enforce expiry. */
+zcl_status zcl_setup_window_remaining(uint64_t started_ms, uint64_t now_ms,
+                                     uint64_t *remaining_ms);
+
 #ifdef __cplusplus
 }
 #endif

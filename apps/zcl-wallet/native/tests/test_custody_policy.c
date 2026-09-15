@@ -6,8 +6,36 @@
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "custody policy check failed at line %d\n", __LINE__); return 1; } } while (0)
 
+static int setup_window(void)
+{
+    static const uint64_t starts[] = {0, 1, UINT64_MAX - ZCL_SETUP_WINDOW_MS, UINT64_MAX};
+    CHECK(ZCL_SETUP_WINDOW_MS == UINT64_C(600000));
+    CHECK(zcl_setup_window_remaining(0, 0, NULL) == ZCL_INVALID_ARGUMENT);
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); ++i) {
+        const uint64_t start = starts[i];
+        uint64_t remaining = UINT64_MAX;
+        CHECK(zcl_setup_window_remaining(start, start, &remaining) == ZCL_OK);
+        CHECK(remaining == ZCL_SETUP_WINDOW_MS);
+        remaining = UINT64_MAX;
+        if (start > 0) {
+            CHECK(zcl_setup_window_remaining(start, start - 1, &remaining) == ZCL_IO_UNCERTAIN);
+            CHECK(remaining == UINT64_MAX);
+        }
+        if (start > UINT64_MAX - ZCL_SETUP_WINDOW_MS) continue;
+        CHECK(zcl_setup_window_remaining(start, start + ZCL_SETUP_WINDOW_MS - 1, &remaining) == ZCL_OK);
+        CHECK(remaining == 1);
+        remaining = UINT64_MAX;
+        CHECK(zcl_setup_window_remaining(start, start + ZCL_SETUP_WINDOW_MS, &remaining) == ZCL_TIMED_OUT);
+        CHECK(remaining == UINT64_MAX);
+        CHECK(zcl_setup_window_remaining(start, UINT64_MAX, &remaining) == ZCL_TIMED_OUT);
+        CHECK(remaining == UINT64_MAX);
+    }
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(setup_window() == 0);
     static const uint64_t starts[] = {0, 1, UINT64_C(123456789), UINT64_MAX - ZCL_AUTH_WINDOW_MS, UINT64_MAX};
     for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); ++i) {
         const uint64_t start = starts[i];

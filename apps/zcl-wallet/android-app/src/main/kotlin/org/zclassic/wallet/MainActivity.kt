@@ -24,6 +24,7 @@ class MainActivity : Activity() {
     private var resumed = false
     private var busy = true
     private var setupTimeout: Runnable? = null
+    private var setupWindow: SetupWindow? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -123,27 +124,33 @@ class MainActivity : Activity() {
         busy = true
         screens.waiting()
         when (prepared.action) {
-            WalletAction.CREATE -> active.createAfterAuthentication(prepared, { words ->
-                if (!startSetupTimeout()) {
-                    words.fill('\u0000')
-                    return@createAfterAuthentication
-                }
-                busy = false
-                screens.backup(words, { enterRecovery(confirming = true) }, ::restart)
-            }, ::failed)
-            WalletAction.RESTORE -> active.restoreAfterAuthentication(prepared, {
-                if (startSetupTimeout()) enterRecovery(confirming = false)
-            }, ::failed)
+            WalletAction.CREATE -> {
+                val window = SetupWindow()
+                active.createAfterAuthentication(prepared, window, { words ->
+                    if (!startSetupTimeout(window)) {
+                        words.fill('\u0000')
+                        return@createAfterAuthentication
+                    }
+                    busy = false
+                    screens.backup(words, { enterRecovery(confirming = true) }, ::restart)
+                }, ::failed)
+            }
+            WalletAction.RESTORE -> {
+                val window = SetupWindow()
+                active.restoreAfterAuthentication(prepared, window, {
+                    if (startSetupTimeout(window)) enterRecovery(confirming = false)
+                }, ::failed)
+            }
             WalletAction.UNLOCK -> active.unlockAfterAuthentication(prepared, ::received, ::failed)
         }
     }
 
     private fun enterRecovery(confirming: Boolean, retry: Boolean = false) {
-        if (!resumed) return
+        if (!resumed || !setupOpen()) return
         busy = false
         screens.enterRecovery(confirming, retry, { owned ->
             val active = session
-            if (!resumed || busy || active == null) {
+            if (!resumed || busy || active == null || !setupOpen()) {
                 owned.fill('\u0000')
             } else {
                 busy = true
@@ -197,16 +204,29 @@ class MainActivity : Activity() {
         inspect()
     }
 
-    private fun startSetupTimeout(): Boolean {
+    private fun setupOpen(): Boolean {
+        if ((setupWindow?.remainingMillis ?: 0) > 0) return true
+        showFailure(R.string.setup_expired)
+        return false
+    }
+
+    private fun startSetupTimeout(window: SetupWindow): Boolean {
         clearSetupTimeout()
+        setupWindow = window
+        val remaining = window.remainingMillis
+        if (remaining <= 0) {
+            showFailure(R.string.setup_expired)
+            return false
+        }
         val timeout = Runnable { showFailure(R.string.setup_expired) }
         setupTimeout = timeout
-        if (handler.postDelayed(timeout, 600_000)) return true
+        if (handler.postDelayed(timeout, remaining)) return true
         showFailure(R.string.operation_failed)
         return false
     }
 
     private fun clearSetupTimeout() {
+        setupWindow = null
         setupTimeout?.let(handler::removeCallbacks)
         setupTimeout = null
     }

@@ -7,6 +7,20 @@ import kotlin.test.assertTrue
 import kotlin.test.assertEquals
 
 class WrappingPolicyTest {
+    @Test fun setupDelayKeepsItsOriginalElapsedDeadline() {
+        for (start in listOf(0L, 1L, 123_456_789L, Long.MAX_VALUE - 600_000)) {
+            assertEquals(600_000L, WrappingPolicy.setupWindowRemainingMillis(start, start))
+            assertEquals(1L, WrappingPolicy.setupWindowRemainingMillis(start, start + 599_999))
+            assertEquals(0L, WrappingPolicy.setupWindowRemainingMillis(start, start + 600_000))
+            if (start > 0) assertEquals(0L, WrappingPolicy.setupWindowRemainingMillis(start, start - 1))
+        }
+        for ((start, now) in listOf(-1L to 0L, 0L to -1L, -1L to -1L, Long.MIN_VALUE to Long.MIN_VALUE,
+            Long.MIN_VALUE to Long.MAX_VALUE, 0L to Long.MAX_VALUE)) {
+            assertEquals(0L, WrappingPolicy.setupWindowRemainingMillis(start, now))
+        }
+        assertEquals(600_000L, WrappingPolicy.setupWindowRemainingMillis(Long.MAX_VALUE, Long.MAX_VALUE))
+    }
+
     @Test fun authenticationContinuationUsesBoundedElapsedTimeAcrossJni() {
         assertEquals(90_000L, WrappingPolicy.authenticationWindowMillis)
         for (start in listOf(0L, 1L, 123_456_789L, Long.MAX_VALUE - 90_000)) {

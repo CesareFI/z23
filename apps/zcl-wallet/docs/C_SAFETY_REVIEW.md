@@ -2131,3 +2131,46 @@ fixture isolation and 16 KiB alignment pass. All three APKs remain byte-identica
 to the backup-screen checkpoint. Evidence is preserved in
 `.cache/android-wallet/resume-20260915/integer-safety/`. TLS remains quarantined;
 hardware-positive custody remains unqualified.
+
+## Elapsed setup expiry at actual use — 2026-09-15
+
+Reviewed `zcl_setup_window_remaining`, its scalar JNI projection and the shared
+Android setup window. The prior 600000-ms Handler delay alone could not enforce
+the limit on delayed user/worker actions. Android documents
+[Handler's uptime-based scheduling](https://developer.android.com/reference/android/os/Handler)
+and the [elapsed clock including sleep](https://developer.android.com/reference/android/os/SystemClock#elapsedRealtime()).
+The new origin is sampled after prompt approval, before secret work. C owns the
+ten-minute predicate; Kotlin samples the clock and schedules the remaining delay.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | The C predicate accepts two uint64 timestamps and one required scalar output. It writes only that scalar, after all checks. JNI takes two Java longs and creates no array, pin or local reference. Existing secret buffers and their capacities are unchanged. |
+| Integer overflow/underflow; signed/unsigned conversions | Backward clocks refuse before subtraction. Age >=600000 refuses before remaining-delay subtraction, so success is 1..600000. No absolute deadline addition occurs in authored code. JNI rejects either negative input before unsigned conversion and statically bounds successful output below INT64_MAX. C tests cover UINT64_MAX; JVM tests cover Long limits and equal negative inputs. |
+| NULL; uninitialized memory; malformed input; format strings | NULL output returns INVALID_ARGUMENT. Rejected timestamps leave caller output unchanged. JNI initializes remaining to zero, returns zero on any refusal and never reads an unpublished result. Diagnostics contain fixed public context, not clocks, entropy or phrases. No serialization or consensus predicate changes. |
+| Use-after-free; double-free; leaks; dangling pointers | One immutable public origin is shared between the UI and its existing worker-owned Setup. Closing drops references; no native allocation or retained pointer is added. Window construction precedes secret work. Expired worker checks run inside existing launch/seal cleanup paths; expired UI submission still has its incoming-array owner and the screen's failure-finally cleanup. No new secret copy or provider handle is introduced. |
+| Stack usage; allocation limits; resource exhaustion | The native predicate has no buffers, recursion or heap; host Clang-O2 reports a zero-byte frame for it. This is not a whole-stack/provider claim. The existing two-owner/four-task platform bound is unchanged. The one small public window object adds no worker, timer queue or retry loop; the existing timer uses C's bounded remaining delay. |
+| Races; cancellation; secret leakage | Production uses the same elapsedRealtime clock across UI/worker sampling. Immutable publication happens through existing task ownership. The worker checks at actual processing, not only at enqueue. Timer callbacks cannot independently authorize expired work. Sealing rechecks before encryption and persistence admission; once storage starts it completes the existing bounded durability protocol. Existing ongoing-operation cleanup still waits until the secret owner is finished, avoiding a concurrent wipe of live inputs. |
+
+Two regressions failed against unchanged Activity routing on API30: delayed
+recovery entry and retry displayed an expired keyboard. The public injected
+clock exercises controller behavior, not real suspend duration. Eight new
+checks plus four backup-screen failures pass as 12-test suites on
+API30/API35/API36 in 74.342/164.773/135.394 seconds. Actual worker-queue fixtures
+verify expired admission/confirmation/restore cleanup and no storage touch;
+live malformed-input controls retain setup just before expiry. Uninitialized
+ciphers and public abc/0x61 markers never create keys or perform encryption.
+The seal checkpoints are reviewed but not a new positive provider-operation or
+hardware-authentication qualification. No production wallet directory is used;
+fixtures remove only their own empty parent, preserving unexpected files.
+
+All 95 fuzz/oracle groups pass in 113.91 seconds, and final 91-group C safety
+acceptance passes in 57.52 seconds. A complexity16 fuzzer refusal is preserved;
+splitting translation checks retained all assertions and restored caps10/15.
+Strict Clang/GCC analysis, JVM/Android builds/tests, debug/release lint, fixture
+isolation, architecture and native alignment pass. The bounded time fuzzer
+executes 69,360,514 cases in 121 seconds without a finding; max_len24, timeout5,
+RSS cap512 MiB, observed303 MiB. Five isolated late/early/backward/remaining/output
+mutations refuse for the intended invariant. Evidence and source/APK identities
+remain in `.cache/android-wallet/resume-20260915/setup-expiry/`. TLS stays
+quarantined. No instantaneous erasure during OS suspension, global-OOM guarantee,
+minified setup runtime or positive hardware custody is claimed.
