@@ -3953,3 +3953,24 @@ Reviewed last-use placement, caller ownership, provider-failure cleanup, public
 result lifetime and unchanged authenticated storage semantics. This covers our
 managed destination, not all internal provider/VM copies. Evidence:
 `.cache/android-wallet/resume-20260915/unlock-retirement/`.
+
+2026-09-15: strengthened the existing fuzz compile-manifest gate against
+sanitizer opt-outs, recovery re-enablement and coverage opt-outs. Previously an
+enabling flag anywhere in the command was enough, even if a later argument
+disabled the sanitizer. The baseline accepted a copied core command with
+`-fno-sanitize=address`; the new regression failed on that false qualification.
+The checker now tokenizes command arguments and refuses explicit opt-outs for
+authored/provider compilations. Single/double-quoted flags are checked; macro
+values containing similar text remain valid controls.
+
+All 31 refusal mutations and two valid macro controls pass, using only copied
+manifests. No weakened target is compiled or executed. The actual fuzz manifest
+still qualifies 156 sanitized authored/provider compilations and 106 covered
+library/fuzz compilations. The registered wallet_fuzz_profile test passes in
+14.91 seconds, including a fresh generated positive profile and rejection of an
+unsanitized configuration. Source/provider C, runtime sanitizers, assertions,
+complexity caps and APK contents are unchanged. Release build, fixture isolation
+and alignment pass; the unsigned APK remains byte-identical to b8bc5395c.
+Reviewed token boundaries, quote handling, source scope, mutation selection and
+failure diagnostics. Evidence:
+`.cache/android-wallet/resume-20260915/fuzz-flag-overrides/`.

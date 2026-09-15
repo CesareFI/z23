@@ -12,6 +12,15 @@ foreach(index RANGE 0 ${last})
     string(JSON source GET "${commands}" ${index} file)
     if(source MATCHES "/native/src/|/vendor/android-[^/]+/|/contexts/commons/packages/")
         string(JSON command GET "${commands}" ${index} command)
+        # An earlier enabling flag cannot qualify a command with an opt-out.
+        # Inspect actual arguments so quoted flags cannot evade this check,
+        # and a macro value containing similar text is not mistaken for a flag.
+        separate_arguments(arguments UNIX_COMMAND "${command}")
+        foreach(argument IN LISTS arguments)
+            if(argument MATCHES "^-f(no-sanitize=|sanitize-recover=|no-sanitize-coverage=)")
+                message(FATAL_ERROR "Sanitizer or coverage opt-out is forbidden for ${source}: ${argument}")
+            endif()
+        endforeach()
         if(NOT command MATCHES "-fsanitize=address,undefined" OR NOT command MATCHES "-fno-sanitize-recover=all")
             message(FATAL_ERROR "Required sanitizer or fail-on-finding flags missing for ${source}")
         endif()
