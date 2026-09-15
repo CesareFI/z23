@@ -2972,3 +2972,53 @@ and public signed-wire primitives, with links to their existing evidence.
 Authenticated current-chain context, per-use custody, consent, completion-time
 checks and broadcast acceptance remain open. This is a continuation correction;
 no implementation or acceptance gate changes.
+
+2026-09-15 11:59 UTC: continuation correction commit
+`0ad6900cdce03303f3353b9975a14ada403210de` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, with a clean tree, correct upstream and 0/0 ahead/behind. All 112 wallet
+commits remain preserved; `origin` remains unchanged.
+
+2026-09-15: recovered change now derives its BIP39 seed once per invocation,
+reusing it only after the exact record anchor matches. It still uses two
+independently blinded curve contexts with at most one live allocation. The
+complete local work object is explicitly wiped on success and every admitted
+failure. The extracted seed/address helpers are private native interfaces;
+public APIs, address paths, record bytes and authenticated-caller requirements
+remain unchanged. There is no seed cache or new transaction/custody authority.
+
+The public-vector benchmark uses exact release archives and independent OpenSSL
+expected addresses. On API30 x86-64, five 100-call samples after ten warmups per
+fixture reduce median thread CPU from 25.510225 to 13.485252 ms for 16-byte
+entropy (47.14%) and 25.027664 to 13.431868 ms for 32-byte entropy (46.33%).
+Every result is checked. The recovered-change frame measures 352 bytes versus
+288 before; there is no new allocation, and all authored frames remain within
+the 4096-byte limit. These emulator results do not establish physical-device
+performance or battery use. The explicit host benchmark has no timing pass bar.
+
+All 90 default sanitizer groups pass in 49.04 seconds. Production and fixture
+Clang/GCC analysis, strict warnings, architecture and complexity caps 10/15 pass.
+The independent oracle adds 48 recovered-change bindings to its existing
+96 receive/change comparisons. Failure tests check private helper bounds,
+allocation/construction/blinding failures in either context, all ten child steps,
+provider errors throughout both paths, mismatched anchors, short provider output,
+unchanged output guards and exact live seed cleanup. Three mutation controls pass;
+ten deliberate erasure, KDF-reuse, blinding, path, binding and publication defects
+fail their intended assertions. Fuzzing completes 3905 cases in 121 seconds under
+five-second case and 512 MiB RSS bounds (48 MiB observed), without a finding.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and native
+alignment pass. Exact release-linked recovery, key-failure and secret-failure
+fixtures pass on x86-64 API30/35/36; ARM64 remains compile-only. The release APK
+is 613047 bytes (+144), SHA256
+`a716ced30ebf97eef777657edf229b79fadf350d45e76f6c0f667df911429ba2`.
+The packaged archive and committed benchmark match the measured candidate.
+TLS remains quarantined and hardware-positive custody remains unqualified.
+Full hazard review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact measurements,
+reference derivation, mutation controls, initial diagnostic failures, hashes and
+acceptance logs are preserved in
+`.cache/android-wallet/resume-20260915/change-seed-measure/`.
+The public-vector JNI mnemonic/refusal/receive test also passes on API30/35/36
+in 0.422/1.410/0.635 seconds. It exercises the real VM/native path without
+creating fresh entropy, persisting a wallet or invoking hardware-authentication
+fallbacks. All temporary native fixture executables were removed after success.

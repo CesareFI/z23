@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "secret_hash.h"
+#include "bip32_internal.h"
+#include "zcl_wallet_record.h"
 
 #include <mbedtls/sha512.h>
 #include <stdbool.h>
@@ -22,6 +24,12 @@ typedef struct {
 } observed_context;
 static observed_context observed[3];
 
+static bool watch_seed;
+static uintptr_t seed_identity;
+static uint8_t seed_snapshot[64];
+static size_t seed_calls, address_calls, seed_wipes, seed_end_calls, anchor_end_calls;
+static size_t short_address;
+
 void __real_mbedtls_sha512_init(mbedtls_sha512_context *);
 void __real_mbedtls_sha512_free(mbedtls_sha512_context *);
 void __real_mbedtls_sha512_clone(mbedtls_sha512_context *, const mbedtls_sha512_context *);
@@ -31,6 +39,9 @@ int __real_mbedtls_sha512_finish(mbedtls_sha512_context *, unsigned char *);
 int __real_mbedtls_sha256(const unsigned char *, size_t, unsigned char *, int);
 int __real_mbedtls_ripemd160(const unsigned char *, size_t, unsigned char *);
 void __real_mbedtls_platform_zeroize(void *, size_t);
+zcl_status __real_zcl_entropy_seed(const uint8_t *, size_t, uint8_t *, size_t);
+zcl_status __real_zcl_seed_address(const uint8_t *, size_t, zcl_network, uint32_t, uint32_t,
+    const secp256k1_context *, uint8_t *, size_t, size_t *);
 
 static void require(bool condition, const char *message)
 {
@@ -45,6 +56,48 @@ static void require_zero(const void *buffer, size_t length)
     const uint8_t *bytes = buffer;
     for (size_t i = 0; i < length; ++i)
         require(bytes[i] == 0, "live scratch was not fully erased");
+}
+
+zcl_status __wrap_zcl_entropy_seed(const uint8_t *entropy, size_t length, uint8_t *seed, size_t capacity)
+{
+    if (watch_seed) {
+        require(seed_calls++ == 0 && seed != NULL && capacity == 64, "seed must be derived exactly once");
+        seed_identity = (uintptr_t)seed;
+        require_zero(seed, capacity);
+    }
+    const zcl_status status = __real_zcl_entropy_seed(entropy, length, seed, capacity);
+    if (watch_seed) { memcpy(seed_snapshot, seed, 64); seed_end_calls = calls; }
+    return status;
+}
+
+zcl_status __wrap_zcl_seed_address(const uint8_t *seed, size_t length, zcl_network network,
+    uint32_t chain, uint32_t index, const secp256k1_context *context,
+    uint8_t *address, size_t capacity, size_t *written)
+{
+    if (watch_seed) {
+        require(seed_calls == 1 && address_calls < 2 && (uintptr_t)seed == seed_identity,
+            "address must use the one live recovered seed");
+        require(length == 64 && memcmp(seed, seed_snapshot, 64) == 0, "reused seed changed");
+        require(chain == address_calls && index == (address_calls == 0 ? 0U : 19U), "recovered path changed");
+        ++address_calls;
+    }
+    const zcl_status status = __real_zcl_seed_address(seed, length, network, chain, index,
+        context, address, capacity, written);
+    if (watch_seed && address_calls == short_address && status == ZCL_OK) *written = 34;
+    if (watch_seed && address_calls == 1) anchor_end_calls = calls;
+    return status;
+}
+
+static void observe_seed_wipe(const void *buffer, size_t length)
+{
+    if (!watch_seed || seed_identity == 0 || buffer == NULL) return;
+    const uintptr_t start = (uintptr_t)buffer;
+    if (seed_identity < start || seed_identity - start >= length) return;
+    const size_t offset = (size_t)(seed_identity - start);
+    require(length - offset >= 64, "recovered seed wipe is short");
+    require_zero((const uint8_t *)buffer + offset, 64);
+    seed_identity = 0;
+    ++seed_wipes;
 }
 
 static observed_context *context_slot(const mbedtls_sha512_context *context)
@@ -163,6 +216,7 @@ void __wrap_mbedtls_platform_zeroize(void *buffer, size_t length)
 {
     __real_mbedtls_platform_zeroize(buffer, length);
     require_zero(buffer, length);
+    observe_seed_wipe(buffer, length);
     if (length == 128)
         ++pad_wipes;
     if (length == 64)
@@ -320,9 +374,92 @@ static int address_provider_failures(void)
     return 0;
 }
 
+static void seed_watch_start(size_t failure)
+{
+    require(seed_identity == 0 && !watch_seed, "previous recovered seed lifetime did not end");
+    inject(failure);
+    seed_calls = address_calls = seed_wipes = seed_end_calls = anchor_end_calls = 0;
+    __real_mbedtls_platform_zeroize(seed_snapshot, sizeof(seed_snapshot));
+    watch_seed = true;
+}
+
+static void seed_watch_end(void)
+{
+    require(seed_identity == 0 && seed_calls <= 1 && seed_wipes == seed_calls,
+        "recovered seed escaped without complete live erasure");
+    require(live_contexts == 0 && contexts_opened == contexts_closed, "recovered provider context escaped");
+    watch_seed = false;
+    __real_mbedtls_platform_zeroize(seed_snapshot, sizeof(seed_snapshot));
+}
+
+static int recovered_binding_failures(void)
+{
+    uint8_t entropy[16] = {0}, blinding[64], header[80], output[37], before[37];
+    memset(blinding, 1, 32); memset(blinding + 32, 2, 32);
+    inject(SIZE_MAX);
+    CHECK(zcl_wallet_header_create(entropy, sizeof(entropy), ZCL_TESTNET, blinding, 32,
+        header, sizeof(header)) == ZCL_OK);
+    memset(output, 0xa5, sizeof(output)); memcpy(before, output, sizeof(before));
+    entropy[0] = 1;
+    seed_watch_start(SIZE_MAX);
+    CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, sizeof(entropy), 19,
+        blinding, sizeof(blinding), output + 1, 35) == ZCL_INVALID_ENCODING);
+    seed_watch_end();
+    CHECK(seed_calls == 1 && address_calls == 1 && seed_wipes == 1);
+    CHECK(memcmp(output, before, sizeof(output)) == 0);
+    entropy[0] = 0;
+    for (short_address = 1; short_address <= 2; ++short_address) {
+        seed_watch_start(SIZE_MAX);
+        const zcl_status expected = short_address == 1 ? ZCL_INVALID_ENCODING : ZCL_CRYPTO_FAILURE;
+        CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, sizeof(entropy), 19,
+            blinding, sizeof(blinding), output + 1, 35) == expected);
+        seed_watch_end();
+        CHECK(seed_calls == 1 && address_calls == short_address && seed_wipes == 1);
+        CHECK(memcmp(output, before, sizeof(output)) == 0);
+    }
+    short_address = 0;
+    zcl_secure_zero(entropy, sizeof(entropy)); zcl_secure_zero(blinding, sizeof(blinding));
+    return 0;
+}
+
+static int recovered_seed_failures(size_t entropy_len)
+{
+    uint8_t entropy[32] = {0}, blinding[64] = {0}, header[80] = {0}, output[37];
+    memset(blinding, 1, 32); memset(blinding + 32, 2, 32);
+    inject(SIZE_MAX);
+    CHECK(zcl_wallet_header_create(entropy, entropy_len, ZCL_TESTNET, blinding, 32, header, sizeof(header)) == ZCL_OK);
+    seed_watch_start(SIZE_MAX);
+    memset(output, 0xa5, sizeof(output));
+    CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, entropy_len, 19,
+        blinding, sizeof(blinding), output + 1, 35) == ZCL_OK);
+    seed_watch_end();
+    CHECK(seed_calls == 1 && address_calls == 2 && seed_wipes == 1);
+    /* The zero-entropy 24-word mnemonic exceeds one SHA512 key block and
+     * needs one normalization context; the 12-word mnemonic does not. */
+    const size_t normalization = entropy_len == 32 ? 1 : 0;
+    CHECK(contexts_opened == 2086 + normalization && clones == 4120 && pad_wipes == 13);
+    CHECK(output[0] == 0xa5 && output[36] == 0xa5);
+    const size_t total = calls;
+    CHECK(seed_end_calls > 3 && anchor_end_calls > seed_end_calls && total > anchor_end_calls + 3);
+    const size_t points[] = {1, 2, 3, 4, seed_end_calls - 3, seed_end_calls,
+        seed_end_calls + 1, anchor_end_calls - 3, anchor_end_calls,
+        anchor_end_calls + 1, total - 3, total - 2, total - 1, total};
+    for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); ++i) {
+        seed_watch_start(points[i]);
+        memset(output, 0xa5, sizeof(output));
+        CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, entropy_len, 19,
+            blinding, sizeof(blinding), output + 1, 35) == ZCL_CRYPTO_FAILURE);
+        seed_watch_end();
+        CHECK(calls == points[i] && bytes_are(output, sizeof(output), 0xa5));
+    }
+    zcl_secure_zero(entropy, sizeof(entropy)); zcl_secure_zero(blinding, sizeof(blinding));
+    return 0;
+}
+
 int main(void)
 {
-    if (hmac_failures() || pbkdf2_failures() || mnemonic_failures() || address_provider_failures())
+    if (hmac_failures() || pbkdf2_failures() || mnemonic_failures() || address_provider_failures()
+        || recovered_seed_failures(16) || recovered_seed_failures(32) || recovered_binding_failures())
         return 1;
     puts("secret failures: provider errors preserve output; all contexts and KDF scratch are erased");
     return 0;

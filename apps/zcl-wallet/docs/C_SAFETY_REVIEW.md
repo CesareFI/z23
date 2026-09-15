@@ -1834,3 +1834,60 @@ SHA256 `8d88ec9944e4ac00e2ba3222e17f53ac2725e2487680ef6da7128688c5847d4d`.
 No new device custody, physical camera, TLS or transaction-authorization claim.
 Source/artifact hashes, failures, mutations, generated public corpus and logs
 are preserved in `.cache/android-wallet/resume-20260915/bip32-fuzz/`.
+
+## Invocation-local recovered-change seed reuse — 2026-09-15
+
+Reviewed `wallet_change.c`, `receive_key.c`, their private `bip32_internal.h`
+interface, the extended secret/key failure and OpenSSL reference fixtures,
+`bench_wallet_change.c` and their host-only CMake wiring. Recovery previously
+computed the same BIP39 seed once for the record anchor and again for change.
+The new bounded work object derives it once, verifies the record anchor, then
+uses it for the requested internal-chain address. It preserves two independently
+blinded contexts and destroys the first before constructing the second. The
+public APIs, derivation path, record format and authenticated-caller preconditions
+are unchanged; no cached seed or new signing/custody authority is introduced.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Public recovery validates the complete header and exact 64-byte blinding span, supported nonhardened index, output pointer/capacity and record entropy length before derivation. Only then is the second 32-byte blinding half addressed. Private seed/address helpers retain explicit lengths and capacities: exactly 64 seed bytes, 35 address bytes, supported network and chain 0/1. Local seed/anchor/candidate spans are fixed 64/35/35 bytes. Both provider-reported address lengths are checked before anchor acceptance or output publication. Guarded refusal tests cover NULLs, invalid lengths through SIZE_MAX and every undersized seed/address capacity. |
+| Integer overflow/underflow; signed/unsigned conversion | No allocation multiplication, variable-size stack object, index increment or narrowing of external lengths is added. The index must remain below 2^31; existing hardened path construction is unchanged. Blinding offsets and address copies use checked fixed sizes. Strict conversion warnings remain errors. Timing uses fixed 100-call samples and checked monotonic/thread-clock results; it is an explicitly invoked public fixture, not a runtime acceptance threshold. |
+| NULL dereferences; uninitialized memory | The complete change work object is zero-initialized, including owner fields and padding. Private address entry checks the borrowed context, seed, output and length pointers before use. Existing checked entropy/mnemonic/KDF helpers initialize their own scratch. Seed watchers require the destination to be zero before the one derivation; stale output lengths cannot publish a failed candidate. |
+| Use-after-free; double-free; leaks; dangling pointers | One local owner controls at most one checked 1..1024-byte provider allocation at a time. The first context ends only after anchor match; the second uses the other blinding half. One final cleanup handles success and every admitted failure. Private address helpers borrow a live context and allocate none. Failure fixtures exercise allocation, construction, size and blinding failures at each of the two stages, require balanced allocation/free counts and full live allocation erasure, and retain existing invalid-child checks at all ten path steps. Seed erasure observation stores only integer identities; bytes are inspected solely through a currently live zeroization argument, never a retained stack pointer after return. |
+| Stack usage; allocation limits; resource exhaustion | No new allocation, recursion, persistent cache or worker is introduced; one duplicate 2048-round KDF and duplicate header parse are removed. GCC-O2 measures the recovered-change frame at 352 bytes versus 288 before; extracted entropy/seed-address helpers use 288/416 bytes and the entropy wrapper 224 bytes, versus a previous combined 752-byte frame. These are per-function measurements, not whole-stack/RSS claims. All authored frames remain below 4096 bytes. Fuzzing uses maximum input 118 bytes, five-second cases and a 512 MiB RSS cap. |
+| Malformed serialization/input; error handling | Header parsing and exact entropy-length binding still precede key work. A mismatched re-derived anchor returns INVALID_ENCODING and performs no change derivation. Short successful anchor/change outputs, provider failures at header/KDF/anchor/change boundaries and failures in either context leave all 37 guarded caller-output bytes unchanged. The first independent anchor and final change address must be exact before publishing 35 bytes. No error is converted to success or skipped child index. |
+| Races; ownership; cancellation | Seed, owner and candidate storage are invocation-local; helpers retain no pointers or mutable global production state. Caller spans retain their documented stable/nonoverlapping requirement. No JNI handle, process/Activity owner, storage authentication, consent or deadline behavior changes. Test observer globals belong only to sequential standalone fixtures; their linker wrappers do not enter the app. |
+| Secret leakage; format strings; cryptographic behavior | The entire work object is explicitly wiped after ending its last context. Existing canonical mnemonic, extended-private-key, public-key and provider scratch cleanup remains. Watchers prove one seed derivation, identical live seed use for both paths and complete seed erasure on success, provider faults, anchor mismatch and short output. Separate tests inspect both exact blinding halves. Ten deliberate regressions fail intended assertions, including omitted/short erasure, duplicate KDF, reused blinding, changed path/index, omitted anchor/length checks and publishing failed output. Only public synthetic vectors/fuzz bytes and fixed fixture blinding are used; diagnostics print counts/times/assertions, never secret bytes. No cryptographic primitive, monetary/consensus rule or transaction-validity condition changes. |
+
+Acceptance: all 90 default ASan/UBSan/LSan groups pass in 49.04 seconds, with
+TLS excluded. Clang/GCC analysis and strict warnings pass for production and
+modified fixtures, together with architecture placement and unchanged complexity
+caps 10/15 (509 production functions/91 files; 1262 fixture functions/151 files).
+The independent OpenSSL suite passes its 96 receive/change comparisons plus
+48 recovered-change bindings. Three unchanged mutation controls pass; all ten
+isolated defects hit their intended assertions. The fully instrumented recovered
+change fuzzer completes 3905 cases in 121 seconds without a finding, observing
+48 MiB RSS under its 512 MiB cap. A test-only context-count expectation for the
+long mnemonic was corrected: its SHA512 key normalization adds one context;
+the counter-only diagnostic and initial failures remain preserved.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and 16 KiB native
+alignment pass. The release-linked recovery, key-failure and secret-failure
+fixtures pass on x86-64 API30/35/36; ARM64 is compile-only. These are public
+native/VM claims, not successful hardware custody or physical-device acceptance.
+The unsigned release APK is 613047 bytes (+144), SHA256
+`a716ced30ebf97eef777657edf229b79fadf350d45e76f6c0f667df911429ba2`.
+
+The exact release archive matches the measured API30 x86-64 candidate. Five
+100-call samples after ten warmups per public zero-entropy fixture compare every
+result against an independently derived OpenSSL address. Median thread CPU
+milliseconds per recovered change improve 25.510225→13.485252 for 16-byte
+entropy (47.14%) and 25.027664→13.431868 for 32-byte entropy (46.33%). This is
+bounded emulator evidence, not a physical-device speed or battery claim. The
+committed benchmark source is byte-identical to the measured fixture. Exact
+sources, archives, reference driver, hashes, timing samples, mutation controls,
+initial failures and acceptance logs remain in
+`.cache/android-wallet/resume-20260915/change-seed-measure/`. TLS remains
+quarantined; authenticated chain context, per-use custody and send gates remain.
+The exact public-vector JNI mnemonic/refusal/receive method also passes on
+API30/35/36 in 0.422/1.410/0.635 seconds. No fresh entropy-generation method
+was invoked; all device-native fixture copies were removed after success.

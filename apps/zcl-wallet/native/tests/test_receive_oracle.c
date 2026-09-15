@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "bip32_oracle.h"
+#include "zcl_wallet_record.h"
 
 #include <openssl/bn.h>
 #include <openssl/evp.h>
@@ -96,6 +97,20 @@ static unsigned nibble(uint8_t value)
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "receive oracle check failed at line %d\n", __LINE__); return 1; } } while (0)
 
+static int recovered_change(const uint8_t *entropy, size_t length, zcl_network network,
+    uint32_t index, const uint8_t expected[35])
+{
+    uint8_t header[80] = {0}, blinding[64] = {0}, output[37];
+    memset(blinding, 1, 32); memset(blinding + 32, 2, 32);
+    memset(output, 0xa5, sizeof(output));
+    CHECK(zcl_wallet_header_create(entropy, length, network, blinding, 32, header, sizeof(header)) == ZCL_OK);
+    CHECK(zcl_wallet_recovered_change(header, sizeof(header), entropy, length, index,
+        blinding, sizeof(blinding), output + 1, 35) == ZCL_OK);
+    CHECK(output[0] == 0xa5 && output[36] == 0xa5 && memcmp(output + 1, expected, 35) == 0);
+    zcl_secure_zero(blinding, sizeof(blinding));
+    return 0;
+}
+
 static int check_fixture(size_t fixture_index, zcl_network network, uint32_t chain, uint32_t index)
 {
     const fixture *item = &fixtures[fixture_index];
@@ -120,6 +135,7 @@ static int check_fixture(size_t fixture_index, zcl_network network, uint32_t cha
     CHECK(status == ZCL_OK);
     CHECK(actual_len == 35 && actual[0] == 0xa5 && actual[36] == 0xa5);
     CHECK(memcmp(actual + 1, expected, sizeof(expected)) == 0);
+    if (chain == 1) CHECK(recovered_change(entropy, item->entropy_len, network, index, expected) == 0);
     OPENSSL_cleanse(entropy, sizeof(entropy));
     OPENSSL_cleanse(seed, sizeof(seed));
     OPENSSL_cleanse(secret, sizeof(secret));
@@ -138,6 +154,6 @@ int main(void)
             }
         }
     }
-    puts("receive/change: 96 independent OpenSSL seed/HD/public-key/hash/address comparisons passed");
+    puts("receive/change: 96 independent OpenSSL comparisons and 48 recovered change bindings passed");
     return 0;
 }

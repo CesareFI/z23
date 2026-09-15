@@ -1070,6 +1070,10 @@ if(NOT ANDROID)
         target_link_libraries(bench_mnemonic_seed PRIVATE zcl_wallet_core)
         target_compile_options(bench_mnemonic_seed PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_executable(bench_wallet_change tests/bench_wallet_change.c)
+        target_link_libraries(bench_wallet_change PRIVATE zcl_wallet_core)
+        target_compile_options(bench_wallet_change PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     endif()
     add_executable(bip32_tests tests/test_bip32.c)
     target_link_libraries(bip32_tests PRIVATE zcl_wallet_core)
@@ -1333,7 +1337,7 @@ if(NOT ANDROID)
         add_test(NAME wallet_storage_crash COMMAND storage_crash_tests)
         set_tests_properties(wallet_storage_crash PROPERTIES TIMEOUT 30)
         add_executable(secret_failure_tests tests/test_secret_failures.c)
-        target_link_libraries(secret_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_link_libraries(secret_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider secp256k1)
         target_include_directories(secret_failure_tests PRIVATE src)
         target_compile_options(secret_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
             -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
@@ -1341,7 +1345,7 @@ if(NOT ANDROID)
             -Wl,--wrap=mbedtls_sha512_init -Wl,--wrap=mbedtls_sha512_free -Wl,--wrap=mbedtls_sha512_clone
             -Wl,--wrap=mbedtls_sha512_starts -Wl,--wrap=mbedtls_sha512_update
             -Wl,--wrap=mbedtls_sha512_finish -Wl,--wrap=mbedtls_sha256 -Wl,--wrap=mbedtls_ripemd160
-            -Wl,--wrap=mbedtls_platform_zeroize)
+            -Wl,--wrap=mbedtls_platform_zeroize -Wl,--wrap=zcl_entropy_seed -Wl,--wrap=zcl_seed_address)
         add_test(NAME wallet_secret_failures COMMAND secret_failure_tests)
         add_executable(random_tests tests/test_random.c)
         target_link_libraries(random_tests PRIVATE zcl_wallet_core)

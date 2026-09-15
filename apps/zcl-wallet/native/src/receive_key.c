@@ -18,8 +18,8 @@ static zcl_status validate_receive(const uint8_t *entropy, size_t entropy_len,
     return capacity < 35 ? ZCL_BUFFER_TOO_SMALL : ZCL_OK;
 }
 
-static zcl_status entropy_seed(const uint8_t *entropy, size_t entropy_len,
-                               uint8_t *seed, size_t seed_capacity)
+zcl_status zcl_entropy_seed(const uint8_t *entropy, size_t entropy_len,
+                             uint8_t *seed, size_t seed_capacity)
 {
     uint8_t text[215] = {0};
     static const uint8_t empty[] = {0};
@@ -75,6 +75,34 @@ cleanup:
     return status;
 }
 
+static zcl_status seed_address_bounds(const uint8_t *seed, size_t seed_len,
+    zcl_network network, uint32_t chain, uint32_t index)
+{
+    if (seed == NULL) return ZCL_INVALID_ARGUMENT;
+    if (seed_len != ZCL_SEED_BYTES || chain > 1 || index >= UINT32_C(0x80000000)) return ZCL_OUT_OF_RANGE;
+    return network == ZCL_MAINNET || network == ZCL_TESTNET ? ZCL_OK : ZCL_UNSUPPORTED;
+}
+
+zcl_status zcl_seed_address(const uint8_t *seed, size_t seed_len, zcl_network network,
+    uint32_t chain, uint32_t index, const secp256k1_context *context,
+    uint8_t *address, size_t capacity, size_t *length)
+{
+    if (context == NULL || address == NULL || length == NULL) return ZCL_INVALID_ARGUMENT;
+    zcl_status status = seed_address_bounds(seed, seed_len, network, chain, index);
+    if (status != ZCL_OK) return status;
+    if (capacity < 35) return ZCL_BUFFER_TOO_SMALL;
+    uint8_t public_key[33] = {0};
+    zcl_extended_private key = {0};
+    status = address_path(seed, seed_len, network, chain, index, context, &key);
+    if (status == ZCL_OK)
+        status = zcl_ec_public(context, key.secret, sizeof(key.secret), public_key, sizeof(public_key));
+    if (status == ZCL_OK)
+        status = encode_public_address(public_key, sizeof(public_key), network, address, capacity, length);
+    zcl_secure_zero(public_key, sizeof(public_key));
+    zcl_secure_zero(&key, sizeof(key));
+    return status;
+}
+
 /* Only the two public wrappers select chain: fixed external0 or internal1. */
 static zcl_status address_from_entropy(const uint8_t *entropy, size_t entropy_len,
                                     zcl_network network, uint32_t chain, uint32_t index,
@@ -85,25 +113,18 @@ static zcl_status address_from_entropy(const uint8_t *entropy, size_t entropy_le
                                          address, address_capacity, address_len);
     if (status != ZCL_OK)
         return status;
-    uint8_t seed[64] = {0}, public_key[33] = {0};
-    zcl_extended_private key = {0};
+    uint8_t seed[64] = {0};
     zcl_ec_context context = {0};
     status = zcl_ec_begin(&context, blinding, blinding_len);
     if (status != ZCL_OK)
         goto cleanup;
-    status = entropy_seed(entropy, entropy_len, seed, sizeof(seed));
+    status = zcl_entropy_seed(entropy, entropy_len, seed, sizeof(seed));
     if (status != ZCL_OK)
         goto cleanup;
-    status = address_path(seed, sizeof(seed), network, chain, index, context.handle, &key);
-    if (status != ZCL_OK)
-        goto cleanup;
-    status = zcl_ec_public(context.handle, key.secret, sizeof(key.secret), public_key, sizeof(public_key));
-    if (status == ZCL_OK)
-        status = encode_public_address(public_key, sizeof(public_key), network, address, address_capacity, address_len);
+    status = zcl_seed_address(seed, sizeof(seed), network, chain, index, context.handle,
+        address, address_capacity, address_len);
 cleanup:
     zcl_secure_zero(seed, sizeof(seed));
-    zcl_secure_zero(public_key, sizeof(public_key));
-    zcl_secure_zero(&key, sizeof(key));
     zcl_ec_end(&context);
     return status;
 }
