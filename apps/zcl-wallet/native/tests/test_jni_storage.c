@@ -14,6 +14,7 @@
 #define REQUIRE(v) do { if (!(v)) { fprintf(stderr, "JNI storage fault at%d\n", __LINE__); abort(); } } while (0)
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
 JNIEXPORT jint JNICALL API(createFreshWalletStorage)(JNIEnv *, jclass, jbyteArray, jbyteArray, jbyteArray);
+JNIEXPORT jbyteArray JNICALL API(readWalletStorage)(JNIEnv *, jclass, jbyteArray);
 
 typedef struct { const uint8_t *bytes; size_t capacity; jsize length; } fake_array;
 static fake_array path_array, record_array, entropy_array;
@@ -81,12 +82,17 @@ zcl_status zcl_jni_storage_test_create(const uint8_t *path, size_t path_len,
     ++core_calls;
     REQUIRE(path != path_array.bytes && record != record_array.bytes && entropy != entropy_array.bytes);
     REQUIRE(record_len == expected->wallet_len && memcmp(record, expected->wallet, record_len) == 0);
-    REQUIRE(entropy_len == 16 && entropy == secret_pointer);
+    REQUIRE(entropy_len == (size_t)entropy_array.length && entropy == secret_pointer);
     if (fail_core) return ZCL_CRYPTO_FAILURE;
     return zcl_wallet_change_create(path, path_len, record, record_len, entropy, entropy_len);
 }
 
-static const struct JNINativeInterface_ fake_table = {
+#if defined(__ANDROID__)
+typedef struct JNINativeInterface storage_jni_interface;
+#else
+typedef struct JNINativeInterface_ storage_jni_interface;
+#endif
+static const storage_jni_interface fake_table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length, .GetByteArrayRegion = get_bytes
 };
 static JNIEnv fake_env = &fake_table;
@@ -139,7 +145,7 @@ static int vm_failures(const change_storage_data *data)
     return fixture_close(&fixture);
 }
 
-static int argument_failures(const change_storage_data *data)
+static int null_arguments(const change_storage_data *data)
 {
     storage_fixture fixture;
     CHECK(fixture_open(&fixture) == 0);
@@ -150,6 +156,13 @@ static int argument_failures(const change_storage_data *data)
             argument == 3 ? NULL : (jbyteArray)&entropy_array) == ZCL_INVALID_ARGUMENT);
         CHECK(core_calls == 0 && !pending && no_files(&fixture) == 0);
     }
+    return fixture_close(&fixture);
+}
+
+static int length_arguments(const change_storage_data *data)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
     const jsize invalid[2] = {-1, INT32_MAX};
     for (size_t argument = 0; argument < 3; ++argument) {
         for (size_t value = 0; value < 2; ++value) {
@@ -191,11 +204,65 @@ static int core_outcomes(const change_storage_data *data)
     return fixture_close(&fixture);
 }
 
+static int full_entropy_data(change_storage_data *data, const uint8_t *entropy, size_t entropy_len)
+{
+    CHECK(data != NULL && entropy != NULL && entropy_len == 32);
+    uint8_t header[80] = {0}, blind[32] = {1}, iv[12] = {0}, ciphertext[48] = {0};
+    CHECK(zcl_wallet_header_create(entropy, entropy_len, ZCL_TESTNET, blind, sizeof(blind),
+        header, sizeof(header)) == ZCL_OK);
+    CHECK(zcl_wallet_record_pack(header, sizeof(header), iv, sizeof(iv), ciphertext, sizeof(ciphertext),
+        data->wallet, sizeof(data->wallet), &data->wallet_len) == ZCL_OK);
+    CHECK(zcl_change_state_encode(header, sizeof(header), entropy, entropy_len, blind, sizeof(blind),
+        0, data->state[0], sizeof(data->state[0])) == ZCL_OK);
+    return 0;
+}
+
+static int full_entropy_cleared(void)
+{
+    /* Public, inert fixture. Every byte is nonzero so a truncated native wipe
+     * cannot pass merely because the unused secret-buffer suffix was zero. */
+    uint8_t entropy[32] = {0};
+    for (size_t i = 0; i < sizeof(entropy); ++i) entropy[i] = (uint8_t)(i + 1);
+    change_storage_data data = {0};
+    CHECK(full_entropy_data(&data, entropy, sizeof(entropy)) == 0);
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    reset(&fixture, &data);
+    memcpy(entropy_bytes, entropy, sizeof(entropy));
+    entropy_array.length = (jsize)sizeof(entropy);
+    const jint status = create(&fake_env, (jbyteArray)&path_array, (jbyteArray)&record_array,
+        (jbyteArray)&entropy_array);
+    expected = NULL; /* The callback no longer borrows this local record. */
+    CHECK(status == ZCL_OK);
+    CHECK(core_calls == 1 && vm_calls == 6 && zero_calls == 1);
+    CHECK(memcmp(entropy_bytes, entropy, sizeof(entropy)) == 0);
+    CHECK(change_bytes(&fixture, data.state[0], 80, 0) == 0);
+    zcl_secure_zero(entropy, sizeof(entropy));
+    zcl_secure_zero(entropy_bytes, sizeof(entropy_bytes));
+    return fixture_close(&fixture);
+}
+
+static int read_environment_refusal(void)
+{
+    const fake_array unused = {0}; /* This entry must never inspect its fields. */
+    CHECK(API(readWalletStorage)(NULL, NULL, NULL) == NULL);
+    CHECK(API(readWalletStorage)(NULL, NULL, (jbyteArray)&unused) == NULL);
+    pending = true;
+    vm_calls = 0;
+    CHECK(API(readWalletStorage)(&fake_env, NULL, (jbyteArray)&unused) == NULL);
+    CHECK(pending && vm_calls == 0);
+    pending = false;
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(read_environment_refusal() == 0);
     change_storage_data data = {0};
     CHECK(change_data_init(&data) == 0);
-    CHECK(vm_failures(&data) == 0 && argument_failures(&data) == 0 && core_outcomes(&data) == 0);
-    puts("JNI fresh storage: six VM faults, pending exception refusal, bounded private copies, live entropy clearing, paired creation and no overwrite passed");
+    CHECK(vm_failures(&data) == 0 && null_arguments(&data) == 0);
+    CHECK(length_arguments(&data) == 0 && core_outcomes(&data) == 0);
+    CHECK(full_entropy_cleared() == 0);
+    puts("JNI fresh storage: six VM faults, pending exception refusal, bounded private copies, full-width nonzero entropy clearing, paired creation and no overwrite passed");
     return 0;
 }

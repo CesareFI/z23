@@ -3659,3 +3659,57 @@ This remains same-host/toolchain path-independence evidence. Review:
 samples, source archive, compile manifests and acceptance logs remain under
 `.cache/android-wallet/resume-20260915/jni-size/`.
 TLS remains quarantined; positive hardware custody remains unqualified.
+
+2026-09-15: measured-JNI-size checkpoint
+`322b6d62c26557553309d04a9caa785808b4d2a7` is verified on the private
+`wallet-backup` development branch: four-way SHA agreement, correct upstream,
+clean tree and ahead/behind 0/0. All 126 wallet commits remain preserved.
+
+2026-09-15: recovered the storage JNI guard and full-width entropy regression
+from preserved commit `4057097c333296e9a1cf97a2c8c7caac9909a53a`. Its source
+parent matches these two files on the current wallet branch. Applied only the
+reviewed source/test patch here, without switching worktrees, merging, rewriting
+history or importing old artifacts/acceptance claims. Original work is preserved.
+
+`readWalletStorage` now refuses a missing JNI environment before dereferencing
+it, and refuses a pending exception before array work. The current optimized
+ASan/UBSan/integer build reproduces the baseline null load. Real JNI calls
+supply their environment; this is a defensive native-call fix, not evidence of
+an Android exploit. A non-NULL environment still requires the VM's valid table.
+
+The storage erasure fixture now fills all 32 entropy bytes with public nonzero
+values, verifies the actual native copy is zero while live, preserves borrowed
+input, and checks the resulting paired storage. Independently wiping only 16
+or 31 bytes still passes the old fixture but fails the new byte assertion.
+The unchanged control passes. Each mutation uses an owned directory retained
+as evidence; no real wallet, seed or GCM authentication claim is involved.
+
+The first NDK fixture compile exposed its host-only JNI table tag. Reused the
+existing key fixture's Android/host typedef pattern; no VM layout is invented.
+The final native fixture passes x86-64 API30/API35/API36 with matching transferred
+hashes, current release archives and -Os JNI sources. ARM64 is compile-only.
+Ten existing real-VM storage/GCM/recovery tests pass per API in
+6.328/25.136/11.893 seconds. Their provider keys and records are isolated public
+fixtures; no wrapping-key alias or production wallet is used.
+
+All 92 default sanitizer groups pass in 57.59 seconds; the optimized JNI profile
+passes 12/12 in 2.62 seconds. Final host fixture compilation/static analysis and
+its focused sanitizer group pass after the portable table typedef. Strict
+analysis, complexity caps10/15, Android/JVM tests, debug/release builds and lint,
+fixture isolation, architecture and16 KiB alignment pass. An invalid scratch
+lint-mode spelling was refused; the final check uses the gate's existing FAIL
+mode and verifies zero test functions above15, without changing any threshold.
+
+The optimized storage fuzzer completes31899 cases in121 seconds without a
+finding: max_len8, timeout5, RSS cap512 MiB (observed48 MiB), with stack-use-after-
+return, leak and strict-string checks. It covers fresh-storage JNI faults;
+the read-environment guard has explicit regression coverage.
+
+The unsigned APK grows32 bytes to611815; ARM64/x86-64 libraries grow16/32 bytes
+to228192/257408. All18 non-native APK entries are unchanged. Release SHA256:
+`8e4dcf879df3fee113acffb0c2ab3ceb8c01434612eb58fbd366554d438f6421`.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Recovered patch identity,
+baseline failure, mutation evidence, NDK header refusal, public corpus and
+current acceptance logs remain under
+`.cache/android-wallet/resume-20260915/storage-refusal/`.
+TLS remains quarantined; positive hardware custody remains unqualified.

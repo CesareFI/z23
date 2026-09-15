@@ -11,6 +11,8 @@ JNIEXPORT jbyteArray JNICALL
 Java_org_zclassic_wallet_core_NativeCore_readWalletStorage(JNIEnv *env, jclass type, jbyteArray path_input)
 {
     (void)type;
+    if (env == NULL || (*env)->ExceptionCheck(env))
+        return NULL;
     uint8_t path[1024] = {0}, packet[142] = {0};
     size_t path_len = 0, record_len = 0;
     bool pending = false;

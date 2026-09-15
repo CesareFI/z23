@@ -2351,3 +2351,35 @@ hardware, startup or battery performance. Baseline, rejected all-JNI -Os candida
 accepted mixed profile and raw results remain under
 `.cache/android-wallet/resume-20260915/jni-size/`. Positive hardware custody
 remains unqualified; no consensus or network boundary changes.
+
+## Recovered storage environment guard and full erasure fixture — 2026-09-15
+
+Reviewed the source/test patch from preserved commit4057097c3 against the current
+branch and current -Os Android JNI profile. Its source parent matches the two
+current files. No history or other worktree is changed. The only further source
+adaptation selects the NDK/JDK JNI table tag in the fixture, following the
+existing key test. Production JNI ABI and all storage formats are unchanged.
+
+| Hazard | Review and current evidence |
+| --- | --- |
+| Buffers; out-of-bounds access; pointer arithmetic | Production path1024/packet142/record140/entropy32 capacities and offsets are unchanged. The full-entropy helper requires32 bytes and supplies explicit header/record/state capacities. The wipe observer checks only the actual live32-byte span. |
+| Integer overflow/underflow; signed/unsigned conversions | No production arithmetic changes. Bounded test indices0..31 produce public bytes1..32; positive jsize32 fits size_t. The hook requires the actual caller length instead of hardcoding16, preserving existing invalid-length assertions. |
+| NULL; uninitialized memory | The new short-circuit guard refuses NULL env before its table is evaluated, and pending exceptions before array work. The baseline fails under nonrecovering UBSan. New arrays initialize completely. The JNI table typedef uses the actual platform header, not a hand-maintained layout. |
+| Use-after-free; double-free; leaks; dangling pointers | No production allocation, reference or owner is added. The observer reads bytes and retires its pointer inside the live zeroizer callback. The new local record's borrowed reference is cleared after synchronous use. Each fixture owns its directory/descriptor; aborted mutations are retained inside a separately owned root. |
+| Stack; allocation limits; resource exhaustion | Fixed automatic budgets remain below the4096-byte authored warning. NDK -Os read-fixture frames measure1256/1264 bytes on x86-64/ARM64, excluding callees; no whole-stack claim. New host fixture analysis passes at-O2. No worker, persistent state, loop or retry is added in production. APK cost is32 bytes with alignment unchanged. |
+| Malformed input; races; format strings; secret leakage | Existing six VM-fault ordinals, partial secret writes, invalid arguments, private record copies, core failure and no-overwrite checks remain. Full-width public entropy detects16/31-byte wipe mutations that escaped the old fixture. Logging contains only fixed test labels/locations. No real secrets, hardware alias, concurrency, authentication, durability, consensus or network behavior changes. |
+
+Current evidence: default92 sanitizer groups/57.59s, optimizedJNI12/2.62s,
+final portable fixture analysis/focused test, complexity10/15, Android/JVM
+tests/builds/lint, isolation, architecture and alignment pass. Native fixture
+passes all three x86-64 Android APIs; ARM64 is compile-only. Real-VM public
+storage/GCM/recovery passes10 tests each on API30/35/36. The storage fuzzer
+completes31899 cases/121s with max_len8, timeout5 and48 MiB peak RSS under a512
+MiB cap, with stack-use-after-return/leak/strict-string checks.
+
+Normal JVM entry supplies env; the direct-call null refusal does not establish
+an Android exploit. The nonzero entropy/ciphertext fixture proves native erasure
+and paired storage, not GCM or hardware custody. Separate real-VM tests use
+software-GCM public records. No previous-worktree APK or obsolete validation
+count is reused. Exact current evidence is retained in
+`.cache/android-wallet/resume-20260915/storage-refusal/`. TLS stays quarantined.
