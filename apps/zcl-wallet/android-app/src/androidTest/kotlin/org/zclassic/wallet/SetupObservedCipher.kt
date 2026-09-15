@@ -17,6 +17,8 @@ internal class SetupObservedCipher : CipherSpi() {
     var aadCalls = 0
     var finalCalls = 0
     var input: ByteArray? = null // Borrowed public fixture; never copied.
+    var output: ByteArray? = null // Observe only this fixture's plaintext owner.
+    var reportedLength: Int? = null
     var afterAad: () -> Unit = {}
     var beforeFinal: () -> Unit = {}
     var afterFinal: () -> Unit = {}
@@ -59,12 +61,19 @@ internal class SetupObservedCipher : CipherSpi() {
         input = checkNotNull(bytes)
         finalCalls++
         beforeFinal()
-        val output = delegate.doFinal(bytes, offset, len)
+        val output = delegate.doFinal(bytes, offset, len).also { this.output = it }
         afterFinal()
         return output
     }
-    override fun engineDoFinal(bytes: ByteArray?, offset: Int, len: Int, output: ByteArray, outputOffset: Int): Int =
-        error("Unexpected test cipher output overload")
+    override fun engineDoFinal(bytes: ByteArray?, offset: Int, len: Int, output: ByteArray, outputOffset: Int): Int {
+        input = checkNotNull(bytes)
+        this.output = output
+        finalCalls++
+        beforeFinal()
+        val length = delegate.doFinal(bytes, offset, len, output, outputOffset)
+        afterFinal()
+        return reportedLength ?: length
+    }
     override fun engineUpdate(bytes: ByteArray?, offset: Int, len: Int): ByteArray =
         error("Unexpected test cipher streaming input")
     override fun engineUpdate(bytes: ByteArray?, offset: Int, len: Int, output: ByteArray, outputOffset: Int): Int =

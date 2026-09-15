@@ -217,8 +217,15 @@ internal class WalletPlatformSession(
             check(prepared.action == WalletAction.UNLOCK)
             val record = checkNotNull(prepared.record)
             prepared.cipher.updateAAD(record.header)
-            val entropy = prepared.cipher.doFinal(record.ciphertext)
+            // C-parsed ciphertext contains 16..32 entropy bytes and a 16-byte
+            // GCM tag. Own the bounded destination before the provider writes;
+            // a failed partial decrypt must still reach our complete wipe.
+            val capacity = record.ciphertext.size - 16
+            check(capacity in 16..32)
+            val entropy = ByteArray(capacity)
             try {
+                val written = prepared.cipher.doFinal(record.ciphertext, 0, record.ciphertext.size, entropy, 0)
+                check(written == entropy.size) { "Invalid decrypted wallet length" }
                 val address = WalletRecord.recoveredAddress(record.header, entropy, record.network)
                 // Also checks an existing committed record still equals the
                 // authenticated bytes; pending promotion follows GCM and C checks.

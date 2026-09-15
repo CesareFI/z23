@@ -3793,3 +3793,41 @@ Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Evidence is retained under
 `.cache/android-wallet/resume-20260915/camera-jni-output/`. TLS stays quarantined;
 hardware custody and physical ARM64 runtime acceptance remain unqualified.
 Next: authenticated-decryption destination ownership under provider exceptions.
+
+2026-09-15: authenticated unlock now allocates its exact 16..32-byte plaintext
+destination before calling the GCM provider. The write and exact returned-length
+check are inside the owner's finally block, which clears the full destination
+on success, refusal and fatal exceptions. Previously the allocating doFinal
+overload could write plaintext and throw before returning its array to that
+owner. C record/recovered-address validation, per-use authentication and storage
+promotion order are unchanged. No native or cryptographic algorithm changes.
+
+The real Android worker regression reproduces both baseline failures with a
+test-only provider that delegates real software GCM, observes public nonzero
+plaintext, then throws AEADBadTagException or OutOfMemoryError. The original
+normal path passes all five supported entropy lengths. Both failures pass with
+the fix. Additional controls cover corrupted ciphertext, six incorrect returned
+lengths, unchanged borrowed ciphertext and closing while the provider still
+owns its write. Closing retains the active buffer until the worker clears it;
+the original fatal exception propagates and retired callbacks remain inert.
+No actual memory exhaustion, hardware alias, authentication prompt, real seed
+or funded wallet is used. All filesystem fixtures have privately created paths
+and exact known-file cleanup; refusal cases create no storage.
+
+All 21 selected unlock/setup/GCM/storage/recovery instrumented tests pass on
+x86-64 API30/API35/API36 in 7.382/23.016/15.856 seconds. Android/JVM tests,
+both-ABI debug/release builds, lint, fixture isolation and 16 KiB alignment pass.
+Only classes.dex changes; both native libraries remain byte-identical to the
+preceding 92-group sanitizer/analysis/fuzz checkpoint. Unsigned release remains
+612,647 bytes, SHA256
+`bd525af260b43b4516a199e5e0bde1add1c570c79611e6288d2fba374f31b1b5`.
+
+Reviewed bounded subtraction/allocation, exact output lengths, one managed
+owner, worker/close ordering, error propagation and cleanup before callback
+delivery. This erases the caller's buffer; it cannot erase every internal
+provider/VM copy. Positive hardware-backed custody remains unqualified, and TLS
+remains quarantined. Source, baseline failures, unchanged test APK inputs,
+device logs and byte comparisons are retained in
+`.cache/android-wallet/resume-20260915/unlock-output/`.
+Next: shorten submitted recovery-phrase lifetime after native confirmation or
+decoding, before subsequent encryption and persistence work.
