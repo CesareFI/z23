@@ -2481,3 +2481,39 @@ fixture isolation and16 KiB alignment pass. Root lint separately reports
 pre-existing empty .agents/.codex root directories and an unchanged flag-registry
 selftest failure; no gate is waived or weakened. Hardware custody remains
 unqualified. Evidence: `.cache/android-wallet/resume-20260915/jni-secret-retirement/`.
+
+## Retire native decoder images before VM allocation — 2026-09-16
+
+Reviewed jni_scan.c, jni_camera.c and the existing fake-VM camera fixture.
+Decoded requests own fixed arrays, so allocating a public Java result no longer
+needs the native pixel copy. Both adapters now erase and free that copy after
+decoding, before NewByteArray/SetByteArrayRegion. Request scratch still clears
+after its last use. No format, parser, camera policy or JNI signature changes.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Existing validated input and output bounds remain intact. No new pointer arithmetic or copy is introduced. The decoded request and text contain owned arrays, not pointers into the released image. Existing exact-result, input-stability and output-sentinel checks pass. |
+| Integer overflow/underflow; signed/unsigned conversions | Only the status result and cleanup order change. Validated lengths retain their original types and bounds. No arithmetic, narrowing conversion or serialized length changes. Authored integer sanitizers remain enabled. |
+| Use-after-free; double-free; leaks; dangling pointers | Each checked native allocation has one owner and one zero/free path, now before public VM allocation. No released pointer is read afterward. The allocator verifies every byte is zero before free; NewByteArray verifies no native image owner remains. Both decoded structs outlive their result copy. ASan and native fixtures cover the actual adapters. |
+| NULL dereferences; uninitialized memory; malformed input | Existing missing-env/input and pending-exception refusals remain. Structs and copied lengths initialize before use; explicit status checks gate decoding and result creation. All VM-read, allocation and output-transfer fault positions retain refusal and exception state. |
+| Stack usage; allocation limits; resource exhaustion | No buffer, heap allocation, queue or recursion is added. The bounded native image (at most 8 MiB) or sampled packet (at most 147461 bytes) is absent at public VM allocation. This measures ownership ordering, not whole-process peak RSS. NDK -Os scanQr frames are 616/656 bytes and scanCameraPacket frames 1608/1632 bytes on x86-64/ARM64, excluding callees, below 4096. |
+| Races; format strings; secret leakage | The existing stable borrowed-input contract stays synchronous. No pointer crosses a thread or escapes its invocation. Native image bytes clear earlier; managed/camera/provider copies remain outside this guarantee. Fixed diagnostic labels and public QR fixtures contain no wallet material. Custody, consensus and TLS quarantine are unchanged. |
+
+The new allocation-time assertion fails on the baseline in 0.04 seconds. The
+fixed focused sanitizer group passes in 0.45 seconds. The safety gate passes
+all 92 default groups, Clang/GCC source/provider analysis and unchanged
+production/test complexity caps 10/15. The separate integer/oracle profile
+passes 96 groups; these overlap the default suite and are not 188 distinct
+tests. Normal and fuzz fixture modes also pass Clang/GCC analysis.
+
+The existing 13-byte camera JNI fuzzer completes 15,569 executions in 121 seconds
+with no finding, max_len 13, timeout 5 seconds and RSS cap 512 MiB (observed
+104 MiB). Its startup regression includes decoder retirement; varied inputs
+still exercise packing geometry/transport, not arbitrary decoded-image content.
+The actual compile manifest verifies sanitizer/fail-on-finding flags on 156
+authored/provider compilations and fuzz coverage on 106 library/fuzz compilations.
+ASan/UBSan, authored integer checks, stack-use-after-return, leak and strict-string
+checks remain enabled. Native fixtures pass x86-64 API30/35/36 after exact transfer
+hash checks; ARM64 is compile-only. Real Android JNI/isolation and actual camera
+acceptance, APK reproduction and remaining limits are recorded in PROGRESS.md.
+Evidence: `.cache/android-wallet/resume-20260915/jni-decoder-retirement/`.

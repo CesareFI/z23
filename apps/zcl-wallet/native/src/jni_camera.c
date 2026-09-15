@@ -101,16 +101,16 @@ static jbyteArray decode_packet(JNIEnv *env, jbyteArray input, size_t length, zc
     uint8_t *packet = malloc(length);
     if (packet == NULL)
         return NULL;
-    jbyteArray output = NULL;
     size_t copied = 0;
     zcl_scanned_request decoded = {0};
-    if (zcl_jni_read_bytes(env, input, packet, length, &copied) == ZCL_OK) {
-        if (zcl_camera_packet_scan(packet, copied, network, &decoded) == ZCL_OK)
-            output = zcl_jni_new_bytes(env, decoded.text, decoded.text_len);
-    }
-    zcl_secure_zero(&decoded, sizeof(decoded));
+    zcl_status status = zcl_jni_read_bytes(env, input, packet, length, &copied);
+    if (status == ZCL_OK) status = zcl_camera_packet_scan(packet, copied, network, &decoded);
+    /* The decoded text owns its bytes; no pixel pointer crosses this release
+     * or remains live while allocating the public VM result. */
     zcl_secure_zero(packet, length);
     free(packet);
+    jbyteArray output = status == ZCL_OK ? zcl_jni_new_bytes(env, decoded.text, decoded.text_len) : NULL;
+    zcl_secure_zero(&decoded, sizeof(decoded));
     return output;
 }
 

@@ -106,6 +106,9 @@ static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize count)
 {
     (void)env;
     CHECK(count > 0 && (size_t)count <= result.capacity);
+    /* Decoding has consumed its native image before allocating a public VM
+     * result. The allocator observer separately verifies erasure before free. */
+    CHECK(owned == NULL);
     ++new_arrays;
     if (vm_failure()) return NULL;
     result.length = count;

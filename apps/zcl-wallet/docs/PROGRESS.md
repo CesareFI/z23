@@ -4221,3 +4221,54 @@ Evidence: `.cache/android-wallet/resume-20260915/seal-entropy-handoff/`.
 
 Next: inspect native fresh-wallet/change-state creation for secret retention
 across persistence, using the existing safety and fault-injection fixtures.
+
+2026-09-16: native fresh-wallet/change-state creation retains borrowed entropy;
+its derived key and blinding scratch already clear before filesystem work.
+That audit required no implementation change. Separately, inspection of the
+minified release confirms the session constructor prepares its finalizer,
+close() loads that field without allocating a replacement, and sealing calls
+the full-byte-array wipe before both return and rethrow. The byte/character
+helpers call Arrays.fill across the full array. This is DEX inspection, not
+physical-memory or hardware-custody acceptance. Evidence is under
+`.cache/android-wallet/resume-20260915/release-cleanup-review/`.
+
+Both native QR decoder adapters now erase and free their pixel copy before
+allocating or transferring the public Java result. The decoded text/request
+owns its arrays and remains valid through transfer; its scratch then clears.
+The existing fault-injection fixture now observes no native pixel owner at
+NewByteArray, in addition to its existing full-erasure-before-free assertion.
+That assertion fails on the original code and passes with the new ordering.
+No new allocation, parser behavior or JNI interface is introduced. The complete
+C hazard review is recorded in C_SAFETY_REVIEW.md.
+
+The default safety gate passes 92 sanitizer groups, strict source/provider
+analysis and unchanged complexity caps. A separate profile passes 96 groups
+including its extra oracle checks. Normal/fuzz fixture analysis passes with
+Clang and GCC. The existing packing-control fuzzer runs 15,569 cases in
+121 seconds without a finding, with ASan/UBSan/integer checks and a 512 MiB
+RSS bound (104 MiB observed); its initialization also executes the decoder
+retirement regression. The emitted compiler manifest passes its sanitizer and
+coverage audit. TLS remains excluded and its parked investigation is untouched.
+
+Native fake-VM fixtures pass on x86-64 API30/35/36; both x86-64 and ARM64 fixtures
+compile with the NDK. Six real Android JNI/isolated-service tests pass on each
+API in 7.017/0.885/27.757 seconds. The actual image-backed camera, exact public
+review and recreation/rescan journey also pass API30/36 in 69.649/103.937 seconds.
+No camera fixture is skipped and no deadline is relaxed. The fresh API35 KVM
+emulator completes console shutdown with its launcher returning exit 0.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+architecture and 16 KiB alignment pass. A source-only build from tree
+ea8ab7250030e66f76d4db73571009dc592010aa reproduces the complete unsigned APK
+in a separate directory. This commit matches that app source except for the
+two review logs. Reproduction remains limited to this host/toolchain. The DEX
+is byte-identical to the inspected prior release. Unsigned APK size is 612,823
+bytes (+16), SHA256
+`718075922f289ea6dbfd41c56537801280d0a8906e2f7d8a467c1a014d1fdda0`.
+Evidence: `.cache/android-wallet/resume-20260915/jni-decoder-retirement/`.
+Root-lint failures, physical camera/ARM64 runtime and hardware-custody acceptance
+remain unresolved. The native pixel lifetime claim does not cover all managed,
+camera-driver or provider copies.
+
+Next: audit the remaining JNI result handoffs for unnecessary native input
+retention and reuse their existing fault-injection fixtures for any real gap.

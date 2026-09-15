@@ -26,16 +26,16 @@ static jbyteArray scan_copy(JNIEnv *env, jbyteArray input, size_t length,
     uint8_t *image = malloc(length);
     if (image == NULL)
         return NULL;
-    jbyteArray result = NULL;
     size_t copied = 0;
     zcl_payment_request request = {0};
-    if (zcl_jni_read_bytes(env, input, image, length, &copied) == ZCL_OK) {
-        if (zcl_scan_qr(image, copied, layout, network, &request) == ZCL_OK)
-            result = zcl_jni_payment_record(env, &request);
-    }
-    zcl_secure_zero(&request, sizeof(request));
+    zcl_status status = zcl_jni_read_bytes(env, input, image, length, &copied);
+    if (status == ZCL_OK) status = zcl_scan_qr(image, copied, layout, network, &request);
+    /* Decoding has consumed the pixels. Retire this native copy before the
+     * public result needs a VM allocation or transfer. */
     zcl_secure_zero(image, length);
     free(image);
+    jbyteArray result = status == ZCL_OK ? zcl_jni_payment_record(env, &request) : NULL;
+    zcl_secure_zero(&request, sizeof(request));
     return result;
 }
 
