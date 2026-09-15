@@ -2961,3 +2961,14 @@ this host-only milestone grants no hardware-custody or physical-device claim.
 Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact sources, binary hashes,
 corpus, mutation controls and validation logs remain in
 `.cache/android-wallet/resume-20260915/bip32-fuzz/`.
+
+2026-09-15 11:56 UTC: BIP32 differential commit
+`b25ca47f81fc5906655f87ed3f0373aaf48e1035` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean with 0/0 ahead/behind and all 111 wallet commits
+preserved. `origin` remains unchanged. `NEXT_MILESTONE.md` now reflects the
+implemented change reservation/recovery, live review, branch/sighash, signature
+and public signed-wire primitives, with links to their existing evidence.
+Authenticated current-chain context, per-use custody, consent, completion-time
+checks and broadcast acceptance remain open. This is a continuation correction;
+no implementation or acceptance gate changes.

@@ -1,8 +1,10 @@
-# Next milestone: qualify custody and finish read-only receive
+# Next milestone: qualify custody and authenticated transaction completion
 
 The application remains development-only. No address from a development build
 may receive real funds. The C core and Android workflow are implemented; a
 successful hardware-authenticated create/restore/unlock flow is not yet proven.
+Resume from the implemented baseline below; detailed validation and exact
+checkpoint identities are recorded in [`PROGRESS.md`](PROGRESS.md).
 
 ## First acceptance gate
 
@@ -55,8 +57,8 @@ journey. Retain no secret scan/import route or automatic transaction authority.
 The bounded C request/reply codec and original-genesis fixtures are present.
 The TLS/socket candidate is **BLOCKED — REQUIRES FURTHER SECURITY REVIEW**;
 its [evidence is preserved](TLS_REVIEW.md), and normal host/Android builds
-exclude it. The independent one-attempt C sync state is implemented. Continue
-with Android presentation using isolated fixtures: C deadline/freshness and
+exclude it. The independent one-attempt C sync state and Android presentation
+are implemented against isolated fixtures: C deadline/freshness and
 offline balance state, late-token rejection and empty restart state are now
 implemented, together with a bounded C owner pool and serialized JNI adapter.
 JVM and emulator fixtures verify complete-only unverified reports, signed
@@ -76,20 +78,10 @@ now has maximum-packet, exception and public-device fixtures. The history view
 has unverified/empty/unavailable, restoration, detach and timer evidence. Both
 views now share one foreground snapshot and clear together on rendering failure;
 combined recreation, background/resume and process-relaunch fixtures pass.
-The bounded transparent v4 C codec now has canonical wire, failure-atomicity
-and independent hash fixtures; see [transaction scope](TRANSACTIONS.md).
-Hash-matched previous outputs and explicit bounded fee/destination assessment
-now have synthetic tests. Public change derivation has independent OpenSSL and
-cleanup evidence; index reservation/recovery and ownership remain unfinished.
-Immutable unsigned review lifetime and exact input/outpoint/lock/expiry context
-now have cancellation, deadline, ownership and failure-atomicity fixtures.
-The thin JNI/managed projection and canonical destination address factories now
-have fake/real VM and public emulator evidence. Complete foreground review
-presentation, then authenticated key ownership and original branch-specific
-signature hashes before exposing any send action.
-Define the source trust and
-address-privacy model before enabling a real endpoint. Verify the exact Zclassic
-chain/network identity, enforce deadlines and byte/count limits, and report
+
+Define the source trust and address-privacy model before enabling a real endpoint.
+Verify the exact Zclassic chain/network identity, enforce deadlines and byte/count
+limits, and report
 offline/stale/unverified balances explicitly. Exercise malformed responses,
 disconnects, retry bounds, reorgs and address/network mismatches against local
 fixtures. No production node or mining runs on Worldstream.
@@ -99,11 +91,45 @@ are recorded in [`READ_ONLY_SYNC.md`](READ_ONLY_SYNC.md).
 Receiving QR encoding and device rendering are present. Physical camera QR
 interoperability remains part of this gate.
 
+## Implemented native transaction and change-state baseline
+
+The bounded transparent v4 codec, exact draft construction, hash-matched previous
+outputs, checked value/fee/destination assessment and immutable unsigned review
+are implemented. Foreground review tests cover cancellation, expiry, recreation
+and concealed text after rendering failure on host fixtures and Android emulators. The internal
+candidate-context helper selects the pinned original Zclassic branch and checks
+reviewed finality/expiry against explicit height/time inputs. P2PKH digests use
+only the live review's transaction, input script and value. Raw-digest signing,
+canonical signature-script verification and complete public signed-wire assembly
+also have independent host and release-library fixture evidence. These primitives
+grant no consent, authenticated chain state, unspentness or broadcast authority;
+see [`TRANSACTIONS.md`](TRANSACTIONS.md) for their exact scope and remaining gates.
+
+Change derivation, paired fresh wallet/index persistence, conservative index
+reservation, consumed-address ownership and bounded authenticated suffix recovery
+are implemented. The live-review wallet-input comparison checks re-derived
+ownership under its authenticated-caller preconditions. Restoration still cannot
+initialize index zero without historical discovery; an ambiguous or unsupported
+tail still refuses recovery. Journal MACs do not establish recency against a
+malicious filesystem rollback. These operations preserve their explicit per-use
+custody requirements; see [`CHANGE_STORAGE.md`](CHANGE_STORAGE.md).
+
+Native recovery/key regression coverage includes published vectors, independent
+OpenSSL seed/BIP32/address comparisons, provider faults, exact scratch/context
+cleanup, bounded differential fuzzing and mutation checks. Prepared HMAC state
+reduces measured seed-derivation work while retaining the exact BIP39 profile.
+These results support the current primitives; positive hardware custody still
+requires the first acceptance gate above. Continue improvements from these
+validated components while retaining the separate authorization gates for send.
+
 ## Remaining ordered scope
 
-1. Transparent send: C transaction construction, checked money/fee/UTXO rules,
-   change ownership, exact pinned-original Zclassic serialization and sighash
-   vectors, then signing and explicit user confirmation. No real funds in tests.
+1. Transparent send: compose the existing draft/review, durable change ownership,
+   pinned branch/sighash and signed-wire primitives with fresh authenticated
+   chain context, per-use custody and explicit user consent. Recheck live review
+   ownership and actual completion/delivery deadlines; qualify cancellation,
+   process recovery and broadcast lifecycle before exposing send. No real funds
+   in tests, and no server balance/history assertion as spending authority.
 2. Shielded transactions: preserve original Zclassic wire/branch/proof semantics;
    qualify parameters, witnesses, anchors, value accounting, recovery and proof
    generation/verification before exposing a send action. No Rust toolchain.
