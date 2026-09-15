@@ -3435,3 +3435,58 @@ TLS remains quarantined. Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md).
 Source archives, exact CMake patch, negative/positive APKs, compilation manifests,
 byte comparisons and validation logs remain in
 `.cache/android-wallet/resume-20260915/apk-reproduction/`.
+
+2026-09-15: checkout-path reproduction checkpoint
+`7f6f837319bbd7f9c2be7a78357ba30f18cf38eb` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, upstream is correct and the tree is clean with ahead/behind 0/0. All 122
+wallet commits remain preserved; origin is unchanged.
+
+2026-09-15: setup sealing now has device failure-path acceptance past the GCM
+boundary. Five new instrumentation tests exercise actual worker, canonical C
+backup confirmation, sealing and isolated persistence with a nonzero public
+entropy marker, fixed public AES key and fixed IV. There is no entropy generation,
+Keystore alias or authentication prompt. A CipherSpi observer delegates real
+software GCM through a provider passed only to that Cipher instance; it is never
+registered globally or submitted to production hardware-custody acceptance.
+
+The tests verify expiry after successful GCM completion refuses persistence;
+AAD and finalization exceptions clear session entropy and submitted recovery
+words; and a live operation commits its public fixture and clears both owners.
+A separate observer control checks actual GCM parameters and completion. The
+finalization observer borrows the exact input array, allowing the test to verify
+its erasure after the worker drains. The nonzero marker makes omitted wiping
+observable. Failure cases require the storage directory to remain absent.
+
+All five tests pass on API30/API35/API36 in 1.052/4.812/2.166 seconds. Two isolated
+mutations in a separate cache-source tree and application ID qualify the checks:
+removing the post-encryption expiry guard fails exactly the expiry test while
+four controls pass; removing Setup entropy erasure fails all four wallet-path
+cleanup tests while the observer control passes. The expired mutant's unexpected
+public fixture files are retained as evidence. Its separate emulator package is
+disabled after validation; ordinary wallet source and package remain unchanged.
+
+Initial fixture failures are also preserved. An Android supplied-SPI Cipher
+subclass skipped the observer's initialization, so its delegate lacked GCM
+parameters. A standalone control exposed that fixture assumption. The final
+instance-local provider uses normal initialization; production's missing-parameter
+refusal was never weakened. The relevant Android11 implementation is
+[Cipher.SpiAndProviderUpdater](https://android.googlesource.com/platform/libcore/+/refs/tags/android-11.0.0_r1/ojluni/src/main/java/javax/crypto/Cipher.java).
+
+Android/JVM tests, debug/release builds and lint, fixture isolation and 16 KiB
+alignment pass. The unsigned release remains byte-identical to the prior
+checkpoint: 613415 bytes, SHA256
+`6f9b9641dfeecd36cca4b110dc3aba506bcef4d1aef8fd7bea2d0390bb567a1f`.
+No production C/Kotlin behavior, ABI, complexity threshold or sanitizer setting
+changes. This extends software-provider routing/cleanup evidence, not hardware
+authentication, fatal-VM-error, process-death or signed/minified custody acceptance.
+TLS remains quarantined; positive hardware custody remains unqualified.
+
+Review: each fixture has one session/worker, bounded waits, an independent
+callback queue and a unique cache parent. Cleanup joins that worker before
+clearing fixture arrays. Success deletes only its known public fixture files;
+unexpected files are preserved, with no recursive wallet deletion. The observer
+retains only the borrowed public input array and no secret copy. No fixture or
+fault hook enters the release. Exact sources, APKs, initialization failures,
+mutations and acceptance logs remain under
+`.cache/android-wallet/resume-20260915/setup-seal/`.
