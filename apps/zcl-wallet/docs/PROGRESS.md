@@ -4188,3 +4188,36 @@ remain. Unsigned release is 612,807 bytes, SHA256
 Fresh evidence: `.cache/android-wallet/resume-20260915/session-finalizer-reuse/`.
 
 Next: commit the demonstrated restoration entropy retirement before UI dispatch.
+
+2026-09-15: sealing now clears its entropy argument before returning the public
+receiving address to UI scheduling. Restored entropy is a local array outside
+Setup, so the previous Setup cleanup left it live until restore()'s outer
+finally, after the handoff. The sealing finally now wipes that array as well.
+The outer cleanup remains as coverage for earlier failures. Creation retains
+its existing erasure behavior. Persistence order and restored change-state
+policy are unchanged; entropy remains available throughout native use.
+
+The existing real GCM/create/restore fixture now observes the encryption input
+at the actual UI executor boundary. On the baseline, one of its eight tests
+fails: restoration dispatch observes nonzero entropy. The creation control
+passes. With the fix, both routes preserve the expected public address and
+persisted record while dispatch observes erased entropy. Fixtures use only
+fixed public entropy, key and IV in unique temporary directories, and clean
+only their known files. No Keystore bypass enters production code.
+
+All 20 sealing, worker-expiry, unlock-output and finalizer tests pass on each
+x86-64 API30/35/36 device in 4.710/0.505/9.022 seconds, with no skips. Android/JVM
+tests, both-ABI builds, lint, fixture isolation, architecture and alignment pass.
+Both native libraries are byte-identical. Source tree
+c2e798f74538a090a121dd42b370234a1abee8c7 reproduces the complete unsigned APK
+from a separate source-only directory; this commit matches its app source
+except for the progress log. Same-host/toolchain reproduction is the measured
+claim. Reviewed last-use ordering, worker ownership, failure paths, repeated
+erasure and no extra secret copies. Framework/provider copies and physical
+hardware custody remain unqualified; existing root-lint failures remain.
+Unsigned release is 612,807 bytes, SHA256
+`385f30da47c87a76b432e5aac2d7784956352164b931d152b0e82032be59b805`.
+Evidence: `.cache/android-wallet/resume-20260915/seal-entropy-handoff/`.
+
+Next: inspect native fresh-wallet/change-state creation for secret retention
+across persistence, using the existing safety and fault-injection fixtures.

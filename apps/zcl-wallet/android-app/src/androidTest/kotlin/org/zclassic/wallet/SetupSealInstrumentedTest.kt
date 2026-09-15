@@ -53,11 +53,15 @@ class SetupSealInstrumentedTest {
         private val directory = File(parent, "fixture")
         val storage = WalletStorage(directory.absolutePath)
         private val callbacks = ConcurrentLinkedQueue<Runnable>()
-        val session = WalletPlatformSession(context, storage, Executor { callbacks.add(it) })
+        private val erasedAtDispatch = ConcurrentLinkedQueue<Boolean>()
+        val calls = SetupObservedCipher()
+        val session = WalletPlatformSession(context, storage, Executor {
+            calls.input?.let { input -> erasedAtDispatch.add(input.all { byte -> byte == 0.toByte() }) }
+            callbacks.add(it)
+        })
         val entropy = ByteArray(16) { 0x61 } // Nonzero public marker makes erasure observable.
         val words = WalletKeys.recoveryPhrase(entropy)
         val clock = AtomicLong(100)
-        val calls = SetupObservedCipher()
         var failure: WalletProblem? = null
         var address: TransparentAddress? = null
         private val setupField = WalletPlatformSession::class.java.getDeclaredField("setup").apply { isAccessible = true }
@@ -97,6 +101,10 @@ class SetupSealInstrumentedTest {
                 assertTrue(checkNotNull(calls.input).all { it == 0.toByte() })
             }
             assertTrue(words.all { it == '\u0000' })
+        }
+
+        fun assertErasedBeforeDispatch() {
+            assertEquals("Sealed entropy survived into the UI handoff", listOf(true), erasedAtDispatch.toList())
         }
 
         fun assertRefused() {
@@ -167,6 +175,7 @@ class SetupSealInstrumentedTest {
             assertEquals(CoreStatus.OK, fixture.storage.read().status)
             assertSame(fixture.entropy, fixture.calls.input)
             fixture.assertCleared()
+            fixture.assertErasedBeforeDispatch()
         }
     }
 
@@ -182,6 +191,7 @@ class SetupSealInstrumentedTest {
             assertEquals(expected, fixture.address)
             assertEquals(CoreStatus.OK, fixture.storage.read().status)
             fixture.assertCleared()
+            fixture.assertErasedBeforeDispatch()
         }
     }
 

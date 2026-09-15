@@ -214,6 +214,9 @@ internal class WalletPlatformSession(
             // session. Stored-wallet unlock below requires GCM decryption first.
             return WalletKeys.receivingAddress(entropy, current.prepared.network)
         } finally {
+            // Restored entropy is local to restore(), outside Setup. Retire
+            // both forms here before the public result reaches UI scheduling.
+            entropy.fill(0)
             clearSetup()
         }
     }
