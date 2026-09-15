@@ -2280,3 +2280,40 @@ APK remains byte-identical. Evidence is under
 `.cache/android-wallet/resume-20260915/jni-span-identity/`. These are stronger
 fixture/erasure observations, not a newly discovered production leak or new
 hardware-custody acceptance. TLS remains quarantined.
+
+## Secret destination validation before JNI input copies — 2026-09-15
+
+Reviewed the two entry checks, private writer preconditions and strengthened
+native refusal assertions. `recoveryPhrase` and `restoreEntropy` now validate
+output before copying native recovery input. The check is moved, not duplicated:
+valid calls retain their four array operations and six exception checks. Caller arrays remain local
+JNI arguments with immutable lengths. The old path wiped its copies correctly;
+this reduces unnecessary secret handling for unusable destinations.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffers; out-of-bounds access; pointer arithmetic | Exact32-byte/215-character output capacities are checked before secret reads. Private single-caller writers retain their0<length≤capacity checks before JNI transfer. They receive the same validated array; its length cannot change. Existing wrong-capacity guards, full430-byte input wipe checks and partial-output tests remain intact. |
+| Integer overflow/underflow; signed/unsigned conversions | No arithmetic or conversion is added. JNI lengths are compared against fixed positive jsize capacities before output use. Successful C lengths are bounded before jsize/jint casts. All existing negative/extreme length fixtures and sanitizer checks remain enabled. |
+| NULL; uninitialized memory; malformed input | Null input returns before any VM operation; null environment/output or pending exception refuses in the existing destination helper. No secret has been copied at these early returns. Subsequent input reads check every JNI result/exception before native processing. Malformed input still reaches one cleanup path for initialized scratch. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation, retained reference, new owner or lifetime change. The caller owns the destination before entry and after partial transfer. Native scratch is wiped before return; moved validation never requires a JNI cleanup operation under an observed pending exception. Existing real-JVM fault fixtures retain their finally erasure. |
+| Stack; allocation limits; resource exhaustion | Fixed scratch budgets are unchanged. Invalid output no longer causes secret reads or encoding/decoding work. No retry, loop, arena or heap is introduced. Tests bound native mutations and device runs; fuzzing retains fixed input/time/RSS limits. |
+| Races; format strings; secret leakage; custody | Java array length is immutable; no destination or source pointer escapes this invocation. Source contents retain the caller's existing no-concurrent-writer contract. Refusal tests now require zero touched secret spans, not only later wiping. Diagnostics remain fixed text. No authentication, cryptographic check, storage format, network, consensus or wallet authority changes. |
+
+The baseline fails the new zero-secret-copy requirement for an unusable output.
+Optimized isolated encoding/restoration mutants each move validation back late,
+retaining bounds; both fail the intended assertion while the control passes.
+All96 fuzz/oracle groups pass113.28s; all92 default sanitizer groups pass57.56s.
+Strict analysis and unchanged complexity caps10/15 pass. Android/JVM builds/tests,
+lint, fixture isolation, architecture and16 KiB alignment pass. Existing real-VM
+public JNI cases pass API30/API35/API36 (0.851/3.006/0.971s); the updated native
+fake-JNI fixture also passes those x86-64 APIs, with ARM64 compile-only.
+
+ARM/x86 libraries grow96/64 bytes. The ARM payload crosses an APK alignment page,
+so the unsigned APK grows16448 bytes to629863. All non-native APK entry contents
+remain identical; alignment and hardening remain intact. No RAM/CPU/startup
+improvement or new hardware-custody acceptance is claimed. TLS is quarantined.
+
+The existing JNI fuzzer completes78,049 cases/121s without a finding at max_len217,
+timeout5 and RSS cap512 MiB (observed57 MiB), with stack-use-after-return, leak and
+strict-string checks enabled. Exact evidence and preserved baseline artifacts are
+under `.cache/android-wallet/resume-20260915/jni-destination-preflight/`.

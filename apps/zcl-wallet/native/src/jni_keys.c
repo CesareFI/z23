@@ -15,10 +15,11 @@ static bool secret_destination(JNIEnv *env, jarray output, jsize capacity)
     return length == capacity;
 }
 
+/* Each private writer receives a prevalidated, caller-owned destination.
+ * Java array lengths cannot change; successful input reads leave no exception. */
 static jint write_secret_bytes(JNIEnv *env, jbyteArray output, const uint8_t *bytes, size_t length)
 {
     if (bytes == NULL || length == 0 || length > 32) return 0;
-    if (!secret_destination(env, output, 32)) return 0;
     (*env)->SetByteArrayRegion(env, output, 0, (jsize)length, (const jbyte *)bytes);
     return (*env)->ExceptionCheck(env) ? 0 : (jint)length;
 }
@@ -41,7 +42,6 @@ Java_org_zclassic_wallet_core_NativeCore_createEntropy(JNIEnv *env, jclass type,
 static jint write_phrase(JNIEnv *env, jcharArray output, const uint8_t *text, size_t length)
 {
     if (text == NULL || length == 0 || length > 215) return 0;
-    if (!secret_destination(env, output, 215)) return 0;
     jchar chars[215] = {0};
     jint written = 0;
     for (size_t i = 0; i < length; ++i)
@@ -57,6 +57,7 @@ Java_org_zclassic_wallet_core_NativeCore_recoveryPhrase(JNIEnv *env, jclass type
     jbyteArray input, jcharArray output)
 {
     (void)type;
+    if (input == NULL || !secret_destination(env, output, 215)) return 0;
     uint8_t entropy[32] = {0}, text[215] = {0};
     size_t entropy_len = 0, text_len = 0;
     jint written = 0;
@@ -117,6 +118,7 @@ Java_org_zclassic_wallet_core_NativeCore_restoreEntropy(JNIEnv *env, jclass type
     jcharArray input, jbyteArray output)
 {
     (void)type;
+    if (input == NULL || !secret_destination(env, output, 32)) return 0;
     uint8_t entropy[32] = {0}, text[215] = {0};
     size_t entropy_len = 0, text_len = 0;
     jint written = 0;

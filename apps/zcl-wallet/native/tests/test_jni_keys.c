@@ -456,11 +456,13 @@ static void destination_refusals(void)
             CHECK(secret_to(operation, &environment, (jbyteArray)&entropy, (jcharArray)&phrase,
                 (jarray)&result_array) == 0);
             CHECK(!pending && random_calls == 0 && memcmp(&before, &result_array, sizeof(before)) == 0);
+            CHECK(touched_count == 0); /* Refuse unusable output before copying any secret input. */
             verify_cleanup();
         }
         prepare(); active_operation = operation;
         CHECK(secret_to(operation, &environment, (jbyteArray)&entropy, (jcharArray)&phrase, NULL) == 0);
         CHECK(!pending && random_calls == 0);
+        CHECK(touched_count == 0);
         verify_cleanup();
     }
 }

@@ -3540,3 +3540,57 @@ fixture, strengthened controls, optimized negative binaries, corpus and all
 acceptance logs remain in
 `.cache/android-wallet/resume-20260915/jni-span-identity/`.
 TLS remains quarantined; positive hardware custody remains unqualified.
+
+2026-09-15: JNI erasure-fixture checkpoint
+`c68fb89aab42dc3c0085e6ffdd120c43eb5bf029` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, upstream is correct and the tree is clean with ahead/behind 0/0. All 124
+wallet commits remain preserved; origin is unchanged.
+
+2026-09-15: recovery-phrase encoding and entropy restoration now validate the
+caller-owned JNI destination before copying or processing recovery input. Null
+or incorrectly sized output is refused without creating native secret copies.
+Previously the same refusal happened after copying/processing input, followed by
+correct wiping; this is reduced secret handling on failure, not a discovered
+production leak. Output sizes, successful values and Java APIs are unchanged.
+
+The existing destination check moves to entry, with a null-input short circuit.
+Its private writer no longer repeats that check: the same Java array has an
+immutable length, and successful input JNI reads have already checked pending
+exceptions. Valid entry points retain the same four array operations and six exception checks. The writers
+still check derived result lengths and observe exceptions after transfer. Native
+scratch wiping and managed ownership of partially transferred output remain
+unchanged, with no new allocation, JNI reference, capacity or policy.
+
+The native regression requires zero touched secret spans for every existing
+invalid/null destination case. The preserved baseline fails that requirement.
+Two separate optimized mutants move validation back to its old position for
+encoding or restoration individually; both fail the intended zero-copy assertion
+while the unchanged control passes. No output bounds are removed in these mutants.
+All 96 fuzz/oracle groups pass in113.28 seconds and all92 default native sanitizer
+groups pass in57.56 seconds, together with strict analysis and complexity gates.
+
+Android/JVM tests/builds, debug/release lint, isolation, architecture and16 KiB
+alignment pass. Two unchanged public secret-destination/exception instrumented
+tests pass on API30/API35/API36 in0.851/3.006/0.971 seconds. The updated native
+fake-JNI fixture also passes all three x86-64 APIs against current release
+archives, with verified transferred hashes; ARM64 is compile-only. The host
+real-JVM partial-transfer/OOM fixtures remain part of the passing JVM suite.
+These tests use public vectors and no fresh entropy source or hardware key.
+
+The security change increases the ARM library by96 bytes to229328 and x86 by64
+bytes to259072. The ARM payload crosses the next16 KiB APK alignment boundary;
+the unsigned APK grows613415→629863 bytes (+16448). All other APK entry contents
+are byte-identical. Alignment remains intact. Release SHA256 is
+`f81cbe93df5d7d4591d1dd7ee417c4c0be3edb8d2c57898fbe49448175c7ff8f`.
+This is an artifact-size cost, not a RAM/startup/latency claim. Further size work
+must preserve early refusal, ownership, cryptography and alignment.
+
+The existing JNI fuzzer completes78,049 cases in121 seconds without a finding,
+with max_len217, per-input timeout5 and RSS cap512 MiB (observed57 MiB).
+ASan stack-use-after-return, leak detection and strict string checks are enabled.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Baseline failure/source/APK,
+independently delayed-validation mutants, public corpus, exact artifact sizes
+and all acceptance logs remain in
+`.cache/android-wallet/resume-20260915/jni-destination-preflight/`.
+TLS remains quarantined; positive hardware custody remains unqualified.
