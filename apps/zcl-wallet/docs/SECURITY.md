@@ -79,6 +79,8 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   values or an incomplete report. This does not qualify any network source.
 * Recovery displays and keyboard previews conceal their text before clearing,
   transferring or rendering it. Only a complete update reveals the view again.
+  Explicit cleanup erases owned character buffers before calling Android's
+  visibility/text operations, so a stalled framework clear cannot prolong them.
   A refused Android text clear still wipes owned characters and leaves retained
   framework copies hidden. Input failures preserve the usable keyboard and
   original/cleanup errors. Concealment does not erase every framework or GPU copy.

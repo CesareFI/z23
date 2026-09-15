@@ -45,6 +45,55 @@ class SecretConcealmentInstrumentedTest {
         fun allow() { clearFailure = null; renderFailure = null }
     }
 
+    private fun assertRetiredBeforeTextClear(view: TextView, owned: CharArray,
+                                           problem: Throwable?, clear: () -> Unit) {
+        var observed = false
+        val listener = object : TextWatcher {
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+                if (after != 0) return
+                observed = true
+                assertTrue("Owned characters remained live during framework clear", owned.all { it == '\u0000' })
+                assertEquals(View.INVISIBLE, view.visibility)
+                problem?.let { throw it }
+            }
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(text: Editable?) = Unit
+        }
+        view.addTextChangedListener(listener)
+        try {
+            if (problem == null) clear()
+            else assertSame(problem, assertThrows(Throwable::class.java) { clear() })
+            assertTrue("Framework clear was not observed", observed)
+            assertTrue(owned.all { it == '\u0000' })
+        } finally { view.removeTextChangedListener(listener) }
+    }
+
+    @Test fun displayRetiresOwnedWordsBeforeFrameworkClearing() = onMain {
+        for (problem in listOf(null, IllegalStateException("Public display clear refusal"),
+            OutOfMemoryError("Public display clear failure"))) {
+            val view = RecoveryWordsView(instrumentation.targetContext)
+            val words = charArrayOf('a', 'b', 'c')
+            try {
+                view.show(words)
+                assertRetiredBeforeTextClear(view, words, problem, view::clearSecret)
+            } finally { view.clearSecret(); words.fill('\u0000') }
+        }
+    }
+
+    @Test fun keyboardRetiresOwnedCharactersBeforeFrameworkClearing() = onMain {
+        for (problem in listOf(null, IllegalStateException("Public keyboard clear refusal"),
+            OutOfMemoryError("Public keyboard clear failure"))) {
+            val view = RecoveryInputView(instrumentation.targetContext)
+            val preview = view.getChildAt(0) as TextView
+            val characters = RecoveryInputView::class.java.getDeclaredField("characters")
+                .apply { isAccessible = true }.get(view) as CharArray
+            try {
+                for (letter in "abc") view.append(letter)
+                assertRetiredBeforeTextClear(preview, characters, problem, view::clearSecret)
+            } finally { view.clearSecret() }
+        }
+    }
+
     @Test fun failedDisplayClearConcealsTheFrameworkCopyAndWipesOwnedWords() {
         onMain {
             val view = RecoveryWordsView(instrumentation.targetContext)

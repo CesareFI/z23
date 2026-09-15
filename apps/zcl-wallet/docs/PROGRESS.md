@@ -4391,3 +4391,39 @@ custody, existing root-lint failures and parked TLS remain unqualified.
 
 Next: continue the owned-secret handoff audit through recovery submission and
 screen cleanup, reusing existing fixtures when a concrete gap is found.
+
+2026-09-16: recovery display and keyboard cleanup now erase owned characters
+before Android visibility/text operations. Previously their finally blocks
+retired characters only after those operations returned or threw. The owned
+buffers have no remaining use during explicit cleanup; moving the wipe earlier
+also covers a stalled framework call without adding an allocation. Transfer
+still preserves the input long enough to produce its owned destination.
+
+Two new tests observe actual TextView clear callbacks, checking the owned
+arrays are already zero and the text concealed before framework clearing. Both
+fail on the original implementation (0.078 seconds). The fixed tests include
+ordinary clears, Exception and Error, and preserve original error identity.
+All 24 selected tests pass on each x86-64 API30/35/36 in
+46.947/3.692/91.695 seconds: concealment/retirement, saved-state refusal, bounded
+keyboard/transfer, delayed delivery and backup-screen construction failures.
+Public markers and the storage-free display host only; no real seed, key,
+wallet or actual memory pressure. No selected test is skipped.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+architecture and alignment pass. Native libraries remain byte-identical.
+Minified DEX inspection confirms each clear calls the full char-array erasure
+helper before setVisibility and setText. A separate source-only build from
+tree 1549afafa8d007635ddfb7fcfb86f0bc8cc7b494 reproduces the complete unsigned
+APK; this commit matches that app source except for security/progress notes.
+The release remains 612,823 bytes, SHA256
+`1461305ec4d515011000cf85d40208086f9038d8b086cf9754bcee9599e04985`.
+Evidence: `.cache/android-wallet/resume-20260916/secret-clear-retirement/`.
+Reviewed replacement ownership, buffer bounds, exception propagation and main-
+thread ordering. Framework/provider/GPU copies remain outside this erasure
+claim. Same-host reproduction, physical-device/custody, root-lint and parked
+TLS limits remain unchanged.
+
+The existing C camera/QR fuzzers already vary pixel content. The JNI camera
+fuzzer varies packing geometry/VM faults but only runs fixed decoder fixtures
+at startup. Next: extend that existing target to vary decoder packet bytes
+alongside VM/allocation faults, retaining exact C-to-JNI result checks.

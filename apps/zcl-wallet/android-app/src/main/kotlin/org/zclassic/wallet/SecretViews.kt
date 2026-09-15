@@ -52,10 +52,13 @@ internal class RecoveryWordsView(context: Context) : TextView(context) {
     fun clearSecret() {
         val previous = words
         words = null
+        // The old owned buffer has no remaining use. Erase it before any
+        // Android visibility/text callback can allocate, block or throw.
+        previous?.fill('\u0000')
         // TextView may retain its own copy if clearing fails. Conceal it before
         // calling the framework; only a complete later show may reveal it.
-        try { visibility = INVISIBLE; text = "" }
-        finally { previous?.fill('\u0000') }
+        visibility = INVISIBLE
+        text = ""
     }
 
     override fun dispatchSaveInstanceState(container: SparseArray<Parcelable>) = Unit
@@ -149,8 +152,9 @@ internal class RecoveryInputView(context: Context) : LinearLayout(context) {
 
     fun clearSecret() {
         length = 0
-        try { preview.visibility = INVISIBLE; preview.text = "" }
-        finally { characters.fill('\u0000') }
+        characters.fill('\u0000')
+        preview.visibility = INVISIBLE
+        preview.text = ""
     }
 
     override fun dispatchSaveInstanceState(container: SparseArray<Parcelable>) = Unit
