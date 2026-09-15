@@ -2752,3 +2752,21 @@ the full public permission-denial/retry/grant/camera-review/cleanup fixture on
 the isolated API 30 profile in 9.318 seconds. No C, wallet or consensus behavior
 changes. The owned emulator uses the qualified reaping adapter and exits by
 normal console shutdown; the pre-existing emulator profiles remain intact.
+
+2026-09-15: the native RNG regression now observes the complete scratch wipe
+while the buffer is still alive. It requires one full wipe on every admitted
+success/failure, exact remaining spans and nonblocking OS requests, and no OS
+or wipe calls on invalid arguments. Every width 1..64 is tested at both sides
+of the 128-attempt limit. A partial secret followed by 127 interruptions must
+be erased while caller output remains unchanged. No production C or API changes.
+
+The old fixture accepts a missing-wipe mutation; the new one rejects it and
+nine other deliberate defects with intended assertions. An initial test-helper
+complexity violation is preserved and fixed by extracting the interruption
+predicate, retaining the 10/15 caps. All 89 sanitizer groups pass in 64.28 seconds;
+Clang/GCC analysis, strict warnings and final focused checks pass. The exact
+release-archive executable passes on x86-64 API 30/35/36; ARM64 is compiled only.
+Android/JVM/build/lint, fixture isolation and 16 KiB native alignment pass. The
+release APK remains byte-identical to the canvas checkpoint. Full hazard review
+is in [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md); exact evidence and mutations are
+in `.cache/android-wallet/resume-20260915/random/`.

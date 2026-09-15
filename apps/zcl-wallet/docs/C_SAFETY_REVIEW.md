@@ -1595,3 +1595,35 @@ pass. All three application/test APKs compare byte-identically with the prior
 review-concealment milestone, retaining that exact device evidence. All source,
 standards, mutants, seeds and artifacts are in
 `.cache/android-wallet/utf8-reference-20260914/`.
+
+## Observe RNG scratch erasure and exact retry limits — 2026-09-15
+
+Scope: the existing registered `test_random.c` and its host-only linker flags.
+Production C, the entropy API and Android libraries are unchanged. The fixture
+interposes OS reads and the real zeroization call, observing the scratch bytes
+only while the production call still owns them. No allocator or production
+fault-control interface is added.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Every intercepted read requires the exact remaining length and destination offset in a maximum 64-byte scratch buffer before invoking the provider. The zeroization observer requires the captured base pointer and full 64-byte length before reading the cleared bytes. Caller fixtures use 66-byte arrays with untouched boundaries; retry-boundary tests compare every caller byte. |
+| Integer overflow/underflow; signed/unsigned conversions | Read counts are converted only after positivity checks and must fit the remaining span before incrementing the observed offset. Requested length is at most 64 before pointer arithmetic; completed reads are strictly below 128 before increment. For lengths 1..64, the fixture's three-byte read count is 1..22, making 128 minus that count plus zero/one safe. Oversized provider returns remain synthetic bounded values. SIZE_MAX is refused without provider or wipe calls. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation or descriptor is added. The scratch pointer is captured inside the synchronous OS-read callback, inspected during the synchronous wipe, and retired there. If a mutant omits wiping, the caller assigns NULL immediately after return without evaluating or dereferencing the expired pointer. Existing caller output wiping runs outside observation. |
+| NULL dereferences; uninitialized memory | The observer requires a non-NULL captured scratch pointer and checked length before access. State is reset before every call. Caller arrays initialize before checks, and synthetic bytes initialize with memset. Invalid NULL/length calls must make no OS or wipe call. |
+| Pointer arithmetic; format strings | Scratch plus filled is formed only after the filled offset is checked below a request of at most 64 bytes. The provider sees exactly the remaining admitted span. Diagnostics contain a fixed message and source line, never random bytes or caller data. |
+| Stack usage; allocation limits; resource exhaustion | The expanded registered test performs 330 bounded API cases, including success and exhaustion exactly at attempt 128 for every admitted width. No heap, VLA, recursion or worker is introduced. Host optimized test main measures 224 bytes; observer frames measure 16 bytes. Strict warning, format, conversion, shadow, VLA and 4096-byte frame checks apply. The initial helper exceeded test complexity 15; a named interruption predicate removed the violation without changing the cap. |
+| Malformed input; races; explicit lifetimes | The host-only observer is single-threaded. It checks partial reads, zero and oversized returns, nonblocking flags, immediate/partial EAGAIN, EINTR and exhaustion after a partial secret. Failure must leave all caller bytes unchanged. Ten isolated mutations fail intended assertions; the old test accepts the omitted-wipe mutation. Mutants never replace working-tree production source. |
+| Secret leakage, custody and authority | Synthetic marker bytes and the existing unfunded OS-RNG exercise are used; no wallet, seed derivation, private key, authentication, network or signing operation occurs. The real zeroization primitive clears each scratch span before inspection; the fixture retains no secret bytes or expired-pointer reads. This proves these observed buffers and failure paths, not erasure of all compiler, kernel or hardware copies. |
+
+All 89 ASan/UBSan/LSan groups pass in 64.28 seconds, with production/provider
+Clang/GCC analysis and unchanged 10/15 complexity caps. The changed fixture
+also passes separate strict Clang/GCC analysis. After adding its stricter
+compile flags, the final focused target is rebuilt and rechecked. The exact
+release-archive test passes on x86-64 API 30/35/36, with SHA256
+`7686e6e5ead470e6c2cce0a8eb68b5b57fe68f12e3260772490db5ed6baa6bd1`.
+ARM64 compiles with SHA256
+`59dc5743ae5ed72468c519cec7967152688de675b96668054345d5a8827173b0`;
+hardware execution remains unobserved. Android/JVM/build/lint, fixture isolation
+and native alignment pass. The release APK remains identical to the canvas
+checkpoint. Source, mutants, hashes, analysis and device evidence are retained
+in `.cache/android-wallet/resume-20260915/random/`.
