@@ -3120,3 +3120,44 @@ TLS remains quarantined; hardware-positive custody remains unqualified. Full
 review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Exact source/binary identities,
 old-harness mutation acceptance, new differential failures, corpus and validation
 are preserved in `.cache/android-wallet/resume-20260915/change-state-fuzz/`.
+
+2026-09-15: change-state differential checkpoint
+`264b10793cd45d8b792bfd8e178d9f1c4ce08239` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean, upstream correct and ahead/behind 0/0. All 115 wallet
+commits remain preserved, including the original 108-commit checkpoint. Origin
+remains `https://github.com/z23c/z23.git`, used only for upstream fetching.
+
+The Android decryption handoff was inspected before further custody edits.
+`unlockAfterAuthentication` already clears its returned plaintext in finally.
+The inspected [AOSP Keystore implementation](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/refs/heads/main/keystore/java/android/security/keystore2/AndroidKeyStoreCipherSpiBase.java)
+first obtains an internal plaintext array for the caller-buffer overload, then
+copies it into the destination. Switching overloads would add a secret copy
+without resolving provider-internal cleanup. The existing call is retained;
+no provider leak or additional hardware-custody qualification is claimed.
+
+2026-09-15: direct HMAC-SHA512 differential fuzzing now compares arbitrary bounded
+public key/message bytes with OpenSSL3. Each admitted case exercises a valid
+full digest before invalid arguments, and checks output guards, unchanged inputs
+and refusal atomicity. Its deterministic driver covers298 boundary/refusal cases,
+including empty inputs, SHA512 block/padding boundaries and maximum256-byte keys
+and512-byte messages. Both targets are host-only under ZCL_ORACLE, with fuzzing
+additionally requiring the existing sanitized ZCL_FUZZ profile. Production code,
+cryptography, custody and APK dependencies are unchanged.
+
+Six isolated boundary defects pass the earlier fixed HMAC/PBKDF2 executable and
+fail the new digest comparison. Both unchanged controls pass. The direct fuzzer
+completes2278672 cases in121 seconds without a finding, with max_len774, timeout5
+and RSS cap512 MiB (281 MiB observed). All90 default sanitizer groups pass
+in48.54 seconds; oracle-only HMAC/differential checks pass in0.73 seconds and the
+fuzz-profile deterministic driver passes. Clang/GCC analysis, strict warnings,
+architecture and unchanged complexity caps10/15 pass. Maximum measured authored
+GCC-O2 frames are1824 bytes for the harness and1104 for its corpus writer.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and native alignment
+pass. All three APKs remain byte-identical; release SHA256 remains
+`5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+No new hardware-custody or production-device behavior is claimed; TLS stays
+quarantined. Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Public mutation,
+fuzz, source and validation evidence is preserved in
+`.cache/android-wallet/resume-20260915/hmac-fuzz/`.

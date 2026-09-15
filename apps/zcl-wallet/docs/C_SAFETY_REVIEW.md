@@ -1995,3 +1995,45 @@ hashes, mutation controls/old-harness acceptances, fuzz corpus and acceptance
 logs remain in `.cache/android-wallet/resume-20260915/change-state-fuzz/`.
 TLS remains quarantined; the same custody and transaction-authorization gates
 remain in effect.
+
+## Direct HMAC differential fuzzing — 2026-09-15
+
+Reviewed host-only `fuzz_hmac.c`, `test_hmac_fuzz.c` and their CMake integration.
+Production C, providers, JNI, custody and cryptographic algorithms are unchanged.
+The harness directly compares the enabled HMAC-SHA512 implementation with the
+existing OpenSSL 3 reference dependency. Fixed RFC4231 and independent PBKDF2
+checks remain; their narrower direct-HMAC coverage is supplemented, not replaced.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Input length is checked at 6..774 before reading six control bytes. Fixed 256-byte keys and 512-byte messages are completely initialized from bounded modulo offsets. Admitted lengths are 0..256 and 0..512. Each output has two sentinel bytes surrounding the exact64-byte span. Invalid claimed lengths 257/513/SIZE_MAX must refuse before reading the smaller real arrays. Every capacity0..63 is checked. |
+| Integer overflow/underflow; signed/unsigned conversions | Two-byte length controls sum to at most65535 in size_t before modulo. Input indices are at most773 before modulo; size is nonzero. OpenSSL's signed key length is converted only after the at-most256 bound. Test arithmetic is bounded by298 cases and774 bytes; corpus path snprintf results are checked before size_t conversion. Strict conversion/format warnings pass. |
+| NULL dereferences; uninitialized memory; malformed input | NULL key/message/output modes require INVALID_ARGUMENT, including with an insufficient output span. Excess key/message lengths require OUT_OF_RANGE before output-capacity refusal. Every success computes a full independent digest; invalid-only cases cannot crowd out cryptography. OpenSSL return and64-byte length are checked. All output/snapshot bytes are initialized. |
+| Use-after-free; double-free; leaks; dangling pointers; ownership | The authored harness uses automatic arrays, retains no caller pointer and allocates no heap. OpenSSL owns its internal contexts. Both complete input arrays are compared against snapshots after valid and rejected calls. Optional corpus files use exclusive creation, checked writes and one checked fclose, preserving existing files on collision. There are no JNI or storage handles. |
+| Stack usage; allocation limits; resource exhaustion | GCC-O2 maximum authored frames are1824 bytes for the harness and1104 for the corpus writer, below4096. These are per-function measurements, not whole-provider-stack bounds. Campaign limits are120 seconds,774-byte inputs, five seconds per case and512 MiB RSS. OpenSSL allocation behavior is confined to the host reference; no application dependency, worker, allocation or iteration count changes. |
+| Secret leakage; format strings; races | Only public generated/fuzz bytes are accepted by this test. Key/message snapshots and actual/expected digest buffers are explicitly cleared on normal completion; failures abort with fixed descriptions and no byte dumps. No global mutable state or cross-call ownership is introduced. Optional corpus persistence contains public fuzz material only and stays outside source control. This does not establish erasure of OpenSSL internal copies or positive hardware custody. |
+
+The deterministic driver passes298 key/message-boundary and refusal cases,
+including empty inputs, SHA512 block/padding boundaries and maximum spans.
+All90 default sanitizer groups pass in48.54 seconds. Oracle-only HMAC/differential
+checks pass in0.73 seconds, and the differential driver passes in the fuzz profile.
+Clang/GCC analysis, strict warnings, architecture and unchanged complexity caps
+10/15 pass (511 production functions/91 files;1285 fixture functions/155 files).
+The direct differential fuzzer completes2278672 cases in121 seconds without a
+finding; peak observed RSS is281 MiB under the512 MiB cap. Enabled wallet and
+hash-provider objects retain their sanitizer and fuzzer instrumentation.
+
+Six isolated boundary defects in direct HMAC handling are accepted by the earlier
+fixed HMAC/PBKDF2 test executable but rejected by the new digest comparison:
+empty key,128/256-byte keys, empty/512-byte messages and the112-byte padding
+boundary. Both unchanged controls pass. The mutations model incorrect boundary
+handling; they are not discovered production defects and are never compiled
+into the app. Exact sources, mutation diagnostics, corpus, frame reports and
+acceptance logs remain in `.cache/android-wallet/resume-20260915/hmac-fuzz/`.
+
+Android/JVM builds/tests, debug/release lint, fixture isolation and16 KiB native
+alignment pass. All three APKs are byte-identical to the prior checkpoint;
+release SHA256 remains
+`5df0e14b60a6f81f637bf556e76806cf49ddc3361ecd996680f6668d07281da3`.
+No new device behavior is claimed. TLS remains quarantined and positive hardware
+custody remains unqualified.
