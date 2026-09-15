@@ -17,6 +17,8 @@ JNIEXPORT jint JNICALL Java_org_zclassic_wallet_core_NativeCore_recoveryPhrase(
     JNIEnv *, jclass, jbyteArray, jcharArray);
 JNIEXPORT jint JNICALL Java_org_zclassic_wallet_core_NativeCore_restoreEntropy(
     JNIEnv *, jclass, jcharArray, jbyteArray);
+JNIEXPORT jint JNICALL Java_org_zclassic_wallet_core_NativeCore_packCameraPlane(
+    JNIEnv *, jclass, jobject, jint, jint, jint, jint, jint, jint, jbyteArray);
 
 static JNIEnv *live_env(JNIEnv *env)
 {
@@ -49,6 +51,18 @@ static void JNICALL get_chars(JNIEnv *env, jcharArray input, jsize start, jsize 
     (*actual)->GetCharArrayRegion(actual, input, start, length, output);
 }
 
+static jlong JNICALL buffer_capacity(JNIEnv *env, jobject buffer)
+{
+    JNIEnv *actual = live_env(env);
+    return (*actual)->GetDirectBufferCapacity(actual, buffer);
+}
+
+static void *JNICALL buffer_address(JNIEnv *env, jobject buffer)
+{
+    JNIEnv *actual = live_env(env);
+    return (*actual)->GetDirectBufferAddress(actual, buffer);
+}
+
 static void raise_failure(fixture_env *fixture)
 {
     JNIEnv *actual = fixture->actual;
@@ -77,7 +91,8 @@ static void JNICALL set_chars(JNIEnv *env, jcharArray output, jsize start, jsize
 static const struct JNINativeInterface_ table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length,
     .GetByteArrayRegion = get_bytes, .GetCharArrayRegion = get_chars,
-    .SetByteArrayRegion = set_bytes, .SetCharArrayRegion = set_chars
+    .SetByteArrayRegion = set_bytes, .SetCharArrayRegion = set_chars,
+    .GetDirectBufferCapacity = buffer_capacity, .GetDirectBufferAddress = buffer_address
 };
 
 JNIEXPORT jint JNICALL Java_org_zclassic_wallet_core_SecretOutputNativeFixture_phrase(
@@ -96,4 +111,14 @@ JNIEXPORT jint JNICALL Java_org_zclassic_wallet_core_SecretOutputNativeFixture_e
     if ((*env)->ExceptionCheck(env)) return 0;
     fixture_env fixture = {.table = &table, .actual = env, .failure = failure, .prefix = prefix};
     return Java_org_zclassic_wallet_core_NativeCore_restoreEntropy(&fixture.table, type, input, output);
+}
+
+JNIEXPORT jint JNICALL Java_org_zclassic_wallet_core_SecretOutputNativeFixture_camera(
+    JNIEnv *env, jclass type, jobject plane, jbyteArray output, jthrowable failure, jint prefix)
+{
+    if (env == NULL || failure == NULL || prefix < 0 || prefix > 446) return 0;
+    if ((*env)->ExceptionCheck(env)) return 0;
+    fixture_env fixture = {.table = &table, .actual = env, .failure = failure, .prefix = prefix};
+    return Java_org_zclassic_wallet_core_NativeCore_packCameraPlane(&fixture.table, type,
+        plane, 0, 441, 21, 21, 21, 1, output);
 }

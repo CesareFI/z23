@@ -10,6 +10,7 @@ internal object SecretOutputNativeFixture {
     init { System.loadLibrary("zclwallet_secret_fixture") }
     @JvmStatic external fun phrase(input: ByteArray, output: CharArray, failure: Throwable, prefix: Int): Int
     @JvmStatic external fun entropy(input: CharArray, output: ByteArray, failure: Throwable, prefix: Int): Int
+    @JvmStatic external fun camera(plane: java.nio.ByteBuffer, output: ByteArray, failure: Throwable, prefix: Int): Int
 }
 
 /** Public synthetic input, real VM arrays, actual production C JNI entries. */

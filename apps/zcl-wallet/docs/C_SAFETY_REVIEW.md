@@ -2383,3 +2383,42 @@ and paired storage, not GCM or hardware custody. Separate real-VM tests use
 software-GCM public records. No previous-worktree APK or obsolete validation
 count is reused. Exact current evidence is retained in
 `.cache/android-wallet/resume-20260915/storage-refusal/`. TLS stays quarantined.
+
+## Caller-owned camera JNI output — 2026-09-15
+
+Reviewed the camera JNI size/fill interface and its Kotlin owner. Previously a
+partial SetByteArrayRegion failure could leave pixel bytes in a new Java array
+whose reference never reached Kotlin. Native scratch was already erased. The
+caller now owns the exact destination before JNI, so its finally block can
+erase the whole array on a refusal or exception. C retains geometry validation.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | Both JNI invocations use the existing C sizing and direct-buffer range checks. Sizing reads no pixels and retains no pointer. Packing independently recomputes the size and requires exactly that Java capacity before allocation or pixel copying. Negative offsets/lengths, short limits, heap buffers, extreme strides and incorrect output capacities refuse. Offset, slice and read-only direct views retain their existing bounds. |
+| Integer overflow/underflow; signed/unsigned conversions | Negative JNI geometry is rejected before conversion; direct ranges use ordered subtraction after nonnegative checks. Existing C arithmetic and sampling are unchanged. The new static assertion proves the maximum packet fits INT32_MAX; actual packet sizes are 446..147461 before jsize/jint conversion. No size from an untrusted Java destination drives allocation. |
+| NULL; uninitialized memory; malformed input | Missing environment, pending exception, missing input/destination and unavailable direct address refuse. Scratch and packet length initialize before use. Each VM result is checked before the next operation. The fill operation accepts only a complete C packet of the recomputed size; no partial result is transferred as success. |
+| Use-after-free; double-free; leaks; dangling pointers | One checked exact-sized C allocation is wiped before its single free on success and failure. One exact-sized Java array is owned before fill; refusal, incorrect returned length and any Throwable erase it. Success transfers that same array without a copy. No array pin, new JNI reference or retained direct pointer is added. The Image remains open through both synchronous invocations. |
+| Stack; allocation limits; resource exhaustion | Sizing allocates nothing. Packing retains one C allocation and one Java array, each at the exact sampled size. The eight geometry fixtures verify native sizes, zero JNI-created arrays and full erasure before free. Measured -Os JNI frames are size104/128 and fill104/144 bytes on x86-64/ARM64, excluding callees. The new size roundtrip adds two VM calls and repeated validation; no CPU/battery improvement is claimed. APK cost is832 bytes. |
+| Races; format strings; secret leakage | Java capacity is immutable; source offset/remaining are captured once. Both calls retain the existing stable, borrowed Image contract; no concurrent writer or pointer sharing is introduced. The real-JVM fixture observes partial pixel copies before rethrowing the original injected OOM and verifies full caller-array erasure. Logs contain only fixed labels and public fixture sizes. Public decoded request text, custody, authentication, persistence, consensus and TLS quarantine are unchanged. |
+
+The preserved optimized ASan/UBSan/integer baseline reproduction fails the pixel
+erasure assertion after a six-byte synthetic VM transfer that includes image
+data. The final real-JVM fixture covers prefixes0/1/6/223/446 with unchanged
+exception identity; refusal and success controls cover capacities446/76805/147461.
+This is deterministic ownership evidence, not proof of a real VM partial-write
+exploit or protection from physical memory inspection.
+
+All92 default sanitizer groups pass57.54s; strict analysis and unchanged
+complexity caps10/15 pass. The initial test function at16 was refused and split
+without removing assertions. Native fake-JNI tests pass API30/35/36 on x86-64;
+ARM64 is compile-only. Android/JVM tests, debug/release builds and lint, fixture
+isolation, architecture and16 KiB alignment pass. The existing C camera fuzzer
+completes2811 cases/121s without a finding, with ASan/UBSan/integer, UAR/leak/
+strict-string checks, max_len8388616, timeout5 and RSS cap512 MiB (peak264 MiB).
+That fuzzer covers C sizing/packing/scan invariants, not the new JNI interface.
+
+Only classes.dex and the two JNI libraries change in the APK; core/provider
+archives remain byte-identical. Device acceptance and the retained API35
+timeout are detailed in PROGRESS.md. Evidence remains under
+`.cache/android-wallet/resume-20260915/camera-jni-output/`. Positive hardware
+custody and physical ARM64 runtime acceptance remain unqualified.

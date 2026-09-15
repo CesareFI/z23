@@ -3755,3 +3755,41 @@ this fix concerns queued pixel ownership. Baseline source/APKs, the failing
 device result, unchanged fixture identity and final acceptance logs remain in
 `.cache/android-wallet/resume-20260915/camera-dispatch/`.
 TLS remains quarantined; positive hardware custody remains unqualified.
+
+2026-09-15: completed the recovered caller-owned camera JNI output candidate.
+The managed caller now allocates the exact destination before native packing,
+so a partial VM write followed by an exception still has an owner that wipes
+the complete pixel array. C independently revalidates geometry and destination
+capacity before its one exact allocation, and always wipes native scratch.
+The real-JVM fixture observes prefixes 0/1/6/223/446 before an injected exception;
+the preserved baseline fails its pixel-erasure assertion. Bounds, refusal,
+unchanged borrowed inputs and successful transfer without copying are covered.
+
+All 92 native sanitizer groups pass again in 57.32 seconds, with strict Clang/GCC
+analysis and unchanged production/test complexity caps 10/15. Android/JVM,
+debug/release builds and lint, fixture isolation and native alignment pass.
+Native fake-JNI fixtures pass x86-64 API30/35/36; both ABIs compile. The existing
+C camera fuzzer completed 2,811 cases in 121 seconds without a finding, with
+ASan/UBSan/integer checks, stack-use-after-return, leaks and strict strings;
+maximum input 8,388,616 bytes, timeout 5 seconds, RSS cap 512 MiB, observed 264 MiB.
+That campaign covers C packing and decoding, not a new JNI fuzz target.
+
+All 10 selected camera/output/decoder/handoff instrumented tests pass per API:
+API30 7.619 s, API35 43.804 s, API36 32.634 s. An earlier API35 aggregate exceeded
+its 120-second shell bound. Its two output tests separately passed in 71.93 s.
+Bytecode inspection showed boxed per-byte JUnit calls in the new exhaustive
+fixture. Replaced those calls with inline complete-span predicates: every byte,
+layout, offset, read-only view and boundary assertion remains checked, with no
+extra buffer or increased timeout. The final aggregate passes the same bound;
+the earlier timeout and logs remain preserved. This is fixture-cost evidence,
+not an application camera latency claim.
+
+Unsigned release size is 612,647 bytes (+832); SHA256
+`619fe1745d35c145bf29bde7b96ad2fe8b1510cc111998b38cdb91906f505c8d`.
+Only classes.dex and the two JNI libraries change; core/provider archives remain
+byte-identical. Exact sampled allocations and 16 KiB alignment are preserved.
+The new size query adds a JNI roundtrip; no speed or battery gain is claimed.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Evidence is retained under
+`.cache/android-wallet/resume-20260915/camera-jni-output/`. TLS stays quarantined;
+hardware custody and physical ARM64 runtime acceptance remain unqualified.
+Next: authenticated-decryption destination ownership under provider exceptions.

@@ -18,8 +18,10 @@ internal object NativeCore {
     @JvmStatic external fun receiveQr(text: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun scanQr(image: ByteArray, width: Int, height: Int, rowStride: Int,
                                    pixelStride: Int, network: Int): ByteArray?
+    @JvmStatic external fun cameraPlanePacketSize(buffer: java.nio.ByteBuffer, offset: Int, length: Int,
+        width: Int, height: Int, rowStride: Int, pixelStride: Int): Int
     @JvmStatic external fun packCameraPlane(buffer: java.nio.ByteBuffer, offset: Int, length: Int,
-        width: Int, height: Int, rowStride: Int, pixelStride: Int): ByteArray?
+        width: Int, height: Int, rowStride: Int, pixelStride: Int, output: ByteArray): Int
     @JvmStatic external fun scanCameraPacket(packet: ByteArray, network: Int): ByteArray?
     @JvmStatic external fun parsePayment(text: ByteArray, network: Int): ByteArray?
     // Secret destinations are managed-owned before JNI and cleared on any failure.

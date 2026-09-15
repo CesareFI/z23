@@ -4,6 +4,8 @@
 #include "zcl_keys.h"
 #include <stdlib.h>
 
+_Static_assert(ZCL_CAMERA_PACKET_MAX <= INT32_MAX, "Camera packets fit JNI lengths");
+
 static bool camera_layout(jint width, jint height, jint row, jint pixel, zcl_qr_image *layout)
 {
     if (width < 0 || height < 0 || row < 0 || pixel < 0)
@@ -34,41 +36,63 @@ static const uint8_t *direct_pixels(JNIEnv *env, jobject buffer, jint offset, ji
     return pixels + (size_t)offset;
 }
 
-static jbyteArray pack_pixels(JNIEnv *env, const uint8_t *pixels, size_t length,
-                                const zcl_qr_image *layout, size_t packet_size)
+static jint pack_pixels(JNIEnv *env, const uint8_t *pixels, size_t length,
+                         const zcl_qr_image *layout, size_t packet_size, jbyteArray output)
 {
     /* C sizing proves 446..147461 bytes. This invocation alone owns and clears
      * exactly that allocation; layout and borrowed pixels stay stable. */
     uint8_t *packet = malloc(packet_size);
     if (packet == NULL)
-        return NULL;
-    jbyteArray output = NULL;
+        return 0;
+    jint written = 0;
     size_t packet_len = 0;
-    if (zcl_camera_frame_pack(pixels, length, layout, packet, packet_size, &packet_len) == ZCL_OK)
-        output = zcl_jni_new_bytes(env, packet, packet_len);
+    if (zcl_camera_frame_pack(pixels, length, layout, packet, packet_size, &packet_len) == ZCL_OK &&
+        packet_len == packet_size) {
+        (*env)->SetByteArrayRegion(env, output, 0, (jsize)packet_len, (const jbyte *)packet);
+        if (!(*env)->ExceptionCheck(env)) written = (jint)packet_len;
+    }
     zcl_secure_zero(packet, packet_size);
     free(packet);
-    return output;
+    return written;
 }
 
-JNIEXPORT jbyteArray JNICALL
-Java_org_zclassic_wallet_core_NativeCore_packCameraPlane(JNIEnv *env, jclass type, jobject buffer,
-                                                        jint offset, jint length, jint width,
-                                                        jint height, jint row, jint pixel)
+/* No image bytes are read or copied while sizing. The managed caller allocates
+ * the exact destination before packing, and owns its cleanup even if a VM
+ * output transfer partially writes before throwing. Packing rechecks all input
+ * bounds; no pointer or layout is retained across these separate invocations. */
+JNIEXPORT jint JNICALL
+Java_org_zclassic_wallet_core_NativeCore_cameraPlanePacketSize(JNIEnv *env, jclass type, jobject buffer,
+    jint offset, jint length, jint width, jint height, jint row, jint pixel)
 {
     (void)type;
-    if (env == NULL || (*env)->ExceptionCheck(env))
-        return NULL;
+    if (env == NULL || (*env)->ExceptionCheck(env)) return 0;
+    zcl_qr_image layout = {0};
+    if (!camera_layout(width, height, row, pixel, &layout)) return 0;
+    size_t packet_size = 0;
+    if (direct_pixels(env, buffer, offset, length, &layout, &packet_size) == NULL) return 0;
+    return (jint)packet_size;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_zclassic_wallet_core_NativeCore_packCameraPlane(JNIEnv *env, jclass type, jobject buffer,
+                                                        jint offset, jint length, jint width,
+                                                        jint height, jint row, jint pixel, jbyteArray output)
+{
+    (void)type;
+    if (env == NULL || output == NULL || (*env)->ExceptionCheck(env))
+        return 0;
     zcl_qr_image layout = {0};
     if (!camera_layout(width, height, row, pixel, &layout))
-        return NULL;
+        return 0;
     size_t packet_size = 0;
     const uint8_t *pixels = direct_pixels(env, buffer, offset, length, &layout, &packet_size);
     if (pixels == NULL)
-        return NULL;
+        return 0;
+    const jsize capacity = (*env)->GetArrayLength(env, output);
+    if ((*env)->ExceptionCheck(env) || capacity != (jsize)packet_size) return 0;
     /* The Android caller keeps the Image and direct ByteBuffer alive until
      * this synchronous copy returns. No pointer or buffer reference escapes. */
-    return pack_pixels(env, pixels, (size_t)length, &layout, packet_size);
+    return pack_pixels(env, pixels, (size_t)length, &layout, packet_size, output);
 }
 
 static jbyteArray decode_packet(JNIEnv *env, jbyteArray input, size_t length, zcl_network network)

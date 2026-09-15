@@ -10,7 +10,8 @@
 
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "JNI camera check failed at %d\n", __LINE__); abort(); } } while (0)
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
-JNIEXPORT jbyteArray JNICALL API(packCameraPlane)(JNIEnv *, jclass, jobject, jint, jint, jint, jint, jint, jint);
+JNIEXPORT jint JNICALL API(cameraPlanePacketSize)(JNIEnv *, jclass, jobject, jint, jint, jint, jint, jint, jint);
+JNIEXPORT jint JNICALL API(packCameraPlane)(JNIEnv *, jclass, jobject, jint, jint, jint, jint, jint, jint, jbyteArray);
 JNIEXPORT jbyteArray JNICALL API(scanCameraPacket)(JNIEnv *, jclass, jbyteArray, jint);
 JNIEXPORT jbyteArray JNICALL API(scanQr)(JNIEnv *, jclass, jbyteArray, jint, jint, jint, jint, jint);
 
@@ -24,7 +25,7 @@ static struct { uint64_t before; uint8_t bytes[ZCL_CAMERA_PACKET_MAX]; uint64_t 
 static fake_array input, result;
 static jlong direct_capacity;
 static bool pending, allocation_failure;
-static unsigned fault, calls, allocations;
+static unsigned fault, calls, allocations, new_arrays;
 static uint8_t *owned;
 static size_t owned_length, allocation_bytes;
 
@@ -71,8 +72,8 @@ static jboolean JNICALL exception_check(JNIEnv *env)
 static jsize JNICALL array_length(JNIEnv *env, jarray array)
 {
     (void)env;
-    CHECK(array == (jarray)&input);
-    return vm_failure() ? 0 : input.length;
+    CHECK(array == (jarray)&input || array == (jarray)&result);
+    return vm_failure() ? 0 : ((const fake_array *)array)->length;
 }
 
 static void JNICALL get_bytes(JNIEnv *env, jbyteArray array, jsize offset, jsize count, jbyte *bytes)
@@ -105,6 +106,7 @@ static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize count)
 {
     (void)env;
     CHECK(count > 0 && (size_t)count <= result.capacity);
+    ++new_arrays;
     if (vm_failure()) return NULL;
     result.length = count;
     return (jbyteArray)&result;
@@ -115,11 +117,20 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray array, jsize offset, jsize
     (void)env;
     CHECK(array == (jbyteArray)&result && offset == 0 && count == result.length);
     CHECK(count > 0 && (size_t)count <= result.capacity && bytes != NULL);
-    if (vm_failure()) { result.bytes[0] = (uint8_t)bytes[0]; return; }
+    if (vm_failure()) {
+        const size_t prefix = (size_t)count < 6 ? (size_t)count : 6;
+        memcpy(result.bytes, bytes, prefix);
+        return;
+    }
     memcpy(result.bytes, bytes, (size_t)count);
 }
 
-static const struct JNINativeInterface_ table = {
+#if defined(__ANDROID__)
+typedef struct JNINativeInterface camera_jni_interface;
+#else
+typedef struct JNINativeInterface_ camera_jni_interface;
+#endif
+static const camera_jni_interface table = {
     .ExceptionCheck = exception_check, .GetArrayLength = array_length,
     .GetByteArrayRegion = get_bytes, .NewByteArray = new_bytes, .SetByteArrayRegion = set_bytes,
     .GetDirectBufferCapacity = buffer_capacity, .GetDirectBufferAddress = buffer_address
@@ -148,19 +159,22 @@ static void reset(operation op, unsigned selected_fault)
 {
     CHECK(owned == NULL);
     pending = false; allocation_failure = false;
-    fault = selected_fault; calls = 0; allocations = 0; allocation_bytes = 0;
+    fault = selected_fault; calls = 0; allocations = 0; allocation_bytes = 0; new_arrays = 0;
     input = op == PACKET ? (fake_array){(jsize)packet_length, sizeof(packet), packet}
                         : (fake_array){(jsize)image_length, sizeof(image), image};
     direct_capacity = (jlong)image_length;
     memset(&result_box, 0xa5, sizeof(result_box));
-    result = (fake_array){0, sizeof(result_box.bytes), result_box.bytes};
+    result = (fake_array){op == PACK ? (jsize)packet_length : 0, sizeof(result_box.bytes), result_box.bytes};
 }
 
 static jbyteArray dispatch(operation op, JNIEnv *env, jobject object)
 {
-    if (op == PACK)
-        return API(packCameraPlane)(env, NULL, object, 0, (jint)image_length,
-            (jint)side, (jint)side, (jint)side, 1);
+    if (op == PACK) {
+        const jint written = API(packCameraPlane)(env, NULL, object, 0, (jint)image_length,
+            (jint)side, (jint)side, (jint)side, 1, (jbyteArray)&result);
+        CHECK(written == 0 || written == result.length);
+        return written == 0 ? NULL : (jbyteArray)&result;
+    }
     if (op == PACKET) return API(scanCameraPacket)(env, NULL, (jbyteArray)object, 0);
     return API(scanQr)(env, NULL, (jbyteArray)object, (jint)side, (jint)side, (jint)side, 1, 0);
 }
@@ -200,6 +214,7 @@ static void exception_and_allocation_faults(operation op)
         if (selected == 0) check_success(op, output);
         else CHECK(output == NULL && pending && calls == selected);
         CHECK(owned == NULL && allocations <= 1);
+        if (op == PACK) CHECK(new_arrays == 0);
         CHECK(result_box.before == UINT64_C(0xa5a5a5a5a5a5a5a5) && result_box.after == result_box.before);
     }
     reset(op, 0);
@@ -240,6 +255,14 @@ static void invalid_lengths(void)
     }
 }
 
+static void check_sizing(jint width, jint height, jint length, size_t expected)
+{
+    CHECK(API(cameraPlanePacketSize)(&environment, NULL, (jobject)&input, 0, length,
+        width, height, width, 1) == (jint)expected);
+    CHECK(calls == 2 && allocations == 0 && new_arrays == 0 && !pending);
+    calls = 0;
+}
+
 static void exact_pack_allocations(void)
 {
     static uint8_t pixels[1024 * 1024]; /* Public fixture pixels, never an application buffer. */
@@ -256,11 +279,13 @@ static void exact_pack_allocations(void)
         const size_t expected = 5 + layouts[i].sampled_width * layouts[i].sampled_height;
         input = (fake_array){length, sizeof(pixels), pixels};
         direct_capacity = sizeof(pixels);
+        check_sizing(width, height, length, expected);
+        result.length = (jsize)expected;
         CHECK(API(packCameraPlane)(&environment, NULL, (jobject)&input, 0, length,
-            width, height, width, 1) == (jbyteArray)&result);
+            width, height, width, 1, (jbyteArray)&result) == (jint)expected);
         printf("JNI camera %dx%d: allocation=%zu packet=%zu\n", width, height, allocation_bytes, expected);
         CHECK(allocations == 1 && allocation_bytes == expected && owned == NULL);
-        CHECK(calls == 4 && !pending);
+        CHECK(calls == 4 && new_arrays == 0 && !pending);
         CHECK((size_t)result.length == expected && result.bytes[0] == 1);
         CHECK((size_t)result.bytes[1] + (size_t)result.bytes[2] * 256 == layouts[i].sampled_width);
         CHECK((size_t)result.bytes[3] + (size_t)result.bytes[4] * 256 == layouts[i].sampled_height);
@@ -271,13 +296,56 @@ static void exact_pack_allocations(void)
     input = (fake_array){21 * 1024, sizeof(pixels), pixels};
     direct_capacity = sizeof(pixels);
     CHECK(API(packCameraPlane)(&environment, NULL, (jobject)&input, 0, input.length,
-        21, 1024, 21, 1) == NULL); /* Valid input dimensions, unsupported sampled width. */
+        21, 1024, 21, 1, (jbyteArray)&result) == 0); /* Unsupported sampled width. */
     CHECK(calls == 0 && allocations == 0 && owned == NULL && !pending);
+}
+
+static jint size_packet(JNIEnv *env, jobject buffer)
+{
+    return API(cameraPlanePacketSize)(env, NULL, buffer, 0, (jint)image_length,
+        (jint)side, (jint)side, (jint)side, 1);
+}
+
+static void sizing_refusals(void)
+{
+    reset(PACK, 0);
+    CHECK(size_packet(NULL, (jobject)&input) == 0);
+    CHECK(size_packet(&environment, NULL) == 0);
+    pending = true;
+    CHECK(size_packet(&environment, (jobject)&input) == 0);
+    CHECK(calls == 0 && allocations == 0 && new_arrays == 0 && pending);
+    for (unsigned selected = 1; selected <= 2; ++selected) {
+        reset(PACK, selected);
+        CHECK(size_packet(&environment, (jobject)&input) == 0);
+        CHECK(calls == selected && pending && allocations == 0 && new_arrays == 0);
+    }
+    reset(PACK, 0);
+    direct_capacity = -1;
+    CHECK(size_packet(&environment, (jobject)&input) == 0);
+    CHECK(calls == 1 && !pending && allocations == 0 && new_arrays == 0);
+}
+
+static void destination_refusals(void)
+{
+    const jsize sizes[] = {-1, 0, 5, (jsize)packet_length - 1, (jsize)packet_length + 1, INT32_MAX};
+    reset(PACK, 0);
+    CHECK(API(packCameraPlane)(&environment, NULL, (jobject)&input, 0, (jint)image_length,
+        (jint)side, (jint)side, (jint)side, 1, NULL) == 0);
+    CHECK(calls == 0 && allocations == 0 && !pending);
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+        reset(PACK, 0);
+        result.length = sizes[i];
+        CHECK(invoke(PACK, &environment, (jobject)&input) == NULL);
+        CHECK(calls == 3 && allocations == 0 && new_arrays == 0 && !pending);
+        for (size_t j = 0; j < result.capacity; ++j) CHECK(result.bytes[j] == 0xa5);
+    }
 }
 
 int main(void)
 {
     initialize();
+    sizing_refusals();
+    destination_refusals();
     for (operation op = PACK; op <= SCAN; ++op) {
         invalid_entries(op);
         exception_and_allocation_faults(op);

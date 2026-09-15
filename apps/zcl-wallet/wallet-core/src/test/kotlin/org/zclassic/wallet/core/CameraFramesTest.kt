@@ -41,13 +41,35 @@ class CameraFramesTest {
         val plane = ByteBuffer.allocateDirect(441)
         assertNull(CameraFrames.pack(ByteBuffer.allocate(441), 21, 21, 21, 1))
         for ((offset, length) in listOf(-1 to 441, 1 to 441, 0 to -1, Int.MAX_VALUE to 441, 0 to 440)) {
-            assertNull(NativeCore.packCameraPlane(plane, offset, length, 21, 21, 21, 1))
+            assertRefused(plane, offset, length)
         }
-        assertNull(NativeCore.packCameraPlane(plane, 0, 441, -1, 21, 21, 1))
-        assertNull(NativeCore.packCameraPlane(plane, 0, 441, 21, 21, Int.MAX_VALUE, 1))
-        assertNull(NativeCore.packCameraPlane(plane, 0, 441, 21, 21, 21, -1))
+        assertRefused(plane, 0, 441, width = -1)
+        assertRefused(plane, 0, 441, row = Int.MAX_VALUE)
+        assertRefused(plane, 0, 441, pixel = -1)
         plane.limit(440)
         assertNull(CameraFrames.pack(plane, 21, 21, 21, 1))
+    }
+
+    private fun assertRefused(plane: ByteBuffer, offset: Int, length: Int,
+                              width: Int = 21, row: Int = 21, pixel: Int = 1) {
+        val output = ByteArray(446) { 93 }
+        try {
+            assertEquals(0, NativeCore.cameraPlanePacketSize(plane, offset, length, width, 21, row, pixel))
+            assertEquals(0, NativeCore.packCameraPlane(plane, offset, length, width, 21, row, pixel, output))
+            assertContentEquals(ByteArray(446) { 93 }, output)
+        } finally { output.fill(0) }
+    }
+
+    @Test fun outputCapacityMustMatchTheRevalidatedPlane() {
+        val plane = ByteBuffer.allocateDirect(441)
+        assertEquals(446, NativeCore.cameraPlanePacketSize(plane, 0, 441, 21, 21, 21, 1))
+        for (capacity in listOf(0, 1, 445, 447, CameraFrames.MAX_PACKET_BYTES + 1)) {
+            val output = ByteArray(capacity) { 93 }
+            try {
+                assertEquals(0, NativeCore.packCameraPlane(plane, 0, 441, 21, 21, 21, 1, output))
+                assertContentEquals(ByteArray(capacity) { 93 }, output)
+            } finally { output.fill(0) }
+        }
     }
 
     @Test fun packetBoundsAndUntrustedTextRefuse() {
