@@ -63,6 +63,10 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   if another owner throws. It preserves the first failure and retains failed
   owners for a later lifecycle cleanup attempt. Android's pause/destroy cleanup
   still runs; one component's exception cannot skip retirement of its peers.
+* The decoder service erases its managed camera frame after native decoding,
+  before returning text through Binder. It retains its single-input admission
+  until the reply finishes and clears decoded text afterward. Task cleanup also
+  erases cancelled/rejected frames. This does not erase all Binder/provider copies.
 * Camera preview scratch pixels clear after upload or failure. Cleanup retires
   the owned image reference and clears scratch before calling Android's bitmap
   erase operation; it does not allocate a replacement buffer or recycle an image

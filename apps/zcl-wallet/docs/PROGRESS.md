@@ -4353,3 +4353,41 @@ Evidence: `.cache/android-wallet/resume-20260916/scanner-cleanup-failure/`.
 Next: check whether the decoder service retires its managed camera frame before
 handing the decoded result back through Binder; preserve its single-input bound
 and queued-input cancellation cleanup.
+
+2026-09-16: the decoder service now clears its managed camera frame immediately
+after native decoding, before reply marshalling can allocate or block. Its
+single-input busy flag remains held through the reply, decoded text is cleared
+afterward, and OwnedExecutor cleanup still clears queued/rejected inputs.
+The native decoder already retired its separate pixel copy before VM output.
+
+A local service endpoint fixture uses the actual worker and packaged JNI with
+a public QR image. Its reply holds the handoff open, directly observing frame
+retirement, intact response text, rejection/clearing of a competing input and
+text erasure when the handoff ends. Wrong-network decoding and a reply exception
+exercise refusal cleanup; queued cancellation delivers nothing and clears its
+frame. Three of four tests fail on the original service at the frame-retirement
+assertion (0.339 seconds). An initial fixture return-type error was corrected
+before that baseline; its runner diagnostic remains in the evidence directory.
+This local endpoint does not claim Binder isolation.
+
+All eight selected tests pass on each x86-64 API30/35/36 in
+6.270/0.992/25.923 seconds, with no skips: the four ownership tests, three actual
+JNI QR tests and the real isolated-service identity/network round trip.
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+architecture and alignment pass. Native libraries are byte-identical to the
+previous tested release. Minified worker DEX calls the whole-array erasure
+helper before each reply path; the returned text remains live only through
+its handoff and retains normal/exceptional cleanup afterward.
+
+A separate source-only build from tree 1e1ce5c864a6ba4f1c8feb68c14c4380ce6803ac
+reproduces the full unsigned APK. This commit matches that app source except
+for security/progress notes. The release remains 612,823 bytes, SHA256
+`412690bf65833c306ae3b8a8ce7504820b98e38aaa3eca11644fa1de9c107007`.
+Evidence: `.cache/android-wallet/resume-20260916/service-frame-retirement/`.
+Reviewed array ownership/aliasing, native-return ordering, reply exceptions,
+worker cancellation, the unchanged admission bound and no new runtime
+allocation. Reproduction remains same-host/toolchain; physical hardware,
+custody, existing root-lint failures and parked TLS remain unqualified.
+
+Next: continue the owned-secret handoff audit through recovery submission and
+screen cleanup, reusing existing fixtures when a concrete gap is found.

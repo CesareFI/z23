@@ -41,6 +41,10 @@ class ScanDecodeService : Service() {
                 } catch (_: Exception) {
                     // Generic refusal; never log camera frames or payloads.
                 } finally {
+                    // Native decoding has returned. Retire captured pixels
+                    // before Binder can allocate or block while sending text.
+                    // Task cleanup still owns queued/rejected input retirement.
+                    frame.fill(0)
                     try {
                         if (!stopped.get()) respond(reply, requestId, text)
                     } finally {
