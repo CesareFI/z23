@@ -62,12 +62,18 @@ internal class ScanDecodeClient(
             if (!withinTime(connectStartedMs.get(), 15_000)) { fail(); return }
             if (!serviceUid.compareAndSet(-1, uid)) return
             main.removeCallbacks(connectTimeout)
-            if (!main.post {
-                if (isReady) {
-                    if (withinTime(connectStartedMs.get(), 15_000)) onReady(this@ScanDecodeClient)
-                    else fail()
-                }
-            }) fail()
+            try {
+                if (!main.post {
+                    if (isReady) {
+                        if (withinTime(connectStartedMs.get(), 15_000)) onReady(this@ScanDecodeClient)
+                        else fail()
+                    }
+                }) fail()
+            } catch (problem: Throwable) {
+                // The timeout is already retired. Close even if the post
+                // enqueued before throwing; late readiness must stay inert.
+                try { fail() } finally { throw problem }
+            }
         }
 
         override fun onResult(requestId: Long, text: ByteArray?) {

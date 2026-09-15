@@ -3907,3 +3907,26 @@ delivery cannot be undone; the queued-callback tests hold the main thread until
 retirement to observe the specific stated invariant. No camera, secret input,
 wallet or actual OOM is involved. Evidence is retained in
 `.cache/android-wallet/resume-20260915/scan-reply-handoff/`.
+
+2026-09-15: exceptional decoder-readiness handoffs now close and unbind the
+client after its connection timeout has been retired. A readiness callback
+queued before the exception sees the closed client and remains inert. The
+original exception is preserved even if failure notification also fails.
+Identity validation, elapsed deadlines and successful readiness are unchanged.
+
+A new actual isolated-service fixture refuses readiness posts before/after
+enqueue, holds UI delivery until Binder cleanup completes, and checks the
+isolated UID, one failure callback, no readiness delivery and no retained bind.
+Its baseline fails both exceptional paths; ordinary readiness passes. All 12
+selected readiness/reply/isolation/deadline tests pass x86-64 API30/35/36 in
+15.263/61.511/43.256 seconds. No deadline or test timeout was relaxed.
+Android/JVM, both-ABI builds, lint, fixture isolation and alignment pass. Native
+libraries remain byte-identical. Unsigned release is 612,647 bytes, SHA256
+`0c1fab6ac6673694de8a64a42badae42f614944ab1e5576322548f563f4b015d`.
+Reviewed Binder/main ordering, atomic closure, unbinding and original-error
+preservation. The fixture uses no camera, decoded input, wallet or key. Evidence:
+`.cache/android-wallet/resume-20260915/scan-ready-handoff/`.
+Next: erase unlocked entropy at the address-derivation boundary, before storage
+promotion and UI dispatch. The existing bounded EC allocation is retained:
+its opaque provider storage needs suitable alignment and C effective-type
+semantics; replacing it mechanically with a declared byte array is unjustified.
