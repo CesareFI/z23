@@ -4116,3 +4116,42 @@ Next: finish the controller setup-timeout failure regression with a real worker
 owning only public marker entropy. Then review/reuse the earlier prepared-session
 finalizer change from 6227d2d97; current debug bytecode still allocates its bound
 callback inside close(), before requesting worker shutdown.
+
+2026-09-15: setup-timeout scheduling now retires the foreground session when
+the clock read or Handler post throws. Ordinary exceptions report refusal;
+fatal errors close the owner before propagating the original error, including
+when failure rendering also throws. A failed post that already enqueued its
+timer removes that timer. Exact expiry retains its existing message and the
+successful path retains the original immutable setup window.
+
+The new regression fails four of seven tests on the original controller. It
+uses an unlaunched controller on the storage-free debug host and a real worker
+holding only public marker entropy. It observes session closure, timer removal,
+worker termination and entropy erasure after worker release. No authentication,
+key generation or storage operation occurs. All 15 selected scheduling and
+worker/UI-expiry tests pass on x86-64 API30/35/36 without skips or weakened
+deadlines. API30 completes in 128.104 seconds; API36's seven scheduling and eight
+expiry tests complete in 165.758/82.222 seconds. The fresh API35 KVM device runs
+all 15 in 13.782 seconds.
+
+The inherited software-emulated API35 initially reports 15 passed in its device
+log, but the outer command times out before collecting completion. A retry is
+stopped after observing a System UI ANR obstructing lifecycle transitions. Its
+reboot does not finish within the bounded readiness checks. Acceptance instead
+uses a fresh isolated API35 profile, the installed image and the existing
+hash-qualified child-reaping launcher with usable KVM. Initial timeout/ANR logs
+remain preserved; no acceptance threshold or test timeout is relaxed.
+
+Android/JVM tests, both-ABI builds, Android lint, fixture isolation, architecture
+and 16 KiB alignment pass. The native libraries remain byte-identical. A fresh
+source-only build in a separate directory reproduces the complete unsigned APK
+under the same host/toolchain. Reviewed main-thread ownership, timer identity,
+worker-side erasure, original-error preservation and bounded successful setup.
+This does not make Android cleanup allocation-free or qualify hardware custody.
+Existing root-lint failures remain. Unsigned release is 612,807 bytes, SHA256
+`4acec13eb0239517f1385482dd2786662130a6c6869eef45b888a55a0835041e`.
+Evidence: `.cache/android-wallet/resume-20260915/setup-timeout-failure/`;
+fresh-emulator launch evidence: the sibling `api35-kvm/` directory.
+
+Next: integrate the independently tested prepared-session finalizer, then
+retire restored entropy before the public-address UI handoff.

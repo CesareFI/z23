@@ -213,16 +213,28 @@ class MainActivity : Activity() {
     private fun startSetupTimeout(window: SetupWindow): Boolean {
         clearSetupTimeout()
         setupWindow = window
-        val remaining = window.remainingMillis
-        if (remaining <= 0) {
-            showFailure(R.string.setup_expired)
-            return false
+        val failure = try {
+            queueSetupTimeout(window)
+        } catch (_: Exception) {
+            R.string.operation_failed
+        } catch (problem: Throwable) {
+            // Retire the session even if the timer was enqueued before the
+            // error. Rendering failure must not replace the original error.
+            try { showFailure(R.string.operation_failed) } catch (_: Throwable) { /* Preserve setup error. */ }
+            throw problem
         }
+        if (failure == 0) return true
+        showFailure(failure)
+        return false
+    }
+
+    // Return a failure message resource, or zero once cleanup is scheduled.
+    private fun queueSetupTimeout(window: SetupWindow): Int {
+        val remaining = window.remainingMillis
+        if (remaining <= 0) return R.string.setup_expired
         val timeout = Runnable { showFailure(R.string.setup_expired) }
         setupTimeout = timeout
-        if (handler.postDelayed(timeout, remaining)) return true
-        showFailure(R.string.operation_failed)
-        return false
+        return if (handler.postDelayed(timeout, remaining)) 0 else R.string.operation_failed
     }
 
     private fun clearSetupTimeout() {
