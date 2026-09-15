@@ -3490,3 +3490,53 @@ retains only the borrowed public input array and no secret copy. No fixture or
 fault hook enters the release. Exact sources, APKs, initialization failures,
 mutations and acceptance logs remain under
 `.cache/android-wallet/resume-20260915/setup-seal/`.
+
+2026-09-15: setup-sealing checkpoint
+`2eb9c4c1f99b42687aa26c83f7d138ac75543be5` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree, upstream is correct and the tree is clean with ahead/behind 0/0. All 123
+wallet commits remain preserved; origin is unchanged.
+
+2026-09-15: the JNI secret-erasure regression/fuzz observer now stores integer
+span identities instead of retaining stack pointers. An omitted-wipe mutation
+can end a child buffer's lifetime before a later comparison; the observer must
+remain valid even when the code under test fails cleanup. Pointer-to-integer
+conversion occurs only through live arguments. Bytes are inspected only through
+the current live zeroizer argument. All prior cleanup assertions remain intact.
+
+The audit also reproduced a deterministic regression gap: changing only the
+recovery-input wipe from 430 bytes to 429 passed the prior fixed JNI suite at
+Clang20 -O2 with sanitizers. Four new cases fill the complete 215-character input
+for restoration and confirmation, using an invalid ASCII word and a non-ASCII
+final character with both bytes nonzero. JNI copies the full input before either
+refusal, so all 430 bytes must be wiped. The shortened-wipe mutation now fails
+its minimum-length assertion. Separately omitting recovery-input, phrase-output
+or entropy wiping also fails the intended cleanup assertion; the control passes.
+The production wipe was already correct; this change strengthens its evidence.
+
+All 92 default native sanitizer groups pass in 57.17 seconds. Strict Clang/GCC
+analysis and unchanged complexity caps10/15 pass, including separate optimized
+analysis of the regression and fuzz fixture forms. Counts are512 production
+functions/91 files and1298 fixture functions/157 files. The largest measured
+GCC-O2 fixture frame is1408 bytes; this is not a whole-call-stack bound.
+The existing JNI fuzzer runs60,996 cases in121 seconds without a finding, with
+max_len217, per-input timeout5, RSS cap512 MiB and observed55 MiB. ASan stack-use-
+after-return, leak detection and strict string checks remain enabled. Its public
+corpus includes explicit full-length restoration/confirmation inputs.
+
+The updated native fixture also passes on x86-64 Android API30/API35/API36,
+compiled at NDK-O2 against the current release C/provider archives; transferred
+executable hashes match the host. ARM64 compilation passes but is not executed.
+This fixture uses a fake JNI environment and fixed synthetic RNG bytes, with no
+VM, wallet file, fresh entropy source or Keystore operation. It does not newly qualify
+real-VM or hardware custody behavior.
+
+Android/JVM tests/builds, debug/release lint, fixture isolation, architecture and
+16 KiB alignment pass. Production source and the unsigned release APK remain
+unchanged; the APK still hashes to
+`6f9b9641dfeecd36cca4b110dc3aba506bcef4d1aef8fd7bea2d0390bb567a1f`.
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). The escaped mutation, original
+fixture, strengthened controls, optimized negative binaries, corpus and all
+acceptance logs remain in
+`.cache/android-wallet/resume-20260915/jni-span-identity/`.
+TLS remains quarantined; positive hardware custody remains unqualified.

@@ -24,7 +24,9 @@ typedef struct {
     jsize length;
     union { uint8_t bytes[216]; jchar chars[216]; } data;
 } fake_array;
-typedef struct { const void *pointer; size_t length; bool cleared; } touched_span;
+/* Missing-wipe mutations can outlive the touched stack buffer. Retain only
+ * integer identity; inspect bytes solely through a live zeroizer argument. */
+typedef struct { uintptr_t identity; size_t length; bool cleared; } touched_span;
 static fake_array entropy, phrase, header, result_array;
 static uint8_t known_header[80];
 static bool header_ready;
@@ -40,14 +42,15 @@ static void track(const void *pointer, size_t length)
 {
     if (length == 0) return;
     CHECK(pointer != NULL);
+    const uintptr_t identity = (uintptr_t)pointer;
     for (size_t i = 0; i < touched_count; ++i) {
-        if (touched[i].pointer != pointer) continue;
+        if (touched[i].identity != identity) continue;
         CHECK(!touched[i].cleared);
         if (touched[i].length < length) touched[i].length = length;
         return;
     }
     CHECK(touched_count < sizeof(touched) / sizeof(touched[0]));
-    touched[touched_count++] = (touched_span){pointer, length, false};
+    touched[touched_count++] = (touched_span){identity, length, false};
 }
 
 void zcl_jni_key_test_zero(void *pointer, size_t length)
@@ -56,11 +59,12 @@ void zcl_jni_key_test_zero(void *pointer, size_t length)
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
     for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    const uintptr_t identity = (uintptr_t)pointer;
     for (size_t i = 0; i < touched_count; ++i) {
-        if (touched[i].pointer != pointer) continue;
+        if (touched[i].identity != identity) continue;
         CHECK(length >= touched[i].length);
         touched[i].cleared = true;
-        touched[i].pointer = NULL; /* Do not retain a pointer past this span's lifetime. */
+        touched[i].identity = (uintptr_t)NULL;
         touched[i].length = 0;
     }
 }
@@ -423,6 +427,22 @@ static void invalid_headers(void)
     CHECK(!run(6) && random_calls == 1 && !pending);
 }
 
+static void full_phrase_inputs(void)
+{
+    const jchar endings[] = {'a', 0x1234};
+    for (unsigned operation = 2; operation <= 3; ++operation) {
+        for (size_t ending = 0; ending < sizeof(endings) / sizeof(endings[0]); ++ending) {
+            prepare();
+            phrase.length = 215;
+            for (size_t i = 0; i < 215; ++i) phrase.data.chars[i] = 'a';
+            phrase.data.chars[214] = endings[ending];
+            /* Both are malformed, but JNI first copies all 430 bytes. Cover
+             * full scratch erasure after decoding and after ASCII refusal. */
+            CHECK(!run(operation) && !pending);
+        }
+    }
+}
+
 static void destination_refusals(void)
 {
     const jsize lengths[] = {INT32_MIN, -1, 0, 1, 31, 33, 214, 216, INT32_MAX};
@@ -469,7 +489,7 @@ static void transfer_failures(void)
 int main(void)
 {
     pending_helpers(); pending_and_null_entries(); exact_results(); vm_failures();
-    allocation_with_exception(); invalid_inputs(); invalid_headers();
+    allocation_with_exception(); invalid_inputs(); invalid_headers(); full_phrase_inputs();
     destination_refusals(); transfer_failures();
     puts("JNI key exception and secret cleanup checks passed");
     return 0;

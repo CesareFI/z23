@@ -2247,3 +2247,36 @@ installed toolchain/dependencies. It does not establish cross-host/toolchain or
 signed-APK reproducibility, hardware custody, or arbitrary source safety. TLS
 remains quarantined. Exact artifacts and negative controls are preserved under
 `.cache/android-wallet/resume-20260915/apk-reproduction/`.
+
+## JNI erasure observer lifetime and full input — 2026-09-15
+
+Reviewed the test/fuzz observer and four new full-length malformed phrase cases.
+No production C/Kotlin code changes. Missing-wipe mutants can let an observed
+stack span end before later fixture bookkeeping. The observer now retains
+uintptr_t identities converted from live pointers, with no integer-to-pointer
+conversion or expired-pointer comparison. Actual bytes are inspected only while
+a live zeroizer argument owns the span. All earlier cleanup assertions remain.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffers; out-of-bounds access; pointer arithmetic; NULL/uninitialized memory | The existing eight-span registry and fake-array capacities are unchanged. New inputs fill215 of216 jchar slots, with explicit final index214. Existing region checks prove bounds before copying all430 bytes, and full-structure comparisons require unchanged caller input. Scalar identities are initialized and retired; live pointer arguments retain their existing NULL/length checks. |
+| Integer overflow/underflow; signed/unsigned conversions | uintptr_t is used only for equality of supported pointer identities, with no arithmetic or reconstruction. The retired identity is the conversion of NULL. The215-character length and0x1234 marker fit jsize/jchar; bounded loop/index conversions remain explicit. Optimized ASan/UBSan/integer-instrumented controls and mutants compile with strict warnings. |
+| Use-after-free; double-free; leaks; dangling pointers | No allocation is added. Missing-wipe mutation bookkeeping no longer evaluates a pointer after its target lifetime. Cleared flags and required span lengths retain all previous assertions. Byte inspection is limited to live wipe calls, including the shortened-wipe refusal; no dead stack is read to prove erasure. |
+| Stack; allocation limits; resource exhaustion | Fixed registry/array budgets and bounded loops remain unchanged. GCC-O2's largest measured fixture frame is1408 bytes; no whole-stack claim is made. Mutants have15-second limits and must fail their intended assertion; timeout is not evidence. Fuzzing uses max_len217, timeout5 and512 MiB RSS cap. |
+| Malformed input; races; format strings; secret leakage | Tests exercise decode refusal and late ASCII-conversion refusal with a fully copied input. State is per test/fuzz process with no concurrent caller. Diagnostics contain only fixed labels/line numbers. RNG is replaced by synthetic0x42 bytes, and all other vectors are public. No real seed, provider authentication, persistence or secret logging is introduced. |
+
+A430→429-byte recovery-input wipe passed the previous deterministic fixture;
+its source, executable and result are preserved. The full-length cases reject
+that exact mutant. Omitted input-character, output-character and entropy wipes
+also reject under Clang20-O2 with ASan/UBSan/integer checks; the control passes.
+All92 default sanitizer groups pass57.17s; strict fixture analysis and complexity
+caps10/15 pass. The existing JNI fuzzer completes60,996 cases/121s with55 MiB
+peak RSS and enabled stack-use-after-return/leak/strict-string checks.
+
+The native fake-JNI fixture passes x86-64 Android API30/API35/API36 against current
+release archives with matching transferred hashes; ARM64 is compile-only. Full
+Android/JVM/build/lint, isolation, alignment and architecture pass. The release
+APK remains byte-identical. Evidence is under
+`.cache/android-wallet/resume-20260915/jni-span-identity/`. These are stronger
+fixture/erasure observations, not a newly discovered production leak or new
+hardware-custody acceptance. TLS remains quarantined.
