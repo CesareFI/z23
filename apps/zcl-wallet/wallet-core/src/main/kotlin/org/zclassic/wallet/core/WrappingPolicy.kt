@@ -17,14 +17,14 @@ object WrappingPolicy {
 
     /** UI scheduling hint; the C elapsed-time predicate must still guard
      * actual delivery after sleep or delayed platform callbacks. */
-    val authenticationWindowMillis: Long get() = NativeCore.authenticationWindowMillis()
+    val authenticationWindowMillis: Long get() = NativeCore.custodyWindowRemainingMillis(false, 0, 0)
     fun authenticationWindowOpen(startedMillis: Long, nowMillis: Long): Boolean =
-        NativeCore.authenticationWindowOpen(startedMillis, nowMillis)
+        NativeCore.custodyWindowRemainingMillis(false, startedMillis, nowMillis) > 0
 
     /** Positive cleanup delay while setup is live; zero refuses an expired or
      * invalid clock. Resample at each use, including after queued delivery. */
     fun setupWindowRemainingMillis(startedMillis: Long, nowMillis: Long): Long =
-        NativeCore.setupWindowRemainingMillis(startedMillis, nowMillis)
+        NativeCore.custodyWindowRemainingMillis(true, startedMillis, nowMillis)
 
     fun accepts(keyBits: Int, hardware: Int, flags: Int, authenticationSeconds: Int, methods: Int): Boolean =
         NativeCore.acceptWrappingPolicy(keyBits, hardware, flags, authenticationSeconds, methods)

@@ -3338,3 +3338,59 @@ Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Baseline source/APKs/failures,
 public fixtures, complexity refusal, mutations and exact final acceptance remain
 in `.cache/android-wallet/resume-20260915/setup-expiry/`. TLS remains quarantined;
 positive hardware custody remains unqualified.
+
+2026-09-15: elapsed-setup checkpoint
+`cc65321b82eedc879c7076c195f9a507e76e7cc6` is verified on the private
+`wallet-backup` development branch. Local/tracking/direct-Git/GitHub-API SHAs
+agree; the tree was clean, upstream correct and ahead/behind 0/0. All 120 wallet
+commits remain preserved, including the original 108-commit checkpoint. Origin
+remains unchanged; only the same-named development branch was pushed.
+
+2026-09-15: the scalar JNI clock projection now shares its timestamp conversion
+and refusal handling. The C authentication predicate and separate setup policy
+retain their 90000/600000-ms limits. A new C authentication-remaining function
+reuses that predicate and preserves output on failure. The managed WrappingPolicy
+API is unchanged: zero-age authentication queries return its full duration, while
+actual delivery still checks elapsed time. No hardware-authentication policy,
+secret operation, storage protocol or native alignment setting changes.
+
+This follows an exact APK measurement: setup expiry increased the ARM library
+across the ZIP's next 16 KiB alignment boundary. Three JNI clock exports became
+one, and both native libraries are 256 bytes smaller. The ARM data offset remains
+98304; the following x86 data offset falls from 344064 to 327680. This recovers
+one alignment page without weakening alignment. The 17 non-code APK entries
+remain byte-identical; classes.dex decreases by 76 bytes.
+
+| Release artifact | Before | After |
+| --- | ---: | ---: |
+| Unsigned APK | 630055 bytes | 613415 bytes |
+| ARM64 native library | 229488 bytes | 229232 bytes |
+| x86-64 native library | 259264 bytes | 259008 bytes |
+
+The APK reduction is 16640 bytes. This is a file-size result; no RAM, CPU or
+startup-time improvement is claimed. Release SHA256 is
+`3578329a69f52cbc868870505430532bbf2cd812cecbbd29da8975d65de24e72`.
+
+The new registered scalar JNI fixture checks both deadlines, 32/64-bit crossings,
+negative-equal timestamps and all 254 invalid boolean byte values. The C
+remaining-delay fixture now covers both named policies without removing its prior
+assertions. Four isolated JNI mutations (boolean refusal, signed refusal, selector
+swap and truncation) and an authentication failure-output mutation all refuse for
+their intended invariant. The expanded time fuzzer completes 62,374,271 cases in
+121 seconds without a finding (max_len24, timeout5, RSS cap512 MiB, observed276 MiB).
+
+All 96 fuzz/oracle groups pass in 113.56 seconds and all 92 default native groups
+pass in 57.67 seconds. Strict Clang/GCC analysis, unchanged complexity caps10/15,
+architecture, Android/JVM builds/tests, debug/release lint, fixture isolation and
+16 KiB alignment pass. The unchanged two authentication and eight setup tests
+pass through actual device JNI on API30/API35/API36 in 35.909/110.266/65.949 seconds.
+The scalar C fixture also passes on all three x86-64 APIs linked dynamically to
+the exact extracted release library; host/device hashes agree. Its ARM64 build
+is compile-only. No VM operations, keys, wallet storage or provider authentication
+are used by that release-library fixture. Positive hardware custody and minified
+setup UI remain unqualified; TLS stays quarantined.
+
+Review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Baseline/candidate ZIP layouts,
+library/export identities, negative sources, public corpus, APK hashes and all
+acceptance logs are preserved in
+`.cache/android-wallet/resume-20260915/setup-apk-size/`.

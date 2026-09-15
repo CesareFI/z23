@@ -2,25 +2,6 @@
 #include "jni_support.h"
 #include "zcl_custody.h"
 
-JNIEXPORT jlong JNICALL
-Java_org_zclassic_wallet_core_NativeCore_authenticationWindowMillis(JNIEnv *env, jclass type)
-{
-    (void)env;
-    (void)type;
-    _Static_assert(ZCL_AUTH_WINDOW_MS <= INT64_MAX, "Authentication delay must fit Java long");
-    return (jlong)ZCL_AUTH_WINDOW_MS;
-}
-
-JNIEXPORT jboolean JNICALL
-Java_org_zclassic_wallet_core_NativeCore_authenticationWindowOpen(JNIEnv *env, jclass type,
-    jlong started, jlong now)
-{
-    (void)env;
-    (void)type;
-    if (started < 0 || now < 0) return JNI_FALSE;
-    return zcl_authentication_window_check((uint64_t)started, (uint64_t)now) == ZCL_OK ? JNI_TRUE : JNI_FALSE;
-}
-
 JNIEXPORT jboolean JNICALL
 Java_org_zclassic_wallet_core_NativeCore_acceptWrappingPolicy(JNIEnv *env, jclass type,
     jint bits, jint hardware, jint flags, jint seconds, jint methods)
@@ -35,15 +16,18 @@ Java_org_zclassic_wallet_core_NativeCore_acceptWrappingPolicy(JNIEnv *env, jclas
 }
 
 JNIEXPORT jlong JNICALL
-Java_org_zclassic_wallet_core_NativeCore_setupWindowRemainingMillis(JNIEnv *env, jclass type,
-    jlong started, jlong now)
+Java_org_zclassic_wallet_core_NativeCore_custodyWindowRemainingMillis(JNIEnv *env, jclass type,
+    jboolean setup, jlong started, jlong now)
 {
     (void)env;
     (void)type;
-    _Static_assert(ZCL_SETUP_WINDOW_MS <= INT64_MAX, "Setup delay must fit Java long");
+    _Static_assert(ZCL_AUTH_WINDOW_MS <= INT64_MAX && ZCL_SETUP_WINDOW_MS <= INT64_MAX,
+                   "Custody delays must fit Java long");
+    if (setup != JNI_FALSE && setup != JNI_TRUE) return 0;
     if (started < 0 || now < 0) return 0;
     uint64_t remaining = 0;
-    if (zcl_setup_window_remaining((uint64_t)started, (uint64_t)now, &remaining) != ZCL_OK)
-        return 0;
-    return (jlong)remaining;
+    const zcl_status status = setup == JNI_TRUE
+        ? zcl_setup_window_remaining((uint64_t)started, (uint64_t)now, &remaining)
+        : zcl_authentication_window_remaining((uint64_t)started, (uint64_t)now, &remaining);
+    return status == ZCL_OK ? (jlong)remaining : 0;
 }

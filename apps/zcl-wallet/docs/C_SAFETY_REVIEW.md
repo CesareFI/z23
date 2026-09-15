@@ -2174,3 +2174,46 @@ mutations refuse for the intended invariant. Evidence and source/APK identities
 remain in `.cache/android-wallet/resume-20260915/setup-expiry/`. TLS stays
 quarantined. No instantaneous erasure during OS suspension, global-OOM guarantee,
 minified setup runtime or positive hardware custody is claimed.
+
+## Measured shared JNI clock projection — 2026-09-15
+
+Reviewed `zcl_authentication_window_remaining`, the shared scalar JNI clock
+entry, unchanged managed policy API and native regressions. Both separate C
+policies retain their exact 90000/600000-ms limits. The authentication remaining
+delay reuses the existing acceptance predicate. Querying it at equal zero
+timestamps returns the policy duration; delivery still checks actual timestamps.
+Three JNI exports become one, reducing duplicated conversion/refusal handling.
+
+| Hazard | Review and evidence |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access; pointer arithmetic | The new C operation has one required uint64 output and no buffers. It publishes only on success. JNI exchanges only a boolean and two longs; it creates no array, pinned region or local/global reference. Native fixture arrays have fixed small bounds and no variable-length allocation. |
+| Integer overflow/underflow; signed/unsigned conversions | The existing authentication predicate proves ordered timestamps and age <90000 before remaining-delay subtraction. JNI accepts only boolean bytes 0/1 and nonnegative longs, then converts to uint64. Both maximum delays are statically bounded by INT64_MAX before the successful return conversion. Fixtures cover 32-bit crossings, signed extrema/equal negatives and all 254 invalid boolean bytes. |
+| NULL; uninitialized memory; malformed input; format strings | NULL output returns INVALID_ARGUMENT; failed C calls leave it unchanged. JNI initializes its local output to zero and returns zero on any failed policy check. Direct scalar fixture calls need no VM environment because the adapter performs no VM operation. Test failures print only fixed context and source line numbers. |
+| Use-after-free; double-free; leaks; dangling pointers; ownership | No allocation, retained pointer or secret owner changes. C test function pointers refer only to the two known static-lifetime entry points. The existing managed authentication/setup APIs retain their contracts, so callers, pending prompts and shared setup origins do not change ownership. |
+| Stack usage; allocation limits; resource exhaustion | Production work remains a fixed number of scalar checks/calls with no parsing, recursion, loop or heap. Host test arrays are at most 80 bytes. C probes have five-second limits; registered JNI acceptance has a 15-second timeout. Fuzzing retains max_len24, timeout5 and RSS cap512 MiB. No application queue, worker, provider allocation or secret buffer is added. |
+| Races; cancellation; secret leakage | Immutable copied timestamps are checked within one call. The selector is a checked public boolean, not authentication evidence. Hardware per-use policy and the 90-second prompt/ten-minute setup lifetime remain distinct. No algorithm, consensus, serialization, storage, secret wiping or ongoing-operation cancellation behavior changes. |
+
+Both stripped Android libraries shrink by 256 bytes (ARM229488→229232,
+x86259264→259008). The ARM library no longer pushes the following x86 payload
+across a ZIP16 KiB boundary; its offset decreases from344064 to327680. The
+unsigned APK shrinks630055→613415 bytes, with alignment unchanged. The 17
+non-code entries are byte-identical; classes.dex shrinks by76 bytes. These are
+artifact measurements, not resident-memory, CPU or startup claims. The preserved
+baseline and candidate ZIP layouts establish the alignment effect directly.
+
+All96 fuzz/oracle groups pass in113.56 seconds; all92 default sanitizer groups
+pass in57.67 seconds. Strict Clang/GCC analysis and unchanged complexity caps10/15
+pass (512 production functions/91 files;1297 fixture functions/157 files).
+Four JNI boolean/signed/selector/truncation mutants and one premature C failure
+output mutant are rejected for their intended assertion. The expanded time
+fuzzer executes62,374,271 cases in121 seconds with no finding and276 MiB peak RSS.
+
+Android/JVM/build/lint, fixture isolation, architecture and16 KiB alignment pass.
+Ten existing authentication/setup tests pass on API30/API35/API36 in
+35.909/110.266/65.949 seconds through real device JNI. The scalar fixture also
+passes against the exact extracted release library on those x86-64 APIs;
+transferred library/executable hashes agree with the host. ARM64 is compile-only.
+It uses no VM calls, wallet path, key generation or hardware authentication.
+Evidence remains in `.cache/android-wallet/resume-20260915/setup-apk-size/`.
+TLS remains quarantined; positive hardware custody and minified setup UI are
+not newly qualified by these scalar release-library results.

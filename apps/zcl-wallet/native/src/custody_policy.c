@@ -8,6 +8,16 @@ zcl_status zcl_authentication_window_check(uint64_t started_ms, uint64_t now_ms)
     return ZCL_OK;
 }
 
+zcl_status zcl_authentication_window_remaining(uint64_t started_ms, uint64_t now_ms,
+                                              uint64_t *remaining_ms)
+{
+    if (remaining_ms == NULL) return ZCL_INVALID_ARGUMENT;
+    const zcl_status status = zcl_authentication_window_check(started_ms, now_ms);
+    if (status != ZCL_OK) return status;
+    *remaining_ms = ZCL_AUTH_WINDOW_MS - (now_ms - started_ms);
+    return ZCL_OK;
+}
+
 zcl_status zcl_setup_window_remaining(uint64_t started_ms, uint64_t now_ms,
                                      uint64_t *remaining_ms)
 {
