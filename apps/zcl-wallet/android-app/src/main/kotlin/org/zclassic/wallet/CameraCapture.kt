@@ -196,15 +196,26 @@ internal class CameraCapture(
 
     private fun dispatch(packet: ByteArray) {
         queuedPacket.set(packet)
-        if (closed.get()) { queuedPacket.getAndSet(null)?.fill(0); frameDone(); return }
-        if (!main.post {
-            val owned = queuedPacket.getAndSet(null) ?: return@post
-            if (closed.get()) { owned.fill(0); frameDone() }
-            else {
-                try { onFrame(this, owned, orientation, front) }
-                finally { owned.fill(0) }
+        var posted = false
+        try {
+            if (closed.get()) return
+            posted = main.post {
+                val owned = queuedPacket.getAndSet(null) ?: return@post
+                if (closed.get()) { owned.fill(0); frameDone() }
+                else {
+                    try { onFrame(this, owned, orientation, front) }
+                    finally { owned.fill(0) }
+                }
             }
-        }) { queuedPacket.getAndSet(null)?.fill(0); frameDone(); fail() }
+        } finally {
+            // Callback allocation or Handler.post may throw. Retire any still
+            // queued owner so a late callback cannot claim its pixels.
+            if (!posted) {
+                queuedPacket.getAndSet(null)?.fill(0)
+                frameDone()
+            }
+        }
+        if (!posted) fail()
     }
 
     fun frameDone() { framePending.set(false) }

@@ -3713,3 +3713,45 @@ baseline failure, mutation evidence, NDK header refusal, public corpus and
 current acceptance logs remain under
 `.cache/android-wallet/resume-20260915/storage-refusal/`.
 TLS remains quarantined; positive hardware custody remains unqualified.
+
+2026-09-15: storage-refusal checkpoint
+`afaea0a73276b1c8322cebfea873397bca6578fd` is verified on the private
+`wallet-backup` development branch: local/tracking/direct-Git/GitHub-API SHAs
+agree, upstream is correct and the tree is clean with ahead/behind0/0. All127
+wallet commits remain preserved; origin is unchanged.
+
+2026-09-15: camera-to-UI handoff now retires and wipes a still-queued pixel
+packet when callback creation or Handler posting throws. Previously only a
+false post result and normal close cleared that field, so an exceptional post
+could retain the image bytes and leave frame admission marked busy. Cleanup is
+now in finally, conditioned on successful posting. The original exception
+propagates; a late queued callback finds no packet to claim. A callback that
+already claimed ownership retains its existing finally wipe. No extra buffer,
+queue, worker, retry, camera permission or cryptographic behavior is introduced.
+
+Four new instrumented tests use public21x21 pixel packets and a private Handler
+on the real main Looper. They inject RuntimeException/OutOfMemoryError before
+enqueueing and after a successful real enqueue, then verify complete erasure,
+retirement, released frame admission and unchanged exception identity. Late
+callbacks must remain inert without being removed before that assertion.
+False posting, closed capture and successful single delivery are controls.
+The baseline fails both exceptional-handoff tests while the controls pass;
+the identical fixture passes the fix. No actual memory is exhausted or camera
+started, and no wallet, seed, permission or key is accessed.
+
+Together with existing camera-start and preview-failure coverage, all12 selected
+instrumented tests pass API30/API35/API36 in1.547/13.364/5.415 seconds.
+Android/JVM tests, debug/release builds and lint, fixture isolation, architecture
+and16 KiB alignment pass. Native source and both packaged native libraries
+remain byte-identical to the preceding validated milestone, retaining its
+sanitizer/fuzz/complexity evidence. This change makes no new physical camera,
+driver cancellation, global-OOM or hardware-custody claim.
+
+The unsigned APK remains611815 bytes; only classes.dex changes. SHA256:
+`a60d1da861c791fe50c49eafe77be66fb03bcdaa710ae5148d5117d2afae0cca`.
+Reviewed atomic ownership transfer, close/post interleavings, fatal propagation
+and allocation-free failure cleanup. The worker still owns camera resources;
+this fix concerns queued pixel ownership. Baseline source/APKs, the failing
+device result, unchanged fixture identity and final acceptance logs remain in
+`.cache/android-wallet/resume-20260915/camera-dispatch/`.
+TLS remains quarantined; positive hardware custody remains unqualified.
