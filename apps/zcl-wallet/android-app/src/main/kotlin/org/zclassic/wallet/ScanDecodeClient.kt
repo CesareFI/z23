@@ -163,6 +163,11 @@ internal class ScanDecodeClient(
         } catch (_: Exception) {
             fail()
             return false
+        } catch (problem: Throwable) {
+            // Scheduling or Binder marshalling may fail after claiming the
+            // request. Retire its timeout/owner before propagating the error;
+            // a secondary notification failure cannot replace that error.
+            try { fail() } finally { throw problem }
         } finally {
             frame.fill(0)
         }

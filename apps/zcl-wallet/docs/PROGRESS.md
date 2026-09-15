@@ -4008,3 +4008,38 @@ custody. Full review: [C_SAFETY_REVIEW.md](C_SAFETY_REVIEW.md). Evidence:
 `.cache/android-wallet/resume-20260915/jni-secret-retirement/`.
 Next: verify scan submission retires a claimed request when scheduling its
 timeout throws, including an exception after enqueue.
+
+2026-09-15: scan submission now retires its pending request and timeout on an
+Error during timeout scheduling or Binder handoff, then propagates the original
+Error. A failure while posting the failure notification cannot replace it.
+Ordinary Exception/refusal handling remains false-returning, and the submitted
+frame is still erased in finally on every exit.
+
+Four new baseline tests fail because the request remains pending after an
+injected OOM before/after enqueue, during decoder handoff, or alongside a
+secondary notification failure. The fixed six-test fixture additionally proves
+ordinary refusals and successful bounded submission, including erasure of a
+competing frame. It uses a local Binder stub and private main Handler; separate
+real-service tests continue to verify isolated identity and deadline behavior.
+All 18 selected tests pass x86-64 API30/35/36 in 15.553/63.935/44.444 seconds.
+No test deadline is relaxed; no actual OOM, camera, wallet or key is involved.
+
+Android/JVM tests, both-ABI builds, Android lint, fixture isolation, architecture
+and 16 KiB alignment pass. Reviewed atomic retirement, timeout cancellation,
+exception identity, input ownership and bounded queue behavior. Native sources
+are unchanged from the preceding 92-group sanitizer/fuzz/analysis checkpoint.
+Fresh source-only builds in separate directories reproduce both the preceding
+and current complete unsigned APKs. Both current native libraries are also
+byte-identical to those from the independently rebuilt preceding commit.
+This measures checkout-path independence on one host/toolchain, not cross-host
+or signed-release reproduction. Existing root-lint failures remain outside this
+Android-only change.
+
+Unsigned release remains 612,807 bytes, SHA256
+`767108fb3f5ca812cb46329e7705b9c89a6c543c9b8392e045e3c8cc939377ea`.
+Evidence: `.cache/android-wallet/resume-20260915/scan-submit-failure/`, including
+the exact source archive/patch, baseline failures and reproduction hashes.
+Next: WalletAuthentication.begin currently registers its timeout outside the
+protected prompt block. Its existing AuthenticationWindow tests cover C/JNI
+timestamps only. Add deterministic scheduling-failure coverage for pending
+prompt cleanup without requesting authentication or weakening custody policy.
