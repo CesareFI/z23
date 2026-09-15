@@ -77,6 +77,11 @@ internal class CameraCapture(
             if (!main.postDelayed(startupTimeout, 15_000) || !queue.post { open() }) fail()
         } catch (_: Exception) {
             fail()
+        } catch (problem: Throwable) {
+            // After Handler publication, close through the worker as usual.
+            // It must retain a pending OS open until its terminal callback;
+            // never return admission directly from this thread at that stage.
+            try { close() } finally { throw problem }
         } finally {
             // Until the handler is published no OS camera open can be queued.
             // Return admission even if worker construction/start throws Error;

@@ -4079,3 +4079,40 @@ startup timeout/open operation. Its Error cleanup currently covers only the
 pre-Handler stage, and CameraStartFailureInstrumentedTest exercises construction
 and worker-start failures only. Verify failures after Handler publication using
 bounded synthetic posts and real worker shutdown, without opening a camera.
+
+2026-09-15: camera startup now closes through its published worker Handler when
+an Error escapes timeout/open scheduling, then rethrows the same Error. The
+pre-Handler cleanup remains intact. After Handler publication, admission is
+released only by the existing worker release path, which still waits for a
+pending OS open's terminal callback.
+
+The new fixture fails both fatal-post tests on the original code; ordinary
+refusals pass. It starts a real worker and rejects the timeout before/after
+enqueue, then observes timeout removal, worker termination, released admission,
+no automatic retry and admission of a fresh owner. It opens no camera and does
+not simulate cleanup by resetting global ownership. The ordinary false/exception
+controls retain one notification; fatal failures propagate without notification.
+
+All 13 selected tests pass on each x86-64 API30/35/36 emulator: nine synthetic
+ownership/dispatch tests, three actual capture/open-cancellation/lifecycle tests,
+and one permission-refusal test. The actual capture groups complete in
+107.481/202.591/187.922 seconds, including repeated background cleanup and explicit
+restart after recreation. No deadline is relaxed and no camera test is skipped.
+Android/JVM tests, both-ABI builds, Android lint, fixture isolation, architecture
+and 16 KiB alignment pass. The native libraries are byte-identical to the prior
+validated checkpoint. A source-only build in a separate directory reproduces
+the complete unsigned release; the same-host/toolchain limit remains.
+
+Reviewed asynchronous worker release, pending-open ownership, original-error
+preservation, bounded retry behavior and unchanged frame ownership. The change
+does not make framework shutdown allocation-free or qualify physical camera
+interoperability. Existing root-lint failures and hardware-custody limits remain.
+Unsigned release remains 612,807 bytes, SHA256
+`22b13eae23a1aa81f64b59c259c6a8386b6204b4502bb752c1e654a6a73b431d`.
+Exact APKs, baseline failures and reproduction evidence are preserved under
+`.cache/android-wallet/resume-20260915/camera-startup-post/`.
+
+Next: finish the controller setup-timeout failure regression with a real worker
+owning only public marker entropy. Then review/reuse the earlier prepared-session
+finalizer change from 6227d2d97; current debug bytecode still allocates its bound
+callback inside close(), before requesting worker shutdown.
