@@ -228,17 +228,19 @@ internal class WalletPlatformSession(
             val capacity = record.ciphertext.size - 16
             check(capacity in 16..32)
             val entropy = ByteArray(capacity)
-            try {
+            val address = try {
                 val written = prepared.cipher.doFinal(record.ciphertext, 0, record.ciphertext.size, entropy, 0)
                 check(written == entropy.size) { "Invalid decrypted wallet length" }
-                val address = WalletRecord.recoveredAddress(record.header, entropy, record.network)
-                // Also checks an existing committed record still equals the
-                // authenticated bytes; pending promotion follows GCM and C checks.
-                check(storage.promote(checkNotNull(prepared.encodedRecord)) == CoreStatus.OK)
-                post { ready(address) }
+                WalletRecord.recoveredAddress(record.header, entropy, record.network)
             } finally {
+                // Address verification consumes the last plaintext use.
+                // Storage durability and UI scheduling need only public data.
                 entropy.fill(0)
             }
+            // Also checks an existing committed record still equals the
+            // authenticated bytes; pending promotion follows GCM and C checks.
+            check(storage.promote(checkNotNull(prepared.encodedRecord)) == CoreStatus.OK)
+            post { ready(address) }
         }
     }
 }

@@ -3930,3 +3930,26 @@ Next: erase unlocked entropy at the address-derivation boundary, before storage
 promotion and UI dispatch. The existing bounded EC allocation is retained:
 its opaque provider storage needs suitable alignment and C effective-type
 semantics; replacing it mechanically with a declared byte array is unjustified.
+
+2026-09-15: unlock now erases its bounded plaintext immediately after authenticated
+address derivation, before native storage promotion and UI scheduling. The
+public address and exact authenticated ciphertext suffice for those operations;
+no secret needs to survive a slow durability operation. Decryption, recovered
+address verification, no-overwrite promotion and callback order are unchanged.
+
+The enhanced real-worker/public-GCM fixture snapshots full output erasure at the
+UI executor boundary. The old implementation fails that assertion; the new one
+passes for all five supported entropy lengths, with unchanged exact addresses
+and successful storage verification. All 21 selected unlock/setup/expiry/worker
+tests pass x86-64 API30/35/36 in 5.750/17.975/10.996 seconds. Existing provider
+failure, injected OOM, wrong-length, cancellation and ciphertext-mutation checks
+remain green. The fixture directly observes dispatch-time erasure; placement of
+the finally block establishes erasure before the unmodified storage call.
+
+Android/JVM, both-ABI builds, lint, fixture isolation and alignment pass; both
+native libraries are unchanged. Unsigned release is 612,647 bytes, SHA256
+`93a7472e25b125b4ed6f796af4d54e1379ed21c8be428c61133129af0c661b85`.
+Reviewed last-use placement, caller ownership, provider-failure cleanup, public
+result lifetime and unchanged authenticated storage semantics. This covers our
+managed destination, not all internal provider/VM copies. Evidence:
+`.cache/android-wallet/resume-20260915/unlock-retirement/`.

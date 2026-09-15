@@ -35,8 +35,12 @@ class UnlockOutputInstrumentedTest {
         private val directory = File(parent, "fixture")
         val storage = WalletStorage(directory.absolutePath)
         private val callbacks = ConcurrentLinkedQueue<Runnable>()
-        val session = WalletPlatformSession(context, storage, Executor { callbacks.add(it) })
         val calls = SetupObservedCipher()
+        private val erasedAtDispatch = ConcurrentLinkedQueue<Boolean>()
+        val session = WalletPlatformSession(context, storage, Executor {
+            calls.output?.let { output -> erasedAtDispatch.add(output.all { byte -> byte == 0.toByte() }) }
+            callbacks.add(it)
+        })
         val entropy = ByteArray(size) { 0x61 }
         private val header = WalletRecord.createHeader(entropy, Network.TESTNET)
         val expected = WalletRecord.recoveredAddress(header, entropy, Network.TESTNET)
@@ -95,6 +99,10 @@ class UnlockOutputInstrumentedTest {
             assertEquals(entropy.size, output.size)
             assertTrue("Unlock retained plaintext", output.all { it == 0.toByte() })
             assertTrue(entropy.all { it == 0x61.toByte() })
+        }
+
+        fun assertErasedBeforeDispatch() {
+            assertEquals("Decrypted entropy survived into the UI handoff", listOf(true), erasedAtDispatch.toList())
         }
 
         fun assertNoPersistence() {
@@ -159,6 +167,7 @@ class UnlockOutputInstrumentedTest {
             assertEquals(fixture.expected, fixture.address)
             assertEquals(CoreStatus.OK, fixture.storage.read().status)
             fixture.assertErased()
+            fixture.assertErasedBeforeDispatch()
         }
     }
 
