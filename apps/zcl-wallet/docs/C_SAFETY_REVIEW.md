@@ -1,5 +1,32 @@
 # C parser foundation safety review
 
+## Transaction-review committed-record retirement — 2026-09-17
+
+Scope: `transaction_review_wallet.c`. The receiving-input ownership check now
+retires its full 140-byte committed-record comparison array before returning,
+including dirty read failures, pending records, wrong lengths and mismatches.
+It clears before random blinding or key derivation begins. The enclosing claim,
+entropy and custody owner retain their existing whole-work retirement.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Erasure uses the exact fixed array `sizeof`. Length equality still short-circuits before comparison; even a faulty provider's `SIZE_MAX` length never reaches `memcmp`. |
+| Integer overflow/underflow, signed/unsigned conversions | No production arithmetic or conversion added. Admission bounds and status precedence remain unchanged. |
+| Use-after-free, double-free, leaks | No allocation or resource ownership changes. Test-only observation uses a numeric identity and reads erased bytes only during the live clear call. |
+| NULL dereferences, uninitialized memory | Existing input admission precedes access. Record bytes, length and pending flag are initialized before the provider call. |
+| Dangling pointers, pointer arithmetic | No new production pointer escapes or offsets. Test reset requires complete retirement before the next invocation. |
+| Format strings, secret leakage | No new logging. The full ciphertext/metadata copy clears on success and failure; no managed/provider-erasure guarantee is inferred. |
+| Stack usage, allocation limits | Existing 140-byte scratch and 4096-byte frame gate remain; no VLA, recursion, heap owner or input-sized allocation. |
+| Malformed serialization/network input | Exact committed-record identity, pending refusal, network/ownership checks and unchanged review-owner outputs remain required. |
+| Races, resource exhaustion | Synchronous borrowed inputs and existing serialization assumptions are unchanged. The new clear is fixed-size and adds no lock or callback. |
+
+The existing fault fixture now invokes the real secure-zero primitive and
+observes complete record retirement on every read outcome, before any random
+or derivation operation. It retains all five entropy lengths, both chains,
+dirty provider outputs, caller-input mutation and unchanged-review assertions.
+The inherited implementation fails this stronger assertion. Focused safety,
+analysis, fuzz and Android validation are recorded in `PROGRESS.md`.
+
 ## Change-custody and journal scratch retirement — 2026-09-17
 
 Scope: `change_custody.c` and the three change-storage implementation units.

@@ -52,12 +52,13 @@ static zcl_status committed_wallet(const zcl_review_wallet_input *claim)
     uint8_t record[ZCL_WALLET_RECORD_MAX] = {0};
     size_t length = 0;
     bool pending = false;
-    const zcl_status status = zcl_storage_read(claim->directory, claim->directory_len,
+    zcl_status status = zcl_storage_read(claim->directory, claim->directory_len,
         record, sizeof(record), &length, &pending);
-    if (status != ZCL_OK) return status;
-    if (pending) return ZCL_NOT_FOUND;
-    return length == claim->record_len && memcmp(record, claim->record, length) == 0
-        ? ZCL_OK : ZCL_ALREADY_EXISTS;
+    if (status == ZCL_OK && pending) status = ZCL_NOT_FOUND;
+    if (status == ZCL_OK && (length != claim->record_len || memcmp(record, claim->record, length) != 0))
+        status = ZCL_ALREADY_EXISTS;
+    zcl_secure_zero(record, sizeof(record));
+    return status;
 }
 
 static zcl_status receive_owner(const zcl_review_wallet_input *claim, uint8_t *address, size_t capacity)

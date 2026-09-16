@@ -114,8 +114,38 @@ The earlier full root-lint run has now terminated with fourteen failing gates,
 including node/tooling checks, historical provider/upstream documentation paths,
 and four standalone node-tool link targets. Its complete log remains under
 the record-retirement evidence directory. No global pass or production custody
-acceptance is claimed. Next: reproduce the unsigned release from a fresh source
-archive, then continue the ordered custody/transaction/lifecycle review.
+acceptance is claimed. This batch was pushed and remotely verified as
+`5f6271da1c483aa2573c5ef840e681ff17306a11`.
+
+A fresh archive of that exact checkpoint and its pinned source dependencies
+built the unsigned release in a separate path, with all 57 Gradle tasks executed
+and no copied build outputs. Its complete 629,847-byte APK compares identical
+to the working-tree artifact: SHA-256
+`762484d41084529b4c1d8bc38c88891ffd1db969213c383ec7c13fa97c9a2fab`.
+This is same-host/toolchain, two-path unsigned reproduction, not independent
+hardware, signed-release or custody qualification. The source identity and
+build log remain in the change-retirement evidence directory.
+
+Continued into the transaction-review receiving-input ownership boundary.
+Its committed-record comparison now clears the entire 140-byte scratch on
+every read outcome before returning, including partial dirty failures,
+pending records, excessive lengths and byte mismatches. The existing
+source-copy fault fixture checks actual erasure before RNG/derivation and
+before enclosing-work retirement. All five entropy lengths, both chains,
+caller-input mutation and unchanged-review assertions remain. The inherited
+implementation fails the new retirement assertion before derivation.
+
+The three focused review-wallet tests pass under both Clang's safety profile
+and optimized GCC. Both exact-unit static analyzers and whole-source/test
+complexity caps 10/15 pass. A bounded 61-second ASan/UBSan review-wallet fuzz
+run completes 18,706 executions without a finding. Android/JVM tests, both
+ABI builds, debug/release APKs and lints, fixture isolation and 16 KiB alignment
+pass. The preceding full 101/100 safety suites remain checkpoint-specific;
+they were not relabeled as a full run for this narrow follow-up. No new JNI or
+hardware-custody behavior is claimed. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/review-record-retirement/`.
+TLS, consent, authenticated chain-state and production boundaries are unchanged.
+Next: continue custody/lifecycle review from these validated components.
 
 ## Current continuation — 2026-09-16
 

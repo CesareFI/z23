@@ -1,4 +1,5 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#undef zcl_secure_zero
 #include "review_wallet_fixture.h"
 #include "change_custody_internal.h"
 #include <stdlib.h>
@@ -19,7 +20,8 @@ static uint8_t directory[1024], record[140], entropy[32], expected[35];
 static struct { const uint8_t *bytes; size_t length; } spans[5];
 static size_t span_count;
 static const uint8_t *blinding;
-static unsigned failure, calls, work_wipes, random_wipes;
+static uintptr_t record_copy;
+static unsigned failure, calls, work_wipes, random_wipes, record_wipes;
 static uint32_t chain;
 
 static void filled(const uint8_t *bytes, size_t length, uint8_t value)
@@ -86,6 +88,8 @@ zcl_status zcl_review_wallet_test_read(const uint8_t *path, size_t path_len,
     calls |= 4;
     CHECK(*length == 0 && !*pending);
     filled(output, capacity, 0);
+    CHECK(record_copy == 0 && record_wipes == 0);
+    record_copy = (uintptr_t)output;
     check_directory(path, path_len);
     memcpy(output, fixture.wallet.wallet, fixture.wallet.wallet_len);
     *length = failure == 6 ? SIZE_MAX : fixture.wallet.wallet_len;
@@ -97,6 +101,7 @@ zcl_status zcl_review_wallet_test_read(const uint8_t *path, size_t path_len,
 zcl_status zcl_review_wallet_test_random(uint8_t *output, size_t length)
 {
     CHECK(calls == 7 && length == 32 && blinding == NULL);
+    CHECK(record_copy == 0 && record_wipes == 1);
     calls |= 8;
     filled(output, length, 0);
     blinding = output;
@@ -145,17 +150,24 @@ zcl_status zcl_review_wallet_test_change(const uint8_t *path, size_t path_len,
     return derived_address(output, capacity);
 }
 
+void zcl_review_wallet_test_zero(void *buffer, size_t length);
 void zcl_review_wallet_test_zero(void *buffer, size_t length)
 {
     CHECK(buffer != NULL && length <= 4096);
-    memset(buffer, 0, length);
+    zcl_secure_zero(buffer, length);
+    if ((uintptr_t)buffer == record_copy) {
+        CHECK(length == 140 && record_wipes++ == 0);
+        filled(buffer, length, 0);
+        record_copy = 0;
+        return;
+    }
     if (buffer == blinding) {
         CHECK(length == 32 && random_wipes++ == 0);
         filled(blinding, 32, 0);
         blinding = NULL;
         return;
     }
-    CHECK(work_wipes++ == 0 && length >= 32 + 1024 + 140 + 70);
+    CHECK(record_copy == 0 && work_wipes++ == 0 && length >= 32 + 1024 + 140 + 70);
     CHECK(span_count <= sizeof(spans) / sizeof(spans[0]));
     /* Inspect/retire while the whole work and its subobjects are still live. */
     for (size_t i = 0; i < span_count; ++i) {
@@ -167,8 +179,8 @@ void zcl_review_wallet_test_zero(void *buffer, size_t length)
 static void reset(unsigned ordinal, uint32_t selected)
 {
     failure = ordinal; chain = selected;
-    calls = 0; work_wipes = 0; random_wipes = 0; span_count = 0;
-    CHECK(blinding == NULL);
+    calls = 0; work_wipes = 0; random_wipes = 0; record_wipes = 0; span_count = 0;
+    CHECK(blinding == NULL && record_copy == 0);
     memset(spans, 0, sizeof(spans));
     memset(directory, 0, sizeof(directory));
     memcpy(directory, fixture.store.path, fixture_path_len());
@@ -193,6 +205,7 @@ static void run(unsigned ordinal, uint32_t selected)
     const unsigned expected_calls = chain == 0 ? receive_calls[ordinal] : ordinal == 1 ? 1 : ordinal <= 3 && ordinal != 0 ? 3 : 35;
     CHECK(calls == expected_calls && work_wipes == 1 && blinding == NULL);
     CHECK(random_wipes == (chain == 0 && (calls & 8) != 0 ? 1U : 0U));
+    CHECK(record_copy == 0 && record_wipes == (chain == 0 && (calls & 4) != 0 ? 1U : 0U));
     CHECK(span_count <= sizeof(spans) / sizeof(spans[0]));
     for (size_t i = 0; i < span_count; ++i) CHECK(spans[i].bytes == NULL);
     CHECK(memcmp(&fixture.review, &saved, sizeof(saved)) == 0);
