@@ -1,5 +1,35 @@
 # C parser foundation safety review
 
+## Unsigned review preparation scratch — 2026-09-17
+
+Scope: `transaction_review.c` and `transaction_review_prepare.c`. Opening now
+retires its staged review on success and every provider refusal. Preparation
+retires its parsed transaction before returning; snapshot publication retires
+its staging copy after the caller receives the value. These are public
+transaction fields, not keys, but their temporary lifetime should not exceed
+their use. Retained review clearing and issuance/lifetime rules are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use complete object `sizeof`; publication still follows parser, assessment and serializer acceptance. Provider failures never publish dirty fields or lengths. |
+| Integer overflow/underflow, signed/unsigned conversions | Existing ID/deadline admission and checked monetary arithmetic remain. No new production arithmetic or narrowing. |
+| Use-after-free, double-free, leaks | No allocation or resource ownership changes. Test hooks observe bytes during the live erasure call, retain only numeric identities, and require retirement before reuse. |
+| NULL dereferences, uninitialized memory | NULL owner/ID/candidate admission remains. The parsed transaction is now explicitly initialized before the provider can partially fill it. |
+| Dangling pointers, pointer arithmetic | No new production offsets or escaping pointer. Assessment and serialization still consume the same owned parsed value, not a borrowed wire reread. |
+| Format strings, secret leakage | No new production logging. Full review/transaction/snapshot staging copies clear; this does not claim erasure of all parser/provider/managed copies or establish signing authority. |
+| Stack usage, allocation limits | Existing separate preparation/publication frames and 4096-byte compiler cap remain. Optimized GCC reports bounded 3424-byte opening, 2288-byte preparation and 1424-byte snapshot frames; these are not a whole-call-chain budget. No VLA, recursion, heap or input-sized allocation. |
+| Malformed serialization/network input | Signed-input refusal, exact canonical bytes, fee/prevout assessment and error precedence remain. Dirty failed provider outputs cannot change the review owner or caller ID. |
+| Races, resource exhaustion | Exclusive adapter lock, stable/nonoverlapping caller spans, monotonic ID and fixed deadline contracts remain. Cleanup adds only bounded synchronous writes. |
+
+The registered source-copy fixture observes complete erasure, including dirty
+partial parse/assessment/serialization failures and signed-input refusal. It
+mutates the borrowed wire after parsing to ensure successful publication uses
+the admitted transaction. It checks exact owner/ID preservation on failure,
+snapshot output canaries, stale-ID refusal, inclusive expiry and retained-ID
+clearing. The inherited implementation fails the first retirement assertion;
+the fixed code and existing review lifetime suite pass. Full validation is
+recorded in `PROGRESS.md`.
+
 ## Transaction-review committed-record retirement — 2026-09-17
 
 Scope: `transaction_review_wallet.c`. The receiving-input ownership check now

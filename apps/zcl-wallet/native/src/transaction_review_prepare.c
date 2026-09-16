@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "transaction_review_internal.h"
+#include "zcl_keys.h"
 #include <string.h>
 
 static void review_context(const zcl_transparent_tx *transaction, zcl_review_context *context)
@@ -27,16 +28,17 @@ zcl_status zcl_review_prepare(const uint8_t *wire, size_t length, zcl_network ne
                               uint64_t maximum_fee, zcl_review_data *candidate)
 {
     if (candidate == NULL) return ZCL_INVALID_ARGUMENT;
-    zcl_transparent_tx transaction;
+    zcl_transparent_tx transaction = {0};
     zcl_status status = zcl_transaction_parse(wire, length, &transaction);
-    if (status != ZCL_OK) return status;
-    if (!unsigned_inputs(&transaction)) return ZCL_UNSUPPORTED;
-    status = zcl_transaction_assess(&transaction, network, previous, previous_count,
-        maximum_fee, &candidate->assessment);
-    if (status != ZCL_OK) return status;
+    if (status == ZCL_OK && !unsigned_inputs(&transaction)) status = ZCL_UNSUPPORTED;
+    if (status == ZCL_OK)
+        status = zcl_transaction_assess(&transaction, network, previous, previous_count,
+            maximum_fee, &candidate->assessment);
     /* Serialize the owned parsed value, never re-read a borrowed wire span. */
-    status = zcl_transaction_serialize(&transaction, candidate->wire, sizeof(candidate->wire),
-        &candidate->wire_length);
+    if (status == ZCL_OK)
+        status = zcl_transaction_serialize(&transaction, candidate->wire, sizeof(candidate->wire),
+            &candidate->wire_length);
     if (status == ZCL_OK) review_context(&transaction, &candidate->context);
+    zcl_secure_zero(&transaction, sizeof(transaction));
     return status;
 }

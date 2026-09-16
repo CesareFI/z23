@@ -234,6 +234,16 @@ positive review ID. Caller mutation after opening cannot change the draft.
 Returned snapshots and byte buffers are independent copies. A read exposes
 review data only; it is not consent or authority to sign or broadcast.
 
+Opening clears its staged review on success and every preparation failure.
+The separate preparation frame clears its owned parsed transaction before
+returning, and snapshot publication clears its temporary copy after transfer.
+A source-copy regression injects dirty partial failures at parsing, assessment
+and serialization, observes actual full-object erasure, and verifies unchanged
+owner/ID outputs. Borrowed-wire mutation after parsing cannot alter the exact
+published draft. These operations contain public transaction fields, not keys;
+this bounded scratch-retirement evidence does not erase every downstream copy
+or grant consent, chain trust or signing authority.
+
 Each snapshot also owns the exact uint32 lock time and expiry height, plus
 display-order previous-transaction ID, uint32 output index and uint32 sequence
 for every input. Rows share the assessment's input count/order, and unused

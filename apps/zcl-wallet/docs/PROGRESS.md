@@ -183,6 +183,38 @@ or custody acceptance. TLS remains quarantined; global repository lint retains
 its documented unrelated failures. Continue with native review-state lifetime
 and transaction failure-atomicity inspection.
 
+The lifecycle slice was pushed and remotely verified as
+`8aa668537776e2a8951c13f0c481f52e3d3861cb`. Continued immediately into native
+unsigned-review preparation. Opening now clears its staged review on every
+entered exit, preparation clears its parsed transaction, and snapshot
+publication clears its temporary value after transfer. The existing separate
+stack frames, immutable draft, status precedence, fixed deadline and issuance
+rules are preserved; no signing, custody or network authority is added.
+
+A registered source-copy fixture observes full erasure with the real secure-zero
+primitive while objects are live. It injects dirty partial parser, assessment
+and serializer refusals, verifies unchanged owner/ID outputs, and mutates the
+borrowed wire after parsing to check exact publication from the owned value.
+Signed-input refusal, admission limits, snapshot canaries, stale IDs and
+inclusive expiry remain covered. The inherited implementation fails the first
+retirement assertion; the fixed fixture and existing review suite pass.
+Optimized GCC stack reports retain bounded 3424-byte opening, 2288-byte
+preparation and 1424-byte snapshot frames under the 4096-byte frame gate; these
+figures do not bound nested call-chain usage. Explicit hazard review is in
+`C_SAFETY_REVIEW.md`.
+
+Full non-TLS safety passes 102/102 Clang tests in 84.48 seconds and 101/101
+optimized GCC tests in 120.95 seconds. Both analyzers and production/test
+complexity caps 10/15 pass. A bounded 61-second ASan/UBSan review-state fuzz
+run completes 253,714 executions without a finding. Core/Android JVM tests,
+both ABI builds, debug/release APKs and lints, fixture isolation, 16 KiB native
+alignment, architecture and documentation counts pass. All thirteen API35
+unsigned-review/lifecycle/render-failure tests pass in 5.717 seconds.
+Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/review-state-retirement/`.
+Next: retire JNI snapshot/wire output copies under the existing VM fault and
+replacement-owner tests. TLS and all custody/consensus authority remain unchanged.
+
 ## Current continuation — 2026-09-16
 
 Worktree: `/root/z23-android`; branch:

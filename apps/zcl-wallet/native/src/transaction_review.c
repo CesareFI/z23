@@ -15,14 +15,16 @@ zcl_status zcl_review_open(zcl_review_owner *owner, const uint8_t *wire, size_t 
     zcl_review_data candidate = {0};
     const zcl_status status = zcl_review_prepare(wire, length, network, previous, previous_count,
         maximum_fee, &candidate);
-    if (status != ZCL_OK) return status;
-    candidate.id = owner->issued + 1;
-    candidate.last_ms = now_ms;
-    candidate.deadline_ms = now_ms + ZCL_REVIEW_LIFETIME_MS;
-    owner->data = candidate;
-    owner->issued = candidate.id;
-    *id = candidate.id;
-    return ZCL_OK;
+    if (status == ZCL_OK) {
+        candidate.id = owner->issued + 1;
+        candidate.last_ms = now_ms;
+        candidate.deadline_ms = now_ms + ZCL_REVIEW_LIFETIME_MS;
+        owner->data = candidate;
+        owner->issued = candidate.id;
+        *id = candidate.id;
+    }
+    zcl_secure_zero(&candidate, sizeof(candidate));
+    return status;
 }
 
 void zcl_review_clear(zcl_review_owner *owner)
@@ -56,6 +58,7 @@ zcl_status zcl_review_snapshot_get(zcl_review_owner *owner, uint64_t id, uint64_
     candidate.context = owner->data.context;
     candidate.remaining_ms = owner->data.deadline_ms - now_ms;
     *snapshot = candidate;
+    zcl_secure_zero(&candidate, sizeof(candidate));
     return ZCL_OK;
 }
 

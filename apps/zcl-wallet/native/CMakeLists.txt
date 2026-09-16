@@ -787,6 +787,17 @@ if(NOT ANDROID)
     target_link_libraries(assessment_test_fixture PUBLIC zcl_wallet_core)
     target_compile_options(assessment_test_fixture PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wshadow)
+    add_executable(review_retirement_tests tests/test_review_retirement.c
+        src/transaction_review.c src/transaction_review_prepare.c)
+    target_include_directories(review_retirement_tests PRIVATE src)
+    target_link_libraries(review_retirement_tests PRIVATE assessment_test_fixture)
+    target_compile_definitions(review_retirement_tests PRIVATE
+        zcl_transaction_parse=zcl_review_test_parse zcl_transaction_assess=zcl_review_test_assess
+        zcl_transaction_serialize=zcl_review_test_serialize zcl_secure_zero=zcl_review_test_zero)
+    target_compile_options(review_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_retirement COMMAND review_retirement_tests)
+    set_tests_properties(wallet_review_retirement PROPERTIES TIMEOUT 15)
     add_executable(review_sighash_tests tests/test_review_sighash.c)
     target_include_directories(review_sighash_tests PRIVATE src)
     target_link_libraries(review_sighash_tests PRIVATE assessment_test_fixture)
