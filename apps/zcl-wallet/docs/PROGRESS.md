@@ -4664,3 +4664,39 @@ Full hazard review is in C_SAFETY_REVIEW.md. Existing root-lint failures,
 hardware custody, physical-camera acceptance and parked TLS remain unresolved.
 Next: inspect setup/foreground expiry decisions when queued UI work or provider
 work completes after its original time window.
+
+2026-09-16: foreground closure now refuses new persistence after provider work.
+Inspection confirmed the existing elapsed-window checks cover delayed UI,
+worker and provider completion. A separate cancellation gap remained: closing
+while GCM was running still allowed create/restore persistence or authenticated
+pending-record promotion after GCM returned. Three public-vector regressions
+reproduced those effects on unchanged production code; a live pending-unlock
+control passed. No hardware key, prompt, real seed or funded record was used.
+
+The platform worker now reads its existing atomic closed state immediately
+before each persistence call. That read is the admission point: closure before
+it refuses the new operation; closure afterward lets C finish its existing
+bounded durability protocol. Active provider input remains worker-owned until
+return, then clears through existing finally blocks. Closed callbacks remain
+inert. Tests hold real software GCM completion behind a bounded latch, close on
+the main thread, observe that the active input remains intact, then verify full
+cleanup and absence of new storage or exact retention of the pending record.
+The live control still promotes precisely the authenticated bytes.
+
+All 27 setup/seal/unlock/expiry/session-close tests pass without skips on API30,
+API35 and API36 x86-64 emulators in 45.262/3.116/75.887 seconds. Android/JVM tests,
+both-ABI builds, debug/release lint, APK fixture isolation/alignment, architecture
+and whitespace checks pass. Both packaged native libraries are byte-identical
+to the previous release; C source, cryptography and storage protocols did not
+change. These public fixtures do not qualify hardware custody or ARM64 execution.
+
+Source-only tree 32e97e2b964ab8a59eb715e69d95b106e57825e6 reproduces the complete
+unsigned release APK exactly from a fresh directory on the same host/toolchain.
+The APK remains 612,839 bytes; SHA256 is
+`ab82b4690fa9990cc183301222e9aae1d187d789e6b92941caf8a96257e74a78`.
+Committed app source matches that tree except this progress note. Baseline/final
+APKs, failing/passing tests, native comparisons and reproduction evidence are
+under `.cache/android-wallet/resume-20260916/session-persistence-cancel/`.
+Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
+failures remain unresolved. Next: inspect private-key scratch retirement in the
+existing offline signing primitive; no send or broadcast authority is added.

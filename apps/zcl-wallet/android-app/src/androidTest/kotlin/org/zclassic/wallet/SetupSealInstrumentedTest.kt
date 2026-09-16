@@ -4,6 +4,7 @@ package org.zclassic.wallet
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -79,7 +80,7 @@ class SetupSealInstrumentedTest {
                 WalletRecord.createHeader(entropy, Network.TESTNET)))
         }
 
-        fun submit() {
+        fun start() {
             if (action == WalletAction.CREATE) {
                 session.confirmCreation(words, { error("Canonical public confirmation was refused") },
                     { address = it }, { failure = it })
@@ -87,10 +88,28 @@ class SetupSealInstrumentedTest {
                 session.restore(words, { error("Canonical public restoration was refused") },
                     { address = it }, { failure = it })
             }
+        }
+
+        fun submit() {
+            start()
             val idle = CountDownLatch(1)
             assertTrue(worker.submit { idle.countDown() })
             assertTrue(idle.await(10, TimeUnit.SECONDS))
             while (true) (callbacks.poll() ?: break).run()
+        }
+
+        fun awaitRetired() {
+            val backend = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
+                .get(worker) as ThreadPoolExecutor
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            while (true) (callbacks.poll() ?: break).run()
+        }
+
+        fun assertCancelled() {
+            assertNull(failure)
+            assertNull(address)
+            assertFalse("Closed setup started persistence after encryption", directory.exists())
+            assertCleared()
         }
 
         fun assertCleared() {
@@ -182,6 +201,32 @@ class SetupSealInstrumentedTest {
     @Test fun confirmedWordsAreErasedBeforeEncryptionBegins() = checkPhraseRetirement(WalletAction.CREATE)
 
     @Test fun restoredWordsAreErasedBeforeEncryptionBegins() = checkPhraseRetirement(WalletAction.RESTORE)
+
+    @Test fun closingDuringCreationEncryptionRefusesNewPersistence() = checkClosedSeal(WalletAction.CREATE)
+
+    @Test fun closingDuringRestorationEncryptionRefusesNewPersistence() = checkClosedSeal(WalletAction.RESTORE)
+
+    private fun checkClosedSeal(action: WalletAction) {
+        Fixture(permitsStorage = true, action = action).use { fixture ->
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.calls.afterFinal = {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+            }
+            try {
+                fixture.start()
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                InstrumentationRegistry.getInstrumentation().runOnMainSync { fixture.session.close() }
+                // The provider still owns its input. The worker must clear it
+                // after returning, without beginning a new storage operation.
+                assertTrue(checkNotNull(fixture.calls.input).all { it == 0x61.toByte() })
+            } finally { release.countDown() }
+            fixture.awaitRetired()
+            assertEquals(1, fixture.calls.finalCalls)
+            fixture.assertCancelled()
+        }
+    }
 
     @Test fun liveRestoreCommitsTheSamePublicAddressAndClearsDecodedEntropy() {
         Fixture(permitsStorage = true, action = WalletAction.RESTORE).use { fixture ->

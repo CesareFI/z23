@@ -67,6 +67,14 @@ Closing cancels queued work, permits active native/provider code to complete its
 cleanup, then clears worker-owned session state on the same thread. It never
 waits for filesystem/keystore work on the UI thread.
 
+The worker rechecks its owner's closed state after GCM and before admitting
+record creation or authenticated pending-record promotion. Background closure
+while a provider owns plaintext therefore cannot start a new persistence
+operation when the provider returns. The atomic read admits that operation;
+closure afterward lets the C durability protocol finish. Plaintext cleanup
+remains on the worker, and closed-session callbacks stay inert. This is a
+lifecycle gate, not a replacement for per-use authentication or setup expiry.
+
 Failed submission also clears its transferred input if task construction or
 worker creation throws. A failure after queue insertion removes that task before
 discarding it; a later healthy worker cannot run it or inherit its occupied

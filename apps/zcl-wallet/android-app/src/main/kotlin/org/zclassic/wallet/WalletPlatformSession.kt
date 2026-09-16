@@ -200,9 +200,11 @@ internal class WalletPlatformSession(
             check(parameters.tLen == 128 && parameters.iv.size == 12)
             cipher.updateAAD(header)
             val encoded = WalletRecord.pack(header, parameters.iv, cipher.doFinal(entropy))
-            // Refuse an expired operation before beginning persistence. Once
-            // admitted, the C store must finish its bounded durability protocol.
+            // Expiry or foreground closure during provider work must refuse
+            // new persistence. The closed-state read is its admission point;
+            // closure afterward lets C finish its bounded durability protocol.
             current.window.requireOpen()
+            check(!work.isClosed) { "Wallet session closed" }
             check(commitPreparedWallet(storage, current.prepared.action, encoded, entropy) == CoreStatus.OK) {
                 "Wallet commit requires recovery"
             }
@@ -245,6 +247,9 @@ internal class WalletPlatformSession(
             }
             // Also checks an existing committed record still equals the
             // authenticated bytes; pending promotion follows GCM and C checks.
+            // Closing during decryption cannot admit a new promotion. Once
+            // admitted here, C must finish its existing durability protocol.
+            check(!work.isClosed) { "Wallet session closed" }
             check(storage.promote(checkNotNull(prepared.encodedRecord)) == CoreStatus.OK)
             post { ready(address) }
         }

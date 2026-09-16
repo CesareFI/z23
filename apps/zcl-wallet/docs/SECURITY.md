@@ -96,6 +96,12 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   Already-admitted persistence must finish its bounded durability protocol.
   This does not guarantee instantaneous erasure while Android suspends a process
   or stalls its queues, or cancel a provider call already in progress.
+* After encryption or authenticated decryption, the platform worker checks its
+  foreground owner's closed state before admitting record creation or pending
+  promotion. Closing during provider work therefore prevents new persistence;
+  it still lets the provider return before the worker erases its owned plaintext.
+  The atomic closed-state read is the admission point. Closure after that point
+  permits the existing C durability protocol to finish without interruption.
 * Unsigned-review text replacements remain concealed until complete. If expiry
   or cancellation text cannot be rendered, earlier transaction details stay
   hidden even when Android refuses clearing. Native review closure and display

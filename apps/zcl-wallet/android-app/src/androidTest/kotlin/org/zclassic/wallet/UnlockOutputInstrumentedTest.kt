@@ -4,6 +4,7 @@ package org.zclassic.wallet
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -110,6 +111,28 @@ class UnlockOutputInstrumentedTest {
             assertFalse("Refused unlock touched storage", directory.exists())
         }
 
+        fun makePending() {
+            check(persisted)
+            Files.move(File(directory, "wallet.zcl").toPath(), File(directory, ".wallet.pending").toPath())
+            assertPending()
+        }
+
+        fun assertPending() {
+            val stored = storage.read()
+            assertEquals(CoreStatus.OK, stored.status)
+            assertTrue("Closed unlock promoted a pending wallet", stored.pending)
+            assertArrayEquals(prepared.encodedRecord, stored.record)
+            assertFalse(File(directory, "wallet.zcl").exists())
+        }
+
+        fun assertCommitted() {
+            val stored = storage.read()
+            assertEquals(CoreStatus.OK, stored.status)
+            assertFalse(stored.pending)
+            assertArrayEquals(prepared.encodedRecord, stored.record)
+            assertFalse(File(directory, ".wallet.pending").exists())
+        }
+
         fun awaitRetired() {
             val backend = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
                 .get(worker) as ThreadPoolExecutor?
@@ -214,6 +237,40 @@ class UnlockOutputInstrumentedTest {
             assertNull(fixture.failure) // Retired callbacks are inert.
             fixture.assertNoPersistence()
             fixture.assertErased()
+        }
+    }
+
+    @Test fun closingDuringSuccessfulDecryptionPreservesThePendingRecord() {
+        Fixture(persisted = true).use { fixture ->
+            fixture.makePending()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.calls.afterFinal = {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+            }
+            try {
+                fixture.startUnlock()
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                InstrumentationRegistry.getInstrumentation().runOnMainSync { fixture.session.close() }
+                assertArrayEquals(fixture.entropy, fixture.calls.output)
+            } finally { release.countDown() }
+            fixture.awaitRetired()
+            assertNull(fixture.failure)
+            assertNull(fixture.address)
+            fixture.assertErased()
+            fixture.assertPending()
+        }
+    }
+
+    @Test fun liveUnlockPromotesTheExactAuthenticatedPendingRecord() {
+        Fixture(persisted = true).use { fixture ->
+            fixture.makePending()
+            fixture.unlock()
+            assertNull(fixture.failure)
+            assertEquals(fixture.expected, fixture.address)
+            fixture.assertErased()
+            fixture.assertCommitted()
         }
     }
 }
