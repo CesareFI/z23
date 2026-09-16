@@ -61,13 +61,17 @@ Java_org_zclassic_wallet_core_NativeCore_recoveryPhrase(JNIEnv *env, jclass type
     uint8_t entropy[32] = {0}, text[215] = {0};
     size_t entropy_len = 0, text_len = 0;
     jint written = 0;
+    bool ready = false;
     if (zcl_jni_read_bytes(env, input, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;
     if (zcl_mnemonic_encode(entropy, entropy_len, text, sizeof(text), &text_len) != ZCL_OK)
         goto cleanup;
-    written = write_phrase(env, output, text, text_len);
+    ready = true;
 cleanup:
+    /* Phrase encoding has consumed the entropy. Only its secret result is
+     * needed while the VM transfers into the caller-owned destination. */
     zcl_secure_zero(entropy, sizeof(entropy));
+    if (ready) written = write_phrase(env, output, text, text_len);
     zcl_secure_zero(text, sizeof(text));
     return written;
 }
@@ -122,14 +126,18 @@ Java_org_zclassic_wallet_core_NativeCore_restoreEntropy(JNIEnv *env, jclass type
     uint8_t entropy[32] = {0}, text[215] = {0};
     size_t entropy_len = 0, text_len = 0;
     jint written = 0;
+    bool ready = false;
     if (read_phrase(env, input, text, sizeof(text), &text_len) != ZCL_OK)
         goto cleanup;
     if (zcl_mnemonic_decode(text, text_len, entropy, sizeof(entropy), &entropy_len) != ZCL_OK)
         goto cleanup;
-    written = write_secret_bytes(env, output, entropy, entropy_len);
+    ready = true;
 cleanup:
-    zcl_secure_zero(entropy, sizeof(entropy));
+    /* Decoding has consumed the phrase. Retire that byte copy before the VM
+     * transfers entropy; the UTF-16 read scratch was already cleared. */
     zcl_secure_zero(text, sizeof(text));
+    if (ready) written = write_secret_bytes(env, output, entropy, entropy_len);
+    zcl_secure_zero(entropy, sizeof(entropy));
     return written;
 }
 

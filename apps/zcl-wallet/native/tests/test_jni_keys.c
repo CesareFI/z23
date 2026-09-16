@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #undef zcl_secure_zero
 #undef zcl_random_bytes
+#undef zcl_mnemonic_decode
 #include "jni_support.h"
 #include "zcl_keys.h"
 #include "zcl_wallet_record.h"
@@ -38,6 +39,8 @@ static size_t transfer_prefix = SIZE_MAX;
 #define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 static void verify_cleanup(void);
+zcl_status zcl_jni_key_test_decode(const uint8_t *text, size_t text_len,
+    uint8_t *output, size_t capacity, size_t *length);
 
 static void track(const void *pointer, size_t length)
 {
@@ -52,6 +55,16 @@ static void track(const void *pointer, size_t length)
     }
     CHECK(touched_count < sizeof(touched) / sizeof(touched[0]));
     touched[touched_count++] = (touched_span){identity, length, false};
+}
+
+zcl_status zcl_jni_key_test_decode(const uint8_t *text, size_t text_len,
+    uint8_t *output, size_t capacity, size_t *length)
+{
+    /* This target substitutes only the JNI call. Its byte-text scratch owns
+     * all 215 bytes; the real decoder and published vectors stay unchanged. */
+    CHECK(active_operation == 2 && text_len <= 215);
+    track(text, 215);
+    return zcl_mnemonic_decode(text, text_len, output, capacity, length);
 }
 
 void zcl_jni_key_test_zero(void *pointer, size_t length)
@@ -165,6 +178,10 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
 {
     (void)env;
     fake_array *array = region(input, start, length, BYTES);
+    if (active_operation == 2) {
+        CHECK(touched_count == 2); /* UTF-16 read scratch and consumed byte text. */
+        verify_cleanup();
+    }
     /* These two entries publish only public metadata/address bytes. Keep all
      * existing key-entry scratch obligations, including their public output. */
     if (active_operation < 5) track(bytes, (size_t)length);
@@ -178,6 +195,8 @@ static void JNICALL set_chars(JNIEnv *env, jcharArray input, jsize start, jsize 
 {
     (void)env;
     fake_array *array = region(input, start, length, CHARS);
+    CHECK(active_operation == 1 && touched_count == 1);
+    verify_cleanup(); /* Consumed input entropy must precede the VM transfer. */
     track(chars, (size_t)length * sizeof(*chars));
     size_t copied = (size_t)length;
     if (vm_calls + 1 == fail_call && copied > transfer_prefix) copied = transfer_prefix;

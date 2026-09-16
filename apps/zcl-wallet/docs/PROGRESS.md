@@ -4554,3 +4554,36 @@ the initial timeout: `.cache/android-wallet/resume-20260916/fuzz-harness-qualifi
 Hardware acceptance, pre-existing root-lint failures and parked TLS remain
 unresolved. Next: check whether JNI mnemonic conversions retain consumed input
 scratch while transferring their secret result to its preowned Java destination.
+
+2026-09-16: JNI mnemonic generation now clears its consumed entropy before the
+VM transfers the phrase; restoration clears its consumed byte phrase before
+transferring entropy. Necessary result scratch retains its existing ownership
+and post-transfer wipe. Failure paths use the same cleanup and never publish a
+result after a failed conversion. Caller arrays and the JNI ABI are unchanged.
+
+The fake VM observes full consumed-input erasure before normal, refused and
+partial output transfers. A fixture-only wrapper tracks restoration's byte text
+while calling the real decoder. The old generation path fails the new boundary
+assertion; after fixing only generation, restoration fails it too. The complete
+fix passes the focused additional-integer sanitizer profile (0.53 seconds), all
+92 default sanitizer groups (79.05 seconds), Clang/GCC source/provider and both
+fixture-mode analysis, and unchanged production/test complexity caps 10/15.
+The existing seeded JNI fuzzer completes 81,793 inputs in 121 seconds without a
+finding, with a five-second input limit and 512 MiB RSS cap (59 MiB observed).
+Actual compile commands qualify 156 authored/provider and 75 harness/helper
+compilations, with 181 covered library/fuzz compilations.
+
+Strict NDK erasure fixtures build for x86-64 and ARM64. Exact-hash transferred
+x86-64 fixtures pass API30/35/36, and four actual JNI/public GCM-vector tests pass
+on each in 2.013/0.146/3.607 seconds with no skips. Android/JVM tests, both-ABI
+builds, debug/release lint, fixture isolation, alignment and architecture pass.
+The source-only tree e5d108e96a16e0e13624ddfd4963203493e602e5 reproduces the
+unsigned APK byte-for-byte; committed app source matches except this progress
+note. Release is 612,839 bytes (16 bytes larger), SHA256
+`93476511db12f12cf91db6c9beb40392f51129d42b66b630bc8b798ecad75474`.
+This is same-host/toolchain reproduction and emulator evidence, not ARM64
+execution or hardware custody acceptance. Full hazard review is recorded in
+C_SAFETY_REVIEW.md. Evidence:
+`.cache/android-wallet/resume-20260916/jni-mnemonic-retirement/`.
+Existing root-lint failures and parked TLS remain unresolved. Next: inspect
+managed record/key result ownership around view and platform handoffs.

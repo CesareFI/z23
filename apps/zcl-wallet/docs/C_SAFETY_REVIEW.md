@@ -2548,3 +2548,40 @@ matrix remains in the registered test. Fuzzing receives those packet/fault cases
 as individual seeds under the unchanged per-input limit. No acceptance assertion
 or deadline was relaxed. Logs and empty timeout artifacts are preserved under
 `.cache/android-wallet/resume-20260916/jni-decoder-fuzz/`.
+
+## JNI mnemonic input retirement review — 2026-09-16
+
+Scope: `native/src/jni_keys.c`, `native/tests/test_jni_keys.c` and the two
+fixture-only CMake definitions. Generation erases its consumed native entropy
+before transferring the phrase. Restoration erases its consumed byte phrase
+before transferring entropy. The necessary result scratch and preallocated
+managed destination remain owned through transfer and existing failure cleanup.
+No mnemonic, key-derivation, consensus, provider or custody policy changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Existing exact managed destination capacities, 32-byte entropy and 215-byte phrase bounds remain. Both moved wipes use sizeof their own arrays; no length-derived wipe or new write is introduced. |
+| Out-of-bounds access | Existing JNI reads and result writers retain their range checks. The fixture tracks the complete 215-byte local text owner and checks its erasure only through a live zeroizer argument. |
+| Integer overflow/underflow | No new arithmetic in production. The observer adds one bounded span to the existing eight-entry table, whose insertion checks capacity. |
+| Signed/unsigned conversions | Existing validated jsize/size_t conversions remain unchanged. The added readiness state is boolean. No cast or narrowing is added. |
+| Use-after-free | No allocation or free is introduced. All production arrays remain live through their local cleanup. The observer stores integer identities rather than retaining pointers for later dereference. |
+| Double-free | No allocator ownership changes. Each consumed input array reaches exactly one unconditional wipe; the result array retains its single post-transfer wipe. |
+| Leaks | No new heap, descriptor, JNI reference, native handle or retained callback. VM destinations remain caller-owned before entry, including partial transfer followed by an exception. |
+| NULL dereferences | The existing input/environment/destination checks remain before use. The new decoder observer receives the JNI entry's checked local text and asserts its tracked span is non-null. |
+| Uninitialized memory | Both secret arrays and lengths retain zero initialization; ready begins false and becomes true only after successful conversion. No result is published after a failed read or conversion. |
+| Dangling pointers | No production pointer escapes. Test identities are invalidated when their live owner is erased and are never converted back into pointers. |
+| Pointer arithmetic | No new production pointer arithmetic. Existing bounded fake VM copies and span tracking remain unchanged. |
+| Format strings | Only fixed test diagnostic text and public vectors are used. No entropy, phrase, fuzz payload or provider diagnostic is logged. |
+| Stack usage | No new array, recursion or VLA. Strict NDK frames for generation/restoration are 760/328 bytes on x86-64 and 784/352 on ARM64; these are individual frames, not whole-call-stack bounds. |
+| Allocation limits | No new allocation. The Java caller still allocates at most 215 characters or 32 bytes before entering JNI. The test-only observer reuses its fixed table. |
+| Malformed serialization/network input | Existing mnemonic length, canonical encoding/checksum and invalid UTF-16 refusal paths retain cleanup and no output. No transport or network authority is introduced. |
+| Races | Arrays and readiness state are invocation-local. No lock, shared secret owner or concurrency contract changes. The fake VM remains single-threaded per test process. |
+| Resource exhaustion | All loops, VM call counts, registered deadlines and fuzz limits remain. A failed output transfer still reaches result erasure; consumed input was erased before the VM call began. |
+| Secret leakage | The observer requires full consumed-input retirement at the actual fake VM output callback, including its refusal/partial-copy modes. The necessary secret result remains live during handoff. This does not erase caller inputs, all VM/provider/register copies, or establish hardware custody. |
+
+The new generation assertion fails against the original source. After only
+generation is repaired, the restoration assertion fails; both pass after the
+complete change. The decoder observer wraps the real mnemonic decoder only in
+the registered JNI fixture and its fuzzer, and does not enter either APK ABI.
+Full sanitizer, analysis, device, fuzz and reproduction evidence is recorded in
+PROGRESS.md and `.cache/android-wallet/resume-20260916/jni-mnemonic-retirement/`.
