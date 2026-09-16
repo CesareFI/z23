@@ -6,6 +6,7 @@
 #undef zcl_change_state_decode
 #undef zcl_wallet_recovered_change
 #include "change_storage_fixture.h"
+#include "change_custody_retirement.h"
 #include "../src/change_custody_internal.h"
 #include "storage_faults.h"
 #include "zcl_change_reservation.h"
@@ -51,11 +52,7 @@ zcl_status zcl_reservation_test_random(uint8_t *output, size_t length)
 
 void zcl_reservation_test_zero(void *pointer, size_t length)
 {
-    if (length == sizeof(zcl_change_custody)) {
-        REQUIRE(pointer != NULL);
-        zcl_secure_zero(pointer, length);
-        return;
-    }
+    if (change_custody_retirement_zero(pointer, length)) return;
     REQUIRE(pointer != NULL && (length == 32 || length == 64));
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
@@ -112,6 +109,7 @@ zcl_status zcl_reservation_test_derive(const uint8_t *header, size_t header_len,
 
 static void checked_clear(void)
 {
+    change_custody_retirement_check();
     for (size_t i = 0; i < random_calls; ++i) REQUIRE(spans[i].cleared && spans[i].pointer == NULL);
     memset(spans, 0, sizeof(spans));
     random_calls = fail_random = 0;
@@ -201,10 +199,45 @@ static int private_binding_and_competition(const change_storage_data *data)
     return fixture_close(&fixture);
 }
 
+static int preparation_refusals(const change_storage_data *data)
+{
+    const uint8_t entropy[16] = {0};
+    uint8_t invalid[140];
+    memcpy(invalid, data->wallet, sizeof(invalid));
+    invalid[4] = 0xff;
+    for (unsigned failure = 0; failure < 6; ++failure) {
+        zcl_change_custody wallet = {0};
+        const uint8_t *record = failure == 0 ? NULL : failure == 1 ? invalid : data->wallet;
+        const uint8_t *secret = failure == 2 ? NULL : entropy;
+        const size_t record_len = failure == 3 ? 123 : data->wallet_len;
+        const size_t entropy_len = failure == 4 ? 15 : sizeof(entropy);
+        const zcl_status status = zcl_change_custody_prepare(record, record_len, secret, entropy_len, &wallet);
+        CHECK((status == ZCL_OK) == (failure == 5));
+        if (status == ZCL_OK) {
+            CHECK(wallet.entropy == entropy && wallet.entropy_len == sizeof(entropy));
+            CHECK(wallet.record_len == data->wallet_len && memcmp(wallet.record, data->wallet, data->wallet_len) == 0);
+        }
+        zcl_change_custody_clear(&wallet);
+        checked_clear();
+    }
+    CHECK(zcl_change_custody_prepare(data->wallet, data->wallet_len, entropy, sizeof(entropy), NULL)
+        == ZCL_INVALID_ARGUMENT);
+    zcl_change_custody_clear(NULL);
+    checked_clear();
+    CHECK(zcl_wallet_change_create(NULL, 0, NULL, 0, entropy, sizeof(entropy)) == ZCL_INVALID_ARGUMENT);
+    checked_clear();
+    zcl_change_reservation reservation = {0};
+    CHECK(zcl_wallet_change_reserve(NULL, 0, NULL, 0, entropy, sizeof(entropy), &reservation)
+        == ZCL_INVALID_ARGUMENT);
+    checked_clear();
+    return 0;
+}
+
 int main(void)
 {
     change_storage_data data = {0};
     CHECK(change_data_init(&data) == 0);
+    CHECK(preparation_refusals(&data) == 0);
     CHECK(failed_creation(&data, true) == 0 && failed_creation(&data, false) == 0);
     for (size_t at = 1; at <= 3; ++at) {
         CHECK(failed_reservation(&data, at, FAIL_NONE, NULL, IO_NORMAL, 0, 80, at) == 0);

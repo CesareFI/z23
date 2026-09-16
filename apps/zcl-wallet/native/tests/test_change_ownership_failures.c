@@ -5,6 +5,7 @@
 #undef zcl_change_state_decode
 #undef zcl_wallet_recovered_change
 #include "change_storage_fixture.h"
+#include "change_custody_retirement.h"
 #include "../src/change_custody_internal.h"
 #include "storage_faults.h"
 #include "zcl_change_reservation.h"
@@ -65,11 +66,7 @@ zcl_status zcl_ownership_test_random(uint8_t *output, size_t length)
 
 void zcl_ownership_test_zero(void *pointer, size_t length)
 {
-    if (length == sizeof(zcl_change_custody)) {
-        REQUIRE(pointer != NULL);
-        zcl_secure_zero(pointer, length);
-        return;
-    }
+    if (change_custody_retirement_zero(pointer, length)) return;
     REQUIRE(pointer != NULL && (length == 32 || length == 64) && random_calls <= 2);
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
@@ -107,6 +104,7 @@ zcl_status zcl_ownership_test_derive(const uint8_t *header, size_t header_len,
 
 static void reset(void)
 {
+    change_custody_retirement_check();
     REQUIRE(random_calls <= 2 && mutate_record_byte == NULL);
     for (size_t i = 0; i < random_calls; ++i) REQUIRE(spans[i].cleared && spans[i].pointer == NULL);
     memset(spans, 0, sizeof(spans));
@@ -209,6 +207,10 @@ static int success(const change_storage_data *data, size_t *close_count, size_t 
 
 int main(void)
 {
+    uint8_t address[35] = {0};
+    CHECK(zcl_wallet_change_reserved_address(NULL, 0, NULL, 0, NULL, 0, 0,
+        address, sizeof(address)) == ZCL_INVALID_ARGUMENT);
+    reset();
     change_storage_data data = {0};
     CHECK(change_data_init(&data) == 0);
     size_t closes = 0, stats = 0;

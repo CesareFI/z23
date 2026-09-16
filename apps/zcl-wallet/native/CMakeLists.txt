@@ -1331,9 +1331,10 @@ if(NOT ANDROID)
         set_tests_properties(wallet_change_recovery wallet_change_recovery_partial
             wallet_change_recovery_corrupt PROPERTIES TIMEOUT 30)
         add_executable(change_recovery_failure_tests tests/test_change_recovery_failures.c
-            src/change_recovery.c src/change_custody.c
+            src/change_recovery.c src/change_custody.c tests/change_custody_retirement.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(change_recovery_failure_tests PRIVATE zcl_wallet_core)
+        target_link_options(change_recovery_failure_tests PRIVATE -Wl,--wrap=zcl_change_custody_prepare)
         target_compile_definitions(change_recovery_failure_tests PRIVATE
             zcl_random_bytes=zcl_recovery_test_random zcl_secure_zero=zcl_recovery_test_zero
             zcl_change_state_encode=zcl_recovery_test_encode zcl_change_state_decode=zcl_recovery_test_decode)
@@ -1403,9 +1404,10 @@ if(NOT ANDROID)
             target_link_options(fuzz_review_wallet PRIVATE -fsanitize=fuzzer,address,undefined)
         endif()
         add_executable(change_ownership_failure_tests tests/test_change_ownership_failures.c
-            src/change_ownership.c src/change_custody.c
+            src/change_ownership.c src/change_custody.c tests/change_custody_retirement.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(change_ownership_failure_tests PRIVATE zcl_wallet_core)
+        target_link_options(change_ownership_failure_tests PRIVATE -Wl,--wrap=zcl_change_custody_prepare)
         target_compile_definitions(change_ownership_failure_tests PRIVATE
             zcl_random_bytes=zcl_ownership_test_random zcl_secure_zero=zcl_ownership_test_zero
             zcl_change_state_decode=zcl_ownership_test_decode zcl_wallet_recovered_change=zcl_ownership_test_derive)
@@ -1417,9 +1419,10 @@ if(NOT ANDROID)
         add_test(NAME wallet_change_ownership_failures COMMAND change_ownership_failure_tests)
         set_tests_properties(wallet_change_ownership_failures PROPERTIES TIMEOUT 30)
         add_executable(change_reservation_failure_tests tests/test_change_reservation_failures.c
-            src/change_reservation.c src/change_custody.c
+            src/change_reservation.c src/change_custody.c tests/change_custody_retirement.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(change_reservation_failure_tests PRIVATE zcl_wallet_core)
+        target_link_options(change_reservation_failure_tests PRIVATE -Wl,--wrap=zcl_change_custody_prepare)
         target_compile_definitions(change_reservation_failure_tests PRIVATE
             zcl_random_bytes=zcl_reservation_test_random zcl_secure_zero=zcl_reservation_test_zero
             zcl_change_state_encode=zcl_reservation_test_encode zcl_change_state_decode=zcl_reservation_test_decode
@@ -1450,6 +1453,20 @@ if(NOT ANDROID)
             -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_storage_retirement COMMAND storage_retirement_tests)
         set_tests_properties(wallet_storage_retirement PROPERTIES TIMEOUT 15)
+        add_executable(change_storage_retirement_tests tests/test_change_storage_retirement.c
+            tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c
+            src/storage_change_read.c src/storage_change_write.c src/storage_change_repair.c)
+        target_include_directories(change_storage_retirement_tests PRIVATE src)
+        target_link_libraries(change_storage_retirement_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(change_storage_retirement_tests PRIVATE
+            zcl_secure_zero=zcl_change_storage_test_zero zcl_store_write_bytes=zcl_change_storage_test_write_bytes)
+        target_compile_options(change_storage_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(change_storage_retirement_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+            -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk -Wl,--wrap=write -Wl,--wrap=fsync
+            -Wl,--wrap=renameat2 -Wl,--wrap=close)
+        add_test(NAME wallet_change_storage_retirement COMMAND change_storage_retirement_tests)
+        set_tests_properties(wallet_change_storage_retirement PROPERTIES TIMEOUT 15)
         add_executable(change_storage_fault_tests tests/test_change_storage_faults.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(change_storage_fault_tests PRIVATE zcl_wallet_core)

@@ -17,10 +17,10 @@ zcl_status zcl_store_match_wallet(const zcl_store *store, const uint8_t *record,
     size_t existing_len = 0;
     zcl_status status = zcl_store_read_file(store, ZCL_STORE_COMMITTED,
         existing, sizeof(existing), &existing_len, false);
-    if (status != ZCL_OK) return status;
-    if (existing_len != length || memcmp(existing, record, length) != 0)
-        return ZCL_ALREADY_EXISTS;
-    return ZCL_OK;
+    if (status == ZCL_OK && (existing_len != length || memcmp(existing, record, length) != 0))
+        status = ZCL_ALREADY_EXISTS;
+    zcl_secure_zero(existing, sizeof(existing));
+    return status;
 }
 
 static zcl_status change_size(int fd, uint32_t *size)
@@ -102,6 +102,7 @@ zcl_status zcl_storage_change_observe(const uint8_t *directory, size_t directory
     if (snapshot == NULL) return ZCL_INVALID_ARGUMENT;
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(wallet_record, wallet_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK) return status;
     zcl_store store = {-1, -1};
     int fd = -1;
@@ -112,6 +113,7 @@ zcl_status zcl_storage_change_observe(const uint8_t *directory, size_t directory
     status = zcl_store_change_close(&fd, status);
     status = zcl_store_close(&store, status);
     if (status == ZCL_OK) *snapshot = candidate;
+    zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
 }
 
@@ -136,6 +138,7 @@ zcl_status zcl_storage_change_probe(const uint8_t *directory, size_t directory_l
     if (snapshot == NULL) return ZCL_INVALID_ARGUMENT;
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(wallet_record, wallet_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK) return status;
     zcl_store store = {-1, -1};
     int fd = -1;
@@ -147,5 +150,6 @@ zcl_status zcl_storage_change_probe(const uint8_t *directory, size_t directory_l
     status = zcl_store_change_close(&fd, status);
     status = zcl_store_close(&store, status);
     if (status == ZCL_OK) *snapshot = candidate;
+    zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
 }

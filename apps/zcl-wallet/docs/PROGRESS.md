@@ -73,8 +73,49 @@ Four older shorthand filenames in the security review were expanded into their
 actual `.c` and `.h` names; its path-check findings are resolved. The global
 path check still flags other historical upstream citations and unrelated files;
 repository-wide lint is not green. TLS and all production boundaries remain
-unchanged. Next: inspect the remaining change-custody preparation copies and
-their cleanup assertions, then continue the ordered custody/lifecycle review.
+unchanged. This batch was pushed and remotely verified as
+`dcde9d657e6c6e9b0d8991ccb86dfd502b4a8fab`.
+
+The next batch retires the remaining parsed-record copy in change-custody
+preparation, validation-only copies in all five change-storage entry points,
+the exact-wallet comparison buffer, and local observation/recovery snapshots.
+Append/repair retire compared snapshots before writes. No authentication,
+index-consumption, output-publication, file-preservation or status rule changes.
+
+A shared source-only observer now brackets preparation in the creation/
+reservation, recovery and ownership fault suites. It requires parsed-record
+retirement before preparation returns and full erasure of the exact enclosing
+custody owner before reset/reuse. The preceding fixture allowance accepted
+owner-sized wipes without requiring them. Three separate builds using callers
+from `8828c2219` fail the new owner-retirement assertion, and the inherited
+preparation source independently fails its parsed-record assertion. All four
+negative checks fail before filesystem setup. Direct regressions cover NULL
+inputs/owner, short record, unsupported version and entropy-length mismatch.
+
+The registered change-storage retirement fixture checks exact outputs, canaries
+on failure, stale append/repair refusal, failed IO, preserved partial records,
+and actual whole-object zeroing. A test-only write interception requires consumed
+comparison scratch to be retired before append/repair writes. Its inherited
+storage-source build fails the cleanup assertion before filesystem setup.
+These observers are excluded from Android libraries and operate on public
+fixtures; they retain no live stack pointer after retirement.
+
+Full non-TLS safety passes 101/101 Clang wallet CTest cases in 83.91 seconds and
+100/100 optimized GCC cases in 120.84 seconds. Both analyzers and complexity
+caps 10/15 pass. Separate bounded 61-second fuzz runs complete 90,352
+change-storage and 17,923 review-wallet executions without a finding. Android/
+JVM tests, both ABI builds, debug/release APKs and lints, fixture isolation,
+16 KiB alignment, architecture and doc counts pass. All eleven API35 native
+storage/recovery tests pass in 0.347 seconds, including fresh paired creation.
+Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/change-retirement/`.
+
+The earlier full root-lint run has now terminated with fourteen failing gates,
+including node/tooling checks, historical provider/upstream documentation paths,
+and four standalone node-tool link targets. Its complete log remains under
+the record-retirement evidence directory. No global pass or production custody
+acceptance is claimed. Next: reproduce the unsigned release from a fresh source
+archive, then continue the ordered custody/transaction/lifecycle review.
 
 ## Current continuation — 2026-09-16
 

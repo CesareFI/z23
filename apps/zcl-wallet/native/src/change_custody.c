@@ -15,13 +15,15 @@ zcl_status zcl_change_custody_prepare(const uint8_t *record, size_t record_len,
     memcpy(wallet->record, record, record_len);
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(wallet->record, record_len, &parsed);
-    if (status != ZCL_OK) return status;
-    if (entropy_len != parsed.info.entropy_len) return ZCL_OUT_OF_RANGE;
-    wallet->record_len = record_len;
-    wallet->entropy = entropy;
-    wallet->entropy_len = entropy_len;
-    wallet->network = parsed.info.network;
-    return ZCL_OK;
+    if (status == ZCL_OK && entropy_len != parsed.info.entropy_len) status = ZCL_OUT_OF_RANGE;
+    if (status == ZCL_OK) {
+        wallet->record_len = record_len;
+        wallet->entropy = entropy;
+        wallet->entropy_len = entropy_len;
+        wallet->network = parsed.info.network;
+    }
+    zcl_secure_zero(&parsed, sizeof(parsed));
+    return status;
 }
 
 zcl_status zcl_change_custody_encode(const zcl_change_custody *wallet, uint32_t index, uint8_t *state)

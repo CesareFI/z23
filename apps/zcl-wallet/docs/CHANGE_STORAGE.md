@@ -32,6 +32,14 @@ partial existing file for explicit recovery; that observation cannot authorize
 a normal append. No scan, allocation, retained descriptor or growing collection
 is used. Snapshot bytes are unauthenticated until the caller verifies them.
 
+Native validation-only wallet copies, exact-record comparison buffers and local
+journal snapshots are securely cleared after their last use on success and
+refusal. Observe/probe publish independently owned outputs only after descriptor
+cleanup succeeds, then clear their local candidate. Append/repair clear their
+compared local snapshot before writing. The enclosing custody owner still
+borrows stable caller entropy and retires that pointer before return. These
+lifetime controls do not authenticate an observation or grant repair authority.
+
 ## Fresh creation and recovery boundaries
 
 `zcl_storage_create_with_change` requires committed wallet, pending wallet and

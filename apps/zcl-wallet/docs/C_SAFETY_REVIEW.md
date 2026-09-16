@@ -1,5 +1,44 @@
 # C parser foundation safety review
 
+## Change-custody and journal scratch retirement — 2026-09-17
+
+Scope: `change_custody.c` and the three change-storage implementation units.
+Preparation now erases its parsed record on every post-admission return. All
+validation-only change-storage records clear before IO, exact-wallet comparison
+arrays clear before return, and candidate/actual journal snapshots clear after
+their last use. Append/repair retire their compared snapshot before writing.
+The copied bytes are metadata, ciphertext and public authenticated change state.
+Entropy remains caller-owned, borrowed only during synchronous custody work.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use exact array/structure `sizeof`; existing bounded record, tail and predecessor reads remain. Publication precedes candidate erasure. |
+| Integer overflow/underflow, signed/unsigned conversions | No production arithmetic or conversion added. Record/position limits, short-circuit length comparisons and status precedence are unchanged. |
+| Use-after-free, double-free, leaks | No allocation or descriptor ownership changes. Source-only fixtures observe live objects and retire numeric owner identities without dereferencing expired storage. |
+| NULL dereferences, uninitialized memory | Existing admission checks precede member access. Initialized temporaries clear on NULL/malformed-input refusal; no failed output is published. |
+| Dangling pointers, pointer arithmetic | Custody retains its stable borrowed input only until the existing caller clear. The new observer requires that exact owner's full retirement before the next operation. No new production pointer escapes or offsets. |
+| Format strings, secret leakage | No new production diagnostics. Copied record/state bytes clear; complete owner erasure includes the borrowed entropy pointer. Tests use public vectors and emit only assertion locations. |
+| Stack usage, allocation limits | Existing production stack/structure budgets remain; no VLA, recursion, heap owner or input-sized allocation. New fixtures retain the 4096-byte frame gate. |
+| Malformed serialization/network input | Authentication, exact-record binding, structural checks and recovery authority are unchanged. IO observations remain unauthenticated public data. |
+| Races, resource exhaustion | The same synchronous ownership, cooperative lock, descriptor binding and bounded IO loops remain. Clearing does not acquire a lock or block. |
+
+A shared test observer now brackets preparation in the creation/reservation,
+recovery and ownership fault fixtures. It requires the parsed temporary to
+retire before preparation returns and the exact custody owner to retire before
+fixture reset/reuse. The prior owner-size allowance could not detect an omitted
+clear. Direct admission tests cover NULL inputs, missing owner, short record,
+unsupported version and wrong entropy length. Independent builds using the
+older creation/reservation, recovery and ownership callers each fail the new
+owner-retirement assertion before filesystem setup. The inherited preparation
+source separately fails its parsed-record assertion.
+
+The new change-storage fixture checks full erasure, exact returned snapshots,
+unchanged failed outputs, stale append/repair refusal, failed reads/closes/writes
+and preserved partial recovery bytes. Its source-only write hook requires
+comparison scratch retirement before an append/repair write. The inherited
+storage source fails its admission-cleanup assertion before filesystem setup.
+Full validation and remaining limitations are recorded in `PROGRESS.md`.
+
 ## Storage ciphertext retirement — 2026-09-17
 
 Scope: native immutable-wallet reads, creation and promotion in `storage_read.c`

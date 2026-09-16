@@ -5,6 +5,7 @@
 #undef zcl_change_state_encode
 #undef zcl_change_state_decode
 #include "change_storage_fixture.h"
+#include "change_custody_retirement.h"
 #include "../src/change_custody_internal.h"
 #include "storage_faults.h"
 #include "zcl_change_reservation.h"
@@ -46,11 +47,7 @@ zcl_status zcl_recovery_test_random(uint8_t *output, size_t length)
 
 void zcl_recovery_test_zero(void *pointer, size_t length)
 {
-    if (length == sizeof(zcl_change_custody)) {
-        REQUIRE(pointer != NULL);
-        zcl_secure_zero(pointer, length);
-        return;
-    }
+    if (change_custody_retirement_zero(pointer, length)) return;
     REQUIRE(pointer != NULL && length == 32);
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
@@ -96,6 +93,7 @@ zcl_status zcl_recovery_test_decode(const uint8_t *header, size_t header_len,
 
 static void checked_clear(void)
 {
+    change_custody_retirement_check();
     for (size_t i = 0; i < random_calls; ++i) REQUIRE(spans[i].cleared && spans[i].pointer == NULL);
     memset(spans, 0, sizeof(spans));
     random_calls = crypto_calls = fail_random = fail_crypto = 0;
@@ -197,6 +195,8 @@ static int private_binding(const change_storage_data *data, bool competitor)
 
 int main(void)
 {
+    CHECK(zcl_wallet_change_recover(NULL, 0, NULL, 0, NULL, 0) == ZCL_INVALID_ARGUMENT);
+    checked_clear();
     change_storage_data data = {0};
     CHECK(change_data_init(&data) == 0);
     for (size_t at = 1; at <= 4; ++at) {

@@ -46,6 +46,7 @@ static zcl_status repair_locked(const zcl_store *store, const zcl_change_storage
     zcl_change_storage_snapshot actual = {0};
     zcl_status status = zcl_store_change_open(store, true, &fd, &actual);
     if (status == ZCL_OK) status = zcl_store_change_matches(&actual, expected);
+    zcl_secure_zero(&actual, sizeof(actual));
     if (status == ZCL_OK) status = write_repair(fd, plan, replacement, state_len);
     status = zcl_store_change_close(&fd, status);
     if (status == ZCL_OK) status = zcl_store_sync(store->directory);
@@ -59,6 +60,7 @@ zcl_status zcl_storage_change_repair(const uint8_t *directory, size_t directory_
     zcl_wallet_record parsed = {0};
     zcl_change_repair_plan plan = {0};
     zcl_status status = zcl_wallet_record_parse(wallet_record, wallet_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status == ZCL_OK) status = repair_record(expected, replacement, state_len, &plan);
     if (status != ZCL_OK) return status;
     zcl_store store = {-1, -1};

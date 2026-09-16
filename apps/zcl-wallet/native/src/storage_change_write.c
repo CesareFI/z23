@@ -44,6 +44,7 @@ zcl_status zcl_storage_create_with_change(const uint8_t *directory, size_t direc
 {
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(wallet_record, wallet_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status == ZCL_OK) status = initial_record(initial_state, state_len);
     if (status != ZCL_OK) return status;
     zcl_store store = {-1, -1};
@@ -76,6 +77,7 @@ static zcl_status append_locked(const zcl_store *store, const zcl_change_storage
     zcl_change_storage_snapshot actual = {0};
     zcl_status status = zcl_store_change_open(store, true, &fd, &actual);
     if (status == ZCL_OK) status = zcl_store_change_matches(&actual, expected);
+    zcl_secure_zero(&actual, sizeof(actual));
     if (status == ZCL_OK) status = zcl_store_write_bytes(fd, state, state_len);
     if (status == ZCL_OK) status = zcl_store_sync(fd);
     status = zcl_store_change_close(&fd, status);
@@ -89,6 +91,7 @@ zcl_status zcl_storage_change_append(const uint8_t *directory, size_t directory_
 {
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(wallet_record, wallet_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status == ZCL_OK) status = append_records(expected, next_state, state_len);
     if (status != ZCL_OK) return status;
     zcl_store store = {-1, -1};
