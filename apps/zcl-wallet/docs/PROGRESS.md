@@ -4527,3 +4527,30 @@ Evidence: `.cache/android-wallet/resume-20260916/fuzz-output-classification/`.
 Existing root-lint failures, hardware acceptance and parked TLS limits remain.
 Next: check whether actual fuzz harness translation units, as well as linked
 authored/provider sources, receive the intended instrumentation qualification.
+
+2026-09-16: the fuzz gate now also qualifies every native test translation unit
+compiled into a fuzz target, using its actual output operand. The old checker
+accepted a copied manifest with coverage removed from fuzz_blake2's harness.
+Harnesses and helpers now require ASan/UBSan, fail-on-finding and coverage flags,
+and reject overriding opt-outs. Standalone tests/seed writers remain outside
+this added scope; filenames shared with fuzz targets do not grant an exemption.
+An empty harness scope fails. Separate oracle libraries are not included in
+this harness count, and this is compile qualification rather than runtime proof.
+
+Ten added negative mutations cover three harness/helper source forms and an
+empty harness scope. Five positive controls cover quoted real options and the
+standalone/seed distinction. Existing mutations remain enforced. The first
+registered run exceeded its unchanged 60-second mutation deadline; the complete
+standalone suite passed. Caching manifest entries and parsing each command's
+JSON object once removes repeated large-array parsing. The final registered
+profile passes in 28.51 seconds, with 156 authored/provider and 70 harness/helper
+compilations and coverage on 176 library/fuzz compilations. The oracle-enabled
+configuration and final mutation suite also pass: 156 authored/provider plus 75
+harness/helper compilations, with 181 covered library/fuzz compilations.
+
+Architecture and whitespace checks pass. No compiler configuration, C source,
+test deadline, product artifact or custody authority changes. Evidence, including
+the initial timeout: `.cache/android-wallet/resume-20260916/fuzz-harness-qualification/`.
+Hardware acceptance, pre-existing root-lint failures and parked TLS remain
+unresolved. Next: check whether JNI mnemonic conversions retain consumed input
+scratch while transferring their secret result to its preowned Java destination.

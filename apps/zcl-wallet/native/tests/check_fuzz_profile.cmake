@@ -10,8 +10,9 @@ if(accepted EQUAL 0 OR NOT error_flat MATCHES "ZCL_FUZZ requires ZCL_SANITIZE=ON
 endif()
 
 # A host Clang configure also verifies the actual emitted commands, including
-# every enabled authored source/provider compilation (test-only seed writers
-# need not be instrumented). This is a configuration check, not a fuzz run.
+# every enabled authored source/provider compilation and each harness/helper
+# compiled into a fuzz target (test-only seed writers need not be instrumented).
+# This is a configuration check, not a fuzz run.
 if(DEFINED CLANG AND NOT CLANG STREQUAL "")
     execute_process(COMMAND "${CMAKE_COMMAND}" -S "${SOURCE}" -B "${POSITIVE_BUILD}"
         -DCMAKE_C_COMPILER=${CLANG} -DZCL_FUZZ=ON -DZCL_SANITIZE=ON
