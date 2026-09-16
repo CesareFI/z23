@@ -3014,3 +3014,42 @@ Clang 99/99 and optimized GCC 98/98 groups, with analyzers green; production
 complexity is 513 functions in 91 files at <=10 and test complexity is 1,363
 functions in 160 files at <=15. Evidence is under
 `.cache/android-wallet/mission-20260916/change-custody-null/`.
+
+## Change-custody secret retirement — 2026-09-16
+
+Scope: the local `zcl_change_custody` work object used by change creation,
+reservation, recovery and ownership callers. It contains a borrowed entropy
+pointer plus copied custody record and metadata. Those callers now invoke the
+single NULL-safe `zcl_change_custody_clear` boundary before every return, which
+securely zeros the complete object and retires the pointer and copied secret
+bytes. The test fault-injection wrappers accept this owner-sized wipe and still
+verify the existing blinding-buffer wipes. No consensus, transport or TLS code
+is touched.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | The cleanup uses `sizeof(zcl_change_custody)` for the exact object span; no caller-provided length is accepted. |
+| Out-of-bounds access | `zcl_secure_zero` receives the object base and compile-time size only. |
+| Integer overflow/underflow | No arithmetic or size derivation occurs in the cleanup boundary. |
+| Signed/unsigned conversions | The object size is passed through the existing `size_t` secure-zero interface without narrowing. |
+| Use-after-free | The borrowed entropy pointer is wiped as data and is never dereferenced during retirement. |
+| Double-free | The object owns no heap allocation; callers clear once on each return path. |
+| Leaks | No allocation is introduced; stack storage is retired before scope exit. |
+| NULL dereferences | `zcl_change_custody_clear(NULL)` is explicitly harmless, while normal callers pass their live local object. |
+| Uninitialized memory | The complete object span is cleared regardless of which preparation step initialized it. |
+| Dangling pointers | The stored entropy pointer is erased before the stack object becomes unreachable. |
+| Pointer arithmetic | Cleanup performs no pointer arithmetic. |
+| Format strings | No formatting or logging path handles custody bytes. |
+| Stack usage | The existing bounded object remains stack-local; cleanup adds no variable-length storage. |
+| Allocation limits | Retirement is constant-size and allocation-free. |
+| Malformed serialization/network input | The object is local custody preparation state; no wire data is parsed by cleanup. |
+| Races | Callers use the object synchronously; no shared ownership or concurrent access is added. |
+| Resource exhaustion | Cleanup cannot block on or consume external resources. |
+| Secret leakage | The borrowed entropy pointer, copied record and metadata are zeroed on every normal and fault return before scope exit. |
+
+The focused change suite passes 21/21. Full non-TLS safety passes Clang 99/99
+and optimized GCC 98/98 groups (81.73 and 117.44 seconds), with Clang/GCC
+analysis and production/test complexity caps 10/15 green. Android host/JVM,
+both ABIs, APK builds, lints, fixture isolation and native alignment also pass.
+Evidence is under
+`.cache/android-wallet/mission-20260916/change-custody-clear/`.

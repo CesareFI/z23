@@ -2,6 +2,11 @@
 #include "change_custody_internal.h"
 #include <string.h>
 
+void zcl_change_custody_clear(zcl_change_custody *wallet)
+{
+    if (wallet != NULL) zcl_secure_zero(wallet, sizeof(*wallet));
+}
+
 zcl_status zcl_change_custody_prepare(const uint8_t *record, size_t record_len,
     const uint8_t *entropy, size_t entropy_len, zcl_change_custody *wallet)
 {

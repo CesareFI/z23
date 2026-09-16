@@ -5,6 +5,7 @@
 #undef zcl_change_state_encode
 #undef zcl_change_state_decode
 #include "change_storage_fixture.h"
+#include "../src/change_custody_internal.h"
 #include "storage_faults.h"
 #include "zcl_change_reservation.h"
 #include <dirent.h>
@@ -45,6 +46,11 @@ zcl_status zcl_recovery_test_random(uint8_t *output, size_t length)
 
 void zcl_recovery_test_zero(void *pointer, size_t length)
 {
+    if (length == sizeof(zcl_change_custody)) {
+        REQUIRE(pointer != NULL);
+        zcl_secure_zero(pointer, length);
+        return;
+    }
     REQUIRE(pointer != NULL && length == 32);
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;

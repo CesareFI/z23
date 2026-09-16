@@ -32,5 +32,6 @@ zcl_status zcl_wallet_change_reserved_address(const uint8_t *directory, size_t d
     if (status == ZCL_OK) status = consumed_index(&wallet, &snapshot, index);
     if (status == ZCL_OK) status = zcl_change_custody_address(&wallet, index, candidate, sizeof(candidate));
     if (status == ZCL_OK) memcpy(address, candidate, sizeof(candidate));
+    zcl_change_custody_clear(&wallet);
     return status;
 }

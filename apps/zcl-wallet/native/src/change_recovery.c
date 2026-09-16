@@ -84,5 +84,6 @@ zcl_status zcl_wallet_change_recover(const uint8_t *directory, size_t directory_
     if (status == ZCL_OK)
         status = zcl_storage_change_repair(directory, directory_len, wallet.record, wallet.record_len,
             &snapshot.current, replacement, sizeof(replacement));
+    zcl_change_custody_clear(&wallet);
     return status;
 }

@@ -16,6 +16,9 @@ typedef struct {
 
 zcl_status zcl_change_custody_prepare(const uint8_t *record, size_t record_len,
     const uint8_t *entropy, size_t entropy_len, zcl_change_custody *wallet);
+/* Retire the copied record, borrowed entropy pointer and metadata after the
+ * enclosing operation; callers must invoke this on every exit path. */
+void zcl_change_custody_clear(zcl_change_custody *wallet);
 /* Generate fresh OS blinding internally, then clear it on every exit. These
  * helpers recheck recovered wallet identity; no MAC key/secret is retained. */
 zcl_status zcl_change_custody_encode(const zcl_change_custody *wallet, uint32_t index, uint8_t *state);

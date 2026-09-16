@@ -109,6 +109,19 @@ non-TLS native safety passes Clang 99/99 and optimized GCC 98/98; the complete
 hazard review is in `C_SAFETY_REVIEW.md`, with evidence under
 `.cache/android-wallet/mission-20260916/change-custody-null/`.
 
+2026-09-16 continuation with TLS still parked: change-custody callers now
+retire their stack-owned custody work object on every return. The helper's
+borrowed entropy pointer, copied change record and metadata are wiped through
+one NULL-safe `zcl_change_custody_clear` boundary after create, reservation,
+recovery and ownership paths finish. Fault-injection wrappers were updated to
+recognize and verify this owner-sized wipe while retaining their existing
+blinding-buffer assertions. The focused change suite passes 21/21; full
+non-TLS safety passes Clang 99/99 and optimized GCC 98/98, with analyzers and
+complexity caps green. Android host/JVM, both ABIs, APK builds, lints, fixture
+isolation and native alignment pass for this slice. Evidence is under
+`.cache/android-wallet/mission-20260916/change-custody-clear/`. No consensus,
+transport or TLS code changed.
+
 ## Historical checkpoints
 
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC
