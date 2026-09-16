@@ -23,19 +23,25 @@ zcl_status zcl_wallet_record_pack(const uint8_t *header, size_t header_len,
     zcl_wallet_info info = {0};
     status = zcl_wallet_header_parse(header, header_len, &info);
     if (status != ZCL_OK)
-        return status;
-    if (ciphertext_len != info.entropy_len + ZCL_WALLET_TAG_BYTES)
-        return ZCL_OUT_OF_RANGE;
+        goto cleanup;
+    if (ciphertext_len != info.entropy_len + ZCL_WALLET_TAG_BYTES) {
+        status = ZCL_OUT_OF_RANGE;
+        goto cleanup;
+    }
     size_t total = ZCL_WALLET_HEADER_BYTES + ZCL_WALLET_IV_BYTES + ciphertext_len;
-    if (capacity < total)
-        return ZCL_BUFFER_TOO_SMALL;
-    uint8_t result[140] = {0};
-    memcpy(result, header, header_len);
-    memcpy(result + 80, iv, iv_len);
-    memcpy(result + 92, ciphertext, ciphertext_len);
-    memcpy(record, result, total);
+    if (capacity < total) {
+        status = ZCL_BUFFER_TOO_SMALL;
+        goto cleanup;
+    }
+    /* Inputs cannot overlap the destination. All fallible checks are complete;
+     * publish directly without another stack copy of the encrypted record. */
+    memcpy(record, header, header_len);
+    memcpy(record + 80, iv, iv_len);
+    memcpy(record + 92, ciphertext, ciphertext_len);
     *record_len = total;
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(&info, sizeof(info));
+    return status;
 }
 
 zcl_status zcl_wallet_record_parse(const uint8_t *record, size_t record_len, zcl_wallet_record *output)
@@ -47,14 +53,18 @@ zcl_status zcl_wallet_record_parse(const uint8_t *record, size_t record_len, zcl
     zcl_wallet_record result = {0};
     zcl_status status = zcl_wallet_header_parse(record, ZCL_WALLET_HEADER_BYTES, &result.info);
     if (status != ZCL_OK)
-        return status;
+        goto cleanup;
     size_t ciphertext_len = result.info.entropy_len + ZCL_WALLET_TAG_BYTES;
-    if (record_len != ZCL_WALLET_HEADER_BYTES + ZCL_WALLET_IV_BYTES + ciphertext_len)
-        return ZCL_INVALID_ENCODING;
+    if (record_len != ZCL_WALLET_HEADER_BYTES + ZCL_WALLET_IV_BYTES + ciphertext_len) {
+        status = ZCL_INVALID_ENCODING;
+        goto cleanup;
+    }
     memcpy(result.header, record, sizeof(result.header));
     memcpy(result.iv, record + 80, sizeof(result.iv));
     memcpy(result.ciphertext, record + 92, ciphertext_len);
     result.ciphertext_len = ciphertext_len;
     *output = result;
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(&result, sizeof(result));
+    return status;
 }

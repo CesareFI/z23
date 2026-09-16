@@ -1,5 +1,34 @@
 # C parser foundation safety review
 
+## Record codec and JNI retirement coverage — 2026-09-17
+
+Scope: `wallet_record.c`, its native fixture, and the JNI record fixture. Packing
+no longer creates a redundant 140-byte encrypted-record stack copy. Validation
+finishes before direct output publication under the existing non-overlap
+contract. Packing clears parsed metadata; parsing clears the whole staged
+record after publication and every post-initialization refusal. The JNI fixture
+now observes each copied input and codec output through source-only hooks,
+including partially written VM input and full unused capacity.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Fixed 80/12/48/140-byte limits remain. Exact ciphertext length and output capacity precede every copy. Erasure spans use object `sizeof`. |
+| Integer overflow/underflow, signed/unsigned conversions | Header admission bounds entropy to 16..32; total remains 124..140. No new narrowing or input-derived allocation arithmetic. |
+| Use-after-free, double-free, leaks | No production allocation added. Output copies complete before scratch retirement. Fixture hooks check live objects and retain only numeric identities, retired before scope exit. |
+| NULL dereferences, uninitialized memory | Existing pointer checks precede reads. Scratch is zero-initialized; refusal never publishes partial outputs. |
+| Dangling pointers, pointer arithmetic | No production pointer escapes. Existing non-overlap contract permits direct copies at checked constant offsets. |
+| Format strings, secret leakage | No new production diagnostics. Codec ciphertext/metadata scratch clears; JNI spans clear even on a partial VM write. Only public test vectors are used. |
+| Stack usage, allocation limits | Packing removes 140 automatic bytes; parsing retains its existing bounded structure. No VLA, recursion, heap allocation or new JNI reference. |
+| Malformed serialization/network input | Wire format, exact-length checks and authentication requirements are unchanged. Structural acceptance never authenticates GCM. |
+| Races, resource exhaustion | Calls remain synchronous with stable caller-owned inputs. Cleanup is bounded and allocation-free; no state, network or synchronization owner added. |
+
+Focused native and JNI record checks pass. Linking the strengthened native
+fixture against the inherited codec fails its cleanup assertion. Full matrix
+results are recorded in `PROGRESS.md` after completion. TLS stays quarantined;
+hardware custody and managed/provider erasure are outside this evidence.
+
+## Original parser foundation review
+
 Scope: authored `native/src/` and `native/include/` amount, Base58Check,
 transparent-address, payment-URI and JNI adapter code. This record must be
 updated before subsequent C implementation commits. It is a source review and

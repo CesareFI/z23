@@ -1,5 +1,47 @@
 # Development record
 
+## Current continuation — 2026-09-17
+
+Continued from the clean, remotely verified `63f3e2f43` checkpoint in
+`/root/z23-android` on `agent/android-jni-secret-retirement-20260915`.
+The development push target remains that same branch on `wallet-backup`.
+Current `origin/main` was fetched; unrelated node changes remain outside this
+wallet-only branch under its no-merge contract.
+
+The underlying C record codec now retires staged ciphertext/metadata, extending
+the preceding JNI cleanup. Packing validates before direct publication and
+removes a redundant 140-byte ciphertext array. Parsing clears its entire staged
+record on success and all refusals after initialization. Caller outputs remain
+unchanged on failure. Source-only test hooks assert native retirement and track
+full JNI input/result capacities through all existing VM faults, partial reads,
+allocation failures, malformed inputs, NULL inputs and pending exceptions.
+The strengthened native fixture fails against the inherited codec at its first
+missing-cleanup assertion; the current native/JNI fixtures both pass.
+
+Clang safety passes 99/99 wallet CTest cases in 82.03 seconds; optimized GCC
+passes 98/98 in 119.05 seconds. Both static analyzers and production/test
+complexity caps 10/15 pass. Separate bounded ASan/UBSan fuzz runs complete
+175,703 JNI-record and 1,176,614 native-record executions, 61 seconds each,
+with five-second input deadlines and 512 MiB RSS limits, without findings.
+Android/JVM tests, ARM64/x86-64 builds, debug/release APKs and lints, fixture
+isolation, 16 KiB alignment, architecture and documentation-count checks pass.
+The API35 public in-memory record/GCM instrumentation test passes all ten
+entropy/network combinations in 0.132 seconds on `emulator-5560`. The earlier
+`emulator-5554` invocation timed out after 90 seconds without test output and
+is not a pass. No wallet directory or Keystore alias is opened by this fixture.
+Repository-wide lint also reports failures outside the changed wallet surface
+(including Tor defaults, retired protocols, hard-link seeding and Windows
+syntax). Its full local log is retained; no global lint pass is claimed.
+
+Evidence is local under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/record-retirement/`.
+The explicit hazard review is in `C_SAFETY_REVIEW.md`. This qualifies bounded
+record-copy retirement, not hardware custody or erasure of every managed or
+provider copy. TLS remains quarantined; positive hardware custody, physical
+camera acceptance, authenticated sending and real sync remain unfinished.
+Next: retire storage read/promotion and change-preparation record scratch while
+preserving exact-record checks and failure-atomic output publication.
+
 ## Current continuation — 2026-09-16
 
 Worktree: `/root/z23-android`; branch:

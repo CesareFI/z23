@@ -1,4 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#undef zcl_secure_zero
+#undef zcl_wallet_record_pack
+#undef zcl_wallet_record_parse
 #include "jni_support.h"
 #include "zcl_wallet_record.h"
 #include <stdio.h>
@@ -23,6 +26,54 @@ static uint8_t headers[10][80];
 static bool headers_ready, pending;
 static size_t reference_count, live, peak;
 static unsigned vm_calls, fail_call, allocation_fault_mode;
+typedef struct { uintptr_t identity; size_t capacity; bool cleared; } native_span;
+static native_span spans[4];
+static size_t span_count;
+
+static void track(const void *pointer, size_t capacity)
+{
+    CHECK(pointer != NULL && span_count < sizeof(spans) / sizeof(spans[0]));
+    spans[span_count++] = (native_span){(uintptr_t)pointer, capacity, false};
+}
+
+void zcl_jni_record_test_zero(void *pointer, size_t length);
+void zcl_jni_record_test_zero(void *pointer, size_t length)
+{
+    CHECK(pointer != NULL);
+    zcl_secure_zero(pointer, length);
+    const uint8_t *bytes = pointer;
+    for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    for (size_t i = 0; i < span_count; ++i) {
+        if (spans[i].identity != (uintptr_t)pointer) continue;
+        CHECK(!spans[i].cleared && spans[i].capacity == length);
+        spans[i].cleared = true;
+        spans[i].identity = 0; /* Never retain a pointer past native scope exit. */
+    }
+}
+
+zcl_status zcl_jni_record_test_pack(const uint8_t *, size_t, const uint8_t *, size_t,
+    const uint8_t *, size_t, uint8_t *, size_t, size_t *);
+zcl_status zcl_jni_record_test_pack(const uint8_t *header, size_t header_len,
+    const uint8_t *iv, size_t iv_len, const uint8_t *ciphertext, size_t ciphertext_len,
+    uint8_t *record, size_t capacity, size_t *length)
+{
+    track(record, capacity);
+    return zcl_wallet_record_pack(header, header_len, iv, iv_len, ciphertext,
+        ciphertext_len, record, capacity, length);
+}
+
+zcl_status zcl_jni_record_test_parse(const uint8_t *, size_t, zcl_wallet_record *);
+zcl_status zcl_jni_record_test_parse(const uint8_t *bytes, size_t length, zcl_wallet_record *record)
+{
+    track(record, sizeof(*record));
+    return zcl_wallet_record_parse(bytes, length, record);
+}
+
+static void verify_cleanup(void)
+{
+    for (size_t i = 0; i < span_count; ++i)
+        CHECK(spans[i].cleared && spans[i].identity == 0);
+}
 
 static bool vm_fault(void)
 {
@@ -77,6 +128,9 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
     (void)env;
     const fake_object *object = region(input, offset, count);
     CHECK(bytes != NULL);
+    const size_t capacity = object == &record_input ? 140 :
+        object == &inputs[0] ? 80 : object == &inputs[1] ? 12 : 48;
+    track(bytes, capacity); /* Includes partial VM writes and unused tails. */
     if (vm_fault()) { if (count > 0) bytes[0] = 42; return; }
     memcpy(bytes, object->bytes + (size_t)offset, (size_t)count);
 }
@@ -165,6 +219,8 @@ static void prepare(unsigned profile)
     CHECK(profile < 10);
     prepare_headers();
     reference_count = live = peak = 0;
+    span_count = 0;
+    memset(spans, 0, sizeof(spans));
     vm_calls = fail_call = allocation_fault_mode = 0;
     pending = false;
     memset(references, 0, sizeof(references));
@@ -183,9 +239,12 @@ static void prepare(unsigned profile)
 
 static fake_object *invoke(bool unpack, JNIEnv *env)
 {
-    if (unpack) return (fake_object *)API(unpackWalletRecord)(env, NULL, (jbyteArray)&record_input);
-    return (fake_object *)API(packWalletRecord)(env, NULL,
-        (jbyteArray)&inputs[0], (jbyteArray)&inputs[1], (jbyteArray)&inputs[2]);
+    fake_object *result = unpack
+        ? (fake_object *)API(unpackWalletRecord)(env, NULL, (jbyteArray)&record_input)
+        : (fake_object *)API(packWalletRecord)(env, NULL,
+            (jbyteArray)&inputs[0], (jbyteArray)&inputs[1], (jbyteArray)&inputs[2]);
+    verify_cleanup();
+    return result;
 }
 
 static void check_bytes(const fake_object *object, const uint8_t *bytes, size_t length)
@@ -279,6 +338,7 @@ static void pending_and_null(void)
         jbyteArray arguments[3] = {(jbyteArray)&inputs[0], (jbyteArray)&inputs[1], (jbyteArray)&inputs[2]};
         arguments[missing] = NULL;
         CHECK(API(packWalletRecord)(&environment, NULL, arguments[0], arguments[1], arguments[2]) == NULL);
+        verify_cleanup();
         CHECK(vm_calls == missing * 2 && reference_count == 0 && !pending);
     }
 }

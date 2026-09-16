@@ -23,6 +23,15 @@ bytes, unknown versions/profiles, wrong genesis/network, nonzero reserved fields
 invalid entropy sizes and invalid receiving addresses before asking Keystore to
 decrypt. Parsing alone establishes no authenticity.
 
+The C packer validates every span and capacity before copying directly into the
+caller-owned record, avoiding a second ciphertext array. Its metadata scratch
+and the parser's staged record are securely cleared before return, including
+refusals after initialization. JNI separately clears its native copies after
+publication or VM failure. Host fixtures observe complete scratch erasure while
+the objects are live and require independent, unchanged caller-owned results.
+These are ciphertext/metadata lifetime guarantees, not GCM authentication or a
+claim that every managed runtime/provider copy can be erased.
+
 The receiving address must not be displayed from unauthenticated file metadata.
 After authenticated decryption, the C core checks entropy length and independently
 derives the first receiving address again. Only a match permits the UI to expose

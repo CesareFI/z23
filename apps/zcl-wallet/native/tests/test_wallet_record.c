@@ -1,11 +1,28 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#undef zcl_secure_zero
 #include "zcl_wallet_record.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "wallet record check failed at line %d\n", __LINE__); return 1; } } while (0)
+
+static unsigned info_clears, record_clears;
+void zcl_record_test_zero(void *pointer, size_t length);
+void zcl_record_test_zero(void *pointer, size_t length)
+{
+    if (pointer == NULL) abort();
+    if (length == sizeof(zcl_wallet_info)) ++info_clears;
+    else if (length == sizeof(zcl_wallet_record)) ++record_clears;
+    else abort();
+    zcl_secure_zero(pointer, length);
+    const uint8_t *bytes = pointer;
+    for (size_t i = 0; i < length; ++i) {
+        if (bytes[i] != 0) abort();
+    }
+}
 
 static int supported_records(void)
 {
@@ -23,10 +40,13 @@ static int supported_records(void)
             CHECK(header[0] == 0xa5 && header[81] == 0xa5);
             CHECK(zcl_wallet_header_parse(header + 1, 80, &info) == ZCL_OK);
             CHECK(info.network == (zcl_network)chain && info.entropy_len == size);
+            info_clears = record_clears = 0;
             CHECK(zcl_wallet_record_pack(header + 1, 80, iv, sizeof(iv), ciphertext, size + 16,
                                           record + 1, 140, &record_len) == ZCL_OK);
             CHECK(record_len == 108 + size && record[0] == 0xa5 && record[141] == 0xa5);
+            CHECK(info_clears == 1 && record_clears == 0);
             CHECK(zcl_wallet_record_parse(record + 1, record_len, &parsed) == ZCL_OK);
+            CHECK(info_clears == 1 && record_clears == 1);
             CHECK(memcmp(parsed.header, header + 1, 80) == 0 && parsed.ciphertext_len == size + 16);
             CHECK(memcmp(parsed.iv, iv, sizeof(iv)) == 0);
             CHECK(memcmp(parsed.ciphertext, ciphertext, size + 16) == 0);
@@ -103,9 +123,38 @@ static int bounds(void)
     return 0;
 }
 
+static int refused_record_retirement(void)
+{
+    uint8_t entropy[16] = {0}, blinding[32] = {1}, header[80] = {0};
+    uint8_t iv[12] = {0}, ciphertext[32] = {0}, record[140] = {0};
+    CHECK(zcl_wallet_header_create(entropy, sizeof(entropy), ZCL_MAINNET,
+        blinding, sizeof(blinding), header, sizeof(header)) == ZCL_OK);
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        size_t length = 999;
+        memset(record, 0xa5, sizeof(record));
+        if (fault == 2) header[4] = 0xff;
+        info_clears = record_clears = 0;
+        CHECK(zcl_wallet_record_pack(header, 80, iv, 12, ciphertext,
+            fault == 0 ? 31 : 32, record, fault == 1 ? 123 : 140, &length) != ZCL_OK);
+        CHECK(info_clears == 1 && record_clears == 0 && length == 999);
+        for (size_t i = 0; i < sizeof(record); ++i) CHECK(record[i] == 0xa5);
+    }
+    for (unsigned fault = 0; fault < 2; ++fault) {
+        zcl_wallet_record output, before;
+        memset(&output, 0xa5, sizeof(output));
+        memcpy(&before, &output, sizeof(before));
+        header[4] = fault == 0 ? 1 : 0xff;
+        memcpy(record, header, sizeof(header));
+        record_clears = 0;
+        CHECK(zcl_wallet_record_parse(record, fault == 0 ? 125 : 124, &output) != ZCL_OK);
+        CHECK(record_clears == 1 && memcmp(&output, &before, sizeof(output)) == 0);
+    }
+    return 0;
+}
+
 int main(void)
 {
-    if (supported_records() || mutated_headers() || bounds())
+    if (supported_records() || mutated_headers() || bounds() || refused_record_retirement())
         return 1;
     puts("wallet record: all entropy/network formats, header edits and bounds passed");
     return 0;
