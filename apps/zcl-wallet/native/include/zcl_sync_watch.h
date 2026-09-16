@@ -67,6 +67,8 @@ zcl_status zcl_sync_watch_request(zcl_sync_watch *watch, uint64_t token, uint64_
     uint8_t *output, size_t capacity, size_t *length);
 zcl_status zcl_sync_watch_reply(zcl_sync_watch *watch, uint64_t token, uint64_t now_ms,
     const uint8_t *frame, size_t length);
+/* A current token accepts only a declared non-OK zcl_status reason. Invalid
+ * reasons leave the active attempt unchanged. */
 zcl_status zcl_sync_watch_fail(zcl_sync_watch *watch, uint64_t token, zcl_status reason);
 /* Polling also expires the deadline. Retained reports are STALE during refresh,
  * after failure/offline/cancellation, or at age >= 60s. Even fresh reports are

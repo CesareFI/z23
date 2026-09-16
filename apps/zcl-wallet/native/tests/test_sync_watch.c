@@ -161,6 +161,13 @@ static void arguments_and_malformed(void)
     init(&watch, ZCL_MAINNET);
     token = begin(&watch, 0, 100);
     CHECK(zcl_sync_watch_fail(&watch, token, ZCL_OK) == ZCL_INVALID_ARGUMENT && watch.in_flight);
+    zcl_sync_watch before_watch;
+    memcpy(&before_watch, &watch, sizeof(before_watch));
+    CHECK(zcl_sync_watch_fail(&watch, token, (zcl_status)-1) == ZCL_INVALID_ARGUMENT);
+    CHECK(memcmp(&watch, &before_watch, sizeof(watch)) == 0);
+    CHECK(zcl_sync_watch_fail(&watch, token,
+        (zcl_status)(ZCL_TLS_FAILURE + 1)) == ZCL_INVALID_ARGUMENT);
+    CHECK(memcmp(&watch, &before_watch, sizeof(watch)) == 0);
     CHECK(zcl_sync_watch_reply(&watch, token, 1, (const uint8_t *)"{}", 2) == ZCL_INVALID_ENCODING);
     (void)snapshot(&watch, 1, ZCL_BALANCE_UNAVAILABLE, false, ZCL_INVALID_ENCODING);
     zcl_sync_snapshot output, before;

@@ -68,6 +68,22 @@ and quarantined. Next: continue independent native/JNI ownership auditing or
 the bounded transparent-send composition prerequisites without enabling a
 network source or spending route.
 
+2026-09-16 continuation with TLS still parked: the public native sync abort and
+watch-fail boundaries now reject negative and above-range `zcl_status` values
+without changing their caller-owned state. Previously a direct abort stored an
+impossible fault code, and the watch wrapper additionally terminated the live
+attempt. Exact before/after regressions reproduce both inherited failures and
+cover both ends of the invalid domain; valid reasons and stale-token precedence
+remain unchanged.
+
+The focused sync tests pass 2/2. Full non-TLS C safety passes Clang 99/99 groups
+in 81.98 seconds and optimized GCC 98/98 in 118.72 seconds, with both analyzers
+and unchanged production/test complexity caps 10/15 green. Host JNI/JVM tests,
+both Android ABIs, debug/release APKs and lints, fixture isolation and native
+alignment pass. The complete hazard review is in `C_SAFETY_REVIEW.md`; evidence is under
+`.cache/android-wallet/mission-20260916/sync-status-domain/`. Next: continue
+local C/JNI state and ownership auditing; do not enter the quarantined TLS path.
+
 ## Historical checkpoints
 
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC

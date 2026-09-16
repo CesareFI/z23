@@ -58,7 +58,8 @@ zcl_status zcl_sync_request(zcl_sync *session, uint8_t *output, size_t capacity,
  * this boundary. It must never route one as a reply. A changed final tip fails
  * with IO_UNCERTAIN, publishing no balance. No automatic retries occur here. */
 zcl_status zcl_sync_reply(zcl_sync *session, const uint8_t *frame, size_t length);
-/* Cancellation/disconnect discards candidate amounts/history, even after DONE. */
+/* Cancellation/disconnect discards candidate amounts/history, even after DONE.
+ * reason must be one of the declared non-OK zcl_status values. */
 zcl_status zcl_sync_abort(zcl_sync *session, zcl_status reason);
 /* Publishes only after all selected replies and equal before/after tip height/hash.
  * Optional history's positive claimed heights must not exceed the returned tip.

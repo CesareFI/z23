@@ -9,7 +9,8 @@ static zcl_status failure_status(const zcl_sync *session)
 
 zcl_status zcl_sync_abort(zcl_sync *session, zcl_status reason)
 {
-    if (session == NULL || reason == ZCL_OK) return ZCL_INVALID_ARGUMENT;
+    if (session == NULL || reason <= ZCL_OK || reason > ZCL_TLS_FAILURE)
+        return ZCL_INVALID_ARGUMENT;
     memset(&session->candidate.balance, 0, sizeof(session->candidate.balance));
     memset(&session->candidate.tip, 0, sizeof(session->candidate.tip));
     memset(&session->candidate.history, 0, sizeof(session->candidate.history));

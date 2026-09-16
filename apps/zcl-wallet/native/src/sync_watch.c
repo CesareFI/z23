@@ -137,7 +137,7 @@ zcl_status zcl_sync_watch_fail(zcl_sync_watch *watch, uint64_t token, zcl_status
 {
     const zcl_status owner = owns_attempt(watch, token);
     if (owner != ZCL_OK) return owner;
-    if (reason == ZCL_OK) return ZCL_INVALID_ARGUMENT;
+    if (reason <= ZCL_OK || reason > ZCL_TLS_FAILURE) return ZCL_INVALID_ARGUMENT;
     return stop(watch, reason);
 }
 

@@ -100,6 +100,19 @@ static void wrong_ids_and_abort(void)
     }
 }
 
+static void invalid_abort_reason_preserves_session(void)
+{
+    zcl_sync session;
+    sync_fixture_start(&session, ZCL_MAINNET, 10);
+    request(&session, 1);
+    zcl_sync before;
+    memcpy(&before, &session, sizeof(before));
+    CHECK(zcl_sync_abort(&session, (zcl_status)-1) == ZCL_INVALID_ARGUMENT);
+    CHECK(memcmp(&session, &before, sizeof(session)) == 0);
+    CHECK(zcl_sync_abort(&session, (zcl_status)(ZCL_TLS_FAILURE + 1)) == ZCL_INVALID_ARGUMENT);
+    CHECK(memcmp(&session, &before, sizeof(session)) == 0);
+}
+
 static void changed_tip(bool change_height)
 {
     zcl_sync session;
@@ -164,7 +177,8 @@ static void start_errors(void)
 int main(void)
 {
     completed(ZCL_MAINNET, 1); completed(ZCL_TESTNET, UINT32_MAX - 5);
-    wrong_ids_and_abort(); changed_tip(false); changed_tip(true);
+    wrong_ids_and_abort(); invalid_abort_reason_preserves_session();
+    changed_tip(false); changed_tip(true);
     wrong_network_and_notification(); start_errors();
     puts("Sync ordering, identity-before-address, complete-only report, cancellation, request IDs and changed-tip refusal passed");
     return 0;

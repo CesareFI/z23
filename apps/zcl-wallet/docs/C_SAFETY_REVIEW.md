@@ -2897,3 +2897,44 @@ alignment pass. No emulator rerun is needed for a state that Java cannot
 normally invoke; real JVM sync behavior remains covered by the unchanged
 device fixtures. Evidence is under
 `.cache/android-wallet/mission-20260916/jni-sync-pending/`.
+
+## Sync fault status domain — 2026-09-16
+
+Scope: `sync.c` and `sync_watch.c` explicit-abort reason validation. The public
+C APIs previously accepted integer values outside `zcl_status`; a direct abort
+stored the impossible value as the session fault, and the watch wrapper also
+ended its current attempt. Both boundaries now accept only declared non-OK
+statuses and otherwise return `ZCL_INVALID_ARGUMENT` without changing the
+session or watch. JNI already applied the same domain check. Stale-token
+precedence, valid cancellation, reply failures and timeout behavior are
+unchanged. No transport or TLS implementation is touched.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | The production change only compares scalar enum values. Tests compare fixed-size state objects with their snapshots. |
+| Out-of-bounds access | No indexing or span access is added. Both rejected values are constructed scalars. |
+| Integer overflow/underflow | The upper regression uses `ZCL_TLS_FAILURE + 1`, which is within `int`; production performs no arithmetic. |
+| Signed/unsigned conversions | The lower regression casts `-1` directly to `zcl_status`; the signed enum comparisons reject it before storage. No unsigned conversion is added. |
+| Use-after-free | APIs retain no pointers and the checks run before any state mutation. Test state remains automatic and live for each call. |
+| Double-free | Sync sessions and watches do not allocate or free memory. |
+| Leaks | No allocation, descriptor, thread or retained resource is added. |
+| NULL dereferences | Existing NULL-session rejection remains first in the short-circuit expression; watch ownership validation still rejects NULL before the reason check. |
+| Uninitialized memory | Fixtures initialize the session/watch through their public start helpers before taking exact snapshots. |
+| Dangling pointers | No pointer is retained or newly borrowed. Snapshot comparisons occur within each object's lifetime. |
+| Pointer arithmetic | No production or regression pointer arithmetic is added. |
+| Format strings | No logging or formatted output is added. Existing fixed test diagnostics are unchanged. |
+| Stack usage | Each regression adds one bounded `zcl_sync` or `zcl_sync_watch` snapshot; production adds no stack object. Existing stack gates pass. |
+| Allocation limits | No allocation exists on accepted or refused paths. |
+| Malformed serialization/network input | This validates local API control input before it can become persistent fault state. Electrum frame parsing and all network behavior are unchanged. |
+| Races | Objects remain caller-owned and single-worker. Rejection occurs synchronously before mutation and adds no shared state. |
+| Resource exhaustion | Refusal is constant-time and creates no retry, timer, worker or resource. |
+| Secret leakage | Sync state contains public address/report data only. Exact comparisons and evidence use synthetic fixtures and no custody material. |
+
+Both regressions fail on the inherited implementation at their first negative
+reason assertion. The fixed focused tests pass 2/2. Full non-TLS safety passes
+Clang 99/99 groups in 81.98 seconds and optimized GCC 98/98 in 118.72 seconds,
+with both analyzers green. Production complexity remains 513 functions in 91
+files at <=10; test complexity is 1,361 functions in 160 files at <=15. The
+rebuilt host JNI/JVM checks, ARM64/x86-64 debug and release APKs, both Android
+lints, fixture isolation and 16 KiB native alignment also pass.
+Evidence is under `.cache/android-wallet/mission-20260916/sync-status-domain/`.
