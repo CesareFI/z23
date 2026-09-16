@@ -13,7 +13,12 @@ Its node-only work is outside this app mission and the app contract prohibits
 merging. The installed main-only hook conflicts with development-branch backup;
 the existing documented per-command backup exception leaves hooks unchanged.
 
-Current checkpoint: stronger Electrum framing invariants and a reproducible
+Verified GitHub checkpoint: `29ea242380e6e169cd343f5cfc8445ebbdb88529` on the
+same-named development branch. Direct remote advertisement matches local Git;
+the branch now tracks its own fetched remote ref. All inherited commits are
+preserved remotely. The hook exception affected only that development push.
+
+That checkpoint adds stronger Electrum framing invariants and a reproducible
 1,600-case host regression/corpus generator. Clang and optimized GCC sanitizer
 suites pass 99/99 and 98/98 native CTest cases (81.72/118.35 seconds). Clang/GCC
 analysis and production/test complexity caps 10/15 pass. A seeded ASan/UBSan
@@ -33,8 +38,9 @@ passes. The flag-registry failure remains open; no global lint pass is claimed.
 Evidence: `.cache/android-wallet/mission-20260916/`; durable test sources and
 this summary accompany the source commit. No production code changed.
 
-Next: qualify recovery input ownership when UI submission or worker admission
-fails, and during queued cancellation. Positive hardware custody, physical
+Next: explicit host-only investigation of the quarantined TLS certificate
+finding under the current mission's network/TLS validation scope. Quarantine
+and Android/JNI exclusions stay in place. Positive hardware custody, physical
 camera acceptance, authenticated send/shielded completion and real sync remain
 unfinished. TLS remains quarantined under `TLS_REVIEW.md`; it was not enabled
 or investigated. Continue useful work after each verified development push.
@@ -5072,3 +5078,42 @@ Committed app source matches except this progress note. Evidence is under
 Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
 findings remain unresolved. Next: inspect the UI-to-worker recovery input
 handoff and early failure cleanup before ownership reaches the executor.
+
+2026-09-16: six new Android recovery-submission regressions qualify the real
+recovery keyboard/screen to platform-worker ownership handoff. Public invalid
+marker text exercises ordinary and fatal callback failures, failure while
+rendering the waiting screen, successful exact transfer, full queue refusal,
+and queued cancellation for both confirmation and restoration. Assertions
+observe both the original keyboard buffer and the transferred array; refusal
+must erase before its deferred resource-failure callback. A held worker never
+reaches wallet setup, entropy derivation, authentication, storage or keys.
+Every worker gate/termination wait is bounded and owned temporary parents must
+remain empty. No production Kotlin, JNI, C, provider or release behavior changes.
+
+API35's accelerated emulator passes all six cases in 6.998 seconds; a fresh
+isolated accelerated API36 emulator passes in 9.515 seconds. API30 passes two
+three-case groups in 39.679 and 67.372 seconds. The original combined commands
+on the three old unaccelerated profiles exceeded their 90-second outer limit.
+API30's device log later reported all six passes, but that incomplete host run
+is not substituted for the bounded group results. API35/36's old profiles remain
+unqualified for this run; a stalled API36 logcat client was terminated. Their
+profiles were not reset. The fresh API36 launch uses the qualified reaping
+wrapper and local installed image; boot took 44.075 seconds. No emulator state
+or build artifact enters Git.
+
+An isolated source-copy mutation reverses the UI's transfer-cleanup guard.
+Exactly five expected tests fail and the already-erased queue-refusal control
+passes. The copied source is restored afterward; installing the normal debug
+APK again yields six passes in 7.192 seconds. Mutation assertions include
+embedded NUL diagnostics, so its preserved log must be read as text explicitly.
+No assertion, deadline, permission, hardware policy or authentication check is
+weakened in the accepted source.
+
+Android/JVM checks, strict Kotlin compilation, debug/release lint, both-ABI
+builds, fixture isolation, native alignment and whitespace checks pass. The
+unsigned release hash remains
+`64006c7ed890056749ad35b0e66a7cd056fd6edc915f94f84ffb74f766042bf2`.
+Native analysis/sanitizer/fuzz evidence remains the preceding unchanged-C
+checkpoint, not a new run. The unrelated flag-registry self-test remains open.
+Evidence is under `.cache/android-wallet/mission-20260916/recovery-*`.
+Next: explicit offline TLS security review, preserving its release quarantine.
