@@ -63,12 +63,26 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        authentication.cancel()
-        session?.close()
+        resumed = false
+        busy = true
+        val previous = session
         session = null
-        screens.clearSecrets()
-        clearSetupTimeout()
-        super.onDestroy()
+        // Match scanner teardown: attempt every owner, preserve the first
+        // failure without allocating suppressed-exception storage, and always
+        // reach framework destruction. Creation may have installed only some
+        // owners. An active worker still owns cleanup until its termination.
+        var failure: Throwable? = null
+        try {
+            try { if (this::authentication.isInitialized) authentication.cancel() }
+            catch (problem: Throwable) { failure = problem }
+            try { previous?.close() }
+            catch (problem: Throwable) { if (failure == null) failure = problem }
+            try { clearSetupTimeout() }
+            catch (problem: Throwable) { if (failure == null) failure = problem }
+            try { if (this::screens.isInitialized) screens.clearSecrets() }
+            catch (problem: Throwable) { if (failure == null) failure = problem }
+            if (failure != null) throw failure
+        } finally { super.onDestroy() }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {

@@ -145,7 +145,43 @@ they were not relabeled as a full run for this narrow follow-up. No new JNI or
 hardware-custody behavior is claimed. Evidence is under
 `apps/zcl-wallet/.cache/android-wallet/mission-20260917/review-record-retirement/`.
 TLS, consent, authenticated chain-state and production boundaries are unchanged.
-Next: continue custody/lifecycle review from these validated components.
+This follow-up was pushed and remotely verified as
+`56190db1b5b5c96cc30bbe8b8fe870cd376bf580`.
+
+Continued into Activity destruction. The previous sequential cleanup could
+skip the secret-owning session and timer if prompt cancellation threw, or leave
+the timer installed if secret-view clearing failed. Destruction now first
+detaches the session and refuses further foreground work, attempts every owner,
+and always attempts framework destruction. It preserves the first owner failure
+without allocating suppressed-exception storage and tolerates partial creation.
+Active worker entropy still clears only after worker termination.
+
+Three initial device regressions fail against the prior controller at their
+specific cancellation, timer-order and partial-creation assertions. The expanded
+fixture also checks simultaneous cancellation/view failures, duplicate teardown,
+actual Android destruction callbacks, concealed/erased public marker words and
+worker-owned marker entropy remaining intact until termination. Its controller
+is never launched: an inert application/test context supplies framework lifecycle
+dependencies, and the existing storage-free host displays public markers only.
+The first fixed-code run exposed missing fixture framework dependencies; those
+were supplied without weakening any cleanup assertion or changing production
+authentication. No key, real seed, wallet storage operation or prompt is used.
+
+All 32 selected lifecycle/authentication/display tests pass on API35 in 15.085
+seconds. The four new destruction cases also pass on API30 in 43.528 seconds.
+The first API30 32-case attempt exceeded its 60-second command bound and is
+not a completed suite pass. Core and debug/release Android JVM tests, both ABI
+builds, debug/release APKs and lints, fixture isolation, 16 KiB alignment,
+architecture and documentation counts pass. Native C was unchanged in this
+lifecycle slice; prior sanitizer/fuzz results retain their stated scope.
+The optional API36 four-case attempt exceeded its 90-second bound after two
+reported passes; no completed API36 run is claimed for this change.
+Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/destroy-retirement/`.
+These are public synthetic cleanup tests, not positive hardware authentication
+or custody acceptance. TLS remains quarantined; global repository lint retains
+its documented unrelated failures. Continue with native review-state lifetime
+and transaction failure-atomicity inspection.
 
 ## Current continuation — 2026-09-16
 

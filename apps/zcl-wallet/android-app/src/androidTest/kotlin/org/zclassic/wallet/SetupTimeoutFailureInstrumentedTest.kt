@@ -1,9 +1,16 @@
 // Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 package org.zclassic.wallet
 
+import android.app.Activity
+import android.app.Application
+import android.content.ContextWrapper
+import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -36,6 +43,27 @@ class SetupTimeoutFailureInstrumentedTest {
 
     private fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
 
+    private class LifecycleApplication : Application(), Application.ActivityLifecycleCallbacks {
+        var destructions = 0
+        init { registerActivityLifecycleCallbacks(this) }
+        override fun onActivityDestroyed(activity: Activity) { destructions++ }
+        override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
+        override fun onActivityStarted(activity: Activity) = Unit
+        override fun onActivityResumed(activity: Activity) = Unit
+        override fun onActivityPaused(activity: Activity) = Unit
+        override fun onActivityStopped(activity: Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) = Unit
+    }
+
+    private fun controller(): MainActivity = MainActivity().also {
+        // No onCreate/onResume or storage routing. Supply framework lifecycle
+        // dependencies only: an inert application and the test context.
+        Activity::class.java.getDeclaredField("mApplication").apply { isAccessible = true }
+            .set(it, LifecycleApplication())
+        ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
+            .set(it, instrumentation.targetContext)
+    }
+
     private fun onMain(action: () -> Unit) {
         val failure = AtomicReference<Throwable?>()
         instrumentation.runOnMainSync {
@@ -58,8 +86,10 @@ class SetupTimeoutFailureInstrumentedTest {
     private inner class Fixture(val host: WalletDisplayFixtureActivity) : AutoCloseable {
         private val parent = Files.createTempDirectory(host.cacheDir.toPath(), "public-setup-timeout-").toFile()
         private val directory = File(parent, "untouched")
-        val controller = MainActivity()
+        val controller = controller()
         val screens = WalletScreens(host)
+        val authentication = WalletAuthentication(host,
+            { error("No authentication is performed") }, { error("No prompt is active") })
         val handler = PostingHandler(false, null)
         val clock = AtomicLong(100)
         val clockFailure = AtomicReference<Throwable?>()
@@ -78,6 +108,7 @@ class SetupTimeoutFailureInstrumentedTest {
 
         init {
             field("screens").set(controller, screens)
+            field("authentication").set(controller, authentication)
             field("handler").set(controller, handler)
             field("session").set(controller, session)
             field("resumed").set(controller, true)
@@ -108,6 +139,25 @@ class SetupTimeoutFailureInstrumentedTest {
                 return MainActivity::class.java.getDeclaredMethod("startSetupTimeout", SetupWindow::class.java)
                     .apply { isAccessible = true }.invoke(controller, window) as Boolean
             } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        }
+
+        fun destroy() {
+            try {
+                MainActivity::class.java.getDeclaredMethod("onDestroy").apply { isAccessible = true }
+                    .invoke(controller)
+            } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        }
+
+        fun failCancellation(problem: Throwable): CancellationSignal {
+            val type = WalletAuthentication::class.java.declaredClasses.single { it.simpleName == "Pending" }
+            val prepared = PreparedWalletAction(WalletAction.CREATE,
+                Cipher.getInstance("AES/GCM/NoPadding"), Network.TESTNET)
+            val pending = type.getDeclaredConstructor(PreparedWalletAction::class.java)
+                .apply { isAccessible = true }.newInstance(prepared)
+            WalletAuthentication::class.java.getDeclaredField("pending").apply { isAccessible = true }
+                .set(authentication, pending)
+            return (type.getDeclaredField("signal").apply { isAccessible = true }.get(pending)
+                as CancellationSignal).also { signal -> signal.setOnCancelListener { throw problem } }
         }
 
         fun failRendering(problem: Throwable) {
@@ -225,5 +275,80 @@ class SetupTimeoutFailureInstrumentedTest {
             assertTrue(fixture.handler.hasCallbacks(fixture.handler.timeout!!))
             assertTrue(fixture.entropy.all { it == 0x61.toByte() })
         }
+    }
+
+    @Test fun destructionCancellationFailureStillRetiresEveryOwner() {
+        for (problem in listOf(IllegalStateException("Public cancellation refusal"),
+            OutOfMemoryError("Public cancellation error"))) withFixture { fixture ->
+            val words = charArrayOf('a', 'b', 'c')
+            try {
+                onMain {
+                    fixture.handler.enqueue = true
+                    assertTrue(fixture.start())
+                    fixture.screens.backup(words, {}, {})
+                    val signal = fixture.failCancellation(problem)
+                    assertSame(problem, assertThrows(Throwable::class.java) { fixture.destroy() })
+                    assertTrue(signal.isCanceled)
+                    assertFalse(fixture.authentication.hasPending)
+                    fixture.assertRetired()
+                    assertFalse(field("resumed").getBoolean(fixture.controller))
+                    assertTrue(field("busy").getBoolean(fixture.controller))
+                    assertTrue(words.all { it == '\u0000' })
+                    assertEquals(1, (fixture.controller.application as LifecycleApplication).destructions)
+                    assertEquals(View.INVISIBLE,
+                        fixture.host.findViewById<View>(R.id.recovery_words).visibility)
+                    // An active worker still owns its marker until termination.
+                    assertTrue(fixture.entropy.all { it == 0x61.toByte() })
+                    fixture.destroy()
+                    assertEquals(2, (fixture.controller.application as LifecycleApplication).destructions)
+                }
+                fixture.finishWorker()
+            } finally { words.fill('\u0000') }
+        }
+    }
+
+    @Test fun destructionRetiresWorkerAndTimerBeforeAViewClearFailure() = destructionViewFailure(false)
+
+    @Test fun destructionPreservesCancellationErrorWhenViewClearingAlsoFails() = destructionViewFailure(true)
+
+    private fun destructionViewFailure(failCancellation: Boolean) = withFixture { fixture ->
+        val words = charArrayOf('a', 'b', 'c')
+        val problem = OutOfMemoryError("Public destruction display failure")
+        onMain {
+            fixture.handler.enqueue = true
+            assertTrue(fixture.start())
+            fixture.screens.backup(words, {}, {})
+            val cancellation = OutOfMemoryError("Public primary cancellation error")
+            if (failCancellation) fixture.failCancellation(cancellation)
+            val display = fixture.host.findViewById<RecoveryWordsView>(R.id.recovery_words)
+            val listener = object : TextWatcher {
+                override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+                    if (after == 0) { fixture.assertRetired(); throw problem }
+                }
+                override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(text: Editable?) = Unit
+            }
+            display.addTextChangedListener(listener)
+            try {
+                assertSame(if (failCancellation) cancellation else problem,
+                    assertThrows(OutOfMemoryError::class.java) { fixture.destroy() })
+                assertTrue(words.all { it == '\u0000' })
+                assertEquals(View.INVISIBLE, display.visibility)
+                assertEquals(1, (fixture.controller.application as LifecycleApplication).destructions)
+            } finally { display.removeTextChangedListener(listener); words.fill('\u0000') }
+            fixture.destroy()
+        }
+        fixture.finishWorker()
+    }
+
+    @Test fun destructionToleratesIncompleteCreation() = onMain {
+        val controller = controller() // Never launched or given storage.
+        try {
+            MainActivity::class.java.getDeclaredMethod("onDestroy").apply { isAccessible = true }
+                .invoke(controller)
+        } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        assertNull(field("session").get(controller))
+        assertNull(field("setupTimeout").get(controller))
+        assertEquals(1, (controller.application as LifecycleApplication).destructions)
     }
 }

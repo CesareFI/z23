@@ -51,6 +51,13 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   any secret or worker admission, so requesting shutdown does not first need
   to allocate that callback. Active workers still retain cleanup ownership
   until termination; this does not make all framework shutdown allocation-free.
+* Wallet Activity destruction first detaches its session and refuses further
+  foreground work. It attempts prompt cancellation, worker closure, setup-timer
+  removal and secret-view clearing even if another cleanup throws, then always
+  attempts Android's base destruction. Owner cleanup preserves its first failure
+  without allocating suppressed-exception storage. Partial construction is
+  supported. An active worker still owns its secret until safe termination;
+  destruction must not race it by clearing worker-owned entropy from the UI.
 * Camera startup returns its single process admission if worker construction or
   startup fails before publishing a handler, including on fatal allocation
   errors. That failed lifetime cannot retry itself. Once an OS camera open is
