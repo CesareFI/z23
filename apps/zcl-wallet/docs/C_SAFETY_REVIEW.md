@@ -2853,3 +2853,47 @@ Clang/GCC analyzers and complexity caps pass. Both sanitizer suites pass;
 the seeded campaign and two isolated mutation failures are recorded in
 PROGRESS.md. These observations establish tested framing properties, not a
 qualified network source or absence of all defects.
+
+## JNI sync pre-existing exception refusal — 2026-09-16
+
+Scope: `jni_sync.c` request/reply entry guards and their fake-VM regression.
+A missing JNI environment or pre-existing VM exception previously reached the
+native owner: request publication failed it with resource exhaustion, while a
+reply read failed it as an invalid argument. Both entries now refuse before
+locking, clock sampling, request consumption, frame allocation or attempt
+mutation. Cleanup-only close/fail entries and ordinary malformed-reply behavior
+remain unchanged. This is JNI state-lifetime hardening; no transport or TLS path
+is enabled.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Production adds no buffer operation. The fixture uses the existing bounded 512-byte reply scratch and generated length. |
+| Out-of-bounds access | Guards inspect only `env` and its exception state. Fake arrays retain their checked length/region helpers. |
+| Integer overflow/underflow | No production arithmetic is added. Test times 100..102 and the ten-millisecond deadline fit signed Java longs and native bounds. |
+| Signed/unsigned conversions | The reply refusal returns the existing integer status value. No new narrowing or sign conversion occurs. |
+| Use-after-free | Refusal happens before owner lookup or frame ownership. The test reply array remains VM-owned through every synchronous call. |
+| Double-free | No allocation or release is added. Refused replies never allocate the native frame; the existing successful path retains one clear/free. |
+| Leaks | No new owner or resource exists. The fixture closes its owner and releases all fake local references. |
+| NULL dereferences | `env == NULL` short-circuits before `ExceptionCheck`; both direct NULL-entry regressions preserve the active attempt. |
+| Uninitialized memory | No new production object is introduced. Test reply/state buffers initialize before use. |
+| Dangling pointers | Neither refusal borrows the registry watch. Existing valid calls retain their mutex-bounded synchronous borrow. |
+| Pointer arithmetic | No production pointer arithmetic changes. Fixture array offsets remain inside existing checked helpers. |
+| Format strings | No product logging or formatting is added. Fixture diagnostics contain only fixed assertion locations. |
+| Stack usage | Two scalar guards add no local frame storage. Existing 4096-byte production/test frame gates remain active in both profiles. |
+| Allocation limits | Refused calls perform zero allocation. Valid reply allocation remains the fixed `ZCL_ELECTRUM_FRAME_MAX` owner. |
+| Malformed serialization/network input | Valid and malformed frame handling is unchanged after admission. The generated public version reply proves the same attempt remains usable after both refusals. |
+| Races | Guards run before the registry mutex and cannot mutate shared state. Existing concurrent close/replacement tests remain green. |
+| Resource exhaustion | Pre-existing VM exceptions no longer convert into a native resource fault. No retry, worker, timer or persistent state is added. |
+| Secret leakage | Sync state, addresses and frames are public fixture data. Refusal touches no wallet record, entropy, key, custody state or real endpoint. |
+
+The unchanged request path fails the new owner-preservation assertion after a
+NULL environment call. The fixed focused sanitizer test passes, then the full
+non-TLS safety command passes Clang 99/99 groups in 81.88 seconds and optimized
+GCC 98/98 groups in 118.42 seconds. Clang/GCC analysis passes; 513 production
+functions in 91 files remain at complexity <=10 and 1,360 fixture functions in
+160 files remain at <=15. The rebuilt host JNI/JVM checks, ARM64/x86-64 debug
+and release APKs, both Android lints, fixture isolation and 16 KiB native
+alignment pass. No emulator rerun is needed for a state that Java cannot
+normally invoke; real JVM sync behavior remains covered by the unchanged
+device fixtures. Evidence is under
+`.cache/android-wallet/mission-20260916/jni-sync-pending/`.

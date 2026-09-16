@@ -45,6 +45,29 @@ camera acceptance, authenticated send/shielded completion and real sync remain
 unfinished. TLS remains quarantined under `TLS_REVIEW.md`; it was not enabled
 or investigated. Continue useful work after each verified development push.
 
+2026-09-16 continuation with TLS explicitly parked: sync request/reply JNI
+entries now refuse a missing environment or pre-existing VM exception before
+locking or mutating the active owner. Previously, request refusal converted the
+condition into resource exhaustion and reply refusal failed the attempt as an
+invalid argument. The new fake-VM regression reproduces the request defect on
+the inherited implementation and requires the same token, clock, deadline and
+waiting state after NULL and pending-exception request/reply calls. A valid
+version exchange then continues on that exact attempt. Normal malformed input,
+allocation failures, explicit cancellation and cleanup behavior are unchanged.
+
+The focused sanitizer regression passes. Full non-TLS C safety passes Clang
+99/99 groups in 81.88 seconds and optimized GCC 98/98 in 118.42 seconds, with
+Clang/GCC analysis and unchanged production/test complexity caps 10/15. The
+rebuilt host JNI/JVM checks, both Android ABIs, debug/release APKs and lints,
+fixture isolation and native alignment pass. No emulator was rerun because a
+Java caller cannot normally enter a native method with an already pending VM
+exception; existing real-JVM sync fixtures remain applicable. The complete
+hazard review is in `C_SAFETY_REVIEW.md`; evidence is under
+`.cache/android-wallet/mission-20260916/jni-sync-pending/`. TLS remains excluded
+and quarantined. Next: continue independent native/JNI ownership auditing or
+the bounded transparent-send composition prerequisites without enabling a
+network source or spending route.
+
 ## Historical checkpoints
 
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC

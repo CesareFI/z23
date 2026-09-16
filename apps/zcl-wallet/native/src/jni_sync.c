@@ -133,6 +133,8 @@ Java_org_zclassic_wallet_core_NativeCore_syncRequest(JNIEnv *env, jclass type,
     jlong id, jlong token, jlong now)
 {
     (void)type;
+    /* Refusal must not consume a request or poison this owner. */
+    if (env == NULL || (*env)->ExceptionCheck(env)) return NULL;
     zcl_status status = ZCL_OUT_OF_RANGE;
     zcl_sync_watch *watch = NULL;
     if (token > 0 && now >= 0) status = enter_owner(id, &watch);
@@ -164,6 +166,8 @@ Java_org_zclassic_wallet_core_NativeCore_syncReply(JNIEnv *env, jclass type,
     jlong id, jlong token, jlong now, jbyteArray input)
 {
     (void)type;
+    /* Refusal must not allocate/copy a frame or fail this attempt. */
+    if (env == NULL || (*env)->ExceptionCheck(env)) return (jint)ZCL_INVALID_ARGUMENT;
     if (token <= 0) return (jint)ZCL_CANCELLED;
     if (now < 0) return (jint)ZCL_OUT_OF_RANGE;
     zcl_sync_watch *watch = NULL;

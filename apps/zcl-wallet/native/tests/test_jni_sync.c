@@ -247,6 +247,43 @@ static void pending_snapshot_reads(void)
     }
 }
 
+static void pending_request_reply_preserve_attempt(void)
+{
+    const jlong id = open_owner();
+    const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 100, 10, 1);
+    CHECK(token > 0);
+    const size_t before = reference_count;
+
+    CHECK(API(syncRequest)(NULL, NULL, id, token, 101) == NULL);
+    CHECK(reference_count == before);
+    pending_exception = true;
+    CHECK(API(syncRequest)(&environment, NULL, id, token, 101) == NULL);
+    CHECK(pending_exception && reference_count == before && owned_frame == NULL);
+    pending_exception = false;
+    const jlong *state = snapshot(id, 100);
+    CHECK(state[0] == ZCL_OK && state[2] == 1 && state[3] == ZCL_OK && state[9] == 10);
+
+    CHECK(API(syncRequest)(&environment, NULL, id, token, 101) != NULL);
+    char reply[512] = {0};
+    const size_t reply_len = sync_fixture_reply(ZCL_MAINNET, ZCL_SYNC_VERSION, 1,
+        reply, sizeof(reply));
+    const jbyteArray frame = bytes((const uint8_t *)reply, reply_len);
+    pending_exception = true;
+    CHECK(API(syncReply)(&environment, NULL, id, token, 102, frame) == ZCL_INVALID_ARGUMENT);
+    CHECK(pending_exception && owned_frame == NULL);
+    pending_exception = false;
+    state = snapshot(id, 101);
+    CHECK(state[0] == ZCL_OK && state[2] == 1 && state[3] == ZCL_OK && state[9] == 9);
+    CHECK(API(syncReply)(NULL, NULL, id, token, 102, frame) == ZCL_INVALID_ARGUMENT);
+    state = snapshot(id, 101);
+    CHECK(state[0] == ZCL_OK && state[2] == 1 && state[3] == ZCL_OK && state[9] == 9);
+
+    CHECK(API(syncReply)(&environment, NULL, id, token, 102, frame) == ZCL_OK);
+    CHECK(API(syncRequest)(&environment, NULL, id, token, 102) != NULL);
+    CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+    release_references();
+}
+
 static void snapshot_failure_preserves_timeout(void)
 {
     const jlong id = open_owner();
@@ -340,7 +377,7 @@ static void history_packet_and_owner_replacement(void)
 int main(void)
 {
     request_allocation_and_region_failure(); frame_allocation_and_region_failure();
-    pending_snapshot_reads();
+    pending_snapshot_reads(); pending_request_reply_preserve_attempt();
     snapshot_failure_preserves_timeout();
     history_snapshot_failures(); history_packet_and_owner_replacement();
     puts("JNI sync: allocation/region exceptions, full frame clearing, slot cleanup and retained timeout passed");
