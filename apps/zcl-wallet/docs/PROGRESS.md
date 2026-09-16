@@ -4454,8 +4454,8 @@ and empty inputs are preserved rather than classified as decoder findings.
 
 The final default C safety run passes 92 sanitizer groups (69.90 seconds),
 Clang/GCC source/provider analysis and production/test complexity caps 10/15.
-Both fixture modes separately pass Clang/GCC analysis. The affected integer-
-sanitation profile passes (1.47 seconds). Actual compile commands qualify
+Both fixture modes separately pass Clang/GCC analysis. The affected profile with
+additional integer checks passes (1.47 seconds). Actual compile commands qualify
 sanitizers/fail-on-finding on 156 authored/provider compilations and fuzz
 coverage on 106 library/fuzz compilations. Strict NDK builds pass for x86-64 and
 ARM64; exact-hash transferred x86-64 fixtures pass on API30/35/36. The new
@@ -4470,3 +4470,35 @@ Evidence: `.cache/android-wallet/resume-20260916/jni-decoder-fuzz/`.
 Hardware custody, physical-camera acceptance and the parked TLS candidate remain
 unqualified. Next: reconcile stale custody process/deadline documentation with
 the actual manifest and setup clock, then check the build enforces those bounds.
+
+2026-09-16: reconciled custody process/deadline documentation with the actual
+manifest and SetupWindow. Wallet activity work is serialized within the UI
+process; QR decoding uses a separate isolated UID and creates no wallet session.
+Setup uses an immutable elapsed-clock origin after authentication, rather than
+counting foreground time. Explicit view cleanup retires owned characters before
+calling Android. The corresponding wrapping-key source comment is corrected
+without changing executable behavior or line count.
+
+The existing checkFixtureIsolation gate now examines both merged APK manifests.
+It requires one private isolated decoder at :qrdecode, stopWithTask, one private
+scanner Activity and the public wallet launcher. Process/isolation declarations
+outside the decoder, shared UIDs and multiprocess providers fail closed. The
+check accumulates a component's attributes before evaluating it, so their order
+is not authoritative. It complements actual Binder UID tests and does not prove
+hardware custody or protect against a compromised OS.
+
+The prior checker accepts shared-decoder, exported-decoder and wallet-process
+mutations in both variants. The new regression passes actual APKs and both
+reordered-attribute controls, and rejects all 32 new process mutations plus the
+existing eight host and two asset mutations. Faults affect aapt2 output only;
+no application manifest/APK is modified. Shell syntax, full Android/JVM tests,
+both-ABI builds, debug/release lint, fixture isolation, native alignment and
+architecture pass. Debug, test and release APKs are each byte-identical to the
+previous device-qualified checkpoint. The unsigned release remains 612,823 bytes,
+SHA256 `1461305ec4d515011000cf85d40208086f9038d8b086cf9754bcee9599e04985`.
+Evidence: `.cache/android-wallet/resume-20260916/manifest-process-boundary/`.
+No new runtime route, key operation or custody qualification. Existing root-
+lint failures, physical-hardware acceptance and parked TLS limits remain.
+
+Next: inspect whether fuzz manifest qualification distinguishes actual test
+object outputs from test-shaped text in unrelated compiler arguments.

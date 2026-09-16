@@ -82,8 +82,8 @@ internal class KeystoreWrappingKey(context: Context, private val storage: Wallet
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val PURPOSES = KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         private const val AUTHENTICATION = KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
-        // App manifest declares one process. Serialize alias creation across
-        // activity instances; the C store independently refuses record overwrite.
+        // Wallet work stays in the UI process; the isolated QR process has a
+        // separate UID. Serialize activities; C independently refuses overwrite.
         private val aliasLock = Any()
 
         private fun openStore(): KeyStore = KeyStore.getInstance(PROVIDER).apply { load(null) }

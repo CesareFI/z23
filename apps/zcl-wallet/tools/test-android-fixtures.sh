@@ -23,6 +23,68 @@ case "$ZCL_FIXTURE_TEST_FAULT:$5" in
             { print }' ;;
     release:*/release/android-app-release-unsigned.apk)
         printf '%s\n' 'E: activity' "A: android:name=\"$ZCL_FIXTURE_TEST_HOST\"" ;;
+    process-*:* )
+        if [[ "$5" != */"${ZCL_FIXTURE_TEST_VARIANT:?}"/* ]]; then
+            exec "$ZCL_FIXTURE_TEST_AAPT" "$@"
+        fi
+        "$ZCL_FIXTURE_TEST_AAPT" "$@" | awk -v fault="${ZCL_FIXTURE_TEST_FAULT#process-}" '
+            /E:/ {
+                decoder=0; wallet=0; scanner=0
+                if (/E: application / && fault == "application") {
+                    print; print "        A: android:process(0x01010011)=\":other\""; next
+                }
+                if (/E: manifest / && fault == "shared-user") {
+                    print; print "    A: android:sharedUserId(0x0101000b)=\"public.fixture\""; next
+                }
+            }
+            /android:name/ {
+                decoder=index($0, "\"org.zclassic.wallet.ScanDecodeService\"")
+                wallet=index($0, "\"org.zclassic.wallet.MainActivity\"")
+                scanner=index($0, "\"org.zclassic.wallet.CameraScanActivity\"")
+                if (decoder && fault == "missing-decoder") next
+                if (decoder && fault == "reordered") print "            A: android:isolatedProcess(0x010103a9)=true"
+                if (wallet && fault == "wallet") {
+                    print; print "            A: android:process(0x01010011)=\":other\""; next
+                }
+            }
+            decoder && /android:isolatedProcess/ {
+                if (fault == "missing-isolated" || fault == "reordered") next
+                if (fault == "shared-decoder") sub(/=true$/, "=false")
+            }
+            decoder && /android:exported/ {
+                if (fault == "missing-exported") next
+                if (fault == "exported-decoder") sub(/=false$/, "=true")
+            }
+            decoder && /android:process\(/ {
+                if (fault == "missing-process") next
+                if (fault == "other-decoder") gsub(/:qrdecode/, ":other")
+            }
+            decoder && /android:stopWithTask/ {
+                if (fault == "missing-stop") next
+                if (fault == "retained-decoder") sub(/=true$/, "=false")
+            }
+            scanner && /android:exported/ && fault == "exported-scanner" { sub(/=false$/, "=true") }
+            { print }
+            END {
+                if (fault == "other-isolated") {
+                    print "          E: service"
+                    print "            A: android:name(0x01010003)=\"public.OtherDecoder\""
+                    print "            A: android:isolatedProcess(0x010103a9)=true"
+                }
+                if (fault == "multiprocess") {
+                    print "          E: provider"
+                    print "            A: android:name(0x01010003)=\"public.OtherProvider\""
+                    print "            A: android:multiprocess(0x01010013)=true"
+                }
+                if (fault == "duplicate-decoder") {
+                    print "          E: service"
+                    print "            A: android:name(0x01010003)=\"org.zclassic.wallet.ScanDecodeService\""
+                    print "            A: android:exported(0x01010010)=false"
+                    print "            A: android:process(0x01010011)=\":qrdecode\""
+                    print "            A: android:isolatedProcess(0x010103a9)=true"
+                    print "            A: android:stopWithTask(0x0101036a)=true"
+                }
+            }' ;;
     *) "$ZCL_FIXTURE_TEST_AAPT" "$@" ;;
 esac
 FIXTURE
@@ -43,6 +105,24 @@ for host in WalletDisplayFixtureActivity WalletReviewFixtureActivity; do
             rg -q 'expected exactly one nonexported debug host' "$result.log"
         fi
     done
+done
+for variant in debug release; do
+    for fault in missing-decoder missing-isolated shared-decoder missing-exported exported-decoder \
+        missing-process other-decoder missing-stop retained-decoder wallet application shared-user \
+        exported-scanner other-isolated duplicate-decoder multiprocess; do
+        result="$report/process-$variant-$fault"
+        if ZCL_FIXTURE_TEST_VARIANT="$variant" ZCL_FIXTURE_TEST_FAULT="process-$fault" \
+            bash "$wallet_root/tools/check-android-fixtures.sh" "$report/fault-aapt" \
+            "$result" > "$result.log" 2>&1; then
+            echo "Fixture isolation regression: accepted $variant process mutation $fault" >&2
+            exit 1
+        fi
+        rg -q "$variant APK violates the wallet/decoder process boundary" "$result.log"
+    done
+    # Attribute order carries no authority. Equivalent merged metadata passes.
+    ZCL_FIXTURE_TEST_VARIANT="$variant" ZCL_FIXTURE_TEST_FAULT=process-reordered \
+        bash "$wallet_root/tools/check-android-fixtures.sh" "$report/fault-aapt" \
+        "$report/reordered-$variant" > "$report/reordered-$variant.log" 2>&1
 done
 mkdir -p "$report/fault-tools"
 cat > "$report/fault-tools/unzip" <<'FIXTURE'
@@ -68,4 +148,4 @@ for fault in app-review missing-review; do
 done
 rg -q 'public response/review assets entered an application APK' "$report/app-review.log"
 rg -q 'expected three public transactions in the test APK' "$report/missing-review.log"
-echo 'Fixture isolation regression passed: actual APKs accepted; host and transaction-asset mutations refused.'
+echo 'Fixture isolation regression passed: actual APKs accepted; process, host and asset mutations refused.'

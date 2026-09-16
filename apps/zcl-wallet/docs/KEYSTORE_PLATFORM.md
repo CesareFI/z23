@@ -17,10 +17,19 @@ path/profile checks, receiving derivation and custody acceptance predicate.
 The adapter requires a secure, unlocked device and available platform
 authentication. It checks C storage is missing before generating a wrapping
 key. Existing record data cannot trigger replacement or regeneration of its key.
-One process-wide lock serializes alias creation across activity instances; the
-manifest declares no additional process. C independently prevents wallet-record
-overwrite. Missing/invalidated keys or unsupported hardware are explicit failures.
+One process-wide lock serializes alias creation across activity instances in the
+UI process. The separate QR decoder runs under an isolated UID and creates no
+wallet session. The lock does not synchronize processes; Android UID isolation
+and C wallet-record no-overwrite checks retain their separate roles.
+Missing/invalidated keys or unsupported hardware are explicit failures.
 There is no software fallback, export or key-deletion API in the application.
+
+`checkFixtureIsolation` inspects both built application manifests. It requires
+one private, isolated decoder in `:qrdecode`, with task-bound lifetime, the
+private camera Activity and the public wallet launcher. Process overrides or
+isolation attributes elsewhere, shared UIDs and multiprocess providers refuse
+the build check. These checks preserve the intended process topology; they do
+not establish hardware custody or defend against a compromised Android OS.
 
 Creation initializes a fresh provider cipher without a caller IV. Unlock uses
 the validated record's IV and a 128-bit GCM tag. BiometricPrompt must authenticate
@@ -88,7 +97,8 @@ The activity now drives create/restore/confirm/receive/lock/unlock screens.
 `WalletAuthentication` binds approval to the same provider Cipher, retains no
 entropy while the prompt is pending, and delivers only in the foreground.
 Credential UI can pause the activity; a bounded 90-second continuation handles
-that transition. Setup expires after ten foreground minutes. Every failed
+that transition. Setup expires ten elapsed minutes after its post-authentication
+origin, shared by the UI and worker; retries retain that origin. Every failed
 worker action clears retained setup entropy, including before a fatal VM Error
 propagates. Leaving the app
 clears secret views and closes the worker-owned setup. Backup confirmation uses
@@ -104,7 +114,8 @@ accessibility service. The application has no recovery export/logging path.
 Recovery input rendering failures now clear the complete owned buffer and reset
 its length after either append or delete. Cleanup is attempted even for a fatal
 rendering error; a second clearing failure is preserved alongside the original
-exception after the buffer's finally block runs. Submission clears the preview
+exception after owned characters are erased. Explicit cleanup erases the owned
+buffer before calling Android visibility/text operations. Submission clears the preview
 before allocating its outgoing char array and clears the original in finally.
 Thus a preview-clear failure cannot strand a newly allocated outgoing copy,
 and a copy-allocation failure still clears the source. No phrase String, input
