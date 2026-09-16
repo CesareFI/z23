@@ -5,7 +5,7 @@
 zcl_status zcl_change_custody_prepare(const uint8_t *record, size_t record_len,
     const uint8_t *entropy, size_t entropy_len, zcl_change_custody *wallet)
 {
-    if (record == NULL || entropy == NULL) return ZCL_INVALID_ARGUMENT;
+    if (wallet == NULL || record == NULL || entropy == NULL) return ZCL_INVALID_ARGUMENT;
     if (record_len < 124 || record_len > sizeof(wallet->record)) return ZCL_OUT_OF_RANGE;
     memcpy(wallet->record, record, record_len);
     zcl_wallet_record parsed = {0};
@@ -21,6 +21,7 @@ zcl_status zcl_change_custody_prepare(const uint8_t *record, size_t record_len,
 
 zcl_status zcl_change_custody_encode(const zcl_change_custody *wallet, uint32_t index, uint8_t *state)
 {
+    if (wallet == NULL || state == NULL) return ZCL_INVALID_ARGUMENT;
     uint8_t blinding[32] = {0};
     zcl_status status = zcl_random_bytes(blinding, sizeof(blinding));
     if (status == ZCL_OK)
@@ -33,6 +34,7 @@ zcl_status zcl_change_custody_encode(const zcl_change_custody *wallet, uint32_t 
 zcl_status zcl_change_custody_decode(const zcl_change_custody *wallet,
     const uint8_t *state, size_t state_len, uint32_t *index)
 {
+    if (wallet == NULL || state == NULL || index == NULL) return ZCL_INVALID_ARGUMENT;
     uint8_t blinding[32] = {0};
     zcl_status status = zcl_random_bytes(blinding, sizeof(blinding));
     if (status == ZCL_OK)
@@ -45,6 +47,7 @@ zcl_status zcl_change_custody_decode(const zcl_change_custody *wallet,
 zcl_status zcl_change_custody_address(const zcl_change_custody *wallet,
     uint32_t index, uint8_t *address, size_t capacity)
 {
+    if (wallet == NULL || address == NULL) return ZCL_INVALID_ARGUMENT;
     uint8_t blinding[64] = {0};
     zcl_status status = zcl_random_bytes(blinding, sizeof(blinding));
     if (status == ZCL_OK)

@@ -101,6 +101,14 @@ evidence is under
 `.cache/android-wallet/mission-20260916/jni-sync-begin/`. Next: continue local
 JNI/native ownership auditing without entering the quarantined TLS path.
 
+2026-09-16 continuation with TLS still parked: internal change-custody helpers
+now reject NULL wallet, state, index and address arguments before dereference or
+blinding generation. The focused change regression covers every invalid pointer
+combination while valid reservation/recovery behavior remains unchanged. Full
+non-TLS native safety passes Clang 99/99 and optimized GCC 98/98; the complete
+hazard review is in `C_SAFETY_REVIEW.md`, with evidence under
+`.cache/android-wallet/mission-20260916/change-custody-null/`.
+
 ## Historical checkpoints
 
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC

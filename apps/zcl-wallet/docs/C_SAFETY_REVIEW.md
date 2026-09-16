@@ -2978,3 +2978,39 @@ in 91 files at <=10; test complexity is 1,362 functions in 160 files at <=15.
 The rebuilt host JNI/JVM checks, ARM64/x86-64 debug and release APKs, both
 Android lints, fixture isolation and 16 KiB native alignment also pass.
 Evidence is under `.cache/android-wallet/mission-20260916/jni-sync-begin/`.
+
+## Change-custody helper argument refusal — 2026-09-16
+
+Scope: internal change-custody preparation, encoding, decoding and address
+helpers. NULL caller objects previously reached member access in these C
+boundaries. They now reject NULL wallet/output/state/index arguments before
+randomness, pointer dereference or state access. Valid change reservation,
+recovery and ownership behavior is unchanged; no consensus or TLS code is
+touched.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Rejected calls perform no span operation; existing fixed 140/80/35 bounds remain. |
+| Out-of-bounds access | NULL checks precede all member and buffer access. |
+| Integer overflow/underflow | No arithmetic is added on refusal paths. |
+| Signed/unsigned conversions | No conversion is added. |
+| Use-after-free | Helpers borrow entropy only after a valid wallet object is admitted. |
+| Double-free | No allocation or ownership release is added. |
+| Leaks | Refused calls do not allocate blinding material. |
+| NULL dereferences | Every pointer consumed by the four helpers is checked. |
+| Uninitialized memory | Valid callers still initialize custody work with zeroed storage. |
+| Dangling pointers | No pointer is read when its owning helper argument is NULL. |
+| Pointer arithmetic | No new pointer arithmetic is introduced. |
+| Format strings | No logging or formatting changes. |
+| Stack usage | Only existing bounded blinding buffers are used after admission. |
+| Allocation limits | Refusal is allocation-free and constant-time. |
+| Malformed serialization/network input | Record validation remains before custody use; NULL refusal precedes it. |
+| Races | Helpers remain synchronous and caller-owned; no shared state is added. |
+| Resource exhaustion | Randomness is not requested for invalid arguments. |
+| Secret leakage | Invalid calls never borrow entropy; accepted callers retain existing secure-zero cleanup. |
+
+The focused change test passes all NULL combinations. Full non-TLS safety passes
+Clang 99/99 and optimized GCC 98/98 groups, with analyzers green; production
+complexity is 513 functions in 91 files at <=10 and test complexity is 1,363
+functions in 160 files at <=15. Evidence is under
+`.cache/android-wallet/mission-20260916/change-custody-null/`.

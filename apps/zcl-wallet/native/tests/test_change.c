@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_keys.h"
+#include "../src/change_custody_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,9 +74,25 @@ static void distinct_and_blinded(void)
     zcl_secure_zero(entropy, sizeof(entropy));
 }
 
+static void null_custody_arguments(void)
+{
+    uint8_t record[140] = {0}, entropy[16] = {0}, state[80] = {0}, address[35] = {0};
+    zcl_change_custody wallet = {0};
+    uint32_t index = 0;
+    CHECK(zcl_change_custody_prepare(record, sizeof(record), entropy, sizeof(entropy), NULL)
+        == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_encode(NULL, 0, state) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_encode(&wallet, 0, NULL) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_decode(NULL, state, sizeof(state), &index) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_decode(&wallet, NULL, sizeof(state), &index) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_decode(&wallet, state, sizeof(state), NULL) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_address(NULL, 0, address, sizeof(address)) == ZCL_INVALID_ARGUMENT);
+    CHECK(zcl_change_custody_address(&wallet, 0, NULL, sizeof(address)) == ZCL_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
-    bounds(); distinct_and_blinded();
+    bounds(); distinct_and_blinded(); null_custody_arguments();
     puts("Receive/change bounds, separation and blinding checks passed");
     return 0;
 }
