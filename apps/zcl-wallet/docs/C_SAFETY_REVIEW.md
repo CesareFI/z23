@@ -2938,3 +2938,43 @@ files at <=10; test complexity is 1,361 functions in 160 files at <=15. The
 rebuilt host JNI/JVM checks, ARM64/x86-64 debug and release APKs, both Android
 lints, fixture isolation and 16 KiB native alignment also pass.
 Evidence is under `.cache/android-wallet/mission-20260916/sync-status-domain/`.
+
+## JNI sync begin pre-existing exception refusal — 2026-09-16
+
+Scope: the `beginSyncAttempt` JNI entry and fake-VM owner-state regression. A
+NULL JNI environment or already-pending VM exception previously entered the
+native registry, started an attempt and consumed its sequence. The entry now
+returns `ZCL_INVALID_ARGUMENT` before number validation, locking or mutation.
+Explicit fail/close cleanup remains callable independently, and normal valid
+begin, timeout and owner-replacement behavior is unchanged. This does not
+enable or inspect transport/TLS.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | The production guard performs no buffer access. Test snapshots use the existing fixed fake long-array bounds. |
+| Out-of-bounds access | `env` is short-circuited before dereference; the existing exception table is accessed only for a non-NULL environment. |
+| Integer overflow/underflow | The guard adds no arithmetic. Existing checked time/deadline and ID bounds remain after it. |
+| Signed/unsigned conversions | Refusal returns the existing negative Java-long encoding of `ZCL_INVALID_ARGUMENT`; no new native state conversion occurs. |
+| Use-after-free | Refusal occurs before registry lookup or watch borrowing. Each test owner remains open until its explicit close. |
+| Double-free | No allocation or release changes. Owner close remains exactly once per fixture iteration. |
+| Leaks | No owner, token or reference is created by a refused call. Test references are released after each fresh owner. |
+| NULL dereferences | `env == NULL` short-circuits before `ExceptionCheck`; the NULL regression exercises this exact path. |
+| Uninitialized memory | Owners are initialized through the JNI open fixture and snapshots are created through the existing zero-initialized packet path. |
+| Dangling pointers | A refused begin never borrows a registry watch. The valid begin retains only caller-owned native state, as before. |
+| Pointer arithmetic | No production pointer arithmetic is added. |
+| Format strings | No production formatting or logging is added. Test diagnostics remain fixed strings. |
+| Stack usage | The production guard adds no local object. The fixture adds scalar/reference values within existing stack limits. |
+| Allocation limits | Refused calls allocate nothing. The test asserts that the fake VM reference count remains exact. |
+| Malformed serialization/network input | No wire input is accepted here. Existing numeric admission remains unchanged after JNI admission. |
+| Races | Refusal runs before the registry mutex. Valid begin retains the same mutex-bounded owner transition and race suite. |
+| Resource exhaustion | Refusal does not consume the bounded owner sequence or start a deadline; the next valid attempt receives token 1. |
+| Secret leakage | Registry state is public sync metadata only. Synthetic addresses/source IDs are used and no custody material is touched. |
+
+The NULL-environment case fails the new first assertion on the inherited
+implementation. The fixed focused sanitizer test passes. Full non-TLS safety
+passes Clang 99/99 groups in 82.26 seconds and optimized GCC 98/98 in 118.48
+seconds, with both analyzers green. Production complexity remains 513 functions
+in 91 files at <=10; test complexity is 1,362 functions in 160 files at <=15.
+The rebuilt host JNI/JVM checks, ARM64/x86-64 debug and release APKs, both
+Android lints, fixture isolation and 16 KiB native alignment also pass.
+Evidence is under `.cache/android-wallet/mission-20260916/jni-sync-begin/`.

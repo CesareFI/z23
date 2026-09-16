@@ -84,6 +84,23 @@ alignment pass. The complete hazard review is in `C_SAFETY_REVIEW.md`; evidence 
 `.cache/android-wallet/mission-20260916/sync-status-domain/`. Next: continue
 local C/JNI state and ownership auditing; do not enter the quarantined TLS path.
 
+2026-09-16 continuation with TLS still parked: `beginSyncAttempt` now refuses a
+missing JNI environment or pre-existing VM exception before locking, starting
+an attempt or consuming its sequence. Previously either condition could mutate
+the native owner despite VM refusal. Fresh-owner regressions cover NULL and
+pending-exception calls, require byte-for-byte idle state with no added local
+reference, and prove the next valid begin still receives token 1. Explicit
+fail/close cleanup remains unchanged.
+
+The focused JNI sanitizer regression passes. Full non-TLS C safety passes Clang
+99/99 groups in 82.26 seconds and optimized GCC 98/98 in 118.48 seconds, with
+both analyzers and production/test complexity caps 10/15 green. Host JNI/JVM
+tests, both Android ABIs, debug/release APKs and lints, fixture isolation and
+native alignment pass. The complete hazard review is in `C_SAFETY_REVIEW.md`;
+evidence is under
+`.cache/android-wallet/mission-20260916/jni-sync-begin/`. Next: continue local
+JNI/native ownership auditing without entering the quarantined TLS path.
+
 ## Historical checkpoints
 
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC

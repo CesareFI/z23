@@ -247,6 +247,25 @@ static void pending_snapshot_reads(void)
     }
 }
 
+static void pending_begin_preserves_owner(void)
+{
+    for (unsigned mode = 0; mode < 2; ++mode) {
+        const jlong id = open_owner();
+        const size_t before = reference_count;
+        if (mode != 0) pending_exception = true;
+        JNIEnv *env = mode == 0 ? NULL : &environment;
+        CHECK(API(beginSyncAttempt)(env, NULL, id, 100, 10, 1)
+            == -(jlong)ZCL_INVALID_ARGUMENT);
+        CHECK(reference_count == before && pending_exception == (mode != 0));
+        pending_exception = false;
+        const jlong *state = snapshot(id, 100);
+        CHECK(state[0] == ZCL_OK && state[2] == 0 && state[3] == ZCL_OK && state[9] == 0);
+        CHECK(API(beginSyncAttempt)(&environment, NULL, id, 100, 10, 1) == 1);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
+}
+
 static void pending_request_reply_preserve_attempt(void)
 {
     const jlong id = open_owner();
@@ -377,7 +396,8 @@ static void history_packet_and_owner_replacement(void)
 int main(void)
 {
     request_allocation_and_region_failure(); frame_allocation_and_region_failure();
-    pending_snapshot_reads(); pending_request_reply_preserve_attempt();
+    pending_snapshot_reads(); pending_begin_preserves_owner();
+    pending_request_reply_preserve_attempt();
     snapshot_failure_preserves_timeout();
     history_snapshot_failures(); history_packet_and_owner_replacement();
     puts("JNI sync: allocation/region exceptions, full frame clearing, slot cleanup and retained timeout passed");

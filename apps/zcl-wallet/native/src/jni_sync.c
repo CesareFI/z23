@@ -87,7 +87,9 @@ JNIEXPORT jlong JNICALL
 Java_org_zclassic_wallet_core_NativeCore_beginSyncAttempt(JNIEnv *env, jclass type,
     jlong id, jlong now, jlong timeout, jlong first_id)
 {
-    (void)env; (void)type;
+    (void)type;
+    /* Refusal must not start an attempt or consume its sequence. */
+    if (env == NULL || (*env)->ExceptionCheck(env)) return -(jlong)ZCL_INVALID_ARGUMENT;
     if (!begin_numbers(now, timeout, first_id)) return -(jlong)ZCL_OUT_OF_RANGE;
     zcl_sync_watch *watch = NULL;
     zcl_status status = enter_owner(id, &watch);
