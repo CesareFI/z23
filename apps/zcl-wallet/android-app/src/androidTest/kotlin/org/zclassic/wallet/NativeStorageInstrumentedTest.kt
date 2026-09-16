@@ -12,6 +12,7 @@ import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -27,6 +28,42 @@ class NativeStorageInstrumentedTest {
     @Test fun nativeStorageAndProviderGcmRoundTripOnAndroid() = roundTrip(false)
 
     @Test fun freshPairedStorageAndProviderGcmRoundTripOnAndroid() = roundTrip(true)
+
+    @Test fun orphanChangeStateRefusesFreshSetupWithoutChangingFiles() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "orphan-storage-" + UUID.randomUUID().toString())
+        assertFalse(directory.exists())
+        val storage = WalletStorage(directory.absolutePath)
+        val entropy = ByteArray(16) // Published public fixture, never a funded wallet.
+        val state = File(directory, ".change.index")
+        try {
+            assertEquals(CoreStatus.NOT_FOUND, storage.read().status)
+            val header = WalletRecord.createHeader(entropy, Network.TESTNET)
+            // Inert ciphertext: this test exercises storage admission, not GCM.
+            val record = WalletRecord.pack(header, ByteArray(12), ByteArray(32))
+            for (length in listOf(0, 40, 80)) {
+                val bytes = ByteArray(length) { 0xa5.toByte() }
+                state.writeBytes(bytes)
+                android.system.Os.chmod(state.absolutePath, 0x180) // 0600
+                val stored = storage.read()
+                assertEquals(CoreStatus.ALREADY_EXISTS, stored.status)
+                assertNull(stored.record)
+                assertFalse(stored.pending)
+                assertEquals(CoreStatus.ALREADY_EXISTS, storage.create(record))
+                assertEquals(CoreStatus.ALREADY_EXISTS, storage.createFreshWithChange(record, entropy))
+                assertArrayEquals(bytes, state.readBytes())
+                assertFalse(File(directory, "wallet.zcl").exists())
+                assertFalse(File(directory, ".wallet.pending").exists())
+            }
+        } finally {
+            entropy.fill(0)
+            listOf("wallet.zcl", ".wallet.pending", ".change.index", ".lock").forEach { name ->
+                val file = File(directory, name)
+                if (file.exists()) assertTrue(file.delete())
+            }
+            if (directory.exists()) assertTrue(directory.delete())
+        }
+    }
 
     private fun roundTrip(fresh: Boolean) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

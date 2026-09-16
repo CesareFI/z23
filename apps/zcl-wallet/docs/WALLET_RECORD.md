@@ -50,6 +50,12 @@ discovery and Android sending integration remain unfinished.
 Both creation APIs refuse an existing change file, including orphan state left
 by interrupted paired creation. Missing state never permits an existing wallet
 to initialize an index automatically.
+Wallet reads return `NOT_FOUND` only when committed, pending and change names
+are all absent. If both wallet records are absent but a change entry remains,
+the read returns `ALREADY_EXISTS` without publishing outputs or reading that
+entry. Android therefore takes the existing storage-failure path before setup.
+The locked metadata check also refuses dangling symlinks and FIFOs promptly;
+it does not authenticate, repair or remove orphan state.
 
 ## Recovered-wallet internal address binding
 

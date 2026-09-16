@@ -4811,3 +4811,48 @@ and the corrected version declaration are retained. Hardware custody, physical
 camera acceptance, parked TLS and prior root-lint findings remain unresolved.
 Next: inspect ciphertext/pending-record ownership across provider and JNI error
 returns, keeping real-device custody qualification separate.
+
+2026-09-16: interrupted paired creation now reports orphan change state before
+Android offers fresh setup. Creation already refused an existing .change.index;
+wallet reads incorrectly returned NOT_FOUND when that was the only remaining
+artifact. After both wallet records are absent, the read now checks the change
+name under the existing lock and returns ALREADY_EXISTS without publishing
+outputs. Truly empty storage still returns NOT_FOUND. Existing wallet/pending
+priority, authentication and creation refusal remain unchanged; no repair,
+deletion or overwrite path is added.
+
+The original source fails the new orphan-status assertion. Native cases cover
+empty, partial and complete initial state, unchanged outputs/files, dangling
+symlinks and FIFOs. Crash/fault tests now require the stronger classification.
+Three focused additional-integer sanitizer groups pass in 0.52 seconds; full C
+safety passes all 95 groups in 81.06 seconds, source/provider Clang/GCC analysis
+and unchanged 10/15 complexity limits. Changed fixtures separately pass both
+analyzers and strict NDK compilation for both ABIs. The storage fuzzer now varies
+orphan contents, sizes, capacities and link aliases: 303,995 inputs in 121 seconds
+without a finding, max_len142, five-second per-input limit, 512 MiB RSS cap and
+77 MiB observed. Compile qualification observes 158 authored/provider plus 75
+harness compilations, with 181 coverage compilations.
+
+Android/JVM tests, both-ABI builds, debug/release lint, APK fixture isolation/
+alignment, architecture and whitespace checks pass. An existing JVM assertion
+initially expected the old NOT_FOUND result; it now requires ALREADY_EXISTS and
+no returned record. All four packaged JNI/storage/GCM tests pass without skips
+on API30/35/36 in 3.15/0.278/8.215 seconds. The scratch verification script
+initially expected five tests; inspection of source and named start/completion
+records confirms four, and the corrected log verifier passes without rerunning
+or discarding results. The full native storage fixture cannot finish under the
+emulator shell UID: FIFO creation fails on all three, and an API35 probe reports
+Permission denied. Host assertions and device policies remain unchanged; this
+is not a full native-device fixture pass. ARM64 runtime and hardware custody
+remain unqualified.
+
+Source-only tree 3e4f13ff7ba43bc0bdc55671cb0d9bde94157904 reproduces the unsigned
+release APK exactly on this host/toolchain: 612,903 bytes (+48), SHA256
+`6c5d0c5f61ae9cd762f43df4fed9520ea05094dfd561c0b2f6715a8646f83f01`.
+Committed app source matches except this progress note. The explicit 18-hazard
+review is in C_SAFETY_REVIEW.md; baseline, faults, fuzz, build, device and
+reproduction evidence is under
+`.cache/android-wallet/resume-20260916/orphan-storage-read/`.
+Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
+findings remain unresolved. Next: inspect recovery admission when pending and
+committed artifacts coexist or metadata checks fail.

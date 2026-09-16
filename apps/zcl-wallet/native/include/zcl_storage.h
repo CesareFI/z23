@@ -20,6 +20,8 @@ extern "C" {
  * replace the trusted private-directory/cooperating-lock requirements.
  * Read outputs remain unchanged on error. A pending result requires platform
  * GCM authentication and zcl_wallet_recovered_address before promotion/use.
+ * NOT_FOUND means committed, pending and change names are all absent. An orphan
+ * change entry returns ALREADY_EXISTS and requires recovery, never fresh setup.
  */
 zcl_status zcl_storage_read(const uint8_t *directory, size_t directory_len,
                            uint8_t *record, size_t capacity, size_t *record_len, bool *pending);

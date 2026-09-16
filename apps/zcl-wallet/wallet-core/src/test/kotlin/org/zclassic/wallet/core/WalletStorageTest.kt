@@ -123,7 +123,10 @@ class WalletStorageTest {
             Files.createFile(orphan, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
             Files.write(orphan, byteArrayOf(42))
             assertEquals(CoreStatus.ALREADY_EXISTS, storage.createFreshWithChange(bytes, entropy))
-            assertEquals(CoreStatus.NOT_FOUND, storage.read().status)
+            val stored = storage.read()
+            assertEquals(CoreStatus.ALREADY_EXISTS, stored.status)
+            assertNull(stored.record)
+            assertFalse(stored.pending)
             assertContentEquals(byteArrayOf(42), Files.readAllBytes(orphan))
             Files.delete(orphan) // Only this test's deliberately created orphan.
             assertEquals(CoreStatus.OK, storage.create(bytes))

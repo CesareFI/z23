@@ -103,6 +103,10 @@ static zcl_status read_record(const zcl_store *store, uint8_t *record, size_t ca
         status = zcl_store_read_file(store, ZCL_STORE_PENDING, record, capacity, length, false);
         *pending = status == ZCL_OK;
     }
+    if (status == ZCL_NOT_FOUND) {
+        status = zcl_store_absent(store, ZCL_STORE_CHANGE);
+        return status == ZCL_OK ? ZCL_NOT_FOUND : status;
+    }
     if (status != ZCL_OK)
         return status;
     zcl_wallet_record parsed = {0};

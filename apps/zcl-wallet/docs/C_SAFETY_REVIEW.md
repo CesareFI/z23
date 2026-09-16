@@ -2740,3 +2740,49 @@ ARM64 remains compile-only. Both packaged .text sections match their
 symbol-bearing libraries exactly; disassembly places the full64-byte wipe after
 public-key derivation and before SHA256. Full evidence is under
 `.cache/android-wallet/resume-20260916/address-key-retirement/`.
+
+## Orphan change state refuses fresh setup during read — 2026-09-16
+
+Scope: storage_read.c, its storage contract, existing native/JVM/Android
+fixtures and the wallet-storage fuzzer. After both wallet names are absent,
+the existing locked, no-follow metadata helper distinguishes an absent change
+name from orphan state. Presence returns ALREADY_EXISTS; metadata errors retain
+their refusal. Existing creation already refused these entries. This closes an
+incorrect empty-directory classification, not an overwrite vulnerability.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | No production buffer or copy changes. Error returns still precede caller publication; 140-byte sentinel tests and fuzz canaries require unchanged outputs. |
+| Out-of-bounds access | The new branch passes only the fixed internal change-slot enum. Fuzz input stays within 2..142 bytes; payload mutation remains inside the existing 140-byte buffer. |
+| Integer overflow/underflow | Production adds no arithmetic. Fixture lengths are fixed 0/40/80 and fuzz capacities remain modulo 141. Length sentinels are compared, never used as allocation sizes. |
+| Signed/unsigned conversions | No new production conversion. Test file lengths cast only bounded values to off_t; fuzzer retains its checked ssize_t read conversion. |
+| Use-after-free | The metadata check runs while the store descriptors are owned and open. No retained pointer or asynchronous operation is introduced. |
+| Double-free | Descriptor cleanup remains the existing single zcl_store_close call. No new allocation, close or release is added to production. |
+| Leaks | The helper only calls fstatat; it opens no file. Existing fault fixtures retain descriptor-count checks. Test directories and names are owned isolated fixtures. |
+| NULL dereferences | Public argument validation remains before store open. The internal store and enum are valid; the reused helper independently validates both. |
+| Uninitialized memory | The helper initializes stat storage and only examines the syscall result. Public outputs, including length and pending, remain untouched on ALREADY_EXISTS or any error. |
+| Dangling pointers | Store, scratch and stat lifetimes remain synchronous and local. Tests do not retain pointers beyond calls; Android fixtures retain their arrays through each JNI call. |
+| Pointer arithmetic | Production adds none. Existing fuzzer canaries and read spans retain their bounded length/capacity calculations. |
+| Format strings | No product formatting or logging change. Diagnostics use fixed assertions; no path, entropy or ciphertext is logged by the product. |
+| Stack usage | The existing helper has fixed stat storage; no new large local, recursion or VLA. Changed fixtures pass the 4096-byte frame gate on both NDK ABIs; largest measured individual fixture frames are 1304/1360 bytes on x86-64/ARM64. |
+| Allocation limits | No new production heap or provider work. The read still uses fixed 140-byte scratch. Test arrays and case counts are bounded. |
+| Malformed serialization/network input | Orphan bytes are not parsed or authenticated; any entry, including a dangling symlink/FIFO, prevents fresh setup. Existing committed/pending validation and priority remain unchanged. No network input is involved. |
+| Races | The absence checks execute under the existing cooperative private-directory lock. No claim is added against an attacker mutating the private directory outside that authority. Creation independently rechecks all names. |
+| Resource exhaustion | The new branch adds one bounded metadata call, without opening a FIFO, following a symlink, retrying or reading orphan data. Registered timeouts and fuzz time/input/RSS limits remain enforced. |
+| Secret leakage | This path handles only public metadata and bounded ciphertext. It adds no entropy/key access. Read failure prevents Android setup admission; no authentication, repair, deletion or replacement authority is added. |
+
+The original implementation fails the new orphan-read status assertion. Focused
+additional-integer sanitizer tests cover exact output/file preservation,
+interrupted creation and injected I/O failures. Existing tests now require
+ALREADY_EXISTS for orphan state while retaining NOT_FOUND for genuinely empty
+storage and for a missing change file belonging to an existing wallet.
+Clang/GCC analysis covers changed fixtures separately from the full production
+safety gate. Evidence is under
+`.cache/android-wallet/resume-20260916/orphan-storage-read/`.
+
+The complete C storage fixture cannot finish under the emulator shell UID:
+mkfifoat fails on API30/35/36, and a separate API35 probe reports Permission
+denied. These failure logs are preserved; no assertion or device policy is
+weakened. Host FIFO/symlink coverage and packaged Android JNI tests are separate
+claims. Both native ABIs compile; ARM64 runtime and hardware custody remain
+unqualified.

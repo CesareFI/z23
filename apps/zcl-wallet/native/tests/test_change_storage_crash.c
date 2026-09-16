@@ -90,7 +90,7 @@ static int inspect_creation(const storage_fixture *fixture, const change_storage
         zcl_change_storage_snapshot snapshot = {0};
         CHECK(change_observe(fixture, data, &snapshot) == ZCL_OK && snapshot.file_bytes == 80);
     } else {
-        CHECK(status == ZCL_NOT_FOUND || status == ZCL_INVALID_ENCODING);
+        CHECK(status == ZCL_ALREADY_EXISTS || status == ZCL_INVALID_ENCODING);
         if (status == ZCL_INVALID_ENCODING) CHECK(state.st_size == 80);
     }
     return 0;

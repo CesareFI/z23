@@ -81,7 +81,7 @@ static int failed_creation(const change_storage_data *data, io_fault *fault,
         CHECK(status == ZCL_OK && length == data->wallet_len && memcmp(wallet, data->wallet, length) == 0);
         CHECK(change_bytes(&fixture, data->state[0], 80, 0) == 0);
         CHECK(fixture_promote(&fixture, data->wallet, data->wallet_len) == ZCL_OK);
-    } else CHECK(status == ZCL_NOT_FOUND);
+    } else CHECK(status == (state_exists ? ZCL_ALREADY_EXISTS : ZCL_NOT_FOUND));
     return fixture_close(&fixture);
 }
 

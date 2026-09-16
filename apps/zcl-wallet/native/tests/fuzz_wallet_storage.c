@@ -28,7 +28,7 @@ static void initialize(void)
 
 static void clear_files(void)
 {
-    const char *names[] = {"wallet.zcl", ".wallet.pending", "target"};
+    const char *names[] = {"wallet.zcl", ".wallet.pending", ".change.index", "target"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
         const int removed = unlinkat(fixture.directory, names[i], 0);
         require(removed == 0 || errno == ENOENT);
@@ -59,7 +59,8 @@ static void unchanged_file(const char *name, const uint8_t *record, size_t lengt
     require(memcmp(actual, record, length) == 0);
 }
 
-static void read_record(const uint8_t *record, size_t length, size_t capacity, bool pending, bool aliased)
+static void read_record(const uint8_t *record, size_t length, size_t capacity, bool pending,
+    zcl_status expected)
 {
     uint8_t actual[142], before[142];
     memset(actual, 0xa5, sizeof(actual));
@@ -67,7 +68,7 @@ static void read_record(const uint8_t *record, size_t length, size_t capacity, b
     size_t actual_length = SIZE_MAX;
     bool actual_pending = !pending;
     const zcl_status status = fixture_read(&fixture, actual + 1, capacity, &actual_length, &actual_pending);
-    require(status == expected_read(record, length, capacity, aliased));
+    require(status == expected);
     if (status == ZCL_OK) {
         require(actual_length == length && actual_pending == pending);
         require(memcmp(actual + 1, record, length) == 0);
@@ -90,10 +91,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const size_t length = (data[0] & 1U) != 0 ? base_length : size - 2;
     const bool pending = (data[0] & 2U) != 0;
     const bool aliased = (data[0] & 4U) != 0;
-    const char *name = pending ? ".wallet.pending" : "wallet.zcl";
+    const bool orphan = (data[0] & 8U) != 0;
+    const char *name = orphan ? ".change.index" : (pending ? ".wallet.pending" : "wallet.zcl");
     require(fixture_write(&fixture, name, record, length) == 0);
     if (aliased) require(linkat(fixture.directory, name, fixture.directory, "target", 0) == 0);
-    read_record(record, length, (size_t)data[1] % 141, pending, aliased);
+    const size_t capacity = (size_t)data[1] % 141;
+    const zcl_status expected = orphan ? ZCL_ALREADY_EXISTS : expected_read(record, length, capacity, aliased);
+    read_record(record, length, capacity, pending, expected);
     unchanged_file(name, record, length, aliased);
     if (aliased) unchanged_file("target", record, length, true);
     return 0;
