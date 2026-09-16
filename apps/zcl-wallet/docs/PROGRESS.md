@@ -4983,3 +4983,51 @@ an arbitrary later filesystem rollback or positive hardware custody. Existing
 hardware, physical-camera, parked-TLS and root-lint limitations remain.
 Next: inspect setup/authentication ownership across repeated foreground changes
 and worker refusal, keeping hardware policy and live wallet state untouched.
+
+2026-09-16: authentication callback acceptance is now isolated in a small
+private success handler and exercised by eight public on-device regressions.
+The platform callback forwards its nullable cipher to the same request-identity,
+time-window and exact-cipher checks; foreground delivery remains in the existing
+deliver method. No policy, timeout, key capability or acceptance condition changes.
+The extraction adds no secret owner or new asynchronous operation. Cipher
+comparison uses object identity, including when a replacement reuses the same
+handle. Failure and duplicate callbacks cannot retire or approve another request.
+
+Tests use an unattached Activity, uninitialized cipher handles and a receiver
+that only counts prepared-action identities. They cover missing/different
+ciphers, exactly-once delivery, background success/failure, cancellation, stale
+callbacks after replacement, invalid clock origins and delivery-time rechecking.
+Success calls the private handler; errors call the actual generated callback.
+All state changes run on the main thread and each fixture cancels its own request.
+No prompt, entropy, wallet session, file or platform key is opened. These tests
+do not establish framework-result delivery, elapsed sleep behavior or hardware
+authentication; the existing native deadline tests remain a separate claim.
+
+The first prototype tried to instantiate a framework AuthenticationResult and
+all eight cases stopped at API35 NoSuchMethodException. Its source and logs are
+preserved. The constructor exists in the reviewed
+[Android 15 framework source](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/core/java/android/hardware/biometrics/BiometricPrompt.java)
+but is hidden from the public SDK. No hidden-API exemption, skip or platform
+policy change was used. The final fixture tests the extracted production guard
+with the nullable cipher value that the framework adapter forwards; every
+behavioral assertion is retained.
+
+All sixteen new/existing routing, setup-failure and native deadline tests pass
+without skips on API30/35/36 x86-64 in 1.426/0.063/2.564 seconds. Three separate
+isolated debug mutations remove exact-cipher rejection, foreground gating or
+failure-request identity. They produce exactly 1/2/2 expected failures, each
+with one passing control. After the normal APK is restored, all eight new tests
+pass in 0.043 seconds. Mutated source copies are restored; their APKs, patches
+and complete negative observations remain available.
+
+Android/JVM tests, both-ABI builds, debug/release lint, APK fixture isolation,
+alignment, architecture and whitespace checks pass. No C/provider source
+changes; both packaged native libraries compare byte-for-byte with the previous
+release. Source-only tree 7b9b26d31a790624ce990e53cd75506eee25e594 reproduces the
+unsigned release APK on this host/toolchain: 612,903 bytes, SHA256
+`64006c7ed890056749ad35b0e66a7cd056fd6edc915f94f84ffb74f766042bf2`.
+Committed app source matches except this progress note. Evidence is under
+`.cache/android-wallet/resume-20260916/authentication-callbacks/`.
+Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
+findings remain unresolved. Next: inspect the UI-to-worker recovery input
+handoff and early failure cleanup before ownership reaches the executor.

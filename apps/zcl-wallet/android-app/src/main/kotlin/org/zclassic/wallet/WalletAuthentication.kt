@@ -82,20 +82,24 @@ internal class WalletAuthentication(
 
     private fun callback(request: Pending) = object : BiometricPrompt.AuthenticationCallback() {
         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-            if (pending !== request) return
-            if (!windowOpen(request)) { fail(request); return }
-            if (result.cryptoObject?.cipher !== request.prepared.cipher) {
-                fail(request)
-                return
-            }
-            request.succeeded = true
-            deliver()
+            succeed(request, result.cryptoObject?.cipher)
         }
 
         override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
             // Provider text is not displayed or logged by the wallet.
             fail(request)
         }
+    }
+
+    private fun succeed(request: Pending, cipher: Cipher?) {
+        if (pending !== request) return
+        if (!windowOpen(request)) { fail(request); return }
+        if (cipher !== request.prepared.cipher) {
+            fail(request)
+            return
+        }
+        request.succeeded = true
+        deliver()
     }
 
     private fun fail(request: Pending) {
