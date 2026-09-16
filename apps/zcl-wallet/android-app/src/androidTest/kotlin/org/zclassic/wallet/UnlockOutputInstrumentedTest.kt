@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
@@ -86,13 +87,17 @@ class UnlockOutputInstrumentedTest {
             val ciphertext = checkNotNull(prepared.record).ciphertext
             val before = ciphertext.copyOf()
             startUnlock()
+            awaitIdle(expectedFatal)
+            assertArrayEquals(before, ciphertext)
+        }
+
+        fun awaitIdle(expectedFatal: Throwable? = null) {
             val idle = CountDownLatch(1)
             assertTrue(worker.submit { idle.countDown() })
             assertTrue(idle.await(10, TimeUnit.SECONDS))
             if (expectedFatal != null) assertTrue(failedThread.await(5, TimeUnit.SECONDS))
             assertSame(expectedFatal, fatal.get())
             while (true) (callbacks.poll() ?: break).run()
-            assertArrayEquals(before, ciphertext)
         }
 
         fun assertErased() {
@@ -131,6 +136,30 @@ class UnlockOutputInstrumentedTest {
             assertFalse(stored.pending)
             assertArrayEquals(prepared.encodedRecord, stored.record)
             assertFalse(File(directory, ".wallet.pending").exists())
+        }
+
+        fun replaceStoredRecord(pending: Boolean): ByteArray {
+            check(persisted)
+            val file = File(directory, if (pending) ".wallet.pending" else "wallet.zcl")
+            assertTrue(file.isFile)
+            val original = checkNotNull(prepared.encodedRecord)
+            assertArrayEquals(original, file.readBytes())
+            val replacement = original.copyOf()
+            replacement[replacement.lastIndex] = (replacement.last().toInt() xor 1).toByte()
+            // Structurally valid ciphertext, different from the authenticated
+            // snapshot. The fixture never authenticates or accepts these bytes.
+            WalletRecord.parse(replacement)
+            Files.write(file.toPath(), replacement, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+            assertArrayEquals(replacement, file.readBytes())
+            return replacement
+        }
+
+        fun assertReplacement(pending: Boolean, replacement: ByteArray) {
+            val stored = storage.read()
+            assertEquals(CoreStatus.OK, stored.status)
+            assertEquals(pending, stored.pending)
+            assertArrayEquals(replacement, stored.record)
+            assertFalse(File(directory, if (pending) "wallet.zcl" else ".wallet.pending").exists())
         }
 
         fun awaitRetired() {
@@ -273,4 +302,36 @@ class UnlockOutputInstrumentedTest {
             fixture.assertCommitted()
         }
     }
+
+    private fun replacementDuringDecryption(pending: Boolean) {
+        Fixture(persisted = true).use { fixture ->
+            if (pending) fixture.makePending()
+            val ciphertext = checkNotNull(fixture.prepared.record).ciphertext.copyOf()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.calls.afterFinal = {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+            }
+            val replacement = try {
+                fixture.startUnlock()
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                assertArrayEquals(fixture.entropy, fixture.calls.output)
+                fixture.replaceStoredRecord(pending)
+            } finally { release.countDown() }
+            fixture.awaitIdle()
+            assertEquals(WalletProblem.OPERATION, fixture.failure)
+            assertNull("Changed storage published an authenticated address", fixture.address)
+            fixture.assertErased()
+            fixture.assertErasedBeforeDispatch()
+            assertArrayEquals(ciphertext, checkNotNull(fixture.prepared.record).ciphertext)
+            fixture.assertReplacement(pending, replacement)
+        }
+    }
+
+    @Test fun pendingRecordReplacementDuringDecryptionRefusesPublication() =
+        replacementDuringDecryption(pending = true)
+
+    @Test fun committedRecordReplacementDuringDecryptionRefusesPublication() =
+        replacementDuringDecryption(pending = false)
 }

@@ -4945,3 +4945,41 @@ findings remain unresolved. The source audit of record/header publication,
 recovery admission, JNI secret outputs and bounded RNG found no additional
 product defect in the inspected paths. Next: inspect the managed recovery
 record/entropy ownership boundary and its cancellation/error coverage.
+
+2026-09-16: the real managed unlock worker now has explicit coverage for a
+stored record changing after GCM decryption but before C promotion. Two new
+instrumented cases cover pending and committed names. Each uses the existing
+public software-GCM fixture and holds its actual provider callback after the
+plaintext destination is filled. The test replaces only its own pre-existing
+cache file with structurally valid, different ciphertext, releases the worker,
+and requires OPERATION failure, no address publication, complete plaintext
+erasure before UI dispatch, unchanged in-memory ciphertext and exact retention
+of the replacement bytes/name. The ciphertext is never authenticated or accepted.
+
+The fixture reuses the existing exclusive temporary-directory owner and worker
+cleanup. All paths/names are fixed within that directory; the write refuses to
+create a missing file. Callback entry, release, idle and termination waits stay
+bounded. No platform key, wallet-v1 directory, real seed, authentication prompt
+or global provider is used. No production source or C implementation changes.
+
+All ten unlock tests pass without skips on API30/35/36 x86-64 emulators in
+5.878/0.294/7.873 seconds. An isolated source-copy mutation removes only the
+promotion-status check while retaining the actual promotion call. Both new
+cases fail their expected OPERATION assertion; the live exact-pending and
+closed-during-decryption controls still pass. The normal debug APK is then
+restored on API35 and all four selected cases pass in 0.166 seconds. The
+mutation never enters the checkout or release source, and its copied source is
+restored after the pinned mutant APK and patch are preserved.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+alignment, architecture and whitespace checks pass. Source-only tree
+718cdf4e0f2edf0e57de0f8c84c793ef95027a59 reproduces the unchanged unsigned release
+APK before the isolated debug mutation: 612,903 bytes, SHA256
+`6c5d0c5f61ae9cd762f43df4fed9520ea05094dfd561c0b2f6715a8646f83f01`.
+Committed app source matches except this progress note. Evidence and APKs are
+under `.cache/android-wallet/resume-20260916/unlock-record-replacement/`.
+This proves refusal for these observed storage changes, not protection against
+an arbitrary later filesystem rollback or positive hardware custody. Existing
+hardware, physical-camera, parked-TLS and root-lint limitations remain.
+Next: inspect setup/authentication ownership across repeated foreground changes
+and worker refusal, keeping hardware policy and live wallet state untouched.
