@@ -1,5 +1,46 @@
 # Development record
 
+## Current continuation — 2026-09-16
+
+Worktree: `/root/z23-android`; branch:
+`agent/android-jni-secret-retirement-20260915`. GitHub development remote:
+`wallet-backup` (`CesareFI/zclassic-android-wallet`). Main is not a push target.
+The inherited baseline is `d3245b900dfb7a864e5dc612479d5fe3bf5ae804`;
+37 wallet-only commits follow the previously advertised backup `df3be5659`.
+The inherited Electrum test changes were saved in Git stash before validation.
+No history was reset or merged; current origin/main was fetched and inspected.
+Its node-only work is outside this app mission and the app contract prohibits
+merging. The installed main-only hook conflicts with development-branch backup;
+the existing documented per-command backup exception leaves hooks unchanged.
+
+Current checkpoint: stronger Electrum framing invariants and a reproducible
+1,600-case host regression/corpus generator. Clang and optimized GCC sanitizer
+suites pass 99/99 and 98/98 native CTest cases (81.72/118.35 seconds). Clang/GCC
+analysis and production/test complexity caps 10/15 pass. A seeded ASan/UBSan
+campaign completed 28,752 executions in 121 seconds, max input 16,385 bytes,
+five-second input deadline and 512 MiB RSS cap (observed 258 MiB), without a
+finding. Separate byte-corruption and completed-state-mutation candidates each
+abort on the new invariant. The first completed-state mutation failed compilation
+because it attempted to modify a const pointer; the final isolated mutation
+uses the mutable feed input. No mutation changed the checkout's product source.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation, native
+alignment, architecture and whitespace checks pass. Root lint initially fails
+two gates: a historical wallet-test count was mistaken for the node count and
+the unrelated flag-registry self-test refuses an empty scan. The historical
+wording now explicitly identifies wallet CTest cases; `make check-doc-counts`
+passes. The flag-registry failure remains open; no global lint pass is claimed.
+Evidence: `.cache/android-wallet/mission-20260916/`; durable test sources and
+this summary accompany the source commit. No production code changed.
+
+Next: qualify recovery input ownership when UI submission or worker admission
+fails, and during queued cancellation. Positive hardware custody, physical
+camera acceptance, authenticated send/shielded completion and real sync remain
+unfinished. TLS remains quarantined under `TLS_REVIEW.md`; it was not enabled
+or investigated. Continue useful work after each verified development push.
+
+## Historical checkpoints
+
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC
 (16:11 Europe/Amsterdam). Branch `agent/android-wallet-20260911`, based on
 Z23 `337f4e6da1368087fa56e1a6cd30f2371a6041a6`.
@@ -4792,7 +4833,7 @@ fixture, with a bounded outer runner. The checks themselves have fifteen-second
 limits. These gates bound fixture execution; they make no new provider, storage
 latency or Android runtime guarantee and do not change production code.
 
-The full default sanitizer suite passes all 95 registered groups in 81.54 seconds.
+The wallet's default sanitizer suite passes 95 native CTest cases in 81.54 seconds.
 Both new checks also pass in the integer-sanitizer and fuzz/oracle configurations
 (99 registered tests each) and the thread-sanitizer configuration (94). Only the
 two metadata/termination groups ran in those additional configurations; this is

@@ -2822,3 +2822,34 @@ contract, is under `.cache/android-wallet/resume-20260916/gcc-optimized-safety/`
 The contract exercises both fortified entry points in all six read fault modes;
 all twelve oversized calls retain SIGABRT with core dumps disabled. Default
 Clang and optimized GCC suites exercise the actual storage callers separately.
+
+## Electrum framing regression and fuzz invariants — 2026-09-16
+
+Scope: inherited host-only fixtures and CMake registration. No product, JNI,
+provider, protocol acceptance or TLS-quarantine change.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Fixed frame and surrounding canaries; exact prefix, length and complete-reset checks. |
+| Out-of-bounds access | Consumed length is checked before offset advancement; newline lookup follows positive consumption. Corpus indexes stay within its 16,385-byte static array. |
+| Integer overflow/underflow | Input is capped before arithmetic; offsets never exceed input size, chunks are 1..256 or the entire bounded span. Case count is exactly 1,600. |
+| Signed/unsigned conversions | Byte, length and counter conversions are bounded; snprintf is checked for negative result before size_t conversion. |
+| Use-after-free | All borrowed input is synchronous; no heap or input retention. |
+| Double-free | No allocation/free; each opened optional corpus file has one fclose. |
+| Leaks | Files close after success or short fwrite; analyzer and leak checking remain enabled. |
+| NULL dereferences | Zero-size fuzzer input is normalized to a valid empty span; corpus directory NULL skips file output. fopen is checked. Nonempty fuzzer spans follow libFuzzer's contract. |
+| Uninitialized memory | Frame, canaries, comparison snapshots and output sentinels initialize before inspection; reset checks all bytes including padding. |
+| Dangling pointers | Static scratch and call-borrowed spans outlive all synchronous checks. |
+| Pointer arithmetic | start/offset stay inside the input or its one-past position; zero-length comparisons use valid pointers. |
+| Format strings | Diagnostics and filenames use constant formats; optional directory text is a bounded snprintf argument. |
+| Stack usage | Framing, saved frame and corpus bytes use host-only static storage. Both changed targets retain a 4,096-byte frame limit. No recursion/VLA. |
+| Allocation limits | No fixture heap allocation; optional generated files are limited to 1,600 exclusive-create paths. |
+| Malformed serialization/network input | Every byte value, empty/truncated input, boundary sizes, newline positions and fragmentation run through real framing and existing reply parsers. |
+| Races | Static scratch is explicitly single-threaded host fixture state, never packaged Android state. Independent test processes do not share it. |
+| Resource exhaustion | Replay has a 30-second CTest deadline; fuzz time/input/RSS bounds are explicit. Corpus writes refuse existing paths and path truncation. |
+| Secret leakage | Public synthetic bytes only; no entropy, key, socket, authentication or wallet storage operation. |
+
+Clang/GCC analyzers and complexity caps pass. Both sanitizer suites pass;
+the seeded campaign and two isolated mutation failures are recorded in
+PROGRESS.md. These observations establish tested framing properties, not a
+qualified network source or absence of all defects.
