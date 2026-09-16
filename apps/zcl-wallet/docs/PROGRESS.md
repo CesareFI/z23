@@ -4502,3 +4502,28 @@ lint failures, physical-hardware acceptance and parked TLS limits remain.
 
 Next: inspect whether fuzz manifest qualification distinguishes actual test
 object outputs from test-shaped text in unrelated compiler arguments.
+
+2026-09-16: fuzz compile qualification now determines the standalone-test
+coverage exemption from the actual compiler output operand. Previously,
+test-shaped text anywhere in a command could exempt a library compilation.
+The new regression replaces a library coverage flag with a harmless macro
+containing CMakeFiles/pretend_tests.dir/: the old checker accepts it and reports
+105 covered compilations instead of 106. Only copied command manifests are
+mutated; no weakened target is built or executed.
+
+The checker consumes the emitted separated -o argument and requires exactly one
+nonempty output. Output names do not count as enabling sanitizer flags. Five
+new negative cases cover plain/quoted macros, include paths, duplicate output
+and missing output; two positive controls retain real coverage alongside a
+test-shaped macro and quote the actual -o option. Existing sanitizer, integer,
+coverage, opt-out and empty-scope mutations remain enforced.
+
+The registered wallet_fuzz_profile passes (24.06 seconds), as does the separate
+final mutation run. The actual configured profile still qualifies 156 authored/
+provider sanitizer compilations and 106 library/fuzz coverage compilations.
+Architecture and whitespace checks pass. This changes only CMake qualification
+and regression scripts; the previously qualified product APK is unchanged.
+Evidence: `.cache/android-wallet/resume-20260916/fuzz-output-classification/`.
+Existing root-lint failures, hardware acceptance and parked TLS limits remain.
+Next: check whether actual fuzz harness translation units, as well as linked
+authored/provider sources, receive the intended instrumentation qualification.

@@ -60,6 +60,20 @@ foreach(flag -fsanitize=address,undefined -fno-sanitize-recover=all)
 endforeach()
 replace_flag(zcl_wallet_core "-fsanitize=fuzzer-no-link" "-DZCL_TEST_LABEL='-fsanitize=fuzzer-no-link'"
     "Required fuzz coverage instrumentation missing")
+# A test-shaped macro/include path does not make this library object a
+# standalone registered test or exempt it from coverage instrumentation.
+foreach(label "-DZCL_TEST_LABEL=CMakeFiles/pretend_tests.dir/fixture.c.o"
+    "'-DZCL_TEST_LABEL=CMakeFiles/pretend_tests.dir/fixture.c.o'"
+    "-I/fixture/CMakeFiles/pretend_tests.dir/include")
+    replace_flag(zcl_wallet_core "-fsanitize=fuzzer-no-link" "${label}"
+        "Required fuzz coverage instrumentation missing")
+endforeach()
+replace_flag(zcl_wallet_core "-fsanitize=fuzzer-no-link"
+    "-fsanitize=fuzzer-no-link -DZCL_TEST_LABEL=CMakeFiles/pretend_tests.dir/fixture.c.o" "")
+replace_flag(zcl_wallet_core "-o " "-o CMakeFiles/pretend_tests.dir/fixture.c.o -o "
+    "Exactly one compiler output is required")
+replace_flag(zcl_wallet_core "-o " "-DZCL_TEST_OUTPUT=" "Exactly one compiler output is required")
+replace_flag(zcl_wallet_core "-o " "'-o' " "")
 replace_flag(zcl_wallet_core
     "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change"
     "-DZCL_TEST_LABEL='-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change'"

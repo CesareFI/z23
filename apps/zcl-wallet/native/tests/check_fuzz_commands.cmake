@@ -17,7 +17,21 @@ foreach(index RANGE 0 ${last})
         # and a macro value containing similar text is not mistaken for a flag.
         separate_arguments(arguments UNIX_COMMAND "${command}")
         set(has_coverage FALSE)
+        set(flag_arguments)
+        set(object_output "")
+        set(output_count 0)
+        set(expect_output FALSE)
         foreach(argument IN LISTS arguments)
+            if(expect_output)
+                set(object_output "${argument}")
+                math(EXPR output_count "${output_count} + 1")
+                set(expect_output FALSE)
+                continue()
+            elseif(argument STREQUAL "-o")
+                set(expect_output TRUE)
+                continue()
+            endif()
+            list(APPEND flag_arguments "${argument}")
             if(argument MATCHES "^-f(no-sanitize=|sanitize-recover=|no-sanitize-coverage=)")
                 message(FATAL_ERROR "Sanitizer or coverage opt-out is forbidden for ${source}: ${argument}")
             endif()
@@ -25,9 +39,12 @@ foreach(index RANGE 0 ${last})
                 set(has_coverage TRUE)
             endif()
         endforeach()
-        list(FIND arguments "-fsanitize=address,undefined" sanitizer_position)
-        list(FIND arguments "-fno-sanitize-recover=all" failure_position)
-        list(FIND arguments
+        if(expect_output OR NOT output_count EQUAL 1 OR object_output STREQUAL "")
+            message(FATAL_ERROR "Exactly one compiler output is required for ${source}")
+        endif()
+        list(FIND flag_arguments "-fsanitize=address,undefined" sanitizer_position)
+        list(FIND flag_arguments "-fno-sanitize-recover=all" failure_position)
+        list(FIND flag_arguments
             "-fsanitize=unsigned-integer-overflow,implicit-integer-truncation,implicit-integer-sign-change"
             integer_position)
         if(sanitizer_position LESS 0 OR failure_position LESS 0)
@@ -39,7 +56,9 @@ foreach(index RANGE 0 ${last})
         # Registered standalone unit tests compile some provider/source copies
         # for fault substitution. Those copies need sanitizers; coverage is
         # required on the libraries and source copies linked into fuzz targets.
-        if(NOT command MATCHES "CMakeFiles/[^/ ]+_tests\\.dir/")
+        # Only the actual -o operand can establish that exemption. A macro,
+        # include path or other argument containing a test path cannot do so.
+        if(NOT object_output MATCHES "^CMakeFiles/[^/]+_tests\\.dir/")
             if(NOT has_coverage)
                 message(FATAL_ERROR "Required fuzz coverage instrumentation missing for ${source}")
             endif()
