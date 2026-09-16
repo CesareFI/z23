@@ -504,6 +504,13 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set_tests_properties(wallet_jni_public PROPERTIES TIMEOUT 15)
         add_test(NAME wallet_jni_sync COMMAND jni_sync_tests)
         set_tests_properties(wallet_jni_sync PROPERTIES TIMEOUT 15)
+        add_executable(jni_sync_race_tests tests/test_jni_sync_races.c src/jni_sync.c src/jni_support.c)
+        target_include_directories(jni_sync_race_tests PRIVATE src ${JNI_INCLUDE_DIRS})
+        target_link_libraries(jni_sync_race_tests PRIVATE zcl_wallet_core Threads::Threads)
+        target_compile_options(jni_sync_race_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_jni_sync_races COMMAND jni_sync_race_tests)
+        set_tests_properties(wallet_jni_sync_races PROPERTIES TIMEOUT 15)
         add_executable(jni_review_tests tests/test_jni_review.c tests/assessment_fixture.c
             src/jni_review.c src/jni_review_packet.c src/jni_support.c)
         target_include_directories(jni_review_tests PRIVATE src ${JNI_INCLUDE_DIRS})

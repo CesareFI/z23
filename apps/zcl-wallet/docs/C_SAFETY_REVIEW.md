@@ -2612,3 +2612,44 @@ No product C, JNI ABI, provider, serialization or custody rule changes.
 The registered regression fails before the prefix selector is added, observing
 a full copy where zero bytes were requested. The selector then passes the same
 assertion, complete prefix/tail checks and existing erasure obligations.
+
+## Concurrent JNI sync-owner fixture review — 2026-09-16
+
+Scope: `native/tests/test_jni_sync_races.c`, its host-only registered target and
+the documented separate ThreadSanitizer invocation. Production C and ownership
+rules are unchanged. Two callers query an owner during closure/replacement,
+then require old requests, snapshots and failures to refuse. The replacement
+uses the same attempt token but a different owner ID and must remain active.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Fake byte arrays have the fixed request capacity plus status; number arrays have ten elements. Length, kind, offset, count and physical capacity are checked before each copy. No unbounded string operation is introduced. |
+| Out-of-bounds access | The newline lookup follows positive packet length and validated output capacity. Snapshot indices are fixed 0..9 after exact length verification. Thread and repetition loops use fixed bounds. |
+| Integer overflow/underflow | Region subtraction follows nonnegative offset/count and offset <= length. Number-copy multiplication is bounded to ten jlong elements. No input-sized allocation arithmetic is added. |
+| Signed/unsigned conversions | Array length becomes size_t only after region checks establish nonnegative bounds. Encoded address length is checked to equal 35 before jsize conversion. Status and owner/attempt scalars retain their JNI types. |
+| Use-after-free | Race state, barriers and immutable ID/token values stay live until both readers join. Stack input arrays exist for the complete synchronous open. Thread-local output is consumed before that thread's next JNI call. |
+| Double-free | No manual allocator/free introduced. Every successful cycle joins both workers and destroys each barrier once, then closes its replacement owner. Failure aborts only the isolated fixture process. |
+| Leaks | Every pthread creation/init/join/destroy result is checked. At most two worker threads and one live native owner exist per cycle. Registry IDs are consumed through the real API and never reset by the fixture. |
+| NULL dereferences | Callback array/output pointers and the thread argument are checked before use. JNI results must equal the calling thread's actual result owner before any result dereference. |
+| Uninitialized memory | Fake arrays, owner state and thread-local results initialize fully. pthread_t values are used only after checked successful creation. JNI output expectations depend on validated initialized spans. |
+| Dangling pointers | Only scalar owner/attempt IDs cross the race boundary. No native watch pointer leaves production JNI, and no fake VM result or input pointer is shared between threads. |
+| Pointer arithmetic | Fake VM offsets follow region validation. JNI opaque references are round-tripped to their original fixture object type; they are never dereferenced as a VM implementation object. |
+| Format strings | A fixed diagnostic includes only the source line; the success text is fixed. Public synthetic address/source bytes are not formatted or logged. |
+| Stack usage | No recursion or VLA. Largest measured fixture frame is open_owner at 600/640 bytes on x86-64/ARM64; all authored/test NDK frames pass 4096 bytes. These are per-frame observations. |
+| Allocation limits | The fake VM allocates no heap. One fixed output slot is thread-local per caller; thread count is two and cycle count sixteen. The real registry remains four bounded public-data slots. |
+| Malformed serialization/network input | This fixture uses a C-encoded public zero-hash address and fixed source ID. It tests ownership interleavings rather than parser/VM-fault combinations. No socket, network exchange, wallet file or key is used. |
+| Races | IDs/tokens initialize before pthread_create and remain immutable. The JNI table pointer is read-only after initialization. VM results are thread-local. Barriers separate the overlapping phase from guaranteed post-close assertions; joins precede barrier destruction. Production registry locks are untouched. |
+| Resource exhaustion | All loops are finite; the registered deadline remains fifteen seconds. Checked resource failure aborts the isolated process, so a failed thread creation cannot leave a permanent barrier waiter. ThreadSanitizer is a separate host profile, never an Android release option. |
+| Secret leakage | Only public sync metadata is exercised. Stale callbacks must return cancellation and cannot consume/cancel the replacement's matching attempt token. No custody or authenticated-chain claim follows from these IDs or this fixture. |
+
+ASan/UBSan with additional integer checks and ThreadSanitizer both pass the
+registered fixture. A deliberately unsynchronized overlapping-write control is
+reported by ThreadSanitizer, and its atomic counterpart passes. Two earlier
+short controls returned without reports; their logs are preserved without a
+claim about the cause. A temporary JNI source copy with test-only no-op lock
+substitutions produces the expected registry lookup/publication data-race report
+and exit 66. No production source or global ASLR setting is changed. Emitted
+commands for all 81 objects built by the thread profile contain thread and
+fail-on-finding instrumentation flags. These observations cover the executed
+interleavings and the C registry, not all races or actual VM concurrency.
+Evidence: `.cache/android-wallet/resume-20260916/jni-owner-races/`.

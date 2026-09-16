@@ -139,6 +139,27 @@ LeakSanitizer needs a host that permits its process inspection. Do not disable
 it to call a restricted sandbox run successful. The manual pre-commit review is
 [C_SAFETY_REVIEW.md](docs/C_SAFETY_REVIEW.md).
 
+The registered JNI sync-owner race fixture also supports a separate host Clang
+ThreadSanitizer build. Keep it separate from ASan/UBSan and Android releases:
+
+```sh
+cmake -S native -B native/build/thread-safety -DCMAKE_C_COMPILER=clang-20 \
+  -DCMAKE_BUILD_TYPE=Debug -DZCL_SANITIZE=OFF -DZCL_TLS_REVIEW=OFF \
+  -DZCL_JNI=OFF -DZCL_FUZZ=OFF -DZCL_ORACLE=OFF \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  '-DCMAKE_C_FLAGS=-fsanitize=thread -fno-sanitize-recover=all -fno-omit-frame-pointer' \
+  '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread'
+cmake --build native/build/thread-safety --target jni_sync_race_tests -j4
+TSAN_OPTIONS=halt_on_error=1:report_bugs=1:exitcode=66 \
+  ctest --test-dir native/build/thread-safety -R '^wallet_jni_sync_races$' --output-on-failure
+```
+
+Two native callers query an owner during closure/replacement, then require
+retired callbacks to refuse even when the replacement has the same attempt
+token. The fake VM uses independent thread-local result buffers. This tests the
+native registry, not a real JVM or every possible thread schedule. The measured
+detector rejects an unlocked-registry mutation; see the review and work log.
+
 ## Ordered milestones
 
 1. Exact money/address/QR parsing; on-device create/restore; authenticated

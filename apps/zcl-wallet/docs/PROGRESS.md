@@ -4625,3 +4625,42 @@ review is in C_SAFETY_REVIEW.md, with execution evidence under
 Hardware custody, physical camera acceptance, parked TLS and pre-existing root-
 lint failures remain unqualified. Next: inspect native operation ownership and
 publication guards for stale UI or JNI calls after a foreground owner closes.
+
+2026-09-16: native sync/review inspection found no stale-handle defect in the
+inspected paths. Added a registered concurrent JNI sync-owner fixture to test
+the existing lock/ID invariant directly. In sixteen bounded cycles, two callers
+query an owner while the main thread closes/replaces it. A barrier then requires
+all retired snapshots, requests and failure callbacks to return cancellation.
+The replacement has a new owner ID but the same attempt token and must remain
+active with its first request unconsumed. Each thread owns its fake VM result;
+no shared fake exception/array state hides a native registry race.
+
+The additional-integer ASan/UBSan fixture passes in 0.04 seconds. A separate
+ThreadSanitizer profile passes in 0.07 seconds; emitted commands for all 81 built
+objects contain thread/fail-on-finding flags. An overlapping-write detector
+control reports a race and its atomic counterpart passes. Two initial short
+controls returned without reports; their cause remains unclaimed. A temporary
+JNI source copy with no-op lock substitutions triggers a data-race report in
+registry lookup/publication and exit 66. Production source and global ASLR
+settings remain unchanged. The documented README command uses a separate host
+build, TLS off, a fifteen-second registered deadline and explicit report/exit
+options. This qualifies observed C-registry interleavings, not every schedule
+or a real VM's concurrency.
+
+The full C safety run passes 93 sanitizer groups (79.55 seconds), Clang/GCC
+source/provider and fixture analysis, and unchanged 10/15 complexity caps.
+Strict native fixtures build for both ABIs; exact-hash transferred x86-64
+fixtures pass API30/35/36. ARM64 is compile-only. The enabled fuzz profile now
+qualifies 158 authored/provider plus 75 harness/helper compilations, with 181
+library/fuzz coverage compilations. Release build, APK isolation/alignment,
+architecture and whitespace gates pass.
+
+A fresh source-only build from tree 203bfe560ed6c9788756aa9ffe7670c9ed2c4d7a
+reproduces the existing 612,839-byte unsigned APK exactly. The committed app
+source matches except this progress note; no product C or Kotlin changes.
+SHA256 `93476511db12f12cf91db6c9beb40392f51129d42b66b630bc8b798ecad75474`.
+Evidence: `.cache/android-wallet/resume-20260916/jni-owner-races/`.
+Full hazard review is in C_SAFETY_REVIEW.md. Existing root-lint failures,
+hardware custody, physical-camera acceptance and parked TLS remain unresolved.
+Next: inspect setup/foreground expiry decisions when queued UI work or provider
+work completes after its original time window.
