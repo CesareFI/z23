@@ -96,10 +96,12 @@ zcl_status zcl_seed_address(const uint8_t *seed, size_t seed_len, zcl_network ne
     status = address_path(seed, seed_len, network, chain, index, context, &key);
     if (status == ZCL_OK)
         status = zcl_ec_public(context, key.secret, sizeof(key.secret), public_key, sizeof(public_key));
+    /* Hashing and address encoding consume only the public key. Retire both
+     * the private scalar and chain code before entering those providers. */
+    zcl_secure_zero(&key, sizeof(key));
     if (status == ZCL_OK)
         status = encode_public_address(public_key, sizeof(public_key), network, address, capacity, length);
     zcl_secure_zero(public_key, sizeof(public_key));
-    zcl_secure_zero(&key, sizeof(key));
     return status;
 }
 

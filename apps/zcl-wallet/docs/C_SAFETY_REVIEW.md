@@ -2695,3 +2695,48 @@ Release-archive disassembly for both ABIs preserves the two wipe positions.
 The oracle-enabled fuzzer completes 8,095 executions in 121 seconds without a
 finding; this is bounded evidence, not comprehensive cryptographic acceptance.
 Evidence: `.cache/android-wallet/resume-20260916/signature-retirement/`.
+
+## Derived address key retired before public hashing — 2026-09-16
+
+Scope: receive_key.c moves its existing local extended-key wipe before address
+hashing/encoding. The secret-failure fixture observes the final BIP44 key through
+one additional test-only linker wrapper. Borrowed entropy/seed, derivation paths,
+provider order, addresses and production allocation count remain unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | The existing sizeof(key) wipe still covers exactly the owned extended-key object. No caller capacity or copy changes. |
+| Out-of-bounds access | The observer recognizes only a captured integer identity within a live zeroizer span. Subtraction follows the ordering test; full remaining sizeof(zcl_extended_private) is required before inspection. The scalar's first-member position is checked statically. |
+| Integer overflow/underflow | Production adds no arithmetic. Fixture hash failure offsets follow a successful call with calls>4; fixed two-chain/four-mode loops and three public-key calls bound counters. |
+| Signed/unsigned conversions | No production conversion changes. Test uintptr_t subtraction is checked within a size_t-bounded live span before conversion; fixed chain indexes remain uint32_t. |
+| Use-after-free | The scalar remains live through synchronous public-key derivation, then clears before public-only providers. No heap lifetime changes. Observer bytes are read solely through the live zeroizer argument. |
+| Double-free | No release or allocation is added. The moved wipe runs once on every entered derivation result; the caller still owns context teardown. |
+| Leaks | Production retains its existing context, seed and scratch cleanup paths. The new serial fixture owns one bounded context for its cases and closes it before normal return; assertion failures terminate the fixture process. |
+| NULL dereferences | Existing context/input/output checks still precede work. The local key initializes even when derivation fails. The test captures only a non-NULL 32-byte scalar argument and ignores absent observations. |
+| Uninitialized memory | The complete extended key and public buffer still start zeroed. Derivation/public-key failure reaches the unconditional wipe before returning; failed hash providers leave caller output and length unchanged. |
+| Dangling pointers | Captured key identity is an integer, retired during the live wipe. Later hashing and post-return assertions use only identity/counter state, never an expired stack pointer. |
+| Pointer arithmetic | Production arithmetic is unchanged. Test inspection stays inside the current wipe span and checks the complete key/chain-code extent. No guessed stack location or cast to a reconstructed owner is used. |
+| Format strings | No production formatting/logging change. Fixed fixture messages identify lifetime failures without displaying seed or key bytes. |
+| Stack usage | Production moves one operation without adding a local object. Fixture arrays are fixed at 32/35/64 bytes and retain the 4096-byte per-frame gate on host and both NDK ABIs. No recursion or VLA is added. |
+| Allocation limits | No production heap or provider/context bound changes. Test-only observation adds scalar state, without a new owner registry or allocation path. |
+| Malformed serialization/network input | Existing entropy/seed/index/network/capacity, BIP32 and address checks remain unchanged. Failure cases cover final public-key refusal and the first SHA256/RIPEMD160 encoding failures for both chains. No network path is involved. |
+| Races | Production scratch remains invocation-local. Borrowed seed and context keep their original stable-call contract; reused recovery seed is not erased by this change. Test observer globals are confined to one serial fixture process. |
+| Resource exhaustion | The same single 64-byte wipe moves earlier; no additional production loop/provider work is added. Two paths times four fixed cases bound the extra fixture work. Existing process/test/fuzz limits remain. |
+| Secret leakage | The final scalar and chain code clear before public address hashing/encoding. The live observer requires full-object erasure and rejects the original ordering. This makes no new guarantee about caller-owned seed, CPU registers, provider temporaries or every memory copy. Public-key and outer seed/context cleanup remain intact. No custody-policy, signing, broadcast or consensus authority changes. |
+
+The original implementation fails with "private address key survived into
+public hashing". Three focused additional-integer sanitizer groups, including
+independent OpenSSL receive/change comparisons, pass in 4.95 seconds. Full C
+safety passes all 93 groups in 79.62 seconds, Clang/GCC source/provider analysis
+and unchanged 10/15 complexity caps; the modified fixture separately passes
+both analyzers. A first focused build named a nonexistent wallet_key_tests
+target; its diagnostic is preserved, and the final run uses registered targets.
+The JNI key fuzzer completes 73,779 inputs in 121 seconds with no finding,
+max_len217, five seconds/input, RSS cap512 MiB and observed60 MiB. It is a JNI
+failure/cleanup campaign; independent derivation comparisons are separate tests.
+Strict native fixtures compile on both ABIs, execute after exact-hash transfer
+on API30/35/36 x86-64 emulators, and all four packaged JNI/GCM tests pass there.
+ARM64 remains compile-only. Both packaged .text sections match their
+symbol-bearing libraries exactly; disassembly places the full64-byte wipe after
+public-key derivation and before SHA256. Full evidence is under
+`.cache/android-wallet/resume-20260916/address-key-retirement/`.

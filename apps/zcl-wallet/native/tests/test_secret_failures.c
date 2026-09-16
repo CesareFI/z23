@@ -29,6 +29,9 @@ static uintptr_t seed_identity;
 static uint8_t seed_snapshot[64];
 static size_t seed_calls, address_calls, seed_wipes, seed_end_calls, anchor_end_calls;
 static size_t short_address;
+static bool watch_address_key, fail_address_public;
+static uintptr_t address_key_identity;
+static size_t public_calls, address_key_wipes;
 
 void __real_mbedtls_sha512_init(mbedtls_sha512_context *);
 void __real_mbedtls_sha512_free(mbedtls_sha512_context *);
@@ -42,6 +45,7 @@ void __real_mbedtls_platform_zeroize(void *, size_t);
 zcl_status __real_zcl_entropy_seed(const uint8_t *, size_t, uint8_t *, size_t);
 zcl_status __real_zcl_seed_address(const uint8_t *, size_t, zcl_network, uint32_t, uint32_t,
     const secp256k1_context *, uint8_t *, size_t, size_t *);
+zcl_status __real_zcl_ec_public(const secp256k1_context *, const uint8_t *, size_t, uint8_t *, size_t);
 
 static void require(bool condition, const char *message)
 {
@@ -98,6 +102,34 @@ static void observe_seed_wipe(const void *buffer, size_t length)
     require_zero((const uint8_t *)buffer + offset, 64);
     seed_identity = 0;
     ++seed_wipes;
+}
+
+zcl_status __wrap_zcl_ec_public(const secp256k1_context *context, const uint8_t *secret,
+    size_t secret_len, uint8_t *output, size_t capacity)
+{
+    if (watch_address_key && ++public_calls == 3) {
+        /* Fixed BIP44 path: two nonhardened child inputs, then the final key.
+         * Keep only its identity; inspect through the later live wipe span. */
+        require(secret != NULL && secret_len == 32 && address_key_identity == 0,
+            "final address key capture changed");
+        address_key_identity = (uintptr_t)secret;
+        if (fail_address_public) return ZCL_CRYPTO_FAILURE;
+    }
+    return __real_zcl_ec_public(context, secret, secret_len, output, capacity);
+}
+
+static void observe_address_key_wipe(const void *buffer, size_t length)
+{
+    if (!watch_address_key || address_key_identity == 0 || buffer == NULL) return;
+    const uintptr_t start = (uintptr_t)buffer;
+    if (address_key_identity < start || address_key_identity - start >= length) return;
+    const size_t offset = (size_t)(address_key_identity - start);
+    /* secret is the first member; require the chain code to clear as well. */
+    _Static_assert(offsetof(zcl_extended_private, secret) == 0, "private key starts at secret");
+    require(length - offset >= sizeof(zcl_extended_private), "address private-key wipe is short");
+    require_zero((const uint8_t *)buffer + offset, sizeof(zcl_extended_private));
+    address_key_identity = 0;
+    ++address_key_wipes;
 }
 
 static observed_context *context_slot(const mbedtls_sha512_context *context)
@@ -204,6 +236,9 @@ int __wrap_mbedtls_sha512_finish(mbedtls_sha512_context *context, unsigned char 
 int __wrap_mbedtls_sha256(const unsigned char *input, size_t length,
                          unsigned char *output, int is224)
 {
+    if (watch_address_key && public_calls == 3)
+        require(address_key_identity == 0 && address_key_wipes == 1,
+            "private address key survived into public hashing");
     return fail_now() ? -1 : __real_mbedtls_sha256(input, length, output, is224);
 }
 
@@ -217,6 +252,7 @@ void __wrap_mbedtls_platform_zeroize(void *buffer, size_t length)
     __real_mbedtls_platform_zeroize(buffer, length);
     require_zero(buffer, length);
     observe_seed_wipe(buffer, length);
+    observe_address_key_wipe(buffer, length);
     if (length == 128)
         ++pad_wipes;
     if (length == 64)
@@ -456,10 +492,46 @@ static int recovered_seed_failures(size_t entropy_len)
     return 0;
 }
 
+static int address_key_retirement(void)
+{
+    uint8_t seed[64] = {0}, blinding[32] = {1}, output[35], before[35];
+    zcl_ec_context context = {0};
+    CHECK(zcl_ec_begin(&context, blinding, sizeof(blinding)) == ZCL_OK);
+    size_t total = 0;
+    for (uint32_t chain = 0; chain < 2; ++chain) {
+        for (size_t mode = 0; mode < 4; ++mode) {
+            require(address_key_identity == 0 && !watch_address_key, "address key escaped previous call");
+            /* The last four hashes encode the final public address. */
+            inject(mode == 1 ? total - 3 : mode == 2 ? total - 2 : SIZE_MAX);
+            watch_address_key = true;
+            fail_address_public = mode == 3;
+            public_calls = address_key_wipes = 0;
+            memset(output, 0xa5, sizeof(output)); memcpy(before, output, sizeof(before));
+            size_t length = 777;
+            const zcl_status status = zcl_seed_address(seed, sizeof(seed), ZCL_TESTNET, chain, 19,
+                context.handle, output, sizeof(output), &length);
+            require(address_key_identity == 0 && address_key_wipes == 1 && public_calls == 3,
+                "final address key was not retired exactly once");
+            watch_address_key = false;
+            if (mode == 0) {
+                CHECK(status == ZCL_OK && length == 35 && calls > 4);
+                total = calls;
+            } else {
+                CHECK(status == ZCL_CRYPTO_FAILURE && length == 777);
+                CHECK(memcmp(output, before, sizeof(output)) == 0);
+            }
+        }
+    }
+    zcl_ec_end(&context);
+    zcl_secure_zero(seed, sizeof(seed)); zcl_secure_zero(blinding, sizeof(blinding));
+    return 0;
+}
+
 int main(void)
 {
     if (hmac_failures() || pbkdf2_failures() || mnemonic_failures() || address_provider_failures()
-        || recovered_seed_failures(16) || recovered_seed_failures(32) || recovered_binding_failures())
+        || recovered_seed_failures(16) || recovered_seed_failures(32) || recovered_binding_failures()
+        || address_key_retirement())
         return 1;
     puts("secret failures: provider errors preserve output; all contexts and KDF scratch are erased");
     return 0;

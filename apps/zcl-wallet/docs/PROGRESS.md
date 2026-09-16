@@ -4737,3 +4737,42 @@ C_SAFETY_REVIEW.md; evidence is under
 Hardware custody, physical cameras, parked TLS and prior root-lint findings
 remain unresolved. Next: inspect retirement of derived private-key scratch
 before public receiving/change-address encoding.
+
+2026-09-16: final receiving/change private-key scratch now clears before public
+address hashing. The previous order retained the local scalar and chain code
+through SHA256, RIPEMD160 and address encoding. Moving its existing full-object
+wipe immediately after public-key derivation removes that lifetime without
+adding a provider call, allocation or wipe. Borrowed seed and entropy retain
+their existing owners, including the seed reused by recovered-change derivation.
+
+The existing secret-failure fixture now captures the final key's integer identity
+through a test-only linker wrapper and checks its full live erasure before public
+hashing. The original implementation fails that ordering assertion. Both chains
+exercise success, public-key failure and SHA256/RIPEMD160 failure; caller output
+and length remain unchanged on failure. Three focused additional-integer
+sanitizer groups pass in 4.95 seconds, including independent OpenSSL derivation
+comparisons. Full C safety passes 93 groups in 79.62 seconds, source/provider
+Clang/GCC analysis and unchanged 10/15 complexity caps. The changed fixture also
+passes both analyzers and strict NDK compilation for both ABIs.
+
+The native lifetime fixture passes after exact-hash transfer to API30/35/36
+x86-64 emulators. Their four actual packaged JNI/GCM tests also pass without
+skips in 2.007/0.158/3.73 seconds. Both packaged native .text sections match the
+symbol-bearing libraries exactly; disassembly confirms the 64-byte private-key
+wipe precedes public SHA256. The JNI key fuzzer completes 73,779 inputs in 121
+seconds without a finding (max_len217, timeout5, RSS cap512 MiB, observed60 MiB).
+Actual compile qualification remains 158 authored/provider plus 75 harness/helper
+compilations and 181 library/fuzz coverage compilations. These claims do not
+qualify hardware custody or ARM64 runtime behavior.
+
+Android/JVM tests, both-ABI builds, debug/release lint, APK fixture isolation/
+alignment, architecture and whitespace checks pass. Source-only tree
+82128500cc769f3230e246b192cc8e77809ec4d5 reproduces the unsigned APK exactly on
+this host/toolchain. The APK is 612,855 bytes (+16); SHA256 is
+`3a3e4047142e98f8a9f15172bc672278be7b333127635c303e3bce2bf8b35a65`.
+Committed app source matches except this progress note. Full per-hazard review
+is in C_SAFETY_REVIEW.md; baseline/final fixtures, logs and reproduction evidence
+are under `.cache/android-wallet/resume-20260916/address-key-retirement/`.
+Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
+findings remain unresolved. Next: inspect native regression-runner deadlines so
+fault or cleanup regressions cannot leave the safety acceptance running forever.
