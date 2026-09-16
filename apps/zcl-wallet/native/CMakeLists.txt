@@ -1438,6 +1438,18 @@ if(NOT ANDROID)
             -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_storage_faults COMMAND storage_fault_tests)
         set_tests_properties(wallet_storage_faults PROPERTIES TIMEOUT 30)
+        add_executable(storage_retirement_tests tests/test_storage_retirement.c
+            tests/storage_fixture.c tests/storage_faults.c src/storage_read.c src/storage_write.c)
+        target_include_directories(storage_retirement_tests PRIVATE src)
+        target_link_libraries(storage_retirement_tests PRIVATE zcl_wallet_core)
+        target_compile_definitions(storage_retirement_tests PRIVATE zcl_secure_zero=zcl_storage_test_zero)
+        target_compile_options(storage_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(storage_retirement_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+            -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk -Wl,--wrap=write -Wl,--wrap=fsync
+            -Wl,--wrap=renameat2 -Wl,--wrap=close)
+        add_test(NAME wallet_storage_retirement COMMAND storage_retirement_tests)
+        set_tests_properties(wallet_storage_retirement PROPERTIES TIMEOUT 15)
         add_executable(change_storage_fault_tests tests/test_change_storage_faults.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(change_storage_fault_tests PRIVATE zcl_wallet_core)

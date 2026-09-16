@@ -86,13 +86,14 @@ zcl_status zcl_store_read_file(const zcl_store *store, zcl_store_slot slot,
     uint8_t scratch[140] = {0};
     size_t size = 0;
     zcl_status status = read_and_close(fd, scratch, &size, durable);
-    if (status != ZCL_OK)
-        return status;
-    if (capacity < size)
-        return ZCL_BUFFER_TOO_SMALL;
-    memcpy(record, scratch, size);
-    *length = size;
-    return ZCL_OK;
+    if (status == ZCL_OK && capacity < size)
+        status = ZCL_BUFFER_TOO_SMALL;
+    if (status == ZCL_OK) {
+        memcpy(record, scratch, size);
+        *length = size;
+    }
+    zcl_secure_zero(scratch, sizeof(scratch));
+    return status;
 }
 
 static zcl_status read_record(const zcl_store *store, uint8_t *record, size_t capacity,
@@ -110,7 +111,9 @@ static zcl_status read_record(const zcl_store *store, uint8_t *record, size_t ca
     if (status != ZCL_OK)
         return status;
     zcl_wallet_record parsed = {0};
-    return zcl_wallet_record_parse(record, *length, &parsed);
+    status = zcl_wallet_record_parse(record, *length, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
+    return status;
 }
 
 zcl_status zcl_storage_read(const uint8_t *directory, size_t directory_len,
@@ -126,12 +129,13 @@ zcl_status zcl_storage_read(const uint8_t *directory, size_t directory_len,
     if (status == ZCL_OK)
         status = read_record(&store, scratch, sizeof(scratch), &length, &was_pending);
     status = zcl_store_close(&store, status);
-    if (status != ZCL_OK)
-        return status;
-    if (capacity < length)
-        return ZCL_BUFFER_TOO_SMALL;
-    memcpy(record, scratch, length);
-    *record_len = length;
-    *pending = was_pending;
-    return ZCL_OK;
+    if (status == ZCL_OK && capacity < length)
+        status = ZCL_BUFFER_TOO_SMALL;
+    if (status == ZCL_OK) {
+        memcpy(record, scratch, length);
+        *record_len = length;
+        *pending = was_pending;
+    }
+    zcl_secure_zero(scratch, sizeof(scratch));
+    return status;
 }

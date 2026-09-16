@@ -1,5 +1,36 @@
 # C parser foundation safety review
 
+## Storage ciphertext retirement — 2026-09-17
+
+Scope: native immutable-wallet reads, creation and promotion in `storage_read.c`
+and `storage_write.c`. Each initialized 140-byte read/comparison array now has
+one bounded clear on all exits. Validation-only parsed records are erased
+immediately after parsing, before filesystem work. Promotion retires its exact
+comparison copy before commit or idempotent directory sync. No on-disk byte,
+status precedence, overwrite rule, authentication condition or descriptor
+lifetime changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Existing file-size, EOF and capacity checks precede publication. Clears cover each fixed array or full structure by `sizeof`; failed outputs remain untouched. |
+| Integer overflow/underflow, signed/unsigned conversions | No new arithmetic or narrowing. Exact-length comparison still precedes `memcmp`; all IO lengths retain their bounds. |
+| Use-after-free, double-free, leaks | Stack copies clear while live. No allocation or descriptor-release path changes; closes still occur exactly once. |
+| NULL dereferences, uninitialized memory | Existing admission remains; scratch is zero-initialized. NULL record refusal also retires its initialized parsed object. |
+| Dangling pointers, pointer arithmetic | No pointer escapes or new offsets. Caller buffers remain independently owned. |
+| Format strings, secret leakage | No data logging is added. Full copied ciphertext/metadata is retired; this is not a claim of plaintext handling or GCM authentication. |
+| Stack usage, allocation limits | Existing bounded stack objects are unchanged; no new heap owner, VLA, recursion or input-sized allocation. Fixture frames retain the 4096-byte compiler gate. |
+| Malformed serialization/network input | Unsupported/corrupt records still refuse; committed corruption still prevents pending fallback. Neither a read nor a parse grants promotion authority. |
+| Races, resource exhaustion | Existing cooperative lock, no-replace commit and bounded IO/retry loops remain. Cleanup is fixed-size and does not retain state across calls. |
+
+The registered source-copy fixture checks clear counts and actual erased bytes
+before stack retirement, with real isolated files and existing IO-fault wrappers.
+It covers reads, pending/committed promotion, malformed records, all close
+positions, short/error/zero/oversized/interrupted reads, sync errors and both
+public/internal output-capacity failures. Failure outputs retain canaries,
+length and pending state. The inherited storage source fails the first cleanup
+assertion before creating any fixture directory. Full results follow in
+`PROGRESS.md`; no hardware, power-loss or hostile same-UID guarantee is inferred.
+
 ## Record codec and JNI retirement coverage — 2026-09-17
 
 Scope: `wallet_record.c`, its native fixture, and the JNI record fixture. Packing
@@ -1512,7 +1543,7 @@ checks pass. Exact identities and results remain in
 
 ## Independent camera sampling reference — 2026-09-14
 
-Scope: test-only `camera_reference.c/.h`, `test_camera_sampling.c`, the existing
+Scope: test-only `camera_reference.c` and `camera_reference.h`, `test_camera_sampling.c`, the existing
 camera fuzzer and their CMake registration. Production sampling, IPC bytes,
 native libraries and consensus are unchanged. The reference enumerates occupied
 source bytes and candidate strides without calling a production bounds/sampling
@@ -1585,7 +1616,7 @@ Exact identities and evidence remain in
 
 ## Independent UTF-8 request-text reference — 2026-09-14
 
-Scope: test-only `utf8_reference.c/.h`, its exhaustive registered unit, payment
+Scope: test-only `utf8_reference.c` and `utf8_reference.h`, its exhaustive registered unit, payment
 fuzzer assertions and CMake wiring. No production behavior or Android library
 changes. The reference matches byte classes from
 [Unicode 17 Table 3-7](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/#G27506)
@@ -1826,7 +1857,7 @@ source/archive hashes are under
 
 ## Independent BIP32 differential fuzzing — 2026-09-15
 
-Reviewed the new `bip32_oracle.c/.h`, `fuzz_bip32.c`, deterministic replay/corpus
+Reviewed the new `bip32_oracle.c` and `bip32_oracle.h`, `fuzz_bip32.c`, deterministic replay/corpus
 driver, the two adapted fixed-vector fixtures and host-only CMake registration.
 The OpenSSL reference is extracted from the existing receive/change oracle;
 master/child byte operations now serve both the existing fixtures and fuzzing.
@@ -1987,7 +2018,7 @@ entropy-generation method was invoked on the devices.
 ## Independent change-state fuzz comparison — 2026-09-15
 
 Reviewed the extraction of existing `test_change_state_oracle.c` HKDF/HMAC code
-into `change_state_oracle.c/.h`, its reuse by the fixed-vector test and optional
+into `change_state_oracle.c` and `change_state_oracle.h`, its reuse by the fixed-vector test and optional
 `fuzz_change_state`, and host-only CMake wiring. The original 40 combinations
 remain; 80 additional combinations use nonuniform counter bytes. Production
 change-state/key derivation, storage, JNI, providers and record format do not

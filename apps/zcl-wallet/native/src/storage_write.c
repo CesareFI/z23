@@ -42,6 +42,7 @@ zcl_status zcl_store_write_pending(const zcl_store *store, const uint8_t *record
         return ZCL_INVALID_ARGUMENT;
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(record, length, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK)
         return status;
     int fd = openat(store->directory, zcl_store_name(ZCL_STORE_PENDING),
@@ -83,6 +84,7 @@ zcl_status zcl_storage_create(const uint8_t *directory, size_t directory_len,
 {
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(record, record_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK)
         return status;
     zcl_store store = {-1, -1};
@@ -105,21 +107,17 @@ static zcl_status promote_record(const zcl_store *store, const uint8_t *record, 
     uint8_t existing[140] = {0};
     size_t existing_len = 0;
     zcl_status status = zcl_store_read_file(store, ZCL_STORE_COMMITTED, existing, sizeof(existing), &existing_len, true);
-    if (status == ZCL_OK) {
-        if (existing_len != length || memcmp(existing, record, length) != 0)
-            return ZCL_ALREADY_EXISTS;
-        /* A previous attempt may have renamed but failed its directory sync.
-         * Re-establish durability before acknowledging an idempotent retry. */
-        return zcl_store_sync(store->directory);
-    }
-    if (status != ZCL_NOT_FOUND)
-        return status;
-    status = zcl_store_read_file(store, ZCL_STORE_PENDING, existing, sizeof(existing), &existing_len, true);
+    const bool committed = status == ZCL_OK;
+    if (status == ZCL_NOT_FOUND)
+        status = zcl_store_read_file(store, ZCL_STORE_PENDING, existing, sizeof(existing), &existing_len, true);
+    if (status == ZCL_OK && (existing_len != length || memcmp(existing, record, length) != 0))
+        status = committed ? ZCL_ALREADY_EXISTS : ZCL_INVALID_ENCODING;
+    zcl_secure_zero(existing, sizeof(existing));
     if (status != ZCL_OK)
         return status;
-    if (existing_len != length || memcmp(existing, record, length) != 0)
-        return ZCL_INVALID_ENCODING;
-    return zcl_store_commit(store);
+    /* An already committed retry must still re-establish directory durability.
+     * The compared copy is retired before either potentially blocking action. */
+    return committed ? zcl_store_sync(store->directory) : zcl_store_commit(store);
 }
 
 zcl_status zcl_storage_promote(const uint8_t *directory, size_t directory_len,
@@ -127,6 +125,7 @@ zcl_status zcl_storage_promote(const uint8_t *directory, size_t directory_len,
 {
     zcl_wallet_record parsed = {0};
     zcl_status status = zcl_wallet_record_parse(authenticated_record, record_len, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK)
         return status;
     zcl_store store = {-1, -1};

@@ -39,8 +39,42 @@ The explicit hazard review is in `C_SAFETY_REVIEW.md`. This qualifies bounded
 record-copy retirement, not hardware custody or erasure of every managed or
 provider copy. TLS remains quarantined; positive hardware custody, physical
 camera acceptance, authenticated sending and real sync remain unfinished.
-Next: retire storage read/promotion and change-preparation record scratch while
-preserving exact-record checks and failure-atomic output publication.
+This batch was pushed as `306dc9a2bfbd5d241c4964ebf5c159618b603fba`;
+the remote advertised that exact SHA. The existing per-command development
+backup hook exception was used; installed hooks remain unchanged.
+
+Continued immediately into storage read/create/promotion scratch retirement.
+Every initialized 140-byte read/comparison array now clears on success and
+refusal; validation-only parsed records clear before filesystem work. The
+promotion comparison is complete and its copy is retired before commit or
+idempotent directory sync. Output publication, exact-record comparison, status
+precedence and no-overwrite behavior remain intact.
+
+A registered source-copy fixture observes full-span clears on real isolated
+file operations and injected failures: partial/short reads, EOF errors,
+zero/oversized/interrupted reads, all close positions, sync failures, malformed
+records, internal/public capacity refusal, pending mismatches and committed
+competitors. Failure outputs preserve their bytes, length and pending flag.
+The strengthened fixture fails against the preceding storage source before it
+creates a temporary directory. The existing storage-fault fixture also passes.
+
+Full safety passes 100/100 Clang wallet CTest cases in 83.58 seconds and 99/99
+optimized GCC cases in 119.77 seconds, with both analyzers and complexity caps
+green. A 61-second bounded storage fuzz run completes 139,447 executions with
+no finding. Android/JVM tests, both ABI builds, debug/release APKs and lints,
+fixture isolation, 16 KiB alignment, architecture and doc counts pass. All eight
+API35 storage/recovery instrumentation tests pass in 0.259 seconds using only
+invocation-owned temporary directories and public GCM vectors. This does not
+qualify hardware authentication, physical power loss or same-UID tampering.
+
+Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/storage-retirement/`.
+Four older shorthand filenames in the security review were expanded into their
+actual `.c` and `.h` names; its path-check findings are resolved. The global
+path check still flags other historical upstream citations and unrelated files;
+repository-wide lint is not green. TLS and all production boundaries remain
+unchanged. Next: inspect the remaining change-custody preparation copies and
+their cleanup assertions, then continue the ordered custody/lifecycle review.
 
 ## Current continuation — 2026-09-16
 

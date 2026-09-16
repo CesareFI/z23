@@ -128,6 +128,12 @@ record re-flushes its contents and directory before reporting success. Committed
 data takes precedence over any unrelated pending file, and no unauthenticated
 cleanup is attempted.
 
+Temporary read and exact-record comparison arrays are securely cleared on
+success and refusal, including IO and capacity failures. Validation-only parsed
+records are retired before subsequent filesystem work. Promotion finishes its
+byte comparison and retires that copy before the commit/directory flush; the
+caller still owns the authenticated input and every published output.
+
 An IO error after creating the pending file is `IO_UNCERTAIN`; callers must
 re-read storage and authenticate any complete record. An incomplete file stays
 intact as an explicit recovery condition. Errors never authorize overwriting
