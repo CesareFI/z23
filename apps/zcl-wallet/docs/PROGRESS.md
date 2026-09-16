@@ -4856,3 +4856,43 @@ reproduction evidence is under
 Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
 findings remain unresolved. Next: inspect recovery admission when pending and
 committed artifacts coexist or metadata checks fail.
+
+2026-09-16: storage admission now has a real-view integration regression through
+the packaged native reader, WalletPlatformSession and MainActivity controller.
+The six cases cover empty storage, orphan change entries of 0/40/80 bytes,
+corrupt committed data alongside a complete pending record, pending unlock
+admission, unsafe record permissions, and a queued setup callback delivered
+after session closure. Failure checks require the storage message, absent
+create/restore/unlock controls, a retired session and unchanged fixture files.
+The complete-pending control checks that displaying Unlock does not promote it.
+
+The controller is unattached and uses the existing debug display host. Every
+read uses an exclusively created cache directory; no wallet-v1, prompt,
+Keystore alias, real seed or authentication bypass is involved. A one-entry
+queue intercepts only UI scheduling. Queue arrival and worker termination each
+have five-second limits; cleanup waits for the owned worker and removes only
+fixed fixture names. The separate record fixtures exercise real software GCM;
+the new controller fixture uses explicitly inert ciphertext and makes no GCM or
+hardware-custody claim.
+
+Against the saved pre-fix APK, the initial five-case version fails exactly the
+orphan UI assertion while four controls pass. A sixth permissions case was then
+added. The fixed APK passes all 18 selected UI/storage/recovery/GCM tests on
+API30/35 without skips in 88.065/7.919 seconds. The API36 combined observation
+reaches its 180-second host limit after 17 unique successful completions,
+including all six new UI cases. Device process inspection then confirms the
+target has ended before retry; the remaining record test passes separately in
+2.956 seconds. Logs verify six UI, eight recovery and three storage completions
+plus that separate final result. The interrupted run is not claimed as a
+successful batch, and its output and process inspection are preserved.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+alignment, architecture and whitespace checks pass. No production source or
+C code changes. Source-only tree 9bfa18566f13d3c9ed02480c9c6689d34576e403
+reproduces the unchanged 612,903-byte unsigned release APK on this host/toolchain,
+SHA256 `6c5d0c5f61ae9cd762f43df4fed9520ea05094dfd561c0b2f6715a8646f83f01`.
+Committed app source matches except this progress note. Evidence is under
+`.cache/android-wallet/resume-20260916/storage-admission-ui/`.
+Hardware custody, physical-camera acceptance, the shell-UID FIFO fixture,
+parked TLS and prior root-lint findings remain unresolved. Next: inspect native
+authentication-result publication and its fail-closed cleanup boundaries.
