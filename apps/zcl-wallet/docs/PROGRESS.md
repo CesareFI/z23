@@ -4896,3 +4896,52 @@ Committed app source matches except this progress note. Evidence is under
 Hardware custody, physical-camera acceptance, the shell-UID FIFO fixture,
 parked TLS and prior root-lint findings remain unresolved. Next: inspect native
 authentication-result publication and its fail-closed cleanup boundaries.
+
+2026-09-16: optimized GCC sanitizer execution now participates in the regular
+C safety command. The previous command ran GCC analysis but executed only the
+Clang suite. A separate Debug/-O2 GCC 14.2 profile, with assertions, ASan/UBSan,
+leak detection, fail-on-finding and existing provider -Os settings retained,
+exposed four fixture frame failures (4480/4144/4816/4256 bytes). Independent
+orphan checks now have their own registered executable; reservation/wire checks
+remove redundant scratch, and ownership checks use a typed dispatch table.
+Every original case and complete output-preservation assertion remains.
+
+The first complete GCC run then failed two storage fault assertions and the
+combined recovery deadline. Optimized glibc used __read_chk instead of read,
+bypassing the test wrapper. The shared fault harness now covers fortified read
+and pread with the original capacity and bounds trap retained. A direct public
+fixture checks both entries in all six fault modes and observes all twelve
+required oversized-call SIGABRT results, with core dumps disabled. The two
+original failing assertions now pass unchanged. Recovery's complete 160-length
+and 160-byte corruption matrices run independently with their original
+30-second deadlines; custody, authenticated-predecessor, network/entropy and
+capacity cases remain in the bounds group. Focused GCC times are
+1.78/11.95/17.60 seconds for bounds/partial/corrupt.
+
+The revised safety command passes source/provider Clang/GCC analysis, unchanged
+10/15 complexity caps, all 98 Clang groups (82.12 seconds) and all 97 optimized
+GCC groups (123.25 seconds). The separate GCC OpenSSL/libsodium-oracle profile
+passes all 101 groups in 131.45 seconds. Final orphan success-message error
+checking is rebuilt and passes separately in all three profiles. Seven changed
+C fixtures also pass both analyzers and strict x86-64/ARM64 NDK compilation;
+this adds no device execution claim. Actual compile-command qualification
+observes 146 optimized sanitizer compilations, including thirteen compilations
+of those seven fixture sources. The largest reported changed-fixture GCC
+sanitizer stack use is 3984 bytes; NDK maxima are 2296/2352 bytes on x86-64/ARM64.
+The qualifier initially found the ordinary storage-fault target lacked the
+frame gate; it now also enforces 4096 bytes. No warning or assertion is waived.
+
+Android/JVM tests, both-ABI builds, debug/release lint, fixture isolation,
+alignment, architecture, shell syntax and whitespace checks pass. Source-only
+tree 94ff5b26c210778fab50c4df98c11a8cee47b882 reproduces the unchanged unsigned
+release APK on this host/toolchain: 612,903 bytes, SHA256
+`6c5d0c5f61ae9cd762f43df4fed9520ea05094dfd561c0b2f6715a8646f83f01`.
+Committed app source matches except this progress note. No production C, JNI,
+Kotlin or provider implementation changes. The explicit 18-hazard review is in
+C_SAFETY_REVIEW.md; all initial failures and final evidence remain under
+`.cache/android-wallet/resume-20260916/gcc-optimized-safety/`.
+Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
+findings remain unresolved. The source audit of record/header publication,
+recovery admission, JNI secret outputs and bounded RNG found no additional
+product defect in the inspected paths. Next: inspect the managed recovery
+record/entropy ownership boundary and its cancellation/error coverage.

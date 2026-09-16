@@ -2786,3 +2786,39 @@ denied. These failure logs are preserved; no assertion or device policy is
 weakened. Host FIFO/symlink coverage and packaged Android JNI tests are separate
 claims. Both native ABIs compile; ARM64 runtime and hardware custody remain
 unqualified.
+
+## Optimized GCC sanitizer and storage fault qualification — 2026-09-16
+
+Scope: host fixtures, their CMake registrations and the C safety runner. No
+production C, JNI, Kotlin or provider implementation changes. An optimized GCC
+ASan/UBSan build exposed oversized fixture frames, fortified glibc reads that
+bypassed ordinary linker wrappers, and a combined recovery matrix exceeding its
+existing deadline. The fixes preserve every original case, expected status,
+output/file preservation assertion, sanitizer and per-group deadline.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Wire rejection checks every output byte against its original 0xa5 sentinel without a duplicate array. Fortified wrappers pass the original object capacity to glibc and invoke its original trap before any fault substitution when length exceeds capacity. |
+| Out-of-bounds access | Reservation copies only the bounded wallet record into 140 bytes; fixture initialization supplies the valid nonzero record length. Orphan checks are moved unchanged. Recovery dispatch indexes a fixed three-entry table after argc==2. |
+| Integer overflow/underflow | No product arithmetic changes. Existing fault counters and bounded length+1 injection remain test-only; actual storage requests are at most 140 bytes. All original 160-entry matrices remain intact. |
+| Signed/unsigned conversions | Fortified wrappers retain size_t lengths/capacities, off_t offsets and ssize_t results. The original bounded fault-result conversion remains. No new narrowing conversion is introduced. |
+| Use-after-free | Fixture data and function tables stay live through synchronous calls. No heap owner or product lifetime changes. |
+| Double-free | No allocation or cleanup operation is duplicated. Split orphan tests own their own fixture; the existing close lifecycle is retained. |
+| Leaks | Every successful fixture still closes its isolated directory and files. Assertion failures terminate the bounded test process. ASan leak detection stays enabled. |
+| NULL dereferences | CTest supplies one recognized mode; argc is checked before argv[1]. Dispatch functions and initialized fixture pointers are fixed non-NULL entries. Existing product argument checks remain unchanged. |
+| Uninitialized memory | The smaller record copy is zero-initialized. Output sentinels, length sentinels and before/after owner comparisons remain complete. Original fault state resets precede test operations. |
+| Dangling pointers | Dispatch retains only static function identities and live fixture addresses. Fortified wrappers borrow buffers only through the synchronous libc call. |
+| Pointer arithmetic | No new product arithmetic. Per-byte sentinel inspection is bounded by sizeof(wire); the changed record byte is within the validated fixture length. |
+| Format strings | New test diagnostics are fixed text. No seed, key or private path is formatted. |
+| Stack usage | Independent orphan checks move to their own executable; ownership uses a typed table instead of merging all helper frames; reservation and wire checks remove unused duplicate scratch. The 4096-byte frame threshold remains, and now also applies to the ordinary storage-fault target. No noinline attribute, optimization opt-out, VLA or recursion is added. |
+| Allocation limits | No new heap use. Recovery modes reuse one bounded fixture. ASan runtime allocations are instrumentation, not packaged wallet behavior. |
+| Malformed serialization/network input | Every previous recovery length, corrupted byte, malformed predecessor, custody mismatch and capacity case remains registered. No parser, network input, signature acceptance or consensus behavior changes. |
+| Races | Wrapper counters remain process-local serial test state. CTest groups have separate processes and independently owned temporary directories. No production shared state changes. |
+| Resource exhaustion | Partial and corrupted suffix matrices each keep the original 30-second timeout instead of sharing one combined deadline. All cases remain present; the default deadline gate still checks the complete generated registry. The regular safety runner adds optimized GCC execution in its own build directory with four build workers. |
+| Secret leakage | All cases use public synthetic fixture entropy and inert ciphertext. Product zeroization, custody policy and output publication are unchanged. No Android execution, hardware custody or production-readiness claim follows from these host checks. |
+
+Evidence, including original failing builds/tests and the direct fortified-read
+contract, is under `.cache/android-wallet/resume-20260916/gcc-optimized-safety/`.
+The contract exercises both fortified entry points in all six read fault modes;
+all twelve oversized calls retain SIGABRT with core dumps disabled. Default
+Clang and optimized GCC suites exercise the actual storage callers separately.

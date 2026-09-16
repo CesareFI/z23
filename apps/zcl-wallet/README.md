@@ -127,12 +127,30 @@ For C safety checks on a Linux development host with Clang 20 and GCC:
 bash tools/check-c-safety.sh
 ```
 
+This runs source/provider analysis, the Clang sanitizer suite and a separate
+optimized GCC ASan/UBSan suite. The GCC profile uses Debug with `-O2 -g`, keeping
+assertions enabled; provider-specific `-Os` remains in effect. It retains the
+4096-byte fixture frame limits. On glibc, storage fault injection covers the
+fortified read entry points as well as ordinary reads, preserving bounds traps.
+For the optimized profile with optional OpenSSL/libsodium host oracles:
+
+```sh
+cmake -S native -B native/build/gcc-optimized-safety -DCMAKE_C_COMPILER=gcc \
+  -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS_DEBUG=-O2 -g' \
+  -DZCL_SANITIZE=ON -DZCL_ORACLE=ON -DZCL_FUZZ=OFF \
+  -DZCL_TLS_REVIEW=OFF -DZCL_JNI=OFF
+cmake --build native/build/gcc-optimized-safety -j4
+ctest --test-dir native/build/gcc-optimized-safety --output-on-failure
+```
+
 Every registered host test has an explicit execution deadline. Tests without a
 specialized limit receive 60 seconds; existing per-test limits are preserved.
 The registered `wallet_test_deadlines` check inspects CTest's generated registry,
 and `wallet_test_deadline_contract` rejects empty/missing/zero/negative deadline
 fixtures and verifies actual one-second termination of a stalled test. These
 limits bound test execution, not Android provider or filesystem latency.
+The partial-suffix and corruption recovery matrices run as separate groups;
+each retains all cases and the original 30-second deadline.
 
 Host Clang sanitizer builds also check unsigned integer overflow and implicit
 integer truncation/sign changes in authored native C, including JNI and fault-test

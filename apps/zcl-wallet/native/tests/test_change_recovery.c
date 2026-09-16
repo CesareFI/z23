@@ -213,20 +213,34 @@ static int capacity(const change_storage_data *data, bool exhausted)
     return fixture_close(&fixture);
 }
 
-int main(void)
+static int remaining_cases(const change_storage_data *data)
 {
-    change_storage_data data = {0};
-    CHECK(change_data_init(&data) == 0);
-    CHECK(partial_suffixes(&data) == 0);
-    CHECK(complete_and_misaligned(&data) == 0);
-    CHECK(corrupted_suffix(&data) == 0);
-    CHECK(custody_and_bounds(&data) == 0);
-    CHECK(refused_authenticated_predecessor(&data) == 0);
+    CHECK(complete_and_misaligned(data) == 0);
+    CHECK(custody_and_bounds(data) == 0);
+    CHECK(refused_authenticated_predecessor(data) == 0);
     const zcl_network networks[2] = {ZCL_MAINNET, ZCL_TESTNET};
     for (size_t network = 0; network < 2; ++network)
         for (size_t length = 16; length <= 32; length += 4)
             CHECK(matrix_case(networks[network], length) == 0);
-    CHECK(capacity(&data, false) == 0 && capacity(&data, true) == 0);
+    CHECK(capacity(data, false) == 0 && capacity(data, true) == 0);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    CHECK(argc == 2);
+    const struct { const char *name; int (*run)(const change_storage_data *); } groups[] = {
+        {"partial", partial_suffixes}, {"corrupt", corrupted_suffix}, {"bounds", remaining_cases}
+    };
+    change_storage_data data = {0};
+    CHECK(change_data_init(&data) == 0);
+    bool found = false;
+    for (size_t i = 0; i < sizeof(groups) / sizeof(groups[0]); ++i) {
+        if (strcmp(argv[1], groups[i].name) != 0) continue;
+        CHECK(groups[i].run(&data) == 0);
+        found = true;
+    }
+    CHECK(found);
     puts("change recovery: authenticated predecessor, supported suffix, no reset, prefix preservation, safe next reservation and bounded capacity passed");
     return 0;
 }

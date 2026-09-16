@@ -198,11 +198,11 @@ int main(void)
     const zcl_network networks[2] = {ZCL_MAINNET, ZCL_TESTNET};
     for (size_t network = 0; network < 2; ++network)
         for (size_t length = 16; length <= 32; length += 4) CHECK(matrix_case(networks[network], length) == 0);
-    CHECK(capacities(&data) == 0);
-    CHECK(malformed_state(&data) == 0);
-    CHECK(exhausted_state(&data) == 0);
-    CHECK(bad_custody(&data) == 0);
-    CHECK(bounds(&data) == 0);
+    int (*const checks[])(const change_storage_data *) = {
+        capacities, malformed_state, exhausted_state, bad_custody, bounds
+    };
+    for (size_t i = 0; i < sizeof(checks) / sizeof(checks[0]); ++i)
+        CHECK(checks[i](&data) == 0);
     CHECK(puts("Previously consumed change addresses reconstruct without journal mutation; invalid state refuses") >= 0);
     return 0;
 }

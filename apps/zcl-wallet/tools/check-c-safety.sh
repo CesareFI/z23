@@ -151,4 +151,16 @@ cmake -S native -B "$build_dir" -DCMAKE_C_COMPILER="$clang_bin" -DZCL_SANITIZE=O
     -DZCL_TLS_REVIEW="$tls_review" -DCMAKE_BUILD_TYPE=Debug
 cmake --build "$build_dir" -j4
 ctest --test-dir "$build_dir" --output-on-failure
+
+# Optimized GCC has different inlining/frame and fortified-libc behavior.
+# Debug keeps assertions active; a separate directory prevents mixing objects
+# with the Clang profile. Retain provider-specific optimization and sanitizers.
+gcc_build_dir=native/build/safety-gcc-active
+if [[ "$tls_review" == ON ]]; then gcc_build_dir=native/build/safety-gcc-tls-review; fi
+cmake -S native -B "$gcc_build_dir" -DCMAKE_C_COMPILER="$gcc_bin" \
+    -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_C_FLAGS_DEBUG=-O2 -g' \
+    -DZCL_SANITIZE=ON -DZCL_FUZZ=OFF -DZCL_JNI=OFF -DZCL_ORACLE=OFF \
+    -DZCL_TLS_REVIEW="$tls_review" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build "$gcc_build_dir" -j4
+ctest --test-dir "$gcc_build_dir" --output-on-failure
 echo "C safety checks passed for selected scope (TLS review=$tls_review); manual review remains required."

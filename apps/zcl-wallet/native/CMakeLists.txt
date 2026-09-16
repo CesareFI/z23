@@ -1256,6 +1256,15 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
         add_test(NAME wallet_change_storage COMMAND change_storage_tests)
         set_tests_properties(wallet_change_storage PROPERTIES TIMEOUT 30)
+        # Keep independent cases in separate translation units: optimized
+        # sanitizer builds must retain the same 4096-byte frame bound.
+        add_executable(storage_orphan_tests tests/test_storage_orphan.c
+            tests/change_storage_fixture.c tests/storage_fixture.c)
+        target_link_libraries(storage_orphan_tests PRIVATE zcl_wallet_core)
+        target_compile_options(storage_orphan_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_storage_orphan COMMAND storage_orphan_tests)
+        set_tests_properties(wallet_storage_orphan PROPERTIES TIMEOUT 30)
         add_executable(change_probe_tests tests/test_change_probe.c
             tests/change_storage_fixture.c tests/storage_fixture.c)
         target_link_libraries(change_probe_tests PRIVATE zcl_wallet_core)
@@ -1268,7 +1277,7 @@ if(NOT ANDROID)
         target_link_libraries(change_probe_fault_tests PRIVATE zcl_wallet_core)
         target_compile_options(change_probe_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
-        target_link_options(change_probe_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=fstat
+        target_link_options(change_probe_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk -Wl,--wrap=fstat
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_change_probe_faults COMMAND change_probe_fault_tests)
         set_tests_properties(wallet_change_probe_faults PROPERTIES TIMEOUT 30)
@@ -1286,7 +1295,7 @@ if(NOT ANDROID)
         target_link_libraries(change_repair_fault_tests PRIVATE zcl_wallet_core)
         target_compile_options(change_repair_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
-        target_link_options(change_repair_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+        target_link_options(change_repair_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_change_repair_faults COMMAND change_repair_fault_tests)
         set_tests_properties(wallet_change_repair_faults PROPERTIES TIMEOUT 30)
@@ -1304,8 +1313,12 @@ if(NOT ANDROID)
         target_link_libraries(change_recovery_tests PRIVATE zcl_wallet_core)
         target_compile_options(change_recovery_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
-        add_test(NAME wallet_change_recovery COMMAND change_recovery_tests)
-        set_tests_properties(wallet_change_recovery PROPERTIES TIMEOUT 30)
+        # Each exhaustive matrix retains every case and the original deadline.
+        add_test(NAME wallet_change_recovery COMMAND change_recovery_tests bounds)
+        add_test(NAME wallet_change_recovery_partial COMMAND change_recovery_tests partial)
+        add_test(NAME wallet_change_recovery_corrupt COMMAND change_recovery_tests corrupt)
+        set_tests_properties(wallet_change_recovery wallet_change_recovery_partial
+            wallet_change_recovery_corrupt PROPERTIES TIMEOUT 30)
         add_executable(change_recovery_failure_tests tests/test_change_recovery_failures.c
             src/change_recovery.c src/change_custody.c
             tests/change_storage_fixture.c tests/storage_fixture.c tests/storage_faults.c)
@@ -1315,7 +1328,7 @@ if(NOT ANDROID)
             zcl_change_state_encode=zcl_recovery_test_encode zcl_change_state_decode=zcl_recovery_test_decode)
         target_compile_options(change_recovery_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
-        target_link_options(change_recovery_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+        target_link_options(change_recovery_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_change_recovery_failures COMMAND change_recovery_failure_tests)
         set_tests_properties(wallet_change_recovery_failures PROPERTIES TIMEOUT 30)
@@ -1387,7 +1400,7 @@ if(NOT ANDROID)
             zcl_change_state_decode=zcl_ownership_test_decode zcl_wallet_recovered_change=zcl_ownership_test_derive)
         target_compile_options(change_ownership_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
-        target_link_options(change_ownership_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+        target_link_options(change_ownership_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close -Wl,--wrap=fstat
             -Wl,--wrap=zcl_storage_change_observe)
         add_test(NAME wallet_change_ownership_failures COMMAND change_ownership_failure_tests)
@@ -1402,14 +1415,15 @@ if(NOT ANDROID)
             zcl_wallet_recovered_change=zcl_reservation_test_derive)
         target_compile_options(change_reservation_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
-        target_link_options(change_reservation_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+        target_link_options(change_reservation_failure_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_change_reservation_failures COMMAND change_reservation_failure_tests)
         set_tests_properties(wallet_change_reservation_failures PROPERTIES TIMEOUT 30)
         add_executable(storage_fault_tests tests/test_storage_faults.c tests/storage_fixture.c tests/storage_faults.c)
         target_link_libraries(storage_fault_tests PRIVATE zcl_wallet_core)
-        target_compile_options(storage_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
-        target_link_options(storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=write -Wl,--wrap=fsync
+        target_compile_options(storage_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk -Wl,--wrap=write -Wl,--wrap=fsync
             -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_storage_faults COMMAND storage_fault_tests)
         set_tests_properties(wallet_storage_faults PROPERTIES TIMEOUT 30)
@@ -1418,7 +1432,7 @@ if(NOT ANDROID)
         target_link_libraries(change_storage_fault_tests PRIVATE zcl_wallet_core)
         target_compile_options(change_storage_fault_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
-        target_link_options(change_storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread
+        target_link_options(change_storage_fault_tests PRIVATE -Wl,--wrap=read -Wl,--wrap=pread -Wl,--wrap=__read_chk -Wl,--wrap=__pread_chk
             -Wl,--wrap=write -Wl,--wrap=fsync -Wl,--wrap=renameat2 -Wl,--wrap=close)
         add_test(NAME wallet_change_storage_faults COMMAND change_storage_fault_tests)
         set_tests_properties(wallet_change_storage_faults PROPERTIES TIMEOUT 30)

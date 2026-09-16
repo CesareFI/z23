@@ -125,11 +125,12 @@ static void profiles(void)
 
 static void rejected_signature(void)
 {
-    uint8_t wire[ZCL_TX_WIRE_MAX], before[ZCL_TX_WIRE_MAX]; size_t length = SIZE_MAX;
-    memset(wire, 0xa5, sizeof(wire)); memcpy(before, wire, sizeof(before));
+    uint8_t wire[ZCL_TX_WIRE_MAX]; size_t length = SIZE_MAX;
+    memset(wire, 0xa5, sizeof(wire));
     CHECK(zcl_review_p2pkh_wire(&fixture.owner, fixture.id, 100, &fixture.block, fixture.signatures,
         8, wire, sizeof(wire), &length) != ZCL_OK);
-    CHECK(length == SIZE_MAX && memcmp(wire, before, sizeof(wire)) == 0);
+    CHECK(length == SIZE_MAX);
+    for (size_t i = 0; i < sizeof(wire); ++i) CHECK(wire[i] == 0xa5);
     CHECK(memcmp(&saved, &fixture.owner, sizeof(saved)) == 0);
 }
 

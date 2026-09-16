@@ -78,9 +78,11 @@ static int refused_custody(const change_storage_data *data)
     memcpy(&before, &result, sizeof(before));
     CHECK(reserve(&fixture, data, wrong, sizeof(wrong), &result) != ZCL_OK);
     CHECK(memcmp(&result, &before, sizeof(result)) == 0);
-    change_storage_data different = *data;
-    different.wallet[different.wallet_len - 1] ^= 1;
-    CHECK(reserve(&fixture, &different, entropy, sizeof(entropy), &result) == ZCL_ALREADY_EXISTS);
+    uint8_t different[140] = {0};
+    memcpy(different, data->wallet, data->wallet_len);
+    different[data->wallet_len - 1] ^= 1;
+    CHECK(zcl_wallet_change_reserve((const uint8_t *)fixture.path, fixture_path_len(),
+        different, data->wallet_len, entropy, sizeof(entropy), &result) == ZCL_ALREADY_EXISTS);
     CHECK(memcmp(&result, &before, sizeof(result)) == 0);
     CHECK(change_bytes(&fixture, data->state[0], 80, 0) == 0);
     return fixture_close(&fixture);
