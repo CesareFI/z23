@@ -122,6 +122,15 @@ isolation and native alignment pass for this slice. Evidence is under
 `.cache/android-wallet/mission-20260916/change-custody-clear/`. No consensus,
 transport or TLS code changed.
 
+2026-09-16 continuation with TLS still parked: wallet-record JNI packing and
+unpacking now retire all native header, IV, ciphertext, serialized-record and
+parsed-record buffers on success and every refusal path. This closes a secret
+residue window for encrypted wallet material while preserving the Java output
+before native cleanup. The focused JNI-record test passes; full C safety passes
+Clang 99/99 and optimized GCC 98/98, and Android host/JVM, both ABIs, APK
+builds, lints, fixture isolation and native alignment pass for this slice.
+Evidence is under `.cache/android-wallet/mission-20260916/wallet-record-clear/`.
+
 ## Historical checkpoints
 
 Started 2026-09-11 18:11 UTC; requested work window ends 2026-09-12 14:11 UTC

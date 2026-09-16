@@ -58,16 +58,23 @@ Java_org_zclassic_wallet_core_NativeCore_packWalletRecord(JNIEnv *env, jclass ty
     (void)type;
     uint8_t header[80] = {0}, iv[12] = {0}, ciphertext[48] = {0}, record[140] = {0};
     size_t header_len = 0, iv_len = 0, ciphertext_len = 0, record_len = 0;
+    jbyteArray output = NULL;
     if (zcl_jni_read_bytes(env, header_input, header, sizeof(header), &header_len) != ZCL_OK)
-        return NULL;
+        goto cleanup;
     if (zcl_jni_read_bytes(env, iv_input, iv, sizeof(iv), &iv_len) != ZCL_OK)
-        return NULL;
+        goto cleanup;
     if (zcl_jni_read_bytes(env, ciphertext_input, ciphertext, sizeof(ciphertext), &ciphertext_len) != ZCL_OK)
-        return NULL;
+        goto cleanup;
     if (zcl_wallet_record_pack(header, header_len, iv, iv_len, ciphertext, ciphertext_len,
                                record, sizeof(record), &record_len) != ZCL_OK)
-        return NULL;
-    return zcl_jni_new_bytes(env, record, record_len);
+        goto cleanup;
+    output = zcl_jni_new_bytes(env, record, record_len);
+cleanup:
+    zcl_secure_zero(header, sizeof(header));
+    zcl_secure_zero(iv, sizeof(iv));
+    zcl_secure_zero(ciphertext, sizeof(ciphertext));
+    zcl_secure_zero(record, sizeof(record));
+    return output;
 }
 
 static bool set_part(JNIEnv *env, jobjectArray array, jsize index, const uint8_t *data, size_t length)
@@ -108,9 +115,14 @@ Java_org_zclassic_wallet_core_NativeCore_unpackWalletRecord(JNIEnv *env, jclass 
     uint8_t bytes[140] = {0};
     size_t length = 0;
     zcl_wallet_record record = {0};
+    jobjectArray output = NULL;
     if (zcl_jni_read_bytes(env, input, bytes, sizeof(bytes), &length) != ZCL_OK)
-        return NULL;
+        goto cleanup;
     if (zcl_wallet_record_parse(bytes, length, &record) != ZCL_OK)
-        return NULL;
-    return new_parts(env, &record);
+        goto cleanup;
+    output = new_parts(env, &record);
+cleanup:
+    zcl_secure_zero(bytes, sizeof(bytes));
+    zcl_secure_zero(&record, sizeof(record));
+    return output;
 }

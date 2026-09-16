@@ -3053,3 +3053,38 @@ analysis and production/test complexity caps 10/15 green. Android host/JVM,
 both ABIs, APK builds, lints, fixture isolation and native alignment also pass.
 Evidence is under
 `.cache/android-wallet/mission-20260916/change-custody-clear/`.
+
+## Wallet-record JNI buffer retirement — 2026-09-16
+
+The wallet-record JNI pack and unpack entries now clear every native input,
+serialized record and parsed record on all exits. This includes encrypted
+ciphertext copied from Java and parsed custody metadata; the Java result is
+created first and remains independently owned. The change is bounded and does
+not alter record bytes, parsing rules, consensus or transport.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Existing fixed capacities remain; cleanup uses each array's `sizeof`. |
+| Out-of-bounds access | JNI reads and record parsing still enforce their existing lengths before use. |
+| Integer overflow/underflow | No new arithmetic is introduced. |
+| Signed/unsigned conversions | Existing checked JNI length conversions are unchanged. |
+| Use-after-free | Native buffers remain live until Java output creation completes. |
+| Double-free | Cleanup only zeroes stack storage and releases no heap object. |
+| Leaks | All failure branches converge on cleanup. |
+| NULL dereferences | Existing JNI helpers reject invalid environments and arrays before access. |
+| Uninitialized memory | All buffers are zero-initialized and fully cleared. |
+| Dangling pointers | Parsed record data is not retained after return. |
+| Pointer arithmetic | No new pointer arithmetic is added. |
+| Format strings | No formatting path handles record bytes. |
+| Stack usage | Fixed buffers are unchanged and bounded. |
+| Allocation limits | Java allocation remains bounded by the existing record limits. |
+| Malformed serialization/network input | Existing record parser rejects malformed input before output creation. |
+| Races | JNI entry remains synchronous with caller-owned arrays. |
+| Resource exhaustion | Cleanup is constant-size and allocation-free. |
+| Secret leakage | Ciphertext and parsed record state are zeroed on success and every refusal path. |
+
+The focused JNI-record test passes. Full non-TLS safety passes Clang 99/99 and
+optimized GCC 98/98 groups, with analyzers and complexity caps green. Android
+host/JVM, both ABIs, APK builds, lints, fixture isolation and native alignment
+also pass. Evidence is under
+`.cache/android-wallet/mission-20260916/wallet-record-clear/`.
