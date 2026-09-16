@@ -2585,3 +2585,30 @@ complete change. The decoder observer wraps the real mnemonic decoder only in
 the registered JNI fixture and its fuzzer, and does not enter either APK ABI.
 Full sanitizer, analysis, device, fuzz and reproduction evidence is recorded in
 PROGRESS.md and `.cache/android-wallet/resume-20260916/jni-mnemonic-retirement/`.
+
+## JNI key partial-transfer fuzz review — 2026-09-16
+
+Scope: `native/tests/test_jni_keys.c` only. An unused fault-control bit now
+selects a partial output prefix from the third byte when present. The same
+bounded fuzz-input function runs in the registered test, where 33 cases verify
+zero, intermediate, exact and excessive prefixes for three secret operations.
+No product C, JNI ABI, provider, serialization or custody rule changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow and out-of-bounds access | The third byte is read only after size > 2; existing 2..217-byte admission remains. Fake VM copies clip the selected 0..255 prefix to the validated region length. Fixed cases compare all 216 elements of the applicable backing array, including the unused tail. |
+| Integer overflow/underflow | No new size arithmetic. Existing payload subtraction follows size admission. Fixed loops cover three operations and eleven byte-sized prefixes. Transfer counts are bounded size_t values copied from the checked VM copy length. |
+| Signed/unsigned conversions | Prefix conversion from uint8_t to size_t is exact. Operation narrowing follows the 0..2 test loop. Known ASCII characters are nonnegative and fit jchar; no arbitrary fuzz byte becomes a signed array length. |
+| Use-after-free, double-free and leaks | No new allocator, free, descriptor or native reference. A three-byte local input remains live during the synchronous call. Existing native-owner erasure and input immutability checks still run after every fuzz input. |
+| NULL dereferences and dangling pointers | Test inputs are actual fixed arrays; libFuzzer supplies its valid invocation-local span. No pointer escapes. The new observer retains only a size, reset before each invocation. |
+| Uninitialized memory | Transfer count starts at SIZE_MAX to distinguish no transfer from zero bytes. Fake destination arrays retain full initialization; fixed expectations cover both copied prefix and untouched tail. Existing result validation remains on successful invocations. |
+| Pointer arithmetic | No new production pointer arithmetic. Expected phrase indexing is guarded by copied <= sizeof(known_phrase)-1. Existing fake VM region validation precedes all copies. |
+| Format strings | No new formatted output. Inputs are public corpus/test bytes and are not logged as format strings or secret diagnostics. |
+| Stack usage and allocation limits | No heap allocation, recursion or VLA added. Registered cases reuse existing fake arrays and add a three-byte automatic input. Both NDK ABIs retain the 4096-byte frame gate. |
+| Malformed serialization/network input | Existing malformed entropy, phrase, header and VM refusal cases remain. Prefix mode can combine with those existing controls; its third byte may also be payload, so this is not a claim that every control varies independently. No network is used. |
+| Races and resource exhaustion | The fixture remains single-threaded per process. State resets between calls. The registered 15-second deadline, fuzz five-second input bound, 512 MiB RSS cap and bounded campaign remain. Common fuzz-input complexity is 15 under the existing test cap. |
+| Secret leakage | Tests use only public synthetic data. Native scratch must retire at the same observed VM boundary and cleanup points. The fixed partial destination is explicitly erased after comparison; real managed finally erasure remains qualified by the separate JVM fixture. |
+
+The registered regression fails before the prefix selector is added, observing
+a full copy where zero bytes were requested. The selector then passes the same
+assertion, complete prefix/tail checks and existing erasure obligations.

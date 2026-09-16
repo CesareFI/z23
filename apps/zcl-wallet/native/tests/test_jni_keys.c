@@ -36,6 +36,7 @@ static size_t touched_count;
 static bool pending, fail_random, null_without_exception, array_with_exception;
 static unsigned fail_call, vm_calls, random_calls, active_operation;
 static size_t transfer_prefix = SIZE_MAX;
+static size_t transferred_count = SIZE_MAX;
 #define OPERATION_COUNT 7u
 static const char known_phrase[] = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 static void verify_cleanup(void);
@@ -188,6 +189,7 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
     size_t copied = (size_t)length;
     if (vm_calls + 1 == fail_call && copied > transfer_prefix) copied = transfer_prefix;
     memcpy(array->data.bytes + (size_t)start, bytes, copied);
+    transferred_count = copied;
     (void)vm_fault();
 }
 
@@ -201,6 +203,7 @@ static void JNICALL set_chars(JNIEnv *env, jcharArray input, jsize start, jsize 
     size_t copied = (size_t)length;
     if (vm_calls + 1 == fail_call && copied > transfer_prefix) copied = transfer_prefix;
     memcpy(array->data.chars + (size_t)start, chars, copied * sizeof(*chars));
+    transferred_count = copied;
     (void)vm_fault();
 }
 
@@ -236,6 +239,7 @@ static void prepare(void)
     pending = fail_random = null_without_exception = array_with_exception = false;
     fail_call = vm_calls = random_calls = 0;
     transfer_prefix = SIZE_MAX;
+    transferred_count = SIZE_MAX;
     active_operation = 0;
     entropy = (fake_array){.kind = BYTES, .length = 16};
     phrase = (fake_array){.kind = CHARS, .length = (jsize)(sizeof(known_phrase) - 1)};
@@ -545,16 +549,7 @@ static void transfer_failures(void)
     }
 }
 
-int main(void)
-{
-    pending_helpers(); pending_and_null_entries(); exact_results(); public_results(); vm_failures();
-    allocation_with_exception(); invalid_inputs(); invalid_headers(); full_phrase_inputs();
-    destination_refusals(); transfer_failures();
-    puts("JNI key exception and secret cleanup checks passed");
-    return 0;
-}
-#else
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+#endif
 
 static void verify_phrase(const fake_array *words, const fake_array *bytes)
 {
@@ -606,12 +601,15 @@ static void verify_accepted(unsigned operation)
     }
 }
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+static bool fuzz_input(const uint8_t *data, size_t size)
 {
-    if (size < 2 || size > 217) return 0;
+    if (size < 2 || size > 217) return false;
     prepare();
     const unsigned operation = data[0] % OPERATION_COUNT;
     fail_call = data[1] % 8;
+    /* Preserve the existing two-byte format. Its unused flag bit opts into
+     * a bounded output prefix; the third byte may also supply input payload. */
+    if (size > 2 && (data[1] & 0x08) != 0) transfer_prefix = data[2];
     pending = (data[1] & 0x80) != 0;
     fail_random = (data[1] & 0x40) != 0;
     array_with_exception = (data[1] & 0x10) != 0;
@@ -631,6 +629,51 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     const bool accepted = run(operation);
     if (accepted) verify_accepted(operation);
+    return accepted;
+}
+
+#ifdef ZCL_JNI_KEYS_FUZZ
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    (void)fuzz_input(data, size);
+    return 0;
+}
+#else
+static void fuzz_transfer_case(unsigned operation, uint8_t prefix)
+{
+    const uint8_t data[] = {(uint8_t)operation, operation == 0 ? 10 : 12, prefix};
+    CHECK(!fuzz_input(data, sizeof(data)) && pending);
+    CHECK(vm_calls == (operation == 0 ? 2u : 4u));
+    const size_t length = operation == 1 ? sizeof(known_phrase) - 1 : (operation == 0 ? 32u : 16u);
+    const size_t copied = prefix < length ? prefix : length;
+    CHECK(transferred_count == copied);
+    for (size_t i = 0; i < 216; ++i) {
+        if (operation == 1) {
+            const jchar expected = i < copied ? (jchar)known_phrase[i] : 0;
+            CHECK(result_array.data.chars[i] == expected);
+        } else {
+            const uint8_t expected = operation == 0 && i < copied ? 0x42 : 0;
+            CHECK(result_array.data.bytes[i] == expected);
+        }
+    }
+    zcl_secure_zero(&result_array.data, sizeof(result_array.data));
+}
+
+static void fuzz_transfers(void)
+{
+    const uint8_t prefixes[] = {0, 1, 7, 16, 31, 32, 46, 92, 93, 215, 255};
+    for (unsigned operation = 0; operation <= 2; ++operation)
+        for (size_t i = 0; i < sizeof(prefixes); ++i)
+            fuzz_transfer_case(operation, prefixes[i]);
+}
+
+int main(void)
+{
+    pending_helpers(); pending_and_null_entries(); exact_results(); public_results(); vm_failures();
+    allocation_with_exception(); invalid_inputs(); invalid_headers(); full_phrase_inputs();
+    destination_refusals(); transfer_failures(); fuzz_transfers();
+    puts("JNI key exception and secret cleanup checks passed");
     return 0;
 }
 #endif

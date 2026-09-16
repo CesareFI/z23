@@ -4587,3 +4587,41 @@ C_SAFETY_REVIEW.md. Evidence:
 `.cache/android-wallet/resume-20260916/jni-mnemonic-retirement/`.
 Existing root-lint failures and parked TLS remain unresolved. Next: inspect
 managed record/key result ownership around view and platform handoffs.
+
+2026-09-16: the managed record/key handoff inspection found no additional leak
+in the inspected paths. The JNI key fuzzer did not vary partial output lengths:
+only its separate fixed test selected them. An unused control bit now selects
+a 0..255-byte/character prefix from the third input byte when present. Existing
+two-byte inputs retain their behavior, and the 217-byte input bound is unchanged.
+Prefix mode can combine with existing malformed-input/VM/RNG controls; its third
+byte may also be payload, so those values are not universally independent.
+
+The registered test now calls the same fuzz-input function and checks 33 cases
+across entropy creation, phrase generation and restoration. It observes actual
+copied counts, exact public prefix bytes/characters, untouched destination tails,
+pending exceptions, caller input immutability and native erasure. The new test
+fails on the prior full-copy-only behavior, then passes with prefix selection.
+Both normal/fuzz fixture modes pass Clang/GCC analysis; all 92 default sanitizer
+groups pass (78.76 seconds), as does the focused additional-integer profile
+(0.51 seconds). Existing complexity caps 10/15 pass; the shared fuzz-input
+function reaches the test cap of 15. Strict NDK fixtures compile for both ABIs
+and pass after exact-hash transfer to API30/35/36 x86-64 emulators. The seeded
+campaign completes 78,258 inputs in 121 seconds without a finding, with nine
+added units and peak RSS 60 MiB; limits remain five seconds/input and 512 MiB.
+Actual compile qualification remains 156 authored/provider plus 75 harness/
+helper compilations and 181 library/fuzz coverage compilations.
+
+This slice changes only the fixture and review notes. Architecture and whitespace
+checks pass. The product source and previously reproduced 612,839-byte release
+APK remain unchanged, SHA256
+`93476511db12f12cf91db6c9beb40392f51129d42b66b630bc8b798ecad75474`.
+The mnemonic erasure order was additionally inspected in both packaged ABIs:
+their .text sections match the corresponding symbol-bearing build exactly, and
+the consumed-input wipe calls precede the JNI output calls. This supplements
+the runtime observer and is not an ARM64 execution claim. Disassembly evidence
+is in the preceding jni-mnemonic-retirement lane; this fixture's full per-hazard
+review is in C_SAFETY_REVIEW.md, with execution evidence under
+`.cache/android-wallet/resume-20260916/jni-key-partial-fuzz/`.
+Hardware custody, physical camera acceptance, parked TLS and pre-existing root-
+lint failures remain unqualified. Next: inspect native operation ownership and
+publication guards for stale UI or JNI calls after a foreground owner closes.
