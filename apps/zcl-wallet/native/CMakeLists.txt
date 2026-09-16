@@ -1474,4 +1474,28 @@ if(NOT ANDROID)
             -Wl,--wrap=secp256k1_ec_pubkey_create -Wl,--wrap=secp256k1_ec_pubkey_serialize)
         add_test(NAME wallet_ec_lifetime COMMAND ec_lifetime_tests)
     endif()
+
+    add_test(NAME wallet_test_deadlines COMMAND ${CMAKE_COMMAND}
+        -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR} -DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+        -P ${CMAKE_CURRENT_LIST_DIR}/tests/check_test_deadlines.cmake)
+    set_tests_properties(wallet_test_deadlines PROPERTIES TIMEOUT 15)
+    add_test(NAME wallet_test_deadline_contract COMMAND ${CMAKE_COMMAND}
+        -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test-deadline-contract
+        -DCHECK_SCRIPT=${CMAKE_CURRENT_LIST_DIR}/tests/check_test_deadlines.cmake
+        -DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+        -P ${CMAKE_CURRENT_LIST_DIR}/tests/test_test_deadlines.cmake)
+    set_tests_properties(wallet_test_deadline_contract PROPERTIES TIMEOUT 15)
+    # Bound newly registered fixtures too. Explicit per-group limits remain
+    # authoritative; an absent limit receives one minute, never no timeout.
+    get_property(_zcl_tests DIRECTORY PROPERTY TESTS)
+    foreach(_zcl_test IN LISTS _zcl_tests)
+        get_property(_zcl_deadline_set TEST "${_zcl_test}" PROPERTY TIMEOUT SET)
+        if(NOT _zcl_deadline_set)
+            set_tests_properties("${_zcl_test}" PROPERTIES TIMEOUT 60)
+        endif()
+        get_test_property("${_zcl_test}" TIMEOUT _zcl_deadline)
+        if(NOT _zcl_deadline MATCHES "^[1-9][0-9]*$")
+            message(FATAL_ERROR "${_zcl_test} needs a positive whole-second execution deadline")
+        endif()
+    endforeach()
 endif()

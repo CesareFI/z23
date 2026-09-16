@@ -4776,3 +4776,38 @@ are under `.cache/android-wallet/resume-20260916/address-key-retirement/`.
 Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
 findings remain unresolved. Next: inspect native regression-runner deadlines so
 fault or cleanup regressions cannot leave the safety acceptance running forever.
+
+2026-09-16: every registered native host test now has an execution deadline.
+The new metadata checker first rejected the unchanged registry because
+wallet_receive_qr had no timeout; secret-cleanup, RNG and key-failure fixtures
+also lacked limits. CMake now assigns 60 seconds only where no limit was set,
+preserves explicit limits, and refuses nonpositive/nonintegral source settings.
+A comparison against the original generated registry confirms all 79 existing
+limits are unchanged and 14 previously unbounded tests received the fallback.
+
+Two registered checks inspect the actual CTest registry and qualify the checker
+with empty/missing/zero/negative fixtures plus a positive control. A separate
+one-second test deadline must terminate a deliberately stalled five-second
+fixture, with a bounded outer runner. The checks themselves have fifteen-second
+limits. These gates bound fixture execution; they make no new provider, storage
+latency or Android runtime guarantee and do not change production code.
+
+The full default sanitizer suite passes all 95 registered groups in 81.54 seconds.
+Both new checks also pass in the integer-sanitizer and fuzz/oracle configurations
+(99 registered tests each) and the thread-sanitizer configuration (94). Only the
+two metadata/termination groups ran in those additional configurations; this is
+not a claim that all configured ThreadSanitizer binaries were built or executed.
+Release build, fixture isolation, native alignment, architecture and whitespace
+checks pass. No new C implementation or C analysis claim is involved.
+
+Source-only tree d4d4386817ca6c7d8be13c16b6530ac1743f7e0a reproduces the existing
+612,855-byte unsigned APK exactly on this host/toolchain, SHA256
+`3a3e4047142e98f8a9f15172bc672278be7b333127635c303e3bce2bf8b35a65`.
+Committed app source matches except this progress note. Baseline registry,
+negative result, preservation comparison and execution/reproduction logs are in
+`.cache/android-wallet/resume-20260916/native-test-deadlines/`.
+The one-off comparison initially lacked CMake's IN_LIST policy; that diagnostic
+and the corrected version declaration are retained. Hardware custody, physical
+camera acceptance, parked TLS and prior root-lint findings remain unresolved.
+Next: inspect ciphertext/pending-record ownership across provider and JNI error
+returns, keeping real-device custody qualification separate.

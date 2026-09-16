@@ -127,6 +127,13 @@ For C safety checks on a Linux development host with Clang 20 and GCC:
 bash tools/check-c-safety.sh
 ```
 
+Every registered host test has an explicit execution deadline. Tests without a
+specialized limit receive 60 seconds; existing per-test limits are preserved.
+The registered `wallet_test_deadlines` check inspects CTest's generated registry,
+and `wallet_test_deadline_contract` rejects empty/missing/zero/negative deadline
+fixtures and verifies actual one-second termination of a stalled test. These
+limits bound test execution, not Android provider or filesystem latency.
+
 Host Clang sanitizer builds also check unsigned integer overflow and implicit
 integer truncation/sign changes in authored native C, including JNI and fault-test
 copies. Provider code keeps ASan/UBSan; its modular arithmetic is outside these
