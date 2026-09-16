@@ -4700,3 +4700,40 @@ under `.cache/android-wallet/resume-20260916/session-persistence-cancel/`.
 Hardware custody, physical-camera acceptance, parked TLS and prior root-lint
 failures remain unresolved. Next: inspect private-key scratch retirement in the
 existing offline signing primitive; no send or broadcast authority is added.
+
+2026-09-16: the offline signing primitive now retires consumed inputs before
+public encoding and verification. Raw context-blinding bytes clear immediately
+after initialization, and the private-key copy clears after signing. Low-S
+normalization is still the next provider operation; it now runs in the encoding
+helper after that wipe. Final whole-work and EC-context cleanup remain intact.
+The digest stays available for verification. No signing JNI/UI route, nonce
+policy, signature bytes, custody gate or transaction authority changes.
+
+The existing provider-failure fixture now observes both earlier retirements.
+Unchanged code fails the blinding assertion; a blinding-only change then fails
+the scalar assertion. All twenty final fault modes pass, including partial RNG,
+context, signing, nonce, encoding and verification failures. The observer uses
+live arguments and retires pointers before return. Four focused additional-
+integer sanitizer/oracle groups pass in 7.14 seconds; full C safety passes 93
+registered groups in 79.63 seconds, Clang/GCC source/provider analysis and 10/15
+complexity caps. Separate analysis also passes for the changed fault fixture.
+
+The OpenSSL-enabled signature fuzzer completes 8,095 executions in 121 seconds
+without a finding, with a 66-byte input cap, five-second per-input limit and
+512 MiB RSS cap (266 MiB observed). Actual compile flags qualify 158 authored/
+provider and 75 harness/helper compilations, with 181 coverage compilations.
+Strict native real-provider and fault fixtures build for both ABIs and pass
+following exact-hash transfer to API30/35/36 x86-64 emulators. ARM64 remains
+compile-only. Both optimized release-archive objects preserve the wipe order.
+
+Release build, APK fixture isolation/alignment, architecture and whitespace
+checks pass. Source-only tree 10a2ff537469b57fe54031abbed263e4b9e7dd42 reproduces
+the unchanged 612,839-byte unsigned APK exactly on this host/toolchain, SHA256
+`ab82b4690fa9990cc183301222e9aae1d187d789e6b92941caf8a96257e74a78`.
+This internal signer is absent from the packaged JNI library. Committed app
+source matches except this progress note. Full per-hazard review is in
+C_SAFETY_REVIEW.md; evidence is under
+`.cache/android-wallet/resume-20260916/signature-retirement/`.
+Hardware custody, physical cameras, parked TLS and prior root-lint findings
+remain unresolved. Next: inspect retirement of derived private-key scratch
+before public receiving/change-address encoding.

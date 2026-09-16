@@ -28,14 +28,14 @@ static zcl_status sign_material(signature_work *work)
 {
     secp256k1_context *context = work->context.handle;
     if (secp256k1_ec_pubkey_create(context, &work->key, work->secret) != 1) return ZCL_CRYPTO_FAILURE;
-    if (secp256k1_ecdsa_sign(context, &work->signature, work->digest, work->secret, bounded_nonce, NULL) != 1)
-        return ZCL_CRYPTO_FAILURE;
-    return secp256k1_ecdsa_signature_normalize(context, NULL, &work->signature) == 0 ? ZCL_OK : ZCL_CRYPTO_FAILURE;
+    return secp256k1_ecdsa_sign(context, &work->signature, work->digest, work->secret, bounded_nonce, NULL) == 1
+        ? ZCL_OK : ZCL_CRYPTO_FAILURE;
 }
 
 static zcl_status encode_material(signature_work *work)
 {
     const secp256k1_context *context = work->context.handle;
+    if (secp256k1_ecdsa_signature_normalize(context, NULL, &work->signature) != 0) return ZCL_CRYPTO_FAILURE;
     size_t length = sizeof(work->result.public_key);
     if (secp256k1_ec_pubkey_serialize(context, work->result.public_key, &length, &work->key,
         SECP256K1_EC_COMPRESSED) != 1) return ZCL_CRYPTO_FAILURE;
@@ -80,7 +80,11 @@ zcl_status zcl_signature_create(const uint8_t *secret, size_t secret_len,
     memcpy(work.digest, digest, 32);
     status = zcl_random_bytes(work.blinding, sizeof(work.blinding));
     if (status == ZCL_OK) status = zcl_ec_begin(&work.context, work.blinding, sizeof(work.blinding));
+    /* Context initialization consumed these bytes; its owned state remains
+     * live until zcl_ec_end. Public encoding/verification need no raw key. */
+    zcl_secure_zero(work.blinding, sizeof(work.blinding));
     if (status == ZCL_OK) status = sign_material(&work);
+    zcl_secure_zero(work.secret, sizeof(work.secret));
     if (status == ZCL_OK) status = encode_material(&work);
     if (status == ZCL_OK) status = verify_material(&work);
     if (status == ZCL_OK) memcpy(output, &work.result, sizeof(work.result));

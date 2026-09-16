@@ -2653,3 +2653,45 @@ commands for all 81 objects built by the thread profile contain thread and
 fail-on-finding instrumentation flags. These observations cover the executed
 interleavings and the C registry, not all races or actual VM concurrency.
 Evidence: `.cache/android-wallet/resume-20260916/jni-owner-races/`.
+
+## Signing inputs retired after their last use — 2026-09-16
+
+Scope: signature.c and its existing provider-failure observer. Context blinding
+bytes clear after context initialization, and the copied scalar clears after
+signing, before public normalization/encoding/verification. The provider-call
+order, exact signature format, nonce policy and final whole-work/context cleanup
+remain unchanged. This internal primitive has no Android signing entry point.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow | Both new wipes use sizeof on owned 32-byte array members. No capacity or output-publication rule changes. |
+| Out-of-bounds access | Existing pointer/32-byte input checks precede work initialization/copies. Tests inspect only the live zeroizer argument or live provider arguments; no stack offset is reconstructed. |
+| Integer overflow/underflow | No production arithmetic is added. Fixed fixture counters reset per case; all twenty existing fault modes retain their bounded stage expectations. |
+| Signed/unsigned conversions | No new production conversion. Wipe lengths remain size_t from sizeof; provider results retain their checked int semantics. |
+| Use-after-free | Wipes precede the existing EC context teardown. The provider does not retain the borrowed raw input spans after its synchronous calls. The context owns its independent state until zcl_ec_end. |
+| Double-free | No new free, owner transfer or context teardown. Repeated clearing by final cleanup is intentional and does not release storage. |
+| Leaks | The single context allocation and unconditional cleanup remain intact. Existing wrapped allocation checks require one matching release and zeroed storage, including initialization failures. |
+| NULL dereferences | Entry validation and status-gated context use remain intact. The new wipes address members of an initialized local work object even after RNG/context failure. |
+| Uninitialized memory | Whole work still initializes before copying inputs. Partial RNG/provider failures also reach both new wipes and final cleanup. Output remains untouched on any failure. |
+| Dangling pointers | Each observer retires the captured pointer while its span is still live. Later provider/return assertions inspect counters and NULL markers; the digest capture stays live until final cleanup. |
+| Pointer arithmetic | No new production pointer arithmetic. The test recognizes blinding by its RNG argument and scalar by its provider/zeroizer argument, never by guessed struct layout. |
+| Format strings | No production logging/string formatting is added. Fixture diagnostics contain fixed assertion line identifiers, never key/digest bytes. |
+| Stack usage | No work object or buffer is added. Strict NDK fixture builds measure individual signing frames of 568 bytes on x86-64 and 608 on ARM64; nested provider use is separate. All retain the 4096-byte frame gate. |
+| Allocation limits | No allocation or size limit changes. The existing context helper still accepts only a checked nonzero provider size at most 1024 bytes. |
+| Malformed serialization/network input | Input lengths, scalar validation, bounded nonce callback, low-S checks, DER bounds and reparse/verification remain unchanged. Normalization moves into the next helper but stays the next provider call after signing. No network path is involved. |
+| Races | Production adds no shared state or thread. Caller inputs retain their synchronous stability contract; work and early wipes belong to one invocation. Test observer globals are process-local serial fixtures. |
+| Resource exhaustion | Two fixed 32-byte wipes add bounded work, with no retry or extra provider operation. Existing nonce/OS RNG/context bounds remain. Fuzz input/time/RSS limits stay 66 bytes, five seconds per input and 512 MiB. |
+| Secret leakage | Blinding clears before key creation, scalar before the first normalization call, including failure exits. Digest remains until its public verification use. Final work/context wipes remain mandatory. Caller copies, CPU registers and all provider internals are outside this new erasure claim. Only public synthetic vectors enter tests; no key export, wallet signing, consent, chain or broadcast authority is added. |
+
+The unchanged implementation fails the new blinding-order assertion; a copy
+with only that wipe added then fails the scalar-order assertion. Final observer
+checks pass across all twenty modes. Four focused additional-integer sanitizer
+and OpenSSL-oracle groups pass in 7.14 seconds. Full C safety passes 93 groups
+in 79.63 seconds, source/provider Clang/GCC analysis and unchanged 10/15 caps;
+the modified fault fixture also passes separate Clang/GCC analysis. Strict NDK
+real-provider and fault fixtures compile for both ABIs and execute after exact
+hash transfer on API30/35/36 x86-64 emulators. ARM64 remains compile-only.
+Release-archive disassembly for both ABIs preserves the two wipe positions.
+The oracle-enabled fuzzer completes 8,095 executions in 121 seconds without a
+finding; this is bounded evidence, not comprehensive cryptographic acceptance.
+Evidence: `.cache/android-wallet/resume-20260916/signature-retirement/`.

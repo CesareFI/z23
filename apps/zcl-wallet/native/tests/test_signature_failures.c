@@ -17,6 +17,7 @@
 void zcl_secure_zero(void *buffer, size_t length);
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "Signature fault at %d\n", __LINE__); abort(); } } while (0)
 static unsigned failure, calls, random_calls, work_wipes, nonce_calls, nonce_wipes;
+static unsigned blinding_wipes, secret_wipes;
 static uint8_t caller_secret[32], caller_digest[32];
 static const uint8_t *spans[3]; /* blinding, secret, digest in the live work */
 static uint8_t *nonce_span;
@@ -102,6 +103,7 @@ int secp256k1_ec_pubkey_create(const secp256k1_context *context, secp256k1_pubke
     const unsigned char *secret)
 {
     enter(1); CHECK(context != NULL && key != NULL);
+    CHECK(blinding_wipes == 1 && spans[0] == NULL);
     private_secret(secret);
     memset(key, 0x6a, sizeof(*key));
     return failure == 1 ? 0 : 1;
@@ -169,6 +171,7 @@ int secp256k1_ecdsa_signature_normalize(const secp256k1_context *context, secp25
 {
     const unsigned stage = calls == 2 ? 3 : 9;
     enter(stage); CHECK(context != NULL && output == NULL && input != NULL);
+    CHECK(secret_wipes == 1 && spans[1] == NULL);
     return failure == stage ? 1 : 0;
 }
 
@@ -227,6 +230,25 @@ int secp256k1_ecdsa_verify(const secp256k1_context *context, const secp256k1_ecd
     return failure == 10 ? 0 : 1;
 }
 
+static void retire_input(void *buffer)
+{
+    if (buffer == spans[0]) {
+        CHECK(blinding_wipes++ == 0 && calls == 0);
+        memset(buffer, 0, 32);
+        filled(buffer, 32, 0);
+        spans[0] = NULL;
+        return;
+    }
+    CHECK(blinding_wipes == 1 && secret_wipes++ == 0);
+    /* Early RNG/context failures never expose the copied scalar to a provider.
+     * Observe that live argument here, without reconstructing a work offset. */
+    CHECK(buffer == spans[1] || (spans[1] == NULL && calls == 0));
+    private_secret(buffer);
+    memset(buffer, 0, 32);
+    filled(buffer, 32, 0);
+    spans[1] = NULL;
+}
+
 void zcl_signature_test_zero(void *buffer, size_t length)
 {
     CHECK(buffer != NULL);
@@ -236,9 +258,11 @@ void zcl_signature_test_zero(void *buffer, size_t length)
         nonce_span = NULL; ++nonce_wipes;
         return;
     }
+    if (length == 32) { retire_input(buffer); return; }
     CHECK(length >= sizeof(zcl_ec_context) + 96 + 2 * sizeof(secp256k1_pubkey)
         + 2 * sizeof(secp256k1_ecdsa_signature) + sizeof(zcl_signature) && length <= 1024);
     CHECK(work_wipes++ == 0 && owned == NULL && allocations == releases);
+    CHECK(blinding_wipes == 1 && secret_wipes == 1);
     memset(buffer, 0, length);
     for (size_t i = 0; i < 3; ++i) {
         if (spans[i] != NULL) filled(spans[i], 32, 0);
@@ -251,6 +275,7 @@ static void run(unsigned mode)
     static const unsigned stages[] = {10,1,2,3,4,5,6,7,8,9,10,0,0,0,0,0,4,5,5,2};
     CHECK(mode < sizeof(stages) / sizeof(stages[0]) && owned == NULL && nonce_span == NULL);
     failure = mode; calls = 0; random_calls = 0; work_wipes = 0; nonce_calls = 0; nonce_wipes = 0;
+    blinding_wipes = secret_wipes = 0;
     allocations = releases = 0;
     memset(spans, 0, sizeof(spans));
     memset(caller_secret, 0, sizeof(caller_secret)); caller_secret[31] = 1;
@@ -262,6 +287,7 @@ static void run(unsigned mode)
     if (mode == 12) expected = ZCL_RESOURCE_EXHAUSTED;
     CHECK(zcl_signature_create(caller_secret, 32, caller_digest, 32, &output) == expected);
     CHECK(calls == stages[mode] && random_calls == 1 && work_wipes == 1);
+    CHECK(blinding_wipes == 1 && secret_wipes == 1);
     CHECK(owned == NULL && allocations == releases && nonce_span == NULL);
     CHECK(nonce_wipes == (mode == 0 ? 4U : mode == 19 ? 1U : 0U));
     for (size_t i = 0; i < 3; ++i) CHECK(spans[i] == NULL);
@@ -274,11 +300,12 @@ static void run(unsigned mode)
 int main(void)
 {
     for (unsigned mode = 0; mode < 20; ++mode) run(mode);
-    calls = random_calls = work_wipes = 0;
+    calls = random_calls = work_wipes = blinding_wipes = secret_wipes = 0;
     zcl_signature output;
     CHECK(zcl_signature_create(caller_secret, SIZE_MAX, caller_digest, 32, &output) == ZCL_OUT_OF_RANGE);
     CHECK(zcl_signature_create(NULL, 32, caller_digest, 32, &output) == ZCL_INVALID_ARGUMENT);
     CHECK(calls == 0 && random_calls == 0 && work_wipes == 0 && owned == NULL);
+    CHECK(blinding_wipes == 0 && secret_wipes == 0);
     CHECK(puts("Signing provider failures preserve output, bound nonce callbacks and clear live secret/context storage") >= 0);
     return 0;
 }
