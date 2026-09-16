@@ -27,7 +27,7 @@ static jlong direct_capacity;
 static bool pending, allocation_failure;
 static unsigned fault, calls, allocations, new_arrays;
 static uint8_t *owned;
-static size_t owned_length, allocation_bytes, failure_prefix;
+static size_t owned_length, allocation_bytes, failure_prefix, read_failure_prefix;
 
 void *zcl_jni_camera_test_malloc(size_t size);
 void zcl_jni_camera_test_free(void *pointer);
@@ -82,7 +82,8 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray array, jsize offset, jsize
     CHECK(array == (jbyteArray)&input && offset == 0 && count >= 0);
     CHECK((size_t)count <= input.capacity && bytes != NULL);
     if (vm_failure()) {
-        if (count > 0) bytes[0] = 42; /* Partial VM read must still clear. */
+        const size_t prefix = (size_t)count < read_failure_prefix ? (size_t)count : read_failure_prefix;
+        memcpy(bytes, input.bytes, prefix); /* Partial VM read must still clear. */
         return;
     }
     memcpy(bytes, input.bytes, (size_t)count);
@@ -164,6 +165,7 @@ static void reset(operation op, unsigned selected_fault)
     pending = false; allocation_failure = false;
     fault = selected_fault; calls = 0; allocations = 0; allocation_bytes = 0; new_arrays = 0;
     failure_prefix = 6;
+    read_failure_prefix = 1;
     input = op == PACKET ? (fake_array){(jsize)packet_length, sizeof(packet), packet}
                         : (fake_array){(jsize)image_length, sizeof(image), image};
     direct_capacity = (jlong)image_length;
@@ -449,6 +451,102 @@ static void fuzz_camera_case(const uint8_t data[13])
     if (result.length == expected && fault == 0 && (data[10] & 31U) == 0) CHECK(written == expected);
 }
 
+/* Four controls followed by actual packet bytes. The fake array advertises
+ * only its real backing span. This C decoder is a transport/result oracle;
+ * independent pixel/QR behavior remains covered by the C camera/QR fuzzers. */
+static uint8_t fuzz_decode_pixels[ZCL_CAMERA_PACKET_MAX];
+
+static size_t transfer_prefix(uint8_t selector, size_t length)
+{
+    CHECK(length <= ZCL_CAMERA_PACKET_MAX);
+    const size_t values[] = {0, 1, 5, length / 2, length, length + 1};
+    return values[selector % (sizeof(values) / sizeof(values[0]))];
+}
+
+static void check_decode_result(jbyteArray output, zcl_status status, const zcl_scanned_request *expected)
+{
+    static uint8_t expected_output[ZCL_CAMERA_PACKET_MAX]; /* Single-threaded guard oracle. */
+    CHECK(calls <= 5 && allocations <= 1 && new_arrays <= 1 && owned == NULL);
+    CHECK(allocations == 0 || allocation_bytes == input.capacity);
+    size_t touched = 0;
+    if (output != NULL) {
+        CHECK(output == (jbyteArray)&result && !pending && status == ZCL_OK);
+        CHECK(result.length > 0 && (size_t)result.length == expected->text_len);
+        touched = expected->text_len;
+    } else if (pending && calls == 5) {
+        CHECK(status == ZCL_OK && (size_t)result.length == expected->text_len);
+        touched = failure_prefix < expected->text_len ? failure_prefix : expected->text_len;
+    }
+    CHECK(touched <= ZCL_PAYMENT_TEXT_MAX);
+    CHECK(result.capacity == sizeof(expected_output));
+    memset(expected_output, 0xa5, sizeof(expected_output));
+    memcpy(expected_output, expected->text, touched);
+    CHECK(memcmp(result.bytes, expected_output, sizeof(expected_output)) == 0);
+    CHECK(result_box.before == UINT64_C(0xa5a5a5a5a5a5a5a5) && result_box.after == result_box.before);
+}
+
+static void fuzz_decode_case(const uint8_t *data, size_t size)
+{
+    CHECK(size >= 4 && size <= sizeof(fuzz_decode_pixels) + 4);
+    const size_t length = size - 4;
+    static const jint chains[] = {0, 1, -1, INT32_MIN, INT32_MAX};
+    const jint chain = chains[data[0] % (sizeof(chains) / sizeof(chains[0]))];
+    memcpy(fuzz_decode_pixels, data + 4, length);
+    zcl_scanned_request expected = {0};
+    zcl_status status = ZCL_UNSUPPORTED;
+    if (chain == 0 || chain == 1)
+        status = zcl_camera_packet_scan(fuzz_decode_pixels, length,
+            chain == 0 ? ZCL_MAINNET : ZCL_TESTNET, &expected);
+    reset(PACKET, data[1] % 6U);
+    input = (fake_array){(jsize)length, length, fuzz_decode_pixels};
+    allocation_failure = (data[2] & 1U) != 0;
+    pending = (data[2] & 2U) != 0;
+    read_failure_prefix = transfer_prefix(data[3], length);
+    failure_prefix = transfer_prefix(data[3], expected.text_len);
+    const jbyteArray output = API(scanCameraPacket)((data[2] & 4U) != 0 ? NULL : &environment,
+        NULL, (data[2] & 8U) != 0 ? NULL : (jbyteArray)&input, chain);
+    CHECK(memcmp(fuzz_decode_pixels, data + 4, length) == 0);
+    check_decode_result(output, status, &expected);
+    if (status != ZCL_OK || fault != 0 || (data[2] & 15U) != 0) CHECK(output == NULL);
+    else CHECK(output != NULL);
+}
+
+#if !defined(ZCL_JNI_CAMERA_FUZZ)
+/* Keep the fixed matrix in the registered test, with its suite deadline.
+ * Fuzzing exercises each packet/fault combination as a separate timed input;
+ * do not charge an entire new regression matrix to the first empty input. */
+static void decoder_regressions(void)
+{
+    static uint8_t seed[ZCL_CAMERA_PACKET_MAX + 4];
+    static const uint8_t values[] = {0, 1, 2, 3, 4, 5, 7, 15, 31, 255};
+    CHECK(packet_length >= 5 && packet_length <= sizeof(seed) - 4);
+    memcpy(seed + 4, packet, packet_length);
+    for (size_t field = 0; field < 4; ++field) for (size_t i = 0; i < sizeof(values); ++i) {
+        memset(seed, 0, 4);
+        seed[field] = values[i];
+        fuzz_decode_case(seed, packet_length + 4);
+    }
+    for (unsigned selected = 3; selected <= 5; selected += 2) {
+        for (uint8_t prefix = 0; prefix < 6; ++prefix) {
+            memset(seed, 0, 4);
+            seed[1] = (uint8_t)selected;
+            seed[3] = prefix;
+            fuzz_decode_case(seed, packet_length + 4);
+        }
+    }
+    memset(seed, 0, 4);
+    const size_t lengths[] = {0, 1, 4, 5, packet_length - 1, packet_length + 1, ZCL_CAMERA_PACKET_MAX};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i)
+        fuzz_decode_case(seed, lengths[i] + 4);
+    for (size_t i = 0; i < 5; ++i) {
+        const uint8_t original = seed[i + 4];
+        seed[i + 4] = 0xff;
+        fuzz_decode_case(seed, packet_length + 4);
+        seed[i + 4] = original;
+    }
+}
+#endif
+
 static void regressions(void)
 {
     initialize();
@@ -469,12 +567,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     static bool initialized;
     if (!initialized) { regressions(); initialized = true; }
     if (size == 13) fuzz_camera_case(data);
+    else if (size >= 4 && size <= ZCL_CAMERA_PACKET_MAX + 4) fuzz_decode_case(data, size);
     return 0;
 }
 #else
 int main(void)
 {
     regressions();
+    decoder_regressions();
     static const uint8_t values[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 31, 32, 63, 64, 127, 128, 255};
     uint8_t data[13] = {0};
     for (size_t field = 0; field < sizeof(data); ++field) {

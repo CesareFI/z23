@@ -4427,3 +4427,46 @@ The existing C camera/QR fuzzers already vary pixel content. The JNI camera
 fuzzer varies packing geometry/VM faults but only runs fixed decoder fixtures
 at startup. Next: extend that existing target to vary decoder packet bytes
 alongside VM/allocation faults, retaining exact C-to-JNI result checks.
+
+2026-09-16: expanded the existing JNI camera fuzz target with a decoder mode:
+four bounded controls followed by actual packet bytes. It varies valid/invalid
+networks, VM call failure, allocation refusal, pending/null entry and partial
+read/write lengths. Exact C decoder output is the transport oracle; input
+immutability, complete output/tail/canary checks, full native erasure and release
+before VM result allocation remain mandatory. Existing 13-byte packing inputs
+retain their interpretation. The registered test adds deterministic control,
+partial-transfer, malformed-header and length cases.
+
+A temporary wrong-network JNI mutation in ignored scratch forces every decoder
+request to mainnet. The old fixture accepts it; the final expanded fixture
+rejects it with the expected assertion. No production source was mutated.
+The reference is not independent QR recognition; existing C camera/QR fuzzers
+retain that separate role. The per-hazard source review is in C_SAFETY_REVIEW.md.
+
+The first two fuzz attempts timed out while running the complete added fixed
+matrix as the first empty input. An exact full-buffer guard comparison replaces
+an equivalent per-byte loop; the full matrix remains under the registered
+15-second test deadline. Its cases seed separate fuzz invocations under the
+unchanged five-second input limit. The final campaign completes 11,564 executions
+in 121 seconds with no finding, 264 added units and peak RSS 260 MiB against a
+512 MiB cap. Maximum admitted fuzz length is 147,465 bytes. Both timeout logs
+and empty inputs are preserved rather than classified as decoder findings.
+
+The final default C safety run passes 92 sanitizer groups (69.90 seconds),
+Clang/GCC source/provider analysis and production/test complexity caps 10/15.
+Both fixture modes separately pass Clang/GCC analysis. The affected integer-
+sanitation profile passes (1.47 seconds). Actual compile commands qualify
+sanitizers/fail-on-finding on 156 authored/provider compilations and fuzz
+coverage on 106 library/fuzz compilations. Strict NDK builds pass for x86-64 and
+ARM64; exact-hash transferred x86-64 fixtures pass on API30/35/36. The new
+fuzz_decode_case frame is 1640/1728 bytes on x86-64/ARM64. No ARM64 runtime claim.
+Architecture passes; pre-existing root-lint failures remain unresolved.
+
+Only tests and review notes change. A source-only build from tree
+fa7ef35a550f92e7a24f8404ccdaf091bb152353 reproduces the prior 612,823-byte unsigned
+APK exactly; the commit matches that app source except this progress note.
+SHA256 `1461305ec4d515011000cf85d40208086f9038d8b086cf9754bcee9599e04985`.
+Evidence: `.cache/android-wallet/resume-20260916/jni-decoder-fuzz/`.
+Hardware custody, physical-camera acceptance and the parked TLS candidate remain
+unqualified. Next: reconcile stale custody process/deadline documentation with
+the actual manifest and setup clock, then check the build enforces those bounds.

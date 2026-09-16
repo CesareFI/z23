@@ -2517,3 +2517,34 @@ checks remain enabled. Native fixtures pass x86-64 API30/35/36 after exact trans
 hash checks; ARM64 is compile-only. Real Android JNI/isolation and actual camera
 acceptance, APK reproduction and remaining limits are recorded in PROGRESS.md.
 Evidence: `.cache/android-wallet/resume-20260915/jni-decoder-retirement/`.
+
+## JNI decoder fuzz transport review — 2026-09-16
+
+Scope: `native/tests/test_jni_camera.c` only. The existing target now combines
+actual packet bytes with network selection, VM/allocation faults and partial
+reads/writes. No production C, provider, JNI ABI, consensus or custody predicate
+changes. The C decoder is the JNI transport/result oracle; it is not an
+independent implementation of QR recognition or payment parsing.
+
+| Required hazard | Reviewed control |
+| --- | --- |
+| Buffer overflow/underflow and out-of-bounds access | Four control bytes precede a checked 0..147461-byte packet. Length is checked before subtraction/copy. The fake array advertises exactly its real static backing span. Guard comparison covers the full result capacity and both external canaries. Partial transfers clip to the validated VM count. |
+| Integer overflow/underflow | `size - 4` follows the lower bound; `length + 1` follows the packet maximum. Fixed seed length is at least five before `- 1`, and its upper bound proves `+ 4` fits. Loops and fault/selector tables have fixed small bounds. |
+| Signed/unsigned conversions | Packet lengths fit positive jsize. Invalid signed networks are passed to JNI, but only explicit 0/1 become reference enums. Returned VM length must equal the bounded expected length; successful output also requires positive length. Strict conversion warnings remain errors. |
+| Use-after-free, double-free and leaks | Existing allocation hooks require one live JNI allocation, full erasure before its exact free and no owner remaining after every call. Static borrowed input remains alive and must be byte-identical afterward. The reference decoder's independent allocations retain sanitizer/leak checks. |
+| NULL dereferences and dangling pointers | Null environment/input are explicit cases and must refuse. Fake VM callbacks validate array identity. The reference result is a local initialized struct used only during the call; static input/output owners do not expire or escape. |
+| Uninitialized memory | Reference results initialize to zero; copied input has an exact initialized span. VM destinations initialize to 0xa5, native allocations to a distinct marker. Partial-read failures must erase both copied and untouched native bytes. Expected guard output is fully initialized on each comparison. |
+| Pointer arithmetic | Payload offsets follow the four-byte prefix check. No pointer casts into serialized structs or unbounded pointer arithmetic. Empty spans use valid static/one-past spans without dereference. |
+| Format strings | Diagnostics and seed fixtures contain only fixed public text. Fuzz bytes never become a format string or log payload. |
+| Stack usage and allocation limits | The bounded scanned-request struct is local; large backing/guard/seed arrays are static and single-threaded. Strict 4096-byte frame checks remain. Additional static storage is 294922 bytes in the fuzz target, plus 147465 bytes for the registered test's fixed matrix; none enters the application APK. |
+| Malformed serialization/network input | Pixel bytes, canonical packet headers/lengths and invalid networks vary independently of VM faults. JNI results must match exact C text or preserve the full untouched/partially written destination. The fixed matrix includes truncated/extended packets and each corrupted header byte. No networking or wallet operation occurs. |
+| Races and resource exhaustion | This fixture is single-threaded per process, with no shared cross-process state. Bounds remain one JNI allocation, at most five VM calls and one result allocation. The registered suite retains its 15-second limit. The fuzzer retains five seconds per input, a 512 MiB RSS cap and a bounded campaign. |
+| Secret leakage | Only generated public QR/address fixtures and arbitrary fuzz bytes are used. Input immutability, full native erasure before free and retirement before VM output allocation remain explicit assertions. No seed, key, provider handle or operator state is loaded. |
+
+The first two fuzz attempts charged the entire newly added fixed decoder matrix
+to the first empty input and exceeded its five-second limit. Full-buffer guard
+comparison replaced an equivalent per-byte assertion loop; the complete fixed
+matrix remains in the registered test. Fuzzing receives those packet/fault cases
+as individual seeds under the unchanged per-input limit. No acceptance assertion
+or deadline was relaxed. Logs and empty timeout artifacts are preserved under
+`.cache/android-wallet/resume-20260916/jni-decoder-fuzz/`.
