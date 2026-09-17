@@ -1,5 +1,45 @@
 # Development record
 
+## Bounded transaction Merkle-path consistency — 2026-09-17
+
+The internal C `zcl_merkle_branch_check` now checks a transaction-ID path against
+an explicit root and claimed uint32 tree width/index. Display-order hashes convert
+to original raw uint256 order before ordered SHA256d pairs. Exact depth, valid
+index, odd-width last-node self-copy and unequal actual siblings on the path are
+required. Work is at most32 pairs/64 hashes, without allocation or retained state.
+This establishes conditional hash-path consistency only. Count/root authority,
+leaf-versus-internal-node meaning, off-path uniqueness, chain acceptance,
+freshness, maturity and unspentness remain unproven. No JNI, send or node predicate
+changes; TLS and custody gates remain intact.
+
+Pinned original `14a83d510` block/partial-Merkle/uint256 sources were inspected as
+Git objects and SHA256-recorded. Its partial extractor uses a200000-byte block
+constant and /60 count guard; this bounded helper deliberately introduces no
+block-size/height validity rule. The path checks follow the original byte order,
+ordering, odd-width behavior and partial-extractor equal-sibling refusal.
+
+Independent full-tree fixtures exercise every leaf for widths1..65, boundaries
+around every uint32 power of two and a32-level UINT32_MAX path with synthetic
+subtree commitments. OpenSSL-generated roots reproduce exactly. All64 dirty
+hash-provider failure positions and complete scratch retirement pass. Nine
+byte-order/depth/width/duplication/side/hash/root/wipe/provider mutations fail.
+The mutation generator initially expanded awk replacement ampersands into invalid
+C; direct line assignment corrected that harness error before the full rerun.
+OpenSSL differential fuzzing completes224959 executions in61 seconds, no finding.
+
+The isolated `87f19cbe7` snapshot plus ten SHA256-recorded native files passes
+TLS-off analysis/complexity,129 Clang sanitizer/oracle and124 optimized GCC
+sanitizer groups. Optimized Clang/GCC frames measure248/272 bytes. Android/JVM,
+debug/minified release, lint, fixture/result isolation and16KiB gates pass
+(155 tasks). Normal and dirty-provider fixtures linked to release-built archives
+pass API30/35/36 x86_64 with owned temporary-path cleanup; ARM64 builds only.
+Evidence: `.cache/android-wallet/mission-20260917/transaction-merkle/`.
+
+Next: factor the existing serialized-header checks into an owned raw-header
+inspection result, pin hash/previous/Merkle byte order against original genesis
+fixtures, and compose exact source/outpoint/header commitment checks. Keep
+structural/hash evidence distinct from authenticated chain/unspentness and send.
+
 ## Full-source review foreground and restart qualification — 2026-09-17
 
 The existing display, rendering-failure, Activity-lifecycle and process-relaunch

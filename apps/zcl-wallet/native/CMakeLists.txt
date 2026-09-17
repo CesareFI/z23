@@ -116,7 +116,8 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
     src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
     src/transaction_review_wire_encode.c src/transaction_review_complete.c src/transaction_review_sign.c
-    src/transaction_draft.c src/transaction_draft_check.c src/transaction_source.c)
+    src/transaction_draft.c src/transaction_draft_check.c src/transaction_source.c
+    src/transaction_merkle.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -1367,7 +1368,43 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
     add_test(NAME wallet_source_draft_contract COMMAND source_draft_contract_tests)
     set_tests_properties(wallet_source_draft_contract PROPERTIES TIMEOUT 30)
+    add_executable(merkle_tests tests/test_merkle.c tests/merkle_fixture.c)
+    target_include_directories(merkle_tests PRIVATE src)
+    target_link_libraries(merkle_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_options(merkle_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_merkle_branch COMMAND merkle_tests)
+    set_tests_properties(wallet_merkle_branch PROPERTIES TIMEOUT 30)
+    add_executable(merkle_failure_tests tests/test_merkle_failures.c tests/merkle_fixture.c src/transaction_merkle.c)
+    target_include_directories(merkle_failure_tests PRIVATE src)
+    target_link_libraries(merkle_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_definitions(merkle_failure_tests PRIVATE mbedtls_sha256=zcl_merkle_test_sha
+        zcl_secure_zero=zcl_merkle_test_zero)
+    target_compile_options(merkle_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_merkle_failures COMMAND merkle_failure_tests)
+    set_tests_properties(wallet_merkle_failures PROPERTIES TIMEOUT 30)
+    if(ZCL_ORACLE)
+        target_compile_definitions(merkle_tests PRIVATE ZCL_MERKLE_ORACLE=1)
+        target_link_libraries(merkle_tests PRIVATE OpenSSL::Crypto)
+        add_executable(seed_merkle_vectors tests/seed_merkle_vectors.c tests/merkle_fixture.c)
+        target_include_directories(seed_merkle_vectors PRIVATE src)
+        target_compile_definitions(seed_merkle_vectors PRIVATE ZCL_MERKLE_ORACLE=1)
+        target_link_libraries(seed_merkle_vectors PRIVATE zcl_wallet_core OpenSSL::Crypto)
+        target_compile_options(seed_merkle_vectors PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    endif()
     if(ZCL_FUZZ)
+        add_executable(fuzz_merkle tests/fuzz_merkle.c tests/merkle_fixture.c)
+        target_include_directories(fuzz_merkle PRIVATE src)
+        target_link_libraries(fuzz_merkle PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_compile_options(fuzz_merkle PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(fuzz_merkle PRIVATE -fsanitize=fuzzer,address,undefined)
+        if(ZCL_ORACLE)
+            target_compile_definitions(fuzz_merkle PRIVATE ZCL_MERKLE_ORACLE=1)
+            target_link_libraries(fuzz_merkle PRIVATE OpenSSL::Crypto)
+        endif()
         add_executable(fuzz_source_draft tests/fuzz_draft.c tests/source_assessment_fixture.c
             tests/draft_fixture.c tests/assessment_fixture.c)
         target_link_libraries(fuzz_source_draft PRIVATE zcl_wallet_core zcl_hash_provider)

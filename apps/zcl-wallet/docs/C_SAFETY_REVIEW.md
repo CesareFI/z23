@@ -1,5 +1,28 @@
 # C parser foundation safety review
 
+## Bounded transaction Merkle-path consistency — 2026-09-17
+
+Scope: internal C branch checker, original-source audit, independent full-tree/
+OpenSSL fixtures, generated public roots, dirty-provider retirement and fuzzing.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Fixed32 sibling slots; count/depth admission precedes iteration. Hashes use32 bytes, pairs64, offsets only0/32. Reverse indices remain0..31. All leaves of trees1..65 and every uint32 depth boundary pass. |
+| Integer overflow/underflow, signed/unsigned conversions | Width halving uses width/2+width%2, safe at UINT32_MAX. Index remains below width; XOR1 selects sibling position without addition. At most32 levels and64 hashes. The sole offset conversion maps a uint32 bit to size_t before bounded multiplication. |
+| Use-after-free, double-free, leaks | No allocation/free, owned global state or escaped pointer. Provider one-shot contexts retain existing provider cleanup. Whole local work clears on root/shape/hash failure after entry and on success; LSan and all64 dirty-output positions pass. |
+| NULL dereferences, uninitialized memory | ID/branch/root null checks precede access. Work initializes fully. Failed provider output cannot be accepted and always retires. Argument refusals do no hashing or work-object initialization. |
+| Dangling pointers, pointer arithmetic | Stable caller-owned ID/root/branch spans are read synchronously and remain unchanged. Pair offsets stay inside the64-byte array. Fuzzer byte mutation addresses the whole sibling-array object, not beyond its first row. No source pointer is retained. |
+| Format strings, secret leakage | No production formatting/logging, key material or wallet access. Full160-byte work retires, including current/sibling/pair/first-hash scratch. Live observers qualify provider outputs inside the cleared region; no compiler-spill erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion, heap or input-sized automatic object. Optimized Clang/GCC entry frames248/272 bytes. At most64 provider calls independent of claimed width; no performance optimization or total nested-stack claim. |
+| Malformed serialization/network input | Exact declared shape, valid index, canonical odd-width path duplication and final root are checked. Equal real siblings on this path refuse. The count/root remain supplied claims; no off-path uniqueness, leaf/domain separation, header/consensus/chain/freshness/unspentness authority follows. This adds no network parser or block predicate. |
+| Races, resource exhaustion | No global production state, lock, callback, I/O or retry. Caller spans must stay stable during one bounded call. No JNI owner, source-status promotion, consent or signing path changes. |
+
+Nine mutations fail. Ten exact native files pass TLS-off analysis/complexity,
+129 Clang sanitizer/oracle and124 GCC sanitizer groups. OpenSSL differential
+fuzzing completes224959 runs without a finding. Public vector generation is
+byte-reproducible. Android155-task gates and normal/fault release-archive fixtures
+pass API30/35/36 x86_64; ARM64 builds only. Existing custody and chain gates remain.
+
 ## Single-call full-source preparation — 2026-09-17
 
 Scope: explicit JNI/managed preparation, reused source-copy owner and draft

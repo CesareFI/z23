@@ -1,5 +1,46 @@
 # Transparent transaction development
 
+## Bounded Merkle-path consistency
+
+The internal `zcl_merkle_branch_check` accepts a displayed transaction ID,
+displayed expected root and a fixed-capacity branch with claimed uint32 count,
+index and up to32 displayed sibling hashes, leaf level first. It requires
+nonzero count, index<count, exact depth, final-node self-copy only at odd widths,
+and unequal actual siblings along the path. Raw little-endian uint256 storage
+bytes form each ordered64-byte SHA256d pair. Count halving avoids overflow even
+at UINT32_MAX; work is bounded to64 hash calls, with no heap, I/O or retained
+pointer. Complete work scratch clears after success and any entered failure.
+
+Success proves only this hash path under the supplied shape/root. A header does
+not separately commit the claimed count, and a path alone does not distinguish
+a transaction leaf from an internal node or establish off-path uniqueness.
+No block-size/height rule, consensus validity, accepted-chain inclusion,
+freshness, maturity, unspentness, ownership, consent or signing authority is
+established. No caller status is upgraded to authenticated funding. Header
+inspection and exact source/outpoint/header composition remain separate work.
+
+References are Git objects at original Zclassic `14a83d510ffd109d3fa09bf74ebf8c28854a263f`:
+`src/primitives/block.cpp` (`GetMerkleBranch`, `CheckMerkleBranch`),
+`src/merkleblock.cpp` (partial extraction) and `src/uint256.cpp` (`GetHex`).
+Their SHA256 values are respectively
+`87ca0c104fd6c6c03e6b64c30218ff65c723cd430cbfc05bcb4215a3ab8d2ea2`,
+`d4018af26901efd1c4aef2c7498a99a08cf592e6fb804786440fef6cd9115f16` and
+`c7b3388336fdc696c022f71d0ce1ce30a954b78586ebbaa0bb489b8bb4ea40f1`.
+The original partial extractor also applies its200000-byte block constant /60
+count guard; the helper above is a bounded hash primitive, not that network
+message parser or a replacement consensus predicate. The full-block builder and
+partial extractor have different mutation-detection scopes; this checker sees
+only the supplied path. Original MIT notice is in `transaction-reference.LICENSE`.
+
+`seed_merkle_vectors` in a `ZCL_ORACLE=ON` host build prints the exact committed
+`native/tests/merkle_vectors.h` using OpenSSL. Inputs are public synthetic labels
+and opaque subtree commitments, never real block/transaction validity fixtures.
+The normal tests cover all leaves of full trees up to65 entries and uint32
+boundaries; the oracle profile independently hashes through OpenSSL. Nine
+mutations and every hash-provider failure position qualify exact shape and
+retirement. Differential fuzzing and release-archive runtime tests pass; ARM64
+remains build-only evidence.
+
 ## Single-call managed full-source preparation
 
 `UnsignedReview.prepareFullSources` takes explicit funding selections and intended
