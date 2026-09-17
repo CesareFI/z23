@@ -124,6 +124,23 @@ class UnsignedReview private constructor(private var id: Long, clock: () -> Long
         @Synchronized fun open(draft: ByteArray, previous: Array<ByteArray>, network: Network,
                                maximumFee: Zatoshi, clock: () -> Long): UnsignedReview {
             val result = NativeCore.openReview(draft, previous, network.nativeId, maximumFee.value, clock())
+            return ownOpened(result, clock)
+        }
+
+        /** Explicit offline inspection of a bounded unsigned draft funded by
+         * full v4 source bytes (including opaque shielded components). Inputs
+         * remain stable for this call; C captures/copies at most eight sources
+         * of 102000 bytes and retains only the checked review data. Proofs and
+         * signatures in sources are not verified. No chain/unspentness, custody,
+         * consent, signing or broadcast authority. Same foreground-only lifetime.
+         */
+        @Synchronized fun openFullSources(draft: ByteArray, previous: Array<ByteArray>, network: Network,
+                                          maximumFee: Zatoshi, clock: () -> Long): UnsignedReview {
+            val result = NativeCore.openFullSourceReview(draft, previous, network.nativeId, maximumFee.value, clock())
+            return ownOpened(result, clock)
+        }
+
+        private fun ownOpened(result: Long, clock: () -> Long): UnsignedReview {
             if (result <= 0) {
                 check(result in -Int.MAX_VALUE.toLong()..-1L) { "Invalid native review ID" }
                 throw UnsignedReviewFailure(CoreStatus.fromCode((-result).toInt()))

@@ -25,7 +25,8 @@ zcl_status zcl_review_prepare_full_sources(const uint8_t *wire, size_t length,
  * validity, inclusion, maturity, unspentness, custody, ownership, user consent
  * or authority to sign/broadcast is established. Internal signing operations
  * still require ALL their independently qualified external prerequisites.
- * No JNI/UI caller yet. Delayed delivery must recheck this exact live owner. */
+ * The JNI adapter owns source copies for this call. Delayed delivery must
+ * recheck this exact live owner; no UI consent or send action is supplied. */
 zcl_status zcl_review_open_full_sources(zcl_review_owner *owner,
     const uint8_t *wire, size_t length, zcl_network network,
     const zcl_previous_transaction *previous, size_t previous_count,

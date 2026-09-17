@@ -1,5 +1,29 @@
 # C parser foundation safety review
 
+## Bounded JNI full-source review — 2026-09-17
+
+Scope: `jni_full_review.c`, explicit JNI/managed opening, shared mutex routing,
+native fake-VM fixtures, public C-generated resources and JVM/Android tests.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Capture validates1..8 rows and1..102000 bytes each. Remaining-cap checks bound aggregate/offset copies; fixed draft capacity stays1925. Tests cover zero/negative/oversized counts, exact816000-byte aggregate, over-limit sources and partial JNI writes. |
+| Integer overflow/underflow, signed/unsigned conversions | Positive jsize is checked before size_t conversion. Static assertions prove aggregate multiplication and source-to-jsize fit. Total uses SOURCE_TOTAL_MAX-total; each copy uses total-used before pointer addition and advancement. |
+| Use-after-free, double-free, leaks | One positive checked allocation, one cleanup path, one free. All local Java refs release even when a JNI exception accompanies a non-null ref. Pointer metadata clears while copied bytes remain live; bytes wipe before free. LSan, failures and entry/free observers qualify ownership. |
+| NULL dereferences, uninitialized memory | Shared JNI entry checks env/draft/source/network/time/fee before locking. Captured refs, work and draft initialize fully. Every JNI result/exception and malloc result is checked. Allocated bytes initialize before region copies; partial dirty writes cannot publish a review. |
+| Dangling pointers, pointer arithmetic | Arrays are captured once so outer-array replacement cannot substitute later rows. Native sources point only inside one owned allocation and are used synchronously. Java refs retire before C preparation; draft and source metadata retire before free. Caller arrays must remain stable during the call. |
+| Format strings, secret leakage | No new product native logging/formatting or secret/key path. Inputs/results are public transaction data. Complete draft, copied source bytes and pointer metadata clear on all entered cleanup paths; no compiler-spill erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion or source-sized stack object. One source allocation uses exact checked total<=816000, serialized under the process owner lock. Fixture allocation is6652 bytes. Optimized frames2296/2400 bytes with Clang/GCC remain below4096; no total nested-stack or general performance claim. |
+| Malformed serialization/network input | C owns parsing, exact identity/index matching, unsigned-current profile, destinations, totals and fee policy. Legacy JNI opening keeps its original limits. Opaque proofs/signatures establish no chain/ownership/consent authority. Source failures preserve owner/ID and pending VM exceptions. |
+| Races, resource exhaustion | Both openings share the existing process mutex, BUSY rule and non-repeating IDs. At most8 JNI refs and bounded copies; no critical/pinned Java byte pointer, callback, I/O or retry. Replacement/stale IDs and expiry/rollback remain checked. Managed read/clock failures close their owner; real-VM tests cover profile contention and recovery after failure. |
+
+Eight mutations fail deterministic regressions. Complete isolated TLS-off gates
+pass125 Clang/oracle and120 GCC sanitizer groups; the final entry observer also
+passes focused profiles. Final JNI fuzzing completes18163 runs without a finding.
+Four JVM tests pass with `-Xcheck:jni`; eight debug instrumentation tests per
+API30/35/36 pass with no skips. Debug/minified-release and16KiB gates pass.
+ARM64 remains compile-only; hardware custody and authenticated-chain gates remain.
+
 ## Owned full-source review lifecycle — 2026-09-17
 
 Scope: explicit internal full-source opening/preparation, shared legacy bodies,

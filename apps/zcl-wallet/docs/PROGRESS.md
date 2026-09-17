@@ -1,5 +1,44 @@
 # Development record
 
+## Bounded JNI full-source review — 2026-09-17
+
+The managed `UnsignedReview.openFullSources` operation now reaches the explicit
+C full-source review lifecycle. JNI captures all source refs/lengths first,
+checks1..8 rows of1..102000 bytes and total<=816000, then allocates exactly the
+sum. Java refs retire before C preparation. Draft and pointer metadata clear
+before the source allocation wipes/frees, including partial-copy exceptions,
+allocation failure and C refusal. Existing opening/preparation stay narrow;
+both profiles share the same mutex, owner and replacement/expiry rules. No
+new send action, chain evidence, key access, consent or TLS authority is added.
+
+The native fake-VM fixture now exercises both profiles, exact allocation size,
+all length/element/region failures, non-null references with pending exceptions,
+reference replacement during allocation, maximum816000-byte copying and cleanup
+order. An entry observer proves no Java references remain before C preparation
+and all source spans belong to the one allocation. Initial fixture failures
+identified legacy-only entry selection, fixed allocation assumptions and stale
+per-call counters in the expanded harness; those were corrected without changing
+product refusals or assertions. Eight allocation/cap/index/exception/ref/cleanup
+mutations fail. Final JNI fuzzing with the entry observer completes18163
+executions in46 seconds; an earlier run completed27812, neither with a finding.
+
+The isolated `c08834da4` snapshot passes TLS-off static analysis/complexity,
+125 Clang sanitizer/oracle and120 optimized GCC sanitizer groups. The final
+ownership observer passes focused Clang/GCC gates and complexity. Fourteen
+final source/resource files are SHA256-recorded. The new adapter's optimized
+frames measure2296 bytes with Clang and2400 with GCC. Four JVM tests pass under
+`-Xcheck:jni`; the155-task Android/JVM/debug/release/minification/lint/fixture/
+16KiB gates pass and are rechecked after final test qualification. Eight real
+instrumentation tests (three full-source, five legacy) pass without skips on
+each API30/35/36 x86_64 emulator against SHA256-recorded final debug APKs.
+Minified release builds only; ARM64 builds only. Public C-generated fixture
+bytes reproduce exactly with `seed_full_review`. Evidence:
+`.cache/android-wallet/mission-20260917/jni-full-review/`.
+
+Next: explicit full-source draft construction from chosen funding/outputs,
+followed by foreground/UI lifecycle qualification. Keep hardware custody,
+authenticated chain/unspentness and send gates open. TLS stays quarantined.
+
 ## Owned full-source review lifecycle — 2026-09-17
 
 An explicit internal opening operation now composes full-v4 source assessment

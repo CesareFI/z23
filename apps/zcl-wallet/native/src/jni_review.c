@@ -73,20 +73,36 @@ static zcl_status opening_arguments(JNIEnv *env, jbyteArray draft, jobjectArray 
     return zcl_jni_network(chain, network);
 }
 
-JNIEXPORT jlong JNICALL
-Java_org_zclassic_wallet_core_NativeCore_openReview(JNIEnv *env, jclass type,
-    jbyteArray draft, jobjectArray previous, jint chain, jlong fee, jlong now)
+static jlong open_review(JNIEnv *env, jbyteArray draft, jobjectArray previous,
+    jint chain, jlong fee, jlong now, bool full_sources)
 {
-    (void)type;
     zcl_network network;
     zcl_status status = opening_arguments(env, draft, previous, chain, fee, now, &network);
     if (status != ZCL_OK) return -(jlong)status;
     if (pthread_mutex_lock(&review_lock) != 0) return -(jlong)ZCL_IO_FAILURE;
     uint64_t id = 0;
-    status = review.data.id != 0 ? ZCL_BUSY
-        : open_copied(env, draft, previous, network, (uint64_t)fee, (uint64_t)now, &id);
+    if (review.data.id != 0) status = ZCL_BUSY;
+    else if (full_sources)
+        status = zcl_jni_open_full_review(env, &review, draft, previous, network, (uint64_t)fee, (uint64_t)now, &id);
+    else status = open_copied(env, draft, previous, network, (uint64_t)fee, (uint64_t)now, &id);
     status = unlock_review(status);
     return status == ZCL_OK ? (jlong)id : -(jlong)status;
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_zclassic_wallet_core_NativeCore_openReview(JNIEnv *env, jclass type,
+    jbyteArray draft, jobjectArray previous, jint chain, jlong fee, jlong now)
+{
+    (void)type;
+    return open_review(env, draft, previous, chain, fee, now, false);
+}
+
+JNIEXPORT jlong JNICALL
+Java_org_zclassic_wallet_core_NativeCore_openFullSourceReview(JNIEnv *env, jclass type,
+    jbyteArray draft, jobjectArray previous, jint chain, jlong fee, jlong now)
+{
+    (void)type;
+    return open_review(env, draft, previous, chain, fee, now, true);
 }
 
 JNIEXPORT jint JNICALL

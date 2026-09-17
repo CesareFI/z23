@@ -3,9 +3,13 @@
 #undef free
 #undef zcl_secure_zero
 #undef zcl_review_snapshot_get
+#undef zcl_review_open_full_sources
 #include "jni_review_internal.h"
+#include "transaction_review_internal.h"
 #include "zcl_keys.h"
 #include "assessment_fixture.h"
+#include "source_assessment_fixture.h"
+#include "transaction_source_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +17,7 @@
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "JNI review check failed at %d\n", __LINE__); abort(); } } while (0)
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
 JNIEXPORT jlong JNICALL API(openReview)(JNIEnv *, jclass, jbyteArray, jobjectArray, jint, jlong, jlong);
+JNIEXPORT jlong JNICALL API(openFullSourceReview)(JNIEnv *, jclass, jbyteArray, jobjectArray, jint, jlong, jlong);
 JNIEXPORT jint JNICALL API(cancelReview)(JNIEnv *, jclass, jlong);
 JNIEXPORT jlongArray JNICALL API(reviewSnapshot)(JNIEnv *, jclass, jlong, jlong);
 JNIEXPORT jbyteArray JNICALL API(reviewWire)(JNIEnv *, jclass, jlong, jlong);
@@ -24,19 +29,26 @@ typedef struct fake_array {
     jsize length;
     array_kind kind;
     union {
-        uint8_t bytes[ZCL_TX_WIRE_MAX + 1];
+        uint8_t bytes[ZCL_V4_SOURCE_MAX + 1];
         jlong numbers[ZCL_REVIEW_PACKET_MAX];
         struct fake_array *objects[ZCL_TX_INPUT_MAX];
     } data;
 } fake_array;
 static fake_array *references[64];
+static fake_array *captured[ZCL_TX_INPUT_MAX];
 static size_t reference_count, borrowed;
 static bool pending, fail_malloc, fail_set;
+static bool element_with_exception;
 /* New-array faults: 0=none, 1=NULL+exception, 2=array+exception, 3=NULL only. */
 static unsigned fail_new, fail_length, fail_element, fail_region;
 static void (*allocation_hook)(void);
 static void *owned_inputs;
+static size_t owned_size, last_allocation_size;
+static bool full_sources;
+static unsigned source_clears, draft_clears;
+static void (*input_allocation_hook)(void);
 static assessment_fixture fixture;
+static source_assessment_fixture full_fixture;
 static uint8_t draft[ZCL_TX_WIRE_MAX];
 static size_t draft_length;
 static uintptr_t snapshot_identity, output_identity;
@@ -45,6 +57,25 @@ static unsigned snapshot_reads, snapshot_clears, number_clears, wire_clears;
 zcl_status zcl_jni_review_test_snapshot(zcl_review_owner *owner, uint64_t id, uint64_t now,
     zcl_review_snapshot *snapshot);
 void zcl_jni_review_test_zero(void *buffer, size_t length);
+zcl_status zcl_jni_review_test_full_open(zcl_review_owner *owner, const uint8_t *wire, size_t length,
+    zcl_network network, const zcl_previous_transaction *sources, size_t count,
+    uint64_t fee, uint64_t now, uint64_t *id);
+
+zcl_status zcl_jni_review_test_full_open(zcl_review_owner *owner, const uint8_t *wire, size_t length,
+    zcl_network network, const zcl_previous_transaction *sources, size_t count,
+    uint64_t fee, uint64_t now, uint64_t *id)
+{
+    CHECK(full_sources && borrowed == 0 && owned_inputs != NULL);
+    CHECK(source_clears == 0 && draft_clears == 0 && count > 0 && count <= ZCL_TX_INPUT_MAX);
+    size_t used = 0;
+    for (size_t i = 0; i < count; ++i) {
+        CHECK(sources[i].wire == (const uint8_t *)owned_inputs + used);
+        CHECK(sources[i].length <= owned_size - used);
+        used += sources[i].length;
+    }
+    CHECK(used == owned_size);
+    return zcl_review_open_full_sources(owner, wire, length, network, sources, count, fee, now, id);
+}
 
 zcl_status zcl_jni_review_test_snapshot(zcl_review_owner *owner, uint64_t id, uint64_t now,
     zcl_review_snapshot *snapshot)
@@ -62,9 +93,12 @@ void zcl_jni_review_test_zero(void *buffer, size_t length)
     const uint8_t *bytes = buffer;
     for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
     if (buffer == owned_inputs) {
-        CHECK(length == sizeof(zcl_jni_review_inputs));
+        CHECK(length == owned_size);
+        if (full_sources) CHECK(source_clears == 1 && draft_clears == 1 && borrowed == 0);
         return;
     }
+    if (full_sources && length == sizeof(zcl_jni_full_sources)) { CHECK(source_clears++ == 0 && borrowed == 0); return; }
+    if (full_sources && length == ZCL_TX_WIRE_MAX) { CHECK(draft_clears++ == 0); return; }
     if ((uintptr_t)buffer == snapshot_identity) {
         CHECK(length == sizeof(zcl_review_snapshot));
         snapshot_identity = 0;
@@ -101,11 +135,26 @@ static jbyteArray wire_read(JNIEnv *env, jclass type, jlong id, jlong now)
 
 void *zcl_jni_review_test_malloc(size_t size)
 {
-    CHECK(size == sizeof(zcl_jni_review_inputs) && owned_inputs == NULL);
+    size_t expected_size = sizeof(zcl_jni_review_inputs);
+    if (full_sources) {
+        CHECK(borrowed > 0 && borrowed <= ZCL_TX_INPUT_MAX);
+        expected_size = 0;
+        for (size_t i = 0; i < borrowed; ++i) {
+            CHECK(captured[i] != NULL && captured[i]->length > 0 && (size_t)captured[i]->length <= ZCL_V4_SOURCE_MAX);
+            expected_size += (size_t)captured[i]->length;
+        }
+    }
+    CHECK(size == expected_size && owned_inputs == NULL);
     if (fail_malloc) { fail_malloc = false; return NULL; }
     owned_inputs = malloc(size);
+    owned_size = last_allocation_size = size;
     CHECK(owned_inputs != NULL);
     memset(owned_inputs, 0xa5, size);
+    if (input_allocation_hook != NULL) {
+        void (*hook)(void) = input_allocation_hook;
+        input_allocation_hook = NULL;
+        hook();
+    }
     return owned_inputs;
 }
 
@@ -113,8 +162,10 @@ void zcl_jni_review_test_free(void *pointer)
 {
     CHECK(pointer != NULL && pointer == owned_inputs);
     const uint8_t *bytes = pointer;
-    for (size_t i = 0; i < sizeof(zcl_jni_review_inputs); ++i) CHECK(bytes[i] == 0);
+    for (size_t i = 0; i < owned_size; ++i) CHECK(bytes[i] == 0);
+    if (full_sources) CHECK(source_clears == 1 && draft_clears == 1 && borrowed == 0);
     owned_inputs = NULL;
+    owned_size = 0;
     free(pointer);
 }
 
@@ -129,7 +180,7 @@ static bool fails(unsigned *ordinal)
 
 static fake_array *array_new(jsize length, array_kind kind)
 {
-    const size_t maximum = kind == BYTES ? ZCL_TX_WIRE_MAX + 1 :
+    const size_t maximum = kind == BYTES ? ZCL_V4_SOURCE_MAX + 1 :
         (kind == NUMBERS ? ZCL_REVIEW_PACKET_MAX : ZCL_TX_INPUT_MAX);
     CHECK(length >= 0 && (size_t)length <= maximum);
     CHECK(reference_count < sizeof(references) / sizeof(references[0]));
@@ -146,10 +197,13 @@ static void release_references(void)
     CHECK(owned_inputs == NULL && borrowed == 0);
     CHECK(snapshot_identity == 0 && output_identity == 0 && snapshot_reads == snapshot_clears);
     snapshot_reads = snapshot_clears = number_clears = wire_clears = 0;
+    source_clears = draft_clears = 0;
     CHECK(allocation_hook == NULL);
+    CHECK(input_allocation_hook == NULL);
     for (size_t i = 0; i < reference_count; ++i) { free(references[i]); references[i] = NULL; }
     reference_count = 0;
     pending = fail_malloc = fail_set = false;
+    element_with_exception = false;
     fail_new = 0;
     fail_length = fail_element = fail_region = 0;
 }
@@ -174,9 +228,9 @@ static jobject JNICALL get_element(JNIEnv *env, jobjectArray input, jsize index)
     const fake_array *array = (fake_array *)input;
     CHECK(array != NULL && array->kind == OBJECTS && !pending);
     CHECK(index >= 0 && index < array->length && (size_t)index < ZCL_TX_INPUT_MAX);
-    if (fails(&fail_element)) return NULL;
+    if (fails(&fail_element) && !element_with_exception) return NULL;
     fake_array *element = array->data.objects[(size_t)index];
-    if (element != NULL) ++borrowed;
+    if (element != NULL) { CHECK(borrowed < ZCL_TX_INPUT_MAX); captured[borrowed++] = element; }
     return (jobject)element;
 }
 
@@ -185,6 +239,7 @@ static void JNICALL delete_reference(JNIEnv *env, jobject reference)
     (void)env;
     CHECK(reference != NULL && borrowed > 0);
     --borrowed; /* Allowed with a pending exception, as in the actual VM. */
+    if (borrowed == 0) memset(captured, 0, sizeof(captured));
 }
 
 static fake_array *region(jarray input, jsize offset, jsize count, array_kind kind)
@@ -275,7 +330,7 @@ static fake_array *java_draft, *java_previous;
 
 static fake_array *bytes(const uint8_t *data, size_t length)
 {
-    CHECK(length <= ZCL_TX_WIRE_MAX + 1);
+    CHECK(length <= ZCL_V4_SOURCE_MAX + 1);
     fake_array *array = array_new((jsize)length, BYTES);
     memcpy(array->data.bytes, data, length);
     return array;
@@ -293,6 +348,10 @@ static void java_inputs(void)
 static void setup(void)
 {
     CHECK(reference_count == 0 && assessment_fixture_init(&fixture));
+    if (full_sources) {
+        CHECK(source_assessment_init(&full_fixture, 7));
+        fixture = full_fixture.base;
+    }
     fixture.spending.lock_time = UINT32_MAX;
     fixture.spending.expiry_height = ZCL_TX_EXPIRY_LIMIT - 1;
     fixture.spending.inputs[0].sequence = UINT32_C(0x80000000);
@@ -301,8 +360,12 @@ static void setup(void)
 
 static jlong open_review(jlong now)
 {
-    return API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
-        (jint)ZCL_MAINNET, 500, now);
+    source_clears = draft_clears = 0;
+    const jlong result = full_sources
+        ? API(openFullSourceReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, 500, now)
+        : API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, 500, now);
+    if (full_sources) CHECK(source_clears == draft_clears && borrowed == 0 && owned_inputs == NULL);
+    return result;
 }
 
 static void hash_matches(const jlong *words, const uint8_t *expected, size_t length)
@@ -341,8 +404,10 @@ static void snapshot_matches(fake_array *array, jlong remaining)
         hash_matches(row, fixture.spending.inputs[i].previous_txid, 32);
         CHECK(row[8] == fixture.spending.inputs[i].previous_index && row[9] == fixture.spending.inputs[i].sequence);
         zcl_tx_output previous;
-        CHECK(zcl_transaction_prevout(&fixture.spending.inputs[i], fixture.sources[i].wire,
-            fixture.sources[i].length, &previous) == ZCL_OK);
+        const zcl_status status = full_sources
+            ? zcl_v4_source_prevout(&fixture.spending.inputs[i], fixture.sources[i].wire, fixture.sources[i].length, &previous)
+            : zcl_transaction_prevout(&fixture.spending.inputs[i], fixture.sources[i].wire, fixture.sources[i].length, &previous);
+        CHECK(status == ZCL_OK);
         destination_matches(&row[10], &previous);
     }
     for (size_t i = 0; i < outputs; ++i)
@@ -456,16 +521,18 @@ static void publication_races(void)
 
 static void argument_failures(void)
 {
+    jlong (JNICALL *entry)(JNIEnv *, jclass, jbyteArray, jobjectArray, jint, jlong, jlong)
+        = full_sources ? API(openFullSourceReview) : API(openReview);
     setup();
-    CHECK(API(openReview)(NULL, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
+    CHECK(entry(NULL, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
         0, 500, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
-    CHECK(API(openReview)(&vm, NULL, NULL, (jobjectArray)java_previous, 0, 500, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
-    CHECK(API(openReview)(&vm, NULL, (jbyteArray)java_draft, NULL, 0, 500, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
-    CHECK(API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
+    CHECK(entry(&vm, NULL, NULL, (jobjectArray)java_previous, 0, 500, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
+    CHECK(entry(&vm, NULL, (jbyteArray)java_draft, NULL, 0, 500, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
+    CHECK(entry(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
         2, 500, 100) == -(jlong)ZCL_UNSUPPORTED);
-    CHECK(API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
+    CHECK(entry(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
         0, -1, 100) == -(jlong)ZCL_OUT_OF_RANGE);
-    CHECK(API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
+    CHECK(entry(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous,
         0, INT64_MAX, 100) == -(jlong)ZCL_OUT_OF_RANGE);
     CHECK(open_review(-1) == -(jlong)ZCL_OUT_OF_RANGE);
     CHECK(open_review(INT64_MAX - 89999) == -(jlong)ZCL_OUT_OF_RANGE);
@@ -484,7 +551,7 @@ static void argument_failures(void)
     java_previous->data.objects[1] = saved;
     const jsize original_length = saved->length;
     saved->length = (jsize)ZCL_TX_WIRE_MAX + 1;
-    CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE);
+    CHECK(open_review(100) == -(jlong)(full_sources ? ZCL_INVALID_ENCODING : ZCL_OUT_OF_RANGE));
     saved->length = original_length;
     java_draft->length = (jsize)ZCL_TX_WIRE_MAX + 1;
     CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE);
@@ -542,10 +609,73 @@ static void maximum_packet(void)
     release_references();
 }
 
-static void regressions(void)
+static void replace_captured_elements(void)
+{
+    CHECK(borrowed == 2);
+    for (size_t i = 0; i < 2; ++i) java_previous->data.objects[i] = array_new(1, BYTES);
+}
+
+static void captured_sources(void)
+{
+    setup();
+    input_allocation_hook = replace_captured_elements;
+    const jlong id = open_review(100);
+    CHECK(id > 0 && input_allocation_hook == NULL);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, id, 101), 89999);
+    CHECK(API(cancelReview)(&vm, NULL, id) == ZCL_OK);
+    release_references();
+}
+
+static void source_bounds(void)
+{
+    setup();
+    fake_array *first = java_previous->data.objects[0];
+    const jsize length = first->length;
+    first->length = 0;
+    CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE && owned_inputs == NULL && !pending);
+    first->length = (jsize)ZCL_V4_SOURCE_MAX + 1;
+    CHECK(open_review(100) == -(jlong)ZCL_RESOURCE_EXHAUSTED && owned_inputs == NULL && !pending);
+    first->length = length;
+    java_previous->data.objects[1] = NULL;
+    CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT && owned_inputs == NULL && !pending);
+    release_references();
+    setup();
+    java_previous->length = (jsize)ZCL_TX_INPUT_MAX;
+    for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i)
+        java_previous->data.objects[i] = array_new((jsize)ZCL_V4_SOURCE_MAX, BYTES);
+    /* Copy the exact maximum aggregate before the current two-input draft
+     * refuses the eight source rows. Every byte still retires before free. */
+    CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT);
+    CHECK(last_allocation_size == ZCL_TX_INPUT_MAX * ZCL_V4_SOURCE_MAX);
+    CHECK(source_clears == 1 && draft_clears == 1 && borrowed == 0 && owned_inputs == NULL);
+    release_references();
+}
+
+static void exceptional_reference(void)
+{
+    for (unsigned point = 1; point <= 2; ++point) {
+        setup();
+        element_with_exception = true;
+        fail_element = point;
+        CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT);
+        CHECK(pending && borrowed == 0 && owned_inputs == NULL);
+        pending = false;
+        release_references();
+    }
+}
+
+static void profile_regressions(void)
 {
     golden_and_lifetime(); opening_failures(); publication_failures();
     argument_failures(); maximum_packet(); publication_races();
+}
+
+static void regressions(void)
+{
+    profile_regressions();
+    full_sources = true;
+    profile_regressions(); captured_sources(); source_bounds(); exceptional_reference();
+    full_sources = false;
 }
 
 #ifndef ZCL_JNI_REVIEW_FUZZ
@@ -613,6 +743,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if (size > 128) return 0;
     static bool tested;
     if (!tested) { regressions(); tested = true; }
+    full_sources = size != 0 && (data[0] & 1U) != 0;
     setup();
     jlong current = open_review(100), old = 0;
     CHECK(current > 0);

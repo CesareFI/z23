@@ -21,8 +21,12 @@ reuses checked transparent destinations, totals and fee policy. It leaves legacy
 prevout/draft/review/signing admission intact. An explicit internal full-source
 review opening now reuses the owned unsigned lifecycle: complete-only publication,
 fixed expiry, rollback cancellation and non-repeating replacement IDs. Borrowed
-funding bytes retire after opening. Next, qualify bounded JNI source ownership
-and real-VM lifecycle behavior before Android exposure.
+funding bytes retire after opening. `UnsignedReview.openFullSources` now provides
+the bounded JNI path for an already constructed unsigned draft, qualified by
+real-JVM and API30/35/36 instrumentation. It shares the original owner/lifetime
+and leaves `open`/`prepare` narrow. Next, compose explicit full-source draft
+construction from selected funding and outputs, then qualify foreground/UI
+lifecycle use without introducing signing or stale-chain authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.
 

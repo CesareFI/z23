@@ -1,5 +1,38 @@
 # Transparent transaction development
 
+## Managed full-source offline review
+
+`UnsignedReview.openFullSources` explicitly opens an already constructed bounded
+unsigned draft against1..8 full v4 funding sources. The JNI adapter captures each
+array reference and length before allocation, bounds every source to102000 bytes
+and the aggregate to816000, and allocates exactly the summed lengths. It copies
+the draft and sources, releases all Java references before C preparation, then
+clears draft/pointer metadata and wipes/frees the source allocation on every
+exit. Pending exceptions remain pending; no JNI source/reference survives.
+
+This shares the existing single process owner, non-repeating IDs, cancellation,
+fixed expiry and background/clock-failure cleanup. `open` and `prepare` retain
+their original source profile; no automatic fallback changes admission.
+Callers must supply stable arrays during opening. The owner retains only public
+checked review data and canonical current wire. These results establish no
+source proof/signature validity, chain freshness, inclusion, unspentness,
+custody, consent or signing/broadcast authority. There is no new send/UI action.
+Full-source draft construction from selected outputs remains the next step.
+
+Four real-JVM tests run with `-Xcheck:jni`. Three new plus five existing review
+instrumentation tests pass on each x86_64 API30/35/36 emulator. Source replacement
+during capture/allocation, partial JNI writes, non-null exceptional references,
+maximum aggregate allocation and exact cleanup order have deterministic native
+fixtures. Debug/release, minification and alignment gates pass; instrumentation
+uses the debug target, and ARM64 is build-only evidence.
+
+Public synthetic fixtures in `wallet-core/src/test/resources/full-review/`
+reproduce with the `seed_full_review` target from a host `ZCL_FUZZ=ON` build,
+run in a new empty directory. Compare its `draft`, `previous0` and `previous1`
+against those resources. Opaque proofs/signatures are deliberately invalid;
+these are never spendable or chain-validation fixtures. The two3326-byte
+sources require one6652-byte native source allocation in the observed fixture.
+
 ## Owned full-source review lifecycle
 
 The internal `zcl_review_open_full_sources` explicitly opens a review using
@@ -11,8 +44,8 @@ retire every borrowed funding span immediately after return.
 
 The existing owner, fixed deadline, rollback cancellation, non-repeating IDs,
 snapshot/copy and background-clear rules apply. Legacy `zcl_review_open` keeps
-its original source profile. The new operation adds no heap, JNI/UI entry point,
-chain evidence or signing authority. Internal signing still requires its exact
+its original source profile. The C operation adds no heap, chain evidence or
+signing authority. Internal signing still requires its exact
 per-use custody, consent and independently authenticated chain/unspentness
 prerequisites; opaque source proofs/signatures remain unverified.
 
@@ -21,8 +54,8 @@ every source truncation, both networks/all conditional tails, replacement and
 expiry boundaries, and verify unchanged owner/ID on failed preparation. The
 existing complete review contract and dirty-provider retirement suite also run
 through the new entry point. Differential lifetime/sighash fuzzing uses the
-independent oracle. Next: qualify bounded JNI byte ownership and real-VM lifetime
-behavior before Android exposure.
+independent oracle. Managed ownership and real-VM qualification are described
+above; explicit full-source draft construction remains separate.
 
 ## Explicit offline full-source assessment
 
@@ -38,7 +71,7 @@ This explicit internal entry point produces offline data about supplied bytes.
 It does not establish source consensus validity, inclusion, unspentness, maturity,
 ownership, consent or current chain state. Opaque proofs/signatures are hashed,
 not verified. Legacy assessment, draft, review and signing retain their existing
-source profile; no JNI/UI entry point is added. The new path may inspect funding
+source profile; the standalone assessment grants no review ID. The path may inspect funding
 containing shielded components, but cannot create a shielded spend.
 
 The existing assessment contract also runs through this entry point. Additional
@@ -61,9 +94,9 @@ This supplies structural inspection, not consensus validation, proof/signature
 verification, trusted outpoint matching, inclusion, unspentness or signing
 authority. Raw expiry and valueBalance do not establish valid accounting or
 finality. Pinned original hash vectors need not be consensus-valid. Existing
-transparent-only prevout, draft and JNI source limits remain unchanged.
-Explicit source admission and bounded JNI ownership require qualification
-before funding transactions containing shielded components can be admitted.
+legacy transparent-only prevout, draft and JNI source limits remain unchanged.
+Wider source inspection is available only through the explicit full-source
+assessment and opening operations above.
 This does not implement shielded spending.
 
 Four untouched reference wires and independent OpenSSL SHA256d identities

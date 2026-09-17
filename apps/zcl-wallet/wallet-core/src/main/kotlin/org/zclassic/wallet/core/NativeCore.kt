@@ -51,6 +51,8 @@ internal object NativeCore {
     @JvmStatic external fun syncHistorySnapshot(owner: Long, nowMillis: Long): LongArray?
     @JvmStatic external fun openReview(draft: ByteArray, previous: Array<ByteArray>, network: Int,
                                       maximumFee: Long, nowMillis: Long): Long
+    @JvmStatic external fun openFullSourceReview(draft: ByteArray, previous: Array<ByteArray>, network: Int,
+                                                maximumFee: Long, nowMillis: Long): Long
     @JvmStatic external fun cancelReview(id: Long): Int
     @JvmStatic external fun reviewSnapshot(id: Long, nowMillis: Long): LongArray?
     @JvmStatic external fun reviewWire(id: Long, nowMillis: Long): ByteArray?
