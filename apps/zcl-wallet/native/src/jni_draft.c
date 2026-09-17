@@ -25,8 +25,10 @@ static zcl_status read_parameters(JNIEnv *env, jlongArray parameters, zcl_draft_
     if (count != 3 + 2 * request->input_count + request->output_count) return ZCL_INVALID_ARGUMENT;
     jlong values[ZCL_DRAFT_PARAMETER_MAX] = {0};
     (*env)->GetLongArrayRegion(env, parameters, 0, (jsize)count, values);
-    if ((*env)->ExceptionCheck(env)) return ZCL_INVALID_ARGUMENT;
-    return zcl_jni_draft_fields(values, count, request);
+    status = (*env)->ExceptionCheck(env) ? ZCL_INVALID_ARGUMENT
+        : zcl_jni_draft_fields(values, count, request);
+    zcl_secure_zero(values, sizeof(values));
+    return status;
 }
 
 static zcl_status read_element(JNIEnv *env, jobjectArray array, size_t index,
@@ -59,8 +61,9 @@ static zcl_status copy_destinations(JNIEnv *env, jobjectArray destinations, zcl_
         uint8_t text[35] = {0};
         size_t length = 0;
         zcl_status status = read_element(env, destinations, i, text, sizeof(text), &length);
-        if (status != ZCL_OK) return status;
-        status = zcl_address_parse(text, length, request->network, &request->outputs[i].destination);
+        if (status == ZCL_OK)
+            status = zcl_address_parse(text, length, request->network, &request->outputs[i].destination);
+        zcl_secure_zero(text, sizeof(text));
         if (status != ZCL_OK) return status;
     }
     return ZCL_OK;
@@ -105,7 +108,8 @@ Java_org_zclassic_wallet_core_NativeCore_buildDraft(JNIEnv *env, jclass type,
             bytes + 1, sizeof(bytes) - 1, &length);
     /* Construction input storage and all local refs have already been released.
      * Never call a Java allocator while an input read exception is pending. */
-    if ((*env)->ExceptionCheck(env)) return NULL;
     bytes[0] = (uint8_t)status;
-    return zcl_jni_new_bytes(env, bytes, status == ZCL_OK ? length + 1 : 1);
+    jbyteArray result = zcl_jni_new_bytes(env, bytes, status == ZCL_OK ? length + 1 : 1);
+    zcl_secure_zero(bytes, sizeof(bytes));
+    return result;
 }

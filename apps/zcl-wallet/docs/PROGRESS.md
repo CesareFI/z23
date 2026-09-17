@@ -1,5 +1,39 @@
 # Development record
 
+## JNI draft continuation — 2026-09-17
+
+This session found the requested JNI review cleanup already pushed and verified
+at `de59fd23c71b7fdf0e46b55fb8e155bbf59a884e`. Inherited uncommitted JNI storage
+source/tests/documentation are preserved separately and excluded from this slice.
+The next inspected gap was JNI draft scratch: numeric parameters, destination
+text, the constructed transaction and wire response survived their last use.
+They now clear at full capacity on success and failure, preserving validation,
+exception state, output format and existing heap-input retirement.
+
+The source-copy fixture observes actual erasure while each object is live,
+requires retirement before VM allocation, poisons transaction output before
+provider calls, and covers partial reads and all four New/Set fault outcomes.
+The inherited implementation fails the first missing-retirement assertion.
+The same observer and expanded fault class run in the existing JNI draft fuzzer.
+Short wire buffers retain their caller byte/length canaries. No consensus,
+custody, signing, network or TLS behavior changes.
+
+Android/JVM tests, ARM64/x86-64 debug/release builds, lints, fixture isolation
+and 16 KiB alignment pass. All thirteen selected API35 review/lifecycle/render
+failure cases pass in 5.616 seconds. Bounded ASan/UBSan JNI draft fuzzing completed
+19,111 executions in 61 seconds (five-second input deadline, 512 MiB RSS cap)
+without findings. Architecture/doc counts and production/test complexity caps
+10/15 pass. Explicit hazard review is in `C_SAFETY_REVIEW.md`; evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-draft-retirement/`.
+The historical repository-wide lint failures remain documented; no global lint
+pass is claimed. TLS stays quarantined and production data is untouched.
+
+Full non-TLS safety passes all 102 Clang wallet CTest cases (84.52 seconds) and
+101 optimized GCC cases (120.75 seconds), including both static analyzers and
+strict compiler gates. These runs include the preserved inherited storage work;
+the isolated draft changes do not depend on it. Next: native draft candidate,
+parsed funding and assessment scratch retirement.
+
 ## Current continuation — 2026-09-17
 
 Continued from the clean, remotely verified `63f3e2f43` checkpoint in

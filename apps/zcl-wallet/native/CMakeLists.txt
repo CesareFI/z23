@@ -536,6 +536,8 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_include_directories(jni_draft_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_draft_tests PRIVATE zcl_wallet_core)
         target_compile_definitions(jni_draft_tests PRIVATE malloc=zcl_jni_draft_test_malloc free=zcl_jni_draft_test_free)
+        target_compile_definitions(jni_draft_tests PRIVATE zcl_secure_zero=zcl_jni_draft_test_zero
+            zcl_transaction_draft=zcl_jni_draft_test_construct)
         target_compile_options(jni_draft_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_jni_draft COMMAND jni_draft_tests)
@@ -582,6 +584,8 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_link_libraries(fuzz_jni_draft PRIVATE zcl_wallet_core)
             target_compile_definitions(fuzz_jni_draft PRIVATE ZCL_JNI_DRAFT_FUZZ=1
                 malloc=zcl_jni_draft_test_malloc free=zcl_jni_draft_test_free)
+            target_compile_definitions(fuzz_jni_draft PRIVATE zcl_secure_zero=zcl_jni_draft_test_zero
+                zcl_transaction_draft=zcl_jni_draft_test_construct)
             target_compile_options(fuzz_jni_draft PRIVATE -fsanitize=fuzzer,address,undefined
                 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
             target_link_options(fuzz_jni_draft PRIVATE -fsanitize=fuzzer,address,undefined)

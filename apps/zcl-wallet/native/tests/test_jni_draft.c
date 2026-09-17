@@ -1,8 +1,11 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #undef malloc
 #undef free
+#undef zcl_secure_zero
+#undef zcl_transaction_draft
 #include "jni_draft_internal.h"
 #include "draft_fixture.h"
+#include "zcl_keys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,10 +30,62 @@ static size_t reference_count, borrowed;
 static void *owned_inputs;
 static bool pending, fail_malloc, fail_new, new_without_exception, fail_set, element_with_exception;
 static bool new_failed;
+static bool new_with_exception;
 static unsigned fail_length, fail_element, fail_bytes, fail_longs;
 static unsigned length_calls, element_calls, byte_calls, long_calls, new_calls, frees;
 static assessment_fixture fixture;
 static zcl_draft_request fixture_request;
+static fake_array *destination_array;
+static uintptr_t numbers_identity, transaction_identity, output_identity;
+static unsigned destination_reads, destination_clears, number_clears;
+static unsigned transaction_calls, transaction_clears, output_clears;
+
+void zcl_jni_draft_test_zero(void *buffer, size_t length);
+zcl_status zcl_jni_draft_test_construct(const zcl_draft_request *request, zcl_transparent_tx *transaction);
+
+zcl_status zcl_jni_draft_test_construct(const zcl_draft_request *request, zcl_transparent_tx *transaction)
+{
+    CHECK(transaction_identity == 0 && transaction_calls == transaction_clears);
+    transaction_identity = (uintptr_t)transaction;
+    ++transaction_calls;
+    /* Even a provider refusal that leaves dirty output must retire it. */
+    memset(transaction, 0xa5, sizeof(*transaction));
+    return zcl_transaction_draft(request, transaction);
+}
+
+static void scratch_retired(void)
+{
+    CHECK(numbers_identity == 0 && number_clears == long_calls);
+    CHECK(destination_clears == destination_reads);
+    CHECK(transaction_identity == 0 && transaction_clears == transaction_calls);
+}
+
+void zcl_jni_draft_test_zero(void *buffer, size_t length)
+{
+    CHECK(buffer != NULL);
+    zcl_secure_zero(buffer, length);
+    const uint8_t *bytes = buffer;
+    for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    if (buffer == owned_inputs) {
+        CHECK(length == sizeof(zcl_jni_draft_inputs));
+        scratch_retired();
+    } else if ((uintptr_t)buffer == transaction_identity) {
+        CHECK(length == sizeof(zcl_transparent_tx));
+        transaction_identity = 0;
+        ++transaction_clears;
+    } else if ((uintptr_t)buffer == numbers_identity) {
+        CHECK(length == ZCL_DRAFT_PARAMETER_MAX * sizeof(jlong));
+        numbers_identity = 0;
+        ++number_clears;
+    } else if (length == 35) {
+        ++destination_clears;
+    } else {
+        CHECK(length == ZCL_TX_WIRE_MAX + 1);
+        CHECK(output_identity == 0 || output_identity == (uintptr_t)buffer);
+        output_identity = 0;
+        ++output_clears;
+    }
+}
 
 void *zcl_jni_draft_test_malloc(size_t size)
 {
@@ -90,10 +145,15 @@ static fake_array *byte_array(const uint8_t *bytes, size_t length)
 static void release_references(void)
 {
     CHECK(owned_inputs == NULL && borrowed == 0);
+    scratch_retired();
+    CHECK(output_identity == 0);
+    destination_array = NULL;
+    destination_reads = destination_clears = number_clears = 0;
+    transaction_calls = transaction_clears = output_clears = 0;
     for (size_t i = 0; i < reference_count; ++i) { free(references[i]); references[i] = NULL; }
     reference_count = 0;
     pending = fail_malloc = fail_new = new_without_exception = fail_set = element_with_exception = false;
-    new_failed = false;
+    new_failed = new_with_exception = false;
     fail_length = fail_element = fail_bytes = fail_longs = 0;
     length_calls = element_calls = byte_calls = long_calls = new_calls = frees = 0;
 }
@@ -119,6 +179,7 @@ static jobject JNICALL get_element(JNIEnv *env, jobjectArray input, jsize index)
     CHECK(array != NULL && array->kind == OBJECTS && !pending);
     CHECK(index >= 0 && index < array->length && (size_t)index < fake_capacity(OBJECTS));
     ++element_calls;
+    if (array == destination_array) ++destination_reads;
     fake_array *element = array->data.objects[(size_t)index];
     if (fails(&fail_element) && !element_with_exception) return NULL;
     if (element != NULL) ++borrowed;
@@ -158,6 +219,8 @@ static void JNICALL get_longs(JNIEnv *env, jlongArray input, jsize offset, jsize
     (void)env;
     fake_array *array = region(input, offset, count, NUMBERS);
     ++long_calls;
+    CHECK(numbers_identity == 0 && number_clears + 1 == long_calls);
+    numbers_identity = (uintptr_t)output;
     if (fails(&fail_longs)) {
         if (count > 0) output[0] = INT64_MAX;
         return;
@@ -169,13 +232,14 @@ static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize length)
 {
     (void)env;
     CHECK(!pending && owned_inputs == NULL && borrowed == 0);
+    scratch_retired();
     CHECK(length > 0 && (size_t)length <= ZCL_TX_WIRE_MAX + 1);
     ++new_calls;
     if (fail_new) {
         fail_new = false;
         new_failed = true;
         pending = !new_without_exception;
-        return NULL;
+        if (!new_with_exception) return NULL;
     }
     return (jbyteArray)array_new(length, BYTES);
 }
@@ -185,6 +249,8 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
     (void)env;
     fake_array *array = region(input, offset, count, BYTES);
     CHECK(owned_inputs == NULL && borrowed == 0);
+    CHECK(output_identity == 0);
+    output_identity = (uintptr_t)bytes;
     memcpy(array->data.bytes + (size_t)offset, bytes, (size_t)count);
     if (fail_set) { fail_set = false; pending = true; }
 }
@@ -240,6 +306,7 @@ static java_inputs prepare_fixture(bool maximum, zcl_network network)
     const size_t input_count = fixture_request.input_count, output_count = fixture_request.output_count;
     java_inputs inputs = {array_new((jsize)input_count, OBJECTS), array_new((jsize)output_count, OBJECTS),
         array_new((jsize)(3 + 2 * input_count + output_count), NUMBERS), (jint)network};
+    destination_array = inputs.destinations;
     jlong *values = inputs.parameters->data.numbers;
     values[0] = (jlong)fixture_request.lock_time;
     values[1] = (jlong)fixture_request.expiry_height;
@@ -262,8 +329,13 @@ static java_inputs prepare_fixture(bool maximum, zcl_network network)
 
 static fake_array *run(const java_inputs *inputs)
 {
-    return (fake_array *)API(&environment, NULL, (jobjectArray)inputs->previous,
+    const unsigned before = output_clears;
+    const unsigned expected = pending ? 0U : 1U;
+    fake_array *result = (fake_array *)API(&environment, NULL, (jobjectArray)inputs->previous,
         (jobjectArray)inputs->destinations, (jlongArray)inputs->parameters, inputs->network);
+    scratch_retired();
+    CHECK(output_clears == before + expected && output_identity == 0);
+    return result;
 }
 
 static void verify_outputs(const java_inputs *inputs, const zcl_transaction_assessment *assessment,
@@ -382,12 +454,13 @@ static void allocation_and_publication_failures(void)
     expect_status(&inputs, ZCL_RESOURCE_EXHAUSTED);
     CHECK(frees == 0);
     release_references();
-    for (int no_exception = 0; no_exception < 2; ++no_exception) {
+    for (int mode = 0; mode < 3; ++mode) {
         inputs = prepare_fixture(false, ZCL_MAINNET);
         fail_new = true;
-        new_without_exception = no_exception != 0;
+        new_without_exception = mode == 1;
+        new_with_exception = mode == 2;
         CHECK(run(&inputs) == NULL && new_failed && frees == 1 && borrowed == 0);
-        CHECK(pending == (no_exception == 0));
+        CHECK(pending == (mode != 1));
         release_references();
     }
     inputs = prepare_fixture(false, ZCL_MAINNET);
@@ -562,7 +635,11 @@ static void mutate(java_inputs *inputs, const uint8_t *data, size_t size)
     case 6: fail_element = (unsigned)(selector % 24) + 1; element_with_exception = (selector & 1) != 0; break;
     case 7: fail_bytes = (unsigned)(selector % 24) + 1; break;
     case 8: fail_longs = 1; break;
-    case 9: fail_new = true; new_without_exception = (selector & 1) != 0; break;
+    case 9:
+        fail_new = true;
+        new_without_exception = selector % 3 == 1;
+        new_with_exception = selector % 3 == 2;
+        break;
     case 10: fail_set = true; break;
     default: fail_malloc = true; break;
     }

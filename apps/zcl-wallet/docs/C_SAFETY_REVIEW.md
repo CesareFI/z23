@@ -1,5 +1,30 @@
 # C parser foundation safety review
 
+## JNI draft scratch retirement — 2026-09-17
+
+Scope: `jni_draft.c` and `jni_draft_wire.c`. Numeric inputs, destination text,
+constructed transaction and serialized response now retire at full capacity on
+success and refusal. The shared JNI byte publisher retains its pending-exception
+entry guard; input exceptions never reach a VM allocator. Heap-input retirement,
+status precedence, packet encoding and caller output semantics are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Every clear uses the exact local array/object size. Existing input counts, fixed address capacity and region bounds are retained. |
+| Integer overflow/underflow, signed/unsigned conversions | No production arithmetic or conversion changes. Response length adds one only after bounded serialization succeeds. |
+| Use-after-free, double-free, leaks | Existing checked heap ownership and single free remain. Stack retirement precedes return; tests inspect live spans through the real primitive. |
+| NULL dereferences, uninitialized memory | NULL VM and pending entry exceptions return before scratch creation. The transaction is initialized; all initialized scratch clears on entered exits, including dirty provider refusal. |
+| Dangling pointers, pointer arithmetic | No native pointers escape. VM results own independent bytes; test observers retain numeric identities only until live cleanup. |
+| Format strings, secret leakage | No logs or formats added. These are public transaction copies; managed/provider erasure is not claimed. |
+| Stack usage, allocation limits | No added heap, recursion or VLA. Optimized GCC frames are 2416 bytes for the JNI entry and 2256 for the wire helper, below 4096 individually, not a nested stack bound. |
+| Malformed serialization/network input | Existing validation and failure-atomic wire/length behavior remain. Tests cover malformed addresses/sources, width/count limits, short capacities and partial JNI reads. |
+| Races, resource exhaustion | Scratch is invocation-local and no owner/state transition changes. New-array NULL with/without exception, non-NULL with exception and transfer failures retire native output without forbidden JNI operations. |
+
+The strengthened existing JNI fixture fails against the inherited implementation
+at its first missing-retirement assertion. Full live clears and retirement before
+Java allocation are required by both the host fixture and its ASan/UBSan fuzzer.
+The observer is test-only; Android libraries call the real primitive directly.
+
 ## JNI unsigned review output retirement — 2026-09-17
 
 Scope: `jni_review.c`. The copied snapshot clears before releasing the native
