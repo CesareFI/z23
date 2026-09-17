@@ -1,5 +1,33 @@
 # C parser foundation safety review
 
+## JNI unsigned review output retirement — 2026-09-17
+
+Scope: `jni_review.c`. The copied snapshot clears before releasing the native
+review mutex and before any VM allocation. Numeric snapshot and wire response
+arrays clear at full capacity after attempted VM publication, before failure
+cancellation. Opening's existing heap-input retirement remains unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Erasure uses exact object/array `sizeof`, including unused output capacity. Existing packet, wire and JNI region bounds remain unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | No production arithmetic or conversion changes. Checked statuses, lengths, IDs and clocks retain their bounds. |
+| Use-after-free, double-free, leaks | No allocation, free or local-reference ownership changes. Source-only observers read erased bytes while live and retire numeric identities before return. |
+| NULL dereferences, uninitialized memory | Entry still refuses NULL VM or pending exceptions before work. Snapshot, numeric and wire scratch remain initialized and clear on every entered exit. |
+| Dangling pointers, pointer arithmetic | No new production offsets or escaping pointer. Successful VM outputs own copies before native scratch clears. |
+| Format strings, secret leakage | No production diagnostics added. Public transaction-data scratch clears; managed/VM copies are not claimed erased. |
+| Stack usage, allocation limits | Existing fixed capacities and 4096-byte frame gate remain. No new allocation, worker, VLA or recursion. |
+| Malformed serialization/network input | Status-only refusals remain one element/byte; normal packet/wire encoding and validation are unchanged. |
+| Races, resource exhaustion | Snapshot clearing stays inside the existing native lock; VM allocation stays outside it. Failed old-ID publication cannot cancel a replacement. Native zeroing/cancellation adds no forbidden JNI call after a pending exception. |
+
+The existing JNI fixture now checks full-span erasure on every read and
+requires snapshot retirement before VM allocation. It exercises NULL VM,
+pending entry exceptions, stale/expired IDs, maximum packets and publication
+faults: NULL with/without exception, non-NULL with exception, and transfer
+exceptions. All four publication outcomes are interleaved with owner replacement
+for both response shapes. The same assertions and fault classes enter the JNI
+fuzzer. The inherited implementation fails the pre-allocation retirement
+assertion; current checks pass. Validation scope is recorded in `PROGRESS.md`.
+
 ## Unsigned review preparation scratch — 2026-09-17
 
 Scope: `transaction_review.c` and `transaction_review_prepare.c`. Opening now

@@ -110,6 +110,7 @@ static zcl_status snapshot_numbers(jlong id, jlong now, jlong *values, size_t *l
     zcl_review_snapshot snapshot = {0};
     status = zcl_review_snapshot_get(&review, (uint64_t)id, (uint64_t)now, &snapshot);
     if (status == ZCL_OK) status = zcl_jni_review_values(&snapshot, values, length);
+    zcl_secure_zero(&snapshot, sizeof(snapshot));
     return unlock_review(status);
 }
 
@@ -136,6 +137,7 @@ Java_org_zclassic_wallet_core_NativeCore_reviewSnapshot(JNIEnv *env, jclass type
         length = 1;
     }
     jlongArray result = new_numbers(env, values, length);
+    zcl_secure_zero(values, sizeof(values));
     if (result == NULL) (void)cancel_review(id);
     return result;
 }
@@ -159,6 +161,7 @@ Java_org_zclassic_wallet_core_NativeCore_reviewWire(JNIEnv *env, jclass type, jl
     const zcl_status status = copy_wire(id, now, bytes + 1, sizeof(bytes) - 1, &length);
     bytes[0] = (uint8_t)status;
     jbyteArray result = zcl_jni_new_bytes(env, bytes, status == ZCL_OK ? length + 1 : 1);
+    zcl_secure_zero(bytes, sizeof(bytes));
     if (result == NULL) (void)cancel_review(id);
     return result;
 }

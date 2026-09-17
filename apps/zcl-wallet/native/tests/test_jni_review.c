@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #undef malloc
 #undef free
+#undef zcl_secure_zero
+#undef zcl_review_snapshot_get
 #include "jni_review_internal.h"
+#include "zcl_keys.h"
 #include "assessment_fixture.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,13 +31,73 @@ typedef struct fake_array {
 } fake_array;
 static fake_array *references[64];
 static size_t reference_count, borrowed;
-static bool pending, fail_malloc, fail_new, fail_set;
-static unsigned fail_length, fail_element, fail_region;
+static bool pending, fail_malloc, fail_set;
+/* New-array faults: 0=none, 1=NULL+exception, 2=array+exception, 3=NULL only. */
+static unsigned fail_new, fail_length, fail_element, fail_region;
 static void (*allocation_hook)(void);
 static void *owned_inputs;
 static assessment_fixture fixture;
 static uint8_t draft[ZCL_TX_WIRE_MAX];
 static size_t draft_length;
+static uintptr_t snapshot_identity, output_identity;
+static unsigned snapshot_reads, snapshot_clears, number_clears, wire_clears;
+
+zcl_status zcl_jni_review_test_snapshot(zcl_review_owner *owner, uint64_t id, uint64_t now,
+    zcl_review_snapshot *snapshot);
+void zcl_jni_review_test_zero(void *buffer, size_t length);
+
+zcl_status zcl_jni_review_test_snapshot(zcl_review_owner *owner, uint64_t id, uint64_t now,
+    zcl_review_snapshot *snapshot)
+{
+    CHECK(snapshot_identity == 0 && snapshot_reads == snapshot_clears);
+    snapshot_identity = (uintptr_t)snapshot;
+    ++snapshot_reads;
+    return zcl_review_snapshot_get(owner, id, now, snapshot);
+}
+
+void zcl_jni_review_test_zero(void *buffer, size_t length)
+{
+    CHECK(buffer != NULL);
+    zcl_secure_zero(buffer, length);
+    const uint8_t *bytes = buffer;
+    for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    if (buffer == owned_inputs) {
+        CHECK(length == sizeof(zcl_jni_review_inputs));
+        return;
+    }
+    if ((uintptr_t)buffer == snapshot_identity) {
+        CHECK(length == sizeof(zcl_review_snapshot));
+        snapshot_identity = 0;
+        ++snapshot_clears;
+        return;
+    }
+    CHECK(snapshot_identity == 0);
+    CHECK(output_identity == 0 || output_identity == (uintptr_t)buffer);
+    output_identity = 0;
+    if (length == ZCL_REVIEW_PACKET_MAX * sizeof(jlong)) ++number_clears;
+    else { CHECK(length == ZCL_TX_WIRE_MAX + 1); ++wire_clears; }
+}
+
+static jlongArray snapshot_read(JNIEnv *env, jclass type, jlong id, jlong now)
+{
+    const unsigned before = number_clears;
+    const unsigned expected = env != NULL && !pending ? 1U : 0U;
+    CHECK(output_identity == 0 && snapshot_identity == 0);
+    jlongArray result = API(reviewSnapshot)(env, type, id, now);
+    CHECK(number_clears == before + expected && snapshot_reads == snapshot_clears);
+    CHECK(output_identity == 0 && snapshot_identity == 0);
+    return result;
+}
+
+static jbyteArray wire_read(JNIEnv *env, jclass type, jlong id, jlong now)
+{
+    const unsigned before = wire_clears;
+    const unsigned expected = env != NULL && !pending ? 1U : 0U;
+    CHECK(output_identity == 0 && snapshot_identity == 0);
+    jbyteArray result = API(reviewWire)(env, type, id, now);
+    CHECK(wire_clears == before + expected && output_identity == 0);
+    return result;
+}
 
 void *zcl_jni_review_test_malloc(size_t size)
 {
@@ -81,10 +144,13 @@ static fake_array *array_new(jsize length, array_kind kind)
 static void release_references(void)
 {
     CHECK(owned_inputs == NULL && borrowed == 0);
+    CHECK(snapshot_identity == 0 && output_identity == 0 && snapshot_reads == snapshot_clears);
+    snapshot_reads = snapshot_clears = number_clears = wire_clears = 0;
     CHECK(allocation_hook == NULL);
     for (size_t i = 0; i < reference_count; ++i) { free(references[i]); references[i] = NULL; }
     reference_count = 0;
-    pending = fail_malloc = fail_new = fail_set = false;
+    pending = fail_malloc = fail_set = false;
+    fail_new = 0;
     fail_length = fail_element = fail_region = 0;
 }
 
@@ -144,12 +210,18 @@ static jlongArray JNICALL new_numbers(JNIEnv *env, jsize length)
 {
     (void)env;
     CHECK(!pending);
+    CHECK(snapshot_identity == 0 && snapshot_reads == snapshot_clears);
     if (allocation_hook != NULL) {
         void (*hook)(void) = allocation_hook;
         allocation_hook = NULL;
         hook();
     }
-    if (fail_new) { fail_new = false; pending = true; return NULL; }
+    const unsigned failure = fail_new;
+    fail_new = 0;
+    if (failure != 0) {
+        pending = failure != 3;
+        if (failure != 2) return NULL;
+    }
     return (jlongArray)array_new(length, NUMBERS);
 }
 
@@ -162,7 +234,12 @@ static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize length)
         allocation_hook = NULL;
         hook();
     }
-    if (fail_new) { fail_new = false; pending = true; return NULL; }
+    const unsigned failure = fail_new;
+    fail_new = 0;
+    if (failure != 0) {
+        pending = failure != 3;
+        if (failure != 2) return NULL;
+    }
     return (jbyteArray)array_new(length, BYTES);
 }
 
@@ -170,6 +247,8 @@ static void JNICALL set_numbers(JNIEnv *env, jlongArray input, jsize offset, jsi
 {
     (void)env;
     fake_array *array = region(input, offset, count, NUMBERS);
+    CHECK(output_identity == 0);
+    output_identity = (uintptr_t)data;
     memcpy(array->data.numbers + (size_t)offset, data, (size_t)count * sizeof(*data));
     if (fail_set) { fail_set = false; pending = true; }
 }
@@ -178,6 +257,8 @@ static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
 {
     (void)env;
     fake_array *array = region(input, offset, count, BYTES);
+    CHECK(output_identity == 0);
+    output_identity = (uintptr_t)data;
     memcpy(array->data.bytes + (size_t)offset, data, (size_t)count);
     if (fail_set) { fail_set = false; pending = true; }
 }
@@ -270,7 +351,7 @@ static void snapshot_matches(fake_array *array, jlong remaining)
 
 static void snapshot_error(jlong id, jlong now, zcl_status status)
 {
-    fake_array *array = (fake_array *)API(reviewSnapshot)(&vm, NULL, id, now);
+    fake_array *array = (fake_array *)snapshot_read(&vm, NULL, id, now);
     CHECK(array != NULL && array->kind == NUMBERS && array->length == 1);
     CHECK(array->data.numbers[0] == (jlong)status);
 }
@@ -283,12 +364,12 @@ static void golden_and_lifetime(void)
     memset(java_draft->data.bytes, 0xff, (size_t)java_draft->length);
     memset(java_previous->data.objects[0]->data.bytes, 0xff,
         (size_t)java_previous->data.objects[0]->length);
-    snapshot_matches((fake_array *)API(reviewSnapshot)(&vm, NULL, first, 101), 89999);
-    fake_array *wire = (fake_array *)API(reviewWire)(&vm, NULL, first, 102);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, first, 101), 89999);
+    fake_array *wire = (fake_array *)wire_read(&vm, NULL, first, 102);
     CHECK(wire != NULL && wire->kind == BYTES && wire->length == (jsize)(draft_length + 1));
     CHECK(wire->data.bytes[0] == ZCL_OK && memcmp(wire->data.bytes + 1, draft, draft_length) == 0);
     memset(wire->data.bytes, 0, (size_t)wire->length);
-    snapshot_matches((fake_array *)API(reviewSnapshot)(&vm, NULL, first, 103), 89997);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, first, 103), 89997);
     CHECK(API(cancelReview)(&vm, NULL, first) == ZCL_OK);
     snapshot_error(first, 103, ZCL_CANCELLED);
     release_references();
@@ -297,7 +378,7 @@ static void golden_and_lifetime(void)
     CHECK(second > first);
     snapshot_error(first, INT64_MAX, ZCL_CANCELLED);
     CHECK(API(cancelReview)(&vm, NULL, first) == ZCL_CANCELLED);
-    snapshot_matches((fake_array *)API(reviewSnapshot)(&vm, NULL, second, 201), 89999);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, second, 201), 89999);
     snapshot_error(second, 90200, ZCL_TIMED_OUT);
     CHECK(API(cancelReview)(&vm, NULL, second) == ZCL_CANCELLED);
     const jlong third = open_review(300);
@@ -329,15 +410,15 @@ static void opening_failures(void)
 
 static void publication_failures(void)
 {
-    for (unsigned kind = 0; kind < 4; ++kind) {
+    for (unsigned kind = 0; kind < 8; ++kind) {
         setup();
         const jlong id = open_review(100);
         CHECK(id > 0);
-        fail_new = kind % 2 == 0;
+        fail_new = kind % 4;
         fail_set = !fail_new;
-        if (kind < 2) CHECK(API(reviewSnapshot)(&vm, NULL, id, 101) == NULL);
-        else CHECK(API(reviewWire)(&vm, NULL, id, 101) == NULL);
-        CHECK(pending && borrowed == 0 && owned_inputs == NULL);
+        if (kind < 4) CHECK(snapshot_read(&vm, NULL, id, 101) == NULL);
+        else CHECK(wire_read(&vm, NULL, id, 101) == NULL);
+        CHECK(pending == (kind % 4 != 3) && borrowed == 0 && owned_inputs == NULL);
         pending = false;
         snapshot_error(id, 102, ZCL_CANCELLED);
         release_references();
@@ -356,17 +437,18 @@ static void replace_during_publication(void)
 
 static void publication_races(void)
 {
-    for (unsigned kind = 0; kind < 2; ++kind) {
+    for (unsigned kind = 0; kind < 8; ++kind) {
         setup();
         publication_old = open_review(100);
         CHECK(publication_old > 0);
         allocation_hook = replace_during_publication;
-        fail_new = true;
-        if (kind == 0) CHECK(API(reviewSnapshot)(&vm, NULL, publication_old, 101) == NULL);
-        else CHECK(API(reviewWire)(&vm, NULL, publication_old, 101) == NULL);
-        CHECK(pending && allocation_hook == NULL);
+        fail_new = kind / 2;
+        fail_set = !fail_new;
+        if (kind % 2 == 0) CHECK(snapshot_read(&vm, NULL, publication_old, 101) == NULL);
+        else CHECK(wire_read(&vm, NULL, publication_old, 101) == NULL);
+        CHECK(pending == (kind / 2 != 3) && allocation_hook == NULL);
         pending = false;
-        snapshot_matches((fake_array *)API(reviewSnapshot)(&vm, NULL, publication_replacement, 100), 90000);
+        snapshot_matches((fake_array *)snapshot_read(&vm, NULL, publication_replacement, 100), 90000);
         CHECK(API(cancelReview)(&vm, NULL, publication_replacement) == ZCL_OK);
         release_references();
     }
@@ -409,17 +491,21 @@ static void argument_failures(void)
     java_draft->length = (jsize)draft_length;
     const jlong id = open_review(100);
     CHECK(id > 0);
-    CHECK(API(reviewSnapshot)(NULL, NULL, id, 100) == NULL);
-    CHECK(API(reviewWire)(NULL, NULL, id, 100) == NULL);
+    CHECK(snapshot_read(NULL, NULL, id, 100) == NULL);
+    CHECK(wire_read(NULL, NULL, id, 100) == NULL);
+    pending = true;
+    CHECK(snapshot_read(&vm, NULL, id, 100) == NULL);
+    CHECK(wire_read(&vm, NULL, id, 100) == NULL);
+    pending = false;
     snapshot_error(id, -1, ZCL_OUT_OF_RANGE);
     snapshot_error(0, INT64_MAX, ZCL_CANCELLED);
     snapshot_error(-1, INT64_MAX, ZCL_CANCELLED);
     CHECK(API(cancelReview)(&vm, NULL, -1) == ZCL_CANCELLED);
-    snapshot_matches((fake_array *)API(reviewSnapshot)(&vm, NULL, id, 100), 90000);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, id, 100), 90000);
     CHECK(API(cancelReview)(&vm, NULL, id) == ZCL_OK);
     const jlong last = open_review(INT64_MAX - 90000);
     CHECK(last > id);
-    snapshot_matches((fake_array *)API(reviewSnapshot)(&vm, NULL, last, INT64_MAX - 1), 1);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, last, INT64_MAX - 1), 1);
     snapshot_error(last, INT64_MAX, ZCL_TIMED_OUT);
     release_references();
 }
@@ -449,7 +535,7 @@ static void maximum_packet(void)
     java_inputs();
     const jlong id = open_review(100);
     CHECK(id > 0);
-    fake_array *packet = (fake_array *)API(reviewSnapshot)(&vm, NULL, id, 100);
+    fake_array *packet = (fake_array *)snapshot_read(&vm, NULL, id, 100);
     CHECK(packet != NULL && packet->length == (jsize)ZCL_REVIEW_PACKET_MAX);
     snapshot_matches(packet, 90000);
     CHECK(API(cancelReview)(&vm, NULL, id) == ZCL_OK);
@@ -474,8 +560,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
 static void fuzz_snapshot(jlong id, jlong now)
 {
-    fake_array *packet = (fake_array *)API(reviewSnapshot)(&vm, NULL, id, now);
-    if (packet == NULL) { CHECK(pending); return; }
+    const bool refusal = fail_new != 0 || fail_set;
+    const bool exception = refusal && fail_new != 3;
+    fake_array *packet = (fake_array *)snapshot_read(&vm, NULL, id, now);
+    CHECK((packet == NULL) == refusal && pending == exception);
+    if (packet == NULL) return;
     CHECK(!pending && packet->kind == NUMBERS && packet->length >= 1);
     if (packet->data.numbers[0] == ZCL_OK) {
         CHECK(now >= 100 && now < 90100);
@@ -485,8 +574,11 @@ static void fuzz_snapshot(jlong id, jlong now)
 
 static void fuzz_wire(jlong id, jlong now)
 {
-    fake_array *packet = (fake_array *)API(reviewWire)(&vm, NULL, id, now);
-    if (packet == NULL) { CHECK(pending); return; }
+    const bool refusal = fail_new != 0 || fail_set;
+    const bool exception = refusal && fail_new != 3;
+    fake_array *packet = (fake_array *)wire_read(&vm, NULL, id, now);
+    CHECK((packet == NULL) == refusal && pending == exception);
+    if (packet == NULL) return;
     CHECK(!pending && packet->kind == BYTES && packet->length >= 1);
     if (packet->data.bytes[0] == ZCL_OK) {
         CHECK(packet->length == (jsize)(draft_length + 1));
@@ -511,7 +603,8 @@ static jlong fuzz_open(uint8_t mode, jlong current)
 static void clear_failures(void)
 {
     CHECK(owned_inputs == NULL && borrowed == 0);
-    pending = fail_malloc = fail_new = fail_set = false;
+    pending = fail_malloc = fail_set = false;
+    fail_new = 0;
     fail_length = fail_element = fail_region = 0;
 }
 
@@ -537,10 +630,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             break;
         }
         case 4:
-            fail_new = (mode & 16) != 0; fail_set = !fail_new;
+            fail_new = data[offset + 2] % 4; fail_set = !fail_new;
             fuzz_snapshot(selected, now); break;
         case 5:
-            fail_new = (mode & 16) != 0; fail_set = !fail_new;
+            fail_new = data[offset + 2] % 4; fail_set = !fail_new;
             fuzz_wire(selected, now); break;
         default:
             java_previous->length = (jsize)(data[offset + 2] % 10);

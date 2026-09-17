@@ -244,6 +244,13 @@ published draft. These operations contain public transaction fields, not keys;
 this bounded scratch-retirement evidence does not erase every downstream copy
 or grant consent, chain trust or signing authority.
 
+The JNI adapter retires its copied snapshot before VM allocation and erases
+the full numeric/wire response scratch after attempted publication, including
+allocation and pending-exception failures. The returned VM array is a separate
+copy. Failure cancellation remains bound to the original review ID, so a
+concurrent replacement is preserved. The source-only fault/fuzz fixture checks
+these lifetimes without introducing any production hook or managed-erasure claim.
+
 Each snapshot also owns the exact uint32 lock time and expiry height, plus
 display-order previous-transaction ID, uint32 output index and uint32 sequence
 for every input. Rows share the assessment's input count/order, and unused

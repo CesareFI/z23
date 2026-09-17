@@ -215,6 +215,42 @@ Evidence is under
 Next: retire JNI snapshot/wire output copies under the existing VM fault and
 replacement-owner tests. TLS and all custody/consensus authority remain unchanged.
 
+The native review-state slice was pushed and remotely verified as
+`72aad204f1ac4f485699243a1cb08ade3c59220b`. The JNI continuation now clears its
+copied snapshot before unlocking and VM allocation, then erases the full
+numeric/wire output capacity after attempted publication and before failure
+cancellation. No JNI signature, review identity, packet format or permission
+changes. Temporary transaction data is public; managed/VM erasure is not claimed.
+
+The source-copy fixture observes live erasure with the real primitive, including
+unused capacity, NULL/pending entry refusals, stale/expired IDs and maximum
+packets. It adds NULL-without-exception and non-NULL-with-exception allocation
+faults alongside existing NULL/exception and transfer failures. All four outcomes
+are also interleaved with replacement ownership for both response shapes; an
+old failed publication cannot cancel its replacement. The inherited source
+fails the pre-allocation snapshot-retirement assertion.
+
+The first expanded fuzz run exposed a test-oracle mismatch: it still assumed
+every NULL result carried an exception after the fixture gained an explicit
+NULL-without-exception mode. The oracle now predicts both result and exception
+from the exact injected fault, rather than dropping its failure check. The
+three-byte input is preserved in ignored local evidence and passes replay.
+A subsequent bounded 61-second ASan/UBSan campaign completes 31,759 executions
+without findings. Test/fuzz observers retain only numeric identities after a
+native span's last use; no dead stack object is inspected.
+
+Focused JNI/core/retirement tests pass on Clang and optimized GCC, and both
+exact-unit analyzers plus whole-source/test complexity gates pass. Optimized
+JNI snapshot/wire frames remain 3632/2000 bytes under the 4096-byte frame gate.
+Core/Android JVM tests, both ABI builds, debug/release APKs and lints, fixture
+isolation and 16 KiB alignment pass. All thirteen API35 unsigned-review,
+lifecycle and render-failure tests pass in 5.412 seconds. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-review-retirement/`.
+The complete native safety gate passes: 102/102 Clang tests and 101/101 optimized
+GCC tests, with TLS review OFF and analyzers/strict warning gates unchanged.
+Next: retire JNI storage path, ciphertext-record and read-packet copies across
+VM read/publication failures, retaining the existing fresh-entropy guarantee.
+
 ## Current continuation — 2026-09-16
 
 Worktree: `/root/z23-android`; branch:
