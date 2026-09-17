@@ -1,5 +1,34 @@
 # C parser foundation safety review
 
+## Reviewed output change ownership — 2026-09-17
+
+Scope: `zcl_review_output_change_check` and its small row/profile helper in the
+existing review-wallet owner. They reuse `check_wallet`, consumed-address
+reconstruction and the same trusted-clock/live-review transition. No new key,
+record, journal, cryptographic predicate or serialization is introduced.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Output index is checked against both the live assessment count and fixed16 capacity before access. Existing claim bounds precede exact directory/record/entropy copies. Maximum-row and SIZE_MAX-index tests pass. No new output buffer or copy exists. |
+| Integer overflow/underflow, signed/unsigned conversions | No new arithmetic, deadline calculation or narrowing. Existing bounded chain1/index and journal-position checks remain authoritative; row indexes retain size_t. |
+| Use-after-free, double-free, leaks | No new allocation/free or retained pointer. Existing invocation-owned wallet work clears before the final clock. Caller payloads remain stable and borrowed only for the call; existing EC context lifetimes remain unchanged. |
+| NULL dereferences, uninitialized memory | Owner, clock/callback and claim are checked before use. Both trusted-time reads initialize their destination to UINT64_MAX; successful unwritten samples refuse. Existing work initializes completely, including failure paths. |
+| Dangling pointers, pointer arithmetic | Only a bounded pointer to the review-owned output destination is selected. Existing claim metadata/payload copies retire synchronously. Fault observers inspect only live spans and require complete work cleanup before completion sampling. |
+| Format strings, secret leakage | No product formatting/logging or secret output. Existing copied entropy, custody owner, expected/derived addresses and complete work clear on each entered exit. Caller entropy remains its owner's responsibility; no whole-stack/spill erasure claim is made. |
+| Stack usage, allocation limits | No new buffer, VLA, recursion, heap or retry. Optimized Clang reports1416 bytes for the check; GCC reports80 bytes plus the separate1408-byte wallet-check frame. All individual frames remain below4096; these are not total call-chain limits. |
+| Malformed serialization/network input | Chain1/P2PKH and exact reviewed-row selection precede existing recovered-wallet, committed-record and consumed-index matching. Wrong wallet, unconsumed index, receive path and mismatched destination refuse. No status establishes hardware custody, intent, journal recency or authenticated chain state. |
+| Races, resource exhaustion | Existing exclusive review lock, stable spans, trusted nonreentrant clock and bounded storage protocols apply. Exactly two samples occur only on a successful ownership match; errors stop earlier. No storage write, index reservation, review consumption, output hiding or authority token is introduced. |
+
+Normal fixtures cover both networks/all entropy lengths, sixteen output rows,
+destroyed borrowed sources, journal preservation and both clock phases. Existing
+source-copy provider faults now cover output matching and cleanup-before-clock.
+Four mutations remove chain restriction, select the wrong row, bypass ownership
+or omit completion time; all fail. The differential fuzzer completes3588 runs
+in47 seconds without a finding. Isolated Android gates and release-library
+x86_64 fixtures pass API30/35/36; ARM64 compiles only. Full TLS-off analysis and
+complexity plus119 Clang sanitizer/oracle and114 optimized GCC sanitizer groups
+pass from the isolated source. TLS stays quarantined.
+
 ## Recovered change seed last-use retirement — 2026-09-17
 
 Scope: two exact object clears in `wallet_change.c` and stronger observations

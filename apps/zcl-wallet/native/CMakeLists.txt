@@ -1495,6 +1495,12 @@ if(NOT ANDROID)
         add_test(NAME wallet_review_wallet_sign COMMAND review_wallet_sign_tests)
         set_tests_properties(wallet_review_wallet_sign PROPERTIES TIMEOUT 60)
         add_executable(review_transaction_sign_tests tests/test_review_transaction_sign.c)
+        add_executable(review_change_tests tests/test_review_change.c)
+        target_link_libraries(review_change_tests PRIVATE review_wallet_test_fixture)
+        target_compile_options(review_change_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_change COMMAND review_change_tests)
+        set_tests_properties(wallet_review_change PROPERTIES TIMEOUT 60)
         target_link_libraries(review_transaction_sign_tests PRIVATE review_wallet_test_fixture)
         target_compile_options(review_transaction_sign_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)

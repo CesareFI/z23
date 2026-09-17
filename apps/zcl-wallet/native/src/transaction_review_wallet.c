@@ -221,3 +221,27 @@ zcl_status zcl_review_input_wallet_sign(zcl_review_owner *owner, uint64_t id,
         claim == NULL || output == NULL) return ZCL_INVALID_ARGUMENT;
     return wallet_signature(owner, id, clock, input_index, block, claim, output);
 }
+
+static zcl_status reviewed_change(zcl_review_owner *owner, size_t output_index,
+    const zcl_review_wallet_input *claim)
+{
+    if (claim->chain != 1) return ZCL_UNSUPPORTED;
+    if (output_index >= owner->data.assessment.output_count || output_index >= ZCL_TX_OUTPUT_MAX)
+        return ZCL_OUT_OF_RANGE;
+    const zcl_address *destination = &owner->data.assessment.outputs[output_index].destination;
+    if (destination->kind != ZCL_P2PKH) return ZCL_UNSUPPORTED;
+    return check_wallet(claim, destination);
+}
+
+zcl_status zcl_review_output_change_check(zcl_review_owner *owner, uint64_t id,
+    const zcl_review_clock *clock, size_t output_index, const zcl_review_wallet_input *claim)
+{
+    if (owner == NULL || clock == NULL || clock->read == NULL || claim == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    zcl_status status = signing_time(owner, id, clock);
+    if (status == ZCL_OK) status = reviewed_change(owner, output_index, claim);
+    /* check_wallet has already retired every owned secret before this final
+     * clock read. A slow derivation cannot return a stale change match. */
+    if (status == ZCL_OK) status = signing_time(owner, id, clock);
+    return status;
+}

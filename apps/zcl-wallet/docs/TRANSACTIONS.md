@@ -1,5 +1,33 @@
 # Transparent transaction development
 
+## Reviewed output change ownership
+
+The internal `zcl_review_output_change_check` checks one output from the same
+live review against a consumed change index of the exact committed, recovered
+wallet. It reuses the existing bounded wallet claim and ownership checks;
+chain1 is mandatory. A receive address, P2SH destination, wrong wallet,
+unconsumed index or mismatched output cannot pass as change. It neither reserves
+another index nor modifies the wallet/journal. The original output amounts and
+destinations remain part of the review; ownership does not authorize concealing
+a payment or infer the user's intended output role.
+
+Trusted monotonic time is sampled at admission and again after ownership work
+and complete secret cleanup. Expiry or rollback invalidates the review, while
+clock/provider errors refuse a match. OK refers only to this exact live ID and
+row under the enclosing exclusive lock; it is not a retained approval token.
+Per-use hardware authentication of the exact supplied record/header/entropy
+remains an external prerequisite. Journal authentication does not prove recency
+against filesystem rollback or recover historical indexes. There is no JNI/UI
+entry point, consent, authenticated chain/unspentness or broadcast authority.
+Any future display must recheck delayed delivery and retain exact output data.
+
+Fixtures cover both networks/all entropy lengths, all16 output positions,
+destroyed borrowed draft sources, wrong-wallet/receive/P2SH/index refusals,
+entry/completion expiry/rollback/clock errors and unchanged journals. Existing
+provider-fault observations now also prove copied claims and complete secret
+cleanup before the final change-check sample. The differential claim fuzzer
+models this output match and its two clock samples alongside input signing.
+
 ## Complete internal wallet signing
 
 `zcl_review_wallet_transaction_sign` composes the review-bound input signer

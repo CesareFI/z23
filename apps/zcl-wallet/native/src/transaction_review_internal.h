@@ -123,6 +123,24 @@ typedef struct {
     void *context;
 } zcl_review_clock;
 
+/* Prove that ONE output of the same live review matches an already consumed
+ * change index of the exact committed, recovered wallet. Uses the existing
+ * wallet-location claim type; chain MUST be 1. Receive addresses, recipients,
+ * P2SH, pending records and unconsumed indexes cannot be classified as change.
+ * The adapter MUST authenticate this exact record/header/entropy under per-use
+ * custody before entry. A claim alone provides no such proof. Journal MACs do
+ * not prove freshness against filesystem rollback or historical index recovery.
+ * Sample the trusted clock before admission and after ownership work/cleanup;
+ * expiry or rollback invalidates the review. No output label, pointer, secret
+ * or reusable approval token is returned: OK applies only to this live ID/row
+ * under the same exclusive lock and stable-span/no-reentrancy contract.
+ * No index reservation, storage mutation, review consumption, amount hiding,
+ * consent, current-chain/unspentness, signing or broadcast authority. A UI must
+ * retain exact output amounts/destinations and recheck at delayed delivery.
+ * Caller retains and must clear its supplied entropy. No JNI/UI entry point. */
+zcl_status zcl_review_output_change_check(zcl_review_owner *owner, uint64_t id,
+    const zcl_review_clock *clock, size_t output_index, const zcl_review_wallet_input *claim);
+
 /* Internal synchronous wallet-input signing composition; no JNI/UI caller.
  * BEFORE entry the adapter MUST authenticate this exact record/header/entropy
  * under per-use hardware custody, independently qualify current chain context

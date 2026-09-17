@@ -20,6 +20,8 @@ static void initialize(void)
 {
     if (initialized) return;
     CHECK(review_wallet_fixture_open(&fixture, ZCL_MAINNET, 16, false) == 0);
+    fixture.funding.spending.outputs[1] = fixture.funding.previous[1].outputs[1];
+    fixture.funding.spending.outputs[1].value = 1500;
     CHECK(review_wallet_fixture_close(&fixture) == 0);
     initialized = true;
 }
@@ -179,6 +181,22 @@ static zcl_status sample_transaction(void *context, uint64_t *now)
     return ZCL_OK;
 }
 
+static void check_change_claim(const zcl_review_wallet_input *candidate, uint64_t id,
+    size_t output_index, const uint8_t *data, signing_clock *clock)
+{
+    fixture.review = initial_owner; expected_owner = initial_owner;
+    zcl_status expected = lifetime_model(candidate != NULL, id, clock->times[0]);
+    bool valid = expected == ZCL_OK && output_index == 1 && key_matches(candidate, 1, data);
+    size_t calls = candidate == NULL ? 0 : 1;
+    if (valid) { ++calls; expected = advance_signing(clock->times[1]); valid = expected == ZCL_OK; }
+    const zcl_review_clock source = {sample_signing, clock};
+    const zcl_status status = zcl_review_output_change_check(&fixture.review, id, &source,
+        output_index, candidate);
+    CHECK((status == ZCL_OK) == valid && clock->calls == calls);
+    if (expected != ZCL_OK) CHECK(status == expected);
+    CHECK(memcmp(&fixture.review, &expected_owner, sizeof(expected_owner)) == 0);
+}
+
 static void sign_transaction(const zcl_review_wallet_input *candidate, uint64_t id,
     uint64_t now, const uint8_t *data)
 {
@@ -230,6 +248,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     signing_clock clock = {{now, times[data[9] % 5], times[data[10] % 5]}, 0};
     sign_claim(candidate, id, input, data, &clock);
     sign_transaction(candidate, id, now, data);
+    clock.calls = 0;
+    check_change_claim(candidate, id, input, data, &clock);
     preserved_files(data[0] % 11 == 8);
     CHECK(review_wallet_fixture_close(&fixture) == 0);
     return 0;

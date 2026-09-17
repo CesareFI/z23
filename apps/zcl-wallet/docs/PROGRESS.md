@@ -1,5 +1,42 @@
 # Development record
 
+## Reviewed output change ownership — 2026-09-17
+
+The existing input-ownership checks now also support an internal exact-output
+change predicate. It selects only the live review's output row, requires a
+chain1 P2PKH claim, and reuses exact committed-wallet/recovered-entropy and
+consumed-index matching. It samples trusted monotonic time before admission and
+after ownership work/secret cleanup. Receive paths, wrong wallets, unconsumed
+indexes, recipients and stale completion refuse. Nothing is reserved or written;
+output amounts/destinations remain visible review data, not inferred intent.
+
+Normal fixtures cover both networks/all entropy lengths, sixteen outputs,
+destroyed borrowed draft sources, unchanged journals and both clock phases.
+The existing source-copy failure fixture now proves claim copying and complete
+secret cleanup before the final output-check clock, including dirty provider
+refusal. The independent claim fuzzer also models output ownership and time.
+Four mutations fail; fuzzing completes3588 executions in47 seconds without a
+finding. The first fixture incorrectly expected OUT_OF_RANGE for an unconsumed
+valid index; it was corrected to the existing NOT_FOUND contract without changing
+the refusal. The expanded test helper initially exceeded complexity15 and was
+split before final validation. Production complexity remains at most10.
+
+Validation used an isolated `55a17c2ea` snapshot plus six native files recorded
+by SHA256. Concurrent TLS/provider edits were preserved and excluded, including
+their separate CMake hunk. The canonical TLS-off gate passes all static analysis
+and complexity checks, 119 Clang sanitizer/oracle groups and 114 optimized GCC
+sanitizer groups. The new optimized frame is1416 bytes with Clang; GCC uses an
+80-byte gate plus the separate1408-byte wallet-check frame. Android/JVM,
+debug/release, lint, fixture/result isolation and16KiB alignment pass (155 tasks).
+Release-library x86_64 fixtures pass API30/35/36 with owned temporary-path cleanup;
+ARM64 compiles only. Evidence: `.cache/android-wallet/mission-20260917/review-change/`.
+
+This supplies no JNI/UI entry point, hardware authentication, output hiding,
+consent, journal recency, chain/unspentness or broadcast authority. Those
+prerequisites remain open before send. TLS stays quarantined. Continue composing
+the exact reviewed payment/change intent with these ownership primitives and
+qualifying custody/lifecycle boundaries; preserve the physical-device gate.
+
 ## Recovered change seed last-use retirement — 2026-09-17
 
 The recovered-change composition previously retained its receive-address binding

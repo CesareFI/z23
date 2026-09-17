@@ -23,6 +23,16 @@ static const uint8_t *blinding;
 static uintptr_t record_copy;
 static unsigned failure, calls, work_wipes, random_wipes, record_wipes;
 static uint32_t chain;
+static bool output_check;
+static unsigned samples;
+
+static zcl_status sample(void *context, uint64_t *now)
+{
+    CHECK(context == NULL && now != NULL && samples < 2);
+    CHECK(work_wipes == samples); /* All owned secrets retire before completion. */
+    ++samples; *now = 100;
+    return ZCL_OK;
+}
 
 static void filled(const uint8_t *bytes, size_t length, uint8_t value)
 {
@@ -180,6 +190,7 @@ static void reset(unsigned ordinal, uint32_t selected)
 {
     failure = ordinal; chain = selected;
     calls = 0; work_wipes = 0; random_wipes = 0; record_wipes = 0; span_count = 0;
+    samples = 0;
     CHECK(blinding == NULL && record_copy == 0);
     memset(spans, 0, sizeof(spans));
     memset(directory, 0, sizeof(directory));
@@ -193,6 +204,16 @@ static void reset(unsigned ordinal, uint32_t selected)
     CHECK(length == 35);
 }
 
+static zcl_status checked_operation(void)
+{
+    const zcl_review_clock clock = {sample, NULL};
+    const zcl_status status = output_check
+        ? zcl_review_output_change_check(&fixture.review, fixture.id, &clock, 1, &supplied)
+        : zcl_review_input_wallet_check(&fixture.review, fixture.id, 100, chain, &supplied);
+    CHECK(samples == (output_check ? status == ZCL_OK ? 2u : 1u : 0u));
+    return status;
+}
+
 static void run(unsigned ordinal, uint32_t selected)
 {
     static const zcl_status statuses[] = {ZCL_OK, ZCL_INVALID_ENCODING, ZCL_CRYPTO_FAILURE,
@@ -201,7 +222,7 @@ static void run(unsigned ordinal, uint32_t selected)
     static const unsigned receive_calls[] = {31, 1, 3, 3, 7, 7, 7, 7, 15, 31, 31};
     CHECK(ordinal < sizeof(statuses) / sizeof(statuses[0]) && selected < 2);
     reset(ordinal, selected);
-    CHECK(zcl_review_input_wallet_check(&fixture.review, fixture.id, 100, chain, &supplied) == statuses[ordinal]);
+    CHECK(checked_operation() == statuses[ordinal]);
     const unsigned expected_calls = chain == 0 ? receive_calls[ordinal] : ordinal == 1 ? 1 : ordinal <= 3 && ordinal != 0 ? 3 : 35;
     CHECK(calls == expected_calls && work_wipes == 1 && blinding == NULL);
     CHECK(random_wipes == (chain == 0 && (calls & 8) != 0 ? 1U : 0U));
@@ -227,10 +248,18 @@ int main(void)
 {
     for (size_t length = 16; length <= 32; length += 4) {
         CHECK(review_wallet_fixture_open(&fixture, ZCL_MAINNET, length, false) == 0);
+        zcl_tx_output *change = &fixture.funding.spending.outputs[1];
+        CHECK(zcl_address_script(&fixture.review.data.assessment.inputs[1].destination,
+            change->script, sizeof(change->script), &change->script_len) == ZCL_OK);
+        zcl_review_clear(&fixture.review);
+        CHECK(review_wallet_fixture_review(&fixture, ZCL_MAINNET, 100) == 0);
         memcpy(&saved, &fixture.review, sizeof(saved));
         for (unsigned ordinal = 0; ordinal <= 10; ++ordinal) run(ordinal, 0);
         const unsigned change_cases[] = {0, 1, 2, 3, 9, 10};
         for (size_t i = 0; i < sizeof(change_cases) / sizeof(change_cases[0]); ++i) run(change_cases[i], 1);
+        output_check = true;
+        for (size_t i = 0; i < sizeof(change_cases) / sizeof(change_cases[0]); ++i) run(change_cases[i], 1);
+        output_check = false;
         early_refusals();
         CHECK(review_wallet_fixture_close(&fixture) == 0);
     }

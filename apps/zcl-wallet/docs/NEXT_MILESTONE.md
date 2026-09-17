@@ -10,6 +10,9 @@ The internal C transaction foundation now composes all-input ownership admission
 review-bound signing and completion-time wire publication atomically. Later
 input failures expose no partial result. This adds no JNI/UI send entry point
 or substitute for the custody, consent and authenticated-chain gates below.
+The exact reviewed output can also be matched to a consumed change index, with
+completion-time freshness and no journal mutation. This supplies ownership
+evidence only; it does not hide output data or authorize a send.
 
 ## First acceptance gate
 
