@@ -1,5 +1,34 @@
 # C parser foundation safety review
 
+## Transaction ID and previous-output retirement — 2026-09-17
+
+Scope: `transaction_id.c` and `transaction_prevout.c`. Canonical wire, both
+SHA256d digests, parsed previous transaction and compared ID now clear on all
+initialized exits. Previous-transaction scratch is explicitly initialized.
+The original serialization, hash order, displayed-ID reversal, hash/index checks
+and output-publication order remain unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use exact existing object capacities. Serialization, digest lengths and output-index admission are unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic or conversion changes. Existing count/size checks and digest reversal bounds remain. |
+| Use-after-free, double-free, leaks | No allocation/free changes. Callers receive copied values before scratch retires; tests read only live zeroing spans. |
+| NULL dereferences, uninitialized memory | Existing caller guards remain. All cleanup objects initialize before any provider call or cleanup branch. |
+| Dangling pointers, pointer arithmetic | No product pointer escape or new offset. Host observers retain numeric identities and remove them during live cleanup. |
+| Format strings, secret leakage | No product logging, formatting or private-key access. This retires public transaction data and association metadata, not provider/managed copies. |
+| Stack usage, allocation limits | No additional buffer capacity, heap, VLA or recursion. Optimized GCC ID/prevout frames are 2064/2304 bytes individually; the nested call chain exceeds either individual frame. |
+| Malformed serialization/network input | Dirty parser/serializer/SHA failure retains original failure statuses and caller bytes. Hash mismatch and invalid index still refuse before publication. |
+| Races, resource exhaustion | The synchronous stable/nonoverlapping caller-span contract remains. No additional hashes, parse calls, retries or shared product state. |
+
+The new registered source-copy fixture fails on inherited ID scratch retirement.
+It passes with the fix against all three pinned original transaction projections
+and every output, including dirty parse/serialization/both SHA failures, wrong
+hash and invalid index. Exact expected IDs come from the existing independent
+fixtures. Full caller-output canaries remain on every refusal. Five isolated
+source mutations individually remove wire, either SHA digest, previous-object
+or compared-ID clearing; each fails a retirement assertion and an unchanged
+source-copy control passes. No mutation enters the checkout or Android APKs.
+
 ## Wallet header and recovery scratch retirement — 2026-09-17
 
 Scope: `wallet_header.c` identity validation, parsing, creation and recovered

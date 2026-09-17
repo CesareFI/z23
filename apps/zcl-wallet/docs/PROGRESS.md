@@ -1,5 +1,43 @@
 # Development record
 
+## Transaction ID and prevout continuation — 2026-09-17
+
+Resumed from clean, backed-up `432872cf6`; origin/main was fetched without
+merging. Transaction ID and previous-output helpers now retire canonical wire,
+both SHA256d digests, the parsed previous transaction and compared ID on every
+initialized exit. Exact hash bytes/order, output-index selection and failure
+publication semantics remain unchanged. This proves no chain inclusion,
+unspentness, custody or spending authorization.
+
+The new registered fixture fails against inherited ID cleanup, then passes
+with the fix. It covers all three pinned transaction projections and every
+output, dirty parser/serializer/both SHA failures, wrong hash and invalid index,
+with complete caller-output preservation. Five isolated cleanup-removal mutants
+fail their retirement assertions; the unchanged source-copy control passes.
+Explicit C hazard review is recorded in C_SAFETY_REVIEW.md.
+
+Full non-TLS safety passes 106/106 Clang wallet CTest cases (86.89 seconds) and
+105/105 optimized GCC cases (123.06 seconds), both analyzers and unchanged
+production/test complexity caps 10/15. The new fixture also passes both
+analyzers and strict ARM64/x86-64 NDK compilation. Android/JVM checks, both ABI
+debug/release builds, lints, fixture isolation and 16 KiB alignment pass.
+All thirteen selected API35 review/lifecycle/render-refusal cases pass in
+5.462 seconds. Architecture/doc counts pass.
+
+Bounded ASan/UBSan campaigns exercise transaction and assessment inputs; the
+initial unseeded runs complete 649,566 and 5,724,528 executions. Separate final
+campaigns start from canonical public previous transactions and a draft, so
+accepted hash/prevout/accounting paths participate immediately. Every campaign
+has a 61-second observed duration, five-second input deadline and 512 MiB RSS
+cap, without findings. Logs and corpus copies are under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/transaction-retirement/`.
+
+Next: assessment-local previous outputs, parsed destinations and staged report
+retirement, preserving checked totals/fees and complete-only publication.
+The broader acceptance review still leaves hardware-authenticated custody and
+authenticated transparent-send composition unproven. TLS remains quarantined;
+physical-device and historical global-lint limitations remain unchanged.
+
 ## Wallet header and recovery continuation — 2026-09-17
 
 The BIP32 checkpoint was backed up and directly verified as

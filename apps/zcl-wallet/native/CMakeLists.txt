@@ -794,6 +794,16 @@ if(NOT ANDROID)
     target_compile_options(prevout_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_prevout COMMAND prevout_tests)
+    add_executable(transaction_retirement_tests tests/test_transaction_retirement.c
+        src/transaction_id.c src/transaction_prevout.c)
+    target_link_libraries(transaction_retirement_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_definitions(transaction_retirement_tests PRIVATE
+        zcl_transaction_parse=zcl_tx_test_parse zcl_transaction_serialize=zcl_tx_test_serialize
+        mbedtls_sha256=zcl_tx_test_sha256 zcl_secure_zero=zcl_tx_test_zero)
+    target_compile_options(transaction_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_transaction_retirement COMMAND transaction_retirement_tests)
+    set_tests_properties(wallet_transaction_retirement PROPERTIES TIMEOUT 15)
     set_tests_properties(wallet_prevout PROPERTIES TIMEOUT 15)
     add_executable(assessment_tests tests/test_assessment.c tests/assessment_fixture.c)
     target_link_libraries(assessment_tests PRIVATE zcl_wallet_core)
