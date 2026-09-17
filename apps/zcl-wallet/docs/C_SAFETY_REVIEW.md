@@ -1,5 +1,31 @@
 # C parser foundation safety review
 
+## Native sync owner retirement — 2026-09-17
+
+Scope: `sync_owners.c`. Opening now retires the staged watch on success and
+initializer refusal. Closing one/all slots uses the real secure-zero primitive,
+clearing complete retained attempts/reports while preserving the issued-ID
+counter. Failure still leaves the pool and caller ID unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Each clear uses exact object/array `sizeof`; slot lookup and fixed capacity remain unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | ID exhaustion checks still precede increment. Closing never resets the counter or changes numeric conversions. |
+| Use-after-free, double-free, leaks | No allocation/free added. Live staged and retained objects are observed through real zeroing before return or reuse. |
+| NULL dereferences, uninitialized memory | Existing NULL/admission checks precede staging. The staged watch remains initialized and clears even after a dirty initializer refusal. |
+| Dangling pointers, pointer arithmetic | No new borrow escapes. Existing serialized-borrow contract remains; old IDs cannot retrieve a reused slot. |
+| Format strings, secret leakage | No production logging or secret access. These public source/address/report copies now have explicit retirement. |
+| Stack usage, allocation limits | No extra buffer, heap, recursion or VLA. Optimized opening frame is 1568 bytes; wrappers use 32 bounded bytes and close paths 16/8 bytes. These are individual frames. |
+| Malformed serialization/network input | Initialization still checks address/network/source length before publication; dirty provider failures preserve pool and ID bytes. |
+| Races, resource exhaustion | Caller serialization and the JNI registry lock remain authoritative. Capacity and final-ID exhaustion still fail closed without consuming an ID. |
+
+The new registered source-copy fixture observes exact full-span zeroing while
+staging and retained slots are live. Both opening modes cover malformed inputs
+and dirty initializer failure. Close/reuse, clear-all, full capacity, final-ID
+saturation and stale lookup retain their original semantics. Its inherited
+source build fails the first missing staging-clear assertion. No dead stack
+memory is inspected, and no test-only hook enters Android libraries.
+
 ## JNI sync request retirement — 2026-09-17
 
 Scope: `jni_sync.c` request publication. The copied watch and full serialized

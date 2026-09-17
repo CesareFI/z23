@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_sync_owners.h"
-#include <string.h>
+#include "zcl_keys.h"
 
 static zcl_sync_owner_slot *find_slot(zcl_sync_owners *owners, uint64_t id)
 {
@@ -22,11 +22,13 @@ static zcl_status open_owner(zcl_sync_owners *owners, const uint8_t *address,
     const zcl_status status = include_history
         ? zcl_sync_watch_init_with_history(&watch, address, length, network, source, source_length)
         : zcl_sync_watch_init(&watch, address, length, network, source, source_length);
-    if (status != ZCL_OK) return status;
-    slot->watch = watch;
-    slot->id = ++owners->issued; /* Bounded above before increment. */
-    *id = slot->id;
-    return ZCL_OK;
+    if (status == ZCL_OK) {
+        slot->watch = watch;
+        slot->id = ++owners->issued; /* Bounded above before increment. */
+        *id = slot->id;
+    }
+    zcl_secure_zero(&watch, sizeof(watch));
+    return status;
 }
 
 zcl_status zcl_sync_owners_open(zcl_sync_owners *owners, const uint8_t *address,
@@ -59,11 +61,11 @@ zcl_status zcl_sync_owners_close(zcl_sync_owners *owners, uint64_t id)
     if (id == 0 || id > ZCL_SYNC_OWNER_ID_MAX) return ZCL_CANCELLED;
     zcl_sync_owner_slot *slot = find_slot(owners, id);
     if (slot == NULL) return ZCL_CANCELLED;
-    memset(slot, 0, sizeof(*slot));
+    zcl_secure_zero(slot, sizeof(*slot));
     return ZCL_OK;
 }
 
 void zcl_sync_owners_close_all(zcl_sync_owners *owners)
 {
-    if (owners != NULL) memset(owners->slots, 0, sizeof(owners->slots));
+    if (owners != NULL) zcl_secure_zero(owners->slots, sizeof(owners->slots));
 }

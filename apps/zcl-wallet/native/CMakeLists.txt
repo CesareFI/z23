@@ -733,6 +733,16 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_sync_owners COMMAND sync_owner_tests)
     set_tests_properties(wallet_sync_owners PROPERTIES TIMEOUT 15)
+    add_executable(sync_owner_retirement_tests tests/test_sync_owner_retirement.c tests/sync_fixture.c
+        src/sync_owners.c)
+    target_link_libraries(sync_owner_retirement_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(sync_owner_retirement_tests PRIVATE
+        zcl_sync_watch_init=zcl_owner_test_init zcl_sync_watch_init_with_history=zcl_owner_test_init_history
+        zcl_secure_zero=zcl_owner_test_zero)
+    target_compile_options(sync_owner_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_sync_owner_retirement COMMAND sync_owner_retirement_tests)
+    set_tests_properties(wallet_sync_owner_retirement PROPERTIES TIMEOUT 15)
     if(ZCL_TLS_REVIEW)
     find_package(OpenSSL REQUIRED)
     find_package(Threads REQUIRED)

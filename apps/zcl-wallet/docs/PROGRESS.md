@@ -1,5 +1,34 @@
 # Development record
 
+## Native sync owner continuation — 2026-09-17
+
+JNI request retirement was pushed and remotely verified as
+`aeb15eba33727a1728fe7c72795a0c46c14e7351`. Continued into the owner registry:
+opening retires its staged watch on success/refusal, and close/clear-all now use
+the secure-zero primitive for complete retained slots. The issued-ID counter,
+capacity, stale-owner refusal and failure-atomic pool/ID publication are preserved.
+
+The new registered fixture observes real full-span erasure while each object
+is live. Both initialization modes cover dirty provider refusal, malformed
+address/network/source length, slot reuse, full capacity and ID saturation.
+The inherited implementation fails the first missing staging-clear assertion.
+Existing owner and JNI suites also pass. Explicit hazard review and bounded
+frame measurements are in `C_SAFETY_REVIEW.md`.
+
+Full non-TLS safety passes 104/104 Clang wallet CTest cases (85.86 seconds) and
+103/103 optimized GCC cases (122.20 seconds), both analyzers and complexity caps
+10/15. Bounded ASan/UBSan campaigns complete 29,610 owner-history and 13,597 JNI
+sync executions, 61 seconds each, without findings (five-second input deadlines,
+512 MiB RSS caps). Android/JVM tests, both ABI debug/release builds, lints,
+fixture isolation and 16 KiB alignment pass. Thirteen API35 sync/history/
+lifecycle/render-failure cases pass in 8.078 seconds; architecture/doc counts
+pass. These full runs include the preserved inherited storage work, independent
+of this slice. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/sync-owner-retirement/`.
+TLS and production boundaries remain unchanged; no global lint pass is claimed.
+Next: retire JNI owner-opening address/source copies across partial reads and
+early returns, including pending exceptions and malformed admission.
+
 ## JNI sync request continuation — 2026-09-17
 
 JNI sync snapshot retirement was pushed and remotely verified as
