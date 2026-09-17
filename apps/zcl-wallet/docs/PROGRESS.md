@@ -1,5 +1,22 @@
 # Development record
 
+## Setup-expiry message accuracy — 2026-09-17
+
+The preceding checkpoint was backed up and directly verified as
+`bcfc19d323abb95519c5c6d217e8236f2021303f`. The setup-expiry message now directs
+the user to check the saved wallet and keep the written backup. It no longer
+claims immediate complete erasure: an active provider retains its input until
+worker cleanup, as the existing creation/restoration closure fixtures observe.
+Completed storage may also need a fresh unlock instead of a new setup.
+
+Debug/release builds, both Android lints, fixture isolation and 16 KiB alignment
+pass; both public-GCM closure fixtures pass on API35 in 0.057 seconds. This is
+resource text only, with no native, policy, storage or ownership changes. Evidence
+is under `apps/zcl-wallet/.cache/android-wallet/mission-20260917/setup-expiry-copy/`.
+Next: continue custody and physical-device qualification readiness; retain the
+explicit emulator-only fixture boundary until a separate safe hardware fixture
+is reviewed. Positive hardware custody and complete send remain unproven.
+
 ## Setup and restore delivery lifetime — 2026-09-17
 
 Resumed clean from backed-up `451c64e20bfa68fc3e24372c56d2386fb6e11342`;

@@ -87,7 +87,7 @@
     <string name="storage_failed">Wallet data could not be verified. Keep your recovery backup and retry when storage is available.</string>
     <string name="operation_failed">The operation did not finish. Check the saved wallet again and keep your recovery backup.</string>
     <string name="wallet_busy">The wallet is busy. Try again shortly.</string>
-    <string name="setup_expired">Setup expired and recovery material was cleared. Start again using your written backup if needed.</string>
+    <string name="setup_expired">Setup expired. Check the wallet again and keep your written backup.</string>
     <string name="review_unavailable">Transaction review unavailable</string>
     <string name="review_title">Transaction review</string>
     <string name="review_description">Review every destination, amount and fee.</string>
