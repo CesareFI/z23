@@ -165,7 +165,7 @@ internal class WalletPlatformSession(
                 return@launch
             }
             val address = seal(current, entropy, checkNotNull(current.header))
-            post { ready(address) }
+            postSealed(current.window, address, ready, failure)
         }
     }
 
@@ -185,10 +185,19 @@ internal class WalletPlatformSession(
             try {
                 val header = WalletRecord.createHeader(entropy, current.prepared.network)
                 val address = seal(current, entropy, header)
-                post { ready(address) }
+                postSealed(current.window, address, ready, failure)
             } finally {
                 entropy.fill(0)
             }
+        }
+    }
+
+    private fun postSealed(window: SetupWindow, address: TransparentAddress,
+                           ready: (TransparentAddress) -> Unit, failure: (WalletProblem) -> Unit) {
+        // Capture only the public window/address, after seal retired entropy.
+        // A delayed result cannot cancel the timeout and reopen expired setup.
+        post {
+            if (window.remainingMillis > 0) ready(address) else failure(WalletProblem.OPERATION)
         }
     }
 

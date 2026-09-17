@@ -93,6 +93,15 @@ erasure, unchanged pending bytes on refusal, preserved committed bytes after
 late delivery, and exact-address success in the final live millisecond. No
 test key enters AndroidKeyStore and no real wallet or funding is involved.
 
+Creation and restoration likewise recheck their original ten-minute setup
+window when delivering the saved address. A queued success callback can run
+before an overdue timer, so the timer alone cannot authorize delivery. Expired
+or backward-time delivery reports operation failure, preserves the completed
+wallet/change-state bytes, and requires a fresh unlock. Only the public clock
+window and address cross this handoff after entropy cleanup; the old setup
+object is not captured. This does not reset a restored wallet's change history
+or roll back a completed commit.
+
 Failed submission also clears its transferred input if task construction or
 worker creation throws. A failure after queue insertion removes that task before
 discarding it; a later healthy worker cannot run it or inherit its occupied

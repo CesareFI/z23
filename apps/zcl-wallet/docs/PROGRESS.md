@@ -1,5 +1,53 @@
 # Development record
 
+## Setup and restore delivery lifetime — 2026-09-17
+
+Resumed clean from backed-up `451c64e20bfa68fc3e24372c56d2386fb6e11342`;
+origin/main was fetched without integration. The inherited creation and restore
+workers checked setup before persistence, but their queued success callbacks
+could reach `received()` after expiry and cancel the overdue setup timer.
+The new deterministic regression fails both paths against that implementation;
+the final-live-millisecond control already succeeds.
+
+Both paths now share a small delivery helper that checks their original
+C-backed setup window immediately before reporting the saved address. It
+captures only the public window/address and existing callbacks, after entropy
+cleanup, without retaining the old Setup object. Expiry or backward time reports
+the existing operation failure. Completed wallet bytes remain unchanged; fresh
+creation retains paired change state, and restore still cannot initialize it.
+This does not interrupt providers or roll back a completed durability protocol.
+
+All 28 selected unlock/seal/session-close tests pass on API30 (8.401 seconds),
+API35 (0.797 seconds) and API36 (16.136 seconds). New cases cover both actions,
+rollback, exact expiry, extreme elapsed time and the final live millisecond;
+they also observe plaintext retirement and preserved stored records. Three
+isolated source mutations bypass creation routing, restore routing or the shared
+positive-remaining check. They fail one, one and two targeted regressions,
+respectively; the unchanged control passes all three. Exact mutation diffs were
+inspected before execution. The separate, initially absent
+`org.zclassic.wallet.dev.setupmutation20260917` package and its test package are
+removed afterward; the normal wallet installation and release remain unchanged.
+
+Android/JVM checks, both ABI debug/release builds, minification, lints, fixture
+isolation and 16 KiB alignment pass. No C, JNI, provider or cryptographic bytes
+changed, so the preceding full native safety and focused custody/recovery
+evidence retain their exact scope. Review confirms the helper reads the existing
+window only at delivery, closed-session callbacks remain inert, no secret is
+captured, and failure cannot delete or rewrite completed wallet/change state.
+
+Staged source tree `a167447982bc337a15a532fcc6a3ac346e6e8e09` rebuilds the unsigned
+release byte-identically in a fresh directory on the same host/toolchain:
+631,223 bytes, SHA256
+`b744cd2a08940060031d05360a833c2ca8d36983e345e4b65949de72433c95b1`.
+Architecture/doc counts pass. Evidence lives under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/setup-delivery/`.
+
+Next: continue custody/backup failure review and authenticated signing/change
+acceptance from the existing primitives. Physical hardware custody, real camera
+qualification, authenticated chain context and complete transparent/shielded
+send remain unproven. These public software-GCM emulator fixtures grant none of
+those claims. TLS stays quarantined and historical global-lint limits remain.
+
 ## Post-authentication unlock lifetime — 2026-09-17
 
 Resumed clean from backed-up `c42e70e4be99b303e93e7ddd47c01db70dc5120d`;

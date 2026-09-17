@@ -17,6 +17,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -90,12 +91,24 @@ class SetupSealInstrumentedTest {
             }
         }
 
-        fun submit() {
+        fun submit(deliver: Boolean = true) {
             start()
             val idle = CountDownLatch(1)
             assertTrue(worker.submit { idle.countDown() })
             assertTrue(idle.await(10, TimeUnit.SECONDS))
-            while (true) (callbacks.poll() ?: break).run()
+            if (deliver) deliverCallbacks()
+        }
+
+        fun deliverCallbacks() { while (true) (callbacks.poll() ?: break).run() }
+
+        fun assertStored(record: ByteArray) {
+            val stored = storage.read()
+            assertEquals(CoreStatus.OK, stored.status)
+            assertFalse(stored.pending)
+            assertArrayEquals(record, stored.record)
+            val change = File(directory, ".change.index")
+            if (action == WalletAction.CREATE) assertEquals(80L, change.length())
+            else assertFalse(change.exists()) // Restore cannot reset historical indexes.
         }
 
         fun awaitRetired() {
@@ -152,6 +165,45 @@ class SetupSealInstrumentedTest {
             }
             assertTrue("Public sealing fixture unexpectedly retained files", parent.delete())
         }
+    }
+
+    @Test fun expiredCreationDeliveryPreservesStorageButRefusesReceive() =
+        delayedResult(WalletAction.CREATE)
+
+    @Test fun expiredRestoreDeliveryPreservesStorageButRefusesReceive() =
+        delayedResult(WalletAction.RESTORE)
+
+    private fun delayedResult(action: WalletAction) {
+        for (now in listOf(99L, 600_100L, Long.MAX_VALUE))
+            Fixture(permitsStorage = true, action = action).use { fixture ->
+                fixture.submit(deliver = false)
+                val record = checkNotNull(fixture.storage.read().record)
+                fixture.assertStored(record)
+                fixture.assertCleared()
+                fixture.assertErasedBeforeDispatch()
+                assertNull(fixture.address)
+                fixture.clock.set(now)
+                fixture.deliverCallbacks()
+                assertEquals(WalletProblem.OPERATION, fixture.failure)
+                assertNull(fixture.address)
+                fixture.assertStored(record)
+                fixture.assertCleared()
+            }
+    }
+
+    @Test fun lastLiveSetupMillisecondStillDeliversCreationAndRestore() {
+        for (action in listOf(WalletAction.CREATE, WalletAction.RESTORE))
+            Fixture(permitsStorage = true, action = action).use { fixture ->
+                val expected = WalletKeys.receivingAddress(fixture.entropy, Network.TESTNET)
+                fixture.submit(deliver = false)
+                val record = checkNotNull(fixture.storage.read().record)
+                fixture.clock.set(600_099)
+                fixture.deliverCallbacks()
+                assertNull(fixture.failure)
+                assertEquals(expected, fixture.address)
+                fixture.assertStored(record)
+                fixture.assertCleared()
+            }
     }
 
     @Test fun expiryAfterGcmCompletionRefusesPersistenceAndClearsOwners() {
