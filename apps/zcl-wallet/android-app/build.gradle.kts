@@ -3,6 +3,15 @@ plugins {
     id("com.android.application")
     kotlin("android")
 }
+val qualificationMode = providers.gradleProperty("walletQualification").orNull
+require(qualificationMode == null || qualificationMode == "public-custody") {
+    "walletQualification accepts only public-custody; omit it for normal builds"
+}
+val qualificationBuild = qualificationMode != null
+if (qualificationBuild) {
+    layout.buildDirectory.set(rootProject.layout.projectDirectory.dir(
+        ".cache/android-wallet/qualification-build/android-app"))
+}
 android {
     buildFeatures { aidl = true }
     namespace = "org.zclassic.wallet"
@@ -29,6 +38,12 @@ android {
     sourceSets.getByName("androidTest").assets.srcDir("../wallet-core/src/test/resources")
     sourceSets.getByName("test").resources.srcDir("../wallet-core/src/test/resources")
     buildTypes {
+        debug {
+            manifestPlaceholders["walletTestOnly"] = qualificationBuild
+            manifestPlaceholders["walletDebugLabel"] = if (qualificationBuild)
+                "Zclassic public custody fixture" else "@string/app_name"
+            if (qualificationBuild) applicationIdSuffix = ".qualification"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -42,6 +57,22 @@ android {
     lint {
         abortOnError = true
         warningsAsErrors = true
+    }
+}
+androidComponents.beforeVariants(androidComponents.selector().withBuildType("release")) {
+    if (qualificationBuild) it.enable = false
+}
+if (qualificationBuild) {
+    tasks.register<Exec>("checkQualificationIsolation") {
+        group = "verification"
+        description = "Verify the separate test-only custody qualification APK identity."
+        dependsOn("assembleDebug", "assembleDebugAndroidTest")
+        workingDir(rootProject.projectDir)
+        commandLine("bash", rootProject.file("tools/test-custody-qualification.sh"),
+            android.sdkDirectory.resolve("build-tools/${android.buildToolsVersion}/aapt2"),
+            layout.buildDirectory.file("outputs/apk/debug/android-app-debug.apk").get().asFile,
+            layout.buildDirectory.file("outputs/apk/androidTest/debug/android-app-debug-androidTest.apk").get().asFile,
+            layout.buildDirectory.dir("reports/qualification-isolation").get().asFile)
     }
 }
 kotlin { compilerOptions { allWarningsAsErrors.set(true) } }

@@ -11,6 +11,36 @@ test_apk="$wallet_root/android-app/build/outputs/apk/androidTest/debug/android-a
 
 "$aapt" dump xmltree --file AndroidManifest.xml "$debug" > "$report/debug-manifest.txt"
 "$aapt" dump xmltree --file AndroidManifest.xml "$release" > "$report/release-manifest.txt"
+"$aapt" dump xmltree --file AndroidManifest.xml "$test_apk" > "$report/test-manifest.txt"
+for variant in debug release test; do
+    expected=org.zclassic.wallet.dev
+    if [[ "$variant" == test ]]; then expected+=.test; fi
+    if ! awk -v expected="$expected" -v variant="$variant" '
+        function quoted(line) {
+            sub(/^[^=]*="/, "", line); sub(/".*$/, "", line); return line
+        }
+        /E: / {
+            node=$0; sub(/^.*E: /, "", node); sub(/ .*/, "", node)
+            if (node == "instrumentation") instruments++
+        }
+        /A: package=/ { packages++; if (node != "manifest" || quoted($0) != expected) bad=1 }
+        /android:testOnly\(/ { tests++; if (node != "application" || $0 !~ /=false$/) bad=1 }
+        /android:targetPackage\(/ {
+            targets++; if (node != "instrumentation" || quoted($0) != "org.zclassic.wallet.dev") bad=1
+        }
+        /android:name\(/ && node == "instrumentation" {
+            runners++; if (quoted($0) != "androidx.test.runner.AndroidJUnitRunner") bad=1
+        }
+        END {
+            if (variant == "test" && (instruments != 1 || targets != 1 || runners != 1)) bad=1
+            if (variant != "test" && (instruments || targets)) bad=1
+            exit (bad || packages != 1 || tests > 1)
+        }
+    ' "$report/$variant-manifest.txt"; then
+        echo "Fixture isolation: $variant APK violates its normal wallet package identity" >&2
+        exit 1
+    fi
+done
 for host in org.zclassic.wallet.WalletDisplayFixtureActivity org.zclassic.wallet.WalletReviewFixtureActivity; do
     if ! awk -v host="$host" '/E:/ { fixture=0; activity=($0 ~ /E: activity/) }
         activity && /android:name/ && index($0, "\"" host "\"") { fixture=1; names++ }

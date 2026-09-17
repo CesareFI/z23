@@ -13,6 +13,8 @@ TEE/StrongBox storage and hardware-enforced per-use authentication. Never point
 the fixture cleanup at an existing wallet. The current interactive test fixture
 deliberately permits only a fresh opted-in emulator and will need a separately
 reviewed real-device fixture boundary. Do not remove its protection checks.
+The [qualification build boundary](DEVICE_QUALIFICATION.md) now supplies a
+separate test-only package/UID; the attended hardware fixture is still open.
 
 Prove creation with written-backup confirmation, restoration of a public
 unfunded vector, authenticated unlock to the exact same receiving address,

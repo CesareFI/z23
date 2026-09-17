@@ -1,5 +1,54 @@
 # Development record
 
+## Physical-device qualification build boundary — 2026-09-17
+
+Resumed clean from backed-up `3a9a278063b1cd255b84bad2c35cbccd20f7c5f3` and
+fetched origin/main without integration. All four attached devices are emulators;
+no physical custody claim can be made. The next hardware-fixture dependency is
+now implemented: `-PwalletQualification=public-custody` builds a visibly labeled,
+separate `org.zclassic.wallet.dev.qualification` debug package and matching
+instrumentation package under an isolated cache output directory. Both are
+explicitly test-only. Other property values and wallet release builds in this
+mode fail. Default builds retain their original identities and output paths.
+
+The new actual-APK identity gate and twenty negative metadata fixtures pass.
+Its initial refusal exposed that AGP had not marked the instrumentation APK as
+test-only; an explicit AndroidTest manifest now follows the selected profile.
+Normal APK identity checking was also missing: the new regression first accepted
+a wrong debug package against the inherited checker. The fixed checker refuses
+all thirteen package/runner/target/profile mutations while retaining existing host,
+process and asset checks. The release-host mutation now retains valid base
+metadata so it still observes its intended host-exclusion refusal.
+
+On API35, Android rejects qualification installation without test opt-in; with
+explicit test installation, its UID differs from the normal app. All 28 public
+unlock/seal/session-close fixtures pass in the separate namespace (0.783 seconds).
+The unchanged emulator-only WalletFlow fixture refuses its package at admission,
+before owning files or a Keystore alias. Both invocation-created qualification
+packages are removed afterward. No physical device, real seed, funds or operator
+wallet was involved. The hardware acceptance fixture remains to be implemented;
+the build mode does not bypass authentication or custody policy.
+
+Normal Android/JVM checks, both ABI debug/release builds, lints, fixture isolation
+and 16 KiB alignment pass. Qualification lint, metadata mutations and alignment
+also pass. Native source/provider/JNI policy is unchanged. The two profiles'
+packaged native libraries differ only in the twenty GNU build-ID bytes on each
+ABI; `.text`, `.rodata` and `.data` match. This is not whole-library byte identity.
+The normal unsigned release remains byte-identical to the pre-change artifact:
+SHA256 `7c99584b556460ef04eeb727d0c6c67ee2eee60cbae725b9883da64bfe13ca68`.
+Shell syntax checks pass; shellcheck is unavailable. Two validation-only result
+matchers initially treated literal punctuation as regex syntax; literal matching
+confirmed the intended release/install/runtime refusals without rerunning work.
+
+Build, installation, UID, mutation, native-comparison and cleanup evidence is
+under `apps/zcl-wallet/.cache/android-wallet/mission-20260917/qualification-profile/`.
+The supported mode and remaining attended hardware-fixture requirements are in
+[`DEVICE_QUALIFICATION.md`](DEVICE_QUALIFICATION.md). Next: implement that guarded
+public-vector fixture without changing the existing emulator fixture, then
+obtain actual per-use hardware evidence on an explicitly selected fresh profile.
+TLS remains quarantined. Physical custody and complete transparent/shielded send
+remain unproven; historical global-lint limitations remain unchanged.
+
 ## Setup-expiry message accuracy — 2026-09-17
 
 The preceding checkpoint was backed up and directly verified as

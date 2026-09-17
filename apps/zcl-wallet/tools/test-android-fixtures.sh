@@ -22,7 +22,33 @@ case "$ZCL_FIXTURE_TEST_FAULT:$5" in
             }
             { print }' ;;
     release:*/release/android-app-release-unsigned.apk)
+        "$ZCL_FIXTURE_TEST_AAPT" "$@"
         printf '%s\n' 'E: activity' "A: android:name=\"$ZCL_FIXTURE_TEST_HOST\"" ;;
+    identity-*:* )
+        if [[ "$5" != */"${ZCL_FIXTURE_TEST_VARIANT:?}"/* ]]; then
+            exec "$ZCL_FIXTURE_TEST_AAPT" "$@"
+        fi
+        "$ZCL_FIXTURE_TEST_AAPT" "$@" | awk -v fault="${ZCL_FIXTURE_TEST_FAULT#identity-}" '
+            /E:/ { instrument=($0 ~ /E: instrumentation /) }
+            /android:name/ && instrument {
+                if (fault == "missing-runner") next
+                if (fault == "runner") gsub(/androidx.test.runner.AndroidJUnitRunner/, "public.WrongRunner")
+            }
+            /E: application / && fault == "test-only" {
+                print; print "        A: android:testOnly(0x01010272)=true"; next
+            }
+            /A: package=/ {
+                if (fault == "missing-package") next
+                if (fault == "package") gsub(/org.zclassic.wallet.dev/, "public.wrong")
+            }
+            /android:targetPackage/ {
+                if (fault == "missing-target") next
+                if (fault == "target") gsub(/org.zclassic.wallet.dev/, "public.wrong")
+            }
+            /android:testOnly/ {
+                if (fault == "test-only") next
+            }
+            {print}' ;;
     process-*:* )
         if [[ "$5" != */"${ZCL_FIXTURE_TEST_VARIANT:?}"/* ]]; then
             exec "$ZCL_FIXTURE_TEST_AAPT" "$@"
@@ -90,6 +116,22 @@ esac
 FIXTURE
 chmod u+x "$report/fault-aapt"
 bash "$wallet_root/tools/check-android-fixtures.sh" "$ZCL_FIXTURE_TEST_AAPT" "$report/positive" > "$report/positive.log" 2>&1
+for variant in debug release androidTest; do
+    faults=(package missing-package test-only)
+    if [[ "$variant" == androidTest ]]; then
+        faults=(package missing-package target missing-target runner missing-runner test-only)
+    fi
+    for fault in "${faults[@]}"; do
+        result="$report/identity-$variant-$fault"
+        if ZCL_FIXTURE_TEST_VARIANT="$variant" ZCL_FIXTURE_TEST_FAULT="identity-$fault" \
+            bash "$wallet_root/tools/check-android-fixtures.sh" "$report/fault-aapt" \
+            "$result" > "$result.log" 2>&1; then
+            echo "Fixture identity regression: accepted $variant $fault" >&2
+            exit 1
+        fi
+        rg -q 'APK violates its normal wallet package identity' "$result.log"
+    done
+done
 for host in WalletDisplayFixtureActivity WalletReviewFixtureActivity; do
     for fault in exported missing-exported missing release; do
         result="$report/$host-$fault"
@@ -148,4 +190,4 @@ for fault in app-review missing-review; do
 done
 rg -q 'public response/review assets entered an application APK' "$report/app-review.log"
 rg -q 'expected three public transactions in the test APK' "$report/missing-review.log"
-echo 'Fixture isolation regression passed: actual APKs accepted; process, host and asset mutations refused.'
+echo 'Fixture isolation regression passed: actual APKs accepted; identity, process, host and asset mutations refused.'

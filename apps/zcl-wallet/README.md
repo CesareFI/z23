@@ -40,6 +40,10 @@ the APKs themselves are never modified. Reports and exact APK hashes are saved
 under `android-app/build/reports/fixture-isolation`. This does not run device
 instrumentation or qualify hardware custody.
 
+An explicit [custody qualification build](docs/DEVICE_QUALIFICATION.md) uses a
+separate test-only application identity and output directory. It disables wallet
+release builds in that mode; physical-device custody remains unproven.
+
 Native builds enable the NDK's flexible page-size support. Verify the actual
 debug/release APK alignment and both packaged libraries' ELF LOAD segments:
 
