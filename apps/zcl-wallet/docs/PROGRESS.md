@@ -1,5 +1,35 @@
 # Development record
 
+## JNI sync opening continuation — 2026-09-17
+
+Native owner retirement was pushed and remotely verified as
+`5f87a0aa3810264d7cea072af2913afe98abc141`. Continued immediately into JNI
+owner input copies. Address/source arrays now retire on every return and before
+registry unlock when a lock was acquired. Input/status precedence, pending
+exceptions, pool capacity and monotonically issued owner IDs are unchanged.
+
+The inherited implementation fails the new live-retirement assertion. Both
+owner modes now cover NULL VM/inputs, pending exceptions, invalid chain,
+oversized arrays, malformed address and dirty partial reads of either input.
+Each refusal is followed by successful creation/close. Existing replacement,
+request/snapshot cleanup and fuzz paths observe the same full-span clears.
+Explicit hazard review is in `C_SAFETY_REVIEW.md`.
+
+Full non-TLS safety passes 104/104 Clang wallet CTest cases (85.66 seconds) and
+103/103 optimized GCC cases (122.21 seconds), both analyzers and complexity caps
+10/15. Optimized JNI opening uses a 192-byte bounded frame. The ASan/UBSan JNI
+sync fuzzer completes 13,898 executions in 61 seconds without findings, with a
+five-second input deadline and 512 MiB RSS cap. Android/JVM tests, both ABI
+debug/release builds, lints, fixture isolation and 16 KiB alignment pass. Combined
+API35 sync/lifecycle plus storage/recovery instrumentation passes all 24 cases
+in 8.028 seconds. Architecture/doc counts pass. Full runs include the inherited
+storage slice, which remains independent and is being finalized separately.
+Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-sync-open-retirement/`.
+TLS and production boundaries remain unchanged; no global lint pass is claimed.
+Next: publish the separately reviewed and validated inherited JNI storage slice,
+then inspect native watch initialization/report/snapshot temporary lifetime.
+
 ## Native sync owner continuation — 2026-09-17
 
 JNI request retirement was pushed and remotely verified as

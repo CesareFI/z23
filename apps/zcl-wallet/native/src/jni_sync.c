@@ -41,13 +41,18 @@ static jlong open_owner(JNIEnv *env, jbyteArray address_input, jint chain,
         status = zcl_jni_read_bytes(env, address_input, address, sizeof(address), &address_length);
     if (status == ZCL_OK)
         status = zcl_jni_read_bytes(env, source_input, source, sizeof(source), &source_length);
-    if (status != ZCL_OK) return -(jlong)status;
-    if (pthread_mutex_lock(&registry_lock) != 0) return -(jlong)ZCL_IO_FAILURE;
     uint64_t id = 0;
-    status = include_history
-        ? zcl_sync_owners_open_with_history(&registry, address, address_length, network, source, source_length, &id)
-        : zcl_sync_owners_open(&registry, address, address_length, network, source, source_length, &id);
-    status = unlock_registry(status);
+    bool locked = false;
+    if (status == ZCL_OK) {
+        locked = pthread_mutex_lock(&registry_lock) == 0;
+        if (!locked) status = ZCL_IO_FAILURE;
+        else status = include_history
+            ? zcl_sync_owners_open_with_history(&registry, address, address_length, network, source, source_length, &id)
+            : zcl_sync_owners_open(&registry, address, address_length, network, source, source_length, &id);
+    }
+    zcl_secure_zero(address, sizeof(address));
+    zcl_secure_zero(source, sizeof(source));
+    if (locked) status = unlock_registry(status);
     return status == ZCL_OK ? (jlong)id : -(jlong)status;
 }
 

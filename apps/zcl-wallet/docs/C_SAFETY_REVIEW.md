@@ -1,5 +1,31 @@
 # C parser foundation safety review
 
+## JNI sync opening retirement — 2026-09-17
+
+Scope: `jni_sync.c` owner opening. Both the complete address and source-ID copies
+now retire on every return. A successful lock stays held until retirement;
+failures before lock acquisition follow the same cleanup path. Argument/status
+precedence, pending exceptions, owner issuance and pool capacity are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use exact 35/32-byte local capacities. Existing JNI region and native address/source length validation remain. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic/conversion changes. Issued IDs and negative statuses retain their bounds. |
+| Use-after-free, double-free, leaks | No allocation/free change. Successful pool owners receive independent values before input erasure. |
+| NULL dereferences, uninitialized memory | Both arrays remain initialized even for NULL VM/input and pending exception entry. All initialized exits clear them, including partial reads. |
+| Dangling pointers, pointer arithmetic | No buffer escapes; the registry retains values, not pointers. Test numeric identities clear while each object is live. |
+| Format strings, secret leakage | No log/format or secret access. Public address/configuration copies retire; source IDs remain opaque metadata, not authentication. |
+| Stack usage, allocation limits | No new buffer, heap, VLA or recursion. A local lock-state boolean controls exactly one unlock after successful acquisition. |
+| Malformed serialization/network input | The same input/status checks run in the same order. Malformed/oversized input cannot create an owner or authorize network use. |
+| Races, resource exhaustion | Acquired registry locks remain held through erasure, before replacement can reuse the slot. Failed lock acquisition skips unlock; pool admission and ID exhaustion remain fail closed. |
+
+The strengthened JNI fixture observes complete live input clears on success,
+NULL/pending entry, malformed/oversized inputs, invalid chain and dirty partial
+reads of either input, for both owner modes. Failed opening is followed by
+successful creation/close to check continued availability. The inherited
+implementation fails its first missing-clear assertion. Existing replacement,
+request/snapshot retirement and bounded JNI fuzz tests retain these observers.
+
 ## Native sync owner retirement — 2026-09-17
 
 Scope: `sync_owners.c`. Opening now retires the staged watch on success and

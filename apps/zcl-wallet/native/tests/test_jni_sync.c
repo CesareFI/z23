@@ -48,6 +48,10 @@ static size_t output_capacity;
 static void (*allocation_hook)(void);
 static uintptr_t request_identity, packet_identity;
 static unsigned request_calls, request_clears, packet_clears;
+static bool opening;
+static unsigned opening_reads, address_clears, source_clears;
+static unsigned fail_open_get;
+static uintptr_t address_identity, source_identity;
 
 zcl_status zcl_jni_sync_test_snapshot(zcl_sync_watch *watch, uint64_t now, zcl_sync_snapshot *snapshot);
 void zcl_jni_sync_test_zero(void *buffer, size_t length);
@@ -83,6 +87,22 @@ static bool retire_request_copy(void *buffer, size_t length)
     return false;
 }
 
+static bool retire_open_copy(void *buffer, size_t length)
+{
+    if (!opening) return false;
+    if (length == 35) {
+        CHECK(address_identity == 0 || address_identity == (uintptr_t)buffer);
+        address_identity = 0;
+        ++address_clears;
+    } else {
+        CHECK(length == 32);
+        CHECK(source_identity == 0 || source_identity == (uintptr_t)buffer);
+        source_identity = 0;
+        ++source_clears;
+    }
+    return true;
+}
+
 static zcl_status corrupt_snapshot(zcl_sync_snapshot *snapshot, zcl_status status)
 {
     switch (snapshot_fault) {
@@ -113,6 +133,7 @@ void zcl_jni_sync_test_zero(void *buffer, size_t length)
     zcl_secure_zero(buffer, length);
     const uint8_t *data = buffer;
     for (size_t i = 0; i < length; ++i) CHECK(data[i] == 0);
+    if (retire_open_copy(buffer, length)) return;
     if (retire_request_copy(buffer, length)) return;
     if (buffer == owned_frame) {
         CHECK(length == ZCL_ELECTRUM_FRAME_MAX);
@@ -169,6 +190,9 @@ static jbyteArray bytes(const uint8_t *data, size_t length)
 static void release_references(void)
 {
     CHECK(owned_frame == NULL);
+    CHECK(!opening && address_identity == 0 && source_identity == 0);
+    address_clears = source_clears = opening_reads = 0;
+    fail_open_get = 0;
     CHECK(request_identity == 0 && packet_identity == 0);
     CHECK(request_calls == request_clears && request_calls == packet_clears);
     request_calls = request_clears = packet_clears = 0;
@@ -204,7 +228,17 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
 {
     (void)env;
     fake_array *array = region(input, offset, count, false);
-    if (fail_get) { fail_get = false; pending_exception = true; return; }
+    if (opening) {
+        if (opening_reads++ == 0) address_identity = (uintptr_t)output;
+        else source_identity = (uintptr_t)output;
+        if (opening_reads == fail_open_get) fail_get = true;
+    }
+    if (fail_get) {
+        if (count > 0) output[0] = 42;
+        fail_get = false;
+        pending_exception = true;
+        return;
+    }
     memcpy(output, array->data.bytes + (size_t)offset, (size_t)count);
 }
 static void JNICALL set_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize count, const jbyte *data)
@@ -261,6 +295,20 @@ static const struct JNINativeInterface_ table = {
 };
 static JNIEnv environment = &table;
 
+static jlong checked_open(JNIEnv *env, jbyteArray address, jint chain, jbyteArray source, bool history)
+{
+    CHECK(!opening && address_identity == 0 && source_identity == 0);
+    const unsigned before_address = address_clears, before_source = source_clears;
+    opening = true;
+    opening_reads = 0;
+    const jlong id = history ? API(openHistorySyncOwner)(env, NULL, address, chain, source)
+        : API(openSyncOwner)(env, NULL, address, chain, source);
+    CHECK(address_clears == before_address + 1 && source_clears == before_source + 1);
+    CHECK(address_identity == 0 && source_identity == 0);
+    opening = false;
+    return id;
+}
+
 static jbyteArray checked_request(JNIEnv *env, jclass type, jlong id, jlong token, jlong now)
 {
     CHECK(request_identity == 0 && packet_identity == 0);
@@ -301,9 +349,7 @@ static jlong open_owner_mode(bool history)
     const uint8_t source[32] = {1};
     const jbyteArray address = bytes(fixture.candidate.address, 35);
     const jbyteArray source_input = bytes(source, sizeof(source));
-    const jlong id = history
-        ? API(openHistorySyncOwner)(&environment, NULL, address, (jint)ZCL_MAINNET, source_input)
-        : API(openSyncOwner)(&environment, NULL, address, (jint)ZCL_MAINNET, source_input);
+    const jlong id = checked_open(&environment, address, (jint)ZCL_MAINNET, source_input, history);
     CHECK(id > 0 && !pending_exception);
     return id;
 }
@@ -349,6 +395,42 @@ static void refuse_pending_snapshots(jlong id, jlong now)
 }
 
 #ifndef ZCL_JNI_FUZZ
+static jlong opening_fault(unsigned mode, bool history)
+{
+    zcl_sync fixture;
+    sync_fixture_start(&fixture, ZCL_MAINNET, 1);
+    uint8_t source[32] = {1};
+    jbyteArray address = bytes(fixture.candidate.address, 35);
+    jbyteArray source_input = bytes(source, sizeof(source));
+    JNIEnv *env = &environment;
+    jint chain = (jint)ZCL_MAINNET;
+    switch (mode) {
+    case 0: env = NULL; break;
+    case 1: pending_exception = true; break;
+    case 2: address = NULL; break;
+    case 3: source_input = NULL; break;
+    case 4: chain = 2; break;
+    case 5: ((fake_array *)address)->length = 36; break;
+    case 6: ((fake_array *)source_input)->length = 33; break;
+    case 7: ((fake_array *)address)->data.bytes[0] = 0xff; break;
+    default: fail_open_get = mode - 7; break;
+    }
+    return checked_open(env, address, chain, source_input, history);
+}
+
+static void opening_refusals(void)
+{
+    for (unsigned mode = 0; mode < 10; ++mode) for (unsigned history = 0; history < 2; ++history) {
+        CHECK(opening_fault(mode, history != 0) < 0);
+        CHECK(pending_exception == (mode == 1 || mode >= 8));
+        pending_exception = false;
+        fail_open_get = 0;
+        const jlong id = open_owner_mode(history != 0);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
+}
+
 static void snapshot_projection_refusals(void)
 {
     for (unsigned mode = 1; mode <= 7; ++mode) {
@@ -613,6 +695,7 @@ static void history_packet_and_owner_replacement(void)
 
 int main(void)
 {
+    opening_refusals();
     stale_request_failure_preserves_attempt();
     snapshot_projection_refusals();
     snapshot_publication_races();
