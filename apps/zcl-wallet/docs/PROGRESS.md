@@ -1,5 +1,41 @@
 # Development record
 
+## Full v4 public source inspection — 2026-09-17
+
+The existing transparent funding codec cannot inspect a funding transaction
+containing shielded components. A separate internal C inspector now provides
+bounded parsing/identity: complete canonical v4 layout, opaque Sapling/Groth
+descriptions and signatures, full-wire SHA256d, selected owned output and raw
+metadata. Layout and the 102,000-byte bound come from pinned original Zclassic.
+Existing prevout/draft/JNI admission remains unchanged. This adds no consensus,
+chain, unspentness, signing or shielded-spend authority.
+
+Four untouched original wires reproduce from a hash-pinned reference with
+independent OpenSSL identities. Every truncation and byte change, conditional
+tails, extended counts, exact/over-limit wire, noncanonical CompactSize and
+dirty hash-provider failures are covered. Six mutations removing canonicality,
+exact end, either signature tail, hash reversal or candidate retirement fail
+deterministic regressions. Fuzzing completes 333066 executions in 46 seconds
+without a finding. An initial projection fixture exposed invalid expiry in an
+original hash vector; only the separate transparent projection was corrected,
+preserving reference bytes and production predicates. A missing direct
+hash-provider include dependency in the fault target was corrected before
+final validation.
+
+An isolated `1921c7b31` snapshot plus eight SHA256-recorded files passes TLS-off
+static analysis/complexity, 121 Clang sanitizer/oracle and 116 optimized GCC
+sanitizer groups. The final added noncanonical-count regression also passes
+both profiles and test complexity. Production frames measure 312 bytes with
+Clang and 368 with GCC, without heap allocation. Android/JVM, debug/release,
+both lints, fixture/result isolation and 16 KiB alignment pass (155 tasks).
+Release-library fixtures pass API30/35/36 with owned temporary-path cleanup;
+ARM64 compiles only. Evidence:
+`.cache/android-wallet/mission-20260917/v4-funding/`.
+
+Next: qualify explicit funding-source admission and bounded JNI ownership before
+lifting the old source profile. Hardware custody and authenticated chain state
+remain open; TLS stays quarantined. No real funds or private fixtures were used.
+
 ## Reviewed output change ownership — 2026-09-17
 
 The existing input-ownership checks now also support an internal exact-output

@@ -1,0 +1,34 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#include "transaction_source_internal.h"
+#include <stdlib.h>
+#include <string.h>
+#include "source_vectors.h"
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+#define CHECK(v) do { if (!(v)) abort(); } while (0)
+static uint8_t changed[11001];
+
+static void inspect(const uint8_t *data, size_t size, uint32_t index)
+{
+    struct { uint64_t before; zcl_v4_source view; uint64_t after; } output, original;
+    memset(&output, 0xa5, sizeof(output)); memcpy(&original, &output, sizeof(output));
+    const zcl_status status = zcl_v4_source_inspect(data, size, index, &output.view);
+    CHECK(output.before == original.before && output.after == original.after);
+    if (status != ZCL_OK) { CHECK(memcmp(&output, &original, sizeof(output)) == 0); return; }
+    CHECK(output.view.output_count > index && output.view.output_count <= size / 9);
+    CHECK(output.view.input_count <= size / 41 && output.view.spend_count <= size / 384);
+    CHECK(output.view.shielded_count <= size / 948 && output.view.joinsplit_count <= size / 1698);
+    CHECK(output.view.output.value <= ZCL_MAX_MONEY && output.view.output.script_len <= 25);
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    if (size < 4 || size > ZCL_V4_SOURCE_MAX + 4) return 0;
+    const uint32_t index = (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+        ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+    inspect(data + 4, size - 4, index);
+    const size_t vector = data[0] % 4;
+    memcpy(changed, source_vectors[vector].wire, source_vectors[vector].length);
+    for (size_t i = 4; i < size; ++i) changed[(i - 4) % source_vectors[vector].length] ^= data[i];
+    inspect(changed, source_vectors[vector].length, data[1] % 5);
+    return 0;
+}

@@ -116,7 +116,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
     src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
     src/transaction_review_wire_encode.c src/transaction_review_complete.c src/transaction_review_sign.c
-    src/transaction_draft.c src/transaction_draft_check.c)
+    src/transaction_draft.c src/transaction_draft_check.c src/transaction_source.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -1302,6 +1302,31 @@ if(NOT ANDROID)
     target_compile_options(wallet_change_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_recovered_change COMMAND wallet_change_tests)
+    add_executable(transaction_source_tests tests/test_transaction_source.c)
+    target_link_libraries(transaction_source_tests PRIVATE zcl_wallet_core)
+    target_include_directories(transaction_source_tests PRIVATE src)
+    target_compile_options(transaction_source_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_transaction_source COMMAND transaction_source_tests)
+    set_tests_properties(wallet_transaction_source PROPERTIES TIMEOUT 60)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(source_failure_tests tests/test_source_failures.c src/transaction_source.c)
+        target_link_libraries(source_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_include_directories(source_failure_tests PRIVATE src)
+        target_compile_definitions(source_failure_tests PRIVATE mbedtls_sha256=zcl_source_test_sha
+            zcl_secure_zero=zcl_source_test_zero)
+        target_compile_options(source_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_source_failures COMMAND source_failure_tests)
+    endif()
+    if(ZCL_FUZZ)
+        add_executable(fuzz_transaction_source tests/fuzz_transaction_source.c)
+        target_link_libraries(fuzz_transaction_source PRIVATE zcl_wallet_core)
+        target_include_directories(fuzz_transaction_source PRIVATE src)
+        target_compile_options(fuzz_transaction_source PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
+        target_link_options(fuzz_transaction_source PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
     set_tests_properties(wallet_recovered_change PROPERTIES TIMEOUT 30)
     add_executable(change_state_tests tests/test_change_state.c)
     target_link_libraries(change_state_tests PRIVATE zcl_wallet_core)

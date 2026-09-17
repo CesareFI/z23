@@ -1,5 +1,32 @@
 # Transparent transaction development
 
+## Full v4 funding-source inspection foundation
+
+The internal `zcl_v4_source_inspect` reads the complete canonical v4 layout,
+including opaque Sapling descriptions, Groth JoinSplits and conditional
+signatures. It returns full-wire SHA256d in displayed order, one owned
+transparent output and raw metadata. Counts and scripts are bounded by
+remaining wire within the original Zclassic 102,000-byte limit. Only the
+selected output must fit the existing 25-byte script owner. Transparent values
+and their sum remain bounded by MAX_MONEY. No heap, I/O or pointer is retained;
+failures preserve the complete caller output.
+
+This supplies structural inspection, not consensus validation, proof/signature
+verification, trusted outpoint matching, inclusion, unspentness or signing
+authority. Raw expiry and valueBalance do not establish valid accounting or
+finality. Pinned original hash vectors need not be consensus-valid. Existing
+transparent-only prevout, draft and JNI source limits remain unchanged.
+Explicit source admission and bounded JNI ownership require qualification
+before funding transactions containing shielded components can be admitted.
+This does not implement shielded spending.
+
+Four untouched reference wires and independent OpenSSL SHA256d identities
+reproduce with `tools/project-original-sources.sh`; see
+[COMPATIBILITY.md](COMPATIBILITY.md). Fixtures cover all conditional tails,
+every truncation and single-byte change, minimal CompactSize, large vectors,
+exact/over-limit wire and dirty hash-provider failures. Release-library
+runtime fixtures pass API30/35/36; ARM64 is compile-only evidence.
+
 ## Reviewed output change ownership
 
 The internal `zcl_review_output_change_check` checks one output from the same

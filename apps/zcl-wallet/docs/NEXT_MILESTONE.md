@@ -14,6 +14,13 @@ The exact reviewed output can also be matched to a consumed change index, with
 completion-time freshness and no journal mutation. This supplies ownership
 evidence only; it does not hide output data or authorize a send.
 
+A separate full-v4 public source inspector now reads shielded-bearing funding
+wire and computes its complete identity under the original 102,000-byte bound.
+It does not change existing transparent prevout/draft/JNI admission. Next,
+qualify an explicit source-admission contract and bounded JNI source ownership
+before lifting those limits. Preserve authenticated-chain/unspentness and
+custody gates; structural inspection cannot establish consensus validity.
+
 ## First acceptance gate
 
 Use a fresh, explicitly authorized test profile on an Android device providing

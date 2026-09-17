@@ -1,5 +1,29 @@
 # C parser foundation safety review
 
+## Full v4 public source inspection — 2026-09-17
+
+Scope: `transaction_source.c`, internal declarations, public reference extraction,
+normal/provider-fault fixtures and the fuzzer. Existing spend admission,
+cryptography, consensus core and JNI paths are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Sticky reader status preserves used<=length. Every read/skip checks remaining bytes. Counts divide remaining bytes by positive constant widths before conversion/multiplication. Selected scripts fit25 bytes; wire is bounded to102000. Canaries, every truncation and exact/over-limit fixtures pass. |
+| Integer overflow/underflow, signed/unsigned conversions | Minimal CompactSize decodes in uint64_t and is bounded before size_t conversion. Integer widths are internal constants1/2/4/8. Money uses guarded MAX_MONEY-total. Signed balance conversion handles INT64_MIN without overflow or out-of-range casts. |
+| Use-after-free, double-free, leaks | No heap/free. Candidate and digests remain live through cleanup. Result owns its script and contains no source pointer. LSan and provider-fault paths pass. |
+| NULL dereferences, uninitialized memory | Public pointers are checked first; take returns NULL only with sticky refusal. Candidate and hash buffers initialize fully. Dirty first/second hash failures cannot publish output. |
+| Dangling pointers, pointer arithmetic | Borrowed source remains stable through synchronous parsing/hash. Pointer addition follows remaining-length checks; no pointer escapes. Nonoverlapping valid caller spans are an explicit precondition. |
+| Format strings, secret leakage | No product formatting/logging, wallet access or secret input. Both digests and candidate clear on every entered work exit; fault tests observe live clears. No compiler-spill erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion, heap or attacker-sized stack object. New optimized frames are312 bytes with Clang and368 with GCC, below4096; these are per-frame measurements. Large test wire is static and fixture-only. |
+| Malformed serialization/network input | Header/group, minimal lengths, conditional tails, exact end, index, script fit and transparent money range are checked. Proofs/signatures remain opaque; raw expiry/valueBalance do not claim valid accounting/finality. Full-wire identity is computed, not matched to a trusted outpoint. Existing spend codec refuses as before. |
+| Races, resource exhaustion | No global product state, callbacks, I/O or retries. Caller owns stable input. Parsing and hashing are bounded by102000 bytes; vector iteration is bounded by remaining wire. No source is retained or executed. |
+
+Six guard/identity/cleanup mutations fail deterministic tests. Fuzzing completes
+333066 runs; isolated TLS-off safety gates pass 121 Clang/oracle and116 GCC
+groups with static analysis and complexity limits. Android gates and actual
+release-library execution pass API30/35/36. ARM64 builds only. Extraction
+reproduces all four public vectors exactly.
+
 ## Reviewed output change ownership — 2026-09-17
 
 Scope: `zcl_review_output_change_check` and its small row/profile helper in the
