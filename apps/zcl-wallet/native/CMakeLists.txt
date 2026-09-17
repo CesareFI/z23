@@ -1484,8 +1484,30 @@ if(NOT ANDROID)
             -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wvla -Wframe-larger-than=4096)
         add_test(NAME wallet_review_wallet COMMAND review_wallet_tests)
         set_tests_properties(wallet_review_wallet PROPERTIES TIMEOUT 60)
+        add_executable(review_wallet_sign_tests tests/test_review_wallet_sign.c)
+        target_link_libraries(review_wallet_sign_tests PRIVATE review_wallet_test_fixture)
+        target_compile_options(review_wallet_sign_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        if(ZCL_ORACLE)
+            target_link_libraries(review_wallet_sign_tests PRIVATE signature_oracle sighash_oracle)
+            target_compile_definitions(review_wallet_sign_tests PRIVATE ZCL_SIGNATURE_ORACLE=1)
+        endif()
+        add_test(NAME wallet_review_wallet_sign COMMAND review_wallet_sign_tests)
+        set_tests_properties(wallet_review_wallet_sign PROPERTIES TIMEOUT 60)
+        add_executable(review_wallet_sign_failure_tests tests/test_review_wallet_sign_failures.c
+            src/transaction_review_wallet.c)
+        target_link_libraries(review_wallet_sign_failure_tests PRIVATE review_wallet_test_fixture secp256k1)
+        target_compile_definitions(review_wallet_sign_failure_tests PRIVATE
+            zcl_entropy_seed=zcl_sign_test_seed zcl_seed_private=zcl_sign_test_private
+            zcl_signature_create=zcl_sign_test_create zcl_signature_p2pkh=zcl_sign_test_verify
+            zcl_random_bytes=zcl_sign_test_random zcl_ec_begin=zcl_sign_test_begin zcl_ec_end=zcl_sign_test_end
+            zcl_secure_zero=zcl_sign_test_zero)
+        target_compile_options(review_wallet_sign_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_wallet_sign_failures COMMAND review_wallet_sign_failure_tests)
+        set_tests_properties(wallet_review_wallet_sign_failures PROPERTIES TIMEOUT 60)
         add_executable(review_wallet_failure_tests tests/test_review_wallet_failures.c src/transaction_review_wallet.c)
-        target_link_libraries(review_wallet_failure_tests PRIVATE review_wallet_test_fixture)
+        target_link_libraries(review_wallet_failure_tests PRIVATE review_wallet_test_fixture secp256k1)
         target_compile_definitions(review_wallet_failure_tests PRIVATE
             zcl_change_custody_prepare=zcl_review_wallet_test_prepare zcl_address_encode=zcl_review_wallet_test_encode
             zcl_storage_read=zcl_review_wallet_test_read zcl_random_bytes=zcl_review_wallet_test_random

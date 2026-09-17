@@ -123,6 +123,29 @@ typedef struct {
     void *context;
 } zcl_review_clock;
 
+/* Internal synchronous wallet-input signing composition; no JNI/UI caller.
+ * BEFORE entry the adapter MUST authenticate this exact record/header/entropy
+ * under per-use hardware custody, independently qualify current chain context
+ * and unspentness, and obtain explicit consent for this exact live review.
+ * This function cannot establish those external prerequisites from a claim.
+ * It rechecks the committed wallet and recovered receive0/consumed-change
+ * ownership, derives the existing exact BIP44 path, hashes only this review,
+ * and verifies the resulting signature/public key against its input hash.
+ * No caller-supplied digest, script, amount or arbitrary key path is accepted.
+ * Sample trusted time at admission, before ECDSA, and after public verification
+ * before publishing the detached public signature. Expiry/rollback follows
+ * existing review invalidation. Clock/provider/ownership refusal preserves all
+ * output bytes. Success neither consumes nor extends the review, reserves an
+ * index, changes storage or grants a reusable authorization/broadcast token.
+ * No private key escapes. Owned entropy, seed, scalar, chain code and contexts
+ * retire at their last uses and on failures; caller must clear its own entropy.
+ * Same exclusive lock, stable nonoverlapping spans, trusted private directory
+ * and no-reentrancy rules apply. Delayed delivery and complete transaction
+ * publication still require their own lifetime/consent/context checks. */
+zcl_status zcl_review_input_wallet_sign(zcl_review_owner *owner, uint64_t id,
+    const zcl_review_clock *clock, size_t input_index, const zcl_review_block *block,
+    const zcl_review_wallet_input *claim, zcl_signature *output);
+
 /* Completion-time variant of public signed-wire assembly above. Read the
  * trusted clock before admission and again after all signature verification
  * and serialization. Recheck the SAME live review at that final sample before

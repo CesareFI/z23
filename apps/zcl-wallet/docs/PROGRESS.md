@@ -1,5 +1,55 @@
 # Development record
 
+## Review-bound wallet input signing — 2026-09-17
+
+The C core now has an internal synchronous composition that signs exactly one
+P2PKH input from a live review. It accepts no caller digest, script, amount or
+arbitrary key path. It checks supplied candidate branch/finality/expiry context,
+matches the input to the exact committed receive0 wallet or an already consumed
+change index, derives the existing BIP44 key, signs the review-owned digest and
+independently verifies the public signature/key hash before publication. Trusted
+monotonic time is sampled before admission, before ECDSA and after verification;
+expiry, rollback or clock/provider failure leaves output unchanged.
+
+Entropy, seed, EC blinding, chain code, scalar, transient context, verification
+script and complete work object have explicit last-use cleanup. The fault fixture
+injects dirty seed/key/signature/script results, mismatched key/digest, malformed
+successful length, EC allocation, RNG and clock failures while checking cleanup
+order and output atomicity. Normal fixtures cover both networks, all supported
+entropy lengths, receive and consumed-change paths, deterministic repeat output,
+unchanged journals and complete independently verified signed wire. The wallet
+claim fuzzer now models all three signing clock phases as well as malformed
+record/entropy/directory/journal inputs. Strict static analysis and complexity
+checks pass. The measured signing frames are 1896 bytes with Clang and 1936
+with GCC; these are per-function observations, not total nested stack bounds.
+
+Final validation used an isolated copy of backed-up
+`27d0808c64ba85183d291f1cdfabba88aa38640d` plus the nine owned native files,
+recorded by SHA256. Concurrent change-state edits were preserved and excluded.
+The TLS-off safety script passes all authored/provider analysis and complexity
+checks, 116 Clang sanitizer/oracle groups and 111 optimized GCC sanitizer groups.
+The claim/signing fuzzer completes 4,983 executions in 46 seconds without a
+finding. Eight source-copy mutations ignore ownership refusal, omit either
+signing time check, skip public verification or omit entropy/seed/chain-code/
+scalar retirement; all fail deterministic regressions. An initial mutation-only
+compile refusal for newly unused symbols was resolved by preserving harmless
+references, retaining warnings as errors. The initial fixture used a nonexistent
+decoded-index snapshot field; it now checks the real exact journal bytes/length.
+
+Android/JVM checks, both ABI debug/release builds, both lints, fixture isolation,
+instrumentation-result controls and 16 KiB alignment pass from that isolated
+copy. The signing fixture linked against its release-built x86_64 archives passes
+API30/35/36, using only owned temporary paths and published entropy/inert wallet
+records. Invocation-created executables/directories are removed. ARM64 builds;
+physical ARM64 execution remains unproven. Evidence is under the wallet directory
+at `.cache/android-wallet/mission-20260917/review-wallet-signing/`.
+
+This has no JNI or UI entry point and does not itself establish hardware-backed
+authentication, explicit consent, authenticated chain/unspentness, delayed UI
+freshness or broadcast authority. Those remain required before a real send.
+TLS is unchanged and quarantined. Next: qualify those external prerequisites
+before connecting this foundation to a user-visible send or broadcast path.
+
 ## Change-state authenticated scratch retirement — 2026-09-17
 
 Inspection found two avoidable stack remnants in the authenticated change-index

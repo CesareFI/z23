@@ -1,5 +1,43 @@
 # C parser foundation safety review
 
+## Review-bound wallet input signing — 2026-09-17
+
+Scope: the internal `zcl_seed_private` path helper and
+`zcl_review_input_wallet_sign` composition, deterministic/provider-fault
+fixtures and the existing wallet-claim differential fuzzer. The composition
+accepts no caller digest, script, value or arbitrary path. It hashes one input
+from the same live review, verifies committed receive0 or consumed-change
+ownership, derives that exact existing BIP44 key, signs, independently verifies
+the public signature/key hash, and samples trusted monotonic time before
+admission, before ECDSA and after verification. There is no JNI/UI entry point.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Existing bounded claim copies admit directory, record and entropy lengths before copying. Fixed 32/64-byte secret material, 20/32-byte hashes, 35-byte addresses and 107-byte verification script use exact capacities. Input index and count checks precede review access; output is copied only after all checks. Canaries and unchanged-failure output assertions pass. |
+| Integer overflow/underflow, signed/unsigned conversions | Existing path bounds require chain 0/1 and index below `0x80000000`; wallet claims further restrict receive to index0 and change to the bounded journal range. No new deadline arithmetic or narrowing is added. Script length is checked within 44..107 after verified construction. |
+| Use-after-free, double-free, leaks | Inputs remain stable borrowed spans only for the synchronous call. The claim copies precede wallet-key and storage work; trusted clock reads and public review hashing can precede that copy. The derivation EC context is zero-initialized, ended exactly once on every result and observed empty before signing opens its context. Existing bounded EC allocations are sequential; no private pointer or persistent heap owner escapes. |
+| NULL dereferences, uninitialized memory | The public gate validates owner, clock/callback, block, claim and output. Work, seed, blinding, context and script initialize before use. Clock outputs start at `UINT64_MAX`, so success-without-write refuses through existing liveness checks. Provider-fault fixtures dirty outputs deliberately and still preserve caller output. |
+| Dangling pointers, pointer arithmetic | Claim pointers are rebound only to invocation-owned directory, ciphertext and entropy copies. The key pointer is observed only while the containing work object is live. No new product pointer arithmetic or retained callback span exists. |
+| Format strings, secret leakage | No product logging or formatting. The owned entropy copy clears immediately after derivation; seed and EC blinding clear inside derivation; chain code clears before the signer; the scalar clears immediately after the signing provider; the EC context ends before signing; the bounded verification script and complete work object clear on every exit. This is explicit object retirement, not a whole-stack/compiler-spill claim. |
+| Stack usage, allocation limits | No VLA or recursion. Optimized Clang reports 1896 bytes for signing, 1400 for the check gate, 248 for prepared-wallet checking and 184 for private path derivation. GCC reports a 1936-byte bounded signing frame. Each stays below the enforced 4096-byte cap; provider internals and the total nested call chain are separate bounds. |
+| Malformed serialization/network input | Existing wallet-record GCM prerequisite, record parser, exact committed-record comparison, authenticated change head, review codec, branch/finality/expiry context and strict DER/low-S/key-hash verifier remain authoritative. Wrong entropy, ciphertext, path, pending wallet, unconsumed change, branch or signature refuses without publication. |
+| Races, resource exhaustion | Same exclusive review lock, stable nonoverlapping spans and nonreentrant synchronous clock contract apply. Work uses bounded existing ownership/path operations, at most three clock reads, one signer call and one public signature verification; there is no retry, worker, attacker-sized allocation or shared mutable product state. |
+
+Fixtures cover both networks, every supported entropy length, receive0 and a
+consumed change index, deterministic repeated signatures, exact independently
+verified signed wire, unchanged change storage and ownership/time refusal.
+Source-copy faults cover dirty seed/key/signature/script outputs, mismatched key
+or digest, malformed successful script length, EC allocation, RNG and second/
+third clock failures while observing secret/context retirement. The differential
+fuzzer independently models three-phase lifetime mutation and malformed claims.
+The isolated TLS-off gate passes all static analysis, 116 Clang sanitizer/oracle
+groups and 111 optimized GCC sanitizer groups. Fuzzing completes 4,983 executions;
+eight ownership/time/verification/retirement mutations fail deterministic tests.
+Release-library x86_64 fixtures pass API30/35/36; ARM64 is compile-only.
+This establishes an internal signing foundation only: per-use hardware custody,
+explicit consent, authenticated chain/unspentness, delayed delivery and
+broadcast remain external required gates. TLS remains quarantined.
+
 ## Change-state authenticated scratch retirement — 2026-09-17
 
 Scope: `change_state.c`, `change_state_key.c` and the existing source-copy

@@ -83,6 +83,16 @@ static zcl_status seed_address_bounds(const uint8_t *seed, size_t seed_len,
     return network == ZCL_MAINNET || network == ZCL_TESTNET ? ZCL_OK : ZCL_UNSUPPORTED;
 }
 
+zcl_status zcl_seed_private(const uint8_t *seed, size_t seed_len, zcl_network network,
+    uint32_t chain, uint32_t index, const secp256k1_context *context,
+    zcl_extended_private *output)
+{
+    if (context == NULL || output == NULL) return ZCL_INVALID_ARGUMENT;
+    const zcl_status status = seed_address_bounds(seed, seed_len, network, chain, index);
+    if (status != ZCL_OK) return status;
+    return address_path(seed, seed_len, network, chain, index, context, output);
+}
+
 zcl_status zcl_seed_address(const uint8_t *seed, size_t seed_len, zcl_network network,
     uint32_t chain, uint32_t index, const secp256k1_context *context,
     uint8_t *address, size_t capacity, size_t *length)
@@ -93,7 +103,7 @@ zcl_status zcl_seed_address(const uint8_t *seed, size_t seed_len, zcl_network ne
     if (capacity < 35) return ZCL_BUFFER_TOO_SMALL;
     uint8_t public_key[33] = {0};
     zcl_extended_private key = {0};
-    status = address_path(seed, seed_len, network, chain, index, context, &key);
+    status = zcl_seed_private(seed, seed_len, network, chain, index, context, &key);
     if (status == ZCL_OK)
         status = zcl_ec_public(context, key.secret, sizeof(key.secret), public_key, sizeof(public_key));
     /* Hashing and address encoding consume only the public key. Retire both

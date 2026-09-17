@@ -1,5 +1,31 @@
 # Transparent transaction development
 
+## Review-bound wallet signing foundation
+
+The internal `zcl_review_input_wallet_sign` operation can produce one detached
+public signature only for an input already owned by the same live review. It
+does not accept a digest, script, amount or arbitrary derivation path from its
+caller. The C core recomputes the contextual ZIP-243 digest from that review,
+requires the exact committed wallet and recovered receive0 or consumed-change
+address to match the assessed input, derives the corresponding existing BIP44
+private key, signs, then runs the strict DER/low-S/public-key/HASH160 verifier.
+
+A trusted local monotonic clock is sampled before admission, after key
+derivation and before ECDSA, and after public verification. Rollback or expiry
+invalidates the same review under existing rules; any clock, ownership, context,
+provider or verification refusal preserves all caller output bytes. Secret
+objects retire at their last uses and the whole invocation work object clears.
+
+This internal composition is qualified with synthetic host fixtures and native
+x86_64 execution on API30/35/36 against release-built libraries. ARM64 compilation
+does not qualify physical-device execution. There is no
+JNI or send-screen entry point. The Android adapter must first establish per-use
+hardware-backed custody of the exact wallet, explicit consent for the exact
+review, and independently authenticated current chain/unspentness. It must also
+recheck delayed delivery and broadcast freshness. A returned signature is not a
+reusable approval, does not consume the review or reserve change, and grants no
+broadcast authority by itself.
+
 ## Signed-wire completion boundary
 
 The internal `zcl_review_p2pkh_complete` operation composes the existing public

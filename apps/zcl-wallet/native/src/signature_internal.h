@@ -27,7 +27,8 @@ typedef struct {
  * wallet caller MUST bind authenticated wallet/key ownership, current chain
  * context, exact live review and consent in its own operation before invoking
  * it, and must recheck cancellation/completion before publishing a transaction.
- * Current callers are isolated public synthetic tests only. */
+ * The internal review-bound composition retains those caller prerequisites;
+ * current execution callers are isolated public synthetic fixtures only. */
 zcl_status zcl_signature_create(const uint8_t *secret, size_t secret_len,
     const uint8_t *digest, size_t digest_len, zcl_signature *output);
 

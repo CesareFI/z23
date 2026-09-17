@@ -11,7 +11,7 @@
 #define CHECK(v) do { if (!(v)) abort(); } while (0)
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 static review_wallet_fixture fixture;
-static zcl_review_owner expected_owner;
+static zcl_review_owner expected_owner, initial_owner;
 static bool initialized;
 static uint8_t record[140], entropy[32], journal[240];
 static size_t journal_len;
@@ -125,6 +125,54 @@ static void preserved_files(bool expected_pending)
     CHECK(info.st_size >= 0 && (uint64_t)info.st_size == journal_len);
 }
 
+typedef struct { uint64_t times[3]; size_t calls; } signing_clock;
+
+static zcl_status sample_signing(void *context, uint64_t *now)
+{
+    signing_clock *clock = context;
+    CHECK(clock != NULL && now != NULL && clock->calls < 3);
+    *now = clock->times[clock->calls++];
+    return ZCL_OK;
+}
+
+static zcl_status advance_signing(uint64_t now)
+{
+    if (now < expected_owner.data.last_ms) {
+        memset(&expected_owner.data, 0, sizeof(expected_owner.data)); return ZCL_CANCELLED;
+    }
+    if (now >= expected_owner.data.deadline_ms) {
+        memset(&expected_owner.data, 0, sizeof(expected_owner.data)); return ZCL_TIMED_OUT;
+    }
+    expected_owner.data.last_ms = now;
+    return ZCL_OK;
+}
+
+static void sign_claim(const zcl_review_wallet_input *candidate, uint64_t id, size_t input,
+    const uint8_t *data, signing_clock *clock)
+{
+    fixture.review = initial_owner; expected_owner = initial_owner;
+    zcl_status expected = lifetime_model(candidate != NULL, id, clock->times[0]);
+    bool valid = expected == ZCL_OK && key_matches(candidate, input, data);
+    size_t calls = candidate == NULL ? 0 : 1;
+    if (valid) { ++calls; expected = advance_signing(clock->times[1]); valid = expected == ZCL_OK; }
+    if (valid) { ++calls; expected = advance_signing(clock->times[2]); valid = expected == ZCL_OK; }
+    const zcl_network network = initial_owner.data.assessment.network;
+    const zcl_review_block block = {network, network == ZCL_MAINNET ? 1000000 : 100000, 0};
+    const zcl_review_clock source = {sample_signing, clock};
+    struct { uint8_t before[8]; zcl_signature signature; uint8_t after[8]; } output;
+    memset(&output, 0xa5, sizeof(output));
+    const zcl_status status = zcl_review_input_wallet_sign(&fixture.review, id, &source,
+        input, &block, candidate, &output.signature);
+    CHECK((status == ZCL_OK) == valid && clock->calls == calls);
+    if (expected != ZCL_OK) CHECK(status == expected);
+    CHECK(memcmp(&fixture.review, &expected_owner, sizeof(expected_owner)) == 0);
+    for (size_t i = 0; i < 8; ++i) CHECK(output.before[i] == 0xa5 && output.after[i] == 0xa5);
+    if (!valid) {
+        const uint8_t *bytes = (const uint8_t *)&output.signature;
+        for (size_t i = 0; i < sizeof(output.signature); ++i) CHECK(bytes[i] == 0xa5);
+    }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size < 12 || size > 252) return 0;
@@ -136,11 +184,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const uint64_t ids[] = {fixture.id, fixture.id + 1, 0, UINT64_MAX};
     const uint64_t id = ids[data[7] % 4];
     const size_t input = data[3] == 255 ? SIZE_MAX : data[3] % 10;
+    initial_owner = fixture.review;
     const zcl_status life = lifetime_model(candidate != NULL, id, now);
     const zcl_status status = zcl_review_input_wallet_check(&fixture.review, id, now, input, candidate);
     if (life != ZCL_OK) CHECK(status == life);
     else CHECK((status == ZCL_OK) == key_matches(candidate, input, data));
     CHECK(memcmp(&expected_owner, &fixture.review, sizeof(expected_owner)) == 0);
+    signing_clock clock = {{now, times[data[9] % 5], times[data[10] % 5]}, 0};
+    sign_claim(candidate, id, input, data, &clock);
     preserved_files(data[0] % 11 == 8);
     CHECK(review_wallet_fixture_close(&fixture) == 0);
     return 0;

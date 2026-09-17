@@ -108,9 +108,13 @@ canonical signature-script verification and complete public signed-wire assembly
 also have independent host and release-library fixture evidence. These primitives
 now include completion-time signed-wire publication: a trusted local monotonic
 clock is sampled again after verification/serialization, and the same review
-must still be live before bytes publish. Delayed delivery/broadcast, actual
-wallet signing, custody, consent and authenticated chain context remain separate
-open composition requirements. The primitives
+must still be live before bytes publish. Delayed delivery/broadcast,
+hardware-backed Android custody, consent and authenticated chain context remain separate open
+composition requirements. An internal C composition now derives and signs
+only the exact committed receive0 or consumed-change path for one live review
+input, with three-phase monotonic checks and independent public verification.
+It has no JNI/UI entry point and cannot establish hardware custody, consent,
+authenticated chain/unspentness, delayed delivery or broadcast authority. The primitives
 grant no consent, authenticated chain state, unspentness or broadcast authority;
 see [`TRANSACTIONS.md`](TRANSACTIONS.md) for their exact scope and remaining gates.
 
