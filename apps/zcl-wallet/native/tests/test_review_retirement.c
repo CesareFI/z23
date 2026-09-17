@@ -17,6 +17,7 @@ static uint8_t wire[ZCL_TX_WIRE_MAX], original[ZCL_TX_WIRE_MAX];
 static size_t wire_length;
 static uintptr_t parsed_identity, candidate_identity;
 static unsigned fault, calls, parsed_wipes, candidate_wipes, snapshot_wipes, owner_wipes;
+static bool full_sources;
 
 zcl_status zcl_review_test_parse(const uint8_t *bytes, size_t length, zcl_transparent_tx *transaction);
 zcl_status zcl_review_test_assess(const zcl_transparent_tx *transaction, zcl_network network,
@@ -114,7 +115,9 @@ static void reset(unsigned selected)
 
 static zcl_status open_review(uint64_t now, uint64_t *id)
 {
-    return zcl_review_open(&owner, wire, wire_length, ZCL_MAINNET, fixture.sources, 2, 500, now, id);
+    return full_sources
+        ? zcl_review_open_full_sources(&owner, wire, wire_length, ZCL_MAINNET, fixture.sources, 2, 500, now, id)
+        : zcl_review_open(&owner, wire, wire_length, ZCL_MAINNET, fixture.sources, 2, 500, now, id);
 }
 
 static void preparation(void)
@@ -184,6 +187,8 @@ int main(void)
     preparation();
     admission();
     snapshots();
+    full_sources = true;
+    preparation(); admission(); snapshots();
     puts("Review preparation and publication retirement passed");
     return 0;
 }

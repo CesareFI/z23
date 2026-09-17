@@ -865,6 +865,7 @@ if(NOT ANDROID)
     target_link_libraries(review_retirement_tests PRIVATE assessment_test_fixture)
     target_compile_definitions(review_retirement_tests PRIVATE
         zcl_transaction_parse=zcl_review_test_parse zcl_transaction_assess=zcl_review_test_assess
+        zcl_v4_source_assess=zcl_review_test_assess
         zcl_transaction_serialize=zcl_review_test_serialize zcl_secure_zero=zcl_review_test_zero)
     target_compile_options(review_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
@@ -1326,6 +1327,35 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_source_assessment_contract COMMAND source_assessment_contract_tests)
     set_tests_properties(wallet_source_assessment_contract PROPERTIES TIMEOUT 30)
+    add_executable(source_review_tests tests/test_source_review.c
+        tests/source_assessment_fixture.c tests/assessment_fixture.c)
+    target_link_libraries(source_review_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_include_directories(source_review_tests PRIVATE src)
+    target_compile_options(source_review_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_source_review COMMAND source_review_tests)
+    set_tests_properties(wallet_source_review PROPERTIES TIMEOUT 30)
+    add_executable(source_review_contract_tests tests/test_review.c tests/assessment_fixture.c)
+    target_link_libraries(source_review_contract_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(source_review_contract_tests PRIVATE zcl_review_open=zcl_review_open_full_sources)
+    target_compile_options(source_review_contract_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
+    add_test(NAME wallet_source_review_contract COMMAND source_review_contract_tests)
+    set_tests_properties(wallet_source_review_contract PROPERTIES TIMEOUT 30)
+    if(ZCL_FUZZ)
+        add_executable(fuzz_source_review tests/fuzz_review.c tests/source_assessment_fixture.c
+            tests/assessment_fixture.c tests/context_reference.c)
+        target_link_libraries(fuzz_source_review PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_include_directories(fuzz_source_review PRIVATE src)
+        target_compile_definitions(fuzz_source_review PRIVATE ZCL_FULL_SOURCE_REVIEW=1)
+        target_compile_options(fuzz_source_review PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
+        target_link_options(fuzz_source_review PRIVATE -fsanitize=fuzzer,address,undefined)
+        if(ZCL_ORACLE)
+            target_link_libraries(fuzz_source_review PRIVATE sighash_oracle)
+            target_compile_definitions(fuzz_source_review PRIVATE ZCL_SIGHASH_ORACLE=1)
+        endif()
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(source_failure_tests tests/test_source_failures.c src/transaction_source.c)
         target_link_libraries(source_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)

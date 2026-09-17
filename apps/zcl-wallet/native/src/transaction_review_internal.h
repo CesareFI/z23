@@ -9,6 +9,27 @@
 zcl_status zcl_review_prepare(const uint8_t *wire, size_t length, zcl_network network,
                               const zcl_previous_transaction *previous, size_t previous_count,
                               uint64_t maximum_fee, zcl_review_data *candidate);
+/* Same private preparation, explicitly using structural full-v4 source data.
+ * The current unsigned transaction and all assessment predicates are unchanged. */
+zcl_status zcl_review_prepare_full_sources(const uint8_t *wire, size_t length,
+    zcl_network network, const zcl_previous_transaction *previous, size_t previous_count,
+    uint64_t maximum_fee, zcl_review_data *candidate);
+
+/* Explicit offline-data opening using the full-v4 source inspector. At most8
+ * stable borrowed sources of102000 bytes each; no source is retained. Current
+ * unsigned wire remains bounded by the existing transparent spend profile.
+ * Same lock, stable nonoverlap, ID, trusted monotonic time, fixed deadline and
+ * complete-only publication contract as zcl_review_open. Existing public
+ * opening still uses only its original source profile.
+ * Opaque source proofs/signatures are hashed, never verified. No source chain
+ * validity, inclusion, maturity, unspentness, custody, ownership, user consent
+ * or authority to sign/broadcast is established. Internal signing operations
+ * still require ALL their independently qualified external prerequisites.
+ * No JNI/UI caller yet. Delayed delivery must recheck this exact live owner. */
+zcl_status zcl_review_open_full_sources(zcl_review_owner *owner,
+    const uint8_t *wire, size_t length, zcl_network network,
+    const zcl_previous_transaction *previous, size_t previous_count,
+    uint64_t maximum_fee, uint64_t now_ms, uint64_t *id);
 /* Shared lifetime transition; caller checks owner != NULL and holds its lock. */
 zcl_status zcl_review_live(zcl_review_owner *owner, uint64_t id, uint64_t now_ms);
 

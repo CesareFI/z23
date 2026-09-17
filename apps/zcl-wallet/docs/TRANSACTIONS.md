@@ -1,5 +1,29 @@
 # Transparent transaction development
 
+## Owned full-source review lifecycle
+
+The internal `zcl_review_open_full_sources` explicitly opens a review using
+full-v4 source assessment. Preparation parses the bounded current transaction,
+requires unsigned inputs, matches all sources and checks amounts/destinations,
+then serializes the owned parsed value. Only complete preparation publishes
+the next review ID. It retains no source pointer or source wire: callers can
+retire every borrowed funding span immediately after return.
+
+The existing owner, fixed deadline, rollback cancellation, non-repeating IDs,
+snapshot/copy and background-clear rules apply. Legacy `zcl_review_open` keeps
+its original source profile. The new operation adds no heap, JNI/UI entry point,
+chain evidence or signing authority. Internal signing still requires its exact
+per-use custody, consent and independently authenticated chain/unspentness
+prerequisites; opaque source proofs/signatures remain unverified.
+
+Full-source fixtures destroy borrowed data before subsequent reads, exercise
+every source truncation, both networks/all conditional tails, replacement and
+expiry boundaries, and verify unchanged owner/ID on failed preparation. The
+existing complete review contract and dirty-provider retirement suite also run
+through the new entry point. Differential lifetime/sighash fuzzing uses the
+independent oracle. Next: qualify bounded JNI byte ownership and real-VM lifetime
+behavior before Android exposure.
+
 ## Explicit offline full-source assessment
 
 `zcl_v4_source_prevout` matches the complete raw v4 source identity and selected

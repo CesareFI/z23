@@ -18,8 +18,11 @@ A separate full-v4 public source inspector now reads shielded-bearing funding
 wire and computes its complete identity under the original 102,000-byte bound.
 An explicit internal offline assessment now matches full source hash/index and
 reuses checked transparent destinations, totals and fee policy. It leaves legacy
-prevout/draft/review/signing admission intact. Next, qualify bounded JNI source
-ownership and an explicit offline-data lifecycle before any Android exposure.
+prevout/draft/review/signing admission intact. An explicit internal full-source
+review opening now reuses the owned unsigned lifecycle: complete-only publication,
+fixed expiry, rollback cancellation and non-repeating replacement IDs. Borrowed
+funding bytes retire after opening. Next, qualify bounded JNI source ownership
+and real-VM lifecycle behavior before Android exposure.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.
 

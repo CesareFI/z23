@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "transaction_review_internal.h"
+#include "transaction_source_internal.h"
 #include "zcl_keys.h"
 #include <string.h>
 
@@ -23,17 +24,20 @@ static bool unsigned_inputs(const zcl_transparent_tx *tx)
     return true;
 }
 
-zcl_status zcl_review_prepare(const uint8_t *wire, size_t length, zcl_network network,
+static zcl_status prepare(const uint8_t *wire, size_t length, zcl_network network,
                               const zcl_previous_transaction *previous, size_t previous_count,
-                              uint64_t maximum_fee, zcl_review_data *candidate)
+                              uint64_t maximum_fee, zcl_review_data *candidate, bool full_sources)
 {
     if (candidate == NULL) return ZCL_INVALID_ARGUMENT;
     zcl_transparent_tx transaction = {0};
     zcl_status status = zcl_transaction_parse(wire, length, &transaction);
     if (status == ZCL_OK && !unsigned_inputs(&transaction)) status = ZCL_UNSUPPORTED;
     if (status == ZCL_OK)
-        status = zcl_transaction_assess(&transaction, network, previous, previous_count,
-            maximum_fee, &candidate->assessment);
+        status = full_sources
+            ? zcl_v4_source_assess(&transaction, network, previous, previous_count,
+                maximum_fee, &candidate->assessment)
+            : zcl_transaction_assess(&transaction, network, previous, previous_count,
+                maximum_fee, &candidate->assessment);
     /* Serialize the owned parsed value, never re-read a borrowed wire span. */
     if (status == ZCL_OK)
         status = zcl_transaction_serialize(&transaction, candidate->wire, sizeof(candidate->wire),
@@ -41,4 +45,18 @@ zcl_status zcl_review_prepare(const uint8_t *wire, size_t length, zcl_network ne
     if (status == ZCL_OK) review_context(&transaction, &candidate->context);
     zcl_secure_zero(&transaction, sizeof(transaction));
     return status;
+}
+
+zcl_status zcl_review_prepare(const uint8_t *wire, size_t length, zcl_network network,
+    const zcl_previous_transaction *previous, size_t previous_count,
+    uint64_t maximum_fee, zcl_review_data *candidate)
+{
+    return prepare(wire, length, network, previous, previous_count, maximum_fee, candidate, false);
+}
+
+zcl_status zcl_review_prepare_full_sources(const uint8_t *wire, size_t length, zcl_network network,
+    const zcl_previous_transaction *previous, size_t previous_count,
+    uint64_t maximum_fee, zcl_review_data *candidate)
+{
+    return prepare(wire, length, network, previous, previous_count, maximum_fee, candidate, true);
 }

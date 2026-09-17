@@ -3,18 +3,19 @@
 #include "zcl_keys.h"
 #include <string.h>
 
-zcl_status zcl_review_open(zcl_review_owner *owner, const uint8_t *wire, size_t length,
+static zcl_status open_review(zcl_review_owner *owner, const uint8_t *wire, size_t length,
                            zcl_network network, const zcl_previous_transaction *previous,
                            size_t previous_count, uint64_t maximum_fee, uint64_t now_ms,
-                           uint64_t *id)
+                           uint64_t *id, bool full_sources)
 {
     if (owner == NULL || id == NULL) return ZCL_INVALID_ARGUMENT;
     if (owner->data.id != 0) return ZCL_BUSY;
     if (owner->issued >= ZCL_REVIEW_ID_MAX) return ZCL_RESOURCE_EXHAUSTED;
     if (now_ms > UINT64_MAX - ZCL_REVIEW_LIFETIME_MS) return ZCL_OUT_OF_RANGE;
     zcl_review_data candidate = {0};
-    const zcl_status status = zcl_review_prepare(wire, length, network, previous, previous_count,
-        maximum_fee, &candidate);
+    const zcl_status status = full_sources
+        ? zcl_review_prepare_full_sources(wire, length, network, previous, previous_count, maximum_fee, &candidate)
+        : zcl_review_prepare(wire, length, network, previous, previous_count, maximum_fee, &candidate);
     if (status == ZCL_OK) {
         candidate.id = owner->issued + 1;
         candidate.last_ms = now_ms;
@@ -25,6 +26,20 @@ zcl_status zcl_review_open(zcl_review_owner *owner, const uint8_t *wire, size_t 
     }
     zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
+}
+
+zcl_status zcl_review_open(zcl_review_owner *owner, const uint8_t *wire, size_t length,
+    zcl_network network, const zcl_previous_transaction *previous, size_t previous_count,
+    uint64_t maximum_fee, uint64_t now_ms, uint64_t *id)
+{
+    return open_review(owner, wire, length, network, previous, previous_count, maximum_fee, now_ms, id, false);
+}
+
+zcl_status zcl_review_open_full_sources(zcl_review_owner *owner, const uint8_t *wire, size_t length,
+    zcl_network network, const zcl_previous_transaction *previous, size_t previous_count,
+    uint64_t maximum_fee, uint64_t now_ms, uint64_t *id)
+{
+    return open_review(owner, wire, length, network, previous, previous_count, maximum_fee, now_ms, id, true);
 }
 
 void zcl_review_clear(zcl_review_owner *owner)

@@ -1,5 +1,27 @@
 # C parser foundation safety review
 
+## Owned full-source review lifecycle — 2026-09-17
+
+Scope: explicit internal full-source opening/preparation, shared legacy bodies,
+normal/fault fixtures and differential lifetime/context/sighash fuzzing.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Current transaction parsing, unsigned-input iteration, assessment and canonical serialization keep existing count/capacity gates. Wider source spans remain bounded by the full inspector. Owned wire/context contain only bounded current rows; every source truncation and destroyed-source reads are covered. |
+| Integer overflow/underflow, signed/unsigned conversions | No new arithmetic or narrowing. Issued-ID exhaustion and deadline overflow checks remain before preparation; shared checked fee/totals remain. Maximum IDs/counts and clock edges run through both entry points. |
+| Use-after-free, double-free, leaks | No new allocation/free. Sources are borrowed only during synchronous assessment; final owner contains no source pointer. Parsed/candidate objects clear after use and on provider failure; LSan passes. |
+| NULL dereferences, uninitialized memory | Existing owner/id/candidate checks precede access. Candidate and parsed transaction initialize completely. Dirty failed parse/assessment/serialization cannot publish an ID or overwrite owner state. |
+| Dangling pointers, pointer arithmetic | No new pointer arithmetic or escaped source pointer. Preparation serializes its owned parsed transaction rather than re-reading borrowed draft bytes. Fixtures destroy all source/draft bytes before exact later reads. |
+| Format strings, secret leakage | No new product logging, formatting, private material or wallet access. Parsed and complete candidate objects retire before return; source metadata/wire remain public. Live wipe observers cover both modes without claiming compiler-spill erasure. |
+| Stack usage, allocation limits | No VLA, recursion, heap or source-sized automatic array. Optimized open frames are3416/3424 bytes; preparation2264/2288 with Clang/GCC, each below4096. These are per-frame bounds, not total nested-stack measurements. |
+| Malformed serialization/network input | New source profile is explicit and internal. Current unsigned-input, amount, destination and serialization predicates remain; original opening still refuses wider sources. Opaque source proof/signature data establishes no consensus, inclusion, unspentness, custody or consent. Signing retains all external prerequisites. |
+| Races, resource exhaustion | Same enclosing exclusive-lock and stable-span contract. At most8 bounded source inspections occur during synchronous opening. No callbacks, I/O, retries or retained source storage. BUSY, monotonic rollback, fixed deadline and stale-ID replacement protections remain; no JNI owner is introduced. |
+
+Seven routing/refusal/publication/cleanup mutations fail. Isolated TLS-off
+analysis/complexity and125 Clang/oracle plus120 GCC sanitizer groups pass.
+Differential oracle fuzzing completes176734 executions. Android gates and
+normal/fault release-library fixtures pass API30/35/36. ARM64 builds only.
+
 ## Explicit full-source offline assessment — 2026-09-17
 
 Scope: source prevout matching, shared assessment with two statically selected

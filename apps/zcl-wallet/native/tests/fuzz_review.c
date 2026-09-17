@@ -11,7 +11,14 @@
 #include <string.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+#ifdef ZCL_FULL_SOURCE_REVIEW
+#include "source_assessment_fixture.h"
+static source_assessment_fixture full_fixture;
+#define fixture full_fixture.base
+#define zcl_review_open zcl_review_open_full_sources
+#else
 static assessment_fixture fixture;
+#endif
 static uint8_t draft[ZCL_TX_WIRE_MAX];
 static size_t draft_length;
 static bool initialized;
@@ -285,7 +292,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size > 640) return 0;
     if (!initialized) {
+#ifdef ZCL_FULL_SOURCE_REVIEW
+        if (!source_assessment_init(&full_fixture, 7)) abort();
+#else
         if (!assessment_fixture_init(&fixture)) abort();
+#endif
         initialized = true;
     }
     const uint64_t fields = size >= 8 ? read_time(data) : 0;

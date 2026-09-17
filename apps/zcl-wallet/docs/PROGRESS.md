@@ -1,5 +1,42 @@
 # Development record
 
+## Owned full-source review lifecycle — 2026-09-17
+
+An explicit internal opening operation now composes full-v4 source assessment
+with the existing owned unsigned-review lifecycle. Preparation still validates
+the current transparent profile, requires empty input scripts and serializes
+only the owned parsed value. No source pointer/wire survives opening. Failed
+preparation preserves owner/ID; success retains the same fixed lifetime,
+rollback cancellation and non-repeating replacement identity. Legacy opening
+keeps its original source profile. No JNI/UI exposure or signing prerequisite
+changes; source proofs/signatures remain opaque and chain state unverified.
+
+New fixtures cover both networks/all conditional tails, every source truncation,
+destroyed borrowed sources, exact retained wire/context, expiry equality,
+rollback and cross-profile replacement. The entire existing review contract
+also runs through the new entry point. Dirty parser, assessment and serializer
+fixtures exercise both modes and observe parsed/candidate retirement. Seven
+mutations of profile routing, unsigned-input refusal, publication, both clears
+and serialization gating fail. The mutation generator initially matched two
+candidate clears and later produced misleading indentation; its scope/format
+were corrected and the intended single mutations rerun. Product code and
+assertions did not change to accommodate those harness errors.
+
+An isolated `d33dba05d` snapshot plus seven SHA256-recorded native files passes
+TLS-off analysis/complexity,125 Clang sanitizer/oracle and120 GCC sanitizer
+groups. Differential full-source lifetime/context/sighash fuzzing completes
+176734 executions in46 seconds with the independent oracle and no finding.
+New/shared optimized open frames measure3416/3424 bytes, preparation2264/2288
+with Clang/GCC; no new heap or attacker-sized automatic object. Android/JVM,
+debug/release, both lints, fixture/result isolation and16KiB alignment pass
+(155 tasks). Normal and interposed retirement fixtures linked to release
+archives pass API30/35/36 with owned temporary-path cleanup; ARM64 builds only.
+Evidence: `.cache/android-wallet/mission-20260917/source-review/`.
+
+Next: bounded JNI source ownership and real-VM lifecycle qualification before
+Android exposure. Keep the physical custody and authenticated-chain gates open;
+TLS stays quarantined. Public fixtures only, no real funds or private state.
+
 ## Explicit full-source offline assessment — 2026-09-17
 
 Full raw source identity/index matching now feeds a separate internal offline
