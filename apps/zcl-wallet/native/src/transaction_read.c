@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "transaction_internal.h"
+#include "zcl_keys.h"
 #include <string.h>
 
 typedef struct {
@@ -56,6 +57,7 @@ static void read_input(tx_reader *reader, zcl_tx_input *input)
     read_bytes(reader, hash, sizeof(hash));
     for (size_t i = 0; i < sizeof(hash); ++i)
         input->previous_txid[i] = hash[sizeof(hash) - i - 1];
+    zcl_secure_zero(hash, sizeof(hash));
     input->previous_index = (uint32_t)read_integer(reader, 4);
     input->script_len = read_count(reader, sizeof(input->script));
     read_bytes(reader, input->script, input->script_len);
@@ -104,11 +106,16 @@ zcl_status zcl_transaction_parse(const uint8_t *wire, size_t length,
     zcl_transparent_tx candidate = {0};
     read_vectors(&reader, &candidate);
     zcl_status status = read_tail(&reader, &candidate);
-    if (status != ZCL_OK) return status;
+    if (status != ZCL_OK) goto cleanup;
     size_t expected = 0;
     status = zcl_transaction_check(&candidate, &expected);
-    if (status != ZCL_OK) return status;
-    if (expected != length) return ZCL_INVALID_ENCODING;
+    if (status != ZCL_OK) goto cleanup;
+    if (expected != length) {
+        status = ZCL_INVALID_ENCODING;
+        goto cleanup;
+    }
     *transaction = candidate;
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(&candidate, sizeof(candidate));
+    return status;
 }

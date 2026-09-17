@@ -1,5 +1,35 @@
 # C parser foundation safety review
 
+## Transaction codec scratch retirement — 2026-09-17
+
+Scope: `transaction_read.c` and `transaction_write.c`. Reversed input hashes
+clear immediately after their copy. The parser's staged transaction and the
+serializer's full wire byte array clear on every initialized exit. Borrowed
+input ownership, exact wire bytes, bounded profile and complete-only output
+publication are unchanged; public reader/writer scalar metadata is not claimed
+erased. No private keys or signing authority enter these operations.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use exact existing object sizes. Reader remaining-length and writer capacity checks remain unchanged; every fixture truncation and existing maximum-size case pass. |
+| Integer overflow/underflow, signed/unsigned conversions | No product arithmetic, narrowing, CompactSize or money-limit changes. New test conversion follows an explicit bound. |
+| Use-after-free, double-free, leaks | No allocation/free changes. Hash bytes copy before clearing; complete caller output publishes before candidate/wire retirement. |
+| NULL dereferences, uninitialized memory | Existing guards precede staging. Each cleanup object is initialized before use; skipped scalar initialization is not read at cleanup. |
+| Dangling pointers, pointer arithmetic | No retained pointers or new product offsets. Test observers inspect only live clearing spans; output-tail checks follow a checked exact length. |
+| Format strings, secret leakage | No product logs, formatting, key operations or extra copies. Public transaction metadata is retired; provider/managed erasure is not claimed. |
+| Stack usage, allocation limits | No additional capacity, heap, VLA or recursion. Optimized GCC parser/serializer frames are 2416/2128 bytes individually, not nested call-chain bounds. |
+| Malformed serialization/network input | Canonical header/vector/tail, transaction-check and exact-length admission remain authoritative. Truncation, trailing bytes, provider refusal and size disagreement preserve all caller bytes. |
+| Races, resource exhaustion | Stable nonoverlapping synchronous caller spans remain required. Fixed iteration counts and byte limits are unchanged; tests never race mutation with product execution. |
+
+The registered source-copy fixture fails against inherited cleanup. It passes
+all three pinned canonical transactions, every truncation, exact round trips,
+short output capacity and injected check/size failures. Existing full-capacity
+and malformed transaction regressions remain active. Four isolated mutations
+remove read-hash, candidate, write-hash or wire clearing; each fails its live
+retirement assertion and the unchanged control passes. Source substitutions
+and mutation binaries never enter Android. A validation-only archive link-order
+error was corrected with an explicit linker group; no product change was needed.
+
 ## Assessment scratch retirement — 2026-09-17
 
 Scope: `transaction_assess.c`. Each local previous output and parsed destination

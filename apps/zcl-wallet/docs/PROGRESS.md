@@ -1,5 +1,52 @@
 # Development record
 
+## Transaction codec continuation — 2026-09-17
+
+The assessment checkpoint was backed up and directly verified as
+`1e5e43b542b2f76b4dfc9546906dd6aa8df1f003` on the same-named development branch.
+Its remaining four API36 render-refusal tests subsequently pass separately in
+3.243 seconds; the earlier combined/host timeouts remain preserved below.
+
+The parser and serializer now retire reversed input hashes immediately after
+copying them, plus the staged parsed transaction/full wire byte array on every
+initialized exit. Exact serialization and all existing admission, profile and
+caller-output guarantees remain unchanged. This retires public transaction
+metadata; it grants no custody, consensus or spending authority.
+
+The new registered fixture fails against inherited cleanup. It passes all three
+pinned canonical transactions, every truncation, exact serialization, short
+capacity and injected validation/size-disagreement failures. Each of four
+isolated cleanup-removal mutations fails; the unchanged source-copy control
+passes. An initial mutation-only archive link-order error was corrected with
+an explicit linker group, without changing product code. Explicit C hazard
+review is recorded in C_SAFETY_REVIEW.md.
+
+Full non-TLS safety passes 108/108 Clang cases (87.52 seconds) and 107/107
+optimized GCC cases (124.76 seconds), both analyzers and unchanged production/
+test complexity caps 10/15. The new fixture separately passes both analyzers
+and strict ARM64/x86-64 NDK compilation. Seeded ASan/UBSan transaction and
+assessment campaigns complete 577,142 and 1,558,312 executions, each in 61
+seconds with a five-second input deadline and 512 MiB RSS cap, without findings.
+Android/JVM checks, both ABI debug/release builds, lints, fixture isolation and
+16 KiB alignment pass. All thirteen selected API35 review/lifecycle/render
+cases pass in 5.035 seconds; five public unsigned-review cases pass on API30
+(1.348 seconds) and API36 (3.174 seconds). ARM64 remains compile-only here.
+
+A fresh directory archived from staged source tree
+`f4966b87aac7ade0e537f0e85c64fcef79969cb6` rebuilds the release APK byte-identically
+on the same host/toolchain: 631,223 bytes, SHA256
+`9e9134795ec86f4fb51d687826c8ed884016ae73f95e97d4a7ce4f57489fb6e5`.
+This does not establish independent-host reproduction or physical-device custody.
+Evidence lives under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/codec-retirement/`.
+
+Next: return to per-use custody and deterministic recovery refusal coverage,
+then signing/change-state completion. Inspect existing contracts before treating
+primitive-level limits as defects. Hardware-authenticated custody and fresh
+authenticated transparent-send composition remain unproven; TLS stays
+quarantined. No production state or funds were accessed, and historical
+global-lint limitations remain unchanged.
+
 ## Assessment scratch continuation — 2026-09-17
 
 The preceding checkpoint was backed up and directly verified as

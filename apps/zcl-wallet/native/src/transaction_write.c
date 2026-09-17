@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "transaction_internal.h"
+#include "zcl_keys.h"
 #include <string.h>
 
 typedef struct {
@@ -31,6 +32,7 @@ static void write_input(tx_writer *writer, const zcl_tx_input *input)
     for (size_t i = 0; i < sizeof(hash); ++i)
         hash[i] = input->previous_txid[sizeof(hash) - i - 1];
     write_bytes(writer, hash, sizeof(hash));
+    zcl_secure_zero(hash, sizeof(hash));
     write_integer(writer, input->previous_index, 4);
     write_integer(writer, input->script_len, 1);
     write_bytes(writer, input->script, input->script_len);
@@ -61,13 +63,16 @@ zcl_status zcl_transaction_serialize(const zcl_transparent_tx *transaction,
 {
     if (wire == NULL || length == NULL) return ZCL_INVALID_ARGUMENT;
     size_t expected = 0;
-    const zcl_status status = zcl_transaction_check(transaction, &expected);
+    zcl_status status = zcl_transaction_check(transaction, &expected);
     if (status != ZCL_OK) return status;
     if (capacity < expected) return ZCL_BUFFER_TOO_SMALL;
     tx_writer writer = {{0}, 0, false};
     write_transaction(&writer, transaction);
-    if (writer.failed || writer.used != expected) return ZCL_INVALID_ENCODING;
-    memcpy(wire, writer.bytes, writer.used);
-    *length = writer.used;
-    return ZCL_OK;
+    if (writer.failed || writer.used != expected) status = ZCL_INVALID_ENCODING;
+    else {
+        memcpy(wire, writer.bytes, writer.used);
+        *length = writer.used;
+    }
+    zcl_secure_zero(writer.bytes, sizeof(writer.bytes));
+    return status;
 }
