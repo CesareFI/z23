@@ -1,5 +1,37 @@
 # Development record
 
+## Instrumentation evidence completeness — 2026-09-17
+
+The attended fixture checkpoint was committed and backed up as
+`2b95c780df464b902e2c698ee83ba698830d81e1`, with exact remote SHA verification.
+Its validation exposed a repeatable evidence bug: AndroidJUnitRunner emits
+`OK (8 tests)` even when one test returns assumption-skip code `-4`. Counting
+the summary alone accepted this incomplete run. The new bounded captured-log
+checker rejects skips and failures, requires matching start/completion identities
+and sequence for the explicit expected count, and checks the result stream,
+summary and final runner status. Duplicate, malformed and partial evidence
+refuses. Logs are bounded to 16 MiB and expected counts to 10000; the checker
+does not authenticate devices, artifacts or test selection.
+
+Three positive local fixtures cover plural/singular summaries, telemetry status
+packets and CRLF. Thirty-seven negative cases cover skips, failures, unknown
+statuses, identity/count/order mismatch, missing or duplicate events, malformed
+fields, truncated/oversized/absent logs and invalid expected counts. All pass.
+The registered `:android-app:checkInstrumentationResults` Gradle task passes and
+is included in `check`. Debug/release lint, APK fixture isolation and both-ABI
+16 KiB alignment pass. Shell syntax checks pass; shellcheck remains unavailable.
+No C/JNI, product source, dependency or provider policy changes.
+
+The saved eight-test API30/35/36 logs now refuse for their skipped per-use test.
+Fresh explicitly selected six-boundary-plus-one-policy runs execute and pass all
+seven tests on each API, with no skips, under the new checker. This establishes
+those exact emulator observations only; the missing per-use/hardware proof is
+unchanged. Evidence is under the wallet directory at
+`.cache/android-wallet/mission-20260917/instrumentation-results/`. Use the checker
+for future captured instrumentation acceptance, including the attended hardware
+fixture. Next: continue custody/lifecycle review while actual physical-device
+qualification and complete transparent/shielded send remain open.
+
 ## Attended public-vector custody fixture — 2026-09-17
 
 Resumed the existing test-only slice on backed-up

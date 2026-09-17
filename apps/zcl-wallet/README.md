@@ -125,6 +125,22 @@ The offline [transparent transaction codec](docs/TRANSACTIONS.md) now has
 bounded C parsing/serialization and independent SHA256d fixtures; it grants no
 funding, signing or broadcast authority.
 
+Check captured `am instrument -w -r` output with the expected number of tests:
+
+```sh
+bash tools/check-instrumentation-result.sh <expected-test-count> <captured-log>
+./gradlew --offline :android-app:checkInstrumentationResults
+```
+
+AndroidJUnitRunner can print `OK` while tests were skipped. The result checker
+requires every expected test to start and pass, matching identities and sequence,
+followed by the matching summary and terminal result. Skips, partial runs and
+inconsistent evidence fail. The Gradle task qualifies this checker against local
+fixtures and is included in `check`; it does not run device tests. Keep skipped
+capability evidence separately and rerun explicitly selected supported tests
+with their own expected count. Passing log structure does not authenticate the
+device, APK, test selection or hardware custody outcome.
+
 For C safety checks on a Linux development host with Clang 20 and GCC:
 
 ```sh

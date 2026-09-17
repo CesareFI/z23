@@ -66,6 +66,11 @@ adb -s <device> shell am instrument -w -r \
   org.zclassic.wallet.dev.qualification.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
+Preserve the command output in an ignored local log (use `tee` if the owner
+needs stage output during authentication), and require
+`bash tools/check-instrumentation-result.sh 1 <captured-log>` before recording a
+passing run. An `OK (1 test)` summary alone also appears for a skipped fixture.
+
 The fixture requires the exact test-only/debuggable package, matching process
 and explicitly supplied application UID, and non-emulator Build metadata before
 inspecting private storage or the Keystore. Build fields are a known-emulator

@@ -112,7 +112,14 @@ val checkNativeAlignment by tasks.registering(Exec::class) {
         layout.buildDirectory.file("outputs/apk/release/android-app-release-unsigned.apk").get().asFile,
         layout.buildDirectory.dir("reports/native-alignment").get().asFile)
 }
-tasks.named("check") { dependsOn(checkFixtureIsolation, checkNativeAlignment) }
+val checkInstrumentationResults by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Reject skipped, incomplete or inconsistent instrumentation evidence."
+    workingDir(rootProject.projectDir)
+    commandLine("bash", rootProject.file("tools/test-instrumentation-result.sh"),
+        layout.buildDirectory.dir("reports/instrumentation-results").get().asFile)
+}
+tasks.named("check") { dependsOn(checkFixtureIsolation, checkNativeAlignment, checkInstrumentationResults) }
 dependencies {
     implementation(project(":wallet-core"))
     testImplementation(kotlin("test-junit"))
