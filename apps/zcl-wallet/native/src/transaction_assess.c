@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_transaction_assess.h"
 #include "transaction_internal.h"
+#include "zcl_keys.h"
 
 static zcl_status assessment_arguments(const zcl_transparent_tx *tx, zcl_network network,
                                         const zcl_previous_transaction *previous,
@@ -18,16 +19,17 @@ static zcl_status assessment_arguments(const zcl_transparent_tx *tx, zcl_network
 static zcl_status assess_output(const zcl_tx_output *output, zcl_network network,
                                 zcl_assessed_output *item, uint64_t *total)
 {
-    zcl_address address;
+    zcl_address address = {0};
     zcl_status status = zcl_address_from_script(output->script, output->script_len, network, &address);
-    if (status != ZCL_OK) return status;
     uint64_t sum = 0;
-    status = zcl_amount_add(*total, output->value, &sum);
-    if (status != ZCL_OK) return status;
-    item->destination = address;
-    item->value = output->value;
-    *total = sum;
-    return ZCL_OK;
+    if (status == ZCL_OK) status = zcl_amount_add(*total, output->value, &sum);
+    if (status == ZCL_OK) {
+        item->destination = address;
+        item->value = output->value;
+        *total = sum;
+    }
+    zcl_secure_zero(&address, sizeof(address));
+    return status;
 }
 
 static zcl_status assess_inputs(const zcl_transparent_tx *tx,
@@ -35,11 +37,12 @@ static zcl_status assess_inputs(const zcl_transparent_tx *tx,
                                 zcl_transaction_assessment *candidate)
 {
     for (size_t i = 0; i < tx->input_count; ++i) {
-        zcl_tx_output output;
+        zcl_tx_output output = {0};
         zcl_status status = zcl_transaction_prevout(&tx->inputs[i], previous[i].wire,
             previous[i].length, &output);
-        if (status != ZCL_OK) return status;
-        status = assess_output(&output, candidate->network, &candidate->inputs[i], &candidate->input_total);
+        if (status == ZCL_OK)
+            status = assess_output(&output, candidate->network, &candidate->inputs[i], &candidate->input_total);
+        zcl_secure_zero(&output, sizeof(output));
         if (status != ZCL_OK) return status;
     }
     return ZCL_OK;
@@ -72,14 +75,19 @@ zcl_status zcl_transaction_assess(const zcl_transparent_tx *transaction,
     candidate.output_count = transaction->output_count;
     candidate.maximum_fee = maximum_fee;
     status = assess_inputs(transaction, previous, &candidate);
-    if (status != ZCL_OK) return status;
+    if (status != ZCL_OK) goto cleanup;
     status = assess_outputs(transaction, &candidate);
-    if (status != ZCL_OK) return status;
+    if (status != ZCL_OK) goto cleanup;
     status = zcl_amount_subtract(candidate.input_total, candidate.output_total, &candidate.fee);
-    if (status != ZCL_OK) return status;
-    if (candidate.fee > maximum_fee) return ZCL_OUT_OF_RANGE;
+    if (status != ZCL_OK) goto cleanup;
+    if (candidate.fee > maximum_fee) {
+        status = ZCL_OUT_OF_RANGE;
+        goto cleanup;
+    }
     status = zcl_transaction_id(transaction, candidate.transaction_id, sizeof(candidate.transaction_id));
-    if (status != ZCL_OK) return status;
+    if (status != ZCL_OK) goto cleanup;
     *assessment = candidate;
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(&candidate, sizeof(candidate));
+    return status;
 }

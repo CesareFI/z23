@@ -1,5 +1,33 @@
 # C parser foundation safety review
 
+## Assessment scratch retirement — 2026-09-17
+
+Scope: `transaction_assess.c`. Each local previous output and parsed destination
+now initializes explicitly and clears after use, including dirty-provider and
+checked-add refusal. The complete staged assessment clears on success and
+every subsequent refusal. Existing total/fee arithmetic, hash binding, network
+selection and complete-only caller publication remain unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Each clear uses exact existing object `sizeof`. Fixed input/output counts and provider capacities remain unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | Checked addition/subtraction and maximum-fee comparisons are unchanged. Tests observe combined-input overflow, overspending and fee-ceiling refusal. |
+| Use-after-free, double-free, leaks | No allocation/free changes. Local output stays live through assessment; addresses and report are copied before their scratch clears. |
+| NULL dereferences, uninitialized memory | Existing argument checks precede staging. Output/address scratch now explicitly initializes; dirty-provider refusal never consumes its contents. |
+| Dangling pointers, pointer arithmetic | No new product offsets or pointer escape. Test identity subtraction is guarded before use; bytes are observed only through live clear spans. |
+| Format strings, secret leakage | No new product logs, formatting or key access. Public accounting/address metadata retires; no provider/managed erasure is claimed. |
+| Stack usage, allocation limits | No new buffer capacity, heap, VLA or recursion. Optimized GCC output/assessment frames are 112/1232 bytes individually, not nested call-chain bounds. |
+| Malformed serialization/network input | Exact previous-output and script providers remain authoritative. Dirty-provider failures cannot publish a partial report or bypass money checks. |
+| Races, resource exhaustion | Existing stable/nonoverlapping caller-span and fixed-count iteration contracts remain. No additional parse, hash, retry or shared product state. |
+
+The new registered source-copy fixture fails against inherited output retirement
+between inputs. It now observes each full live output/address clear and staged
+report retirement through success, every provider stage, dirty ID refusal and
+real funding/fee failures. Existing exact destination/accounting and malformed
+source matrices remain active. Three isolated mutations individually remove
+output, address or report cleanup and fail the corresponding assertions; the
+unchanged source-copy control passes. Host substitutions never enter Android.
+
 ## Transaction ID and previous-output retirement — 2026-09-17
 
 Scope: `transaction_id.c` and `transaction_prevout.c`. Canonical wire, both

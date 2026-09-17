@@ -1,5 +1,48 @@
 # Development record
 
+## Assessment scratch continuation — 2026-09-17
+
+The preceding checkpoint was backed up and directly verified as
+`c30ec3193ffcc3a109074ceefab385d4c4584557` on the same-named development branch.
+Assessment now retires each local previous output, parsed destination and
+staged report on every initialized exit. Checked totals/fees, exact transaction
+identity and complete-only caller publication remain unchanged. This is public
+metadata lifetime hardening, not new chain freshness or spending authority.
+
+The new registered regression fails against inherited output retirement and
+passes with the fix through every dirty provider stage, overspending, aggregate
+input overflow and fee-ceiling refusal. Removing each of the three cleanup
+calls in isolated source copies independently fails; the unchanged control
+passes. Explicit C hazard review is recorded in C_SAFETY_REVIEW.md.
+
+Full non-TLS safety passes 107/107 Clang cases (88.09 seconds) and 106/106
+optimized GCC cases (123.32 seconds), both analyzers and unchanged production/
+test complexity caps 10/15. The new fixture separately passes both analyzers
+and strict ARM64/x86-64 NDK compilation. A seeded ASan/UBSan assessment campaign
+completes 1,553,815 executions in 61 seconds with a five-second input deadline
+and 512 MiB RSS cap, without findings. Android/JVM checks, both ABI debug/release
+builds, lints, fixture isolation and 16 KiB alignment pass. All thirteen selected
+review/lifecycle/render-refusal tests pass on API30 (70.948 seconds) and API35
+(5.428 seconds). The combined API36 run exceeded its 90-second bound after
+seven completed tests. Individual-class retries report five unsigned-review
+tests (2.988 seconds) and four lifecycle tests (107.21 seconds) passing, but the
+120-second host deadline still expired before the remaining render class ran.
+API36 therefore has partial evidence only; logs preserve the timeout instead
+of treating it as a complete pass. API30/35 provide the complete selected matrix.
+
+A fresh directory archived from staged source tree
+`1289695cd4dd8b1e7e09ab43c9f13bfb04363e81` rebuilds the release APK byte-identically
+on the same host/toolchain: 631,143 bytes, SHA256
+`c6346e61c618b4ff6f46601f2049794f2b2ac07d9ec4e5509a925d7bfebc32c6`.
+This is neither independent-host nor physical-device evidence. Architecture/
+doc counts pass. Logs and isolated artifacts are under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/assessment-retirement/`.
+
+Next: parser/serializer staging lifetime and canonical round-trip/refusal
+regressions. Hardware-authenticated custody and authenticated transparent-send
+composition remain unproven; TLS remains quarantined. No production state or
+funds were accessed. Historical global-lint limitations remain unchanged.
+
 ## Transaction ID and prevout continuation — 2026-09-17
 
 Resumed from clean, backed-up `432872cf6`; origin/main was fetched without

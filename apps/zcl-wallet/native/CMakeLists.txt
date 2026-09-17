@@ -811,6 +811,15 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_assessment COMMAND assessment_tests)
     set_tests_properties(wallet_assessment PROPERTIES TIMEOUT 15)
+    add_executable(assessment_retirement_tests tests/test_assessment_retirement.c src/transaction_assess.c)
+    target_link_libraries(assessment_retirement_tests PRIVATE assessment_test_fixture)
+    target_compile_definitions(assessment_retirement_tests PRIVATE
+        zcl_transaction_prevout=zcl_assess_test_prevout zcl_address_from_script=zcl_assess_test_address
+        zcl_transaction_id=zcl_assess_test_id zcl_secure_zero=zcl_assess_test_zero)
+    target_compile_options(assessment_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_assessment_retirement COMMAND assessment_retirement_tests)
+    set_tests_properties(wallet_assessment_retirement PROPERTIES TIMEOUT 15)
     add_executable(draft_tests tests/test_draft.c tests/draft_fixture.c tests/assessment_fixture.c)
     target_link_libraries(draft_tests PRIVATE zcl_wallet_core)
     target_compile_options(draft_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
