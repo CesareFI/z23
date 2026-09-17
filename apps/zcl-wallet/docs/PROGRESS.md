@@ -28,7 +28,9 @@ result checks and 16 KiB alignment pass there. The x86_64 completion fixture
 passes API30/35/36; both ABI fixture binaries are byte-identical when linked
 from the isolated release archives. ARM64 execution and physical custody remain
 unproven. The initial differential fuzz run completed 14,946 inputs without a
-finding; the final isolated snapshot is also fuzzed separately.
+finding; the final isolated snapshot completed another 5,000. Its normal unsigned
+release remains byte-identical to the checkpoint artifact, SHA256
+`7c99584b556460ef04eeb727d0c6c67ee2eee60cbae725b9883da64bfe13ca68`.
 
 Evidence: `.cache/android-wallet/mission-20260917/review-completion/` under the
 wallet directory. The explicit native hazard review is in

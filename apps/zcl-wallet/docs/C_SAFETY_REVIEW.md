@@ -21,6 +21,8 @@ does not add private-key access, JNI, consent or authenticated chain state.
 
 Isolated-source validation passes 114 Clang ASan/UBSan/oracle groups and 109
 optimized GCC sanitizer groups, strict analysis and existing complexity limits.
+The optimized completion helper has a 2112-byte bounded frame and its public
+argument gate an 8-byte frame; these are individual frames, not call-chain bounds.
 Three guard/retirement mutations fail deterministic assertions. Differential
 fuzzing and release-library Android x86_64 fixtures cover both exact-byte output
 and final-time refusal; ARM64 is compile-only. No consensus, TLS or provider
