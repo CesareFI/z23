@@ -21,6 +21,8 @@ static size_t random_calls, fail_random, stat_calls, fail_stat;
 static unsigned fail_crypto;
 static bool fail_observation;
 static uint8_t *mutate_record_byte;
+static unsigned candidate_clears, snapshot_clears;
+static unsigned expected_candidates, expected_snapshots;
 int __real_fstat(int fd, struct stat *info);
 int __wrap_fstat(int fd, struct stat *info);
 zcl_status __real_zcl_storage_change_observe(const uint8_t *directory, size_t directory_len,
@@ -67,10 +69,14 @@ zcl_status zcl_ownership_test_random(uint8_t *output, size_t length)
 void zcl_ownership_test_zero(void *pointer, size_t length)
 {
     if (change_custody_retirement_zero(pointer, length)) return;
-    REQUIRE(pointer != NULL && (length == 32 || length == 64) && random_calls <= 2);
+    REQUIRE(pointer != NULL && random_calls <= 2);
+    if (length == 35) ++candidate_clears;
+    else if (length == sizeof(zcl_change_storage_snapshot)) ++snapshot_clears;
+    else REQUIRE(length == 32 || length == 64);
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
     for (size_t i = 0; i < length; ++i) REQUIRE(bytes[i] == 0);
+    if (length != 32 && length != 64) return;
     bool found = false;
     for (size_t i = 0; i < random_calls; ++i) {
         if (spans[i].pointer != pointer) continue;
@@ -105,10 +111,13 @@ zcl_status zcl_ownership_test_derive(const uint8_t *header, size_t header_len,
 static void reset(void)
 {
     change_custody_retirement_check();
+    REQUIRE(candidate_clears == expected_candidates && snapshot_clears == expected_snapshots);
     REQUIRE(random_calls <= 2 && mutate_record_byte == NULL);
     for (size_t i = 0; i < random_calls; ++i) REQUIRE(spans[i].cleared && spans[i].pointer == NULL);
     memset(spans, 0, sizeof(spans));
     random_calls = fail_random = stat_calls = fail_stat = 0;
+    candidate_clears = snapshot_clears = 0;
+    expected_candidates = expected_snapshots = 0;
     fail_crypto = 0;
     fail_observation = false;
     storage_faults_reset();
@@ -140,6 +149,8 @@ static int setup(storage_fixture *fixture, const change_storage_data *data)
 static zcl_status reconstruct(const storage_fixture *fixture, const change_storage_data *data, uint8_t *address)
 {
     static const uint8_t entropy[16] = {0};
+    ++expected_candidates;
+    ++expected_snapshots;
     return zcl_wallet_change_reserved_address((const uint8_t *)fixture->path, fixture_path_len(),
         data->wallet, data->wallet_len, entropy, sizeof(entropy), 0, address, 35);
 }
@@ -208,6 +219,8 @@ static int success(const change_storage_data *data, size_t *close_count, size_t 
 int main(void)
 {
     uint8_t address[35] = {0};
+    ++expected_candidates;
+    ++expected_snapshots;
     CHECK(zcl_wallet_change_reserved_address(NULL, 0, NULL, 0, NULL, 0, 0,
         address, sizeof(address)) == ZCL_INVALID_ARGUMENT);
     reset();
@@ -232,6 +245,6 @@ int main(void)
         CHECK(failure(&data, 0, 0, &storage_read_fault, modes[mode], 0, 0) == 0);
         CHECK(failure(&data, 0, 0, &storage_pread_fault, modes[mode], 0, 0) == 0);
     }
-    CHECK(puts("Change ownership failures preserve output/files/descriptors and clear both live blinding spans") >= 0);
+    CHECK(puts("Change ownership failures preserve output/files/descriptors and clear blinding/workflow scratch") >= 0);
     return 0;
 }

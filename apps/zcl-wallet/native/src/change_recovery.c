@@ -51,11 +51,14 @@ static zcl_status supported_prefix(const zcl_change_custody *wallet,
 {
     uint8_t expected[80] = {0};
     zcl_status status = zcl_change_custody_encode(wallet, plan->next_index - 1, expected);
-    if (status != ZCL_OK) return status;
     /* Compare PUBLIC format/counter bytes only, never a MAC through memcmp.
      * Shape proved current tail80 and fragment16..80 before this offset. */
-    const uint8_t *fragment = snapshot->current.tail + (80 - fragment_len);
-    return memcmp(fragment, expected, 16) == 0 ? ZCL_OK : ZCL_UNSUPPORTED;
+    if (status == ZCL_OK) {
+        const uint8_t *fragment = snapshot->current.tail + (80 - fragment_len);
+        status = memcmp(fragment, expected, 16) == 0 ? ZCL_OK : ZCL_UNSUPPORTED;
+    }
+    zcl_secure_zero(expected, sizeof(expected));
+    return status;
 }
 
 static zcl_status recovery_record(const zcl_change_custody *wallet,
@@ -84,6 +87,8 @@ zcl_status zcl_wallet_change_recover(const uint8_t *directory, size_t directory_
     if (status == ZCL_OK)
         status = zcl_storage_change_repair(directory, directory_len, wallet.record, wallet.record_len,
             &snapshot.current, replacement, sizeof(replacement));
+    zcl_secure_zero(replacement, sizeof(replacement));
+    zcl_secure_zero(&snapshot, sizeof(snapshot));
     zcl_change_custody_clear(&wallet);
     return status;
 }

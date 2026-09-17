@@ -23,12 +23,15 @@ static size_t random_calls, crypto_calls, fail_random, fail_crypto;
 static uint8_t *mutate_cipher;
 static const storage_fixture *competing_fixture;
 static const change_storage_data *competing_data;
+static unsigned state_clears, snapshot_clears, expected_states, expected_snapshots;
+static bool recovery_active;
 
 zcl_status zcl_recovery_test_random(uint8_t *output, size_t length)
 {
     REQUIRE(output != NULL && length == 32 && random_calls < 4);
     spans[random_calls] = (blind_span){output, false};
     ++random_calls;
+    if (recovery_active && random_calls == 3) ++expected_states;
     if (mutate_cipher != NULL) {
         *mutate_cipher ^= 1;
         mutate_cipher = NULL;
@@ -48,10 +51,14 @@ zcl_status zcl_recovery_test_random(uint8_t *output, size_t length)
 void zcl_recovery_test_zero(void *pointer, size_t length)
 {
     if (change_custody_retirement_zero(pointer, length)) return;
-    REQUIRE(pointer != NULL && length == 32);
+    REQUIRE(pointer != NULL);
+    if (length == 80) ++state_clears;
+    else if (length == sizeof(zcl_change_recovery_snapshot)) ++snapshot_clears;
+    else REQUIRE(length == 32);
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
     for (size_t i = 0; i < length; ++i) REQUIRE(bytes[i] == 0);
+    if (length != 32) return;
     bool found = false;
     for (size_t i = 0; i < random_calls; ++i) {
         if (spans[i].pointer != pointer) continue;
@@ -94,18 +101,26 @@ zcl_status zcl_recovery_test_decode(const uint8_t *header, size_t header_len,
 static void checked_clear(void)
 {
     change_custody_retirement_check();
+    REQUIRE(state_clears == expected_states && snapshot_clears == expected_snapshots);
     for (size_t i = 0; i < random_calls; ++i) REQUIRE(spans[i].cleared && spans[i].pointer == NULL);
     memset(spans, 0, sizeof(spans));
     random_calls = crypto_calls = fail_random = fail_crypto = 0;
-    REQUIRE(mutate_cipher == NULL && competing_fixture == NULL && competing_data == NULL);
+    state_clears = snapshot_clears = expected_states = expected_snapshots = 0;
+    REQUIRE(!recovery_active && mutate_cipher == NULL && competing_fixture == NULL && competing_data == NULL);
     storage_faults_reset();
 }
 
 static zcl_status recover(const storage_fixture *fixture, const change_storage_data *data)
 {
     const uint8_t entropy[16] = {0};
-    return zcl_wallet_change_recover((const uint8_t *)fixture->path, fixture_path_len(),
+    REQUIRE(!recovery_active);
+    ++expected_states;
+    ++expected_snapshots;
+    recovery_active = true;
+    const zcl_status status = zcl_wallet_change_recover((const uint8_t *)fixture->path, fixture_path_len(),
         data->wallet, data->wallet_len, entropy, sizeof(entropy));
+    recovery_active = false;
+    return status;
 }
 
 static int initial_partial(storage_fixture *fixture, const change_storage_data *data)
@@ -195,6 +210,8 @@ static int private_binding(const change_storage_data *data, bool competitor)
 
 int main(void)
 {
+    ++expected_states;
+    ++expected_snapshots;
     CHECK(zcl_wallet_change_recover(NULL, 0, NULL, 0, NULL, 0) == ZCL_INVALID_ARGUMENT);
     checked_clear();
     change_storage_data data = {0};
@@ -215,6 +232,6 @@ int main(void)
     CHECK(failed(&data, 0, 0, &storage_write_fault, IO_ERROR, 2, 160, 4) == 0);
     CHECK(failed(&data, 0, 0, &storage_write_fault, IO_PARTIAL_ERROR, 2, 200, 4) == 0);
     CHECK(private_binding(&data, false) == 0 && private_binding(&data, true) == 0);
-    puts("change recovery faults: four RNG/codec steps, live cleanup, private wallet binding, competing repair, durability failures and refused ambiguous retry passed");
+    puts("change recovery faults: four RNG/codec steps, blinding/workflow cleanup, private wallet binding, competing repair, durability failures and refused ambiguous retry passed");
     return 0;
 }

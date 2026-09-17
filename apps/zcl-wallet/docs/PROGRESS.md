@@ -50,6 +50,33 @@ freshness or broadcast authority. Those remain required before a real send.
 TLS is unchanged and quarantined. Next: qualify those external prerequisites
 before connecting this foundation to a user-visible send or broadcast path.
 
+## Change workflow scratch retirement — 2026-09-17
+
+The authenticated change create/reserve/reconstruct/recover compositions now
+retire their complete local workflow objects. This includes the 80-byte initial,
+next, expected and replacement records; complete observed storage/recovery
+snapshots; the staged reservation; and the 35-byte reconstructed address.
+Cleanup follows the final storage/provider use or conditional output copy, so
+success bytes, index-consumption rules, repair behavior and failure atomicity do
+not change.
+
+The three source-copy fault fixtures now distinguish and require exact cleanup
+for the 35-, 44-, 80-, 96- and 184-byte objects alongside the existing custody
+and blinding spans. They cover invalid arguments, every relevant RNG/codec
+failure, malformed and partial journals, competing observations, append/repair
+failure and successful publication. Focused normal/failure/crash suites pass
+under Clang ASan/UBSan and optimized GCC, and focused static analysis is clean.
+Optimized Clang frames are 280 bytes for create, 440 for reserve, 376 for
+consumed-address reconstruction and 600 for recovery.
+
+The final combined TLS-off gate passes all authored static analysis and
+complexity checks, 112/112 Clang tests and 111/111 optimized GCC tests.
+Android/JVM checks, ARM64/x86-64 debug and release native builds, lint, fixture
+isolation, complete instrumentation-result controls and both-ABI 16 KiB
+alignment pass. There is no API, serialization, consensus, JNI or TLS change;
+TLS remains quarantined. Next: continue into the highest-value unretired
+wallet/custody scratch while the signer remains internal and unexposed.
+
 ## Change-state authenticated scratch retirement — 2026-09-17
 
 Inspection found two avoidable stack remnants in the authenticated change-index

@@ -34,9 +34,45 @@ The isolated TLS-off gate passes all static analysis, 116 Clang sanitizer/oracle
 groups and 111 optimized GCC sanitizer groups. Fuzzing completes 4,983 executions;
 eight ownership/time/verification/retirement mutations fail deterministic tests.
 Release-library x86_64 fixtures pass API30/35/36; ARM64 is compile-only.
+The final combined checkout also passes the canonical TLS-off safety gate with
+112/112 Clang ASan/UBSan tests and 111/111 optimized GCC tests.
 This establishes an internal signing foundation only: per-use hardware custody,
 explicit consent, authenticated chain/unspentness, delayed delivery and
 broadcast remain external required gates. TLS remains quarantined.
+
+## Change workflow scratch retirement — 2026-09-17
+
+Scope: authenticated change creation, reservation, consumed-address recovery
+and damaged-journal recovery in `change_reservation.c`, `change_ownership.c`
+and `change_recovery.c`, plus their existing source-copy fault fixtures. Each
+operation now clears its complete staged state record, storage observation and
+candidate output after the last read or conditional caller copy. Recovery also
+clears the locally reconstructed damaged-prefix record on every codec result.
+Wallet/state formats, authenticated counters, append/repair semantics and
+complete-only caller publication are unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use exact existing object sizes: 80-byte state records, the complete storage/recovery snapshot types, the complete reservation object and the 35-byte address candidate. Existing capacity, journal-shape and fragment bounds precede every copy and pointer offset. Caller outputs are copied only on success and canaries remain intact. |
+| Integer overflow/underflow, signed/unsigned conversions | No product arithmetic or conversion changed. Existing journal divisibility/cap checks bound `file_bytes / 80`, `index + 1`, predecessor subtraction and `80 - fragment_len`; the new test counters are bounded by deterministic call counts. |
+| Use-after-free, double-free, leaks | All changed objects have automatic storage; there is no allocation or free. Each object clears once while live and only after its final provider/storage use or conditional caller copy. Existing custody cleanup remains the single owner cleanup path. |
+| NULL dereferences, uninitialized memory | Existing public argument gates remain unchanged. Every newly cleared object is zero-initialized before possible provider use, and cleanup does not read its contents. Early argument returns occur before those local workflow objects exist. |
+| Dangling pointers, pointer arithmetic | No pointer escapes or retained callback span is introduced. The sole fragment offset remains guarded by the existing 16..80 shape proof. Test observers inspect cleanup only during the synchronous clear call. |
+| Format strings, secret leakage | No product logging or formatting. Authenticated state records, wallet-linked snapshot bytes, derived address/reservation candidates and recovery replacement bytes are retired on success and failure. This is explicit object retirement, not a whole-stack or compiler-spill erasure claim. |
+| Stack usage, allocation limits | No new buffer capacity, heap, VLA or recursion. Optimized Clang reports 280 bytes for create, 440 for reserve, 376 for consumed-address recovery and 600 for journal recovery, each below the enforced 4096-byte frame limit; nested provider frames remain separate bounds. |
+| Malformed serialization/network input | Existing exact wallet-record authentication prerequisite, 80-byte state codec, journal position checks, predecessor/prefix qualification and fail-closed repair rules remain authoritative. Codec, RNG, IO, malformed and competing-state failures now retire all initialized workflow scratch without publishing output. |
+| Races, resource exhaustion | Existing synchronous stable-span and directory-lock contracts are unchanged. Work stays fixed-size, with no retry, attacker-sized allocation or new shared mutable state. Clearing adds bounded linear writes only after the last use. |
+
+The source-copy fixtures distinguish the 35-, 44-, 80-, 96- and 184-byte
+workflow objects from blinding and custody cleanup. They require exact
+retirement across invalid arguments, RNG/codec faults, malformed records,
+partial/corrupt journals, competing observations and storage failures. Focused
+Clang ASan/UBSan and optimized GCC suites pass, and focused Clang/GCC static
+analysis is clean. The final combined TLS-off gate passes all authored static
+analysis and complexity checks, 112/112 Clang tests and 111/111 optimized GCC
+tests. Android/JVM checks, both ABI debug/release builds, lint, fixture
+isolation, instrumentation-result controls and 16 KiB alignment also pass.
+TLS remains quarantined.
 
 ## Change-state authenticated scratch retirement — 2026-09-17
 

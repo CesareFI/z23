@@ -25,6 +25,8 @@ static crypto_failure fail_crypto;
 static uint8_t *mutate_cipher;
 static const storage_fixture *competing_fixture;
 static const change_storage_data *competing_data;
+static unsigned state_clears, snapshot_clears, reservation_clears;
+static unsigned expected_states, expected_snapshots, expected_reservations;
 
 zcl_status zcl_reservation_test_random(uint8_t *output, size_t length)
 {
@@ -53,10 +55,15 @@ zcl_status zcl_reservation_test_random(uint8_t *output, size_t length)
 void zcl_reservation_test_zero(void *pointer, size_t length)
 {
     if (change_custody_retirement_zero(pointer, length)) return;
-    REQUIRE(pointer != NULL && (length == 32 || length == 64));
+    REQUIRE(pointer != NULL);
+    if (length == 80) ++state_clears;
+    else if (length == sizeof(zcl_change_storage_snapshot)) ++snapshot_clears;
+    else if (length == sizeof(zcl_change_reservation)) ++reservation_clears;
+    else REQUIRE(length == 32 || length == 64);
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
     for (size_t i = 0; i < length; ++i) REQUIRE(bytes[i] == 0);
+    if (length != 32 && length != 64) return;
     bool found = false;
     for (size_t i = 0; i < random_calls; ++i) {
         if (spans[i].pointer != pointer) continue;
@@ -110,9 +117,13 @@ zcl_status zcl_reservation_test_derive(const uint8_t *header, size_t header_len,
 static void checked_clear(void)
 {
     change_custody_retirement_check();
+    REQUIRE(state_clears == expected_states && snapshot_clears == expected_snapshots &&
+        reservation_clears == expected_reservations);
     for (size_t i = 0; i < random_calls; ++i) REQUIRE(spans[i].cleared && spans[i].pointer == NULL);
     memset(spans, 0, sizeof(spans));
     random_calls = fail_random = 0;
+    state_clears = snapshot_clears = reservation_clears = 0;
+    expected_states = expected_snapshots = expected_reservations = 0;
     fail_crypto = FAIL_NONE;
     REQUIRE(mutate_cipher == NULL && competing_fixture == NULL && competing_data == NULL);
     storage_faults_reset();
@@ -122,6 +133,9 @@ static zcl_status reserve(const storage_fixture *fixture, const change_storage_d
     zcl_change_reservation *result)
 {
     static const uint8_t entropy[16] = {0};
+    ++expected_states;
+    ++expected_snapshots;
+    ++expected_reservations;
     return zcl_wallet_change_reserve((const uint8_t *)fixture->path, fixture_path_len(),
         data->wallet, data->wallet_len, entropy, sizeof(entropy), result);
 }
@@ -134,6 +148,7 @@ static int failed_creation(const change_storage_data *data, bool random_failure)
     checked_clear();
     fail_random = random_failure ? 1 : 0;
     fail_crypto = random_failure ? FAIL_NONE : FAIL_ENCODE;
+    ++expected_states;
     CHECK(zcl_wallet_change_create((const uint8_t *)fixture.path, fixture_path_len(), data->wallet,
         data->wallet_len, entropy, sizeof(entropy)) != ZCL_OK);
     CHECK(random_calls == 1);
@@ -224,9 +239,13 @@ static int preparation_refusals(const change_storage_data *data)
         == ZCL_INVALID_ARGUMENT);
     zcl_change_custody_clear(NULL);
     checked_clear();
+    ++expected_states;
     CHECK(zcl_wallet_change_create(NULL, 0, NULL, 0, entropy, sizeof(entropy)) == ZCL_INVALID_ARGUMENT);
     checked_clear();
     zcl_change_reservation reservation = {0};
+    ++expected_states;
+    ++expected_snapshots;
+    ++expected_reservations;
     CHECK(zcl_wallet_change_reserve(NULL, 0, NULL, 0, entropy, sizeof(entropy), &reservation)
         == ZCL_INVALID_ARGUMENT);
     checked_clear();
@@ -251,6 +270,6 @@ int main(void)
             at >= 3 ? 160 : 80, at >= 2 ? 3 : 0) == 0);
     CHECK(failed_reservation(&data, 0, FAIL_NONE, &storage_write_fault, IO_PARTIAL_ERROR, 0, 120, 3) == 0);
     CHECK(private_binding_and_competition(&data) == 0);
-    puts("change reservation faults: private wallet binding, live blinding cleanup, crypto failures, uncertain consumption and CAS refusal passed");
+    puts("change reservation faults: private wallet binding, blinding/workflow cleanup, crypto failures, uncertain consumption and CAS refusal passed");
     return 0;
 }

@@ -22,6 +22,7 @@ zcl_status zcl_wallet_change_create(const uint8_t *directory, size_t directory_l
     if (status == ZCL_OK)
         status = zcl_storage_create_with_change(directory, directory_len,
             wallet.record, wallet.record_len, initial, sizeof(initial));
+    zcl_secure_zero(initial, sizeof(initial));
     zcl_change_custody_clear(&wallet);
     return status;
 }
@@ -51,6 +52,9 @@ zcl_status zcl_wallet_change_reserve(const uint8_t *directory, size_t directory_
         candidate.network = wallet.network;
         *reservation = candidate;
     }
+    zcl_secure_zero(next, sizeof(next));
+    zcl_secure_zero(&candidate, sizeof(candidate));
+    zcl_secure_zero(&snapshot, sizeof(snapshot));
     zcl_change_custody_clear(&wallet);
     return status;
 }
