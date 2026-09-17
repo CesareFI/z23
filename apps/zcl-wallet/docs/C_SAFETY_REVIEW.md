@@ -158,6 +158,35 @@ at its first missing-retirement assertion. Full live clears and retirement befor
 Java allocation are required by both the host fixture and its ASan/UBSan fuzzer.
 The observer is test-only; Android libraries call the real primitive directly.
 
+## JNI storage scratch retirement — 2026-09-17
+
+Scope: `jni_storage.c`. Read retires its copied path before VM allocation and
+its full packet after any publication attempt. Create/promote retire both
+copied inputs on all returns. Fresh paired creation keeps entropy retirement
+first, then clears record and path. Pending exceptions remain pending.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | All erasure uses exact array `sizeof`: path 1024, record 140, packet 142, entropy 32. Existing region and file bounds remain. |
+| Integer overflow/underflow, signed/unsigned conversions | No length, status or conversion rule changes. The private read packet still adds two bounded bytes only on storage success. |
+| Use-after-free, double-free, leaks | No heap, descriptor or VM reference ownership changes. Full scratch spans clear while live; test observers retire numeric identities during the clearing call. |
+| NULL dereferences, uninitialized memory | Fixed arrays remain initialized. NULL inputs/VM and pending entry exceptions preserve their original status/result behavior; read refuses before allocating its scratch. |
+| Dangling pointers, pointer arithmetic | No native pointer escapes. Storage borrows synchronous private copies; successful VM output owns independent bytes before packet retirement. |
+| Format strings, secret leakage | No production log or format added. Existing entropy clear is retained first; path/ciphertext copies now retire too. No managed/provider erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion or new allocation. Optimized GCC reports 1248-byte read, 1264-byte write and 1328-byte fresh frames, below 4096; not whole-call-chain measurements. |
+| Malformed serialization/network input | Structural validation, exact pending-record comparison, no-overwrite, status precedence and authentication obligations remain unchanged. No filesystem access is authorized by a failed VM read. |
+| Races, resource exhaustion | Native scratch is invocation-local. Filesystem locks and publication semantics are unchanged; no forbidden JNI operation occurs after a pending exception. Cleanup is fixed-size. |
+
+The source-only fixture observes every full clear with the real primitive,
+including partial reads, NULL/pending/oversized admission, all four New/Set
+publication fault outcomes, full-width packets and fresh entropy, creation,
+promotion, exact-record refusal, corrupted storage and no overwrite. It
+requires path retirement before VM allocation and independent VM result bytes.
+The inherited implementation fails the fresh-copy retirement assertion.
+The fixture-isolated fresh-storage fuzzer now observes the same three input
+lifetimes; its reset helper keeps the existing complexity cap without suppressions.
+Validation evidence and limitations are recorded in `PROGRESS.md`.
+
 ## JNI unsigned review output retirement — 2026-09-17
 
 Scope: `jni_review.c`. The copied snapshot clears before releasing the native

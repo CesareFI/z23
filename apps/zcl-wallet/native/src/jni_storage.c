@@ -19,11 +19,15 @@ Java_org_zclassic_wallet_core_NativeCore_readWalletStorage(JNIEnv *env, jclass t
     zcl_status status = zcl_jni_read_bytes(env, path_input, path, sizeof(path), &path_len);
     if (status == ZCL_OK)
         status = zcl_storage_read(path, path_len, packet + 2, sizeof(packet) - 2, &record_len, &pending);
-    if ((*env)->ExceptionCheck(env))
-        return NULL;
-    packet[0] = (uint8_t)status;
-    packet[1] = pending ? 1 : 0;
-    return zcl_jni_new_bytes(env, packet, status == ZCL_OK ? record_len + 2 : 1);
+    zcl_secure_zero(path, sizeof(path));
+    jbyteArray result = NULL;
+    if (!(*env)->ExceptionCheck(env)) {
+        packet[0] = (uint8_t)status;
+        packet[1] = pending ? 1 : 0;
+        result = zcl_jni_new_bytes(env, packet, status == ZCL_OK ? record_len + 2 : 1);
+    }
+    zcl_secure_zero(packet, sizeof(packet));
+    return result;
 }
 
 static jint write_record(JNIEnv *env, jbyteArray path_input, jbyteArray record_input, bool promote)
@@ -31,14 +35,14 @@ static jint write_record(JNIEnv *env, jbyteArray path_input, jbyteArray record_i
     uint8_t path[1024] = {0}, record[140] = {0};
     size_t path_len = 0, record_len = 0;
     zcl_status status = zcl_jni_read_bytes(env, path_input, path, sizeof(path), &path_len);
-    if (status != ZCL_OK)
-        return (jint)status;
-    status = zcl_jni_read_bytes(env, record_input, record, sizeof(record), &record_len);
-    if (status != ZCL_OK)
-        return (jint)status;
-    if (promote)
-        return (jint)zcl_storage_promote(path, path_len, record, record_len);
-    return (jint)zcl_storage_create(path, path_len, record, record_len);
+    if (status == ZCL_OK)
+        status = zcl_jni_read_bytes(env, record_input, record, sizeof(record), &record_len);
+    if (status == ZCL_OK)
+        status = promote ? zcl_storage_promote(path, path_len, record, record_len) :
+            zcl_storage_create(path, path_len, record, record_len);
+    zcl_secure_zero(record, sizeof(record));
+    zcl_secure_zero(path, sizeof(path));
+    return (jint)status;
 }
 
 JNIEXPORT jint JNICALL
@@ -66,6 +70,8 @@ Java_org_zclassic_wallet_core_NativeCore_createFreshWalletStorage(JNIEnv *env, j
     /* A VM read can partially write before throwing. Clear the complete native
      * secret span on every exit, without clearing the pending VM exception. */
     zcl_secure_zero(entropy, sizeof(entropy));
+    zcl_secure_zero(record, sizeof(record));
+    zcl_secure_zero(path, sizeof(path));
     return (jint)status;
 }
 

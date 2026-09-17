@@ -134,6 +134,13 @@ records are retired before subsequent filesystem work. Promotion finishes its
 byte comparison and retires that copy before the commit/directory flush; the
 caller still owns the authenticated input and every published output.
 
+JNI storage additionally retires its full copied path and ciphertext record on
+every create/promote/fresh return, preserving entropy-first retirement for fresh
+creation. Read clears its path before VM allocation and its full native packet
+after success or any read/publication exception. Successful VM arrays remain
+independent; a partial transfer never returns a successful array. These lifetime
+checks do not authenticate ciphertext or erase managed/provider copies.
+
 An IO error after creating the pending file is `IO_UNCERTAIN`; callers must
 re-read storage and authenticate any complete record. An incomplete file stays
 intact as an explicit recovery condition. Errors never authorize overwriting

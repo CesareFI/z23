@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
+#undef zcl_secure_zero
 #include "jni_support.h"
 #include "change_storage_fixture.h"
+#include "zcl_keys.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -17,8 +19,32 @@ static storage_fixture fixture;
 static change_storage_data data;
 static bool initialized, pending;
 static size_t vm_calls, fail_call;
+static uintptr_t identities[3];
+static unsigned cleared;
 static void require(bool condition) { if (!condition) abort(); }
 static void cleanup(void) { require(fixture_close(&fixture) == 0); }
+
+static void reset_retirement(void)
+{
+    for (size_t i = 0; i < 3; ++i) require(identities[i] == 0);
+    cleared = 0;
+}
+
+void zcl_jni_storage_fuzz_zero(void *pointer, size_t length);
+void zcl_jni_storage_fuzz_zero(void *pointer, size_t length)
+{
+    require(pointer != NULL);
+    const size_t slot = length == 1024 ? 0 : length == 140 ? 1 : 2;
+    require(slot != 2 || length == 32);
+    const unsigned bit = 1U << slot;
+    require((cleared & bit) == 0);
+    require(identities[slot] == 0 || identities[slot] == (uintptr_t)pointer);
+    zcl_secure_zero(pointer, length);
+    const uint8_t *bytes = pointer;
+    for (size_t i = 0; i < length; ++i) require(bytes[i] == 0);
+    identities[slot] = 0;
+    cleared |= bit;
+}
 
 static bool vm_fault(void)
 {
@@ -48,6 +74,9 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
     const fake_array *array = (const fake_array *)input;
     require(array != NULL && output != NULL && start == 0 && length >= 0);
     require(length == array->length && (size_t)length <= array->capacity);
+    const size_t slot = array->capacity == 1025 ? 0 : array->capacity == 140 ? 1 : 2;
+    require(identities[slot] == 0);
+    identities[slot] = (uintptr_t)output;
     if (vm_fault()) {
         if (length > 0) output[0] = 42;
         return;
@@ -105,6 +134,7 @@ static void verify(jint status, const uint8_t *record, size_t record_len, const 
 int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
 {
     if (length != 8) return 0;
+    reset_retirement();
     initialize();
     clear_files();
     uint8_t path[1025] = {0}, record[140] = {0}, entropy[33] = {0};
@@ -131,6 +161,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *bytes, size_t length)
         (bytes[0] & 64U) != 0 ? NULL : (jbyteArray)&inputs[0], (jbyteArray)&inputs[1],
         (bytes[0] & 128U) != 0 ? NULL : (jbyteArray)&inputs[2]);
     require(vm_calls <= 6);
+    require(cleared == 7);
     verify(status, record, (size_t)inputs[1].length, entropy,
         inputs[2].length >= 0 ? (size_t)inputs[2].length : SIZE_MAX);
     return 0;

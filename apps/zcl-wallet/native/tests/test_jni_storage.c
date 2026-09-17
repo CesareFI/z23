@@ -14,6 +14,8 @@
 #define REQUIRE(v) do { if (!(v)) { fprintf(stderr, "JNI storage fault at%d\n", __LINE__); abort(); } } while (0)
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
 JNIEXPORT jint JNICALL API(createFreshWalletStorage)(JNIEnv *, jclass, jbyteArray, jbyteArray, jbyteArray);
+JNIEXPORT jint JNICALL API(createWalletStorage)(JNIEnv *, jclass, jbyteArray, jbyteArray);
+JNIEXPORT jint JNICALL API(promoteWalletStorage)(JNIEnv *, jclass, jbyteArray, jbyteArray);
 JNIEXPORT jbyteArray JNICALL API(readWalletStorage)(JNIEnv *, jclass, jbyteArray);
 
 typedef struct { const uint8_t *bytes; size_t capacity; jsize length; } fake_array;
@@ -23,6 +25,13 @@ static const change_storage_data *expected;
 static void *secret_pointer;
 static size_t vm_calls, fail_call, core_calls, zero_calls;
 static bool pending, fail_core, mutate_record;
+/* Native spans are observed while live; only numeric identities survive a VM
+ * call. Bits: path=1, record=2, entropy=4, publication packet=8. */
+static uintptr_t identities[4];
+static unsigned cleared, fail_new;
+static bool fail_set;
+static uint8_t published[142];
+static fake_array publication;
 
 static bool vm_fault(void)
 {
@@ -52,6 +61,9 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
     const fake_array *array = (const fake_array *)input;
     REQUIRE(array != NULL && start == 0 && length >= 0 && (size_t)length <= array->capacity);
     REQUIRE(length == array->length && output != NULL);
+    const size_t slot = array == &path_array ? 0 : array == &record_array ? 1 : 2;
+    REQUIRE(identities[slot] == 0);
+    identities[slot] = (uintptr_t)output;
     if (array == &entropy_array) secret_pointer = output;
     if (vm_fault()) {
         if (length > 0) output[0] = 42; /* Partial VM read before exception. */
@@ -66,13 +78,49 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize start, jsize 
 
 void zcl_jni_storage_test_zero(void *pointer, size_t length)
 {
-    REQUIRE(pointer != NULL && length == 32 && zero_calls == 0);
-    if (secret_pointer != NULL) REQUIRE(secret_pointer == pointer);
+    REQUIRE(pointer != NULL);
+    const size_t slot = length == 1024 ? 0 : length == 140 ? 1 : length == 32 ? 2 : 3;
+    REQUIRE(slot != 3 || length == 142);
+    const unsigned bit = 1U << slot;
+    REQUIRE((cleared & bit) == 0);
+    REQUIRE(identities[slot] == 0 || identities[slot] == (uintptr_t)pointer);
+    if (slot == 2) {
+        REQUIRE(zero_calls == 0);
+        if (secret_pointer != NULL) REQUIRE(secret_pointer == pointer);
+        secret_pointer = NULL;
+        ++zero_calls;
+    }
     zcl_secure_zero(pointer, length);
     const uint8_t *bytes = pointer;
     for (size_t i = 0; i < length; ++i) REQUIRE(bytes[i] == 0);
-    secret_pointer = NULL; /* Retire while this invocation's span is live. */
-    ++zero_calls;
+    identities[slot] = 0;
+    cleared |= bit;
+}
+
+static jbyteArray JNICALL new_bytes(JNIEnv *env, jsize length)
+{
+    (void)env;
+    REQUIRE(!pending && cleared == 1 && length > 0 && length <= (jsize)sizeof(published));
+    publication = (fake_array){published, sizeof(published), length};
+    /* 1=NULL+exception; 2=array+exception; 3=NULL without exception. */
+    if (fail_new != 0) {
+        pending = fail_new != 3;
+        if (fail_new != 2) return NULL;
+    }
+    return (jbyteArray)&publication;
+}
+
+static void JNICALL set_bytes(JNIEnv *env, jbyteArray output, jsize start, jsize length,
+    const jbyte *bytes)
+{
+    (void)env;
+    REQUIRE(!pending && output == (jbyteArray)&publication && start == 0);
+    REQUIRE(length == publication.length && length > 0 && (size_t)length <= sizeof(published));
+    REQUIRE(identities[3] == 0 && bytes != NULL);
+    identities[3] = (uintptr_t)bytes;
+    /* Even a partial publication must not escape as a successful result. */
+    memcpy(published, bytes, fail_set ? 1 : (size_t)length);
+    if (fail_set) pending = true;
 }
 
 zcl_status zcl_jni_storage_test_create(const uint8_t *path, size_t path_len,
@@ -93,13 +141,18 @@ typedef struct JNINativeInterface storage_jni_interface;
 typedef struct JNINativeInterface_ storage_jni_interface;
 #endif
 static const storage_jni_interface fake_table = {
-    .ExceptionCheck = exception_check, .GetArrayLength = array_length, .GetByteArrayRegion = get_bytes
+    .ExceptionCheck = exception_check, .GetArrayLength = array_length, .GetByteArrayRegion = get_bytes,
+    .NewByteArray = new_bytes, .SetByteArrayRegion = set_bytes
 };
 static JNIEnv fake_env = &fake_table;
 
 static void reset(const storage_fixture *fixture, const change_storage_data *data)
 {
     REQUIRE(secret_pointer == NULL);
+    for (size_t i = 0; i < 4; ++i) REQUIRE(identities[i] == 0);
+    cleared = fail_new = 0;
+    fail_set = false;
+    memset(published, 0xa5, sizeof(published));
     memcpy(mutable_record, data->wallet, data->wallet_len);
     memset(entropy_bytes, 0, sizeof(entropy_bytes));
     path_array = (fake_array){(const uint8_t *)fixture->path, fixture_path_len(), (jsize)fixture_path_len()};
@@ -122,8 +175,137 @@ static int no_files(const storage_fixture *fixture)
 static jint create(JNIEnv *env, jbyteArray path, jbyteArray record, jbyteArray entropy)
 {
     jint status = API(createFreshWalletStorage)(env, NULL, path, record, entropy);
-    REQUIRE(zero_calls == 1 && secret_pointer == NULL);
+    REQUIRE(zero_calls == 1 && secret_pointer == NULL && cleared == 7);
     return status;
+}
+
+static jint write_record(JNIEnv *env, bool promote, jbyteArray path, jbyteArray record)
+{
+    const jint status = promote ? API(promoteWalletStorage)(env, NULL, path, record) :
+        API(createWalletStorage)(env, NULL, path, record);
+    REQUIRE(cleared == 3 && zero_calls == 0);
+    return status;
+}
+
+static fake_array *read_record(JNIEnv *env, jbyteArray path)
+{
+    const unsigned expected_clears = env != NULL && !pending ? 9U : 0U;
+    fake_array *result = (fake_array *)API(readWalletStorage)(env, NULL, path);
+    REQUIRE(cleared == expected_clears && zero_calls == 0);
+    return result;
+}
+
+static int write_failures(const change_storage_data *data, bool promote)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    for (size_t at = 1; at <= 4; ++at) {
+        reset(&fixture, data);
+        fail_call = at;
+        CHECK(write_record(&fake_env, promote, (jbyteArray)&path_array,
+            (jbyteArray)&record_array) == ZCL_INVALID_ARGUMENT);
+        CHECK(pending && vm_calls == at && no_files(&fixture) == 0);
+    }
+    for (size_t argument = 0; argument < 4; ++argument) {
+        reset(&fixture, data);
+        pending = argument == 3;
+        CHECK(write_record(argument == 0 ? NULL : &fake_env, promote,
+            argument == 1 ? NULL : (jbyteArray)&path_array,
+            argument == 2 ? NULL : (jbyteArray)&record_array) == ZCL_INVALID_ARGUMENT);
+        CHECK(pending == (argument == 3) && no_files(&fixture) == 0);
+    }
+    return fixture_close(&fixture);
+}
+
+static int read_matches(const storage_fixture *fixture, const change_storage_data *data, bool is_pending)
+{
+    reset(fixture, data);
+    const fake_array *packet = read_record(&fake_env, (jbyteArray)&path_array);
+    CHECK(packet == &publication && packet->length == (jsize)(data->wallet_len + 2));
+    CHECK(published[0] == ZCL_OK && published[1] == (is_pending ? 1 : 0));
+    CHECK(memcmp(published + 2, data->wallet, data->wallet_len) == 0 && !pending);
+    /* Native erasure may not erase or overrun the separate VM result. */
+    for (size_t i = data->wallet_len + 2; i < sizeof(published); ++i) CHECK(published[i] == 0xa5);
+    return 0;
+}
+
+static int write_outcomes(const change_storage_data *data, bool promote)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    if (promote) CHECK(fixture_write(&fixture, ".wallet.pending", data->wallet, data->wallet_len) == 0);
+    reset(&fixture, data);
+    CHECK(write_record(&fake_env, promote, (jbyteArray)&path_array, (jbyteArray)&record_array) == ZCL_OK);
+    CHECK(read_matches(&fixture, data, false) == 0);
+    reset(&fixture, data);
+    CHECK(write_record(&fake_env, false, (jbyteArray)&path_array,
+        (jbyteArray)&record_array) == ZCL_ALREADY_EXISTS);
+    CHECK(read_matches(&fixture, data, false) == 0);
+    return fixture_close(&fixture);
+}
+
+static int read_failures(const change_storage_data *data)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    CHECK(fixture_write(&fixture, ".wallet.pending", data->wallet, data->wallet_len) == 0);
+    CHECK(read_matches(&fixture, data, true) == 0);
+    for (size_t at = 1; at <= 2; ++at) {
+        reset(&fixture, data);
+        fail_call = at;
+        CHECK(read_record(&fake_env, (jbyteArray)&path_array) == NULL);
+        CHECK(pending && vm_calls == at && published[0] == 0xa5);
+    }
+    for (unsigned fault = 0; fault < 4; ++fault) {
+        reset(&fixture, data);
+        fail_new = fault;
+        fail_set = fault == 0;
+        CHECK(read_record(&fake_env, (jbyteArray)&path_array) == NULL);
+        CHECK(pending == (fault != 3));
+        CHECK(published[0] == (fault == 0 ? ZCL_OK : 0xa5) && published[1] == 0xa5);
+        CHECK(read_matches(&fixture, data, true) == 0);
+    }
+    return fixture_close(&fixture);
+}
+
+static int read_status_only(const change_storage_data *data)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    reset(&fixture, data);
+    const fake_array *packet = read_record(&fake_env, NULL);
+    CHECK(packet == &publication && packet->length == 1 && published[0] == ZCL_INVALID_ARGUMENT);
+    CHECK(published[1] == 0xa5 && !pending);
+    reset(&fixture, data);
+    path_array.length = INT32_MAX;
+    packet = read_record(&fake_env, (jbyteArray)&path_array);
+    CHECK(packet == &publication && packet->length == 1 && published[0] == ZCL_OUT_OF_RANGE);
+    CHECK(published[1] == 0xa5 && !pending && no_files(&fixture) == 0);
+    return fixture_close(&fixture);
+}
+
+static int storage_refusals(const change_storage_data *data)
+{
+    storage_fixture fixture;
+    CHECK(fixture_open(&fixture) == 0);
+    CHECK(fixture_write(&fixture, ".wallet.pending", data->wallet, data->wallet_len) == 0);
+    reset(&fixture, data);
+    /* Structurally valid but not the exact pending ciphertext. */
+    mutable_record[data->wallet_len - 1] ^= 1;
+    CHECK(write_record(&fake_env, true, (jbyteArray)&path_array,
+        (jbyteArray)&record_array) == ZCL_INVALID_ENCODING);
+    CHECK(read_matches(&fixture, data, true) == 0);
+    CHECK(fixture_close(&fixture) == 0);
+    CHECK(fixture_open(&fixture) == 0);
+    CHECK(fixture_write(&fixture, "wallet.zcl", data->wallet, 1) == 0);
+    reset(&fixture, data);
+    const fake_array *packet = read_record(&fake_env, (jbyteArray)&path_array);
+    CHECK(packet == &publication && packet->length == 1 && published[0] == ZCL_INVALID_ENCODING);
+    CHECK(published[1] == 0xa5 && !pending);
+    reset(&fixture, data);
+    CHECK(write_record(&fake_env, false, (jbyteArray)&path_array,
+        (jbyteArray)&record_array) == ZCL_ALREADY_EXISTS);
+    return fixture_close(&fixture);
 }
 
 static int vm_failures(const change_storage_data *data)
@@ -237,6 +419,8 @@ static int full_entropy_cleared(void)
     CHECK(core_calls == 1 && vm_calls == 6 && zero_calls == 1);
     CHECK(memcmp(entropy_bytes, entropy, sizeof(entropy)) == 0);
     CHECK(change_bytes(&fixture, data.state[0], 80, 0) == 0);
+    CHECK(read_matches(&fixture, &data, false) == 0);
+    expected = NULL;
     zcl_secure_zero(entropy, sizeof(entropy));
     zcl_secure_zero(entropy_bytes, sizeof(entropy_bytes));
     return fixture_close(&fixture);
@@ -245,11 +429,11 @@ static int full_entropy_cleared(void)
 static int read_environment_refusal(void)
 {
     const fake_array unused = {0}; /* This entry must never inspect its fields. */
-    CHECK(API(readWalletStorage)(NULL, NULL, NULL) == NULL);
-    CHECK(API(readWalletStorage)(NULL, NULL, (jbyteArray)&unused) == NULL);
+    CHECK(read_record(NULL, NULL) == NULL);
+    CHECK(read_record(NULL, (jbyteArray)&unused) == NULL);
     pending = true;
     vm_calls = 0;
-    CHECK(API(readWalletStorage)(&fake_env, NULL, (jbyteArray)&unused) == NULL);
+    CHECK(read_record(&fake_env, (jbyteArray)&unused) == NULL);
     CHECK(pending && vm_calls == 0);
     pending = false;
     return 0;
@@ -263,6 +447,10 @@ int main(void)
     CHECK(vm_failures(&data) == 0 && null_arguments(&data) == 0);
     CHECK(length_arguments(&data) == 0 && core_outcomes(&data) == 0);
     CHECK(full_entropy_cleared() == 0);
-    puts("JNI fresh storage: six VM faults, pending exception refusal, bounded private copies, full-width nonzero entropy clearing, paired creation and no overwrite passed");
+    CHECK(write_failures(&data, false) == 0 && write_failures(&data, true) == 0);
+    CHECK(write_outcomes(&data, false) == 0 && write_outcomes(&data, true) == 0);
+    CHECK(read_failures(&data) == 0 && read_status_only(&data) == 0);
+    CHECK(storage_refusals(&data) == 0);
+    puts("JNI storage: live path/record/entropy/packet retirement, VM faults, publication faults, paired creation, pending promotion and no overwrite passed");
     return 0;
 }

@@ -1,5 +1,40 @@
 # Development record
 
+## Inherited JNI storage slice finalized — 2026-09-17
+
+JNI sync opening was pushed and remotely verified as
+`07aa78319a7bd43279981848ab89763d353c989f`. The inherited storage changes were
+kept separate throughout the six new hardening slices, then independently
+reviewed and qualified for their own checkpoint. Their source and test changes
+are preserved intact: JNI path/record/read-packet copies retire on all exits,
+and fresh creation retains entropy-first cleanup. Input/status/record authority,
+no-overwrite and exact-pending promotion semantics remain unchanged.
+
+A fresh isolated build of the preceding JNI storage source with the current
+fixture aborts at the expected missing full-copy retirement assertion. The two
+focused JNI storage tests pass on both Clang and optimized GCC. A bounded
+ASan/UBSan fresh-storage fuzz run completes 21,498 executions in 61 seconds,
+with a five-second input deadline and 512 MiB RSS cap, without findings. Its
+only valid path is the invocation-owned fixture directory; malformed path
+lengths cannot resolve a different ambient directory.
+
+The final source tree was included in the JNI opening validation: all 104 Clang
+and 103 optimized GCC wallet CTest cases pass, both analyzers and complexity
+caps 10/15 pass, and Android/JVM tests, both ABI debug/release builds, lints,
+fixture isolation, 16 KiB alignment and architecture/doc counts pass. All 24
+selected API35 sync/lifecycle/storage/recovery cases pass in 8.028 seconds.
+Storage-specific evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-storage-final/`;
+shared full-gate evidence is under the JNI opening evidence directory.
+The explicit hazard review remains in `C_SAFETY_REVIEW.md`. No global lint pass,
+hardware custody, TLS or production-node acceptance is claimed. TLS remains
+quarantined; no production data or credentials were accessed.
+
+Continuation inspection: `sync_watch.c` still has unretired validation-only
+parsed-address, publication-report and snapshot temporaries. Preserve the
+existing clock/timeout, last-report, source and attempt-token contracts while
+qualifying their retirement with live observers.
+
 ## JNI sync opening continuation — 2026-09-17
 
 Native owner retirement was pushed and remotely verified as
@@ -434,6 +469,33 @@ The complete native safety gate passes: 102/102 Clang tests and 101/101 optimize
 GCC tests, with TLS review OFF and analyzers/strict warning gates unchanged.
 Next: retire JNI storage path, ciphertext-record and read-packet copies across
 VM read/publication failures, retaining the existing fresh-entropy guarantee.
+
+The JNI review slice was pushed and remotely verified as
+`de59fd23c71b7fdf0e46b55fb8e155bbf59a884e`. Continued into JNI storage immediately.
+Read now clears its copied path before Java allocation and its full native
+packet on success or read/publication failure. Create/promote clear both copied
+inputs on all returns; fresh paired creation retains entropy-first cleanup,
+then retires record/path. Storage status precedence, exact-record checks,
+authentication requirements, private packet format and no-overwrite are unchanged.
+
+The expanded source-copy fixture observes all four buffer capacities while
+live with the real primitive, including partial reads, pending/NULL/oversized
+inputs, full-width nonzero entropy and packets, all four New/Set publication
+fault classes, exact-record promotion refusal, corrupted storage and independent
+VM output bytes. The inherited source fails its first fresh-copy cleanup check.
+The fixture-isolated fuzzer observes path/record/entropy retirement too. Its
+initial expanded entry exceeded the test complexity cap; a separate observer
+reset helper restores the cap without removing assertions or suppressions.
+
+Focused host JNI/fuzz-regression tests and exact-unit Clang/GCC analyzers pass.
+Optimized read/write/fresh frames are 1248/1264/1328 bytes, under 4096. Android
+JVM tests, both ABI builds, debug/release APKs and lints, fixture isolation and
+16 KiB alignment pass. API35 storage and recovery instrumentation passes all
+eleven cases in 0.386 seconds; all records/keys are public isolated fixtures.
+Full native and final post-refactor fuzz results are recorded before committing.
+Evidence: `apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-storage-retirement/`.
+Next inspected gap: JNI draft numeric/address/wire scratch and its temporary
+transaction are not retired, despite existing copied-input heap retirement.
 
 ## Current continuation — 2026-09-16
 
