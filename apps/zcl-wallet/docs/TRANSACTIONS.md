@@ -1,5 +1,35 @@
 # Transparent transaction development
 
+## Explicit historical source inspection
+
+`zcl_legacy_source_inspect` reads v1, v2 and Overwinter v3 sources through an
+explicit internal profile. It reuses the bounded transparent reader, amount
+checks, complete-wire SHA256d, owned output and retirement lifecycle. The common
+view has the same layout as the existing `zcl_v4_source` alias; absent expiry and
+Sapling fields remain zero. v4 still uses its original separate entry point.
+Unknown versions/groups refuse, including non-Overwinter version3. Neither
+profile is a consensus predicate or a promise to cover every historical format.
+
+The historical source bound is100000 bytes from the pinned original pre-Sapling
+limit. v1 ends after lock time; v2 adds PHGR JoinSplits and their conditional
+96-byte signature material; v3 also carries version-group and expiry fields.
+Each1802-byte description contains304 prefix bytes, a296-byte PHGR encoding and
+1202 opaque ciphertext bytes. Original PHGR serialization requires seven33-byte
+G1 encodings with leading byte2/3 and one65-byte G2 encoding with byte10/11. These
+prefix checks do not verify points, proofs, signatures, scripts or chain state.
+
+`bash tools/project-original-legacy-sources.sh <original-checkout> <new-output-directory>`
+reproduces the committed public fixtures from pinned original `14a83d510` Git
+objects. It checks both JSON hashes and refuses an existing output directory.
+Four v1/v3 fixtures are untouched; three v2 fixtures explicitly replace the v3
+header and remove group/expiry bytes while retaining PHGR/signature bytes.
+OpenSSL independently computes every complete identity. Projections and original
+random vectors are serialization evidence, not valid-funding or node-acceptance
+evidence. All256 prefix values at every PHGR position are tested.
+
+This adds no historical-source JNI, draft, review, commitment or signing route.
+Those admissions remain unchanged until explicitly composed and qualified.
+
 ## Exact source/outpoint/header commitment composition
 
 The internal `zcl_v4_source_commitment_check` binds full source bytes and selected
@@ -19,8 +49,8 @@ Every expected ID, height, count and position remains caller-supplied. Success
 does not establish accepted-chain membership, proof of work, off-path uniqueness,
 freshness, maturity, unspentness, ownership, consent or signing authority. No
 trust status, custody object, JNI entry, UI send route or TLS boundary changes.
-The current source profile remains v4 only; historical funding formats require
-separate reference-backed coverage before expanding any admission.
+The commitment profile remains v4 only. Historical inspection is available
+separately above; integrating it requires an explicit qualified profile.
 
 ## Owned serialized-header inspection
 

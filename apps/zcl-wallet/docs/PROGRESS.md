@@ -1,5 +1,50 @@
 # Development record
 
+## Explicit historical funding-source inspection — 2026-09-17
+
+`zcl_legacy_source_inspect` now reads v1/v2/Overwinter v3 through a separate C
+profile under the original100000-byte bound. Shared transparent parsing, checked
+amounts, full-wire SHA256d, owned fields and retirement avoid a parallel reader.
+The common view preserves the existing v4 alias/layout. Current v4 cap/admission,
+draft, review, commitment, JNI and signing behavior stay unchanged. Unknown
+formats refuse; absent expiry/Sapling fields remain zero.
+
+The pinned original transaction/PHGR/consensus sources were inspected as Git
+objects and SHA256-recorded. PHGR is not just opaque296-byte storage: its seven
+G1 and one G2 encodings require exact leading-byte masks. All256 values at every
+proof position are exercised, alongside all fixture truncations, exact IDs,
+selected output bounds, version/group mismatch, extra bytes and failure canaries.
+Proofs, signatures, scripts and historical consensus validity remain unverified.
+
+The reproducible projection tool verifies original JSON hashes, refuses an
+existing output directory and never executes a reference node/wallet. Four
+committed v1/v3 fixtures are untouched originals; three v2 fixtures explicitly
+replace the v3 header and remove only group/expiry fields. PHGR/signature bytes
+remain unchanged. Independent OpenSSL SHA256d pins every complete wire identity.
+The generator reproduces the header byte-for-byte, including after an existing-
+directory refusal. These are public serialization fixtures, not spendability
+or original-node acceptance evidence.
+
+Seven group/prefix/length/cap/hash/publication/retirement mutations fail. Dirty
+provider failures retire both hash buffers and staging for every fixture.
+OpenSSL hash fuzzing completes1734915 runs in61 seconds without a finding.
+The isolated `708e6205e` snapshot passes TLS-off analysis/complexity,135 Clang
+sanitizer/oracle and130 optimized GCC sanitizer groups. The strengthened prefix
+fixture and v4/commitment regressions pass final six-group Clang/GCC reruns.
+Eight final source/tool files are SHA256-recorded. Shared optimized inspector
+frames280/352 bytes remain below4096. Android/JVM, debug/minified release, lint,
+fixture/result isolation and16KiB gates pass (155 tasks). Final normal/fault
+release-archive fixtures pass API30/35/36 x86_64 with owned temporary-path cleanup;
+ARM64 compiles/alignment only. Architecture/docs gates pass. Evidence:
+`.cache/android-wallet/mission-20260917/legacy-source/` and
+`.cache/android-wallet/mission-20260917/historical-source-audit/`.
+
+Next: compose historical funding identity/commitments and mixed-format offline
+assessment through an explicit profile, retaining the64-byte preimage refusal
+and exact source matching. Keep existing v4/spend/review profiles intact until
+that path is separately qualified. Chain/unspentness evidence, physical custody,
+shielded spending and quarantined TLS remain open; no live endpoint is enabled.
+
 ## Exact source/outpoint/header commitment composition — 2026-09-17
 
 The internal C `zcl_v4_source_commitment_check` now composes existing header,

@@ -38,9 +38,13 @@ result, with pinned original main/test genesis fields and independent hash check
 An internal composition now binds exact outpoint/source/header IDs and a Merkle
 path before publishing an owned result. It explicitly refuses64-byte source
 preimages, whose size overlaps internal Merkle-node inputs. It does not authenticate
-caller-supplied IDs, height or tree shape. Next, audit historical v1/v2/v3 funding
-serialization against pinned original fixtures and extend source coverage only
-through an explicit profile. Keep proof claims separate from chain validity,
+caller-supplied IDs, height or tree shape. A separate historical inspector now
+covers v1/v2/Overwinter v3 with the original100000-byte bound and exact PHGR
+serialization prefixes. Original and explicitly projected public fixtures qualify
+it; current v4/spend/review/commitment admission stays unchanged. Next, compose
+historical funding identity/commitments and mixed-format offline assessment through
+an explicit profile, retaining the64-byte preimage guard. Keep proof claims
+separate from chain validity,
 freshness, unspentness and signing authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.

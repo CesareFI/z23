@@ -126,17 +126,77 @@ cleanup:
     return status;
 }
 
-zcl_status zcl_v4_source_inspect(const uint8_t *wire, size_t length,
-    uint32_t output_index, zcl_v4_source *output)
+static uint32_t legacy_header(source_reader *reader)
+{
+    const uint32_t header = (uint32_t)integer(reader, 4);
+    if (reader->status != ZCL_OK) return 0;
+    if (header == 1 || header == 2) return header;
+    if (header != UINT32_C(0x80000003)) { reader->status = ZCL_UNSUPPORTED; return 0; }
+    const uint32_t group = (uint32_t)integer(reader, 4);
+    if (reader->status == ZCL_OK && group != UINT32_C(0x03c48270)) reader->status = ZCL_UNSUPPORTED;
+    return 3;
+}
+
+static bool phgr_prefixes(const uint8_t description[1802])
+{
+    static const size_t offsets[] = {304,337,370,435,468,501,534,567};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+        const uint8_t mask = i == 2 ? 10 : 2;
+        if ((description[offsets[i]] & 254) != mask) return false;
+    }
+    return true;
+}
+
+static void legacy_joinsplits(source_reader *reader, zcl_source_view *view)
+{
+    view->joinsplit_count = count(reader, 1802);
+    for (size_t i = 0; i < view->joinsplit_count && reader->status == ZCL_OK; ++i) {
+        const uint8_t *description = take(reader, 1802);
+        if (description == NULL) return;
+        if (!phgr_prefixes(description)) { reader->status = ZCL_INVALID_ENCODING; return; }
+    }
+    if (view->joinsplit_count != 0) (void)take(reader, 96);
+}
+
+static zcl_status legacy_layout(const uint8_t *wire, size_t length, uint32_t selected,
+    zcl_source_view *view)
+{
+    source_reader reader = {wire, length, 0, ZCL_OK};
+    const uint32_t version = legacy_header(&reader);
+    if (reader.status != ZCL_OK) return reader.status;
+    inputs(&reader, view); outputs(&reader, selected, view);
+    view->lock_time = (uint32_t)integer(&reader, 4);
+    if (version == 3) view->expiry_height = (uint32_t)integer(&reader, 4);
+    if (version >= 2) legacy_joinsplits(&reader, view);
+    if (reader.status != ZCL_OK) return reader.status;
+    if (reader.used != length) return ZCL_INVALID_ENCODING;
+    return selected < view->output_count ? ZCL_OK : ZCL_OUT_OF_RANGE;
+}
+
+static zcl_status source_inspect(const uint8_t *wire, size_t length,
+    uint32_t output_index, bool legacy, zcl_source_view *output)
 {
     if (wire == NULL || output == NULL) return ZCL_INVALID_ARGUMENT;
-    if (length > ZCL_V4_SOURCE_MAX) return ZCL_RESOURCE_EXHAUSTED;
-    zcl_v4_source candidate = {0};
-    zcl_status status = source_layout(wire, length, output_index, &candidate);
+    if (length > (legacy ? ZCL_LEGACY_SOURCE_MAX : ZCL_V4_SOURCE_MAX)) return ZCL_RESOURCE_EXHAUSTED;
+    zcl_source_view candidate = {0};
+    zcl_status status = legacy ? legacy_layout(wire, length, output_index, &candidate)
+                               : source_layout(wire, length, output_index, &candidate);
     if (status == ZCL_OK) status = source_id(wire, length, candidate.transaction_id);
     if (status == ZCL_OK) *output = candidate;
     zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
+}
+
+zcl_status zcl_v4_source_inspect(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_v4_source *output)
+{
+    return source_inspect(wire, length, output_index, false, output);
+}
+
+zcl_status zcl_legacy_source_inspect(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_source_view *output)
+{
+    return source_inspect(wire, length, output_index, true, output);
 }
 
 zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,

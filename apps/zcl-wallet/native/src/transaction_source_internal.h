@@ -7,13 +7,15 @@
  * limit. This reader inspects public bytes only and never authorizes funding.
  * The existing spend codec, prevout admission and JNI limits are unchanged. */
 #define ZCL_V4_SOURCE_MAX ((size_t)102000)
+#define ZCL_LEGACY_SOURCE_MAX ((size_t)100000)
 typedef struct {
     uint8_t transaction_id[32]; /* Full raw wire SHA256d, displayed order. */
     zcl_tx_output output;       /* Selected transparent row, owned script. */
     size_t input_count, output_count, spend_count, shielded_count, joinsplit_count;
     uint32_t lock_time, expiry_height;
     int64_t value_balance;     /* Raw signed field, not verified accounting. */
-} zcl_v4_source;
+} zcl_source_view;
+typedef zcl_source_view zcl_v4_source; /* Preserve the existing explicit v4 profile. */
 
 /* Parse the complete canonical v4 layout, including opaque Sapling descriptions,
  * Groth JoinSplits and their conditional signatures. Transparent script lengths
@@ -27,6 +29,15 @@ typedef struct {
  * This is not a replacement for zcl_transaction_prevout admission. */
 zcl_status zcl_v4_source_inspect(const uint8_t *wire, size_t length,
     uint32_t output_index, zcl_v4_source *output);
+
+/* Explicit historical profile: v1, v2 and Overwinter v3 only. Reuses owned
+ * source fields, with absent expiry/Sapling fields zero. Canonical PHGR point
+ * prefixes are serialization checks, not curve/proof verification. Bound100000
+ * follows the pinned original pre-Sapling source limit. No v4 admission here;
+ * no existing prevout, draft, review, commitment or signing profile is widened.
+ * Same structural-only, stable-span and failure-atomic contract as above. */
+zcl_status zcl_legacy_source_inspect(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_source_view *output);
 
 /* Match complete source identity/index before publishing its owned output.
  * Same structural-only contract; the expected outpoint is caller-supplied and

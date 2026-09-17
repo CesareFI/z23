@@ -1,5 +1,28 @@
 # C parser foundation safety review
 
+## Explicit historical funding-source inspection — 2026-09-17
+
+Scope: shared source retirement/transparent parsing, separate legacy header/tail,
+PHGR serialization prefixes, pinned public fixture projection and host/runtime proof.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Existing checked reader owns every slice; legacy descriptions must supply1802 bytes before any prefix access. Eight fixed offsets304..567 remain inside that span. Output scripts retain25-byte capacity. Every fixture truncation, extra byte and SIZE_MAX is exercised with output canaries. |
+| Integer overflow/underflow, signed/unsigned conversions | Four-byte header/group/lock/expiry reads fit uint32. Counts are bounded by remaining bytes/1802 before loops; no new untrusted multiplication in production. Prefix masking promotes uint8 safely. v4 arithmetic remains unchanged. |
+| Use-after-free, double-free, leaks | No allocation/free. Both profiles share the same complete candidate/hash retirement owner. Dirty first/second provider failures preserve output and clear both hash arrays plus the whole view for all seven fixtures; LSan passes. |
+| NULL dereferences, uninitialized memory | Shared entry checks wire/output before reading. Candidate initializes completely, leaving absent legacy fields zero. Failed take/status checks precede PHGR access; malformed layouts never hash or publish. |
+| Dangling pointers, pointer arithmetic | Existing reader alone advances borrowed stable wire spans. PHGR pointers last only for the synchronous checked description. Result owns script/identity/counts; no wire pointer survives. Stable nonoverlapping spans remain a precondition. |
+| Format strings, secret leakage | No production formatting, logging, secrets or wallet access. Complete view/hash scratch clears; parser metadata remains ordinary public-data stack state. Generator handles only hash-pinned public fixtures; no private data or node execution. |
+| Stack usage, allocation limits | No VLA, recursion, heap or source-sized stack array. Shared optimized inspector frames280/352 bytes for Clang/GCC; wrappers0/8. Existing prevout frames152/192. These are per-frame observations, not total nested stack or a performance claim. |
+| Malformed serialization/network input | Legacy accepts only1/2/Overwinter3 and exact group, canonical lengths, all PHGR leading bytes and complete consumption under100000 bytes. It does not verify point/proof/script/signature semantics or historical chain validity. Current v4 admission/cap, draft, review, commitment, JNI and signing remain separate. |
+| Races, resource exhaustion | No production global state, callback, I/O or retry. Work is bounded by100000 bytes and remaining-byte counts. The static prefix-offset table is immutable. Generator refuses existing output paths and reproduces pinned fixture bytes exactly. |
+
+Seven mutations fail. All256 leading-byte values at every PHGR position qualify
+the mask. Full135 Clang/oracle and130 optimized GCC groups pass; strengthened
+prefix tests plus existing v4/commitment regressions pass final focused reruns.
+OpenSSL hash fuzzing, Android155-task gates and final release-archive fixtures
+pass; ARM64 remains build/alignment evidence only. Details are in PROGRESS.
+
 ## Exact source/outpoint/header commitment composition — 2026-09-17
 
 Scope: internal composition of three existing bounded owners, complete result
