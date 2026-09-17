@@ -2,9 +2,12 @@
 #undef zcl_transaction_parse
 #undef zcl_transaction_id
 #undef zcl_transaction_assess
+#undef zcl_v4_source_assess
+#undef zcl_v4_source_inspect
 #undef zcl_secure_zero
 #include "draft_fixture.h"
 #include "transaction_draft_internal.h"
+#include "transaction_source_internal.h"
 #include "zcl_keys.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,12 +21,25 @@ static uintptr_t parsed_identity, candidate_identity, assessment_identity, sourc
 static unsigned parse_calls, parsed_clears, candidate_clears, assessment_calls, assessment_clears, sources_clears;
 static unsigned fail_parse, fail_id;
 static bool fail_assessment;
+static bool full_sources;
 
 zcl_status zcl_draft_test_parse(const uint8_t *bytes, size_t length, zcl_transparent_tx *transaction);
 zcl_status zcl_draft_test_id(const zcl_transparent_tx *transaction, uint8_t *bytes, size_t capacity);
 zcl_status zcl_draft_test_assess(const zcl_transparent_tx *transaction, zcl_network network,
     const zcl_previous_transaction *previous, size_t count, uint64_t fee, zcl_transaction_assessment *assessment);
 void zcl_draft_test_zero(void *buffer, size_t length);
+zcl_status zcl_draft_test_source(const uint8_t *wire, size_t length, uint32_t index, zcl_v4_source *source);
+
+zcl_status zcl_draft_test_source(const uint8_t *wire, size_t length, uint32_t index, zcl_v4_source *source)
+{
+    CHECK(full_sources && parsed_identity == 0 && parse_calls == parsed_clears);
+    parsed_identity = (uintptr_t)source;
+    ++parse_calls;
+    memset(source, 0xa5, sizeof(*source));
+    if (fail_parse == parse_calls) return ZCL_INVALID_ENCODING;
+    if (fail_id == parse_calls) return ZCL_CRYPTO_FAILURE;
+    return zcl_v4_source_inspect(wire, length, index, source);
+}
 
 zcl_status zcl_draft_test_parse(const uint8_t *bytes, size_t length, zcl_transparent_tx *transaction)
 {
@@ -66,7 +82,7 @@ void zcl_draft_test_zero(void *buffer, size_t length)
     const uint8_t *bytes = buffer;
     for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
     if ((uintptr_t)buffer == parsed_identity) {
-        CHECK(length == sizeof(zcl_transparent_tx));
+        CHECK(length == (full_sources ? sizeof(zcl_v4_source) : sizeof(zcl_transparent_tx)));
         parsed_identity = 0;
         ++parsed_clears;
     } else if ((uintptr_t)buffer == assessment_identity) {
@@ -100,7 +116,9 @@ static void reset(void)
 static void check_result(zcl_status expected, unsigned candidates)
 {
     memcpy(&saved_request, &request, sizeof(request));
-    CHECK(zcl_transaction_draft(&request, &output) == expected);
+    const zcl_status status = full_sources
+        ? zcl_transaction_draft_full_sources(&request, &output) : zcl_transaction_draft(&request, &output);
+    CHECK(status == expected);
     CHECK(memcmp(&request, &saved_request, sizeof(request)) == 0);
     CHECK(parsed_identity == 0 && candidate_identity == 0 && assessment_identity == 0 && sources_identity == 0);
     CHECK(parse_calls == parsed_clears && candidate_clears == candidates);
@@ -166,6 +184,8 @@ int main(void)
     CHECK(parse_calls == 2 && assessment_calls == 1);
     failures();
     admission();
+    full_sources = true;
+    reset(); check_result(ZCL_OK, 1); failures(); admission();
     puts("Draft scratch retirement checks passed");
     return 0;
 }

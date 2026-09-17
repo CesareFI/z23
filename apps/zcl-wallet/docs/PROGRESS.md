@@ -1,5 +1,37 @@
 # Development record
 
+## Explicit full-source draft construction — 2026-09-17
+
+The internal `zcl_transaction_draft_full_sources` now constructs a bounded
+transparent unsigned transaction from exact selected outputs of full v4 sources.
+It derives each complete source identity, retains explicit row/sequence/output
+order, then reuses full-source amount/destination/fee assessment before publishing
+the whole owned transaction. The original public builder remains narrow. Source
+proofs/signatures remain opaque: changing those bytes selects a different
+unverified outpoint, not authenticated chain evidence. No JNI preparation, send,
+custody, consent or TLS authority is added.
+
+Fixtures cover both networks/all conditional tails, shared sources with distinct
+indexes, duplicate-outpoint refusal, mixed narrow/full sources, exact wire after
+destroying borrowed data, every source truncation and unchanged output on failure.
+The existing complete draft contract and dirty-provider retirement fixture also
+run through the new profile. Eight routing/index/later-error/assessment/network/
+cleanup mutations fail deterministic regressions. Full-source construction
+fuzzing completes 85,420 executions in 46 seconds without a finding.
+
+The isolated `908fbbf44` snapshot plus seven SHA256-recorded native files passes
+TLS-off analysis/complexity, 127 Clang sanitizer/oracle and 122 GCC sanitizer
+groups. Optimized Clang/GCC frames measure 2264/2288 bytes for construction,
+168/192 for full-source binding and 1224/1232 for assessment. Android/JVM,
+debug/minified release, lint, fixture/result isolation and 16KiB gates pass
+(155 tasks). Normal and dirty-provider fixtures linked against release-built
+archives pass API30/35/36 x86_64 with owned temporary-path cleanup. ARM64 builds
+only. Evidence: `.cache/android-wallet/mission-20260917/source-draft/`.
+
+Next: one JNI operation that constructs and opens a full-source review using
+the same bounded source copy, with real-VM and lifecycle qualification. Hardware
+custody, authenticated chain/unspentness and send gates remain open.
+
 ## Bounded JNI full-source review — 2026-09-17
 
 The managed `UnsignedReview.openFullSources` operation now reaches the explicit

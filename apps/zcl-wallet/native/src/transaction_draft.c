@@ -19,10 +19,13 @@ static zcl_status draft_arguments(const zcl_draft_request *request, const zcl_tr
     return draft_limits(request);
 }
 
-static zcl_status draft_inputs(const zcl_draft_request *request, zcl_transparent_tx *candidate)
+static zcl_status draft_inputs(const zcl_draft_request *request, zcl_transparent_tx *candidate,
+    bool full_sources)
 {
     for (size_t i = 0; i < request->input_count; ++i) {
-        const zcl_status status = zcl_draft_bind_funding(&request->inputs[i], &candidate->inputs[i]);
+        const zcl_status status = full_sources
+            ? zcl_draft_bind_full_funding(&request->inputs[i], &candidate->inputs[i])
+            : zcl_draft_bind_funding(&request->inputs[i], &candidate->inputs[i]);
         if (status != ZCL_OK) return status;
     }
     return ZCL_OK;
@@ -42,7 +45,8 @@ static zcl_status draft_outputs(const zcl_draft_request *request, zcl_transparen
     return ZCL_OK;
 }
 
-zcl_status zcl_transaction_draft(const zcl_draft_request *request, zcl_transparent_tx *transaction)
+static zcl_status draft(const zcl_draft_request *request, zcl_transparent_tx *transaction,
+    bool full_sources)
 {
     zcl_status status = draft_arguments(request, transaction);
     if (status != ZCL_OK) return status;
@@ -51,10 +55,21 @@ zcl_status zcl_transaction_draft(const zcl_draft_request *request, zcl_transpare
     candidate.expiry_height = request->expiry_height;
     candidate.input_count = request->input_count;
     candidate.output_count = request->output_count;
-    status = draft_inputs(request, &candidate);
+    status = draft_inputs(request, &candidate, full_sources);
     if (status == ZCL_OK) status = draft_outputs(request, &candidate);
-    if (status == ZCL_OK) status = zcl_draft_assess(request, &candidate);
+    if (status == ZCL_OK) status = full_sources
+        ? zcl_draft_assess_full_sources(request, &candidate) : zcl_draft_assess(request, &candidate);
     if (status == ZCL_OK) *transaction = candidate;
     zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
+}
+
+zcl_status zcl_transaction_draft(const zcl_draft_request *request, zcl_transparent_tx *transaction)
+{
+    return draft(request, transaction, false);
+}
+
+zcl_status zcl_transaction_draft_full_sources(const zcl_draft_request *request, zcl_transparent_tx *transaction)
+{
+    return draft(request, transaction, true);
 }

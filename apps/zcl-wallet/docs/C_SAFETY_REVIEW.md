@@ -1,5 +1,28 @@
 # C parser foundation safety review
 
+## Explicit full-source draft construction — 2026-09-17
+
+Scope: shared draft construction/assessment, explicit full-source binding,
+normal/dirty-provider contracts and full-source construction fuzzing.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Existing request count gates precede input/output iteration. Full inspector bounds each source to102000 bytes and checks selected index. Identity copies exactly32 bytes. Whole-output canaries, all truncations and existing draft contract pass. |
+| Integer overflow/underflow, signed/unsigned conversions | No new arithmetic/narrowing. Original count, network, expiry, money and fee checks remain; full assessment owns checked totals/subtraction. Explicit sequences/indexes preserve their uint32_t values. |
+| Use-after-free, double-free, leaks | No allocation/free. Borrowed sources live for one synchronous call; final transaction owns all values. Source views, assessment, descriptors and whole candidate clear after use and provider failure; LSan and live observers pass. |
+| NULL dereferences, uninitialized memory | Existing top-level argument gates remain. New binder checks funding/output, inspector checks wire, all local candidates initialize. Dirty partial source/hash or later assessment failures cannot publish caller output. |
+| Dangling pointers, pointer arithmetic | No new pointer arithmetic or retained source pointer. Stable nonoverlapping source/request/output spans remain a precondition. Fixtures destroy borrowed sources/request before exact output serialization. |
+| Format strings, secret leakage | No production formatting/logging or private material. Whole candidate and source view retirement are mutation-tested, including dirty failures. No compiler-spill erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion, heap or source-sized stack object. Optimized Clang/GCC frames: construction2264/2288, full binding168/192, assessment1224/1232 bytes, each below4096. This is not a total nested-stack measurement. |
+| Malformed serialization/network input | New profile is explicit/internal; old public admission remains narrow. Source structure/identity is distinct from proof/signature/chain validity. Duplicate outpoints, bad index, wrong network, overspend and fee ceiling refuse before whole-output publication. |
+| Races, resource exhaustion | No new global state, callback, I/O or retry. Caller supplies stable spans. At most8 bounded sources are inspected during binding and reassessed; repeated hashing is deliberate composition, not an unmeasured optimization. No owner/signing/consent authority is introduced. |
+
+Eight guard/cleanup mutations fail. Isolated TLS-off analysis/complexity and
+127 Clang sanitizer/oracle plus122 GCC sanitizer groups pass. Full-source draft
+fuzzing completes85420 executions without a finding. Android155-task gates and
+normal/fault release-archive fixtures pass API30/35/36 x86_64. ARM64 builds only;
+hardware custody and authenticated-chain prerequisites remain open.
+
 ## Bounded JNI full-source review — 2026-09-17
 
 Scope: `jni_full_review.c`, explicit JNI/managed opening, shared mutex routing,

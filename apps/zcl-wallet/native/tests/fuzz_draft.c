@@ -6,8 +6,19 @@
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 /* Public test-only baselines, immutable after initialization. Each iteration
  * owns its bounded request and output; production adds no global or heap. */
+#ifdef ZCL_FULL_SOURCE_DRAFT
+#include "source_assessment_fixture.h"
+#include "transaction_draft_internal.h"
+#include "transaction_source_internal.h"
+static source_assessment_fixture full_baseline, full_wide;
+#define baseline full_baseline.base
+#define wide full_wide.base
+#define zcl_transaction_draft zcl_transaction_draft_full_sources
+#define zcl_transaction_assess zcl_v4_source_assess
+#else
 static assessment_fixture baseline;
 static assessment_fixture wide;
+#endif
 static zcl_draft_request standard;
 static bool initialized;
 
@@ -33,6 +44,13 @@ static void initialize(void)
         wide.previous[0].outputs[i].value = 1000;
     }
     if (!assessment_fixture_rebind(&wide, 0)) abort();
+#ifdef ZCL_FULL_SOURCE_DRAFT
+    for (size_t i = 0; i < 2; ++i) {
+        if (!source_assessment_extend(&full_baseline, i, 7)) abort();
+        standard.inputs[i].previous = baseline.sources[i];
+    }
+    if (!source_assessment_extend(&full_wide, 0, 7)) abort();
+#endif
     initialized = true;
 }
 
@@ -133,7 +151,11 @@ static void structured(const uint8_t *data, size_t size)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
+#ifdef ZCL_FULL_SOURCE_DRAFT
+    if (size > ZCL_V4_SOURCE_MAX + 1) return 0;
+#else
     if (size > ZCL_TX_WIRE_MAX + 1) return 0;
+#endif
     if (!initialized) initialize();
     zcl_draft_request request = standard;
     request.inputs[0].previous.wire = data;

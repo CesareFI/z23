@@ -24,9 +24,11 @@ fixed expiry, rollback cancellation and non-repeating replacement IDs. Borrowed
 funding bytes retire after opening. `UnsignedReview.openFullSources` now provides
 the bounded JNI path for an already constructed unsigned draft, qualified by
 real-JVM and API30/35/36 instrumentation. It shares the original owner/lifetime
-and leaves `open`/`prepare` narrow. Next, compose explicit full-source draft
-construction from selected funding and outputs, then qualify foreground/UI
-lifecycle use without introducing signing or stale-chain authority.
+and leaves `open`/`prepare` narrow. Explicit internal full-source draft construction
+now derives exact selected outpoints and reassesses before publishing the owned
+transaction. Next, compose construction and opening in one JNI call over the
+same bounded source copy, then qualify foreground/UI lifecycle use without
+introducing signing or stale-chain authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.
 

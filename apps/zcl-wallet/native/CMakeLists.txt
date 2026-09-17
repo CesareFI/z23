@@ -850,6 +850,7 @@ if(NOT ANDROID)
     target_link_libraries(draft_retirement_tests PRIVATE assessment_test_fixture)
     target_compile_definitions(draft_retirement_tests PRIVATE
         zcl_transaction_parse=zcl_draft_test_parse zcl_transaction_id=zcl_draft_test_id
+        zcl_v4_source_assess=zcl_draft_test_assess zcl_v4_source_inspect=zcl_draft_test_source
         zcl_transaction_assess=zcl_draft_test_assess zcl_secure_zero=zcl_draft_test_zero)
     target_compile_options(draft_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
@@ -1349,7 +1350,30 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
     add_test(NAME wallet_source_review_contract COMMAND source_review_contract_tests)
     set_tests_properties(wallet_source_review_contract PROPERTIES TIMEOUT 30)
+    add_executable(source_draft_tests tests/test_source_draft.c tests/source_assessment_fixture.c
+        tests/draft_fixture.c tests/assessment_fixture.c)
+    target_link_libraries(source_draft_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_include_directories(source_draft_tests PRIVATE src)
+    target_compile_options(source_draft_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_source_draft COMMAND source_draft_tests)
+    set_tests_properties(wallet_source_draft PROPERTIES TIMEOUT 30)
+    add_executable(source_draft_contract_tests tests/test_draft.c tests/draft_fixture.c tests/assessment_fixture.c)
+    target_link_libraries(source_draft_contract_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(source_draft_contract_tests PRIVATE zcl_transaction_draft=zcl_transaction_draft_full_sources)
+    target_compile_options(source_draft_contract_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
+    add_test(NAME wallet_source_draft_contract COMMAND source_draft_contract_tests)
+    set_tests_properties(wallet_source_draft_contract PROPERTIES TIMEOUT 30)
     if(ZCL_FUZZ)
+        add_executable(fuzz_source_draft tests/fuzz_draft.c tests/source_assessment_fixture.c
+            tests/draft_fixture.c tests/assessment_fixture.c)
+        target_link_libraries(fuzz_source_draft PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_include_directories(fuzz_source_draft PRIVATE src)
+        target_compile_definitions(fuzz_source_draft PRIVATE ZCL_FULL_SOURCE_DRAFT=1)
+        target_compile_options(fuzz_source_draft PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
+        target_link_options(fuzz_source_draft PRIVATE -fsanitize=fuzzer,address,undefined)
         add_executable(fuzz_source_review tests/fuzz_review.c tests/source_assessment_fixture.c
             tests/assessment_fixture.c tests/context_reference.c)
         target_link_libraries(fuzz_source_review PRIVATE zcl_wallet_core zcl_hash_provider)

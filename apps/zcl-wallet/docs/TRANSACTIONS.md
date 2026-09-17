@@ -1,5 +1,22 @@
 # Transparent transaction development
 
+## Explicit full-source draft construction
+
+The internal `zcl_transaction_draft_full_sources` accepts the existing bounded
+draft request with full v4 funding sources. Exact selected indexes and sequences
+become inputs in request order; checked output destinations/amounts stay explicit.
+Full-wire source identities are derived from the supplied bytes. Full-source
+assessment then rechecks every outpoint, destination, total and fee ceiling
+before the complete owned transaction is published. Failure preserves the caller's
+output. Source views, assessment and candidate scratch retire on all work exits.
+
+The original public builder remains narrow. No source pointer survives, no heap
+is added, and no implicit change or coin selection occurs. Structurally valid
+opaque proof/signature changes select a different unverified source identity;
+this operation cannot establish inclusion, unspentness or consensus validity.
+The next managed preparation step must construct and open over the same owned
+source copy. No new signing, consent, custody or network authority is introduced.
+
 ## Managed full-source offline review
 
 `UnsignedReview.openFullSources` explicitly opens an already constructed bounded
@@ -17,7 +34,8 @@ Callers must supply stable arrays during opening. The owner retains only public
 checked review data and canonical current wire. These results establish no
 source proof/signature validity, chain freshness, inclusion, unspentness,
 custody, consent or signing/broadcast authority. There is no new send/UI action.
-Full-source draft construction from selected outputs remains the next step.
+Full-source C draft construction is available internally; a single-call managed
+construction/opening adapter remains the next step.
 
 Four real-JVM tests run with `-Xcheck:jni`. Three new plus five existing review
 instrumentation tests pass on each x86_64 API30/35/36 emulator. Source replacement
