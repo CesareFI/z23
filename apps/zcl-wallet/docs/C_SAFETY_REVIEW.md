@@ -1,5 +1,35 @@
 # C parser foundation safety review
 
+## BIP32 child input retirement — 2026-09-17
+
+Scope: `bip32.c` child derivation. Its 37-byte HMAC input, which contains the
+parent private scalar for hardened children, now retires immediately after
+HMAC consumption and before scalar tweaking. Failure while preparing the input
+also reaches that clear. Digest/result cleanup, path selection, HMAC bytes,
+invalid-child semantics and caller publication remain unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | The same exact 37-byte `sizeof(data)` clear moves earlier; existing checked provider spans remain. |
+| Integer overflow/underflow, signed/unsigned conversions | No index, path, length arithmetic or conversions change. Boundary indexes remain covered. |
+| Use-after-free, double-free, leaks | No allocation/free change. HMAC completes synchronously before its input retires; scalar tweaking uses the separate digest and parent. |
+| NULL dereferences, uninitialized memory | Existing argument admission remains. All three local objects initialize before work; input clear follows either preparation result. |
+| Dangling pointers, pointer arithmetic | No pointer escapes or new offsets. Test observers retain numeric identities and inspect only live provider/clear arguments. |
+| Format strings, secret leakage | No product logging/formatting changes. The redundant private scalar copy retires earlier; caller-owned parent and published output are preserved. |
+| Stack usage, allocation limits | No new product buffers, VLA, recursion or allocation. Optimized GCC child derivation uses a 272-byte frame, not a call-chain bound. |
+| Malformed serialization/network input | No wire parser changes. Failed HMAC/tweak results preserve the caller output and existing statuses, including invalid-child refusal. |
+| Races, resource exhaustion | Existing synchronous per-call context ownership remains. No retry, shared state, provider invocation or cryptographic operation is added. |
+
+The strengthened registered key-failure test observes full input/digest erasure
+and requires input retirement at the actual scalar-tweak entry. The inherited
+source fails that assertion. Twenty combinations cover normal/hardened index
+boundaries, normal output, dirty HMAC failure, order/negative/zero tweaks, parent
+preservation and exact output/status agreement with the unobserved control.
+Existing independent vectors and oracle tests remain separate evidence for
+derivation correctness. Fault hooks remain confined to host linker wrappers.
+The fixture's initial complexity 16 was reduced to the existing cap 15 by
+extracting its dirty-HMAC refusal helper, retaining every assertion.
+
 ## Native sync parser scratch retirement — 2026-09-17
 
 Scope: `sync.c` validation-only address parsing and before/after tip comparison.

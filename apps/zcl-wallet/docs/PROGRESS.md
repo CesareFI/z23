@@ -1,5 +1,46 @@
 # Development record
 
+## BIP32 private input continuation — 2026-09-17
+
+The preceding sync checkpoint is backed up and directly verified as
+`a0fe489d083eb6780b93835a79aba7f415cdf070` on the same-named wallet-backup branch.
+BIP32 child derivation now clears its 37-byte input immediately after HMAC,
+before scalar tweaking; hardened input includes a redundant private-key copy.
+Preparation failure still clears it. No derivation bytes, index policy,
+invalid-child behavior, provider calls or caller-output semantics change.
+
+The inherited implementation fails the new real-tweak-entry retirement
+assertion. Twenty normal/hardened boundary-index and provider-fault combinations
+now observe full input/digest retirement, unchanged parent, exact outputs and
+existing refusal statuses, including dirty HMAC failure and order/negative/zero
+tweaks. A small test-helper extraction restored complexity 15 from the initial
+16 without removing assertions. Explicit hazard review is in C_SAFETY_REVIEW.md.
+
+Full non-TLS safety passes 104/104 Clang wallet CTest cases (86.17 seconds) and
+103/103 optimized GCC cases (123.17 seconds), both analyzers and unchanged
+production/test complexity caps 10/15. Changed fixtures pass both analyzers and
+strict ARM64/x86-64 NDK compilation. Published BIP32 vectors, independent OpenSSL
+differential checks and receive-address oracle pass (three groups, 9.32 seconds).
+The 860-case public differential replay seeds an ASan/UBSan fuzz campaign:
+4,827 executions in 61 seconds, five-second input deadline, 512 MiB RSS cap,
+without findings. Android/JVM checks, both ABI debug/release builds, lints,
+fixture isolation, 16 KiB alignment and architecture/doc counts pass.
+
+API35 passes twelve key/record/recovery cases in 0.370 seconds. API30 and API36
+each pass all three key-adapter cases in 0.900/1.066 seconds. These are x86-64
+emulator observations; hardware custody and ARM64 device execution remain open.
+Source-only tree `9f4424af0c1780238923757afae89c429217498f` reproduces the complete
+unsigned release APK in a different checkout path on this host/toolchain:
+630,663 bytes, SHA256
+`e5593e6345195d313db1d5b39598955abab8fbd7545dbaf6239b5cd8cd07cc45`.
+Final app source differs from that tree only in progress/safety documentation.
+Evidence: `apps/zcl-wallet/.cache/android-wallet/mission-20260917/bip32-input-retirement/`.
+
+Next inspected gap: wallet-header parsing, creation and recovered-address
+validation retain address/identity scratch on early returns. Qualify cleanup
+without relaxing exact header binding or output preservation. TLS remains
+quarantined; no global-lint, physical-camera or production acceptance is claimed.
+
 ## Native sync parser continuation — 2026-09-17
 
 Resumed clean at `e8450172c` on the existing Android development branch; fetched

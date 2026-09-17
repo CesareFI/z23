@@ -1,4 +1,5 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#define SECP256K1_BUILD /* Keep wrapper entry checks valid under optimization. */
 #include "secret_hash.h"
 #include "bip32_internal.h"
 #include "zcl_wallet_record.h"
@@ -16,6 +17,9 @@ static size_t owned_size = 0, allocations = 0, releases = 0;
 static size_t child_calls = 0, fail_child = 0;
 static size_t watched_contexts, fail_context;
 static int watch_contexts;
+static bool watch_child;
+static uintptr_t child_data_id, child_digest_id;
+static size_t child_data_wipes, child_digest_wipes, tweaks;
 typedef zcl_status (*address_function)(const uint8_t *, size_t, zcl_network, uint32_t,
     const uint8_t *, size_t, uint8_t *, size_t, size_t *);
 static const address_function address_functions[] = {zcl_receive_from_entropy, zcl_change_from_entropy};
@@ -26,6 +30,59 @@ size_t __real_secp256k1_context_preallocated_size(unsigned int);
 secp256k1_context *__real_secp256k1_context_preallocated_create(void *, unsigned int);
 int __real_secp256k1_context_randomize(secp256k1_context *, const unsigned char *);
 zcl_status __real_zcl_hmac_sha512(const uint8_t *, size_t, const uint8_t *, size_t, uint8_t *, size_t);
+void __real_zcl_secure_zero(void *, size_t);
+int __real_secp256k1_ec_seckey_tweak_add(const secp256k1_context *, unsigned char *, const unsigned char *);
+
+static void require_child(bool condition, const char *message)
+{
+    if (!condition) {
+        fprintf(stderr, "child retirement check failed: %s\n", message);
+        abort();
+    }
+}
+
+static void observe_child(const uint8_t *data, size_t length, uint8_t *digest, size_t capacity)
+{
+    if (!watch_child) return;
+    require_child(data != NULL && length == 37 && digest != NULL && capacity == 64,
+        "unexpected child HMAC spans");
+    require_child(child_data_id == 0 && child_digest_id == 0, "unretired previous child scratch");
+    child_data_id = (uintptr_t)data;
+    child_digest_id = (uintptr_t)digest;
+}
+
+void __wrap_zcl_secure_zero(void *buffer, size_t length)
+{
+    __real_zcl_secure_zero(buffer, length);
+    if (!watch_child || buffer == NULL) return;
+    const uintptr_t identity = (uintptr_t)buffer;
+    if (identity != child_data_id && identity != child_digest_id) return;
+    const uint8_t *bytes = buffer;
+    for (size_t i = 0; i < length; ++i)
+        require_child(bytes[i] == 0, "live child scratch not fully cleared");
+    if (identity == child_data_id) {
+        require_child(length == 37, "child input clear capacity");
+        child_data_id = 0;
+        ++child_data_wipes;
+    } else {
+        require_child(length == 64, "child digest clear capacity");
+        child_digest_id = 0;
+        ++child_digest_wipes;
+    }
+}
+
+int __wrap_secp256k1_ec_seckey_tweak_add(const secp256k1_context *context,
+    unsigned char *secret, const unsigned char *tweak)
+{
+    if (watch_child) {
+        require_child(child_data_id == 0 && child_data_wipes == 1,
+            "private child input must retire before scalar tweaking");
+        require_child(tweak != NULL && (uintptr_t)tweak == child_digest_id,
+            "tweak must use the live HMAC digest");
+        ++tweaks;
+    }
+    return __real_secp256k1_ec_seckey_tweak_add(context, secret, tweak);
+}
 
 static failure_mode context_mode(void)
 {
@@ -93,6 +150,13 @@ int __wrap_secp256k1_context_randomize(secp256k1_context *context, const unsigne
     return context_mode() == NO_BLINDING ? 0 : __real_secp256k1_context_randomize(context, seed);
 }
 
+static zcl_status hash_refusal(uint8_t *output, size_t capacity)
+{
+    /* observe_child already checked the complete live digest capacity. */
+    if (watch_child) memset(output, 0x5a, capacity);
+    return ZCL_CRYPTO_FAILURE;
+}
+
 zcl_status __wrap_zcl_hmac_sha512(const uint8_t *key, size_t key_len,
                                  const uint8_t *data, size_t data_len, uint8_t *out, size_t capacity)
 {
@@ -100,8 +164,8 @@ zcl_status __wrap_zcl_hmac_sha512(const uint8_t *key, size_t key_len,
         0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,
         0xba,0xae,0xdc,0xe6,0xaf,0x48,0xa0,0x3b,0xbf,0xd2,0x5e,0x8c,0xd0,0x36,0x41,0x41
     };
-    if (mode == HASH_FAILURE)
-        return ZCL_CRYPTO_FAILURE;
+    observe_child(data, data_len, out, capacity);
+    if (mode == HASH_FAILURE) return hash_refusal(out, capacity);
     if (mode == CHILD_FAILURE && key_len == 32 && data_len == 37) {
         ++child_calls;
         if (child_calls == fail_child) {
@@ -318,10 +382,52 @@ static int seeded_address(void)
     return 0;
 }
 
+static int child_retirement_case(uint32_t index, failure_mode fault)
+{
+    zcl_extended_private parent = {0}, before, output, expected;
+    parent.secret[31] = 1;
+    memset(parent.chain_code, 0x42, sizeof(parent.chain_code));
+    memcpy(&before, &parent, sizeof(before));
+    memset(&output, 0xa5, sizeof(output));
+    memcpy(&expected, &output, sizeof(expected));
+    const uint8_t blinding[32] = {1};
+    mode = fault;
+    zcl_status wanted = ZCL_OK;
+    if (fault == HASH_FAILURE) wanted = ZCL_CRYPTO_FAILURE;
+    else if (fault == ORDER_TWEAK || fault == NEGATIVE_TWEAK) wanted = ZCL_INVALID_CHILD;
+    CHECK(zcl_bip32_child(&parent, index, blinding, 32, &expected) == wanted);
+    child_data_wipes = child_digest_wipes = tweaks = 0;
+    CHECK(child_data_id == 0 && child_digest_id == 0);
+    watch_child = true;
+    CHECK(zcl_bip32_child(&parent, index, blinding, 32, &output) == wanted);
+    watch_child = false;
+    CHECK(child_data_id == 0 && child_digest_id == 0);
+    CHECK(child_data_wipes == 1 && child_digest_wipes == 1);
+    CHECK(tweaks == (fault == HASH_FAILURE ? 0U : 1U));
+    CHECK(memcmp(&output, &expected, sizeof(output)) == 0);
+    CHECK(memcmp(&parent, &before, sizeof(parent)) == 0);
+    CHECK(owned == NULL && allocations == releases);
+    zcl_secure_zero(&parent, sizeof(parent)); zcl_secure_zero(&before, sizeof(before));
+    zcl_secure_zero(&output, sizeof(output)); zcl_secure_zero(&expected, sizeof(expected));
+    return 0;
+}
+
+static int child_retirement(void)
+{
+    static const failure_mode faults[] = {NORMAL, HASH_FAILURE, ORDER_TWEAK, NEGATIVE_TWEAK, ZERO_TWEAK};
+    static const uint32_t indexes[] = {0, UINT32_C(0x7fffffff), UINT32_C(0x80000000), UINT32_MAX};
+    for (size_t i = 0; i < sizeof(indexes) / sizeof(indexes[0]); ++i) {
+        for (size_t f = 0; f < sizeof(faults) / sizeof(faults[0]); ++f)
+            CHECK(child_retirement_case(indexes[i], faults[f]) == 0);
+    }
+    mode = NORMAL;
+    return 0;
+}
+
 int main(void)
 {
     if (context_failures() || derivation_failures() || address_failures() || recovered_change_failures()
-        || recovered_context_stages() || seed_bounds() || seeded_address())
+        || recovered_context_stages() || seed_bounds() || seeded_address() || child_retirement())
         return 1;
     puts("key failures: allocation, context, blinding and invalid BIP32 results handled");
     return 0;

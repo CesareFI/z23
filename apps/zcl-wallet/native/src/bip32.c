@@ -55,10 +55,12 @@ static zcl_status derive_child(const zcl_extended_private *parent, uint32_t inde
     uint8_t data[37] = {0}, digest[64] = {0};
     zcl_extended_private result = {0};
     zcl_status status = child_data(parent, index, context, data, sizeof(data));
-    if (status != ZCL_OK)
-        goto cleanup;
-    status = zcl_hmac_sha512(parent->chain_code, sizeof(parent->chain_code),
-                             data, sizeof(data), digest, sizeof(digest));
+    if (status == ZCL_OK)
+        status = zcl_hmac_sha512(parent->chain_code, sizeof(parent->chain_code),
+                                 data, sizeof(data), digest, sizeof(digest));
+    /* Hardened input includes a private-key copy. HMAC is its last consumer;
+     * scalar tweaking and publication need only the digest and parent. */
+    zcl_secure_zero(data, sizeof(data));
     if (status != ZCL_OK)
         goto cleanup;
     memcpy(result.secret, parent->secret, sizeof(result.secret));
@@ -69,7 +71,6 @@ static zcl_status derive_child(const zcl_extended_private *parent, uint32_t inde
     memcpy(result.chain_code, digest + 32, sizeof(result.chain_code));
     *output = result;
 cleanup:
-    zcl_secure_zero(data, sizeof(data));
     zcl_secure_zero(digest, sizeof(digest));
     zcl_secure_zero(&result, sizeof(result));
     return status;
