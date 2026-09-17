@@ -35,8 +35,12 @@ qualifies bounded hash/shape consistency with independent OpenSSL evidence.
 It cannot authenticate tree width/root or turn a branch match into chain
 acceptance. Existing serialized-header checks now share an owned raw inspection
 result, with pinned original main/test genesis fields and independent hash checks.
-Next, compose exact outpoint/source/header commitment checks, explicitly reviewing
-leaf-versus-internal-node ambiguity. Keep proof claims separate from chain validity,
+An internal composition now binds exact outpoint/source/header IDs and a Merkle
+path before publishing an owned result. It explicitly refuses64-byte source
+preimages, whose size overlaps internal Merkle-node inputs. It does not authenticate
+caller-supplied IDs, height or tree shape. Next, audit historical v1/v2/v3 funding
+serialization against pinned original fixtures and extend source coverage only
+through an explicit profile. Keep proof claims separate from chain validity,
 freshness, unspentness and signing authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.

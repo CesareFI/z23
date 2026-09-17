@@ -1,5 +1,46 @@
 # Development record
 
+## Exact source/outpoint/header commitment composition — 2026-09-17
+
+The internal C `zcl_v4_source_commitment_check` now composes existing header,
+full-v4 source and bounded Merkle owners. It matches explicit header identity,
+then exact source identity/selected output, then the path against that header's
+transaction root. Only a complete owned source/header result publishes; staging
+retires on success and every entered failure. Expected IDs, height/count/index
+remain caller claims. No chain validity, freshness, unspentness, custody, consent,
+JNI/UI send or TLS authority is added.
+
+The composition explicitly refuses64-byte source preimages, the same input size
+as internal Merkle-node hashing. A deterministic64-byte envelope passes the
+structural source reader and is refused here. It is deliberately not a valid
+funding transaction. This conservative profile guard changes no node consensus
+predicate and makes no off-path uniqueness or accepted-chain claim.
+
+All eight opaque v4 section profiles, both selected outputs, one through32-level
+paths, UINT32_MAX tree width, both header networks, identity/source/branch
+mutations, bad indices/lengths/nulls and complete failure-output preservation
+pass. Dirty component failures qualify exact stage ordering, no later work,
+complete staging retirement and early no-work refusals. Seven deliberate
+identity/index/path/length/publication/wipe mutations fail. OpenSSL-backed fixture
+commitments drive256720 fuzz executions in61 seconds without a finding; the
+source parser remains the structural verdict owner in that composition harness.
+
+The isolated `c6259d727` snapshot passes TLS-off analysis/complexity,133 Clang
+sanitizer/oracle and128 optimized GCC sanitizer groups. A final fixture-only
+padding-copy portability adjustment passes focused Clang/GCC reruns and all seven
+mutations again; the eight final native files are SHA256-recorded. Optimized
+entry frames360/384 bytes remain below4096. Android/JVM, debug/minified release,
+lint, fixture/result isolation and16KiB gates pass (155 tasks). Final normal/fault
+fixtures linked against release-built archives pass API30/35/36 x86_64, with
+owned temporary paths removed; ARM64 compiles/alignment only. Architecture/docs
+gates pass. Evidence:
+`.cache/android-wallet/mission-20260917/source-commitment/`.
+
+Next: audit original v1/v2/v3 historical funding layouts and untouched public
+fixtures, then extend source coverage through an explicit profile while keeping
+existing v4/spend/review admission intact. Accepted-chain/unspentness evidence,
+physical custody, shielded spending and quarantined TLS remain separate gates.
+
 ## Owned raw-header inspection — 2026-09-17
 
 The existing RPC header shape/hash logic now has one raw C owner returning

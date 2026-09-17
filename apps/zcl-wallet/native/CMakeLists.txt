@@ -117,7 +117,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
     src/transaction_review_wire_encode.c src/transaction_review_complete.c src/transaction_review_sign.c
     src/transaction_draft.c src/transaction_draft_check.c src/transaction_source.c
-    src/transaction_merkle.c)
+    src/transaction_merkle.c src/source_commitment.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
 # No Android socket/transport entry point is compiled during that quarantine.
@@ -1368,6 +1368,41 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
     add_test(NAME wallet_source_draft_contract COMMAND source_draft_contract_tests)
     set_tests_properties(wallet_source_draft_contract PROPERTIES TIMEOUT 30)
+    set(ZCL_COMMITMENT_FIXTURE tests/commitment_fixture.c tests/source_assessment_fixture.c tests/assessment_fixture.c)
+    add_executable(commitment_tests tests/test_commitment.c ${ZCL_COMMITMENT_FIXTURE})
+    target_include_directories(commitment_tests PRIVATE src)
+    target_link_libraries(commitment_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_options(commitment_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_source_commitment COMMAND commitment_tests)
+    set_tests_properties(wallet_source_commitment PROPERTIES TIMEOUT 30)
+    add_executable(commitment_failure_tests tests/test_commitment_failures.c ${ZCL_COMMITMENT_FIXTURE}
+        src/source_commitment.c)
+    target_include_directories(commitment_failure_tests PRIVATE src)
+    target_link_libraries(commitment_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_definitions(commitment_failure_tests PRIVATE zcl_header_inspect=zcl_commitment_test_header
+        zcl_v4_source_inspect=zcl_commitment_test_source zcl_merkle_branch_check=zcl_commitment_test_branch
+        zcl_secure_zero=zcl_commitment_test_zero)
+    target_compile_options(commitment_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_source_commitment_failures COMMAND commitment_failure_tests)
+    set_tests_properties(wallet_source_commitment_failures PROPERTIES TIMEOUT 30)
+    if(ZCL_ORACLE)
+        target_compile_definitions(commitment_tests PRIVATE ZCL_COMMITMENT_ORACLE=1)
+        target_link_libraries(commitment_tests PRIVATE OpenSSL::Crypto)
+    endif()
+    if(ZCL_FUZZ)
+        add_executable(fuzz_commitment tests/fuzz_commitment.c ${ZCL_COMMITMENT_FIXTURE})
+        target_include_directories(fuzz_commitment PRIVATE src)
+        target_link_libraries(fuzz_commitment PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_compile_options(fuzz_commitment PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(fuzz_commitment PRIVATE -fsanitize=fuzzer,address,undefined)
+        if(ZCL_ORACLE)
+            target_compile_definitions(fuzz_commitment PRIVATE ZCL_COMMITMENT_ORACLE=1)
+            target_link_libraries(fuzz_commitment PRIVATE OpenSSL::Crypto)
+        endif()
+    endif()
     add_executable(header_tests tests/test_header.c tests/header_fixture.c)
     target_include_directories(header_tests PRIVATE src)
     target_link_libraries(header_tests PRIVATE zcl_wallet_core zcl_hash_provider)

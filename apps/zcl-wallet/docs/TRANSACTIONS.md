@@ -1,5 +1,27 @@
 # Transparent transaction development
 
+## Exact source/outpoint/header commitment composition
+
+The internal `zcl_v4_source_commitment_check` binds full source bytes and selected
+transparent output to explicit transaction/header IDs and a supplied Merkle path.
+It reuses the existing raw-header inspector, full-v4 reader and bounded branch
+checker. Header identity is checked first, followed by selected source identity,
+then the path against that header's transaction root. A complete owned source/
+header result publishes only after every check passes; all staging retires.
+
+The composition refuses64-byte source preimages because internal Merkle nodes
+also hash64-byte inputs. This conservative guard is separate from the structural
+reader and consensus rules. A deterministic64-byte envelope accepted by the
+structural reader qualifies the refusal. It has zero inputs and no valid funding
+claim. Synthetic paths, headers and opaque proofs are byte fixtures only.
+
+Every expected ID, height, count and position remains caller-supplied. Success
+does not establish accepted-chain membership, proof of work, off-path uniqueness,
+freshness, maturity, unspentness, ownership, consent or signing authority. No
+trust status, custody object, JNI entry, UI send route or TLS boundary changes.
+The current source profile remains v4 only; historical funding formats require
+separate reference-backed coverage before expanding any admission.
+
 ## Owned serialized-header inspection
 
 The internal `zcl_header_inspect` returns owned header identity, previous hash,
@@ -22,8 +44,8 @@ at `14a83d510ffd109d3fa09bf74ebf8c28854a263f` has SHA256
 `4db4dc2a373eec5e3b22fa8499404769b0f127305243431b4c1fb2417b5f7589`.
 
 This is serialized byte/hash inspection, not proof-of-work, chain membership,
-freshness, unspentness or authorization. Exact source/outpoint/header composition
-remains separate; neither header inspection nor a Merkle path changes trust status.
+freshness, unspentness or authorization. The composition above adds exact source/
+outpoint binding; neither header inspection nor a Merkle path changes trust status.
 
 ## Bounded Merkle-path consistency
 
@@ -42,8 +64,8 @@ a transaction leaf from an internal node or establish off-path uniqueness.
 No block-size/height rule, consensus validity, accepted-chain inclusion,
 freshness, maturity, unspentness, ownership, consent or signing authority is
 established. No caller status is upgraded to authenticated funding. Header
-inspection is available separately; exact source/outpoint/header composition
-remains separate work.
+inspection and exact source/outpoint/header composition are available separately
+under the same conditional byte/hash contract.
 
 References are Git objects at original Zclassic `14a83d510ffd109d3fa09bf74ebf8c28854a263f`:
 `src/primitives/block.cpp` (`GetMerkleBranch`, `CheckMerkleBranch`),

@@ -1,5 +1,26 @@
 # C parser foundation safety review
 
+## Exact source/outpoint/header commitment composition — 2026-09-17
+
+Scope: internal composition of three existing bounded owners, complete result
+publication, synthetic commitment fixtures and dirty-component retirement.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | No new wire parsing. Header/source/path owners retain exact length,102000-byte source and32-sibling bounds. IDs compare exactly32 bytes. Selected output index passes unchanged to the source owner. Whole output/input canaries and oversized lengths pass. |
+| Integer overflow/underflow, signed/unsigned conversions | Composition performs no arithmetic or narrowing. uint32 height/index and size_t lengths retain their types. Fixture path arithmetic uses independent uint64 width rounding; UINT32_MAX paths qualify. |
+| Use-after-free, double-free, leaks | No allocation/free. Borrowed bytes remain stable for one synchronous call. Result owns source output and header fields. Whole staging clears after success or any entered failure, including dirty component output. LSan and live retirement observers qualify cleanup. |
+| NULL dereferences, uninitialized memory | Request/output/branch null gates precede work. Component owners validate header/source pointers. Candidate initializes completely; subsequent stages run only after success. No failed result publishes. |
+| Dangling pointers, pointer arithmetic | No new pointer arithmetic in production. Request borrows source/header/branch only during the call; none is copied into the result. Fixture destruction leaves owned results intact. Caller spans must be stable and nonoverlapping. |
+| Format strings, secret leakage | No production logging, formatting, keys or wallet access. Entire source/header staging clears; no compiler-spill erasure claim. Test-only public diagnostics use constant formats. |
+| Stack usage, allocation limits | No VLA, recursion, heap or input-sized stack array. Optimized entry frames360/384 bytes for Clang/GCC, not a total nested-stack measurement. Existing component limits remain authoritative. |
+| Malformed serialization/network input | Exact source/header identities and path root must agree. The64-byte source guard separates this accepted profile from internal-node input length without changing the structural reader or node consensus. Count/height/IDs remain claims; no PoW, off-path uniqueness, accepted-chain, freshness, maturity, unspentness or signing authority follows. |
+| Races, resource exhaustion | Synchronous stable spans, no shared state, callback, I/O or retries. At most one bounded header/source inspection and32 path levels. Identity failure prevents later work; early null/64-byte refusal performs none. Existing custody, review and TLS gates remain. |
+
+Seven mutations detect identity/index/path/length/publication/retirement weakening.
+Normal and dirty-component fixtures qualify successful owned output and exact
+failure-stage ordering. Full results are in the corresponding progress entry.
+
 ## Owned raw-header inspection and RPC delegation — 2026-09-17
 
 Scope: extraction of existing header shape/hash rules, owned commitment fields,
