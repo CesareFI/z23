@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_sync.h"
+#include "zcl_keys.h"
 #include <string.h>
 
 static zcl_status failure_status(const zcl_sync *session)
@@ -30,6 +31,7 @@ zcl_status zcl_sync_start(zcl_sync *session, const uint8_t *address, size_t addr
         return zcl_sync_abort(session, ZCL_OUT_OF_RANGE);
     zcl_address parsed = {0};
     const zcl_status status = zcl_address_parse(address, address_length, network, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK) return zcl_sync_abort(session, status);
     memcpy(session->candidate.address, address, sizeof(session->candidate.address));
     session->candidate.network = network;
@@ -113,16 +115,16 @@ static zcl_status data_reply(zcl_sync *session, const uint8_t *frame, size_t len
         return zcl_electrum_balance_reply(frame, length, session->request_id, &session->candidate.balance);
     if (session->phase == ZCL_SYNC_HISTORY) return history_reply(session, frame, length);
     zcl_reported_tip tip = {0};
-    const zcl_status status = zcl_electrum_tip_reply(frame, length, session->request_id,
+    zcl_status status = zcl_electrum_tip_reply(frame, length, session->request_id,
         session->candidate.network, &tip);
-    if (status != ZCL_OK) return status;
-    if (session->phase == ZCL_SYNC_TIP_BEFORE) {
-        session->candidate.tip = tip;
-        return ZCL_OK;
+    if (status == ZCL_OK) {
+        if (session->phase == ZCL_SYNC_TIP_BEFORE) session->candidate.tip = tip;
+        else if (tip.height != session->candidate.tip.height ||
+            memcmp(tip.hash, session->candidate.tip.hash, sizeof(tip.hash)) != 0)
+            status = ZCL_IO_UNCERTAIN;
     }
-    if (tip.height != session->candidate.tip.height ||
-        memcmp(tip.hash, session->candidate.tip.hash, sizeof(tip.hash)) != 0) return ZCL_IO_UNCERTAIN;
-    return ZCL_OK;
+    zcl_secure_zero(&tip, sizeof(tip));
+    return status;
 }
 
 static void advance(zcl_sync *session)

@@ -1,5 +1,42 @@
 # Development record
 
+## Native sync parser continuation — 2026-09-17
+
+Resumed clean at `e8450172c` on the existing Android development branch; fetched
+current origin/main without merging or changing upstream permissions. The next
+recorded gap in `sync.c` is closed: validation-only parsed addresses and both
+tip-comparison temporaries now retire after their last use, including dirty
+provider refusal. Abort deliberately retains address/network routing metadata;
+phase, request-ID advancement and complete-only report publication are unchanged.
+
+The strengthened existing sync fixture fails on inherited code at its first
+missing-clear assertion, then passes with the fix. It checks full live erasure,
+dirty parser refusal, dirty tip refusal at both phases, exact routing retention,
+unchanged request IDs and unavailable reports, alongside the existing mainnet/
+testnet, changed-tip, malformed-input, boundary-ID and output-canary cases.
+The explicit C hazard review is in `C_SAFETY_REVIEW.md`.
+
+Full non-TLS safety passes all 104 Clang wallet CTest cases (86.28 seconds) and
+103 optimized GCC cases (122.65 seconds), with ASan/UBSan/leak detection, both
+analyzers and unchanged production/test complexity caps 10/15. The changed
+fixture also passes both analyzers and strict ARM64/x86-64 NDK compilation.
+A bounded ASan/UBSan sync fuzz run completes 49,896 executions in 61 seconds,
+with five-second input deadlines and a 512 MiB RSS cap, without findings.
+
+Android/JVM checks, both ABI debug/release builds, lints, fixture isolation,
+16 KiB alignment and architecture/doc counts pass. All sixteen selected sync,
+balance-lifecycle and storage/recovery cases pass on accelerated API35 in
+5.146 seconds. The old API35 profile exceeded the 90-second host deadline with
+no result output; that failure is preserved and no acceptance is claimed for
+it. No emulator reset or test assertion weakening was used. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/sync-scratch-retirement/`.
+
+Next: qualify BIP32 child-input retirement immediately after HMAC consumption,
+before scalar tweaking. Hardened child scratch contains a private-key copy;
+preserve exact derivation, invalid-child status and caller-output atomicity.
+TLS remains quarantined; hardware custody, physical-camera acceptance and
+historical global-lint limitations remain open. No production state was touched.
+
 ## Native sync watch continuation — 2026-09-17
 
 The independently finalized JNI storage slice was pushed and remotely verified

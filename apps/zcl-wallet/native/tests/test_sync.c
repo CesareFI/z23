@@ -1,5 +1,9 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#undef zcl_secure_zero
+#undef zcl_address_parse
+#undef zcl_electrum_tip_reply
 #include "sync_fixture.h"
+#include "zcl_keys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +11,56 @@
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "Sync check failed at %d\n", __LINE__); abort(); } } while (0)
 #define TEXT(s) (const uint8_t *)(s), sizeof(s) - 1
 static char frame[4096];
+static uintptr_t parsed_identity, tip_identity;
+static unsigned parsed_calls, parsed_clears, tip_calls, tip_clears;
+static bool fail_parse, fail_tip;
+
+zcl_status zcl_sync_test_parse(const uint8_t *text, size_t length, zcl_network network, zcl_address *address);
+zcl_status zcl_sync_test_tip(const uint8_t *bytes, size_t length, uint32_t id,
+    zcl_network network, zcl_reported_tip *tip);
+void zcl_sync_test_zero(void *buffer, size_t length);
+
+zcl_status zcl_sync_test_parse(const uint8_t *text, size_t length, zcl_network network, zcl_address *address)
+{
+    CHECK(parsed_identity == 0 && parsed_calls == parsed_clears);
+    parsed_identity = (uintptr_t)address;
+    ++parsed_calls;
+    if (fail_parse) { memset(address, 0xa5, sizeof(*address)); return ZCL_INVALID_ENCODING; }
+    return zcl_address_parse(text, length, network, address);
+}
+
+zcl_status zcl_sync_test_tip(const uint8_t *bytes, size_t length, uint32_t id,
+    zcl_network network, zcl_reported_tip *tip)
+{
+    CHECK(tip_identity == 0 && tip_calls == tip_clears);
+    tip_identity = (uintptr_t)tip;
+    ++tip_calls;
+    if (fail_tip) { memset(tip, 0x5a, sizeof(*tip)); return ZCL_IO_FAILURE; }
+    return zcl_electrum_tip_reply(bytes, length, id, network, tip);
+}
+
+void zcl_sync_test_zero(void *buffer, size_t length)
+{
+    CHECK(buffer != NULL);
+    zcl_secure_zero(buffer, length);
+    const uint8_t *bytes = buffer;
+    for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    if ((uintptr_t)buffer == parsed_identity) {
+        CHECK(length == sizeof(zcl_address));
+        parsed_identity = 0;
+        ++parsed_clears;
+    } else {
+        CHECK((uintptr_t)buffer == tip_identity && length == sizeof(zcl_reported_tip));
+        tip_identity = 0;
+        ++tip_clears;
+    }
+}
+
+static void retired(void)
+{
+    CHECK(parsed_identity == 0 && tip_identity == 0);
+    CHECK(parsed_calls == parsed_clears && tip_calls == tip_clears);
+}
 
 static bool contains(const uint8_t *bytes, size_t length, const uint8_t *value, size_t count)
 {
@@ -54,6 +108,7 @@ static void advance(zcl_sync *session, unsigned through)
         const size_t length = sync_fixture_reply(session->candidate.network, step,
             session->request_id, frame, sizeof(frame));
         CHECK(zcl_sync_reply(session, (const uint8_t *)frame, length) == ZCL_OK);
+        retired();
     }
 }
 
@@ -61,6 +116,7 @@ static void completed(zcl_network network, uint32_t first_id)
 {
     zcl_sync session;
     sync_fixture_start(&session, network, first_id);
+    retired();
     uint8_t address[35];
     memcpy(address, session.candidate.address, sizeof(address));
     advance(&session, 6);
@@ -125,6 +181,7 @@ static void changed_tip(bool change_height)
     if (change_height) field[9] = '1';
     else field[7] = '1';
     CHECK(zcl_sync_reply(&session, (const uint8_t *)frame, length) == ZCL_IO_UNCERTAIN);
+    retired();
     no_report(&session, ZCL_IO_UNCERTAIN);
 }
 
@@ -174,12 +231,52 @@ static void start_errors(void)
     CHECK(length == 99);
 }
 
+static void dirty_parser_refusal(void)
+{
+    zcl_sync session;
+    sync_fixture_start(&session, ZCL_MAINNET, 1);
+    uint8_t address[35];
+    memcpy(address, session.candidate.address, sizeof(address));
+    fail_parse = true;
+    CHECK(zcl_sync_start(&session, address, sizeof(address), ZCL_MAINNET, 1) == ZCL_INVALID_ENCODING);
+    fail_parse = false;
+    retired();
+    CHECK(session.phase == ZCL_SYNC_FAILED && session.request_id == 0 && !session.waiting);
+    const zcl_sync_report empty = {0};
+    CHECK(memcmp(&session.candidate, &empty, sizeof(empty)) == 0);
+    no_report(&session, ZCL_INVALID_ENCODING);
+}
+
+static void dirty_tip_refusal(unsigned stop)
+{
+    zcl_sync session;
+    sync_fixture_start(&session, ZCL_TESTNET, 10);
+    uint8_t address[35];
+    memcpy(address, session.candidate.address, sizeof(address));
+    advance(&session, stop - 1);
+    request(&session, stop);
+    const uint32_t id = session.request_id;
+    const size_t length = sync_fixture_reply(ZCL_TESTNET, stop, id, frame, sizeof(frame));
+    fail_tip = true;
+    CHECK(zcl_sync_reply(&session, (const uint8_t *)frame, length) == ZCL_IO_FAILURE);
+    fail_tip = false;
+    retired();
+    CHECK(session.phase == ZCL_SYNC_FAILED && session.request_id == id && !session.waiting);
+    zcl_sync_report expected = {0};
+    memcpy(expected.address, address, sizeof(address));
+    expected.network = ZCL_TESTNET;
+    CHECK(memcmp(&session.candidate, &expected, sizeof(expected)) == 0);
+    no_report(&session, ZCL_IO_FAILURE);
+}
+
 int main(void)
 {
     completed(ZCL_MAINNET, 1); completed(ZCL_TESTNET, UINT32_MAX - 5);
     wrong_ids_and_abort(); invalid_abort_reason_preserves_session();
     changed_tip(false); changed_tip(true);
     wrong_network_and_notification(); start_errors();
+    dirty_parser_refusal(); dirty_tip_refusal(4); dirty_tip_refusal(6);
+    retired();
     puts("Sync ordering, identity-before-address, complete-only report, cancellation, request IDs and changed-tip refusal passed");
     return 0;
 }

@@ -1,5 +1,31 @@
 # C parser foundation safety review
 
+## Native sync parser scratch retirement — 2026-09-17
+
+Scope: `sync.c` validation-only address parsing and before/after tip comparison.
+Both initialized local objects now clear at full capacity after their final use,
+including provider refusal with partial output. Successful tip publication and
+all phase, request-ID, routing and report-admission rules remain unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use exact object `sizeof`; no input/output capacity or copy length changes. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic/conversion changes; request-ID bounds and checked phase advancement remain intact. |
+| Use-after-free, double-free, leaks | No allocation/free changes. Caller values are copied before local retirement; tests inspect only live clear spans. |
+| NULL dereferences, uninitialized memory | Existing admission remains ahead of dereferences. Initialized scratch clears on both success and dirty provider failure. |
+| Dangling pointers, pointer arithmetic | No new borrow, offset or escaped pointer. Test tracking uses numeric identities, removed during live cleanup. |
+| Format strings, secret leakage | No production logging, formatting or secret access. This retires public address/tip metadata, not private keys or managed/provider copies. |
+| Stack usage, allocation limits | No additional buffer, heap, VLA or recursion. Optimized GCC start/reply frames are 112/80 bytes individually; these are not call-chain bounds. |
+| Malformed serialization/network input | Existing parser results and changed-tip refusal remain authoritative. Dirty output injection is confined to the host fixture. |
+| Races, resource exhaustion | Existing caller serialization remains. Failure neither advances the request ID nor publishes a report; abort retains routing metadata. |
+
+The strengthened registered sync test fails on the inherited source at its first
+missing-retirement assertion. It observes full erasure through the real zeroing
+primitive, dirty parser failure and both dirty tip phases. Existing both-network,
+boundary-ID, changed-tip, malformed-reply and report/output-canary cases remain.
+The test target compiles its own source copy with private provider substitutions;
+no fault hook enters the Android library. The focused sanitizer regression passes.
+
 ## Native sync watch scratch retirement — 2026-09-17
 
 Scope: `sync_watch.c` initialization, publication and snapshot creation. The
