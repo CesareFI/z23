@@ -42,6 +42,7 @@ zcl_status zcl_change_state_encode(const uint8_t *header, size_t header_len,
     if (status == ZCL_OK)
         status = zcl_hmac_sha512(key, sizeof(key), candidate, 16, candidate + 16, 64);
     if (status == ZCL_OK) memcpy(record, candidate, sizeof(candidate));
+    zcl_secure_zero(candidate, sizeof(candidate));
     zcl_secure_zero(key, sizeof(key));
     return status;
 }

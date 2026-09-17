@@ -1,5 +1,29 @@
 # Development record
 
+## Change-state authenticated scratch retirement — 2026-09-17
+
+Inspection found two avoidable stack remnants in the authenticated change-index
+path: encoding returned with its complete 80-byte staged record intact, and key
+derivation returned with its 35-byte recovered-address anchor intact, including
+provider refusal. Encoding now clears its candidate after the conditional caller
+copy. Key derivation clears the anchor immediately after the custody binding
+check. Existing output atomicity, exact record bytes, KDF inputs and recovery
+rules are unchanged.
+
+The source-copy failure fixture now distinguishes and requires exact 35-, 64-
+and 80-byte cleanup. It passes success, every extract/expand/record-MAC failure,
+tag mismatch, malformed records and malformed wallet headers while proving
+failed caller outputs remain untouched. Focused Clang ASan/UBSan and optimized
+GCC sanitizer suites pass; focused Clang and GCC static analysis is clean.
+Optimized frames are 152 bytes for encode, 168 for decode and 296 bytes for key
+derivation. There is no heap, recursion, API, dependency, serialization,
+consensus, JNI or TLS change. The full TLS-off native gate passes all static
+analysis and complexity checks plus 110/110 Clang and 109/109 optimized GCC
+sanitizer groups. Android/JVM checks, debug/release builds, both lints, fixture
+isolation, instrumentation-result controls and both-ABI 16 KiB alignment pass.
+Next: continue authenticated change-state lifetime review and transparent
+signing integration; physical custody and complete send remain open.
+
 ## Review completion-time publication — 2026-09-17
 
 Resumed clean on backed-up `5fa772ddddc8b343b3064063cbbe511fc5ca12c3` and

@@ -29,6 +29,7 @@ zcl_status zcl_change_state_key(const uint8_t *header, size_t header_len,
     uint8_t anchor[35] = {0};
     const zcl_status status = zcl_wallet_recovered_address(header, header_len, entropy, entropy_len,
         blinding, blinding_len, anchor, sizeof(anchor));
+    zcl_secure_zero(anchor, sizeof(anchor));
     if (status != ZCL_OK) return status;
     return expand_key(header, entropy, entropy_len, key, capacity);
 }

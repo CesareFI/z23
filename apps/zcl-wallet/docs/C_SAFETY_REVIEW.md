@@ -1,5 +1,35 @@
 # C parser foundation safety review
 
+## Change-state authenticated scratch retirement — 2026-09-17
+
+Scope: `change_state.c`, `change_state_key.c` and the existing source-copy
+failure fixture. Encoding now clears its complete staged authenticated record
+after conditional publication. Key derivation clears the recovered-address
+anchor immediately after the custody check, including its failure path. The
+existing extracted key, expanded key and expected-tag cleanup is retained.
+Record bytes, KDF inputs, authentication rules and caller output atomicity are
+unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | New clears use exact existing object sizes: 35-byte anchor and 80-byte candidate. Existing exact wallet-header, entropy, blinding, record and output bounds remain authoritative. The fixture uses fixed arrays and checks untouched failed outputs. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic, index, capacity or conversion change. Existing bounded four-byte index encoding and money-independent state format remain unchanged. Test counters are bounded by fixed call counts. |
+| Use-after-free, double-free, leaks | No allocation or free exists in the changed paths. Each automatic object clears once while live, after its final read or conditional caller copy. |
+| NULL dereferences, uninitialized memory | Existing argument and capacity guards remain before scratch construction. Anchor, candidate, key and expected tag initialize fully; cleanup never reads their contents. Malformed-header early exits now clear all initialized outer scratch. |
+| Dangling pointers, pointer arithmetic | No pointer escapes or new product pointer arithmetic. The test observer retains only live HMAC-output identities and retires them during the corresponding clear. |
+| Format strings, secret leakage | No product logging or formatting. Recovered-address authentication scratch, derived key material, the authenticated candidate and expected tag do not remain in their stack objects after return. This is process-memory hygiene, not a whole-stack or compiler-spill erasure claim. |
+| Stack usage, allocation limits | No new buffer, heap, VLA or recursion. Optimized Clang reports 152 bytes for encode, 168 for decode and 296 for key derivation, each below the enforced 4096-byte frame limit; these are individual frames, not a whole-call-chain bound. |
+| Malformed serialization/network input | Existing fixed marker/version/reserved/index checks and exact 80-byte record admission are unchanged. Malformed record input refuses before derivation; malformed wallet headers now exercise anchor and outer-scratch cleanup without publishing output. |
+| Races, resource exhaustion | The synchronous stable-input/nonoverlap contract is unchanged. Work remains fixed-size with three or fewer HMAC calls and no retry, shared mutable product state or attacker-sized allocation. |
+
+The registered failure fixture distinguishes 35-, 64- and 80-byte cleanup and
+requires exact retirement on success, all three injected HMAC failure stages,
+MAC mismatch and authenticated-header refusal. Both Clang ASan/UBSan and
+optimized GCC sanitizer profiles pass the normal and failure suites. Focused
+Clang and GCC static analysis passes. The full TLS-off safety gate passes all
+authored static analysis and complexity checks, 110/110 Clang sanitizer groups
+and 109/109 optimized GCC sanitizer groups. TLS remains quarantined.
+
 ## Review completion-time publication — 2026-09-17
 
 Scope: new `transaction_review_complete.c`, its internal clock/API contract,
