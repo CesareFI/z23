@@ -1,5 +1,27 @@
 # C parser foundation safety review
 
+## Owned raw-header inspection and RPC delegation — 2026-09-17
+
+Scope: extraction of existing header shape/hash rules, owned commitment fields,
+RPC scratch retirement, reference/oracle, fault, mutation and fuzz fixtures.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Exact543/1487-byte admission precedes every wire access. Fixed offsets end at139 before the checked three-byte CompactSize. Fields copy32 bytes, reverse indices0..31. Every shorter length, extra byte, SIZE_MAX and output canaries are tested. |
+| Integer overflow/underflow, signed/unsigned conversions | Scalar bytes promote to uint32 before shifts up to24. Version retains raw bits without signed conversion. Only fixed solution lengths participate in addition; network/fork constants preserve the old schedule. Full uint32 height scope and external signed32-bit tip gate remain unchanged. |
+| Use-after-free, double-free, leaks | No heap or free. Raw view owns all fields. Whole work clears after both hash failures and success; RPC clears its decoded wire/view after partial hex, inspection refusal and success. Dirty-provider tests and LSan qualify entered paths. |
+| NULL dereferences, uninitialized memory | Raw wire/view null checks precede access; RPC adds a hash-output guard. Work, decoded wire and temporary view initialize completely. Dirty failed hashes cannot publish output. |
+| Dangling pointers, pointer arithmetic | Stable nonoverlapping caller spans are a documented precondition. No wire/solution pointer survives. Fixed pointer offsets are admitted by exact length. Destroying the original input leaves the owned result intact. Fixture digit offsets subtract pointers within one explicit array. |
+| Format strings, secret leakage | Production adds no formatting/logging or private input. Hash scratch, owned temporary view and RPC decoded wire retire; live provider addresses are checked within cleared storage. The existing public hex text scratch has no new secret contract. No compiler-spill erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion, heap or input-sized stack array. Optimized Clang/GCC raw frames296/304 bytes, RPC wrapper1752/1776 bytes; existing hex helper3016/3040. These are per-frame observations, not a nested-stack or performance claim. |
+| Malformed serialization/network input | Exact shape, canonical solution prefix and full-wire hash retain original RPC admission. Scalar fields remain uninterpreted. Network/height are caller claims, not authenticated metadata. No Equihash, difficulty, ancestry, inclusion, freshness, unspentness or signing authority is inferred. |
+| Races, resource exhaustion | Synchronous stable spans, no production global state, callback, I/O or retry. At most1487 bytes and two provider hashes. Existing JNI/review/custody and TLS quarantine remain untouched. |
+
+The original main/test genesis and fork regressions, OpenSSL differential checks,
+eight deliberate mutations, dirty-provider retirement and API30/35/36 x86_64
+release-archive fixtures pass. ARM64 is compilation/alignment evidence only.
+Exact run results and retained setup errors are in the matching progress entry.
+
 ## Bounded transaction Merkle-path consistency — 2026-09-17
 
 Scope: internal C branch checker, original-source audit, independent full-tree/

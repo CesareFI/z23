@@ -109,7 +109,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/storage_change_read.c src/storage_change_write.c src/storage_change_repair.c
     src/custody_policy.c src/receive_qr.c src/scan_qr.c src/camera_frame.c
     src/rpc_json.c src/rpc_values.c src/electrum_request.c src/electrum_line.c src/electrum_balance.c
-    src/electrum_identity.c src/electrum_header.c src/electrum_history.c
+    src/electrum_identity.c src/electrum_header.c src/header_inspect.c src/electrum_history.c
     src/sync.c src/sync_watch.c src/sync_owners.c
     src/transaction_check.c src/transaction_read.c src/transaction_write.c src/transaction_id.c src/transaction_sighash.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
@@ -1368,6 +1368,39 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla)
     add_test(NAME wallet_source_draft_contract COMMAND source_draft_contract_tests)
     set_tests_properties(wallet_source_draft_contract PROPERTIES TIMEOUT 30)
+    add_executable(header_tests tests/test_header.c tests/header_fixture.c)
+    target_include_directories(header_tests PRIVATE src)
+    target_link_libraries(header_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_options(header_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_header_inspection COMMAND header_tests)
+    set_tests_properties(wallet_header_inspection PROPERTIES TIMEOUT 30)
+    add_executable(header_failure_tests tests/test_header_failures.c tests/header_fixture.c
+        src/header_inspect.c src/electrum_header.c)
+    target_include_directories(header_failure_tests PRIVATE src)
+    target_link_libraries(header_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider zcl_json_provider)
+    target_compile_definitions(header_failure_tests PRIVATE mbedtls_sha256=zcl_header_test_sha
+        zcl_secure_zero=zcl_header_test_zero)
+    target_compile_options(header_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_header_failures COMMAND header_failure_tests)
+    set_tests_properties(wallet_header_failures PROPERTIES TIMEOUT 30)
+    if(ZCL_ORACLE)
+        target_compile_definitions(header_tests PRIVATE ZCL_HEADER_ORACLE=1)
+        target_link_libraries(header_tests PRIVATE OpenSSL::Crypto)
+    endif()
+    if(ZCL_FUZZ)
+        add_executable(fuzz_header tests/fuzz_header.c tests/header_fixture.c)
+        target_include_directories(fuzz_header PRIVATE src)
+        target_link_libraries(fuzz_header PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_compile_options(fuzz_header PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(fuzz_header PRIVATE -fsanitize=fuzzer,address,undefined)
+        if(ZCL_ORACLE)
+            target_compile_definitions(fuzz_header PRIVATE ZCL_HEADER_ORACLE=1)
+            target_link_libraries(fuzz_header PRIVATE OpenSSL::Crypto)
+        endif()
+    endif()
     add_executable(merkle_tests tests/test_merkle.c tests/merkle_fixture.c)
     target_include_directories(merkle_tests PRIVATE src)
     target_link_libraries(merkle_tests PRIVATE zcl_wallet_core zcl_hash_provider)

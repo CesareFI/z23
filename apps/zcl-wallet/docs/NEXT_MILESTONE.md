@@ -33,9 +33,10 @@ delayed delivery, background cancellation, recreation and explicit process
 relaunch on API30/35/36 x86_64. A pinned-reference C Merkle-path checker now
 qualifies bounded hash/shape consistency with independent OpenSSL evidence.
 It cannot authenticate tree width/root or turn a branch match into chain
-acceptance. Next, factor existing serialized-header checks into an owned raw
-inspection result, pin header/source byte order and compose exact outpoint/
-source/header commitment checks. Keep proof claims separate from chain validity,
+acceptance. Existing serialized-header checks now share an owned raw inspection
+result, with pinned original main/test genesis fields and independent hash checks.
+Next, compose exact outpoint/source/header commitment checks, explicitly reviewing
+leaf-versus-internal-node ambiguity. Keep proof claims separate from chain validity,
 freshness, unspentness and signing authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.

@@ -1,5 +1,44 @@
 # Development record
 
+## Owned raw-header inspection — 2026-09-17
+
+The existing RPC header shape/hash logic now has one raw C owner returning
+complete owned identity, previous/Merkle/Sapling roots, nonce and scalar fields.
+All uint256 fields use display order. Canonical solution length/prefix and both
+Bubbles schedules are preserved; arbitrary scalar bits and the old internal
+uint32 height domain remain accepted. Public tip height keeps its signed32-bit
+gate. No PoW, chain, inclusion, freshness, unspentness or send authority is added.
+The RPC adapter clears its decoded header/view on success and refusal, including
+partial hex decoding; raw work retires after success and either hash failure.
+
+Original `14a83d510` header/chainparams objects are SHA256-recorded. Both real
+genesis hashes/fields, every truncated length, extra/SIZE_MAX lengths, malformed
+prefixes, network/fork boundaries, scalar bit patterns, unchanged failure output
+and destroyed borrowed input pass. OpenSSL independently hashes complete wire.
+Eight field/order/epoch/prefix/hash/provider/wipe mutations are caught; differential
+fuzzing completes9971739 executions in61 seconds without a finding.
+
+Initial test setup exposed a missing JSON include dependency and a fixture using
+a top-level string where RPC requires an object. Both were corrected. The first
+focused selection also included three not-yet-built executables; all six focused
+groups pass after explicit builds. Original failed logs remain, with no skipped
+assertion or weakened acceptance. No production behavior defect was discovered.
+
+The isolated `500a520b2` snapshot plus nine SHA256-recorded native files passes
+TLS-off Clang/GCC analysis, complexity limits10/15,131 Clang sanitizer/oracle and
+126 optimized GCC sanitizer groups. Optimized raw frames296/304 bytes and RPC
+wrapper1752/1776 bytes remain below4096. Android/JVM, debug/minified release,
+lint, fixture/result isolation and16KiB checks pass (155 tasks). Normal, dirty-
+provider and existing Electrum fixtures linked to release-built archives pass
+API30/35/36 x86_64; all owned device temporary paths are removed. ARM64 compiles
+with recorded hashes/alignment only. Architecture/docs gates pass. Evidence:
+`.cache/android-wallet/mission-20260917/header-inspection/`.
+
+Next: compose exact full-v4 source/outpoint/header commitments, reviewing
+leaf-versus-internal-node ambiguity explicitly. Caller-supplied roots/counts and
+matching bytes must never promote state to chain-accepted or unspent. Physical
+custody, legacy funding coverage, shielded spending and TLS gates remain open.
+
 ## Bounded transaction Merkle-path consistency — 2026-09-17
 
 The internal C `zcl_merkle_branch_check` now checks a transaction-ID path against

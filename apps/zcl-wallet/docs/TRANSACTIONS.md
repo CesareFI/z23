@@ -1,5 +1,30 @@
 # Transparent transaction development
 
+## Owned serialized-header inspection
+
+The internal `zcl_header_inspect` returns owned header identity, previous hash,
+transaction Merkle root, final Sapling root, nonce, raw version bits, timestamp,
+difficulty bits and solution length. Every uint256 field uses displayed order.
+Its raw input is exactly1487 or543 bytes according to the existing main/test
+Bubbles height schedule, with canonical CompactSize. No version, nonce, bits,
+proof-of-work or ancestry predicate is added. Network/height select the encoding;
+they are not authenticated metadata. Full-wire SHA256d must succeed before the
+whole view publishes; failed output stays unchanged and work retires.
+
+The existing RPC header hash now delegates to this single serialization owner,
+then clears its decoded header/view on success and refusal, including partial
+hex decoding. Public tip parsing retains its signed32-bit height bound; the raw
+internal helper retains the old hash helper's full uint32 height domain.
+Original main/test genesis hashes and fields, both fork boundaries, all truncated
+lengths, arbitrary scalar bit patterns and dirty-provider failures are qualified.
+OpenSSL supplies independent full-wire hash checks. Original `primitives/block.h`
+at `14a83d510ffd109d3fa09bf74ebf8c28854a263f` has SHA256
+`4db4dc2a373eec5e3b22fa8499404769b0f127305243431b4c1fb2417b5f7589`.
+
+This is serialized byte/hash inspection, not proof-of-work, chain membership,
+freshness, unspentness or authorization. Exact source/outpoint/header composition
+remains separate; neither header inspection nor a Merkle path changes trust status.
+
 ## Bounded Merkle-path consistency
 
 The internal `zcl_merkle_branch_check` accepts a displayed transaction ID,
@@ -17,7 +42,8 @@ a transaction leaf from an internal node or establish off-path uniqueness.
 No block-size/height rule, consensus validity, accepted-chain inclusion,
 freshness, maturity, unspentness, ownership, consent or signing authority is
 established. No caller status is upgraded to authenticated funding. Header
-inspection and exact source/outpoint/header composition remain separate work.
+inspection is available separately; exact source/outpoint/header composition
+remains separate work.
 
 References are Git objects at original Zclassic `14a83d510ffd109d3fa09bf74ebf8c28854a263f`:
 `src/primitives/block.cpp` (`GetMerkleBranch`, `CheckMerkleBranch`),

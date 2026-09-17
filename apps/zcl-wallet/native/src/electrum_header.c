@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_electrum.h"
 #include "electrum_internal.h"
-#include "mbedtls/sha256.h"
+#include "header_internal.h"
+#include "zcl_keys.h"
+#include <string.h>
 
 static int nibble(uint8_t byte)
 {
@@ -29,32 +31,20 @@ zcl_status zcl_rpc_hex(const zcl_rpc_json *doc, const zcl_rpc_token *token,
     return ZCL_OK;
 }
 
-static bool solution_header(const uint8_t *header, size_t length, size_t solution)
-{
-    if (length != 143 + solution) return false;
-    return header[140] == 253 && header[141] == (uint8_t)(solution & 255) &&
-           header[142] == (uint8_t)(solution >> 8);
-}
-
 zcl_status zcl_rpc_header_hash(const zcl_rpc_json *doc, const zcl_rpc_token *token,
                                 zcl_network network, uint32_t height, uint8_t hash[32])
 {
     if (network != ZCL_MAINNET && network != ZCL_TESTNET) return ZCL_UNSUPPORTED;
-    const uint32_t bubbles = network == ZCL_MAINNET ? UINT32_C(585318) : UINT32_C(6350);
-    const size_t solution = height < bubbles ? 1344 : 400;
-    uint8_t header[1487];
+    if (hash == NULL) return ZCL_INVALID_ARGUMENT;
+    uint8_t header[1487] = {0};
+    zcl_header_view view = {0};
     size_t length = 0;
-    const zcl_status status = zcl_rpc_hex(doc, token, header, sizeof(header), &length);
-    if (status != ZCL_OK) return status;
-    /* Canonical CompactSize at offset 140. This checks serialization only,
-     * not Equihash, difficulty, ancestry, transaction inclusion or consensus. */
-    if (!solution_header(header, length, solution))
-        return ZCL_INVALID_ENCODING;
-    uint8_t first[32], second[32];
-    if (mbedtls_sha256(header, length, first, 0) != 0 || mbedtls_sha256(first, sizeof(first), second, 0) != 0)
-        return ZCL_CRYPTO_FAILURE;
-    for (size_t i = 0; i < sizeof(second); ++i) hash[i] = second[31 - i];
-    return ZCL_OK;
+    zcl_status status = zcl_rpc_hex(doc, token, header, sizeof(header), &length);
+    if (status == ZCL_OK) status = zcl_header_inspect(header, length, network, height, &view);
+    if (status == ZCL_OK) memcpy(hash, view.hash, sizeof(view.hash));
+    zcl_secure_zero(&view, sizeof(view));
+    zcl_secure_zero(header, sizeof(header));
+    return status;
 }
 
 zcl_status zcl_electrum_tip_reply(const uint8_t *frame, size_t length, uint32_t id,
