@@ -1,5 +1,31 @@
 # C parser foundation safety review
 
+## JNI sync request retirement — 2026-09-17
+
+Scope: `jni_sync.c` request publication. The copied watch and full serialized
+packet now retire after successful state transfer or failed publication, before
+returning to the caller and releasing the registry lock. Existing publication
+atomicity, timeout handling and stale-token refusal remain unchanged.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Both clears use exact `sizeof` of existing bounded locals. Existing request capacity/length checks are unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic or conversion change. Bounded packet length still adds one status byte only on success. |
+| Use-after-free, double-free, leaks | No new allocation/free or reference ownership. The copied watch retires after its final use; observers inspect full spans while live. |
+| NULL dereferences, uninitialized memory | Existing entry and owner checks precede the helper. The packet is zero-initialized and the watch is an owned value copy; both retire on every helper return. |
+| Dangling pointers, pointer arithmetic | No native pointer escapes. Java owns independent bytes before packet retirement; the retained watch remains unchanged by temporary erasure. |
+| Format strings, secret leakage | No logging or formats added. Public requests/reports only; no managed/provider erasure claim. |
+| Stack usage, allocation limits | No heap, VLA, recursion or extra buffer. Existing frame-size and strict-warning gates remain active. |
+| Malformed serialization/network input | Status precedence and bounded request construction are unchanged. Failed stale-token publication cannot consume/expire/fail the active attempt. |
+| Races, resource exhaustion | Cleanup stays under the original registry lock. State transfer occurs only after Java accepts the packet; all four New/Set failure classes preserve the existing active-versus-stale failure rules. |
+
+The source-only fixture observes full watch/packet erasure with the real primitive
+on every entered request helper. Its inherited-source build fails the first
+missing-clear assertion. Tests cover NULL/pending entry, valid and stale tokens,
+all four VM publication failures, later successful requests, VM transfer exceptions
+and complete history progression. The fuzzer now predicts result/exception state
+for every injected allocation mode and observes the same cleanup.
+
 ## JNI sync snapshot retirement — 2026-09-17
 
 Scope: `jni_sync.c` balance/history snapshot paths. Native snapshot copies now

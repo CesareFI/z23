@@ -127,6 +127,8 @@ static jbyteArray request_packet(JNIEnv *env, zcl_sync_watch *watch, uint64_t to
     jbyteArray result = zcl_jni_new_bytes(env, packet, status == ZCL_OK ? length + 1 : 1);
     if (result != NULL) *watch = next;
     else (void)zcl_sync_watch_fail(watch, token, ZCL_RESOURCE_EXHAUSTED);
+    zcl_secure_zero(&next, sizeof(next));
+    zcl_secure_zero(packet, sizeof(packet));
     return result;
 }
 

@@ -1,5 +1,36 @@
 # Development record
 
+## JNI sync request continuation — 2026-09-17
+
+JNI sync snapshot retirement was pushed and remotely verified as
+`233bf411b17481e74873f7aa411b2a789bd18d25`. Continued immediately into request
+publication: the staged watch and full packet now clear after transfer/refusal
+and before unlock. Success still publishes only after Java accepts the packet;
+failed publication retains the existing current-token/stale-token behavior.
+
+The expanded JNI fixture checks real erasure while both objects remain live
+on every entered request helper. Its inherited-source build fails the first
+missing-clear assertion. All four New/Set failures now cover active requests
+and stale tokens with extreme clocks; stale failure cannot expire or fail the
+current attempt. VM transfer exceptions, NULL/pending entry and successful history
+progression remain covered. The fuzzer predicts both returned object and pending
+exception for all injected allocation modes, alongside the live-clear checks.
+
+Full non-TLS safety passes 103/103 Clang wallet CTest cases (85.46 seconds) and
+102/102 optimized GCC cases (121.46 seconds), both static analyzers and
+production/test complexity caps 10/15. The optimized request frame remains
+1840 bytes, below 4096. Bounded ASan/UBSan JNI sync fuzzing completes 14,433
+executions in 61 seconds without findings (five-second input deadline, 512 MiB
+RSS cap). Android/JVM tests, both ABI debug/release builds, lints, fixture
+isolation and 16 KiB alignment pass. Thirteen selected API35 sync/history/
+lifecycle/render-failure cases pass in 7.718 seconds; architecture/doc counts
+pass. Broad runs include preserved inherited storage work, independently of this
+slice. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-sync-request-retirement/`.
+TLS and production boundaries remain unchanged; no global lint pass is claimed.
+Next: native sync-owner staged-watch and retained-slot retirement, preserving
+pool identity and failure-atomic opening.
+
 ## JNI sync snapshot continuation — 2026-09-17
 
 Native draft retirement was pushed and remotely verified as
