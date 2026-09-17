@@ -10,11 +10,13 @@ checkpoint identities are recorded in [`PROGRESS.md`](PROGRESS.md).
 
 Use a fresh, explicitly authorized test profile on an Android device providing
 TEE/StrongBox storage and hardware-enforced per-use authentication. Never point
-the fixture cleanup at an existing wallet. The current interactive test fixture
-deliberately permits only a fresh opted-in emulator and will need a separately
-reviewed real-device fixture boundary. Do not remove its protection checks.
-The [qualification build boundary](DEVICE_QUALIFICATION.md) now supplies a
-separate test-only package/UID; the attended hardware fixture is still open.
+the fixture cleanup at an existing wallet. The original interactive test fixture
+deliberately permits only a fresh opted-in emulator; preserve its protection
+checks. The separate [attended qualification fixture](DEVICE_QUALIFICATION.md)
+now supplies a test-only package/UID and guarded public-vector restore plus two
+per-use unlocks. It retains its public wallet/key and refuses existing state.
+Its positive hardware execution remains open; emulator refusal and synthetic
+admission tests do not substitute for that evidence.
 
 Prove creation with written-backup confirmation, restoration of a public
 unfunded vector, authenticated unlock to the exact same receiving address,

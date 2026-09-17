@@ -1,8 +1,9 @@
 # Device qualification build boundary
 
 Positive physical-device custody remains unproven. The qualification build
-provides an isolated application identity for future public-vector acceptance;
-it does not implement that hardware acceptance fixture or relax wallet policy.
+provides an isolated application identity for attended public-vector acceptance.
+The restore/repeated-unlock fixture is implemented but has not run successfully
+on physical hardware. It does not relax wallet policy.
 The existing `WalletFlowInstrumentedTest` remains emulator-only and refuses the
 qualification package before taking ownership of files or keys.
 
@@ -49,12 +50,59 @@ the original emulator-only wallet fixture refuses its package. Only packages
 created by that invocation are removed. This exercises installation isolation
 without generating a Keystore wallet or authenticating a physical device.
 
-Next acceptance work must add a separately reviewed fixture that requires an
-explicitly selected fresh device/profile, refuses existing wallet/key material
-before taking ownership, uses only published unfunded recovery data, and lets
-the operator authenticate through the real system prompt. It must never read,
-inject or record a device PIN, capture a secret screen, replace an existing key,
-or weaken the C custody predicate. Restore, repeated per-use unlock, cancellation,
-key invalidation and interrupted-record recovery need actual hardware evidence.
+## Attended public-vector restore
+
+Use only an explicitly selected fresh physical test device/profile. Install the
+two qualification APKs with `adb -s <device> install -t <apk>`; do not use `-r`
+to replace an existing installation. Obtain its exact assigned UID with
+`adb -s <device> shell pm list packages -U org.zclassic.wallet.dev.qualification`
+and select the application row, not the instrumentation row. Then run:
+
+```sh
+adb -s <device> shell am instrument -w -r \
+  -e class org.zclassic.wallet.AttendedCustodyInstrumentedTest \
+  -e custodyHardware restore-public-vector \
+  -e qualificationUid <application-uid> \
+  org.zclassic.wallet.dev.qualification.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The fixture requires the exact test-only/debuggable package, matching process
+and explicitly supplied application UID, and non-emulator Build metadata before
+inspecting private storage or the Keystore. Build fields are a known-emulator
+refusal, not hardware attestation. It then requires an absent `wallet-v1` path
+under a real parent directory and an absent wrapping-key alias. Existing files,
+empty directories, symlinks or inspection errors refuse; nothing is deleted.
+No opt-in argument skips the test; malformed supplied consent fails. Neither
+a skip nor an admission refusal establishes positive custody acceptance.
+
+The owner authenticates through three real system prompts: restore and two
+subsequent independent unlocks. Each awaited UI stage has a 75-second bound.
+The fixture reports fixed stage names, injects no credentials, reads no system
+credential views and captures no screens. It restores only the published
+128-zero-bit BIP39 vector (`abandon` eleven times, then `about`), with empty
+passphrase on testnet. The expected `m/44'/1'/0'/0/0` address is
+`tmF1xjfhsSzhy55dmhorzTnKjtHhZmPKzts`, independently checked using the existing
+OpenSSL oracle. This public fixture must never receive funds.
+
+After each successful operation it verifies the exact address, secure-window
+flag, committed unchanged ciphertext and absent historical change initialization.
+A separate unauthenticated decrypt must fail specifically for authentication,
+and the real provider key must pass the existing custody policy. An unrelated
+provider error is not accepted as per-use authentication evidence.
+
+The resulting public wallet and key are deliberately retained, including after
+failure. A rerun refuses existing state. Inspect and preserve the evidence before
+any owner-directed removal of this qualification installation. The fixture has
+no key/file cleanup or normal-wallet namespace access.
+
+On API30/35/36, all six synthetic admission tests and the unauthenticated-key
+policy refusal pass. The separate per-use provider test skips because those
+devices have no configured test screen lock; it contributes no passing evidence.
+On API35,
+the attended fixture refuses the normal package, emulator, missing UID and
+malformed consent before wallet access; its no-consent run skips. No physical
+device was attached. Creation with written-backup confirmation, actual hardware
+restore/repeated unlock, cancellation, key invalidation, process death,
+interrupted-record recovery and minified hardware execution remain open.
 See [the ordered acceptance contract](NEXT_MILESTONE.md) and
 [custody boundaries](KEYSTORE_PLATFORM.md).

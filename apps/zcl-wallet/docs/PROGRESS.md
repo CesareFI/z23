@@ -1,5 +1,60 @@
 # Development record
 
+## Attended public-vector custody fixture — 2026-09-17
+
+Resumed the existing test-only slice on backed-up
+`8f2f7f1a3dc70c714969eb75afac633bc4a710f9`; fetched origin/main without integration.
+The qualification APK now has a separately guarded attended restore fixture.
+Exact consent, package/test/debug flags, process/application/explicit UID and
+known-emulator refusal precede any private-path or Keystore inspection. Admission
+then requires a real parent directory, absent wallet path and absent fixed key
+alias. File inspection errors, empty scaffolds and symlinks refuse. The fixture
+never removes wallet/key state, injects device credentials, captures screens,
+overrides provider policy or touches the normal wallet namespace.
+
+The owner must authenticate a published unfunded BIP39 restore and two fresh
+unlocks, with a 75-second bound per awaited stage. Assertions require the exact
+testnet address, secure-window flag, unchanged committed record, no historical
+change reset, accepted provider custody metadata and an authentication-specific
+refusal from another unauthenticated operation. The public address was checked
+with the existing independent OpenSSL oracle: 96 derivation comparisons and 48
+recovered change bindings pass under sanitizers. Native source is unchanged.
+
+All six synthetic admission regressions and the unauthenticated-key policy
+refusal execute and pass on API30/35/36. The per-use provider test skips on all
+three because no test screen lock is configured. An initial `OK (8 tests)`
+summary check missed AndroidJUnitRunner's assumption code `-4`; stricter status
+inspection corrected the earlier eight-pass commentary. It is seven passed,
+one skipped, with no positive authentication evidence. On API35, the attended
+fixture refuses the emulator, missing UID, malformed consent and normal package;
+an omitted consent skips. The qualification wallet path remains absent afterward.
+Only this invocation's qualification packages were removed. An older emulator's
+unavailable prelaunch sandbox is retained as infrastructure evidence; the healthy
+API35 instance supplies the actual admission-refusal observations.
+
+A separate minimal APK contains only copied admission code, synthetic tests and
+disposable cache files: its six-test control passes, and all nine isolated guard
+mutations fail their intended missing-refusal assertion. These cover consent,
+package, flags, UID, metadata, known emulators, parent directory, existing wallet
+path and key alias. Mutation APKs were removed. Initial isolated harness Java/
+Kotlin target mismatch was corrected to Java17; no product workaround was needed.
+
+Normal JVM checks, debug/test/minified-release builds, both lints, fixture
+isolation and 16 KiB alignment pass. Qualification identity checks and lint pass.
+The normal unsigned release remains byte-identical, SHA256
+`7c99584b556460ef04eeb727d0c6c67ee2eee60cbae725b9883da64bfe13ca68`.
+This is instrumentation/documentation only; no C/JNI or product custody change.
+Evidence: `.cache/android-wallet/mission-20260917/attended-custody/` under the
+wallet directory. Commands and state-retention rules are in
+[`DEVICE_QUALIFICATION.md`](DEVICE_QUALIFICATION.md).
+
+No physical device is attached, so positive hardware execution remains open.
+Creation/written backup, cancellation, invalidation, process-death/recovery and
+minified hardware acceptance also remain open. Next: make instrumentation result
+checking reject skipped/partial runs by default, then continue custody/lifecycle
+readiness while preserving the physical-device acceptance requirement. TLS
+quarantine and the historical unrelated root-lint limitation are unchanged.
+
 ## Physical-device qualification build boundary — 2026-09-17
 
 Resumed clean from backed-up `3a9a278063b1cd255b84bad2c35cbccd20f7c5f3` and

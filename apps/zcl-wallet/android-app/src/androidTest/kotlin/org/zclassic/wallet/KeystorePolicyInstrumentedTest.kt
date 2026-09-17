@@ -7,7 +7,6 @@ import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
-import android.security.keystore.UserNotAuthenticatedException
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.security.KeyStore
@@ -26,18 +25,6 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class KeystorePolicyInstrumentedTest {
-    private fun authenticationFailure(error: Throwable): Boolean {
-        var current: Throwable? = error
-        repeat(8) {
-            val cause = current ?: return false
-            if (cause is UserNotAuthenticatedException) return true
-            if (Build.VERSION.SDK_INT >= 33 && cause is android.security.KeyStoreException &&
-                cause.requiresUserAuthentication()) return true
-            current = cause.cause
-        }
-        return false
-    }
-
     private fun withTestKey(authenticated: Boolean, test: (SecretKey) -> Unit) {
         val alias = "org.zclassic.wallet.instrumentation." + UUID.randomUUID().toString()
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -98,9 +85,9 @@ class KeystorePolicyInstrumentedTest {
                 stage = "finalize"
                 cipher.doFinal(fixture)
             } catch (error: java.security.GeneralSecurityException) {
-                refused = authenticationFailure(error)
+                refused = custodyAuthenticationRefused(error)
             } catch (error: java.security.ProviderException) {
-                refused = authenticationFailure(error)
+                refused = custodyAuthenticationRefused(error)
             } finally {
                 fixture.fill(0)
             }
