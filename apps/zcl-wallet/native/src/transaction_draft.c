@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "transaction_draft_internal.h"
+#include "zcl_keys.h"
 
 static zcl_status draft_limits(const zcl_draft_request *request)
 {
@@ -51,11 +52,9 @@ zcl_status zcl_transaction_draft(const zcl_draft_request *request, zcl_transpare
     candidate.input_count = request->input_count;
     candidate.output_count = request->output_count;
     status = draft_inputs(request, &candidate);
-    if (status != ZCL_OK) return status;
-    status = draft_outputs(request, &candidate);
-    if (status != ZCL_OK) return status;
-    status = zcl_draft_assess(request, &candidate);
-    if (status != ZCL_OK) return status;
-    *transaction = candidate;
-    return ZCL_OK;
+    if (status == ZCL_OK) status = draft_outputs(request, &candidate);
+    if (status == ZCL_OK) status = zcl_draft_assess(request, &candidate);
+    if (status == ZCL_OK) *transaction = candidate;
+    zcl_secure_zero(&candidate, sizeof(candidate));
+    return status;
 }

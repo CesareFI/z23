@@ -1,5 +1,33 @@
 # C parser foundation safety review
 
+## Native draft scratch retirement — 2026-09-17
+
+Scope: `transaction_draft.c` and `transaction_draft_check.c`. The staged draft,
+parsed funding transaction, assessment and borrowed-source descriptor array now
+retire on every initialized exit. Publication still occurs only after all inputs,
+destinations and fee assessment pass; caller transaction bytes remain unchanged
+on failure. No rule, wire format or ownership authority changes.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | All erasure uses exact object/array sizes, including unused rows. Existing index/count validation still precedes indexed access. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic or conversion change. Counts, indexes, values and fees retain existing checks. |
+| Use-after-free, double-free, leaks | Stack-only scratch adds no allocation/free. Retirement occurs after final synchronous use and before return; observed bytes are live. |
+| NULL dereferences, uninitialized memory | Existing NULL/admission refusals occur before scratch initialization. Parsed funding and assessment locals are now initialized; dirty provider failures still clear the full span. |
+| Dangling pointers, pointer arithmetic | The temporary descriptor array borrows caller bytes only for assessment, then clears. Caller source bytes are never erased; no scratch pointer escapes. |
+| Format strings, secret leakage | No format/log changes or new secret access. Public transaction data lifetime is shortened; provider/managed copies are outside this claim. |
+| Stack usage, allocation limits | No heap, VLA or recursion. Optimized GCC reports 2288-byte draft, 2256-byte funding and 1232-byte assessment frames, below 4096 individually. This is not a call-chain bound. |
+| Malformed serialization/network input | Parser, canonical outpoint derivation, destination checks and complete assessment are retained in order. Fault injection preserves caller transaction/request canaries. |
+| Races, resource exhaustion | Invocation-local scratch and existing stable borrowed-input contract remain. No global state, mutex or capacity changes. |
+
+A registered source-copy fixture observes full erasure with the real primitive,
+requires each parsed funding object to retire before the next parse/assessment,
+and requires assessment/descriptors to retire before the outer candidate. It
+injects dirty parser and txid failures in each input position, dirty assessment
+failure, invalid destinations/indexes, fee refusal and NULL/admission failures.
+The inherited source fails before its second parse. Existing exact-wire, maximum
+row, output-canary and caller ownership tests remain active.
+
 ## JNI draft scratch retirement — 2026-09-17
 
 Scope: `jni_draft.c` and `jni_draft_wire.c`. Numeric inputs, destination text,

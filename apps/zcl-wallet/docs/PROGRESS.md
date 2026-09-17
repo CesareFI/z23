@@ -1,5 +1,35 @@
 # Development record
 
+## Native draft continuation — 2026-09-17
+
+The preceding JNI draft slice was pushed and remotely verified as
+`70ee507bd23c64353c6f6c3195eb47783404630d`. Continued into native construction:
+staged candidate, parsed funding, assessment and source-descriptor scratch now
+clear on success and every initialized refusal. Exact input/output ordering,
+fee policy, canonical txids and failure-atomic caller publication remain intact.
+
+The new registered fixture uses real secure-zero observers on live objects and
+injects dirty parser, txid and assessment failures. It verifies cleanup before
+scratch reuse, before assessment and before outer candidate retirement, alongside
+unchanged caller transaction and request bytes on refusal. The inherited source
+fails before its second funding parse. Existing exact-wire and maximum-row tests
+also pass. Optimized GCC frame reports remain below 4096 for each changed entry;
+explicit hazard review is in `C_SAFETY_REVIEW.md`.
+
+Full non-TLS safety passes 103/103 Clang wallet CTest cases (85.34 seconds) and
+102/102 optimized GCC cases (121.41 seconds), both analyzers and complexity caps
+10/15. Bounded ASan/UBSan campaigns complete 98,185 native draft and 20,661 JNI
+draft executions, 61 seconds each with five-second input deadlines and 512 MiB
+RSS caps, without findings. Android/JVM tests, both ABI debug/release builds,
+lints, fixture isolation and 16 KiB alignment pass. The thirteen selected API35
+review/lifecycle/render cases pass in 5.718 seconds. Architecture/doc counts pass.
+These broad runs include the unchanged inherited JNI storage work; this slice
+is independent of it. No global lint pass, hardware custody or TLS qualification
+is claimed. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/draft-retirement/`.
+Next inspected gap: JNI sync balance/history snapshot and numeric output scratch
+are not retired. Preserve native clock/timeout and replacement-owner semantics.
+
 ## JNI draft continuation — 2026-09-17
 
 This session found the requested JNI review cleanup already pushed and verified

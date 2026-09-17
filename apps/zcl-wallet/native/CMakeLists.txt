@@ -784,6 +784,17 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wshadow)
     add_test(NAME wallet_draft COMMAND draft_tests)
     set_tests_properties(wallet_draft PROPERTIES TIMEOUT 15)
+    add_executable(draft_retirement_tests tests/test_draft_retirement.c tests/draft_fixture.c
+        src/transaction_draft.c src/transaction_draft_check.c)
+    target_include_directories(draft_retirement_tests PRIVATE src)
+    target_link_libraries(draft_retirement_tests PRIVATE assessment_test_fixture)
+    target_compile_definitions(draft_retirement_tests PRIVATE
+        zcl_transaction_parse=zcl_draft_test_parse zcl_transaction_id=zcl_draft_test_id
+        zcl_transaction_assess=zcl_draft_test_assess zcl_secure_zero=zcl_draft_test_zero)
+    target_compile_options(draft_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_draft_retirement COMMAND draft_retirement_tests)
+    set_tests_properties(wallet_draft_retirement PROPERTIES TIMEOUT 15)
     add_executable(review_tests tests/test_review.c tests/assessment_fixture.c)
     target_link_libraries(review_tests PRIVATE zcl_wallet_core)
     target_compile_options(review_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
