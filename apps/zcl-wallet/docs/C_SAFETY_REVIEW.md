@@ -1,5 +1,32 @@
 # C parser foundation safety review
 
+## JNI sync snapshot retirement — 2026-09-17
+
+Scope: `jni_sync.c` balance/history snapshot paths. Native snapshot copies now
+retire inside the existing registry lock before VM allocation. Numeric response
+arrays retire at full capacity after any publication attempt. Shared projection
+and allocation helpers keep the ownership cleanup explicit without adding heap
+allocation or changing packet formats, timeout effects or replacement ownership.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Exact `sizeof` erasure covers snapshots and all 10/156 numeric elements. Existing history bounds precede indexed projection; the shared allocator checks its static cap. |
+| Integer overflow/underflow, signed/unsigned conversions | Existing checked jlong projections remain. Bounded length-to-jsize conversion is centralized under the same cap. No balance/time arithmetic changes. |
+| Use-after-free, double-free, leaks | No new allocation/free/reference ownership. Live observers check erased spans before return. JNI local references still have invocation lifetime. |
+| NULL dereferences, uninitialized memory | NULL VM/pending entry refusals still occur before scratch. All entered locals are initialized and retire after native/projection/VM failures. |
+| Dangling pointers, pointer arithmetic | No scratch pointer escapes. Successful Java arrays retain independent values after native retirement; test numeric identities clear during the live erase call. |
+| Format strings, secret leakage | No production logging, formats or secret access added. This retires public report copies, not managed/provider copies. |
+| Stack usage, allocation limits | No heap, recursion or VLA added. Optimized GCC balance/history JNI frames are 912/2112 bytes, and the shared publisher is 48 bytes; individual frame limits pass, not a whole-chain bound. |
+| Malformed serialization/network input | Dirty provider failure and invalid age/balance/deadline/history fields refuse under existing status semantics. Existing maximum history, stale IDs and signed pending values remain covered. |
+| Races, resource exhaustion | Snapshot erasure precedes unlock and VM allocation. Allocation callbacks can replace the owner without deadlock; failed old publication leaves the replacement intact. Existing native clock/timeout changes still survive VM publication failure. |
+
+The inherited implementation fails the live-retirement check before Java
+allocation. The expanded fixture observes complete clears on every snapshot
+entry, including NULL/pending admission, native/projection refusal and all four
+New/Set failure classes. Replacement interleaving covers both packet shapes.
+The existing JNI fuzzer now exercises these publication faults with the same
+live observers. No dead stack memory is inspected.
+
 ## Native draft scratch retirement — 2026-09-17
 
 Scope: `transaction_draft.c` and `transaction_draft_check.c`. The staged draft,

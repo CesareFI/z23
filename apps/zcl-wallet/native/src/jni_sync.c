@@ -199,8 +199,10 @@ static zcl_status snapshot_values(const zcl_sync_snapshot *snapshot, jlong value
 static zcl_status snapshot_numbers(zcl_sync_watch *watch, uint64_t now, jlong values[10])
 {
     zcl_sync_snapshot snapshot = {0};
-    const zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
-    return status == ZCL_OK ? snapshot_values(&snapshot, values) : status;
+    zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
+    if (status == ZCL_OK) status = snapshot_values(&snapshot, values);
+    zcl_secure_zero(&snapshot, sizeof(snapshot));
+    return status;
 }
 
 #define HISTORY_PACKET_MAX ((size_t)12 + 9 * ZCL_ELECTRUM_HISTORY_MAX)
@@ -220,23 +222,39 @@ static void history_entry_values(const zcl_reported_history_entry *entry, jlong 
     values[8] = (jlong)entry->reported_height;
 }
 
-static zcl_status history_snapshot_numbers(zcl_sync_watch *watch, uint64_t now,
+static zcl_status history_values(const zcl_sync_snapshot *snapshot,
     jlong values[HISTORY_PACKET_MAX], size_t *length)
 {
-    zcl_sync_snapshot snapshot = {0};
-    zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
+    const zcl_status status = snapshot_values(snapshot, values);
     if (status != ZCL_OK) return status;
-    status = snapshot_values(&snapshot, values);
-    if (status != ZCL_OK) return status;
-    const zcl_reported_history *history = &snapshot.report.history;
+    const zcl_reported_history *history = &snapshot->report.history;
     if (history->count > ZCL_ELECTRUM_HISTORY_MAX) return ZCL_OUT_OF_RANGE;
-    if (!snapshot.report.has_history && history->count != 0) return ZCL_INVALID_ENCODING;
-    values[10] = snapshot.report.has_history ? 1 : 0;
+    if (!snapshot->report.has_history && history->count != 0) return ZCL_INVALID_ENCODING;
+    values[10] = snapshot->report.has_history ? 1 : 0;
     values[11] = (jlong)history->count;
     for (size_t i = 0; i < history->count; ++i)
         history_entry_values(&history->entries[i], &values[12 + i * 9]);
     *length = 12 + history->count * 9; /* count <=16 proves length <=156. */
     return ZCL_OK;
+}
+
+static zcl_status history_snapshot_numbers(zcl_sync_watch *watch, uint64_t now,
+    jlong values[HISTORY_PACKET_MAX], size_t *length)
+{
+    zcl_sync_snapshot snapshot = {0};
+    zcl_status status = zcl_sync_watch_snapshot(watch, now, &snapshot);
+    if (status == ZCL_OK) status = history_values(&snapshot, values, length);
+    zcl_secure_zero(&snapshot, sizeof(snapshot));
+    return status;
+}
+
+static jlongArray new_snapshot_numbers(JNIEnv *env, const jlong *values, size_t length)
+{
+    if (length > HISTORY_PACKET_MAX) return NULL;
+    jlongArray result = (*env)->NewLongArray(env, (jsize)length);
+    if (result == NULL || (*env)->ExceptionCheck(env)) return NULL;
+    (*env)->SetLongArrayRegion(env, result, 0, (jsize)length, values);
+    return (*env)->ExceptionCheck(env) ? NULL : result;
 }
 
 JNIEXPORT jlongArray JNICALL
@@ -252,11 +270,9 @@ Java_org_zclassic_wallet_core_NativeCore_syncHistorySnapshot(JNIEnv *env, jclass
     if (status == ZCL_OK)
         status = unlock_registry(history_snapshot_numbers(watch, (uint64_t)now, values, &length));
     values[0] = (jlong)status;
-    /* Private helper and static cap prove the jsize conversion is exact. */
-    jlongArray result = (*env)->NewLongArray(env, (jsize)length);
-    if (result == NULL || (*env)->ExceptionCheck(env)) return NULL;
-    (*env)->SetLongArrayRegion(env, result, 0, (jsize)length, values);
-    return (*env)->ExceptionCheck(env) ? NULL : result;
+    jlongArray result = new_snapshot_numbers(env, values, length);
+    zcl_secure_zero(values, sizeof(values));
+    return result;
 }
 
 JNIEXPORT jlongArray JNICALL
@@ -269,8 +285,7 @@ Java_org_zclassic_wallet_core_NativeCore_syncSnapshot(JNIEnv *env, jclass type, 
     zcl_status status = now < 0 ? ZCL_OUT_OF_RANGE : enter_owner(id, &watch);
     if (status == ZCL_OK) status = unlock_registry(snapshot_numbers(watch, (uint64_t)now, values));
     values[0] = (jlong)status;
-    jlongArray result = (*env)->NewLongArray(env, 10);
-    if (result == NULL || (*env)->ExceptionCheck(env)) return NULL;
-    (*env)->SetLongArrayRegion(env, result, 0, 10, values);
-    return (*env)->ExceptionCheck(env) ? NULL : result;
+    jlongArray result = new_snapshot_numbers(env, values, 10);
+    zcl_secure_zero(values, sizeof(values));
+    return result;
 }

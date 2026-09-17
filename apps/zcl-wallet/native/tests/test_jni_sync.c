@@ -3,9 +3,12 @@
  * The harness itself uses normal allocation; libFuzzer/VM internals are untouched. */
 #undef malloc
 #undef free
+#undef zcl_secure_zero
+#undef zcl_sync_watch_snapshot
 #include "jni_support.h"
 #include "sync_fixture.h"
 #include "zcl_sync_watch.h"
+#include "zcl_keys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,8 +37,62 @@ typedef struct {
 } fake_array;
 static fake_array *references[32];
 static size_t reference_count;
-static bool pending_exception, fail_new, fail_set, fail_get, fail_frame;
+static bool pending_exception, fail_set, fail_get, fail_frame;
+static unsigned fail_new;
 static uint8_t *owned_frame;
+static uintptr_t snapshot_identity, output_identity;
+static unsigned snapshot_calls, snapshot_clears, output_clears;
+static unsigned snapshot_fault;
+static size_t output_capacity;
+static void (*allocation_hook)(void);
+
+zcl_status zcl_jni_sync_test_snapshot(zcl_sync_watch *watch, uint64_t now, zcl_sync_snapshot *snapshot);
+void zcl_jni_sync_test_zero(void *buffer, size_t length);
+
+static zcl_status corrupt_snapshot(zcl_sync_snapshot *snapshot, zcl_status status)
+{
+    switch (snapshot_fault) {
+    case 1: memset(snapshot, 0x5a, sizeof(*snapshot)); return ZCL_INVALID_ENCODING;
+    case 2: snapshot->age_ms = UINT64_MAX; break;
+    case 3: snapshot->report.balance.confirmed = UINT64_MAX; break;
+    case 4: snapshot->report.balance.total = UINT64_MAX; break;
+    case 5: snapshot->next_change_ms = UINT64_MAX; break;
+    case 6: snapshot->report.history.count = ZCL_ELECTRUM_HISTORY_MAX + 1; break;
+    case 7: snapshot->report.has_history = false; snapshot->report.history.count = 1; break;
+    default: break;
+    }
+    return status;
+}
+
+zcl_status zcl_jni_sync_test_snapshot(zcl_sync_watch *watch, uint64_t now, zcl_sync_snapshot *snapshot)
+{
+    CHECK(snapshot_identity == 0 && snapshot_calls == snapshot_clears);
+    snapshot_identity = (uintptr_t)snapshot;
+    ++snapshot_calls;
+    const zcl_status status = zcl_sync_watch_snapshot(watch, now, snapshot);
+    return corrupt_snapshot(snapshot, status);
+}
+
+void zcl_jni_sync_test_zero(void *buffer, size_t length)
+{
+    CHECK(buffer != NULL);
+    zcl_secure_zero(buffer, length);
+    const uint8_t *data = buffer;
+    for (size_t i = 0; i < length; ++i) CHECK(data[i] == 0);
+    if (buffer == owned_frame) {
+        CHECK(length == ZCL_ELECTRUM_FRAME_MAX);
+    } else if ((uintptr_t)buffer == snapshot_identity) {
+        CHECK(length == sizeof(zcl_sync_snapshot));
+        snapshot_identity = 0;
+        ++snapshot_clears;
+    } else {
+        CHECK(length == output_capacity && output_capacity != 0);
+        CHECK(snapshot_identity == 0 && snapshot_calls == snapshot_clears);
+        CHECK(output_identity == 0 || output_identity == (uintptr_t)buffer);
+        output_identity = 0;
+        ++output_clears;
+    }
+}
 
 void *zcl_jni_test_malloc(size_t size)
 {
@@ -77,6 +134,10 @@ static jbyteArray bytes(const uint8_t *data, size_t length)
 static void release_references(void)
 {
     CHECK(owned_frame == NULL);
+    CHECK(snapshot_identity == 0 && output_identity == 0 && output_capacity == 0);
+    CHECK(snapshot_calls == snapshot_clears && allocation_hook == NULL);
+    snapshot_calls = snapshot_clears = output_clears = 0;
+    snapshot_fault = 0;
     for (size_t i = 0; i < reference_count; ++i) { free(references[i]); references[i] = NULL; }
     reference_count = 0;
     pending_exception = false;
@@ -126,15 +187,28 @@ static jlongArray JNICALL new_longs(JNIEnv *env, jsize length)
 {
     (void)env;
     CHECK(!pending_exception);
-    if (fail_new) { fail_new = false; pending_exception = true; return NULL; }
+    CHECK(snapshot_identity == 0 && snapshot_calls == snapshot_clears);
+    if (allocation_hook != NULL) {
+        void (*hook)(void) = allocation_hook;
+        allocation_hook = NULL;
+        hook();
+    }
+    const unsigned fault = fail_new;
+    fail_new = 0;
+    if (fault != 0) {
+        pending_exception = fault != 3;
+        if (fault != 2) return NULL;
+    }
     return (jlongArray)array_new(length, true);
 }
 static void JNICALL set_longs(JNIEnv *env, jlongArray input, jsize offset, jsize count, const jlong *data)
 {
     (void)env;
     fake_array *array = region(input, offset, count, true);
-    if (fail_set) { fail_set = false; pending_exception = true; return; }
+    CHECK(output_identity == 0);
+    output_identity = (uintptr_t)data;
     memcpy(array->data.numbers + (size_t)offset, data, (size_t)count * sizeof(*data));
+    if (fail_set) { fail_set = false; pending_exception = true; }
 }
 
 static const struct JNINativeInterface_ table = {
@@ -143,6 +217,30 @@ static const struct JNINativeInterface_ table = {
     .NewByteArray = new_bytes, .NewLongArray = new_longs, .SetLongArrayRegion = set_longs
 };
 static JNIEnv environment = &table;
+
+static jlongArray read_snapshot(JNIEnv *env, jclass type, jlong id, jlong now, bool history)
+{
+    CHECK(output_capacity == 0 && output_identity == 0);
+    const unsigned before = output_clears;
+    const unsigned expected = env != NULL && !pending_exception ? 1U : 0U;
+    output_capacity = (history ? 156U : 10U) * sizeof(jlong);
+    jlongArray result = history ? API(syncHistorySnapshot)(env, type, id, now)
+        : API(syncSnapshot)(env, type, id, now);
+    CHECK(output_clears == before + expected && output_identity == 0);
+    CHECK(snapshot_identity == 0 && snapshot_calls == snapshot_clears);
+    output_capacity = 0;
+    return result;
+}
+
+static jlongArray checked_snapshot(JNIEnv *env, jclass type, jlong id, jlong now)
+{
+    return read_snapshot(env, type, id, now, false);
+}
+
+static jlongArray checked_history(JNIEnv *env, jclass type, jlong id, jlong now)
+{
+    return read_snapshot(env, type, id, now, true);
+}
 
 static jlong open_owner_mode(bool history)
 {
@@ -165,7 +263,7 @@ static jlong open_owner(void)
 
 static const jlong *snapshot(jlong id, jlong now)
 {
-    fake_array *result = (fake_array *)API(syncSnapshot)(&environment, NULL, id, now);
+    fake_array *result = (fake_array *)checked_snapshot(&environment, NULL, id, now);
     CHECK(result != NULL && result->longs && result->length == 10 && !pending_exception);
     CHECK(result->data.numbers[9] >= 0 && result->data.numbers[9] <= (jlong)ZCL_SYNC_FRESH_MS);
     return result->data.numbers;
@@ -173,7 +271,7 @@ static const jlong *snapshot(jlong id, jlong now)
 
 static const jlong *history_snapshot(jlong id, jlong now)
 {
-    fake_array *result = (fake_array *)API(syncHistorySnapshot)(&environment, NULL, id, now);
+    fake_array *result = (fake_array *)checked_history(&environment, NULL, id, now);
     CHECK(result != NULL && result->longs && result->length >= 12 && result->length <= 156 && !pending_exception);
     const jlong *values = result->data.numbers;
     CHECK(values[10] >= 0 && values[10] <= 1 && values[11] >= 0 && values[11] <= 16);
@@ -192,13 +290,60 @@ static void refuse_pending_snapshots(jlong id, jlong now)
     CHECK(!pending_exception);
     const size_t before = reference_count;
     pending_exception = true;
-    CHECK(API(syncSnapshot)(&environment, NULL, id, now) == NULL);
-    CHECK(API(syncHistorySnapshot)(&environment, NULL, id, now) == NULL);
+    CHECK(checked_snapshot(&environment, NULL, id, now) == NULL);
+    CHECK(checked_history(&environment, NULL, id, now) == NULL);
     CHECK(pending_exception && reference_count == before);
     pending_exception = false;
 }
 
 #ifndef ZCL_JNI_FUZZ
+static void snapshot_projection_refusals(void)
+{
+    for (unsigned mode = 1; mode <= 7; ++mode) {
+        const jlong id = open_owner_mode(true);
+        snapshot_fault = mode;
+        fake_array *result = (fake_array *)checked_history(&environment, NULL, id, 0);
+        const jlong expected = mode == 1 || mode == 7 ? ZCL_INVALID_ENCODING : ZCL_OUT_OF_RANGE;
+        CHECK(result != NULL && result->length == 12 && result->data.numbers[0] == expected);
+        if (mode <= 5) {
+            result = (fake_array *)checked_snapshot(&environment, NULL, id, 0);
+            CHECK(result != NULL && result->length == 10 && result->data.numbers[0] == expected);
+        }
+        snapshot_fault = 0;
+        CHECK(snapshot(id, 0)[0] == ZCL_OK);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
+}
+
+static jlong publication_old, publication_replacement;
+
+static void replace_during_publication(void)
+{
+    CHECK(API(closeSyncOwner)(&environment, NULL, publication_old) == ZCL_OK);
+    publication_replacement = open_owner_mode(true);
+    CHECK(publication_replacement > publication_old);
+}
+
+static void snapshot_publication_races(void)
+{
+    for (unsigned mode = 0; mode < 8; ++mode) {
+        publication_old = open_owner_mode(true);
+        CHECK(API(beginSyncAttempt)(&environment, NULL, publication_old, 100, 10, 1) > 0);
+        allocation_hook = replace_during_publication;
+        fail_new = mode / 2;
+        fail_set = fail_new == 0;
+        CHECK(read_snapshot(&environment, NULL, publication_old, 101, mode % 2 != 0) == NULL);
+        CHECK(pending_exception == (mode / 2 != 3) && allocation_hook == NULL);
+        pending_exception = false;
+        const jlong *state = history_snapshot(publication_replacement, 100);
+        CHECK(state[0] == ZCL_OK && state[2] == 0 && state[3] == ZCL_OK && state[10] == 0);
+        CHECK(snapshot(publication_old, INT64_MAX)[0] == ZCL_CANCELLED);
+        CHECK(API(closeSyncOwner)(&environment, NULL, publication_replacement) == ZCL_OK);
+        release_references();
+    }
+}
+
 static void request_allocation_and_region_failure(void)
 {
     const jlong id = open_owner();
@@ -307,15 +452,15 @@ static void snapshot_failure_preserves_timeout(void)
 {
     const jlong id = open_owner();
     CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 1, 1) > 0);
-    CHECK(API(syncSnapshot)(NULL, NULL, id, 1) == NULL);
+    CHECK(checked_snapshot(NULL, NULL, id, 1) == NULL);
     CHECK(snapshot(id, 0)[9] == 1); /* NULL env did not advance/expire the owner. */
     fail_new = true;
-    CHECK(API(syncSnapshot)(&environment, NULL, id, 1) == NULL && pending_exception);
+    CHECK(checked_snapshot(&environment, NULL, id, 1) == NULL && pending_exception);
     pending_exception = false;
     const jlong *state = snapshot(id, 1);
     CHECK(state[0] == ZCL_OK && state[2] == 0 && state[3] == ZCL_TIMED_OUT && state[9] == 0);
     fail_set = true;
-    CHECK(API(syncSnapshot)(&environment, NULL, id, 1) == NULL && pending_exception);
+    CHECK(checked_snapshot(&environment, NULL, id, 1) == NULL && pending_exception);
     pending_exception = false;
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     CHECK(snapshot(id, 1)[0] == ZCL_CANCELLED);
@@ -327,11 +472,11 @@ static void history_snapshot_failures(void)
     const jlong id = open_owner_mode(true);
     CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 100, UINT32_MAX - 5) == -(jlong)ZCL_OUT_OF_RANGE);
     CHECK(API(beginSyncAttempt)(&environment, NULL, id, 0, 1, UINT32_MAX - 6) > 0);
-    CHECK(API(syncHistorySnapshot)(NULL, NULL, id, 1) == NULL);
+    CHECK(checked_history(NULL, NULL, id, 1) == NULL);
     CHECK(history_snapshot(id, 0)[9] == 1);
     for (unsigned mode = 0; mode < 2; ++mode) {
         if (mode == 0) fail_new = true; else fail_set = true;
-        CHECK(API(syncHistorySnapshot)(&environment, NULL, id, 1) == NULL && pending_exception);
+        CHECK(checked_history(&environment, NULL, id, 1) == NULL && pending_exception);
         pending_exception = false;
         const jlong *state = history_snapshot(id, 1);
         CHECK(state[0] == ZCL_OK && state[3] == ZCL_TIMED_OUT && state[10] == 0);
@@ -395,6 +540,8 @@ static void history_packet_and_owner_replacement(void)
 
 int main(void)
 {
+    snapshot_projection_refusals();
+    snapshot_publication_races();
     request_allocation_and_region_failure(); frame_allocation_and_region_failure();
     pending_snapshot_reads(); pending_begin_preserves_owner();
     pending_request_reply_preserve_attempt();
@@ -404,6 +551,16 @@ int main(void)
     return 0;
 }
 #else
+static void fuzz_snapshot_failure(jlong id, jlong now, uint8_t mode)
+{
+    fail_new = (mode >> 1) % 4;
+    fail_set = fail_new == 0;
+    const bool exception = fail_new != 3;
+    CHECK(read_snapshot(&environment, NULL, id, now, (mode & 1) != 0) == NULL);
+    CHECK(pending_exception == exception);
+    pending_exception = false;
+}
+
 static void advance_fuzz_owner(jlong id, jlong token, bool history, unsigned step)
 {
     for (unsigned n = 1; n < step; ++n) {
@@ -448,6 +605,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
     }
     refuse_pending_snapshots(id, INT64_MAX);
     inspect_fuzz_owner(id, history, step);
+    fuzz_snapshot_failure(id, (jlong)step, data[0]);
     CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
     CHECK(API(failSyncAttempt)(&environment, NULL, id, token, (jint)ZCL_CANCELLED) == ZCL_CANCELLED);
     release_references();

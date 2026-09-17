@@ -1,5 +1,35 @@
 # Development record
 
+## JNI sync snapshot continuation — 2026-09-17
+
+Native draft retirement was pushed and remotely verified as
+`1f76ae41107998ba4aad8a34a2c2371943e44db5`. Continued into JNI balance/history
+snapshots: native report copies now clear before registry unlock and Java
+allocation; numeric output arrays clear at full capacity on success/refusal.
+Clock/timeout effects, source identity, packet shapes, pending exceptions and
+replacement ownership retain their existing semantics.
+
+The existing source-copy fixture now checks live erasure with the real primitive,
+including unused numeric capacity. It covers dirty provider refusals, invalid
+age/balance/deadline/history fields, maximum history, stale owners, entry
+refusals and all four New/Set failure classes. Failed publication is interleaved
+with owner replacement for both response shapes, outside the native lock.
+The inherited implementation fails its pre-allocation retirement assertion.
+The JNI sync fuzzer includes the same observers and publication faults.
+
+Full non-TLS safety passes all 103 Clang and 102 optimized GCC wallet CTest
+cases, both static analyzers and production/test complexity caps 10/15. JNI sync
+ASan/UBSan fuzzing completes 15,158 executions in 61 seconds with a five-second
+input deadline and 512 MiB RSS cap, without findings. Android/JVM tests, both ABI
+debug/release builds, lints, fixture isolation and 16 KiB alignment pass. All
+thirteen selected API35 sync/history/lifecycle/render-failure cases pass in
+8.235 seconds. Architecture/doc counts pass. Full suites include the preserved
+inherited storage work; these changes are independent of it. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/jni-sync-snapshot-retirement/`.
+TLS remains quarantined, no production data is touched, and the historical global
+lint failures remain open. Next: retire JNI request watch/packet scratch while
+preserving publication atomicity and stale-attempt refusal.
+
 ## Native draft continuation — 2026-09-17
 
 The preceding JNI draft slice was pushed and remotely verified as
