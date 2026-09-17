@@ -1,5 +1,35 @@
 # Development record
 
+## Recovered change seed last-use retirement — 2026-09-17
+
+The recovered-change composition previously retained its receive-address binding
+buffer through change derivation and its seed through final context release and
+output publication. The existing secret-provider fixture now observes those
+objects' live identities, requires exact object clears and checks cleanup order.
+It reproduces the old lifetime before the fix. Four production lines clear the
+35-byte anchor immediately after its binding decision and the 64-byte seed
+after its last derivation, before publication/context release. The complete
+work-object clear remains. Derivation, separate blinding contexts, output bytes
+and failure atomicity are unchanged; supplied entropy remains caller-owned.
+
+The focused normal/key/provider suites pass. Removing either new clear in a
+source-copy mutation fails the strengthened fixture. An isolated snapshot of
+`45040b9b0` plus three SHA256-recorded native files passes the complete TLS-off
+gate: static analysis/complexity, 118 Clang sanitizer/oracle groups and 113
+optimized GCC sanitizer groups. The existing recovered-change differential
+fuzzer completes 829 executions in 46 seconds without a finding. Optimized
+frames measure 280 bytes with Clang and 352 bounded bytes with GCC.
+
+Android/JVM, debug/release, lint, fixture/result isolation and 16 KiB alignment
+pass (155 tasks). Both normal binding and secret-provider fault fixtures linked
+against release-built x86_64 archives pass API30/35/36, including observed
+retirement order. ARM64 compiles only; this is no hardware-custody proof. Only
+public deterministic fixtures were used and invocation-owned executables were
+removed. Evidence: `.cache/android-wallet/mission-20260917/change-seed-retirement/`.
+TLS remains quarantined. Next: continue custody/lifecycle and complete-send
+prerequisite review; hardware qualification and authenticated chain state remain
+open before any user-visible signing or real funds.
+
 ## Complete internal transaction signing — 2026-09-17
 
 The internal C signer now completes a whole reviewed P2PKH transaction without

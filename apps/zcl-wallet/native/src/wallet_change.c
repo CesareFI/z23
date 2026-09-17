@@ -41,6 +41,8 @@ static zcl_status recovered_change(const zcl_wallet_info *info, const uint8_t *e
     memset(&work, 0, sizeof(work));
     zcl_status status = zcl_ec_begin(&work.context, blinding, 32);
     if (status == ZCL_OK) status = recover_seed(&work, info, entropy, entropy_len);
+    /* The binding decision is complete. Change derivation needs only seed. */
+    zcl_secure_zero(work.anchor, sizeof(work.anchor));
     if (status == ZCL_OK) {
         /* The matched anchor ends its context before change begins. Preserve
          * independent blinding and one live context while reusing only seed. */
@@ -50,6 +52,8 @@ static zcl_status recovered_change(const zcl_wallet_info *info, const uint8_t *e
             status = zcl_seed_address(work.seed, sizeof(work.seed), info->network, 1, index,
                 work.context.handle, work.candidate, sizeof(work.candidate), &work.length);
     }
+    /* No subsequent output check, publication or context release needs seed. */
+    zcl_secure_zero(work.seed, sizeof(work.seed));
     if (status == ZCL_OK && work.length != sizeof(work.candidate)) status = ZCL_CRYPTO_FAILURE;
     if (status == ZCL_OK) memcpy(address, work.candidate, sizeof(work.candidate));
     zcl_ec_end(&work.context);

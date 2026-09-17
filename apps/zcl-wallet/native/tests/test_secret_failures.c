@@ -26,6 +26,7 @@ static observed_context observed[3];
 
 static bool watch_seed;
 static uintptr_t seed_identity;
+static uintptr_t anchor_identity;
 static uint8_t seed_snapshot[64];
 static size_t seed_calls, address_calls, seed_wipes, seed_end_calls, anchor_end_calls;
 static size_t short_address;
@@ -46,6 +47,7 @@ zcl_status __real_zcl_entropy_seed(const uint8_t *, size_t, uint8_t *, size_t);
 zcl_status __real_zcl_seed_address(const uint8_t *, size_t, zcl_network, uint32_t, uint32_t,
     const secp256k1_context *, uint8_t *, size_t, size_t *);
 zcl_status __real_zcl_ec_public(const secp256k1_context *, const uint8_t *, size_t, uint8_t *, size_t);
+void __real_zcl_ec_end(zcl_ec_context *);
 
 static void require(bool condition, const char *message)
 {
@@ -83,6 +85,8 @@ zcl_status __wrap_zcl_seed_address(const uint8_t *seed, size_t length, zcl_netwo
             "address must use the one live recovered seed");
         require(length == 64 && memcmp(seed, seed_snapshot, 64) == 0, "reused seed changed");
         require(chain == address_calls && index == (address_calls == 0 ? 0U : 19U), "recovered path changed");
+        if (chain == 0) anchor_identity = (uintptr_t)address;
+        else require(anchor_identity == 0, "receive anchor must retire before change derivation");
         ++address_calls;
     }
     const zcl_status status = __real_zcl_seed_address(seed, length, network, chain, index,
@@ -98,10 +102,25 @@ static void observe_seed_wipe(const void *buffer, size_t length)
     const uintptr_t start = (uintptr_t)buffer;
     if (seed_identity < start || seed_identity - start >= length) return;
     const size_t offset = (size_t)(seed_identity - start);
-    require(length - offset >= 64, "recovered seed wipe is short");
+    require(offset == 0 && length == 64, "recovered seed needs its own last-use retirement");
     require_zero((const uint8_t *)buffer + offset, 64);
     seed_identity = 0;
     ++seed_wipes;
+}
+
+static void observe_anchor_wipe(const void *buffer, size_t length)
+{
+    if (!watch_seed || anchor_identity == 0 || (uintptr_t)buffer != anchor_identity) return;
+    require(length == 35, "receive anchor wipe must cover its exact object");
+    require_zero(buffer, length);
+    anchor_identity = 0;
+}
+
+void __wrap_zcl_ec_end(zcl_ec_context *context)
+{
+    if (watch_seed && address_calls == 2)
+        require(seed_identity == 0, "seed must retire before final context release");
+    __real_zcl_ec_end(context);
 }
 
 zcl_status __wrap_zcl_ec_public(const secp256k1_context *context, const uint8_t *secret,
@@ -250,6 +269,7 @@ int __wrap_mbedtls_ripemd160(const unsigned char *input, size_t length, unsigned
 void __wrap_mbedtls_platform_zeroize(void *buffer, size_t length)
 {
     __real_mbedtls_platform_zeroize(buffer, length);
+    observe_anchor_wipe(buffer, length);
     require_zero(buffer, length);
     observe_seed_wipe(buffer, length);
     observe_address_key_wipe(buffer, length);
@@ -412,7 +432,7 @@ static int address_provider_failures(void)
 
 static void seed_watch_start(size_t failure)
 {
-    require(seed_identity == 0 && !watch_seed, "previous recovered seed lifetime did not end");
+    require(seed_identity == 0 && anchor_identity == 0 && !watch_seed, "previous recovered seed lifetime did not end");
     inject(failure);
     seed_calls = address_calls = seed_wipes = seed_end_calls = anchor_end_calls = 0;
     __real_mbedtls_platform_zeroize(seed_snapshot, sizeof(seed_snapshot));
@@ -423,6 +443,7 @@ static void seed_watch_end(void)
 {
     require(seed_identity == 0 && seed_calls <= 1 && seed_wipes == seed_calls,
         "recovered seed escaped without complete live erasure");
+    require(anchor_identity == 0, "receive anchor escaped without last-use retirement");
     require(live_contexts == 0 && contexts_opened == contexts_closed, "recovered provider context escaped");
     watch_seed = false;
     __real_mbedtls_platform_zeroize(seed_snapshot, sizeof(seed_snapshot));

@@ -1,5 +1,32 @@
 # C parser foundation safety review
 
+## Recovered change seed last-use retirement — 2026-09-17
+
+Scope: two exact object clears in `wallet_change.c` and stronger observations
+in the existing secret-provider failure fixture. The receive-address anchor
+clears after its binding decision; the seed clears after the final derivation,
+before public output checks/copy and context release. Whole-work cleanup remains.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Clears use sizeof the existing fixed 35-byte anchor and 64-byte seed. No capacity, offset, copy or output bound changes. Normal/failure tests retain canaries and exact byte comparisons. |
+| Integer overflow/underflow, signed/unsigned conversions | No production arithmetic or conversion changes. Test identities are compared as uintptr_t and bytes are inspected only through live clear spans; subtraction remains guarded by ordering. |
+| Use-after-free, double-free, leaks | No new allocation/free. Both automatic objects remain live during clearing. The existing first context still ends before the second starts; final context cleanup remains unconditional. |
+| NULL dereferences, uninitialized memory | Existing public gates are unchanged. The entire work object initializes before either new clear, including failed initial context setup and dirty provider failure. |
+| Dangling pointers, pointer arithmetic | No pointer escapes or new production pointer arithmetic. The test stores integer identities and clears them upon the observed live wipe; later observers require retirement without dereferencing stale storage. |
+| Format strings, secret leakage | No product logging or formatting. The seed no longer survives into final output publication/context release, and the wallet-linked anchor no longer survives into change derivation. Existing complete-object cleanup remains; this is not a compiler-spill/whole-stack erasure claim. |
+| Stack usage, allocation limits | No new production object, VLA, recursion or heap. Optimized frames are 280 bytes with Clang and 352 bounded bytes with GCC, below 4096. Nested provider frames remain separate bounds. |
+| Malformed serialization/network input | No record, binding, key path, invalid-child, blinding, output or failure predicate changes. Tests retain wrong-wallet, malformed successful length, provider failure and unchanged-failure output checks. |
+| Races, resource exhaustion | Existing synchronous stable-input contract remains. Two fixed bounded clears add no shared state, retry or external operation. Caller-owned entropy and blinding are not modified. |
+
+The strengthened fixture first fails against the old source, then passes the
+fix; deleting either clear fails its independent mutation. Full isolated
+TLS-off analysis/complexity and 118 Clang sanitizer/oracle plus 113 GCC sanitizer
+groups pass. Recovered-change differential fuzzing completes 829 executions.
+Android gates pass, and normal binding plus interposed secret-provider fixtures
+pass against release-built x86_64 libraries on API30/35/36. ARM64 builds only.
+TLS and external per-use hardware custody requirements remain unchanged.
+
 ## Complete internal transaction signing — 2026-09-17
 
 Scope: `transaction_review_sign.c`, its internal declaration and registration,
