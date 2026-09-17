@@ -191,6 +191,9 @@ ZCL_TEST_GROUP(store_e2e_shielded)
 ZCL_TEST_GROUP(soak_harness)
 ZCL_TEST_GROUP(event)
 ZCL_TEST_GROUP(download)
+ZCL_TEST_GROUP(download_contention)
+ZCL_TEST_GROUP(download_enqueue_profile)
+ZCL_TEST_GROUP(download_speed_contract)
 ZCL_TEST_GROUP(body_coverage)
 ZCL_TEST_GROUP(body_history)
 ZCL_TEST_GROUP(consensus)
@@ -255,6 +258,8 @@ ZCL_TEST_GROUP(code_emitter)
 ZCL_TEST_GROUP(fact_writers)
 ZCL_TEST_GROUP(fleet_board)
 ZCL_TEST_GROUP(fleet_board_bridge)
+ZCL_TEST_GROUP(fleet_steer)
+ZCL_TEST_GROUP(fleet_gateway)
 ZCL_TEST_GROUP(board_site)
 ZCL_TEST_GROUP(fleet_enrol)
 ZCL_TEST_GROUP(fleet_objectives)
@@ -289,6 +294,9 @@ ZCL_TEST_GROUP(dev_fleet)
 ZCL_TEST_GROUP(dev_fleet_start)
 ZCL_TEST_GROUP(fleet_agents)
 ZCL_TEST_GROUP(dev_orient)
+/* dev.beta6.verify: the real beta6_bs_arm() preflight against a candidate
+ * serve tree, called from this process only. */
+ZCL_TEST_GROUP(dev_beta6_verify)
 ZCL_TEST_GROUP(devagent_situation)
 ZCL_TEST_GROUP(devagent_rules)
 ZCL_TEST_GROUP(devagent_start)
@@ -301,6 +309,7 @@ ZCL_TEST_GROUP(devagent_hot)
 ZCL_TEST_GROUP(devagent_outcomes)
 ZCL_TEST_GROUP(devagent_ticketkey)
 ZCL_TEST_GROUP(devagent_queue)
+ZCL_TEST_GROUP(devagent_worker)
 ZCL_TEST_GROUP(devagent_mail)
 ZCL_TEST_GROUP(dev_train)
 ZCL_TEST_GROUP(dev_train_keep)
@@ -1057,6 +1066,7 @@ ZCL_TEST_GROUP(mint_anchor_fresh_datadir)
 ZCL_TEST_GROUP(no_state_source)
 ZCL_TEST_GROUP(fold_inram_crash_proof)
 ZCL_TEST_GROUP(stage_crash_sweep)
+ZCL_TEST_GROUP(reducer_body_fsync_crash)
 ZCL_TEST_GROUP(coins_kv_read_cache)
 ZCL_TEST_GROUP(parallel_range_fold)
 ZCL_TEST_GROUP(psc_real_range)
@@ -1309,6 +1319,29 @@ ZCL_TEST_GROUP(replay_receipt_root)
 ZCL_TEST_GROUP(directory_watcher)
 ZCL_TEST_GROUP(watcher_record)
 ZCL_TEST_GROUP(watcher_lease)
+/* Exact resident-launch seam: the launcher half of the app-run path. Proves
+ * acceptance-record refusal before any process exists, the mapped-image
+ * receipt (Linux fexecve/proc triple, macOS suspended CodeDirectory), the
+ * nonce-authenticated IPC frame codec with stale-launch rejection, and a
+ * launch/cancel cycle that leaves neither descriptors nor children behind.
+ * Windows asserts the named platform refusal. */
+ZCL_TEST_GROUP(resident_launch)
+/* Product acceptance contract for the resident-launch CONSUMER, driven
+ * against C's landed app.invoke.package slice: installs REAL packages
+ * (C's shipped ztasks from its repo bytes, plus a parking candidate)
+ * through the production zcode lifecycle and drives the six product
+ * stages (production accepted-artifact record, verified launch, fd-3
+ * frame protocol, observable result, bounded cancel/reap, rollback).
+ * Stages a–e assert C's bounded one-shot invocation semantics; stage f
+ * is the born-RED acceptance TRAP for C's coming serving-generation
+ * supersession + atomic-rollback landing (nine named checks f1–f9:
+ * serving record, activate, READY-before-switch, atomic switch, stale
+ * refusal, pending supersession, failure containment, EXACT-A rollback,
+ * restart persistence). resident_launch covers the platform seam. */
+ZCL_TEST_GROUP(resident_launch_contract)
+ZCL_TEST_GROUP(package_resident_record)
+ZCL_TEST_GROUP(task_document)
+ZCL_TEST_GROUP(package_local)
 /* astro lane: platform/modules/astro's exact fixed-grid arithmetic and the birth chart
  * built on it. The determinism cases are the point — a chart another node
  * recomputes must match bit for bit, so the group asserts that property by

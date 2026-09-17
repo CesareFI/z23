@@ -691,6 +691,10 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_map)
 
+/* Detailed work results include the exact proof roots and the confirmation
+ * continuation as well as the human summary. Their complete result envelope
+ * exceeds RESULT_BUDGET even when the data object alone fits. Both aliases
+ * use the same bounded allowance; evidence and acceptance rules stay intact. */
 ZCL_COMMAND_READY_READ(
     "zcode.work.status", "zcode.work", "", "Show one human-first work status",
     "Rebuilds task and candidate state, then read-only re-verifies the exact "
@@ -701,7 +705,7 @@ ZCL_COMMAND_READY_READ(
     "human decision; accepted work resumes its existing idempotent acceptance "
     "to recover the exact publication continuation. Status itself performs no "
     "acceptance, source edit or publication.",
-    ZCL_COMMAND_RESULT_BUDGET,
+    ZCL_COMMAND_LIST_BUDGET,
     "zcode,work,status,human,evidence,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
     "workspace,work,datadir,details", "",
@@ -718,7 +722,7 @@ ZCL_COMMAND_READY_READ(
     "A discoverable alias for work status. It returns the same read-only proof "
     "facts and conversational confirmation identity; no display alias becomes "
     "authority and no window is launched.",
-    ZCL_COMMAND_RESULT_BUDGET,
+    ZCL_COMMAND_LIST_BUDGET,
     "zcode,work,show,human,evidence,result,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
     "workspace,work,datadir,details", "",
@@ -2244,7 +2248,7 @@ ZCL_COMMAND_READY_COMMAND(
     "resolver.", 0,
     "zcode,use,package,dependency,lock,install",
     "zcl.zcode_use.input.v1", "zcl.zcode_use.v1",
-    "name_or_root,plan_id,now_unix,datadir", "",
+    "name_or_root,plan_id,now_unix,datadir,local_only,dir,release_hex,manifest_hex,recipe_hex", "",
     "z23 zcode use --input='{\"name_or_root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -4706,11 +4710,16 @@ ZCL_COMMAND_READY_COMMAND(
     "authorization. A dependency-rich step list is pageable with the "
     "shared `cursor`/`max_items` controls: a shortened reply carries a "
     "`_page` descriptor naming where to resume, and the complete list is "
-    "the concatenation of every page in order.",
+    "all pages in order. With local_only:true, explicit "
+    "datadir, dir, release_hex, manifest_hex and recipe_hex, verifies the signed "
+    "exact source into a private nonhosting child store without Commons publication. "
+    "Returns that store's datadir for a separate add commit; execution acceptance "
+    "remains a separate exact-artifact grant. Local planning may retain verified "
+    "source or partial content on refusal; public publication quota is unchanged.",
     0,
     "zcode,package,add,install,plan,dependency,lock,resolve",
     "zcl.zcode_add_plan.input.v1", "zcl.zcode_add_plan.v1",
-    "name_or_root,now_unix,datadir,cursor,max_items", "name_or_root",
+    "name_or_root,now_unix,datadir,cursor,max_items,local_only,dir,release_hex,manifest_hex,recipe_hex", "name_or_root",
     "z23 zcode package add plan --input='{\"name_or_root\":\"ringbuffer\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,

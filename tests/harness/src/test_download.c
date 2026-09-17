@@ -13,6 +13,125 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <time.h>
+#include <dlfcn.h>
+#include "../../../tools/dev/c3_mutex_probe.h"
+
+static struct c3_mutex_sample dl_profile_last;
+
+static int dl_profile_compare(const void *a, const void *b)
+{
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+
+static int dl_profile_duplicate_batch(struct download_manager *dm,
+                                      const struct uint256 *hashes,
+                                      const int32_t *heights, size_t count,
+                                      enum dl_work_class work_class)
+{
+    dl_profile_last = (struct c3_mutex_sample){0};
+    size_t before = dm->queue_len;
+    size_t slots = dm->qset_slots;
+    const struct c3_mutex_probe_api *probe = dlsym(RTLD_DEFAULT, "c3_mutex_probe_v1");
+    if (getenv("C3_REQUIRE_MUTEX_PROBE") && !probe) {
+        fputs("required C3 mutex probe is absent\n", stderr);
+        return 1;
+    }
+    if (probe) probe->begin(&dm->cs);
+    int64_t begin = platform_time_monotonic_us();
+    clock_t cpu_begin = clock();
+    size_t added = dl_queue_blocks_class(dm, hashes, heights, count, work_class);
+    clock_t cpu_end = clock();
+    int64_t elapsed = platform_time_monotonic_us() - begin;
+    struct c3_mutex_sample sample = {0};
+    if (probe) {
+        size_t measured = probe->read(&sample, 1);
+        probe->begin(NULL);
+        if (measured != 1) {
+            fprintf(stderr, "expected one enqueue lock, observed %zu\n", measured);
+            return 1;
+        }
+    }
+    dl_profile_last = sample;
+    printf("{\"schema\":\"c3.duplicate_enqueue.v1\",\"queued\":%zu,"
+           "\"duplicate_batch\":%zu,\"class\":\"%s\",\"added\":%zu,\"elapsed_us\":%lld,"
+           "\"cpu_us\":%.0f,\"qset_before\":%zu,\"qset_after\":%zu,"
+           "\"mutex_measured\":%s,\"wait_ns\":%llu,\"hold_ns\":%llu,"
+           "\"unlock_ns\":%llu,\"first_seen_enqueues_per_second\":%.3f}\n", before, count,
+           work_class == DL_WORK_FORWARD ? "forward" : "history",
+           added, (long long)elapsed,
+           cpu_begin == (clock_t)-1 || cpu_end == (clock_t)-1 ? -1.0 :
+           1000000.0 * (double)(cpu_end - cpu_begin) / CLOCKS_PER_SEC,
+           slots, dm->qset_slots, probe ? "true" : "false",
+           (unsigned long long)sample.wait_ns, (unsigned long long)sample.hold_ns,
+           (unsigned long long)sample.unlock_ns,
+           elapsed > 0 ? 1000000.0 * (double)added / (double)elapsed : 0.0);
+    if (added != (before ? 0 : count) || dm->queue_len != (before ? before : count)) {
+        fprintf(stderr, "duplicate enqueue changed queue: before=%zu after=%zu added=%zu\n",
+                before, dm->queue_len, added);
+        return 1;
+    }
+    return 0;
+}
+
+int test_download_enqueue_profile(void)
+{
+    const size_t sizes[] = {0, 1024, 8192, 65536};
+    struct uint256 *hashes = calloc(65536, sizeof(*hashes));
+    int32_t *heights = calloc(65536, sizeof(*heights));
+    if (!hashes || !heights) {
+        perror("download enqueue profile allocation");
+        free(hashes); free(heights);
+        return 1;
+    }
+    for (size_t i = 0; i < 65536; i++) {
+        heights[i] = (int32_t)i + 1;
+        memcpy(hashes[i].data, &heights[i], sizeof(heights[i]));
+    }
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        const size_t batches[] = {256, sizes[i] ? sizes[i] : 65536};
+        for (size_t b = 0; b < 2; b++) {
+            for (unsigned path = 0; path < 2; path++) {
+                uint64_t waits[5], holds[5], unlocks[5];
+                for (unsigned repeat = 0; repeat < 5; repeat++) {
+                    struct download_manager dm;
+                    dl_init(&dm);
+                    if (sizes[i] && dl_queue_blocks(&dm, hashes, heights, sizes[i]) != sizes[i]) {
+                        fputs("download enqueue profile seed failed\n", stderr);
+                        failures++;
+                    } else {
+                        failures += dl_profile_duplicate_batch(&dm, hashes, heights,
+                            batches[b], path ? DL_WORK_HISTORY : DL_WORK_FORWARD);
+                    }
+                    dl_free(&dm);
+                    waits[repeat] = dl_profile_last.wait_ns;
+                    holds[repeat] = dl_profile_last.hold_ns;
+                    unlocks[repeat] = dl_profile_last.unlock_ns;
+                }
+                if (dlsym(RTLD_DEFAULT, "c3_mutex_probe_v1")) {
+                    qsort(waits, 5, sizeof(*waits), dl_profile_compare);
+                    qsort(holds, 5, sizeof(*holds), dl_profile_compare);
+                    qsort(unlocks, 5, sizeof(*unlocks), dl_profile_compare);
+                    printf("{\"schema\":\"c3.enqueue_mutex_summary.v1\",\"queued\":%zu,"
+                           "\"batch\":%zu,\"class\":\"%s\",\"samples\":5,"
+                           "\"duplicate_pct\":%u,\"wait_ns_p50\":%llu,\"wait_ns_p95\":%llu,"
+                           "\"wait_ns_max\":%llu,\"hold_ns_p50\":%llu,\"hold_ns_p95\":%llu,"
+                           "\"hold_ns_max\":%llu,\"unlock_ns_p50\":%llu,\"unlock_ns_max\":%llu}\n",
+                           sizes[i], batches[b], path ? "history" : "forward", sizes[i] ? 100 : 0,
+                           (unsigned long long)waits[2], (unsigned long long)waits[4],
+                           (unsigned long long)waits[4], (unsigned long long)holds[2],
+                           (unsigned long long)holds[4], (unsigned long long)holds[4],
+                           (unsigned long long)unlocks[2], (unsigned long long)unlocks[4]);
+                }
+            }
+        }
+    }
+    free(hashes); free(heights);
+    return failures;
+}
 
 /* Helper: make a uint256 from a single byte value */
 static struct uint256 make_hash(uint8_t v)
@@ -148,6 +267,70 @@ static int test_dl_queue_dedup(void)
         dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
         ASSERT(queued == 4); /* 5 queued minus 1 moved to in-flight */
         ASSERT(inflight == 1);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_received_pending_staging(void)
+{
+    int failures = 0;
+    TEST("received-but-unstaged block is not re-queued or re-requested") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(41);
+        struct uint256 h2 = make_hash(42);
+        int32_t h1_height = 700;
+        int32_t h2_height = 701;
+
+        /* Normal path: requested, body arrives, slot settles. The hash is
+         * now in NO HAVE_DATA filter's reach until the intake worker
+         * persists it — the duplicate-download hole. */
+        ASSERT(dl_mark_requested(&dm, &h1, h1_height, 1));
+        ASSERT(dl_mark_received(&dm, &h1) == 1);
+        ASSERT(!dl_is_in_flight(&dm, &h1));
+
+        /* A producer pass in the arrival->staging window must not
+         * re-queue the hash ... */
+        ASSERT(dl_queue_blocks(&dm, &h1, &h1_height, 1) == 0);
+        ASSERT(dm.queue_len == 0);
+        ASSERT(dm.total_requeue_suppressed_pending == 1);
+
+        /* ... the priority queue path must not either ... */
+        dl_queue_priority(&dm, &h1, h1_height);
+        ASSERT(dm.queue_len == 0);
+        ASSERT(dm.total_requeue_suppressed_pending == 2);
+
+        /* ... and the direct at-tip request path must refuse it too. */
+        ASSERT(!dl_mark_requested(&dm, &h1, h1_height, 2));
+        ASSERT(dm.total_requeue_suppressed_pending == 3);
+        ASSERT(!dl_is_in_flight(&dm, &h1));
+
+        /* A control hash whose body never arrived queues normally. */
+        ASSERT(dl_queue_blocks(&dm, &h2, &h2_height, 1) == 1);
+
+        /* TTL lapse: a never-staged body must become re-requestable
+         * (fail-open). Age the tombstone past the window instead of
+         * sleeping. */
+        for (size_t i = 0; i < dm.num_slots; i++) {
+            if (!dm.slots[i].active && uint256_eq(&dm.slots[i].hash, &h1)) {
+                dm.slots[i].received_time =
+                    (int64_t)platform_time_wall_time_t() -
+                    DL_RECEIVED_PENDING_SECS - 1;
+            }
+        }
+        ASSERT(dl_queue_blocks(&dm, &h1, &h1_height, 1) == 1);
+        ASSERT(dl_mark_requested(&dm, &h1, h1_height, 2));
+        ASSERT(dl_is_in_flight(&dm, &h1));
+
+        /* Activation cleared the stale tombstone timestamp. */
+        for (size_t i = 0; i < dm.num_slots; i++) {
+            if (dm.slots[i].active && uint256_eq(&dm.slots[i].hash, &h1))
+                ASSERT(dm.slots[i].received_time == 0);
+        }
 
         dl_free(&dm);
         PASS();
@@ -1011,6 +1194,35 @@ static int test_gap_fill_timeout_wakes_dispatcher(void)
     return failures;
 }
 
+static int test_gap_fill_kick_latch_skips_wait(void)
+{
+    int failures = 0;
+    TEST("gap_fill kick latch: a mid-pass kick is never lost to the timer") {
+        /* The regression: a durable body completion lands while the worker
+         * is mid-pass (not inside pthread_cond_timedwait). Without a latch
+         * the broadcast is lost and refill waits out the whole 5 s tick. */
+        gap_fill_test_set_running(true);
+        gap_fill_kick();
+        ASSERT(gap_fill_test_kick_pending());
+
+        struct gap_fill_stats st_before, st_after;
+        gap_fill_get_stats(&st_before);
+        gap_fill_test_await_kick_or_tick();
+        gap_fill_get_stats(&st_after);
+        ASSERT(st_after.kick_latch_skips == st_before.kick_latch_skips + 1);
+        ASSERT(!gap_fill_test_kick_pending());
+
+        /* A kick while the service is down stays a no-op and never
+         * latches a stale wakeup into the next run. */
+        gap_fill_test_set_running(false);
+        gap_fill_kick();
+        ASSERT(!gap_fill_test_kick_pending());
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_gap_fill_queued_idle_wakes_dispatcher(void)
 {
     int failures = 0;
@@ -1821,6 +2033,7 @@ int test_download(void)
     failures += test_dl_mark_requested();
     failures += test_dl_mark_received();
     failures += test_dl_queue_dedup();
+    failures += test_dl_received_pending_staging();
     failures += test_dl_assign_to_peer();
     failures += test_dl_assignment_generation_parking();
     failures += test_dl_assignment_parking_is_per_peer();
@@ -1841,6 +2054,7 @@ int test_download(void)
     failures += test_dl_diagnostics();
     failures += test_gap_fill_timeout_sweep();
     failures += test_gap_fill_timeout_wakes_dispatcher();
+    failures += test_gap_fill_kick_latch_skips_wait();
     failures += test_gap_fill_queued_idle_wakes_dispatcher();
     failures += test_dl_many_insertions();
     failures += test_dl_ibd_windows();

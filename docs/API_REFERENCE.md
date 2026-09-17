@@ -74,17 +74,17 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 879 |
+| Registry entries (branches + leaves) | 890 |
 | Top-level roots | 14 |
-| Branches | 197 |
-| Leaves (dispatchable command paths) | 682 |
-| … `ready` (live handler in this build) | 605 |
-| … `compat` (metadata only, names a fallback) | 47 |
+| Branches | 199 |
+| Leaves (dispatchable command paths) | 691 |
+| … `ready` (live handler in this build) | 613 |
+| … `compat` (metadata only, names a fallback) | 48 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `z23-dev`) | 46 |
-| Leaves with `effect=mutate` | 246 |
+| … dev-gated 🔧 (`ready` only in `z23-dev`) | 47 |
+| Leaves with `effect=mutate` | 252 |
 | Leaves with `effect=destructive` | 6 |
-| Leaves requiring **owner** authority | 128 |
+| Leaves requiring **owner** authority | 130 |
 
 Per source file:
 
@@ -92,11 +92,11 @@ Per source file:
 |---|---|---|---|
 | `engine/composition/commands/root.def` | 10 | 5 | 5 |
 | `engine/composition/commands/core.def` | 122 | 29 | 93 |
-| `engine/composition/commands/apps.def` | 16 | 3 | 13 |
+| `engine/composition/commands/apps.def` | 18 | 3 | 15 |
 | `engine/composition/commands/app_features.def` | 75 | 20 | 55 |
-| `engine/composition/commands/store.def` | 18 | 0 | 18 |
+| `engine/composition/commands/store.def` | 19 | 0 | 19 |
 | `engine/composition/commands/ops.def` | 59 | 11 | 48 |
-| `engine/composition/commands/dev.def` | 107 | 21 | 86 |
+| `engine/composition/commands/dev.def` | 110 | 22 | 88 |
 | `engine/composition/commands/code.def` | 33 | 4 | 29 |
 | `engine/composition/commands/accounts.def` | 11 | 2 | 9 |
 | `engine/composition/commands/vault.def` | 24 | 4 | 20 |
@@ -108,7 +108,7 @@ Per source file:
 | `engine/composition/commands/story.def` | 5 | 1 | 4 |
 | `engine/composition/commands/fleet_board.def` | 11 | 3 | 8 |
 | `engine/composition/commands/mind.def` | 4 | 1 | 3 |
-| `engine/composition/commands/fleet.def` | 23 | 6 | 17 |
+| `engine/composition/commands/fleet.def` | 28 | 7 | 21 |
 | `engine/composition/commands/fleet_agents.def` | 1 | 0 | 1 |
 | `engine/composition/commands/fleet_enrol.def` | 4 | 0 | 4 |
 | `engine/composition/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -443,6 +443,7 @@ represented by its children's sections.
 | `app list` | ready | read / read / public · fast/low | none | `zcl.app_index.v1` | `z23 app list` | List installed App manifests |
 | `app inspect` | ready | read / read / public · fast/low | **`app_id`** | `zcl.app_manifest_summary.v1` | `z23 app inspect social` | Inspect one App manifest and bindings |
 | `app protocols` (aliases: `appprotocols`) | compat → `z23 appprotocols` | read / read / public · fast/low | none | `zcl.app_protocols.v1` | `z23 app protocols` | List App protocol contracts — *native adapter is not executable yet; use the compatibility target* |
+| `app tasks` | ready | mutate / app-write / operator · background/low | **`datadir`**, `app`, **`action`**, `expected_revision`, `task_id`, `title`, `preview_root`, `preview_receipt`, `preview_program` | `zcl.task_document.v1` | `z23 app tasks open` | Save and reopen your local tasks |
 
 #### `app.transaction-types` — Discover every semantic ZCL transaction shape and its safe workflow
 
@@ -454,6 +455,12 @@ represented by its children's sections.
 | `app transaction-types command` | ready | read / read / public · instant/tiny | **`path`** | `zcl.transaction_command.v1` | `z23 app transaction-types command core.wallet.transaction.send` | Reverse-map one native command to every transaction workflow it can serve |
 | `app transaction-types wire` | ready | read / read / public · instant/tiny | none | `zcl.transaction_wire_catalog.v1` | `z23 app transaction-types wire` | List every consensus transaction wire era and script-processing bucket |
 | `app transaction-types micro-lab` | ready | read / read / public · instant/tiny | **`slot`** | `zcl.transaction_micro_lab.v1` | `z23 app transaction-types micro-lab --slot=1` | Inspect the checked 100-transaction micro-lab campaign or one numbered slot |
+
+#### `app.invoke` — Invoke a manifest-owned App route
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app invoke package` | ready | mutate / app-write / operator · background/low | `datadir`, `app`, `action`, `package_root`, `receipt_id`, `artifact_sha3`, `program`, `input_text`, `accept_execution`, `operation`, `configuration_generation`, `expected_generation`, `nonce`, `start_token`, `generation` | `zcl.package_resident.v1` | `z23 app invoke package --input=-` | Run an explicitly accepted installed resident app |
 
 #### `app.service` — Token-gated services declared in the service catalog
 
@@ -556,6 +563,7 @@ represented by its children's sections.
 | `app store products` | ready | read / read / operator · fast/low | `datadir` | `zcl.app_store_products.v1` | `z23 app store products` | List the store's active products |
 | `app store catalog` | ready | read / read / operator · fast/low | none | `zcl.store_catalog.v1` | `z23 app store catalog` | List what the store sells |
 | `app store order` | ready | mutate / app-write / **owner** · foreground/moderate | `product_id`, `customer_address`, `output_path`, `payment_kind` | `zcl.store_order.v1` | `z23 app store order --input='{"product_id":1,"customer_address":"t1...","output_path":"/tmp/bought.bin"}'` | Place an order for a product |
+| `app store remotebuy` | ready | mutate / app-write / **owner** · foreground/moderate | **`seller_onion`**, **`product_id`**, **`customer_address`**, `output_path`, `payment_kind` | `zcl.store_remotebuy.v1` | `z23 app store remotebuy --input='{"seller_onion":"abc...xyz.onion","product_id":1,"customer_address":"t1...","output_path":"/tmp/bought.bin"}'` | Place an order on another node's store, over Tor |
 | `app store pay` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `purchase_id`, `from_address`, `confirm` | `zcl.store_pay.v1` | `z23 app store pay --input='{"purchase_id":1,"from_address":"t1...","confirm":true}'` | Pay a placed order |
 | `app store purchases` | ready | read / read / operator · fast/low | **`purchase_id`** | `zcl.store_purchases.v1` | `z23 app store purchases` | Show purchases and what is still owed |
 | `app store collect` | ready | mutate / app-write / **owner** · foreground/moderate | **`purchase_id`**, `output_path` | `zcl.store_collect.v1` | `z23 app store collect --input='{"purchase_id":1,"output_path":"/tmp/bought.bin"}'` | Download a purchase you paid for |
@@ -839,7 +847,8 @@ represented by its children's sections.
 | `dev agent claim` | compat 🔧 → `z23-dev dev agent claim` | mutate / dev-mutation / operator · fast/low | `cwd`, **`story`**, `files`, `release` | `zcl.agent_claim.v1` | `z23-dev dev agent claim hex-codec` | Claim files for one story so lanes do not collide — *the file-claim ledger is a development-lane coordination surface* |
 | `dev agent hot` | ready | read / read / operator · background/high | **`path`**, `group`, `cwd` | `zcl.agent_hot.v1` | `z23 dev agent hot --path=tools/command/native_devagent_hot.c` | Run one saved file's owning test group, hot or rebuilt |
 | `dev agent ticketkey` | ready | read / read / operator · fast/low | `group`, `cwd`, `tip` | `zcl.agent_ticketkey.v1` | `z23 dev agent ticketkey --group=devagent_situation` | Commuting-ticket key of one test group at one tip |
-| `dev agent queue` | compat 🔧 → `z23-dev dev agent queue` | mutate / dev-mutation / operator · fast/low | **`action`**, `kind`, `name`, `group`, `path`, `brief`, `model`, `attempt`, `json`, `cwd` | `zcl.agent_queue.v1` | `z23 dev agent queue post --kind=leaf --name=situation` | Post, dispatch, reap, and inspect async flash-unit runs without blocking — *the unit queue is a development-lane coordination surface* |
+| `dev agent queue` | compat 🔧 → `z23-dev dev agent queue` | mutate / dev-mutation / operator · fast/low | **`action`**, `kind`, `name`, `group`, `path`, `brief`, `model`, `attempt`, `json`, `cwd`, `worker`, `session` | `zcl.agent_queue.v1` | `z23 dev agent queue post --kind=leaf --name=situation` | Post, dispatch, reap, and inspect async flash-unit runs without blocking — *the unit queue is a development-lane coordination surface* |
+| `dev agent worker` | compat 🔧 → `z23-dev dev agent worker` | mutate / dev-mutation / operator · foreground/moderate | **`action`**, `worker`, `session`, `model`, `deadline_s`, `idle_start_s`, `idle_limit_s`, `max_jobs`, `time_cap_s`, `cpu_s`, `mem_mb`, `token_cap` | `zcl.agent_worker.v1` | `z23 dev agent worker run --worker=resident-a --max_jobs=1` | Consume the unit queue continuously with a bounded resident worker — *the resident worker is a development-lane coordination surface* |
 | `dev agent mail` | compat 🔧 → `z23-dev dev agent mail` | mutate / dev-mutation / operator · fast/low | **`action`**, `to`, `kind`, `body`, `since`, `from`, **`cursor`**, `agent`, `ref`, `cwd` | `zcl.agent_mail.v1` | `z23 dev agent mail post --to=* --kind=note --body=hello` | Post, pull, and ack async agent mail without blocking — *agent mail is a development-lane coordination surface* |
 
 #### `dev.lane` — Agent worktree with independent inodes
@@ -847,6 +856,12 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `dev lane new` | compat 🔧 → `z23-dev dev lane new --path=<abs> --base=<ref>` | mutate / dev-mutation / operator · fast/moderate | `path`, `base` | `zcl.lane_new.v1` | `z23-dev dev lane new --path=$HOME/.z23/lanes/example --base=HEAD` | Create an agent worktree and clone proof dependencies onto new inodes — *agent worktree construction requires the dev binary* |
+
+#### `dev.beta6` — Preflight a beta6 bootstrap serve tree
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `dev beta6 verify` | ready | read / read / operator · maintenance/high | **`source_dir`**, `network` | `zcl.dev_beta6_verify.v1` | `z23 dev beta6 verify /srv/beta6-serve --network=main` | Verify a beta6 serve tree without arming a running node |
 
 #### `dev.fleet.mind` — The node's resident index owner, and what to ask it
 
@@ -1412,7 +1427,7 @@ represented by its children's sections.
 | `zcode package dev prepare` | ready | read / read / operator · foreground/moderate | **`dir`**, **`publisher_pubkey`**, **`publisher_sequence`**, `reward_address`, `chain_id` | `zcl.zcode_package_dev_prepare.v1` | `z23 zcode package dev prepare --input='{"dir":"lib/base","publisher_pubkey":"<66hex>","publisher_sequence":1}'` | Derive canonical release inputs from a local package tree |
 | `zcode package dev seal` | ready | read / read / operator · fast/low | **`release_body_hex`**, **`signature_hex`** | `zcl.zcode_package_dev_seal.v1` | `z23 zcode package dev seal --input='{"release_body_hex":"<hex>","signature_hex":"<128hex>"}'` | Verify and attach an offline development signature |
 | `zcode package dev create` (aliases: `zcode.create`) | ready | mutate / app-write / operator · foreground/moderate | **`mode`**, `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_create.v1` | `z23 zcode create --input='{"mode":"plan","release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Create package |
-| `zcode package dev use` (aliases: `zcode.use`) | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `z23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use dependency |
+| `zcode package dev use` (aliases: `zcode.use`) | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir`, `local_only`, `dir`, `release_hex`, `manifest_hex`, `recipe_hex` | `zcl.zcode_use.v1` | `z23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use dependency |
 | `zcode package dev improve` (aliases: `zcode.improve`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `candidate_workspace`, `datadir`, `mode`, `planned_task_root`, `planned_context_root`, `candidate_source_sha256`, `source_root`, `dependency_lock_root`, **`dependency_lock_hex`**, `write_scope_root`, **`write_scope_csv`**, `acceptance_tests_root`, **`acceptance_recipe_hex`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, `action_kind`, `fixed_input_path`, `fixed_input_relpath`, `preprocessed_path`, `patch_root`, `candidate_source_root`, `adapter_policy_root`, `author_pubkey`, `candidate_sequence`, `candidate_created_unix`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `context_symbol`, `remote_peer` | `zcl.zcode_improve.v1` | `z23 zcode improve --input='{"mode":"plan","workspace":"/src/project","dependency_lock_hex":"<canonical wire hex>","write_scope_csv":"src,include","acceptance_recipe_hex":"<canonical wire hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","context_symbol":"buggy_function","expires_unix":123}'` | Improve code candidate |
 | `zcode package dev evidence` (aliases: `zcode.evidence`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`action_id`** | `zcl.zcode_evidence.v1` | `z23 zcode evidence --input='{"workspace":"/src/project","action_id":"<64hex>"}'` | Evaluate candidate evidence |
 | `zcode package dev accept` (aliases: `zcode.accept`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`action_id`**, **`lane`**, `datadir` | `zcl.zcode_accept.v1` | `z23 zcode accept --input='{"workspace":"/src/project","action_id":"<64hex>","lane":"CANDIDATE"}'` | Record candidate proof readiness |
@@ -1599,7 +1614,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir`, `cursor`, `max_items` | `zcl.zcode_add_plan.v1` | `z23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
+| `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir`, `cursor`, `max_items`, `local_only`, `dir`, `release_hex`, `manifest_hex`, `recipe_hex` | `zcl.zcode_add_plan.v1` | `z23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
 | `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir`, `cursor`, `max_items` | `zcl.zcode_add_commit.v1` | `z23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
 
 #### `zcode.node` — Node join/update
@@ -1837,6 +1852,15 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `fleet link probe` | ready | mutate / dev-mutation / operator · maintenance/low | `mode`, `peer`, `bind`, `key`, `seconds` | `zcl.fleet_link_probe.v1` | `z23 fleet link probe --seconds=2` | Round-trip time, jitter and loss over the UDP datagram link |
+
+#### `fleet.steer` — Brief, send and evidence for remote steering
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `fleet steer brief` | ready | read / read / operator · fast/low | `grant`, `since`, `limit` | `zcl.fleet_steer_brief.v1` | `z23 fleet steer brief` | One-call fleet brief: agents, work, blockers, capacity, candidates |
+| `fleet steer send` | ready | mutate / dev-mutation / operator · fast/low | `grant`, **`items`**, `from` | `zcl.fleet_steer_send.v1` | `z23 fleet steer send --items=[...]` | One bounded batch of directives to named fleet agents |
+| `fleet steer evidence` | ready | read / read / operator · fast/low | `grant`, **`type`**, **`ref`** | `zcl.fleet_steer_evidence.v1` | `z23 fleet steer evidence --type=mail --ref=<ref>` | One bounded evidence object by exact reference |
+| `fleet steer grant` | ready | mutate / dev-mutation / **owner** · fast/low | **`action`**, `scopes`, `ttl_seconds`, `label`, `id` | `zcl.fleet_steer_grant.v1` | `z23 fleet steer grant --action=mint --scopes=brief,send` | Mint and revoke the adapter's scoped bearer grants |
 
 
 ## Aliases

@@ -250,7 +250,7 @@ ZCL_GUI_APP_GOALS := $(foreach a,$(GUI_APPS),$(a) $(a)-selftest $(a)-clean \
 # Its standalone compile must not recurse into the readiness check it serves.
 ZCL_TOR_PROVENANCE_GOALS := build/bin/z23-tor-provenance \
 	tools/tor-provenance z23-tor-provenance
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap \
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply hotswap c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	$(ZCL_TOR_PROVENANCE_GOALS) \
 	presentation-lib presentation-demo presentation-relaunch \
 	presentation-desktop-install presentation-portability \
@@ -733,6 +733,8 @@ zcl_filter_ephemeral_sources = $(filter-out $(call zcl_ephemeral_sources,$(1)),$
 APP_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach a,$(APP_AUTHORITIES),\
 		$(foreach d,$(APP_DIRS),$(wildcard $(a)/$(d)/src/*.c))))
+# The task host and resident artifact use the same canonical state codec.
+APP_SRCS += contexts/commons/packages/ztasks/src/ztasks.c
 
 # The one-writer chain-state authority is physically isolated.  Conditions,
 # jobs, and services may support it, but every reducer-owned translation unit
@@ -1400,7 +1402,7 @@ TOR_MISSING_ARCHIVES := $(filter-out $(wildcard $(TOR_ARCHIVE_PATHS)),$(TOR_ARCH
 # point: a goal nobody thought about gets REAL Tor. An allow list would mean
 # every unlisted goal silently links the stub, which is the exact
 # default-permit shape this change exists to delete.
-ZCL_TOR_SKIP_GOALS := clean distclean clean-% help tor-full tor-ready \
+ZCL_TOR_SKIP_GOALS := clean distclean clean-% help tor-full tor-ready c3-mutex-probe c3-speed-bench c3-tip-seam build/bin/c3-mutex-probe.so \
 	vendor vendor-force vendor-ready vendor-provenance worktree-prime \
 	worktree-prime-selftest install-hooks setup \
 	check-% lint lint-% %-selftest docs docs-% $(ZCL_WINDOWS_LAUNCHER_GOALS) \
@@ -1809,7 +1811,7 @@ ifneq ($(filter build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := build-only
 else ifneq ($(filter zclassic23 z23 zclassic23-package-verify,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := node-c23
-else ifneq ($(filter fast-compile dev-build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter fast-compile dev-build-only dev-package-verifier,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev
 else ifneq ($(filter dev-bin z23-dev zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev $(if $(ZCL_HOST_WINDOWS),,test-fast)
@@ -1846,7 +1848,7 @@ ifneq ($(filter node-c23,$(ZCL_DEPFILE_PROFILES)),)
 -include $(NODE_C23_OBJS:.o=.d) $(NODE_C23_PACKAGE_VERIFY_OBJ:.o=.d)
 endif
 ifneq ($(filter dev,$(ZCL_DEPFILE_PROFILES)),)
--include $(DEV_OBJS:.o=.d)
+-include $(DEV_OBJS:.o=.d) $(DEV_PACKAGE_VERIFY_OBJ:.o=.d)
 endif
 ifneq ($(filter dev-asan,$(ZCL_DEPFILE_PROFILES)),)
 -include $(DEV_ASAN_OBJS:.o=.d)
@@ -2907,6 +2909,37 @@ HOTSWAP_ROLLBACK_FIXTURE_SOS = \
 	$(BUILD_DIR)/hotswap/zcl_rollback_fixture_a.so \
 	$(BUILD_DIR)/hotswap/zcl_rollback_fixture_b.so
 
+# ── Resident-launch CONTRACT fixture children ─────────────────────────────
+# test_resident_launch_contract.c must launch REAL ELF images: the pinned
+# descriptor resident_launch hands to fexecve is O_CLOEXEC, and exec'ing a
+# shebang script through it re-opens /dev/fd/N for the interpreter AFTER
+# exec closed it (ENOENT on Linux). ONE fixture source, two link outputs:
+# the protocol-speaking reference child (frames argv[1] on fd 3 under the
+# Z23_RESIDENT_NONCE handoff, or parks on "sleep" as the cancel target) and
+# the RLC_FIXTURE_BROKEN candidate that exits without framing, so the
+# rollback stage's two versions differ in both content and behavior. Built
+# only where the test's deep stages run (a POSIX spawn exists); Windows
+# asserts the named platform refusal instead.
+RESIDENT_CONTRACT_FIXTURE_SRC = tests/harness/fixtures/resident_launch_contract_child.c
+ifeq ($(ZCL_HOST_WINDOWS),)
+RESIDENT_CONTRACT_FIXTURE_BINS = \
+	$(BUILD_DIR)/fixtures/rlc_child_v1$(ZCL_HOST_EXEEXT) \
+	$(BUILD_DIR)/fixtures/rlc_child_broken$(ZCL_HOST_EXEEXT)
+else
+RESIDENT_CONTRACT_FIXTURE_BINS =
+endif
+
+$(BUILD_DIR)/fixtures/rlc_child_v1$(ZCL_HOST_EXEEXT): $(RESIDENT_CONTRACT_FIXTURE_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_FAST_CFLAGS) -Iplatform/modules/platform/include \
+	  -o $@ $(RESIDENT_CONTRACT_FIXTURE_SRC)
+
+$(BUILD_DIR)/fixtures/rlc_child_broken$(ZCL_HOST_EXEEXT): $(RESIDENT_CONTRACT_FIXTURE_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_FAST_CFLAGS) -DRLC_FIXTURE_BROKEN \
+	  -Iplatform/modules/platform/include \
+	  -o $@ $(RESIDENT_CONTRACT_FIXTURE_SRC)
+
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tests/harness/src/*.c))
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
@@ -2951,7 +2984,7 @@ ZCL_TEST_WINDOWS_COMPAT_FLAGS = $(if $(ZCL_HOST_WINDOWS),-include test/windows_c
 TEST_FAST_CFLAGS = $(filter-out -O3 $(ZCL_LTO_FLAG) -Werror,$(CACHED_CFLAGS)) -O1 -g -DZCL_TESTING \
 	-Wno-deprecated-declarations -Wno-format-truncation $(ZCL_WARN_MAYBE_UNINITIALIZED) \
 	$(ZCL_TEST_WINDOWS_COMPAT_FLAGS)
-TEST_FAST_LDFLAGS = $(filter-out $(ZCL_LTO_FLAG),$(LDFLAGS)) $(ZCL_DEV_LINKER)
+TEST_FAST_LDFLAGS = $(filter-out $(ZCL_LTO_FLAG),$(LDFLAGS)) $(ZCL_DEV_LINKER) $(C3_TIP_LINK)
 TEST_FAST_EPOCH_COMPILE_FLAGS := $(strip $(TEST_FAST_CFLAGS) $(ZCL_EPOCH_DEPFILE_ID))
 TEST_FAST_EPOCH_LINK_FLAGS := $(strip $(TEST_FAST_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifneq ($(filter test-fast,$(ZCL_EPOCH_PROFILES)),)
@@ -3410,6 +3443,17 @@ $(TEST_PARALLEL_BIN): | $(HOTSWAP_ROLLBACK_FIXTURE_SOS)
 $(TEST_PARALLEL_FAST_BIN): | $(HOTSWAP_ROLLBACK_FIXTURE_SOS)
 $(TEST_PARALLEL_REL_CANDIDATE): | $(HOTSWAP_ROLLBACK_FIXTURE_SOS)
 $(TEST_PARALLEL_FAST_CANDIDATE): | $(HOTSWAP_ROLLBACK_FIXTURE_SOS)
+endif
+
+# Same contract for the resident_launch_contract group's fixture children:
+# the group's reference launches exec these images, so a missing fixture is a
+# broken build, never a skip.
+ifeq ($(ZCL_HOST_WINDOWS),)
+$(BIN_DIR)/test_zcl: | $(RESIDENT_CONTRACT_FIXTURE_BINS)
+$(TEST_PARALLEL_BIN): | $(RESIDENT_CONTRACT_FIXTURE_BINS)
+$(TEST_PARALLEL_FAST_BIN): | $(RESIDENT_CONTRACT_FIXTURE_BINS)
+$(TEST_PARALLEL_REL_CANDIDATE): | $(RESIDENT_CONTRACT_FIXTURE_BINS)
+$(TEST_PARALLEL_FAST_CANDIDATE): | $(RESIDENT_CONTRACT_FIXTURE_BINS)
 endif
 
 # test_engine's end-to-end case runs $(ENGINE_UNIT_BIN) as a subprocess (same
@@ -4091,7 +4135,8 @@ agent-velocity:
 t:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  $(MAKE) --no-print-directory t-locked ONLY='$(ONLY)'
+	  $(MAKE) --no-print-directory t-locked ONLY='$(ONLY)' \
+	    BUILD_SOURCE_RECORD='$(BUILD_SOURCE_RECORD)'
 
 t-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 	$(ZCL_TEST_STACK_SETUP) && $(LINKED_TEST_ENV) $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)
@@ -4100,10 +4145,17 @@ t-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 # a cached, stable (toolchain+flags-keyed) per-file epoch and links a non-LTO harness; use strict `make t`
 # before push/release or when chasing optimizer-dependent behavior.
 # Checkout-locked around prerequisite construction and execution.
+# The recursive invocations below freeze this parse's BUILD_SOURCE_RECORD on
+# the command line (the provenance guard above accepts exactly that shape), so
+# the locked inner parse stops paying a second full source capture while it
+# holds the checkout lock. Recipe-time verify-record and the epoch lease's
+# finish verification still compare that frozen record against the tree, so an
+# edit landing between the two parses fails the build instead of hiding.
 t-fast:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  $(MAKE) --no-print-directory t-fast-locked ONLY='$(ONLY)'
+	  $(MAKE) --no-print-directory t-fast-locked ONLY='$(ONLY)' \
+	    BUILD_SOURCE_RECORD='$(BUILD_SOURCE_RECORD)'
 
 t-fast-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure \
 	$(BIN_DIR)/z23-git-hook$(ZCL_HOST_EXEEXT) $(BIN_DIR)/z23-lint
@@ -4116,7 +4168,8 @@ t-fast-exact:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  $(MAKE) --no-print-directory t-fast-exact-locked \
-	    EXACT_ONLY_MATCHED='$(EXACT_ONLY_MATCHED)'
+	    EXACT_ONLY_MATCHED='$(EXACT_ONLY_MATCHED)' \
+	    BUILD_SOURCE_RECORD='$(BUILD_SOURCE_RECORD)'
 
 t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure \
 	$(BIN_DIR)/z23-git-hook$(ZCL_HOST_EXEEXT) $(BIN_DIR)/z23-lint
@@ -7090,6 +7143,40 @@ $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
 	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
 	    -o $@ $^ -lm
 
+# fs_handshake_probe: the C3 stopwatch's PRE-FLIGHT fixture-compatibility
+# probe (tools/scripts/cold_start_to_tip_stopwatch.sh). Performs the CLIENT
+# half of the exact authenticated X25519/HKDF file-service handshake the
+# wiped node's RLS directory fetch performs (fs_handshake_until,
+# core/modules/net/src/file_service_handshake.c) against the stated file
+# peer, so a fixture whose binary predates that handshake fails the run in
+# seconds (exit 4) instead of after the full budget — the measured defect
+# was a stale fixture passing the old bare-TCP-connect precheck and every
+# run burning 600s on a boot that could only log "directory: handshake
+# failed ... — skipping seed". Read-only against the peer (pubkey +
+# key-confirmation exchange only, no frame requested). Links the node's own
+# handshake TU and crypto, nothing from the frame codec.
+.PHONY: fs-handshake-probe
+fs-handshake-probe: $(BIN_DIR)/fs_handshake_probe
+$(BIN_DIR)/fs_handshake_probe: tools/fs_handshake_probe.c \
+		core/modules/net/src/file_service_handshake.c \
+		core/modules/crypto/src/curve25519.c core/modules/crypto/src/hkdf_sha3.c \
+		core/modules/crypto/src/hmac_sha3.c core/modules/crypto/src/x25519_safe.c \
+		core/modules/crypto/src/random_secret.c core/modules/core/src/random.c \
+		platform/modules/platform/src/rng.c platform/modules/platform/src/clock.c \
+		platform/modules/sha3/src/sha3.c core/modules/crypto/src/keccak_x4.c \
+		core/modules/crypto/src/simd_dispatch.c \
+		platform/modules/base/src/cleanse.c platform/modules/base/src/log_level.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -Icore/modules/net/include -Icore/modules/crypto/include -Icore/modules/core/include \
+	    -Icore/math/include \
+	    -Iplatform/modules/sha3/include -Iplatform/modules/platform/include \
+	    -Iplatform/modules/base/include -Iplatform/modules/util/include \
+	    -Iplatform/modules/support/include -Ivendor/include \
+	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
+	    -o $@ $^ -lpthread -lm
+
 # rom-bundle-replicate: copy a verified consensus-state bundle + its replay
 # receipt + a producing-binary hash record to a second directory, verified
 # byte-identical by SHA3 (tools/scripts/rom-bundle-replicate.sh). Point a
@@ -7573,6 +7660,38 @@ $(BIN_DIR)/fleet-board-bridge: tools/fleet_board_bridge.c \
 	    -Iplatform/modules/base/include \
 	    -Iplatform/modules/json/include -Iplatform/modules/platform/include \
 	    -Iplatform/modules/util/include -o $@ $(filter %.c,$^) -lm
+
+# Loopback Streamable-HTTP front for the fleet steering verbs. G1 binds
+# 127.0.0.1 only and carries no credentials; TLS termination and OAuth live
+# in front of it on the host path. Each tool call fork/execs the TESTED node
+# binary with --input JSON, so the gateway adds no store and mints nothing.
+FLEET_GATEWAY_BIN = $(BIN_DIR)/z23-fleet-gateway
+.PHONY: fleet-gateway
+fleet-gateway: $(FLEET_GATEWAY_BIN)
+$(FLEET_GATEWAY_BIN): tools/fleet_gateway.c \
+    platform/modules/json/src/json.c platform/modules/base/src/safe_alloc.c \
+    platform/modules/platform/src/os_proc.c \
+    platform/modules/platform/src/clock.c \
+    platform/modules/base/src/log_level.c core/modules/crypto/src/sha256.c \
+    platform/modules/json/include/json/json.h \
+    platform/modules/platform/include/platform/os_proc.h \
+    platform/modules/platform/include/platform/clock.h \
+    platform/modules/base/include/base/safe_alloc.h \
+    platform/modules/base/include/base/hex.h \
+    platform/modules/base/include/base/log_level.h \
+    platform/modules/base/include/base/format_attribute.h \
+    platform/modules/base/include/base/utc_tm.h \
+    platform/modules/base/include/base/stdio_lock.h \
+    platform/modules/base/include/base/log_macros.h \
+    platform/modules/util/include/util/log_macros.h \
+    core/modules/crypto/include/crypto/sha256.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
+	    -Iplatform/modules/base/include \
+	    -Iplatform/modules/json/include \
+	    -Iplatform/modules/util/include \
+	    -Iplatform/modules/platform/include -Icore/modules/crypto/include -o $@ $(filter %.c,$^) -lm
 
 # Strict line-protocol adapter over the maintained retrieval evaluator. The
 # historical runner supplies two sealed rank lists per reviewed task; this
@@ -8886,8 +9005,17 @@ mvp-coldstart-to-tip-local: zclassic23 zcl-rpc
 # with no -fileservice peer"), and does a from-genesis IBD instead of the
 # bundle-then-fold path the ledger's numbers came from. Measured here
 # 2026-07-30: without it, H* pinned at 0 for the whole 600 s budget.
+#
+# fs-handshake-probe is a hard dependency: the harness runs it as the
+# PRE-FLIGHT fixture-compatibility check on --file-peer before launching the
+# wiped node, so a fixture whose binary predates the authenticated
+# X25519/HKDF file-service handshake fails the run in seconds (named skip
+# class fixture_incompatible) instead of after the full budget. Measured
+# 2026-09: a stale fixture passed the old bare-TCP-connect precheck and
+# every scheduled run burned 600s on a boot that could only log
+# "directory: handshake failed ... — skipping seed".
 .PHONY: mvp-coldstart-to-tip-stopwatch
-mvp-coldstart-to-tip-stopwatch: zclassic23
+mvp-coldstart-to-tip-stopwatch: zclassic23 fs-handshake-probe
 	@bash -c 'set -uo pipefail; \
 	 echo "══ MVP C3 STOPWATCH (real): wiped datadir -> checkpoint/fold -> peer tip, real wall-clock ══"; \
 	 if ! bash tools/scripts/cold_start_to_tip_stopwatch.sh --selftest >/dev/null 2>&1; then \
@@ -13317,6 +13445,10 @@ check-host-gc-selftest:
 	@echo "══ LINT: host garbage collector fixture regression ══"
 	@tools/scripts/host_gc_selftest.sh
 
+check-commons-journey-ordering:
+	@echo "══ LINT: commons journey peer-dependent wait ordering ══"
+	@tools/dev/commons-journey-ordering-selftest.sh
+
 # wf/dx-scanner-immunity — runs FIRST: names any untracked stray .c/.h file
 # under a scanned source dir as "untracked stray file (not a code
 # violation)" before any OTHER gate has a chance to report its content as
@@ -13717,6 +13849,7 @@ LINT_GATES := \
     check-no-silent-ready \
     check-honest-witness \
     check-host-gc-selftest \
+    check-commons-journey-ordering \
     check-consensus-parity \
     check-no-new-repair-rung \
     check-no-bare-tmp-fixture \
@@ -14237,3 +14370,23 @@ build-bench-selftest:
 .PHONY: params-verify
 params-verify:
 	@tools/scripts/zcash_params.sh verify $(PARAMSDIR)
+
+# Selected-mutex instrumentation is confined to the explicit Linux test target.
+.PHONY: c3-mutex-probe c3-speed-bench
+c3-speed-bench: $(BIN_DIR)/c3-mutex-probe.so
+	LD_PRELOAD="$(abspath $(BIN_DIR)/c3-mutex-probe.so)" C3_REQUIRE_MUTEX_PROBE=1 C3_ENFORCE_SPEED_CONTRACT=1 \
+	  $(MAKE) --no-print-directory t-fast-exact ONLY=download_speed_contract
+c3-mutex-probe: $(BIN_DIR)/c3-mutex-probe.so
+$(BIN_DIR)/c3-mutex-probe.so: tests/harness/fixtures/c3_mutex_probe.c tools/dev/c3_mutex_probe.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic -fPIC -shared \
+	  -o $@ tests/harness/fixtures/c3_mutex_probe.c -ldl -pthread
+
+.PHONY: c3-tip-seam
+c3-tip-seam: $(BIN_DIR)/c3-tip-seam-probe.o
+	$(MAKE) --no-print-directory t-fast-exact ONLY=tip_finalize_stage,tip_finalize_post_step \
+	  T_FAST_EXACT_ARGS=--jobs=1 \
+	  C3_TIP_LINK='$(abspath $(BIN_DIR)/c3-tip-seam-probe.o) -Xlinker --wrap=progress_store_tx_lock -Xlinker --wrap=progress_store_tx_unlock -Xlinker --wrap=tip_finalize_reconcile_visible_cursor_body -Xlinker --wrap=tip_finalize_run_post_finalize -Xlinker --wrap=test_tip_finalize_stage -Xlinker --wrap=test_tip_finalize_post_step'
+$(BIN_DIR)/c3-tip-seam-probe.o: tests/harness/fixtures/c3_tip_seam_probe.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic -c $< -o $@

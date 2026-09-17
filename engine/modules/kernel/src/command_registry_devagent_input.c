@@ -174,6 +174,8 @@ static bool devagent_scoped_bool(const char *path, const char *key,
         /* ops.host.gc's `--apply`: the one switch that turns the host
          * sweep from a classification report into a removal. */
         { "ops.host.gc", "apply" },
+        { "app.invoke.package", "accept_execution" },
+        { "zcode.package.add.plan", "local_only" },
     };
     if (!path)
         return false;
@@ -210,10 +212,62 @@ static bool devagent_host_gc_input(const char *path, const char *key,
     return false;
 }
 
+static bool devagent_resident_generation(const char *path, const char *key,
+    const struct json_value *value, bool *type_ok)
+{
+    if (!path || strcmp(path, "app.invoke.package") != 0 ||
+        (strcmp(key, "configuration_generation") != 0 && strcmp(key, "expected_generation") != 0 &&
+         strcmp(key, "generation") != 0 && strcmp(key, "start_token") != 0))
+        return false;
+    *type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+        (strcmp(key, "expected_generation") == 0 || strcmp(key, "generation") == 0 ||
+         json_get_int(value) > 0);
+    return true;
+}
+
+/* dev.agent.worker's bounded drive and per-job caps. `--max_jobs=1` types
+ * as an integer, so the default string branch would make the leaf
+ * uninvokable from a shell while raw JSON worked. The handler owns the
+ * defaults and the tighter running contract; the transport only admits
+ * the integer shape inside the leaf's published bounds. */
+static bool devagent_worker_ints(const char *path, const char *key,
+                                 const struct json_value *value,
+                                 bool *type_ok)
+{
+    static const struct {
+        const char *key;
+        long long lo;
+        long long hi;
+    } bounds[] = {
+        { "deadline_s", 1, 3600 },
+        { "idle_start_s", 1, 30 },
+        { "idle_limit_s", 1, 600 },
+        { "max_jobs", 0, 1000 },
+        { "time_cap_s", 1, 3600 },
+        { "cpu_s", 1, 3600 },
+        { "mem_mb", 64, 8192 },
+        { "token_cap", 1, 1000000 },
+    };
+    size_t i;
+    if (!path || strcmp(path, "dev.agent.worker") != 0)
+        return false;
+    for (i = 0; i < sizeof(bounds) / sizeof(bounds[0]); i++) {
+        if (strcmp(key, bounds[i].key) != 0)
+            continue;
+        *type_ok = value->type == JSON_INT &&
+                   json_get_int(value) >= bounds[i].lo &&
+                   json_get_int(value) <= bounds[i].hi;
+        return true;
+    }
+    return false;
+}
+
 bool zcl_command_registry_devagent_input_ok(const char *path, const char *key,
                                             const struct json_value *value,
                                             bool *type_ok)
 {
+    if (devagent_worker_ints(path, key, value, type_ok))
+        return true;
     if (devagent_ledger_add_int(path, key, value, type_ok))
         return true;
     if (devagent_bounded_positive_int(key, value, type_ok))
@@ -229,6 +283,8 @@ bool zcl_command_registry_devagent_input_ok(const char *path, const char *key,
     if (devagent_scoped_bool(path, key, value, type_ok))
         return true;
     if (devagent_host_gc_input(path, key, value, type_ok))
+        return true;
+    if (devagent_resident_generation(path, key, value, type_ok))
         return true;
     return false;
 }

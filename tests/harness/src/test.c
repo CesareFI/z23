@@ -1665,6 +1665,14 @@ int main(int argc, char **argv)
       failures += test_platform_toolchain(); }
     { extern int test_watcher_lease(void);
       failures += test_watcher_lease(); }
+    { extern int test_resident_launch(void);
+      failures += test_resident_launch(); }
+    { extern int test_resident_launch_contract(void);
+      failures += test_resident_launch_contract(); }
+    { extern int test_package_resident_record(void);
+      failures += test_package_resident_record(); }
+    { extern int test_package_local(void);
+      failures += test_package_local(); }
     failures += test_hw_bench();
     { extern int test_storage_pacing(void);
       failures += test_storage_pacing(); }

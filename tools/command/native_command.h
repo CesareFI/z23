@@ -591,6 +591,10 @@ void zcl_native_handle_presentation_code_change(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_development(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_package_resident(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_task_document(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_reproduction(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_publication_confirm(
@@ -2362,6 +2366,9 @@ void zcl_native_handle_store_catalog(
 void zcl_native_handle_store_order(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_store_remotebuy(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_store_pay(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -2546,6 +2553,12 @@ void zcl_native_handle_dev_agent_queue(
  * (tools/command/native_devagent_mail.c). Same one-handler-per-file shape
  * as the lane-discipline leaves above. */
 void zcl_native_handle_dev_agent_mail(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+/* dev.agent.worker — resident dev-only queue consumer
+ * (tools/command/native_devagent_worker.c). Same one-handler-per-file
+ * shape as the lane-discipline leaves above. */
+void zcl_native_handle_dev_agent_worker(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
@@ -2918,6 +2931,15 @@ void zcl_native_handle_dev_mind_serve(
  * got one yet. Bound by engine/composition/commands/fleet_enrol.def; the
  * record formats live in tools/dev/fleet_enrol.h. */
 void zcl_native_fleet_enrol_dispatch(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ── beta6 bootstrap serve-tree verifier
+ * (tools/command/native_dev_beta6_verify.c). Runs the real beta6_bs_arm()
+ * preflight against a candidate serve directory in this process only, then
+ * disarms; never touches a running node's own armed state. Bound by
+ * engine/composition/commands/dev.def. */
+void zcl_native_handle_dev_beta6_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

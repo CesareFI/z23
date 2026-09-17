@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "net/download.h"
+#include "download_qset.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
@@ -96,18 +97,8 @@ const char *dl_assign_result_name(int result)
     }
 }
 
-/* FNV-1a hash for uint256 → slot index */
-static size_t hash_slot(const struct uint256 *h, size_t mask)
-{
-    uint64_t fnv = 14695981039346656037ULL;
-    for (int i = 0; i < 32; i++) {
-        fnv ^= h->data[i];
-        fnv *= 1099511628211ULL;
-    }
-    return (size_t)(fnv & mask);
-}
-
-#define DL_QUEUE_MAX_CAP 65536
+/* FNV-1a hash and the queued-hash membership set live in
+ * download_qset.c (dl_hash_slot, dl_qset_*). */
 #define INITIAL_QSET_SLOTS 8192
 
 void dl_init(struct download_manager *dm)
@@ -161,124 +152,6 @@ void dl_free(struct download_manager *dm)
     dm->qset = NULL;
 }
 
-/* ── Queued-hash membership set ───────────────────────────────────
- * Open addressing, linear probe, tombstoned deletes. The queue array
- * is the source of truth; the set only answers "is this hash queued?"
- * in O(1) so bulk enqueues stop scanning the whole queue per item.
- * All helpers require the caller to hold dm->cs. */
-
-static bool qset_contains(const struct download_manager *dm,
-                          const struct uint256 *hash)
-{
-    if (!dm->qset || dm->qset_slots == 0) return false;
-    size_t mask = dm->qset_slots - 1;
-    size_t idx = hash_slot(hash, mask);
-    for (size_t i = 0; i < dm->qset_slots; i++) {
-        const struct dl_queued_key *e = &dm->qset[(idx + i) & mask];
-        if (e->state == 0) return false;            /* virgin: chain end */
-        if (e->state == 1 && uint256_eq(&e->hash, hash)) return true;
-    }
-    return false;
-}
-
-/* Insert without duplicate check (callers check qset_contains first).
- * Reuses tombstones. Never fails once capacity is ensured. */
-static void qset_insert_raw(struct download_manager *dm,
-                            const struct uint256 *hash)
-{
-    size_t mask = dm->qset_slots - 1;
-    size_t idx = hash_slot(hash, mask);
-    for (size_t i = 0; i < dm->qset_slots; i++) {
-        struct dl_queued_key *e = &dm->qset[(idx + i) & mask];
-        if (e->state != 1) {
-            if (e->state == 2) dm->qset_tombs--;
-            e->hash = *hash;
-            e->state = 1;
-            dm->qset_live++;
-            return;
-        }
-    }
-}
-
-/* Rebuild the set from the queue array (drops tombstones), growing to
- * `new_slots` (power of 2). Keeps the old table on alloc failure —
- * correctness is unaffected, only probe lengths suffer. */
-static void qset_rebuild(struct download_manager *dm, size_t new_slots)
-{
-    struct dl_queued_key *ns =
-        zcl_calloc(new_slots, sizeof(struct dl_queued_key), "dl_qset");
-    if (!ns) return;
-    free(dm->qset);
-    dm->qset = ns;
-    dm->qset_slots = new_slots;
-    dm->qset_live = 0;
-    dm->qset_tombs = 0;
-    for (size_t i = 0; i < dm->queue_len; i++)
-        qset_insert_raw(dm, &dm->queue[i]);
-}
-
-/* Ensure room for one more live entry at < 50% combined load. */
-static void qset_reserve_one(struct download_manager *dm)
-{
-    if (!dm->qset || dm->qset_slots == 0) return;
-    if ((dm->qset_live + dm->qset_tombs + 1) * 2 < dm->qset_slots) return;
-    size_t want = dm->qset_slots;
-    if ((dm->qset_live + 1) * 2 >= want)
-        want *= 2;                  /* genuinely full: grow */
-    /* else: tombstone-heavy — rebuild at same size */
-    qset_rebuild(dm, want);
-}
-
-/* Ensure room for `n_more` additional live entries at < 50% combined
- * load, in at most ONE rebuild up-front. Bulk callers MUST reserve
- * before staging inserts: qset_rebuild repopulates from dm->queue
- * only, so a rebuild fired mid-batch (by a per-insert reserve) wipes
- * every staged-but-not-yet-merged hash from the set — dedup breaks,
- * blocks download twice, and the duplicate in-flight slots leak
- * num_active. Same reason dl_queue_push reserves BEFORE its queue
- * insertion. */
-static void qset_reserve_n(struct download_manager *dm, size_t n_more)
-{
-    if (!dm->qset || dm->qset_slots == 0) return;
-    /* Live entries are bounded by queue cap + one staged batch; clamp a
-     * pathological request so the doubling below cannot overflow. Past
-     * the clamp the set degrades to silent dedup misses, never UB. */
-    if (n_more > (size_t)DL_QUEUE_MAX_CAP * 2)
-        n_more = (size_t)DL_QUEUE_MAX_CAP * 2;
-    size_t want = dm->qset_slots;
-    while ((dm->qset_live + n_more + 1) * 2 >= want)
-        want *= 2;
-    if (want == dm->qset_slots &&
-        (dm->qset_live + dm->qset_tombs + n_more + 1) * 2 < dm->qset_slots)
-        return;             /* enough live+tombstone headroom already */
-    qset_rebuild(dm, want);
-}
-
-static void qset_remove(struct download_manager *dm,
-                        const struct uint256 *hash)
-{
-    if (!dm->qset || dm->qset_slots == 0) return;
-    size_t mask = dm->qset_slots - 1;
-    size_t idx = hash_slot(hash, mask);
-    for (size_t i = 0; i < dm->qset_slots; i++) {
-        struct dl_queued_key *e = &dm->qset[(idx + i) & mask];
-        if (e->state == 0) return;
-        if (e->state == 1 && uint256_eq(&e->hash, hash)) {
-            e->state = 2;
-            dm->qset_live--;
-            dm->qset_tombs++;
-            return;
-        }
-    }
-}
-
-static void qset_clear(struct download_manager *dm)
-{
-    if (!dm->qset || dm->qset_slots == 0) return;
-    memset(dm->qset, 0, dm->qset_slots * sizeof(struct dl_queued_key));
-    dm->qset_live = 0;
-    dm->qset_tombs = 0;
-}
 
 /* Expand queue capacity. Returns true on success. Caller holds mutex.
  * Hitting the max cap is NORMAL during deep IBD (millions of bodies
@@ -367,7 +240,7 @@ static bool dl_queue_push(struct download_manager *dm,
                           uint32_t avoid_peer, int64_t avoid_until,
                           enum dl_work_class work_class)
 {
-    if (qset_contains(dm, hash))
+    if (dl_qset_contains(dm, hash))
         return false; // raw-return-ok:duplicate-is-benign
     if (dm->queue_len >= dm->queue_cap && !dl_queue_grow(dm)) {
         /* Bounded queue at max capacity. The queue must always hold the
@@ -382,7 +255,7 @@ static bool dl_queue_push(struct download_manager *dm,
             dm->total_queue_rejected++;
             return false; // raw-return-ok:normal-bounded-queue-backpressure
         }
-        qset_remove(dm, &dm->queue[dm->queue_len - 1]);
+        dl_qset_remove(dm, &dm->queue[dm->queue_len - 1]);
         dm->queue_len--;
         dm->total_queue_evicted++;
     }
@@ -393,7 +266,7 @@ static bool dl_queue_push(struct download_manager *dm,
      * SECOND live entry — a phantom that survives one qset_remove and
      * then refuses every future re-push of this hash (timeout/disconnect
      * re-queues bounce off the duplicate check forever). */
-    qset_reserve_one(dm);
+    dl_qset_reserve_one(dm);
 
     /* Binary search for the first entry whose key is strictly greater
      * than ours; insert there (stable for equal heights). */
@@ -428,7 +301,7 @@ static bool dl_queue_push(struct download_manager *dm,
     dm->queue_avoid_until[pos] = avoid_until;
     dm->queue_classes[pos] = work_class;
     dm->queue_len++;
-    qset_insert_raw(dm, hash);
+    dl_qset_insert_raw(dm, hash, work_class);
     return true;
 }
 
@@ -544,14 +417,18 @@ static struct dl_peer_stats *dl_find_peer(struct download_manager *dm,
 /* Find slot for hash (open addressing with linear probe).
  * Handles gaps from deletions: inactive slots are NOT probe-chain
  * terminators because dl_mark_received clears slots without
- * rehashing. We must scan through inactive slots to find matches. */
+ * rehashing. We must scan through inactive slots to find matches.
+ * Returns the slot carrying the hash whether it is live (active) or a
+ * received-pending tombstone — callers apply their own active/tombstone
+ * policy (see dl_slot_blocks_requeue). With find_empty, returns the first
+ * reusable slot when no slot carries the hash. */
 static struct dl_in_flight *find_slot(struct download_manager *dm,
                                        const struct uint256 *hash,
                                        bool find_empty)
 {
     if (!dm->slots || dm->num_slots == 0) return NULL;
     size_t mask = dm->num_slots - 1;
-    size_t idx = hash_slot(hash, mask);
+    size_t idx = dl_hash_slot(hash, mask);
     struct dl_in_flight *first_empty = NULL;
 
     for (size_t i = 0; i < dm->num_slots; i++) {
@@ -561,12 +438,37 @@ static struct dl_in_flight *find_slot(struct download_manager *dm,
             /* Check if this slot was NEVER used (zero hash = virgin) */
             if (uint256_is_null(&s->hash))
                 break; /* end of probe chain */
+            if (uint256_eq(&s->hash, hash))
+                return s; /* received-pending tombstone match */
             continue; /* skip gap from deletion, keep probing */
         }
         if (uint256_eq(&s->hash, hash))
             return s;
     }
     return find_empty ? first_empty : NULL;
+}
+
+/* Should this hash's slot block a fresh queue/request? True while the slot
+ * is live (in-flight) OR while it is a fresh received-pending tombstone:
+ * the body arrived but the intake worker has not persisted it yet, so
+ * BLOCK_HAVE_DATA is not observable and every producer pass filtering on
+ * HAVE_DATA alone would re-request the same block (measured on a cold
+ * loopback sync: ~52% of block wire traffic was such duplicates).
+ * Fail-open: once DL_RECEIVED_PENDING_SECS lapses the hash becomes
+ * re-requestable again, so a terminally-dropped body (retryable reject,
+ * activation skip, snapshot defer) is never permanently suppressed.
+ * Caller holds dm->cs. Counts tombstone (not in-flight) suppressions. */
+static bool dl_slot_blocks_requeue(struct download_manager *dm,
+                                   const struct dl_in_flight *s,
+                                   int64_t now)
+{
+    if (s->active)
+        return true;
+    if (s->received_time == 0 ||
+        now - s->received_time >= DL_RECEIVED_PENDING_SECS)
+        return false;
+    dm->total_requeue_suppressed_pending++;
+    return true;
 }
 
 /* Rehash into a table of given size (must be power of 2). */
@@ -578,7 +480,7 @@ static void dl_rehash(struct download_manager *dm, size_t new_size)
     size_t new_mask = new_size - 1;
     for (size_t i = 0; i < dm->num_slots; i++) {
         if (!dm->slots[i].active) continue;
-        size_t idx = hash_slot(&dm->slots[i].hash, new_mask);
+        size_t idx = dl_hash_slot(&dm->slots[i].hash, new_mask);
         for (size_t j = 0; j < new_size; j++) {
             struct dl_in_flight *s = &new_slots[(idx + j) & new_mask];
             if (!s->active) {
@@ -630,6 +532,16 @@ bool dl_mark_requested(struct download_manager *dm,
         return false;
     }
 
+    /* Received-pending tombstone: the body arrived but is not staged yet,
+     * so BLOCK_HAVE_DATA cannot have filtered this request. Refuse to
+     * re-request inside the bounded window (fail-open after it lapses). */
+    if (existing &&
+        dl_slot_blocks_requeue(dm, existing,
+                               (int64_t)platform_time_wall_time_t())) {
+        zcl_mutex_unlock(&dm->cs);
+        return false;
+    }
+
     /* Check global limit (dynamic: aggressive during IBD) */
     if (dm->num_active >= dl_get_max_in_flight_total()) {
         zcl_mutex_unlock(&dm->cs);
@@ -641,10 +553,10 @@ bool dl_mark_requested(struct download_manager *dm,
     /* Remove from queue if present (block is moving to in-flight).
      * O(1) membership check first — the linear scan only runs when the
      * hash is actually queued. */
-    if (qset_contains(dm, hash)) {
+    if (dl_qset_contains(dm, hash)) {
         for (size_t j = 0; j < dm->queue_len; j++) {
             if (uint256_eq(&dm->queue[j], hash)) {
-                qset_remove(dm, hash);
+                dl_qset_remove(dm, hash);
                 dl_queue_remove_at(dm, j);
                 break;
             }
@@ -663,6 +575,7 @@ bool dl_mark_requested(struct download_manager *dm,
     slot->height = height;
     slot->peer_id = peer_id;
     slot->request_time = (int64_t)platform_time_wall_time_t();
+    slot->received_time = 0; /* activation clears any stale tombstone */
     slot->work_class = DL_WORK_FORWARD;
     slot->active = true;
     dm->num_active++;
@@ -694,7 +607,12 @@ uint32_t dl_mark_received(struct download_manager *dm,
 
     s->active = false;
     /* Don't zero the hash — find_slot needs it to detect "was used" vs "never used"
-     * for proper probe chain handling after deletions. */
+     * for proper probe chain handling after deletions. The hash bits plus
+     * received_time now double as the received-pending tombstone: the body
+     * is on its way through the intake worker but BLOCK_HAVE_DATA is not
+     * observable yet, so queue/request producers must keep dedup'ing this
+     * hash (bounded by DL_RECEIVED_PENDING_SECS, fail-open). */
+    s->received_time = (int64_t)platform_time_wall_time_t();
     dm->num_active--;
     dm->total_received++;
     dl_generation_advance(&dm->capacity_generation);
@@ -942,6 +860,27 @@ static int dl_stage_cmp(const void *a, const void *b)
                           y->work_class, y->height);
 }
 
+/* A tip/forward request supersedes the same hash discovered by
+ * background history without creating a duplicate. Reinsert it so the
+ * class-first ordering remains valid. Returns true when a promotion
+ * happened. Caller holds dm->cs. */
+static bool dl_promote_queued_history(struct download_manager *dm,
+                                      const struct uint256 *hash,
+                                      const int32_t *height)
+{
+    for (size_t j = 0; j < dm->queue_len; j++) {
+        if (uint256_eq(&dm->queue[j], hash) &&
+            dm->queue_classes[j] == DL_WORK_HISTORY) {
+            int32_t queued_height = height ? *height : dm->queue_heights[j];
+            dl_qset_remove(dm, hash);
+            dl_queue_remove_at(dm, j);
+            return dl_queue_push(dm, hash, queued_height, 0, 0,
+                                 DL_WORK_FORWARD);
+        }
+    }
+    return false;
+}
+
 size_t dl_queue_blocks(struct download_manager *dm,
                        const struct uint256 *hashes,
                        const int32_t *heights,
@@ -972,7 +911,7 @@ size_t dl_queue_blocks_class(struct download_manager *dm,
      *    Capacity is reserved ONCE up-front so no rebuild can fire
      *    mid-loop — a mid-batch rebuild repopulates from dm->queue only
      *    and would wipe the staged hashes' membership (see
-     *    qset_reserve_n). */
+     *    dl_qset_reserve_n). */
     struct dl_stage_item *stage = NULL;
     size_t n_stage = 0;
     bool promoted = false;
@@ -982,32 +921,24 @@ size_t dl_queue_blocks_class(struct download_manager *dm,
         zcl_mutex_unlock(&dm->cs);
         return 0;
     }
-    qset_reserve_n(dm, count);
+    dl_qset_reserve_n(dm, count);
+    const int64_t now_q = (int64_t)platform_time_wall_time_t();
     for (size_t i = 0; i < count; i++) {
         struct dl_in_flight *s = find_slot(dm, &hashes[i], false);
-        if (s && s->active) continue;
-        if (qset_contains(dm, &hashes[i])) {
-            /* A tip/forward request supersedes the same hash discovered by
-             * background history without creating a duplicate. Reinsert it
-             * so the class-first ordering remains valid. */
-            if (work_class == DL_WORK_FORWARD) {
-                for (size_t j = 0; j < dm->queue_len; j++) {
-                    if (uint256_eq(&dm->queue[j], &hashes[i]) &&
-                        dm->queue_classes[j] == DL_WORK_HISTORY) {
-                        int32_t queued_height = heights ? heights[i]
-                                                       : dm->queue_heights[j];
-                        qset_remove(dm, &hashes[i]);
-                        dl_queue_remove_at(dm, j);
-                        promoted = dl_queue_push(
-                            dm, &hashes[i], queued_height, 0, 0,
-                            DL_WORK_FORWARD) || promoted;
-                        break;
-                    }
-                }
-            }
+        /* Skip live (in-flight) hashes and received-pending tombstones:
+         * the body is already on its way onto disk, so re-queueing it
+         * here is what produced the duplicate-download traffic. */
+        if (s && dl_slot_blocks_requeue(dm, s, now_q)) continue;
+        const struct dl_queued_key *queued = dl_qset_find(dm, &hashes[i]);
+        if (queued) {
+            if (work_class == DL_WORK_FORWARD &&
+                queued->work_class == DL_WORK_HISTORY)
+                promoted = dl_promote_queued_history(
+                    dm, &hashes[i],
+                    heights ? &heights[i] : NULL) || promoted;
             continue;
         }
-        qset_insert_raw(dm, &hashes[i]);
+        dl_qset_insert_raw(dm, &hashes[i], work_class);
         stage[n_stage].hash = hashes[i];
         stage[n_stage].height = heights ? heights[i] : -1;
         stage[n_stage].work_class = work_class;
@@ -1069,7 +1000,7 @@ size_t dl_queue_blocks_class(struct download_manager *dm,
         }
         size_t keep = total > dm->queue_cap ? dm->queue_cap : total;
         for (size_t i = keep; i < total; i++) {
-            qset_remove(dm, &mh[i]);
+            dl_qset_remove(dm, &mh[i]);
             dm->total_queue_evicted++;
         }
         memcpy(dm->queue, mh, keep * sizeof(*mh));
@@ -1084,7 +1015,7 @@ size_t dl_queue_blocks_class(struct download_manager *dm,
         if (total > keep) {
             added = 0;
             for (size_t i = 0; i < n_stage; i++)
-                if (qset_contains(dm, &stage[i].hash))
+                if (dl_qset_contains(dm, &stage[i].hash))
                     added++;
         }
     } else {
@@ -1092,7 +1023,7 @@ size_t dl_queue_blocks_class(struct download_manager *dm,
          * correctness over speed). qset entries for items the push
          * rejects must be erased. */
         for (size_t i = 0; i < n_stage; i++) {
-            qset_remove(dm, &stage[i].hash);
+            dl_qset_remove(dm, &stage[i].hash);
             if (dl_queue_push(dm, &stage[i].hash, stage[i].height, 0, 0,
                               stage[i].work_class))
                 added++;
@@ -1118,15 +1049,16 @@ void dl_queue_priority(struct download_manager *dm,
     zcl_mutex_lock(&dm->cs);
     bool changed = false;
 
-    /* Skip if already in-flight */
+    /* Skip if already in-flight or received-pending-staging */
     struct dl_in_flight *s = find_slot(dm, hash, false);
-    if (s && s->active) {
+    if (s && dl_slot_blocks_requeue(dm, s,
+                                    (int64_t)platform_time_wall_time_t())) {
         zcl_mutex_unlock(&dm->cs);
         return;
     }
 
     /* Remove from queue if already present (we'll re-insert sorted) */
-    if (qset_contains(dm, hash)) {
+    if (dl_qset_contains(dm, hash)) {
         for (size_t j = 0; j < dm->queue_len; j++) {
             if (uint256_eq(&dm->queue[j], hash)) {
                 int64_t now = (int64_t)platform_time_wall_time_t();
@@ -1136,7 +1068,7 @@ void dl_queue_priority(struct download_manager *dm,
                     zcl_mutex_unlock(&dm->cs);
                     return;
                 }
-                qset_remove(dm, hash);
+                dl_qset_remove(dm, hash);
                 dl_queue_remove_at(dm, j);
                 changed = true;
                 break;
@@ -1446,7 +1378,7 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                 int32_t height = dm->queue_heights[picks[p]];
                 enum dl_work_class work_class =
                     dm->queue_classes[picks[p]];
-                qset_remove(dm, &hash);
+                dl_qset_remove(dm, &hash);
                 maybe_grow(dm);
                 struct dl_in_flight *slot = find_slot(dm, &hash, true);
                 if (!slot)
@@ -1455,6 +1387,8 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                 slot->height = height;
                 slot->peer_id = peer_id;
                 slot->request_time = now;
+                slot->received_time = 0; /* activation clears any stale
+                                          * tombstone */
                 slot->work_class = work_class;
                 slot->active = true;
                 dm->num_active++;
@@ -1500,7 +1434,7 @@ size_t dl_assign_to_peer(struct download_manager *dm,
             if (work_class == DL_WORK_HISTORY &&
                 history_assigned >= history_available)
                 break;
-            qset_remove(dm, &hash);
+            dl_qset_remove(dm, &hash);
             dl_queue_remove_at(dm, pick);
 
             maybe_grow(dm);
@@ -1512,6 +1446,8 @@ size_t dl_assign_to_peer(struct download_manager *dm,
             slot->height = height;
             slot->peer_id = peer_id;
             slot->request_time = now;
+            slot->received_time = 0; /* activation clears any stale
+                                      * tombstone */
             slot->work_class = work_class;
             slot->active = true;
             dm->num_active++;
@@ -1651,7 +1587,7 @@ size_t dl_drain_for_backpressure(struct download_manager *dm)
     /* Drop pending hashes outright — peers won't be re-asked until
      * something else (header sync, reducer activation) re-queues. */
     dm->queue_len = 0;
-    qset_clear(dm);
+    dl_qset_clear(dm);
 
     /* Mark every in-flight slot inactive WITHOUT zeroing its hash:
      * find_slot relies on the hash bits to distinguish a virgin slot

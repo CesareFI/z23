@@ -47,4 +47,21 @@ void zcl_native_handle_fleet_roles_check(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* fleet.steer.* — the thin remote-STEER adapter over mail, queue, board and
+ * receipts (tools/command/native_fleet_steer.c). Brief/send/evidence compose
+ * sibling leaves in-process; the grant leaf mints and revokes the
+ * adapter's own scoped bearer grants. */
+void zcl_native_handle_fleet_steer_brief(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_fleet_steer_send(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_fleet_steer_evidence(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_fleet_steer_grant(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 #endif /* ZCL_NATIVE_FLEET_H */

@@ -238,6 +238,12 @@ service keeps advertising `NODE_BOOTSTRAP`. Re-bake into a new, differently
 named directory (see below) and re-point `-beta6-bootstrap-source` instead of
 updating one in place.
 
+Before arming a real node, `z23 dev beta6 verify <absolute-source-dir>
+[--network=main]` runs this exact preflight — the stray-entry refusal above,
+then the same `.anchor`/`.meta` resolution — in a standalone process and
+prints the resolved manifest, so a bad tree is caught without ever touching a
+running node's own armed state.
+
 ### Producing the snapshot
 
 z23 does not mint a beta6-compatible snapshot itself; the source tree comes
@@ -287,9 +293,13 @@ Query `bootstrapstatus` (native RPC) or `GET /api/v1/bootstrap` (REST; `GET
 /api/v1/bootstrapstatus` is a compatibility alias). The response's
 `beta6_snapshot_bootstrap` object carries `source_dir`, `in_band`,
 `listen_port`, `manifest_version`, `manifest_height`, `manifest_files`,
-`manifest_bytes`, `advertised`, `serving`, and `current_blocker`; the
-top-level `p2p` object separately carries `node_bootstrap` — the bit as sent
-in this node's own `version` message.
+`manifest_bytes`, `advertised`, `serving`, `params_served`, and
+`current_blocker`; the top-level `p2p` object separately carries
+`node_bootstrap` — the bit as sent in this node's own `version` message.
+`params_served` is `false` whenever this node has no `-paramsdir` configured
+— the chain snapshot still arms and serves normally, but every `getbspman`
+gets a beta6 reject — and the same condition adds
+`beta6_params_dir_not_configured` to the top-level `blockers[]`.
 
 `advertised` and `serving` answer different questions and can disagree. The
 `version` message sets `NODE_BOOTSTRAP`, and the in-band path answers

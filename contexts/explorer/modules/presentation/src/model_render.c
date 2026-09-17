@@ -226,6 +226,8 @@ static int32_t render_row(struct zcl_present_canvas *canvas,
                           int32_t y)
 {
     struct zcl_present_color accent = status_color(item->status);
+    if (item->flags & ZCL_PRESENT_ITEM_SELECTED)
+        zcl_present_canvas_stroke_rect(canvas, 36, y - 2, 648u, 41u, 2u, INFO);
     zcl_present_canvas_fill_rect(canvas, 42, y + 3, 4u, 31u, accent);
     text_fit(canvas, 58, y + 2, item->label, 14u, 238u, MUTED);
     text_fit(canvas, 310, y + 2, item->value, 16u, 366u, INK);
@@ -364,10 +366,26 @@ static void render_actions(struct zcl_present_canvas *canvas,
     }
 }
 
-bool zcl_present_model_render_page_v1(
+static void render_heading(struct zcl_present_canvas *canvas,
+    const struct zcl_present_model_v1 *model, bool show_binding)
+{
+    zcl_present_canvas_text(canvas, 42, 28, "ZCLASSIC23", 10u, 14u, ORANGE);
+    if (show_binding)
+        text_fit(canvas, 520, 28, zcl_present_model_kind_name(model->kind), 12u, 158u, MUTED);
+    text_fit(canvas, 42, 60, model->title, 30u, 636u, INK);
+    if (model->summary[0])
+        text_fit(canvas, 42, 104, model->summary, 15u, 636u, MUTED);
+    if (show_binding && model->exact_root[0]) {
+        char root_line[86];
+        (void)snprintf(root_line, sizeof(root_line), "Exact root  %s", model->exact_root);
+        text_fit(canvas, 42, 134, root_line, 12u, 636u, MUTED);
+    }
+}
+
+static bool render_page(
     const struct zcl_present_model_v1 *model, uint32_t page_index,
     struct zcl_present_model_bitmap_v1 *bitmap,
-    char *error, size_t error_cap)
+    char *error, size_t error_cap, bool show_binding)
 {
     if (!bitmap)
         return render_error(error, error_cap,
@@ -397,18 +415,7 @@ bool zcl_present_model_render_page_v1(
     }
     zcl_present_canvas_clear(&canvas, PAPER);
     zcl_present_canvas_fill_rect(&canvas, 0, 0, 12u, canvas.height, ORANGE);
-    zcl_present_canvas_text(&canvas, 42, 28, "ZCLASSIC23", 10u, 14u, ORANGE);
-    const char *kind = zcl_present_model_kind_name(model->kind);
-    text_fit(&canvas, 520, 28, kind, 12u, 158u, MUTED);
-    text_fit(&canvas, 42, 60, model->title, 30u, 636u, INK);
-    if (model->summary[0])
-        text_fit(&canvas, 42, 104, model->summary, 15u, 636u, MUTED);
-    if (model->exact_root[0]) {
-        char root_line[86];
-        (void)snprintf(root_line, sizeof(root_line), "Exact root  %s",
-                       model->exact_root);
-        text_fit(&canvas, 42, 134, root_line, 12u, 636u, MUTED);
-    }
+    render_heading(&canvas, model, show_binding);
     zcl_present_canvas_line(&canvas, 42, 164, 678, 164, RULE);
 
     int32_t y = MODEL_CONTENT_TOP;
@@ -438,12 +445,35 @@ bool zcl_present_model_render_page_v1(
     return true;
 }
 
+bool zcl_present_model_render_page_v1(
+    const struct zcl_present_model_v1 *model, uint32_t page_index,
+    struct zcl_present_model_bitmap_v1 *bitmap, char *error, size_t error_cap)
+{
+    return render_page(model, page_index, bitmap, error, error_cap, true);
+}
+
+bool zcl_present_model_render_editor_v1(const struct zcl_present_model_v1 *model,
+    struct zcl_present_model_bitmap_v1 *bitmap, char *error, size_t error_cap)
+{
+    if (!model || model->kind != ZCL_PRESENT_MODEL_FORM)
+        return render_error(error, error_cap, "local editor requires a bounded form");
+    return render_page(model, 0, bitmap, error, error_cap, false);
+}
+
 bool zcl_present_model_render_v1(const struct zcl_present_model_v1 *model,
                                  struct zcl_present_model_bitmap_v1 *bitmap,
                                  char *error, size_t error_cap)
 {
     return zcl_present_model_render_page_v1(model, 0, bitmap,
                                             error, error_cap);
+}
+
+bool zcl_present_model_render_list_v1(const struct zcl_present_model_v1 *model,
+    struct zcl_present_model_bitmap_v1 *bitmap, char *error, size_t error_cap)
+{
+    if (!model || model->kind != ZCL_PRESENT_MODEL_TABLE)
+        return render_error(error, error_cap, "local list requires a bounded table");
+    return render_page(model, 0, bitmap, error, error_cap, false);
 }
 
 void zcl_present_model_bitmap_free_v1(

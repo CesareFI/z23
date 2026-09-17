@@ -2390,6 +2390,35 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
            dp_mk_write(root, "build/hotswap-fast/flags.env", flags);
 }
 
+/* A second checkout discovers its closure once, then reuses the exact
+ * artifact immediately without requiring a second save -- and on the same
+ * device as the cache, with no forced copy, it still gets a fresh
+ * single-link file, never a hardlink into the shared cache: build/hotswap/
+ * is a tree check-no-hardlink-seeding refuses to find a multiply-linked
+ * file in. */
+static bool dp_second_checkout_hit_is_single_link(
+    const char *root_b, const char *owner,
+    const struct zcl_devloop_hotswap_build_receipt *built,
+    const struct stat *cache_st,
+    struct zcl_devloop_hotswap_build_receipt *cross,
+    struct zcl_devloop_process_result *process, char *why, size_t why_cap)
+{
+    if (!zcl_devloop_hotswap_build(root_b, owner, cross, process, why,
+                                   why_cap) ||
+        !cross->artifact_cache_hit || cross->compiler_processes != 1 ||
+        cross->linker_processes != 0 ||
+        strcmp(cross->artifact_cache_key, built->artifact_cache_key) != 0 ||
+        strcmp(cross->artifact_sha256, built->artifact_sha256) != 0 ||
+        strcmp(cross->candidate_object_sha256,
+               built->candidate_object_sha256) != 0)
+        return false;
+    struct stat cross_st = {0};
+    return stat(cross->artifact_path, &cross_st) == 0 &&
+           cross_st.st_nlink == 1 &&
+           (cross_st.st_dev != cache_st->st_dev ||
+            cross_st.st_ino != cache_st->st_ino);
+}
+
 static bool run_hotswap_artifact_cache_fixture(void)
 {
     static const char root_a[] = "test-tmp/dev_hotswap_cache_a";
@@ -2544,16 +2573,10 @@ static bool run_hotswap_artifact_cache_fixture(void)
         strcmp(reverted.artifact_cache_key, built.artifact_cache_key) != 0)
         goto out;
 
-    /* A second checkout discovers its closure once, then reuses the exact
-     * artifact immediately without requiring a second save. */
-    if (!zcl_devloop_hotswap_build(root_b, owner, &cross, &process,
-                                   why, sizeof(why)) ||
-        !cross.artifact_cache_hit || cross.compiler_processes != 1 ||
-        cross.linker_processes != 0 ||
-        strcmp(cross.artifact_cache_key, built.artifact_cache_key) != 0 ||
-        strcmp(cross.artifact_sha256, built.artifact_sha256) != 0 ||
-        strcmp(cross.candidate_object_sha256,
-               built.candidate_object_sha256) != 0)
+    stage = "cross-checkout-hit";
+    if (!dp_second_checkout_hit_is_single_link(root_b, owner, &built, &cache_st,
+                                               &cross, &process, why,
+                                               sizeof(why)))
         goto out;
 
     /* A dependency appearing between the discovery and verification compile
@@ -3940,6 +3963,99 @@ static int test_template_generator_concurrency(void)
 #define DP_EPHEMERAL_FIXTURE_REL \
     "engine/services/src/_dev_platform_source_identity_fixture_tmp.c"
 
+/* The native source-identity-batch token passes must emit byte-identical
+ * preimages to the portable shell oracle. This is the exactness contract
+ * behind the parse-time speedup: the identity, mutation, and inventory
+ * digests cannot move when the helper takes over, and shadow mode must
+ * agree on a tree that also carries a live untracked file and a symlink. */
+/* The build-epoch integrity gate must pass from a COLD cache on any host:
+ * this regression pins the driver-discovery repair after a host whose plain
+ * `cc` lacked cc1plus (and whose `gcc` rejected -std=c23) failed every cold
+ * probe run behind a warm-cache mask. The test forces a private empty cache
+ * directory, so the wrapper's cached verdict path is unreachable and the
+ * compiler probes run for real every time. */
+static int test_cold_epoch_integrity_gate(void)
+{
+    int failures = 0;
+    TEST("dev platform: build-epoch integrity passes from a cold cache") {
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0) {
+            execlp("bash", "bash", "-c",
+                   "set -eu\n"
+                   "origin=\"$(pwd -P)\"\n"
+                   "scratch=\"$(mktemp -d "
+                   "${TMPDIR:-/tmp}/zcl-cold-epoch.XXXXXX)\"\n"
+                   "cleanup() {\n"
+                   "  cd \"$origin\"\n"
+                   "  rm -rf \"$scratch\"\n"
+                   "}\n"
+                   "trap cleanup EXIT HUP INT TERM\n"
+                   "ZCL_BUILD_EPOCH_CACHE_DIR=\"$scratch/cache\" \\\n"
+                   "  tools/dev/build-epoch-integrity-cached.sh \\\n"
+                   "  >\"$scratch/out.log\" 2>&1\n"
+                   "grep -Fq 'build-epoch-selftest: PASS' \"$scratch/out.log\"\n"
+                   "grep -Fq 'make-depfile-scope-selftest: PASS' "
+                   "\"$scratch/out.log\"\n",
+                   (char *)NULL);
+            _exit(127);
+        }
+        int status = 0;
+        ASSERT(waitpid(child, &status, 0) == child);
+        ASSERT(WIFEXITED(status));
+        ASSERT(WEXITSTATUS(status) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_native_identity_tokens_match_oracle(void)
+{
+    int failures = 0;
+    TEST("dev platform: native identity tokens match the portable oracle") {
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0) {
+            execlp("bash", "bash", "-c",
+                   "set -eu\n"
+                   "origin=\"$(pwd -P)\"\n"
+                   "scratch=\"$(mktemp -d "
+                   "${TMPDIR:-/tmp}/zcl-identity-native.XXXXXX)\"\n"
+                   "tree=\"$scratch/tree\"\n"
+                   "cleanup() {\n"
+                   "  cd \"$origin\"\n"
+                   "  git worktree remove --force \"$tree\" "
+                   ">/dev/null 2>&1 || :\n"
+                   "  rm -rf \"$scratch\"\n"
+                   "}\n"
+                   "trap cleanup EXIT HUP INT TERM\n"
+                   "git worktree add --detach \"$tree\" HEAD >/dev/null\n"
+                   "cd \"$tree\"\n"
+                   "printf 'int zcl_native_oracle_probe(void) { return 7; }\\n' "
+                   "> engine/services/src/native_oracle_probe_tmp.c\n"
+                   "ln -s Makefile native_oracle_link_tmp\n"
+                   "native=\"$(tools/dev/source-identity.sh capture-record)\"\n"
+                   "portable=\"$(ZCL_SOURCE_IDENTITY_BATCH_DISABLE=1 "
+                   "tools/dev/source-identity.sh capture-record)\"\n"
+                   "[ \"$native\" = \"$portable\" ] || {\n"
+                   "  echo \"native and portable capture records differ:\" "
+                   "\"$native\" vs \"$portable\" >&2\n"
+                   "  exit 1\n"
+                   "}\n"
+                   "ZCL_SOURCE_IDENTITY_BATCH_SHADOW=1 "
+                   "tools/dev/source-identity.sh capture-record >/dev/null\n",
+                   (char *)NULL);
+            _exit(127);
+        }
+        int status = 0;
+        ASSERT(waitpid(child, &status, 0) == child);
+        ASSERT(WIFEXITED(status));
+        ASSERT(WEXITSTATUS(status) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ephemeral_fixture_leaves_source_identity(void)
 {
     int failures = 0;
@@ -4044,6 +4160,8 @@ static int test_dev_platform_platform_arm(void)
     failures += test_hotfork_descriptor_boundary();
     failures += test_template_generator_concurrency();
     failures += test_ephemeral_fixture_leaves_source_identity();
+    failures += test_native_identity_tokens_match_oracle();
+    failures += test_cold_epoch_integrity_gate();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_change_plan_closure();

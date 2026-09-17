@@ -215,6 +215,8 @@ static bool cr_match_int_table(const char *key, const struct json_value *value,
         { "seconds", 1, 60 },
         { "top_n", 1, 32 },
         { "depth", 1, 1000000 },
+        /* fleet.steer.grant bearer lifetime: 0 means no expiry. */
+        { "ttl_seconds", 0, 2592000 },
     };
     for (size_t i = 0; i < sizeof(k_bounds) / sizeof(k_bounds[0]); i++) {
         if (strcmp(key, k_bounds[i].key) != 0)
@@ -274,13 +276,48 @@ static bool cr_match_presentation(const char *path, const char *key,
     return false;
 }
 
+static bool cr_match_tasks(const char *path, const char *key,
+                            const struct json_value *value, bool *type_ok)
+{
+    if (strcmp(path, "app.tasks") != 0) return false;
+    if (strcmp(key, "expected_revision") == 0) {
+        *type_ok = cr_int_range(value, 0, INT64_MAX);
+        return true;
+    }
+    if (strcmp(key, "task_id") == 0) {
+        *type_ok = cr_int_range(value, 1, INT64_MAX);
+        return true;
+    }
+    return false;
+}
+
+/* fleet.steer.send carries its bounded directive batch as objects; the leaf
+ * re-validates every item field (recipient alphabet, body bound,
+ * idempotency-key alphabet), so the registry gate only bounds shape. Split
+ * out so cr_match_path_special stays under the complexity cap. */
+static bool cr_match_fleet_steer(const char *path, const char *key,
+                               const struct json_value *value, bool *type_ok)
+{
+    size_t j;
+    if (strcmp(path, "fleet.steer.send") != 0 || strcmp(key, "items") != 0)
+        return false;
+    *type_ok = value->type == JSON_ARR && value->num_children >= 1u &&
+               value->num_children <= 8u;
+    for (j = 0; *type_ok && j < value->num_children; j++)
+        *type_ok = value->children[j].type == JSON_OBJ;
+    return true;
+}
+
 static bool cr_match_path_special(const struct zcl_command_spec *spec,
                                   const char *key,
                                   const struct json_value *value,
                                   bool *type_ok)
 {
     const char *path = spec && spec->path ? spec->path : "";
-    if (cr_match_presentation(path, key, value, type_ok))
+    if (cr_match_presentation(path, key, value, type_ok) ||
+        cr_match_tasks(path, key, value, type_ok))
+        return true;
+    if (cr_match_fleet_steer(path, key, value, type_ok))
         return true;
     if (strcmp(key, "maximum_bytes") == 0) {
         int64_t maximum = strcmp(path, "zcode.package.fetch") == 0
