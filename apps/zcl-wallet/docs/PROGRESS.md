@@ -1,5 +1,42 @@
 # Development record
 
+## Wallet header and recovery continuation — 2026-09-17
+
+The BIP32 checkpoint was backed up and directly verified as
+`ce8002b3039e30f0c1d6ed9c6d1dcb9a2c5b27ec` on the same-named development branch.
+Wallet-header creation, parsing and recovered-address validation now retire
+their initialized header/address/identity scratch on success and every refusal.
+Exact header/profile checks, re-derived address binding and caller-output
+preservation remain unchanged. Parsing still does not authenticate a record;
+platform GCM authentication remains a prerequisite to recovery acceptance.
+
+A new registered source-copy fixture fails on inherited creation's missing
+clear and passes with the fix. It covers dirty genesis/address/derivation
+providers, impossible returned lengths, unsupported P2SH, changed genesis,
+profile/entropy mismatches, output canaries and early capacity/NULL refusal.
+Six separate isolated mutations remove each category of cleanup; every mutant
+fails its live-retirement assertion, while the unchanged source-copy control
+passes. No mutation enters the checkout or Android artifact. Existing record
+mutation matrices remain active; the explicit hazard review is recorded.
+
+Full non-TLS safety passes 105/105 Clang wallet CTest cases (86.44 seconds) and
+104/104 optimized GCC cases (122.20 seconds), both analyzers and unchanged
+production/test complexity caps 10/15. The new fixture separately passes both
+analyzers and strict ARM64/x86-64 NDK compilation. A bounded ASan/UBSan record
+fuzz campaign completes 1,404,949 executions in 61 seconds, five-second input
+deadline and 512 MiB RSS cap, without findings. Android/JVM checks, both ABI
+debug/release builds, lints, fixture isolation and 16 KiB alignment pass.
+All nineteen selected API35 record/recovery/unlock cases pass in 0.646 seconds.
+Architecture/doc counts pass. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/header-retirement/`.
+
+Next inspected gap: `transaction_id.c` and `transaction_prevout.c` retain wire,
+digest and parsed previous-transaction scratch across success/early failure.
+Qualify cleanup with dirty-provider/live-clear regressions while preserving
+exact transaction IDs, hash-bound output selection and output atomicity.
+TLS quarantine, hardware-custody/physical-device gaps and historical global-lint
+limitations remain unchanged. No production state or funds were accessed.
+
 ## BIP32 private input continuation — 2026-09-17
 
 The preceding sync checkpoint is backed up and directly verified as

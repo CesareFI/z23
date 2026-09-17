@@ -1,5 +1,42 @@
 # C parser foundation safety review
 
+## Wallet header and recovery scratch retirement — 2026-09-17
+
+Scope: `wallet_header.c` identity validation, parsing, creation and recovered
+address comparison. Initialized genesis, parsed address, wallet info, header and
+derived-address locals now clear at full capacity on success and refusal.
+Public output publication, fixed fields, network/profile checks and exact
+re-derived address binding remain unchanged. Prior platform GCM authentication
+is still mandatory; structural parsing cannot grant authenticity.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Every clear uses the existing object's exact `sizeof`. Fixed offsets, length checks and short-circuit comparisons remain unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | No product arithmetic or conversion changes. Oversized returned lengths still refuse before comparison/copy. |
+| Use-after-free, double-free, leaks | No allocation/free changes. Publication copies values before local retirement; test inspection occurs through live clear arguments. |
+| NULL dereferences, uninitialized memory | Existing output/admission guards remain. Recovery initializes both locals before cleanup can be reached; skipped scalar initialization is never consumed by cleanup. |
+| Dangling pointers, pointer arithmetic | No pointer escapes or new product offsets. Test captures use integer identities; containment uses checked subtraction and never reads a retired pointer. |
+| Format strings, secret leakage | No product logging/formatting or new secret copies. Address/identity metadata now retires; this does not assert erasure of borrowed entropy or provider memory. |
+| Stack usage, allocation limits | No new buffer capacity, heap, VLA or recursion. Optimized GCC parse/create/recovery frames are 208/224/240 bytes individually, not call-chain bounds. |
+| Malformed serialization/network input | Fixed-format, genesis, P2PKH, entropy-size and re-derived address checks are preserved. Dirty provider and impossible length tests do not relax real providers. |
+| Races, resource exhaustion | Existing stable, nonoverlapping caller-span contract remains. No asynchronous work, retry, global product state or new crypto operation is introduced. |
+
+The new registered source-copy fixture fails on inherited creation at its first
+missing live-clear assertion. Fixed creation/parsing/recovery cases cover dirty
+genesis/address/derivation providers, short/SIZE_MAX derivation results, exact
+output preservation, unsupported P2SH, profile/genesis/entropy mismatches and
+early output-capacity/NULL refusal. Observer identities retire only when the
+real primitive clears their full live spans. Existing record mutation matrices
+remain active. Test substitutions are private to the host target; Android
+libraries contain no fault hooks. Production/test complexity caps remain 10/15.
+
+Six isolated source mutations independently remove genesis, parsed-address,
+parsed-info, staged-header, derived-address or recovered-info retirement. Each
+aborts at its corresponding live-observer/counter assertion; the same compiled
+fixture passes against an unchanged source-copy control. Mutation binaries use
+ASan/UBSan/integer sanitizers, bounded execution and disabled core dumps. The
+checkout's accepted source and Android artifacts are never mutated.
+
 ## BIP32 child input retirement — 2026-09-17
 
 Scope: `bip32.c` child derivation. Its 37-byte HMAC input, which contains the

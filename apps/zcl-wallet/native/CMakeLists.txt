@@ -1280,6 +1280,15 @@ if(NOT ANDROID)
     target_compile_definitions(wallet_record_tests PRIVATE zcl_secure_zero=zcl_record_test_zero)
     target_compile_options(wallet_record_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_record COMMAND wallet_record_tests)
+    add_executable(wallet_header_tests tests/test_wallet_header.c src/wallet_header.c)
+    target_link_libraries(wallet_header_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(wallet_header_tests PRIVATE zcl_secure_zero=zcl_header_test_zero
+        zcl_network_genesis=zcl_header_test_genesis zcl_address_parse=zcl_header_test_parse
+        zcl_receive_from_entropy=zcl_header_test_receive)
+    target_compile_options(wallet_header_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_header COMMAND wallet_header_tests)
+    set_tests_properties(wallet_header PROPERTIES TIMEOUT 15)
     add_executable(custody_policy_tests tests/test_custody_policy.c)
     target_link_libraries(custody_policy_tests PRIVATE zcl_wallet_core)
     target_compile_options(custody_policy_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)

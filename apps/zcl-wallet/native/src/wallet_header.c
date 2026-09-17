@@ -27,17 +27,24 @@ static zcl_status check_identity(const uint8_t *header, size_t length, zcl_walle
     zcl_network network = (zcl_network)header[5];
     zcl_status status = zcl_network_genesis(network, genesis, sizeof(genesis));
     if (status != ZCL_OK)
-        return status;
-    if (memcmp(header + 12, genesis, sizeof(genesis)) != 0)
-        return ZCL_INVALID_ENCODING;
+        goto cleanup;
+    if (memcmp(header + 12, genesis, sizeof(genesis)) != 0) {
+        status = ZCL_INVALID_ENCODING;
+        goto cleanup;
+    }
     status = zcl_address_parse(header + 44, 35, network, &address);
     if (status != ZCL_OK)
-        return status;
-    if (address.kind != ZCL_P2PKH)
-        return ZCL_UNSUPPORTED;
+        goto cleanup;
+    if (address.kind != ZCL_P2PKH) {
+        status = ZCL_UNSUPPORTED;
+        goto cleanup;
+    }
     info->network = network;
     memcpy(info->address, header + 44, sizeof(info->address));
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(genesis, sizeof(genesis));
+    zcl_secure_zero(&address, sizeof(address));
+    return status;
 }
 
 zcl_status zcl_wallet_header_parse(const uint8_t *header, size_t header_len, zcl_wallet_info *info)
@@ -51,11 +58,12 @@ zcl_status zcl_wallet_header_parse(const uint8_t *header, size_t header_len, zcl
         return ZCL_INVALID_ENCODING;
     zcl_wallet_info result = {0};
     status = check_identity(header, header_len, &result);
-    if (status != ZCL_OK)
-        return status;
-    result.entropy_len = header[7];
-    *info = result;
-    return ZCL_OK;
+    if (status == ZCL_OK) {
+        result.entropy_len = header[7];
+        *info = result;
+    }
+    zcl_secure_zero(&result, sizeof(result));
+    return status;
 }
 
 zcl_status zcl_wallet_header_create(const uint8_t *entropy, size_t entropy_len,
@@ -70,17 +78,21 @@ zcl_status zcl_wallet_header_create(const uint8_t *entropy, size_t entropy_len,
     size_t address_len = 0;
     zcl_status status = zcl_network_genesis(network, result + 12, 32);
     if (status != ZCL_OK)
-        return status;
+        goto cleanup;
     status = zcl_receive_from_entropy(entropy, entropy_len, network, 0, blinding, blinding_len,
                                       result + 44, 35, &address_len);
     if (status != ZCL_OK)
-        return status;
-    if (address_len != 35)
-        return ZCL_CRYPTO_FAILURE;
+        goto cleanup;
+    if (address_len != 35) {
+        status = ZCL_CRYPTO_FAILURE;
+        goto cleanup;
+    }
     result[5] = (uint8_t)network;
     result[7] = (uint8_t)entropy_len;
     memcpy(header, result, sizeof(result));
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(result, sizeof(result));
+    return status;
 }
 
 zcl_status zcl_wallet_recovered_address(const uint8_t *header, size_t header_len,
@@ -93,19 +105,26 @@ zcl_status zcl_wallet_recovered_address(const uint8_t *header, size_t header_len
     if (capacity < 35)
         return ZCL_BUFFER_TOO_SMALL;
     zcl_wallet_info info = {0};
+    uint8_t derived[35] = {0};
     zcl_status status = zcl_wallet_header_parse(header, header_len, &info);
     if (status != ZCL_OK)
-        return status;
-    if (entropy_len != info.entropy_len)
-        return ZCL_INVALID_ENCODING;
-    uint8_t derived[35] = {0};
+        goto cleanup;
+    if (entropy_len != info.entropy_len) {
+        status = ZCL_INVALID_ENCODING;
+        goto cleanup;
+    }
     size_t length = 0;
     status = zcl_receive_from_entropy(entropy, entropy_len, info.network, 0, blinding, blinding_len,
                                       derived, sizeof(derived), &length);
     if (status != ZCL_OK)
-        return status;
-    if (length != sizeof(derived) || memcmp(info.address, derived, sizeof(derived)) != 0)
-        return ZCL_INVALID_ENCODING;
+        goto cleanup;
+    if (length != sizeof(derived) || memcmp(info.address, derived, sizeof(derived)) != 0) {
+        status = ZCL_INVALID_ENCODING;
+        goto cleanup;
+    }
     memcpy(address, derived, sizeof(derived));
-    return ZCL_OK;
+cleanup:
+    zcl_secure_zero(derived, sizeof(derived));
+    zcl_secure_zero(&info, sizeof(info));
+    return status;
 }
