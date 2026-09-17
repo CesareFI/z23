@@ -113,6 +113,34 @@ zcl_status zcl_review_sighash_context(zcl_review_owner *owner, uint64_t id, uint
 zcl_status zcl_review_p2pkh_wire(zcl_review_owner *owner, uint64_t id, uint64_t now_ms,
     const zcl_review_block *block, const zcl_signature *signatures, size_t signature_count,
     uint8_t *wire, size_t capacity, size_t *length);
+
+/* Trusted local monotonic clock, sampled synchronously under the review lock.
+ * read MUST write elapsed milliseconds on OK, perform no reentrant wallet
+ * operation, and retain no span. context may be NULL. Never use server/wall
+ * time. Stable callback/context lifetime covers the entire operation. */
+typedef struct {
+    zcl_status (*read)(void *context, uint64_t *now_ms);
+    void *context;
+} zcl_review_clock;
+
+/* Completion-time variant of public signed-wire assembly above. Read the
+ * trusted clock before admission and again after all signature verification
+ * and serialization. Recheck the SAME live review at that final sample before
+ * publishing bytes/length. Expiry/rollback clears it under existing rules;
+ * clock/provider errors publish nothing. Caller outputs remain unchanged on
+ * every refusal; staged public signed wire is cleared before return.
+ * There is still no key, consent, chain authentication, unspentness, JNI or
+ * broadcast authority. Success neither consumes nor extends the review.
+ * This only closes the assembly-completion timing gap. The eventual adapter
+ * MUST independently qualify custody/consent/context and recheck at delayed UI
+ * delivery or broadcast; no returned bytes become a reusable authorization.
+ * Same lock, no reentrancy, stable inputs and nonoverlap rules apply, including
+ * the clock object/context. Time may pass after the final sample; this is not
+ * a scheduling or provider-execution deadline/interrupt guarantee. */
+zcl_status zcl_review_p2pkh_complete(zcl_review_owner *owner, uint64_t id,
+    const zcl_review_clock *clock, const zcl_review_block *block,
+    const zcl_signature *signatures, size_t count,
+    uint8_t *wire, size_t capacity, size_t *length);
 /* Assembly-only private publication phase. Separate translation unit keeps its
  * staged1925-byte wire out of the parsed transaction/signature owner's frame.
  * Caller supplies validated non-NULL stable objects under the same owner lock;

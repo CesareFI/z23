@@ -1,5 +1,32 @@
 # C parser foundation safety review
 
+## Review completion-time publication — 2026-09-17
+
+Scope: new `transaction_review_complete.c`, its internal clock/API contract,
+deterministic/provider-fault fixtures and the existing signed-wire differential
+fuzzer. This composes unchanged signature/context/serialization primitives; it
+does not add private-key access, JNI, consent or authenticated chain state.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Caller capacity is capped to the fixed 1925-byte staging array. A successful staged length must be nonzero and within that cap before copy. Canaries, short capacities, zero and SIZE_MAX provider lengths preserve caller output on refusal. |
+| Integer overflow/underflow, signed/unsigned conversions | No deadline arithmetic is added. Two uint64 samples use existing comparison-only liveness checks. Size bounds precede copy; there are no product narrowings or index additions. |
+| Use-after-free, double-free, leaks | No heap or freeing is added. Clock, context, owner and inputs remain stable borrowed values for the synchronous call; staged bytes never escape by pointer. |
+| NULL dereferences, uninitialized memory | All required arguments and the callback are checked before work. Staging is initialized. Each time sample starts at UINT64_MAX, which cannot pass a live review if a faulty callback reports success without writing. |
+| Dangling pointers, pointer arithmetic | Callback retains no spans and caller holds the exclusive review lock with no reentrancy. Only a checked fixed-length memcpy publishes. Source-copy observers inspect staging only while it is live. |
+| Format strings, secret leakage | No product logging or formatting. Only detached public signatures/transaction bytes enter this operation; all staged bytes clear before return. This does not claim private-key or provider-memory erasure. |
+| Stack usage, allocation limits | One bounded wire stage plus scalar fields; no heap, VLA, recursion or new worker. Existing deeper verifier/serializer frames remain separate. Per-function limits and complexity gates remain enforced; this is not a total call-chain stack bound. |
+| Malformed serialization/network input | Existing exact review, branch/context and signature verification stay authoritative. Clock failure and dirty/invalid backend results cannot publish partial output. No server data becomes a trusted clock. |
+| Races, resource exhaustion | Serialized access, stable nonoverlapping inputs and a nonreentrant trusted callback are explicit prerequisites. There are at most two clock calls and one bounded assembly. Final expiry/rollback clears the same review; no scheduling/interruption or UI-delivery freshness guarantee is implied. |
+
+Isolated-source validation passes 114 Clang ASan/UBSan/oracle groups and 109
+optimized GCC sanitizer groups, strict analysis and existing complexity limits.
+Three guard/retirement mutations fail deterministic assertions. Differential
+fuzzing and release-library Android x86_64 fixtures cover both exact-byte output
+and final-time refusal; ARM64 is compile-only. No consensus, TLS or provider
+algorithm changes. Unrelated concurrent change-state work was excluded from
+the isolated snapshot and this milestone's staged changes.
+
 ## Transaction codec scratch retirement — 2026-09-17
 
 Scope: `transaction_read.c` and `transaction_write.c`. Reversed input hashes

@@ -6,7 +6,7 @@
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 static signed_review_fixture baselines[4], fixture;
 static bool initialized;
-static zcl_review_owner model;
+static zcl_review_owner model, before;
 static zcl_review_snapshot snapshot;
 static uint8_t expected_wire[ZCL_TX_WIRE_MAX];
 typedef struct { uint8_t before[8], wire[ZCL_TX_WIRE_MAX], after[8]; } wire_box;
@@ -132,6 +132,49 @@ static void execute(const signed_review_fixture *baseline, const invocation *cal
     check_bytes(&box, valid, length, expected_length);
 }
 
+typedef struct { uint64_t times[2]; size_t calls; } completion_clock;
+
+static zcl_status sample_completion(void *context, uint64_t *now)
+{
+    completion_clock *clock = context;
+    if (clock == NULL || now == NULL || clock->calls >= 2) abort();
+    *now = clock->times[clock->calls++];
+    return ZCL_OK;
+}
+
+static zcl_status model_completion(uint64_t finish)
+{
+    if (finish < model.data.last_ms) { memset(&model.data, 0, sizeof(model.data)); return ZCL_CANCELLED; }
+    if (finish >= model.data.deadline_ms) { memset(&model.data, 0, sizeof(model.data)); return ZCL_TIMED_OUT; }
+    model.data.last_ms = finish;
+    return ZCL_OK;
+}
+
+static void execute_completion(const signed_review_fixture *baseline, const invocation *call, uint64_t finish)
+{
+    wire_box box;
+    memset(&box, 0xa5, sizeof(box)); size_t length = SIZE_MAX, expected_length = 0;
+    memcpy(&fixture.owner, &before, sizeof(before));
+    memcpy(&model, &before, sizeof(before));
+    zcl_status expected = model_live(call);
+    bool assembled = false;
+    if (expected == ZCL_OK)
+        assembled = signed_review_reference(baseline, call->block, call->signatures, call->count,
+            expected_wire, &expected_length) && call->capacity >= expected_length;
+    if (assembled) expected = model_completion(finish);
+    completion_clock clock = {{call->now, finish}, 0};
+    const zcl_review_clock source = {sample_completion, &clock};
+    const zcl_status status = zcl_review_p2pkh_complete(call->owner, call->id, &source,
+        call->block, call->signatures, call->count, call->null_wire ? NULL : box.wire,
+        call->capacity, call->null_length ? NULL : &length);
+    if (expected != ZCL_OK && status != expected) abort();
+    const bool valid = assembled && expected == ZCL_OK;
+    if ((status == ZCL_OK) != valid || memcmp(&model, &fixture.owner, sizeof(model)) != 0) abort();
+    const size_t calls = expected == ZCL_INVALID_ARGUMENT ? 0 : assembled ? 2 : 1;
+    if (clock.calls != calls) abort();
+    check_bytes(&box, valid, length, expected_length);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size < 16 || size > 144) return 0;
@@ -141,7 +184,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     prepare_state((data[1] & 7U) % 6);
     mutate_block(data + 12); mutate_signatures(data, size, baseline);
     const invocation call = request(data);
+    memcpy(&before, &fixture.owner, sizeof(before));
     execute(baseline, &call);
+    const uint64_t raw_finish = read_time(data + 8);
+    const uint64_t finish = (data[12] & 128U) != 0 ? raw_finish : 100 + raw_finish % 90001;
+    execute_completion(baseline, &call, finish);
     zcl_review_clear(&fixture.owner);
     return 0;
 }

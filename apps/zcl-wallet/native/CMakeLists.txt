@@ -115,7 +115,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
     src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
     src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
-    src/transaction_review_wire_encode.c
+    src/transaction_review_wire_encode.c src/transaction_review_complete.c
     src/transaction_draft.c src/transaction_draft_check.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
@@ -949,6 +949,22 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_review_wire COMMAND review_wire_tests)
     set_tests_properties(wallet_review_wire PROPERTIES TIMEOUT 30)
+    add_executable(review_complete_tests tests/test_review_complete.c)
+    target_link_libraries(review_complete_tests PRIVATE signed_review_test_fixture)
+    target_compile_options(review_complete_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_complete COMMAND review_complete_tests)
+    set_tests_properties(wallet_review_complete PROPERTIES TIMEOUT 30)
+    add_executable(review_complete_failure_tests tests/test_review_complete_failures.c
+        src/transaction_review_complete.c)
+    target_link_libraries(review_complete_failure_tests PRIVATE zcl_wallet_core)
+    target_include_directories(review_complete_failure_tests PRIVATE src)
+    target_compile_definitions(review_complete_failure_tests PRIVATE
+        zcl_review_p2pkh_wire=zcl_complete_test_wire zcl_secure_zero=zcl_complete_test_zero)
+    target_compile_options(review_complete_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_review_complete_failures COMMAND review_complete_failure_tests)
+    set_tests_properties(wallet_review_complete_failures PROPERTIES TIMEOUT 15)
     add_executable(review_wire_failure_tests tests/test_review_wire_failures.c
         src/transaction_review_wire.c src/transaction_review_wire_encode.c)
     target_link_libraries(review_wire_failure_tests PRIVATE signed_review_test_fixture)

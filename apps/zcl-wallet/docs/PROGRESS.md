@@ -1,5 +1,43 @@
 # Development record
 
+## Review completion-time publication — 2026-09-17
+
+Resumed clean on backed-up `5fa772ddddc8b343b3064063cbbe511fc5ca12c3` and
+fetched origin/main without integration. The existing signed-wire assembler
+explicitly used one supplied entry timestamp and could not observe completion
+freshness. A new internal C composition samples a trusted local monotonic clock
+before admission and after all signature verification/serialization, then
+rechecks the same live review before publishing privately staged bytes. Clock
+failure, exact-deadline expiry and rollback publish nothing. Existing canonical
+bytes, branch/context semantics and signature predicates are unchanged. This is
+not wallet signing, custody/consent, authenticated chain state or send authority.
+
+Deterministic tests pass both networks, 1..8 inputs, 1/16 outputs, exact signed
+bytes, capacity/canary checks and entry/completion clock failures. A source-copy
+fixture covers dirty backend refusal, malformed lengths and complete staging
+retirement. Three isolated mutations of the second sample, final liveness check
+or wipe fail. Production complexity remains <=10 and fixture complexity <=15;
+the first combined function was split instead of raising the limit.
+
+Unrelated change-state edits appeared during validation and were preserved.
+Final gates used a source copy of the checkpoint plus only the six owned native
+files, with a SHA256 manifest. That isolated snapshot passes 114 Clang sanitizer/
+oracle groups and 109 optimized GCC sanitizer groups. Android JVM checks,
+debug/test/minified-release builds, lints, fixture separation, instrumentation
+result checks and 16 KiB alignment pass there. The x86_64 completion fixture
+passes API30/35/36; both ABI fixture binaries are byte-identical when linked
+from the isolated release archives. ARM64 execution and physical custody remain
+unproven. The initial differential fuzz run completed 14,946 inputs without a
+finding; the final isolated snapshot is also fuzzed separately.
+
+Evidence: `.cache/android-wallet/mission-20260917/review-completion/` under the
+wallet directory. The explicit native hazard review is in
+[`C_SAFETY_REVIEW.md`](C_SAFETY_REVIEW.md), with the API boundary in
+[`TRANSACTIONS.md`](TRANSACTIONS.md). No JNI or UI entry point was added. Next:
+compose actual wallet signing only with authenticated custody, exact live review
+ownership and qualified chain/consent inputs; preserve separate delayed-delivery
+and broadcast checks. Physical-device acceptance and shielded send remain open.
+
 ## Instrumentation evidence completeness — 2026-09-17
 
 The attended fixture checkpoint was committed and backed up as

@@ -106,6 +106,11 @@ reviewed finality/expiry against explicit height/time inputs. P2PKH digests use
 only the live review's transaction, input script and value. Raw-digest signing,
 canonical signature-script verification and complete public signed-wire assembly
 also have independent host and release-library fixture evidence. These primitives
+now include completion-time signed-wire publication: a trusted local monotonic
+clock is sampled again after verification/serialization, and the same review
+must still be live before bytes publish. Delayed delivery/broadcast, actual
+wallet signing, custody, consent and authenticated chain context remain separate
+open composition requirements. The primitives
 grant no consent, authenticated chain state, unspentness or broadcast authority;
 see [`TRANSACTIONS.md`](TRANSACTIONS.md) for their exact scope and remaining gates.
 

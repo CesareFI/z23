@@ -1,5 +1,34 @@
 # Transparent transaction development
 
+## Signed-wire completion boundary
+
+The internal `zcl_review_p2pkh_complete` operation composes the existing public
+signature verification and signed-wire assembly with a trusted local monotonic
+clock. It samples before admission, stages all signed bytes privately, then
+samples again after verification/serialization and checks the same review ID
+before publishing. Expiry at the exact deadline or clock rollback clears the
+review under its existing rules. Clock/provider failure leaves caller bytes and
+length unchanged. The staged wire clears on every entered exit. The existing
+fixed-timestamp assembler retains its narrower documented contract.
+
+The clock callback runs synchronously under the caller's existing exclusive
+review lock. It must provide local elapsed time, retain no span and make no
+reentrant wallet call. A server timestamp or wall clock cannot supply it.
+Success observes liveness at the last sample; it does not impose a scheduler
+or provider interruption deadline, consume the review, prove wallet custody,
+authenticate chain context, or grant consent/broadcast authority. The eventual
+adapter must still recheck at delayed delivery and broadcast. There is no JNI
+or send-screen entry point for this operation.
+
+Deterministic fixtures cover both networks, 1..8 inputs, 1/16 outputs, exact
+signed-byte equivalence, capacity boundaries, entry/completion expiry, rollback,
+clock refusal and missing samples. A separate source-copy fixture observes
+private staging, malformed provider lengths and full cleanup. Three mutations
+remove the second clock sample, final review check or wipe; all fail. The signed
+wire differential fuzzer also models completion time independently. Host
+sanitizers/oracles and x86_64 execution against release-built Android archives
+qualify this scope; ARM64 compilation does not establish device behavior.
+
 The C codec handles a bounded transparent-only subset of the existing Zclassic
 v4/Sapling wire format. A thin JNI adapter exposes offline unsigned review data;
 there is no endpoint, key, signing, broadcast or send-screen entry point. Successful decoding establishes
