@@ -12,24 +12,16 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.zclassic.wallet.core.CoreStatus
-import org.zclassic.wallet.core.Network
-import org.zclassic.wallet.core.TransparentAddress
 import org.zclassic.wallet.core.UnsignedReview
 import org.zclassic.wallet.core.UnsignedReviewFailure
-import org.zclassic.wallet.core.Zatoshi
 
 /** Public synthetic reviews in a debug-only Activity; never a custody bypass. */
 @RunWith(AndroidJUnit4::class)
 class ReviewLifecycleInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private data class Displayed(val review: UnsignedReview, val view: ReviewView)
-    private fun fixture(name: String) = instrumentation.context.assets.open("review/$name").use { it.readBytes() }
-    private fun owner() = UnsignedReview.prepare(listOf(
-        UnsignedReview.Funding(fixture("previous0"), 0, 0xffff_ffffL),
-        UnsignedReview.Funding(fixture("previous1"), 1, 0xffff_ffffL)), listOf(
-        UnsignedReview.Output(TransparentAddress.fromPublicKeyHash(ByteArray(20) { 0x55 }, Network.MAINNET), Zatoshi.of(9000)),
-        UnsignedReview.Output(TransparentAddress.fromScriptHash(ByteArray(20) { 0x66 }, Network.MAINNET), Zatoshi.of(1500))),
-        Network.MAINNET, 0, 0, Zatoshi.of(500), SystemClock::elapsedRealtime)
+    private val fixture = PublicReviewFixture()
+    private fun owner() = fixture.prepare(clock = SystemClock::elapsedRealtime)
 
     private fun unavailable(view: ReviewView) {
         assertTrue(view.text.startsWith(instrumentation.targetContext.getString(R.string.review_unavailable)))
@@ -54,7 +46,7 @@ class ReviewLifecycleInstrumentedTest {
                 val current = it.findViewById<ReviewView>(R.id.transaction_review)
                 assertTrue(current.text.startsWith(it.getString(R.string.review_unsigned)))
                 assertTrue(current.text.contains("Fee: 0.000005 ZCL"))
-                assertTrue(current.text.contains("602c673db0503b48a400414347009ae968b1aaba9b10663bde508e7f8218dc46"))
+                assertTrue(current.text.contains(fixture.transactionId))
                 view = current
             }
             return Displayed(review, checkNotNull(view))

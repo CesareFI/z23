@@ -16,7 +16,6 @@ import org.junit.runner.RunWith
 import org.zclassic.wallet.core.CoreStatus
 import org.zclassic.wallet.core.Network
 import org.zclassic.wallet.core.UnsignedReview
-import org.zclassic.wallet.core.Zatoshi
 
 /** Synthetic public transactions only. This qualifies display, not spending. */
 @RunWith(AndroidJUnit4::class)
@@ -24,9 +23,8 @@ class ReviewViewInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val now = AtomicLong(0)
-    private fun fixture(name: String) = instrumentation.context.assets.open("review/$name").use { it.readBytes() }
-    private fun owner(network: Network = Network.MAINNET) = UnsignedReview.open(fixture("draft"),
-        arrayOf(fixture("previous0"), fixture("previous1")), network, Zatoshi.of(500), now::get)
+    private val fixture = PublicReviewFixture()
+    private fun owner(network: Network = Network.MAINNET) = fixture.open(network, now::get)
     private fun unavailable(view: ReviewView) {
         assertTrue(view.text.startsWith(context.getString(R.string.review_unavailable)))
         assertFalse(view.text.contains("ZCL"))
@@ -55,7 +53,7 @@ class ReviewViewInstrumentedTest {
                 assertTrue(text.contains("Total output value: 0.000105 ZCL"))
                 assertTrue(text.contains("Fee: 0.000005 ZCL"))
                 assertTrue(text.contains("Fee limit: 0.000005 ZCL"))
-                assertTrue(text.contains("602c673db0503b48a400414347009ae968b1aaba9b10663bde508e7f8218dc46"))
+                assertTrue(text.contains(fixture.transactionId))
                 assertTrue(text.contains("Unsigned size (bytes): 177"))
                 assertTrue(text.contains("Sequence (raw): 4294967295"))
                 snapshot.inputs.forEach { input ->

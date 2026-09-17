@@ -16,7 +16,7 @@ dirty-provider failures. This shares fixed expiry, rollback, non-repeating IDs,
 managed clock-failure cleanup and background-close requirements. Five JVM tests
 and three preparation instrumentation tests per API30/35/36 qualify exact rows,
 wire, refusal, ownership and lifetime. Foreground presentation and process-restart
-qualification for this new preparation path remain next. Source proofs and
+qualification now cover both profiles on API30/35/36 x86_64. Source proofs and
 signatures stay opaque; there is no chain/unspentness, consent or send authority.
 
 ## Explicit full-source draft construction
@@ -669,6 +669,17 @@ preparing a new public draft does not automatically display it. Invalid profiles
 or non-emulator serials refuse before creating a report directory or calling adb.
 Preparation is intentionally terminated; its instrumentation crash message is
 expected evidence of process loss, not a parser/sanitizer finding.
+
+The `review-full` controller profile constructs and opens over full sources in
+one JNI call, then runs the same process acceptance. It requires matching
+`review-full` readiness before termination. Both relaunch profiles use the
+strict instrumentation result checker, including skip and incomplete-run refusal.
+For the display/render/lifecycle suites, pass `-e reviewSourceProfile full` to
+select that same public preparation; absence or `narrow` retains the original
+route, and unknown values refuse. Both profiles pass14 tests and both process
+acceptances on API30/35/36 x86_64. The original API36 software-emulation timeout
+is retained in evidence; a fresh isolated accelerated API36 passes unchanged
+assertions and timeouts. These fixtures add no production route or authority.
 
 ## Unsigned draft construction
 

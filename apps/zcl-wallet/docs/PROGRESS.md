@@ -1,5 +1,44 @@
 # Development record
 
+## Full-source review foreground and restart qualification — 2026-09-17
+
+The existing display, rendering-failure, Activity-lifecycle and process-relaunch
+fixtures now accept an explicit instrumentation-only full-source profile. A
+shared public fixture factory uses `prepareFullSources` for that profile and
+retains the original narrow open/prepare routes otherwise. Expected transaction
+identity comes from independent Java SHA256d of committed expected wire. Unknown
+profiles refuse. No production UI, native code, wallet or endpoint changes.
+
+`check-process-relaunch.sh ... review-full` selects this preparation profile and
+requires its matching readiness/profile/PID before terminating the exact public
+fixture process. Relaunch uses the existing strict result checker, including
+test identity/completion and skip rejection. Invalid profile/non-emulator serial
+controls refuse before report-directory creation or adb invocation.
+
+The isolated `6df4e50bf` snapshot passes all155 Android/JVM/debug/minified-release/
+lint/fixture/result/16KiB gates. Six changed fixture/controller files and both
+debug APKs are SHA256-recorded. On each API30/35/36 x86_64, both profiles pass14
+display/render/lifecycle tests without skips (28 per API), including exact trust
+labels, queued delivery, expiry, rendering failure, repeated recreation, late
+prepared-owner refusal and background cleanup. Each API also passes both opt-in
+process-relaunch profiles: verified public display, exact PID termination, new
+PID, empty view and a reusable native review slot with no automatic replay.
+
+The existing software-emulated API36 instance timed out at the outer90-second
+limit during legacy recreation; its activity-service diagnostic also timed out.
+Those records remain intact. A fresh isolated hardware-accelerated API36 AVD
+completed startup after the initial short readiness window and passed the same
+assertions/timeouts. Existing emulators were preserved. API30/35 use5558/5560;
+the qualified fresh API36 uses5562. Evidence:
+`.cache/android-wallet/mission-20260917/full-review-lifecycle/`.
+ARM64 and minified release remain build-only evidence for this slice; physical
+custody, authenticated chain/unspentness and send remain separate open gates.
+
+Next: audit pinned original Merkle behavior and header/source hash byte order,
+then establish bounded reference-backed transaction commitment/inclusion checks.
+State the exact proof claim; a branch/root match alone must not become chain
+validity, freshness, unspentness or signing authority. TLS remains quarantined.
+
 ## Single-call full-source preparation — 2026-09-17
 
 `UnsignedReview.prepareFullSources` now constructs and opens an offline unsigned

@@ -12,18 +12,15 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.zclassic.wallet.core.CoreStatus
-import org.zclassic.wallet.core.Network
 import org.zclassic.wallet.core.UnsignedReview
 import org.zclassic.wallet.core.UnsignedReviewFailure
-import org.zclassic.wallet.core.Zatoshi
 
 /** Public unsigned fixtures and real C review lifetimes; no wallet or consent. */
 @RunWith(AndroidJUnit4::class)
 class ReviewRenderFailureInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
-    private fun fixture(name: String) = instrumentation.context.assets.open("review/$name").use { it.readBytes() }
-    private fun owner(clock: () -> Long = { 0L }) = UnsignedReview.open(fixture("draft"),
-        arrayOf(fixture("previous0"), fixture("previous1")), Network.MAINNET, Zatoshi.of(500), clock)
+    private val fixture = PublicReviewFixture()
+    private fun owner(clock: () -> Long = { 0L }) = fixture.open(clock = clock)
 
     private fun onMain(action: () -> Unit) {
         val failure = AtomicReference<Throwable?>()

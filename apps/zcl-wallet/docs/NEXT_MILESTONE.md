@@ -28,9 +28,12 @@ and leaves `open`/`prepare` narrow. Explicit internal full-source draft construc
 now derives exact selected outpoints and reassesses before publishing the owned
 transaction. `UnsignedReview.prepareFullSources` now composes construction and
 opening in one JNI call over the same bounded source copy, with real-JVM and
-API30/35/36 qualification. Next, qualify foreground presentation, delayed delivery,
-background cancellation, recreation and explicit process relaunch for this path
-without introducing signing or stale-chain authority.
+API30/35/36 qualification. Both source profiles now pass foreground presentation,
+delayed delivery, background cancellation, recreation and explicit process
+relaunch on API30/35/36 x86_64. Next, audit the pinned original Merkle behavior
+and header/source byte order before adding bounded transaction commitment/
+inclusion verification. Keep proof claims separate from chain validity,
+freshness, unspentness and signing authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.
 

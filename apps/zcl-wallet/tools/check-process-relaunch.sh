@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
 set -euo pipefail
-adb=${1:?Usage: check-process-relaunch.sh <sdk-adb> <emulator-serial> <new-report-directory> [balance|history|review]}
+adb=${1:?Usage: check-process-relaunch.sh <sdk-adb> <emulator-serial> <new-report-directory> [balance|history|review|review-full]}
 serial=${2:?An explicit emulator serial is required}
 report=${3:?A new report directory is required}
 profile=${4:-balance}
 fixture=org.zclassic.wallet.BalanceProcessInstrumentedTest
 relaunch_method=newProcessStartsWithoutBalanceOrReplay
+fixture_arguments=()
 case "$profile" in
     balance|history) ;;
-    review) fixture=org.zclassic.wallet.ReviewProcessInstrumentedTest
-        relaunch_method=newProcessStartsWithoutReviewOrReplay ;;
-    *) echo 'Process fixture profile must be balance, history or review' >&2; exit 1 ;;
+    review|review-full) fixture=org.zclassic.wallet.ReviewProcessInstrumentedTest
+        relaunch_method=newProcessStartsWithoutReviewOrReplay
+        if [[ "$profile" == review-full ]]; then fixture_arguments=(-e reviewSourceProfile full); fi ;;
+    *) echo 'Process fixture profile must be balance, history, review or review-full' >&2; exit 1 ;;
 esac
 if [[ ! "$serial" =~ ^emulator-[0-9]+$ ]]; then
     echo 'Process fixture requires an explicit emulator serial' >&2
@@ -22,7 +24,7 @@ mkdir "$report"
 package=org.zclassic.wallet.dev
 runner=org.zclassic.wallet.dev.test/androidx.test.runner.AndroidJUnitRunner
 timeout 180 "$adb" -s "$serial" shell am instrument -w -r -e processKillFixture yes \
-    -e reportProfile "$profile" \
+    -e reportProfile "$profile" "${fixture_arguments[@]}" \
     -e class "$fixture#preparePublicReportForTermination" "$runner" > "$report/prepare.log" 2>&1 &
 preparation_pid=$!
 trap 'if kill -0 "$preparation_pid" 2>/dev/null; then kill "$preparation_pid"; fi' EXIT
@@ -65,8 +67,8 @@ if wait "$preparation_pid"; then preparation_status=0; else preparation_status=$
 printf '%s\n' "$preparation_status" > "$report/prepare-host-status.txt"
 trap - EXIT
 timeout 180 "$adb" -s "$serial" shell am instrument -w -r -e processKillFixture yes \
-    -e reportProfile "$profile" \
+    -e reportProfile "$profile" "${fixture_arguments[@]}" \
     -e previousPid "$fixture_pid" -e class "$fixture#$relaunch_method" \
     "$runner" > "$report/relaunch.log" 2>&1
-rg -q '^OK \(1 test\)' "$report/relaunch.log"
+bash "$(dirname -- "$0")/check-instrumentation-result.sh" 1 "$report/relaunch.log"
 echo 'Process relaunch passed: verified public report, terminated original PID, empty display in a new process.'

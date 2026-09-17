@@ -15,9 +15,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.zclassic.wallet.core.Network
-import org.zclassic.wallet.core.UnsignedReview
-import org.zclassic.wallet.core.Zatoshi
 
 /** Two-phase opt-in public process fixture. Only the exact prepared emulator
  * process may be terminated by check-process-relaunch.sh after readiness.
@@ -25,16 +22,14 @@ import org.zclassic.wallet.core.Zatoshi
 @RunWith(AndroidJUnit4::class)
 class ReviewProcessInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
-    private val transactionId = "602c673db0503b48a400414347009ae968b1aaba9b10663bde508e7f8218dc46"
-    private fun fixture(name: String) = instrumentation.context.assets.open("review/$name").use { it.readBytes() }
-    private fun owner() = UnsignedReview.open(fixture("draft"),
-        arrayOf(fixture("previous0"), fixture("previous1")), Network.MAINNET,
-        Zatoshi.of(500), SystemClock::elapsedRealtime)
+    private val fixture = PublicReviewFixture()
+    private val transactionId get() = fixture.transactionId
+    private fun owner() = fixture.open(clock = SystemClock::elapsedRealtime)
 
     @Before fun optedInEmulatorOnly() {
         assumeTrue("Requires the bounded process-relaunch controller",
             InstrumentationRegistry.getArguments().getString("processKillFixture") == "yes")
-        assertEquals("review", InstrumentationRegistry.getArguments().getString("reportProfile"))
+        assertEquals(fixture.processProfile, InstrumentationRegistry.getArguments().getString("reportProfile"))
         assertEquals("ranchu", Build.HARDWARE)
         assertEquals("org.zclassic.wallet.dev", instrumentation.targetContext.packageName)
     }
@@ -54,7 +49,7 @@ class ReviewProcessInstrumentedTest {
                 instrumentation.sendStatus(2, Bundle().apply {
                     putString("zcl_process_fixture", "ready")
                     putInt("zcl_fixture_pid", Process.myPid())
-                    putString("zcl_fixture_profile", "review")
+                    putString("zcl_fixture_profile", fixture.processProfile)
                 })
                 CountDownLatch(1).await(90, TimeUnit.SECONDS)
                 throw AssertionError("Controller did not terminate the prepared review process")
