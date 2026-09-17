@@ -26,9 +26,11 @@ the bounded JNI path for an already constructed unsigned draft, qualified by
 real-JVM and API30/35/36 instrumentation. It shares the original owner/lifetime
 and leaves `open`/`prepare` narrow. Explicit internal full-source draft construction
 now derives exact selected outpoints and reassesses before publishing the owned
-transaction. Next, compose construction and opening in one JNI call over the
-same bounded source copy, then qualify foreground/UI lifecycle use without
-introducing signing or stale-chain authority.
+transaction. `UnsignedReview.prepareFullSources` now composes construction and
+opening in one JNI call over the same bounded source copy, with real-JVM and
+API30/35/36 qualification. Next, qualify foreground presentation, delayed delivery,
+background cancellation, recreation and explicit process relaunch for this path
+without introducing signing or stale-chain authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.
 

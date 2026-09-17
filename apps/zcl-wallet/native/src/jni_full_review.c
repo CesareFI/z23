@@ -64,7 +64,15 @@ static zcl_status copy_sources(JNIEnv *env, zcl_jni_full_sources *copy)
     return ZCL_OK;
 }
 
-static void retire_sources(zcl_jni_full_sources *copy)
+zcl_status zcl_jni_full_sources_copy(JNIEnv *env, jobjectArray previous, zcl_jni_full_sources *copy)
+{
+    zcl_status status = capture_sources(env, previous, copy);
+    if (status == ZCL_OK) status = copy_sources(env, copy);
+    release_references(env, copy); /* Permitted with a pending JNI exception. */
+    return status;
+}
+
+void zcl_jni_full_sources_clear(zcl_jni_full_sources *copy)
 {
     uint8_t *bytes = copy->bytes;
     const size_t total = copy->total;
@@ -83,13 +91,11 @@ zcl_status zcl_jni_open_full_review(JNIEnv *env, zcl_review_owner *owner,
     size_t length = 0;
     zcl_jni_full_sources copy = {0};
     zcl_status status = zcl_jni_read_bytes(env, draft, wire, sizeof(wire), &length);
-    if (status == ZCL_OK) status = capture_sources(env, previous, &copy);
-    if (status == ZCL_OK) status = copy_sources(env, &copy);
-    release_references(env, &copy); /* Permitted with a pending JNI exception. */
+    if (status == ZCL_OK) status = zcl_jni_full_sources_copy(env, previous, &copy);
     if (status == ZCL_OK)
         status = zcl_review_open_full_sources(owner, wire, length, network,
             copy.sources, copy.count, fee, now, id);
     zcl_secure_zero(wire, sizeof(wire));
-    retire_sources(&copy);
+    zcl_jni_full_sources_clear(&copy);
     return status;
 }

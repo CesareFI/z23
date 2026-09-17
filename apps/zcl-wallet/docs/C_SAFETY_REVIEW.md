@@ -1,5 +1,29 @@
 # C parser foundation safety review
 
+## Single-call full-source preparation — 2026-09-17
+
+Scope: explicit JNI/managed preparation, reused source-copy owner and draft
+parsers/serializer, fake-VM ownership fixtures and real JVM/Android qualification.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Existing source caps remain1..8 rows of1..102000 bytes, aggregate<=816000. Output count1..16 precedes parsing; exact parameter count precedes region reads. Destination text stays35 bytes and current wire1925. Max rows and every read-failure position pass. |
+| Integer overflow/underflow, signed/unsigned conversions | Network/time admission precedes lock; deadline margin checked before uint64 conversion. Shared field parser retains uint32/money bounds and exact shape. Positive bounded JNI counts precede size conversion; source totals/offsets keep remaining-cap checks. |
+| Use-after-free, double-free, leaks | One checked exact-size source allocation, reused synchronously by both phases, one free. Source refs retire before construction. Request, wire and pointer metadata clear before source bytes wipe/free. LSan and live cleanup observers pass, including partial reads and failed allocation. |
+| NULL dereferences, uninitialized memory | JNI entry checks env/all arrays/pending exception before work. Source owner, request, wire and transaction initialize fully. All reads and native statuses gate subsequent work; dirty failed construction cannot open or publish. |
+| Dangling pointers, pointer arithmetic | Existing copy owner alone creates bounded source spans. Request descriptors borrow those spans until cleared. No Java reference or source pointer survives. A hook destroys Java bytes between construction/opening and exact review still succeeds from the owned allocation. |
+| Format strings, secret leakage | No new product native logging/formatting, keys or private material. Complete transaction/request/wire/source scratch retires on entered work exits; caller arrays stay untouched. Live wipe observers use parameter identity to distinguish equal-size scratch objects; no spill-erasure claim. |
+| Stack usage, allocation limits | No VLA, recursion or attacker-sized automatic array. Optimized preparation frames3144/3248 bytes with Clang/GCC; serializer frames2248/2256. One source allocation<=816000 under the review lock. Per-frame measurements do not claim total nested-stack use or performance improvement. |
+| Malformed serialization/network input | Existing count/field/destination/current-transaction/fee authorities are reused. Explicit full profile changes only source admission; legacy preparation remains narrow. Both phases use identical copied bytes. Opaque proofs/signatures do not establish chain validity, freshness, unspentness, consent or signing authority. |
+| Races, resource exhaustion | One process owner mutex covers copy, construction and opening. BUSY now has a regression proving no input preparation. No native callback, I/O, retry, Java allocation or pin occurs while opening. Caller data must stay stable during the synchronous call; stale IDs, rollback, expiry and managed clock failure retain existing cancellation rules. |
+
+Eight mutations fail after strengthening BUSY resource-admission coverage; the
+inner owner already refused that initial mutant. TLS-off analysis/complexity,
+123 normal Clang,127 Clang/oracle and122 GCC sanitizer groups pass. Final JNI
+fuzzing completes18162 runs. Five JVM tests and11 instrumentation tests per
+API30/35/36 pass without skips. Minified release and ARM64 are build evidence;
+physical hardware custody and authenticated-chain prerequisites remain open.
+
 ## Explicit full-source draft construction — 2026-09-17
 
 Scope: shared draft construction/assessment, explicit full-source binding,

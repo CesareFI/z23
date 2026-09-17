@@ -7,7 +7,7 @@
 _Static_assert(ZCL_DRAFT_PARAMETER_MAX <= INT32_MAX, "Draft parameters fit jsize");
 _Static_assert(ZCL_TLS_FAILURE <= UINT8_MAX, "Draft result statuses fit a byte");
 
-static zcl_status array_count(JNIEnv *env, jarray array, size_t maximum, size_t *count)
+zcl_status zcl_jni_draft_count(JNIEnv *env, jarray array, size_t maximum, size_t *count)
 {
     if (array == NULL) return ZCL_INVALID_ARGUMENT;
     const jsize length = (*env)->GetArrayLength(env, array);
@@ -17,10 +17,10 @@ static zcl_status array_count(JNIEnv *env, jarray array, size_t maximum, size_t 
     return ZCL_OK;
 }
 
-static zcl_status read_parameters(JNIEnv *env, jlongArray parameters, zcl_draft_request *request)
+zcl_status zcl_jni_draft_parameters(JNIEnv *env, jlongArray parameters, zcl_draft_request *request)
 {
     size_t count = 0;
-    zcl_status status = array_count(env, parameters, ZCL_DRAFT_PARAMETER_MAX, &count);
+    zcl_status status = zcl_jni_draft_count(env, parameters, ZCL_DRAFT_PARAMETER_MAX, &count);
     if (status != ZCL_OK) return status;
     if (count != 3 + 2 * request->input_count + request->output_count) return ZCL_INVALID_ARGUMENT;
     jlong values[ZCL_DRAFT_PARAMETER_MAX] = {0};
@@ -55,7 +55,7 @@ static zcl_status copy_previous(JNIEnv *env, jobjectArray previous, zcl_jni_draf
     return ZCL_OK;
 }
 
-static zcl_status copy_destinations(JNIEnv *env, jobjectArray destinations, zcl_draft_request *request)
+zcl_status zcl_jni_draft_destinations(JNIEnv *env, jobjectArray destinations, zcl_draft_request *request)
 {
     for (size_t i = 0; i < request->output_count; ++i) {
         uint8_t text[35] = {0};
@@ -73,9 +73,9 @@ static zcl_status build_copied(JNIEnv *env, jobjectArray previous, jobjectArray 
     jlongArray parameters, zcl_network network, uint8_t *wire, size_t capacity, size_t *length)
 {
     size_t input_count = 0, output_count = 0;
-    zcl_status status = array_count(env, previous, ZCL_TX_INPUT_MAX, &input_count);
+    zcl_status status = zcl_jni_draft_count(env, previous, ZCL_TX_INPUT_MAX, &input_count);
     if (status != ZCL_OK) return status;
-    status = array_count(env, destinations, ZCL_TX_OUTPUT_MAX, &output_count);
+    status = zcl_jni_draft_count(env, destinations, ZCL_TX_OUTPUT_MAX, &output_count);
     if (status != ZCL_OK) return status;
     zcl_jni_draft_inputs *inputs = malloc(sizeof(*inputs));
     if (inputs == NULL) return ZCL_RESOURCE_EXHAUSTED;
@@ -83,9 +83,9 @@ static zcl_status build_copied(JNIEnv *env, jobjectArray previous, jobjectArray 
     inputs->request.network = network;
     inputs->request.input_count = input_count;
     inputs->request.output_count = output_count;
-    status = read_parameters(env, parameters, &inputs->request);
+    status = zcl_jni_draft_parameters(env, parameters, &inputs->request);
     if (status == ZCL_OK) status = copy_previous(env, previous, inputs);
-    if (status == ZCL_OK) status = copy_destinations(env, destinations, &inputs->request);
+    if (status == ZCL_OK) status = zcl_jni_draft_destinations(env, destinations, &inputs->request);
     if (status == ZCL_OK) status = zcl_jni_draft_wire(&inputs->request, wire, capacity, length);
     zcl_secure_zero(inputs, sizeof(*inputs));
     free(inputs);

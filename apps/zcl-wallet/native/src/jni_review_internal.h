@@ -25,11 +25,19 @@ typedef struct {
     uint8_t *bytes;
 } zcl_jni_full_sources;
 
+/* Caller passes zero-initialized private scratch. Captured Java references
+ * always retire before return; clear must follow on success or failure. */
+zcl_status zcl_jni_full_sources_copy(JNIEnv *env, jobjectArray previous, zcl_jni_full_sources *copy);
+void zcl_jni_full_sources_clear(zcl_jni_full_sources *copy);
+
 /* Caller checked JNI arguments and holds the single review mutex throughout.
  * No source/ref/pointer survives; failure preserves owner/id and JNI exception. */
 zcl_status zcl_jni_open_full_review(JNIEnv *env, zcl_review_owner *owner,
     jbyteArray draft, jobjectArray previous, zcl_network network,
     uint64_t fee, uint64_t now, uint64_t *id);
+zcl_status zcl_jni_prepare_full_review(JNIEnv *env, zcl_review_owner *owner,
+    jobjectArray previous, jobjectArray destinations, jlongArray parameters,
+    zcl_network network, uint64_t now, uint64_t *id);
 
 /* Internal projection writes private scratch only; discard on any failure. */
 zcl_status zcl_jni_review_values(const zcl_review_snapshot *snapshot,

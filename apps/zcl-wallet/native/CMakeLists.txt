@@ -163,7 +163,7 @@ endif()
 if(ZCL_JNI OR ANDROID)
     add_library(zclwallet_jni SHARED src/jni_amount.c src/jni_codecs.c src/jni_payment.c src/jni_support.c
         src/jni_keys.c src/jni_wallet_record.c src/jni_storage.c src/jni_custody.c src/jni_qr.c src/jni_scan.c src/jni_camera.c
-        src/jni_sync.c src/jni_review.c src/jni_review_packet.c src/jni_full_review.c
+        src/jni_sync.c src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_full_prepare.c
         src/jni_draft.c src/jni_draft_fields.c src/jni_draft_wire.c)
     target_link_libraries(zclwallet_jni PRIVATE zcl_wallet_core)
     target_compile_options(zclwallet_jni PRIVATE -Wall -Wextra -Wpedantic -Werror
@@ -524,12 +524,13 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME wallet_jni_sync_races COMMAND jni_sync_race_tests)
         set_tests_properties(wallet_jni_sync_races PROPERTIES TIMEOUT 15)
         add_executable(jni_review_tests tests/test_jni_review.c tests/assessment_fixture.c tests/source_assessment_fixture.c
-            src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_support.c)
+            src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_full_prepare.c src/jni_draft.c src/jni_draft_fields.c src/jni_draft_wire.c src/jni_support.c)
         target_include_directories(jni_review_tests PRIVATE src ${JNI_INCLUDE_DIRS})
         target_link_libraries(jni_review_tests PRIVATE zcl_wallet_core zcl_hash_provider Threads::Threads)
         target_compile_definitions(jni_review_tests PRIVATE malloc=zcl_jni_review_test_malloc free=zcl_jni_review_test_free)
         target_compile_definitions(jni_review_tests PRIVATE zcl_secure_zero=zcl_jni_review_test_zero
             zcl_review_open_full_sources=zcl_jni_review_test_full_open
+            zcl_transaction_draft_full_sources=zcl_jni_review_test_construct
             zcl_review_snapshot_get=zcl_jni_review_test_snapshot)
         target_compile_options(jni_review_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
@@ -608,13 +609,14 @@ if(NOT ANDROID AND NOT ZCL_TLS_REVIEW AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
             target_link_options(fuzz_jni_address PRIVATE -fsanitize=fuzzer,address,undefined)
             add_executable(fuzz_jni_review tests/test_jni_review.c tests/assessment_fixture.c tests/source_assessment_fixture.c
-                src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_support.c)
+                src/jni_review.c src/jni_review_packet.c src/jni_full_review.c src/jni_full_prepare.c src/jni_draft.c src/jni_draft_fields.c src/jni_draft_wire.c src/jni_support.c)
             target_include_directories(fuzz_jni_review PRIVATE src ${JNI_INCLUDE_DIRS})
             target_link_libraries(fuzz_jni_review PRIVATE zcl_wallet_core zcl_hash_provider Threads::Threads)
             target_compile_definitions(fuzz_jni_review PRIVATE ZCL_JNI_REVIEW_FUZZ=1
                 malloc=zcl_jni_review_test_malloc free=zcl_jni_review_test_free)
             target_compile_definitions(fuzz_jni_review PRIVATE zcl_secure_zero=zcl_jni_review_test_zero
                 zcl_review_open_full_sources=zcl_jni_review_test_full_open
+                zcl_transaction_draft_full_sources=zcl_jni_review_test_construct
                 zcl_review_snapshot_get=zcl_jni_review_test_snapshot)
             target_compile_options(fuzz_jni_review PRIVATE -fsanitize=fuzzer,address,undefined
                 -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)

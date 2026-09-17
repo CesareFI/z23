@@ -53,6 +53,8 @@ internal object NativeCore {
                                       maximumFee: Long, nowMillis: Long): Long
     @JvmStatic external fun openFullSourceReview(draft: ByteArray, previous: Array<ByteArray>, network: Int,
                                                 maximumFee: Long, nowMillis: Long): Long
+    @JvmStatic external fun prepareFullSourceReview(previous: Array<ByteArray>, destinations: Array<ByteArray>,
+                                                   parameters: LongArray, network: Int, nowMillis: Long): Long
     @JvmStatic external fun cancelReview(id: Long): Int
     @JvmStatic external fun reviewSnapshot(id: Long, nowMillis: Long): LongArray?
     @JvmStatic external fun reviewWire(id: Long, nowMillis: Long): ByteArray?

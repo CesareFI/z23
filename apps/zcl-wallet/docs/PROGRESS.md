@@ -1,5 +1,41 @@
 # Development record
 
+## Single-call full-source preparation — 2026-09-17
+
+`UnsignedReview.prepareFullSources` now constructs and opens an offline unsigned
+review through one JNI call under the existing process owner lock. It reuses the
+bounded source-copy owner and existing parameter/destination parsers. Both C
+phases see the same allocation; no intermediate draft returns to Java. Java refs
+retire before construction, request descriptors and draft wire clear before
+source metadata and bytes wipe/free. Legacy preparation stays narrow; this adds
+no send action, proof verification, authenticated chain state or custody authority.
+
+Native fixtures exercise all source/parameter/destination read failures, partial
+writes, exceptional non-null refs, max rows, dirty construction, shared ownership
+and replacement. A hook destroys Java source bytes after construction; opening
+still matches the original C-owned wire. The expanded wipe observer initially
+confused two equal-sized objects; parameter-pointer identity fixes that harness
+error. A BUSY-guard mutation initially survived because the inner owner still
+refused replacement; a stronger regression now checks zero preparation work on
+BUSY. All eight routing/admission/index/cleanup/failure-gating mutations fail.
+Initial fuzzing completes25911 executions; final ownership/lifecycle fuzzing
+completes18162 in46 seconds, neither with a finding.
+
+The isolated `2e4fdf020` snapshot passes TLS-off static analysis/complexity,
+123 Clang and122 optimized GCC sanitizer groups. The independent-oracle Clang
+profile passes127 groups; final observer checks also pass focused GCC.
+Optimized Clang/GCC preparation frames measure3144/3248 bytes, below4096.
+Five new JVM tests pass under `-Xcheck:jni`; the155-task Android/JVM/debug/
+minified-release/lint/fixture/result/16KiB gates pass. Eleven debug instrumentation
+tests (three preparation, three full opening, five legacy) pass without skips
+on each API30/35/36 x86_64 emulator against recorded APK hashes. ARM64 is build
+evidence only. Thirteen source/test files are SHA256-recorded. Evidence:
+`.cache/android-wallet/mission-20260917/jni-full-prepare/`.
+
+Next: qualify this preparation path through foreground presentation, delayed
+delivery, background cancellation, recreation and explicit process relaunch.
+Keep authenticated-chain/unspentness, hardware custody and send gates open.
+
 ## Explicit full-source draft construction — 2026-09-17
 
 The internal `zcl_transaction_draft_full_sources` now constructs a bounded

@@ -4,7 +4,10 @@
 #undef zcl_secure_zero
 #undef zcl_review_snapshot_get
 #undef zcl_review_open_full_sources
+#undef zcl_transaction_draft_full_sources
 #include "jni_review_internal.h"
+#include "jni_draft_internal.h"
+#include "transaction_draft_internal.h"
 #include "transaction_review_internal.h"
 #include "zcl_keys.h"
 #include "assessment_fixture.h"
@@ -18,6 +21,7 @@
 #define API(name) Java_org_zclassic_wallet_core_NativeCore_##name
 JNIEXPORT jlong JNICALL API(openReview)(JNIEnv *, jclass, jbyteArray, jobjectArray, jint, jlong, jlong);
 JNIEXPORT jlong JNICALL API(openFullSourceReview)(JNIEnv *, jclass, jbyteArray, jobjectArray, jint, jlong, jlong);
+JNIEXPORT jlong JNICALL API(prepareFullSourceReview)(JNIEnv *, jclass, jobjectArray, jobjectArray, jlongArray, jint, jlong);
 JNIEXPORT jint JNICALL API(cancelReview)(JNIEnv *, jclass, jlong);
 JNIEXPORT jlongArray JNICALL API(reviewSnapshot)(JNIEnv *, jclass, jlong, jlong);
 JNIEXPORT jbyteArray JNICALL API(reviewWire)(JNIEnv *, jclass, jlong, jlong);
@@ -31,7 +35,7 @@ typedef struct fake_array {
     union {
         uint8_t bytes[ZCL_V4_SOURCE_MAX + 1];
         jlong numbers[ZCL_REVIEW_PACKET_MAX];
-        struct fake_array *objects[ZCL_TX_INPUT_MAX];
+        struct fake_array *objects[ZCL_TX_OUTPUT_MAX];
     } data;
 } fake_array;
 static fake_array *references[64];
@@ -45,6 +49,10 @@ static void (*allocation_hook)(void);
 static void *owned_inputs;
 static size_t owned_size, last_allocation_size;
 static bool full_sources;
+static bool preparing, fail_construction;
+static unsigned request_clears, transaction_clears, parameter_clears, address_clears;
+static uintptr_t parameter_identity;
+static void (*construction_hook)(void);
 static unsigned source_clears, draft_clears;
 static void (*input_allocation_hook)(void);
 static assessment_fixture fixture;
@@ -60,6 +68,28 @@ void zcl_jni_review_test_zero(void *buffer, size_t length);
 zcl_status zcl_jni_review_test_full_open(zcl_review_owner *owner, const uint8_t *wire, size_t length,
     zcl_network network, const zcl_previous_transaction *sources, size_t count,
     uint64_t fee, uint64_t now, uint64_t *id);
+zcl_status zcl_jni_review_test_construct(const zcl_draft_request *request, zcl_transparent_tx *transaction);
+
+zcl_status zcl_jni_review_test_construct(const zcl_draft_request *request, zcl_transparent_tx *transaction)
+{
+    CHECK(preparing && borrowed == 0 && owned_inputs != NULL && request_clears == 0);
+    size_t used = 0;
+    for (size_t i = 0; i < request->input_count; ++i) {
+        CHECK(request->inputs[i].previous.wire == (const uint8_t *)owned_inputs + used);
+        CHECK(request->inputs[i].previous.length <= owned_size - used);
+        used += request->inputs[i].previous.length;
+    }
+    CHECK(used == owned_size);
+    memset(transaction, 0xa5, sizeof(*transaction));
+    if (fail_construction) return ZCL_CRYPTO_FAILURE;
+    const zcl_status status = zcl_transaction_draft_full_sources(request, transaction);
+    if (construction_hook != NULL) {
+        void (*hook)(void) = construction_hook;
+        construction_hook = NULL;
+        hook();
+    }
+    return status;
+}
 
 zcl_status zcl_jni_review_test_full_open(zcl_review_owner *owner, const uint8_t *wire, size_t length,
     zcl_network network, const zcl_previous_transaction *sources, size_t count,
@@ -86,6 +116,27 @@ zcl_status zcl_jni_review_test_snapshot(zcl_review_owner *owner, uint64_t id, ui
     return zcl_review_snapshot_get(owner, id, now, snapshot);
 }
 
+static bool preparation_clear(void *buffer, size_t length)
+{
+    if (length == sizeof(zcl_draft_request)) { CHECK(request_clears++ == 0); return true; }
+    if (length == sizeof(zcl_transparent_tx)) { CHECK(transaction_clears++ == 0); return true; }
+    if ((uintptr_t)buffer == parameter_identity) {
+        CHECK(length == ZCL_DRAFT_PARAMETER_MAX * sizeof(jlong) && parameter_clears++ == 0);
+        parameter_identity = 0;
+        return true;
+    }
+    if (length == 35) { ++address_clears; return true; }
+    return false;
+}
+
+static bool input_scratch_clear(void *buffer, size_t length)
+{
+    if (preparing && preparation_clear(buffer, length)) return true;
+    if (full_sources && length == sizeof(zcl_jni_full_sources)) { CHECK(source_clears++ == 0 && borrowed == 0); return true; }
+    if (full_sources && length == ZCL_TX_WIRE_MAX) { CHECK(draft_clears++ == 0); return true; }
+    return false;
+}
+
 void zcl_jni_review_test_zero(void *buffer, size_t length)
 {
     CHECK(buffer != NULL);
@@ -95,10 +146,10 @@ void zcl_jni_review_test_zero(void *buffer, size_t length)
     if (buffer == owned_inputs) {
         CHECK(length == owned_size);
         if (full_sources) CHECK(source_clears == 1 && draft_clears == 1 && borrowed == 0);
+        if (preparing) CHECK(request_clears == 1);
         return;
     }
-    if (full_sources && length == sizeof(zcl_jni_full_sources)) { CHECK(source_clears++ == 0 && borrowed == 0); return; }
-    if (full_sources && length == ZCL_TX_WIRE_MAX) { CHECK(draft_clears++ == 0); return; }
+    if (input_scratch_clear(buffer, length)) return;
     if ((uintptr_t)buffer == snapshot_identity) {
         CHECK(length == sizeof(zcl_review_snapshot));
         snapshot_identity = 0;
@@ -181,7 +232,7 @@ static bool fails(unsigned *ordinal)
 static fake_array *array_new(jsize length, array_kind kind)
 {
     const size_t maximum = kind == BYTES ? ZCL_V4_SOURCE_MAX + 1 :
-        (kind == NUMBERS ? ZCL_REVIEW_PACKET_MAX : ZCL_TX_INPUT_MAX);
+        (kind == NUMBERS ? ZCL_REVIEW_PACKET_MAX : ZCL_TX_OUTPUT_MAX);
     CHECK(length >= 0 && (size_t)length <= maximum);
     CHECK(reference_count < sizeof(references) / sizeof(references[0]));
     fake_array *result = calloc(1, sizeof(*result));
@@ -198,6 +249,10 @@ static void release_references(void)
     CHECK(snapshot_identity == 0 && output_identity == 0 && snapshot_reads == snapshot_clears);
     snapshot_reads = snapshot_clears = number_clears = wire_clears = 0;
     source_clears = draft_clears = 0;
+    request_clears = transaction_clears = parameter_clears = address_clears = 0;
+    CHECK(construction_hook == NULL);
+    CHECK(parameter_identity == 0);
+    fail_construction = false;
     CHECK(allocation_hook == NULL);
     CHECK(input_allocation_hook == NULL);
     for (size_t i = 0; i < reference_count; ++i) { free(references[i]); references[i] = NULL; }
@@ -227,7 +282,7 @@ static jobject JNICALL get_element(JNIEnv *env, jobjectArray input, jsize index)
     (void)env;
     const fake_array *array = (fake_array *)input;
     CHECK(array != NULL && array->kind == OBJECTS && !pending);
-    CHECK(index >= 0 && index < array->length && (size_t)index < ZCL_TX_INPUT_MAX);
+    CHECK(index >= 0 && index < array->length && (size_t)index < ZCL_TX_OUTPUT_MAX);
     if (fails(&fail_element) && !element_with_exception) return NULL;
     fake_array *element = array->data.objects[(size_t)index];
     if (element != NULL) { CHECK(borrowed < ZCL_TX_INPUT_MAX); captured[borrowed++] = element; }
@@ -259,6 +314,16 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
         return;
     }
     memcpy(output, array->data.bytes + (size_t)offset, (size_t)count);
+}
+
+static void JNICALL get_numbers(JNIEnv *env, jlongArray input, jsize offset, jsize count, jlong *output)
+{
+    (void)env;
+    fake_array *array = region(input, offset, count, NUMBERS);
+    CHECK(parameter_identity == 0);
+    parameter_identity = (uintptr_t)output;
+    if (fails(&fail_region)) { if (count > 0) output[0] = INT64_MAX; return; }
+    memcpy(output, array->data.numbers + (size_t)offset, (size_t)count * sizeof(*output));
 }
 
 static jlongArray JNICALL new_numbers(JNIEnv *env, jsize length)
@@ -323,10 +388,11 @@ static const struct JNINativeInterface_ vm_table = {
     .GetObjectArrayElement = get_element, .DeleteLocalRef = delete_reference,
     .GetByteArrayRegion = get_bytes, .NewLongArray = new_numbers,
     .SetLongArrayRegion = set_numbers, .NewByteArray = new_bytes,
-    .SetByteArrayRegion = set_bytes
+    .SetByteArrayRegion = set_bytes, .GetLongArrayRegion = get_numbers
 };
 static JNIEnv vm = &vm_table;
 static fake_array *java_draft, *java_previous;
+static fake_array *java_parameters, *java_destinations;
 
 static fake_array *bytes(const uint8_t *data, size_t length)
 {
@@ -336,6 +402,28 @@ static fake_array *bytes(const uint8_t *data, size_t length)
     return array;
 }
 
+static void java_selections(void)
+{
+    const size_t count = fixture.spending.input_count, outputs = fixture.spending.output_count;
+    java_parameters = array_new((jsize)(3 + 2 * count + outputs), NUMBERS);
+    jlong *values = java_parameters->data.numbers;
+    values[0] = fixture.spending.lock_time; values[1] = fixture.spending.expiry_height; values[2] = 500;
+    for (size_t i = 0; i < count; ++i) {
+        values[3 + 2 * i] = fixture.spending.inputs[i].previous_index;
+        values[4 + 2 * i] = fixture.spending.inputs[i].sequence;
+    }
+    java_destinations = array_new((jsize)outputs, OBJECTS);
+    for (size_t i = 0; i < outputs; ++i) {
+        zcl_address address;
+        uint8_t text[35]; size_t length = 0;
+        CHECK(zcl_address_from_script(fixture.spending.outputs[i].script, fixture.spending.outputs[i].script_len,
+            ZCL_MAINNET, &address) == ZCL_OK);
+        CHECK(zcl_address_encode(&address, text, sizeof(text), &length) == ZCL_OK);
+        java_destinations->data.objects[i] = bytes(text, length);
+        values[3 + 2 * count + i] = (jlong)fixture.spending.outputs[i].value;
+    }
+}
+
 static void java_inputs(void)
 {
     CHECK(zcl_transaction_serialize(&fixture.spending, draft, sizeof(draft), &draft_length) == ZCL_OK);
@@ -343,6 +431,7 @@ static void java_inputs(void)
     java_previous = array_new((jsize)fixture.spending.input_count, OBJECTS);
     for (size_t i = 0; i < fixture.spending.input_count; ++i)
         java_previous->data.objects[i] = bytes(fixture.sources[i].wire, fixture.sources[i].length);
+    if (preparing) java_selections();
 }
 
 static void setup(void)
@@ -361,10 +450,15 @@ static void setup(void)
 static jlong open_review(jlong now)
 {
     source_clears = draft_clears = 0;
-    const jlong result = full_sources
+    request_clears = transaction_clears = parameter_clears = address_clears = 0;
+    const jlong result = preparing
+        ? API(prepareFullSourceReview)(&vm, NULL, (jobjectArray)java_previous, (jobjectArray)java_destinations,
+            (jlongArray)java_parameters, (jint)ZCL_MAINNET, now)
+        : full_sources
         ? API(openFullSourceReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, 500, now)
         : API(openReview)(&vm, NULL, (jbyteArray)java_draft, (jobjectArray)java_previous, (jint)ZCL_MAINNET, 500, now);
     if (full_sources) CHECK(source_clears == draft_clears && borrowed == 0 && owned_inputs == NULL);
+    if (result == -(jlong)ZCL_BUSY) CHECK(source_clears == 0 && draft_clears == 0 && request_clears == 0);
     return result;
 }
 
@@ -454,8 +548,9 @@ static void golden_and_lifetime(void)
 
 static void opening_failures(void)
 {
+    const unsigned counts[2][4] = {{4, 2, 3, 1}, {7, 4, 5, 1}};
     for (unsigned kind = 0; kind < 4; ++kind) {
-        const unsigned maximum = kind == 0 ? 4 : (kind == 1 ? 2 : (kind == 2 ? 3 : 1));
+        const unsigned maximum = counts[preparing ? 1 : 0][kind];
         for (unsigned point = 1; point <= maximum; ++point) {
             setup();
             if (kind == 0) fail_length = point;
@@ -653,7 +748,8 @@ static void source_bounds(void)
 
 static void exceptional_reference(void)
 {
-    for (unsigned point = 1; point <= 2; ++point) {
+    const unsigned maximum = preparing ? 4 : 2;
+    for (unsigned point = 1; point <= maximum; ++point) {
         setup();
         element_with_exception = true;
         fail_element = point;
@@ -662,6 +758,74 @@ static void exceptional_reference(void)
         pending = false;
         release_references();
     }
+}
+
+static void destroy_java_sources(void)
+{
+    CHECK(borrowed == 0 && owned_inputs != NULL);
+    for (size_t i = 0; i < fixture.spending.input_count; ++i)
+        memset(java_previous->data.objects[i]->data.bytes, 0xff,
+            (size_t)java_previous->data.objects[i]->length);
+}
+
+static void prepared_copy_lifetime(void)
+{
+    setup();
+    construction_hook = destroy_java_sources;
+    const jlong id = open_review(100);
+    CHECK(id > 0 && construction_hook == NULL);
+    CHECK(request_clears == 1 && transaction_clears == 1 && parameter_clears == 1 && address_clears == 2);
+    snapshot_matches((fake_array *)snapshot_read(&vm, NULL, id, 100), 90000);
+    CHECK(API(cancelReview)(&vm, NULL, id) == ZCL_OK);
+    release_references();
+    setup();
+    fail_construction = true;
+    CHECK(open_review(100) == -(jlong)ZCL_CRYPTO_FAILURE);
+    CHECK(transaction_clears == 1 && request_clears == 1 && owned_inputs == NULL);
+    fail_construction = false;
+    const jlong next = open_review(100);
+    CHECK(next > id && API(cancelReview)(&vm, NULL, next) == ZCL_OK);
+    release_references();
+}
+
+static void preparation_fields(void)
+{
+    for (size_t field = 0; field < 9; ++field) for (unsigned edge = 0; edge < 2; ++edge) {
+        setup();
+        java_parameters->data.numbers[field] = edge == 0 ? INT64_MIN : INT64_MAX;
+        CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE && transaction_clears == 0);
+        release_references();
+    }
+    for (jsize length = 1; length <= (jsize)ZCL_DRAFT_PARAMETER_MAX; ++length) {
+        if (length == 9) continue;
+        setup(); java_parameters->length = length;
+        CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT && parameter_clears == 0);
+        release_references();
+    }
+    setup(); java_parameters->data.numbers[2] = 499;
+    CHECK(open_review(100) == -(jlong)ZCL_OUT_OF_RANGE);
+    release_references();
+}
+
+static void preparation_arguments(void)
+{
+    setup();
+    CHECK(API(prepareFullSourceReview)(NULL, NULL, (jobjectArray)java_previous,
+        (jobjectArray)java_destinations, (jlongArray)java_parameters, 0, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
+    for (unsigned field = 0; field < 3; ++field)
+        CHECK(API(prepareFullSourceReview)(&vm, NULL, field == 0 ? NULL : (jobjectArray)java_previous,
+            field == 1 ? NULL : (jobjectArray)java_destinations,
+            field == 2 ? NULL : (jlongArray)java_parameters, 0, 100) == -(jlong)ZCL_INVALID_ARGUMENT);
+    CHECK(API(prepareFullSourceReview)(&vm, NULL, (jobjectArray)java_previous,
+        (jobjectArray)java_destinations, (jlongArray)java_parameters, 2, 100) == -(jlong)ZCL_UNSUPPORTED);
+    CHECK(API(prepareFullSourceReview)(&vm, NULL, (jobjectArray)java_previous,
+        (jobjectArray)java_destinations, (jlongArray)java_parameters, 1, 100) == -(jlong)ZCL_UNSUPPORTED);
+    CHECK(open_review(-1) == -(jlong)ZCL_OUT_OF_RANGE);
+    CHECK(open_review(INT64_MAX - 89999) == -(jlong)ZCL_OUT_OF_RANGE);
+    pending = true;
+    CHECK(open_review(100) == -(jlong)ZCL_INVALID_ARGUMENT);
+    pending = false;
+    release_references();
 }
 
 static void profile_regressions(void)
@@ -675,6 +839,11 @@ static void regressions(void)
     profile_regressions();
     full_sources = true;
     profile_regressions(); captured_sources(); source_bounds(); exceptional_reference();
+    preparing = true;
+    golden_and_lifetime(); opening_failures(); publication_failures(); publication_races();
+    maximum_packet(); captured_sources(); source_bounds(); exceptional_reference();
+    prepared_copy_lifetime(); preparation_fields(); preparation_arguments();
+    preparing = false;
     full_sources = false;
 }
 
@@ -722,6 +891,10 @@ static jlong fuzz_open(uint8_t mode, jlong current)
     java_draft->length = mode % 5 == 0 ? 0 : (jsize)draft_length;
     memcpy(java_draft->data.bytes, draft, draft_length);
     if (mode % 5 == 1) java_draft->data.bytes[0] ^= 1;
+    if (preparing) {
+        java_parameters->length = mode % 5 == 0 ? 0 : 9;
+        java_parameters->data.numbers[2] = mode % 5 == 1 ? 499 : 500;
+    }
     fail_malloc = mode % 5 == 2;
     fail_region = mode % 5 == 3 ? 2 : 0;
     const jlong next = open_review(100);
@@ -738,12 +911,18 @@ static void clear_failures(void)
     fail_length = fail_element = fail_region = 0;
 }
 
+static void fuzz_profile(uint8_t flags)
+{
+    preparing = (flags & 2U) != 0;
+    full_sources = preparing || (flags & 1U) != 0;
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size > 128) return 0;
     static bool tested;
     if (!tested) { regressions(); tested = true; }
-    full_sources = size != 0 && (data[0] & 1U) != 0;
+    fuzz_profile(size == 0 ? 0 : data[0]);
     setup();
     jlong current = open_review(100), old = 0;
     CHECK(current > 0);

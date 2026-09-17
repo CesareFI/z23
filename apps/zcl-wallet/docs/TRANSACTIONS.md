@@ -1,5 +1,24 @@
 # Transparent transaction development
 
+## Single-call managed full-source preparation
+
+`UnsignedReview.prepareFullSources` takes explicit funding selections and intended
+outputs. JNI captures/copies each full source once under the existing process
+review lock, parses bounded numeric fields and destination text, constructs the
+current transparent unsigned wire and opens its review against those same owned
+sources. An active review refuses before input preparation. No intermediate wire
+is returned to Java, no source pointer survives, and caller arrays are never
+wiped. Arrays/lists must remain stable throughout the synchronous worker call.
+
+Current request descriptors, serialized wire and source metadata retire before
+the bounded source allocation wipes/frees, including pending JNI exceptions and
+dirty-provider failures. This shares fixed expiry, rollback, non-repeating IDs,
+managed clock-failure cleanup and background-close requirements. Five JVM tests
+and three preparation instrumentation tests per API30/35/36 qualify exact rows,
+wire, refusal, ownership and lifetime. Foreground presentation and process-restart
+qualification for this new preparation path remain next. Source proofs and
+signatures stay opaque; there is no chain/unspentness, consent or send authority.
+
 ## Explicit full-source draft construction
 
 The internal `zcl_transaction_draft_full_sources` accepts the existing bounded
@@ -14,8 +33,8 @@ The original public builder remains narrow. No source pointer survives, no heap
 is added, and no implicit change or coin selection occurs. Structurally valid
 opaque proof/signature changes select a different unverified source identity;
 this operation cannot establish inclusion, unspentness or consensus validity.
-The next managed preparation step must construct and open over the same owned
-source copy. No new signing, consent, custody or network authority is introduced.
+The managed preparation above constructs and opens over the same owned source
+copy. No new signing, consent, custody or network authority is introduced.
 
 ## Managed full-source offline review
 
@@ -34,8 +53,8 @@ Callers must supply stable arrays during opening. The owner retains only public
 checked review data and canonical current wire. These results establish no
 source proof/signature validity, chain freshness, inclusion, unspentness,
 custody, consent or signing/broadcast authority. There is no new send/UI action.
-Full-source C draft construction is available internally; a single-call managed
-construction/opening adapter remains the next step.
+Full-source C draft construction and the explicit single-call managed
+construction/opening adapter are available as described above.
 
 Four real-JVM tests run with `-Xcheck:jni`. Three new plus five existing review
 instrumentation tests pass on each x86_64 API30/35/36 emulator. Source replacement

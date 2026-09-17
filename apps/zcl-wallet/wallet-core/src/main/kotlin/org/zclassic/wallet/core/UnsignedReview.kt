@@ -74,6 +74,41 @@ class UnsignedReview private constructor(private var id: Long, clock: () -> Long
     }
 
     companion object {
+        /** Explicit full-v4 sources, copied once in C for construction/opening.
+         * Lists/bytes stay caller-owned and stable throughout this worker call.
+         * Sources may contain opaque shielded components; no chain, unspentness,
+         * consent or signing authority follows. Same foreground-only lifetime.
+         */
+        @Synchronized fun prepareFullSources(funding: List<Funding>, outputs: List<Output>, network: Network,
+                                            lockTime: Long, expiryHeight: Long, maximumFee: Zatoshi,
+                                            clock: () -> Long): UnsignedReview {
+            val inputCount = funding.size
+            val outputCount = outputs.size
+            require(inputCount in 1..8 && outputCount in 1..16) { "Invalid draft row counts" }
+            val parameters = LongArray(3 + 2 * inputCount + outputCount)
+            parameters[0] = lockTime
+            parameters[1] = expiryHeight
+            parameters[2] = maximumFee.value
+            val sources = Array(inputCount) { index ->
+                val input = funding[index]
+                parameters[3 + 2 * index] = input.outputIndex
+                parameters[4 + 2 * index] = input.sequence
+                input.previousTransaction
+            }
+            val addresses = Array(outputCount) { index ->
+                val output = outputs[index]
+                parameters[3 + 2 * inputCount + index] = output.value.value
+                output.address.encoded.toByteArray(Charsets.US_ASCII)
+            }
+            try {
+                val result = NativeCore.prepareFullSourceReview(sources, addresses, parameters, network.nativeId, clock())
+                return ownOpened(result, clock)
+            } finally {
+                parameters.fill(0)
+                addresses.forEach { it.fill(0) }
+            }
+        }
+
         /** Prepare on a bounded worker. Lists and source bytes must remain stable
          * for this synchronous call. C constructs and assesses the exact draft;
          * opening reuses those same privately copied sources. Temporary source
