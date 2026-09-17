@@ -138,3 +138,16 @@ zcl_status zcl_v4_source_inspect(const uint8_t *wire, size_t length,
     zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
 }
+
+zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,
+    const uint8_t *wire, size_t length, zcl_tx_output *output)
+{
+    if (input == NULL || output == NULL) return ZCL_INVALID_ARGUMENT;
+    zcl_v4_source candidate = {0};
+    zcl_status status = zcl_v4_source_inspect(wire, length, input->previous_index, &candidate);
+    if (status == ZCL_OK && memcmp(candidate.transaction_id, input->previous_txid, 32) != 0)
+        status = ZCL_INVALID_ENCODING;
+    if (status == ZCL_OK) *output = candidate.output;
+    zcl_secure_zero(&candidate, sizeof(candidate));
+    return status;
+}

@@ -1,5 +1,40 @@
 # Development record
 
+## Explicit full-source offline assessment — 2026-09-17
+
+Full raw source identity/index matching now feeds a separate internal offline
+assessment entry point. It reuses existing destination, amount, fee and current
+transaction checks. Legacy callers select their original source path internally;
+they accept no new mode argument. No draft/review/signing/JNI authority changes.
+Every report is complete-only, and sources remain caller-owned through the
+synchronous call. At most eight sources of102000 bytes are inspected sequentially
+without allocation or retained pointers. This is byte consistency and arithmetic,
+not proof validation, inclusion, unspentness or shielded spending.
+
+The entire existing assessment contract also runs through the new entry point.
+New fixtures cover all conditional source tails, mixed profiles, independently
+pinned original identities, exact index/script selection, signature-byte changes
+and legacy refusal. Both assessment modes share dirty-provider cleanup tests;
+matching adds nested candidate retirement and unchanged-output checks. Seven
+mutations of identity, index, publication, cleanup, legacy dispatch, later failure
+and fee enforcement fail. Reference and positive synthetic-source fuzz corpora
+complete375961 and722805 executions respectively (46 seconds each), without a
+finding. Synthetic proofs/signatures are deliberately invalid and never claimed
+as chain evidence.
+
+An isolated `9956829fd` snapshot plus ten SHA256-recorded files passes TLS-off
+static analysis/complexity,123 Clang sanitizer/oracle and118 optimized GCC
+sanitizer groups. New matching frames measure152/192 bytes and shared assessment
+frames1224/1248 bytes with Clang/GCC. Android/JVM, debug/release, both lints,
+fixture/result isolation and16KiB alignment pass (155 tasks). Actual release
+archive fixtures pass API30/35/36 with invocation-owned path cleanup; ARM64
+compiles only. Evidence:
+`.cache/android-wallet/mission-20260917/source-assessment/`.
+
+Next: bounded JNI source ownership and an explicit offline-data lifecycle before
+Android exposure. Preserve hardware custody, authenticated-chain and signing
+admission gates. TLS remains quarantined; no real funds or private fixtures.
+
 ## Full v4 public source inspection — 2026-09-17
 
 The existing transparent funding codec cannot inspect a funding transaction

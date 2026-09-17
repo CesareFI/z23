@@ -1,5 +1,28 @@
 # C parser foundation safety review
 
+## Explicit full-source offline assessment — 2026-09-17
+
+Scope: source prevout matching, shared assessment with two statically selected
+entry points, public normal/provider fixtures and source/assessment fuzzing.
+Legacy source admission, current transaction predicates and signing are intact.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Matching delegates bounded full-wire/index parsing, compares exactly32 identity bytes and publishes one fixed output. Existing count validation precedes all source iteration; selected scripts fit25 bytes. Shared destination/money checks remain. Canary and whole-report failure tests cover both entry points. |
+| Integer overflow/underflow, signed/unsigned conversions | No new production arithmetic or narrowing. Shared checked totals, fee subtraction and ceiling remain authoritative. At most8 sources each bounded to102000 bytes are processed sequentially; no aggregate allocation calculation. |
+| Use-after-free, double-free, leaks | No new heap/free. Candidate source, per-input output and assessment remain live through use and clear. No source pointer is retained. Nested dirty-hash and later-provider failures retain complete cleanup; LSan passes. |
+| NULL dereferences, uninitialized memory | Matching checks input/output pointers before access; the inspector checks wire. Candidate initializes fully. Shared assessment validates transaction, source array, output and exact count before iteration. Dirty partial provider output cannot publish a report. |
+| Dangling pointers, pointer arithmetic | Borrowed bytes remain caller-owned and stable; no new production pointer arithmetic. Result consists solely of owned values. Stable nonoverlapping spans remain an explicit precondition. |
+| Format strings, secret leakage | No production formatting/logging or secret input. Source candidate clears on success, mismatch and provider failure; complete assessment and per-row cleanup remain. Tests observe live clears, not compiler-spill erasure. |
+| Stack usage, allocation limits | No VLA, recursion, heap or attacker-sized automatic object. Matching frames measure152/192 bytes and shared assessment1224/1248 with Clang/GCC; each below4096. Nested inspector/provider frames are separate; no total-call-stack measurement is claimed. |
+| Malformed serialization/network input | Full identity and requested index must match before output publication. Exact destination templates, current transaction validity, totals and explicit ceiling remain checked. Wider source structure is selected only by the new internal entry point; legacy refusal is mutation-tested. No source proof, chain or unspentness validity is inferred. |
+| Races, resource exhaustion | No new global state, callback, I/O, lock or retry. Caller controls stable spans for one synchronous call. Work remains bounded by8 source parses/hashes and one current transaction identity; no JNI owner or signing authority is created. |
+
+Seven mutations fail deterministic regressions. Two fuzz corpora complete
+1098766 executions without a finding. Complete isolated TLS-off analysis and
+complexity gates pass123 Clang/oracle and118 GCC sanitizer groups. Android gates
+and release-library runtime fixtures pass API30/35/36; ARM64 builds only.
+
 ## Full v4 public source inspection — 2026-09-17
 
 Scope: `transaction_source.c`, internal declarations, public reference extraction,

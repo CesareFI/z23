@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #ifndef ZCL_TRANSACTION_SOURCE_INTERNAL_H
 #define ZCL_TRANSACTION_SOURCE_INTERNAL_H
-#include "zcl_transaction.h"
+#include "zcl_transaction_assess.h"
 
 /* Pinned original Zclassic v4 serialized transaction limit, NOT a Zcash SDK
  * limit. This reader inspects public bytes only and never authorizes funding.
@@ -27,4 +27,21 @@ typedef struct {
  * This is not a replacement for zcl_transaction_prevout admission. */
 zcl_status zcl_v4_source_inspect(const uint8_t *wire, size_t length,
     uint32_t output_index, zcl_v4_source *output);
+
+/* Match complete source identity/index before publishing its owned output.
+ * Same structural-only contract; the expected outpoint is caller-supplied and
+ * is not authenticated by this operation. Existing prevout admission is intact. */
+zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,
+    const uint8_t *wire, size_t length, zcl_tx_output *output);
+
+/* Explicit offline DATA assessment with full-v4 sources. The current spending
+ * transaction still satisfies every existing bounded transparent predicate;
+ * only source inspection uses the wider, structural-only contract above.
+ * Matches every source hash/index, exact P2PKH/P2SH templates, checked totals
+ * and the explicit fee ceiling. No review owner, signing or chain authority.
+ * At most8 borrowed sources, each <=102000; no allocation/retained pointers.
+ * Caller owns stable nonoverlapping spans. Whole report unchanged on failure. */
+zcl_status zcl_v4_source_assess(const zcl_transparent_tx *transaction,
+    zcl_network network, const zcl_previous_transaction *previous,
+    size_t previous_count, uint64_t maximum_fee, zcl_transaction_assessment *assessment);
 #endif

@@ -822,8 +822,10 @@ if(NOT ANDROID)
     set_tests_properties(wallet_assessment PROPERTIES TIMEOUT 15)
     add_executable(assessment_retirement_tests tests/test_assessment_retirement.c src/transaction_assess.c)
     target_link_libraries(assessment_retirement_tests PRIVATE assessment_test_fixture)
+    target_include_directories(assessment_retirement_tests PRIVATE src)
     target_compile_definitions(assessment_retirement_tests PRIVATE
-        zcl_transaction_prevout=zcl_assess_test_prevout zcl_address_from_script=zcl_assess_test_address
+        zcl_transaction_prevout=zcl_assess_test_prevout zcl_v4_source_prevout=zcl_assess_test_prevout
+        zcl_address_from_script=zcl_assess_test_address
         zcl_transaction_id=zcl_assess_test_id zcl_secure_zero=zcl_assess_test_zero)
     target_compile_options(assessment_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
@@ -1309,6 +1311,21 @@ if(NOT ANDROID)
         -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_transaction_source COMMAND transaction_source_tests)
     set_tests_properties(wallet_transaction_source PROPERTIES TIMEOUT 60)
+    add_executable(source_assessment_tests tests/test_source_assessment.c
+        tests/source_assessment_fixture.c tests/assessment_fixture.c)
+    target_link_libraries(source_assessment_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_include_directories(source_assessment_tests PRIVATE src)
+    target_compile_options(source_assessment_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_source_assessment COMMAND source_assessment_tests)
+    set_tests_properties(wallet_source_assessment PROPERTIES TIMEOUT 30)
+    add_executable(source_assessment_contract_tests tests/test_assessment.c tests/assessment_fixture.c)
+    target_link_libraries(source_assessment_contract_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(source_assessment_contract_tests PRIVATE zcl_transaction_assess=zcl_v4_source_assess)
+    target_compile_options(source_assessment_contract_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_source_assessment_contract COMMAND source_assessment_contract_tests)
+    set_tests_properties(wallet_source_assessment_contract PROPERTIES TIMEOUT 30)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(source_failure_tests tests/test_source_failures.c src/transaction_source.c)
         target_link_libraries(source_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)

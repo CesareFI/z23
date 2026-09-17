@@ -1,5 +1,27 @@
 # Transparent transaction development
 
+## Explicit offline full-source assessment
+
+`zcl_v4_source_prevout` matches the complete raw v4 source identity and selected
+index before publishing its owned output. `zcl_v4_source_assess` then reuses the
+existing assessment owner for destination templates, checked input/output totals,
+explicit fee ceiling and exact current transaction identity. Every current
+transaction predicate remains in force. At most eight stable borrowed sources
+are inspected sequentially, each bounded to102000 bytes; there is no heap,
+source retention or partial report, even after a later input/provider failure.
+
+This explicit internal entry point produces offline data about supplied bytes.
+It does not establish source consensus validity, inclusion, unspentness, maturity,
+ownership, consent or current chain state. Opaque proofs/signatures are hashed,
+not verified. Legacy assessment, draft, review and signing retain their existing
+source profile; no JNI/UI entry point is added. The new path may inspect funding
+containing shielded components, but cannot create a shielded spend.
+
+The existing assessment contract also runs through this entry point. Additional
+fixtures cover all conditional source tails, mixed source profiles, pinned
+reference identities, signature-byte changes and legacy refusal isolation.
+Dirty-provider tests cover both assessment modes and nested matching cleanup.
+
 ## Full v4 funding-source inspection foundation
 
 The internal `zcl_v4_source_inspect` reads the complete canonical v4 layout,
