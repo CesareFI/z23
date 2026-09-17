@@ -224,9 +224,10 @@ internal class WalletPlatformSession(
     }
 
     fun unlockAfterAuthentication(prepared: PreparedWalletAction, ready: (TransparentAddress) -> Unit,
-                                  failure: (WalletProblem) -> Unit) {
+                                  failure: (WalletProblem) -> Unit, window: UnlockWindow = UnlockWindow()) {
         launch(WalletProblem.OPERATION, failure) {
             clearSetup()
+            window.requireOpen()
             check(prepared.action == WalletAction.UNLOCK)
             val record = checkNotNull(prepared.record)
             prepared.cipher.updateAAD(record.header)
@@ -249,9 +250,14 @@ internal class WalletPlatformSession(
             // authenticated bytes; pending promotion follows GCM and C checks.
             // Closing during decryption cannot admit a new promotion. Once
             // admitted here, C must finish its existing durability protocol.
+            window.requireOpen()
             check(!work.isClosed) { "Wallet session closed" }
             check(storage.promote(checkNotNull(prepared.encodedRecord)) == CoreStatus.OK)
-            post { ready(address) }
+            post {
+                // Durability already completed; an expired UI delivery must
+                // require another unlock, never undo the committed record.
+                if (window.isOpen) ready(address) else failure(WalletProblem.OPERATION)
+            }
         }
     }
 }

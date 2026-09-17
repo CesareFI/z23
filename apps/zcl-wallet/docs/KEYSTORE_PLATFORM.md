@@ -75,6 +75,24 @@ closure afterward lets the C durability protocol finish. Plaintext cleanup
 remains on the worker, and closed-session callbacks stay inert. This is a
 lifecycle gate, not a replacement for per-use authentication or setup expiry.
 
+Each post-authentication unlock now captures a separate immutable clock origin
+when submitted. The existing C 90-second authentication-window predicate guards
+worker entry, promotion admission after plaintext cleanup, and actual UI
+delivery. Queue/provider delays do not renew it; invalid or backward clock
+readings refuse. An expired operation cannot begin decryption or newly admit
+pending-record promotion. If durability completed while the operation was live,
+late UI delivery reports operation failure and requires another unlock without
+undoing the committed record. These are admission/publication checks, not a
+provider interruption mechanism or a filesystem wall-clock guarantee. Prompt
+authentication, foreground cancellation and the ten-minute setup policy retain
+their separate checks.
+
+Public GCM fixtures reproduce the inherited missing checks at worker entry,
+post-decryption promotion and queued delivery. They observe full plaintext
+erasure, unchanged pending bytes on refusal, preserved committed bytes after
+late delivery, and exact-address success in the final live millisecond. No
+test key enters AndroidKeyStore and no real wallet or funding is involved.
+
 Failed submission also clears its transferred input if task construction or
 worker creation throws. A failure after queue insertion removes that task before
 discarding it; a later healthy worker cannot run it or inherit its occupied

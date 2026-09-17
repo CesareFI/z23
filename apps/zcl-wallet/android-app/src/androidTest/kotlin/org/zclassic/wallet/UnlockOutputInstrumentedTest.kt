@@ -14,6 +14,7 @@ import java.util.concurrent.Executor
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
@@ -53,6 +54,8 @@ class UnlockOutputInstrumentedTest {
         private val failedThread = CountDownLatch(1)
         var failure: WalletProblem? = null
         var address: TransparentAddress? = null
+        val clock = AtomicLong(100)
+        private val window = UnlockWindow(clock::get)
 
         init {
             val key = SecretKeySpec(ByteArray(32), "AES")
@@ -80,7 +83,7 @@ class UnlockOutputInstrumentedTest {
         }
 
         fun startUnlock() {
-            session.unlockAfterAuthentication(prepared, { address = it }, { failure = it })
+            session.unlockAfterAuthentication(prepared, { address = it }, { failure = it }, window)
         }
 
         fun unlock(expectedFatal: Throwable? = null) {
@@ -91,14 +94,16 @@ class UnlockOutputInstrumentedTest {
             assertArrayEquals(before, ciphertext)
         }
 
-        fun awaitIdle(expectedFatal: Throwable? = null) {
+        fun awaitIdle(expectedFatal: Throwable? = null, deliver: Boolean = true) {
             val idle = CountDownLatch(1)
             assertTrue(worker.submit { idle.countDown() })
             assertTrue(idle.await(10, TimeUnit.SECONDS))
             if (expectedFatal != null) assertTrue(failedThread.await(5, TimeUnit.SECONDS))
             assertSame(expectedFatal, fatal.get())
-            while (true) (callbacks.poll() ?: break).run()
+            if (deliver) deliverCallbacks()
         }
+
+        fun deliverCallbacks() { while (true) (callbacks.poll() ?: break).run() }
 
         fun assertErased() {
             val output = checkNotNull(calls.output)
@@ -182,6 +187,61 @@ class UnlockOutputInstrumentedTest {
                 if (directory.exists()) assertTrue(directory.delete())
             }
             assertTrue("Public unlock fixture retained unexpected files", parent.delete())
+        }
+    }
+
+    @Test fun expiredOrBackwardUnlockCannotEnterTheProvider() {
+        for (now in listOf(99L, 90_100L, Long.MAX_VALUE)) Fixture(persisted = true).use { fixture ->
+            fixture.makePending()
+            fixture.clock.set(now)
+            fixture.unlock()
+            assertEquals(WalletProblem.OPERATION, fixture.failure)
+            assertNull(fixture.address)
+            assertEquals(0, fixture.calls.aadCalls)
+            assertEquals(0, fixture.calls.finalCalls)
+            assertNull(fixture.calls.output)
+            fixture.assertPending()
+        }
+    }
+
+    @Test fun expiryDuringDecryptClearsPlaintextAndCannotPromotePendingRecord() {
+        Fixture(persisted = true).use { fixture ->
+            fixture.makePending()
+            fixture.calls.afterFinal = { fixture.clock.set(90_100) }
+            fixture.unlock()
+            assertEquals(WalletProblem.OPERATION, fixture.failure)
+            assertNull(fixture.address)
+            fixture.assertErased()
+            fixture.assertErasedBeforeDispatch()
+            fixture.assertPending()
+        }
+    }
+
+    @Test fun delayedUiCannotDeliverAnExpiredUnlockAfterValidPromotion() {
+        Fixture(persisted = true).use { fixture ->
+            fixture.makePending()
+            fixture.startUnlock()
+            fixture.awaitIdle(deliver = false)
+            fixture.assertCommitted()
+            fixture.assertErased()
+            assertNull(fixture.address)
+            fixture.clock.set(90_100)
+            fixture.deliverCallbacks()
+            assertEquals(WalletProblem.OPERATION, fixture.failure)
+            assertNull(fixture.address)
+            fixture.assertCommitted() // Completed durability is never rolled back.
+        }
+    }
+
+    @Test fun finalLiveMillisecondCanCompleteAndDeliverTheExactAddress() {
+        Fixture(persisted = true).use { fixture ->
+            fixture.makePending()
+            fixture.clock.set(90_099)
+            fixture.unlock()
+            assertNull(fixture.failure)
+            assertEquals(fixture.expected, fixture.address)
+            fixture.assertErased()
+            fixture.assertCommitted()
         }
     }
 

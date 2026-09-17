@@ -1,5 +1,60 @@
 # Development record
 
+## Post-authentication unlock lifetime — 2026-09-17
+
+Resumed clean from backed-up `c42e70e4be99b303e93e7ddd47c01db70dc5120d`;
+origin/main was fetched without integration. Inspection found that the prompt
+had a 90-second continuation bound, while the subsequent unlock had no elapsed
+guard at worker entry, pending promotion or delayed public UI delivery.
+
+`UnlockWindow` now captures one origin at submission and delegates its checks
+to the existing C authentication-window predicate. The worker checks before
+decrypting and after plaintext erasure before admitting promotion; UI delivery
+checks again. Expiry/backward clocks report the existing operation failure.
+Already completed durability is preserved and a late delivery requires a fresh
+unlock. This does not preempt provider calls or promise a filesystem deadline.
+Prompt authentication, closed-owner refusal, exact GCM/address/record checks
+and setup's separate ten-minute policy remain unchanged.
+
+With the new clock-bearing invocation but inherited unenforced unlock body,
+three of four boundary cases fail: expired entry still calls the provider,
+post-decrypt expiry still promotes, and expired queued delivery still succeeds.
+All four pass after enforcement, including the final live millisecond. The
+full 25-case unlock/seal/session-close matrix passes on API30 (8.443 seconds),
+API35 (0.577 seconds) and API36 (14.140 seconds), using only public software-GCM
+fixtures in isolated cache directories. No Keystore alias or real seed is used.
+
+Three independent source-copy mutations each remove one guard and fail exactly
+its intended regression; the unchanged control passes 4/4. They run under the
+separate, initially absent `org.zclassic.wallet.dev.unlockmutation20260917`
+application ID; both invocation-owned packages are removed afterward. An
+initial broad edit selected a creation check instead of unlock and correctly
+survived these unlock tests. The edit was scoped to the unlock function, each
+exact diff was inspected, and the intended mutations then failed. No mutation
+changes the checkout, normal wallet installation or release artifact.
+
+Both new JVM clock tests and the full Android/JVM checks pass, along with both
+ABI builds, minified release, lints, fixture isolation and 16 KiB alignment.
+Ten focused ASan/UBSan/LSan native custody/JNI/record/confirmation/recovery cases
+pass (11.46 and 0.30 seconds across two runs). No C, JNI ABI, provider or
+cryptographic semantics changed; the preceding full 108/107 Clang/GCC safety
+checkpoint remains applicable. Review confirms new state contains only a public
+clock origin/callable, all decrypted entropy clears before persistence or UI,
+and failure/cancellation retains existing ownership and cleanup paths.
+
+Fresh staged source tree `023b8b80cce0d996d14d7e1852de30e17d08939e` reproduces
+the unsigned release byte-for-byte in another directory on the same host and
+toolchain: 631,223 bytes, SHA256
+`1ede05673196d4778a19c8a73ea5ffc0292b1e300fafa37fa3d0c4b9389afdd6`.
+Architecture/doc counts pass. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/unlock-window/`.
+
+Next: review setup/restore completion and UI delivery against their existing
+immutable window, then continue authenticated signing/change-state acceptance.
+Physical hardware custody, real camera qualification and authenticated chain
+context remain open; emulator/public-GCM evidence proves none of these. TLS
+stays quarantined, and historical global-lint limitations remain unchanged.
+
 ## Transaction codec continuation — 2026-09-17
 
 The assessment checkpoint was backed up and directly verified as
