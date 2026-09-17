@@ -723,8 +723,10 @@ if(NOT ANDROID)
     target_compile_options(sync_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_sync COMMAND sync_tests)
     set_tests_properties(wallet_sync PROPERTIES TIMEOUT 15)
-    add_executable(sync_watch_tests tests/test_sync_watch.c tests/sync_fixture.c)
+    add_executable(sync_watch_tests tests/test_sync_watch.c tests/sync_fixture.c src/sync_watch.c)
     target_link_libraries(sync_watch_tests PRIVATE zcl_wallet_core)
+    target_compile_definitions(sync_watch_tests PRIVATE zcl_secure_zero=zcl_watch_test_zero
+        zcl_address_parse=zcl_watch_test_parse zcl_sync_get_report=zcl_watch_test_report)
     target_compile_options(sync_watch_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
         -Wconversion -Wsign-conversion)
     add_test(NAME wallet_sync_watch COMMAND sync_watch_tests)

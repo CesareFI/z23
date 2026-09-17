@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_sync_watch.h"
+#include "zcl_keys.h"
 #include <string.h>
 
 void zcl_sync_watch_close(zcl_sync_watch *watch)
@@ -15,6 +16,7 @@ zcl_status zcl_sync_watch_init(zcl_sync_watch *watch, const uint8_t *address, si
     if (source_id == NULL || source_length != sizeof(watch->source_id)) return ZCL_INVALID_ARGUMENT;
     zcl_address parsed = {0};
     const zcl_status status = zcl_address_parse(address, length, network, &parsed);
+    zcl_secure_zero(&parsed, sizeof(parsed));
     if (status != ZCL_OK) return status;
     memcpy(watch->address, address, sizeof(watch->address));
     memcpy(watch->source_id, source_id, sizeof(watch->source_id));
@@ -111,13 +113,15 @@ static zcl_status publish(zcl_sync_watch *watch, uint64_t now_ms)
 {
     zcl_sync_report report = {0};
     const zcl_status status = zcl_sync_get_report(&watch->attempt, &report);
-    if (status != ZCL_OK) return stop(watch, status);
-    watch->last = report;
-    watch->observed_ms = now_ms;
-    watch->has_report = true;
-    watch->in_flight = false;
-    watch->last_fault = ZCL_OK;
-    return ZCL_OK;
+    if (status == ZCL_OK) {
+        watch->last = report;
+        watch->observed_ms = now_ms;
+        watch->has_report = true;
+        watch->in_flight = false;
+        watch->last_fault = ZCL_OK;
+    }
+    zcl_secure_zero(&report, sizeof(report));
+    return status == ZCL_OK ? ZCL_OK : stop(watch, status);
 }
 
 zcl_status zcl_sync_watch_reply(zcl_sync_watch *watch, uint64_t token, uint64_t now_ms,
@@ -163,5 +167,6 @@ zcl_status zcl_sync_watch_snapshot(zcl_sync_watch *watch, uint64_t now_ms,
         }
     }
     *snapshot = result;
+    zcl_secure_zero(&result, sizeof(result));
     return ZCL_OK;
 }

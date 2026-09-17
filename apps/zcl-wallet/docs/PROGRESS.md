@@ -1,5 +1,41 @@
 # Development record
 
+## Native sync watch continuation — 2026-09-17
+
+The independently finalized JNI storage slice was pushed and remotely verified
+as `480f8d65ed01cc3305abf3f098593ef66118e96a`. Continued into native watch scratch:
+parsed-address validation, staged report publication and snapshot temporaries
+now clear after their final use. Successful retained/caller values remain intact;
+failed report extraction preserves the previous report and fails the attempt.
+
+The existing watch fixture now observes full erasure while each object is live.
+The inherited implementation fails its first missing-clear assertion. Dirty
+parser refusal checks that initialization leaves an empty watch; dirty report
+refusal checks exact prior-report preservation, stale display state and late-token
+refusal. Existing both-network, retry, phase, deadline/backward-clock and output
+canary assertions remain active. Explicit hazard and frame review is recorded
+in `C_SAFETY_REVIEW.md`.
+
+Bounded ASan/UBSan campaigns complete 51,361 native watch and 13,370 JNI sync
+executions, 61 seconds each, without findings (five-second input deadlines,
+512 MiB RSS caps). Android/JVM tests, both ABI debug/release builds, lints,
+fixture isolation and 16 KiB alignment pass. All 24 selected API35 sync,
+lifecycle and storage/recovery cases pass in 8.163 seconds. Architecture/doc
+counts and production/test complexity caps 10/15 pass. Evidence is under
+`apps/zcl-wallet/.cache/android-wallet/mission-20260917/sync-watch-retirement/`.
+TLS remains quarantined, production state is untouched, and no global lint pass
+or hardware-custody qualification is claimed.
+
+Full non-TLS safety passes all 104 Clang wallet CTest cases (86.02 seconds) and
+103 optimized GCC cases (122.18 seconds), including both static analyzers and
+strict compiler gates.
+
+Continuation inspection: `sync.c` still has parsed-address and tip-comparison
+scratch with early returns. Qualify those with dirty-provider/live-clear tests
+while preserving phase/request-ID advancement and complete-report publication.
+Abort intentionally retains address/network routing metadata; do not clear the
+whole candidate as a shortcut. The broader wallet mission remains open.
+
 ## Inherited JNI storage slice finalized — 2026-09-17
 
 JNI sync opening was pushed and remotely verified as

@@ -1,5 +1,31 @@
 # C parser foundation safety review
 
+## Native sync watch scratch retirement — 2026-09-17
+
+Scope: `sync_watch.c` initialization, publication and snapshot creation. The
+validation-only parsed address, staged report and snapshot value now clear at
+full capacity after their last use. A dirty report-extraction refusal preserves
+the previous report and fails only the current attempt, exactly as before.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Every clear uses exact object `sizeof`. Existing address/source size checks and typed value transfers are unchanged. |
+| Integer overflow/underflow, signed/unsigned conversions | No arithmetic or conversion changes. Existing clock, deadline, freshness and token bounds remain authoritative. |
+| Use-after-free, double-free, leaks | No allocation/free or ownership change. Stack copies retire after their final synchronous use; observers read only live spans. |
+| NULL dereferences, uninitialized memory | Existing NULL/admission guards remain ahead of local initialization. All initialized temporaries clear, including dirty parser/report provider refusal. |
+| Dangling pointers, pointer arithmetic | No new offset/borrow or escaping pointer. Retained report and caller snapshot own independent values before scratch retirement. |
+| Format strings, secret leakage | No new logs/formats or secret access. Public address/report copies are retired; no managed/provider erasure is claimed. |
+| Stack usage, allocation limits | No extra buffer, heap, VLA or recursion. Optimized initialization/publication/snapshot frames are 112/752/816 bytes, below 4096 individually, not a call-chain bound. |
+| Malformed serialization/network input | Parser and complete-only report validation remain unchanged. Dirty provider failures are injected without relaxing the real provider or its validation. |
+| Races, resource exhaustion | The existing exclusive-owner/registry-lock contract remains. Failed report extraction preserves prior retained report bytes; timeout, backward-clock and stale-token behavior remain covered. |
+
+The strengthened existing watch suite observes actual erasure through the real
+primitive, requires parser/report retirement before return and counts snapshot
+clears. Its inherited implementation fails the first missing-clear assertion.
+Dirty parser refusal leaves an empty watch; dirty report refusal preserves the
+previous report, marks it stale, and refuses late callbacks. Existing mainnet/
+testnet, retry, phase failure, deadline, clock and output-canary tests remain.
+
 ## JNI sync opening retirement — 2026-09-17
 
 Scope: `jni_sync.c` owner opening. Both the complete address and source-ID copies

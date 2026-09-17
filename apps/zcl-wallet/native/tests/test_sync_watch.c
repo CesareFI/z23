@@ -1,5 +1,9 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#undef zcl_secure_zero
+#undef zcl_address_parse
+#undef zcl_sync_get_report
 #include "zcl_sync_watch.h"
+#include "zcl_keys.h"
 #include "sync_fixture.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +11,51 @@
 
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "Sync watch check failed at %d\n", __LINE__); abort(); } } while (0)
 static char frame[4096];
+static uintptr_t parsed_identity, report_identity;
+static unsigned parsed_calls, parsed_clears, report_calls, report_clears, snapshot_clears;
+static bool fail_parse, fail_report;
+
+zcl_status zcl_watch_test_parse(const uint8_t *text, size_t length, zcl_network network, zcl_address *address);
+zcl_status zcl_watch_test_report(const zcl_sync *sync, zcl_sync_report *report);
+void zcl_watch_test_zero(void *buffer, size_t length);
+
+zcl_status zcl_watch_test_parse(const uint8_t *text, size_t length, zcl_network network, zcl_address *address)
+{
+    CHECK(parsed_identity == 0 && parsed_calls == parsed_clears);
+    parsed_identity = (uintptr_t)address;
+    ++parsed_calls;
+    if (fail_parse) { memset(address, 0xa5, sizeof(*address)); return ZCL_INVALID_ENCODING; }
+    return zcl_address_parse(text, length, network, address);
+}
+
+zcl_status zcl_watch_test_report(const zcl_sync *sync, zcl_sync_report *report)
+{
+    CHECK(report_identity == 0 && report_calls == report_clears);
+    report_identity = (uintptr_t)report;
+    ++report_calls;
+    if (fail_report) { memset(report, 0x5a, sizeof(*report)); return ZCL_IO_FAILURE; }
+    return zcl_sync_get_report(sync, report);
+}
+
+void zcl_watch_test_zero(void *buffer, size_t length)
+{
+    CHECK(buffer != NULL);
+    zcl_secure_zero(buffer, length);
+    const uint8_t *bytes = buffer;
+    for (size_t i = 0; i < length; ++i) CHECK(bytes[i] == 0);
+    if ((uintptr_t)buffer == parsed_identity) {
+        CHECK(length == sizeof(zcl_address));
+        parsed_identity = 0;
+        ++parsed_clears;
+    } else if ((uintptr_t)buffer == report_identity) {
+        CHECK(length == sizeof(zcl_sync_report));
+        report_identity = 0;
+        ++report_clears;
+    } else {
+        CHECK(length == sizeof(zcl_sync_snapshot));
+        ++snapshot_clears;
+    }
+}
 
 static void init(zcl_sync_watch *watch, zcl_network network)
 {
@@ -14,6 +63,7 @@ static void init(zcl_sync_watch *watch, zcl_network network)
     sync_fixture_start(&fixture, network, 1);
     uint8_t source[32] = {1};
     CHECK(zcl_sync_watch_init(watch, fixture.candidate.address, 35, network, source, 32) == ZCL_OK);
+    CHECK(parsed_identity == 0 && parsed_calls == parsed_clears);
     source[0] = 2;
     CHECK(watch->source_id[0] == 1);
 }
@@ -23,7 +73,9 @@ static zcl_sync_snapshot snapshot(zcl_sync_watch *watch, uint64_t now,
 {
     zcl_sync_snapshot result;
     memset(&result, 0xa5, sizeof(result));
+    const unsigned before = snapshot_clears;
     CHECK(zcl_sync_watch_snapshot(watch, now, &result) == ZCL_OK);
+    CHECK(snapshot_clears == before + 1);
     CHECK(result.freshness == freshness && result.refreshing == refreshing && result.last_fault == fault);
     CHECK(result.source_id[0] == 1);
     if (freshness == ZCL_BALANCE_UNAVAILABLE) {
@@ -50,6 +102,7 @@ static void step(zcl_sync_watch *watch, uint64_t token, uint64_t now, unsigned n
     const size_t length = sync_fixture_reply(watch->network, number, watch->attempt.request_id,
         frame, sizeof(frame));
     CHECK(zcl_sync_watch_reply(watch, token, now, (const uint8_t *)frame, length) == ZCL_OK);
+    CHECK(report_identity == 0 && report_calls == report_clears);
 }
 
 static void finish(zcl_sync_watch *watch, uint64_t token, uint64_t now)
@@ -182,10 +235,53 @@ static void arguments_and_malformed(void)
     zcl_sync_watch_close(NULL);
 }
 
+static void dirty_parser_refusal(void)
+{
+    zcl_sync fixture;
+    sync_fixture_start(&fixture, ZCL_MAINNET, 1);
+    zcl_sync_watch watch;
+    memset(&watch, 0xa5, sizeof(watch));
+    const uint8_t source[32] = {1};
+    fail_parse = true;
+    CHECK(zcl_sync_watch_init(&watch, fixture.candidate.address, 35, ZCL_MAINNET,
+        source, sizeof(source)) == ZCL_INVALID_ENCODING);
+    CHECK(parsed_identity == 0 && parsed_calls == parsed_clears);
+    const uint8_t *bytes = (const uint8_t *)&watch;
+    for (size_t i = 0; i < sizeof(watch); ++i) CHECK(bytes[i] == 0);
+    fail_parse = false;
+}
+
+static void dirty_report_preserves_last(void)
+{
+    zcl_sync_watch watch;
+    init(&watch, ZCL_MAINNET);
+    uint64_t token = begin(&watch, 0, 100);
+    finish(&watch, token, 0);
+    static zcl_sync_report saved;
+    memcpy(&saved, &watch.last, sizeof(saved));
+    token = begin(&watch, 10, 100);
+    for (unsigned n = 1; n < 6; ++n) step(&watch, token, 10 + n, n);
+    uint8_t request[256];
+    size_t written = 0;
+    CHECK(zcl_sync_watch_request(&watch, token, 16, request, sizeof(request), &written) == ZCL_OK);
+    const size_t length = sync_fixture_reply(ZCL_MAINNET, 6, watch.attempt.request_id, frame, sizeof(frame));
+    fail_report = true;
+    CHECK(zcl_sync_watch_reply(&watch, token, 16, (const uint8_t *)frame, length) == ZCL_IO_FAILURE);
+    fail_report = false;
+    CHECK(report_identity == 0 && report_calls == report_clears);
+    CHECK(watch.has_report && memcmp(&watch.last, &saved, sizeof(saved)) == 0);
+    CHECK(snapshot(&watch, 16, ZCL_BALANCE_STALE, false, ZCL_IO_FAILURE).report.balance.total == 993);
+    late(&watch, token);
+    zcl_sync_watch_close(&watch);
+}
+
 int main(void)
 {
+    dirty_parser_refusal(); dirty_report_preserves_last();
     freshness_and_retry(ZCL_MAINNET); freshness_and_retry(ZCL_TESTNET);
     fail_at_every_phase(); deadline_and_clock(); arguments_and_malformed();
+    CHECK(parsed_identity == 0 && report_identity == 0);
+    CHECK(parsed_calls == parsed_clears && report_calls == report_clears);
     puts("Sync watch: complete-only unverified reports, stale/offline state, deadline/clock bounds and late-token rejection passed");
     return 0;
 }
