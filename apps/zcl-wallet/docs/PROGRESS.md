@@ -1,5 +1,43 @@
 # Development record
 
+## Complete internal transaction signing — 2026-09-17
+
+The internal C signer now completes a whole reviewed P2PKH transaction without
+exposing intermediate detached signatures. It checks the exact claim count and
+every input's wallet ownership before signing, stages each signature privately,
+then uses the existing independent verification/completion-time publisher.
+Copied claim pointers retire before public assembly and complete staging clears
+on success or failure. A later input, provider, clock or final assembly refusal
+preserves caller wire and length. No storage, reservation, key path, consensus,
+JNI, consent or broadcast authority changes.
+
+Deterministic fixtures cover both networks/all entropy lengths, receive and
+consumed change, exact signed bytes, unchanged journals, capacity/count bounds,
+all eleven clock refusal/expiry positions and eight real signed inputs. Fault
+fixtures exercise each preflight/dirty signer position for counts 1..8 and
+observe claim/signature retirement. Five source-copy mutations fail. The
+extended claim/completion fuzzer runs 3969 executions in 46 seconds without a
+finding. Strict analysis and complexity checks pass; optimized new frames are
+1496 bytes with Clang and 1616 bytes with GCC, below the per-frame 4096 cap.
+
+Validation used an isolated copy of `29da3d186` plus seven native files recorded
+by SHA256. The shared branch advanced externally during the work; unrelated
+Tor state was preserved. The canonical TLS-off safety script passes 118 Clang
+sanitizer/oracle and 113 optimized GCC sanitizer groups. Android/JVM checks,
+debug/release builds, both lints, fixture/result isolation and 16 KiB alignment
+pass (155 tasks). The fixture linked against release-built x86_64 libraries
+passes API30/35/36; invocation-owned executables/directories were removed.
+ARM64 builds only. Review caught an initial maximum-input fixture reference to
+a nonexistent wire-length field; it was corrected before these gates without
+changing production behavior. Evidence:
+`.cache/android-wallet/mission-20260917/transaction-signing/`.
+
+This remains internal with no JNI/UI entry point. Per-use hardware custody,
+explicit exact-review consent, independently authenticated chain/unspentness,
+and delayed delivery/broadcast checks remain open prerequisites. TLS stays
+quarantined. Continue the highest-value custody/lifecycle review while physical
+hardware qualification remains unavailable; do not connect a real send path.
+
 ## Review-bound wallet input signing — 2026-09-17
 
 The C core now has an internal synchronous composition that signs exactly one

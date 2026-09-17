@@ -1,5 +1,30 @@
 # Transparent transaction development
 
+## Complete internal wallet signing
+
+`zcl_review_wallet_transaction_sign` composes the review-bound input signer
+and completion-time wire publisher. It admits exactly one wallet claim per
+reviewed input, copies the bounded claim metadata and candidate, checks every
+input's ownership before the first ECDSA operation, then signs each input into
+invocation-owned staging. After all inputs succeed it retires the copied claim
+pointers and independently verifies/assembles the complete signed wire. A later
+input or completion failure cannot publish a partial signature or transaction;
+caller bytes and length remain unchanged. Staging clears on every work exit.
+
+The operation supports the existing 1..8-input P2PKH profile and samples the
+trusted monotonic clock at most `4*input_count+3` times. Each input signer still
+checks time before admission, before signing and after public verification;
+the final wire publisher checks again after serialization. There is no retry,
+new allocation, key export, storage write, change reservation or review
+consumption. Stable borrowed payloads may share identical wallet bytes and
+remain caller-owned; the caller must clear its entropy after return.
+
+This is an internal C foundation with no JNI/UI entry point. Per-use hardware
+custody, consent for the exact review, authenticated chain/unspentness and
+freshness at delayed delivery/broadcast remain required external prerequisites.
+Host sanitizer/oracle, provider-fault, mutation and fuzz fixtures qualify the
+composition. Release-library x86_64 fixtures pass API30/35/36; ARM64 builds only.
+
 ## Review-bound wallet signing foundation
 
 The internal `zcl_review_input_wallet_sign` operation can produce one detached

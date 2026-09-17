@@ -6,6 +6,11 @@ successful hardware-authenticated create/restore/unlock flow is not yet proven.
 Resume from the implemented baseline below; detailed validation and exact
 checkpoint identities are recorded in [`PROGRESS.md`](PROGRESS.md).
 
+The internal C transaction foundation now composes all-input ownership admission,
+review-bound signing and completion-time wire publication atomically. Later
+input failures expose no partial result. This adds no JNI/UI send entry point
+or substitute for the custody, consent and authenticated-chain gates below.
+
 ## First acceptance gate
 
 Use a fresh, explicitly authorized test profile on an Android device providing

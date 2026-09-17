@@ -70,6 +70,33 @@ static int receive_without_state(void)
     return review_wallet_fixture_close(&fixture);
 }
 
+static zcl_status maximum_clock(void *context, uint64_t *now)
+{
+    unsigned *calls = context;
+    ++*calls; *now = 100;
+    return ZCL_OK;
+}
+
+static int sign_maximum(void)
+{
+    zcl_review_wallet_input claims[ZCL_TX_INPUT_MAX];
+    for (size_t i = 0; i < ZCL_TX_INPUT_MAX; ++i)
+        claims[i] = review_wallet_fixture_claim(&fixture, 0, 0);
+    unsigned calls = 0;
+    const zcl_review_clock clock = {maximum_clock, &calls};
+    const zcl_review_block block = {ZCL_TESTNET, 100000, 0};
+    uint8_t wire[ZCL_TX_WIRE_MAX]; size_t length = 0;
+    CHECK(zcl_review_wallet_transaction_sign(&fixture.review, fixture.id, &clock,
+        &block, claims, ZCL_TX_INPUT_MAX, wire, sizeof(wire), &length) == ZCL_OK);
+    CHECK(calls == 35 && length > fixture.review.data.wire_length && length <= sizeof(wire));
+    /* Use the fixture's now-empty public transaction storage to avoid another
+     * large automatic object; the live review already owns these fields. */
+    CHECK(zcl_transaction_parse(wire, length, &fixture.funding.spending) == ZCL_OK);
+    CHECK(fixture.funding.spending.input_count == ZCL_TX_INPUT_MAX);
+    CHECK(fixture.funding.spending.output_count == ZCL_TX_OUTPUT_MAX);
+    return 0;
+}
+
 static int maximum_inputs(void)
 {
     CHECK(review_wallet_fixture_open(&fixture, ZCL_TESTNET, 32, false) == 0);
@@ -103,6 +130,7 @@ static int maximum_inputs(void)
     CHECK(check(fixture.id, 100, 8, &claim, ZCL_OUT_OF_RANGE) == 0);
     CHECK(check(fixture.id, 100, SIZE_MAX, &claim, ZCL_OUT_OF_RANGE) == 0);
     CHECK(memcmp(&fixture.review, &saved, sizeof(saved)) == 0);
+    CHECK(sign_maximum() == 0);
     return review_wallet_fixture_close(&fixture);
 }
 

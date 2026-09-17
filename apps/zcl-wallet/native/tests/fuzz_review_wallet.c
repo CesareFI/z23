@@ -173,6 +173,43 @@ static void sign_claim(const zcl_review_wallet_input *candidate, uint64_t id, si
     }
 }
 
+static zcl_status sample_transaction(void *context, uint64_t *now)
+{
+    *now = *(const uint64_t *)context;
+    return ZCL_OK;
+}
+
+static void sign_transaction(const zcl_review_wallet_input *candidate, uint64_t id,
+    uint64_t now, const uint8_t *data)
+{
+    fixture.review = initial_owner; expected_owner = initial_owner;
+    zcl_review_wallet_input claims[2] = {{0}};
+    if (candidate != NULL) {
+        claims[0] = claims[1] = *candidate;
+        claims[0].chain = 0; claims[1].chain = 1;
+        claims[data[3] % 2].chain = candidate->chain;
+    }
+    const size_t count = data[11] == 255 ? SIZE_MAX : data[11] % 10;
+    const zcl_status life = lifetime_model(candidate != NULL, id, now);
+    const bool valid = life == ZCL_OK && count == 2 &&
+        key_matches(&claims[0], 0, data) && key_matches(&claims[1], 1, data);
+    const zcl_network network = initial_owner.data.assessment.network;
+    const zcl_review_block block = {network, network == ZCL_MAINNET ? 1000000 : 100000, 0};
+    const zcl_review_clock clock = {sample_transaction, &now};
+    struct { uint8_t before[8], wire[ZCL_TX_WIRE_MAX], after[8]; } output;
+    memset(&output, 0xa5, sizeof(output)); size_t length = SIZE_MAX;
+    const zcl_status status = zcl_review_wallet_transaction_sign(&fixture.review, id,
+        &clock, &block, candidate == NULL ? NULL : claims, count,
+        output.wire, sizeof(output.wire), &length);
+    CHECK((status == ZCL_OK) == valid);
+    if (life != ZCL_OK) CHECK(status == life);
+    CHECK(memcmp(&fixture.review, &expected_owner, sizeof(expected_owner)) == 0);
+    for (size_t i = 0; i < 8; ++i) CHECK(output.before[i] == 0xa5 && output.after[i] == 0xa5);
+    if (!valid) CHECK(length == SIZE_MAX);
+    else CHECK(length <= sizeof(output.wire));
+    for (size_t i = valid ? length : 0; i < sizeof(output.wire); ++i) CHECK(output.wire[i] == 0xa5);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size < 12 || size > 252) return 0;
@@ -192,6 +229,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     CHECK(memcmp(&expected_owner, &fixture.review, sizeof(expected_owner)) == 0);
     signing_clock clock = {{now, times[data[9] % 5], times[data[10] % 5]}, 0};
     sign_claim(candidate, id, input, data, &clock);
+    sign_transaction(candidate, id, now, data);
     preserved_files(data[0] % 11 == 8);
     CHECK(review_wallet_fixture_close(&fixture) == 0);
     return 0;
@@ -204,7 +242,7 @@ int main(void)
     for (uint8_t mode = 0; mode < 11; ++mode) {
         for (uint8_t clock = 0; clock < 5; ++clock) {
             for (uint8_t chain = 0; chain < 2; ++chain) {
-                data[0] = mode; data[3] = data[4] = chain; data[6] = clock;
+                data[0] = mode; data[3] = data[4] = chain; data[6] = clock; data[11] = 2;
                 CHECK(LLVMFuzzerTestOneInput(data, sizeof(data)) == 0);
             }
         }

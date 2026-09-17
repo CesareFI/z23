@@ -115,7 +115,7 @@ add_library(zcl_wallet_core STATIC src/amount.c src/base58.c src/address.c
     src/transaction_prevout.c src/transaction_assess.c src/transaction_review.c
     src/transaction_review_prepare.c src/transaction_review_sighash.c src/transaction_review_wallet.c
     src/transaction_context.c src/transaction_review_context.c src/transaction_review_wire.c
-    src/transaction_review_wire_encode.c src/transaction_review_complete.c
+    src/transaction_review_wire_encode.c src/transaction_review_complete.c src/transaction_review_sign.c
     src/transaction_draft.c src/transaction_draft_check.c)
 # The TLS candidate remains confined to defensive host fixtures until the
 # certificate-parser finding and provider analysis receive a completed review.
@@ -1494,6 +1494,22 @@ if(NOT ANDROID)
         endif()
         add_test(NAME wallet_review_wallet_sign COMMAND review_wallet_sign_tests)
         set_tests_properties(wallet_review_wallet_sign PROPERTIES TIMEOUT 60)
+        add_executable(review_transaction_sign_tests tests/test_review_transaction_sign.c)
+        target_link_libraries(review_transaction_sign_tests PRIVATE review_wallet_test_fixture)
+        target_compile_options(review_transaction_sign_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_transaction_sign COMMAND review_transaction_sign_tests)
+        set_tests_properties(wallet_review_transaction_sign PROPERTIES TIMEOUT 60)
+        add_executable(review_transaction_sign_failure_tests tests/test_review_transaction_sign_failures.c
+            src/transaction_review_sign.c)
+        target_link_libraries(review_transaction_sign_failure_tests PRIVATE zcl_wallet_core)
+        target_include_directories(review_transaction_sign_failure_tests PRIVATE src)
+        target_compile_definitions(review_transaction_sign_failure_tests PRIVATE
+            zcl_review_input_wallet_check=zcl_batch_test_check zcl_review_input_wallet_sign=zcl_batch_test_sign
+            zcl_review_p2pkh_complete=zcl_batch_test_complete zcl_secure_zero=zcl_batch_test_zero)
+        target_compile_options(review_transaction_sign_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_test(NAME wallet_review_transaction_sign_failures COMMAND review_transaction_sign_failure_tests)
         add_executable(review_wallet_sign_failure_tests tests/test_review_wallet_sign_failures.c
             src/transaction_review_wallet.c)
         target_link_libraries(review_wallet_sign_failure_tests PRIVATE review_wallet_test_fixture secp256k1)

@@ -146,6 +146,26 @@ zcl_status zcl_review_input_wallet_sign(zcl_review_owner *owner, uint64_t id,
     const zcl_review_clock *clock, size_t input_index, const zcl_review_block *block,
     const zcl_review_wallet_input *claim, zcl_signature *output);
 
+/* Complete internal signing operation. All custody/consent/qualified-chain
+ * prerequisites above apply to EVERY supplied claim before entry. Exactly one
+ * claim per reviewed input (1..8), in review order. Claims/clock/candidate and
+ * all borrowed payloads remain stable under the same exclusive adapter lock;
+ * payloads may share identical wallet bytes. No pointer or partial signature
+ * escapes. Preflight every input ownership before the first ECDSA operation,
+ * then recheck/sign each input with its existing three-time-sample operation.
+ * Finally verify/assemble all signatures through the completion-time publisher.
+ * Any refusal preserves caller wire and length. Retire claim pointers before
+ * final assembly and clear staged signatures on every work exit. This neither
+ * persists a result nor consumes the review, reserves change, authenticates
+ * the chain, supplies user consent, or grants broadcast authority. No JNI/UI
+ * entry point; delayed delivery/broadcast still require independent checks.
+ * At most 4*count+3 trusted clock calls, no retry or retained private material.
+ * The caller still owns and must clear all supplied entropy after return. */
+zcl_status zcl_review_wallet_transaction_sign(zcl_review_owner *owner, uint64_t id,
+    const zcl_review_clock *clock, const zcl_review_block *block,
+    const zcl_review_wallet_input *claims, size_t count,
+    uint8_t *wire, size_t capacity, size_t *length);
+
 /* Completion-time variant of public signed-wire assembly above. Read the
  * trusted clock before admission and again after all signature verification
  * and serialization. Recheck the SAME live review at that final sample before

@@ -1,5 +1,40 @@
 # C parser foundation safety review
 
+## Complete internal transaction signing — 2026-09-17
+
+Scope: `transaction_review_sign.c`, its internal declaration and registration,
+complete-wire and dirty-provider fixtures, maximum-input signing coverage and
+the existing wallet-claim fuzzer. This composes existing ownership, private-key
+signing and strict public wire verification; it changes no cryptographic
+predicate, derivation path, transaction encoding, JNI or TLS authority.
+
+| Required hazard | Explicit review |
+| --- | --- |
+| Buffer overflow/underflow, out-of-bounds access | Count must be 1..8 and equal the live review count before claim-array access or multiplication. Fixed eight-entry claim/signature arrays use bounded indices. The final existing publisher bounds wire capacity and publishes complete bytes/length together. Tests cover canaries, exact/short/SIZE_MAX capacity, mismatched and SIZE_MAX counts, and eight real signed inputs. |
+| Integer overflow/underflow, signed/unsigned conversions | The sole new copy multiplication is bounded by eight fixed-size claim objects. No amount, branch, height, deadline or derivation arithmetic changes. All indices/counts remain size_t; no new production narrowing occurs. |
+| Use-after-free, double-free, leaks | No new heap allocation/free. Invocation-owned claim metadata and signature staging live through their synchronous uses. Existing per-input derivation contexts end before subsequent signer work. Borrowed payloads remain stable and caller-owned through return; no pointer or partial signature escapes. |
+| NULL dereferences, uninitialized memory | Owner, clock/callback, block, claims and both output pointers are checked before dereference. Work initializes completely. Each clock destination starts at UINT64_MAX so a successful unwritten sample refuses. Provider-fault tests deliberately dirty partial signature outputs before failure. |
+| Dangling pointers, pointer arithmetic | Metadata copies retain borrowed payload references only until all private-key operations finish. The entire claim array clears before final public assembly. Whole-work cleanup occurs while live, including on preflight and later signing failure. Test clear observers inspect only live storage. |
+| Format strings, secret leakage | No new product logging/formatting. The composition does not copy entropy or keys itself; existing per-input secret retirement remains authoritative. Copied wallet pointers and partial public signatures are explicitly cleared. This is object retirement, not whole-stack/compiler-spill erasure. |
+| Stack usage, allocation limits | Fixed arrays only, no VLA, recursion, attacker-sized allocation or retry. Optimized Clang reports a 1496-byte signing frame; GCC reports a 1616-byte bounded work frame and 112-byte entry frame. Individual frames stay below 4096; these are not total nested-call-chain bounds. |
+| Malformed serialization/network input | Existing live review, committed-wallet/path ownership, candidate context, ZIP-243 digest, strict signature/key-hash verification and complete-wire serializer remain the owners. Every input is preflighted before signing. Any later failure preserves caller output. No supplied claim proves consent, hardware custody or current-chain/unspentness. |
+| Races, resource exhaustion | The enclosing exclusive lock, stable nonoverlapping inputs and synchronous nonreentrant trusted-clock contract apply throughout. Work is bounded to eight inputs and at most 4*N+3 clock samples. Success does not consume/extend review authority or write storage. Delayed delivery/broadcast require separate checks. |
+
+Normal fixtures compare exact signed wire on both networks and all five entropy
+lengths, preserve journal bytes, exercise capacity/count boundaries, and inject
+clock failure/expiry at all eleven phases of two-input completion. Eight-input
+real signing also passes. Source-copy faults cover every failing preflight and
+dirty signer position for counts 1..8, completion refusal, copied metadata,
+claim retirement before publication and complete staging cleanup. Five mutations
+remove preflight, ignore later signing refusal, omit either cleanup, or remove
+exact-count admission; each fails its deterministic regression. The extended
+claim/completion fuzzer completes 3969 executions in 46 seconds without a finding.
+The isolated TLS-off safety gate passes all analysis and complexity checks,
+118 Clang sanitizer/oracle groups and 113 optimized GCC sanitizer groups.
+Isolated Android/JVM, debug/release, lint, fixture/result isolation and 16 KiB
+alignment gates pass. Release-library x86_64 execution passes API30/35/36;
+ARM64 remains compile-only. TLS is unchanged and quarantined.
+
 ## Review-bound wallet input signing — 2026-09-17
 
 Scope: the internal `zcl_seed_private` path helper and
