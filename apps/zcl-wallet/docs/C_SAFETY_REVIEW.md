@@ -4156,3 +4156,27 @@ The mixed-source OpenSSL-oracle fuzz target completed 1,106,600 executions in
 gate and whitespace checks passed. No device or hardware-custody qualification
 is claimed by this checkpoint. Generated outputs and raw validation logs remain
 local and are excluded from Git.
+
+## Preservation audit: recovered local candidates — 2026-09-18
+
+This review covers the existing public-key preflight from `fa14b2a38`, the
+queued recovery delivery from `341800596`, the preserved Electrum line-framing
+worktree candidate, and the header metadata fuzz contract from the preserved
+header/security worktrees. Current tests and registrations are retained while
+adapting their old insertion points. TLS remains outside the enabled scope.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | EC preflight checks pointers, exactly 32 input bytes and at least 33 output bytes before context allocation. Framing validates used against capacity before subtraction, scans at most remaining capacity plus one, and copies at most the remaining capacity. The header oracle checks exact length before reading fields and surrounds output with canaries. |
+| Integer overflow/underflow; signed/unsigned conversions | Framing counts stay within FRAME_MAX+1; subtraction follows the used bound. A newline pointer is subtracted only within the supplied input. Boolean-to-size conversion contributes at most one. Test enum iteration is bounded and explicit. |
+| NULL dereferences; uninitialized memory | Existing framing argument refusal remains first. Empty input still requires a valid pointer. All comparison buffers and model fields are initialized; EC output sentinels precede calls. Header metadata is inspected only on successful parsing. |
+| Pointer arithmetic; aliasing | Input spans must remain valid for their lengths and separate from the framing destination. Existing transport and fixture callers use separate buffers; no concurrent access is introduced. Framing's copied length and destination offset remain within the fixed buffer. |
+| Use-after-free; double-free; leaks; dangling pointers | No C allocation is added. Early EC refusal avoids allocation; successful calls retain existing context cleanup. Recovery delivery drops its array and callback references under the existing lock, transfers local ownership before invoking the receiver, and clears on failed delivery. |
+| Stack use; allocation limits; resource exhaustion | Large framing/model buffers are static in serialized host fixtures, not automatic Android storage. Strict 4096-byte frame warnings remain. Registered new tests have 15/30-second deadlines; source processing is bounded. No new worker, retry, or network access is introduced. |
+| Malformed serialization/network input | Bytewise model checks compare complete buffer contents, statuses, consumed counts, fragmentation, exact-capacity LF, sticky overflow and reset. Header tests cover truncations and overlength public records while requiring unchanged output on refusal. |
+| Races | Framing retains its single-owner contract. Recovery holder access remains under the existing synchronization; reentrant receiver closure and delayed/stale tasks are exercised by the recovered JVM tests. Fuzz globals are single-threaded fixture state only. |
+| Format strings; secret leakage | New diagnostics contain fixed messages or source line numbers. Tests use public marker arrays and isolated fixtures. No operator wallet, seed, key, credential, production data or generated output is part of this patch. |
+
+Host validation of these candidates does not qualify physical-device custody,
+real camera interoperability, TLS, or production readiness. The preservation
+entry in PROGRESS.md records the checks actually run for this snapshot.

@@ -14,6 +14,7 @@ typedef enum { NORMAL, NO_MEMORY, HUGE_CONTEXT, EMPTY_CONTEXT, NO_CONTEXT,
 static failure_mode mode = NORMAL;
 static void *owned = NULL;
 static size_t owned_size = 0, allocations = 0, releases = 0;
+static size_t context_requests;
 static size_t child_calls = 0, fail_child = 0;
 static size_t watched_contexts, fail_context;
 static int watch_contexts;
@@ -123,6 +124,7 @@ void __wrap_free(void *memory)
 
 size_t __wrap_secp256k1_context_preallocated_size(unsigned int flags)
 {
+    ++context_requests;
     if (watch_contexts && ++watched_contexts > 2) abort();
     if (context_mode() == HUGE_CONTEXT)
         return SIZE_MAX;
@@ -211,6 +213,43 @@ static int context_failures(void)
     mode = NORMAL;
     CHECK(zcl_public_key(secret, 32, blinding, 32, out, 33) == ZCL_OK);
     CHECK(owned == NULL && allocations == releases);
+    return 0;
+}
+
+static int public_argument_refusals(void)
+{
+    uint8_t secret[32] = {0}, blinding[32] = {1}, output[35], before[35];
+    secret[31] = 1;
+    memset(before, 0xa5, sizeof(before));
+    const struct {
+        const uint8_t *secret;
+        size_t length;
+        uint8_t *output;
+        size_t capacity;
+        zcl_status status;
+    } cases[] = {
+        {NULL, 32, output + 1, 33, ZCL_INVALID_ARGUMENT},
+        {secret, 32, NULL, 33, ZCL_INVALID_ARGUMENT},
+        {secret, 0, output + 1, 33, ZCL_OUT_OF_RANGE},
+        {secret, 31, output + 1, 33, ZCL_OUT_OF_RANGE},
+        {secret, 33, output + 1, 33, ZCL_OUT_OF_RANGE},
+        {secret, SIZE_MAX, output + 1, 33, ZCL_OUT_OF_RANGE},
+        {secret, 32, output + 1, 0, ZCL_OUT_OF_RANGE},
+        {secret, 32, output + 1, 1, ZCL_OUT_OF_RANGE},
+        {secret, 32, output + 1, 32, ZCL_OUT_OF_RANGE}
+    };
+    for (mode = NORMAL; mode <= NO_BLINDING; mode = (failure_mode)((int)mode + 1)) {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            memcpy(output, before, sizeof(output));
+            const size_t requests = context_requests, allocated = allocations;
+            CHECK(zcl_public_key(cases[i].secret, cases[i].length, blinding, sizeof(blinding),
+                cases[i].output, cases[i].capacity) == cases[i].status);
+            CHECK(context_requests == requests && allocations == allocated);
+            CHECK(memcmp(output, before, sizeof(output)) == 0 && owned == NULL);
+        }
+    }
+    mode = NORMAL;
+    zcl_secure_zero(secret, sizeof(secret));
     return 0;
 }
 
@@ -426,7 +465,7 @@ static int child_retirement(void)
 
 int main(void)
 {
-    if (context_failures() || derivation_failures() || address_failures() || recovered_change_failures()
+    if (public_argument_refusals() || context_failures() || derivation_failures() || address_failures() || recovered_change_failures()
         || recovered_context_stages() || seed_bounds() || seeded_address() || child_retirement())
         return 1;
     puts("key failures: allocation, context, blinding and invalid BIP32 results handled");

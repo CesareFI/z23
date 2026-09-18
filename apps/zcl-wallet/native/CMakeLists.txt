@@ -257,6 +257,12 @@ if(ZCL_FUZZ)
     target_compile_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined
         -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wframe-larger-than=4096)
     target_link_options(fuzz_electrum PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz_electrum_line tests/fuzz_electrum_line.c)
+    target_link_libraries(fuzz_electrum_line PRIVATE zcl_wallet_core)
+    target_compile_options(fuzz_electrum_line PRIVATE -fsanitize=fuzzer,address,undefined
+        -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion
+        -Wshadow -Wvla -Wframe-larger-than=4096)
+    target_link_options(fuzz_electrum_line PRIVATE -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz_transaction tests/fuzz_transaction.c)
     target_link_libraries(fuzz_transaction PRIVATE zcl_wallet_core)
     target_compile_options(fuzz_transaction PRIVATE -fsanitize=fuzzer,address,undefined
@@ -782,6 +788,12 @@ if(NOT ANDROID)
     target_compile_options(electrum_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_electrum COMMAND electrum_tests)
     set_tests_properties(wallet_electrum PROPERTIES TIMEOUT 15)
+    add_executable(electrum_line_tests tests/test_electrum_line.c tests/fuzz_electrum_line.c)
+    target_link_libraries(electrum_line_tests PRIVATE zcl_wallet_core)
+    target_compile_options(electrum_line_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_electrum_line COMMAND electrum_line_tests)
+    set_tests_properties(wallet_electrum_line PROPERTIES TIMEOUT 30)
     add_executable(electrum_fuzz_tests tests/test_electrum_fuzz.c tests/fuzz_electrum.c)
     target_link_libraries(electrum_fuzz_tests PRIVATE zcl_wallet_core)
     target_compile_options(electrum_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
@@ -1628,6 +1640,12 @@ if(NOT ANDROID)
     target_compile_definitions(wallet_record_tests PRIVATE zcl_secure_zero=zcl_record_test_zero)
     target_compile_options(wallet_record_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion)
     add_test(NAME wallet_record COMMAND wallet_record_tests)
+    add_executable(wallet_record_fuzz_tests tests/test_wallet_record_fuzz.c tests/fuzz_wallet_record.c)
+    target_link_libraries(wallet_record_fuzz_tests PRIVATE zcl_wallet_core)
+    target_compile_options(wallet_record_fuzz_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_record_fuzz_contract COMMAND wallet_record_fuzz_tests)
+    set_tests_properties(wallet_record_fuzz_contract PROPERTIES TIMEOUT 15)
     add_executable(wallet_header_tests tests/test_wallet_header.c src/wallet_header.c)
     target_link_libraries(wallet_header_tests PRIVATE zcl_wallet_core)
     target_compile_definitions(wallet_header_tests PRIVATE zcl_secure_zero=zcl_header_test_zero

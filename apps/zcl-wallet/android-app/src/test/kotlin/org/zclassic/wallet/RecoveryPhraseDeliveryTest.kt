@@ -20,6 +20,104 @@ class RecoveryPhraseDeliveryTest {
         fun runNext() { callbacks.removeFirst().run() }
     }
 
+    /** Observe the actual queued holder, without GC timing or a production
+     * inspection API. The holder must retire its strong references to both
+     * transferred inputs even if an executor keeps its Runnable indefinitely. */
+    private fun pendingDelivery(owner: RecoveryPhraseDelivery): Any =
+        checkNotNull(RecoveryPhraseDelivery::class.java.getDeclaredField("pending").apply {
+            isAccessible = true
+        }.get(owner))
+
+    private fun assertRetired(holder: Any, words: CharArray, receiver: (CharArray) -> Unit) {
+        for (field in holder.javaClass.declaredFields) {
+            if (java.lang.reflect.Modifier.isStatic(field.modifiers)) continue
+            field.isAccessible = true
+            val value = field.get(holder)
+            assertTrue(value !== words, "Queued delivery retains the character array")
+            assertTrue(value !== receiver, "Queued delivery retains the receiver")
+        }
+    }
+
+    @Test fun cancellationRetiresQueuedInputsBeforeTheExecutorRuns() {
+        val ui = DelayedUi()
+        val owner = RecoveryPhraseDelivery(ui)
+        val words = charArrayOf('a', 'b', 'c')
+        val receiver: (CharArray) -> Unit = { error("Cancelled receiver ran") }
+        owner.post(words, receiver)
+        val holder = pendingDelivery(owner)
+        try {
+            owner.close()
+            assertTrue(words.all { it == '\u0000' })
+            assertEquals(1, ui.callbacks.size)
+            assertRetired(holder, words, receiver)
+            ui.runNext()
+        } finally { owner.close(); words.fill('\u0000') }
+    }
+
+    @Test fun claimingRetiresQueuedInputsBeforeCallingTheReceiver() {
+        for (fail in listOf(false, true)) {
+            val ui = DelayedUi()
+            val owner = RecoveryPhraseDelivery(ui)
+            val words = charArrayOf('a', 'b', 'c')
+            lateinit var holder: Any
+            lateinit var receiver: (CharArray) -> Unit
+            var calls = 0
+            val failure = IllegalStateException("Public receiver failure")
+            receiver = {
+                ++calls
+                assertSame(words, it)
+                assertRetired(holder, words, receiver)
+                owner.close() // Reentrancy cannot erase the receiver's input.
+                assertContentEquals(charArrayOf('a', 'b', 'c'), it)
+                if (fail) throw failure
+            }
+            try {
+                owner.post(words, receiver)
+                holder = pendingDelivery(owner)
+                val callback = ui.callbacks.removeFirst()
+                if (fail) assertSame(failure, assertFailsWith<IllegalStateException> { callback.run() })
+                else callback.run()
+                assertRetired(holder, words, receiver)
+                if (fail) assertTrue(words.all { it == '\u0000' })
+                else assertContentEquals(charArrayOf('a', 'b', 'c'), words)
+                callback.run()
+                assertEquals(1, calls)
+            } finally { owner.close(); words.fill('\u0000') }
+        }
+    }
+
+    @Test fun enqueueThenThrowRetiresCancelledInputsAndAllowsRetry() {
+        for (fatal in listOf(false, true)) {
+            val ui = DelayedUi()
+            var rejecting = true
+            val failure = if (fatal) OutOfMemoryError("Public queue failure")
+                else RejectedExecutionException("Public queue refusal")
+            lateinit var owner: RecoveryPhraseDelivery
+            lateinit var holder: Any
+            owner = RecoveryPhraseDelivery { command ->
+                ui.execute(command)
+                if (rejecting) {
+                    holder = pendingDelivery(owner)
+                    throw failure
+                }
+            }
+            val words = charArrayOf('a')
+            val receiver: (CharArray) -> Unit = { error("Rejected receiver ran") }
+            try {
+                assertSame(failure, assertFailsWith<Throwable> { owner.post(words, receiver) })
+                assertTrue(words.all { it == '\u0000' })
+                assertRetired(holder, words, receiver)
+                rejecting = false
+                val next = charArrayOf('b')
+                owner.post(next) { assertContentEquals(charArrayOf('b'), it) }
+                ui.runNext() // A stale queued task cannot claim the replacement.
+                assertContentEquals(charArrayOf('b'), next)
+                ui.runNext()
+                next.fill('\u0000')
+            } finally { owner.close(); words.fill('\u0000') }
+        }
+    }
+
     @Test fun closingClearsPhraseBeforeDelayedCallbackRuns() {
         val ui = DelayedUi()
         val owner = RecoveryPhraseDelivery(ui)

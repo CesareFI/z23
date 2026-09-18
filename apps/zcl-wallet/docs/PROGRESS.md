@@ -6900,3 +6900,66 @@ Native analysis/sanitizer/fuzz evidence remains the preceding unchanged-C
 checkpoint, not a new run. The unrelated flag-registry self-test remains open.
 Evidence is under `.cache/android-wallet/mission-20260916/recovery-*`.
 Next: explicit offline TLS security review, preserving its release quarantine.
+
+## Android backup audit — 2026-09-18
+
+The owner requested preservation before new development, exclusively on
+`CesareFI/zclassic-android-wallet`, using the existing
+`agent/android-jni-secret-retirement-20260915` branch. Initial checkout HEAD
+`b0c3523bc3c48e24882d0f4403c2bfa8f1ebb7f5` was clean and already present on
+`wallet-backup`. Both remotes were fetched. No main push, history rewrite,
+branch deletion, worktree cleanup, or upstream integration is part of this
+backup-only operation.
+
+Audit of the other registered Android branches, dirty Android worktrees, and
+stash found these preservation dispositions:
+
+- The stash's Electrum framing harness and regression source are byte-identical
+  to the versions retained by `29ea24238`; their CMake registration is present.
+- The storage continuation is retained by `9eab9a0f9` and later storage and
+  lifecycle commits. The JNI erasure candidate's full-width regression is
+  retained by `afaea0a73`; later JNI retirement adds path/record erasure checks.
+- Thirteen commits on the older security-hardening branch are absent by commit
+  identity from the backup. Most have later implementations: caller-owned JNI
+  output (`07b26ec0c` and successors), RNG checks (`e5e79f068`), backup failure
+  cleanup (`b6d68e57c`), prepared HMAC (`24a688684`), BIP32/EC lifetime checks
+  (`d200dfa09`, `ce8002b30`, `55a17c2ea`), preallocated session cleanup
+  (`228e63b9b`), canvas restoration (`04388cf8b`), bounded camera allocation
+  (`9c0e66717`), independent HMAC coverage (`19c5159e4`), and JNI storage guards
+  (`afaea0a73`). Their original local branch remains untouched; these old commit
+  identities are not claimed to have been pushed.
+- Two remaining useful patches are recovered from that branch: queued recovery
+  reference retirement from `341800596` with its JVM/Android tests, and early EC
+  argument refusal from `fa14b2a38` with its allocation-observing regression.
+  Existing current tests remain, including the later BIP32 retirement cases.
+- The uncommitted header metadata contract is recovered from the header/security
+  candidates, choosing the version with explanatory failure diagnostics. The
+  uncommitted bounded Electrum span implementation, bytewise model, deterministic
+  regression and fuzz target are recovered from the line-framing candidate.
+  Only their CMake insertion points and the EC test insertion points needed
+  adaptation to the current tree.
+- The separate TLS candidate remains unvalidated and excluded under the existing
+  parked review in TLS_REVIEW.md. Its provider patch and regression artifacts
+  are left intact in its original worktree; no TLS reproduction or investigation
+  was run and no TLS acceptance is implied.
+
+All original worktrees, local branches and the stash remain intact. Only the
+reviewed Android source, test, CMake and documentation paths are selected for
+this preservation commit. Ignored caches, build trees, APKs, native binaries,
+local SDK configuration, logs and benchmark outputs remain local. No operator
+wallet, recovery seed, private key, credential or generated secret is included.
+The configured generic commit identity is Wallet Development with an invalid
+example-domain email. Exact remote equality is verified after publication,
+without embedding a self-referential commit SHA in this entry.
+
+Validation of the recovered snapshot: both Clang and GCC static analyzers and
+production/test complexity caps pass; Clang ASan/UBSan passes 142/142 registered
+tests, optimized GCC ASan/UBSan passes 137/137. Independent 31-second bounded
+fuzz runs complete 28,370 framing and 433,907 header/record executions without
+a finding. Offline wallet-core and Android JVM tests pass (including all ten
+recovery-delivery cases), as do debug assembly, test-APK assembly, Android debug
+lint, architecture-tree and whitespace checks. No device test was run in this
+audit. Root lint-fast passes 31/32 gates; its unchanged flag-registry self-test
+fails with an empty tracked-file scan. This is the already recorded unrelated
+root-lint limitation, not a waived or weakened assertion. Raw logs remain in
+ignored `.cache/backup-*` paths and are not committed.

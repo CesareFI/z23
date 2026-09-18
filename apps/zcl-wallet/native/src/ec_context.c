@@ -48,18 +48,29 @@ void zcl_ec_end(zcl_ec_context *context)
     zcl_secure_zero(context, sizeof(*context));
 }
 
+static zcl_status public_arguments(const uint8_t *secret, size_t secret_len,
+                                    const uint8_t *public_key, size_t public_key_capacity)
+{
+    if (secret == NULL || public_key == NULL)
+        return ZCL_INVALID_ARGUMENT;
+    if (secret_len != 32 || public_key_capacity < 33)
+        return ZCL_OUT_OF_RANGE;
+    return ZCL_OK;
+}
+
 zcl_status zcl_ec_public(const secp256k1_context *context,
                         const uint8_t *secret, size_t secret_len,
                         uint8_t *public_key, size_t public_key_capacity)
 {
-    if (context == NULL || secret == NULL || public_key == NULL)
+    if (context == NULL)
         return ZCL_INVALID_ARGUMENT;
-    if (secret_len != 32 || public_key_capacity < 33)
-        return ZCL_OUT_OF_RANGE;
+    zcl_status status = public_arguments(secret, secret_len, public_key, public_key_capacity);
+    if (status != ZCL_OK)
+        return status;
     secp256k1_pubkey point = {{0}};
     uint8_t encoded[33] = {0};
     size_t length = sizeof(encoded);
-    zcl_status status = ZCL_CRYPTO_FAILURE;
+    status = ZCL_CRYPTO_FAILURE;
     if (secp256k1_ec_pubkey_create(context, &point, secret) != 1)
         goto cleanup;
     if (secp256k1_ec_pubkey_serialize(context, encoded, &length, &point, SECP256K1_EC_COMPRESSED) != 1)
@@ -78,8 +89,12 @@ zcl_status zcl_public_key(const uint8_t *secret, size_t secret_len,
                          const uint8_t *blinding, size_t blinding_len,
                          uint8_t *public_key, size_t public_key_capacity)
 {
+    /* Structural refusals need neither allocation nor secret-key blinding. */
+    zcl_status status = public_arguments(secret, secret_len, public_key, public_key_capacity);
+    if (status != ZCL_OK)
+        return status;
     zcl_ec_context context = {0};
-    zcl_status status = zcl_ec_begin(&context, blinding, blinding_len);
+    status = zcl_ec_begin(&context, blinding, blinding_len);
     if (status == ZCL_OK)
         status = zcl_ec_public(context.handle, secret, secret_len, public_key, public_key_capacity);
     zcl_ec_end(&context);
