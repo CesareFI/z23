@@ -1309,6 +1309,10 @@ if(NOT ANDROID)
         target_link_libraries(bench_wallet_change PRIVATE zcl_wallet_core)
         target_compile_options(bench_wallet_change PRIVATE -Wall -Wextra -Wpedantic -Werror
             -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        add_executable(bench_read_only_sync tests/bench_read_only_sync.c tests/sync_fixture.c)
+        target_link_libraries(bench_read_only_sync PRIVATE zcl_wallet_core)
+        target_compile_options(bench_read_only_sync PRIVATE -Wall -Wextra -Wpedantic -Werror
+            -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     endif()
     add_executable(bip32_tests tests/test_bip32.c)
     target_link_libraries(bip32_tests PRIVATE zcl_wallet_core)

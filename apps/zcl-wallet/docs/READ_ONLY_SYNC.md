@@ -73,6 +73,41 @@ is caller metadata, not authentication. The adapter must reject callbacks from
 a destroyed owner before checking numeric tokens, which can start again in a
 new lifetime. No UI snapshot is a serializable native state or restart authority.
 
+## Offline processing benchmark
+
+From `apps/zcl-wallet`, build and run the public-fixture timing tool explicitly:
+
+```sh
+cmake -S native -B native/build/sync-benchmark \
+  -DCMAKE_C_COMPILER=clang-20 -DCMAKE_BUILD_TYPE=Release \
+  -DZCL_SANITIZE=OFF -DZCL_ORACLE=OFF -DZCL_FUZZ=OFF \
+  -DZCL_TLS_REVIEW=OFF -DZCL_JNI=OFF
+cmake --build native/build/sync-benchmark --target bench_read_only_sync -j4
+timeout 60s native/build/sync-benchmark/bench_read_only_sync
+```
+
+Use a separate directory with `-DCMAKE_C_COMPILER=gcc` for comparison. Preserve
+compiler, build profile and host details with measurements. Sanitizer execution
+checks correctness separately; it is not a release-performance comparison.
+
+The tool covers original mainnet/testnet genesis fixtures, balance-only and
+two-entry history profiles, and 1/256/4096-byte response fragments. Each of its
+12 profiles warms up for ten complete attempts and measures five batches of
+100 attempts. Every attempt constructs six or seven requests, frames and parses
+all replies, publishes a snapshot and verifies expected public report fields.
+Timing includes those correctness checks. Wall and thread CPU microseconds are
+reported separately; there is no timing acceptance threshold. The benchmark
+owns one checked fixed-size workspace allocation outside the measured batches,
+prints its size, and frees it on success or failure. Fixture generation and
+printing occur outside each measured batch.
+
+There is no network, TLS, wallet, storage, Android scheduling or chain validation
+in this measurement. Simulated monotonic timestamps qualify the local state
+path only; they do not measure real I/O deadlines. Results cannot establish live
+sync throughput, device responsiveness, battery use, or server truth. Compare
+like-for-like runs before changing any implementation, and keep the existing
+validation, refusal, deadline and freshness contracts authoritative.
+
 ## Pin the network and protocol separately
 
 Consensus reference: original Zclassic `v2.1.2-beta6`, commit

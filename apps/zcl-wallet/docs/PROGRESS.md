@@ -7098,3 +7098,65 @@ Ignored `.cache/auth-cancel-*` logs retain local evidence. The previously
 documented root-lint findings and hardware custody gate remain open, and TLS
 quarantine is unchanged. Next: establish a bounded public-fixture measurement
 of the read-only sync path before proposing any performance change.
+
+## Production continuation: bounded read-only sync measurement — 2026-09-18
+
+The sync path had correctness fixtures but no reusable timing tool for complete
+framed request/reply processing. `bench_read_only_sync` now reuses pinned public
+genesis and zero-hash-address fixtures for both networks, balance-only and
+two-entry history, and 1/256/4096-byte fragments. Every attempt verifies the
+complete public snapshot, including exact balance, history IDs/heights,
+address/source, freshness and report availability. Fixture generation and the
+single checked 47,488-byte workspace allocation are outside measured batches.
+No socket, wallet, key, storage, TLS or Android lifecycle enters the tool.
+
+An x86_64 AMD EPYC 7402P host measured these median thread-CPU microseconds per
+complete attempt, each from five batches of 100 after ten warm-up attempts.
+Release profiles use Clang 20.1.2 or GCC 14.2.0 and retain existing provider
+optimization flags; sanitizer timings are kept separate.
+
+| Network/profile | Fragment bytes | Clang CPU µs | GCC CPU µs |
+| --- | ---: | ---: | ---: |
+| Mainnet balance | 1 | 182.715 | 164.235 |
+| Mainnet balance | 256 | 138.558 | 119.994 |
+| Mainnet balance | 4096 | 138.576 | 119.678 |
+| Mainnet history | 1 | 191.701 | 174.056 |
+| Mainnet history | 256 | 146.862 | 128.691 |
+| Mainnet history | 4096 | 146.574 | 128.353 |
+| Testnet balance | 1 | 187.080 | 165.543 |
+| Testnet balance | 256 | 140.007 | 121.262 |
+| Testnet balance | 4096 | 139.674 | 120.767 |
+| Testnet history | 1 | 198.451 | 175.663 |
+| Testnet history | 256 | 153.834 | 130.099 |
+| Testnet history | 4096 | 153.172 | 129.711 |
+
+This is a local CPU baseline including verification overhead, not live sync,
+device, battery or consensus evidence. It does not justify changing any
+validation or cleanup contract. The measured paths and production code are
+unchanged. Raw timing/build evidence remains in ignored `.cache/sync-benchmark-*`
+files; reproducible commands and limits are in `READ_ONLY_SYNC.md`.
+
+Manual C safety review: all large buffers share one checked fixed-size allocation
+with one cleanup/free path; no multiplication-based allocation, retained pointer,
+recursion, VLA or mutable global is introduced. Array indices are bounded by
+six/seven replies; fragment arithmetic subtracts only after offset bounds and
+advances only by the checked remaining span. Size-to-ID conversions are bounded
+by seven. The simulated clock checks overflow before increment. Clock samples
+are used only after successful reads. Request lengths are checked before tail
+access, framing lengths before comparison, and history count before indexing.
+Format arguments match their types. All error paths return through owned
+cleanup, with no double free, use-after-free, dangling pointer, uninitialized
+read or unchecked allocation. There is one thread, bounded work and bounded
+stack use; fixtures contain only public data. Existing parsers continue to own
+malformed-input refusal. No production serialization or consensus change occurs.
+
+Clang native safety passes 142/142 (132.02s), optimized GCC 137/137 (190.30s),
+both with zero failures. Each sanitizer benchmark also completes all 12 profiles
+and 60 timed samples. Clang analysis and GCC `-fanalyzer` pass for the new tool;
+the full enabled-core/provider analysis, pinned digests and complexity checks
+pass. Android/JVM tests, debug/test and both-ABI release builds, both lint
+variants, fixture isolation, 16 KiB alignment, architecture and diff checks pass.
+The documented root-lint baseline and physical custody gate remain open; TLS
+review stays OFF. No generated benchmark output or build artifact is committed.
+Next: register the five existing Android build/test environment flags responsible
+for the eight previously confirmed catalog diagnostics.
