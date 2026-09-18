@@ -43,6 +43,62 @@ class OwnedExecutorInstrumentedTest {
         }
     }
 
+    @Test fun androidQueuedCleanupFailureStillRetiresInputsAndSession() {
+        for (fatal in listOf(false, true)) verifyQueuedCleanupFailure(fatal)
+    }
+
+    private fun verifyQueuedCleanupFailure(fatal: Boolean) {
+        val owner = OwnedExecutor()
+        val backend = idleBackend(owner, 1)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val clears = AtomicInteger()
+        val finalCount = AtomicInteger(-1)
+        val words = Array(4) { charArrayOf('a', 'b', 'c') }
+        val first = if (fatal) OutOfMemoryError("Public queued cleanup failure")
+            else IllegalStateException("Public queued cleanup failure")
+        val second = IllegalStateException("Public secondary cleanup failure")
+        try {
+            assertTrue(owner.submit({ clears.incrementAndGet() }) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            })
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            for (index in words.indices) assertTrue(owner.submit({
+                words[index].fill('\u0000')
+                clears.incrementAndGet()
+                if (index == 0) throw first
+                if (index == 1) throw second
+            }) { error("Cancelled action ran") })
+            assertSame(first, assertThrows(Throwable::class.java) {
+                owner.close { finalCount.set(clears.get()) }
+            })
+            assertTrue(owner.isClosed)
+            assertEquals(4, clears.get())
+            assertTrue(words.all { input -> input.all { it == '\u0000' } })
+            assertTrue(backend.queue.isEmpty())
+            assertTrue(backend.isShutdown)
+            assertEquals(-1, finalCount.get())
+            release.countDown()
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            assertEquals(5, clears.get())
+            assertEquals(5, finalCount.get())
+            owner.close { error("Closed owner finalized twice") }
+        } finally {
+            release.countDown()
+            while (true) {
+                val task = backend.queue.poll() ?: break
+                try { task.run() }
+                catch (problem: Throwable) { assertTrue(problem === first || problem === second) }
+            }
+            backend.shutdown()
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            owner.close()
+            words.forEach { it.fill('\u0000') }
+        }
+        assertBothAdmissionsAvailable()
+    }
+
     private fun verifyCloseWithoutWorker(coreSize: Int, mode: Int) {
         val owner = OwnedExecutor()
         val backend = idleBackend(owner, coreSize)

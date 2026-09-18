@@ -81,14 +81,20 @@ internal class OwnedExecutor {
         if (!closed.compareAndSet(false, true)) return
         val current = executor
         if (current == null) { clearSession(); return }
+        var failure: Throwable? = null
         while (true) {
             val task = current.queue.poll() ?: break
-            (task as OwnedTask).discard()
+            try { (task as OwnedTask).discard() }
+            catch (problem: Throwable) { if (failure == null) failure = problem }
         }
         // No new worker or queued finalizer is needed. Shutdown waits for the
         // active task's finally block, then termination owns session cleanup.
+        // A broken cleanup callback must not strand the remaining inputs or
+        // pool. Preserve the first failure without allocating suppressed data.
         current.clearSession = clearSession
-        current.shutdown()
+        try { current.shutdown() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        if (failure != null) throw failure
     }
 
     private class OwnedTask(

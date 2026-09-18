@@ -274,4 +274,66 @@ class OwnedExecutorTest {
             awaitClosed(executor)
         }
     }
+
+    @Test fun failingQueuedCleanupStillDrainsAndShutsDownTheOwner() {
+        for (fatal in listOf(false, true)) verifyFailingQueuedCleanup(fatal)
+    }
+
+    private fun verifyFailingQueuedCleanup(fatal: Boolean) {
+        val owner = OwnedExecutor()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val clears = AtomicInteger()
+        val finalCount = AtomicInteger(-1)
+        val words = Array(4) { charArrayOf('a', 'b', 'c') }
+        val first = if (fatal) OutOfMemoryError("Public queued cleanup failure")
+            else IllegalStateException("Public queued cleanup failure")
+        val second = IllegalStateException("Public secondary cleanup failure")
+        var pool: ThreadPoolExecutor? = null
+        try {
+            assertTrue(owner.submit({ clears.incrementAndGet() }) {
+                entered.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+            })
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            pool = OwnedExecutor::class.java.getDeclaredField("executor").apply {
+                isAccessible = true
+            }.get(owner) as ThreadPoolExecutor
+            for (index in words.indices) assertTrue(owner.submit({
+                words[index].fill('\u0000')
+                clears.incrementAndGet()
+                if (index == 0) throw first
+                if (index == 1) throw second
+            }) { error("Cancelled action ran") })
+            assertSame(first, assertFailsWith<Throwable> {
+                owner.close { finalCount.set(clears.get()) }
+            })
+            assertTrue(owner.isClosed)
+            assertEquals(4, clears.get(), "A failed cleanup stranded later queued inputs")
+            assertTrue(words.all { input -> input.all { it == '\u0000' } })
+            assertTrue(pool.queue.isEmpty())
+            assertTrue(pool.isShutdown)
+            assertEquals(-1, finalCount.get(), "Session cleanup raced active work")
+            owner.close { error("Closed owner finalized twice") }
+            release.countDown()
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS))
+            assertEquals(5, clears.get())
+            assertEquals(5, finalCount.get())
+        } finally {
+            release.countDown()
+            // Retain bounded cleanup even against the unfixed implementation.
+            pool?.let { backend ->
+                while (true) {
+                    val task = backend.queue.poll() ?: break
+                    try { task.run() }
+                    catch (problem: Throwable) { assertTrue(problem === first || problem === second) }
+                }
+                backend.shutdown()
+                assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            }
+            owner.close()
+            words.forEach { it.fill('\u0000') }
+        }
+        assertBothAdmissionsAvailable()
+    }
 }

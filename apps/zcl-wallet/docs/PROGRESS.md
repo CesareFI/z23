@@ -7032,3 +7032,39 @@ missing change was found in the final review. Generated artifacts, SDK-local
 configuration, caches, logs and benchmark outputs remain excluded. TLS quarantine
 and all production/custody boundaries are unchanged. Exact remote SHA equality
 must be checked again after publishing this documentation-only closeout.
+
+## Production continuation: queued cleanup failure — 2026-09-18
+
+The owner resumed permitted production engineering while retaining the TLS
+quarantine, platform restrictions, custody gates and original Zclassic rules.
+The next concrete risk was executor shutdown after a queued cleanup throws:
+`OwnedExecutor.close` marked the owner closed, then abandoned its drain before
+installing the session finalizer or calling shutdown. Later queued inputs and
+the process admission could remain retained. Cleanup callbacks still must be
+bounded and nonthrowing; the owner now contains a broken callback's effect on
+other independently owned inputs.
+
+A new JVM regression failed on the unchanged source after observing only one
+queued cleanup instead of four. The minimal fix attempts every queued cleanup,
+installs the existing session finalizer, attempts shutdown, and then rethrows
+the first failure without allocating suppressed-exception storage. The active
+operation remains responsible for its own finally block, and session retirement
+still waits for termination. No worker, retry, extra queue slot, or platform
+restriction bypass is added.
+
+Tests inject ordinary/fatal cleanup failures plus a second cleanup failure,
+check all public marker arrays are cleared, no cancelled action runs, the queue
+is empty, shutdown is admitted, the active worker is not finalized early, cleanup
+runs once, and both process admissions become available afterward. The full
+executor JVM group passes 8/8. The actual ART executor suite passes 3/3 with zero
+skips on API35 (0.066s) and API36 (0.042s). Fixtures contain only public characters
+and owned workers, with bounded cleanup even against the original broken code.
+
+Offline wallet-core/Android JVM tests, strict Kotlin compilation, debug/test
+and both-ABI release builds, debug/release lint, fixture isolation, 16 KiB
+alignment, architecture and whitespace checks pass. Native source and build
+configuration are unchanged; the previous 142/142 Clang and 137/137 optimized
+GCC sanitizer/static-analysis evidence remains the native baseline, not a new
+run. Physical-device custody and the documented baseline root-lint findings
+remain open. Local evidence is in ignored `.cache/executor-drain-*` paths.
+Next: authentication failure notification when prompt cancellation itself throws.
