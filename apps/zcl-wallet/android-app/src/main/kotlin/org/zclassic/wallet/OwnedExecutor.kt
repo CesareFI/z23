@@ -56,7 +56,10 @@ internal class OwnedExecutor {
 
     fun submit(cleanup: () -> Unit = {}, action: () -> Unit): Boolean = synchronized(control) {
         val task = try { OwnedTask(closed, cleanup, action) }
-        catch (problem: Throwable) { cleanup(); throw problem }
+        catch (problem: Throwable) {
+            try { cleanup() } catch (_: Throwable) { /* Preserve task allocation failure. */ }
+            throw problem
+        }
         if (closed.get()) {
             task.discard()
             return false
@@ -71,8 +74,12 @@ internal class OwnedExecutor {
             // execute may enqueue before starting a worker. A failed handoff
             // must release both its queue slot and its transferred input.
             current?.remove(task)
-            task.discard()
-            if (problem is RejectedExecutionException) return false
+            if (problem is RejectedExecutionException) {
+                task.discard()
+                return false
+            }
+            // A second cleanup failure must not replace the worker-start error.
+            try { task.discard() } catch (_: Throwable) { /* Preserve the first failure. */ }
             throw problem
         }
     }

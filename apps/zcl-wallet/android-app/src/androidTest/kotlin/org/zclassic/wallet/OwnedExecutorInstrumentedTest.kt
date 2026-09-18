@@ -37,6 +37,11 @@ class OwnedExecutorInstrumentedTest {
         for (coreSize in listOf(0, 1)) verifyFailedHandoff(coreSize)
     }
 
+    @Test fun androidCleanupFailureCannotReplaceTheWorkerStartError() {
+        for (coreSize in listOf(0, 1)) verifyFailedHandoff(coreSize, cleanupFailure = true)
+        assertBothAdmissionsAvailable()
+    }
+
     @Test fun androidCloseNeedsNoWorkerAndReturnsBothProcessAdmissions() {
         for (coreSize in listOf(0, 1)) {
             for (mode in 0..2) verifyCloseWithoutWorker(coreSize, mode)
@@ -161,7 +166,7 @@ class OwnedExecutorInstrumentedTest {
         }
     }
 
-    private fun verifyFailedHandoff(coreSize: Int) {
+    private fun verifyFailedHandoff(coreSize: Int, cleanupFailure: Boolean = false) {
         val owner = OwnedExecutor()
         val backend = idleBackend(owner, coreSize)
         val originalFactory = backend.threadFactory
@@ -170,11 +175,16 @@ class OwnedExecutorInstrumentedTest {
         val finalized = CountDownLatch(1)
         val words = charArrayOf('a', 'b', 'c')
         val problem = OutOfMemoryError("Synthetic public thread-allocation failure")
+        val secondary = IllegalStateException("Public cleanup failure")
         try {
             backend.corePoolSize = coreSize
             backend.threadFactory = ThreadFactory { throw problem }
             val caught = assertThrows(OutOfMemoryError::class.java) {
-                owner.submit({ words.fill('\u0000'); clears.incrementAndGet() }) {
+                owner.submit({
+                    words.fill('\u0000')
+                    clears.incrementAndGet()
+                    if (cleanupFailure) throw secondary
+                }) {
                     error("Failed input ran after retry")
                 }
             }

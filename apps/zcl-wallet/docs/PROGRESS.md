@@ -7257,3 +7257,36 @@ Evidence remains in ignored `.cache/scan-connect-*`,
 Root-lint selftest, physical custody/camera and independent-host release limits
 remain open; TLS quarantine is unchanged. Continue with bounded foreground
 delivery and shutdown ownership review rather than resuming quarantined work.
+
+## Production continuation: submission error identity — 2026-09-18
+
+The executor's submission cleanup could replace a worker-start error with a
+second cleanup exception. A new JVM regression reproduced this, receiving an
+IllegalStateException instead of the original synthetic OutOfMemoryError.
+Allocation/startup failure paths now attempt owned cleanup and rethrow the first
+failure without allocating suppressed-exception storage. Ordinary queue
+rejection still returns false after successful cleanup; its cleanup failures
+remain visible. The task-allocation catch follows the same first-error rule.
+
+New JVM and ART cases exercise both pre-enqueue and enqueue-before-worker-start
+failure, public-array clearing, exactly one cleanup, an empty failed queue,
+successful independent retry and release of both process admissions. Existing
+assertions are retained. JVM executor tests pass 9/9; the full offline JVM groups
+pass 97 wallet-core and 52 Android tests. The executor instrumentation passes
+4/4 without skips on API30/35/36 (0.685/0.052/0.038s). Debug/test and both-ABI
+release builds, both Android lint variants, fixture isolation, 16 KiB alignment,
+architecture and whitespace checks pass. No native source changed; both packaged
+JNI libraries remain byte-identical to the preceding reproduced release, so the
+recent Clang142/GCC137 safety and analyzer evidence remains applicable.
+
+Fresh source-only tree `f2e09789773b8e35085b077310dc03bc6f39c154` reproduces the
+641,227-byte unsigned APK with every release task executed and build caching
+disabled (18s). Complete `cmp` passes; both APKs have SHA256
+`0eb29e8352139bce06b25fd46b9f10013c99acca14653ef92c34075569b8eaae`.
+The source tree contains the exact implementation/tests and prior documentation;
+this progress note is the only subsequent change. Public synthetic failures do
+not exhaust memory or alter platform restrictions. Logs/artifacts remain ignored
+under `.cache/submit-primary-*` and `.cache/reproduce-submit-primary/`.
+TLS quarantine and existing physical-device/root-lint limits remain unchanged.
+Next: inspect read-only JNI snapshot allocation and measurement opportunities,
+keeping normal validation authoritative and avoiding speculative optimization.

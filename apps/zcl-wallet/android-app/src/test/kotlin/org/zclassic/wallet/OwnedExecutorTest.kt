@@ -144,6 +144,40 @@ class OwnedExecutorTest {
         assertEquals(1, cleared.get())
     }
 
+    @Test fun cleanupFailureCannotHideTheOriginalWorkerStartError() {
+        for (coreSize in listOf(0, 1)) {
+            val owner = OwnedExecutor()
+            val backend = idleBackend(owner, coreSize)
+            val originalFactory = backend.threadFactory
+            val first = OutOfMemoryError("Public worker-start failure")
+            val second = IllegalStateException("Public cleanup failure")
+            val clears = AtomicInteger()
+            val ran = CountDownLatch(1)
+            val words = charArrayOf('a', 'b', 'c')
+            try {
+                backend.threadFactory = ThreadFactory { throw first }
+                assertSame(first, assertFailsWith<Throwable> {
+                    owner.submit({ words.fill('\u0000'); clears.incrementAndGet(); throw second }) {
+                        error("Failed input ran")
+                    }
+                })
+                assertTrue(words.all { it == '\u0000' })
+                assertEquals(1, clears.get())
+                assertTrue(backend.queue.isEmpty())
+                backend.threadFactory = originalFactory
+                assertTrue(owner.submit { ran.countDown() })
+                assertTrue(ran.await(5, TimeUnit.SECONDS))
+            } finally {
+                backend.threadFactory = originalFactory
+                owner.close()
+                awaitClosed(owner)
+                words.fill('\u0000')
+            }
+            assertEquals(1, clears.get())
+        }
+        assertBothAdmissionsAvailable()
+    }
+
     @Test fun closedExecutorRejectsAndClearsInputsOnce() {
         val executor = OwnedExecutor()
         val cleared = AtomicInteger()
