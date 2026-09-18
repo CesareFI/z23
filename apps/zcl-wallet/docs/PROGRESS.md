@@ -6963,3 +6963,72 @@ audit. Root lint-fast passes 31/32 gates; its unchanged flag-registry self-test
 fails with an empty tracked-file scan. This is the already recorded unrelated
 root-lint limitation, not a waived or weakened assertion. Raw logs remain in
 ignored `.cache/backup-*` paths and are not committed.
+
+### Preservation closeout and flag-registry investigation — 2026-09-18
+
+Recovered source commit `d2d03143cc58822d9b49bf55448316e8b3325bea` was pushed
+normally to the existing CesareFI development branch and verified using
+`git ls-remote`. The follow-up audit adds evidence only, with no further
+application, native, test or lint implementation changes.
+
+Collected final validation, with zero failures in each listed test suite:
+
+| Snapshot | Clang sanitizer tests | Optimized GCC sanitizer tests |
+| --- | --- | --- |
+| Pre-recovery `b0c3523bc` | 140 passed, 0 failed | 135 passed, 0 failed |
+| Recovered `d2d03143c` | 142 passed, 0 failed | 137 passed, 0 failed |
+
+The recovered Gradle reports contain 97/97 wallet-core tests and 50/50 Android
+JVM tests, with zero failures, errors or skips. Debug and test-APK assembly,
+Android debug lint, static analysis, complexity, architecture and whitespace
+checks passed. Fuzz results remain 28,370 framing and 433,907 header/record
+executions. No device or hardware-custody acceptance is asserted.
+
+The flag-registry self-test failure has an observed environment cause. Its
+unreadable-file fixture creates `fu_secret.c` with mode 000 and expects an
+unreadable-file return. This session runs as UID 0 with permission-bypass
+capabilities. System-call tracing observes `openat(..., O_RDONLY) = 4` despite
+that mode, and the unmodified self-test exits 1. Running the same binary with
+`setpriv --bounding-set=-dac_override,-dac_read_search` produces the expected
+`EACCES` and self-test exit 0. The empty-scan diagnostic appears in both runs:
+it belongs to an expected negative fixture and is not the failing assertion.
+The binary SHA-256 is
+`1f4d2e7205296eabeb02dd05d73c5b9f6bb60bb635eefe91df8943a486717127`.
+Both gate source files and its shell wrapper have identical Git blob identities
+at the pre-recovery baseline and recovered HEAD. No gate was edited, disabled,
+suppressed or weakened.
+
+After the self-test passes in the restricted environment, the real scan still
+reports eight uses of five unregistered flags: `ZCL_HOST_CLANG`,
+`ZCL_FIXTURE_TEST_VARIANT`, `ZCL_QUALIFY_TARGET`, `ZCL_QUALIFY_AAPT`, and
+`ZCL_QUALIFY_FAULT`. An isolated Git fixture made from the baseline's exact
+`flags.def` and the three reported Android tool scripts reproduces those eight
+diagnostics byte-for-byte (`cmp` exit 0); those inputs are unchanged by the
+recovery. Thus the self-test issue is environment-related and the real scan
+issue is existing baseline registry debt. The fresh restricted-environment
+`lint-fast` run remains 31 passed / 1 failed, not a global lint pass. Both
+findings are documented without expanding this backup into tooling development.
+Raw root/restricted traces, baseline diagnostics and lint output remain in
+ignored `.cache/backup-flag-*` and `.cache/backup-lint-fast-bounded.log`.
+
+Final inventory: A means already represented or superseded in current HEAD;
+B means recovered in `d2d03143c`; C means incomplete/quarantined. All listed
+older worktrees and the stash remain intact; none was deleted or cleaned.
+The current `/root/z23-android` checkout is the sole publication checkout.
+
+| Remaining worktree or stash | Disposition and comparison |
+| --- | --- |
+| `/tmp/z23-android-header-contract-20260914` | B: regression is byte-identical; current fuzz contract adds only explanatory diagnostics to the old contract; registration retained. |
+| `/tmp/z23-android-line-framing-20260915` | B: implementation, bytewise fuzz model and regression are byte-identical; registrations adapted to current CMake. |
+| `/tmp/z23-android-security-hardening-20260914` | A/B: current header files, EC preflight and recovery-delivery implementation match the candidates exactly; other useful changes have the successors listed in the preceding audit. Its 13 old commit identities remain local, with their useful behavior represented in current history. |
+| `/tmp/z23-android-jni-erasure-20260914` | A: full-width entropy regression retained; current fixtures additionally check path/record/publication retirement and portable JNI types. The old fuzz helper split adds no missing behavior. |
+| `/tmp/z23-android-wallet-storage-20260913` | A: paired persistence, restore routing and tests retained; current code additionally rejects orphan state and clears JNI scratch. WalletStorage and WalletPersistenceTest match exactly. |
+| `/tmp/z23-android-tls-empty-name-review` | C: unfinished provider patch and TLS test artifacts left untouched; no TLS test, reproducer, build or investigation run. |
+| `stash@{0}`: inherited Electrum framing tests | A: fuzz_electrum.c and test_electrum_fuzz.c have exactly matching Git blob identities in the stash and HEAD; frame warning and regression registration are present. |
+
+Every registered Android branch other than the older security-hardening branch
+has zero commits absent from the fetched CesareFI remote. No additional useful
+missing change was found in the final review. Generated artifacts, SDK-local
+configuration, caches, logs and benchmark outputs remain excluded. TLS quarantine
+and all production/custody boundaries are unchanged. Exact remote SHA equality
+must be checked again after publishing this documentation-only closeout.
