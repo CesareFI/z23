@@ -7068,3 +7068,33 @@ GCC sanitizer/static-analysis evidence remains the native baseline, not a new
 run. Physical-device custody and the documented baseline root-lint findings
 remain open. Local evidence is in ignored `.cache/executor-drain-*` paths.
 Next: authentication failure notification when prompt cancellation itself throws.
+
+## Production continuation: authentication cancellation notification — 2026-09-18
+
+Failure retirement cleared the pending authentication request before cancelling
+its platform signal. A throwing cancellation listener then prevented foreground
+failure notification or background deferral, leaving the UI wait unresolved.
+Two new callback regressions failed on unchanged source: 8/10 passed, with
+foreground delivery absent and background deferral absent. Cancellation now
+attempts failure notification even when the listener throws, then rethrows the
+first error without allocating suppressed-exception storage. Request identity,
+timeout removal, foreground-only delivery, cipher identity and authentication
+policy are unchanged.
+
+The tests cover ordinary and fatal synthetic cancellation errors, a secondary
+notification error, exactly-once foreground/background failure, and inert late
+callbacks. They use public CancellationSignal listeners and uninitialized
+cipher handles in the existing owned callback fixture. No prompt, key, wallet,
+storage operation or framework security modification is involved; this is
+callback-routing evidence, not hardware-authentication qualification.
+
+API35 and API36 each pass all 16 callback/setup tests with zero skips (0.085s
+and 0.079s). Offline wallet-core tests pass 97/97 and Android JVM tests 51/51.
+Strict compilation, debug/test and both-ABI release builds, debug/release lint,
+fixture isolation, 16 KiB alignment, architecture and whitespace checks pass.
+No native source or build configuration changed; the previous Clang/GCC native
+safety and static-analysis baseline remains applicable without a new run.
+Ignored `.cache/auth-cancel-*` logs retain local evidence. The previously
+documented root-lint findings and hardware custody gate remain open, and TLS
+quarantine is unchanged. Next: establish a bounded public-fixture measurement
+of the read-only sync path before proposing any performance change.

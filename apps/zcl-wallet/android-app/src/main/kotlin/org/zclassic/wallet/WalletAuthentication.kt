@@ -106,8 +106,14 @@ internal class WalletAuthentication(
         if (pending !== request) return
         pending = null
         request.timeout?.let(handler::removeCallbacks)
-        request.signal.cancel()
-        if (foreground) failed() else deferredFailure = true
+        var failure: Throwable? = null
+        try { request.signal.cancel() }
+        catch (problem: Throwable) { failure = problem }
+        // Retiring the request must also retire its UI wait, even if the
+        // cancellation listener throws. Preserve that first failure.
+        try { if (foreground) failed() else deferredFailure = true }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        if (failure != null) throw failure
     }
 
     private fun deliver() {

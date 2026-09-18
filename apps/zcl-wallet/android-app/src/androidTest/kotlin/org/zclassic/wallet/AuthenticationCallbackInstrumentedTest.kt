@@ -36,10 +36,13 @@ class AuthenticationCallbackInstrumentedTest {
 
     private fun inertCipher(): Cipher = Cipher.getInstance("AES/GCM/NoPadding")
 
-    private inner class Fixture : AutoCloseable {
+    private inner class Fixture(notificationFailure: Throwable? = null) : AutoCloseable {
         val approved = mutableListOf<PreparedWalletAction>()
         var failed = 0
-        val auth = WalletAuthentication(Activity(), { approved.add(it) }, { failed++ })
+        val auth = WalletAuthentication(Activity(), { approved.add(it) }, {
+            failed++
+            notificationFailure?.let { throw it }
+        })
         private val requestType = WalletAuthentication::class.java.declaredClasses.single { it.simpleName == "Pending" }
         private val constructor = requestType.getDeclaredConstructor(PreparedWalletAction::class.java).apply {
             isAccessible = true
@@ -169,6 +172,55 @@ class AuthenticationCallbackInstrumentedTest {
             assertEquals(listOf(current.prepared), fixture.approved)
             assertEquals(0, fixture.failed)
             assertFalse(fixture.auth.hasPending)
+        }
+    }
+
+    @Test fun throwingCancellationStillReportsForegroundFailureOnce() = onMain {
+        for (fatal in listOf(false, true)) {
+            val primary = if (fatal) OutOfMemoryError("Public cancellation failure")
+                else IllegalStateException("Public cancellation failure")
+            val secondary = IllegalStateException("Public notification failure")
+            for (notificationFailure in listOf(null, secondary)) {
+                Fixture(notificationFailure).use { fixture ->
+                    fixture.auth.onResume()
+                    val request = fixture.install()
+                    request.signal.setOnCancelListener { throw primary }
+                    assertSame(primary, assertThrows(Throwable::class.java) { request.error() })
+                    assertTrue(request.signal.isCanceled)
+                    assertFalse(fixture.auth.hasPending)
+                    assertEquals(1, fixture.failed)
+                    request.error()
+                    request.success()
+                    fixture.auth.onPause()
+                    fixture.auth.onResume()
+                    assertEquals(1, fixture.failed)
+                    assertTrue(fixture.approved.isEmpty())
+                }
+            }
+        }
+    }
+
+    @Test fun throwingCancellationStillDefersBackgroundFailureUntilResume() = onMain {
+        for (fatal in listOf(false, true)) {
+            val primary = if (fatal) OutOfMemoryError("Public cancellation failure")
+                else IllegalStateException("Public cancellation failure")
+            Fixture().use { fixture ->
+                val request = fixture.install()
+                request.signal.setOnCancelListener { throw primary }
+                assertSame(primary, assertThrows(Throwable::class.java) { request.error() })
+                assertTrue(request.signal.isCanceled)
+                assertNull(field("pending").get(fixture.auth))
+                assertTrue(fixture.auth.hasPending)
+                assertEquals(0, fixture.failed)
+                request.error()
+                request.success()
+                fixture.auth.onResume()
+                fixture.auth.onPause()
+                fixture.auth.onResume()
+                assertEquals(1, fixture.failed)
+                assertFalse(fixture.auth.hasPending)
+                assertTrue(fixture.approved.isEmpty())
+            }
         }
     }
 
