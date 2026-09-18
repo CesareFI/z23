@@ -890,7 +890,9 @@ Z23_FLAG("ZCL_FIXTURE_TEST_FAULT", "env_test", "-", "-",
 Z23_FLAG("ZCL_FIXTURE_TEST_HOST", "env_test", "-", "-",
           "Android fixture-isolation test's expected debug-only Activity name; first use apps/zcl-wallet/tools/test-android-fixtures.sh:16")
 Z23_FLAG("ZCL_FIXTURE_TEST_UNZIP", "env_test", "-", "-",
-          "Android fixture-isolation test's actual unzip path; first use apps/zcl-wallet/tools/test-android-fixtures.sh:53")
+          "Android fixture-isolation test's actual unzip path; first use apps/zcl-wallet/tools/test-android-fixtures.sh:175")
+Z23_FLAG("ZCL_FIXTURE_TEST_VARIANT", "env_test", "-", "-",
+          "Android fixture-isolation test's APK variant selected for metadata mutations; first use apps/zcl-wallet/tools/test-android-fixtures.sh:28")
 Z23_FLAG("ZCL_FLEET_BOARD_BRIDGE_BIN", "env_test", "-", "-",
           "undocumented; first use tests/harness/src/test_fleet_board_bridge.c:20")
 Z23_FLAG("ZCL_FLEET_BOX", "env_build", "-", "-",
@@ -1020,6 +1022,8 @@ Z23_FLAG("ZCL_HEX_CODEC_SCAN_ROOTS", "env_build", "-", "-",
           "undocumented; first use tools/lint/lintc/gate_hex_codec_single.c:578")
 Z23_FLAG("ZCL_HOOKS_STATUS_ROOT", "env_build", "-", "-",
           "undocumented; first use tools/scripts/hooks_status.sh:28")
+Z23_FLAG("ZCL_HOST_CLANG", "env_build", "clang-20", "-",
+          "Host C compiler for the qualified Android emulator reaping helper; first use apps/zcl-wallet/tools/run-emulator-reaped.sh:36")
 Z23_FLAG("ZCL_HOST_GC_BINBAK_MIN_AGE_D", "env_build", "60", "-",
           "days a ~/bin/*.bak-* quarantine backup survives; first use tools/scripts/host_gc.sh:136")
 Z23_FLAG("ZCL_HOST_GC_CACHE_FREEZE_GB", "env_build", "100", "-",
@@ -1783,6 +1787,12 @@ Z23_FLAG("ZCL_PV_TRACE", "env_runtime", "-", "-",
           "undocumented; first use engine/jobs/src/proof_validate_trace.c:44")
 Z23_FLAG("ZCL_PV_WORKERS", "env_runtime", "-", "-",
           "first use engine/jobs/src/pv_lookahead.c:434; documented at docs/CAPABILITY_INVENTORY.jsonl:927: {'record':'capability','header':'engine/jobs/include/jobs/pv_lookahead.h','include_toke...")
+Z23_FLAG("ZCL_QUALIFY_AAPT", "env_test", "-", "-",
+          "Actual aapt2 path delegated to by the Android custody-qualification metadata fixture; first use apps/zcl-wallet/tools/test-custody-qualification.sh:13")
+Z23_FLAG("ZCL_QUALIFY_FAULT", "env_test", "-", "-",
+          "Bounded metadata mutation selected by the Android custody-qualification identity test; first use apps/zcl-wallet/tools/test-custody-qualification.sh:14")
+Z23_FLAG("ZCL_QUALIFY_TARGET", "env_test", "-", "-",
+          "Application or instrumentation APK selected for custody-qualification metadata mutation; first use apps/zcl-wallet/tools/test-custody-qualification.sh:13")
 Z23_FLAG("ZCL_QUALITY_LOG_KEEP", "env_build", "8", "-",
           "first use tools/scripts/quality_log_retention.sh:13; documented at docs/AGENT_API.md:1414: with ZCL_QUALITY_LOG_KEEP / ZCL_QUALITY_LOG_MAX_BYTES.")
 Z23_FLAG("ZCL_QUALITY_LOG_MAX_BYTES", "env_build", "1073741824", "-",

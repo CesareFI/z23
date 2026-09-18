@@ -7160,3 +7160,31 @@ The documented root-lint baseline and physical custody gate remain open; TLS
 review stays OFF. No generated benchmark output or build artifact is committed.
 Next: register the five existing Android build/test environment flags responsible
 for the eight previously confirmed catalog diagnostics.
+
+## Production continuation: Android build/test flag catalog — 2026-09-18
+
+The real flag-registry scan reproduced eight diagnostics for five existing
+Android environment variables. Added their declarations to the existing
+`engine/composition/flags.def` catalog with exact read sites, defaults and
+purposes: the host compiler selector, fixture variant, and three qualification
+metadata-test variables. Once registration passed, first-use validation exposed
+the existing unzip entry's stale line53 reference; its actual read is line175.
+Only catalog metadata changed. No script, checker, fixture, security restriction,
+APK policy or runtime behavior was modified.
+
+The actual catalog gate now passes: 1226 registered flags, 2138 read sites,
+zero unregistered/expired entries and 1207 verified first-use pointers. Normal
+fixture isolation, debug/release lint and 16 KiB alignment pass; the separate
+qualification APK build passes its unchanged control and all 20 negative
+metadata cases. Architecture and whitespace checks pass. The prior native
+142/142 Clang and 137/137 optimized GCC evidence applies unchanged.
+
+The standalone flag-registry selftest still fails under this root environment;
+`make lint-fast` remains 31/32. The earlier mode000/capability diagnosis remains
+applicable: the unreadable-file case expects refusal while this process can
+read the file. The selftest constructs its own catalog, so these real-catalog
+declarations do not affect it. No assertion was changed, skipped or disabled,
+and no privilege or platform-policy change was used in this continuation.
+Evidence is in ignored `.cache/android-flags-*` logs. TLS quarantine remains
+untouched. Next: verify unsigned APK reproduction from a clean source-only
+copy containing the new executor/authentication fixes.
