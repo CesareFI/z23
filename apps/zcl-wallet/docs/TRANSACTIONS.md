@@ -27,8 +27,27 @@ OpenSSL independently computes every complete identity. Projections and original
 random vectors are serialization evidence, not valid-funding or node-acceptance
 evidence. All256 prefix values at every PHGR position are tested.
 
-This adds no historical-source JNI, draft, review, commitment or signing route.
-Those admissions remain unchanged until explicitly composed and qualified.
+Historical-source JNI, draft, review and signing admissions remain unchanged.
+The explicit internal mixed-source assessment and commitment profiles below
+are already implemented; they do not promote source bytes to trusted funding.
+
+## Explicit mixed-source offline assessment
+
+`zcl_source_inspect` dispatches to the existing historical or v4 reader by the
+exact serialized header. Each reader retains its own format and size bounds;
+there is no fallback after a parsing or hashing error. `zcl_source_prevout`
+matches the caller's exact source identity and selected output index before
+publishing an owned output. `zcl_source_assess` composes this explicit profile
+with the existing bounded transparent v4 spending transaction, destination
+checks, checked totals and fee ceiling. At most eight borrowed sources enter
+one assessment; no input pointer survives and a later failure publishes no
+partial report. The older narrow and full-v4 entry points retain their limits.
+
+Existing regressions cover 169 pairs of public source variants, both networks,
+independent reference identities, eight-input admission, later-input failure,
+duplicate outpoints, fee/total bounds and unchanged output on refusal. These
+are offline data checks. They do not establish chain inclusion, unspentness,
+proof/script validity, ownership, freshness, consent or signing authority.
 
 ## Exact source/outpoint/header commitment composition
 
@@ -49,8 +68,12 @@ Every expected ID, height, count and position remains caller-supplied. Success
 does not establish accepted-chain membership, proof of work, off-path uniqueness,
 freshness, maturity, unspentness, ownership, consent or signing authority. No
 trust status, custody object, JNI entry, UI send route or TLS boundary changes.
-The commitment profile remains v4 only. Historical inspection is available
-separately above; integrating it requires an explicit qualified profile.
+The separate internal `zcl_source_commitment_check` now permits the explicit
+mixed historical/v4 source profile through the same identity/header/path
+composition. The v4 entry point remains v4 only. Historical reference vectors,
+selected output bounds, exact identities, path/serialization refusal and the
+historical 64-byte preimage guard are covered by focused regressions. Both
+profiles retain the same consistency-only claim and failure-atomic output.
 
 ## Owned serialized-header inspection
 

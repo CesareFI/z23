@@ -41,13 +41,25 @@ preimages, whose size overlaps internal Merkle-node inputs. It does not authenti
 caller-supplied IDs, height or tree shape. A separate historical inspector now
 covers v1/v2/Overwinter v3 with the original100000-byte bound and exact PHGR
 serialization prefixes. Original and explicitly projected public fixtures qualify
-it; current v4/spend/review/commitment admission stays unchanged. Next, compose
-historical funding identity/commitments and mixed-format offline assessment through
-an explicit profile, retaining the64-byte preimage guard. Keep proof claims
-separate from chain validity,
-freshness, unspentness and signing authority.
+it; existing v4/spend/review admission stays unchanged. Explicit internal
+mixed-source inspection, prevout matching, offline assessment and commitment
+composition are also implemented and preserved. They retain each reader's
+format/size bound, complete-only publication and the 64-byte commitment preimage
+guard. The older v4-only entry points remain narrow. No historical-source
+JNI, draft, review or signing path is added. Keep these byte/hash/path claims
+separate from chain validity, freshness, unspentness and signing authority.
 Preserve authenticated-chain/unspentness and custody gates; structural
 inspection cannot establish consensus validity or authorize signing.
+
+The current permitted continuation covers wallet/platform lifecycle reliability,
+read-only processing measurement and release quality while physical custody
+qualification remains open. Executor draining now survives a queued cleanup
+failure, authentication failure notification survives cancellation errors, and
+a bounded public-fixture sync benchmark is available. The current unsigned
+release has been reproduced from a fresh source-only directory on the same
+host/toolchain. Exact evidence and the next concrete task are in `PROGRESS.md`.
+TLS quarantine remains untouched; do not resume its review as an implicit next
+step or substitute weaker platform policy for unavailable hardware evidence.
 
 ## First acceptance gate
 

@@ -7188,3 +7188,34 @@ and no privilege or platform-policy change was used in this continuation.
 Evidence is in ignored `.cache/android-flags-*` logs. TLS quarantine remains
 untouched. Next: verify unsigned APK reproduction from a clean source-only
 copy containing the new executor/authentication fixes.
+
+## Production continuation: current release reproduction and milestone accuracy — 2026-09-18
+
+A source-only archive of commit
+`67ed27f9b39faea59d690a63d099988a6f83800d` supplied the app, pinned Android
+providers and its two C package dependencies to a fresh nested source directory.
+No project build, `.cxx` or `.gradle` output was copied. The only local input
+added was the SDK path. Offline release assembly with `--no-build-cache`
+executed all 57 tasks successfully in 30s. Complete APK comparison with `cmp`
+passed against the active checkout's unsigned release, including both ABIs.
+Each file is 641,227 bytes with SHA256
+`147e717f0c470c609375ff185cd95f3b786be5f5ddc8322ba5cfe59cfdac30f8`.
+
+Toolchain: Gradle8.13, AGP8.13.2, Kotlin2.2.21, OpenJDK17.0.20,
+Android build-tools35.0.0, compile SDK36 and NDK27.2.12479018 on Linux x86_64.
+The selected source archive has SHA256
+`3c7bcdf668441d585a3f6efb8e6bb6926f22cf840df472a28969bf2b022655cc`.
+Logs, archive, SDK-local configuration and APKs remain ignored under
+`.cache/reproduce-67ed27f9b/`. This establishes unsigned byte reproduction across
+two paths on one host/toolchain; independent-host, signed-release and physical
+custody qualification remain open.
+
+Review also found that `NEXT_MILESTONE.md` and `TRANSACTIONS.md` still described
+the already preserved mixed-source assessment/commitment work as future scope.
+Their descriptions now match the explicit internal APIs and existing regression
+coverage. Older narrow entry points, JNI/review/signing admission, source-trust
+limits and the commitment preimage guard remain explicit. No implementation or
+test changed in this documentation slice. The current native/Android validation
+remains applicable; the root-lint environment limitation remains documented.
+Next: inspect camera and foreground presentation cleanup for a concrete lifecycle
+or callback-ownership gap, keeping TLS and platform-security restrictions intact.
