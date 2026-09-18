@@ -16,7 +16,7 @@ static uintptr_t output_id, address_id, report_id;
 static unsigned outputs, output_clears, addresses, address_clears, ids, report_clears;
 static unsigned fail_output, fail_address;
 static bool fail_id;
-static bool full_sources;
+static unsigned profile;
 
 zcl_status zcl_assess_test_prevout(const zcl_tx_input *input, const uint8_t *wire, size_t length, zcl_tx_output *output);
 zcl_status zcl_assess_test_address(const uint8_t *script, size_t length, zcl_network network, zcl_address *output);
@@ -93,7 +93,9 @@ static void assess(uint64_t ceiling, zcl_status wanted)
 {
     struct { uint64_t before; zcl_transaction_assessment report; uint64_t after; } box;
     memset(&box, 0xa5, sizeof(box));
-    const zcl_status status = full_sources
+    const zcl_status status = profile == 2
+        ? zcl_source_assess(&fixture.spending, ZCL_TESTNET, fixture.sources, 2, ceiling, &box.report)
+        : profile == 1
         ? zcl_v4_source_assess(&fixture.spending, ZCL_TESTNET, fixture.sources, 2, ceiling, &box.report)
         : zcl_transaction_assess(&fixture.spending, ZCL_TESTNET, fixture.sources, 2, ceiling, &box.report);
     CHECK(status == wanted);
@@ -149,7 +151,9 @@ static void funding_and_fee_refusals(void)
 int main(void)
 {
     provider_failures(); funding_and_fee_refusals();
-    full_sources = true;
+    profile = 1;
+    provider_failures(); funding_and_fee_refusals();
+    profile = 2;
     provider_failures(); funding_and_fee_refusals();
     retired();
     CHECK(puts("Assessment retirement: dirty providers, bounded totals/fees and complete-only output passed") >= 0);

@@ -19,7 +19,7 @@ typedef struct {
 } zcl_source_commitment_request;
 
 typedef struct {
-    zcl_v4_source source;
+    zcl_source_view source;
     zcl_header_view header;
 } zcl_source_commitment;
 
@@ -35,5 +35,10 @@ typedef struct {
  * spans are caller-owned; no pointers survive. Whole output stays unchanged
  * on failure. No heap, I/O, network access or trust-status mutation. */
 zcl_status zcl_v4_source_commitment_check(const zcl_source_commitment_request *request,
+    zcl_source_commitment *output);
+
+/* Explicit mixed historical/v4 source profile; otherwise the identical
+ * consistency-only contract above, including the64-byte preimage refusal. */
+zcl_status zcl_source_commitment_check(const zcl_source_commitment_request *request,
     zcl_source_commitment *output);
 #endif

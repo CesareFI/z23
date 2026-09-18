@@ -199,15 +199,40 @@ zcl_status zcl_legacy_source_inspect(const uint8_t *wire, size_t length,
     return source_inspect(wire, length, output_index, true, output);
 }
 
-zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,
-    const uint8_t *wire, size_t length, zcl_tx_output *output)
+zcl_status zcl_source_inspect(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_source_view *output)
+{
+    if (wire == NULL || output == NULL) return ZCL_INVALID_ARGUMENT;
+    if (length > ZCL_V4_SOURCE_MAX) return ZCL_RESOURCE_EXHAUSTED;
+    source_reader reader = {wire, length, 0, ZCL_OK};
+    const uint64_t header = integer(&reader, 4);
+    if (reader.status != ZCL_OK) return reader.status;
+    return source_inspect(wire, length, output_index, header != ZCL_TX_HEADER, output);
+}
+
+static zcl_status source_prevout(const zcl_tx_input *input,
+    const uint8_t *wire, size_t length, bool mixed, zcl_tx_output *output)
 {
     if (input == NULL || output == NULL) return ZCL_INVALID_ARGUMENT;
-    zcl_v4_source candidate = {0};
-    zcl_status status = zcl_v4_source_inspect(wire, length, input->previous_index, &candidate);
+    zcl_source_view candidate = {0};
+    zcl_status status = mixed
+        ? zcl_source_inspect(wire, length, input->previous_index, &candidate)
+        : zcl_v4_source_inspect(wire, length, input->previous_index, &candidate);
     if (status == ZCL_OK && memcmp(candidate.transaction_id, input->previous_txid, 32) != 0)
         status = ZCL_INVALID_ENCODING;
     if (status == ZCL_OK) *output = candidate.output;
     zcl_secure_zero(&candidate, sizeof(candidate));
     return status;
+}
+
+zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,
+    const uint8_t *wire, size_t length, zcl_tx_output *output)
+{
+    return source_prevout(input, wire, length, false, output);
+}
+
+zcl_status zcl_source_prevout(const zcl_tx_input *input,
+    const uint8_t *wire, size_t length, zcl_tx_output *output)
+{
+    return source_prevout(input, wire, length, true, output);
 }

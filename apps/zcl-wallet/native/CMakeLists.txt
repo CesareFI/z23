@@ -835,6 +835,7 @@ if(NOT ANDROID)
     target_include_directories(assessment_retirement_tests PRIVATE src)
     target_compile_definitions(assessment_retirement_tests PRIVATE
         zcl_transaction_prevout=zcl_assess_test_prevout zcl_v4_source_prevout=zcl_assess_test_prevout
+        zcl_source_prevout=zcl_assess_test_prevout
         zcl_address_from_script=zcl_assess_test_address
         zcl_transaction_id=zcl_assess_test_id zcl_secure_zero=zcl_assess_test_zero)
     target_compile_options(assessment_retirement_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
@@ -1397,6 +1398,71 @@ if(NOT ANDROID)
         endif()
     endif()
     set(ZCL_COMMITMENT_FIXTURE tests/commitment_fixture.c tests/source_assessment_fixture.c tests/assessment_fixture.c)
+    set(ZCL_MIXED_SOURCE_FIXTURE tests/mixed_source_fixture.c tests/source_assessment_fixture.c tests/assessment_fixture.c)
+    add_executable(mixed_source_tests tests/test_mixed_source.c ${ZCL_MIXED_SOURCE_FIXTURE})
+    target_include_directories(mixed_source_tests PRIVATE src)
+    target_link_libraries(mixed_source_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_options(mixed_source_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_mixed_source COMMAND mixed_source_tests)
+    set_tests_properties(wallet_mixed_source PROPERTIES TIMEOUT 30)
+    add_executable(mixed_source_failure_tests tests/test_legacy_source_failures.c src/transaction_source.c)
+    target_include_directories(mixed_source_failure_tests PRIVATE src)
+    target_link_libraries(mixed_source_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_definitions(mixed_source_failure_tests PRIVATE ZCL_MIXED_SOURCE_TEST=1
+        mbedtls_sha256=zcl_legacy_test_sha zcl_secure_zero=zcl_legacy_test_zero)
+    target_compile_options(mixed_source_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_mixed_source_failures COMMAND mixed_source_failure_tests)
+    set_tests_properties(wallet_mixed_source_failures PROPERTIES TIMEOUT 30)
+    add_executable(mixed_commitment_tests tests/test_mixed_commitment.c ${ZCL_COMMITMENT_FIXTURE})
+    target_include_directories(mixed_commitment_tests PRIVATE src)
+    target_link_libraries(mixed_commitment_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_options(mixed_commitment_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_mixed_commitment COMMAND mixed_commitment_tests)
+    set_tests_properties(wallet_mixed_commitment PROPERTIES TIMEOUT 30)
+    add_executable(mixed_commitment_contract_tests tests/test_commitment.c ${ZCL_COMMITMENT_FIXTURE})
+    target_include_directories(mixed_commitment_contract_tests PRIVATE src)
+    target_link_libraries(mixed_commitment_contract_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_definitions(mixed_commitment_contract_tests PRIVATE zcl_v4_source_commitment_check=zcl_source_commitment_check)
+    target_compile_options(mixed_commitment_contract_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_mixed_commitment_contract COMMAND mixed_commitment_contract_tests)
+    set_tests_properties(wallet_mixed_commitment_contract PROPERTIES TIMEOUT 30)
+    add_executable(mixed_commitment_failure_tests tests/test_commitment_failures.c ${ZCL_COMMITMENT_FIXTURE}
+        src/source_commitment.c)
+    target_include_directories(mixed_commitment_failure_tests PRIVATE src)
+    target_link_libraries(mixed_commitment_failure_tests PRIVATE zcl_wallet_core zcl_hash_provider)
+    target_compile_definitions(mixed_commitment_failure_tests PRIVATE ZCL_MIXED_SOURCE_TEST=1
+        zcl_header_inspect=zcl_commitment_test_header zcl_v4_source_inspect=zcl_commitment_test_source
+        zcl_source_inspect=zcl_commitment_test_source zcl_merkle_branch_check=zcl_commitment_test_branch
+        zcl_secure_zero=zcl_commitment_test_zero)
+    target_compile_options(mixed_commitment_failure_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+    add_test(NAME wallet_mixed_commitment_failures COMMAND mixed_commitment_failure_tests)
+    set_tests_properties(wallet_mixed_commitment_failures PROPERTIES TIMEOUT 30)
+    if(ZCL_ORACLE)
+        target_compile_definitions(mixed_source_tests PRIVATE ZCL_MIXED_SOURCE_ORACLE=1)
+        target_link_libraries(mixed_source_tests PRIVATE OpenSSL::Crypto)
+        target_compile_definitions(mixed_commitment_tests PRIVATE ZCL_COMMITMENT_ORACLE=1)
+        target_link_libraries(mixed_commitment_tests PRIVATE OpenSSL::Crypto)
+        target_compile_definitions(mixed_commitment_contract_tests PRIVATE ZCL_COMMITMENT_ORACLE=1)
+        target_link_libraries(mixed_commitment_contract_tests PRIVATE OpenSSL::Crypto)
+    endif()
+    if(ZCL_FUZZ)
+        add_executable(fuzz_mixed_source tests/fuzz_transaction_source.c)
+        target_include_directories(fuzz_mixed_source PRIVATE src)
+        target_link_libraries(fuzz_mixed_source PRIVATE zcl_wallet_core zcl_hash_provider)
+        target_compile_definitions(fuzz_mixed_source PRIVATE ZCL_MIXED_SOURCE_TEST=1)
+        target_compile_options(fuzz_mixed_source PRIVATE -fsanitize=fuzzer,address,undefined
+            -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
+        target_link_options(fuzz_mixed_source PRIVATE -fsanitize=fuzzer,address,undefined)
+        if(ZCL_ORACLE)
+            target_compile_definitions(fuzz_mixed_source PRIVATE ZCL_SOURCE_ORACLE=1)
+            target_link_libraries(fuzz_mixed_source PRIVATE OpenSSL::Crypto)
+        endif()
+    endif()
     add_executable(commitment_tests tests/test_commitment.c ${ZCL_COMMITMENT_FIXTURE})
     target_include_directories(commitment_tests PRIVATE src)
     target_link_libraries(commitment_tests PRIVATE zcl_wallet_core zcl_hash_provider)

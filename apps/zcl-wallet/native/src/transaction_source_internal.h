@@ -39,10 +39,18 @@ zcl_status zcl_v4_source_inspect(const uint8_t *wire, size_t length,
 zcl_status zcl_legacy_source_inspect(const uint8_t *wire, size_t length,
     uint32_t output_index, zcl_source_view *output);
 
+/* Explicit mixed profile: select the existing v4 or historical reader by the
+ * exact serialized header. Each retains its own size/format rules. No fallback
+ * after a parse/hash error and no widening of either older entry point. */
+zcl_status zcl_source_inspect(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_source_view *output);
+
 /* Match complete source identity/index before publishing its owned output.
  * Same structural-only contract; the expected outpoint is caller-supplied and
  * is not authenticated by this operation. Existing prevout admission is intact. */
 zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,
+    const uint8_t *wire, size_t length, zcl_tx_output *output);
+zcl_status zcl_source_prevout(const zcl_tx_input *input,
     const uint8_t *wire, size_t length, zcl_tx_output *output);
 
 /* Explicit offline DATA assessment with full-v4 sources. The current spending
@@ -53,6 +61,13 @@ zcl_status zcl_v4_source_prevout(const zcl_tx_input *input,
  * At most8 borrowed sources, each <=102000; no allocation/retained pointers.
  * Caller owns stable nonoverlapping spans. Whole report unchanged on failure. */
 zcl_status zcl_v4_source_assess(const zcl_transparent_tx *transaction,
+    zcl_network network, const zcl_previous_transaction *previous,
+    size_t previous_count, uint64_t maximum_fee, zcl_transaction_assessment *assessment);
+
+/* Same offline assessment contract, explicitly permitting a mixture of the
+ * historical and v4 source profiles. The current spending transaction remains
+ * bounded transparent v4. No source/chain trust status is promoted. */
+zcl_status zcl_source_assess(const zcl_transparent_tx *transaction,
     zcl_network network, const zcl_previous_transaction *previous,
     size_t previous_count, uint64_t maximum_fee, zcl_transaction_assessment *assessment);
 #endif

@@ -3,10 +3,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include "source_vectors.h"
+#ifdef ZCL_MIXED_SOURCE_TEST
+#include "legacy_source_vectors.h"
+#define zcl_v4_source_inspect zcl_source_inspect
+#define zcl_v4_source_assess zcl_source_assess
+#endif
+#ifdef ZCL_SOURCE_ORACLE
+#include <openssl/evp.h>
+#endif
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 #define CHECK(v) do { if (!(v)) abort(); } while (0)
 static uint8_t changed[11001];
 static zcl_transparent_tx spending;
+
+static void identity(const uint8_t *wire, size_t size, const zcl_source_view *view)
+{
+#ifdef ZCL_SOURCE_ORACLE
+    uint8_t first[32], second[32]; unsigned length = 0;
+    CHECK(EVP_Digest(wire, size, first, &length, EVP_sha256(), NULL) == 1 && length == 32);
+    CHECK(EVP_Digest(first, sizeof(first), second, &length, EVP_sha256(), NULL) == 1 && length == 32);
+    for (size_t i = 0; i < 32; ++i) CHECK(view->transaction_id[i] == second[31 - i]);
+#else
+    (void)wire; (void)size; (void)view;
+#endif
+}
 
 static void assess(const uint8_t *wire, size_t size, uint32_t index, const zcl_v4_source *source)
 {
@@ -44,6 +64,7 @@ static void inspect(const uint8_t *data, size_t size, uint32_t index)
     CHECK(output.view.input_count <= size / 41 && output.view.spend_count <= size / 384);
     CHECK(output.view.shielded_count <= size / 948 && output.view.joinsplit_count <= size / 1698);
     CHECK(output.view.output.value <= ZCL_MAX_MONEY && output.view.output.script_len <= 25);
+    identity(data, size, &output.view);
     assess(data, size, index, &output.view);
 }
 
@@ -57,5 +78,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     memcpy(changed, source_vectors[vector].wire, source_vectors[vector].length);
     for (size_t i = 4; i < size; ++i) changed[(i - 4) % source_vectors[vector].length] ^= data[i];
     inspect(changed, source_vectors[vector].length, data[1] % 5);
+#ifdef ZCL_MIXED_SOURCE_TEST
+    const size_t row = data[2] % (sizeof(legacy_vectors) / sizeof(legacy_vectors[0]));
+    memcpy(changed, legacy_vectors[row].wire, legacy_vectors[row].length);
+    for (size_t i = 4; i < size; ++i) changed[(i - 4) % legacy_vectors[row].length] ^= data[i];
+    inspect(changed, legacy_vectors[row].length, data[3] % 5);
+#endif
     return 0;
 }

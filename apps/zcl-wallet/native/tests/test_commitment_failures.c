@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #undef zcl_header_inspect
 #undef zcl_v4_source_inspect
+#undef zcl_source_inspect
 #undef zcl_merkle_branch_check
 #undef zcl_secure_zero
 #include "commitment_fixture.h"
@@ -8,6 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef ZCL_MIXED_SOURCE_TEST
+#include "legacy_source_vectors.h"
+#define zcl_v4_source_commitment_check zcl_source_commitment_check
+#endif
 #define CHECK(v) do { if (!(v)) { fprintf(stderr, "Commitment retirement at %d\n", __LINE__); abort(); } } while (0)
 static commitment_fixture fixture;
 static unsigned fault, calls, clears;
@@ -34,7 +39,11 @@ zcl_status zcl_commitment_test_source(const uint8_t *wire, size_t length, uint32
     CHECK(wire == fixture.request.source && length == fixture.request.source_length && index == fixture.request.output_index);
     source_address = (uintptr_t)view;
     if (fault == 2) { memset(view, 0xa5, sizeof(*view)); return ZCL_CRYPTO_FAILURE; }
+#ifdef ZCL_MIXED_SOURCE_TEST
+    return zcl_source_inspect(wire, length, index, view);
+#else
     return zcl_v4_source_inspect(wire, length, index, view);
+#endif
 }
 
 zcl_status zcl_commitment_test_branch(const uint8_t id[32], const zcl_merkle_branch *branch, const uint8_t root[32])
@@ -66,14 +75,25 @@ static void run(zcl_status expected, unsigned expected_calls)
     if (expected != ZCL_OK) CHECK(memcmp(&value, &before, sizeof(value)) == 0);
 }
 
-int main(void)
+static void exercise(void)
 {
-    CHECK(commitment_fixture_init(&fixture, 7, 3, 2));
     for (fault = 1; fault <= 3; ++fault) run(ZCL_CRYPTO_FAILURE, fault);
     fault = 0; run(ZCL_OK, 3);
     fixture.request.header_id[0] ^= 1; run(ZCL_INVALID_ENCODING, 1); fixture.request.header_id[0] ^= 1;
     fixture.request.transaction_id[0] ^= 1; run(ZCL_INVALID_ENCODING, 2); fixture.request.transaction_id[0] ^= 1;
     fixture.request.source_length = 64; run(ZCL_UNSUPPORTED, 0);
     fixture.request.branch = NULL; run(ZCL_INVALID_ARGUMENT, 0);
+}
+
+int main(void)
+{
+    CHECK(commitment_fixture_init(&fixture, 7, 3, 2)); exercise();
+#ifdef ZCL_MIXED_SOURCE_TEST
+    for (size_t row = 0; row < sizeof(legacy_vectors) / sizeof(legacy_vectors[0]); ++row) {
+        CHECK(commitment_fixture_init(&fixture, 7, 3, 2));
+        fixture.request.source = legacy_vectors[row].wire; fixture.request.source_length = legacy_vectors[row].length;
+        CHECK(commitment_fixture_bind(&fixture)); exercise();
+    }
+#endif
     puts("Commitment dirty-component failure, ordering and retirement checks passed"); return 0;
 }

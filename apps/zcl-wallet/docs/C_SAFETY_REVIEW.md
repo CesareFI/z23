@@ -4118,3 +4118,41 @@ optimized GCC 98/98 groups, with analyzers and complexity caps green. Android
 host/JVM, both ABIs, APK builds, lints, fixture isolation and native alignment
 also pass. Evidence is under
 `.cache/android-wallet/mission-20260916/wallet-record-clear/`.
+
+## Preservation review — mixed historical/v4 sources (2026-09-18)
+
+Reviewed the inherited changes to `transaction_source.c`,
+`transaction_assess.c`, `source_commitment.c`, their internal declarations,
+the mixed-source fixtures, failure/retirement tests, fuzz harness and CMake
+registration before committing this development checkpoint. No new product
+implementation was added during preservation.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow and out-of-bounds access | Header dispatch reads four bytes through the bounded reader; each selected parser retains its original wire, count and script limits. Fixtures guard fixed-buffer writes. |
+| Integer overflow/underflow and signed/unsigned conversions | Length caps precede parsing; existing checked totals and fee subtraction remain authoritative. Dispatch adds no unchecked size multiplication or narrowing conversion. Fixture profile/index casts are bounded. |
+| Use-after-free, double-free, leaks and dangling pointers | Production additions allocate no heap storage, retain no input pointers and publish owned values only after complete success. |
+| NULL dereferences and uninitialized memory | Entry points retain argument checks; candidates are initialized; failed parsing never publishes partially initialized output. |
+| Pointer arithmetic | Reader offsets remain bounded by the supplied span. Fixture offsets stay within fixed arrays and require valid fixture lengths. |
+| Format strings | Test diagnostics use fixed formats; production additions introduce no formatting. |
+| Stack usage and allocation limits | Fixed local candidates remain subject to the 4096-byte compiler frame gate. Large test fixtures use static storage. No variable-length arrays or recursion are introduced. |
+| Malformed serialization/network input | The new explicit profile dispatches to the existing historical or v4 parser without fallback after errors. Existing narrow/v4 APIs retain their admission rules. Hash/index mismatches, bad counts, truncation and excessive totals are refused. |
+| Races | Production calls are synchronous, allocation-free and introduce no mutable global state. Static test/fuzz fixtures are used by single-threaded harnesses. |
+| Resource exhaustion | Existing wire/count limits bound parsing and hashing; test deadlines and the bounded fuzz campaign limit validation work. |
+| Secret leakage | Candidates and temporary assessment outputs retain erasure on success and failure. New fixtures contain public synthetic data, with no wallet credentials, real seed material or private keys. |
+
+Mixed-source commitment success establishes supplied byte/hash/path consistency
+only. It does not establish chain trust, proof validity, unspentness, ownership,
+consent or signing authority. The 64-byte source-preimage refusal remains.
+Failure injection checks unchanged caller output and candidate retirement;
+the assessment matrix covers all 169 pairs of the 13 synthetic source profiles.
+
+Preservation validation: `tools/check-c-safety.sh` passed Clang/GCC static
+analysis, provider/fixture checksums, production/test complexity gates, all
+140 Clang native tests and all 135 optimized GCC native tests with ASan/UBSan.
+The mixed-source OpenSSL-oracle fuzz target completed 1,106,600 executions in
+61 seconds with sanitizers enabled and no finding. Offline `:wallet-core:test`,
+`:android-app:assembleDebug`, `:android-app:lintDebug`, the repository architecture
+gate and whitespace checks passed. No device or hardware-custody qualification
+is claimed by this checkpoint. Generated outputs and raw validation logs remain
+local and are excluded from Git.
