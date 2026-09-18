@@ -141,6 +141,11 @@ internal class ScanDecodeClient(
             bound.set(true)
             if (closed.get()) unbind()
         } catch (_: Exception) { fail() }
+        catch (problem: Throwable) {
+            // Timeout scheduling may enqueue before throwing. Retire setup
+            // before propagating a fatal error, even if notification fails.
+            try { fail() } finally { throw problem }
+        }
     }
 
     /** Consumes and clears frame on every path, including a busy/refused call. */

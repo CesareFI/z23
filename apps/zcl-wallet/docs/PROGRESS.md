@@ -7219,3 +7219,41 @@ test changed in this documentation slice. The current native/Android validation
 remains applicable; the root-lint environment limitation remains documented.
 Next: inspect camera and foreground presentation cleanup for a concrete lifecycle
 or callback-ownership gap, keeping TLS and platform-security restrictions intact.
+
+## Production continuation: scanner connection setup retirement — 2026-09-18
+
+`ScanDecodeClient.connect` handled ordinary setup exceptions but let fatal
+errors escape without retiring its lifetime. A timeout post that enqueued before
+throwing retained the callback and left the failed client open. Three new
+regressions failed on unchanged source; two ordinary-exception/refusal controls
+passed. The minimal fix closes setup before propagating a fatal error and
+preserves that original error even if failure notification also throws.
+
+The five-test fixture uses public Handler and ContextWrapper overrides, with
+reflection confined to this application's owned fields. It checks failures
+before/after enqueue, timeout removal, no service binding, no revived retry,
+inert stale wakeups and exactly-once notification. It creates no service,
+camera, wallet or key, changes no platform policy and causes no actual memory
+exhaustion. Existing actual isolated-service readiness tests supply the separate
+real Binder control.
+
+The combined new connection, existing submission and actual readiness suites
+pass 14/14 with no skips on API30/35/36 in 5.054/0.391/0.481s. The preceding
+executor/authentication changes also pass all 19 instrumented tests on API30
+(1.999s), closing their oldest-supported-API coverage gap. Offline JVM tests,
+debug/test and both-ABI release builds, debug/release lint, fixture isolation,
+16 KiB alignment, architecture and diff checks pass. Native source is unchanged;
+both release JNI libraries compare byte-for-byte with the previous reproduced
+APK, retaining the recent 142/142 Clang and 137/137 optimized GCC safety evidence.
+
+Fresh source-only tree `e9430d31ac1c02a97385a1167fbdb25463df7d48`, containing the
+exact staged implementation/tests and preceding documentation, reproduced the
+complete 641,227-byte unsigned release APK with all 57 tasks executed and the
+build cache disabled (19s). Both paths have SHA256
+`3dd15715169e8cb34c364a025656707838a523283d018761ac71388393100cb0`.
+Toolchain and reproduction limits are unchanged from the preceding checkpoint.
+Evidence remains in ignored `.cache/scan-connect-*`,
+`.cache/continuation-api30-executor-auth.log` and `.cache/reproduce-scan-connect/`.
+Root-lint selftest, physical custody/camera and independent-host release limits
+remain open; TLS quarantine is unchanged. Continue with bounded foreground
+delivery and shutdown ownership review rather than resuming quarantined work.
