@@ -155,3 +155,26 @@ report an explicit dump error; no partial state is accepted. Consensus impact:
 NONE. This is a rebuildable auxiliary projection; block/transaction validity,
 serialization, PoW, monetary policy, activation and cryptographic validation
 are unchanged. Hetzner's network/block-swarm work is unaffected.
+
+## 2026-09-20: Worldstream storage publication inventory
+
+The coherent Worldstream storage series intended for the CesareFI development
+branch is:
+
+- `15a4faf7e` defer comprehensive explorer statistics during IBD;
+- `5a8c7e4fa` make the flag-registry unreadable fixture root-safe;
+- `0a21515aa` fail closed on transaction-index rebuild finalization;
+- `82db7da4a` bound transaction-index rebuild WAL growth;
+- `fddf46571`, `8b28647bc`, `9f64e9c4b` fail closed on primary, explorer and
+  short-lived runtime SQLite connection tuning;
+- `8a1c66725` make boot-timing sample persistence atomic;
+- `dd3f65ad6` reject malformed legacy LevelDB transaction-index records; and
+- `f9c65b069` reject corrupt SQLite transaction-index cursor/digest state.
+
+Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
+`a6ef6bb01` preserve current `origin/main` history and generated inventory.
+The latest engineering tip intended for publication is `f9c65b069`. Each
+slice passed its focused regression, applicable sanitizer/static analysis,
+complexity, architecture, generated-inventory, consensus-parity, sealed-core
+and production-build gates as recorded above. Consensus impact for the entire
+series: NONE.
