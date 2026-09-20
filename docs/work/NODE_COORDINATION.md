@@ -219,3 +219,25 @@ before a later failure remain visible but are idempotently overwritten on the
 next marker-free retry. Recommended next investigation: audit the adjacent
 boot-time explorer/index backfills for the same false-completion pattern,
 starting with unchecked transaction boundaries in the offline import helpers.
+
+## 2026-09-20: transaction-index failure observability
+
+The strengthened full-lint silent-error gate found two orchestration guards in
+the earlier transaction-index hardening that returned a failed schema or cursor
+read without adding call-site context. The lower-level routines already failed
+closed, but an operator could not distinguish batch initialization from a
+public lookup failure in surrounding logs. The batch COMMIT path also relied on
+a compound boolean and emitted no contextual line for a commit-specific I/O
+failure.
+
+The service now logs schema initialization, batch cursor, public lookup cursor
+and COMMIT failures at their owning call sites while preserving the existing
+stop/busy behavior. The dedicated silent-error gate moved from red to green,
+the focused `txindex_projection` group passes, and the complexity ratchet stays
+green without a baseline increase. No schema, transaction ordering, cursor
+value or public classification changes. Consensus impact: NONE. Hetzner's
+`f261d245d` tip remains confined to block-swarm networking and does not overlap.
+Remaining risk: rollback errors are cleanup diagnostics and remain subordinate
+to the already-logged primary failure. Recommended next investigation: the
+offline snapshot importer has unchecked DETACH/rollback cleanup and permissive
+text height parsing that should be fault-injected before any change.

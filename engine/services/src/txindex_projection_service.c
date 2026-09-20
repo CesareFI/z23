@@ -77,14 +77,18 @@ enum txindex_read_status txindex_projection_classify(bool found, int64_t cursor,
 static bool tx_prepare_batch(sqlite3 *db, int64_t *cursor, int64_t *hstar)
 {
     if (!atomic_load(&g_tx_schema_ready)) {
-        if (!txindex_projection_ensure_schema(db))
+        if (!txindex_projection_ensure_schema(db)) {
+            LOG_WARN("txindex", "[txindex] batch schema initialization failed");
             return false;
+        }
         int64_t rc0 = txindex_projection_row_count(db);
         atomic_store(&g_tx_rows, rc0 >= 0 ? rc0 : 0);
         atomic_store(&g_tx_schema_ready, true);
     }
-    if (!txindex_projection_get_cursor(db, cursor))
+    if (!txindex_projection_get_cursor(db, cursor)) {
+        LOG_WARN("txindex", "[txindex] batch cursor read failed");
         return false;
+    }
     *hstar = (int64_t)tip_finalize_stage_cursor();
     atomic_store(&g_tx_hstar, *hstar);
     atomic_store(&g_tx_cursor, *cursor);
@@ -178,9 +182,14 @@ static int tx_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
     }
 
     bool commit = false;
-    if (folded > 0 && txindex_projection_set_cursor(db, last_good, digest) &&
-        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK) {
-        commit = true;
+    if (folded > 0 && txindex_projection_set_cursor(db, last_good, digest)) {
+        int commit_rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+        if (commit_rc == SQLITE_OK) {
+            commit = true;
+        } else {
+            LOG_WARN("txindex", "[txindex] batch COMMIT failed rc=%d: %s",
+                     commit_rc, sqlite3_errmsg(db));
+        }
     }
     if (!commit)
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
@@ -244,6 +253,7 @@ enum txindex_read_status txindex_projection_read_locate(
         return TXINDEX_READ_BUSY;
     int64_t cursor = -1;
     if (!txindex_projection_get_cursor(db, &cursor)) {
+        LOG_WARN("txindex", "[txindex] public lookup cursor read failed");
         projection_store_tx_unlock();
         return TXINDEX_READ_BUSY;
     }
