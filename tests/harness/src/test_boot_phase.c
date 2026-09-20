@@ -448,7 +448,7 @@ static int bp_node_db_gate_refuses(void)
     bp_park_fixture_end(dir);
     return failures;
 }
-static int bp_test_thread_io_evidence(void);  /* end of file */
+static int bp_test_thread_io_evidence(void), bp_test_address_backfill(void); /* end */
 int test_boot_phase(void)
 {
 #if defined(_WIN32)
@@ -1018,6 +1018,7 @@ int test_boot_phase(void)
     /* Evidence scoped to one thread — its own function, so this one stays
      * inside the complexity cap. */
     failures += bp_test_thread_io_evidence();
+    failures += bp_test_address_backfill();
 
     /* Restore for any subsequent tests in this process. */
     boot_stage_reset_for_testing();
@@ -1105,3 +1106,98 @@ static int bp_test_thread_io_evidence(void)
     return failures;
 }
 
+static bool bp_address_marker_absent(sqlite3 *db)
+{
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM node_state WHERE key='addresses_backfilled'",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    bool absent = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return absent;
+}
+
+static bool bp_address_result_ok(sqlite3 *db)
+{
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT a.balance,a.utxo_count,n.value "
+            "FROM addresses a JOIN node_state n "
+            "ON n.key='addresses_backfilled' WHERE a.address_hash=X'0102'",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    bool ok = sqlite3_step(stmt) == SQLITE_ROW;
+    if (ok)
+        ok = sqlite3_column_int64(stmt, 0) == 7;
+    if (ok)
+        ok = sqlite3_column_int64(stmt, 1) == 1;
+    if (ok)
+        ok = sqlite3_column_bytes(stmt, 2) == 1;
+    if (ok)
+        ok = ((const unsigned char *)sqlite3_column_blob(stmt, 2))[0] == 1;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+static int bp_test_address_backfill(void)
+{
+    int failures = 0;
+    char dir[PATH_MAX];
+    char path[PATH_MAX];
+    sqlite3 *db = NULL;
+
+    if (!test_mkdtemp(dir, sizeof(dir), "address_backfill"))
+        return 1;
+    int wrote = snprintf(path, sizeof(path), "%s/node.db", dir);
+    if (wrote < 0 || (size_t)wrote >= sizeof(path) ||
+        sqlite3_open(path, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        test_cleanup_tmpdir(dir);
+        return 1;
+    }
+
+    const char *schema =
+        "CREATE TABLE utxos(address_hash BLOB,script_type INTEGER,"
+        "value INTEGER,height INTEGER);"
+        "CREATE TABLE node_state(key TEXT PRIMARY KEY,value BLOB);"
+        "CREATE TABLE addresses(address_hash BLOB PRIMARY KEY,"
+        "script_type INTEGER NOT NULL DEFAULT 0,"
+        "balance INTEGER NOT NULL DEFAULT 0,"
+        "utxo_count INTEGER NOT NULL DEFAULT 0,"
+        "first_seen_height INTEGER NOT NULL DEFAULT 0,"
+        "last_seen_height INTEGER NOT NULL DEFAULT 0);"
+        "CREATE TRIGGER reject_address BEFORE INSERT ON addresses "
+        "BEGIN SELECT RAISE(FAIL,'injected address write failure'); END;"
+        "INSERT INTO utxos VALUES(X'0102',2,7,3);";
+    BP_CHECK("address backfill fixture created",
+             sqlite3_exec(db, schema, NULL, NULL, NULL) == SQLITE_OK);
+    BP_CHECK("address backfill fixture closed",
+             sqlite3_close(db) == SQLITE_OK);
+    db = NULL;
+
+    BP_CHECK("address backfill rejects an address write failure",
+             !boot_address_backfill_run(path));
+
+    BP_CHECK("address backfill failure fixture reopened",
+             sqlite3_open(path, &db) == SQLITE_OK);
+    BP_CHECK("failed backfill does not publish completion marker",
+             bp_address_marker_absent(db));
+
+    bool trigger_dropped = sqlite3_exec(db,
+        "DROP TRIGGER reject_address", NULL, NULL, NULL) == SQLITE_OK;
+    BP_CHECK("address backfill fault removed", trigger_dropped);
+    BP_CHECK("address backfill failure fixture closed for retry",
+             db && sqlite3_close(db) == SQLITE_OK);
+    db = NULL;
+    BP_CHECK("address backfill retry succeeds",
+             trigger_dropped && boot_address_backfill_run(path));
+
+    BP_CHECK("address backfill result reopened",
+             sqlite3_open(path, &db) == SQLITE_OK);
+    BP_CHECK("successful retry publishes rows and marker",
+             bp_address_result_ok(db));
+    if (db) sqlite3_close(db);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}

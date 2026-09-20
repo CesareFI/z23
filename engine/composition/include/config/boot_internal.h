@@ -179,6 +179,7 @@ bool boot_promote_tip_preserving_header_via_csr(
 void boot_index_verify_coins_tip_consistency(struct main_state *ms,
                                              struct coins_view_sqlite *cvs,
                                              struct node_db *ndb);
+bool boot_address_backfill_run(const char *db_path);
 void *backfill_addresses_thread(void *arg);
 
 /* Scan block files (blk*.dat), parse ZClassic block headers,

@@ -178,3 +178,44 @@ slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
 series: NONE.
+
+## 2026-09-20: address backfill completion integrity
+
+The one-shot explorer address backfill ignored SQLite failures from connection
+tuning, schema setup, transaction boundaries, statement reset/bind/step,
+cursor completion, finalization and completion-marker publication. A
+deterministic trigger reproduced the consequential failure: the address upsert
+returned `SQLITE_CONSTRAINT`, but the worker still returned success and wrote
+`addresses_backfilled=1`. That false marker suppressed future retries while the
+rebuildable address projection remained incomplete.
+
+The worker now checks every SQLite boundary, bounds its row counter, owns its
+statements and connection through one cleanup path, rolls back a failed active
+batch, and publishes the completion marker in the final checked transaction
+only after the cursor reaches `SQLITE_DONE` and both statements finalize.
+Measured after the change, the same injected write fault returns failure and
+leaves no marker; removing the fault lets the next run reconstruct the expected
+balance/count row and atomically publish the one-byte marker. The focused
+`boot_phase` group passes in both the normal and ASan/UBSan harnesses; the
+complexity, architecture, consensus-parity and sealed-core gates pass without
+raising a threshold.
+
+The broader boot selection passed 32/32 groups (two explicit network-stress
+self-skips), the production C23 node built, `lint-fast` and `lint-preflight`
+passed, and the full lint umbrella passed 202/212 gates. Its ten residual reds
+did not name this slice: pre-existing txindex silent returns, checkout
+hook/hardlink/Tor priming, root-mode unreadable-file selftests, missing
+Clang/libFuzzer standalone fuzz tools, and existing ship/Windows fixture
+selftests. Those are not suppressed or relabeled green.
+
+Consensus impact: NONE. The worker writes only the rebuildable explorer
+`addresses` projection and its advisory completion marker; block and
+transaction validity, serialization, chain history, PoW, monetary policy,
+activation and cryptographic validation are unchanged. Hetzner's current work
+through `f261d245d` is confined to block-swarm ownership, ready-peer sharing,
+manifest bounds, monotonic stall timing and timeout-scan measurement, so there
+is no component overlap. Remaining risk: batches committed
+before a later failure remain visible but are idempotently overwritten on the
+next marker-free retry. Recommended next investigation: audit the adjacent
+boot-time explorer/index backfills for the same false-completion pattern,
+starting with unchecked transaction boundaries in the offline import helpers.
