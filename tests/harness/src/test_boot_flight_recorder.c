@@ -90,6 +90,84 @@ static int64_t bfr_distinct_epoch_count(sqlite3 *db)
     return n;
 }
 
+static int64_t bfr_stage_count(sqlite3 *db, const char *prefix)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM boot_stage_timings WHERE stage LIKE ? || '%'",
+            -1, &s, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(s, 1, prefix, -1, SQLITE_STATIC);
+        if (sqlite3_step(s) == SQLITE_ROW)
+            n = sqlite3_column_int64(s, 0);
+    }
+    sqlite3_finalize(s);
+    return n;
+}
+
+struct bfr_tx_trace {
+    int begins;
+    int commits;
+};
+
+static int bfr_trace_tx(unsigned event, void *opaque, void *stmt_ptr,
+                        void *unused)
+{
+    (void)unused;
+    if (event != SQLITE_TRACE_STMT || !opaque || !stmt_ptr)
+        return 0;
+    struct bfr_tx_trace *trace = opaque;
+    const char *sql = sqlite3_sql((sqlite3_stmt *)stmt_ptr);
+    if (!sql) return 0;
+    if (strcmp(sql, "BEGIN TRANSACTION") == 0)
+        trace->begins++;
+    else if (strcmp(sql, "COMMIT") == 0)
+        trace->commits++;
+    return 0;
+}
+
+static int bfr_test_atomic_persistence(struct node_db *ndb)
+{
+    int failures = 0;
+    struct bfr_tx_trace tx_trace = {0};
+    BFR_CHECK("transaction trace installs",
+              sqlite3_trace_v2(ndb->db, SQLITE_TRACE_STMT, bfr_trace_tx,
+                               &tx_trace) == SQLITE_OK);
+    boot_flight_recorder_mark("phase_a", 111);
+    boot_flight_recorder_mark("phase_b", 222);
+    boot_flight_recorder_finish(ndb);
+    BFR_CHECK("one transaction owns every timing row plus retention",
+              tx_trace.begins == 1 && tx_trace.commits == 1);
+    BFR_CHECK("transaction trace removes",
+              sqlite3_trace_v2(ndb->db, 0, NULL, NULL) == SQLITE_OK);
+
+    /* A boot sample is one observation, not a collection of independently
+     * durable rows. Force the middle insert to abort and prove that neither
+     * the earlier nor later stage survives. This is also the write-amplifier
+     * guard: finish() owns one transaction for all marks plus retention. */
+    char *errmsg = NULL;
+    int rc = sqlite3_exec(ndb->db,
+        "CREATE TEMP TRIGGER bfr_abort_sample "
+        "BEFORE INSERT ON boot_stage_timings "
+        "WHEN NEW.stage='atomic_fail' "
+        "BEGIN SELECT RAISE(ABORT, 'planted timing failure'); END",
+        NULL, NULL, &errmsg);
+    BFR_CHECK("install planted mid-sample failure", rc == SQLITE_OK);
+    if (errmsg) sqlite3_free(errmsg);
+    boot_flight_recorder_mark("atomic_before", 1);
+    boot_flight_recorder_mark("atomic_fail", 2);
+    boot_flight_recorder_mark("atomic_after", 3);
+    boot_flight_recorder_finish(ndb);
+    BFR_CHECK("failed timing sample rolls back every stage",
+              bfr_stage_count(ndb->db, "atomic_") == 0);
+    errmsg = NULL;
+    rc = sqlite3_exec(ndb->db, "DROP TRIGGER bfr_abort_sample",
+                      NULL, NULL, &errmsg);
+    BFR_CHECK("remove planted mid-sample failure", rc == SQLITE_OK);
+    if (errmsg) sqlite3_free(errmsg);
+    return failures;
+}
+
 int test_boot_flight_recorder(void);
 int test_boot_flight_recorder(void)
 {
@@ -129,9 +207,7 @@ int test_boot_flight_recorder(void)
     boot_flight_recorder_reset_buffer_for_testing();
 
     /* ── mark() + finish() persists; the dumper reflects the latest boot. */
-    boot_flight_recorder_mark("phase_a", 111);
-    boot_flight_recorder_mark("phase_b", 222);
-    boot_flight_recorder_finish(&ndb);
+    failures += bfr_test_atomic_persistence(&ndb);
     {
         struct json_value v = {0};
         json_set_object(&v);

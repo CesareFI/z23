@@ -152,7 +152,7 @@ static void bfr_check_regression(const char *stage, int64_t ms, int64_t median)
              stage, (long long)ms, (long long)median, (long long)threshold);
 }
 
-static void bfr_persist_and_prune(struct node_db *ndb, int64_t boot_epoch,
+static bool bfr_persist_and_prune(struct node_db *ndb, int64_t boot_epoch,
                                   const struct bfr_mark *marks, size_t count)
 {
     int64_t ts = platform_time_wall_unix();
@@ -163,28 +163,54 @@ static void bfr_persist_and_prune(struct node_db *ndb, int64_t boot_epoch,
             -1, &ins, NULL) != SQLITE_OK) {
         LOG_WARN("boot_flight", "insert prepare failed: %s",
                  sqlite3_errmsg(ndb->db));
-        return;
+        return false;
+    }
+    if (!node_db_begin(ndb)) {
+        LOG_WARN("boot_flight", "timing transaction begin failed");
+        sqlite3_finalize(ins);
+        return false;
     }
     for (size_t i = 0; i < count; i++) {
         sqlite3_reset(ins);
+        sqlite3_clear_bindings(ins);
         sqlite3_bind_int64(ins, 1, boot_epoch);
         sqlite3_bind_text(ins, 2, marks[i].stage, -1, SQLITE_STATIC);
         sqlite3_bind_int64(ins, 3, marks[i].ms);
         sqlite3_bind_int64(ins, 4, ts);
-        if (AR_STEP_WRITE(ins) != SQLITE_DONE)
+        if (AR_STEP_WRITE(ins) != SQLITE_DONE) {
             LOG_WARN("boot_flight", "insert failed stage=%s: %s",
                      marks[i].stage, sqlite3_errmsg(ndb->db));
+            goto rollback;
+        }
     }
     sqlite3_finalize(ins);
+    ins = NULL;
 
     char prune_sql[256];
-    snprintf(prune_sql, sizeof(prune_sql),
-             "DELETE FROM boot_stage_timings WHERE boot_epoch NOT IN "
-             "(SELECT DISTINCT boot_epoch FROM boot_stage_timings "
-             "ORDER BY boot_epoch DESC LIMIT %d)",
-             BOOT_FLIGHT_RECORDER_MAX_BOOTS);
-    if (ar_exec_write_sql(ndb->db, prune_sql) != SQLITE_OK)
+    int written = snprintf(prune_sql, sizeof(prune_sql),
+                           "DELETE FROM boot_stage_timings WHERE boot_epoch NOT IN "
+                           "(SELECT DISTINCT boot_epoch FROM boot_stage_timings "
+                           "ORDER BY boot_epoch DESC LIMIT %d)",
+                           BOOT_FLIGHT_RECORDER_MAX_BOOTS);
+    if (written < 0 || (size_t)written >= sizeof(prune_sql)) {
+        LOG_WARN("boot_flight", "prune statement formatting failed");
+        goto rollback;
+    }
+    if (ar_exec_write_sql(ndb->db, prune_sql) != SQLITE_OK) {
         LOG_WARN("boot_flight", "prune failed: %s", sqlite3_errmsg(ndb->db));
+        goto rollback;
+    }
+    if (!node_db_commit(ndb)) {
+        LOG_WARN("boot_flight", "timing transaction commit failed");
+        goto rollback;
+    }
+    return true;
+
+rollback:
+    if (ins) sqlite3_finalize(ins);
+    if (!node_db_rollback(ndb))
+        LOG_WARN("boot_flight", "timing transaction rollback failed");
+    return false;
 }
 
 void boot_flight_recorder_finish(struct node_db *ndb)
@@ -218,7 +244,10 @@ void boot_flight_recorder_finish(struct node_db *ndb)
     }
 
     int64_t boot_epoch = platform_time_wall_unix();
-    bfr_persist_and_prune(ndb, boot_epoch, marks, count);
+    if (!bfr_persist_and_prune(ndb, boot_epoch, marks, count)) {
+        LOG_WARN("boot_flight", "finish: timing sample not persisted");
+        return;
+    }
 
     /* E2 boot-loop-failsafe: this boot's own row is now persisted (just
      * above), so the boot-loop detector's window count includes it. See

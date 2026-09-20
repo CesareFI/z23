@@ -88,3 +88,30 @@ Short-lived writable runtime reopens also used to discard their connection
 PRAGMA and busy-timeout results. They now use a separately tested fail-closed
 helper that preserves the established WAL mode and smaller 2 MiB cache while
 rejecting and cleaning up any partially tuned handle.
+
+## 2026-09-20: startup/restart measurement and boot-timing atomicity
+
+An isolated height-zero node measured 17.233 s fresh, 17.248 s after a clean
+shutdown and 16.969 s after an unclean termination to RPC-ready. SQLite open
+and migration measured 161 ms fresh and 10--11 ms on both restart paths; the
+dominant stage was proving-parameter initialization at 16.4--16.8 s. Peak RSS
+was 909--992 MiB. The same fresh fixture under an isolated home with no proving
+files used the compiled-in verifying keys, reached RPC in 546 ms, and peaked at
+189 MiB. This identifies proving-key loading as the remaining startup/resource
+risk, not SQLite recovery. It crosses the cryptographic-validation ownership
+boundary and was deliberately not changed by this storage slice.
+
+The boot flight recorder did expose an independent write-path defect: each
+stage row and retention delete ran as a separate implicit transaction, so a
+failure could durably preserve only part of one boot observation. All timing
+rows and retention now share one checked transaction; any insert, prune or
+commit failure rolls the sample back and suppresses the restart-loop check for
+that unrecorded boot. A statement trace proves one begin/commit owns a normal
+sample, and a planted middle-insert failure proves no earlier or later stage
+survives. The focused syscall fixture reported 18 fsync calls before and after
+because its setup and direct history seeding dominate that aggregate, so no
+wall-clock or fsync-count speedup is claimed. Consensus impact: NONE. Hetzner's
+network/block-swarm work is unaffected. Next storage investigation: bound the
+proving-parameter loader's transient whole-file allocation only through the
+repository's cryptographic-core review/unseal process, or continue with
+LevelDB/index write efficiency without crossing that boundary.
