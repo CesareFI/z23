@@ -193,8 +193,14 @@
  * leaf blocks, and its ceiling is `wait_ms`. The mail directory is created
  * before the watch is armed so a box that has never had mail can still be
  * watched. A watcher that cannot be opened refuses the run, and a watch
- * lost mid-flight ends the drive: there is deliberately no fallback path,
- * because any fallback that returned without waiting would be a busy poll.
+ * whose ERROR is observed ends the drive: there is deliberately no fallback
+ * path, because any fallback that returned without waiting would be a busy
+ * poll. A mailbox directory that is renamed, deleted or recreated reports
+ * as CHANGED while the watch keeps pointing at the old inode, so the drive
+ * notices the path's (device, inode) identity change after each wait and
+ * re-arms by closing and reopening the watch on the configured path,
+ * recreating the directory first when it is gone; the durable intake
+ * cursor, the queue and the answer markers continue untouched.
  *
  * SIGTERM. The handler sets one flag. The loop stops taking new work at the
  * next check, the watcher wait is interrupted within its 50 ms stop-sample
@@ -253,6 +259,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #if !defined(_WIN32)
 #include <signal.h>
@@ -2196,9 +2203,80 @@ static bool rcv_loop_live(const struct rcv_drive_opts *opts,
     return platform_time_wall_unix() - t0 < opts->deadline_s;
 }
 
-/* Wait for new mail. Returns false when the wait says stop. A watcher that
- * was never opened, or that errors, still returns true: the caller beats
- * again on the bounded ceiling rather than stalling. */
+#ifdef ZCL_TESTING
+static bool g_rcv_test_watch_loss;
+static void (*g_rcv_test_before_wait)(void *);
+static void *g_rcv_test_wait_arg;
+void zcl_devagent_receive_test_before_wait(void (*hook)(void *), void *arg);
+void zcl_devagent_receive_test_before_wait(void (*hook)(void *), void *arg)
+{
+    g_rcv_test_before_wait = hook;
+    g_rcv_test_wait_arg = arg;
+}
+void zcl_devagent_receive_test_watch_loss(bool enabled);
+void zcl_devagent_receive_test_watch_loss(bool enabled)
+{
+    g_rcv_test_watch_loss = enabled;
+}
+#endif
+
+/* The mailbox pathname identity, sampled on both sides of opening a watch.
+ * This detects ordinary replacement, not adversarial pathname ABA changes.
+ * Linux reports a renamed or deleted mailbox as CHANGED while the
+ * watch keeps pointing at the old inode, so the path and the watch silently
+ * disagree from then on. Comparing the identity after every wait notices the
+ * replacement using one stat per wait — still bounded waiting, never a poll.
+ * The durable intake cursor, the queue and the answer markers are files and
+ * survive a re-arm untouched. */
+struct rcv_mail_id {
+    dev_t dev;
+    ino_t ino;
+    bool valid;
+};
+
+static void rcv_mail_snapshot(const char *maildir, struct rcv_mail_id *id)
+{
+    struct stat st;
+    if (!id)
+        return;
+    id->valid = false;
+    if (!maildir || stat(maildir, &st) != 0 || !S_ISDIR(st.st_mode))
+        return;
+    id->dev = st.st_dev;
+    id->ino = st.st_ino;
+    id->valid = true;
+}
+
+static bool rcv_mail_same(const char *maildir, const struct rcv_mail_id *was)
+{
+    struct stat st;
+    if (!was || !was->valid || !maildir)
+        return false;
+    if (stat(maildir, &st) != 0 || !S_ISDIR(st.st_mode))
+        return false;
+    return st.st_dev == was->dev && st.st_ino == was->ino;
+}
+
+/* Close the stale watch, recreate the mailbox when it was deleted, and open
+ * a fresh watch on the configured path. False when the path cannot be
+ * watched, which ends the drive rather than polling. */
+static bool rcv_watch_rearm(struct platform_directory_watcher *w,
+                            const struct rcv_ctx *c, struct rcv_mail_id *id)
+{
+    platform_directory_watcher_close(w);
+    platform_directory_watcher_init(w);
+    if (!rcv_dirs_ensure(&c->p))
+        return false;
+    rcv_mail_snapshot(c->p.maildir, id);
+    if (!id->valid || !platform_directory_watcher_open(w, c->p.maildir))
+        return false;
+    if (rcv_mail_same(c->p.maildir, id))
+        return true;
+    LOG_WARN(RCV_LOG, "mail directory changed while opening watch");
+    platform_directory_watcher_close(w);
+    return false;
+}
+
 /* The one place this loop blocks. It parks in the directory-watcher wait for
  * at most wait_ms; a delivered inbox file wakes it early, a quiet window
  * times out and beats anyway. There is no fallback that returns without
@@ -2207,6 +2285,15 @@ static bool rcv_wait(struct platform_directory_watcher *w,
                      uint32_t wait_ms, bool *watch_lost)
 {
     enum platform_directory_watch_result r;
+#ifdef ZCL_TESTING
+    if (g_rcv_test_before_wait)
+        g_rcv_test_before_wait(g_rcv_test_wait_arg);
+    /* Exercise error propagation without changing the platform watcher or
+     * touching a live receiver. This seam is absent from shipped binaries. */
+    if (g_rcv_test_watch_loss)
+        r = PLATFORM_DIRECTORY_WATCH_ERROR;
+    else
+#endif
     r = platform_directory_watcher_wait(w, wait_ms, rcv_stop, NULL);
     if (r == PLATFORM_DIRECTORY_WATCH_STOPPED)
         return false;
@@ -2220,9 +2307,11 @@ static long long rcv_drive_posix(const struct rcv_drive_opts *opts,
 {
     struct rcv_ctx c;
     struct platform_directory_watcher watcher;
+    struct rcv_mail_id mid;
     char lockpath[4096];
     void (*old_term)(int) = SIG_DFL;
     bool watch_lost = false;
+    bool watch_dead = false;
     int lockfd;
     long long t0;
     memset(&c, 0, sizeof(c));
@@ -2247,7 +2336,7 @@ static long long rcv_drive_posix(const struct rcv_drive_opts *opts,
      * while that beat runs still wakes the next wait instead of being missed
      * until the ceiling expires. */
     platform_directory_watcher_init(&watcher);
-    if (!platform_directory_watcher_open(&watcher, c.p.maildir)) {
+    if (!rcv_watch_rearm(&watcher, &c, &mid)) {
         LOG_WARN(RCV_LOG, "cannot watch the mail dir; refusing to run rather "
                           "than poll for mail");
         (void)signal(SIGTERM, old_term);
@@ -2263,8 +2352,22 @@ static long long rcv_drive_posix(const struct rcv_drive_opts *opts,
             /* Losing the watch removes the only bounded wait this loop has,
              * so the drive ends here with every ref's record intact; the
              * service unit's Restart=on-failure brings it back. */
-            LOG_WARN(RCV_LOG, "mail watch lost; ending this drive cleanly");
+            LOG_WARN(RCV_LOG, "mail watch lost; failing this drive for recovery");
             break;
+        }
+        /* A renamed, deleted or recreated mailbox reports as CHANGED while
+         * the watch keeps pointing at the old inode, so an observed ERROR
+         * is not the signal — the path's identity is. Re-arm onto the
+         * configured path and keep beating: the intake cursor, the queue
+         * and the answer markers are files and continue untouched. */
+        if (!rcv_mail_same(c.p.maildir, &mid)) {
+            LOG_WARN(RCV_LOG, "mail dir replaced; re-arming the mail watch");
+            if (!rcv_watch_rearm(&watcher, &c, &mid)) {
+                LOG_WARN(RCV_LOG, "cannot re-arm the mail watch; refusing "
+                                  "to run rather than poll for mail");
+                watch_dead = true;
+                break;
+            }
         }
         if (!rcv_loop_live(opts, st, t0))
             break;
@@ -2274,7 +2377,9 @@ static long long rcv_drive_posix(const struct rcv_drive_opts *opts,
     (void)signal(SIGTERM, old_term);
     (void)flock(lockfd, LOCK_UN);
     (void)close(lockfd);
-    return st->beats;
+    if (watch_dead)
+        return -2;
+    return watch_lost ? -3 : st->beats;
 }
 
 /* Lock state without creating anything: O_RDONLY and no O_CREAT, so the
@@ -2465,6 +2570,13 @@ static void rcv_run(const struct zcl_command_request *request,
     opts.wait_ms = rcv_in_int(request, "wait_ms", 1000, 50, 60000);
     opts.max_beats = rcv_in_int(request, "max_beats", 0, 0, 1000000);
     beats = zcl_devagent_receive_drive(&opts, &st);
+    if (beats == -3) {
+        rcv_fail(reply, "RECEIVE_WATCH_LOST", "run",
+                 "mail watch failed; restart the receiver to resume its "
+                 "durable intake cursor",
+                 "platform_directory_watcher_wait lost the mail watch");
+        return;
+    }
     if (beats == -2) {
         rcv_fail(reply, "RECEIVE_WATCH_UNAVAILABLE", "run",
                  "this box cannot watch its mail directory, and this loop "

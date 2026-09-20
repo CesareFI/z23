@@ -37,6 +37,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "platform/directory_watcher.h"
+#include "platform/time_compat.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -51,6 +52,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+void zcl_devagent_receive_test_watch_loss(bool enabled);
+void zcl_devagent_receive_test_before_wait(void (*hook)(void *), void *arg);
 #endif
 
 /* ── isolated state root (this group owns its own rig) ─────────────────── */
@@ -714,6 +717,37 @@ static long long rtx_beat_once(struct rcv_beat_stats *st)
     rtx_opts(&o, 1);
     memset(st, 0, sizeof(*st));
     return zcl_devagent_receive_drive(&o, st);
+}
+
+/* Run filesystem mutations at an actual armed-watch boundary. No sleeping
+ * thread can accidentally replace the directory before the watch opens. */
+struct rtx_mailbox_probe {
+    unsigned phase;
+    bool leave_missing;
+    int moved;
+    int created;
+    bool delivered;
+    int64_t sent_ms;
+    int64_t resumed_ms;
+};
+
+static void rtx_mailbox_step(void *arg)
+{
+    struct rtx_mailbox_probe *p = arg;
+    char mail[1400], moved[1500], body[4096];
+    if (p->phase == 0) {
+        rtx_path(mail, sizeof(mail), "mail");
+        (void)snprintf(moved, sizeof(moved), "%s.old", mail);
+        p->moved = rename(mail, moved);
+        p->created = p->leave_missing ? 0 : mkdir(mail, 0700);
+    } else if (p->phase == 1) {
+        rtx_direction(body, sizeof(body), "hex_codec", "After the move.");
+        p->sent_ms = platform_time_monotonic_ms();
+        p->delivered = rtx_deliver("chatgpt", "box-a", "job-after", body, 2);
+    } else if (p->phase == 2) {
+        p->resumed_ms = platform_time_monotonic_ms();
+    }
+    p->phase++;
 }
 
 /* Is a raw directive pull over this box's mail already one truncated
@@ -1386,6 +1420,81 @@ int test_devagent_receive(void)
         ASSERT(st.beats >= 1);
         ASSERT(st.beats <= 60);
         rtx_restore();
+        PASS();
+    }
+
+    TEST("watch failure refuses and releases the receiver for recovery")
+    {
+        struct rtx_call c;
+        struct rcv_drive_opts o;
+        struct rcv_beat_stats st;
+        char body[4096];
+        rtx_isolate("watch-loss");
+        ASSERT(rtx_mint("chatgpt", "send", 3600, NULL, 0));
+        rtx_direction(body, sizeof(body), "hex_codec", "Survive watch loss.");
+        ASSERT(rtx_deliver("chatgpt", "box-a", "job-watch-loss", body, 1));
+        rtx_begin(&c, "dev.agent.receive", "zcl.agent_receive.v1");
+        (void)json_push_kv_str(&c.input, "action", "run");
+        (void)json_push_kv_str(&c.input, "receiver", "box-a");
+        (void)json_push_kv_int(&c.input, "max_beats", 2);
+        zcl_devagent_receive_test_watch_loss(true);
+        zcl_native_handle_dev_agent_receive(&c.request, &c.reply);
+        zcl_devagent_receive_test_watch_loss(false);
+        ASSERT(!rtx_ok(&c));
+        ASSERT(c.reply.exit_code != 0);
+        ASSERT_STR_EQ(c.reply.error.code, "RECEIVE_WATCH_LOST");
+        rtx_end(&c);
+        ASSERT_EQ(rtx_queue_count("queued", "job-watch-loss"), 1);
+        ASSERT_EQ(rtx_answers("job-watch-loss", "state=accepted"), 1);
+        /* An ordinary next receiver can acquire the released lock. */
+        rtx_opts(&o, 1);
+        memset(&st, 0, sizeof(st));
+        ASSERT_EQ(zcl_devagent_receive_drive(&o, &st), 1);
+        ASSERT_EQ(st.beats, 1);
+        ASSERT_EQ(st.admitted, 0);
+        ASSERT_EQ(rtx_queue_count("queued", "job-watch-loss"), 1);
+        ASSERT_EQ(rtx_answers("job-watch-loss", "state=accepted"), 1);
+        rtx_restore();
+        PASS();
+    }
+
+    TEST("a renamed and recreated mailbox re-arms the same watch")
+    {
+      for (int missing = 0; missing < 2; missing++) {
+        struct rtx_mailbox_probe probe = {0};
+        struct rcv_drive_opts opts;
+        struct rcv_beat_stats st;
+        char body[4096];
+        long long result;
+        probe.leave_missing = missing != 0;
+        rtx_isolate("mailbox-rearm");
+        ASSERT(rtx_mint("chatgpt", "send", 3600, NULL, 0));
+        rtx_direction(body, sizeof(body), "hex_codec", "Before the move.");
+        ASSERT(rtx_deliver("chatgpt", "box-a", "job-keep", body, 1));
+        ASSERT_EQ(rtx_beat_once(&st), 1);
+        ASSERT_EQ(st.admitted, 1);
+        rtx_opts(&opts, 4);
+        opts.deadline_s = 15;
+        opts.wait_ms = 2000;
+        memset(&st, 0, sizeof(st));
+        zcl_devagent_receive_test_before_wait(rtx_mailbox_step, &probe);
+        result = zcl_devagent_receive_drive(&opts, &st);
+        zcl_devagent_receive_test_before_wait(NULL, NULL);
+        ASSERT_EQ(result, 4);
+        ASSERT_EQ(probe.phase, 3);
+        ASSERT_EQ(probe.moved, 0);
+        ASSERT_EQ(probe.created, 0);
+        ASSERT(probe.delivered);
+        ASSERT(probe.resumed_ms >= probe.sent_ms);
+        /* A stale watch sleeps for the 2000 ms ceiling after delivery.
+         * Re-arming must wake promptly; this is local intake, not execution
+         * or distributed presence acceptance. */
+        ASSERT(probe.resumed_ms - probe.sent_ms < 1200);
+        ASSERT_EQ(rtx_queue_count("queued", "job-keep"), 1);
+        ASSERT_EQ(rtx_queue_count("queued", "job-after"), 1);
+        ASSERT_EQ(rtx_answers("job-after", "state=accepted"), 1);
+        rtx_restore();
+      }
         PASS();
     }
 
