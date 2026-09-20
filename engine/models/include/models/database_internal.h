@@ -202,6 +202,11 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version,
  * database.c; used by migrations and performance-mode helpers.) */
 int db_exec_checked(sqlite3 *db, const char *sql, const char *where);
 
+/* Apply the writable node.db connection PRAGMAs and busy timeout. This is an
+ * internal seam so the open path's fail-closed behavior can be fault-injected
+ * without weakening or duplicating the production configuration. */
+bool node_db_apply_writable_tuning(sqlite3 *db);
+
 /* Apply the idempotent baseline schema DDL (SCHEMA[]). Defined in
  * database_schema.c; called once from node_db_open(). Returns false on a
  * real schema regression (boot must halt). */

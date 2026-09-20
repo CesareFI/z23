@@ -363,8 +363,10 @@ bool node_db_apply_readonly_tuning(sqlite3 *db)
     return db_exec_checked(db, pragma, "readonly_mmap_tuning") == SQLITE_OK;
 }
 
-static void db_set_pragmas(sqlite3 *db)
+bool node_db_apply_writable_tuning(sqlite3 *db)
 {
+    if (!db)
+        LOG_FAIL("db", "writable tuning requires an open SQLite handle");
     int64_t ram = db_effective_ram_bytes();
     int64_t cache_ceiling = ram > 0 && ram <= ZCL_NODE_DB_CONSTRAINED_BYTES
         ? 16 * 1024 : ZCL_NODE_DB_CACHE_CEIL_KIB;
@@ -389,7 +391,7 @@ static void db_set_pragmas(sqlite3 *db)
      * the .wal file at its high-water mark for the life of the connection.
      * See models/database_internal.h for what each setting bounds. */
     char sql[512];
-    snprintf(sql, sizeof(sql),
+    int sql_len = snprintf(sql, sizeof(sql),
         "PRAGMA journal_mode=WAL;"
         "PRAGMA synchronous=NORMAL;"
         "PRAGMA cache_size=-%lld;"      /* negative → KiB units */
@@ -402,8 +404,17 @@ static void db_set_pragmas(sqlite3 *db)
         (long long)mmap_bytes,
         (int)ZCL_NODE_DB_WAL_AUTOCKPT_PAGES,
         (long long)ZCL_NODE_DB_JOURNAL_SIZE_LIMIT);
-    sqlite3_exec(db, sql, NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
+    if (sql_len < 0 || (size_t)sql_len >= sizeof(sql))
+        LOG_FAIL("db", "writable tuning PRAGMA batch exceeds its buffer");
+    if (db_exec_checked(db, sql, "writable_connection_tuning") != SQLITE_OK)
+        return false;
+    int rc = sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
+    if (rc != SQLITE_OK) {
+        LOG_WARN("db", "db: writable busy timeout failed: %s (rc=%d)",
+                 sqlite3_errmsg(db), rc);
+        return false;
+    }
+    return true;
 }
 
 /* The db_long_op_progress struct + the maintenance-op progress/registry
@@ -490,7 +501,16 @@ static bool db_open_raw(sqlite3 **db_out, const char *path)
         *db_out = NULL;
         return false;
     }
-    db_set_pragmas(*db_out);
+    if (!node_db_apply_writable_tuning(*db_out)) {
+        LOG_WARN("db", "db: refusing partially tuned connection for %s",
+                 path);
+        rc = sqlite3_close(*db_out);
+        if (rc != SQLITE_OK)
+            LOG_WARN("db", "db: failed to close rejected connection for %s: %s",
+                     path, sqlite3_errstr(rc));
+        *db_out = NULL;
+        return false;
+    }
     return true;
 }
 

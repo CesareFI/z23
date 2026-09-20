@@ -57,3 +57,24 @@ block-file scan. It now shares node.db's existing bulk limits (approximately
 normal checkpoint, journal, cache and busy-timeout settings during finalization.
 The focused lifecycle test reads the live PRAGMAs in both phases so a future
 unbounded setting or incomplete restoration fails deterministically.
+
+## 2026-09-20: Worldstream publication boundary
+
+This checkout is a shared-checkout lane: its installed pre-push hook admits
+only `refs/heads/main`, and the lane contract says agents commit locally but do
+not push. Because Worldstream is prohibited from pushing main and no approved
+development-ref publication command exists, the validated storage commits
+remain on the local `agent/worldstream-storage-20260920` branch for an
+orchestrator or owner-controlled integration. Do not bypass the hook.
+
+## 2026-09-20: writable database connection tuning
+
+The writable node.db open path previously discarded errors from its PRAGMA
+batch and busy-timeout setup, allowing startup to continue with a partially
+configured connection. The open path now checks the bounded batch, rejects and
+closes an incompletely tuned handle, and reports failure to its caller. A
+SQLite authorizer regression deterministically denies PRAGMA operations, proves
+the tuning helper fails closed, then removes the fault and proves normal tuning
+still succeeds. This changes connection setup only; schemas, stored bytes,
+chain validation, consensus serialization, monetary policy, PoW and
+cryptographic validation are unchanged.
