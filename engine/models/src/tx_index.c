@@ -201,17 +201,27 @@ bool db_tx_finalize_bulk_load(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         return false;
-    sqlite3_exec(ndb->db,
-        "CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_hash)",
-        NULL, NULL, NULL);
-    sqlite3_exec(ndb->db,
-        "CREATE INDEX IF NOT EXISTS idx_tx_height ON transactions(block_height)",
-        NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=1000", NULL, NULL, NULL);
-    sqlite3_wal_checkpoint_v2(ndb->db, NULL,
-        SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
-    return true;
+    bool ok = true;
+    if (!node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_tx_block "
+            "ON transactions(block_hash)"))
+        ok = false;
+    if (!node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_tx_height "
+            "ON transactions(block_height)"))
+        ok = false;
+    if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL"))
+        ok = false;
+    if (!node_db_exec(ndb, "PRAGMA wal_autocheckpoint=1000"))
+        ok = false;
+    int checkpoint_rc = sqlite3_wal_checkpoint_v2(
+        ndb->db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    if (checkpoint_rc != SQLITE_OK) {
+        LOG_WARN("tx_index", "bulk-load WAL checkpoint failed: rc=%d msg=%s",
+                 checkpoint_rc, sqlite3_errmsg(ndb->db));
+        ok = false;
+    }
+    return ok;
 }
 
 bool db_tx_configure_additive_build(struct node_db *ndb)

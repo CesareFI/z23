@@ -12,6 +12,47 @@
 #include "wallet/wallet_sqlite.h"
 #include <unistd.h>
 
+static bool check_tx_index_bulk_load_lifecycle(void)
+{
+    char dbdir[256];
+    char dbpath[320];
+    struct node_db ndb;
+    struct db_tx_index tx;
+    struct db_tx_index found;
+    bool ok;
+
+    test_make_tmpdir(dbdir, sizeof(dbdir), "wallet_projection",
+                     "tx_index_bulk");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+    memset(&ndb, 0, sizeof(ndb));
+    memset(&tx, 0, sizeof(tx));
+    memset(&found, 0, sizeof(found));
+    ok = node_db_open(&ndb, dbpath);
+    if (ok) {
+        ok = db_tx_prepare_bulk_load(&ndb);
+        memset(tx.txid, 0x91, 32);
+        memset(tx.block_hash, 0x92, 32);
+        tx.block_height = 21;
+        tx.tx_index = 0;
+        tx.file_num = 4;
+        tx.file_pos = 100;
+        tx.is_coinbase = true;
+        ok = ok && db_tx_save(&ndb, &tx);
+        ok = ok && db_tx_count(&ndb) == 1;
+        ok = ok && node_db_exec(&ndb, "PRAGMA query_only=ON");
+        ok = ok && !db_tx_finalize_bulk_load(&ndb);
+        ok = ok && node_db_exec(&ndb, "PRAGMA query_only=OFF");
+        ok = ok && db_tx_finalize_bulk_load(&ndb);
+        ok = ok && db_tx_find(&ndb, tx.txid, &found);
+        ok = ok && found.block_height == 21;
+        ok = ok && db_tx_delete_all(&ndb);
+        ok = ok && db_tx_count(&ndb) == 0;
+        node_db_close(&ndb);
+    }
+    test_rm_rf_recursive(dbdir);
+    return ok;
+}
+
 int test_model_wallet_projection(void)
 {
     int failures = 0;
@@ -338,44 +379,11 @@ int test_model_wallet_projection(void)
     }
 
     printf("Tx index bulk-load lifecycle stays model-owned... ");
-    {
-        char dbdir[256];
-        char dbpath[320];
-        struct node_db ndb;
-        bool ok;
-        test_make_tmpdir(dbdir, sizeof(dbdir), "wallet_projection",
-                         "tx_index_bulk");
-        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
-        memset(&ndb, 0, sizeof(ndb));
-        ok = node_db_open(&ndb, dbpath);
-
-        if (ok) {
-            struct db_tx_index tx;
-            struct db_tx_index found;
-            memset(&tx, 0, sizeof(tx));
-            memset(&found, 0, sizeof(found));
-
-            ok = db_tx_prepare_bulk_load(&ndb);
-            memset(tx.txid, 0x91, 32);
-            memset(tx.block_hash, 0x92, 32);
-            tx.block_height = 21;
-            tx.tx_index = 0;
-            tx.file_num = 4;
-            tx.file_pos = 100;
-            tx.is_coinbase = true;
-            ok = ok && db_tx_save(&ndb, &tx);
-            ok = ok && db_tx_count(&ndb) == 1;
-            ok = ok && db_tx_finalize_bulk_load(&ndb);
-            ok = ok && db_tx_find(&ndb, tx.txid, &found);
-            ok = ok && (found.block_height == 21);
-            ok = ok && db_tx_delete_all(&ndb);
-            ok = ok && (db_tx_count(&ndb) == 0);
-            node_db_close(&ndb);
-        }
-
-        test_rm_rf_recursive(dbdir);
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
+    if (check_tx_index_bulk_load_lifecycle())
+        printf("OK\n");
+    else {
+        printf("FAIL\n");
+        failures++;
     }
 
     printf("UTXO model rebuilds wallet and address caches... ");

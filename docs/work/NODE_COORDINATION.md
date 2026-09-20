@@ -33,4 +33,20 @@ groups without skips; GCC's static analyzer, the complexity ratchet,
 architecture tree, C23 node build, consensus-parity and sealed-core gates pass.
 Clang is not installed on this host, so Clang-specific observation remains for
 an independent lane. The root-user flag-registry selftest issue is already fixed
-on Hetzner commit `7bf6e482a`; do not duplicate that change in this slice.
+on Hetzner commit `7bf6e482a`; Worldstream independently reviewed, ported and
+validated that exact commit rather than duplicating it.
+
+## 2026-09-20: transaction-index rebuild finalization
+
+The transaction-index bulk-load finalizer previously discarded every SQLite
+result while rebuilding its two lookup indexes, restoring normal durability
+settings and truncating the WAL. It therefore returned success even when an
+index was not created, allowing the background builder to persist its
+`tx_index_complete` marker for an incomplete read projection.
+
+The finalizer now checks and logs each operation and fails closed. A focused
+fault-injection regression makes the connection query-only, proves finalization
+is rejected, restores write access, and proves a normal finalization and lookup
+still succeed. This changes only the rebuildable transaction lookup projection;
+block and transaction validation, consensus serialization and chain state are
+unchanged.
