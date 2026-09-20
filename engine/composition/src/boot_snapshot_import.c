@@ -72,6 +72,59 @@ static int snapshot_attach(sqlite3 *db, const char *path)
     return rc;
 }
 
+static bool snapshot_rollback(sqlite3 *db)
+{
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (sqlite3_get_autocommit(db) != 0)
+            return true;
+        if (sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK)
+            return sqlite3_get_autocommit(db) != 0;
+        LOG_WARN("boot_snapshot_import",
+                 "ROLLBACK attempt %d failed: %s",
+                 attempt + 1, sqlite3_errmsg(db));
+    }
+    return sqlite3_get_autocommit(db) != 0;
+}
+
+static bool snapshot_detach(sqlite3 *db)
+{
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (sqlite3_exec(db, "DETACH DATABASE snapsrc",
+                         NULL, NULL, NULL) == SQLITE_OK)
+            return true;
+        LOG_WARN("boot_snapshot_import",
+                 "DETACH attempt %d failed: %s",
+                 attempt + 1, sqlite3_errmsg(db));
+    }
+    return false;
+}
+
+static void snapshot_detach_after_begin_failure(sqlite3 *db)
+{
+    if (!snapshot_detach(db))
+        LOG_WARN("boot_snapshot_import",
+                 "could not detach snapshot after BEGIN failure");
+}
+
+static bool snapshot_finish_copy(sqlite3 *db, bool copy_ok)
+{
+    bool ok = copy_ok;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        LOG_WARN("boot_snapshot_import",
+                 "COMMIT failed (%s) — rolling back snapshot install",
+                 sqlite3_errmsg(db));
+        ok = false;
+    }
+    if (!ok && !snapshot_rollback(db))
+        LOG_WARN("boot_snapshot_import",
+                 "snapshot transaction remains open after rollback retries");
+
+    sqlite3_progress_handler(db, 0, NULL, NULL);
+    if (!snapshot_detach(db))
+        ok = false;
+    return ok;
+}
+
 bool boot_import_snapshot_db(struct node_db *ndb,
                               const char *snapshot_path,
                               int64_t *out_utxo_count,
@@ -211,7 +264,7 @@ bool boot_import_snapshot_db(struct node_db *ndb,
         != SQLITE_OK) {
         char msg[256] = "?";
         if (err) { snprintf(msg, sizeof(msg), "%s", err); sqlite3_free(err); }
-        sqlite3_exec(ndb->db, "DETACH DATABASE snapsrc", NULL, NULL, NULL);
+        snapshot_detach_after_begin_failure(ndb->db);
         LOG_FAIL("boot_snapshot_import", "BEGIN failed: %s", msg);
     }
     /* Report only measured SQLite VM progress while the bulk copy and
@@ -264,28 +317,14 @@ bool boot_import_snapshot_db(struct node_db *ndb,
             }
         }
     }
-    if (ok) {
-        /* A failed COMMIT (SQLITE_FULL / IO error) leaves the bulk-copy txn
-         * uncommitted — we must NOT then stamp coins_best_block at the
-         * snapshot tip (that is the snapshot-path coin-tear class). Capture
-         * the rc, roll back, and propagate failure so the caller falls back
-         * to normal sync instead of trusting a half-installed set. */
-        if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-            LOG_WARN("boot_snapshot_import",
-                     "COMMIT failed (%s) — rolling back snapshot install",
-                     sqlite3_errmsg(ndb->db));
-            sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
-            ok = false;
-        }
-    } else {
-        sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
-    }
-    sqlite3_exec(ndb->db, "DETACH DATABASE snapsrc", NULL, NULL, NULL);
-    sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+    /* A failed COMMIT (SQLITE_FULL / I/O error) leaves the bulk-copy
+     * transaction uncommitted. Never stamp coins_best_block until checked,
+     * bounded rollback and detach cleanup has finished. */
+    ok = snapshot_finish_copy(ndb->db, ok);
 
     if (!ok) {
         LOG_FAIL("boot_snapshot_import",
-                 "snapshot install failed; node.db rolled back");
+                 "snapshot install failed; cleanup attempted");
         return false;
     }
 

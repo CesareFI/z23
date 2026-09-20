@@ -241,6 +241,92 @@ static int sb_test_malformed_height(struct node_db *ndb, const char *path)
     return failures;
 }
 
+struct sb_copy_fault {
+    bool denied_rollback;
+    bool denied_detach;
+};
+
+static int sb_deny_copy_and_first_cleanup(void *ctx, int action,
+                                          const char *target,
+                                          const char *detail,
+                                          const char *db_name,
+                                          const char *trigger)
+{
+    (void)detail;
+    (void)trigger;
+    struct sb_copy_fault *fault = ctx;
+    if (action == SQLITE_INSERT && target && db_name &&
+        strcmp(target, "utxos") == 0 && strcmp(db_name, "main") == 0)
+        return SQLITE_DENY;
+    if (action == SQLITE_TRANSACTION && target &&
+        strcmp(target, "ROLLBACK") == 0 && !fault->denied_rollback) {
+        fault->denied_rollback = true;
+        return SQLITE_DENY;
+    }
+    if (action == SQLITE_DETACH && !fault->denied_detach) {
+        fault->denied_detach = true;
+        return SQLITE_DENY;
+    }
+    return SQLITE_OK;
+}
+
+static bool sb_has_attached_snapshot(sqlite3 *db)
+{
+    sqlite3_stmt *st = NULL;
+    bool found = false;
+    if (sqlite3_prepare_v2(db, "PRAGMA database_list", -1, &st, NULL) !=
+        SQLITE_OK)
+        return true;
+    while (sqlite3_step(st) == SQLITE_ROW) { // raw-sql-ok:test-fixture-verify
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        if (name && strcmp((const char *)name, "snapsrc") == 0) {
+            found = true;
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+static int sb_test_copy_rollback(struct node_db *ndb, const char *path)
+{
+    int failures = 0;
+    const char *seed_sql =
+        "INSERT INTO utxos"
+        "(txid,vout,value,script,script_type,address_hash,height,is_coinbase)"
+        " VALUES(zeroblob(32),7,99,x'51',0,NULL,1,0)";
+    SB_CHECK("rollback fixture: prior UTXO planted",
+             sqlite3_exec(ndb->db, seed_sql, NULL, NULL, NULL) == SQLITE_OK);
+
+    struct sb_copy_fault fault = {0};
+    SB_CHECK("rollback fixture: fault authorizer installed",
+             sqlite3_set_authorizer(ndb->db,
+                                    sb_deny_copy_and_first_cleanup,
+                                    &fault) == SQLITE_OK);
+    int64_t count = -1, height = -1;
+    uint8_t best[32] = {0};
+    uint8_t zero_hash[32] = {0};
+    SB_CHECK("failed copy is rejected",
+             !boot_import_snapshot_db(ndb, path, &count, &height, best));
+    SB_CHECK("rollback denial was injected", fault.denied_rollback);
+    SB_CHECK("detach denial was injected", fault.denied_detach);
+    SB_CHECK("failed copy closes its transaction",
+             sqlite3_get_autocommit(ndb->db) != 0);
+    SB_CHECK("failed copy detaches snapshot",
+             !sb_has_attached_snapshot(ndb->db));
+    SB_CHECK("failed copy preserves prior UTXO",
+             node_db_utxo_count(ndb) == 1);
+    SB_CHECK("failed copy leaves outputs untouched",
+             count == -1 && height == -1 &&
+             memcmp(best, zero_hash, sizeof(best)) == 0);
+
+    sqlite3_set_authorizer(ndb->db, NULL, NULL);
+    sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "DETACH DATABASE snapsrc", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
+    return failures;
+}
+
 int test_snapshot_boot_seed(void);
 int test_snapshot_boot_seed(void)
 {
@@ -298,6 +384,7 @@ int test_snapshot_boot_seed(void)
     snprintf(valid_height, sizeof(valid_height), "%d", SB_SNAP_HEIGHT);
     SB_CHECK("valid snapshot height restored",
              sb_set_snapshot_height(snap_path, valid_height));
+    failures += sb_test_copy_rollback(&ndb, snap_path);
 
     /* PRECONDITION (the "looks-synced-but-isn't" defect state we must escape):
      * a bare fresh datadir has NO reducer seed authority — coins_kv is NOT a

@@ -172,12 +172,13 @@ branch is:
 - `f9c65b069` reject corrupt SQLite transaction-index cursor/digest state;
 - `fcf59a057` fail closed on address-backfill errors; and
 - `4d9446747` log transaction-index orchestration failures; and
-- `c7d6aa74d` reject malformed snapshot height metadata.
+- `c7d6aa74d` reject malformed snapshot height metadata; and
+- `a611745a7` bind snapshot database attach paths.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `c7d6aa74d`.
+The latest committed engineering tip intended for publication is `a611745a7`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -299,3 +300,35 @@ Hetzner's `f261d245d` work remains in block-swarm networking and does not
 overlap. Remaining risk and recommended next investigation: fault-inject the
 bulk-copy rollback path and verify the prior UTXO set, transaction state,
 attached-schema state and progress handler are all restored before returning.
+
+## 2026-09-20: snapshot failure cleanup recovery
+
+The bulk-copy failure path discarded rollback and detach results, then logged
+that node.db had been rolled back unconditionally. A deterministic authorizer
+fault denied the UTXO copy and the first rollback. The red baseline returned
+failure while leaving the write transaction open, `snapsrc` attached and the
+prior UTXO hidden by the still-active delete; a retry on that connection was
+therefore unsafe.
+
+Rollback and detach are now checked bounded operations with two attempts and
+per-attempt diagnostics. The progress handler is removed before detach, and a
+failed commit follows the same cleanup path. BEGIN failure also uses checked
+detach cleanup. The focused fixture denies the copy, first rollback and first
+detach, then proves the importer rejects the snapshot, closes the transaction,
+detaches the schema, preserves the pre-existing UTXO, leaves outputs untouched
+and remains able to complete a subsequent valid import. The cleanup extraction
+reduced the importer complexity pin from M=50 to M=48.
+
+The focused normal and ASan/UBSan groups pass, as do `lint-fast`, architecture,
+consensus-parity, sealed-core and the production C23 build. One concurrent
+normal-harness launch received the build system's explicit unverified-epoch
+retry signal while another build lease was active; the prescribed rerun after
+that lease completed passed. Consensus impact: NONE. Failure cleanup around a
+local snapshot transaction changed; accepted blocks/transactions, serialized
+consensus data, chain history, PoW, monetary policy, activation and
+cryptographic validation are unchanged. Hetzner's `f261d245d` block-swarm work
+does not overlap. Remaining risk: a persistent two-attempt rollback failure is
+diagnosed but necessarily leaves SQLite owning the unresolved transaction;
+the caller already receives failure and must not promote snapshot authority.
+Recommended next investigation: make metadata/block/count reads distinguish
+SQLite errors from absent rows and verify source-close errors are observable.
