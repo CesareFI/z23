@@ -79,9 +79,12 @@
 
 #include "json/json.h"
 #include "platform/clock.h"
+#include "platform/private_file.h"
+#include "platform/rng.h"
 #include "util/file_io.h"
 #include "util/spawn.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -439,8 +442,13 @@ static bool dvc_ledger_load(const char *path, struct dvc_ledger *lg,
 {
     memset(lg, 0, sizeof(*lg));
     FILE *probe = fopen(path, "rb");
-    if (!probe)
-        return true;
+    if (!probe) {
+        if (errno == ENOENT)
+            return true;
+        dvc_fail(reply, "CLAIM_LEDGER_UNREADABLE", "ledger",
+                 "the claim ledger could not be opened for reading", path);
+        return false;
+    }
     (void)fclose(probe);
     size_t len = 0;
     if (!zcl_read_whole_file_text(path, DVC_LEDGER_MAX_BYTES, &lg->text, &len,
@@ -469,8 +477,31 @@ static bool dvc_line_is_ours(const char *line, const char *toplevel)
            strcmp(wt, toplevel) == 0;
 }
 
-/* Whole-file rewrite: every line not owned by this worktree, then
- * `newline` when one is given. */
+static bool dvc_stage_open(const char *path, char *tmp, size_t cap,
+                           struct platform_private_file *file)
+{
+    uint64_t nonce = 0;
+    if (!rng_fill((uint8_t *)&nonce, sizeof(nonce)))
+        return false;
+    int n = snprintf(tmp, cap, "%s.claim-%016llx", path,
+                      (unsigned long long)nonce);
+    return n > 0 && (size_t)n < cap &&
+           platform_private_file_create(tmp, file);
+}
+
+static bool dvc_stage_line(struct platform_private_file *file,
+                           const char *line, uint64_t *offset)
+{
+    size_t len = strlen(line);
+    if (!platform_private_file_write_at(file, line, len, *offset) ||
+        !platform_private_file_write_at(file, "\n", 1, *offset + len))
+        return false;
+    *offset += len + 1;
+    return true;
+}
+
+/* Stage the whole replacement beside the ledger. Failed writes never
+ * truncate the previous claims; only the complete staged file replaces it. */
 static bool dvc_ledger_write(const char *path, const struct dvc_ledger *lg,
                              const char *toplevel, const char *newline,
                              size_t *kept, size_t *released,
@@ -478,20 +509,27 @@ static bool dvc_ledger_write(const char *path, const struct dvc_ledger *lg,
 {
     *kept = 0;
     *released = 0;
-    FILE *f = fopen(path, "wb");
-    bool ok = f != NULL;
+    struct platform_private_file file;
+    platform_private_file_init(&file);
+    char tmp[PATH_MAX + 64];
+    bool created = dvc_stage_open(path, tmp, sizeof(tmp), &file);
+    bool ok = created;
+    uint64_t offset = 0;
     for (size_t i = 0; ok && i < lg->n; i++) {
         if (dvc_line_is_ours(lg->lines[i], toplevel)) {
             (*released)++;
             continue;
         }
-        ok = fprintf(f, "%s\n", lg->lines[i]) >= 0;
+        ok = dvc_stage_line(&file, lg->lines[i], &offset);
         (*kept)++;
     }
     if (ok && newline)
-        ok = fprintf(f, "%s\n", newline) >= 0;
-    if (f && fclose(f) != 0)
-        ok = false;
+        ok = dvc_stage_line(&file, newline, &offset);
+    if (ok)
+        ok = platform_private_file_replace(&file, tmp, path);
+    if (!ok && created)
+        (void)platform_private_file_retire(&file, tmp);
+    platform_private_file_close(&file);
     if (!ok) {
         char why[PATH_MAX + 32];
         (void)snprintf(why, sizeof(why), "cannot write %s", path);
@@ -667,20 +705,44 @@ static void dvc_claim(const struct dvc_facts *facts,
     reply->exit_code = 0;
 }
 
+static bool dvc_lock(const char *ledger, struct platform_private_file *lock,
+                      struct zcl_command_reply *reply)
+{
+    char path[PATH_MAX + 16];
+    int n = snprintf(path, sizeof(path), "%s.lock", ledger);
+    if (n > 0 && (size_t)n < sizeof(path) &&
+        platform_private_file_open_locked_create(path, lock))
+        return true;
+    dvc_fail(reply, "CLAIM_LOCK_UNAVAILABLE", "ledger",
+             "cannot acquire the claim ledger lock", ledger);
+    (void)snprintf(reply->error.next_action,
+                   sizeof(reply->error.next_action),
+                   "Retry the whole claim or release after the current writer "
+                   "finishes; if this persists, inspect lock-file access. "
+                   "Do not remove a live lock file.");
+    return false;
+}
+
 static void dvc_run(const char *cwd, const char *story, bool release,
                     const struct json_value *norm,
                     struct zcl_command_reply *reply)
 {
     struct dvc_facts facts;
     struct dvc_ledger lg;
-    if (!dvc_git_facts(cwd, &facts, reply) ||
-        !dvc_ledger_load(facts.ledger, &lg, reply))
+    if (!dvc_git_facts(cwd, &facts, reply))
         return;
-    if (release)
-        dvc_release(&facts, &lg, reply);
-    else
-        dvc_claim(&facts, &lg, story, norm, reply);
-    dvc_ledger_free(&lg);
+    struct platform_private_file lock;
+    platform_private_file_init(&lock);
+    if (dvc_lock(facts.ledger, &lock, reply) &&
+        dvc_ledger_load(facts.ledger, &lg, reply)) {
+        if (release)
+            dvc_release(&facts, &lg, reply);
+        else
+            dvc_claim(&facts, &lg, story, norm, reply);
+        dvc_ledger_free(&lg);
+    }
+    /* Persistent sidecar: unlinking it would split the lock identity. */
+    platform_private_file_close(&lock);
 }
 
 /* The story is required; files must be an array, non-empty unless this is

@@ -19,12 +19,19 @@
 #include "config/command_catalog.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "platform/rng.h"
 #include "util/spawn.h"
 #include "util/file_io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #define DVX_PATH "dev.agent.claim"
 
@@ -262,10 +269,160 @@ _test_next:;
     return failures;
 }
 
+struct dvx_interleaved_claim {
+    const char *other;
+    bool entered;
+    bool nested_ok;
+    bool nested_locked;
+};
+
+/* The stage nonce is requested after the outer read/overlap check. Run a
+ * second writer exactly there, without timing-dependent threads or sleeps. */
+static bool dvx_interleave_rng(void *self, uint8_t *out, size_t len)
+{
+    struct dvx_interleaved_claim *state = self;
+    bool outer = !state->entered;
+    memset(out, outer ? 1 : 2, len);
+    if (outer) {
+        state->entered = true;
+        static const char *const files[] = {"engine/b.c", NULL};
+        struct dvx_call c;
+        dvx_claim(&c, state->other, "interleaved", files, false);
+        bool ran = dvx_run(&c);
+        state->nested_ok = ran && dvx_ok(&c);
+        state->nested_locked = ran &&
+            strcmp(c.reply.error.code, "CLAIM_LOCK_UNAVAILABLE") == 0;
+        dvx_end(&c);
+    }
+    return true;
+}
+
+static int dvx_interleaved_tests(void)
+{
+    int failures = 0;
+    TEST("claim: interleaved writers refuse contention and retry without lost rows") {
+        char repo[512], other[600];
+        test_make_tmpdir(repo, sizeof(repo), "devagent_claim", "interleave");
+        (void)snprintf(other, sizeof(other), "%s-other", repo);
+        ASSERT(dvx_fixture(repo));
+        const char *wt[] = {"worktree", "add", "-q", "-b", "other", other, NULL};
+        ASSERT(dvx_git(repo, wt));
+        struct dvx_interleaved_claim state = {.other = other};
+        rng_iface_t interleaved = {.fill = dvx_interleave_rng, .self = &state};
+        const rng_iface_t *saved = rng_default();
+        static const char *const files_a[] = {"engine/a.c", NULL};
+        static const char *const files_b[] = {"engine/b.c", NULL};
+        struct dvx_call c;
+        dvx_claim(&c, repo, "outer", files_a, false);
+        rng_set_default(&interleaved);
+        bool outer_ok = dvx_run(&c) && dvx_ok(&c);
+        rng_set_default(saved);
+        printf("outer_ok=%d nested_ok=%d nested_locked=%d live=%lld ",
+               outer_ok, state.nested_ok, state.nested_locked,
+               (long long)dvx_int(&c, "live"));
+        dvx_end(&c);
+        ASSERT(outer_ok && state.entered);
+        ASSERT(!state.nested_ok && state.nested_locked);
+        dvx_claim(&c, other, "retry", files_b, false);
+        ASSERT(dvx_run(&c) && dvx_ok(&c));
+        ASSERT_EQ(dvx_int(&c, "live"), 2);
+        dvx_end(&c);
+        dvx_claim(&c, repo, "verify-foreign-owner", files_b, false);
+        ASSERT(dvx_run(&c) && !dvx_ok(&c));
+        ASSERT_STR_EQ(c.reply.error.code, "CLAIM_OVERLAP");
+        dvx_end(&c);
+        ASSERT_EQ(test_rm_rf_recursive(other), 0);
+        ASSERT_EQ(test_rm_rf_recursive(repo), 0);
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int dvx_write_failure_tests(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("claim: a failed write preserves the previous ledger bytes") {
+        char repo[512], ledger[1024];
+        test_make_tmpdir(repo, sizeof(repo), "devagent_claim", "write-failure");
+        ASSERT(dvx_fixture(repo));
+        const char *row = "{\"worktree\":\"foreign\",\"story\":\"keep\","
+                          "\"files\":[\"engine/a.c\"]}\n";
+        ASSERT(dvx_write(repo, ".git/z23-agent-claims.jsonl", row));
+        (void)snprintf(ledger, sizeof(ledger),
+                       "%s/.git/z23-agent-claims.jsonl", repo);
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0) {
+            struct rlimit limit = {0, 0};
+            if (signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+                setrlimit(RLIMIT_FSIZE, &limit) != 0)
+                _exit(2);
+            static const char *const files[] = {"engine/b.c", NULL};
+            struct dvx_call c;
+            dvx_claim(&c, repo, "failed-write", files, false);
+            bool refused = dvx_run(&c) && !dvx_ok(&c);
+            dvx_end(&c);
+            _exit(refused ? 0 : 3);
+        }
+        int status = 0;
+        ASSERT_EQ(waitpid(child, &status, 0), child);
+        ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        char *after = NULL;
+        size_t len = 0;
+        ASSERT(zcl_read_whole_file_text(ledger, 8192, &after, &len,
+                                        "claim_write_failure"));
+        ASSERT_EQ(len, strlen(row));
+        ASSERT_STR_EQ(after, row);
+        free(after);
+        ASSERT_EQ(test_rm_rf_recursive(repo), 0);
+        PASS();
+    }
+_test_next:;
+#endif
+    return failures;
+}
+
+static int dvx_unreadable_tests(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("claim: a ledger open error refuses claim and release without rewriting") {
+        char repo[512], ledger[1024];
+        test_make_tmpdir(repo, sizeof(repo), "devagent_claim", "unreadable");
+        ASSERT(dvx_fixture(repo));
+        (void)snprintf(ledger, sizeof(ledger),
+                       "%s/.git/z23-agent-claims.jsonl", repo);
+        /* ELOOP is deterministic even under root; EACCES needs a normal uid. */
+        const char *target = "z23-agent-claims.jsonl";
+        ASSERT_EQ(symlink(target, ledger), 0);
+        static const char *const files[] = {"engine/a.c", NULL};
+        for (int release = 0; release < 2; release++) {
+            struct dvx_call c;
+            dvx_claim(&c, repo, "unreadable-probe", files, release != 0);
+            ASSERT(dvx_run(&c));
+            ASSERT(!dvx_ok(&c));
+            ASSERT_STR_EQ(c.reply.error.code, "CLAIM_LEDGER_UNREADABLE");
+            dvx_end(&c);
+            char after[64];
+            ssize_t n = readlink(ledger, after, sizeof(after));
+            ASSERT_EQ(n, (ssize_t)strlen(target));
+            ASSERT(memcmp(after, target, strlen(target)) == 0);
+        }
+        ASSERT_EQ(test_rm_rf_recursive(repo), 0);
+        PASS();
+    }
+_test_next:;
+#endif
+    return failures;
+}
+
 int test_devagent_claim(void);
 int test_devagent_claim(void)
 {
-    int failures = dvx_metadata_tests();
+    int failures = dvx_metadata_tests() + dvx_unreadable_tests() +
+                   dvx_write_failure_tests() + dvx_interleaved_tests();
     char one[512], two[600];
     test_make_tmpdir(one, sizeof(one), "devagent_claim", "repo");
     (void)snprintf(two, sizeof(two), "%s-lane", one);
