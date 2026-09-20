@@ -246,14 +246,6 @@ bool boot_import_snapshot_db(struct node_db *ndb,
         LOG_FAIL("boot_snapshot_import",
                  "implausible utxo count %lld", (long long)snap_utxos);
 
-    /* Stash prior coins_best_block so we can restore on failure
-     * after the bulk-copy has committed. */
-    uint8_t prior_cb[32] = {0};
-    size_t prior_cb_len = 0;
-    bool prior_cb_present = node_db_state_get(ndb, "coins_best_block",
-                                              prior_cb, sizeof(prior_cb),
-                                              &prior_cb_len);
-
     char *err = NULL;
     if (snapshot_attach(ndb->db, snapshot_path) != SQLITE_OK)
         LOG_FAIL("boot_snapshot_import", "ATTACH failed: %s",
@@ -317,6 +309,14 @@ bool boot_import_snapshot_db(struct node_db *ndb,
             }
         }
     }
+    /* coins_best_block is a projection cache, but it must describe the same
+     * UTXO generation that this transaction publishes. A failed cache write
+     * therefore rejects and rolls back the replacement set atomically. */
+    if (ok && !node_db_state_set(ndb, "coins_best_block",
+                                 best_hash, sizeof(best_hash))) {
+        LOG_WARN("boot_snapshot_import", "set coins_best_block failed");
+        ok = false;
+    }
     /* A failed COMMIT (SQLITE_FULL / I/O error) leaves the bulk-copy
      * transaction uncommitted. Never stamp coins_best_block until checked,
      * bounded rollback and detach cleanup has finished. */
@@ -326,18 +326,6 @@ bool boot_import_snapshot_db(struct node_db *ndb,
         LOG_FAIL("boot_snapshot_import",
                  "snapshot install failed; cleanup attempted");
         return false;
-    }
-
-    /* CACHE-REFRESH (wave 2): 'coins_best_block' is a projection key —
-     * authority = reducer_frontier_derive_coins_best over coins_kv. */
-    if (!node_db_state_set(ndb, "coins_best_block",
-                           best_hash, sizeof(best_hash))) {
-        /* utxos already committed; restore prior anchor so the next
-         * boot doesn't try to CSR-commit to a snapshot we lost. */
-        if (prior_cb_present && prior_cb_len == 32)
-            node_db_state_set(ndb, "coins_best_block",
-                              prior_cb, prior_cb_len);
-        LOG_FAIL("boot_snapshot_import", "set coins_best_block failed");
     }
 
     /* Verified-install epilogue: a snapshot import is only a fast rebuild if

@@ -170,15 +170,16 @@ branch is:
 - `8a1c66725` make boot-timing sample persistence atomic;
 - `dd3f65ad6` reject malformed legacy LevelDB transaction-index records;
 - `f9c65b069` reject corrupt SQLite transaction-index cursor/digest state;
-- `fcf59a057` fail closed on address-backfill errors; and
-- `4d9446747` log transaction-index orchestration failures; and
-- `c7d6aa74d` reject malformed snapshot height metadata; and
-- `a611745a7` bind snapshot database attach paths.
+- `fcf59a057` fail closed on address-backfill errors;
+- `4d9446747` log transaction-index orchestration failures;
+- `c7d6aa74d` reject malformed snapshot height metadata;
+- `a611745a7` bind snapshot database attach paths; and
+- `c51aa03ee` recover snapshot transaction cleanup failures.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `a611745a7`.
+The latest committed engineering tip intended for publication is `c51aa03ee`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -332,3 +333,31 @@ diagnosed but necessarily leaves SQLite owning the unresolved transaction;
 the caller already receives failure and must not promote snapshot authority.
 Recommended next investigation: make metadata/block/count reads distinguish
 SQLite errors from absent rows and verify source-close errors are observable.
+
+## 2026-09-20: atomic snapshot UTXO anchor publication
+
+The importer committed the replacement UTXO set before writing the
+`coins_best_block` projection. An authorizer fault that denied only that state
+write established the red baseline: the importer returned failure and retained
+the prior anchor, but all 1,200 snapshot UTXOs had already replaced the single
+pre-existing UTXO. Retrying or resuming from that torn pair could reason about
+coins from one generation under an anchor from another.
+
+The anchor projection write now executes inside the same transaction as the
+UTXO delete/copy and before the checked commit. If it fails, the shared cleanup
+path rolls back both mutations. The regression plants a prior UTXO and anchor,
+denies the anchor write, and proves both survive unchanged; the subsequent
+normal import still publishes the fixture UTXOs and expected tip together.
+Removing the post-commit restoration branch also reduced importer complexity
+from M=48 to M=47.
+
+The focused normal and ASan/UBSan harnesses, `lint-fast`, architecture,
+consensus-parity, sealed-core and production C23 build gates pass. Consensus
+impact: NONE. This changes atomic publication of local rebuildable snapshot
+state only; chain history, block and
+transaction validity, wire/consensus serialization, PoW, monetary policy,
+activation and cryptographic validation semantics are unchanged. Hetzner's
+`f261d245d` block-swarm work remains non-overlapping. Remaining risk: authority
+epilogue state spans node.db and consensus.db and cannot share one SQLite
+transaction; its failure sentinel/recovery behavior remains the next recovery
+surface to fault-inject.

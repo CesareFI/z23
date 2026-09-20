@@ -327,6 +327,58 @@ static int sb_test_copy_rollback(struct node_db *ndb, const char *path)
     return failures;
 }
 
+static int sb_deny_anchor_write(void *ctx, int action, const char *target,
+                                const char *detail, const char *db_name,
+                                const char *trigger)
+{
+    (void)ctx;
+    (void)detail;
+    (void)trigger;
+    return action == SQLITE_INSERT && target && db_name &&
+           strcmp(target, "node_state") == 0 &&
+           strcmp(db_name, "main") == 0 ? SQLITE_DENY : SQLITE_OK;
+}
+
+static int sb_test_anchor_atomicity(struct node_db *ndb, const char *path)
+{
+    int failures = 0;
+    uint8_t prior_hash[32];
+    memset(prior_hash, 0x6b, sizeof(prior_hash));
+    const char *seed_sql =
+        "INSERT INTO utxos"
+        "(txid,vout,value,script,script_type,address_hash,height,is_coinbase)"
+        " VALUES(zeroblob(32),9,101,x'52',0,NULL,2,0)";
+    SB_CHECK("anchor fixture: prior UTXO planted",
+             sqlite3_exec(ndb->db, seed_sql, NULL, NULL, NULL) == SQLITE_OK);
+    SB_CHECK("anchor fixture: prior hash planted",
+             node_db_state_set(ndb, "coins_best_block",
+                               prior_hash, sizeof(prior_hash)));
+    SB_CHECK("anchor fixture: write fault installed",
+             sqlite3_set_authorizer(ndb->db, sb_deny_anchor_write, NULL) ==
+             SQLITE_OK);
+
+    int64_t count = -1, height = -1;
+    uint8_t best[32] = {0};
+    SB_CHECK("failed anchor write rejects import",
+             !boot_import_snapshot_db(ndb, path, &count, &height, best));
+    SB_CHECK("failed anchor write preserves prior UTXO",
+             node_db_utxo_count(ndb) == 1);
+    uint8_t actual_hash[32] = {0};
+    size_t actual_len = 0;
+    SB_CHECK("failed anchor write preserves prior hash",
+             node_db_state_get(ndb, "coins_best_block", actual_hash,
+                               sizeof(actual_hash), &actual_len) &&
+             actual_len == sizeof(actual_hash) &&
+             memcmp(actual_hash, prior_hash, sizeof(actual_hash)) == 0);
+
+    sqlite3_set_authorizer(ndb->db, NULL, NULL);
+    sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
+    sqlite3_exec(ndb->db,
+                 "DELETE FROM node_state WHERE key='coins_best_block'",
+                 NULL, NULL, NULL);
+    return failures;
+}
+
 int test_snapshot_boot_seed(void);
 int test_snapshot_boot_seed(void)
 {
@@ -385,6 +437,7 @@ int test_snapshot_boot_seed(void)
     SB_CHECK("valid snapshot height restored",
              sb_set_snapshot_height(snap_path, valid_height));
     failures += sb_test_copy_rollback(&ndb, snap_path);
+    failures += sb_test_anchor_atomicity(&ndb, snap_path);
 
     /* PRECONDITION (the "looks-synced-but-isn't" defect state we must escape):
      * a bare fresh datadir has NO reducer seed authority — coins_kv is NOT a
