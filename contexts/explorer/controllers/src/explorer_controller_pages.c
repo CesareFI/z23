@@ -69,6 +69,11 @@ static char g_stats_cache[STATS_CACHE_SIZE] = "";
 static _Atomic size_t g_stats_cache_len = 0;
 static _Atomic int64_t g_stats_cache_height = 0;
 
+bool explorer_stats_recompute_allowed(enum sync_state state)
+{
+    return state == SYNC_IDLE || state == SYNC_AT_TIP;
+}
+
 static int64_t explorer_page_cap_to_served_tip(int64_t index_tip)
 {
     if (index_tip < 0)
@@ -142,6 +147,10 @@ static size_t stats_cache_load(void)
 void *stats_compute_thread(void *arg)
 {
     (void)arg;
+    if (!explorer_stats_recompute_allowed(sync_get_state())) {
+        g_stats_computing = 0;
+        return NULL;
+    }
     struct explorer_context *ctx = explorer_ctx();
     int64_t start_index_tip = -1;
     int64_t start_tip =
@@ -205,6 +214,8 @@ void *stats_compute_thread(void *arg)
 size_t serve_stats(uint8_t *r, size_t max)
 {
     struct explorer_context *ctx = explorer_ctx();
+    bool recompute_allowed =
+        explorer_stats_recompute_allowed(sync_get_state());
     int64_t index_tip = -1;
     int64_t tip = explorer_page_served_tip_height(ctx->datadir, &index_tip);
     /* Return cached version if available. Acquire-load pairs with the release
@@ -214,7 +225,8 @@ size_t serve_stats(uint8_t *r, size_t max)
     int64_t cache_height =
         atomic_load_explicit(&g_stats_cache_height, memory_order_acquire);
     if (cached > 0) {
-        if (tip > 0 && cache_height > 0 && cache_height < tip)
+        if (recompute_allowed && tip > 0 && cache_height > 0 &&
+            cache_height < tip)
             explorer_start_once(&g_stats_computing, stats_compute_thread,
                                 "stats_compute");
         size_t copy = cached < max ? cached : max;
@@ -227,8 +239,9 @@ size_t serve_stats(uint8_t *r, size_t max)
             "#33ff99", "Charts are being computed from blockchain data.");
 
     /* Not cached yet — trigger background computation if not running */
-    explorer_start_once(&g_stats_computing, stats_compute_thread,
-                        "stats_compute");
+    if (recompute_allowed)
+        explorer_start_once(&g_stats_computing, stats_compute_thread,
+                            "stats_compute");
     return explorer_view_loading_placeholder(r, max,
         "Statistics Index Warming",
         "#33ff99", "Charts are being computed from blockchain data.");

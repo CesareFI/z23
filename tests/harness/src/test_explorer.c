@@ -32,10 +32,30 @@ static int ex_environment_unset(const char *name)
 #endif
 }
 
+static int check_stats_recompute_sync_policy(void)
+{
+    bool ok = explorer_stats_recompute_allowed(SYNC_IDLE) &&
+              explorer_stats_recompute_allowed(SYNC_AT_TIP);
+    for (int state = 0; state <= SYNC_NUM_STATES; state++) {
+        if (state == SYNC_IDLE || state == SYNC_AT_TIP)
+            continue;
+        ok = ok && !explorer_stats_recompute_allowed((enum sync_state)state);
+    }
+    printf("explorer: comprehensive stats defer during synchronization... ");
+    if (ok) {
+        printf("OK (large projection scans admitted in 2 states)\n");
+        return 0;
+    }
+    printf("FAIL\n");
+    return 1;
+}
+
 int test_explorer(void)
 {
     int failures = 0;
     uint8_t resp[8192];
+
+    failures += check_stats_recompute_sync_policy();
 
     printf("explorer: NULL path returns 0... ");
     {

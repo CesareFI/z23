@@ -9,6 +9,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "sync/sync_state.h"
+
 struct main_state;
 struct tx_mempool;
 struct coins_view_cache;
@@ -27,6 +29,11 @@ size_t explorer_handle_request(const char *method, const char *path,
 /* Return the canonical /explorer/... location for supported top-level
  * explorer shortcuts such as /factoids and /hodl, or NULL otherwise. */
 const char *explorer_canonical_shortcut(const char *path);
+
+/* Comprehensive explorer statistics scan several large projection tables.
+ * Keep that presentation-only work off the database while synchronization is
+ * active; cached pages remain serveable and the next idle/tip request retries. */
+bool explorer_stats_recompute_allowed(enum sync_state state);
 
 #ifdef ZCL_TESTING
 void explorer_test_set_datadir(const char *datadir);
