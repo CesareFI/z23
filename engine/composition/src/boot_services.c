@@ -1032,7 +1032,8 @@ bool app_init_services(struct app_context *ctx,
                          * boot. node.db is authoritative; do not re-import. */
                         int64_t existing_utxos =
                             node_db_utxo_count(svc->node_db);
-                        if (existing_utxos > 1000) {
+                        if (boot_snapshot_import_can_skip(
+                                svc->node_db, existing_utxos)) {
                             printf("=== UTXO snapshot already imported "
                                    "(%lld UTXOs, %.0f MB on disk) ===\n",
                                    (long long)existing_utxos,

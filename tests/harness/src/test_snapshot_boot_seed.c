@@ -379,6 +379,44 @@ static int sb_test_anchor_atomicity(struct node_db *ndb, const char *path)
     return failures;
 }
 
+static int sb_deny_coins_reset(void *ctx, int action, const char *target,
+                               const char *detail, const char *db_name,
+                               const char *trigger)
+{
+    (void)ctx;
+    (void)detail;
+    (void)db_name;
+    (void)trigger;
+    return action == SQLITE_DELETE && target &&
+           strcmp(target, "coins") == 0 ? SQLITE_DENY : SQLITE_OK;
+}
+
+static int sb_test_epilogue_resume(struct node_db *ndb, sqlite3 *pdb,
+                                   const char *path)
+{
+    int failures = 0;
+    SB_CHECK("resume fixture: epilogue fault installed",
+             sqlite3_set_authorizer(pdb, sb_deny_coins_reset, NULL) ==
+             SQLITE_OK);
+    SB_CHECK("failed authority epilogue rejects import",
+             !boot_import_snapshot_db(ndb, path, NULL, NULL, NULL));
+
+    bool pending = false;
+    SB_CHECK("failed authority epilogue leaves pending receipt",
+             boot_snapshot_import_pending(ndb, &pending) && pending);
+    SB_CHECK("pending receipt prevents existing-UTXO skip",
+             !boot_snapshot_import_can_skip(ndb, SB_UTXO_COUNT));
+    SB_CHECK("resume fixture: epilogue fault removed",
+             sqlite3_set_authorizer(pdb, NULL, NULL) == SQLITE_OK);
+    SB_CHECK("pending snapshot import resumes",
+             boot_import_snapshot_db(ndb, path, NULL, NULL, NULL));
+    SB_CHECK("successful resume clears pending receipt",
+             boot_snapshot_import_pending(ndb, &pending) && !pending);
+    SB_CHECK("completed receipt allows existing-UTXO skip",
+             boot_snapshot_import_can_skip(ndb, SB_UTXO_COUNT));
+    return failures;
+}
+
 int test_snapshot_boot_seed(void);
 int test_snapshot_boot_seed(void)
 {
@@ -536,6 +574,7 @@ int test_snapshot_boot_seed(void)
      * never a silent stall or a named halt. */
     SB_CHECK("post: no active blocker after seed",
              blocker_count_active() == 0);
+    failures += sb_test_epilogue_resume(&ndb, pdb, snap_path);
 
     tip_finalize_stage_shutdown();
     main_state_free(&ms);

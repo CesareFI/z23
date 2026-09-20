@@ -26,6 +26,8 @@
 
 #include <sqlite3.h>
 
+#define SNAPSHOT_IMPORT_PENDING_KEY "snapshot_import_pending_v1"
+
 /* SQLite calls this only after executing more virtual-machine instructions.
  * Unlike a timer thread, it cannot claim progress while a disk operation is
  * hung. Returning zero preserves the statement; the callback records only a
@@ -106,23 +108,84 @@ static void snapshot_detach_after_begin_failure(sqlite3 *db)
                  "could not detach snapshot after BEGIN failure");
 }
 
-static bool snapshot_finish_copy(sqlite3 *db, bool copy_ok)
+static bool snapshot_finish_copy(struct node_db *ndb, bool copy_ok)
 {
     bool ok = copy_ok;
-    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+    const uint8_t pending = 1;
+    if (ok)
+        ok = node_db_state_set(ndb, SNAPSHOT_IMPORT_PENDING_KEY,
+                               &pending, sizeof(pending));
+    if (ok && sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         LOG_WARN("boot_snapshot_import",
                  "COMMIT failed (%s) — rolling back snapshot install",
-                 sqlite3_errmsg(db));
+                 sqlite3_errmsg(ndb->db));
         ok = false;
     }
-    if (!ok && !snapshot_rollback(db))
+    if (!ok && !snapshot_rollback(ndb->db))
         LOG_WARN("boot_snapshot_import",
                  "snapshot transaction remains open after rollback retries");
 
-    sqlite3_progress_handler(db, 0, NULL, NULL);
-    if (!snapshot_detach(db))
+    sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+    if (!snapshot_detach(ndb->db))
         ok = false;
     return ok;
+}
+
+bool boot_snapshot_import_pending(struct node_db *ndb, bool *pending)
+{
+    if (pending)
+        *pending = true;
+    if (!ndb || !ndb->open || !ndb->db || !pending)
+        return false;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(ndb->db,
+            "SELECT 1 FROM node_state WHERE key=?",
+            -1, &stmt, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(stmt, 1, SNAPSHOT_IMPORT_PENDING_KEY,
+                               -1, SQLITE_STATIC);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_step(stmt); // raw-sql-ok:read-only-snapshot-receipt
+    if (rc == SQLITE_ROW)
+        *pending = true;
+    else if (rc == SQLITE_DONE)
+        *pending = false;
+    int finalize_rc = sqlite3_finalize(stmt);
+    return (rc == SQLITE_ROW || rc == SQLITE_DONE) &&
+           finalize_rc == SQLITE_OK;
+}
+
+bool boot_snapshot_import_can_skip(struct node_db *ndb,
+                                   int64_t existing_utxos)
+{
+    bool pending = true;
+    if (!boot_snapshot_import_pending(ndb, &pending)) {
+        LOG_WARN("boot_snapshot_import",
+                 "snapshot import receipt unreadable; forcing retry");
+        return false;
+    }
+    return existing_utxos > 1000 && !pending;
+}
+
+static bool snapshot_finish_authority(struct node_db *ndb,
+                                      const char *main_db_path,
+                                      int snap_height,
+                                      const uint8_t best_hash[32])
+{
+    if (!reindex_epilogue_derive_imported_snapshot(
+            ndb, main_db_path, snap_height, best_hash)) {
+        LOG_WARN("boot_snapshot_import",
+                 "snapshot imported into node.db but authority epilogue failed "
+                 "at h=%d; refusing fast-rebuild success", snap_height);
+        return false;
+    }
+    if (!node_db_state_delete(ndb, SNAPSHOT_IMPORT_PENDING_KEY)) {
+        LOG_WARN("boot_snapshot_import",
+                 "authority complete but pending receipt clear failed");
+        return false;
+    }
+    return true;
 }
 
 bool boot_import_snapshot_db(struct node_db *ndb,
@@ -320,7 +383,7 @@ bool boot_import_snapshot_db(struct node_db *ndb,
     /* A failed COMMIT (SQLITE_FULL / I/O error) leaves the bulk-copy
      * transaction uncommitted. Never stamp coins_best_block until checked,
      * bounded rollback and detach cleanup has finished. */
-    ok = snapshot_finish_copy(ndb->db, ok);
+    ok = snapshot_finish_copy(ndb, ok);
 
     if (!ok) {
         LOG_FAIL("boot_snapshot_import",
@@ -333,14 +396,9 @@ bool boot_import_snapshot_db(struct node_db *ndb,
      * reindex epilogue so both paths derive coins_kv, coins_applied_height,
      * utxo_sha3, trusted cursors, and H* with one implementation. */
     const char *main_db_path = sqlite3_db_filename(ndb->db, "main");
-    if (!reindex_epilogue_derive_imported_snapshot(
-            ndb, main_db_path, (int)snap_height, best_hash)) {
-        LOG_WARN("boot_snapshot_import",
-                 "snapshot imported into node.db but authority epilogue failed "
-                 "at h=%lld; refusing fast-rebuild success",
-                 (long long)snap_height);
+    if (!snapshot_finish_authority(ndb, main_db_path,
+                                   (int)snap_height, best_hash))
         return false;
-    }
 
     if (out_utxo_count)  *out_utxo_count  = snap_utxos;
     if (out_snap_height) *out_snap_height = snap_height;

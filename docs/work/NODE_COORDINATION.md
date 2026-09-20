@@ -177,12 +177,13 @@ branch is:
 - `c51aa03ee` recover snapshot transaction cleanup failures; and
 - `c14b2f3f0` publish snapshot UTXOs and anchor atomically; and
 - `094e78880` report full node-state blob lengths; and
-- `ff66b1e8d` check node-state writer bounds and binds.
+- `ff66b1e8d` check node-state writer bounds and binds; and
+- `71a23fb92` preserve node-state read and delete errors.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `ff66b1e8d`.
+The latest committed engineering tip intended for publication is `71a23fb92`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -445,3 +446,33 @@ cryptographic validation. Hetzner's `f261d245d` block-swarm work is unaffected.
 Remaining risk: empty node-state blobs are still represented as unreadable by
 the historical API contract; changing that behavior would require a separate
 caller audit rather than being folded into error-lifecycle hardening.
+
+## 2026-09-20: resumable snapshot authority epilogue
+
+Snapshot UTXOs and their node.db anchor must commit before the separate
+consensus.db authority epilogue can run. On an epilogue failure, both startup
+callers nevertheless saw more than 1,000 node.db UTXOs on the next attempt and
+skipped the importer permanently. A deterministic denial of the coins-store
+reset established the red baseline: import returned false after committing the
+1,200-row node.db set, but left no durable indication that consensus authority
+was incomplete.
+
+The node.db import transaction now publishes a one-byte pending receipt with
+the UTXO set and anchor. Only a fully successful authority epilogue clears it.
+Both pre-restore and late service import paths consult the checked receipt and
+may use their existing-UTXO shortcut only when no receipt is pending; an
+unreadable receipt also forces retry. The regression denies the epilogue reset,
+proves the receipt survives and suppresses the shortcut, removes the fault,
+re-runs the real importer, and proves successful recovery clears the receipt
+and re-enables the shortcut.
+
+The focused normal and ASan/UBSan harnesses, generated-inventory check, lint,
+silent-error and complexity ratchets, architecture and consensus-parity gates,
+sealed-core check, and production C23 build pass. Consensus impact: NONE. The receipt
+coordinates recovery of local rebuildable databases only; validation,
+consensus/wire serialization, chain history, PoW, monetary policy, activation
+and cryptographic semantics are unchanged. Hetzner's `f261d245d` block-swarm
+work remains non-overlapping. Remaining risk: if a pending receipt survives but
+the snapshot artifact is removed before restart, the current boot path cannot
+resume it; a subsequent slice should explicitly gate that missing-artifact
+case rather than silently treating the node.db mirror as complete.

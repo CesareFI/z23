@@ -40,6 +40,12 @@
 
 struct node_db;
 
+/* Reads the durable cross-database recovery receipt. A found receipt is
+ * pending regardless of payload; malformed state must never suppress retry. */
+bool boot_snapshot_import_pending(struct node_db *ndb, bool *pending);
+bool boot_snapshot_import_can_skip(struct node_db *ndb,
+                                   int64_t existing_utxos);
+
 bool boot_import_snapshot_db(struct node_db *ndb,
                               const char *snapshot_path,
                               int64_t *out_utxo_count,

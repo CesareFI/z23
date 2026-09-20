@@ -1621,7 +1621,7 @@ static void boot_step_import_snapshot_first(struct app_context *ctx)
                 int64_t existing = coins_kv_count(progress_store_db());
                 if (existing <= 0)
                     existing = node_db_utxo_count(&g_node_db);
-                if (existing > 1000) {
+                if (boot_snapshot_import_can_skip(&g_node_db, existing)) {
                     printf("[boot] consensus_snapshot.db present "
                            "(%.0f MB) — node.db already has %lld UTXOs, "
                            "skipping pre-restore import\n",
