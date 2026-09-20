@@ -115,3 +115,24 @@ network/block-swarm work is unaffected. Next storage investigation: bound the
 proving-parameter loader's transient whole-file allocation only through the
 repository's cryptographic-core review/unseal process, or continue with
 LevelDB/index write efficiency without crossing that boundary.
+
+## 2026-09-20: legacy transaction-index record hardening
+
+The LevelDB block and transaction-index write entry points have no production
+callers in the current node; live persistence is SQLite, while the legacy
+LevelDB transaction index remains a read-only compatibility source. Optimizing
+that dead write path would therefore not improve IBD throughput.
+
+The live compatibility reader instead exposed a correctness risk: a found but
+truncated varint record returned success with a zero or partially decoded disk
+position. It also narrowed unchecked 64-bit values and accepted trailing bytes.
+The reader now decodes into temporary state, rejects truncation, overflow,
+out-of-range fields and trailing data, and publishes the position only after a
+complete parse. The failure policy is fail closed with context; the caller's
+output remains unchanged. Focused fixtures cover truncation, overflow, trailing
+data and a valid legacy record. Consensus impact: NONE; this only hardens an
+auxiliary lookup path and does not change block/transaction validity,
+serialization, PoW, monetary policy, activation or cryptographic validation.
+Hetzner's network/block-swarm work is unaffected. Remaining risk: native raw
+structure records are retained for existing local compatibility and should be
+separately inventoried before considering removal.

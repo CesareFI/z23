@@ -11,6 +11,7 @@
 #include "storage/coins_db.h"
 #include "validation/update_coins.h"
 #include "storage/block_index_db.h"
+#include "storage/txdb.h"
 #include "util/boot_phase.h"
 #include "crypto/equihash.h"
 #include "crypto/equihash_solver.h"
@@ -35,9 +36,89 @@ static bool test_eh_cancel(void *ctx)
     return *(const bool *)ctx;
 }
 
+static bool txindex_record_is_rejected(struct block_tree_db *btdb,
+                                       const char key[33],
+                                       const struct uint256 *txid,
+                                       const char *record, size_t record_len)
+{
+    struct disk_tx_pos pos = { .block_pos = {77, 88}, .nTxOffset = 99 };
+    if (!db_write(&btdb->db, key, 33, record, record_len, false))
+        return false;
+    if (block_tree_db_read_tx_index(btdb, txid, &pos))
+        return false;
+    return pos.block_pos.nFile == 77 && pos.block_pos.nPos == 88 &&
+           pos.nTxOffset == 99;
+}
+
+static bool txindex_record_is_accepted(struct block_tree_db *btdb,
+                                       const char key[33],
+                                       const struct uint256 *txid,
+                                       const char *record, size_t record_len)
+{
+    struct disk_tx_pos pos;
+    if (!db_write(&btdb->db, key, 33, record, record_len, false))
+        return false;
+    if (!block_tree_db_read_tx_index(btdb, txid, &pos))
+        return false;
+    return pos.block_pos.nFile == 1 && pos.block_pos.nPos == 2 &&
+           pos.nTxOffset == 3;
+}
+
+static int test_txindex_corrupt_record_refusal(void)
+{
+    int failures = 0;
+    char dbdir[512];
+    test_make_tmpdir(dbdir, sizeof(dbdir), "chain", "txindex_corrupt");
+    struct block_tree_db btdb;
+    if (!block_tree_db_open(&btdb, dbdir, 1 << 20, false, true)) {
+        printf("block_tree_db txindex corrupt records... SKIP (open failed)\n");
+        test_rm_rf(dbdir);
+        return 0;
+    }
+
+    struct uint256 txid;
+    uint256_set_null(&txid);
+    txid.data[0] = 0x42;
+    char key[33];
+    key[0] = 't';
+    memcpy(key + 1, txid.data, sizeof(txid.data));
+
+    const char truncated[] = { (char)0x80 };
+    bool rejected = txindex_record_is_rejected(
+        &btdb, key, &txid, truncated, sizeof(truncated));
+
+    const char valid[] = { 1, 2, 3 };
+    bool accepted = txindex_record_is_accepted(
+        &btdb, key, &txid, valid, sizeof(valid));
+
+    const char trailing[] = { 1, 2, 3, 4 };
+    bool trailing_rejected = txindex_record_is_rejected(
+        &btdb, key, &txid, trailing, sizeof(trailing));
+
+    const char overflow[] = {
+        (char)0xff, (char)0xff, (char)0xff, (char)0xff,
+        (char)0xff, (char)0xff, (char)0xff, (char)0xff,
+        (char)0xff, (char)0xff, (char)0xff
+    };
+    bool overflow_rejected = txindex_record_is_rejected(
+        &btdb, key, &txid, overflow, sizeof(overflow));
+
+    if (rejected && accepted && trailing_rejected && overflow_rejected) {
+        printf("block_tree_db txindex corrupt records... OK\n");
+    } else {
+        printf("block_tree_db txindex corrupt records... FAIL\n");
+        failures++;
+    }
+    block_tree_db_close(&btdb);
+    test_rm_rf(dbdir);
+    return failures;
+}
+
 int test_chain(void)
 {
     int failures = 0;
+
+    failures += test_txindex_corrupt_record_refusal();
 
     printf("CheckProofOfWork... ");
     {

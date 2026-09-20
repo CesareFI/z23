@@ -7,6 +7,7 @@
 #include "storage/txdb.h"
 #include "core/serialize.h"
 #include "util/log_macros.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -83,6 +84,7 @@ static size_t decode_varint(const uint8_t *buf, size_t len, uint64_t *out)
         n = (n << 7) | (ch & 0x7F);
         i++;
         if (ch & 0x80) {
+            if (n == UINT64_MAX) return 0;
             n++; /* Bitcoin varint: high bit = more bytes, add 1 */
         } else {
             *out = n;
@@ -96,6 +98,9 @@ bool block_tree_db_read_tx_index(struct block_tree_db *btdb,
                                   const struct uint256 *txid,
                                   struct disk_tx_pos *pos)
 {
+    if (!btdb || !txid || !pos)
+        LOG_FAIL("txdb", "read_tx_index: invalid argument");
+
     char key[64];
     size_t keylen;
     make_key_char_hash(key, &keylen, DB_TXINDEX, txid);
@@ -115,26 +120,41 @@ bool block_tree_db_read_tx_index(struct block_tree_db *btdb,
     /* Decode varint format (written by zclassicd/Bitcoin Core):
      * CDiskTxPos inherits CDiskBlockPos: varint(nFile) + varint(nDataPos)
      * then adds varint(nTxOffset) */
-    disk_tx_pos_init(pos);
+    struct disk_tx_pos decoded;
+    disk_tx_pos_init(&decoded);
     const uint8_t *p = (const uint8_t *)val;
     size_t off = 0;
     uint64_t v;
 
     size_t consumed = decode_varint(p + off, vallen - off, &v);
-    if (!consumed) { free(val); return true; }
-    pos->block_pos.nFile = (int)v;
+    if (!consumed || v > INT_MAX) {
+        free(val);
+        LOG_FAIL("txdb", "read_tx_index: invalid file varint");
+    }
+    decoded.block_pos.nFile = (int)v;
     off += consumed;
 
     consumed = decode_varint(p + off, vallen - off, &v);
-    if (!consumed) { free(val); return true; }
-    pos->block_pos.nPos = (unsigned int)v;
+    if (!consumed || v > UINT_MAX) {
+        free(val);
+        LOG_FAIL("txdb", "read_tx_index: invalid block-position varint");
+    }
+    decoded.block_pos.nPos = (unsigned int)v;
     off += consumed;
 
     consumed = decode_varint(p + off, vallen - off, &v);
-    if (!consumed) { free(val); return true; }
-    pos->nTxOffset = (unsigned int)v;
+    if (!consumed || v > UINT_MAX) {
+        free(val);
+        LOG_FAIL("txdb", "read_tx_index: invalid transaction-offset varint");
+    }
+    decoded.nTxOffset = (unsigned int)v;
     off += consumed;
 
+    if (off != vallen) {
+        free(val);
+        LOG_FAIL("txdb", "read_tx_index: trailing bytes after disk position");
+    }
+    *pos = decoded;
     free(val);
     return true;
 }
