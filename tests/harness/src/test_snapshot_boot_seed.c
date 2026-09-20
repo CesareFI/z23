@@ -238,6 +238,10 @@ static int sb_test_malformed_height(struct node_db *ndb, const char *path)
     SB_CHECK("malformed snapshot leaves outputs untouched",
              count == -1 && height == -1 &&
              memcmp(best, zero_hash, sizeof(best)) == 0);
+    SB_CHECK("overflow-height fixture planted",
+             sb_set_snapshot_height(path, "2147483647"));
+    SB_CHECK("height whose next cursor would overflow is rejected",
+             !boot_import_snapshot_db(ndb, path, NULL, NULL, NULL));
     return failures;
 }
 
@@ -408,12 +412,36 @@ static int sb_test_epilogue_resume(struct node_db *ndb, sqlite3 *pdb,
              !boot_snapshot_import_can_skip(ndb, SB_UTXO_COUNT));
     SB_CHECK("resume fixture: epilogue fault removed",
              sqlite3_set_authorizer(pdb, NULL, NULL) == SQLITE_OK);
+    SB_CHECK("resume fixture: snapshot artifact removed",
+             unlink(path) == 0);
+    int64_t resumed_utxos = 0, resumed_height = 0;
+    uint8_t resumed_hash[32] = {0};
+    uint8_t expected_hash[32] = {0};
+    sb_tip_hash(expected_hash);
     SB_CHECK("pending snapshot import resumes",
-             boot_import_snapshot_db(ndb, path, NULL, NULL, NULL));
+             boot_snapshot_import_resume(ndb, &resumed_utxos,
+                                         &resumed_height, resumed_hash));
+    SB_CHECK("artifact-free resume reports installed UTXOs",
+             resumed_utxos == SB_UTXO_COUNT);
+    SB_CHECK("artifact-free resume reports snapshot height",
+             resumed_height == SB_SNAP_HEIGHT);
+    SB_CHECK("artifact-free resume reports snapshot hash",
+             memcmp(resumed_hash, expected_hash, sizeof(resumed_hash)) == 0);
     SB_CHECK("successful resume clears pending receipt",
              boot_snapshot_import_pending(ndb, &pending) && !pending);
     SB_CHECK("completed receipt allows existing-UTXO skip",
              boot_snapshot_import_can_skip(ndb, SB_UTXO_COUNT));
+    const uint8_t malformed_receipt = 1;
+    SB_CHECK("malformed receipt fixture planted",
+             node_db_state_set(ndb, "snapshot_import_pending_v1",
+                               &malformed_receipt,
+                               sizeof(malformed_receipt)));
+    SB_CHECK("malformed receipt fails closed",
+             !boot_snapshot_import_resume(ndb, NULL, NULL, NULL));
+    SB_CHECK("malformed receipt remains pending",
+             boot_snapshot_import_pending(ndb, &pending) && pending);
+    SB_CHECK("malformed receipt fixture cleared",
+             node_db_state_delete(ndb, "snapshot_import_pending_v1"));
     return failures;
 }
 

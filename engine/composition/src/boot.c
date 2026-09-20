@@ -1594,20 +1594,18 @@ static bool boot_step_open_progress_store(struct app_context *ctx)
 
 /* Snapshot-first: import a downloaded consensus_snapshot.db before any
  * chain-tip restoration runs. */
-static void boot_step_import_snapshot_first(struct app_context *ctx)
+static bool boot_step_import_snapshot_first(struct app_context *ctx)
 {
-    /* Snapshot-first: if a downloaded consensus_snapshot.db
-     * is present in the datadir, import its UTXOs into node.db *before*
-     * any chain-tip restoration runs. This makes coins_best_block
-     * resolve to the snapshot height when the coins view first reads
-     * it, so utxo_recovery_restore_chain_tip / chain_restore_finalize
-     * observe the snapshot anchor as ground truth instead of racing
-     * past it with the older block_index.bin tip and leaving utxos=0.
-     *
-     * Idempotent: the helper refuses to import if main.utxos already
-     * holds the snapshot's contents (handled by checking the source
-     * file's integrity + size; a re-run with utxos>1000 is a no-op via
-     * the export guard in consensus_snapshot_export_service_run_bound). */
+    /* Import downloaded UTXOs before chain-tip restoration, so the coins view
+     * and chain_restore_finalize observe the snapshot anchor rather than an
+     * older block_index.bin tip. The helper is idempotent: source integrity and
+     * size are checked, while an already installed set above the plausibility
+     * floor is a no-op through the export guard. A durable pending receipt is
+     * resumed first, even when the downloaded artifact is no longer present.
+     */
+    if (g_node_db.open &&
+        !boot_snapshot_import_resume_pending(&g_node_db))
+        return false;
     if (g_node_db.open) {
         char snap_path[PATH_MAX];
         int sp_n = snprintf(snap_path, sizeof(snap_path),
@@ -1660,6 +1658,7 @@ static void boot_step_import_snapshot_first(struct app_context *ctx)
             }
         }
     }
+    return true;
 }
 
 /* -snapshot: create a snapshot of a legacy datadir and import it. */
@@ -1996,7 +1995,8 @@ static bool boot_seq_open_coins_state(struct app_context *ctx)
     /* Timing only: the stretch to the block_index_load marker (~1.3–13s warm)
      * had no markers — attribute its heaviest steps via boot_submark(). */
     int64_t t_sub = boot_clock_ms();
-    boot_step_import_snapshot_first(ctx);
+    if (!boot_step_import_snapshot_first(ctx))
+        return false;
     t_sub = boot_submark("coins.snapshot_first", t_sub);
     if (!boot_step_create_legacy_snapshot(ctx))
         return false;

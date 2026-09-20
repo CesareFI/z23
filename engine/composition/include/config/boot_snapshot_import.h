@@ -45,6 +45,15 @@ struct node_db;
 bool boot_snapshot_import_pending(struct node_db *ndb, bool *pending);
 bool boot_snapshot_import_can_skip(struct node_db *ndb,
                                    int64_t existing_utxos);
+/* Completes a pending authority epilogue from its self-contained node.db
+ * receipt; no snapshot artifact is required. Outputs publish only on success. */
+bool boot_snapshot_import_resume(struct node_db *ndb,
+                                 int64_t *out_utxo_count,
+                                 int64_t *out_snap_height,
+                                 uint8_t out_best_hash[32]);
+/* Boot-time orchestration: no-op without a receipt, otherwise resume and
+ * publish the recovered import to chain-restore/event observers. */
+bool boot_snapshot_import_resume_pending(struct node_db *ndb);
 
 bool boot_import_snapshot_db(struct node_db *ndb,
                               const char *snapshot_path,

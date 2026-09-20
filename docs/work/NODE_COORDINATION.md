@@ -178,12 +178,13 @@ branch is:
 - `c14b2f3f0` publish snapshot UTXOs and anchor atomically; and
 - `094e78880` report full node-state blob lengths; and
 - `ff66b1e8d` check node-state writer bounds and binds; and
-- `71a23fb92` preserve node-state read and delete errors.
+- `71a23fb92` preserve node-state read and delete errors; and
+- `1a155d843` resume incomplete snapshot authority imports.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `71a23fb92`.
+The latest committed engineering tip intended for publication is `1a155d843`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -476,3 +477,35 @@ work remains non-overlapping. Remaining risk: if a pending receipt survives but
 the snapshot artifact is removed before restart, the current boot path cannot
 resume it; a subsequent slice should explicitly gate that missing-artifact
 case rather than silently treating the node.db mirror as complete.
+
+## 2026-09-20: artifact-independent snapshot recovery
+
+The first durable receipt prevented the existing-UTXO shortcut after an
+authority-epilogue failure, but its one-byte payload could not finish recovery
+without reopening the original snapshot. The measured restart reproduction
+denied the coins reset after the 1,200-row node.db commit, removed the snapshot
+artifact, and then failed the only available retry at `stat(2)`; the receipt
+remained pending indefinitely.
+
+The receipt now stores a version, bounded snapshot height, and best-block hash
+in a fixed 41-byte little-endian record inside the same transaction as the UTXO
+generation and `coins_best_block`. Before chain restoration, boot validates the
+record length/version, requires at least 1,000 installed UTXOs, byte-matches its
+hash to the installed anchor, and completes the shared authority epilogue
+directly from node.db. Missing, malformed, mismatched, or unreadable recovery
+state fails boot closed. Snapshot heights that cannot safely form the epilogue's
+signed 32-bit next-height cursor are rejected before import.
+
+The focused regression removes the artifact after the injected epilogue
+failure, resumes successfully, verifies the exact UTXO count, height and hash,
+and proves the receipt clears only after completion. A one-byte malformed
+receipt remains pending and is rejected. The focused normal and ASan/UBSan
+harnesses, generated-inventory check, fast lint, file-size/flag, complexity and
+silent-error ratchets, architecture and consensus-parity gates, sealed-core
+check, and production C23 build pass. Consensus impact: NONE. This is local recovery
+metadata around rebuildable node/progress databases and changes no validation,
+chain history, consensus/wire serialization, PoW, monetary policy, activation,
+or cryptographic semantics. Hetzner's `f261d245d` block-swarm work remains
+non-overlapping. Remaining risk: receipt removal follows the cross-database
+epilogue and is not atomic with it; its safe failure mode is an idempotent
+epilogue replay on the next boot.

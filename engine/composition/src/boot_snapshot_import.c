@@ -7,10 +7,13 @@
  */
 
 #include "config/boot_snapshot_import.h"
+#include "base/serialize_le.h"
 #include "chain/checkpoints.h"
 #include "coins/utxo_commitment.h"
 #include "models/database.h"
+#include "services/chain_restore_boot_snapshot.h"
 #include "services/reindex_epilogue.h"
+#include "event/event.h"
 #include "util/ar_step_readonly.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
@@ -27,6 +30,8 @@
 #include <sqlite3.h>
 
 #define SNAPSHOT_IMPORT_PENDING_KEY "snapshot_import_pending_v1"
+#define SNAPSHOT_IMPORT_RECEIPT_VERSION 1u
+#define SNAPSHOT_IMPORT_RECEIPT_LEN (1u + 8u + 32u)
 
 /* SQLite calls this only after executing more virtual-machine instructions.
  * Unlike a timer thread, it cannot claim progress while a disk operation is
@@ -50,7 +55,7 @@ static bool snapshot_read_height(sqlite3 *src, int64_t *out_height)
         if (sqlite3_step(q) == SQLITE_ROW) {  // raw-sql-ok:read-only-snapshot
             const unsigned char *v = sqlite3_column_text(q, 0);
             ok = v && zcl_parse_i64((const char *)v, out_height) &&
-                 *out_height >= 1;
+                 *out_height >= 1 && *out_height < INT32_MAX;
         }
     }
     sqlite3_finalize(q);
@@ -108,13 +113,19 @@ static void snapshot_detach_after_begin_failure(sqlite3 *db)
                  "could not detach snapshot after BEGIN failure");
 }
 
-static bool snapshot_finish_copy(struct node_db *ndb, bool copy_ok)
+static bool snapshot_finish_copy(struct node_db *ndb, bool copy_ok,
+                                 int64_t snap_height,
+                                 const uint8_t best_hash[32])
 {
     bool ok = copy_ok;
-    const uint8_t pending = 1;
+    uint8_t receipt[SNAPSHOT_IMPORT_RECEIPT_LEN] = {
+        SNAPSHOT_IMPORT_RECEIPT_VERSION
+    };
+    zcl_write_i64_le(receipt + 1, snap_height);
+    memcpy(receipt + 9, best_hash, 32);
     if (ok)
         ok = node_db_state_set(ndb, SNAPSHOT_IMPORT_PENDING_KEY,
-                               &pending, sizeof(pending));
+                               receipt, sizeof(receipt));
     if (ok && sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         LOG_WARN("boot_snapshot_import",
                  "COMMIT failed (%s) — rolling back snapshot install",
@@ -185,6 +196,100 @@ static bool snapshot_finish_authority(struct node_db *ndb,
                  "authority complete but pending receipt clear failed");
         return false;
     }
+    return true;
+}
+
+struct snapshot_pending_receipt {
+    int height;
+    int64_t utxo_count;
+    uint8_t best_hash[32];
+};
+
+static bool snapshot_pending_receipt_load(
+    struct node_db *ndb, struct snapshot_pending_receipt *out)
+{
+    if (!ndb || !ndb->open || !ndb->db || !out)
+        return false;
+
+    uint8_t receipt[SNAPSHOT_IMPORT_RECEIPT_LEN] = {0};
+    size_t receipt_len = 0;
+    if (!node_db_state_get(ndb, SNAPSHOT_IMPORT_PENDING_KEY,
+                           receipt, sizeof(receipt), &receipt_len) ||
+        receipt_len != sizeof(receipt) ||
+        receipt[0] != SNAPSHOT_IMPORT_RECEIPT_VERSION) {
+        LOG_WARN("boot_snapshot_import",
+                 "pending snapshot receipt missing or malformed");
+        return false;
+    }
+
+    int64_t snap_height = zcl_read_i64_le(receipt + 1);
+    int64_t utxo_count = node_db_utxo_count(ndb);
+    uint8_t stored_hash[32] = {0};
+    size_t stored_hash_len = 0;
+    if (snap_height < 1 || snap_height >= INT32_MAX || utxo_count < 1000 ||
+        !node_db_state_get(ndb, "coins_best_block", stored_hash,
+                           sizeof(stored_hash), &stored_hash_len) ||
+        stored_hash_len != sizeof(stored_hash) ||
+        memcmp(stored_hash, receipt + 9, sizeof(stored_hash)) != 0) {
+        LOG_WARN("boot_snapshot_import",
+                 "pending snapshot receipt does not match installed anchor");
+        return false;
+    }
+
+    out->height = (int)snap_height;
+    out->utxo_count = utxo_count;
+    memcpy(out->best_hash, receipt + 9, sizeof(out->best_hash));
+    return true;
+}
+
+bool boot_snapshot_import_resume(struct node_db *ndb,
+                                 int64_t *out_utxo_count,
+                                 int64_t *out_snap_height,
+                                 uint8_t out_best_hash[32])
+{
+    struct snapshot_pending_receipt receipt = {0};
+    if (!snapshot_pending_receipt_load(ndb, &receipt))
+        return false;
+
+    const char *main_db_path = sqlite3_db_filename(ndb->db, "main");
+    if (!snapshot_finish_authority(ndb, main_db_path,
+                                   receipt.height, receipt.best_hash))
+        return false;
+
+    if (out_utxo_count)
+        *out_utxo_count = receipt.utxo_count;
+    if (out_snap_height)
+        *out_snap_height = receipt.height;
+    if (out_best_hash)
+        memcpy(out_best_hash, receipt.best_hash, 32);
+    return true;
+}
+
+bool boot_snapshot_import_resume_pending(struct node_db *ndb)
+{
+    bool pending = false;
+    if (!boot_snapshot_import_pending(ndb, &pending)) {
+        LOG_WARN("boot_snapshot_import", "snapshot recovery receipt unreadable");
+        return false;
+    }
+    if (!pending)
+        return true;
+
+    int64_t utxo_count = 0, snap_height = 0;
+    uint8_t best_hash[32] = {0};
+    if (!boot_snapshot_import_resume(ndb, &utxo_count,
+                                     &snap_height, best_hash)) {
+        LOG_WARN("boot_snapshot_import",
+                 "pending snapshot authority recovery failed");
+        return false;
+    }
+    chain_restore_record_snapshot_import(true, utxo_count, snap_height);
+    event_emitf(EV_BOOT_UTXO_IMPORT, 0,
+                "phase=pre-restore-resume ok=1 utxos=%lld height=%lld",
+                (long long)utxo_count, (long long)snap_height);
+    printf("[boot] pending snapshot authority recovery OK: "
+           "%lld UTXOs at h=%lld\n",
+           (long long)utxo_count, (long long)snap_height);
     return true;
 }
 
@@ -383,7 +488,7 @@ bool boot_import_snapshot_db(struct node_db *ndb,
     /* A failed COMMIT (SQLITE_FULL / I/O error) leaves the bulk-copy
      * transaction uncommitted. Never stamp coins_best_block until checked,
      * bounded rollback and detach cleanup has finished. */
-    ok = snapshot_finish_copy(ndb, ok);
+    ok = snapshot_finish_copy(ndb, ok, snap_height, best_hash);
 
     if (!ok) {
         LOG_FAIL("boot_snapshot_import",
