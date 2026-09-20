@@ -417,6 +417,28 @@ bool node_db_apply_writable_tuning(sqlite3 *db)
     return true;
 }
 
+bool node_db_apply_existing_runtime_tuning(sqlite3 *db)
+{
+    if (!db)
+        LOG_FAIL("db", "runtime tuning requires an open SQLite handle");
+    static const char sql[] =
+        "PRAGMA synchronous=NORMAL;"
+        "PRAGMA cache_size=-2048;"
+        "PRAGMA mmap_size=0;"
+        "PRAGMA temp_store=MEMORY;"
+        "PRAGMA foreign_keys=ON";
+    if (db_exec_checked(db, sql, "existing_runtime_connection_tuning") !=
+        SQLITE_OK)
+        return false;
+    int rc = sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
+    if (rc != SQLITE_OK) {
+        LOG_WARN("db", "db: runtime busy timeout failed: %s (rc=%d)",
+                 sqlite3_errmsg(db), rc);
+        return false;
+    }
+    return true;
+}
+
 /* The db_long_op_progress struct + the maintenance-op progress/registry
  * machinery (db_long_op_start/finish, db_exec_checked_progress, and the
  * busy-op publication that backs node_db_long_op_active) live in
@@ -849,14 +871,12 @@ bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
      * pages, schema DDL, migration, or full cached-statement preparation on a
      * periodic open. A small cache prevents a short-lived poller from competing
      * with the canonical connection for the lane's memory ceiling. */
-    (void)sqlite3_exec(ndb->db,
-        "PRAGMA synchronous=NORMAL;"
-        "PRAGMA cache_size=-2048;"
-        "PRAGMA mmap_size=0;"
-        "PRAGMA temp_store=MEMORY;"
-        "PRAGMA foreign_keys=ON",
-        NULL, NULL, NULL);
-    (void)sqlite3_busy_timeout(ndb->db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
+    if (!node_db_apply_existing_runtime_tuning(ndb->db)) {
+        LOG_WARN("db", "lightweight runtime reopen refused incomplete "
+                 "connection tuning reason=%s", reason);
+        db_lifetime_scope_leave(&open_scope);
+        return node_db_open_abort(ndb);
+    }
     ndb->open = true;
 
     int schema = node_db_schema_version(ndb);

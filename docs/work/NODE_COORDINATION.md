@@ -83,3 +83,8 @@ The explorer's short-lived read-only connections now apply the same fail-closed
 contract: failed mmap tuning or busy-timeout setup closes the handle before any
 page or API query can use it. Fault injection denies the tuning PRAGMA and
 proves both rejection and normal recovery.
+
+Short-lived writable runtime reopens also used to discard their connection
+PRAGMA and busy-timeout results. They now use a separately tested fail-closed
+helper that preserves the established WAL mode and smaller 2 MiB cache while
+rejecting and cleaning up any partially tuned handle.

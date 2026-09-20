@@ -2688,6 +2688,27 @@ static void check_sqlite_writable_tuning_fails_closed(int *failures)
     else { printf("FAIL\n"); (*failures)++; }
 }
 
+static void check_sqlite_runtime_tuning_fails_closed(int *failures)
+{
+    printf("SQLite runtime reopen tuning rejects a failed PRAGMA batch... ");
+    sqlite3 *db = NULL;
+    bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK && db != NULL;
+    if (ok)
+        ok = sqlite3_set_authorizer(db, sqlite_test_deny_pragma, NULL) ==
+             SQLITE_OK;
+    if (ok)
+        ok = !node_db_apply_existing_runtime_tuning(db);
+    if (db)
+        ok = sqlite3_set_authorizer(db, NULL, NULL) == SQLITE_OK && ok;
+    if (ok)
+        ok = node_db_apply_existing_runtime_tuning(db);
+    if (db)
+        ok = sqlite3_close(db) == SQLITE_OK && ok;
+
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); (*failures)++; }
+}
+
 static void check_sqlite_48_sqlite_node_state_detached_fallback_wait(int *failures)
 {
     printf("SQLite node_state detached fallback waits out writer lock... ");
@@ -3631,6 +3652,7 @@ int test_sqlite(void) {
 
     check_sqlite_47_sqlite_pragma_tuning_honors_constrained_(&failures);
     check_sqlite_writable_tuning_fails_closed(&failures);
+    check_sqlite_runtime_tuning_fails_closed(&failures);
 
     /* Chain-evidence state writes have to survive transient node.db writer
      * locks during live health/deploy checks. The normal handle has a zero

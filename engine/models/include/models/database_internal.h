@@ -207,6 +207,10 @@ int db_exec_checked(sqlite3 *db, const char *sql, const char *where);
  * without weakening or duplicating the production configuration. */
 bool node_db_apply_writable_tuning(sqlite3 *db);
 
+/* Apply the smaller connection-local settings used by short-lived runtime
+ * reopens without changing the database's established journal mode. */
+bool node_db_apply_existing_runtime_tuning(sqlite3 *db);
+
 /* Apply the idempotent baseline schema DDL (SCHEMA[]). Defined in
  * database_schema.c; called once from node_db_open(). Returns false on a
  * real schema regression (boot must halt). */
