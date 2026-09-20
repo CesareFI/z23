@@ -55,6 +55,23 @@ static bool snapshot_read_height(sqlite3 *src, int64_t *out_height)
     return ok;
 }
 
+static int snapshot_attach(sqlite3 *db, const char *path)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+                               "ATTACH DATABASE ? AS snapsrc",
+                               -1, &st, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(st, 1, path, -1, SQLITE_TRANSIENT);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_step(st); // raw-sql-ok:snapshot-attach
+
+    int finalize_rc = sqlite3_finalize(st);
+    if (rc == SQLITE_DONE)
+        rc = finalize_rc;
+    return rc;
+}
+
 bool boot_import_snapshot_db(struct node_db *ndb,
                               const char *snapshot_path,
                               int64_t *out_utxo_count,
@@ -184,15 +201,10 @@ bool boot_import_snapshot_db(struct node_db *ndb,
                                               prior_cb, sizeof(prior_cb),
                                               &prior_cb_len);
 
-    char attach_sql[640];
-    snprintf(attach_sql, sizeof(attach_sql),
-             "ATTACH DATABASE '%s' AS snapsrc", snapshot_path);
     char *err = NULL;
-    if (sqlite3_exec(ndb->db, attach_sql, NULL, NULL, &err) != SQLITE_OK) {
-        char msg[256] = "?";
-        if (err) { snprintf(msg, sizeof(msg), "%s", err); sqlite3_free(err); }
-        LOG_FAIL("boot_snapshot_import", "ATTACH failed: %s", msg);
-    }
+    if (snapshot_attach(ndb->db, snapshot_path) != SQLITE_OK)
+        LOG_FAIL("boot_snapshot_import", "ATTACH failed: %s",
+                 sqlite3_errmsg(ndb->db));
 
     bool ok = true;
     if (sqlite3_exec(ndb->db, "BEGIN IMMEDIATE", NULL, NULL, &err)

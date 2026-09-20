@@ -171,12 +171,13 @@ branch is:
 - `dd3f65ad6` reject malformed legacy LevelDB transaction-index records;
 - `f9c65b069` reject corrupt SQLite transaction-index cursor/digest state;
 - `fcf59a057` fail closed on address-backfill errors; and
-- `4d9446747` log transaction-index orchestration failures.
+- `4d9446747` log transaction-index orchestration failures; and
+- `c7d6aa74d` reject malformed snapshot height metadata.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `4d9446747`.
+The latest committed engineering tip intended for publication is `c7d6aa74d`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -273,3 +274,28 @@ block-swarm networking and measurement, with no overlap. Remaining risk: the
 importer's post-attach transaction and cleanup paths still deserve
 deterministic SQLite fault injection. Recommended next investigation: prove
 rollback and detach behavior under a failed bulk copy or authority epilogue.
+
+## 2026-09-20: bound snapshot attach path
+
+The importer constructed `ATTACH DATABASE` by interpolating the snapshot path
+into a fixed 640-byte SQL buffer. A real snapshot fixture whose valid filename
+contained an apostrophe established the red baseline: integrity and metadata
+reads succeeded, but `ATTACH` failed with a syntax error and the otherwise
+valid snapshot could not be imported. The same construction also made SQL
+syntax depend on path contents and could truncate a sufficiently long path.
+
+The attach boundary now prepares a constant statement and binds the path as a
+SQLite parameter with transient ownership. There is no fixed statement buffer
+and filename bytes are never interpreted as SQL. The apostrophe-path fixture
+now completes the full 1,200-UTXO import and all authority/commitment checks.
+The focused normal and ASan/UBSan groups, `lint-fast`, architecture,
+consensus-parity, sealed-core and the production C23 build pass. The refactor
+also reduced the importer complexity pin from M=51 to M=50.
+
+Consensus impact: NONE. Only local snapshot file selection changed; schemas,
+stored consensus bytes, chain history, validation, serialization, PoW,
+monetary policy, activation and cryptographic semantics are unchanged.
+Hetzner's `f261d245d` work remains in block-swarm networking and does not
+overlap. Remaining risk and recommended next investigation: fault-inject the
+bulk-copy rollback path and verify the prior UTXO set, transaction state,
+attached-schema state and progress handler are all restored before returning.

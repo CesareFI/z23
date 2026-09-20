@@ -259,7 +259,9 @@ int test_snapshot_boot_seed(void)
 
     /* ── Build the on-disk fixture snapshot. */
     char snap_path[600];
-    snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
+    /* Exercise ATTACH path handling with a valid filename that must never be
+     * interpolated into SQL text. */
+    snprintf(snap_path, sizeof(snap_path), "%s/consensus'_snapshot.db", dir);
     uint8_t tip_hash[32];
     sb_tip_hash(tip_hash);
     SB_CHECK("fixture: snapshot.db built", sb_build_fixture(snap_path, tip_hash));
