@@ -286,6 +286,33 @@ static bool sqlite_state_bounds_ok(struct node_db *ndb,
     return ok;
 }
 
+static bool sqlite_state_key_bind_errors_ok(struct node_db *ndb)
+{
+    bool ok = true;
+    char long_key[200];
+    memset(long_key, 'k', sizeof(long_key) - 1);
+    long_key[sizeof(long_key) - 1] = '\0';
+    uint8_t value = 0x42;
+    ok = ok && node_db_state_set(ndb, long_key, &value, sizeof(value));
+
+    int prior_limit = sqlite3_limit(ndb->db, SQLITE_LIMIT_LENGTH, 128);
+    uint8_t got = 0;
+    size_t got_len = 0;
+    ok = ok && !node_db_state_get(ndb, long_key, &got,
+                                  sizeof(got), &got_len);
+    struct node_db_status status;
+    node_db_get_status(ndb, &status);
+    ok = ok && status.last_sqlite_rc == SQLITE_TOOBIG;
+    ok = ok && !node_db_state_delete(ndb, long_key);
+    sqlite3_limit(ndb->db, SQLITE_LIMIT_LENGTH, prior_limit);
+
+    ok = ok && node_db_state_get(ndb, long_key, &got,
+                                 sizeof(got), &got_len);
+    ok = ok && got_len == 1 && got == value;
+    ok = ok && node_db_state_delete(ndb, long_key);
+    return ok;
+}
+
 static void check_sqlite_2_sqlite_state_set_get(int *failures)
 {
     printf("SQLite state set/get... ");
@@ -304,6 +331,7 @@ static void check_sqlite_2_sqlite_state_set_get(int *failures)
     ok = ok && (got_len == 32) && (got[0] == 0xde);
 
     ok = ok && sqlite_state_bounds_ok(&ndb, blob);
+    ok = ok && sqlite_state_key_bind_errors_ok(&ndb);
     node_db_close(&ndb);
     if (ok) printf("OK\n");
     else { printf("FAIL\n"); (*failures)++; }

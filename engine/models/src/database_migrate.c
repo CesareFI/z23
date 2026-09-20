@@ -33,6 +33,20 @@ static bool state_write_args_valid(const struct node_db *ndb,
     return ndb && ndb->open && ndb->db && key && value && len <= INT_MAX;
 }
 
+static bool state_key_args_valid(const struct node_db *ndb, const char *key)
+{
+    return ndb && ndb->open && ndb->db && key;
+}
+
+static void state_get_note_failure(struct node_db *ndb, const char *key,
+                                   int rc)
+{
+    if (rc != SQLITE_DONE)
+        LOG_WARN("node_db", "state_get failed key=%s rc=%d: %s",
+                 key, rc, sqlite3_errmsg(ndb->db));
+    node_db_note_activity(ndb, "state_get", rc);
+}
+
 /* Binds, steps and finalizes one node_state writer. The returned rc owns all
  * three phases so no bind/finalize failure can be mistaken for persistence. */
 static int state_write_bound(sqlite3_stmt *stmt, const char *key,
@@ -189,7 +203,12 @@ bool node_db_state_set_detached(struct node_db *ndb, const char *key,
 bool node_db_state_get(struct node_db *ndb, const char *key,
                        void *value, size_t max_len, size_t *out_len)
 {
-    if (!ndb->open) return false;
+    if (!state_key_args_valid(ndb, key) || (!value && max_len > 0)) {
+        if (ndb)
+            node_db_note_activity(ndb, "state_get_invalid", SQLITE_MISUSE);
+        LOG_WARN("node_db", "state_get refused invalid arguments");
+        return false;
+    }
 
     /* Prepare a fresh statement per call rather than reusing the
      * cached ndb->stmt_state_get. SQLite statements are not
@@ -204,18 +223,22 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
      * background task, not per block). The cached stmt_state_get
      * field is intentionally unused. */
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
+    int rc = sqlite3_prepare_v2(ndb->db,
             "SELECT value FROM node_state WHERE key=?",
-            -1, &s, NULL) != SQLITE_OK || !s) {
-        node_db_note_activity(ndb, "state_get",
-                              s ? SQLITE_OK : SQLITE_ERROR);
-        return false;
-    }
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
-    int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
-    if (rc != SQLITE_ROW) {
+            -1, &s, NULL);
+    if (rc != SQLITE_OK || !s) {
+        if (rc == SQLITE_OK)
+            rc = SQLITE_ERROR;
         sqlite3_finalize(s);
         node_db_note_activity(ndb, "state_get", rc);
+        return false;
+    }
+    rc = sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(s);
+        state_get_note_failure(ndb, key, rc);
         return false;
     }
     int blob_len = sqlite3_column_bytes(s, 0);
@@ -226,9 +249,14 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
     }
     size_t copy = (size_t)blob_len < max_len
                   ? (size_t)blob_len : max_len;
-    memcpy(value, sqlite3_column_blob(s, 0), copy);
+    if (copy > 0)
+        memcpy(value, sqlite3_column_blob(s, 0), copy);
+    int finalize_rc = sqlite3_finalize(s);
+    if (finalize_rc != SQLITE_OK) {
+        node_db_note_activity(ndb, "state_get", finalize_rc);
+        return false;
+    }
     if (out_len) *out_len = (size_t)blob_len;
-    sqlite3_finalize(s);
     node_db_note_activity(ndb, "state_get", rc);
     return true;
 }
@@ -250,8 +278,10 @@ bool node_db_state_get_int(struct node_db *ndb,
 
 bool node_db_state_delete(struct node_db *ndb, const char *key)
 {
-    if (!ndb || !ndb->open || !key)
+    if (!state_key_args_valid(ndb, key)) {
+        LOG_WARN("node_db", "state_delete refused invalid arguments");
         return false;
+    }
 
     /* Per-call prepare, NOT a cached statement: same non-thread-safe-stmt
      * rationale as node_db_state_set (writers run from several threads). */
@@ -261,14 +291,18 @@ bool node_db_state_delete(struct node_db *ndb, const char *key)
             -1, &s, NULL) != SQLITE_OK || !s) {
         LOG_WARN("node_db", "state_delete prepare failed key=%s: %s",
                  key, sqlite3_errmsg(ndb->db));
+        sqlite3_finalize(s);
         return false;
     }
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
-    int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
-    sqlite3_finalize(s);
+    int rc = sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
+    int finalize_rc = sqlite3_finalize(s);
+    if (rc == SQLITE_DONE && finalize_rc != SQLITE_OK)
+        rc = finalize_rc;
     node_db_note_activity(ndb, "state_delete", rc);
     if (rc != SQLITE_DONE)
-        LOG_WARN("node_db", "state_delete step failed key=%s rc=%d: %s",
+        LOG_WARN("node_db", "state_delete write failed key=%s rc=%d: %s",
                  key, rc, sqlite3_errmsg(ndb->db));
     return rc == SQLITE_DONE;
 }

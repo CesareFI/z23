@@ -176,12 +176,13 @@ branch is:
 - `a611745a7` bind snapshot database attach paths; and
 - `c51aa03ee` recover snapshot transaction cleanup failures; and
 - `c14b2f3f0` publish snapshot UTXOs and anchor atomically; and
-- `094e78880` report full node-state blob lengths.
+- `094e78880` report full node-state blob lengths; and
+- `ff66b1e8d` check node-state writer bounds and binds.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `094e78880`.
+The latest committed engineering tip intended for publication is `ff66b1e8d`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -417,3 +418,30 @@ cryptographic validation are unchanged. Hetzner's `f261d245d` block-swarm work
 does not overlap. Remaining risk: state reads and deletes still discard bind or
 finalize errors, so the same checked lifecycle should be extended there with
 focused fault coverage.
+
+## 2026-09-20: checked node-state reads and deletes
+
+The remaining node-state operations discarded key-bind and finalization
+results. With a persisted 199-byte key and SQLite's connection length limit
+lowered to 128 bytes, the red baseline showed the read converting
+`SQLITE_TOOBIG` into an ordinary missing-key `SQLITE_DONE`, while delete
+returned success even though the requested row remained present.
+
+Reads now validate their handle/key/buffer contract, preserve bind errors in
+the connection health status, log non-missing lookup failures, and require
+successful statement finalization before publishing the stored length.
+Deletes now preserve bind and finalize failures and only report success after a
+completed statement. The focused regression proves `SQLITE_TOOBIG` remains
+observable, delete fails rather than claiming removal, and the row remains
+readable once the injected limit is restored. Missing keys continue to be a
+quiet false read, and deleting an actually absent valid key remains successful.
+
+The focused normal and ASan/UBSan harnesses, lint, complexity, architecture,
+generated-inventory, consensus-parity, sealed-core and production-build checks
+pass. Consensus impact: NONE. This is local projection error handling only and
+changes no validity, chain history,
+wire/consensus serialization, PoW, monetary policy, activation or
+cryptographic validation. Hetzner's `f261d245d` block-swarm work is unaffected.
+Remaining risk: empty node-state blobs are still represented as unreadable by
+the historical API contract; changing that behavior would require a separate
+caller audit rather than being folded into error-lifecycle hardening.
