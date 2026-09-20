@@ -136,3 +136,22 @@ serialization, PoW, monetary policy, activation or cryptographic validation.
 Hetzner's network/block-swarm work is unaffected. Remaining risk: native raw
 structure records are retained for existing local compatibility and should be
 separately inventoried before considering removal.
+
+## 2026-09-20: transaction-index state corruption refusal
+
+The SQLite transaction-index projection treated a present but truncated cursor
+or digest as if no fold had ever run. A reproduced one-byte state value passed
+both readers, so a later batch could restart at height zero over existing rows
+and publish a digest unrelated to those rows. Cursor decoding also shifted into
+a signed integer, creating undefined behavior for a high-bit value.
+
+Cursor and digest readers now reject malformed widths, cursor decoding uses
+unsigned arithmetic with an `INT64_MAX` bound, and batch, keyed-read and dump
+consumers stop or fail soft when the cursor cannot be trusted. Focused fixtures
+prove the pre-fix failure and post-fix refusal for truncated cursor/digest and
+an out-of-range cursor, while preserving the valid round trip. Failure policy:
+fail closed for the background fold, return busy for the public lookup, and
+report an explicit dump error; no partial state is accepted. Consensus impact:
+NONE. This is a rebuildable auxiliary projection; block/transaction validity,
+serialization, PoW, monetary policy, activation and cryptographic validation
+are unchanged. Hetzner's network/block-swarm work is unaffected.

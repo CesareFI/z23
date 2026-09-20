@@ -74,22 +74,29 @@ enum txindex_read_status txindex_projection_classify(bool found, int64_t cursor,
     return TXINDEX_READ_ABSENT;
 }
 
-/* ── one bounded fold batch (tx lock held by caller) ────────────────── */
-static int tx_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
+static bool tx_prepare_batch(sqlite3 *db, int64_t *cursor, int64_t *hstar)
 {
     if (!atomic_load(&g_tx_schema_ready)) {
         if (!txindex_projection_ensure_schema(db))
-            return 0;
+            return false;
         int64_t rc0 = txindex_projection_row_count(db);
         atomic_store(&g_tx_rows, rc0 >= 0 ? rc0 : 0);
         atomic_store(&g_tx_schema_ready, true);
     }
+    if (!txindex_projection_get_cursor(db, cursor))
+        return false;
+    *hstar = (int64_t)tip_finalize_stage_cursor();
+    atomic_store(&g_tx_hstar, *hstar);
+    atomic_store(&g_tx_cursor, *cursor);
+    return true;
+}
 
-    int64_t cursor = -1;
-    (void)txindex_projection_get_cursor(db, &cursor);
-    int64_t hstar = (int64_t)tip_finalize_stage_cursor();
-    atomic_store(&g_tx_hstar, hstar);
-    atomic_store(&g_tx_cursor, cursor);
+/* ── one bounded fold batch (tx lock held by caller) ────────────────── */
+static int tx_do_batch(struct main_state *ms, const char *datadir, sqlite3 *db)
+{
+    int64_t cursor, hstar;
+    if (!tx_prepare_batch(db, &cursor, &hstar))
+        return 0;
 
     /* Deep-regression safety net: H* only advances under normal operation, so
      * cursor > H* means a reorg/rewind dropped finalized history below us. A
@@ -236,7 +243,10 @@ enum txindex_read_status txindex_projection_read_locate(
     if (!projection_store_tx_trylock())
         return TXINDEX_READ_BUSY;
     int64_t cursor = -1;
-    (void)txindex_projection_get_cursor(db, &cursor);
+    if (!txindex_projection_get_cursor(db, &cursor)) {
+        projection_store_tx_unlock();
+        return TXINDEX_READ_BUSY;
+    }
     int r = txindex_projection_lookup(db, txid, height_out, block_hash_out,
                                       tx_n_out);
     projection_store_tx_unlock();
@@ -356,7 +366,11 @@ bool txindex_dump_state_json(struct json_value *out, const char *key)
         return true;
     }
     int64_t cursor = -1;
-    (void)txindex_projection_get_cursor(db, &cursor);
+    if (!txindex_projection_get_cursor(db, &cursor)) {
+        projection_store_tx_unlock();
+        json_push_kv_str(out, "error", "cursor read failed");
+        return true;
+    }
     int64_t height = -1, tx_n = -1;
     uint8_t block_hash[32];
     int r = txindex_projection_lookup(db, txid, &height, block_hash, &tx_n);

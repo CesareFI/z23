@@ -180,13 +180,21 @@ bool txindex_projection_get_cursor(sqlite3 *db, int64_t *cursor_out)
     if (rc == SQLITE_ROW) {
         const void *b = sqlite3_column_blob(st, 0);
         int n = sqlite3_column_bytes(st, 0);
-        if (b && n == 8) {
-            int64_t v = 0;
-            const uint8_t *p = b;
-            for (int i = 0; i < 8; i++)
-                v |= (int64_t)p[i] << (8 * i);
-            *cursor_out = v;
+        if (!b || n != 8) {
+            LOG_WARN("txindex", "[txindex] malformed cursor bytes=%d", n);
+            sqlite3_finalize(st);
+            return false;
         }
+        uint64_t v = 0;
+        const uint8_t *p = b;
+        for (int i = 0; i < 8; i++)
+            v |= (uint64_t)p[i] << (8 * i);
+        if (v > INT64_MAX) {
+            LOG_WARN("txindex", "[txindex] cursor exceeds INT64_MAX");
+            sqlite3_finalize(st);
+            return false;
+        }
+        *cursor_out = (int64_t)v;
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("txindex", "[txindex] get_cursor step rc=%d: %s",
                  rc, sqlite3_errmsg(db));
@@ -253,10 +261,13 @@ bool txindex_projection_get_digest(sqlite3 *db, uint8_t digest[32], bool *found)
     if (rc == SQLITE_ROW) {
         const void *b = sqlite3_column_blob(st, 0);
         int n = sqlite3_column_bytes(st, 0);
-        if (b && n == 32) {
-            memcpy(digest, b, 32);
-            *found = true;
+        if (!b || n != 32) {
+            LOG_WARN("txindex", "[txindex] malformed digest bytes=%d", n);
+            sqlite3_finalize(st);
+            return false;
         }
+        memcpy(digest, b, 32);
+        *found = true;
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("txindex", "[txindex] get_digest step rc=%d", rc);
         sqlite3_finalize(st);

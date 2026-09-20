@@ -38,6 +38,40 @@ static void ti_set_txid(struct transaction *tx, uint8_t tag)
     tx->hash.data[31] = 0xAB;
 }
 
+static int ti_test_corrupt_state(sqlite3 *db, const uint8_t digest[32])
+{
+    int failures = 0;
+    TI_CHECK("plant truncated cursor",
+             sqlite3_exec(db,
+                 "UPDATE txindex_state SET v=x'01' WHERE k='cursor'",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    int64_t cursor = 999;
+    TI_CHECK("truncated cursor is rejected",
+             !txindex_projection_get_cursor(db, &cursor) && cursor == -1);
+    TI_CHECK("plant out-of-range cursor",
+             sqlite3_exec(db,
+                 "UPDATE txindex_state SET v=x'FFFFFFFFFFFFFFFF' "
+                 "WHERE k='cursor'",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    cursor = 999;
+    TI_CHECK("out-of-range cursor is rejected",
+             !txindex_projection_get_cursor(db, &cursor) && cursor == -1);
+    TI_CHECK("restore cursor and digest",
+             txindex_projection_set_cursor(db, 101, digest));
+    TI_CHECK("plant truncated digest",
+             sqlite3_exec(db,
+                 "UPDATE txindex_state SET v=x'01' WHERE k='digest'",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    uint8_t got_digest[32];
+    bool found = true;
+    TI_CHECK("truncated digest is rejected",
+             !txindex_projection_get_digest(db, got_digest, &found) &&
+             !found && memcmp(got_digest, (uint8_t[32]){0}, 32) == 0);
+    TI_CHECK("restore cursor and digest after corruption fixture",
+             txindex_projection_set_cursor(db, 101, digest));
+    return failures;
+}
+
 int test_txindex_projection(void);
 int test_txindex_projection(void)
 {
@@ -195,6 +229,11 @@ int test_txindex_projection(void)
                  txindex_projection_get_digest(db, dg, &found) && found &&
                  memcmp(dg, digest_full, 32) == 0);
     }
+
+    /* Corrupt auxiliary state must not masquerade as an empty projection.
+     * Otherwise a damaged cursor/digest can restart a fold at height zero and
+     * publish a digest unrelated to the rows already present. */
+    failures += ti_test_corrupt_state(db, digest_full);
 
     /* ── drop-and-rederive is deterministic (rebuildable) ────────── */
     TI_CHECK("drop", txindex_projection_drop(db));
