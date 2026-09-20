@@ -32,6 +32,42 @@ static int ex_environment_unset(const char *name)
 #endif
 }
 
+static int explorer_deny_pragma(void *ctx, int action,
+                                const char *arg1, const char *arg2,
+                                const char *database, const char *trigger)
+{
+    (void)ctx;
+    (void)arg1;
+    (void)arg2;
+    (void)database;
+    (void)trigger;
+    return action == SQLITE_PRAGMA ? SQLITE_DENY : SQLITE_OK;
+}
+
+static int check_readonly_connection_tuning(void)
+{
+    printf("explorer: read-only connection tuning fails closed... ");
+    sqlite3 *db = NULL;
+    bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK && db != NULL;
+    if (ok)
+        ok = sqlite3_set_authorizer(db, explorer_deny_pragma, NULL) ==
+             SQLITE_OK;
+    if (ok)
+        ok = !explorer_configure_readonly_db(db);
+    if (db)
+        ok = sqlite3_set_authorizer(db, NULL, NULL) == SQLITE_OK && ok;
+    if (ok)
+        ok = explorer_configure_readonly_db(db);
+    if (db)
+        ok = sqlite3_close(db) == SQLITE_OK && ok;
+    if (ok) {
+        printf("OK\n");
+        return 0;
+    }
+    printf("FAIL\n");
+    return 1;
+}
+
 static int check_stats_recompute_sync_policy(void)
 {
     bool ok = explorer_stats_recompute_allowed(SYNC_IDLE) &&
@@ -56,6 +92,7 @@ int test_explorer(void)
     uint8_t resp[8192];
 
     failures += check_stats_recompute_sync_policy();
+    failures += check_readonly_connection_tuning();
 
     printf("explorer: NULL path returns 0... ");
     {

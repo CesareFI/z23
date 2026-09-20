@@ -352,6 +352,19 @@ static inline void explorer_query_first_privacy_heights(
         "SELECT MIN(block_height) FROM sapling_spends");
 }
 
+static inline bool explorer_configure_readonly_db(sqlite3 *db)
+{
+    if (!node_db_apply_readonly_tuning(db))
+        return false;
+    int rc = sqlite3_busy_timeout(db, 30000);
+    if (rc != SQLITE_OK) {
+        LOG_WARN("explorer", "read-only busy timeout failed (%d): %s",
+                 rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
 static inline bool explorer_open_readonly_db(const char *datadir, sqlite3 **db_out)
 {
     char dbpath[1024];
@@ -372,8 +385,14 @@ static inline bool explorer_open_readonly_db(const char *datadir, sqlite3 **db_o
         return false;
     }
 
-    (void)node_db_apply_readonly_tuning(*db_out);
-    sqlite3_busy_timeout(*db_out, 30000);
+    if (!explorer_configure_readonly_db(*db_out)) {
+        int rc = sqlite3_close(*db_out);
+        if (rc != SQLITE_OK)
+            LOG_WARN("explorer", "failed to close rejected read-only DB (%d)",
+                     rc);
+        *db_out = NULL;
+        return false;
+    }
     return true;
 }
 

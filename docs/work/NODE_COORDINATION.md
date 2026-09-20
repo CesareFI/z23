@@ -78,3 +78,8 @@ the tuning helper fails closed, then removes the fault and proves normal tuning
 still succeeds. This changes connection setup only; schemas, stored bytes,
 chain validation, consensus serialization, monetary policy, PoW and
 cryptographic validation are unchanged.
+
+The explorer's short-lived read-only connections now apply the same fail-closed
+contract: failed mmap tuning or busy-timeout setup closes the handle before any
+page or API query can use it. Fault injection denies the tuning PRAGMA and
+proves both rejection and normal recovery.
