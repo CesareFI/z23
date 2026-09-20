@@ -203,7 +203,7 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
     size_t copy = (size_t)blob_len < max_len
                   ? (size_t)blob_len : max_len;
     memcpy(value, sqlite3_column_blob(s, 0), copy);
-    if (out_len) *out_len = copy;
+    if (out_len) *out_len = (size_t)blob_len;
     sqlite3_finalize(s);
     node_db_note_activity(ndb, "state_get", rc);
     return true;

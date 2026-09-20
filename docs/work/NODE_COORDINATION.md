@@ -174,12 +174,13 @@ branch is:
 - `4d9446747` log transaction-index orchestration failures;
 - `c7d6aa74d` reject malformed snapshot height metadata;
 - `a611745a7` bind snapshot database attach paths; and
-- `c51aa03ee` recover snapshot transaction cleanup failures.
+- `c51aa03ee` recover snapshot transaction cleanup failures; and
+- `c14b2f3f0` publish snapshot UTXOs and anchor atomically.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `c51aa03ee`.
+The latest committed engineering tip intended for publication is `c14b2f3f0`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -361,3 +362,29 @@ activation and cryptographic validation semantics are unchanged. Hetzner's
 epilogue state spans node.db and consensus.db and cannot share one SQLite
 transaction; its failure sentinel/recovery behavior remains the next recovery
 surface to fault-inject.
+
+## 2026-09-20: exact node-state blob lengths
+
+The shared `node_db_state_get` bounded-copy API reported the number of bytes it
+copied rather than the full stored blob length. A fixed-width reader therefore
+could not distinguish an exact record from an oversized corrupt record whose
+prefix fit its buffer. The red baseline demonstrated both consequences: a
+9-byte state blob was accepted by the 8-byte integer decoder, and a 32-byte
+blob read into four bytes was reported as length four.
+
+The getter continues to copy at most the caller's capacity, preserving bounded
+text/diagnostic reads, but now reports SQLite's full stored length. Exact-width
+decoders consequently reject oversized records while truncating callers can
+detect and label truncation. The focused SQLite selection passed all 3 groups
+in normal and ASan/UBSan modes. `lint-fast`, the complexity and architecture
+gates, consensus parity, sealed core, the regenerated capability inventory,
+and the production C23 build all pass.
+
+Consensus impact: NONE. This hardens local node-state decoding and changes no
+consensus or wire serialization, validity rules, chain history, PoW, monetary
+policy, activation or cryptographic validation. Hetzner's `f261d245d`
+block-swarm work remains non-overlapping. Remaining risk: state writers still
+cast `size_t` blob lengths to SQLite's signed `int` interface without an
+explicit `INT_MAX` bound and do not consistently check bind/finalize results.
+Recommended next investigation: harden the primary and detached state writers
+with deterministic invalid-input and SQLite-fault coverage.

@@ -249,6 +249,8 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len);
 bool node_db_state_set_detached(struct node_db *ndb, const char *key,
                                 const void *value, size_t len);
+/* Copies at most max_len bytes, but reports the full stored blob length in
+ * out_len so fixed-width decoders can reject oversized/corrupt records. */
 bool node_db_state_get(struct node_db *ndb, const char *key,
                        void *value, size_t max_len, size_t *out_len);
 bool node_db_state_set_int(struct node_db *ndb, const char *key, int64_t val);

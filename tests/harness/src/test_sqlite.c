@@ -271,6 +271,18 @@ static void check_sqlite_2_sqlite_state_set_get(int *failures)
     size_t got_len = 0;
     ok = ok && node_db_state_get(&ndb, "best_hash", got, 32, &got_len);
     ok = ok && (got_len == 32) && (got[0] == 0xde);
+
+    uint8_t oversized_int[9] = {1, 0, 0, 0, 0, 0, 0, 0, 0xa5};
+    int64_t rejected_int = -1;
+    ok = ok && node_db_state_set(&ndb, "oversized_int",
+                                 oversized_int, sizeof(oversized_int));
+    ok = ok && !node_db_state_get_int(&ndb, "oversized_int", &rejected_int);
+
+    uint8_t short_buf[4] = {0};
+    size_t stored_len = 0;
+    ok = ok && node_db_state_get(&ndb, "best_hash", short_buf,
+                                 sizeof(short_buf), &stored_len);
+    ok = ok && stored_len == sizeof(blob) && short_buf[0] == 0xde;
     node_db_close(&ndb);
     if (ok) printf("OK\n");
     else { printf("FAIL\n"); (*failures)++; }
