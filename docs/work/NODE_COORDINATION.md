@@ -175,12 +175,13 @@ branch is:
 - `c7d6aa74d` reject malformed snapshot height metadata;
 - `a611745a7` bind snapshot database attach paths; and
 - `c51aa03ee` recover snapshot transaction cleanup failures; and
-- `c14b2f3f0` publish snapshot UTXOs and anchor atomically.
+- `c14b2f3f0` publish snapshot UTXOs and anchor atomically; and
+- `094e78880` report full node-state blob lengths.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
 
-The latest committed engineering tip intended for publication is `c14b2f3f0`.
+The latest committed engineering tip intended for publication is `094e78880`.
 Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
@@ -388,3 +389,31 @@ cast `size_t` blob lengths to SQLite's signed `int` interface without an
 explicit `INT_MAX` bound and do not consistently check bind/finalize results.
 Recommended next investigation: harden the primary and detached state writers
 with deterministic invalid-input and SQLite-fault coverage.
+
+## 2026-09-20: checked node-state writers
+
+Both node-state writers narrowed `size_t` lengths to SQLite's signed `int` and
+discarded key/value bind results. Because the value column permits SQL NULL, a
+failed oversized blob bind could leave the parameter NULL, step successfully,
+and return a false persistence success. A deterministic connection length
+limit reproduced that behavior: the pre-fix writer returned true for a
+256-byte value rejected by `sqlite3_bind_blob`, leaving a NULL row.
+
+The primary and detached writers now share bounded argument validation and one
+bind/step/finalize helper. Lengths above `INT_MAX`, null/closed handles and null
+key/value pointers fail before SQLite; bind errors are preserved; successful
+steps still require successful finalization. The regression proves a bind-time
+`SQLITE_TOOBIG` returns false without a readable row and separately proves the
+oversized public length is rejected without dereferencing its one-byte test
+buffer. Extracting the shared path reduced `node_db_state_set_detached` from
+M=18 to M=14, allowing its complexity exception to be removed entirely.
+
+The focused `test_sqlite` group passes in normal and ASan/UBSan modes. The
+lint, architecture, generated-inventory, consensus-parity, sealed-core and
+production-build checks also pass. Consensus impact: NONE. This changes local
+projection/error handling only; chain history, validity, consensus/wire
+serialization, PoW, monetary policy, activation and
+cryptographic validation are unchanged. Hetzner's `f261d245d` block-swarm work
+does not overlap. Remaining risk: state reads and deletes still discard bind or
+finalize errors, so the same checked lifecycle should be extended there with
+focused fault coverage.

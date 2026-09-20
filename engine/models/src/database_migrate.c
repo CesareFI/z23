@@ -17,6 +17,7 @@
 #include "util/log_macros.h"
 #include "models/database.h"
 #include "models/database_internal.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,29 @@
 /* Health evidence retries this fallback. A single attempt must not spend
  * 30 seconds behind a historical writer before the caller can defer. */
 #define NODE_DB_DETACHED_BUSY_TIMEOUT_MS 100
+
+static bool state_write_args_valid(const struct node_db *ndb,
+                                   const char *key, const void *value,
+                                   size_t len)
+{
+    return ndb && ndb->open && ndb->db && key && value && len <= INT_MAX;
+}
+
+/* Binds, steps and finalizes one node_state writer. The returned rc owns all
+ * three phases so no bind/finalize failure can be mistaken for persistence. */
+static int state_write_bound(sqlite3_stmt *stmt, const char *key,
+                             const void *value, size_t len)
+{
+    int rc = sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_blob(stmt, 2, value, (int)len, SQLITE_STATIC);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_step(stmt);  // raw-sql-ok:kv-state-primitive
+    int finalize_rc = sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE && finalize_rc != SQLITE_OK)
+        rc = finalize_rc;
+    return rc;
+}
 
 /* The Campaign-C3 newer-schema refusal banner, shared by the open-time
  * preflight in database.c (which fires before anything writes to the
@@ -78,7 +102,12 @@ void node_db_log_unknown_schema_refusal(const char *detail)
 bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len)
 {
-    if (!ndb->open) return false;
+    if (!state_write_args_valid(ndb, key, value, len)) {
+        if (ndb)
+            node_db_note_activity(ndb, "state_set_invalid", SQLITE_MISUSE);
+        LOG_WARN("node_db", "state_set refused invalid arguments");
+        return false;
+    }
 
     /* Per-call prepare, NOT the cached ndb->stmt_state_set: SQLite
      * statements are not thread-safe, and state_set is called from the
@@ -92,15 +121,13 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
             -1, &s, NULL) != SQLITE_OK || !s) {
         LOG_WARN("node_db", "state_set prepare failed key=%s: %s",
                  key ? key : "(null)", sqlite3_errmsg(ndb->db));
+        sqlite3_finalize(s);
         return false;
     }
-    sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 2, value, (int)len, SQLITE_STATIC);
-    int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
-    sqlite3_finalize(s);
+    int rc = state_write_bound(s, key, value, len);
     node_db_note_activity(ndb, "state_set", rc);
     if (rc != SQLITE_DONE)
-        LOG_WARN("node_db", "state_set step failed key=%s rc=%d: %s",
+        LOG_WARN("node_db", "state_set write failed key=%s rc=%d: %s",
                  key ? key : "(null)", rc, sqlite3_errmsg(ndb->db));
     return rc == SQLITE_DONE;
 }
@@ -108,7 +135,7 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
 bool node_db_state_set_detached(struct node_db *ndb, const char *key,
                                 const void *value, size_t len)
 {
-    if (!ndb || !ndb->open || !key || !value) {
+    if (!state_write_args_valid(ndb, key, value, len)) {
         LOG_WARN("node_db",
                  "detached state_set skipped invalid args ndb=%d open=%d "
                  "key=%d value=%d",
@@ -145,12 +172,9 @@ bool node_db_state_set_detached(struct node_db *ndb, const char *key,
     rc = sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO node_state(key,value) VALUES(?,?)",
             -1, &s, NULL);
-    if (rc == SQLITE_OK && s) {
-        sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
-        sqlite3_bind_blob(s, 2, value, (int)len, SQLITE_STATIC);
-        rc = sqlite3_step(s);  // raw-sql-ok:kv-state-detached-fallback
-    }
-    if (s)
+    if (rc == SQLITE_OK && s)
+        rc = state_write_bound(s, key, value, len);
+    else
         sqlite3_finalize(s);
     if (rc != SQLITE_DONE) {
         LOG_WARN("node_db",

@@ -26,6 +26,7 @@
 #include "util/safe_alloc.h"
 #include "util/hw_profile.h"
 #include "util/wal_checkpoint_stats.h"
+#include <limits.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
@@ -255,6 +256,36 @@ static void check_sqlite_1_sqlite_db_open_close(int *failures)
     else { printf("FAIL\n"); (*failures)++; }
 }
 
+static bool sqlite_state_bounds_ok(struct node_db *ndb,
+                                   const uint8_t blob[32])
+{
+    bool ok = true;
+    uint8_t oversized_int[9] = {1, 0, 0, 0, 0, 0, 0, 0, 0xa5};
+    int64_t rejected_int = -1;
+    ok = ok && node_db_state_set(ndb, "oversized_int",
+                                 oversized_int, sizeof(oversized_int));
+    ok = ok && !node_db_state_get_int(ndb, "oversized_int", &rejected_int);
+
+    uint8_t short_buf[4] = {0};
+    size_t stored_len = 0;
+    ok = ok && node_db_state_get(ndb, "best_hash", short_buf,
+                                 sizeof(short_buf), &stored_len);
+    ok = ok && stored_len == 32 && short_buf[0] == blob[0];
+
+    uint8_t over_limit[256] = {0x7b};
+    int prior_limit = sqlite3_limit(ndb->db, SQLITE_LIMIT_LENGTH, 128);
+    ok = ok && !node_db_state_set(ndb, "over_limit", over_limit,
+                                  sizeof(over_limit));
+    sqlite3_limit(ndb->db, SQLITE_LIMIT_LENGTH, prior_limit);
+    uint8_t absent = 0;
+    size_t absent_len = 0;
+    ok = ok && !node_db_state_get(ndb, "over_limit", &absent,
+                                  sizeof(absent), &absent_len);
+    ok = ok && !node_db_state_set(ndb, "oversized_length", &absent,
+                                  (size_t)INT_MAX + 1);
+    return ok;
+}
+
 static void check_sqlite_2_sqlite_state_set_get(int *failures)
 {
     printf("SQLite state set/get... ");
@@ -272,17 +303,7 @@ static void check_sqlite_2_sqlite_state_set_get(int *failures)
     ok = ok && node_db_state_get(&ndb, "best_hash", got, 32, &got_len);
     ok = ok && (got_len == 32) && (got[0] == 0xde);
 
-    uint8_t oversized_int[9] = {1, 0, 0, 0, 0, 0, 0, 0, 0xa5};
-    int64_t rejected_int = -1;
-    ok = ok && node_db_state_set(&ndb, "oversized_int",
-                                 oversized_int, sizeof(oversized_int));
-    ok = ok && !node_db_state_get_int(&ndb, "oversized_int", &rejected_int);
-
-    uint8_t short_buf[4] = {0};
-    size_t stored_len = 0;
-    ok = ok && node_db_state_get(&ndb, "best_hash", short_buf,
-                                 sizeof(short_buf), &stored_len);
-    ok = ok && stored_len == sizeof(blob) && short_buf[0] == 0xde;
+    ok = ok && sqlite_state_bounds_ok(&ndb, blob);
     node_db_close(&ndb);
     if (ok) printf("OK\n");
     else { printf("FAIL\n"); (*failures)++; }
