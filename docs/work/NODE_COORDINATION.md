@@ -168,13 +168,16 @@ branch is:
 - `fddf46571`, `8b28647bc`, `9f64e9c4b` fail closed on primary, explorer and
   short-lived runtime SQLite connection tuning;
 - `8a1c66725` make boot-timing sample persistence atomic;
-- `dd3f65ad6` reject malformed legacy LevelDB transaction-index records; and
-- `f9c65b069` reject corrupt SQLite transaction-index cursor/digest state.
+- `dd3f65ad6` reject malformed legacy LevelDB transaction-index records;
+- `f9c65b069` reject corrupt SQLite transaction-index cursor/digest state;
+- `fcf59a057` fail closed on address-backfill errors; and
+- `4d9446747` log transaction-index orchestration failures.
 
 Integration-only commits `a9171ad03`, `7768bff78`, `e4df36146` and
 `a6ef6bb01` preserve current `origin/main` history and generated inventory.
-The latest engineering tip intended for publication is `f9c65b069`. Each
-slice passed its focused regression, applicable sanitizer/static analysis,
+
+The latest committed engineering tip intended for publication is `4d9446747`.
+Each slice passed its focused regression, applicable sanitizer/static analysis,
 complexity, architecture, generated-inventory, consensus-parity, sealed-core
 and production-build gates as recorded above. Consensus impact for the entire
 series: NONE.
@@ -241,3 +244,32 @@ Remaining risk: rollback errors are cleanup diagnostics and remain subordinate
 to the already-logged primary failure. Recommended next investigation: the
 offline snapshot importer has unchecked DETACH/rollback cleanup and permissive
 text height parsing that should be fault-injected before any change.
+
+## 2026-09-20: strict snapshot height metadata
+
+The offline snapshot importer parsed its untrusted `_snapshot_meta.height`
+TEXT with `strtoll` but did not inspect either `errno` or the end pointer. A
+focused real-import fixture established the red baseline: metadata
+`1000000junk` was accepted as height 1,000,000, migrated all 1,200 fixture
+UTXOs, and published snapshot authority and stage cursors even though the
+metadata was malformed.
+
+Height loading now uses the shared full-string, overflow-checked int64 parser
+and rejects missing, malformed, non-positive or out-of-range metadata before
+any destination write. The regression proves rejection and unchanged output
+arguments, restores the valid height, and then proves the normal import still
+reconstructs the expected UTXO authority, commitment and cursors. Extracting
+the read into a small helper reduced the importer's measured cyclomatic
+complexity from its pinned M=55 to M=51; the ratchet was lowered accordingly,
+not relaxed.
+
+The focused normal and ASan/UBSan groups pass, as do `lint-fast`, architecture,
+consensus-parity, sealed-core and the production C23 node build. Consensus
+impact: NONE. This is fail-closed input validation before an existing snapshot
+import and changes no chain history, serialized consensus data, block or
+transaction validity, PoW, monetary policy, activation or cryptographic
+validation semantics. Hetzner's current `f261d245d` tip remains confined to
+block-swarm networking and measurement, with no overlap. Remaining risk: the
+importer's post-attach transaction and cleanup paths still deserve
+deterministic SQLite fault injection. Recommended next investigation: prove
+rollback and detach behavior under a failed bulk copy or authority epilogue.

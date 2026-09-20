@@ -14,6 +14,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
+#include "util/parse_num.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -34,6 +35,24 @@ static int snapshot_import_progress(void *unused)
     (void)unused;
     boot_progress_tick("snapshot_import_bulk_insert");
     return 0;
+}
+
+static bool snapshot_read_height(sqlite3 *src, int64_t *out_height)
+{
+    sqlite3_stmt *q = NULL;
+    bool ok = false;
+
+    if (sqlite3_prepare_v2(src,
+            "SELECT value FROM _snapshot_meta WHERE key='height'",
+            -1, &q, NULL) == SQLITE_OK && q) {
+        if (sqlite3_step(q) == SQLITE_ROW) {  // raw-sql-ok:read-only-snapshot
+            const unsigned char *v = sqlite3_column_text(q, 0);
+            ok = v && zcl_parse_i64((const char *)v, out_height) &&
+                 *out_height >= 1;
+        }
+    }
+    sqlite3_finalize(q);
+    return ok;
 }
 
 bool boot_import_snapshot_db(struct node_db *ndb,
@@ -81,20 +100,8 @@ bool boot_import_snapshot_db(struct node_db *ndb,
                  "integrity_check failed for %s", snapshot_path);
     }
 
-    int64_t snap_height = -1;
-    {
-        sqlite3_stmt *q = NULL;
-        if (sqlite3_prepare_v2(src,
-                "SELECT value FROM _snapshot_meta WHERE key='height'",
-                -1, &q, NULL) == SQLITE_OK && q) {
-            if (sqlite3_step(q) == SQLITE_ROW) {  // raw-sql-ok:read-only-snapshot
-                const unsigned char *v = sqlite3_column_text(q, 0);
-                if (v) snap_height = strtoll((const char *)v, NULL, 10);
-            }
-            sqlite3_finalize(q);
-        }
-    }
-    if (snap_height < 1) {
+    int64_t snap_height = 0;
+    if (!snapshot_read_height(src, &snap_height)) {
         sqlite3_close(src);
         LOG_FAIL("boot_snapshot_import",
                  "missing/invalid _snapshot_meta.height");

@@ -202,6 +202,45 @@ static int64_t sb_cursor(sqlite3 *db, const char *name)
     return out;
 }
 
+static bool sb_set_snapshot_height(const char *path, const char *height)
+{
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK)
+        goto done;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE _snapshot_meta SET value=? WHERE key='height'",
+            -1, &st, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_bind_text(st, 1, height, -1, SQLITE_STATIC) != SQLITE_OK)
+        goto done;
+    if (sqlite3_step(st) != SQLITE_DONE) // raw-sql-ok:test-fixture-seeding
+        goto done;
+    sqlite3_finalize(st);
+    return sqlite3_close(db) == SQLITE_OK;
+done:
+    sqlite3_finalize(st);
+    if (db) sqlite3_close(db);
+    return false;
+}
+
+static int sb_test_malformed_height(struct node_db *ndb, const char *path)
+{
+    int failures = 0;
+    SB_CHECK("malformed-height fixture planted",
+             sb_set_snapshot_height(path, "1000000junk"));
+
+    int64_t count = -1, height = -1;
+    uint8_t best[32] = {0};
+    uint8_t zero_hash[32] = {0};
+    SB_CHECK("malformed snapshot height is rejected",
+             !boot_import_snapshot_db(ndb, path, &count, &height, best));
+    SB_CHECK("malformed snapshot leaves outputs untouched",
+             count == -1 && height == -1 &&
+             memcmp(best, zero_hash, sizeof(best)) == 0);
+    return failures;
+}
+
 int test_snapshot_boot_seed(void);
 int test_snapshot_boot_seed(void)
 {
@@ -249,6 +288,14 @@ int test_snapshot_boot_seed(void)
     memset(&ms, 0, sizeof(ms));
     main_state_init(&ms);
     SB_CHECK("fixture: tip_finalize stage init", tip_finalize_stage_init(&ms));
+
+    /* Metadata is an untrusted TEXT field. A numeric prefix with trailing
+     * bytes used to parse as the prefix and drive the complete import. */
+    failures += sb_test_malformed_height(&ndb, snap_path);
+    char valid_height[32];
+    snprintf(valid_height, sizeof(valid_height), "%d", SB_SNAP_HEIGHT);
+    SB_CHECK("valid snapshot height restored",
+             sb_set_snapshot_height(snap_path, valid_height));
 
     /* PRECONDITION (the "looks-synced-but-isn't" defect state we must escape):
      * a bare fresh datadir has NO reducer seed authority — coins_kv is NOT a
