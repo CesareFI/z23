@@ -50,3 +50,10 @@ is rejected, restores write access, and proves a normal finalization and lookup
 still succeed. This changes only the rebuildable transaction lookup projection;
 block and transaction validation, consensus serialization and chain state are
 unchanged.
+
+The same rebuild path also disabled WAL autocheckpointing for the entire raw
+block-file scan. It now shares node.db's existing bulk limits (approximately
+256 MiB between checkpoints and a 256 MiB retained-file cap), then restores the
+normal checkpoint, journal, cache and busy-timeout settings during finalization.
+The focused lifecycle test reads the live PRAGMAs in both phases so a future
+unbounded setting or incomplete restoration fails deterministically.

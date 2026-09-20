@@ -4,8 +4,8 @@
  *
  * Internal helper contract shared between the node_db connection-handle
  * source files (database.c, database_migrate.c, database_migrate_features.c,
- * database_modes.c). NOT part of the public model API — callers must
- * include models/database.h.
+ * database_modes.c) and the tx-index bulk writer. NOT part of the public
+ * model API — other callers must include models/database.h.
  *
  * This header keeps shared connection-handle helpers visible only to the
  * database model siblings that own migrations, runtime modes, and health

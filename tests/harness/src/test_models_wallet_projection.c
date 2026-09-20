@@ -3,6 +3,7 @@
 
 #include "test/test_core.h"
 #include "models/block.h"
+#include "models/database_internal.h"
 #include "models/tx_index.h"
 #include "models/utxo.h"
 #include "models/wallet_key.h"
@@ -11,6 +12,31 @@
 #include "support/cleanse.h"
 #include "wallet/wallet_sqlite.h"
 #include <unistd.h>
+
+static bool read_pragma_i64(sqlite3 *db, const char *sql, int64_t *out)
+{
+    sqlite3_stmt *stmt = NULL;
+    bool ok = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
+              stmt && sqlite3_step(stmt) == SQLITE_ROW;
+    if (ok)
+        *out = sqlite3_column_int64(stmt, 0);
+    if (stmt)
+        sqlite3_finalize(stmt);
+    return ok;
+}
+
+static bool check_tx_index_pragmas(sqlite3 *db, int64_t checkpoint_pages,
+                                   int64_t journal_bytes, int64_t cache_kib)
+{
+    int64_t checkpoint = 0;
+    int64_t journal = 0;
+    int64_t cache = 0;
+    return read_pragma_i64(db, "PRAGMA wal_autocheckpoint", &checkpoint) &&
+           read_pragma_i64(db, "PRAGMA journal_size_limit", &journal) &&
+           read_pragma_i64(db, "PRAGMA cache_size", &cache) &&
+           checkpoint == checkpoint_pages && journal == journal_bytes &&
+           cache == cache_kib;
+}
 
 static bool check_tx_index_bulk_load_lifecycle(void)
 {
@@ -30,6 +56,10 @@ static bool check_tx_index_bulk_load_lifecycle(void)
     ok = node_db_open(&ndb, dbpath);
     if (ok) {
         ok = db_tx_prepare_bulk_load(&ndb);
+        ok = ok && db_tx_configure_additive_build(&ndb);
+        ok = ok && check_tx_index_pragmas(
+            ndb.db, ZCL_NODE_DB_WAL_AUTOCKPT_PAGES_BULK,
+            ZCL_NODE_DB_JOURNAL_SIZE_LIMIT_BULK, -524288);
         memset(tx.txid, 0x91, 32);
         memset(tx.block_hash, 0x92, 32);
         tx.block_height = 21;
@@ -43,6 +73,9 @@ static bool check_tx_index_bulk_load_lifecycle(void)
         ok = ok && !db_tx_finalize_bulk_load(&ndb);
         ok = ok && node_db_exec(&ndb, "PRAGMA query_only=OFF");
         ok = ok && db_tx_finalize_bulk_load(&ndb);
+        ok = ok && check_tx_index_pragmas(
+            ndb.db, ZCL_NODE_DB_WAL_AUTOCKPT_PAGES,
+            ZCL_NODE_DB_JOURNAL_SIZE_LIMIT, -65536);
         ok = ok && db_tx_find(&ndb, tx.txid, &found);
         ok = ok && found.block_height == 21;
         ok = ok && db_tx_delete_all(&ndb);

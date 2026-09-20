@@ -9,6 +9,7 @@
 
 #include "models/tx_index.h"
 #include "models/block.h"
+#include "models/database_internal.h"
 #include "models/model_fields.h"
 #include "models/def/tx_index_fields.def"
 #include "util/log_macros.h"
@@ -186,14 +187,18 @@ bool db_tx_prepare_bulk_load(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         return false;
-    sqlite3_exec(ndb->db, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA cache_size=-524288", NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
-    sqlite3_busy_timeout(ndb->db, 30000);
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_tx_block",
-                 NULL, NULL, NULL);
-    sqlite3_exec(ndb->db, "DROP INDEX IF EXISTS idx_tx_height",
-                 NULL, NULL, NULL);
+    if (!node_db_exec(ndb, "PRAGMA synchronous=OFF") ||
+        !node_db_exec(ndb, "PRAGMA cache_size=-524288") ||
+        !node_db_exec(ndb, "PRAGMA wal_autocheckpoint="
+                      ZCL_NODE_DB_PRAGMA_NUM(
+                          ZCL_NODE_DB_WAL_AUTOCKPT_PAGES_BULK)) ||
+        !node_db_exec(ndb, "PRAGMA journal_size_limit="
+                      ZCL_NODE_DB_PRAGMA_NUM(
+                          ZCL_NODE_DB_JOURNAL_SIZE_LIMIT_BULK)) ||
+        sqlite3_busy_timeout(ndb->db, 30000) != SQLITE_OK ||
+        !node_db_exec(ndb, "DROP INDEX IF EXISTS idx_tx_block") ||
+        !node_db_exec(ndb, "DROP INDEX IF EXISTS idx_tx_height"))
+        LOG_FAIL("tx_index", "failed to prepare bounded bulk load");
     return db_tx_delete_all(ndb);
 }
 
@@ -212,8 +217,20 @@ bool db_tx_finalize_bulk_load(struct node_db *ndb)
         ok = false;
     if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL"))
         ok = false;
-    if (!node_db_exec(ndb, "PRAGMA wal_autocheckpoint=1000"))
+    if (!node_db_exec(ndb, "PRAGMA cache_size=-65536"))
         ok = false;
+    if (!node_db_exec(ndb, "PRAGMA wal_autocheckpoint="
+                     ZCL_NODE_DB_PRAGMA_NUM(
+                         ZCL_NODE_DB_WAL_AUTOCKPT_PAGES)))
+        ok = false;
+    if (!node_db_exec(ndb, "PRAGMA journal_size_limit="
+                     ZCL_NODE_DB_PRAGMA_NUM(
+                         ZCL_NODE_DB_JOURNAL_SIZE_LIMIT)))
+        ok = false;
+    if (sqlite3_busy_timeout(ndb->db, 10000) != SQLITE_OK) {
+        LOG_WARN("tx_index", "failed to restore normal SQLite busy timeout");
+        ok = false;
+    }
     int checkpoint_rc = sqlite3_wal_checkpoint_v2(
         ndb->db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     if (checkpoint_rc != SQLITE_OK) {
@@ -229,11 +246,18 @@ bool db_tx_configure_additive_build(struct node_db *ndb)
     if (!ndb || !ndb->open)
         LOG_FAIL("tx_index", "additive build requested without an open database");
 
-    sqlite3_busy_timeout(ndb->db, 30000);
+    if (sqlite3_busy_timeout(ndb->db, 30000) != SQLITE_OK)
+        LOG_FAIL("tx_index", "failed to set additive-build busy timeout");
     if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL"))
         LOG_FAIL("tx_index", "failed to set synchronous=NORMAL for additive build");
-    if (!node_db_exec(ndb, "PRAGMA wal_autocheckpoint=0"))
-        LOG_FAIL("tx_index", "failed to disable WAL autocheckpoint for additive build");
+    if (!node_db_exec(ndb, "PRAGMA wal_autocheckpoint="
+                     ZCL_NODE_DB_PRAGMA_NUM(
+                         ZCL_NODE_DB_WAL_AUTOCKPT_PAGES_BULK)))
+        LOG_FAIL("tx_index", "failed to bound additive-build WAL checkpoints");
+    if (!node_db_exec(ndb, "PRAGMA journal_size_limit="
+                     ZCL_NODE_DB_PRAGMA_NUM(
+                         ZCL_NODE_DB_JOURNAL_SIZE_LIMIT_BULK)))
+        LOG_FAIL("tx_index", "failed to bound additive-build WAL file size");
     return true;
 }
 
