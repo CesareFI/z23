@@ -1893,32 +1893,32 @@ static int mr_write_text(const char *path, const char *text)
     return w == (ssize_t)n ? 0 : -1;
 }
 
-/* Unified cgroup path for this process, or -1. */
-static int mr_unified_cgroup(char *cg, size_t cap)
+/* This process's cgroup v2 path under the unified mount ("/a/b"), or -1
+ * when /proc/self/cgroup has no whole unified entry. */
+static int mr_self_cgroup(char *rel, size_t cap)
 {
-    char line[512];
+    char line[4096];
     FILE *f = fopen("/proc/self/cgroup", "r");
-    cg[0] = '\0';
+    rel[0] = '\0';
     if (!f)
         return -1;
     while (fgets(line, sizeof(line), f)) {
-        char *nl;
+        char *nl = strchr(line, '\n');
         if (strncmp(line, "0::", 3) != 0)
             continue;
-        nl = strchr(line, '\n');
         if (nl)
             *nl = '\0';
-        if (snprintf(cg, cap, "/sys/fs/cgroup%s", line + 3) >= (int)cap)
-            cg[0] = '\0';
+        if (!nl || snprintf(rel, cap, "%s", line + 3) >= (int)cap)
+            rel[0] = '\0';
         break;
     }
     fclose(f);
-    return cg[0] == '\0' ? -1 : 0;
+    return rel[0] == '/' ? 0 : -1;
 }
 
 static int mr_delegates_memory(const char *cg)
 {
-    char stpath[700], st[256];
+    char stpath[1100], st[256];
     FILE *sf;
     int delegated = 0;
     if (snprintf(stpath, sizeof(stpath), "%s/cgroup.subtree_control", cg) >=
@@ -1933,68 +1933,139 @@ static int mr_delegates_memory(const char *cg)
     return delegated;
 }
 
-/* 0 armed, 1 the directory was not created (caller walks up), -1 the
- * path does not fit. */
-static int mr_arm_child_cgroup(char *dir, size_t cap, const char *cg)
+/* What the memory.max leg found. ARMED: a child cgroup exists for the
+ * session. UNOBSERVED: no ancestor both delegates the memory controller
+ * and lets this uid create a child, so the precondition cannot exist in
+ * this process (a login session-N.scope sits under a root-owned
+ * user-N.slice). BROKEN: an ancestor refused for any other reason. */
+enum { MR_MEMCG_BROKEN = -1, MR_MEMCG_ARMED = 0, MR_MEMCG_UNOBSERVED = 1 };
+
+/* Where the walk looks and how it creates a child: the unified mount and
+ * mkdir(2), or a fixture tree and a scripted mkdir. */
+struct mr_memcg_walk {
+    const char *mount;
+    int (*make)(const char *path, mode_t mode);
+    int pid;
+    char *dir;
+    size_t cap;
+    char *why;
+    size_t why_cap;
+};
+
+/* 0 armed, else the errno the child's creation failed with. */
+static int mr_arm_child_cgroup(const struct mr_memcg_walk *w, const char *cg)
 {
-    char p[700];
-    if (snprintf(dir, cap, "%s/z23-memmax-%d", cg, (int)getpid()) >= (int)cap)
-        return -1;
-    if (mkdir(dir, 0755) != 0)
-        return 1;
-    if (snprintf(p, sizeof(p), "%s/memory.oom.group", dir) < (int)sizeof(p))
+    char p[1100];
+    if (snprintf(w->dir, w->cap, "%s/z23-memmax-%d", cg, w->pid) >=
+        (int)w->cap)
+        return ENAMETOOLONG;
+    errno = 0;
+    if (w->make(w->dir, 0755) != 0)
+        return errno != 0 ? errno : EIO;
+    if (snprintf(p, sizeof(p), "%s/memory.oom.group", w->dir) < (int)sizeof(p))
         (void)mr_write_text(p, "0\n");
-    if (snprintf(p, sizeof(p), "%s/memory.swap.max", dir) < (int)sizeof(p))
+    if (snprintf(p, sizeof(p), "%s/memory.swap.max", w->dir) < (int)sizeof(p))
         (void)mr_write_text(p, "0\n");
     return 0;
 }
 
-/* A parent that already delegates the memory controller can host one
- * child cgroup. The session under test joins that cgroup. */
-static int mr_memory_cgroup_open(char *dir, size_t cap)
+/* Step to the parent cgroup; false once the mount root was examined. */
+static bool mr_cgroup_parent(char *cg, size_t floor)
 {
-    char cg[512];
-    int hop;
-    if (cap < 32)
-        return -1;
-    if (mr_unified_cgroup(cg, sizeof(cg)) != 0)
-        return -1;
-    for (hop = 0; hop < 8 && cg[1] != '\0'; hop++) {
-        char *slash;
-        if (mr_delegates_memory(cg)) {
-            int arm = mr_arm_child_cgroup(dir, cap, cg);
-            if (arm <= 0)
-                return arm;
-        }
-        slash = strrchr(cg, '/');
-        if (!slash || slash == cg)
-            break;
-        *slash = '\0';
+    char *slash;
+    if (strlen(cg) <= floor)
+        return false;
+    slash = strrchr(cg, '/');
+    if (!slash || (size_t)(slash - cg) < floor)
+        return false;
+    *slash = '\0';
+    return true;
+}
+
+struct mr_memcg_tally {
+    int denied;
+    int broken;
+    char where[1100];
+};
+
+static int mr_memcg_verdict(const struct mr_memcg_walk *w, const char *self,
+                            const struct mr_memcg_tally *t)
+{
+    if (t->broken != 0) {
+        (void)snprintf(w->why, w->why_cap,
+            "creating a child of memory-delegating %s failed: %s",
+            t->where, strerror(t->broken));
+        return MR_MEMCG_BROKEN;
     }
-    return -1;
+    (void)snprintf(w->why, w->why_cap,
+        "cgroup %s has no memory-delegating ancestor this uid may create "
+        "a child under (%d refused with a permission error); run it in a "
+        "user-manager scope, e.g. under devbuild's development.slice",
+        self, t->denied);
+    return MR_MEMCG_UNOBSERVED;
+}
+
+/* Walk from `self` up to the mount root and arm a child under the
+ * nearest ancestor that delegates memory and accepts one. Every level up
+ * to the root is examined; no hop cap can stop short of a delegating
+ * ancestor. */
+static int mr_memcg_walk_run(const struct mr_memcg_walk *w, const char *self)
+{
+    char cg[1024];
+    struct mr_memcg_tally t = {0};
+    size_t floor = strlen(w->mount);
+    if (snprintf(cg, sizeof(cg), "%s%s", w->mount, self) >= (int)sizeof(cg)) {
+        (void)snprintf(w->why, w->why_cap, "cgroup path does not fit: %s",
+                       self);
+        return MR_MEMCG_BROKEN;
+    }
+    while (strlen(cg) > floor && cg[strlen(cg) - 1] == '/')
+        cg[strlen(cg) - 1] = '\0';
+    do {
+        int e;
+        if (!mr_delegates_memory(cg))
+            continue;
+        e = mr_arm_child_cgroup(w, cg);
+        if (e == 0)
+            return MR_MEMCG_ARMED;
+        if (e == EACCES || e == EPERM || e == EROFS) {
+            t.denied++;
+        } else if (t.broken == 0) {
+            t.broken = e;
+            (void)snprintf(t.where, sizeof(t.where), "%s", cg);
+        }
+    } while (mr_cgroup_parent(cg, floor));
+    return mr_memcg_verdict(w, self, &t);
+}
+
+/* The session under test joins the armed child cgroup. */
+static int mr_memory_cgroup_open(char *dir, size_t cap, char *why,
+                                 size_t why_cap)
+{
+    char self[1024];
+    struct mr_memcg_walk w = {
+        .mount = "/sys/fs/cgroup", .make = mkdir, .pid = (int)getpid(),
+        .dir = dir, .cap = cap, .why = why, .why_cap = why_cap,
+    };
+    dir[0] = '\0';
+    if (mr_self_cgroup(self, sizeof(self)) != 0) {
+        (void)snprintf(why, why_cap,
+                       "/proc/self/cgroup has no cgroup v2 unified entry");
+        return MR_MEMCG_UNOBSERVED;
+    }
+    return mr_memcg_walk_run(&w, self);
 }
 
 static void mr_memory_cgroup_close(const char *dir)
 {
-    char line[512], self[700], procs[700];
+    char line[512], rel[1024], self[1100], procs[1100];
     FILE *f;
     if (!dir || dir[0] == '\0') return;
     self[0] = '\0';
-    f = fopen("/proc/self/cgroup", "r");
-    if (f) {
-        while (fgets(line, sizeof(line), f)) {
-            char *nl;
-            if (strncmp(line, "0::", 3) != 0) continue;
-            nl = strchr(line, '\n');
-            if (nl) *nl = '\0';
-            if (snprintf(self, sizeof(self),
-                    "/sys/fs/cgroup%s/cgroup.procs", line + 3) >=
-                (int)sizeof(self))
-                self[0] = '\0';
-            break;
-        }
-        fclose(f);
-    }
+    if (mr_self_cgroup(rel, sizeof(rel)) == 0 &&
+        snprintf(self, sizeof(self), "/sys/fs/cgroup%s/cgroup.procs", rel) >=
+            (int)sizeof(self))
+        self[0] = '\0';
     if (snprintf(procs, sizeof(procs), "%s/cgroup.procs", dir) >=
         (int)sizeof(procs)) {
         (void)rmdir(dir);
@@ -2009,6 +2080,117 @@ static void mr_memory_cgroup_close(const char *dir)
         fclose(f);
     }
     (void)rmdir(dir);
+}
+
+/* ── The walk against a fixture tree shaped like this host's hierarchy.
+ * A scripted mkdir stands in for the kernel's delegation rule: only
+ * inside user@1000.service may this uid create a child. */
+static int g_mr_fake_mkdir_errno;
+
+static int mr_fake_mkdir(const char *path, mode_t mode)
+{
+    if (g_mr_fake_mkdir_errno != 0) {
+        errno = g_mr_fake_mkdir_errno;
+        return -1;
+    }
+    if (!strstr(path, "/user@1000.service/")) {
+        errno = EACCES;
+        return -1;
+    }
+    return mkdir(path, mode);
+}
+
+#define MR_FX_USER "/user.slice/user-1000.slice"
+#define MR_FX_DEV MR_FX_USER "/user@1000.service/development.slice"
+#define MR_FX_SESSION MR_FX_USER "/session-52.scope"
+#define MR_FX_SCOPE MR_FX_DEV "/run-u1.scope"
+#define MR_FX_DEEP MR_FX_SCOPE "/a/b/c/d/e/f/g/h/i"
+
+static bool mr_memcg_fixture(const char *mount)
+{
+    static const struct { const char *rel; const char *ctl; } rows[] = {
+        {"", "cpu io memory pids\n"},
+        {"/user.slice", "cpu memory pids\n"},
+        {MR_FX_USER, "cpu memory pids\n"},
+        {MR_FX_SESSION, "\n"},
+        {MR_FX_USER "/user@1000.service", "cpu memory pids\n"},
+        {MR_FX_DEV, "cpu memory pids\n"},
+        {MR_FX_SCOPE, "\n"},
+        {MR_FX_DEEP, "\n"},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        char dir[1024], ctl[1100];
+        if (snprintf(dir, sizeof(dir), "%s%s", mount, rows[i].rel) >=
+                (int)sizeof(dir) ||
+            snprintf(ctl, sizeof(ctl), "%s/cgroup.subtree_control", dir) >=
+                (int)sizeof(ctl) ||
+            !mr_mkdir_p(dir) || !mr_write(ctl, rows[i].ctl, 0))
+            return false;
+    }
+    return true;
+}
+
+static int mr_memcg_walk_case(const char *mount, const char *self,
+                              int fake_errno, char *dir, size_t cap,
+                              char *why, size_t why_cap)
+{
+    struct mr_memcg_walk w = {
+        .mount = mount, .make = mr_fake_mkdir, .pid = 4242,
+        .dir = dir, .cap = cap, .why = why, .why_cap = why_cap,
+    };
+    g_mr_fake_mkdir_errno = fake_errno;
+    dir[0] = '\0';
+    why[0] = '\0';
+    return mr_memcg_walk_run(&w, self);
+}
+
+static bool mr_memcg_armed_under_dev(const char *mount, const char *dir)
+{
+    char want[1100];
+    struct stat st;
+    return snprintf(want, sizeof(want), "%s%s/z23-memmax-4242", mount,
+                    MR_FX_DEV) < (int)sizeof(want) &&
+        strcmp(dir, want) == 0 && stat(dir, &st) == 0 && S_ISDIR(st.st_mode) &&
+        rmdir(dir) == 0;
+}
+
+/* The landing proof's watcher ran from a login session scope: every
+ * memory-delegating ancestor there is root-owned. That is an
+ * unobservable precondition, not a delegated cgroup that failed. Inside
+ * the user manager the walk arms at the nearest delegating ancestor,
+ * however deep the caller sits, and a non-permission refusal stays a
+ * failure. */
+static int mr_exec_memcg_walk(void)
+{
+    int failures = 0;
+    char root[512], mount[600], dir[1100], why[512];
+    if (!test_mkdtemp(root, sizeof(root), "muse_memcg") ||
+        snprintf(mount, sizeof(mount), "%s/cg", root) >= (int)sizeof(mount) ||
+        !mr_memcg_fixture(mount)) {
+        MR_CHECK("memcg fixture", false);
+        return 1;
+    }
+    MR_CHECK("memcg session scope is unobserved",
+        mr_memcg_walk_case(mount, MR_FX_SESSION, 0, dir, sizeof(dir), why,
+                           sizeof(why)) == MR_MEMCG_UNOBSERVED &&
+        strstr(why, "session-52.scope") && strstr(why, "3 refused"));
+    MR_CHECK("memcg user scope arms under development.slice",
+        mr_memcg_walk_case(mount, MR_FX_SCOPE, 0, dir, sizeof(dir), why,
+                           sizeof(why)) == MR_MEMCG_ARMED &&
+        mr_memcg_armed_under_dev(mount, dir));
+    MR_CHECK("memcg deep caller still reaches its delegating ancestor",
+        mr_memcg_walk_case(mount, MR_FX_DEEP, 0, dir, sizeof(dir), why,
+                           sizeof(why)) == MR_MEMCG_ARMED &&
+        mr_memcg_armed_under_dev(mount, dir));
+    MR_CHECK("memcg non-permission refusal is a failure",
+        mr_memcg_walk_case(mount, MR_FX_SCOPE, EEXIST, dir, sizeof(dir), why,
+                           sizeof(why)) == MR_MEMCG_BROKEN &&
+        strstr(why, "development.slice") && strstr(why, strerror(EEXIST)));
+    MR_CHECK("memcg permission-only refusal is unobserved",
+        mr_memcg_walk_case(mount, MR_FX_SCOPE, EACCES, dir, sizeof(dir), why,
+                           sizeof(why)) == MR_MEMCG_UNOBSERVED);
+    test_rm_rf(root);
+    return failures;
 }
 
 static int mr_cgroup_join(const char *dir)
@@ -2086,16 +2268,26 @@ static void mr_read_all(int fd, char *buf, size_t cap)
 
 /* The host shares a cgroup with the session and crosses memory.max.
  * The run must refuse with the charge reason, and the session parent
- * must still be alive to say so. */
+ * must still be alive to say so. A process with no writable
+ * memory-delegating ancestor cannot create that cgroup at all: the leg
+ * reports UNOBSERVED (never cached, refused by an exact proof) instead
+ * of claiming a delegated cgroup failed. */
 static int mr_exec_memory_max(void)
 {
     int failures = 0;
     char dir[512];
     char buf[512];
+    char why[512];
     int sp[2] = {-1, -1};
     pid_t kid;
     int st = 0;
-    if (mr_memory_cgroup_open(dir, sizeof(dir)) != 0) {
+    int opened = mr_memory_cgroup_open(dir, sizeof(dir), why, sizeof(why));
+    if (opened == MR_MEMCG_UNOBSERVED) {
+        printf("UNOBSERVED (memory.max leg not run: %s)\n", why);
+        return 0;
+    }
+    if (opened != MR_MEMCG_ARMED) {
+        printf("muse_run: memory cgroup: %s\n", why);
         MR_CHECK("memory cgroup delegated", false);
         return 1;
     }
@@ -3273,6 +3465,7 @@ static int mr_failures_execute(void)
     failures += mr_exec_garbage();
     failures += mr_exec_host_exit();
     failures += mr_exec_host_abort();
+    failures += mr_exec_memcg_walk();
     failures += mr_exec_memory_max();
     failures += mr_exec_fresh_muse_home();
     failures += mr_exec_timeout();
