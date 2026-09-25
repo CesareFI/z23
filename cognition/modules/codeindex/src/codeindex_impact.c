@@ -12,6 +12,20 @@
  *                           and `ref_file` = the file the call sits in)
  *     -> impacted FILES    (every ref_file seen + the changed files themselves)
  *
+ * The walk is LINKAGE-AWARE. A frontier entry is a symbol identity, not a bare
+ * name: an external function is keyed by its name, but a static function
+ * defined in a .c file is keyed by (name, defining file). Two TUs that each
+ * define `static int helper(void)` are unrelated symbols; a name-only walk
+ * treated every call to any `helper` as a caller of the changed one, and on the
+ * real tree that turned a one-file test edit into 134 selected test groups.
+ * A static's callers are the refs to its name that its own translation unit
+ * can contain: refs in its file, in any header, and in any other .c whose
+ * compiler depfile lists the static's file. A .c without a recorded depfile
+ * is dropped only when it defines its own function of that name — its calls
+ * bind there. Every case the index cannot prove stays on the name-only walk:
+ * a static defined in a header (a `static inline` is defined in every
+ * includer), an unresolved caller, a clipped include answer.
+ *
  * Everything below the public query surface is REUSED — this TU adds only the
  * traversal + the two bounded string sets it needs, over existing store reads.
  * The result is deterministic (sorted, unique) and hard-capped: any bound hit
@@ -163,7 +177,8 @@ static int ci_str_cmp(const void *a, const void *b)
 
 /* ── traversal state (heap-owned; freed on every exit) ── */
 struct ci_closure_ctx {
-    struct ci_strset  seen_syms;   /* symbol names already queued/visited */
+    struct ci_strset  seen_syms;   /* symbol identity keys queued/visited */
+    struct ci_strset  seen_sites;  /* (enclosing, file) pairs already resolved */
     struct ci_strset  seen_files;  /* impacted files already collected */
     struct ci_strlist files;       /* impacted files (unsorted; deduped) */
     struct ci_ref    *refbuf;      /* CI_CLOSURE_QUERY_BATCH rows */
@@ -174,6 +189,7 @@ struct ci_closure_ctx {
 static void ci_closure_ctx_free(struct ci_closure_ctx *c)
 {
     ci_strset_free(&c->seen_syms);
+    ci_strset_free(&c->seen_sites);
     ci_strset_free(&c->seen_files);
     ci_strlist_free(&c->files);
     free(c->refbuf);
@@ -199,6 +215,62 @@ static bool ci_closure_add_file(struct ci_closure_ctx *c, const char *path,
     return ci_strlist_push(&c->files, path);
 }
 
+/* ── linkage identity ──────────────────────────────────────────────────
+ * A frontier key is "name" for a symbol walked by name (external linkage, or
+ * anything whose linkage the index cannot prove file-local), and
+ * "name@path" for a static function whose defining file is the .c `path`.
+ * '@' never occurs in a C identifier, so the first '@' splits a key. */
+#define CI_CLOSURE_KEY_MAX 400
+
+static bool ci_path_is_c(const char *path)
+{
+    size_t n = path ? strlen(path) : 0;
+    return n > 2 && strcmp(path + n - 2, ".c") == 0;
+}
+
+/* A header-defined static (`static inline` in a .h) is defined in EVERY
+ * includer, so its callers live in files other than its own: it stays on the
+ * name walk. Only a static whose own file is a .c translation unit is keyed
+ * file-local. */
+static bool ci_closure_key(const char *name, char kind, const char *def_path,
+                           const char *decl_path, char key[CI_CLOSURE_KEY_MAX])
+{
+    const char *path = NULL;
+    if (kind == 't')
+        path = (def_path && def_path[0]) ? def_path : decl_path;
+    int n = (path && ci_path_is_c(path))
+        ? snprintf(key, CI_CLOSURE_KEY_MAX, "%s@%s", name, path)
+        : snprintf(key, CI_CLOSURE_KEY_MAX, "%s", name);
+    if (n < 0 || (size_t)n >= CI_CLOSURE_KEY_MAX)
+        LOG_FAIL("codeindex", "closure key overflow for %s", name);
+    return true;
+}
+
+/* Queue `key` unless it was already visited. */
+static bool ci_closure_queue(struct ci_closure_ctx *c, const char *key,
+                             struct ci_strlist *frontier, bool *truncated)
+{
+    if (c->seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
+        *truncated = true;
+        return true;
+    }
+    bool added = false;
+    if (!ci_strset_add(&c->seen_syms, key, &added))
+        return false;
+    return !added || ci_strlist_push(frontier, key);
+}
+
+static bool ci_closure_queue_symbol(struct ci_closure_ctx *c,
+                                    const struct ci_symbol *sym,
+                                    struct ci_strlist *frontier,
+                                    bool *truncated)
+{
+    char key[CI_CLOSURE_KEY_MAX];
+    return ci_closure_key(sym->name, sym->kind, sym->def_path, sym->decl_path,
+                          key) &&
+           ci_closure_queue(c, key, frontier, truncated);
+}
+
 /* Seed the frontier from a changed file's symbols and record the file itself. */
 static bool ci_closure_seed_file(struct ci_closure_ctx *c, struct codeindex *ci,
                                  const char *file, struct ci_strlist *frontier,
@@ -219,44 +291,178 @@ static bool ci_closure_seed_file(struct ci_closure_ctx *c, struct codeindex *ci,
             *truncated = true;
             break;
         }
-        bool added = false;
-        if (!ci_strset_add(&c->seen_syms, c->symbuf[i].name, &added))
-            return false;
-        if (added && !ci_strlist_push(frontier, c->symbuf[i].name))
+        if (!ci_closure_queue_symbol(c, &c->symbuf[i], frontier, truncated))
             return false;
     }
     return true;
 }
 
+/* Queue the function a reference sits in. Its identity comes from the one row
+ * that defines `caller` in `file`; a caller the index cannot resolve to a
+ * static definition there is walked by name. */
+static bool ci_closure_queue_caller(struct ci_closure_ctx *c,
+                                    struct codeindex *ci, const char *caller,
+                                    const char *file, struct ci_strlist *next,
+                                    bool *truncated)
+{
+    char site[CI_CLOSURE_KEY_MAX];
+    int n = snprintf(site, sizeof(site), "%s@%s", caller, file);
+    if (n < 0 || (size_t)n >= sizeof(site))
+        LOG_FAIL("codeindex", "closure site overflow for %s", caller);
+    bool added = false;
+    if (!ci_strset_add(&c->seen_sites, site, &added))
+        return false;
+    if (!added)
+        return true;  /* this (caller, file) pair was already resolved */
+
+    struct ci_symbol s;
+    bool found = false;
+    if (!ci_store_symbol_by_name_path(ci->store, caller, file, &s, &found))
+        LOG_FAIL("codeindex", "caller lookup failed for %s in %s", caller,
+                 file);
+    char key[CI_CLOSURE_KEY_MAX];
+    if (!ci_closure_key(caller, found ? s.kind : 'T', file, "", key))
+        return false;
+    return ci_closure_queue(c, key, next, truncated);
+}
+
+/* Does `file` define its own function named `name`? A call in such a file
+ * binds to that definition, never to another TU's static of the same name. */
+static bool ci_file_defines_function(struct codeindex *ci, const char *name,
+                                     const char *file, bool *defines)
+{
+    struct ci_symbol s;
+    bool found = false;
+    *defines = false;
+    if (!ci_store_symbol_by_name_path(ci->store, name, file, &s, &found))
+        LOG_FAIL("codeindex", "definition lookup failed for %s in %s", name,
+                 file);
+    *defines = found && (s.kind == 't' || s.kind == 'T');
+    return true;
+}
+
+/* The static `name` defined in `path`: which of its name's refs can bind to
+ * it? One per expansion; the per-file answer and the include answer are
+ * cached because refs arrive ordered by file. */
+struct ci_static_scope {
+    const char *name;
+    const char *path;
+    char        last_file[256];
+    bool        last_keep;
+    bool        includers_loaded;
+    bool        includers_unbounded;
+    int         n_includers;
+};
+
+static bool ci_static_includer(struct ci_closure_ctx *c, struct codeindex *ci,
+                               struct ci_static_scope *scope,
+                               const char *file, bool *includes)
+{
+    *includes = false;
+    if (!scope->includers_loaded) {
+        enum codeindex_include_dim dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+        int n = codeindex_reverse_includes(ci, scope->path, c->incbuf,
+                                           CI_CLOSURE_QUERY_BATCH, &dim);
+        if (n < 0)
+            LOG_FAIL("codeindex", "reverse includes failed for %s",
+                     scope->path);
+        scope->includers_loaded = true;
+        scope->n_includers = n;
+        /* A clipped include answer cannot prove a file is NOT an includer. An
+         * absent graph can: the definition check alone is sound without it. */
+        scope->includers_unbounded = dim == CODEINDEX_INCLUDE_DIM_TRUNCATED;
+    }
+    if (scope->includers_unbounded) {
+        *includes = true;
+        return true;
+    }
+    for (int i = 0; i < scope->n_includers; i++)
+        if (strcmp(c->incbuf[i], file) == 0) {
+            *includes = true;
+            break;
+        }
+    return true;
+}
+
+/* Can a call to `name` in `file` bind to the static `name` of scope->path?
+ * Only when `file`'s translation unit contains scope->path. The compiler's
+ * depfile for `file`, when the index holds one, lists that TU's every input,
+ * so membership is exact. Without one, the only provable "no" is a file that
+ * defines its own function of that name: its calls bind to that definition —
+ * unless the include graph shows it also reads scope->path (an #ifdef twin). */
+static bool ci_static_ref_binds(struct ci_closure_ctx *c, struct codeindex *ci,
+                                struct ci_static_scope *scope,
+                                const char *file, bool *keep)
+{
+    *keep = true;
+    /* The static's own file, and every non-.c file (a header or .def
+     * fragment is compiled inside some includer's TU), may bind to it. */
+    if (strcmp(file, scope->path) == 0 || !ci_path_is_c(file))
+        return true;
+    if (strcmp(file, scope->last_file) == 0) {
+        *keep = scope->last_keep;
+        return true;
+    }
+    char probe[1][256];
+    int recorded = codeindex_includes_of_file(ci, file, probe, 1);
+    if (recorded < 0)
+        LOG_FAIL("codeindex", "includes_of_file failed for %s", file);
+    bool defines = false;
+    if (recorded == 0 &&
+        !ci_file_defines_function(ci, scope->name, file, &defines))
+        return false;
+    if ((recorded > 0 || defines) &&
+        !ci_static_includer(c, ci, scope, file, keep))
+        return false;
+    snprintf(scope->last_file, sizeof(scope->last_file), "%s", file);
+    scope->last_keep = *keep;
+    return true;
+}
+
 /* Expand one symbol: pull its callers, record their files, queue new callers. */
 static bool ci_closure_expand_symbol(struct ci_closure_ctx *c,
-                                     struct codeindex *ci, const char *sym,
+                                     struct codeindex *ci, const char *key,
                                      struct ci_strlist *next, bool *truncated,
                                      codeindex_impact_terminal_fn terminal,
                                      void *terminal_user)
 {
-    int nc = codeindex_callers(ci, sym, c->refbuf, CI_CLOSURE_QUERY_BATCH);
+    char name[CI_CLOSURE_KEY_MAX];
+    snprintf(name, sizeof(name), "%s", key);
+    char *at = strchr(name, '@');
+    struct ci_static_scope scope = {0};
+    if (at) {
+        *at = '\0';
+        scope.name = name;
+        scope.path = at + 1;
+    }
+    /* The name's full ref set, filtered below for a static: the fan-out bound
+     * therefore fires exactly where the name-only walk's did. */
+    int nc = codeindex_callers(ci, name, c->refbuf, CI_CLOSURE_QUERY_BATCH);
     if (nc < 0)
-        LOG_FAIL("codeindex", "callers failed for %s", sym);
+        LOG_FAIL("codeindex", "callers failed for %s", name);
     if (nc == CI_CLOSURE_QUERY_BATCH)
         *truncated = true;  /* more callers than one batch — closure incomplete */
 
     for (int i = 0; i < nc; i++) {
-        if (!ci_closure_add_file(c, c->refbuf[i].ref_file, truncated))
+        const struct ci_ref *ref = &c->refbuf[i];
+        bool keep = true;
+        if (scope.path && !ci_static_ref_binds(c, ci, &scope, ref->ref_file,
+                                               &keep))
             return false;
-        if (terminal && terminal(c->refbuf[i].ref_file, terminal_user))
+        if (!keep)
+            continue;  /* a same-named function of another TU */
+        if (!ci_closure_add_file(c, ref->ref_file, truncated))
+            return false;
+        if (terminal && terminal(ref->ref_file, terminal_user))
             continue;
-        const char *caller = c->refbuf[i].enclosing;
-        if (!caller[0])
+        if (!ref->enclosing[0])
             continue;  /* file-scope reference: file recorded, no symbol to walk */
         if (c->seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
             *truncated = true;
             continue;
         }
-        bool added = false;
-        if (!ci_strset_add(&c->seen_syms, caller, &added))
-            return false;
-        if (added && !ci_strlist_push(next, caller))
+        if (!ci_closure_queue_caller(c, ci, ref->enclosing, ref->ref_file,
+                                     next, truncated))
             return false;
     }
     return true;
@@ -273,13 +479,8 @@ static void ci_overlay_sym(const struct ci_symbol *sym, void *user)
 {
     struct ci_overlay_seed *seed = user;
     if (seed->failed || !sym || !sym->name[0]) return;
-    if (seed->closure->seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
-        *seed->truncated = true;
-        return;
-    }
-    bool added = false;
-    if (!ci_strset_add(&seed->closure->seen_syms, sym->name, &added) ||
-        (added && !ci_strlist_push(seed->frontier, sym->name)))
+    if (!ci_closure_queue_symbol(seed->closure, sym, seed->frontier,
+                                 seed->truncated))
         seed->failed = true;
 }
 
@@ -306,6 +507,7 @@ static int impact_closure_impl(
     struct ci_closure_ctx c = {0};
     int rc = -1;
     if (!ci_strset_init(&c.seen_syms, 1024) ||
+        !ci_strset_init(&c.seen_sites, 1024) ||
         !ci_strset_init(&c.seen_files, 1024)) {
         ci_closure_ctx_free(&c);
         LOG_ERR("codeindex", "closure set init failed");
@@ -314,7 +516,9 @@ static int impact_closure_impl(
                           "ci_closure_refbuf");
     c.symbuf = zcl_malloc(sizeof(*c.symbuf) * CI_CLOSURE_QUERY_BATCH,
                           "ci_closure_symbuf");
-    if (!c.refbuf || !c.symbuf) {
+    c.incbuf = zcl_malloc(sizeof(*c.incbuf) * CI_CLOSURE_QUERY_BATCH,
+                          "ci_closure_incbuf");
+    if (!c.refbuf || !c.symbuf || !c.incbuf) {
         ci_closure_ctx_free(&c);
         LOG_ERR("codeindex", "closure batch alloc failed");
     }

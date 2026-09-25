@@ -851,6 +851,8 @@ AGENT_IMPACT_RULE("contexts/commons/modules/vcs/*|tests/harness/src/test_vcs_cor
 
 /* Code navigator: in-binary source index (cognition/modules/codeindex/). */
 AGENT_IMPACT_RULE("cognition/modules/codeindex/*|tests/harness/src/test_codeindex.c", "codeindex code_capsule make_lint_gates")
+/* Linkage-aware impact closure: statics are walked by (name, defining file). */
+AGENT_IMPACT_RULE("cognition/modules/codeindex/src/codeindex_impact.c|tests/harness/src/test_codeindex_static_callers.c", "codeindex_static_callers make_lint_gates")
 
 /* Cheap-at-scale evidence (M2): the cold-build self-receipt is written by the
  * shared full-build path, and the scale group proves linear cold-build cost
