@@ -25,12 +25,14 @@
 #include "services/bg_validation_authority.h"
 #include "services/bg_validation_service.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
 #include <errno.h>
 #include <pthread.h>
+#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,7 +75,8 @@ static struct main_state *g_reorg_ms;
 static struct block_index *g_reorg_replacement;
 static _Atomic bool g_saw_reverify_read;
 static int g_restart_progress = 1;
-static int64_t g_restart_version = 1;
+static int64_t g_restart_version = BG_VALIDATION_COVERAGE_VERSION;
+static int64_t g_restart_skips = 0;
 static struct block_index *g_repair_index;
 static struct disk_block_pos g_repair_position;
 
@@ -282,7 +285,7 @@ static bool restart_save_progress(void *self, int height)
 static bool restart_load_i64(void *self, int64_t *out)
 {
     (void)self;
-    *out = 0;
+    *out = g_restart_skips;
     return true;
 }
 
@@ -296,7 +299,7 @@ static bool restart_load_version(void *self, int64_t *out)
 static bool restart_save_i64(void *self, int64_t value)
 {
     (void)self;
-    (void)value;
+    g_restart_skips = value;
     return true;
 }
 
@@ -563,7 +566,7 @@ static int test_bg_validation_body_repair_stops_responsively(void)
         g_body_repair_svc = &svc;
         atomic_store(&g_body_read_calls, 0);
         g_restart_progress = 1;
-        g_restart_version = 1;
+        g_restart_version = BG_VALIDATION_COVERAGE_VERSION;
         atomic_store(&g_saw_reverify_read, false);
         reducer_frontier_body_read_note_reset_for_testing();
         bg_validation_test_set_body_repair_stubs(
@@ -636,6 +639,158 @@ static int test_bg_validation_legacy_cursor_restarts_walk(void)
         main_state_free(&ms);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* Wire a two-block walk over the restart stubs, for the census/gate cases. */
+static void walk_svc_init(struct bg_validation_service *svc,
+                          struct main_state *ms)
+{
+    memset(svc, 0, sizeof(*svc));
+    svc->ms = ms;
+    svc->datadir = "unused";
+    svc->progress_store = (struct bg_validation_store_port) {
+        .self = svc,
+        .load_progress = restart_load_progress,
+        .save_progress = restart_save_progress,
+        .load_skips = restart_load_i64,
+        .save_skips = restart_save_i64,
+        .load_coverage_version = restart_load_version,
+        .save_coverage_version = restart_save_version,
+    };
+    g_body_repair_svc = svc;
+    atomic_store(&g_body_read_calls, 0);
+    atomic_store(&g_saw_reverify_read, false);
+}
+
+/* A v1 cursor's census counted every self-connected block as a skip because
+ * only rev files were consulted. Carrying it into the restarted campaign
+ * would keep the full-history authority unpublishable forever. */
+static int test_bg_validation_v1_cursor_drops_skip_census(void)
+{
+    int failures = 0;
+
+    TEST("bg_validation: a refused v1 cursor restarts with a zero census") {
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 h0_hash, h1_hash;
+        struct block_index *h0 = make_repair_index(&ms, &h0_hash);
+        ASSERT(h0 != NULL);
+        ASSERT(extend_repair_chain(&ms, h0, &h1_hash) != NULL);
+        struct bg_validation_service svc;
+        walk_svc_init(&svc, &ms);
+        g_restart_progress = 1;
+        g_restart_version = 1;
+        g_restart_skips = 41;
+        bg_validation_test_set_body_repair_stubs(
+            body_read_never_succeeds, body_repair_stop_on_sleep);
+
+        ASSERT(bg_validation_start(&svc));
+        ASSERT(body_read_count_wait_at_least(1));
+        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 0);
+        bg_validation_stop(&svc);
+        ASSERT_EQ(g_restart_skips, 0);
+        ASSERT_EQ(g_restart_version, BG_VALIDATION_COVERAGE_VERSION);
+
+        bg_validation_test_set_body_repair_stubs(NULL, NULL);
+        reducer_frontier_body_read_note_reset_for_testing();
+        main_state_free(&ms);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bg_validation_current_cursor_keeps_census(void)
+{
+    int failures = 0;
+
+    TEST("bg_validation: a current cursor keeps its skip census") {
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 h0_hash, h1_hash;
+        struct block_index *h0 = make_repair_index(&ms, &h0_hash);
+        ASSERT(h0 != NULL);
+        ASSERT(extend_repair_chain(&ms, h0, &h1_hash) != NULL);
+        struct bg_validation_service svc;
+        walk_svc_init(&svc, &ms);
+        g_restart_progress = 1;
+        g_restart_version = BG_VALIDATION_COVERAGE_VERSION;
+        g_restart_skips = 41;
+        bg_validation_test_set_body_repair_stubs(
+            body_read_never_succeeds, body_repair_stop_on_sleep);
+
+        ASSERT(bg_validation_start(&svc));
+        ASSERT(body_read_count_wait_at_least(1));
+        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 41);
+        bg_validation_stop(&svc);
+
+        bg_validation_test_set_body_repair_stubs(NULL, NULL);
+        reducer_frontier_body_read_note_reset_for_testing();
+        main_state_free(&ms);
+        g_restart_skips = 0;
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool set_utxo_apply_cursor(int next)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+             "VALUES('utxo_apply', %d, 1)", next);
+    progress_store_tx_lock();
+    bool ok = sqlite3_exec(progress_store_db(), sql, NULL, NULL, NULL) ==
+              SQLITE_OK;
+    progress_store_tx_unlock();
+    return ok;
+}
+
+/* The undo of a self-connected block is the delta row utxo_apply commits
+ * with its cursor. Verifying a height the fold has not applied would book a
+ * transient absence as a permanent skip, so the walk must hold there. */
+static int test_bg_validation_walk_waits_for_fold(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "bg_validation", "fold_gate");
+    bool store_open = false;
+
+    TEST("bg_validation: the walk never verifies ahead of the fold") {
+        ASSERT(progress_store_open(dir));
+        store_open = true;
+        ASSERT(set_utxo_apply_cursor(1));
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 h0_hash, h1_hash;
+        struct block_index *h0 = make_repair_index(&ms, &h0_hash);
+        ASSERT(h0 != NULL);
+        ASSERT(extend_repair_chain(&ms, h0, &h1_hash) != NULL);
+        struct bg_validation_service svc;
+        walk_svc_init(&svc, &ms);
+        g_restart_progress = -1;
+        g_restart_version = BG_VALIDATION_COVERAGE_VERSION;
+        g_restart_skips = 0;
+        bg_validation_test_set_body_repair_stubs(
+            body_read_never_succeeds, body_repair_stop_on_sleep);
+
+        ASSERT(bg_validation_start(&svc));
+        platform_sleep_ms(1500);
+        int held_reads = atomic_load(&g_body_read_calls);
+        bool advanced = set_utxo_apply_cursor(2) &&
+                        body_read_count_wait_at_least(1);
+        bg_validation_stop(&svc);
+        bg_validation_test_set_body_repair_stubs(NULL, NULL);
+        reducer_frontier_body_read_note_reset_for_testing();
+        main_state_free(&ms);
+        g_restart_progress = 1;
+        ASSERT_EQ(held_reads, 0);
+        ASSERT(advanced);
+        PASS();
+    } _test_next:;
+    if (store_open)
+        progress_store_close();
+    (void)test_rm_rf_recursive(dir);
     return failures;
 }
 
@@ -991,6 +1146,9 @@ int test_bg_validation_reverify(void)
     failures += test_bg_validation_post_verify_reorg_is_orphan();
     failures += test_bg_validation_restart_keeps_reverify_worker();
     failures += test_bg_validation_legacy_cursor_restarts_walk();
+    failures += test_bg_validation_v1_cursor_drops_skip_census();
+    failures += test_bg_validation_current_cursor_keeps_census();
+    failures += test_bg_validation_walk_waits_for_fold();
     failures += test_bg_validation_authority_requires_complete_coverage();
     return failures;
 }

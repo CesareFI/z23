@@ -38,6 +38,8 @@
 #include "script/interpreter.h"
 #include "script/script_flags.h"
 #include "platform/positioned_file.h"
+#include "jobs/utxo_apply_delta_undo.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -110,6 +112,53 @@ static bool read_block_undo(struct block_undo *undo, const struct block_index *p
     bool ok = block_undo_deserialize(undo, &s);
     free(buf);
     return ok;
+}
+
+/* ── Undo from the reducer's own inverse-delta record ───────────
+ *
+ * A block this node connected itself has no rev record: the utxo_apply stage
+ * keeps its spent-coin pre-images in `utxo_apply_delta` instead, co-committed
+ * with the coins and the stage cursor (jobs/utxo_apply_delta_undo.h). That
+ * row is read through an independent read-only connection so the walk never
+ * waits behind a reducer batch; if the reader is unavailable or busy, the
+ * singleton answers under its lock. A row for another block hash, or one that
+ * does not name exactly this block's prevouts, yields no undo and the block's
+ * transparent txs stay counted as unverified. */
+static _Atomic uint64_t g_undo_from_delta_blocks = 0;
+
+uint64_t bg_validation_undo_from_delta_blocks(void)
+{
+    return atomic_load(&g_undo_from_delta_blocks);
+}
+
+static bool read_delta_undo(struct block_undo *undo, const struct block *block,
+                            const struct block_index *pindex)
+{
+    block_undo_init(undo);
+    const struct uint256 *hash = pindex->phashBlock;
+    if (!hash)
+        LOG_FAIL("bg_validation", "read_delta_undo: h=%d has no block hash",
+                 pindex->nHeight);
+
+    enum utxo_apply_delta_undo_status st = UTXO_DELTA_UNDO_ERROR;
+    sqlite3 *reader = progress_store_open_reader();
+    if (reader) {
+        st = utxo_apply_delta_block_undo_load(reader, pindex->nHeight, hash,
+                                              block, undo);
+        sqlite3_close(reader);
+    }
+    if (st == UTXO_DELTA_UNDO_ERROR) {
+        progress_store_tx_lock();
+        sqlite3 *db = progress_store_db();
+        st = db ? utxo_apply_delta_block_undo_load(db, pindex->nHeight, hash,
+                                                   block, undo)
+                : UTXO_DELTA_UNDO_ABSENT;
+        progress_store_tx_unlock();
+    }
+    if (st != UTXO_DELTA_UNDO_FOUND)
+        return false; // raw-return-ok:missing-undo-is-counted-as-script-skip
+    atomic_fetch_add(&g_undo_from_delta_blocks, 1);
+    return true;
 }
 
 /* ── Undo-missing script-skip suppression ─────────────────────
@@ -269,8 +318,14 @@ bool bg_validation_validate_block_proofs(const struct block *block,
         pindex->nHeight, &params->consensus);
     uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
 
-    if (block->num_vtx > 1)
+    if (block->num_vtx > 1) {
         have_undo = read_block_undo(&blockundo, pindex, datadir);
+        if (!have_undo) {
+            /* A torn rev parse may leave partial allocations behind. */
+            block_undo_free(&blockundo);
+            have_undo = read_delta_undo(&blockundo, block, pindex);
+        }
+    }
 
     /* Count transparent inputs and cap allocation */
     size_t total_inputs = 0;

@@ -77,6 +77,7 @@
 #include "models/database.h"
 #include "ports/bg_validation_store_port.h"
 #include "jobs/reducer_frontier.h"           /* reducer_seed_floor_height_read */
+#include "jobs/utxo_apply_delta_undo.h"      /* bg_validation_applied_next */
 #include "storage/progress_store.h"          /* progress_store_db */
 #include "event/event.h"
 #include "platform/rng.h"
@@ -105,7 +106,6 @@ struct bg_validation_service *g_bg_validation = NULL;
 /* ── How often to save progress and log ─────────────────────── */
 #define SAVE_INTERVAL  1000
 #define LOG_INTERVAL   10000
-#define BG_VALIDATION_COVERAGE_VERSION 1
 #define BG_VALIDATION_SUPERVISOR_DEADLINE_SEC 600
 /* Idle gap between sampled re-verifies (post-COMPLETE). Deliberately long so
  * the always-on re-verify stays a low-rate background witness and NEVER
@@ -264,6 +264,61 @@ static bool save_coverage_version(
            store->save_coverage_version(store->self, version);
 }
 
+/* ── Stay behind the fold ─────────────────────────────────────
+ * For a height this node connected, the spent outputs live in the delta row
+ * the utxo_apply stage co-commits with its cursor. The active chain can run
+ * ahead of that cursor by the pipeline depth, so verifying such a height
+ * would turn a transient absence into a permanent skip in the walk census.
+ *
+ * bg_validation_applied_next() reads the stage's durable next-to-apply
+ * height. It returns UINT64_MAX (nothing to wait for) when the store is not
+ * open or the stage has never committed on it, and 0 on a read error so the
+ * caller re-probes instead of trusting a stale value. */
+static uint64_t bg_validation_applied_next(void)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return UINT64_MAX;
+    uint64_t next = 0;
+    bool found = false;
+    if (!utxo_apply_delta_undo_next_unapplied(db, &next, &found))
+        return 0; // raw-return-ok:read-error-logged-by-probe-caller-reprobes
+    return found ? next : UINT64_MAX;
+}
+
+/* Wait, stop-responsive and heartbeating, until the reducer has applied `h`.
+ * `*applied_next` caches the last observed cursor so the store is read only
+ * when the walk reaches it. A persistent read error does not wedge the walk:
+ * after a bounded retry the block is verified with whatever undo exists and
+ * any skip is counted honestly. Returns false only when stop is requested. */
+static bool bg_validation_wait_until_applied(
+    struct bg_validation_service *svc, int h, uint64_t *applied_next)
+{
+    unsigned read_errors = 0;
+    bool announced = false;
+    while (!atomic_load(&svc->stop_requested)) {
+        if ((uint64_t)h < *applied_next)
+            return true;
+        uint64_t next = bg_validation_applied_next();
+        if (next == 0 && ++read_errors >= 5)
+            return true;
+        if (next != 0)
+            *applied_next = next;
+        if ((uint64_t)h < *applied_next)
+            return true;
+        if (!announced && next != 0) {
+            LOG_INFO("bg_validation",
+                     "[bg-valid] h=%d waits for the reducer to apply it "
+                     "(utxo_apply next=%llu)",
+                     h, (unsigned long long)next);
+            announced = true;
+        }
+        bg_validation_supervisor_heartbeat(svc);
+        platform_sleep_ms(1000);
+    }
+    return false;
+}
+
 /* ── Sampled re-verify loop (after the genesis→tip walk completes) ──── */
 
 /* Low-rate, always-on re-verification of RANDOM already-verified heights.
@@ -293,6 +348,17 @@ static void bg_validation_sampled_reverify_loop(
         int ceiling = active_chain_height(&ms->chain_active);
         if (ceiling < 1)
             ceiling = chain_height;
+        /* Never sample a height the reducer has not applied yet: its undo
+         * does not exist, and the process tally would record a false gap. */
+        uint64_t applied_next = bg_validation_applied_next();
+        if (applied_next != UINT64_MAX && (uint64_t)ceiling >= applied_next)
+            ceiling = applied_next > 1 ? (int)(applied_next - 1) : 0;
+        if (ceiling < 1) {
+            for (int i = 0; i < BG_REVERIFY_IDLE_SECS &&
+                            !atomic_load(&svc->stop_requested); i++)
+                platform_sleep_ms(1000);
+            continue;
+        }
         int h = 1 + (int)(rng_u64() % (uint64_t)ceiling);
 
         struct block_index *pindex = NULL;
@@ -365,6 +431,7 @@ static void *bg_validation_thread(void *arg)
         seed_floor_found && seed_floor > 0;
 
     int start_height = load_progress(&svc->progress_store);
+    bool walk_from_floor = start_height < 0;
     if (start_height < 0) {
         coverage_complete = save_coverage_version(
             &svc->progress_store, BG_VALIDATION_COVERAGE_VERSION);
@@ -387,6 +454,7 @@ static void *bg_validation_thread(void *arg)
             coverage_complete = cursor_cleared && save_coverage_version(
                 &svc->progress_store, BG_VALIDATION_COVERAGE_VERSION);
             start_height = external_seeded ? seed_floor + 1 : 0;
+            walk_from_floor = true;
             LOG_WARN("bg_validation",
                      "[bg-valid] legacy coverage cursor refused; restarting "
                      "walk from h=%d",
@@ -410,8 +478,15 @@ static void *bg_validation_thread(void *arg)
     int h_last_log = start_height;
     int64_t total_sigs = 0;
     int64_t total_proofs = 0;
-    int64_t ls = load_skips(&svc->progress_store);
+    /* The skip census belongs to the campaign that started at the floor. A
+     * walk restarting there must not inherit a refused cursor's tally, or a
+     * skip the new coverage contract can now verify would block the
+     * authority forever. */
+    int64_t ls = walk_from_floor ? 0 : load_skips(&svc->progress_store);
     int64_t total_skips = ls < 0 ? 0 : ls;
+    if (walk_from_floor)
+        save_skips(&svc->progress_store, 0);
+    uint64_t applied_next = 0;
     atomic_store(&svc->progress.script_verif_skipped_no_undo, total_skips);
 
     for (int h = start_height; h <= chain_height; h++) {
@@ -437,6 +512,8 @@ static void *bg_validation_thread(void *arg)
             atomic_store(&svc->progress.verified_height, 0);
             continue;
         }
+        if (!bg_validation_wait_until_applied(svc, h, &applied_next))
+            break;
         struct block blk;
         block_init(&blk);
         if (!bg_validation_read_body_resilient(
@@ -465,6 +542,18 @@ static void *bg_validation_thread(void *arg)
         }
 
         block_free(&blk);
+        /* A rewind can pull the fold's cursor back under a cached value, so a
+         * skip is re-checked against a fresh cursor before it is booked: a
+         * height the reducer no longer holds as applied is retried, not
+         * counted. */
+        if (block_skips > 0) {
+            applied_next = bg_validation_applied_next();
+            if (applied_next != 0 && applied_next != UINT64_MAX &&
+                (uint64_t)h >= applied_next) {
+                h--;
+                continue;
+            }
+        }
         total_sigs += block_sigs;
         total_proofs += block_proofs;
         total_skips += block_skips;

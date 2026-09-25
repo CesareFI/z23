@@ -63,4 +63,11 @@ enum utxo_apply_delta_undo_status utxo_apply_delta_block_undo_load(
     sqlite3 *db, int height, const struct uint256 *block_hash,
     const struct block *blk, struct block_undo *out);
 
+/* The utxo_apply stage's durable cursor: the next height it will apply, so
+ * no height at or above it has a delta row yet. *found_out is false when the
+ * stage has never committed on this store (nothing to wait for). Returns
+ * false on a store error. Serializes on progress_store_tx_lock. */
+bool utxo_apply_delta_undo_next_unapplied(sqlite3 *db, uint64_t *next_out,
+                                          bool *found_out);
+
 #endif /* ZCL_JOBS_UTXO_APPLY_DELTA_UNDO_H */

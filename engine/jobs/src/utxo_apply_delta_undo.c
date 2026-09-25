@@ -15,6 +15,7 @@
 #include "jobs/utxo_apply_delta_undo.h"
 
 #include "coins/undo.h"
+#include "jobs/stage_helpers.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
@@ -199,4 +200,19 @@ enum utxo_apply_delta_undo_status utxo_apply_delta_block_undo_load(
     }
     sqlite3_finalize(st);
     return status;
+}
+
+bool utxo_apply_delta_undo_next_unapplied(sqlite3 *db, uint64_t *next_out,
+                                          bool *found_out)
+{
+    if (!db || !next_out || !found_out)
+        LOG_FAIL(UNDO_TAG, "[utxo_apply_undo] next_unapplied: invalid args");
+    struct stage_cursor_read_result r =
+        stage_cursor_read_persisted(db, "utxo_apply", UNDO_TAG);
+    if (!r.ok)
+        LOG_FAIL(UNDO_TAG, "[utxo_apply_undo] next_unapplied: cursor read "
+                 "failed rc=%d", r.sqlite_rc);
+    *next_out = r.cursor;
+    *found_out = r.found;
+    return true;
 }

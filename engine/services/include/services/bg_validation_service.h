@@ -45,6 +45,14 @@ struct chain_params;
 struct block;
 struct block_index;
 
+/* Coverage contract of a persisted walk cursor. A cursor stamped with any
+ * other version is refused and the walk restarts from its floor with a zero
+ * skip census.
+ *   1 — spent outputs came only from rev (undo) files.
+ *   2 — blocks without a rev record take their spent outputs from the
+ *       reducer's utxo_apply_delta row, so a v1 cursor's skips are stale. */
+#define BG_VALIDATION_COVERAGE_VERSION 2
+
 enum bg_validation_state {
     BG_VALIDATION_IDLE = 0,      /* not started */
     BG_VALIDATION_RUNNING,       /* actively verifying blocks */
@@ -183,6 +191,11 @@ struct bg_validation_undo_skip_stats bg_validation_get_undo_skip_stats(void);
  * re-announces. Called by bg_validation_reset() alongside the persisted
  * skip counter; also the seam the bg-valid test group drives. */
 void bg_validation_reset_undo_skip_stats(void);
+
+/* Verifier invocations (not distinct heights) whose spent outputs came from
+ * the reducer's utxo_apply_delta row because the block had no rev record.
+ * Monotonic for the process; lock-free. */
+uint64_t bg_validation_undo_from_delta_blocks(void);
 
 /* Record the outcome of ONE sampled re-verify of an already-verified height.
  * On success bumps reverify_passes and returns true (keep sampling). On failure
