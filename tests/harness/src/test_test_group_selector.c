@@ -647,6 +647,27 @@ static int test_declared_family_expansion(void)
                 registered++;
         ASSERT(lint.len == registered);
 
+        /* The gateway umbrella: its base group only proves the shard
+         * partition, so an impact rule naming `fleet_gateway` must reach
+         * every registered test_fleet_gateway* shard or a proof runs none
+         * of the gateway sub-suites. */
+        struct family_expansion gw = {0};
+        ASSERT(zcl_test_group_family_expand("fleet_gateway",
+                                            family_expansion_collect, &gw));
+        ASSERT(!gw.overflowed);
+        ASSERT(gw.len > 1);
+        ASSERT(strcmp(gw.ids[0], "test_fleet_gateway") == 0);
+        ASSERT(family_expansion_has(&gw, "test_fleet_gateway_shard_01"));
+        size_t gw_registered = 0;
+        for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
+            if (strncmp(zcl_test_group_catalog_at(i), "test_fleet_gateway",
+                        strlen("test_fleet_gateway")) == 0) {
+                gw_registered++;
+                ASSERT(family_expansion_has(&gw,
+                                            zcl_test_group_catalog_at(i)));
+            }
+        ASSERT(gw.len == gw_registered);
+
         /* An exact single-group token still yields exactly one group. */
         struct family_expansion exact = {0};
         ASSERT(zcl_test_group_family_expand("test_api",

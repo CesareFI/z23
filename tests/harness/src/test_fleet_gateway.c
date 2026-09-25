@@ -13,6 +13,7 @@
  */
 
 #include "test/test_core.h"
+#include "test_group_catalog.h"
 
 #include "command/native_command.h"
 #include "config/command_catalog.h"
@@ -30,6 +31,16 @@ int test_fleet_gateway(void)
     printf("fleet_gateway: POSIX-only gateway, noting Windows refusal\n");
     return 0;
 }
+#define GW_SHARD_FN(tag)                                                    \
+    int test_fleet_gateway_shard_##tag(void);                               \
+    int test_fleet_gateway_shard_##tag(void) { return test_fleet_gateway(); }
+GW_SHARD_FN(01)
+GW_SHARD_FN(02)
+GW_SHARD_FN(03)
+GW_SHARD_FN(04)
+GW_SHARD_FN(05)
+GW_SHARD_FN(06)
+#undef GW_SHARD_FN
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -42,6 +53,7 @@ int test_fleet_gateway(void)
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+#include <poll.h>
 
 #include "../../../tools/zcl_fleet_front_hello.h"
 
@@ -1559,6 +1571,94 @@ _test_next:;
  * both. The rig runs the gateway with FLEET_GW_MAX_CHILDREN=8 and
  * FLEET_GW_IO_TIMEOUT_MS=1000. */
 #define GW_HALF_OPEN 12
+/* How long the held children may take to be released and an ordinary
+ * request served again: the rig's 1000 ms socket deadline plus the margin
+ * the case has always allowed. */
+#define GW_HALF_OPEN_BOUND_MS 1600
+
+/* Milliseconds since `from`. An unreadable clock reads as "the bound has
+ * passed", so a wait fails closed instead of spinning. */
+static long long gw_elapsed_ms(const struct timespec *from)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return 1LL << 40;
+    return (long long)(now.tv_sec - from->tv_sec) * 1000 +
+           (now.tv_nsec - from->tv_nsec) / 1000000;
+}
+
+/* Drain one readable held socket. True when the peer has closed it: EOF,
+ * or a reset, which is also the gateway letting go. */
+static bool gw_peer_gone(int fd)
+{
+    char sink[512];
+    ssize_t r = read(fd, sink, sizeof(sink));
+    if (r > 0)
+        return false;
+    return r == 0 || (errno != EINTR && errno != EAGAIN);
+}
+
+/* Wait on the held sockets themselves until the gateway has closed every
+ * one, or bound_ms after `from` passes first. The event is the peer's close
+ * arriving on our own descriptor; poll() wakes on it, no sleep guesses. */
+static bool gw_wait_peer_closed(const int *fds, int n,
+                                const struct timespec *from, long bound_ms)
+{
+    bool gone[GW_HALF_OPEN] = {false};
+    int open = n;
+    if (n > GW_HALF_OPEN)
+        return false;
+    while (open > 0) {
+        struct pollfd pf[GW_HALF_OPEN];
+        int map[GW_HALF_OPEN], m = 0, r;
+        long long left = bound_ms - gw_elapsed_ms(from);
+        if (left <= 0)
+            return false;
+        for (int i = 0; i < n; i++) {
+            if (gone[i])
+                continue;
+            pf[m].fd = fds[i];
+            pf[m].events = POLLIN;
+            pf[m].revents = 0;
+            map[m++] = i;
+        }
+        r = poll(pf, (nfds_t)m, (int)left); /* real-clock: bounded wait for a gateway child outside this address space to close its socket on its own SO_RCVTIMEO deadline; the close itself is the event */
+        if (r < 0 && errno != EINTR)
+            return false;
+        for (int k = 0; r > 0 && k < m; k++) {
+            if (pf[k].revents != 0 && gw_peer_gone(fds[map[k]])) {
+                gone[map[k]] = true;
+                open--;
+            }
+        }
+    }
+    return true;
+}
+
+/* GET until it is served or bound_ms after `from` passes. A released
+ * child's socket closes a moment before the child exits and the listener
+ * reaps it, so the first request after the close can still meet the cap;
+ * asking again inside the same bound is the same question the case always
+ * asked. SIGPIPE is held off while a refused connection may be written. */
+static char *gw_get_by(const struct timespec *from, long bound_ms,
+                       const char *path, int *status)
+{
+    struct sigaction ign, old;
+    char *b = NULL;
+    memset(&ign, 0, sizeof(ign));
+    ign.sa_handler = SIG_IGN;
+    if (sigaction(SIGPIPE, &ign, &old) != 0)
+        return NULL;
+    for (;;) {
+        struct timespec pause = {0, 10000000L};
+        b = gw_get(path, status);
+        if (b || gw_elapsed_ms(from) >= bound_ms)
+            break;
+        (void)nanosleep(&pause, NULL); /* real-clock: the listener reaps a released child only at its next accept; no descriptor signals that reap to this process */
+    }
+    (void)sigaction(SIGPIPE, &old, NULL);
+    return b;
+}
 
 static int gw_t_conn_bounds(void)
 {
@@ -1568,6 +1668,7 @@ static int gw_t_conn_bounds(void)
         struct timespec ts;
         char *b;
         int st = 0, i;
+        bool clock_ok;
         for (i = 0; i < GW_HALF_OPEN; i++) {
             static const char partial[] = "GET /healthz HTTP/1.1\r\nHost: x\r\n";
             fds[i] = gw_sock_open();
@@ -1582,11 +1683,15 @@ static int gw_t_conn_bounds(void)
          * an ordinary request gets nothing back rather than a child. */
         b = gw_get("/healthz", &st);
         ASSERT(b == NULL);
-        /* The deadline releases them without anyone closing a socket. */
-        ts.tv_sec = 1;
-        ts.tv_nsec = 600000000L;
-        (void)nanosleep(&ts, NULL);
-        b = gw_get("/healthz", &st);
+        /* The deadline releases them without anyone closing a socket: every
+         * held connection is closed from the gateway's side, and an ordinary
+         * request is served again, all inside the same 1.6 s bound the case
+         * used to sleep through before asking once. */
+        clock_ok = clock_gettime(CLOCK_MONOTONIC, &ts) == 0;
+        ASSERT(clock_ok);
+        ASSERT(gw_wait_peer_closed(fds, GW_HALF_OPEN, &ts,
+                                   GW_HALF_OPEN_BOUND_MS));
+        b = gw_get_by(&ts, GW_HALF_OPEN_BOUND_MS, "/healthz", &st);
         GW_ASSERT_BODY(b, "\"ok\":true");
         ASSERT_EQ(st, 200);
         free(b);
@@ -1868,12 +1973,15 @@ static bool gw_pool(char *qd, size_t qdcap)
 
 /* Poll a run file for content, not mere existence: the launcher creates
  * run.out before the child appends its rc line, so existence alone races
- * the reap read. A NULL needle keeps the plain existence check. */
+ * the reap read. A NULL needle keeps the plain existence check. The bound
+ * is `tries` tenths of a second, as it always was; the file is looked at
+ * every 10 ms inside it, so a child that finishes early is seen early. */
+#define GW_POLL_SLICES_PER_TRY 10
 static bool gw_poll_match(const char *path, const char *needle, int tries)
 {
     int i;
     struct timespec req;
-    for (i = 0; i < tries; i++) {
+    for (i = 0; i < tries * GW_POLL_SLICES_PER_TRY; i++) {
         FILE *f = fopen(path, "rb");
         if (f) {
             char buf[8192];
@@ -1884,7 +1992,7 @@ static bool gw_poll_match(const char *path, const char *needle, int tries)
                 return true;
         }
         req.tv_sec = 0;
-        req.tv_nsec = 100000000L;
+        req.tv_nsec = 100000000L / GW_POLL_SLICES_PER_TRY;
         (void)nanosleep(&req, NULL); /* real-clock: bounded wait for a detached engine-unit child outside this address space; completion arrives in kernel time and no fake-clock seam reaches it */
     }
     return false;
@@ -3382,83 +3490,6 @@ _test_next:;
     return failures;
 }
 
-int test_fleet_gateway(void);
-int test_fleet_gateway(void)
-{
-    int failures = 0;
-    const char *bin = gw_bin("Z23_TEST_GATEWAY_BIN", GW_TEST_BIN_DEFAULT);
-    const char *node = gw_bin("Z23_TEST_NODE_BIN", GW_TEST_NODE_DEFAULT);
-    char state[512];
-    const char *saved_xdg = getenv("XDG_STATE_HOME");
-    char saved[4096];
-    bool had_xdg = saved_xdg != NULL;
-    test_make_tmpdir(state, sizeof(state), "fleet_gateway", "iso");
-    if (strlen(state) + 8 >= sizeof(state))
-        return 1;
-    strcat(state, "/state");
-    if (mkdir(state, 0700) != 0)
-        return 1;
-    /* The direct node runs (grant mint) must land in the same isolated
-     * store the gateway child serves; save and restore the ambient root. */
-    if (had_xdg) {
-        if (snprintf(saved, sizeof(saved), "%s", saved_xdg) < 0)
-            return 1;
-    }
-    if (setenv("XDG_STATE_HOME", state, 1) != 0)
-        return 1;
-    if (snprintf(g_gw_state, sizeof(g_gw_state), "%s", state) < 0)
-        return 1;
-    if (!gw_spawn(bin, node, state)) {
-        if (had_xdg)
-            setenv("XDG_STATE_HOME", saved, 1);
-        else
-            unsetenv("XDG_STATE_HOME");
-        return 1;
-    }
-    failures += gw_t_routes();
-    failures += gw_t_handshake();
-    failures += gw_t_calls();
-    failures += gw_t_node_input_bound();
-#if defined(__linux__)
-    failures += gw_t_bound_pressure();
-#endif
-    failures += gw_t_child_status();
-    failures += gw_t_auth();
-    failures += gw_t_oauth();
-    failures += gw_t_register_bounds();
-    failures += gw_t_conn_bounds();
-    /* Last: it spends the owner-key window, which is persistent by
-     * design and does not roll over inside one run. */
-    failures += gw_t_csrf();
-    failures += gw_t_life_send_ack();
-    failures += gw_t_life_complete();
-    failures += gw_t_life_restart();
-    failures += gw_t_compat_pass();
-    failures += gw_t_compat_terminal();
-    failures += gw_t_compat_crash();
-    failures += gw_t_compat_case();
-    failures += gw_t_compat_rc();
-    failures += gw_t_compat_result();
-    failures += gw_t_compat_cancelq();
-    failures += gw_t_front_hello_verdicts();
-    failures += gw_t_front_hello_truncated();
-    failures += gw_t_front_hello_malformed();
-    /* Last: seeds inbox streams into the shared group state, so it runs
-     * after every brief-content assertion. */
-    failures += gw_t_brief_token();
-    /* No ASSERT lives here; the stop always runs on fall-through. */
-    gw_stop();
-    if (had_xdg)
-        setenv("XDG_STATE_HOME", saved, 1);
-    else
-        unsetenv("XDG_STATE_HOME");
-    if (failures == 0)
-        printf("test_fleet_gateway: all passed\n");
-    else
-        printf("test_fleet_gateway: %d FAILED\n", failures);
-    return failures;
-}
-
 static int gw_t_auth(void)
 {
     int failures = 0;
@@ -3551,4 +3582,288 @@ static int gw_t_auth(void)
 _test_next:;
     return failures;
 }
+
+/* ── Shards ──────────────────────────────────────────────────────────────
+ *
+ * One table names every sub-suite, the shard that owns it, and (by row
+ * order) the order it runs in inside that shard. Each shard is its own
+ * catalog group with a private XDG state root, its own gateway child on its
+ * own ephemeral loopback port, and its own fixture directories, so the
+ * shards run concurrently under the parallel runner. Inside a shard the rows
+ * keep the original serial order, which carries every ordering rule the
+ * single group had: the gw_t_life_* legs share g_life_gid/g_life_seq and run
+ * in sequence; gw_t_csrf follows any case that approves, because it spends
+ * the persistent owner-key window; gw_t_brief_token follows every
+ * brief-content assertion, because it seeds inbox streams into the state
+ * root. The registered base group test_fleet_gateway proves the partition.
+ *
+ * Owners are balanced by measured wall: the unsharded group took 8-10 s
+ * alone, spent mostly in node forks, the half-open deadline and the queue
+ * receipt polls, and no shard here should exceed about a quarter of that.
+ * Each shard logs [fleet-gateway-case] ms= per row to rebalance from. */
+struct gw_case {
+    const char *name;
+    int (*run)(void);
+    unsigned shard;
+};
+#define GW_CASE(fn, owner) {#fn, fn, owner}
+static const struct gw_case g_gw_cases[] = {
+    GW_CASE(gw_t_routes, 0),
+    GW_CASE(gw_t_handshake, 0),
+    GW_CASE(gw_t_calls, 1),
+    GW_CASE(gw_t_node_input_bound, 0),
+#if defined(__linux__)
+    GW_CASE(gw_t_bound_pressure, 0),
+#endif
+    GW_CASE(gw_t_child_status, 2),
+    GW_CASE(gw_t_auth, 1),
+    GW_CASE(gw_t_oauth, 1),
+    GW_CASE(gw_t_register_bounds, 0),
+    GW_CASE(gw_t_conn_bounds, 0),
+    GW_CASE(gw_t_csrf, 1),
+    GW_CASE(gw_t_life_send_ack, 2),
+    GW_CASE(gw_t_life_complete, 2),
+    GW_CASE(gw_t_life_restart, 2),
+    GW_CASE(gw_t_compat_pass, 3),
+    GW_CASE(gw_t_compat_terminal, 3),
+    GW_CASE(gw_t_compat_crash, 4),
+    GW_CASE(gw_t_compat_case, 4),
+    GW_CASE(gw_t_compat_rc, 5),
+    GW_CASE(gw_t_compat_result, 3),
+    GW_CASE(gw_t_compat_cancelq, 5),
+    GW_CASE(gw_t_front_hello_verdicts, 0),
+    GW_CASE(gw_t_front_hello_truncated, 0),
+    GW_CASE(gw_t_front_hello_malformed, 0),
+    GW_CASE(gw_t_brief_token, 5),
+};
+#undef GW_CASE
+#define GW_CASE_COUNT (sizeof(g_gw_cases) / sizeof(g_gw_cases[0]))
+#define GW_SHARD_COUNT 6u
+
+/* The sub-suite list the unsharded group ran, written down independently of
+ * the table above: the partition check proves the shards' union is exactly
+ * this list, each name owned once, so a row dropped from the table or a
+ * sub-suite that never joins it fails the base group instead of silently
+ * going unrun. */
+static const char *const g_gw_original[] = {
+    "gw_t_routes", "gw_t_handshake", "gw_t_calls", "gw_t_node_input_bound",
+#if defined(__linux__)
+    "gw_t_bound_pressure",
+#endif
+    "gw_t_child_status", "gw_t_auth", "gw_t_oauth", "gw_t_register_bounds",
+    "gw_t_conn_bounds", "gw_t_csrf", "gw_t_life_send_ack",
+    "gw_t_life_complete", "gw_t_life_restart", "gw_t_compat_pass",
+    "gw_t_compat_terminal", "gw_t_compat_crash", "gw_t_compat_case",
+    "gw_t_compat_rc", "gw_t_compat_result", "gw_t_compat_cancelq",
+    "gw_t_front_hello_verdicts", "gw_t_front_hello_truncated",
+    "gw_t_front_hello_malformed", "gw_t_brief_token",
+};
+#define GW_ORIGINAL_COUNT (sizeof(g_gw_original) / sizeof(g_gw_original[0]))
+
+/* The ambient XDG root, saved before a shard points it at its own store and
+ * put back afterwards. */
+struct gw_xdg {
+    bool had;
+    char saved[4096];
+};
+
+static bool gw_xdg_save(struct gw_xdg *x)
+{
+    const char *v = getenv("XDG_STATE_HOME");
+    x->had = v != NULL;
+    x->saved[0] = '\0';
+    return !v || snprintf(x->saved, sizeof(x->saved), "%s", v) <
+                     (int)sizeof(x->saved);
+}
+
+static void gw_xdg_restore(const struct gw_xdg *x)
+{
+    if (x->had)
+        setenv("XDG_STATE_HOME", x->saved, 1);
+    else
+        unsetenv("XDG_STATE_HOME");
+}
+
+/* A fresh state root private to this shard and this process, made the
+ * ambient XDG root: the direct node runs (grant mint) and the in-process
+ * leaves must land in the same isolated store the gateway child serves. */
+static bool gw_shard_state(unsigned shard, char *state, size_t cap)
+{
+    char tag[32];
+    if (snprintf(tag, sizeof(tag), "iso_s%02u", shard + 1u) >=
+        (int)sizeof(tag))
+        return false;
+    test_make_tmpdir(state, cap, "fleet_gateway", tag);
+    if (strlen(state) + 8 >= cap)
+        return false;
+    strcat(state, "/state");
+    return mkdir(state, 0700) == 0 &&
+           setenv("XDG_STATE_HOME", state, 1) == 0 &&
+           snprintf(g_gw_state, sizeof(g_gw_state), "%s", state) <
+               (int)sizeof(g_gw_state);
+}
+
+/* The owned rows, in table order, each timed so a proof transcript shows
+ * where a slow shard spent its wall. */
+static int gw_run_cases(unsigned shard)
+{
+    int failures = 0;
+    for (size_t i = 0; i < GW_CASE_COUNT; i++) {
+        struct timespec started;
+        int added;
+        if (g_gw_cases[i].shard != shard)
+            continue;
+        (void)clock_gettime(CLOCK_MONOTONIC, &started);
+        added = g_gw_cases[i].run();
+        failures += added;
+        printf("[fleet-gateway-case] shard=%u name=%s ms=%lld failures=%d\n",
+               shard + 1u, g_gw_cases[i].name, gw_elapsed_ms(&started), added);
+    }
+    return failures;
+}
+
+/* One shard: private state root, one gateway, the owned rows, then the stop
+ * and the ambient XDG root restored. */
+static int gw_run_shard(unsigned shard)
+{
+    const char *bin = gw_bin("Z23_TEST_GATEWAY_BIN", GW_TEST_BIN_DEFAULT);
+    const char *node = gw_bin("Z23_TEST_NODE_BIN", GW_TEST_NODE_DEFAULT);
+    char state[512];
+    struct gw_xdg xdg;
+    int failures;
+    if (!gw_xdg_save(&xdg))
+        return 1;
+    if (!gw_shard_state(shard, state, sizeof(state))) {
+        printf("FAIL fleet_gateway shard=%u: no private state root\n",
+               shard + 1u);
+        gw_xdg_restore(&xdg);
+        return 1;
+    }
+    printf("=== fleet_gateway shard=%u pid=%ld state=%s ===\n", shard + 1u,
+           (long)getpid(), state);
+    if (!gw_spawn(bin, node, state)) {
+        /* Say so: a missing gateway or node binary used to exit 1 with an
+         * empty log, indistinguishable from a crash. */
+        printf("FAIL fleet_gateway shard=%u: gateway did not start "
+               "(gateway=%s node=%s)\n", shard + 1u, bin, node);
+        gw_xdg_restore(&xdg);
+        return 1;
+    }
+    failures = gw_run_cases(shard);
+    /* No ASSERT lives here; the stop always runs on fall-through. */
+    gw_stop();
+    gw_xdg_restore(&xdg);
+    if (failures == 0)
+        printf("test_fleet_gateway shard=%u: all passed\n", shard + 1u);
+    else
+        printf("test_fleet_gateway shard=%u: %d FAILED\n", shard + 1u,
+               failures);
+    return failures;
+}
+
+/* Every row names a real shard, no sub-suite appears twice, every shard owns
+ * at least one row, and the rows are exactly the original list. */
+static bool gw_partition_valid(void)
+{
+    unsigned counts[GW_SHARD_COUNT] = {0};
+    bool ok = GW_CASE_COUNT == GW_ORIGINAL_COUNT;
+    for (size_t i = 0; i < GW_CASE_COUNT; i++) {
+        if (g_gw_cases[i].shard >= GW_SHARD_COUNT) {
+            ok = false;
+            continue;
+        }
+        counts[g_gw_cases[i].shard]++;
+        for (size_t j = 0; j < i; j++)
+            if (g_gw_cases[i].run == g_gw_cases[j].run ||
+                strcmp(g_gw_cases[i].name, g_gw_cases[j].name) == 0)
+                ok = false;
+    }
+    for (unsigned s = 0; s < GW_SHARD_COUNT; s++)
+        if (counts[s] == 0)
+            ok = false;
+    for (size_t k = 0; k < GW_ORIGINAL_COUNT; k++) {
+        size_t owners = 0;
+        for (size_t i = 0; i < GW_CASE_COUNT; i++)
+            if (strcmp(g_gw_original[k], g_gw_cases[i].name) == 0)
+                owners++;
+        if (owners != 1)
+            ok = false;
+    }
+    return ok;
+}
+
+struct gw_family {
+    char ids[GW_SHARD_COUNT + 1u][ZCL_TEST_GROUP_FULL_MAX];
+    size_t len;
+    bool overflowed;
+};
+
+static bool gw_family_visit(const char *full_id, void *ctx)
+{
+    struct gw_family *seen = ctx;
+    if (seen->len >= GW_SHARD_COUNT + 1u) {
+        seen->overflowed = true;
+        return false;
+    }
+    snprintf(seen->ids[seen->len], ZCL_TEST_GROUP_FULL_MAX, "%s", full_id);
+    seen->len++;
+    return true;
+}
+
+/* The proof selector expands an impact token through the declared family,
+ * not the substring rule: the `fleet_gateway` token must reach this base
+ * group first and then every shard, or a proof would run the partition check
+ * and none of the sub-suites. */
+static bool gw_family_complete(void)
+{
+    struct gw_family seen = {0};
+    if (!zcl_test_group_family_expand("fleet_gateway", gw_family_visit,
+                                      &seen) ||
+        seen.overflowed || seen.len != GW_SHARD_COUNT + 1u ||
+        strcmp(seen.ids[0], "test_fleet_gateway") != 0)
+        return false;
+    for (unsigned s = 1; s <= GW_SHARD_COUNT; s++) {
+        char id[ZCL_TEST_GROUP_FULL_MAX];
+        bool hit = false;
+        snprintf(id, sizeof(id), "test_fleet_gateway_shard_%02u", s);
+        for (size_t i = 1; i < seen.len; i++)
+            hit |= strcmp(seen.ids[i], id) == 0;
+        if (!hit)
+            return false;
+    }
+    return true;
+}
+
+/* The registered base group: proves the partition and the family, runs no
+ * gateway. Each shard group runs its owned sub-suites. */
+int test_fleet_gateway(void);
+int test_fleet_gateway(void)
+{
+    int failures = 0;
+    if (!gw_partition_valid()) {
+        printf("FAIL fleet_gateway: shard partition is not exactly the "
+               "original %zu sub-suites, each owned once\n",
+               GW_ORIGINAL_COUNT);
+        failures++;
+    }
+    if (!gw_family_complete()) {
+        printf("FAIL fleet_gateway: proof family does not select the base "
+               "group and all %u shards\n", GW_SHARD_COUNT);
+        failures++;
+    }
+    printf("fleet_gateway partition: cases=%zu shards=%u failures=%d\n",
+           GW_CASE_COUNT, GW_SHARD_COUNT, failures);
+    return failures;
+}
+
+#define GW_SHARD_FN(tag, index)                                             \
+    int test_fleet_gateway_shard_##tag(void);                               \
+    int test_fleet_gateway_shard_##tag(void) { return gw_run_shard(index); }
+GW_SHARD_FN(01, 0)
+GW_SHARD_FN(02, 1)
+GW_SHARD_FN(03, 2)
+GW_SHARD_FN(04, 3)
+GW_SHARD_FN(05, 4)
+GW_SHARD_FN(06, 5)
+#undef GW_SHARD_FN
 #endif /* _WIN32 */
