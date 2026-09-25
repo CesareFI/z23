@@ -573,7 +573,10 @@ static void du_child_fold(const char *dir, const struct chain_params *cp,
         _exit(3);
     g_du_commit_countdown = die_at_commit;
     sqlite3_commit_hook(progress_store_db(), du_die_on_commit, NULL);
-    (void)utxo_apply_stage_drain(100);
+    /* One height per drain: each block is its own commit, so the crash
+     * points fall between blocks as well as inside one. */
+    for (int i = 0; i < DU_BLOCKS; i++)
+        (void)utxo_apply_stage_drain(1);
     sqlite3_commit_hook(progress_store_db(), NULL, NULL);
     _exit(utxo_apply_stage_cursor() == DU_BLOCKS ? 0 : 4);
 }
@@ -608,6 +611,7 @@ static int test_delta_undo_kill9(const struct chain_params *cp)
 
     TEST("delta_undo: kill -9 at every fold commit keeps undo exact") {
         int killed = 0;
+        unsigned crash_fronts = 0;  /* durable cursors seen after a kill */
         bool completed = false;
         for (int k = 1; k <= 64 && !completed; k++) {
             char dir[256];
@@ -632,6 +636,8 @@ static int test_delta_undo_kill9(const struct chain_params *cp)
             bool opened = du_open(dir, &ms, &c);
             uint64_t next = 0;
             bool before = opened && du_crash_invariant(&c, &next);
+            if (died && before && next < 32)
+                crash_fronts |= 1u << next;
             int advanced = opened ? utxo_apply_stage_drain(100) : -1;
             bool after = opened && du_crash_invariant(&c, &next) &&
                          next == DU_BLOCKS;
@@ -646,7 +652,10 @@ static int test_delta_undo_kill9(const struct chain_params *cp)
         }
         /* The loop must have crossed every commit and then run clean. */
         ASSERT(completed);
-        ASSERT(killed > 0);
+        ASSERT(killed >= DU_BLOCKS);
+        /* ...and a kill landed with each of 0, 1 and 2 blocks durable. */
+        ASSERT_EQ(crash_fronts & ((1u << DU_BLOCKS) - 1u),
+                  (1u << DU_BLOCKS) - 1u);
         printf("(%d crash points) ", killed);
         PASS();
     } _test_next:;
