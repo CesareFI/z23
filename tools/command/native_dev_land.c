@@ -2168,6 +2168,14 @@ static enum dl_proof dl_proof_stub_read(const char *stub, const char *wt,
         (void)snprintf(detail, cap, "%s", "proof worker lost its request");
         return DL_PROOF_MISSING;
     }
+    if (strcmp(stub, "cancelled") == 0) {
+        /* The settled text a requester signal leaves (seq 48's shape). */
+        (void)snprintf(dimension, dim_cap, "test");
+        (void)snprintf(detail, cap, "%s",
+                       "child_proof_cancelled_test_budget_ms_3600000_"
+                       "elapsed_ms_215489_idle_ms_213923");
+        return DL_PROOF_FAILED;
+    }
     if (strcmp(stub, "watcher_absent") == 0)
         (void)snprintf(detail, cap, "%s", "resident_proof_watcher_absent");
     else if (strcmp(stub, "manual") == 0)
@@ -6483,6 +6491,43 @@ static bool dl_resume_proof_read(const struct dl_dirs *d, struct dl_row *row,
     return true;
 }
 
+/* An interrupted run (a requester signal, an outer timeout, the base probe)
+ * is not a verdict on the candidate: re-run the same exact pair rather than
+ * settle the request as failed, bounded by DL_ATTEMPT_MAX so a candidate
+ * that interrupts its own proof still ends. Returns false when the bound is
+ * spent and the caller should settle the failure as before. Never PASS. */
+static bool dl_resume_interrupted_proof(const struct dl_dirs *d,
+                                        struct dl_row *row,
+                                        const char detail[512],
+                                        struct zcl_command_reply *reply)
+{
+    if (row->attempt >= DL_ATTEMPT_MAX)
+        return false;
+    dl_log(row, "interrupted exact proof; re-running the same pair\n");
+#ifdef ZCL_DEV_BUILD
+    if (!dl_stub()) {
+        struct zcl_dev_proof_status status = {0};
+        if (!zcl_dev_proof_retry(d->wt, row->local, row->base, &status)) {
+            /* Nothing mutated: the row stays in flight for the next step. */
+            (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                                   ZCL_COMMAND_EXIT_BLOCKED,
+                                   "PROOF_RETRY_REFUSED", "prove", true, false,
+                                   "the interrupted pair could not be re-queued yet; retry this step",
+                                   status.detail[0] ? status.detail
+                                                    : "proof_retry_refused");
+            return true;
+        }
+    }
+#endif
+    row->attempt++;
+    (void)snprintf(row->detail, sizeof(row->detail),
+                   "interrupted proof re-queued: %.400s", detail);
+    if (dl_commit_or_report(d, row, false, reply, "proving"))
+        dl_step_reply(reply, row, "proving");
+    return true;
+}
+
 static void dl_resume_failed_proof(const struct dl_dirs *d,
                                     struct dl_row *row,
                                     const char dimension[48],
@@ -6499,6 +6544,9 @@ static void dl_resume_failed_proof(const struct dl_dirs *d,
         dl_step_successor(d, row, base_now, reply);
         return;
     }
+    if (zcl_dev_proof_failure_interrupted(detail) &&
+        dl_resume_interrupted_proof(d, row, detail, reply))
+        return;
     bool host_load = dl_host_load_failure(detail);
     dl_log(row, detail);
     dl_log(row, "\n");
@@ -7515,6 +7563,48 @@ static bool dl_drive_pair(char local[80], char base[80], char root[4096])
 }
 #endif
 
+/* The probe a proving drive runs every ZCL_DEV_PROOF_BASE_PROBE_MS: one
+ * bounded, read-only `ls-remote` of origin main from the landing worktree.
+ * Only a well-formed answer naming a different commit says SUPERSEDED; a
+ * timeout, a launch failure or unreadable output says UNKNOWN, which never
+ * cancels. Publication does not trust this answer either way: attach and
+ * push still take their own fresh fetch of the remote tip. */
+#define DL_BASE_PROBE_TIMEOUT_MS (10 * 1000)
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+struct dl_base_probe_ctx {
+    const char *wt;
+    const char *base;
+};
+
+static enum zcl_dev_proof_base_observation dl_base_observe(void *opaque)
+{
+    const struct dl_base_probe_ctx *ctx = opaque;
+    const char *args[] = { "ls-remote", "--quiet", "origin",
+                           "refs/heads/main", NULL };
+    char out[512], tip[80];
+    if (!ctx || !ctx->wt || !ctx->base ||
+        dl_git(ctx->wt, args, out, sizeof(out), DL_BASE_PROBE_TIMEOUT_MS) != 0)
+        return ZCL_DEV_PROOF_BASE_UNKNOWN;
+    size_t n = strcspn(out, " \t\r\n");
+    if (n >= sizeof(tip) || strcmp(out + n, "\trefs/heads/main\n") != 0)
+        return ZCL_DEV_PROOF_BASE_UNKNOWN;
+    memcpy(tip, out, n);
+    tip[n] = '\0';
+    if (!dl_sha_ok(tip))
+        return ZCL_DEV_PROOF_BASE_UNKNOWN;
+    return strcmp(tip, ctx->base) == 0 ? ZCL_DEV_PROOF_BASE_CURRENT
+                                       : ZCL_DEV_PROOF_BASE_SUPERSEDED;
+}
+#endif
+
+#if defined(ZCL_TESTING)
+int zcl_native_dev_land_test_base_observe(const char *wt, const char *base)
+{
+    struct dl_base_probe_ctx ctx = { .wt = wt, .base = base };
+    return (int)dl_base_observe(&ctx);
+}
+#endif
+
 /* Return 1 after this pair settles, 0 when a worker owns it, -1 on refusal. */
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static int dl_drive_proof(struct zcl_command_reply *reply)
@@ -7531,7 +7621,16 @@ static int dl_drive_proof(struct zcl_command_reply *reply)
                 "retry dev land drive after inspecting dev land status");
         return -1;
     }
-    result = zcl_dev_proof_step(root, local, base, &proof);
+    struct dl_base_probe_ctx probe_ctx = { .wt = root, .base = base };
+    const struct zcl_dev_proof_base_probe probe = {
+        .observe = dl_base_observe, .ctx = &probe_ctx, .interval_ms = 0 };
+    bool superseded = false;
+    result = zcl_dev_proof_step_watched(root, local, base, &probe, &proof,
+                                        &superseded);
+    /* A superseded run settles as a cancelled failure; the step that
+     * follows re-observes main and cuts the successor. */
+    if (superseded)
+        (void)json_push_kv_bool(&reply->data, "proof_superseded", true);
     if (result < 0) {
         dl_fail(reply, "PROOF_STEP_REFUSED", "drive",
                 "the exact proof worker refused this pair", proof.detail);

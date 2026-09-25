@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -248,6 +249,56 @@ void zcl_dev_proof_execution_release(int guard);
  * invalid/unavailable. Existing failed attempts require explicit retry. */
 int zcl_dev_proof_step(const char *root, const char *local, const char *base,
                         struct zcl_dev_proof_status *out);
+/* A caller-supplied observation that the pair's base is no longer the
+ * remote tip. SUPERSEDED is the only answer that acts: the foreground
+ * requester then cancels its worker exactly as a SIGTERM would, so every
+ * running step's process group gets TERM, 100 ms, then KILL, and the pair
+ * settles as a cancelled failure that can never read as PASS. UNKNOWN
+ * (no answer, timeout, unreadable output) and CURRENT never cancel and
+ * never admit anything. */
+enum zcl_dev_proof_base_observation {
+    ZCL_DEV_PROOF_BASE_UNKNOWN = 0,
+    ZCL_DEV_PROOF_BASE_CURRENT = 1,
+    ZCL_DEV_PROOF_BASE_SUPERSEDED = 2,
+};
+struct zcl_dev_proof_base_probe {
+    enum zcl_dev_proof_base_observation (*observe)(void *ctx);
+    void *ctx;
+    int interval_ms; /* <= 0 selects ZCL_DEV_PROOF_BASE_PROBE_MS */
+};
+#define ZCL_DEV_PROOF_BASE_PROBE_MS 30000
+/* zcl_dev_proof_step with the base watched while the foreground worker
+ * runs. `probe` may be NULL (identical to zcl_dev_proof_step). When the
+ * probe cancelled the worker, `*superseded` is set and out->detail keeps
+ * the settled pair's own failure text. */
+int zcl_dev_proof_step_watched(const char *root, const char *local,
+                               const char *base,
+                               const struct zcl_dev_proof_base_probe *probe,
+                               struct zcl_dev_proof_status *out,
+                               bool *superseded);
+/* Settled failure texts that record an interruption of the run (a step
+ * cancelled by the requester, or a run cancelled between steps) rather than
+ * a verdict on the candidate. They are still failures and never PASS; a
+ * lander may re-run the same pair, a bounded number of times. The budget's
+ * own no_progress and hard_ceiling kills are verdicts, not interruptions. */
+#define ZCL_DEV_PROOF_INTERRUPTED_PREFIX "proof_interrupted_"
+/* run_step_why()'s spelling for a step ended by ZCL_DEV_PROOF_KILL_CANCELLED. */
+#define ZCL_DEV_PROOF_STEP_CANCELLED_PREFIX "child_proof_cancelled_"
+/* Header-inline so the release lander, which links no dev_proof.c, reads
+ * the same predicate the proof worker writes against. */
+static inline bool zcl_dev_proof_failure_interrupted(const char *detail)
+{
+    static const char step[] = ZCL_DEV_PROOF_STEP_CANCELLED_PREFIX;
+    static const char run[] = ZCL_DEV_PROOF_INTERRUPTED_PREFIX;
+    return detail && (strncmp(detail, step, sizeof(step) - 1) == 0 ||
+                      strncmp(detail, run, sizeof(run) - 1) == 0);
+}
+#if defined(ZCL_TESTING) && !defined(_WIN32)
+/* The requester's wait loop over an already-forked worker, for tests. */
+int zcl_dev_proof_test_foreground_wait(
+    int worker_pid, const struct zcl_dev_proof_base_probe *probe,
+    bool *superseded);
+#endif
 /* Notifications publish immutable requests. All consumers share execution
  * exclusion; queue claim remains separately locked and bounded. */
 bool zcl_dev_proof_queue_has_pending(const char *repo_root);

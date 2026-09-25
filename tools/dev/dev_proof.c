@@ -7680,6 +7680,16 @@ static bool proof_worker_run(const struct proof_paths *paths,
     if (!ok) {
         const char *message = why && why[0]
             ? why : "background_verification_failed";
+        /* A run cancelled from outside (requester signal, or the base
+         * probe) says so in its settled text, whichever phase it was in,
+         * so the lander can tell an interrupted run from a verdict on the
+         * candidate. Still a failure: nothing here can read as PASS. */
+        char interrupted[256];
+        if (zcl_devloop_process_cancel_requested() &&
+            !zcl_dev_proof_failure_interrupted(message) &&
+            snprintf(interrupted, sizeof(interrupted), "%s%s",
+                     ZCL_DEV_PROOF_INTERRUPTED_PREFIX, message) > 0)
+            message = interrupted;
         char failure_log[PATH_MAX];
         if (snprintf(failure_log, sizeof(failure_log), "%s/failure.txt",
                      paths->logs) < (int)sizeof(failure_log))
@@ -8398,9 +8408,37 @@ static bool dp_foreground_handlers(struct sigaction saved[3])
     return true;
 }
 
-static int dp_foreground_wait(pid_t worker)
+static int64_t dp_base_probe_interval_us(
+    const struct zcl_dev_proof_base_probe *probe)
+{
+    int ms = probe && probe->interval_ms > 0 ? probe->interval_ms
+                                             : ZCL_DEV_PROOF_BASE_PROBE_MS;
+    return (int64_t)ms * 1000;
+}
+
+/* A proof whose base is no longer the remote tip can only be discarded:
+ * the lander re-checks the base after PASS and cuts a successor. Asking
+ * while it runs lets the doomed run end within one probe interval instead
+ * of at its natural end. Only an affirmative SUPERSEDED acts; the worker is
+ * then cancelled through the same SIGTERM path a requester signal takes. */
+static bool dp_base_probe_superseded(const struct zcl_dev_proof_base_probe *probe,
+                                     int64_t *next_us)
+{
+    if (!probe || !probe->observe) return false;
+    int64_t now = platform_time_monotonic_us();
+    if (now < *next_us) return false;
+    enum zcl_dev_proof_base_observation seen = probe->observe(probe->ctx);
+    *next_us = platform_time_monotonic_us() + dp_base_probe_interval_us(probe);
+    return seen == ZCL_DEV_PROOF_BASE_SUPERSEDED;
+}
+
+static int dp_foreground_wait(pid_t worker,
+                              const struct zcl_dev_proof_base_probe *probe,
+                              bool *superseded)
 {
     bool forwarded = false;
+    int64_t next_probe_us =
+        platform_time_monotonic_us() + dp_base_probe_interval_us(probe);
     for (;;) {
         if (dp_foreground_signal && !forwarded) {
             (void)kill(worker, SIGTERM);
@@ -8411,9 +8449,24 @@ static int dp_foreground_wait(pid_t worker)
         if (got == worker)
             return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 1 : -1;
         if (got < 0 && errno != EINTR) return -1;
+        if (!forwarded && dp_base_probe_superseded(probe, &next_probe_us)) {
+            if (superseded) *superseded = true;
+            (void)kill(worker, SIGTERM);
+            forwarded = true;
+        }
         platform_sleep_ms(20);
     }
 }
+
+#if defined(ZCL_TESTING)
+int zcl_dev_proof_test_foreground_wait(
+    int worker_pid, const struct zcl_dev_proof_base_probe *probe,
+    bool *superseded)
+{
+    dp_foreground_signal = 0;
+    return dp_foreground_wait((pid_t)worker_pid, probe, superseded);
+}
+#endif
 
 /* The bounded worker owns inherited guards, even if its waiting requester
  * is killed. Hard death of this worker itself frees both guards through the
@@ -8422,7 +8475,8 @@ static int dp_foreground_wait(pid_t worker)
  * escaped descendants remains a separate, unclaimed boundary. */
 static int dp_foreground_run(const char *root, const char *local, const char *base,
                               int *execution, int *landing, int *watch,
-                              char *why, size_t why_len)
+                              const struct zcl_dev_proof_base_probe *probe,
+                              bool *superseded, char *why, size_t why_len)
 {
     struct sigaction saved[3];
     if (zcl_devloop_process_cancel_requested() || !dp_foreground_handlers(saved)) {
@@ -8446,7 +8500,7 @@ static int dp_foreground_run(const char *root, const char *local, const char *ba
     *execution = -1;
     *landing = -1;
     *watch = -1;
-    int result = dp_foreground_wait(worker);
+    int result = dp_foreground_wait(worker, probe, superseded);
     dp_foreground_restore(saved, 3);
     if (dp_foreground_signal) zcl_devloop_process_cancel_clear();
     if (result < 0) proof_why(why, why_len, "proof_foreground_worker_interrupted");
@@ -8455,7 +8509,9 @@ static int dp_foreground_run(const char *root, const char *local, const char *ba
 
 static int dp_proof_step_owned(const char *root, const char *local,
                                 const char *base, struct zcl_dev_proof_status *out,
-                                int *execution, int *landing, int *watch)
+                                int *execution, int *landing, int *watch,
+                                const struct zcl_dev_proof_base_probe *probe,
+                                bool *superseded)
 {
     if (!proof_ensure_platform(root, local, base, out)) return -1;
     if (out->state == ZCL_DEV_PROOF_STATE_PASSED ||
@@ -8466,7 +8522,8 @@ static int dp_proof_step_owned(const char *root, const char *local,
         return 0;
     }
     int claimed = dp_foreground_run(root, local, base, execution, landing,
-                                    watch, why, sizeof(why));
+                                    watch, probe, superseded, why,
+                                    sizeof(why));
     if (claimed < 0) {
         proof_why(out->detail, sizeof(out->detail), why);
         return -1;
@@ -8478,6 +8535,16 @@ static int dp_proof_step_owned(const char *root, const char *local,
 int zcl_dev_proof_step(const char *root, const char *local, const char *base,
                         struct zcl_dev_proof_status *out)
 {
+    return zcl_dev_proof_step_watched(root, local, base, NULL, out, NULL);
+}
+
+int zcl_dev_proof_step_watched(const char *root, const char *local,
+                               const char *base,
+                               const struct zcl_dev_proof_base_probe *probe,
+                               struct zcl_dev_proof_status *out,
+                               bool *superseded)
+{
+    if (superseded) *superseded = false;
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
     if (!local || !local[0] || !base || !base[0]) {
@@ -8487,6 +8554,7 @@ int zcl_dev_proof_step(const char *root, const char *local, const char *base,
     }
 #if defined(_WIN32)
     (void)root;
+    (void)probe;
     proof_windows_unavailable(out);
     return -1;
 #else
@@ -8502,7 +8570,7 @@ int zcl_dev_proof_step(const char *root, const char *local, const char *base,
                                         out->detail, sizeof(out->detail));
         if (result > 0)
             result = dp_proof_step_owned(root, local, base, out, &execution,
-                                         &landing, &watch);
+                                         &landing, &watch, probe, superseded);
         zcl_dev_proof_execution_release(execution);
     }
     proof_queue_lock_release(landing);
