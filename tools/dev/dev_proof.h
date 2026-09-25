@@ -284,8 +284,8 @@ int zcl_dev_proof_step_watched(const char *root, const char *local,
 #define ZCL_DEV_PROOF_INTERRUPTED_PREFIX "proof_interrupted_"
 /* run_step_why()'s spelling for a step ended by ZCL_DEV_PROOF_KILL_CANCELLED. */
 #define ZCL_DEV_PROOF_STEP_CANCELLED_PREFIX "child_proof_cancelled_"
-/* Header-inline so the release lander, which links no dev_proof.c, reads
- * the same predicate the proof worker writes against. */
+/* Header-inline so the lander reads the same predicate the proof worker
+ * writes against without a link dependency on dev_proof.c. */
 static inline bool zcl_dev_proof_failure_interrupted(const char *detail)
 {
     static const char step[] = ZCL_DEV_PROOF_STEP_CANCELLED_PREFIX;
