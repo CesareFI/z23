@@ -73,13 +73,16 @@ static bool sc_write_fixture(void)
         "int sc_y_user(void)\n{\n    return sc_y_api();\n}\n");
     ok = ok && sc_write("build/obj/sc_y.d",
         "build/obj/sc_y.o: " SC_SRC "sc_y.c\n");
-    /* Calls some OTHER helper; its depfile proves sc_x.c is not in its TU. */
+    /* Calls some OTHER helper (declared by its own header); its depfile
+     * lists every input of its TU, and sc_x.c is not one of them. */
+    ok = ok && sc_write(SC_INC "sc_ext.h", "int helper(void);\n");
     ok = ok && sc_write(SC_SRC "sc_ext.c",
+        "#include \"net/sc_ext.h\"\n"
         "int sc_ext_fn(void)\n{\n    return helper();\n}\n");
     ok = ok && sc_write(SC_SRC "sc_ext_user.c",
         "int sc_ext_user(void)\n{\n    return sc_ext_fn();\n}\n");
     ok = ok && sc_write("build/obj/sc_ext.d",
-        "build/obj/sc_ext.o: " SC_SRC "sc_ext.c\n");
+        "build/obj/sc_ext.o: " SC_SRC "sc_ext.c " SC_INC "sc_ext.h\n");
 
     /* 3: the ways a file other than sc_x.c CAN reach sc_x.c's helper. */
     ok = ok && sc_write(SC_SRC "sc_inc.c",
