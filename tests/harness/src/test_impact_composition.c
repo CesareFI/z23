@@ -2549,6 +2549,136 @@ static int test_ic_proof_verdict_watches_progress_not_the_clock(void)
     return failures;
 }
 
+/* The test step's budget is pinned at the ceiling, and the ceiling is
+ * checked first, so a healthy test that prints nothing for many silence
+ * windows (the runner reports groups late) can only ever end as
+ * hard_ceiling, never as no_progress. */
+static int test_ic_proof_ceiling_speaks_before_silence(void)
+{
+    int failures = 0;
+    TEST("proof budget: a silent step at the ceiling budget ends as hard_ceiling, never no_progress") {
+        struct zcl_dev_proof_budget budget = zcl_dev_proof_budget_make(
+            zcl_dev_proof_ceiling_ms() * 2, PROOF_TEST_FLOOR_MS);
+        ASSERT_EQ(budget.budget_ms, budget.ceiling_ms);
+        ASSERT(zcl_dev_proof_budget_verdict(&budget, budget.ceiling_ms - 1,
+                                            10 * PROOF_NO_PROGRESS_MS) ==
+               ZCL_DEV_PROOF_KILL_NONE);
+        ASSERT(zcl_dev_proof_budget_verdict(&budget, budget.ceiling_ms,
+                                            10 * PROOF_NO_PROGRESS_MS) ==
+               ZCL_DEV_PROOF_KILL_HARD_CEILING);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* An interruption is not a verdict on the candidate; the budget's own
+ * kills and an ordinary failing exit are. */
+static int test_ic_proof_interruption_is_not_a_verdict(void)
+{
+    int failures = 0;
+    TEST("proof: interrupted runs are told apart from verdicts") {
+        char spelled[64];
+        (void)snprintf(spelled, sizeof(spelled), "child_proof_%s_",
+                       zcl_dev_proof_kill_cause_name(
+                           ZCL_DEV_PROOF_KILL_CANCELLED));
+        ASSERT_STR_EQ(spelled, ZCL_DEV_PROOF_STEP_CANCELLED_PREFIX);
+        ASSERT(zcl_dev_proof_failure_interrupted(
+            "child_proof_cancelled_test_budget_ms_3600000_elapsed_ms_215489"
+            "_idle_ms_213923"));
+        ASSERT(zcl_dev_proof_failure_interrupted(
+            ZCL_DEV_PROOF_INTERRUPTED_PREFIX "proof_generation_not_exact"));
+        ASSERT(!zcl_dev_proof_failure_interrupted(
+            "child_proof_no_progress_lint_budget_ms_1_elapsed_ms_2_idle_ms_3"));
+        ASSERT(!zcl_dev_proof_failure_interrupted(
+            "child_proof_hard_ceiling_test_budget_ms_1_elapsed_ms_2_idle_ms_3"));
+        ASSERT(!zcl_dev_proof_failure_interrupted("child_proof_failed_exit_2"));
+        ASSERT(!zcl_dev_proof_failure_interrupted(NULL));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+#if !defined(_WIN32)
+struct ic_base_script {
+    int calls;
+    int supersede_at; /* 0: never */
+    enum zcl_dev_proof_base_observation otherwise;
+};
+
+static enum zcl_dev_proof_base_observation ic_base_observe(void *ctx)
+{
+    struct ic_base_script *script = ctx;
+    script->calls++;
+    if (script->supersede_at > 0 && script->calls >= script->supersede_at)
+        return ZCL_DEV_PROOF_BASE_SUPERSEDED;
+    return script->otherwise;
+}
+
+static volatile sig_atomic_t ic_fake_worker_termed;
+
+static void ic_fake_worker_term(int signal_number)
+{
+    (void)signal_number;
+    ic_fake_worker_termed = 1;
+}
+
+/* A stand-in for the forked proof worker: it runs `run_ms` unless SIGTERM
+ * ends it first, and exits 0 either way, the way a real worker settles its
+ * pair and exits. */
+static pid_t ic_fake_worker(int run_ms)
+{
+    pid_t pid = fork();
+    if (pid != 0) return pid;
+    struct sigaction action = {0};
+    action.sa_handler = ic_fake_worker_term;
+    sigemptyset(&action.sa_mask);
+    (void)sigaction(SIGTERM, &action, NULL);
+    int64_t end = platform_time_monotonic_us() + (int64_t)run_ms * 1000;
+    while (!ic_fake_worker_termed && platform_time_monotonic_us() < end)
+        platform_sleep_ms(5); /* real-clock: the worker stand-in is a real forked process the requester signals; virtual time cannot deliver SIGTERM. */
+    _exit(0);
+}
+
+static int64_t ic_waited_ms(int run_ms, const struct zcl_dev_proof_base_probe *probe,
+                            int *result, bool *superseded)
+{
+    int64_t start = platform_time_monotonic_us();
+    pid_t worker = ic_fake_worker(run_ms);
+    *result = worker > 0
+        ? zcl_dev_proof_test_foreground_wait((int)worker, probe, superseded)
+        : -2;
+    return (platform_time_monotonic_us() - start) / 1000;
+}
+
+static int test_ic_proof_base_probe_cancels_superseded_worker(void)
+{
+    int failures = 0;
+    TEST("proof: a superseded base ends the worker within one probe interval; no answer never does") {
+        struct ic_base_script moved = {.supersede_at = 2,
+                                       .otherwise = ZCL_DEV_PROOF_BASE_CURRENT};
+        struct ic_base_script silent = {.otherwise = ZCL_DEV_PROOF_BASE_UNKNOWN};
+        struct zcl_dev_proof_base_probe moved_probe = {
+            .observe = ic_base_observe, .ctx = &moved, .interval_ms = 50};
+        struct zcl_dev_proof_base_probe silent_probe = {
+            .observe = ic_base_observe, .ctx = &silent, .interval_ms = 50};
+        int moved_rc = 0, silent_rc = 0, plain_rc = 0;
+        bool moved_flag = false, silent_flag = false, plain_flag = false;
+        int64_t moved_ms = ic_waited_ms(10000, &moved_probe, &moved_rc,
+                                        &moved_flag);
+        int64_t silent_ms = ic_waited_ms(400, &silent_probe, &silent_rc,
+                                         &silent_flag);
+        int64_t plain_ms = ic_waited_ms(100, NULL, &plain_rc, &plain_flag);
+        ASSERT_EQ(moved_rc, 1);
+        ASSERT(moved_flag && moved.calls == 2 && moved_ms < 5000);
+        ASSERT_EQ(silent_rc, 1);
+        ASSERT(!silent_flag && silent.calls >= 3 && silent_ms >= 390);
+        ASSERT(plain_rc == 1 && !plain_flag && plain_ms >= 90);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 static int test_ic_proof_reads_the_harness_banners(void)
 {
     int failures = 0;
@@ -7980,10 +8110,13 @@ int test_impact_composition(void)
     failures += test_ic_proof_budget_learns_from_this_checkout();
     failures += test_ic_proof_ceiling_env_raises_only();
     failures += test_ic_proof_verdict_watches_progress_not_the_clock();
+    failures += test_ic_proof_ceiling_speaks_before_silence();
+    failures += test_ic_proof_interruption_is_not_a_verdict();
     failures += test_ic_proof_reads_the_harness_banners();
 #if !defined(_WIN32)
     failures += test_ic_proof_run_watched_kills_only_the_silent();
     failures += test_ic_proof_budget_cancellation();
+    failures += test_ic_proof_base_probe_cancels_superseded_worker();
     failures += test_ic_proof_steps_run_concurrently();
     failures += test_ic_proof_step_inherits_no_extra_fd();
 #endif

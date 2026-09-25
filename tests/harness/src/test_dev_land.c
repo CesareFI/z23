@@ -27,6 +27,7 @@
 #include "platform/temp_directory.h"
 #include "util/spawn.h"
 #include "dev/dev_git_tree.h"
+#include "dev/dev_proof.h"
 #include "base/bytes.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
@@ -37,6 +38,8 @@
 bool zcl_native_dev_land_test_idle_note(int64_t age_s, char *detail,
                                         size_t cap);
 int64_t zcl_native_dev_land_test_idle_bound(void);
+/* The drive's base probe (dl_base_observe) against one worktree's origin. */
+int zcl_native_dev_land_test_base_observe(const char *wt, const char *base);
 #if defined(__linux__)
 void zcl_native_dev_land_test_watcher_launch(const char *wt,
     const char *scheduler, char *detail, size_t cap);
@@ -5794,6 +5797,108 @@ static int test_dev_land_rebase_regen_cases(void);
 static int test_dev_land_queued_precheck_cases(void);
 #endif
 
+/* Submit the rig's tip and take the first step to a started proof. */
+static bool dlx_started(struct dlx_rig *rig, const char *tag,
+                        const char *rig_tag)
+{
+    struct dlx_call c;
+    dlx_isolate(tag);
+    if (!dlx_rig_make(rig, rig_tag))
+        return false;
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    dlx_submit(&c, rig, rig->tip);
+    bool submitted = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    dlx_begin(&c, "step");
+    bool started = submitted && dlx_run(&c) && dlx_ok(&c) &&
+                   strcmp(dlx_str(&c, "state"), "started") == 0;
+    dlx_end(&c);
+    return started;
+}
+
+/* One step under `stub`; true when it answered `state` at `attempt`. */
+static bool dlx_step_to(const char *stub, const char *state, int64_t attempt,
+                        const char *detail_part)
+{
+    struct dlx_call c;
+    setenv("ZCL_LAND_PROOF_STUB", stub, 1);
+    dlx_begin(&c, "step");
+    bool ok = dlx_run(&c) && dlx_ok(&c) &&
+              strcmp(dlx_str(&c, "state"), state) == 0 &&
+              (attempt <= 0 || dlx_int(&c, "attempt") == attempt) &&
+              (!detail_part || strstr(dlx_str(&c, "detail"), detail_part));
+    dlx_end(&c);
+    return ok;
+}
+
+static int test_dev_land_interrupted_proof(void)
+{
+    int failures = 0;
+    TEST("land: an interrupted proof re-runs the same pair instead of failing the candidate") {
+        struct dlx_rig rig;
+        char before[64], after[64];
+        ASSERT(dlx_started(&rig, "interrupt_retry", "interrupt_retry_rig"));
+        ASSERT(dlx_origin_main(&rig, before));
+        ASSERT(dlx_step_to("cancelled", "proving", 2,
+                           "interrupted proof re-queued"));
+        ASSERT(dlx_origin_main(&rig, after));
+        ASSERT_STR_EQ(after, before);
+        ASSERT(dlx_step_to("pass", "landed", 0, NULL));
+        dlx_restore();
+        PASS();
+    }
+    TEST("land: interruption retries are bounded, then the request settles as failed") {
+        struct dlx_rig rig;
+        ASSERT(dlx_started(&rig, "interrupt_bound", "interrupt_bound_rig"));
+        ASSERT(dlx_step_to("cancelled", "proving", 2, NULL));
+        ASSERT(dlx_step_to("cancelled", "proving", 3, NULL));
+        ASSERT(dlx_step_to("cancelled", "failed", 3,
+                           "child_proof_cancelled_"));
+        dlx_restore();
+        PASS();
+    }
+    TEST("land: an interrupted proof whose base moved cuts the successor") {
+        struct dlx_rig rig;
+        char base[64], stranger[64];
+        ASSERT(dlx_started(&rig, "interrupt_moved", "interrupt_moved_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        const char *branch[] = { "checkout", "--quiet", "-B", "side", base,
+                                 NULL };
+        const char *push[] = { "push", "--quiet", "origin", "HEAD:main",
+                               NULL };
+        ASSERT(dlx_git(rig.clone, branch) == 0);
+        ASSERT(dlx_commit(rig.clone, "stranger.txt", "elsewhere\n", stranger));
+        ASSERT(dlx_git(rig.clone, push) == 0);
+        ASSERT(dlx_step_to("cancelled", "rebased", 2, "successor queued"));
+        dlx_restore();
+        PASS();
+    }
+    TEST("land: the base probe answers only from a well-formed remote tip") {
+        struct dlx_rig rig;
+        char base[64], missing[1200];
+        dlx_isolate("base_probe");
+        ASSERT(dlx_rig_make(&rig, "base_probe_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        ASSERT_EQ(zcl_native_dev_land_test_base_observe(rig.clone, base),
+                  ZCL_DEV_PROOF_BASE_CURRENT);
+        ASSERT_EQ(zcl_native_dev_land_test_base_observe(rig.clone, rig.tip),
+                  ZCL_DEV_PROOF_BASE_SUPERSEDED);
+        (void)snprintf(missing, sizeof(missing), "%s/absent", rig.bare);
+        const char *unreachable[] = { "remote", "set-url", "origin", missing,
+                                      NULL };
+        ASSERT(dlx_git(rig.clone, unreachable) == 0);
+        ASSERT_EQ(zcl_native_dev_land_test_base_observe(rig.clone, rig.tip),
+                  ZCL_DEV_PROOF_BASE_UNKNOWN);
+        ASSERT_EQ(zcl_native_dev_land_test_base_observe(missing, rig.tip),
+                  ZCL_DEV_PROOF_BASE_UNKNOWN);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
 int test_dev_land(void)
 {
     int failures = 0;
@@ -6098,6 +6203,8 @@ int test_dev_land(void)
     }
 
     failures += test_dev_land_missing_worker();
+
+    failures += test_dev_land_interrupted_proof();
 
     failures += test_dev_land_competing_publish();
 
