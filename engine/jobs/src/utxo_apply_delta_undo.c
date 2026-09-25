@@ -1,0 +1,202 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * utxo_apply_delta_undo — see jobs/utxo_apply_delta_undo.h.
+ *
+ * spent_blob layout (written by utxo_apply_delta.c serialize_spent, one entry
+ * per transparent input in block order):
+ *   32 txid | u32 vout | i64 value | u32 height | u8 coinbase |
+ *   u32 script_len | script_len bytes  (all little-endian)
+ */
+
+// one-result-type-ok:typed-undo-load-status — the loader's one result is
+// enum utxo_apply_delta_undo_status; every non-FOUND branch that is not a
+// plain "no row" logs its context before returning.
+
+#include "jobs/utxo_apply_delta_undo.h"
+
+#include "coins/undo.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "script/script.h"
+#include "util/log_macros.h"
+
+#include <string.h>
+
+#define UNDO_TAG "utxo_apply_undo"
+
+const char *utxo_apply_delta_undo_status_name(
+    enum utxo_apply_delta_undo_status status)
+{
+    switch (status) {
+    case UTXO_DELTA_UNDO_FOUND:        return "found";
+    case UTXO_DELTA_UNDO_ABSENT:       return "absent";
+    case UTXO_DELTA_UNDO_OTHER_BRANCH: return "other_branch";
+    case UTXO_DELTA_UNDO_MISMATCH:     return "mismatch";
+    case UTXO_DELTA_UNDO_ERROR:        return "error";
+    }
+    return "unknown";
+}
+
+struct spent_cursor {
+    const uint8_t *p;
+    const uint8_t *end;
+};
+
+static bool take_bytes(struct spent_cursor *c, void *dst, size_t n)
+{
+    if ((size_t)(c->end - c->p) < n)
+        return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
+    if (dst)
+        memcpy(dst, c->p, n);
+    c->p += n;
+    return true;
+}
+
+static bool take_u32(struct spent_cursor *c, uint32_t *out)
+{
+    uint8_t b[4];
+    if (!take_bytes(c, b, sizeof(b)))
+        return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
+    *out = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    return true;
+}
+
+static bool take_i64(struct spent_cursor *c, int64_t *out)
+{
+    uint8_t b[8];
+    if (!take_bytes(c, b, sizeof(b)))
+        return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
+    uint64_t u = 0;
+    for (int i = 7; i >= 0; i--)
+        u = (u << 8) | b[i];
+    *out = (int64_t)u;
+    return true;
+}
+
+/* Parse the next spent entry and require it to name `prevout`. */
+static bool take_spent_for(struct spent_cursor *c,
+                           const struct outpoint *prevout,
+                           struct tx_in_undo *dst)
+{
+    uint8_t txid[32];
+    uint32_t vout = 0, height = 0, script_len = 0;
+    int64_t value = 0;
+    uint8_t coinbase = 0;
+    if (!take_bytes(c, txid, sizeof(txid)) || !take_u32(c, &vout) ||
+        !take_i64(c, &value) || !take_u32(c, &height) ||
+        !take_bytes(c, &coinbase, 1) || !take_u32(c, &script_len))
+        return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
+    if (memcmp(txid, prevout->hash.data, sizeof(txid)) != 0 ||
+        vout != prevout->n || script_len > MAX_SCRIPT_SIZE ||
+        (size_t)(c->end - c->p) < script_len)
+        return false; // raw-return-ok:shape-reported-by-caller-as-mismatch
+    tx_in_undo_init(dst);
+    dst->txout.value = value;
+    dst->txout.script_pub_key.size = script_len;
+    if (script_len)
+        memcpy(dst->txout.script_pub_key.data, c->p, script_len);
+    c->p += script_len;
+    dst->height = height;
+    dst->coinbase = coinbase != 0;
+    return true;
+}
+
+/* Fill `out` from the row's spent blob. MISMATCH unless the blob names exactly
+ * the block's transparent prevouts, in order, and nothing else. */
+static enum utxo_apply_delta_undo_status build_undo(
+    int height, const struct block *blk, const uint8_t *spent, size_t len,
+    struct block_undo *out)
+{
+    struct spent_cursor c = { .p = spent, .end = spent + len };
+    size_t first = (blk->num_vtx > 0 &&
+                    transaction_is_coinbase(&blk->vtx[0])) ? 1 : 0;
+    size_t ntx = blk->num_vtx - first;
+    if (!block_undo_alloc(out, ntx)) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d alloc %zu tx undo failed",
+                 height, ntx);
+        return UTXO_DELTA_UNDO_ERROR;
+    }
+    for (size_t i = first; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+        struct tx_undo *tu = &out->vtxundo[i - first];
+        if (transaction_is_coinbase(tx)) {
+            LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d tx %zu is a second "
+                     "coinbase; delta cannot describe it", height, i);
+            block_undo_free(out);
+            return UTXO_DELTA_UNDO_MISMATCH;
+        }
+        if (!tx_undo_alloc(tu, tx->num_vin)) {
+            LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d tx %zu alloc %zu "
+                     "prevouts failed", height, i, tx->num_vin);
+            block_undo_free(out);
+            return UTXO_DELTA_UNDO_ERROR;
+        }
+        for (size_t j = 0; j < tx->num_vin; j++) {
+            if (!take_spent_for(&c, &tx->vin[j].prevout, &tu->vprevout[j])) {
+                LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d tx %zu vin %zu: "
+                         "delta entry missing, truncated or names another "
+                         "outpoint", height, i, j);
+                block_undo_free(out);
+                return UTXO_DELTA_UNDO_MISMATCH;
+            }
+        }
+    }
+    if (c.p != c.end) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d delta carries %zu bytes "
+                 "beyond the block's inputs", height,
+                 (size_t)(c.end - c.p));
+        block_undo_free(out);
+        return UTXO_DELTA_UNDO_MISMATCH;
+    }
+    return UTXO_DELTA_UNDO_FOUND;
+}
+
+enum utxo_apply_delta_undo_status utxo_apply_delta_block_undo_load(
+    sqlite3 *db, int height, const struct uint256 *block_hash,
+    const struct block *blk, struct block_undo *out)
+{
+    if (out)
+        block_undo_init(out);
+    if (!db || !block_hash || !blk || !out || height < 0) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] invalid arguments h=%d", height);
+        return UTXO_DELTA_UNDO_ERROR;
+    }
+
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT branch_hash, spent_blob FROM utxo_apply_delta WHERE height = ?",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        /* A store the reducer never folded into has no delta table: that is
+         * "no undo here", not an unknown answer. */
+        const char *msg = sqlite3_errmsg(db);
+        if (msg && strstr(msg, "no such table"))
+            return UTXO_DELTA_UNDO_ABSENT;
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d prepare rc=%d: %s",
+                 height, rc, msg ? msg : "(null)");
+        return UTXO_DELTA_UNDO_ERROR;
+    }
+    sqlite3_bind_int(st, 1, height);
+    rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    enum utxo_apply_delta_undo_status status;
+    if (rc == SQLITE_DONE) {
+        status = UTXO_DELTA_UNDO_ABSENT;
+    } else if (rc != SQLITE_ROW) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d step rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        status = UTXO_DELTA_UNDO_ERROR;
+    } else if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+               sqlite3_column_bytes(st, 0) != 32 ||
+               memcmp(sqlite3_column_blob(st, 0), block_hash->data, 32) != 0) {
+        status = UTXO_DELTA_UNDO_OTHER_BRANCH;
+    } else {
+        const uint8_t *spent = sqlite3_column_blob(st, 1);
+        int spent_len = sqlite3_column_bytes(st, 1);
+        status = build_undo(height, blk, spent,
+                            spent && spent_len > 0 ? (size_t)spent_len : 0,
+                            out);
+    }
+    sqlite3_finalize(st);
+    return status;
+}
