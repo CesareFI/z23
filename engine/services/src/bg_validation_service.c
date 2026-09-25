@@ -319,6 +319,70 @@ static bool bg_validation_wait_until_applied(
     return false;
 }
 
+/* A rewind can pull the fold's cursor back under a cached value, so a skip
+ * is re-checked against a fresh cursor before it is booked: true when `h`
+ * is not (or no longer) applied and must be retried, not counted. */
+static bool bg_validation_skip_is_premature(int h, int64_t block_skips,
+                                            uint64_t *applied_next)
+{
+    if (block_skips <= 0)
+        return false;
+    *applied_next = bg_validation_applied_next();
+    return *applied_next != 0 && *applied_next != UINT64_MAX &&
+           (uint64_t)h >= *applied_next;
+}
+
+/* ── Where a walk campaign starts ─────────────────────────────
+ * A current-coverage cursor resumes at its next height with the census it
+ * saved. A fresh store, or a cursor stamped with another coverage version,
+ * starts at the floor (the external-seed floor + 1, else genesis) with a
+ * zero census: the skips belong to the campaign that counted them, and a
+ * refused cursor's tally must not block the authority of the re-walk. */
+struct bg_walk_start {
+    int height;
+    bool coverage_complete;
+    int64_t skips;
+};
+
+static struct bg_walk_start bg_validation_walk_start(
+    struct bg_validation_service *svc, bool external_seeded,
+    int32_t seed_floor)
+{
+    struct bg_walk_start ws = { .height = external_seeded ? seed_floor + 1
+                                                          : 0 };
+    const struct bg_validation_store_port *store = &svc->progress_store;
+    int cursor = load_progress(store);
+    if (cursor >= 0 &&
+        bg_validation_coverage_version_current(load_coverage_version(store))) {
+        int64_t ls = load_skips(store);
+        ws.height = cursor + 1; /* Resume from next unverified block. */
+        ws.coverage_complete = true;
+        ws.skips = ls < 0 ? 0 : ls;
+        return ws;
+    }
+    if (cursor < 0) {
+        ws.coverage_complete = save_coverage_version(
+            store, BG_VALIDATION_COVERAGE_VERSION);
+        if (external_seeded) {
+            printf("[bg-valid] seed floor at height %d — starting above "
+                   "the checkpoint-certified seeded extent\n", seed_floor);
+            event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                        "bg_validation seed_floor from=%d", seed_floor);
+        }
+    } else {
+        bool cursor_cleared = store->save_progress &&
+            store->save_progress(store->self, -1);
+        ws.coverage_complete = cursor_cleared && save_coverage_version(
+            store, BG_VALIDATION_COVERAGE_VERSION);
+        LOG_WARN("bg_validation",
+                 "[bg-valid] legacy coverage cursor refused; restarting "
+                 "walk from h=%d",
+                 ws.height);
+    }
+    save_skips(store, 0);
+    return ws;
+}
+
 /* ── Sampled re-verify loop (after the genesis→tip walk completes) ──── */
 
 /* Low-rate, always-on re-verification of RANDOM already-verified heights.
@@ -430,37 +494,10 @@ static void *bg_validation_thread(void *arg)
         progress_store_db(), &seed_floor, &seed_floor_found) &&
         seed_floor_found && seed_floor > 0;
 
-    int start_height = load_progress(&svc->progress_store);
-    bool walk_from_floor = start_height < 0;
-    if (start_height < 0) {
-        coverage_complete = save_coverage_version(
-            &svc->progress_store, BG_VALIDATION_COVERAGE_VERSION);
-        start_height = external_seeded ? seed_floor + 1 : 0;
-        if (external_seeded) {
-            printf("[bg-valid] seed floor at height %d — starting above "
-                   "the checkpoint-certified seeded extent\n", seed_floor);
-            event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                        "bg_validation seed_floor from=%d", seed_floor);
-        }
-    } else {
-        coverage_complete = bg_validation_coverage_version_current(
-            load_coverage_version(&svc->progress_store));
-        if (coverage_complete) {
-            start_height++; /* Resume from next unverified block. */
-        } else {
-            bool cursor_cleared = svc->progress_store.save_progress &&
-                svc->progress_store.save_progress(
-                    svc->progress_store.self, -1);
-            coverage_complete = cursor_cleared && save_coverage_version(
-                &svc->progress_store, BG_VALIDATION_COVERAGE_VERSION);
-            start_height = external_seeded ? seed_floor + 1 : 0;
-            walk_from_floor = true;
-            LOG_WARN("bg_validation",
-                     "[bg-valid] legacy coverage cursor refused; restarting "
-                     "walk from h=%d",
-                     start_height);
-        }
-    }
+    struct bg_walk_start ws =
+        bg_validation_walk_start(svc, external_seeded, seed_floor);
+    int start_height = ws.height;
+    coverage_complete = ws.coverage_complete;
 
     int chain_height = active_chain_height(&ms->chain_active);
     atomic_store(&svc->progress.chain_height, chain_height);
@@ -478,14 +515,7 @@ static void *bg_validation_thread(void *arg)
     int h_last_log = start_height;
     int64_t total_sigs = 0;
     int64_t total_proofs = 0;
-    /* The skip census belongs to the campaign that started at the floor. A
-     * walk restarting there must not inherit a refused cursor's tally, or a
-     * skip the new coverage contract can now verify would block the
-     * authority forever. */
-    int64_t ls = walk_from_floor ? 0 : load_skips(&svc->progress_store);
-    int64_t total_skips = ls < 0 ? 0 : ls;
-    if (walk_from_floor)
-        save_skips(&svc->progress_store, 0);
+    int64_t total_skips = ws.skips;
     uint64_t applied_next = 0;
     atomic_store(&svc->progress.script_verif_skipped_no_undo, total_skips);
 
@@ -542,17 +572,9 @@ static void *bg_validation_thread(void *arg)
         }
 
         block_free(&blk);
-        /* A rewind can pull the fold's cursor back under a cached value, so a
-         * skip is re-checked against a fresh cursor before it is booked: a
-         * height the reducer no longer holds as applied is retried, not
-         * counted. */
-        if (block_skips > 0) {
-            applied_next = bg_validation_applied_next();
-            if (applied_next != 0 && applied_next != UINT64_MAX &&
-                (uint64_t)h >= applied_next) {
-                h--;
-                continue;
-            }
+        if (bg_validation_skip_is_premature(h, block_skips, &applied_next)) {
+            h--;
+            continue;
         }
         total_sigs += block_sigs;
         total_proofs += block_proofs;

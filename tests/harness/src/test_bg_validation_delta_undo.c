@@ -605,6 +605,48 @@ static bool du_crash_invariant(const struct du_chain *c, uint64_t *next_out)
     return true;
 }
 
+/* One crash round: fold in a child that dies at commit `k`, then reopen the
+ * datadir (running the stage's startup recovery), check the crash invariant,
+ * finish the fold and check it again. */
+struct du_round {
+    bool died;
+    bool completed;
+    uint64_t durable_next;  /* the cursor the kill left behind */
+};
+
+static bool du_kill_round(const struct chain_params *cp, int k,
+                          struct du_round *r)
+{
+    char dir[256];
+    char tag[32];
+    snprintf(tag, sizeof(tag), "kill9_%d", k);
+    test_make_tmpdir(dir, sizeof(dir), "delta_undo", tag);
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid == 0)
+        du_child_fold(dir, cp, k);
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid)
+        return false;
+    r->died = WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+    r->completed = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+
+    struct du_chain c;
+    struct main_state ms;
+    bool built = du_chain_build(&c, cp);
+    bool opened = built && du_open(dir, &ms, &c);
+    bool before = opened && du_crash_invariant(&c, &r->durable_next);
+    bool advanced = opened && utxo_apply_stage_drain(100) >= 0;
+    uint64_t next = 0;
+    bool after = advanced && du_crash_invariant(&c, &next) &&
+                 next == DU_BLOCKS;
+    if (opened)
+        du_close(&ms);
+    du_chain_free(&c);
+    (void)test_rm_rf_recursive(dir);
+    return (r->died || r->completed) && before && after;
+}
+
 static int test_delta_undo_kill9(const struct chain_params *cp)
 {
     int failures = 0;
@@ -614,41 +656,15 @@ static int test_delta_undo_kill9(const struct chain_params *cp)
         unsigned crash_fronts = 0;  /* durable cursors seen after a kill */
         bool completed = false;
         for (int k = 1; k <= 64 && !completed; k++) {
-            char dir[256];
-            char tag[32];
-            snprintf(tag, sizeof(tag), "kill9_%d", k);
-            test_make_tmpdir(dir, sizeof(dir), "delta_undo", tag);
-            fflush(NULL);
-            pid_t pid = fork();
-            ASSERT(pid >= 0);
-            if (pid == 0)
-                du_child_fold(dir, cp, k);
-            int status = 0;
-            ASSERT(waitpid(pid, &status, 0) == pid);
-            bool died = WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
-            completed = WIFEXITED(status) && WEXITSTATUS(status) == 0;
-            ASSERT(died || completed);
-            killed += died ? 1 : 0;
-
-            struct du_chain c;
-            struct main_state ms;
-            ASSERT(du_chain_build(&c, cp));
-            bool opened = du_open(dir, &ms, &c);
-            uint64_t next = 0;
-            bool before = opened && du_crash_invariant(&c, &next);
-            if (died && before && next < 32)
-                crash_fronts |= 1u << next;
-            int advanced = opened ? utxo_apply_stage_drain(100) : -1;
-            bool after = opened && du_crash_invariant(&c, &next) &&
-                         next == DU_BLOCKS;
-            if (opened)
-                du_close(&ms);
-            du_chain_free(&c);
-            (void)test_rm_rf_recursive(dir);
-            ASSERT(opened);
-            ASSERT(before);
-            ASSERT(advanced >= 0);
-            ASSERT(after);
+            struct du_round r = {0};
+            bool held = du_kill_round(cp, k, &r);
+            if (!held)
+                printf("[du] crash round k=%d broke the invariant ", k);
+            ASSERT(held);
+            completed = r.completed;
+            killed += r.died ? 1 : 0;
+            if (r.died && r.durable_next < 32)
+                crash_fronts |= 1u << r.durable_next;
         }
         /* The loop must have crossed every commit and then run clean. */
         ASSERT(completed);

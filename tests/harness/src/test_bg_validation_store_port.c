@@ -42,8 +42,11 @@ int test_bg_validation_store_port(void)
 
     BGV_CHECK("legacy coverage cannot short-circuit validation",
               !bg_validation_test_coverage_version_current(0));
+    BGV_CHECK("a rev-only (v1) cursor cannot short-circuit validation",
+              !bg_validation_test_coverage_version_current(1));
     BGV_CHECK("current coverage resumes from the persisted cursor",
-              bg_validation_test_coverage_version_current(1));
+              bg_validation_test_coverage_version_current(
+                  BG_VALIDATION_COVERAGE_VERSION));
 
     /* ---- Round-trip through the port over an in-memory node DB ---- */
     {

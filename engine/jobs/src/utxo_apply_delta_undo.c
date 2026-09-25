@@ -153,6 +153,30 @@ static enum utxo_apply_delta_undo_status build_undo(
     return UTXO_DELTA_UNDO_FOUND;
 }
 
+/* Classify the stepped row (rc from sqlite3_step) and, for this block's own
+ * row, rebuild its undo. */
+static enum utxo_apply_delta_undo_status classify_row(
+    sqlite3 *db, sqlite3_stmt *st, int rc, int height,
+    const struct uint256 *block_hash, const struct block *blk,
+    struct block_undo *out)
+{
+    if (rc == SQLITE_DONE)
+        return UTXO_DELTA_UNDO_ABSENT;
+    if (rc != SQLITE_ROW) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d step rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        return UTXO_DELTA_UNDO_ERROR;
+    }
+    if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+        sqlite3_column_bytes(st, 0) != 32 ||
+        memcmp(sqlite3_column_blob(st, 0), block_hash->data, 32) != 0)
+        return UTXO_DELTA_UNDO_OTHER_BRANCH;
+    const uint8_t *spent = sqlite3_column_blob(st, 1);
+    int spent_len = sqlite3_column_bytes(st, 1);
+    return build_undo(height, blk, spent,
+                      spent && spent_len > 0 ? (size_t)spent_len : 0, out);
+}
+
 enum utxo_apply_delta_undo_status utxo_apply_delta_block_undo_load(
     sqlite3 *db, int height, const struct uint256 *block_hash,
     const struct block *blk, struct block_undo *out)
@@ -180,27 +204,12 @@ enum utxo_apply_delta_undo_status utxo_apply_delta_block_undo_load(
     }
     sqlite3_bind_int(st, 1, height);
     rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    enum utxo_apply_delta_undo_status status;
-    if (rc == SQLITE_DONE) {
-        status = UTXO_DELTA_UNDO_ABSENT;
-    } else if (rc != SQLITE_ROW) {
-        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] h=%d step rc=%d: %s",
-                 height, rc, sqlite3_errmsg(db));
-        status = UTXO_DELTA_UNDO_ERROR;
-    } else if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
-               sqlite3_column_bytes(st, 0) != 32 ||
-               memcmp(sqlite3_column_blob(st, 0), block_hash->data, 32) != 0) {
-        status = UTXO_DELTA_UNDO_OTHER_BRANCH;
-    } else {
-        const uint8_t *spent = sqlite3_column_blob(st, 1);
-        int spent_len = sqlite3_column_bytes(st, 1);
-        status = build_undo(height, blk, spent,
-                            spent && spent_len > 0 ? (size_t)spent_len : 0,
-                            out);
-    }
+    enum utxo_apply_delta_undo_status status =
+        classify_row(db, st, rc, height, block_hash, blk, out);
     sqlite3_finalize(st);
     return status;
 }
+
 
 bool utxo_apply_delta_undo_next_unapplied(sqlite3 *db, uint64_t *next_out,
                                           bool *found_out)

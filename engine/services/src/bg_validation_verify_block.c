@@ -161,6 +161,19 @@ static bool read_delta_undo(struct block_undo *undo, const struct block *block,
     return true;
 }
 
+/* A copied-in rev record wins; otherwise the fold's own delta row. */
+static bool read_undo_rev_or_delta(struct block_undo *undo,
+                                   const struct block *block,
+                                   const struct block_index *pindex,
+                                   const char *datadir)
+{
+    if (read_block_undo(undo, pindex, datadir))
+        return true;
+    /* A torn rev parse may leave partial allocations behind. */
+    block_undo_free(undo);
+    return read_delta_undo(undo, block, pindex);
+}
+
 /* ── Undo-missing script-skip suppression ─────────────────────
  *
  * A block whose rev (undo) file is absent cannot have its transparent
@@ -318,14 +331,9 @@ bool bg_validation_validate_block_proofs(const struct block *block,
         pindex->nHeight, &params->consensus);
     uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
 
-    if (block->num_vtx > 1) {
-        have_undo = read_block_undo(&blockundo, pindex, datadir);
-        if (!have_undo) {
-            /* A torn rev parse may leave partial allocations behind. */
-            block_undo_free(&blockundo);
-            have_undo = read_delta_undo(&blockundo, block, pindex);
-        }
-    }
+    if (block->num_vtx > 1)
+        have_undo = read_undo_rev_or_delta(&blockundo, block, pindex,
+                                           datadir);
 
     /* Count transparent inputs and cap allocation */
     size_t total_inputs = 0;
