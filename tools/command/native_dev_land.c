@@ -6491,6 +6491,7 @@ static bool dl_resume_proof_read(const struct dl_dirs *d, struct dl_row *row,
     return true;
 }
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 /* An interrupted run (a requester signal, an outer timeout, the base probe)
  * is not a verdict on the candidate: re-run the same exact pair rather than
  * settle the request as failed, bounded by DL_ATTEMPT_MAX so a candidate
@@ -6527,6 +6528,7 @@ static bool dl_resume_interrupted_proof(const struct dl_dirs *d,
         dl_step_reply(reply, row, "proving");
     return true;
 }
+#endif
 
 static void dl_resume_failed_proof(const struct dl_dirs *d,
                                     struct dl_row *row,
@@ -6544,9 +6546,11 @@ static void dl_resume_failed_proof(const struct dl_dirs *d,
         dl_step_successor(d, row, base_now, reply);
         return;
     }
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
     if (zcl_dev_proof_failure_interrupted(detail) &&
         dl_resume_interrupted_proof(d, row, detail, reply))
         return;
+#endif
     bool host_load = dl_host_load_failure(detail);
     dl_log(row, detail);
     dl_log(row, "\n");
