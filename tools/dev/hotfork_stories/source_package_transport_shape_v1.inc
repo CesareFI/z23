@@ -31,9 +31,9 @@ zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out)
     const uint8_t *marker = vcs_source_package_transport_marker(&marker_len);
     HF_CHECK(marker && marker_len == sizeof(source_transport_marker) - 1
              && memcmp(marker, source_transport_marker, marker_len) == 0);
-    static uint8_t license[] = {1}, manifest[] = {2}, shard0[] = {3},
-                   shard1[] = {4}, lane[] = {5}, authority[] = {6},
-                   offline0[] = {7}, offline1[] = {8};
+    uint8_t license[] = {1}, manifest[] = {2}, shard0[] = {3},
+            shard1[] = {4}, lane[] = {5}, authority[] = {6},
+            offline0[] = {7}, offline1[] = {8};
     struct vcs_source_package_transport transport = {0};
     transport.license_bytes = license;
     transport.license_len = sizeof(license);

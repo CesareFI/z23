@@ -10,6 +10,7 @@
 
 #define _GNU_SOURCE
 #include "devloop.h"
+#include "devloop_hotfork_shape.h"
 #include "hotfork_unity.h"
 #include "devloop_action_root.h"
 
@@ -2315,8 +2316,15 @@ static bool hs_hotfork_build(
         goto fail;
     char adapter_root[65];
     hs_sha3_root(unity_text, adapter_root);
-    if (snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s:%s",
-                 def->source_tu, adapter_root) >= (int)sizeof(key_owner) ||
+    /* The resident generation joins the key: a cached artifact is reused
+     * only inside the generation whose shape check admitted it. */
+    struct zcl_hotfork_shape shape;
+    zcl_hotfork_shape_begin(&shape, root, def->source_tu, def->sibling_tus,
+                            def->adapter_id, plan.cc, plan.compiler_id,
+                            plan.cflags);
+    if (snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s:%s:%s",
+                 def->source_tu, adapter_root, shape.generation) >=
+            (int)sizeof(key_owner) ||
         snprintf(cached_dep, sizeof(cached_dep),
                  "%s/build/hotswap-fast/%s-%s.hotfork.d", root, safe,
                  adapter_root) >= (int)sizeof(cached_dep)) {
@@ -2452,7 +2460,8 @@ static bool hs_hotfork_build(
          strcmp(post_key, receipt->artifact_cache_key) != 0))
         stable = false;
     free(before); free(after);
-    if (!stable) {
+    if (!zcl_hotfork_shape_admit(stable, &shape, candidate_obj, cached_dep,
+                                 why, why_len)) {
         goto fail;
     }
     if (!hs_sha256_file(candidate_obj, receipt->candidate_object_sha256)) {
@@ -3692,6 +3701,15 @@ int zcl_devloop_hotfork_batch_event(
                           why, sizeof(why))) {
         if (process.cancelled || zcl_devloop_process_cancel_requested())
             return ZCL_DEVLOOP_RESTART_EVENT_CANCELLED;
+        /* A shape refusal is not a compile failure: the candidate compiled,
+         * its bytes never ran, and the save falls back to the restart path
+         * (event 0 hands it back to the watcher) with the reason on record. */
+        if (zcl_hotfork_shape_refused(why))
+            return hs_emit_event(
+                repo_root, def->source_tu, 1, "reflex_ready",
+                "hotfork_shape_refused", false,
+                platform_time_monotonic_us() - started, &build, 0, NULL,
+                &process, why, false) ? 0 : -1;
         return hs_emit_event(
             repo_root, def->source_tu, 1, "rejected", "compile", false,
             platform_time_monotonic_us() - started, &build, 0, NULL,

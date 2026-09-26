@@ -6,6 +6,11 @@
  * tools/dev/hotfork_unity.h: phase 1 precedes the owner TU set, phase 2
  * follows it. check-hotfork-stories compiles every unity with the frozen
  * dev flags, so an owner API change cannot silently disable this story.
+ *
+ * hotfork-resident-bound: zcl_devloop_deterministic_compile_failure
+ * ZCL_HOTFORK_DEVLOOP_CYCLE_CORE compiles that definition out of the unity,
+ * so the candidate binds the resident's copy; HOT_FORK shape admission does
+ * not count its absence as a removed export.
  */
 #if !defined(ZCL_HOTFORK_STORY_PHASE)
 #error "HOT_FORK stories are included only by the generated capsule unity"

@@ -961,6 +961,7 @@ SHADOW_SELECT_SRCS = tools/dev/dev_shadow_rule.c tools/dev/dev_shadow_corpus.c \
 	tools/dev/dev_shadow_graph.c tools/dev/dev_shadow_compare.c
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/devloop_app_scaffold.c \
+	tools/dev/devloop_hotfork_shape.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_watch_classify.c tools/dev/devloop_process.c \
 	tools/dev/devloop_watch_session.c \
 	tools/dev/devloop_hotswap_build.c tools/dev/devloop_restart_build.c \
@@ -3059,6 +3060,7 @@ TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tests/harness/src/*.c))
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
 	tools/dev/devloop_app_scaffold.c \
+	tools/dev/devloop_hotfork_shape.c \
 	tools/dev/dev_source_identity.c tools/dev/dev_git_tree.c tools/dev/devloop_process.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_watch_classify.c \
 	tools/dev/devloop_watch_session.c \

@@ -6582,8 +6582,6 @@ static const struct dp_hs_case k_dp_hs_edits[] = {
     { "constructor", DP_HS_QUEUE,
       "__attribute__((constructor)) static void policy_shape_probe_ctor(void)\n"
       "{\n}\n\n" DP_HS_QUEUE, false, "HOT_FORK_SHAPE_INIT_FINI" },
-    { "closure-changed", DP_HS_INCLUDE, DP_HS_INCLUDE "#include <limits.h>\n",
-      false, "HOT_FORK_SHAPE_CLOSURE_CHANGED" },
 };
 
 static bool dp_hs_case_text(const char *base, const struct dp_hs_case *c,
@@ -6736,13 +6734,32 @@ static bool dp_hs_missing_facts(void)
                          "HOT_FORK_SHAPE_NO_BASELINE");
 }
 
+/* A new header in the candidate's closure. The watcher's own dependency
+ * baseline may refuse the first save of a new closure; the candidate must
+ * never reach the story either way, and the shape binding names the refusal
+ * from then on. Restoring the closure restores admission. */
+static bool dp_hs_closure_changed(const char *owner)
+{
+    static char text[16384];
+    struct dp_hf_seen seen = {0};
+    return dp_hs_edit(owner, DP_HS_INCLUDE,
+                      DP_HS_INCLUDE "#include <limits.h>\n", false, text,
+                      sizeof(text)) &&
+           dp_mk_write(k_dp_hf_root, k_dp_hf_owner, text) &&
+           dp_hf_drive(&seen) && strcmp(seen.phase, "STORY_GREEN") != 0 &&
+           dp_hs_refused("closure-changed", text,
+                         "HOT_FORK_SHAPE_CLOSURE_CHANGED") &&
+           dp_mk_write(k_dp_hf_root, k_dp_hf_owner, owner) &&
+           dp_hf_drive(&seen) && dp_hs_story_green("closure-restored", owner);
+}
+
 static bool dp_hs_edit_matrix(const char *owner)
 {
     bool ok = dp_hs_story_green("baseline", owner);
     for (size_t i = 0; i < sizeof(k_dp_hs_edits) /
                                      sizeof(k_dp_hs_edits[0]); i++)
         ok = dp_hs_run_case(owner, &k_dp_hs_edits[i]) && ok;
-    return ok && dp_hs_toolchain_drift(owner);
+    return ok && dp_hs_closure_changed(owner) && dp_hs_toolchain_drift(owner);
 }
 
 static int test_hotfork_shape_refusals(void)
