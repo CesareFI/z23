@@ -7290,3 +7290,48 @@ under `.cache/submit-primary-*` and `.cache/reproduce-submit-primary/`.
 TLS quarantine and existing physical-device/root-lint limits remain unchanged.
 Next: inspect read-only JNI snapshot allocation and measurement opportunities,
 keeping normal validation authoritative and avoiding speculative optimization.
+
+## Wallet-header contract continuation — 2026-09-26
+
+The interrupted security worktree's last Gradle command had completed: its
+preserved log ends `BUILD SUCCESSFUL in 14s`. Its header checks and deterministic
+driver were already recovered into `d2d03143c` on the established wallet
+development branch. The older dirty worktrees remain intact. This continuation
+starts from `b4d5d6a8f` in an isolated worktree and adds only the missing explicit
+acceptance expectations; it does not recommit the recovered implementation.
+
+The host driver now requires valid headers for both networks and all five
+entropy lengths to succeed. It rejects every truncation/overlength through 82,
+NULL/zero input and bit-zero corruption at each of the 80 header positions:
+1631 status expectations, retaining the prior 143 zero-XOR harness cases and
+the existing metadata/guard/failure-atomicity checks. Three parser variants
+that reject 20-byte entropy, reject mainnet, or ignore a corrupted genesis hash
+pass the former deterministic driver and fail the expanded test. These are
+test mutations, not reproduced production defects or authentication proofs.
+
+The complete safety script passes Clang 138/138 and optimized GCC 137/137
+ASan/UBSan groups in 132.31/201.40 seconds. Fresh standard profiles leave optional
+OpenSSL oracles off. Strict fixture analysis, unchanged production/test
+complexity caps, all 149 JVM tests, Android builds/lint, fixture isolation,
+16 KiB alignment, architecture and whitespace checks pass. Bounded record
+fuzzing, seeded with ten valid public header profiles, completes 3619936 runs
+in 121 seconds without a finding (1024-byte cap, five-second cases, 512 MiB
+RSS cap; 263 MiB observed). All 12 record/storage/provider-GCM instrumented
+tests pass on fresh disposable API 30/36 emulators with CheckJNI. Both exit
+zero without changing the existing devices or increasing the 31 ADB zombies.
+
+No production source, format, authority or artifact changes. All 154 Gradle
+tasks execute in the fresh worktree, reproducing the recorded 641227-byte
+unsigned release SHA256
+`0eb29e8352139bce06b25fd46b9f10013c99acca14653ef92c34075569b8eaae`.
+The test main frame grows 184 to 440 bytes; providers/callees add their frames.
+The complete C hazard review is in C_SAFETY_REVIEW.md. Logs, three pairs of
+mutation runs, fuzz corpus, stack report and artifact identities are preserved
+in `.cache/header-contract-20260926/` in the validation worktree. Physical
+custody, source trust and TLS quarantine remain separate open boundaries.
+
+Next: validate the preserved stale-sync-reply allocation work separately.
+Its original dirty files remain unchanged; a copied regression against the
+current implementation observes 64 allocations and 64 JNI input copies for
+64 retired replies. The candidate reuses the existing C token check while
+holding the registry lock, without replacing request/reply validation.

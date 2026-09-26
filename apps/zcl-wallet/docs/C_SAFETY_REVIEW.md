@@ -4180,3 +4180,65 @@ adapting their old insertion points. TLS remains outside the enabled scope.
 Host validation of these candidates does not qualify physical-device custody,
 real camera interoperability, TLS, or production readiness. The preservation
 entry in PROGRESS.md records the checks actually run for this snapshot.
+
+## 2026-09-26: explicit wallet-header acceptance contract
+
+Reviewed the host-only `test_wallet_record_fuzz.c` extension. The previously
+recovered harness checks exact metadata and output preservation after whatever
+status the parser returns. Its deterministic driver now independently requires
+acceptance of generated valid headers and refusal of known corruptions. It uses
+the existing parser and fixture generator, not an independent cryptographic
+implementation. No production source, provider, wallet format or APK changes.
+
+Both networks and all five supported entropy lengths are exercised. For each
+profile, lengths 0..82 accept only 80; toggling bit zero at each of the 80 byte
+positions must refuse. Together with NULL/zero length, these are 1631 explicit
+status expectations. The original 143 zero-XOR/truncation harness cases remain.
+After each matching status, the shared harness checks metadata, output guards
+and unchanged output on refusal. Parsing remains structural, never GCM proof.
+
+Three temporary parser variants refuse 20-byte entropy, refuse mainnet, or
+ignore a corrupted genesis identity. Each passes the former deterministic
+driver and fails the new driver with its expected acceptance-mismatch result.
+This makes no claim that those variants evade every other existing wallet test.
+The variants and initial mutation-helper include-path diagnostic are retained;
+production files were never replaced with them.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | Header storage is 82 bytes; the length loop supplies only 0..82. Corruption requires a non-NULL exact 80-byte input before copying into its 80-byte array. The shared harness retains output guards and the length check before metadata offsets. Entropy lengths are supplied only by the bounded 16..32 step-four loop. |
+| Integer overflow/underflow; signed/unsigned conversions | Loops end at 82, 80, two networks and 32-byte entropy; additions remain representable. All lengths use size_t and every API receives actual capacity. Bit-zero toggling remains in uint8_t range. No attacker-controlled allocation size or signed length conversion is introduced. |
+| Use-after-free; double-free; leaks; dangling pointers | Only automatic arrays and the existing single-threaded harness state are used. Calls synchronously borrow live spans; no new pointer escapes, heap allocation, file, descriptor or free is added to the registered fixture. The separate fuzz-seed helper writes public headers only into its owned evidence directory. |
+| NULL dereferences; uninitialized memory | All fixture arrays and metadata initialize before use. NULL with zero length is an explicit refusal case; corruption checks its pointer and size before copying. The length helper is called only with the live 82-byte local array. Initialization failure stops the driver before harness use. |
+| Pointer arithmetic; format strings | Indices remain inside supplied spans. The corruption loop changes one byte and restores it after success; failure immediately exits the fixture. Diagnostics are fixed strings and contain no entropy, address, record or provider error text. |
+| Stack usage; allocation limits; resource exhaustion | The optimized protected host main frame is 440 bytes, up from 184; callees/providers add their own frames. No VLA, recursion, pool, worker or retry loop. The focused record/contract pair completes in 0.35 seconds under sanitizers. The registered 15-second contract deadline remains unchanged. No production RAM, CPU, storage, network or APK cost. |
+| Malformed serialization; races; failure behavior | Expected valid acceptance is now explicit, as are all generated single-byte corruptions and every truncation/overlength through 82. Checks preserve existing failure-atomicity and exact-copy assertions. The fixture is serialized and introduces no shared state. Public fixture creation/status failures fail the test rather than reducing coverage or weakening validation. |
+| Secret leakage and authority | All-zero entropy, fixed blinding and resulting addresses are public unfunded fixtures. Entropy and blinding clear after creation, including failure. Device tests use public provider-GCM records and unique disposable directories, with no real wallet or Keystore alias. Consensus, transaction validation, hardware custody, TLS quarantine and signing admission remain unchanged. |
+
+Evidence lives in `.cache/header-contract-20260926/` in the isolated
+`agent/android-header-validation-20260926` worktree. The older header and
+security worktrees remain intact; their recovered source was already present
+in development commit `d2d03143c` and is not duplicated by this change.
+
+The complete safety script passes 138/138 Clang sanitizer groups in 132.31
+seconds and 137/137 optimized GCC sanitizer groups in 201.40 seconds. Optional
+OpenSSL oracle groups are off in these fresh standard profiles. Strict Clang
+and GCC fixture analysis, production complexity <=10, test complexity <=15,
+all 149 JVM tests, debug/test and both-ABI release builds, debug/release lint,
+fixture isolation, 16 KiB alignment, architecture and whitespace checks pass.
+
+The unchanged record fuzzer, seeded with all ten public valid header profiles,
+completes 3619936 runs in 121 seconds with no finding. Bounds are 1024 input
+bytes, five seconds per case and 512 MiB RSS (263 MiB observed). Fuzzer SHA256 is
+`0528404698e611cedf36fcaa7818180fbf7dccd7ce3f8cc3fe00dabc286bfa24`.
+All 12 record/storage/provider-GCM instrumented tests pass with CheckJNI on
+new disposable API 30/36 emulators in 0.398/0.668 seconds. They include both
+networks, all entropy sizes, corruption, truncation and storage recovery.
+Both owned emulators shut down with exit zero; the existing five devices and
+31 ADB zombies remain unchanged. This supplies no physical-custody evidence.
+
+All 154 Gradle tasks execute successfully in the fresh worktree. The complete
+641227-byte unsigned release reproduces the preceding recorded artifact:
+`0eb29e8352139bce06b25fd46b9f10013c99acca14653ef92c34075569b8eaae`.
+The standalone host contract executable and APK identities are retained with
+the logs, mutation runs, public corpus and measured 440-byte test frame.
