@@ -176,5 +176,26 @@ push and rerun release proof at the batch head; do not reinterpret a
 final-source verdict as proof that every intermediate commit was separately
 release-ready.
 
+P24 measured one narrow C23 edit's full landed journey — reflex feedback,
+signed commit, exact proof, landing queue, push, remote acceptance, durable
+receipt — and then removed its single largest avoidable delay. A landing
+proof's compile dimension reuses the checkout's admitted z23-dev, so its
+generation runs the prefork bundle but never `make build-only`; because the
+warm-start donor marker was written only on the make path, every landing proof
+re-ran the full bundle with `no_eligible_donor`. The bundle success path now
+writes the same marker, the donor survey admits a bundle-built generation's
+`build/bin` when no `build/obj` exists, and executed files are copied rather
+than linked so an in-place rewrite can never disturb a running donor. Before:
+request-to-remote 417 s, proof 301.2 s, prefork bundle admission 89.6 s, 254
+compiler invocations, zero warm links. After (same harness, same edit shape,
+the next consecutive journey on the final main): request-to-remote 392 s,
+proof 246.5 s, admission 38.8 s, 191 compiler invocations, 17,071 files and
+3.6 GB donated by link. Duplicate-request coalescing, crash/retry, stale-main
+refusal with lane recovery, and tampered-receipt refusal with restore all hold
+GREEN receipts in the journey benchmark. The remaining critical path is the
+required independent test dimension (157 s) with lint (91 s) beneath it;
+neither was shortened, no gate was weakened, and a missing donor still falls
+back to the full cold build.
+
 No live service, canonical datadir, wallet, transaction, custody, deployment,
 core or consensus path is part of this ledger or its benchmark.
