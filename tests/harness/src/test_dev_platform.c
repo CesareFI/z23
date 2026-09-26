@@ -5036,7 +5036,29 @@ static bool run_resident_restart_fixture(void)
     memset(&process, 0, sizeof(process));
     if (zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
                                   &process, why, sizeof(why)) ||
-        strcmp(why, "failure-first direct owner invariant failed") != 0 ||
+        strcmp(proof.priority_reason, "direct_owner_invariant") != 0 ||
+        strcmp(why,
+               "failure-first direct owner group test_make_lint_gates "
+               "failed") != 0 ||
+        proof.groups_failed != 2 ||
+        proof.immediate_proof_complete || proof.proof_complete)
+        goto out;
+
+    /* The failing group is now the remembered RED. Failing it again must
+     * name it as previously failing, not repeat the direct-owner wording;
+     * a stale previous_failure group must never read as a verdict on this
+     * unrelated edit. */
+    stage = "remembered red still failing";
+    memset(why, 0, sizeof(why));
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
+                                  &process, why, sizeof(why)) ||
+        strcmp(proof.priority_group, "test_make_lint_gates") != 0 ||
+        strcmp(proof.priority_reason, "previous_failure") != 0 ||
+        strcmp(why,
+               "previously failing group test_make_lint_gates is still red "
+               "(runs first until it passes)") != 0 ||
         proof.groups_failed != 2 ||
         proof.immediate_proof_complete || proof.proof_complete)
         goto out;

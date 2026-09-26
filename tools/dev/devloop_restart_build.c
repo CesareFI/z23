@@ -2737,6 +2737,23 @@ static bool rr_prove_priority_run_and_parse(
         *ran_count + *cached == 1 && *failed == 0 && *skips == 0;
 }
 
+/* Name the priority group and the reason it ran first, so a stale
+ * previous_failure group cannot read as a verdict on the unrelated edit
+ * that triggered this restart. */
+static void rr_prove_priority_why(char *why, size_t why_len,
+                                  const char *reason, const char *group)
+{
+    if (strcmp(reason, "previous_failure") == 0) {
+        (void)snprintf(why, why_len,
+                       "previously failing group %s is still red (runs "
+                       "first until it passes)",
+                       group);
+        return;
+    }
+    (void)snprintf(why, why_len,
+                   "failure-first direct owner group %s failed", group);
+}
+
 static bool rr_prove_run_priority(struct rr_prove_ctx *ctx,
                                   struct rr_prove_test_args *ta)
 {
@@ -2793,8 +2810,8 @@ static bool rr_prove_run_priority(struct rr_prove_ctx *ctx,
         ctx->receipt->groups_failed = priority_failed;
         ctx->receipt->self_skips = priority_skips;
         ctx->receipt->total_us = platform_time_monotonic_us() - ctx->started;
-        rr_why(ctx->why, ctx->why_len,
-               "failure-first direct owner invariant failed");
+        rr_prove_priority_why(ctx->why, ctx->why_len, priority_reason,
+                              priority_full);
         return false;
     }
     if (strcmp(priority_reason, "previous_failure") == 0)
