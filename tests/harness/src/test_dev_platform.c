@@ -4744,10 +4744,13 @@ static bool dp_restart_focused_scope_ok(const char *root,
         dp_restart_event_verdicts_ok(root, changed);
 }
 
-static bool dp_restart_remembered_red_names_group(
+/* A born-red restart proof must fail, name the failing group and why it ran
+ * first, and never claim completion. */
+static bool dp_restart_red_names_group(
     const char *root, const char *const *changed,
     const struct zcl_devloop_plan *proof_plan,
-    struct zcl_devloop_process_result *process)
+    struct zcl_devloop_process_result *process, const char *reason,
+    const char *expected_why)
 {
     char why[256] = {0};
     struct zcl_devloop_restart_proof_receipt proof = {0};
@@ -4755,10 +4758,8 @@ static bool dp_restart_remembered_red_names_group(
     return !zcl_devloop_restart_prove(root, changed, 1, proof_plan, &proof,
                                       process, why, sizeof(why)) &&
         strcmp(proof.priority_group, "test_make_lint_gates") == 0 &&
-        strcmp(proof.priority_reason, "previous_failure") == 0 &&
-        strcmp(why,
-               "previously failing group test_make_lint_gates is still red "
-               "(runs first until it passes)") == 0 &&
+        strcmp(proof.priority_reason, reason) == 0 &&
+        strcmp(why, expected_why) == 0 &&
         proof.groups_failed == 2 &&
         !proof.immediate_proof_complete && !proof.proof_complete;
 }
@@ -5051,16 +5052,9 @@ static bool run_resident_restart_fixture(void)
     stage = "born red proof";
     if (platform_environment_set("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "2", 1) != 0)
         goto out;
-    memset(&proof, 0, sizeof(proof));
-    memset(&process, 0, sizeof(process));
-    if (zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
-                                  &process, why, sizeof(why)) ||
-        strcmp(proof.priority_reason, "direct_owner_invariant") != 0 ||
-        strcmp(why,
-               "failure-first direct owner group test_make_lint_gates "
-               "failed") != 0 ||
-        proof.groups_failed != 2 ||
-        proof.immediate_proof_complete || proof.proof_complete)
+    if (!dp_restart_red_names_group(
+            root, changed, &proof_plan, &process, "direct_owner_invariant",
+            "failure-first direct owner group test_make_lint_gates failed"))
         goto out;
 
     /* The failing group is now the remembered RED. Failing it again must
@@ -5068,8 +5062,10 @@ static bool run_resident_restart_fixture(void)
      * a stale previous_failure group must never read as a verdict on this
      * unrelated edit. */
     stage = "remembered red still failing";
-    if (!dp_restart_remembered_red_names_group(root, changed, &proof_plan,
-                                               &process))
+    if (!dp_restart_red_names_group(
+            root, changed, &proof_plan, &process, "previous_failure",
+            "previously failing group test_make_lint_gates is still red "
+            "(runs first until it passes)"))
         goto out;
     if (platform_environment_set("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "0", 1) != 0)
         goto out;
