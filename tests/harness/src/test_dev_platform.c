@@ -14,6 +14,7 @@
 #include "dev_failure_store.h"
 #include "devloop.h"
 #include "devloop_action_root.h"
+#include "devloop_hotfork_shape.h"
 #include "devloop_watch_session.h"
 #include "kernel/command_registry.h"
 #include "hotswap/hotfork_capsule.h"
@@ -35,6 +36,9 @@
 
 #include <fcntl.h>
 #include <errno.h>
+#if defined(__linux__)
+#include <elf.h>
+#endif
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -6911,6 +6915,106 @@ static int test_hotfork_shape_refusals(void)
     return failures;
 }
 
+#if defined(__linux__)
+/* A minimal ELF64 relocatable object in host byte order whose .symtab
+ * defines one global absolute function `name` (at most 19 bytes), dated
+ * `when`. Rewritten in place: the inode is kept. */
+static bool dp_img_fixture(const char *path, const char *name, time_t when)
+{
+    static const char shstr[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint16_t probe = 1;
+    unsigned char buf[160 + 4 * sizeof(Elf64_Shdr)] = {0};
+    size_t n = strlen(name);
+    Elf64_Ehdr eh = {0};
+    Elf64_Sym sym = {0};
+    Elf64_Shdr sh[4] = {0};
+    if (n == 0 || n > 19)
+        return false;
+    memcpy(eh.e_ident, ELFMAG, SELFMAG);
+    eh.e_ident[EI_CLASS] = ELFCLASS64;
+    eh.e_ident[EI_DATA] =
+        *(const unsigned char *)&probe ? ELFDATA2LSB : ELFDATA2MSB;
+    eh.e_ident[EI_VERSION] = EV_CURRENT;
+    eh.e_type = ET_REL;
+    eh.e_version = EV_CURRENT;
+    eh.e_ehsize = sizeof(eh);
+    eh.e_shentsize = sizeof(Elf64_Shdr);
+    eh.e_shnum = 4;
+    eh.e_shstrndx = 3;
+    eh.e_shoff = 160;
+    sym.st_name = 1;
+    sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
+    sym.st_shndx = SHN_ABS;
+    sh[1] = (Elf64_Shdr){.sh_name = 1, .sh_type = SHT_SYMTAB, .sh_offset = 64,
+                         .sh_size = 2 * sizeof(Elf64_Sym), .sh_link = 2,
+                         .sh_info = 1, .sh_addralign = 8,
+                         .sh_entsize = sizeof(Elf64_Sym)};
+    sh[2] = (Elf64_Shdr){.sh_name = 9, .sh_type = SHT_STRTAB,
+                         .sh_offset = 112, .sh_size = n + 2,
+                         .sh_addralign = 1};
+    sh[3] = (Elf64_Shdr){.sh_name = 17, .sh_type = SHT_STRTAB,
+                         .sh_offset = 133, .sh_size = sizeof(shstr),
+                         .sh_addralign = 1};
+    memcpy(buf, &eh, sizeof(eh));
+    memcpy(buf + 64 + sizeof(Elf64_Sym), &sym, sizeof(sym));
+    memcpy(buf + 113, name, n);
+    memcpy(buf + 133, shstr, sizeof(shstr));
+    memcpy(buf + 160, sh, sizeof(sh));
+    FILE *f = fopen(path, "r+b");
+    if (!f)
+        f = fopen(path, "wb");
+    bool ok = f && fwrite(buf, 1, sizeof(buf), f) == sizeof(buf);
+    if (f && fclose(f) != 0)
+        ok = false;
+    struct timespec t[2] = {{when, 0}, {when, 0}};
+    return ok && utimensat(AT_FDCWD, path, t, 0) == 0;
+}
+#endif
+
+static int test_hotfork_shape_image_cache(void)
+{
+    int failures = 0;
+    TEST("dev platform: HOT_FORK parses the running image's symbols once per image identity and re-parses a changed image") {
+#if defined(__linux__)
+        static const char fixture[] = "test-tmp/dev_hotfork_image.o";
+        static const char absent[] = "zcl_no_such_symbol_q7";
+        const char *exe = "/proc/self/exe";
+        unsigned long p0 = 0, p = 0;
+        (void)unlink(fixture);
+        ASSERT(dp_img_fixture(fixture, "zcl_fixture_symbol", 1000000));
+        /* Occupy both kinds with the fixture so the counts below are exact
+         * (an object has no .dynsym: that parse fails and is not kept). */
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "x", true, &p) == -1);
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbol", false, &p0) == 1);
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbol", false, &p) == 1);
+        ASSERT(p == p0);
+        ASSERT(zcl_hotfork_shape_test_image_defines(exe, "main", false, &p) == 1);
+        ASSERT(p == p0 + 1);
+        ASSERT(zcl_hotfork_shape_test_image_defines(exe, "main", false, &p) == 1);
+        ASSERT(zcl_hotfork_shape_test_image_defines(exe, absent, false, &p) == 0);
+        ASSERT(p == p0 + 1);
+        ASSERT(zcl_hotfork_shape_test_image_defines(exe, "malloc", true, &p) == 1);
+        ASSERT(p == p0 + 2);
+        ASSERT(zcl_hotfork_shape_test_image_defines(exe, "malloc", true, &p) == 1);
+        ASSERT(zcl_hotfork_shape_test_image_defines(exe, absent, true, &p) == 0);
+        ASSERT(p == p0 + 2);
+        ASSERT(dp_img_fixture(fixture, "zcl_fixture_symbol", 1000000));
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbol", false, &p) == 1);
+        ASSERT(p == p0 + 3);
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbol", false, &p) == 1);
+        ASSERT(p == p0 + 3);
+        ASSERT(dp_img_fixture(fixture, "zcl_fixture_symbok", 1000100));
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbol", false, &p) == 0);
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbok", false, &p) == 1);
+        ASSERT(p == p0 + 4);
+        ASSERT(unlink(fixture) == 0);
+        ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbok", false, &p) == -1);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_hotfork_story_file_green_and_red(void)
 {
     int failures = 0;
@@ -8329,6 +8433,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_hotswap_artifact_cache, 5),
     DP_CASE(test_hotfork_story_file_green_and_red, 5),
     DP_CASE(test_hotfork_shape_refusals, 5),
+    DP_CASE(test_hotfork_shape_image_cache, 5),
     DP_CASE(test_resident_restart_builder, 4),
 #if defined(__APPLE__)
     DP_CASE(test_darwin_attested_descriptor_process, 4),
@@ -8489,7 +8594,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 59u + (unsigned)(
+    if (DP_CASE_COUNT != 60u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

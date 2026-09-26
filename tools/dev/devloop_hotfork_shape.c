@@ -93,6 +93,7 @@ static bool shape_refuse(char *why, size_t why_len, const char *reason,
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1072,89 +1073,6 @@ static uint64_t shape_fnv(const char *name, size_t len)
     return h;
 }
 
-struct shape_index {
-    size_t *slots; /* 1 + index into set->items; 0 is empty */
-    bool *seen;
-    size_t mask;
-};
-
-static bool shape_index_build(const struct shape_set *set,
-                              struct shape_index *ix)
-{
-    size_t cap = 16;
-    while (cap < set->count * 2 + 1)
-        cap *= 2;
-    ix->slots = zcl_calloc(cap, sizeof(*ix->slots), "HOT_FORK shape index");
-    ix->seen = zcl_calloc(set->count + 1, sizeof(*ix->seen), "HOT_FORK shape index");
-    ix->mask = cap - 1;
-    for (size_t i = 0; ix->slots && ix->seen && i < set->count; i++) {
-        if (set->items[i].kind != SHAPE_GLOBAL)
-            continue;
-        size_t at = shape_fnv(set->items[i].name, set->items[i].len) & ix->mask;
-        while (ix->slots[at])
-            at = (at + 1) & ix->mask;
-        ix->slots[at] = i + 1;
-    }
-    return ix->slots && ix->seen;
-}
-
-static void shape_index_mark(const struct shape_set *set,
-                             struct shape_index *ix, const char *name)
-{
-    size_t len = strlen(name);
-    size_t at = shape_fnv(name, len) & ix->mask;
-    for (; ix->slots[at]; at = (at + 1) & ix->mask) {
-        const struct shape_sym *s = &set->items[ix->slots[at] - 1];
-        if (s->len == len && memcmp(s->name, name, len) == 0)
-            ix->seen[ix->slots[at] - 1] = true;
-    }
-}
-
-static void shape_mark_resident(const struct shape_elf *img,
-                                const struct shape_set *set,
-                                struct shape_index *ix)
-{
-    for (size_t i = 1; i < img->nsym; i++) {
-        const char *name = shape_sym_name(img, &img->sym[i]);
-        if (name && name[0] && shape_is_global(&img->sym[i]))
-            shape_index_mark(set, ix, name);
-    }
-}
-
-/* Every global the resident objects define is defined by the running image:
- * the objects are the image's inputs, not a later or foreign build. */
-static bool shape_resident_defines(const struct shape_set *base, char *why,
-                                   size_t why_len)
-{
-    struct shape_elf img;
-    struct shape_index ix = {0};
-    enum shape_read got = shape_elf_open(&img, "/proc/self/exe", false);
-    bool ok = got == SHAPE_READ_OK && shape_index_build(base, &ix);
-    if (ok)
-        shape_mark_resident(&img, base, &ix);
-    const struct shape_sym *missing = NULL;
-    for (size_t i = 0; ok && !missing && i < base->count; i++)
-        if (base->items[i].kind == SHAPE_GLOBAL && !ix.seen[i])
-            missing = &base->items[i];
-    shape_elf_close(&img);
-    free(ix.slots);
-    free(ix.seen);
-    if (got != SHAPE_READ_OK)
-        return got == SHAPE_READ_NO_SYMTAB
-                   ? shape_refuse(why, why_len, "SYMTAB_MISSING", "/proc/self/exe",
-                                  "the running image has no symbol table")
-                   : shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
-                                  "/proc/self/exe",
-                                  "the running image cannot be read");
-    if (!ok)
-        return shape_refuse(why, why_len, "RESIDENT_UNREADABLE", "-",
-                            "out of memory indexing the resident objects");
-    return !missing ||
-           shape_refuse(why, why_len, "RESIDENT_MISMATCH", missing->name,
-                        "defined by the resident build objects but not by the "
-                        "running image; the objects are not its inputs");
-}
-
 /* ── dependency closure and the binding record ───────────────────────── */
 
 /* Length of a backslash line continuation at `in`, 0 when there is none. */
@@ -1447,19 +1365,8 @@ static bool shape_header_check(struct shape_run *run, char *why,
 
 /* ── unresolved references ───────────────────────────────────────────── */
 
-static void shape_mark_defined(const struct shape_elf *e,
-                               const struct shape_set *set,
-                               struct shape_index *ix)
-{
-    for (size_t i = 1; i < e->nsym; i++) {
-        const char *name = shape_sym_name(e, &e->sym[i]);
-        if (name && name[0] && e->sym[i].st_shndx != SHN_UNDEF)
-            shape_index_mark(set, ix, name);
-    }
-}
-
 struct shape_libs {
-    const char *needed[SHAPE_LIBS_MAX]; /* basenames, borrowed */
+    char needed[SHAPE_LIBS_MAX][NAME_MAX + 1]; /* DT_NEEDED basenames */
     size_t count;
     char interp[PATH_MAX];
 };
@@ -1483,9 +1390,11 @@ static bool shape_dynamic_needed(const struct shape_elf *img,
         memcpy(&d, raw + k * sizeof(d), sizeof(d));
         if (d.d_tag != DT_NEEDED)
             continue;
-        ok = d.d_un.d_val < img->str_len && libs->count < SHAPE_LIBS_MAX;
+        ok = d.d_un.d_val < img->str_len && libs->count < SHAPE_LIBS_MAX &&
+             snprintf(libs->needed[libs->count], sizeof(libs->needed[0]), "%s",
+                      img->str + d.d_un.d_val) < (int)sizeof(libs->needed[0]);
         if (ok)
-            libs->needed[libs->count++] = img->str + d.d_un.d_val;
+            libs->count++;
     }
     free(raw);
     return ok;
@@ -1529,15 +1438,164 @@ static bool shape_lib_wanted(const struct shape_libs *libs, const char *path)
     return false;
 }
 
-/* Marks every name defined by a library the image names, as this process
- * mapped it (the reflex runner execs the same image). */
-static bool shape_mark_libs(const struct shape_libs *libs,
-                            const struct shape_set *set,
-                            struct shape_index *ix)
+/* ── the running image's defined names, parsed once per image ────────── */
+
+/* A set of names: a string arena and an open-addressed index of offsets. */
+struct shape_names {
+    char *arena;
+    size_t len;
+    size_t cap;
+    size_t *slots; /* 1 + arena offset; 0 is empty */
+    size_t mask;
+    size_t count;
+};
+
+static void shape_names_free(struct shape_names *n)
+{
+    free(n->arena);
+    free(n->slots);
+    memset(n, 0, sizeof(*n));
+}
+
+/* The slot holding `name` (`len` bytes), or the empty slot it would take. */
+static size_t shape_names_slot(const size_t *slots, size_t mask,
+                               const char *arena, const char *name, size_t len)
+{
+    size_t at = shape_fnv(name, len) & mask;
+    for (; slots[at]; at = (at + 1) & mask) {
+        const char *s = arena + slots[at] - 1;
+        if (strncmp(s, name, len) == 0 && s[len] == 0)
+            break;
+    }
+    return at;
+}
+
+static bool shape_names_has(const struct shape_names *n, const char *name,
+                            size_t len)
+{
+    return n->slots &&
+           n->slots[shape_names_slot(n->slots, n->mask, n->arena, name, len)];
+}
+
+static bool shape_names_rehash(struct shape_names *n)
+{
+    size_t cap = n->slots ? (n->mask + 1) * 2 : 1024;
+    size_t *slots = zcl_calloc(cap, sizeof(*slots), "HOT_FORK image names");
+    for (size_t i = 0; slots && n->slots && i <= n->mask; i++) {
+        if (!n->slots[i])
+            continue;
+        const char *s = n->arena + n->slots[i] - 1;
+        slots[shape_names_slot(slots, cap - 1, n->arena, s, strlen(s))] =
+            n->slots[i];
+    }
+    if (!slots)
+        return false;
+    free(n->slots);
+    n->slots = slots;
+    n->mask = cap - 1;
+    return true;
+}
+
+static bool shape_names_add(struct shape_names *n, const char *name)
+{
+    size_t len = strlen(name);
+    if ((!n->slots || (n->count + 1) * 2 > n->mask + 1) &&
+        !shape_names_rehash(n))
+        return false;
+    size_t at = shape_names_slot(n->slots, n->mask, n->arena, name, len);
+    if (n->slots[at])
+        return true;
+    if (n->cap - n->len < len + 1) {
+        size_t cap = n->cap ? n->cap : 1 << 16;
+        while (cap - n->len < len + 1)
+            cap *= 2;
+        char *grown = zcl_realloc(n->arena, cap, "HOT_FORK image names");
+        if (!grown)
+            return false;
+        n->arena = grown;
+        n->cap = cap;
+    }
+    memcpy(n->arena + n->len, name, len + 1);
+    n->slots[at] = n->len + 1;
+    n->len += len + 1;
+    n->count++;
+    return true;
+}
+
+enum { SHAPE_IMAGE_SYMTAB, SHAPE_IMAGE_DYNAMIC, SHAPE_IMAGE_KINDS };
+
+/* One image's defined names: SYMTAB its .symtab globals, DYNAMIC its
+ * .dynsym plus every library it names as mapped in this process. */
+struct shape_image {
+    bool valid;
+    char path[PATH_MAX];
+    struct stat id;
+    struct shape_libs libs;
+    uint64_t libs_id; /* the mapped libraries' paths and file identities */
+    struct shape_names names;
+};
+
+static pthread_mutex_t g_shape_image_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct shape_image g_shape_images[SHAPE_IMAGE_KINDS];
+static unsigned long g_shape_image_parses;
+
+static uint64_t shape_fold(uint64_t h, const void *bytes, size_t len)
+{
+    const unsigned char *b = bytes;
+    for (size_t i = 0; i < len; i++)
+        h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+/* Adds the names `e` defines: with `globals` its defined GLOBAL/WEAK
+ * symbols, otherwise every symbol it does not leave undefined. */
+static bool shape_add_defined(const struct shape_elf *e, bool globals,
+                              struct shape_names *into)
+{
+    bool ok = true;
+    for (size_t i = 1; ok && i < e->nsym; i++) {
+        const Elf64_Sym *s = &e->sym[i];
+        const char *name = shape_sym_name(e, s);
+        bool defines = globals ? shape_is_global(s) : s->st_shndx != SHN_UNDEF;
+        if (name && name[0] && defines)
+            ok = shape_names_add(into, name);
+    }
+    return ok;
+}
+
+/* Folds one mapped library's path and file identity into `*id`; with
+ * `into`, also adds the names its dynamic symbol table defines. */
+static bool shape_lib_scan(const char *path, struct shape_names *into,
+                           uint64_t *id)
+{
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false;
+    uint64_t facts[5] = {(uint64_t)st.st_dev, (uint64_t)st.st_ino,
+                         (uint64_t)st.st_size, (uint64_t)st.st_mtim.tv_sec,
+                         (uint64_t)st.st_mtim.tv_nsec};
+    *id = shape_fold(shape_fold(*id, path, strlen(path) + 1), facts,
+                     sizeof(facts));
+    if (!into)
+        return true;
+    struct shape_elf lib;
+    bool ok = shape_elf_open_as(&lib, path, false, SHT_DYNSYM) ==
+                  SHAPE_READ_OK &&
+              shape_add_defined(&lib, false, into);
+    shape_elf_close(&lib);
+    return ok;
+}
+
+/* Every library the image names, as this process mapped it (the reflex
+ * runner execs the same image): each one's path and identity folds into
+ * `*id`, and with `into` the names each defines are added. */
+static bool shape_libs_scan(const struct shape_libs *libs,
+                            struct shape_names *into, uint64_t *id)
 {
     char *maps = shape_slurp("/proc/self/maps", 4 << 20, NULL);
     const char *last = "";
     bool ok = maps != NULL;
+    *id = 1469598103934665603ull;
     for (char *line = maps; ok && line && *line;) {
         char *end = strchr(line, '\n');
         if (end)
@@ -1545,12 +1603,7 @@ static bool shape_mark_libs(const struct shape_libs *libs,
         const char *path = strchr(line, '/');
         if (path && strcmp(path, last) != 0 && !strstr(path, " (deleted)") &&
             shape_lib_wanted(libs, path)) {
-            struct shape_elf lib;
-            ok = shape_elf_open_as(&lib, path, false, SHT_DYNSYM) ==
-                 SHAPE_READ_OK;
-            if (ok)
-                shape_mark_defined(&lib, set, ix);
-            shape_elf_close(&lib);
+            ok = shape_lib_scan(path, into, id);
             last = path;
         }
         line = end ? end + 1 : NULL;
@@ -1559,14 +1612,94 @@ static bool shape_mark_libs(const struct shape_libs *libs,
     return ok;
 }
 
-static const struct shape_sym *shape_first_unmarked(const struct shape_set *set,
-                                                    const struct shape_index *ix)
+static enum shape_read shape_image_parse(struct shape_image *im, unsigned kind)
 {
-    for (size_t i = 0; i < set->count; i++)
-        if (!ix->seen[i] &&
-            strcmp(set->items[i].name, "_GLOBAL_OFFSET_TABLE_") != 0)
-            return &set->items[i];
-    return NULL;
+    bool dynamic = kind == SHAPE_IMAGE_DYNAMIC;
+    struct shape_elf img;
+    enum shape_read got = shape_elf_open_as(&img, im->path, dynamic,
+                                            dynamic ? SHT_DYNSYM : SHT_SYMTAB);
+    bool ok = got == SHAPE_READ_OK &&
+              shape_add_defined(&img, !dynamic, &im->names) &&
+              (!dynamic || (shape_image_libs(&img, &im->libs) &&
+                            shape_libs_scan(&im->libs, &im->names,
+                                            &im->libs_id)));
+    shape_elf_close(&img);
+    if (got != SHAPE_READ_OK)
+        return got;
+    return ok ? SHAPE_READ_OK : SHAPE_READ_UNREADABLE;
+}
+
+static enum shape_read shape_image_load(struct shape_image *im, unsigned kind,
+                                        const char *path,
+                                        const struct stat *st)
+{
+    shape_names_free(&im->names);
+    memset(&im->libs, 0, sizeof(im->libs));
+    im->libs_id = 0;
+    im->valid = false;
+    if (snprintf(im->path, sizeof(im->path), "%s", path) >=
+        (int)sizeof(im->path))
+        return SHAPE_READ_UNREADABLE;
+    g_shape_image_parses++;
+    enum shape_read got = shape_image_parse(im, kind);
+    im->id = *st;
+    im->valid = got == SHAPE_READ_OK;
+    if (!im->valid)
+        shape_names_free(&im->names);
+    return got;
+}
+
+/* The names `path` defines as `kind`. On SHAPE_READ_OK g_shape_image_mu
+ * is held until shape_image_release(); on failure nothing is held and
+ * nothing is kept. */
+static enum shape_read shape_image_acquire(unsigned kind, const char *path,
+                                           const struct shape_names **names)
+{
+    struct shape_image *im = &g_shape_images[kind];
+    struct stat st;
+    pthread_mutex_lock(&g_shape_image_mu);
+    enum shape_read got = stat(path, &st) != 0
+                              ? SHAPE_READ_UNREADABLE
+                              : shape_image_load(im, kind, path, &st);
+    if (got == SHAPE_READ_OK) {
+        *names = &im->names;
+        return got;
+    }
+    im->valid = false;
+    pthread_mutex_unlock(&g_shape_image_mu);
+    return got;
+}
+
+static void shape_image_release(void)
+{
+    pthread_mutex_unlock(&g_shape_image_mu);
+}
+
+/* Every global the resident objects define is defined by the running image:
+ * the objects are the image's inputs, not a later or foreign build. */
+static bool shape_resident_defines(const struct shape_set *base, char *why,
+                                   size_t why_len)
+{
+    const struct shape_names *names = NULL;
+    enum shape_read got =
+        shape_image_acquire(SHAPE_IMAGE_SYMTAB, "/proc/self/exe", &names);
+    if (got != SHAPE_READ_OK)
+        return got == SHAPE_READ_NO_SYMTAB
+                   ? shape_refuse(why, why_len, "SYMTAB_MISSING", "/proc/self/exe",
+                                  "the running image has no symbol table")
+                   : shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
+                                  "/proc/self/exe",
+                                  "the running image cannot be read");
+    const struct shape_sym *missing = NULL;
+    for (size_t i = 0; !missing && i < base->count; i++)
+        if (base->items[i].kind == SHAPE_GLOBAL &&
+            !shape_names_has(names, base->items[i].name, base->items[i].len))
+            missing = &base->items[i];
+    shape_image_release();
+    return !missing ||
+           shape_refuse(why, why_len, "RESIDENT_MISMATCH", missing->name,
+                        "defined by the resident build objects but not by the "
+                        "running image; the objects are not its inputs");
 }
 
 /* Every symbol the candidate leaves undefined is defined by the running
@@ -1574,35 +1707,47 @@ static const struct shape_sym *shape_first_unmarked(const struct shape_set *set,
  * _GLOBAL_OFFSET_TABLE_ is not a reference to anything. */
 static bool shape_resolve(struct shape_run *run, char *why, size_t why_len)
 {
-    struct shape_elf img;
-    struct shape_index ix = {0};
-    struct shape_libs libs = {0};
-    enum shape_read got =
-        shape_elf_open_as(&img, "/proc/self/exe", true, SHT_DYNSYM);
-    bool ok = got == SHAPE_READ_OK && shape_index_build(&run->undefined, &ix) &&
-              shape_image_libs(&img, &libs);
-    if (ok)
-        shape_mark_defined(&img, &run->undefined, &ix);
-    ok = ok && shape_mark_libs(&libs, &run->undefined, &ix);
-    const struct shape_sym *missing = ok ? shape_first_unmarked(&run->undefined,
-                                                                &ix)
-                                         : NULL;
-    char subject[512];
-    if (missing)
-        (void)snprintf(subject, sizeof(subject), "%s", missing->name);
-    shape_elf_close(&img);
-    free(ix.slots);
-    free(ix.seen);
-    if (!ok)
+    const struct shape_names *names = NULL;
+    const struct shape_set *refs = &run->undefined;
+    if (shape_image_acquire(SHAPE_IMAGE_DYNAMIC, "/proc/self/exe", &names) !=
+        SHAPE_READ_OK)
         return shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
                             "/proc/self/exe",
                             "the running image's dynamic symbols or libraries "
                             "cannot be read");
+    const struct shape_sym *missing = NULL;
+    for (size_t i = 0; !missing && i < refs->count; i++)
+        if (strcmp(refs->items[i].name, "_GLOBAL_OFFSET_TABLE_") != 0 &&
+            !shape_names_has(names, refs->items[i].name, refs->items[i].len))
+            missing = &refs->items[i];
+    shape_image_release();
+    char subject[512];
+    if (missing)
+        (void)snprintf(subject, sizeof(subject), "%s", missing->name);
     return !missing ||
            shape_refuse(why, why_len, "UNRESOLVED", subject,
                         "referenced by the candidate but defined neither by "
                         "the running image nor by a library it loads");
 }
+
+#if defined(ZCL_TESTING)
+int zcl_hotfork_shape_test_image_defines(const char *image, const char *name,
+                                         bool dynamic, unsigned long *parses)
+{
+    const struct shape_names *names = NULL;
+    unsigned kind = dynamic ? SHAPE_IMAGE_DYNAMIC : SHAPE_IMAGE_SYMTAB;
+    int has = -1;
+    if (shape_image_acquire(kind, image, &names) == SHAPE_READ_OK) {
+        has = shape_names_has(names, name, strlen(name)) ? 1 : 0;
+        shape_image_release();
+    }
+    pthread_mutex_lock(&g_shape_image_mu);
+    if (parses)
+        *parses = g_shape_image_parses;
+    pthread_mutex_unlock(&g_shape_image_mu);
+    return has;
+}
+#endif
 
 /* ── adapter attribution ─────────────────────────────────────────────── */
 
@@ -1923,5 +2068,18 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
     return shape_refuse(why, why_len, "UNSUPPORTED", "-",
                         "ELF shape facts are read on Linux only");
 }
+
+#if defined(ZCL_TESTING)
+int zcl_hotfork_shape_test_image_defines(const char *image, const char *name,
+                                         bool dynamic, unsigned long *parses)
+{
+    (void)image;
+    (void)name;
+    (void)dynamic;
+    if (parses)
+        *parses = 0;
+    return -1;
+}
+#endif
 
 #endif

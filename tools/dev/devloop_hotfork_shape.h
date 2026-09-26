@@ -69,4 +69,14 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
  * compile failure. */
 bool zcl_hotfork_shape_refused(const char *why);
 
+#if defined(ZCL_TESTING)
+/* Test seam over the running-image symbol facts the guard reads: 1 when
+ * `image` defines `name` (its .symtab globals, or with `dynamic` its
+ * .dynsym plus every library it names as mapped in this process), 0 when
+ * it does not, -1 when the image cannot be read. `parses` receives the
+ * number of image parses this process has made. */
+int zcl_hotfork_shape_test_image_defines(const char *image, const char *name,
+                                         bool dynamic, unsigned long *parses);
+#endif
+
 #endif /* ZCL_TOOLS_DEV_DEVLOOP_HOTFORK_SHAPE_H */
