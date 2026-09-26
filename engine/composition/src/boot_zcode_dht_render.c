@@ -129,6 +129,14 @@ void boot_zcode_dht_provider_route_json(
   json_push_kv_int(result, "policy_denied", route->policy_denied);
   json_push_kv_str(result, "fetch_result",
                    vcs_swarm_fetch_result_string(fetched));
+  /* Where the bytes come from. already-complete means this node's own
+   * store already holds the exact root (with zero providers, only after a
+   * full possession proof); no provider served anything, whatever the
+   * provider count says. */
+  if (scheduled)
+    json_push_kv_str(result, "source",
+                     fetched == VCS_SWARM_FETCH_ALREADY_COMPLETE
+                         ? "local_store" : "authenticated_provider");
   json_push_kv_bool(result, "restricted", true);
 }
 
