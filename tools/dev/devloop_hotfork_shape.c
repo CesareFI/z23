@@ -14,7 +14,9 @@
  * while the epoch object is still no newer than the image). zcc republishes
  * a rebuilt object under a new inode, so a later dev build of the same TU
  * in the same epoch leaves the kept baseline intact; without a kept object
- * a newer epoch object is RESIDENT_STALE.
+ * a newer epoch object is RESIDENT_STALE. The epoch object's ctime, read
+ * before the link (link() moves it), is recorded beside the kept object as
+ * its build time.
  *
  * The capsule's TUs are the owner, its siblings and every source the story
  * adapter itself includes (a view contract compiles its service .c).
@@ -32,8 +34,10 @@
  *          names (DT_NEEDED) or its interpreter, as mapped in this process
  *   deps   every prerequisite of each resident object's depfile under the
  *          source root, except the edited owner and siblings, still exists
- *          and is not newer than that object (make's own freshness fact; no
- *          per-input digest is recorded for dev objects), and every
+ *          and is not newer than that object: its mtime not newer than the
+ *          object's and its ctime not newer than the object's recorded
+ *          build time (no per-input digest is recorded for dev objects; an
+ *          mtime can be set back, a ctime cannot), and every
  *          prerequisite under the source root the candidate compiled after
  *          the owner is one some resident object was built from. Paths
  *          outside the source root are the toolchain's, bound by the
@@ -581,6 +585,78 @@ static bool shape_link_current(const char *from, const char *to)
     return ok;
 }
 
+static bool shape_ts_after(const struct timespec *a, const struct timespec *b)
+{
+    return a->tv_sec > b->tv_sec ||
+           (a->tv_sec == b->tv_sec && a->tv_nsec > b->tv_nsec);
+}
+
+/* "<kept object>.built": the object's device, inode and build time. */
+static bool shape_built_path(const char *kept, char *out, size_t cap)
+{
+    return snprintf(out, cap, "%s.built", kept) < (int)cap;
+}
+
+/* Records `st` (the epoch object, stated before it is linked) as the kept
+ * object's build time: its ctime, which user space cannot set back. The
+ * record is taken before the link because link() itself moves the ctime. */
+static bool shape_record_built(const char *kept, const struct stat *st)
+{
+    static atomic_uint seq;
+    char path[PATH_MAX], tmp[PATH_MAX], text[128];
+    int n = snprintf(text, sizeof(text), "%llu %llu %lld %ld\n",
+                     (unsigned long long)st->st_dev,
+                     (unsigned long long)st->st_ino,
+                     (long long)st->st_ctim.tv_sec, (long)st->st_ctim.tv_nsec);
+    if (!shape_built_path(kept, path, sizeof(path)) ||
+        snprintf(tmp, sizeof(tmp), "%s.%ld.%u.tmp", path, (long)getpid(),
+                 atomic_fetch_add(&seq, 1u)) >= (int)sizeof(tmp))
+        return false;
+    FILE *f = fopen(tmp, "wb");
+    bool ok = f && fwrite(text, 1, (size_t)n, f) == (size_t)n;
+    if (f && fclose(f) != 0)
+        ok = false;
+    ok = ok && rename(tmp, path) == 0;
+    if (!ok)
+        (void)unlink(tmp);
+    return ok;
+}
+
+/* The build time recorded for the kept object `kept` (stated as `st`);
+ * false when there is no record or it names another file. */
+static bool shape_read_built(const char *kept, const struct stat *st,
+                             struct timespec *built)
+{
+    char path[PATH_MAX];
+    unsigned long long dev = 0, ino = 0;
+    long long sec = 0;
+    long nsec = 0;
+    char *text = shape_built_path(kept, path, sizeof(path))
+                     ? shape_slurp(path, 128, NULL) : NULL;
+    bool ok = text && sscanf(text, "%llu %llu %lld %ld", &dev, &ino, &sec,
+                             &nsec) == 4 &&
+              dev == (unsigned long long)st->st_dev &&
+              ino == (unsigned long long)st->st_ino;
+    free(text);
+    built->tv_sec = (time_t)sec;
+    built->tv_nsec = nsec;
+    return ok;
+}
+
+/* Keeps the epoch object (stated as `st`) and its depfile for the running
+ * image, recording the object's build time first when it is newly kept. */
+static bool shape_keep(const char *obj, const struct stat *st,
+                       const char *kept, const char *dep,
+                       const char *kept_dep)
+{
+    struct stat k;
+    bool same = stat(kept, &k) == 0 && k.st_dev == st->st_dev &&
+                k.st_ino == st->st_ino;
+    return (same || (shape_record_built(kept, st) &&
+                     shape_link_current(obj, kept))) &&
+           shape_link_current(dep, kept_dep);
+}
+
 /* The resident object of one TU and its depfile. The epoch's object and
  * depfile must exist. While the object is no newer than the running image
  * it is the image's input and is kept for this image (hard links); zcc
@@ -606,7 +682,7 @@ static bool shape_bind_tu(struct zcl_hotfork_shape *shape, const char *tu,
         return shape_unbound(shape, "NO_BASELINE", tu,
                              "the TU has no kept-object path");
     if (!shape_newer(&st, resident) &&
-        !(shape_link_current(obj, kept) && shape_link_current(dep, kept_dep)))
+        !shape_keep(obj, &st, kept, dep, kept_dep))
         return shape_unbound(shape, "RECORD_UNWRITABLE", tu,
                              "the resident build object cannot be kept for "
                              "the running image");
@@ -1272,9 +1348,14 @@ static bool shape_drift(char *why, size_t why_len, const char *subject,
     return shape_refuse(why, why_len, "HEADER_DRIFT", subject, detail);
 }
 
-/* One prerequisite of a resident object last written at `built`. */
+/* One prerequisite of a resident object last written at `built`, built at
+ * `built_at` (its recorded ctime). A prerequisite is fresh only when its
+ * mtime is not newer than the object's and its ctime is not newer than
+ * the object's build time: an mtime can be set back (cp -p, touch -d,
+ * rsync -t, tar), a ctime cannot. */
 static bool shape_resident_dep(struct shape_run *run, const char *dep,
-                               const struct stat *built, char *why,
+                               const struct stat *built,
+                               const struct timespec *built_at, char *why,
                                size_t why_len)
 {
     char rel[PATH_MAX], path[PATH_MAX];
@@ -1291,9 +1372,13 @@ static bool shape_resident_dep(struct shape_run *run, const char *dep,
         !shape_regular(path, &st))
         return shape_drift(why, why_len, rel,
                            "an input the resident object was built from is gone");
-    return !shape_newer(&st, built) ||
+    if (shape_newer(&st, built))
+        return shape_drift(why, why_len, rel,
+                           "changed after the resident object was built from it");
+    return !shape_ts_after(&st.st_ctim, built_at) ||
            shape_drift(why, why_len, rel,
-                       "changed after the resident object was built from it");
+                       "replaced or re-dated after the resident object was "
+                       "built from it (its ctime is newer)");
 }
 
 /* Every input one resident object's depfile names. */
@@ -1302,13 +1387,17 @@ static bool shape_resident_tu_deps(struct shape_run *run, const char *tu,
 {
     char obj[PATH_MAX], dep[PATH_MAX];
     struct stat built = {0};
+    struct timespec built_at = {0};
     size_t count = 0;
+    if (!shape_object_path(run->shape, tu, ".o", obj, sizeof(obj)) ||
+        !shape_regular(obj, &built) ||
+        !shape_read_built(obj, &built, &built_at))
+        return shape_refuse(why, why_len, "NO_BASELINE", tu,
+                            "the resident build object's build time is not "
+                            "recorded");
     char **deps = zcl_calloc(SHAPE_DEPS_MAX, sizeof(*deps),
                              "HOT_FORK resident depfile");
-    char *text = deps && shape_object_path(run->shape, tu, ".o", obj,
-                                           sizeof(obj)) &&
-                         shape_regular(obj, &built) &&
-                         shape_object_path(run->shape, tu, ".d", dep,
+    char *text = deps && shape_object_path(run->shape, tu, ".d", dep,
                                            sizeof(dep))
                      ? shape_slurp(dep, 1 << 20, NULL) : NULL;
     bool ok = shape_depfile_split(text, deps, &count, SHAPE_DEPS_MAX);
@@ -1316,7 +1405,7 @@ static bool shape_resident_tu_deps(struct shape_run *run, const char *tu,
         (void)shape_refuse(why, why_len, "NO_BASELINE", tu,
                            "the resident build object's depfile cannot be read");
     for (size_t i = 0; ok && i < count; i++)
-        ok = shape_resident_dep(run, deps[i], &built, why, why_len);
+        ok = shape_resident_dep(run, deps[i], &built, &built_at, why, why_len);
     free(deps);
     free(text);
     return ok;

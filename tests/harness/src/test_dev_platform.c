@@ -6484,7 +6484,10 @@ static bool dp_hs_session(const char *compiler)
 }
 
 /* Compiles the fixture owner as it now stands into the resident build
- * object, dated `seq` seconds after the settled base. */
+ * object, dated `seq` seconds after the settled base. The object is
+ * published under a new inode (compiled beside it, then renamed over it),
+ * as zcc publishes epoch objects; a kept baseline is never rewritten in
+ * place. */
 static bool dp_hs_resident(long seq)
 {
     static char cc[1024], cflags[6144], cmd[8192];
@@ -6496,10 +6499,13 @@ static bool dp_hs_resident(long seq)
             (int)sizeof(epoch) ||
         !dp_mk_write(k_dp_hf_root, "build/dev-obj/.current-epoch", epoch) ||
         !dp_hs_session(compiler) ||
-        !dp_mk_write(k_dp_hf_root, k_dp_hs_object, "") ||
-        snprintf(cmd, sizeof(cmd), "cd '%s' && %s %s -MMD -c %s -o %s",
-                 k_dp_hf_root, cc, cflags, k_dp_hf_owner, k_dp_hs_object) >=
-            (int)sizeof(cmd))
+        !dp_mk_write(k_dp_hf_root, k_dp_hs_depfile, "") ||
+        snprintf(cmd, sizeof(cmd),
+                 "cd '%s' && %s %s -MMD -MF %s -MT %s -c %s -o %s.publish && "
+                 "mv -f %s.publish %s",
+                 k_dp_hf_root, cc, cflags, k_dp_hs_depfile, k_dp_hs_object,
+                 k_dp_hf_owner, k_dp_hs_object, k_dp_hs_object,
+                 k_dp_hs_object) >= (int)sizeof(cmd))
         return false;
     return dp_hs_run(cmd) && dp_settle(k_dp_hf_root, k_dp_hs_object, seq);
 }
@@ -6718,8 +6724,9 @@ static bool dp_hs_probe_header(const char *rel, const char *text)
  * of the program the resident runs even when its object shape matches.
  * A header replaced after the build is refused even when its mtime is set
  * back to before the build (cp -p, touch -d, rsync -t, tar): its ctime
- * cannot be set back. Restoring the original bytes with an old mtime is
- * the same fact and is refused the same way until the resident rebuilds. */
+ * cannot be set back. Restoring the exact bytes the resident was built
+ * from reuses the artifact admitted for them in this generation (its key
+ * binds every header's content). */
 static bool dp_hs_header_cases(const char *base, const char *added)
 {
     return dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
@@ -6738,12 +6745,9 @@ static bool dp_hs_header_cases(const char *base, const char *added)
            dp_hs_refused("header-changed", base,
                          "HOT_FORK_SHAPE_HEADER_DRIFT") &&
            dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
-           dp_hs_predrive(base, true) &&
-           dp_hs_refused("header-restored-old-mtime", base,
-                         "HOT_FORK_SHAPE_HEADER_DRIFT") &&
-           dp_hs_resident(11) && dp_hs_predrive(base, false) &&
+           dp_hs_predrive(base, false) &&
            dp_hs_story_green("header-restored", base) &&
-           dp_hs_resident(12) && dp_hs_predrive(added, true) &&
+           dp_hs_resident(11) && dp_hs_predrive(added, true) &&
            dp_hs_refused("header-added", added, "HOT_FORK_SHAPE_HEADER_DRIFT");
 }
 
