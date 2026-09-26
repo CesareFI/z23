@@ -6779,7 +6779,38 @@ static bool dp_hs_unlink(const char *rel)
            unlink(full) == 0;
 }
 
-/* Objects rebuilt after the resident linked, or by another compiler. */
+/* The epoch object replaced by a rebuilt copy newer than the running image:
+ * a new inode, as zcc's atomic publication renames one into place when the
+ * proof ladder recompiles the TU after the resident linked. */
+static bool dp_hs_object_republished(void)
+{
+    char full[PATH_MAX], tmp[PATH_MAX], buf[8192];
+    struct timespec ahead[2];
+    ahead[0].tv_sec = ahead[1].tv_sec = time(NULL) + 3600;
+    ahead[0].tv_nsec = ahead[1].tv_nsec = 0;
+    if (snprintf(full, sizeof(full), "%s/%s", k_dp_hf_root, k_dp_hs_object) >=
+            (int)sizeof(full) ||
+        snprintf(tmp, sizeof(tmp), "%s.republish", full) >= (int)sizeof(tmp))
+        return false;
+    FILE *in = fopen(full, "rb");
+    FILE *out = in ? fopen(tmp, "wb") : NULL;
+    bool ok = out != NULL;
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof(buf), in)) > 0)
+        ok = fwrite(buf, 1, n, out) == n;
+    ok = ok && in && !ferror(in);
+    if (in)
+        fclose(in);
+    if (out && fclose(out) != 0)
+        ok = false;
+    return ok && utimensat(AT_FDCWD, tmp, ahead, 0) == 0 &&
+           rename(tmp, full) == 0;
+}
+
+/* Objects rebuilt after the resident linked, or by another compiler. An
+ * object touched in place after the resident linked is stale; one the
+ * proof ladder republished (a new inode) leaves the object the resident
+ * was linked from, which stays the baseline. */
 static bool dp_hs_resident_facts(const char *owner)
 {
     char compiler[80];
@@ -6793,7 +6824,10 @@ static bool dp_hs_resident_facts(const char *owner)
            dp_hs_refused("objects-from-other-compiler", NULL,
                          "HOT_FORK_SHAPE_TOOLCHAIN_CHANGED") &&
            dp_hs_plan_value("COMPILER_ID", compiler, sizeof(compiler)) &&
-           dp_hs_session(compiler);
+           dp_hs_session(compiler) &&
+           dp_hs_story_green("facts-restored", owner) &&
+           dp_hs_object_republished() &&
+           dp_hs_story_green("objects-rebuilt-after-resident", owner);
 }
 
 /* No object, an unparseable one, one without a symbol table, no session. */
