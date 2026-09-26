@@ -161,6 +161,11 @@ compiler-id)
         fail 'could not create compiler fingerprint workspace'
     PREIMAGE="$WORK/compiler.preimage"
     : > "$PREIMAGE"
+    # v6 binds CCACHE_* only when ccache is the compile command and SCCACHE_*
+    # only when sccache is (see cache_env_families below), and records which
+    # families it bound: v5 bound both for every compiler, so the resident
+    # watcher's checkout-local CCACHE_DIR gave `build/bin/zcc cc` (zcc never
+    # reads it) a different identity inside the watcher than in a shell.
     # v5 scopes the identity to a repository root: a tool resolved under that
     # root is bound by its root-relative address (not its absolute path), and
     # a CC/CXX command spelled through the root is stripped to the same
@@ -174,7 +179,7 @@ compiler-id)
     # SET changed, not just a value inside it, so every developer's epochs
     # recompile once. That is the correct price for an identity that no
     # longer moves when an unrelated file does.
-    printf 'zcl.build_compiler_identity.v5\0cc_command\0%s\0cxx_command\0%s\0' \
+    printf 'zcl.build_compiler_identity.v6\0cc_command\0%s\0cxx_command\0%s\0' \
         "$CC_COMMAND" "$CXX_COMMAND" \
         >> "$PREIMAGE"
 
@@ -190,12 +195,97 @@ compiler-id)
             printf 'environment\0%s\0unset\0' "$env_name" >> "$PREIMAGE"
         fi
     done
-    while IFS= read -r env_name; do
-        case "$env_name" in CCACHE_*|SCCACHE_*)
-            printf 'environment\0%s\0set\0%s\0' "$env_name" "${!env_name}" \
-                >> "$PREIMAGE"
-            ;;
+    # A compile cache's environment reaches the emitted bytes only when that
+    # cache is the command that runs (CCACHE_BASEDIR, CCACHE_SLOPPINESS and
+    # CCACHE_COMPILERCHECK all can), so every CCACHE_* is bound exactly when
+    # ccache runs, and every SCCACHE_* exactly when sccache does. The command
+    # that runs is argv[0], or for the in-tree zcc wrapper the token after it:
+    # zcc executes argv[1..] verbatim (tools/zcc.c run_argv, exec_direct and
+    # its -E probe all run pl->argv[0], the token after zcc) and reads no
+    # CCACHE_*, SCCACHE_* or ZCL_USE_CCACHE variable itself (that one only
+    # picks, at Make parse time, the wrapper that CC then spells). A token is
+    # classified by both its spelling and its resolved file, so
+    # /usr/lib/ccache/gcc is ccache. Anything else -- an `env VAR=...`
+    # spelling, a zcc outside this root, an unresolvable or unknown program
+    # -- binds both families, as every compiler did before v6: this rule may
+    # over-bind, never under-bind.
+    cache_env_name_family()
+    {
+        case "$1" in
+            ccache|ccache[0-9]*) printf 'ccache\n' ;;
+            sccache|sccache[0-9]*) printf 'sccache\n' ;;
+            *)
+                if [[ "$1" =~ ^([A-Za-z0-9_]+-){0,4}(cc|c\+\+|gcc|g\+\+|clang|clang\+\+|c89|c99)(-[0-9][0-9.]*)?$ ]]; then
+                    printf 'compiler\n'
+                else
+                    printf 'unknown\n'
+                fi
+                ;;
         esac
+    }
+    cache_env_token_family()
+    {
+        local token="$1" resolved spelled real
+        if [[ "$token" == */* ]]; then
+            resolved="$(readlink -f -- "$token" 2>/dev/null || true)"
+        else
+            resolved="$(command -v -- "$token" 2>/dev/null || true)"
+            [ -z "$resolved" ] ||
+                resolved="$(readlink -f -- "$resolved" 2>/dev/null || true)"
+        fi
+        if [ -z "$resolved" ] || [ ! -f "$resolved" ]; then
+            printf 'unknown\n'
+            return 0
+        fi
+        if [ "${resolved##*/}" = zcc ] && [[ "$resolved" == "$ROOT_CANON/"* ]]; then
+            printf 'zcc\n'
+            return 0
+        fi
+        spelled="$(cache_env_name_family "${token##*/}")"
+        real="$(cache_env_name_family "${resolved##*/}")"
+        if [ "$spelled" = ccache ] || [ "$real" = ccache ]; then
+            printf 'ccache\n'
+        elif [ "$spelled" = sccache ] || [ "$real" = sccache ]; then
+            printf 'sccache\n'
+        elif [ "$spelled" = compiler ] && [ "$real" = compiler ]; then
+            printf 'compiler\n'
+        else
+            printf 'unknown\n'
+        fi
+    }
+    # The family of the command one argv actually runs (zcc is skipped).
+    cache_env_argv_family()
+    {
+        local -n family_argv="$1"
+        local i family=unknown
+        for ((i = 0; i < ${#family_argv[@]}; i++)); do
+            family="$(cache_env_token_family "${family_argv[$i]}")"
+            [ "$family" = zcc ] || break
+            family=unknown
+        done
+        printf '%s\n' "$family"
+    }
+    bind_ccache=0
+    bind_sccache=0
+    for cache_env_family in "$(cache_env_argv_family CC_ARGV)" \
+            "$(cache_env_argv_family CXX_ARGV)"; do
+        case "$cache_env_family" in
+            ccache) bind_ccache=1 ;;
+            sccache) bind_sccache=1 ;;
+            compiler) ;;
+            *) bind_ccache=1; bind_sccache=1 ;;
+        esac
+    done
+    printf 'cache-environment\0ccache\0%d\0sccache\0%d\0' \
+        "$bind_ccache" "$bind_sccache" >> "$PREIMAGE"
+    while IFS= read -r env_name; do
+        case "$env_name" in
+            CCACHE_*) [ "$bind_ccache" = 1 ] || continue ;;
+            SCCACHE_*) [ "$bind_sccache" = 1 ] || continue ;;
+            *) continue ;;
+        esac
+        printf 'environment\0%s\0set\0%s\0' "$env_name" "${!env_name}" \
+            >> "$PREIMAGE"
     done < <(compgen -e | LC_ALL=C sort -u)
 
     # Content-hash ONLY: a tool is identified by its bytes, never by its
