@@ -7530,3 +7530,28 @@ bytecode, both device runs, fuzz corpus and source archive are preserved under
 `.cache/auth-lifecycle-20260926/` in the isolated validation worktree. The earlier
 four commits remain local because the installed hook refuses the authorized
 development ref with `remote-ref-not-main`; publication has not been bypassed.
+
+## Current camera lifecycle qualification — 2026-09-26
+
+The current APK passes denied camera permission, three actual software-camera
+frame/background/resume cycles, and Activity recreation followed by an explicit
+second capture on both API30/36 with CheckJNI. The respective times are
+0.012/0.011, 4.247/4.517 and 47.253/47.593 seconds. Permissions are explicitly
+revoked afterward. These are isolated development emulators with generated
+camera imagery, not physical optics or custody qualification.
+
+The approximately 45-second recreation-test tail is identified in the resolved
+AndroidX test-core 1.7.0 teardown, after the wallet Activity is already stopped.
+Its duplicate empty-Activity launch waits for a resume broadcast and ignores
+the timed await result before finishing the target. Scoped lifecycle/task
+logs and local dependency bytecode are retained. Production camera behavior,
+fixtures, lifecycle assertions and timeouts remain unchanged; the total test
+duration is not presented as wallet camera latency.
+
+SCANNING_QR.md records the bounded claim. Exact APK/framework identities and
+reports are in `.cache/camera-lifecycle-20260926/`; the current release remains
+641659 bytes with SHA256
+`9f8956045bfd50500f640224e1f35ca16062b7e3f608a5648dfe6a221a750b32`.
+Next independent native audit: qualify uninitialized-memory paths under a
+separate MemorySanitizer build, preserving the ASan/UBSan/ThreadSanitizer lanes
+and all production validation, custody and TLS boundaries.

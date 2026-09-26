@@ -416,3 +416,29 @@ unqualified. The scanner fixture's no-wallet-directory guard passes throughout.
 The final minified APK is restored and the evidence is retained under
 `.cache/android-wallet/api36-20260914`; exact final artifacts remain bound by
 the camera directory's `compact-all-signing-proof/inputs.sha256`.
+
+2026-09-26: the current debug/test APK pair passes the opted-in camera lifecycle
+fixture on isolated API30/36 AOSP x86_64 emulators with software back cameras and
+CheckJNI. Permission denial releases the worker without a frame in 0.012/0.011
+seconds. Three actual-frame/background/resume cycles pass in 4.247/4.517 seconds.
+Activity recreation, explicit second capture and background cleanup pass in
+47.253/47.593 seconds. Permissions are revoked afterward and both owned emulator
+processes exit zero; the other five devices and 31 existing ADB zombies remain
+unchanged. No physical camera, wallet, authenticated custody or external endpoint
+participates. Existing assertions, deadlines and production code are unchanged.
+
+The recreation duration includes about 45 seconds of test teardown, after the
+second preview has stopped. Captured ActivityScenario events show the new
+Activity reaching RESUMED and then STOPPED before that gap. The resolved
+AndroidX test-core 1.7.0 invoker starts its empty Activity again while that
+placeholder is already resumed, awaits a new resume broadcast for its lifecycle
+timeout, ignores the await result, and only then finishes the wallet Activity.
+Local dependency bytecode and ActivityTaskManager events corroborate this
+sequence. These measurements therefore do not establish a 47-second wallet
+camera/recreation latency. No lifecycle assertion or timeout is reduced to
+remove the framework wait.
+
+Evidence, APK hashes, framework artifact identities and scoped lifecycle logs
+are retained in `.cache/camera-lifecycle-20260926/` in the isolated validation
+worktree. Its release counterpart remains the reproduced 641659-byte unsigned
+APK SHA256 `9f8956045bfd50500f640224e1f35ca16062b7e3f608a5648dfe6a221a750b32`.
