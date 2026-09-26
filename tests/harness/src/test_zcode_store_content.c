@@ -941,6 +941,40 @@ static int store_case_exact_cache_replay_tampered_receipt(
     return failures;
 }
 
+/* A replay is non-executing: the host launches nothing, and it reports
+ * what verifying the signed evidence cost. */
+static int zs_cache_replay_cost_failures(
+    const struct build_fabric_replay_cost *cost, size_t expected_len,
+    uint64_t host_launched, uint64_t thread_launched)
+{
+    int failures = 0;
+    ZS_CHECK("exact cache: exact replay launches zero host processes",
+             host_launched == 0 && thread_launched == 0 &&
+             cost->host_processes_launched == 0);
+    ZS_CHECK("exact cache: exact replay reports its verification cost",
+             cost->output_cas_bytes_verified == expected_len &&
+             cost->receipt_cas_bytes_verified ==
+                 VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES &&
+             cost->record_verify_us > 0 && cost->receipt_verify_us > 0 &&
+             cost->total_us >= cost->record_verify_us +
+                 cost->output_cas_verify_us + cost->receipt_verify_us +
+                 cost->currency_verify_us);
+    printf("  measured: exact replay host_processes=%llu "
+           "thread_processes=%llu total_us=%lld record_verify_us=%lld "
+           "output_cas_verify_us=%lld output_cas_bytes=%llu "
+           "receipt_verify_us=%lld receipt_cas_bytes=%llu "
+           "currency_verify_us=%lld\n",
+           (unsigned long long)host_launched,
+           (unsigned long long)thread_launched, (long long)cost->total_us,
+           (long long)cost->record_verify_us,
+           (long long)cost->output_cas_verify_us,
+           (unsigned long long)cost->output_cas_bytes_verified,
+           (long long)cost->receipt_verify_us,
+           (unsigned long long)cost->receipt_cas_bytes_verified,
+           (long long)cost->currency_verify_us);
+    return failures;
+}
+
 static int store_case_exact_cache_replay(
     struct exact_cache_ctx *ctx, size_t expected_len)
 {
@@ -967,32 +1001,8 @@ static int store_case_exact_cache_replay(
              receipt.work_kind == VCS_ZCODE_WORK_BUILD &&
              vcs_zcode_work_receipt_verify(
                  &receipt, receipt.signer_pubkey) == VCS_ZCODE_DEV_OK);
-    ZS_CHECK("exact cache: exact replay launches zero host processes",
-             host_launched == 0 && thread_launched == 0 &&
-             cost.host_processes_launched == 0);
-    ZS_CHECK("exact cache: exact replay reports its verification cost",
-             cost.output_cas_bytes_verified == expected_len &&
-             cost.receipt_cas_bytes_verified ==
-                 VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES &&
-             cost.record_verify_us > 0 && cost.receipt_verify_us >= 0 &&
-             cost.output_cas_verify_us >= 0 &&
-             cost.currency_verify_us >= 0 &&
-             cost.total_us >= cost.record_verify_us +
-                 cost.output_cas_verify_us + cost.receipt_verify_us +
-                 cost.currency_verify_us);
-    printf("  measured: exact replay host_processes=%llu "
-           "thread_processes=%llu total_us=%lld record_verify_us=%lld "
-           "output_cas_verify_us=%lld output_cas_bytes=%llu "
-           "receipt_verify_us=%lld receipt_cas_bytes=%llu "
-           "currency_verify_us=%lld\n",
-           (unsigned long long)host_launched,
-           (unsigned long long)thread_launched, (long long)cost.total_us,
-           (long long)cost.record_verify_us,
-           (long long)cost.output_cas_verify_us,
-           (unsigned long long)cost.output_cas_bytes_verified,
-           (long long)cost.receipt_verify_us,
-           (unsigned long long)cost.receipt_cas_bytes_verified,
-           (long long)cost.currency_verify_us);
+    failures += zs_cache_replay_cost_failures(
+        &cost, expected_len, host_launched, thread_launched);
     int following = db_build_job_receipts(
         ctx->ndb, ctx->job->job_id, after, 2);
     ZS_CHECK("exact cache: replay mints no second execution receipt",

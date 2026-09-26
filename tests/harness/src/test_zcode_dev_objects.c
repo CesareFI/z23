@@ -3669,6 +3669,47 @@ static bool zd_missing_source_blob_refuses_key(
     return okay;
 }
 
+/* The host, not the sandboxed child, counts what it launched for one
+ * executed action: exactly one confined executor, plus any toolchain probe
+ * the capsule recheck needed, all on the executing thread. */
+static bool zd_compile_host_accounted(
+    struct zcl_result executed, const struct build_fabric_host_accounting *a,
+    uint64_t host_launched, uint64_t thread_launched)
+{
+    printf("  measured: execute host_processes=%llu executor=%llu "
+           "process_wide=%llu wall_us=%lld cpu_user_us=%lld "
+           "cpu_system_us=%lld max_rss_kib=%lld in_blocks=%lld "
+           "out_blocks=%lld io_observed=%d io_error=%d read_bytes=%llu "
+           "write_bytes=%llu storage_read=%llu storage_write=%llu "
+           "child_reported_unverified=%llu/%llu/%llu\n",
+           (unsigned long long)a->host_processes_launched,
+           (unsigned long long)a->host_executor_launches,
+           (unsigned long long)host_launched, (long long)a->host_wall_us,
+           (long long)a->host_cpu_user_us, (long long)a->host_cpu_system_us,
+           (long long)a->host_max_rss_kib, (long long)a->host_in_blocks,
+           (long long)a->host_out_blocks, a->io_observed ? 1 : 0,
+           a->io_error, (unsigned long long)a->host_read_bytes,
+           (unsigned long long)a->host_write_bytes,
+           (unsigned long long)a->host_storage_read_bytes,
+           (unsigned long long)a->host_storage_write_bytes,
+           (unsigned long long)a->child_reported_processes_unverified,
+           (unsigned long long)
+               a->child_reported_compiler_processes_unverified,
+           (unsigned long long)a->child_reported_test_processes_unverified);
+    if (!executed.ok) {
+        printf("  compile execution failed: %s\n", executed.message);
+        return false;
+    }
+    bool counted = a->measured && a->reaped &&
+        a->host_executor_launches == 1u &&
+        a->host_processes_launched == thread_launched &&
+        a->host_processes_launched >= 1u && host_launched >= thread_launched;
+    bool observed = a->host_wall_us > 0 &&
+        a->host_cpu_user_us + a->host_cpu_system_us > 0 &&
+        (!a->io_observed || a->host_write_bytes > 0);
+    return counted && observed;
+}
+
 static int test_zd_improve_command(void)
 {
     int failures = 0;
@@ -5030,56 +5071,15 @@ static int test_zd_improve_command(void)
         uint64_t host_launches = zcl_spawn_launch_count();
         uint64_t thread_launches = zcl_spawn_thread_launch_count();
         struct zcl_result executed_compile =
-            build_fabric_worker_execute_measured(
+            build_fabric_worker_execute(
                 &ndb, workspace, workspace, action_id, lease_hex,
                 worker_secret, worker_key, &receipt, NULL,
                 &compile_accounting);
         uint64_t host_launched = zcl_spawn_launch_count() - host_launches;
         uint64_t thread_launched =
             zcl_spawn_thread_launch_count() - thread_launches;
-        ASSERT_RESULT_OK(executed_compile);
-        /* The host, not the sandboxed child, counts what it launched for
-         * this action: exactly one confined executor, plus any toolchain
-         * probe the capsule recheck needed, all on this thread. */
-        ASSERT(compile_accounting.measured && compile_accounting.reaped);
-        ASSERT(compile_accounting.host_executor_launches == 1u);
-        ASSERT(compile_accounting.host_processes_launched == thread_launched);
-        ASSERT(compile_accounting.host_processes_launched >= 1u);
-        ASSERT(host_launched >= thread_launched);
-        ASSERT(compile_accounting.host_wall_us > 0);
-        ASSERT(compile_accounting.host_cpu_user_us +
-               compile_accounting.host_cpu_system_us > 0);
-        ASSERT(!compile_accounting.io_observed ||
-               compile_accounting.host_write_bytes > 0);
-        printf("  measured: execute host_processes=%llu executor=%llu "
-               "process_wide=%llu wall_us=%lld cpu_user_us=%lld "
-               "cpu_system_us=%lld max_rss_kib=%lld in_blocks=%lld "
-               "out_blocks=%lld io_observed=%d io_error=%d read_bytes=%llu "
-               "write_bytes=%llu storage_read=%llu storage_write=%llu "
-               "child_reported_unverified=%llu/%llu/%llu\n",
-               (unsigned long long)compile_accounting.host_processes_launched,
-               (unsigned long long)compile_accounting.host_executor_launches,
-               (unsigned long long)host_launched,
-               (long long)compile_accounting.host_wall_us,
-               (long long)compile_accounting.host_cpu_user_us,
-               (long long)compile_accounting.host_cpu_system_us,
-               (long long)compile_accounting.host_max_rss_kib,
-               (long long)compile_accounting.host_in_blocks,
-               (long long)compile_accounting.host_out_blocks,
-               compile_accounting.io_observed ? 1 : 0,
-               compile_accounting.io_error,
-               (unsigned long long)compile_accounting.host_read_bytes,
-               (unsigned long long)compile_accounting.host_write_bytes,
-               (unsigned long long)
-                   compile_accounting.host_storage_read_bytes,
-               (unsigned long long)
-                   compile_accounting.host_storage_write_bytes,
-               (unsigned long long)compile_accounting
-                   .child_reported_processes_unverified,
-               (unsigned long long)compile_accounting
-                   .child_reported_compiler_processes_unverified,
-               (unsigned long long)compile_accounting
-                   .child_reported_test_processes_unverified);
+        ASSERT(zd_compile_host_accounted(executed_compile, &compile_accounting,
+                                         host_launched, thread_launched));
         ASSERT(build_fabric_receipt_admit(
             &ndb, workspace, receipt.receipt_id, now + 1).ok);
         ASSERT(strlen(receipt.work_receipt_sha3) == 64);
@@ -5241,7 +5241,7 @@ static int test_zd_improve_command(void)
         struct zcl_result package_executed = build_fabric_worker_execute(
             &ndb, workspace, workspace, package_action_saved,
             package_lease_hex, worker_secret, worker_key, &package_receipt,
-            NULL);
+            NULL, NULL);
         if (!package_executed.ok)
             printf("package worker detail: %s\n", package_executed.message);
         ASSERT(package_executed.ok);
@@ -5353,7 +5353,7 @@ static int test_zd_improve_command(void)
         struct zcl_result dependency_refused = build_fabric_worker_execute(
             &ndb, workspace, workspace, dependency_drift_action,
             drift_lease_hex, worker_secret, worker_key,
-            &refused_dependency_receipt, NULL);
+            &refused_dependency_receipt, NULL, NULL);
         ASSERT(!dependency_refused.ok);
         ASSERT(strstr(dependency_refused.message,
                       "dependency-output-mismatch") != NULL);
@@ -5413,7 +5413,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt local_test_receipt;
         struct zcl_result executed_test = build_fabric_worker_execute(
             &ndb, workspace, workspace, test_action_id, test_lease_hex,
-            worker_secret, worker_key, &local_test_receipt, NULL);
+            worker_secret, worker_key, &local_test_receipt, NULL, NULL);
         ASSERT_RESULT_OK(executed_test);
         uint8_t local_test_receipt_root[32];
         ASSERT(zcl_hex_decode_lower(local_test_receipt.work_receipt_sha3,
@@ -5466,7 +5466,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt local_fuzz_receipt;
         struct zcl_result executed_fuzz = build_fabric_worker_execute(
             &ndb, workspace, workspace, local_fuzz_action_id, fuzz_lease_hex,
-            worker_secret, worker_key, &local_fuzz_receipt, NULL);
+            worker_secret, worker_key, &local_fuzz_receipt, NULL, NULL);
         ASSERT_RESULT_OK(executed_fuzz);
         uint8_t local_fuzz_receipt_root[32];
         ASSERT(zcl_hex_decode_lower(local_fuzz_receipt.work_receipt_sha3,
@@ -5508,7 +5508,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt fuzz_fail_receipt;
         struct zcl_result executed_fuzz_fail = build_fabric_worker_execute(
             &ndb, workspace, workspace, fuzz_fail_action_id, fail_lease_hex,
-            worker_secret, worker_key, &fuzz_fail_receipt, NULL);
+            worker_secret, worker_key, &fuzz_fail_receipt, NULL, NULL);
         ASSERT_RESULT_OK(executed_fuzz_fail);
 #if defined(__APPLE__)
         /* Relocated Apple platform utilities that return failure are killed

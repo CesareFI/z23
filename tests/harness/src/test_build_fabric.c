@@ -1160,7 +1160,8 @@ static int test_bf_confined_worker(void)
         ASSERT(claimed);
         struct db_build_receipt receipt;
         struct zcl_result executed = build_fabric_worker_execute(
-            &ndb, dir, dir, action_id, id_d, secret, pubkey, &receipt, NULL);
+            &ndb, dir, dir, action_id, id_d, secret, pubkey, &receipt, NULL,
+            NULL);
         if (!executed.ok)
             printf("worker detail: %s\n", executed.message);
         ASSERT(executed.ok);
@@ -1717,7 +1718,8 @@ static int test_bf_confined_test_worker(void)
         ASSERT(claimed);
         struct db_build_receipt receipt;
         struct zcl_result executed = build_fabric_worker_execute(
-            &ndb, dir, dir, action_id, id_d, secret, pubkey, &receipt, NULL);
+            &ndb, dir, dir, action_id, id_d, secret, pubkey, &receipt, NULL,
+            NULL);
         if (!executed.ok) printf("test worker detail: %s\n", executed.message);
         ASSERT(executed.ok);
         ASSERT_EQ(receipt.exit_status, 0);

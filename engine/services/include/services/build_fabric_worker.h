@@ -43,19 +43,11 @@ struct build_fabric_host_accounting {
 };
 
 /* Execute one already-claimed action. The caller owns lease acquisition;
- * this path rechecks it at start, verification, and signed publication. */
+ * this path rechecks it at start, verification, and signed publication.
+ * `out_accounting` may be NULL; when present it is zeroed on entry and holds
+ * the host's own accounting as far as the action got, including a refusal
+ * after the executor ran. */
 struct zcl_result build_fabric_worker_execute(
-    struct node_db *ndb, const char *workspace_root, const char *datadir,
-    const char *action_id,
-    const char *lease_id, const uint8_t signer_secret[32],
-    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
-    struct build_fabric_worker_feedback *out_feedback);
-
-/* build_fabric_worker_execute() that also returns the host's own accounting
- * of the action. `out_accounting` may be NULL; when present it is zeroed on
- * entry and filled as far as the action got, including on refusal after the
- * executor ran. */
-struct zcl_result build_fabric_worker_execute_measured(
     struct node_db *ndb, const char *workspace_root, const char *datadir,
     const char *action_id,
     const char *lease_id, const uint8_t signer_secret[32],

@@ -440,6 +440,28 @@ static struct zcl_result bfc_replay_worker_authority(
     return ZCL_OK;
 }
 
+/* The accepted receipt's signer must still hold authority before its proof
+ * is evaluated: proof evaluation silently drops withdrawn signers, which
+ * would turn a revocation into an indistinguishable miss. */
+static struct zcl_result bfc_replay_proof_current(
+    struct node_db *ndb, const char *workspace,
+    const struct db_build_action *action,
+    const struct db_build_receipt *accepted, int64_t now, bool *eligible)
+{
+    struct db_build_worker signer;
+    if (!db_build_worker_find(ndb, accepted->worker_id, &signer))
+        return ZCL_ERR(-1, "historical replay signer is unknown");
+    struct zcl_result authority = bfc_replay_worker_authority(&signer, now);
+    if (!authority.ok) return authority;
+    struct build_fabric_proof_evaluation proof;
+    struct zcl_result evaluated = build_fabric_proof_evaluate_readonly(
+        ndb, workspace, action->action_id, now, &proof);
+    if (!evaluated.ok) return evaluated;
+    *eligible = proof.compile_satisfied &&
+        strcmp(proof.output_root_sha3, action->output_root_sha3) == 0;
+    return ZCL_OK;
+}
+
 static struct zcl_result bfc_replay_record_current(
     struct node_db *ndb, const char *workspace,
     const struct db_build_job *expected_job,
@@ -465,18 +487,8 @@ static struct zcl_result bfc_replay_record_current(
     if (!bfc_has_one_accepted_receipt(
             ndb, workspace, job, action, accepted))
         return ZCL_ERR(-1, "historical replay lacks one local receipt");
-    struct db_build_worker signer;
-    if (!db_build_worker_find(ndb, accepted->worker_id, &signer))
-        return ZCL_ERR(-1, "historical replay signer is unknown");
-    struct zcl_result authority = bfc_replay_worker_authority(&signer, now);
-    if (!authority.ok) return authority;
-    struct build_fabric_proof_evaluation proof;
-    struct zcl_result evaluated = build_fabric_proof_evaluate_readonly(
-        ndb, workspace, action->action_id, now, &proof);
-    if (!evaluated.ok) return evaluated;
-    *eligible = proof.compile_satisfied &&
-        strcmp(proof.output_root_sha3, action->output_root_sha3) == 0;
-    return ZCL_OK;
+    return bfc_replay_proof_current(
+        ndb, workspace, action, accepted, now, eligible);
 }
 
 static struct zcl_result bfc_replay_signed_receipt_load(

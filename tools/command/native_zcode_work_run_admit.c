@@ -363,7 +363,7 @@ static struct zcl_result run_execute_action(
     if (result.ok)
         result = build_fabric_worker_execute(
             &ndb, workspace, datadir, action_id, lease_id,
-            secret, pubkey, receipt, feedback);
+            secret, pubkey, receipt, feedback, NULL);
     node_db_close(&ndb);
     return result;
 }

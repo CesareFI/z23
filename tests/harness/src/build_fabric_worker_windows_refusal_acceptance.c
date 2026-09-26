@@ -18,7 +18,7 @@ int main(void)
 
     struct zcl_result result = build_fabric_worker_execute(
         (struct node_db *)(uintptr_t)1, "workspace", "datadir", "action",
-        "lease", secret, public_key, &receipt, &feedback);
+        "lease", secret, public_key, &receipt, &feedback, NULL);
     if (result.ok ||
         !strstr(result.message, "windows-build-fabric-execution-refused") ||
         !strstr(result.message, "restricted-token Job Object") ||

@@ -896,7 +896,6 @@ static int spawn_pty_capture_observed_platform(
         close(master);
         LOG_ERR("spawn", "PTY fork() failed: %s", strerror(saved));
     }
-    if (pid > 0) spawn_count_launch();
     if (pid == 0) {
         /* Child: no allocator, logger, or other shared-process state before
          * exec. Failure stages use conventional 126/127 exit status. */
@@ -921,6 +920,7 @@ static int spawn_pty_capture_observed_platform(
         _exit(127);
     }
 
+    spawn_count_launch(); /* parent: fork() succeeded */
     return spawn_capture_drain(
         pid, master, buf, cap, timeout_ms, NULL, NULL, NULL, timed_out, true,
         NULL, -1, NULL);
