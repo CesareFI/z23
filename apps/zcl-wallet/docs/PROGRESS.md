@@ -7440,3 +7440,39 @@ branch. No hook or authority boundary is bypassed. Next independent check:
 extend direct native JNI race coverage to active reply copying and owner
 replacement; the existing threaded native fixture covers requests/snapshots,
 while managed reply concurrency is serialized by the Kotlin owner.
+
+## Direct native reply races — 2026-09-26
+
+Expanded the existing bounded JNI race fixture to exercise simultaneous replies
+and owner close/replacement without Kotlin serialization. Two current duplicate
+replies admit exactly one response, then fail the attempt closed. During owner
+replacement at most one old reply may succeed. Both workers subsequently send
+64 retired replies at INT64_MAX time; the replacement keeps its empty state,
+identical attempt token and valid current reply. The new cases repeat 16 times
+beside the existing request/snapshot case, with two workers at a time and the
+unchanged 15-second registered timeout. Production code is unchanged.
+
+Clang ASan/UBSan passes; optimized GCC ASan/UBSan passes 32 repetitions in 2.20
+seconds. A separate fully instrumented ThreadSanitizer build passes 16
+repetitions in 1.34 seconds. Two isolated reply mutations—unconditional success
+and unlocking before processing—pass the former native fixture and fail the
+expanded one. The unlocked mutation also yields a concrete ThreadSanitizer
+registry clock race and exits 66. These qualify the regression's sensitivity;
+no race in the current production implementation was reproduced.
+
+All seven related native sync groups pass under both sanitizer profiles in
+0.27/0.26 seconds. Strict Clang and debug/optimized GCC fixture analysis and the
+unchanged production/test complexity caps pass. The new controller/worker
+frames measure 464/336 bytes, with the fixture maximum still 640. The unchanged
+JNI fuzzer passes its 255-run bounded corpus replay. Focused Gradle JVM tasks
+succeed in 11 seconds (tests up-to-date); the preceding production slice's 149
+JVM cases and API30/36 instrumentation/process checks remain the matching
+runtime evidence. Debug, test and release APK hashes are verified unchanged.
+
+The complete hazard review is in C_SAFETY_REVIEW.md. Test binaries, original
+fixture, failed mutations, the ThreadSanitizer report and build/run logs are
+retained in `.cache/reply-races-20260926/`. The prior normal development push
+was again refused by the unchanged hook policy; the remote remains
+`b4d5d6a8f3da81a0078e943a397a1077d9d91f50`. Continue within the permitted wallet
+lifecycle/custody-error-path audit, preserving hardware qualification and TLS
+quarantine boundaries.

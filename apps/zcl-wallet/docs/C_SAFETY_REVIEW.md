@@ -4365,3 +4365,42 @@ APK equals the fresh packaged artifact, SHA256
 `caf7e74f0ac0740971a280adbec9a377de25bbede347ddaa7b6627fd9ad84d3a`.
 Logs, original source, mutation binaries, corpora, budget reports and the source
 archive are retained in `.cache/active-frame-20260926/` in the isolated worktree.
+
+## 2026-09-26: exercise direct native reply and replacement races
+
+Reviewed the test-only extension to `test_jni_sync_races.c`. The existing native
+thread fixture now submits duplicate current replies concurrently and repeats
+that operation against owner close/replacement. Two barriers separate startup
+from post-retirement callbacks. With no replacement, exactly one first reply
+must succeed and the duplicate must fail closed. With replacement, at most one
+may succeed before close. After both first calls or replacement, each worker's
+64 retired replies must return CANCELLED even at INT64_MAX time. The replacement
+keeps its identical attempt token, unchanged empty state and valid current reply.
+Both new cases run 16 rounds alongside the original request/snapshot race.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | A static assertion bounds the 42-byte public JSON reply within the existing fake VM array. Full structure initialization precedes copying. Each worker owns its input; JNI region bounds and array kinds retain the existing checks. The two worker/status arrays use indices 0..1. |
+| Integer overflow/underflow; signed/unsigned conversions | The constant reply size safely fits jsize. Bounded loops use unsigned/size_t counters with limits 2, 16 and 64. Status comparisons use existing representable enum values. INT64_MAX is a deliberate retired-callback clock, never incremented or converted by the fixture. |
+| Use-after-free; double-free; leaks; dangling pointers | Main owns the race and argument records until both joins complete. Inputs remain on the calling worker's stack for all synchronous calls. Every created owner closes; both barriers are destroyed after joins. No new fixture heap allocation or retained pointer. A failed pthread operation aborts the isolated test process. |
+| NULL dereferences; uninitialized memory | Worker arguments and their state pointer are checked. Main initializes race/argument structures; the reply helper initializes its caller-owned output. Each status is read only after joining its writer. JNI output pointers retain existing non-NULL and identity checks. |
+| Pointer arithmetic; format strings | Bounded memcpy uses the exact constant payload length. Existing index/region checks remain authoritative. Diagnostics are fixed text and source lines, without addresses, reply contents or other wallet data. |
+| Stack usage; allocation limits; resource exhaustion | Optimized protected GCC frames measure 464 bytes for the new controller and 336 for a reply worker; the largest fixture frame remains 640. Two workers run at once and every round joins before the next. The existing 15-second registered deadline is unchanged. No production code, storage, APK, stack or persistent memory changes. |
+| Malformed input; races; failure behavior | Duplicate replies explicitly retain fail-closed ordering. Immutable IDs publish before pthread_create; each worker writes only its own status, and barriers/joins order the main thread's reads. Fake VM results remain thread-local. Retired callbacks cannot consume a replacement request or move its clock. No production mutex is mocked or bypassed by the passing fixture. |
+| Secret leakage and authority | Only fixed public address/source/reply fixtures participate. No key, wallet record, Keystore, network peer, TLS policy, consensus predicate or signing capability is involved. Test mutations are isolated evidence files and never enter production source. |
+
+The fixture passes Clang ASan/UBSan, 32 optimized GCC ASan/UBSan repetitions in
+2.20 seconds, and 16 fully instrumented Clang ThreadSanitizer repetitions in
+1.34 seconds. Strict Clang and debug/optimized GCC analysis pass, as do unchanged
+production/test complexity caps 10/15. ThreadSanitizer uses a separate host
+build with ASan disabled and `-fsanitize=thread` applied to all linked C providers;
+this is host evidence, not an Android runtime or universal concurrency proof.
+
+Two isolated mutations, unconditional reply acceptance and unlocking before
+reply processing, pass the former threaded fixture and fail the expanded
+ASan fixture with exit 134. The unlocked-reply mutation also produces a concrete
+ThreadSanitizer registry clock read/write race and exits 66. The first mutation
+helper compilation lacked the JNI return cast; the strict warning was retained
+and corrected in the isolated helper without suppressing it. Production code
+remains unchanged. Logs, fixtures, exact binaries and mutation reports live in
+`.cache/reply-races-20260926/` in the validation worktree.

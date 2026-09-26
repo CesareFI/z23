@@ -14,6 +14,7 @@ JNIEXPORT jint JNICALL API(closeSyncOwner)(JNIEnv *, jclass, jlong);
 JNIEXPORT jlong JNICALL API(beginSyncAttempt)(JNIEnv *, jclass, jlong, jlong, jlong, jlong);
 JNIEXPORT jint JNICALL API(failSyncAttempt)(JNIEnv *, jclass, jlong, jlong, jint);
 JNIEXPORT jbyteArray JNICALL API(syncRequest)(JNIEnv *, jclass, jlong, jlong, jlong);
+JNIEXPORT jint JNICALL API(syncReply)(JNIEnv *, jclass, jlong, jlong, jlong, jbyteArray);
 JNIEXPORT jlongArray JNICALL API(syncSnapshot)(JNIEnv *, jclass, jlong, jlong);
 
 /* Public-only fake VM. Each thread owns one result slot, consumed before its
@@ -201,9 +202,102 @@ static void replace_while_querying(void)
     CHECK(pthread_barrier_destroy(&state.retired) == 0);
 }
 
+static void version_reply(fake_array *frame)
+{
+    static const char text[] = "{\"id\":1,\"result\":[\"public fixture\",\"1.2\"]}";
+    _Static_assert(sizeof(text) <= ZCL_ELECTRUM_REQUEST_MAX + 1, "Public fixture fits fake VM array");
+    *frame = (fake_array){.length = (jsize)(sizeof(text) - 1)};
+    memcpy(frame->data.bytes, text, sizeof(text) - 1);
+}
+
+typedef struct { race *state; jint first_status; } reply_call;
+
+static void *reply_owner(void *argument)
+{
+    reply_call *call = argument;
+    CHECK(call != NULL && call->state != NULL);
+    race *state = call->state;
+    fake_array frame;
+    version_reply(&frame);
+    meet(&state->start);
+    call->first_status = API(syncReply)(&environment, NULL, state->id, state->token, 2, (jbyteArray)&frame);
+    meet(&state->retired);
+    /* Both duplicate replies have finished, or the owner has been replaced.
+     * Neither retired path may advance a clock or consume the next request. */
+    for (unsigned i = 0; i < 64; ++i)
+        CHECK(API(syncReply)(&environment, NULL, state->id, state->token, INT64_MAX,
+            (jbyteArray)&frame) == ZCL_CANCELLED);
+    return NULL;
+}
+
+static void reply_outcomes(const reply_call calls[2], bool replaced)
+{
+    unsigned accepted = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        const jint status = calls[i].first_status;
+        CHECK(status == ZCL_OK || status == ZCL_INVALID_ENCODING || status == ZCL_CANCELLED);
+        if (status == ZCL_OK) ++accepted;
+        if (!replaced) CHECK(status != ZCL_CANCELLED);
+    }
+    CHECK(accepted <= 1);
+    if (!replaced) CHECK(accepted == 1);
+}
+
+static void duplicate_reply_failure(jlong id)
+{
+    const fake_array *packet = (fake_array *)API(syncSnapshot)(&environment, NULL, id, 2);
+    CHECK(packet == &result && packet->numbers && packet->length == 10);
+    CHECK(packet->data.values[0] == ZCL_OK && packet->data.values[1] == ZCL_BALANCE_UNAVAILABLE);
+    CHECK(packet->data.values[2] == 0 && packet->data.values[3] == ZCL_INVALID_ENCODING);
+    CHECK(packet->data.values[9] == 0);
+}
+
+static void concurrent_replies(bool replace)
+{
+    race state = {0};
+    state.id = open_owner();
+    state.token = API(beginSyncAttempt)(&environment, NULL, state.id, 1, 30000, 1);
+    CHECK(state.token == 1);
+    request(state.id, state.token, false);
+    CHECK(result.data.bytes[0] == ZCL_OK);
+    CHECK(pthread_barrier_init(&state.start, NULL, 3) == 0);
+    CHECK(pthread_barrier_init(&state.retired, NULL, 3) == 0);
+    reply_call calls[2] = {{.state = &state}, {.state = &state}};
+    pthread_t writers[2];
+    for (size_t i = 0; i < 2; ++i) CHECK(pthread_create(&writers[i], NULL, reply_owner, &calls[i]) == 0);
+    meet(&state.start);
+    jlong current = state.id;
+    if (replace) {
+        CHECK(API(closeSyncOwner)(&environment, NULL, state.id) == ZCL_OK);
+        current = open_owner();
+        CHECK(current > state.id);
+        CHECK(API(beginSyncAttempt)(&environment, NULL, current, 1, 30000, 1) == state.token);
+        request(current, state.token, false);
+        CHECK(result.data.bytes[0] == ZCL_OK);
+    }
+    meet(&state.retired);
+    for (size_t i = 0; i < 2; ++i) CHECK(pthread_join(writers[i], NULL) == 0);
+    reply_outcomes(calls, replace);
+    if (replace) {
+        snapshot(current, false);
+        fake_array frame;
+        version_reply(&frame);
+        CHECK(API(syncReply)(&environment, NULL, current, state.token, 2, (jbyteArray)&frame) == ZCL_OK);
+        request(current, state.token, false);
+        CHECK(result.data.bytes[0] == ZCL_OK);
+    } else duplicate_reply_failure(current);
+    CHECK(API(closeSyncOwner)(&environment, NULL, current) == ZCL_OK);
+    CHECK(pthread_barrier_destroy(&state.retired) == 0);
+    CHECK(pthread_barrier_destroy(&state.start) == 0);
+}
+
 int main(void)
 {
-    for (unsigned i = 0; i < 16; ++i) replace_while_querying();
-    puts("JNI sync concurrent closure, replacement and retired callbacks passed");
+    for (unsigned i = 0; i < 16; ++i) {
+        replace_while_querying();
+        concurrent_replies(false);
+        concurrent_replies(true);
+    }
+    puts("JNI sync concurrent requests, snapshots, replies, closure and replacement passed");
     return 0;
 }
