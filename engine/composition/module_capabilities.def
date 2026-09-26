@@ -236,6 +236,7 @@ ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_created_outputs_prune.c", CAP_
 ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_delta.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_delta_reorg.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_delta_repair.c", CAP_FS_READ|CAP_FS_WRITE, "")
+ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_delta_undo.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_log_store.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_nullifiers.c", CAP_FS_WRITE|CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("engine/jobs/src/utxo_apply_stage.c", CAP_FS_WRITE|CAP_FS_READ, "")
