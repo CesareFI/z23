@@ -2,15 +2,19 @@
 
 # ZCL Review for Ledger Blue
 
-This C23 app accepts up to 4,096 bytes of a raw ZCL Sapling-v4 transaction
+This C23 app accepts up to 3,840 bytes of a raw ZCL Sapling-v4 transaction
 over USB and returns a structural summary and SHA-256 digest of the exact
 transaction bytes. It counts transparent inputs and
 outputs, Sapling spends and outputs, and Sprout JoinSplits. It also reports
 the public output total, value balance, lock time, and expiry height. The
-touchscreen says `NO KEYS OR SIGNING` and has an EXIT button. The app has no
-key derivation, approval, or signing command. Given an explicit consensus
-branch ID, it also computes the ZIP-243 shielded SIGHASH_ALL digest. Its screen does not display
-transaction details, so its response is not user authorization of a payment.
+touchscreen starts with `NO REVIEW LOADED`. After a successful review, tap
+`VIEW LATEST` to see the public output total, Sapling and Sprout counts, and
+the first eight bytes of the transaction SHA-256 digest. `EXIT` returns to
+the Blue home screen. The app has no key derivation, approval, or signing
+command. Given an explicit consensus branch ID, it also computes the ZIP-243
+shielded SIGHASH_ALL digest. Its screen does not display recipients,
+individual output amounts, or a verified fee. Its response is not user
+authorization of a payment.
 
 Build with the reviewed Blue SDK and an ISO C23 compiler:
 
@@ -22,7 +26,7 @@ make -C apps/zcl-ledger/device-blue-review \
   CLANGPATH=/path/to/clang/bin/
 ```
 
-The build checks for an empty `.data` section. Extract the 19,968-byte code
+The build checks for an empty `.data` section. Extract the 23,296-byte code
 image and check its SHA-256 before installing:
 
 ```sh
@@ -32,9 +36,15 @@ sha256sum /tmp/zcl-review.bin
 ```
 
 The pinned image hash is
-`9de444a3179520d7edf6a60e67417ef5e57942eb3d04d53e73fa1a7f69ad7528`.
+`ae5755690d8317fda9fa4c827a8c5cdc60497b0cd92a196fe4e28e69b62f9eaf`.
+The measured `.bss`, including the reserved stack, is 6,068 bytes. An
+earlier version accepted 4,096 transaction bytes; this version reserves
+192 bytes for independent screen strings, avoiding overlap with the
+transaction buffer.
 Install only on the dedicated test Blue at its home screen using
 `zcl-blue-install /dev/hidrawN --ca-install CA_KEY_FILE /tmp/zcl-review.bin`.
+Delete an older ZCL Review app first; the Blue rejected installation over
+an existing icon with status `6a80` at commit.
 If the signed install is rejected, the unsigned install command is
 `zcl-blue-install /dev/hidrawN /tmp/zcl-review.bin`; Blue will show its
 non-genuine application warning when the app opens. EXIT returns to home.
@@ -47,9 +57,11 @@ command can compare the app's reply to its own parser using
 open. The earlier version 0.1.0 signed image installed on the dedicated Blue running BOLOS 2.1.1,
 and a synthetic one-spend, one-output Sapling fixture returned a matching
 summary and exact-byte digest. The owner confirmed the signed app opened
-without BOLOS's non-genuine warning and exited normally. This is a structural
-review test only. Version 0.2.0 has passed offline tests but has not been
-installed or tested on the physical Blue. Running
+without BOLOS's non-genuine warning and exited normally. Version 0.2.0
+received a successful install response after the previous Review icon was
+deleted, but its icon is absent from the owner's home screen. Installation,
+touchscreen operation, and live ZIP-243 behavior remain unverified. Version 0.3.0
+passed offline tests and builds but has not been installed. Running
 the host command without `--blue` only parses a local file.
 
 Protocol commands use CLA `A5`, P1/P2 zero, and one-byte `Lc`:

@@ -52,8 +52,8 @@ the authenticated device, the exact create-app parameters, the image bytes,
 and the app parameters. This matches Ledger's Blue-era loader for target
 `0x31010004`. It signs that digest with ECDSA and includes the signature in
 the commit command. The binary SHA-256 allowlist still applies before USB
-access. This revised hash has passed offline tests but has not yet been
-accepted by the connected Blue.
+access. The connected Blue accepted signed ZCL Sign Test and ZCL Review
+installs through this path.
 
 To remove the custom CA, first delete apps installed through it, enter
 Recovery mode, then use `zcl-blue-install /dev/hidrawN --ca-reset`.
@@ -64,9 +64,9 @@ Check until the CA and its apps are removed. This is a device trust change,
 not a change to the Ledger recovery words.
 
 The connected Blue accepted enrollment of `Z23` in Recovery mode. A channel
-authenticated by that key opened, and a delete command removed the old ZCL
-Fixture icon. Three signed install attempts with the earlier hash format
-returned `6986` at commit, leaving no new icon. The revised hash has not
-been tried on the device. The CA path remains experimental until a signed
-app opens without the BOLOS warning and can exit normally. A successful
-manager APDU alone does not prove the warning is gone.
+authenticated by that key opened. The owner confirmed the signed ZCL Review
+0.1.0 app opened without the BOLOS warning and exited normally. The signed
+ZCL Sign Test app later produced a verified fixed-message signature and
+also exited normally. These observations do not establish the safety or
+correctness of future app images; each image needs its own review and device
+test.

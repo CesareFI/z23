@@ -2,6 +2,7 @@
 #include "os.h"
 #include "os_io_seproxyhal.h"
 #include "blue_review_protocol.h"
+#include "blue_review_screen.h"
 #include <string.h>
 
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
@@ -11,6 +12,16 @@
 unsigned char G_io_seproxyhal_spi_buffer[IO_SEPROXYHAL_BUFFER_SIZE_B];
 ux_state_t ux;
 static blue_review_state review_state;
+static char review_lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
+
+static void clear_review_screen(void) {
+    strcpy(review_lines[0], "NO REVIEW LOADED");
+    review_lines[1][0] = 0;
+    review_lines[2][0] = 0;
+    review_lines[3][0] = 0;
+    strcpy(review_lines[4], "READ ONLY; NO SIGNING");
+    review_lines[5][0] = 0;
+}
 
 static bool transaction_digest(const uint8_t *wire, size_t length,
                                uint8_t digest[32]) {
@@ -38,6 +49,8 @@ static const bagl_element_t *exit_app(const bagl_element_t *element) {
     os_sched_exit(0);
     return NULL;
 }
+
+static const bagl_element_t *show_latest(const bagl_element_t *element);
 
 static unsigned int review_ui_button(unsigned int button_mask,
                                      unsigned int button_mask_counter) {
@@ -73,17 +86,74 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 20, .y = 125, .width = 280,
-            .height = 60, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
-            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_16px |
+            .type = BAGL_LABEL, .x = 10, .y = 80, .width = 300,
+            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = "NO KEYS OR SIGNING"
+        .text = review_lines[0]
+    },
+    {
+        .component = {
+            .type = BAGL_LABEL, .x = 10, .y = 125, .width = 300,
+            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER
+        },
+        .text = review_lines[1]
+    },
+    {
+        .component = {
+            .type = BAGL_LABEL, .x = 10, .y = 170, .width = 300,
+            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER
+        },
+        .text = review_lines[2]
+    },
+    {
+        .component = {
+            .type = BAGL_LABEL, .x = 10, .y = 215, .width = 300,
+            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER
+        },
+        .text = review_lines[3]
+    },
+    {
+        .component = {
+            .type = BAGL_LABEL, .x = 10, .y = 260, .width = 300,
+            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER
+        },
+        .text = review_lines[4]
+    },
+    {
+        .component = {
+            .type = BAGL_LABEL, .x = 10, .y = 305, .width = 300,
+            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER
+        },
+        .text = review_lines[5]
     },
     {
         .component = {
             .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
-            .x = 100, .y = 300, .width = 120, .height = 40,
+            .x = 20, .y = 390, .width = 130, .height = 40,
+            .radius = 6, .fill = BAGL_FILL,
+            .fgcolor = 0x41ccb4, .bgcolor = 0xf9f9f9,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER |
+                       BAGL_FONT_ALIGNMENT_MIDDLE
+        },
+        .text = "VIEW LATEST", .tap = show_latest
+    },
+    {
+        .component = {
+            .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
+            .x = 170, .y = 390, .width = 130, .height = 40,
             .radius = 6, .fill = BAGL_FILL,
             .fgcolor = 0x41ccb4, .bgcolor = 0xf9f9f9,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
@@ -96,6 +166,13 @@ static const bagl_element_t review_ui[] = {
         .tap = exit_app
     }
 };
+
+static const bagl_element_t *show_latest(const bagl_element_t *element) {
+    (void)element;
+    if (review_state.expected) return NULL;
+    UX_DISPLAY(review_ui, NULL);
+    return NULL;
+}
 
 unsigned short io_exchange_al(unsigned char channel, unsigned short tx_len) {
     if ((channel & ~IO_FLAGS) != CHANNEL_SPI) THROW(INVALID_PARAMETER);
@@ -143,6 +220,7 @@ static void answer_command(void) {
                 rx = io_exchange(CHANNEL_APDU, tx);
                 tx = 0;
                 size_t reply_length = 0;
+                uint8_t instruction = rx >= 2 ? G_io_apdu_buffer[1] : 0;
                 cx_blake2b_t zip_context;
                 zcl_zip243_hasher hasher = {
                     .context = &zip_context, .init = zip243_start,
@@ -153,12 +231,26 @@ static void answer_command(void) {
                                         sizeof G_io_apdu_buffer - 2,
                                         &reply_length, transaction_digest,
                                         &hasher);
+                if (instruction == 0x10 || instruction == 0x13 ||
+                    (instruction == 0x11 && sw != 0x9000))
+                    clear_review_screen();
+                if (instruction == 0x12) {
+                    if (sw != 0x9000 || reply_length != 76 ||
+                        !blue_review_screen_format(G_io_apdu_buffer,
+                                                   review_lines)) {
+                        clear_review_screen();
+                        if (sw == 0x9000) sw = 0x6a80;
+                        reply_length = 0;
+                    }
+                }
                 tx = reply_length;
             }
             CATCH_OTHER(error) {
                 sw = (error & 0xf000) == 0x6000 ||
                      (error & 0xf000) == 0x9000
                          ? error : (0x6800 | (error & 0x07ff));
+                review_state.expected = review_state.received = 0;
+                clear_review_screen();
             }
             FINALLY {}
         }
@@ -177,6 +269,7 @@ __attribute__((section(".boot"))) int main(void) {
             io_seproxyhal_init();
             USB_power(0);
             USB_power(1);
+            clear_review_screen();
             UX_DISPLAY(review_ui, NULL);
             answer_command();
         }

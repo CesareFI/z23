@@ -37,6 +37,15 @@ static bool script(cursor *input, const uint8_t **bytes, size_t *length) {
     return true;
 }
 
+static bool read_u64(cursor *input, uint64_t *value) {
+    const uint8_t *bytes;
+    if (!take(input, 8, &bytes)) return false;
+    *value = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        *value |= (uint64_t)bytes[i] << (8 * i);
+    return true;
+}
+
 static bool skip_inputs(cursor *input) {
     uint64_t count;
     const uint8_t *bytes;
@@ -65,35 +74,67 @@ static bool zslp_marker(const uint8_t *script_bytes, size_t length) {
     return false;
 }
 
-static void record_output(zcl_tx_script_facts *facts, uint64_t index,
-                          const uint8_t *bytes, size_t length) {
+static zcl_tx_output_type output_type(const uint8_t *bytes, size_t length) {
+    if (length == 25 && bytes[0] == 0x76 && bytes[1] == 0xa9 &&
+        bytes[2] == 0x14 && bytes[23] == 0x88 && bytes[24] == 0xac)
+        return ZCL_TX_OUTPUT_P2PKH;
     if (length == 23 && bytes[0] == 0xa9 && bytes[1] == 0x14 &&
-        bytes[22] == 0x87) ++facts->p2sh_outputs;
-    if (!length || bytes[0] != 0x6a) return;
-    ++facts->op_return_outputs;
-    if (index == 0) facts->zslp_marker = zslp_marker(bytes, length);
+        bytes[22] == 0x87) return ZCL_TX_OUTPUT_P2SH;
+    return length && bytes[0] == 0x6a ? ZCL_TX_OUTPUT_OP_RETURN :
+        ZCL_TX_OUTPUT_OTHER;
 }
 
-static bool read_outputs(cursor *input, zcl_tx_script_facts *facts) {
+static bool read_outputs(cursor *input, zcl_tx_output_visitor visitor,
+                         void *context) {
     uint64_t count;
     const uint8_t *bytes;
     size_t length;
     if (!compact_size(input, &count) || count > 65536) return false;
     for (uint64_t i = 0; i < count; ++i) {
-        if (!take(input, 8, &bytes) || !script(input, &bytes, &length))
+        uint64_t value;
+        if (!read_u64(input, &value) || !script(input, &bytes, &length))
             return false;
-        record_output(facts, i, bytes, length);
+        zcl_tx_output output = {
+            .index = (uint32_t)i, .value_zat = value, .script = bytes,
+            .script_length = length, .type = output_type(bytes, length)
+        };
+        if (!visitor(context, &output)) return false;
+    }
+    return true;
+}
+
+int zcl_tx_outputs_visit(const uint8_t *wire, size_t length,
+                          zcl_tx_output_visitor visitor, void *context) {
+    if (!visitor || zcl_tx_review_parse(wire, length,
+                                         &(zcl_tx_review){0}) < 0)
+        return -1;
+    cursor input = {.wire = wire, .length = length, .offset = 8};
+    return skip_inputs(&input) && read_outputs(&input, visitor, context) ?
+        0 : -1;
+}
+
+static bool collect_fact(void *context, const zcl_tx_output *output) {
+    zcl_tx_script_facts *facts = context;
+    switch (output->type) {
+    case ZCL_TX_OUTPUT_P2PKH: ++facts->p2pkh_outputs; break;
+    case ZCL_TX_OUTPUT_P2SH: ++facts->p2sh_outputs; break;
+    case ZCL_TX_OUTPUT_OP_RETURN:
+        ++facts->op_return_outputs;
+        if (output->index == 0)
+            facts->zslp_marker = zslp_marker(output->script,
+                                              output->script_length);
+        break;
+    case ZCL_TX_OUTPUT_OTHER: ++facts->other_outputs; break;
     }
     return true;
 }
 
 int zcl_tx_script_facts_parse(const uint8_t *wire, size_t length,
                               zcl_tx_script_facts *facts) {
-    if (!facts || zcl_tx_review_parse(wire, length, &(zcl_tx_review){0}) < 0)
-        return -1;
-    cursor input = {.wire = wire, .length = length, .offset = 8};
+    if (!facts) return -1;
     zcl_tx_script_facts parsed = {0};
-    if (!skip_inputs(&input) || !read_outputs(&input, &parsed)) return -1;
+    if (zcl_tx_outputs_visit(wire, length, collect_fact, &parsed) < 0)
+        return -1;
     *facts = parsed;
     return 0;
 }

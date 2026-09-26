@@ -70,6 +70,11 @@ three script facts are checked by the host only, including when `--blue` is
 used. A P2SH output does not establish a multisig threshold; the redeem
 script is needed. An SLP marker does not establish a valid ZSLP transfer;
 token fields, input lineage, and amounts still need verification.
+The CLI lists up to 32 transparent outputs with their values and standard
+P2PKH or P2SH addresses. Other scripts show their length and SHA-256 digest
+without inventing a recipient. JSON sets `output_details_truncated` when
+additional outputs exist. The Blue's current review app does not display or
+verify this host-only address list, so the list is not payment approval.
 
 ```sh
 build/zcl-ledger/zcl-tx-review --json transaction.bin
@@ -89,7 +94,7 @@ BLAKE2b-256. The caller must determine the ZCL consensus branch for the
 transaction's height; the command does not validate the branch ID or
 consensus validity. With `--blue`, it also compares the Blue's independent
 digest. Both digest values are review data, not signatures or approval.
-The optional `--blue` mode sends at most 4,096 transaction bytes to the
+The optional `--blue` mode sends at most 3,840 transaction bytes to the
 [ZCL Review app](device-blue-review/README.md), verifies its review-only
 identity, and requires its structural summary and transaction SHA-256 digest
 to match the host's values. This checks the exact bytes received by the Blue.

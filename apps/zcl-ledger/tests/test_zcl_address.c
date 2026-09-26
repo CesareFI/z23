@@ -15,6 +15,16 @@ int main(void) {
     char address[ZCL_ADDRESS_SIZE];
     assert(zcl_address_from_pubkey(generator, address) == 0);
     assert(strcmp(address, "t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs") == 0);
+    static const uint8_t foundation_script_hash[ZCL_HASH160_SIZE] = {
+        0x7d, 0x46, 0xa7, 0x30, 0xd3, 0x1f, 0x97, 0xb1,
+        0x93, 0x0d, 0x33, 0x68, 0xa9, 0x67, 0xc3, 0x09,
+        0xbd, 0x4d, 0x13, 0x6a
+    };
+    assert(zcl_address_from_hash160(foundation_script_hash, true,
+                                    address) == 0);
+    assert(strcmp(address, "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd") == 0);
+    assert(zcl_address_from_hash160(NULL, true, address) < 0);
+    assert(zcl_address_from_hash160(foundation_script_hash, true, NULL) < 0);
     uint8_t negative_generator[ZCL_COMPRESSED_PUBKEY_SIZE];
     memcpy(negative_generator, generator, sizeof negative_generator);
     negative_generator[0] = 3;

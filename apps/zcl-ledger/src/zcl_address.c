@@ -62,20 +62,29 @@ static int base58(const uint8_t *input, size_t length,
     return 0;
 }
 
-int zcl_address_from_pubkey(const uint8_t pubkey[ZCL_COMPRESSED_PUBKEY_SIZE],
-                            char address[ZCL_ADDRESS_SIZE]) {
-    if (!pubkey || !address || !valid_pubkey(pubkey)) return -1;
+int zcl_address_from_hash160(const uint8_t hash[ZCL_HASH160_SIZE],
+                              bool script_hash,
+                              char address[ZCL_ADDRESS_SIZE]) {
+    if (!hash || !address) return -1;
     uint8_t digest[SHA256_DIGEST_LENGTH], checksum[SHA256_DIGEST_LENGTH];
     uint8_t payload[26];
-    unsigned int hash_length = 0;
-    if (!SHA256(pubkey, ZCL_COMPRESSED_PUBKEY_SIZE, digest) ||
-        EVP_Digest(digest, sizeof digest, payload + 2, &hash_length,
-                   EVP_ripemd160(), NULL) != 1 || hash_length != 20)
-        return -1;
     payload[0] = 0x1c;
-    payload[1] = 0xb8;
+    payload[1] = script_hash ? 0xbd : 0xb8;
+    memcpy(payload + 2, hash, ZCL_HASH160_SIZE);
     if (!SHA256(payload, 22, digest) ||
         !SHA256(digest, sizeof digest, checksum)) return -1;
     memcpy(payload + 22, checksum, 4);
     return base58(payload, sizeof payload, address);
+}
+
+int zcl_address_from_pubkey(const uint8_t pubkey[ZCL_COMPRESSED_PUBKEY_SIZE],
+                            char address[ZCL_ADDRESS_SIZE]) {
+    if (!pubkey || !address || !valid_pubkey(pubkey)) return -1;
+    uint8_t digest[SHA256_DIGEST_LENGTH], hash[ZCL_HASH160_SIZE];
+    unsigned int hash_length = 0;
+    if (!SHA256(pubkey, ZCL_COMPRESSED_PUBKEY_SIZE, digest) ||
+        EVP_Digest(digest, sizeof digest, hash, &hash_length,
+                   EVP_ripemd160(), NULL) != 1 || hash_length != 20)
+        return -1;
+    return zcl_address_from_hash160(hash, false, address);
 }

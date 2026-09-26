@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "blue_review_protocol.h"
 #include "ledger_hid.h"
+#include "zcl_address.h"
 #include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
 #include "zcl_zip243_host.h"
@@ -158,18 +159,89 @@ static void print_hex(const uint8_t *bytes, size_t length) {
     for (size_t i = 0; i < length; ++i) printf("%02x", bytes[i]);
 }
 
-static void print_review_json(const zcl_tx_review *review,
-                              const zcl_tx_script_facts *scripts,
-                              const char *device, bool has_branch,
-                              uint32_t branch_id, const uint8_t zip_digest[32]) {
+typedef struct {
+    bool json;
+    uint32_t shown;
+} output_view;
+
+static const char *output_type_name(zcl_tx_output_type type) {
+    switch (type) {
+    case ZCL_TX_OUTPUT_P2PKH: return "p2pkh";
+    case ZCL_TX_OUTPUT_P2SH: return "p2sh";
+    case ZCL_TX_OUTPUT_OP_RETURN: return "op_return";
+    case ZCL_TX_OUTPUT_OTHER: return "other";
+    }
+    return "other";
+}
+
+static bool print_output(void *context, const zcl_tx_output *output) {
+    output_view *view = context;
+    if (output->index >= 32) return true;
+    bool address_type = output->type == ZCL_TX_OUTPUT_P2PKH ||
+                        output->type == ZCL_TX_OUTPUT_P2SH;
+    char address[ZCL_ADDRESS_SIZE];
+    if (address_type) {
+        const uint8_t *hash = output->script +
+            (output->type == ZCL_TX_OUTPUT_P2PKH ? 3 : 2);
+        if (zcl_address_from_hash160(hash,
+            output->type == ZCL_TX_OUTPUT_P2SH, address) < 0) return false;
+    }
+    uint8_t script_digest[SHA256_DIGEST_LENGTH];
+    if (!address_type && !SHA256(output->script, output->script_length,
+                                 script_digest)) return false;
+    if (view->json) {
+        printf("%s{\"index\":%" PRIu32 ",\"value_zat\":%" PRIu64
+               ",\"type\":\"%s\"",
+               view->shown ? "," : "", output->index, output->value_zat,
+               output_type_name(output->type));
+        if (address_type) printf(",\"address\":\"%s\"", address);
+        else {
+            printf(",\"script_bytes\":%zu,\"script_sha256\":\"",
+                   output->script_length);
+            print_hex(script_digest, sizeof script_digest);
+            putchar('"');
+        }
+        putchar('}');
+    } else {
+        printf("Output %" PRIu32 ": %" PRIu64 " zatoshi, %s",
+               output->index, output->value_zat,
+               output_type_name(output->type));
+        if (address_type) printf(" -> %s\n", address);
+        else {
+            printf(" (%zu bytes, script SHA-256 ", output->script_length);
+            print_hex(script_digest, sizeof script_digest);
+            puts(")");
+        }
+    }
+    ++view->shown;
+    return true;
+}
+
+typedef struct {
+    const zcl_tx_review *review;
+    const zcl_tx_script_facts *scripts;
+    const uint8_t *wire;
+    size_t length;
+    const uint8_t *transaction_hash;
+    const uint8_t *zip_digest;
+    bool has_branch;
+    bool blue_parsed;
+    uint32_t branch_id;
+} review_report;
+
+static bool print_json(const review_report *report) {
+    const zcl_tx_review *review = report->review;
+    const zcl_tx_script_facts *scripts = report->scripts;
     printf("{\"ok\":true,\"format\":\"zcl-sapling-v4\","
            "\"transparent_inputs\":%" PRIu32 ","
            "\"transparent_outputs\":%" PRIu32 ","
            "\"sapling_spends\":%" PRIu32 ","
            "\"sapling_outputs\":%" PRIu32 ","
            "\"sprout_joinsplits\":%" PRIu32 ","
+           "\"p2pkh_outputs\":%" PRIu32 ","
            "\"p2sh_outputs\":%" PRIu32 ","
            "\"op_return_outputs\":%" PRIu32 ","
+           "\"other_outputs\":%" PRIu32 ","
            "\"zslp_marker\":%s,"
            "\"transparent_output_zat\":%" PRIu64 ","
            "\"value_balance_zat\":%" PRId64 ","
@@ -180,25 +252,34 @@ static void print_review_json(const zcl_tx_review *review,
            "\"blue_parsed\":%s",
            review->transparent_inputs, review->transparent_outputs,
            review->sapling_spends, review->sapling_outputs,
-           review->sprout_joinsplits, scripts->p2sh_outputs,
-           scripts->op_return_outputs,
+           review->sprout_joinsplits, scripts->p2pkh_outputs,
+           scripts->p2sh_outputs, scripts->op_return_outputs,
+           scripts->other_outputs,
            scripts->zslp_marker ? "true" : "false",
            review->transparent_output_zat,
            review->value_balance_zat, review->lock_time,
-           review->expiry_height, device ? "true" : "false");
-    if (has_branch) {
-        printf(",\"zip243_branch_id\":\"0x%08" PRIx32 "\",\"zip243_shielded_digest\":\"",
-               branch_id);
-        print_hex(zip_digest, 32);
-        printf("\",\"blue_zip243_matched\":%s", device ? "true" : "false");
+           review->expiry_height, report->blue_parsed ? "true" : "false");
+    if (report->has_branch) {
+        printf(",\"zip243_branch_id\":\"0x%08" PRIx32
+               "\",\"zip243_shielded_digest\":\"", report->branch_id);
+        print_hex(report->zip_digest, 32);
+        printf("\",\"blue_zip243_matched\":%s",
+               report->blue_parsed ? "true" : "false");
     }
-    puts("}");
+    fputs(",\"transaction_sha256\":\"", stdout);
+    print_hex(report->transaction_hash, SHA256_DIGEST_LENGTH);
+    fputs("\",\"outputs\":[", stdout);
+    output_view view = {.json = true};
+    if (zcl_tx_outputs_visit(report->wire, report->length,
+                             print_output, &view) < 0) return false;
+    printf("],\"output_details_truncated\":%s}\n",
+           review->transparent_outputs > view.shown ? "true" : "false");
+    return true;
 }
 
-static void print_review_text(const zcl_tx_review *review,
-                              const zcl_tx_script_facts *scripts,
-                              const char *device, bool has_branch,
-                              uint32_t branch_id, const uint8_t zip_digest[32]) {
+static bool print_text(const review_report *report) {
+    const zcl_tx_review *review = report->review;
+    const zcl_tx_script_facts *scripts = report->scripts;
     printf("ZCL Sapling v4: %" PRIu32 " transparent input(s), %" PRIu32
            " output(s), %" PRIu32 " Sapling spend(s), %" PRIu32
            " Sapling output(s), %" PRIu32 " Sprout JoinSplit(s).\n",
@@ -209,17 +290,30 @@ static void print_review_text(const zcl_tx_review *review,
            " OP_RETURN; first output has ZSLP marker: %s.\n",
            scripts->p2sh_outputs, scripts->op_return_outputs,
            scripts->zslp_marker ? "yes" : "no");
+    output_view view = {0};
+    if (zcl_tx_outputs_visit(report->wire, report->length,
+                             print_output, &view) < 0) return false;
+    if (review->transparent_outputs > view.shown)
+        printf("%" PRIu32 " additional output(s) omitted.\n",
+               review->transparent_outputs - view.shown);
     printf("Public output total: %" PRIu64 " zatoshi; value balance: %" PRId64
            " zatoshi.\n", review->transparent_output_zat,
            review->value_balance_zat);
     puts("Structural review only. Shielded recipients, amounts, fee, proofs, and signatures are unverified.");
-    if (device) puts("The Blue returned the same structural summary; no key operation occurred.");
-    if (has_branch) {
-        printf("ZIP-243 shielded digest for branch 0x%08" PRIx32 ": ", branch_id);
-        print_hex(zip_digest, 32);
+    if (report->blue_parsed)
+        puts("The Blue returned the same structural summary; no key operation occurred.");
+    if (report->has_branch) {
+        printf("ZIP-243 shielded digest for branch 0x%08" PRIx32 ": ",
+               report->branch_id);
+        print_hex(report->zip_digest, 32);
         putchar('\n');
-        if (device) puts("Blue and host ZIP-243 digests matched; no signing was requested.");
+        if (report->blue_parsed)
+            puts("Blue and host ZIP-243 digests matched; no signing was requested.");
     }
+    fputs("Transaction SHA-256: ", stdout);
+    print_hex(report->transaction_hash, SHA256_DIGEST_LENGTH);
+    putchar('\n');
+    return true;
 }
 
 int main(int argc, char **argv) {
@@ -241,8 +335,10 @@ int main(int argc, char **argv) {
     }
     zcl_tx_review review;
     zcl_tx_script_facts scripts;
+    uint8_t transaction_hash[SHA256_DIGEST_LENGTH];
     uint8_t zip_digest[32] = {0};
     int result = zcl_tx_review_parse(wire, length, &review);
+    if (result == 0 && !SHA256(wire, length, transaction_hash)) result = -1;
     if (result == 0)
         result = zcl_tx_script_facts_parse(wire, length, &scripts);
     if (result == 0 && has_branch)
@@ -250,16 +346,23 @@ int main(int argc, char **argv) {
     if (result == 0 && device)
         result = blue_review(device, wire, length, &review,
                              has_branch, branch_id, zip_digest);
-    free(wire);
     if (result < 0) {
+        free(wire);
         fputs("Transaction review failed; no signing was requested.\n", stderr);
         return 1;
     }
-    if (json)
-        print_review_json(&review, &scripts, device, has_branch,
-                          branch_id, zip_digest);
-    else
-        print_review_text(&review, &scripts, device, has_branch,
-                          branch_id, zip_digest);
+    review_report report = {
+        .review = &review, .scripts = &scripts, .wire = wire,
+        .length = length, .transaction_hash = transaction_hash,
+        .zip_digest = zip_digest, .has_branch = has_branch,
+        .blue_parsed = device != NULL, .branch_id = branch_id
+    };
+    bool printed = json ? print_json(&report) : print_text(&report);
+    if (!printed) {
+        free(wire);
+        fputs("Transaction output review failed.\n", stderr);
+        return 1;
+    }
+    free(wire);
     return 0;
 }

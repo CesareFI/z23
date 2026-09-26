@@ -11,10 +11,34 @@
 #endif
 
 typedef struct {
+    uint32_t p2pkh_outputs;
     uint32_t p2sh_outputs;
     uint32_t op_return_outputs;
+    uint32_t other_outputs;
     bool zslp_marker;
 } zcl_tx_script_facts;
+
+typedef enum {
+    ZCL_TX_OUTPUT_P2PKH,
+    ZCL_TX_OUTPUT_P2SH,
+    ZCL_TX_OUTPUT_OP_RETURN,
+    ZCL_TX_OUTPUT_OTHER
+} zcl_tx_output_type;
+
+typedef struct {
+    uint32_t index;
+    uint64_t value_zat;
+    const uint8_t *script;
+    size_t script_length;
+    zcl_tx_output_type type;
+} zcl_tx_output;
+
+typedef bool (*zcl_tx_output_visitor)(void *context,
+                                      const zcl_tx_output *output);
+
+/* Visits every transparent output after validating the complete wire. */
+int zcl_tx_outputs_visit(const uint8_t *wire, size_t length,
+                          zcl_tx_output_visitor visitor, void *context);
 
 /* Host-only wire observations. The marker does not validate a ZSLP transfer;
  * P2SH does not establish a multisig threshold. */

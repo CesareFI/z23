@@ -5,6 +5,21 @@
 #include <assert.h>
 #include <string.h>
 
+typedef struct {
+    zcl_tx_output_type type;
+    uint64_t value;
+    unsigned calls;
+} capture;
+
+static bool capture_output(void *context, const zcl_tx_output *output) {
+    capture *result = context;
+    assert(output->index == result->calls);
+    result->type = output->type;
+    result->value = output->value_zat;
+    ++result->calls;
+    return true;
+}
+
 static size_t one_output(uint8_t wire[128], const uint8_t *script,
                          size_t script_length) {
     static const uint8_t header[] = {4, 0, 0, 0x80, 0x85, 0x20, 0x2f, 0x89};
@@ -50,15 +65,38 @@ static void test_p2sh_and_bounds(void) {
     zcl_tx_script_facts facts;
     assert(zcl_tx_script_facts_parse(wire, length, &facts) == 0);
     assert(facts.p2sh_outputs == 1 && facts.op_return_outputs == 0);
+    capture result = {0};
+    assert(zcl_tx_outputs_visit(wire, length, capture_output,
+                                &result) == 0);
+    assert(result.calls == 1 && result.type == ZCL_TX_OUTPUT_P2SH);
+    assert(result.value == 0);
     wire[19 + 22] = 0x88;
     assert(zcl_tx_script_facts_parse(wire, length, &facts) == 0);
-    assert(facts.p2sh_outputs == 0);
+    assert(facts.p2sh_outputs == 0 && facts.other_outputs == 1);
     assert(zcl_tx_script_facts_parse(wire, length - 1, &facts) < 0);
     assert(zcl_tx_script_facts_parse(wire, length, NULL) < 0);
+}
+
+static void test_p2pkh_output(void) {
+    uint8_t script[25] = {0x76, 0xa9, 0x14};
+    script[23] = 0x88;
+    script[24] = 0xac;
+    uint8_t wire[128];
+    size_t length = one_output(wire, script, sizeof script);
+    wire[10] = 42;
+    zcl_tx_script_facts facts;
+    capture result = {0};
+    assert(zcl_tx_script_facts_parse(wire, length, &facts) == 0);
+    assert(facts.p2pkh_outputs == 1 && facts.other_outputs == 0);
+    assert(zcl_tx_outputs_visit(wire, length, capture_output,
+                                &result) == 0);
+    assert(result.calls == 1 && result.type == ZCL_TX_OUTPUT_P2PKH);
+    assert(result.value == 42);
 }
 
 int main(void) {
     test_zslp_pushes();
     test_p2sh_and_bounds();
+    test_p2pkh_output();
     return 0;
 }

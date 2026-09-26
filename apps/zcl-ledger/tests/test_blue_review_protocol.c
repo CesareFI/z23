@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_review_protocol.h"
+#include "blue_review_screen.h"
 #include "zcl_zip243_host.h"
 
 #undef NDEBUG
@@ -56,6 +57,10 @@ static void test_minimal_review(void) {
     assert(call(&state, apdu, 5, &reply_length) == 0x9000);
     assert(reply_length == 76);
     for (size_t i = 0; i < 44; ++i) assert(apdu[i] == 0);
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
+    assert(blue_review_screen_format(apdu, lines));
+    assert(strcmp(lines[0], "T INPUT/OUT: 0/0") == 0);
+    assert(strcmp(lines[5], "TX SHA256: 0ba4f12d34aa8160") == 0);
     static const uint8_t digest[32] = {
         0x0b, 0xa4, 0xf1, 0x2d, 0x34, 0xaa, 0x81, 0x60,
         0x56, 0x3c, 0xe2, 0xe3, 0x4b, 0x46, 0x2b, 0xc3,
@@ -75,9 +80,11 @@ static void test_state_and_bounds(void) {
     apdu[1] = 0x10;
     apdu[4] = 2;
     apdu[5] = 0;
-    apdu[6] = 16;
+    apdu[6] = 15;
     assert(call(&state, apdu, 7, &reply_length) == 0x9000);
-    assert(state.expected == 4096);
+    assert(state.expected == 3840);
+    apdu[6] = 16;
+    assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
     apdu[5] = 1;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
     assert(state.expected == 0);
