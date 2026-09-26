@@ -68,6 +68,24 @@ elif [[ "$OWNER_KIND" == package-policy ]]; then
     STORY='package-policy-boundary-calculation.v1'
     MUTANT_OLD='VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW,'
     MUTANT_NEW='VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW - 1u,'
+elif [[ "$OWNER_KIND" == shadow-select ]]; then
+    # The mutant is a real historical body edit run backwards: 2648a4c186
+    # made a moved contract an unknown scope. Undoing it must turn the
+    # shadow selector core story RED from the candidate bytes alone.
+    SOURCE="$ROOT/tools/dev/dev_shadow_rule.c"
+    OUTPUT="${ZCL_REFLEX_SHADOW_SELECT_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-shadow-select-core-acceptance.json}"
+    STORY='dev-shadow-selector-core.v1'
+    MUTANT_OLD='facts->plan_refused || facts->contract_moved)'
+    MUTANT_NEW='facts->plan_refused)'
+elif [[ "$OWNER_KIND" == shadow-select-sibling ]]; then
+    # A sibling TU of the same capsule: the lint pricing cap from e3717b5f7c
+    # run backwards. Its rule must be observed inside the capsule, never
+    # resolved from the resident binary.
+    SOURCE="$ROOT/tools/dev/dev_shadow_lint.c"
+    OUTPUT="${ZCL_REFLEX_SHADOW_SELECT_SIBLING_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-shadow-select-sibling-acceptance.json}"
+    STORY='dev-shadow-selector-core.v1'
+    MUTANT_OLD='if (units_ms > rest) units_ms = rest;'
+    MUTANT_NEW='if (units_ms > gate_ms) units_ms = gate_ms;'
 fi
 EDITED_PATH="${SOURCE#$ROOT/}"
 CAPSULE_OWNER="$EDITED_PATH"
