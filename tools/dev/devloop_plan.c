@@ -85,6 +85,15 @@ static bool has_suffix(const char *path, const char *suffix)
     return plen >= slen && memcmp(path + plen - slen, suffix, slen) == 0;
 }
 
+static size_t restart_source_index(
+    const struct zcl_devloop_restart_source_set *set, const char *source)
+{
+    for (size_t i = 0; i < set->count; i++)
+        if (strcmp(set->sources[i], source) == 0)
+            return i;
+    return set->count;
+}
+
 bool zcl_devloop_restart_source_set_add(
     struct zcl_devloop_restart_source_set *set,
     const char *const *paths, size_t path_count)
@@ -102,23 +111,129 @@ bool zcl_devloop_restart_source_set_add(
             set->overflow = true;
             return false;
         }
-        bool present = false;
-        for (size_t j = 0; j < set->count; j++)
-            if (strcmp(set->sources[j], source) == 0) {
-                present = true;
-                break;
-            }
-        if (present)
+        /* A newer save of a known source is unproven again. */
+        size_t at = restart_source_index(set, source);
+        if (at < set->count) {
+            set->proven[at] = false;
             continue;
+        }
         if (set->count >= ZCL_DEVLOOP_RESTART_SOURCE_MAX) {
             set->overflow = true;
             return false;
         }
         (void)snprintf(set->sources[set->count],
                        sizeof(set->sources[set->count]), "%s", source);
+        set->proven[set->count] = false;
         set->count++;
     }
     return true;
+}
+
+void zcl_devloop_restart_source_set_mark_proven(
+    struct zcl_devloop_restart_source_set *set,
+    const char *const *paths, size_t path_count)
+{
+    if (!set || !paths)
+        return;
+    for (size_t i = 0; i < path_count; i++) {
+        size_t at = paths[i] ? restart_source_index(set, paths[i])
+                             : set->count;
+        if (at < set->count)
+            set->proven[at] = true;
+    }
+}
+
+size_t zcl_devloop_restart_source_set_unproven(
+    const struct zcl_devloop_restart_source_set *set,
+    const char **out, size_t cap)
+{
+    if (!set || !out || set->overflow)
+        return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < set->count; i++) {
+        if (set->proven[i])
+            continue;
+        if (n >= cap)
+            return 0;
+        out[n++] = set->sources[i];
+    }
+    return n;
+}
+
+static bool epoch_all_c(const char *const *files, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+        if (!has_suffix(files[i], ".c"))
+            return false;
+    return count > 0;
+}
+
+/* Run the restart lane over `scope` and record what its verdict proved. */
+static int epoch_restart(const char *root, const char *const *scope,
+                         size_t scope_count,
+                         enum zcl_devloop_publish_mode mode,
+                         struct zcl_devloop_restart_source_set *set,
+                         const struct zcl_devloop_epoch_lanes *lanes)
+{
+    bool focused_complete = false;
+    int fast = lanes->restart(root, scope, scope_count, mode,
+                              &focused_complete);
+    if (focused_complete && fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING)
+        zcl_devloop_restart_source_set_mark_proven(set, scope, scope_count);
+    return fast;
+}
+
+/* COMPILE_ONLY was the shell's first reply; nothing has executed its bytes.
+ * Its focused verdict covers exactly the unproven sources, and the complete
+ * proof inherits that same scope. */
+static int epoch_shell_compiled(const char *root,
+                                enum zcl_devloop_publish_mode mode,
+                                struct zcl_devloop_restart_source_set *set,
+                                const struct zcl_devloop_epoch_lanes *lanes,
+                                bool set_ok,
+                                struct zcl_devloop_epoch_proof *proof)
+{
+    size_t scope = set_ok ? zcl_devloop_restart_source_set_unproven(
+        set, proof->sources, ZCL_DEVLOOP_RESTART_SOURCE_MAX) : 0;
+    /* An untrusted set could hide an unproven save: keep the old,
+     * conservative PROOF_PENDING instead of a narrower focused verdict. */
+    if (scope == 0)
+        return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+    proof->files = proof->sources;
+    proof->count = scope;
+    int fast = epoch_restart(root, proof->files, scope, mode, set, lanes);
+    return fast == 0 ? ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING : fast;
+}
+
+int zcl_devloop_epoch_reflex(
+    const char *root, const char *const *files, size_t count,
+    enum zcl_devloop_publish_mode mode,
+    struct zcl_devloop_restart_source_set *set,
+    const struct zcl_devloop_epoch_lanes *lanes,
+    struct zcl_devloop_epoch_proof *proof)
+{
+    proof->files = files;
+    proof->count = count;
+    bool set_ok = zcl_devloop_restart_source_set_add(set, files, count) &&
+        epoch_all_c(files, count) && set->count > 0;
+    int fast = lanes->hotfork(root, files, count, mode);
+    if (fast == 0)
+        fast = lanes->hotswap(root, files, count, mode);
+    if (fast == ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED)
+        return epoch_shell_compiled(root, mode, set, lanes,
+                                    set_ok, proof);
+    if (fast == 0)
+        fast = lanes->service_contract(root, files, count);
+    if (fast != 0)
+        return fast;
+    if (set_ok) {
+        for (size_t i = 0; i < set->count; i++)
+            proof->sources[i] = set->sources[i];
+        proof->files = proof->sources;
+        proof->count = set->count;
+    }
+    return epoch_restart(root, proof->files, proof->count, mode, set,
+                         lanes);
 }
 
 static bool path_is_docs(const char *path)

@@ -633,6 +633,13 @@ static int service_contract_restart_event(
     return 1;
 }
 
+static const struct zcl_devloop_epoch_lanes g_watch_epoch_lanes = {
+    .hotfork = zcl_devloop_hotfork_batch_event,
+    .hotswap = zcl_devloop_hotswap_batch_event,
+    .service_contract = service_contract_restart_event,
+    .restart = zcl_devloop_restart_event_proving,
+};
+
 static void mutation_sequence_advance(struct watch_context *ctx)
 {
     if (ctx && ctx->mutation_sequence < UINT64_MAX)
@@ -4712,38 +4719,12 @@ int zcl_devloop_watch_mode_until(const char *repo_root,
         fflush(stdout);
         watch_request_hint_arm(&ctx);
         zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
-        bool restart_union_ok = zcl_devloop_restart_source_set_add(
-            &ctx.restart_sources, files, epoch_count);
-        const char *restart_files[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
-        const char *const *proof_files = files;
-        size_t proof_count = epoch_count;
-        int fast = zcl_devloop_hotfork_batch_event(
-            ctx.root, files, epoch_count, publish_mode);
-        if (fast == 0)
-            fast = zcl_devloop_hotswap_batch_event(
-                ctx.root, files, epoch_count, publish_mode);
-        /* COMPILE_ONLY is the first reply for a static shell; its bytes still
-         * need the restart candidate lane to execute them. */
-        bool shell_compiled = fast == ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
-        if (shell_compiled)
-            fast = 0;
-        else if (fast == 0)
-            fast = service_contract_restart_event(ctx.root, files,
-                                                  epoch_count);
-        if (fast == 0) {
-            if (restart_union_ok &&
-                zcl_devloop_watch_epoch_all_c(files, epoch_count) &&
-                ctx.restart_sources.count > 0) {
-                proof_count = ctx.restart_sources.count;
-                for (size_t i = 0; i < proof_count; i++)
-                    restart_files[i] = ctx.restart_sources.sources[i];
-                proof_files = restart_files;
-            }
-            fast = zcl_devloop_restart_event(
-                ctx.root, proof_files, proof_count, publish_mode);
-            if (shell_compiled && fast == 0)
-                fast = ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
-        }
+        struct zcl_devloop_epoch_proof epoch_proof;
+        int fast = zcl_devloop_epoch_reflex(
+            ctx.root, files, epoch_count, publish_mode, &ctx.restart_sources,
+            &g_watch_epoch_lanes, &epoch_proof);
+        const char *const *proof_files = epoch_proof.files;
+        size_t proof_count = epoch_proof.count;
         watch_trace_mark(&ctx.trace.reflex_return_us);
         /* Candidate emitters seal through their already-visible terminal
          * reflex event. Retire the watcher's matching queue entries now so a

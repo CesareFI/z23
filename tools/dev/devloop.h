@@ -512,6 +512,17 @@ int zcl_devloop_restart_event(const char *repo_root,
                               size_t source_count,
                               enum zcl_devloop_publish_mode publish_mode);
 
+/* zcl_devloop_restart_event, also reporting through `focused_complete`
+ * whether the event published FOCUSED_GREEN: every immediate group its plan
+ * selects ran green against a candidate built from the current bytes of
+ * every one of `source_tus`. Anything else (partial, red, superseded,
+ * cancelled, refused) leaves it false. */
+int zcl_devloop_restart_event_proving(const char *repo_root,
+                                      const char *const *source_tus,
+                                      size_t source_count,
+                                      enum zcl_devloop_publish_mode publish_mode,
+                                      bool *focused_complete);
+
 /* Continue a green owner-bound story into exact affected proof without
  * rebuilding or re-probing the runtime candidate. This is deliberately an
  * asynchronous post-reflex lane: STORY_GREEN is already observable before
@@ -700,9 +711,12 @@ bool zcl_devloop_path_is_relevant(const char *path);
 /* Accumulated C translation units whose source bytes have diverged from the
  * resident restart base during this watcher lifetime. Service-private header
  * edits map to their one island owner. Overflow fails closed so a later
- * restart cannot silently link stale base objects. */
+ * restart cannot silently link stale base objects. `proven[i]` is true only
+ * while a FOCUSED_GREEN verdict has executed the current bytes of
+ * sources[i]; adding the source again (a newer save) clears it. */
 struct zcl_devloop_restart_source_set {
     char sources[ZCL_DEVLOOP_RESTART_SOURCE_MAX][ZCL_DEVLOOP_PATH_MAX];
+    bool proven[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
     size_t count;
     bool overflow;
 };
@@ -710,6 +724,55 @@ struct zcl_devloop_restart_source_set {
 bool zcl_devloop_restart_source_set_add(
     struct zcl_devloop_restart_source_set *set,
     const char *const *paths, size_t path_count);
+
+/* Mark each accumulated source named in `paths` proven. Call only with the
+ * exact source list of a restart event that reported focused_complete. */
+void zcl_devloop_restart_source_set_mark_proven(
+    struct zcl_devloop_restart_source_set *set,
+    const char *const *paths, size_t path_count);
+
+/* Write every accumulated source that is not proven to `out` (in set
+ * order) and return how many; 0 when the set overflowed or `cap` is too
+ * small. After adding an epoch, this is that epoch's restart sources plus
+ * every earlier save no FOCUSED_GREEN verdict has executed. */
+size_t zcl_devloop_restart_source_set_unproven(
+    const struct zcl_devloop_restart_source_set *set,
+    const char **out, size_t cap);
+
+/* The lanes one watcher epoch tries, in order. The watcher passes the
+ * production handlers; tests pass fakes. */
+struct zcl_devloop_epoch_lanes {
+    int (*hotfork)(const char *root, const char *const *files, size_t count,
+                   enum zcl_devloop_publish_mode mode);
+    int (*hotswap)(const char *root, const char *const *files, size_t count,
+                   enum zcl_devloop_publish_mode mode);
+    int (*service_contract)(const char *root, const char *const *files,
+                            size_t count);
+    int (*restart)(const char *root, const char *const *files, size_t count,
+                   enum zcl_devloop_publish_mode mode, bool *focused_complete);
+};
+
+/* The complete-proof set an epoch hands on: `files` points either at the
+ * epoch's own paths or at `sources`, which borrows from the source set. */
+struct zcl_devloop_epoch_proof {
+    const char *sources[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
+    const char *const *files;
+    size_t count;
+};
+
+/* Run one watcher epoch's reflex lanes and return the deciding lane's
+ * zcl_devloop_restart_event_result (0 when none applied). A static authority
+ * shell (SHELL_COMPILED) skips the service-contract handler and runs the
+ * restart lane over exactly the set's unproven sources, so its verdict
+ * covers the edited owner and every earlier save still unproven, and never
+ * one already executed by a FOCUSED_GREEN verdict. A declined restart lane,
+ * or a source set that cannot be trusted, leaves the shell PROOF_PENDING. */
+int zcl_devloop_epoch_reflex(
+    const char *root, const char *const *files, size_t count,
+    enum zcl_devloop_publish_mode mode,
+    struct zcl_devloop_restart_source_set *set,
+    const struct zcl_devloop_epoch_lanes *lanes,
+    struct zcl_devloop_epoch_proof *proof);
 
 /* True iff `path` is under the sealed consensus core (the `core/` prefix —
  * the exact surface `core/MANIFEST.sha3` seals). Broader than the

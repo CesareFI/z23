@@ -4732,6 +4732,248 @@ static bool dp_restart_event_verdicts_ok(const char *root,
     return partial && green && superseded && reset && unjudged && restored;
 }
 
+/* Fake epoch lanes: the shell and service handlers are scripted, and the
+ * restart lane is either scripted or the real resident lane. */
+struct dp_epoch_lane_log {
+    int hotswap_result;
+    int service_result;
+    int restart_result;
+    bool restart_complete;
+    unsigned service_calls;
+    unsigned restart_calls;
+    char restart_files[4][ZCL_DEVLOOP_PATH_MAX];
+    size_t restart_count;
+};
+static struct dp_epoch_lane_log g_dp_lanes;
+
+static int dp_lane_hotfork(const char *root, const char *const *files,
+                           size_t count, enum zcl_devloop_publish_mode mode)
+{
+    (void)root; (void)files; (void)count; (void)mode;
+    return 0;
+}
+
+static int dp_lane_hotswap(const char *root, const char *const *files,
+                           size_t count, enum zcl_devloop_publish_mode mode)
+{
+    (void)root; (void)files; (void)count; (void)mode;
+    return g_dp_lanes.hotswap_result;
+}
+
+static int dp_lane_service(const char *root, const char *const *files,
+                           size_t count)
+{
+    (void)root; (void)files; (void)count;
+    g_dp_lanes.service_calls++;
+    return g_dp_lanes.service_result;
+}
+
+static void dp_lane_record(const char *const *files, size_t count)
+{
+    g_dp_lanes.restart_calls++;
+    g_dp_lanes.restart_count = count;
+    for (size_t i = 0; i < count && i < 4; i++)
+        (void)snprintf(g_dp_lanes.restart_files[i],
+                       sizeof(g_dp_lanes.restart_files[i]), "%s", files[i]);
+}
+
+static int dp_lane_restart(const char *root, const char *const *files,
+                           size_t count, enum zcl_devloop_publish_mode mode,
+                           bool *focused_complete)
+{
+    (void)root; (void)mode;
+    dp_lane_record(files, count);
+    *focused_complete = g_dp_lanes.restart_complete;
+    return g_dp_lanes.restart_result;
+}
+
+/* The real resident lane, recording the scope it was handed. */
+static int dp_lane_restart_real(const char *root, const char *const *files,
+                                size_t count,
+                                enum zcl_devloop_publish_mode mode,
+                                bool *focused_complete)
+{
+    dp_lane_record(files, count);
+    return zcl_devloop_restart_event_proving(root, files, count, mode,
+                                             focused_complete);
+}
+
+static const struct zcl_devloop_epoch_lanes k_dp_fake_lanes = {
+    .hotfork = dp_lane_hotfork, .hotswap = dp_lane_hotswap,
+    .service_contract = dp_lane_service, .restart = dp_lane_restart,
+};
+
+static const struct zcl_devloop_epoch_lanes k_dp_shell_real_lanes = {
+    .hotfork = dp_lane_hotfork, .hotswap = dp_lane_hotswap,
+    .service_contract = dp_lane_service, .restart = dp_lane_restart_real,
+};
+
+/* One scripted static-shell epoch; true when the restart lane saw exactly
+ * `want` (in order) and the complete proof inherits that same scope. */
+static bool dp_shell_epoch_scope(struct zcl_devloop_restart_source_set *set,
+                                 const char *edited, bool complete,
+                                 const char *const *want, size_t want_count)
+{
+    struct zcl_devloop_epoch_proof proof;
+    const char *files[] = { edited };
+    unsigned calls = g_dp_lanes.restart_calls;
+    g_dp_lanes.restart_complete = complete;
+    int fast = zcl_devloop_epoch_reflex(
+        "fixture-root", files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY, set,
+        &k_dp_fake_lanes, &proof);
+    bool ok = fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING &&
+        g_dp_lanes.restart_calls == calls + 1 &&
+        g_dp_lanes.restart_count == want_count && proof.count == want_count;
+    for (size_t i = 0; ok && i < want_count; i++)
+        ok = strcmp(g_dp_lanes.restart_files[i], want[i]) == 0 &&
+            strcmp(proof.files[i], want[i]) == 0;
+    if (!ok)
+        fprintf(stderr, "shell epoch %s: fast=%d calls=%u scope=%zu first=%s "
+                "(want %zu %s)\n", edited, fast, g_dp_lanes.restart_calls,
+                g_dp_lanes.restart_count, g_dp_lanes.restart_files[0],
+                want_count, want_count ? want[0] : "");
+    return ok;
+}
+
+static int test_shell_compiled_epoch_scope(void)
+{
+    int failures = 0;
+    static const char one[] = "tools/dev/shell_owner_one.c";
+    static const char two[] = "tools/dev/shell_owner_two.c";
+    TEST("dev platform: a static-shell verdict covers exactly its unproven sources") {
+        struct zcl_devloop_restart_source_set set = {0};
+        memset(&g_dp_lanes, 0, sizeof(g_dp_lanes));
+        g_dp_lanes.hotswap_result = ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
+        g_dp_lanes.service_result = 1;
+        g_dp_lanes.restart_result = ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+        /* COMPILE_ONLY is not the last reply: the restart lane runs the
+         * edited owner and the service-contract handler never decides. */
+        const char *only_one[] = { one };
+        ASSERT(dp_shell_epoch_scope(&set, one, true, only_one, 1));
+        ASSERT(g_dp_lanes.service_calls == 0);
+        /* The first owner was proven, so the second verdict is scoped to
+         * the second owner alone. */
+        const char *only_two[] = { two };
+        ASSERT(dp_shell_epoch_scope(&set, two, true, only_two, 1));
+        /* A partial verdict proves nothing: that owner stays in every later
+         * shell verdict until a FOCUSED_GREEN executes it. */
+        ASSERT(dp_shell_epoch_scope(&set, one, false, only_one, 1));
+        const char *both[] = { one, two };
+        ASSERT(dp_shell_epoch_scope(&set, two, true, both, 2));
+        ASSERT(set.proven[0] && set.proven[1]);
+        /* The restart lane declines: the old PROOF_PENDING, never a service
+         * contract decision, and the declined owner stays unproven. */
+        g_dp_lanes.restart_result = 0;
+        ASSERT(dp_shell_epoch_scope(&set, one, true, only_one, 1));
+        ASSERT(g_dp_lanes.service_calls == 0 && !set.proven[0]);
+        g_dp_lanes.restart_result = ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+        /* A set that overflowed could hide an unproven save: no narrower
+         * focused run, only the conservative PROOF_PENDING. */
+        struct zcl_devloop_restart_source_set lost = set;
+        lost.overflow = true;
+        struct zcl_devloop_epoch_proof proof;
+        const char *files[] = { two };
+        unsigned calls = g_dp_lanes.restart_calls;
+        ASSERT(zcl_devloop_epoch_reflex(
+                   "fixture-root", files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
+                   &lost, &k_dp_fake_lanes, &proof) ==
+               ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING);
+        ASSERT(g_dp_lanes.restart_calls == calls && proof.count == 1 &&
+               strcmp(proof.files[0], two) == 0);
+        /* An ordinary restart epoch keeps the whole accumulated union. */
+        g_dp_lanes.hotswap_result = 0;
+        g_dp_lanes.service_result = 0;
+        ASSERT(zcl_devloop_epoch_reflex(
+                   "fixture-root", files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
+                   &set, &k_dp_fake_lanes, &proof) ==
+               ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING);
+        ASSERT(g_dp_lanes.service_calls == 1 && g_dp_lanes.restart_count == 2 &&
+               proof.count == 2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* A static-shell epoch through the real resident lane: after COMPILE_ONLY it
+ * earns FOCUSED_GREEN from a candidate that linked the edited bytes, and a
+ * newer save cancels the focused run with no process left behind. */
+static bool dp_shell_reflex_green(const char *root,
+                                  struct zcl_devloop_restart_source_set *set,
+                                  const char *body, char cas[65])
+{
+    const char *files[] = { "tools/dev/restart_fixture.c" };
+    struct zcl_devloop_epoch_proof proof;
+    static char verdict[16384];
+    if (!dp_mk_write(root, files[0], body))
+        return false;
+    int fast = zcl_devloop_epoch_reflex(
+        root, files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY, set,
+        &k_dp_shell_real_lanes, &proof);
+    bool ok = dp_restart_event_phase(
+        root, fast, ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING, "FOCUSED_GREEN");
+    size_t n = read_native_cycle(root, verdict, sizeof(verdict));
+    struct json_value doc = {0};
+    bool parsed = n > 0 && json_read(&doc, verdict, n);
+    const struct json_value *receipt = json_get(&doc, "proof_receipt");
+    const char *bound = parsed ? json_get_str(json_get(receipt,
+                                                       "source_cas_sha3"))
+                               : NULL;
+    ok = ok && bound && strlen(bound) == 64 && set->count == 1 &&
+        set->proven[0] && g_dp_lanes.service_calls == 0;
+    if (ok)
+        (void)snprintf(cas, 65, "%s", bound);
+    json_free(&doc);
+    /* The fake compiler copies source to object: the linked test object is
+     * the edited bytes themselves. */
+    char object[PATH_MAX], linked[256] = {0};
+    FILE *f = snprintf(object, sizeof(object),
+                       "%s/build/dev-loop/restart-test-objects/tools/dev/"
+                       "restart_fixture.o", root) < (int)sizeof(object)
+        ? fopen(object, "r") : NULL;
+    size_t got = f ? fread(linked, 1, sizeof(linked) - 1, f) : 0;
+    if (f) (void)fclose(f);
+    return ok && got == strlen(body) && memcmp(linked, body, got) == 0;
+}
+
+static bool dp_shell_reflex_fixture_ok(const char *root)
+{
+    struct zcl_devloop_restart_source_set set = {0};
+    memset(&g_dp_lanes, 0, sizeof(g_dp_lanes));
+    g_dp_lanes.hotswap_result = ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
+    g_dp_lanes.service_result = 1;
+    char first[65] = {0}, second[65] = {0};
+    bool green = dp_shell_reflex_green(
+        root, &set, "int restart_fixture(void) { return 11; }\n", first) &&
+        dp_shell_reflex_green(
+            root, &set, "int restart_fixture(void) { return 12; }\n", second) &&
+        strcmp(first, second) != 0;
+    /* Supersession: a newer save lands while the focused probe runs. */
+    char hook[PATH_MAX];
+    struct dp_probe_watch watch = {0};
+    bool setup = dp_mk_write(root, "tools/dev/restart_fixture.c",
+                             "int restart_fixture(void) { return 7; }\n") &&
+        dp_probe_setup(root, true, hook, &watch);
+    const char *files[] = { "tools/dev/restart_fixture.c" };
+    struct zcl_devloop_epoch_proof proof;
+    zcl_devloop_process_cancel_poll_set(dp_probe_cancel_poll, &watch);
+    int fast = setup ? zcl_devloop_epoch_reflex(
+        root, files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY, &set,
+        &k_dp_shell_real_lanes, &proof) : ZCL_DEVLOOP_RESTART_EVENT_ERROR;
+    zcl_devloop_process_cancel_poll_clear();
+    zcl_devloop_process_cancel_clear();
+    (void)dp_environment_unset("ZCL_DEVLOOP_TEST_PROBE_HOOK");
+    bool cancelled = setup && fast == ZCL_DEVLOOP_RESTART_EVENT_CANCELLED &&
+        dp_probe_left_no_children(watch.marker) && !set.proven[0];
+    (void)unlink(watch.marker);
+    (void)unlink(hook);
+    bool reset = dp_mk_write(root, "tools/dev/restart_fixture.c",
+                             "int restart_fixture(void) { return 7; }\n");
+    if (!green || !cancelled)
+        fprintf(stderr, "shell reflex: green=%d setup=%d fast=%d "
+                "proven=%d\n", green, setup, fast, set.proven[0]);
+    return green && cancelled && reset;
+}
+
 static bool dp_restart_focused_scope_ok(const char *root,
                                         const char *const *changed,
                                         const struct zcl_devloop_plan *plan,
@@ -4741,7 +4983,8 @@ static bool dp_restart_focused_scope_ok(const char *root,
         dp_restart_probe_cancel_ok(root, changed, plan, false, why,
                                    why_len) &&
         dp_restart_probe_cancel_ok(root, changed, plan, true, why, why_len) &&
-        dp_restart_event_verdicts_ok(root, changed);
+        dp_restart_event_verdicts_ok(root, changed) &&
+        dp_shell_reflex_fixture_ok(root);
 }
 
 /* A born-red restart proof must fail, name the failing group and why it ran
@@ -8503,6 +8746,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_hotfork_shape_refusals, 5),
     DP_CASE(test_hotfork_shape_image_cache, 5),
     DP_CASE(test_resident_restart_builder, 4),
+    DP_CASE(test_shell_compiled_epoch_scope, 5),
 #if defined(__APPLE__)
     DP_CASE(test_darwin_attested_descriptor_process, 4),
 #endif

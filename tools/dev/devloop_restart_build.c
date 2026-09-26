@@ -3399,6 +3399,7 @@ struct rr_event_ctx {
     char why[512];
     struct dev_source_record source_before, source_after;
     bool source_superseded;
+    bool *focused_complete;
 };
 
 static bool rr_event_validate(const char *repo_root,
@@ -3628,8 +3629,12 @@ static int rr_event_finish(struct rr_event_ctx *ctx, bool ok)
         ctx->plan.closure_snapshot, false);
     if (!emitted)
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
-    if (ok)
+    if (ok) {
+        /* FOCUSED_GREEN, never a partial: the verdict ran every selected
+         * immediate group against these exact bytes. */
+        *ctx->focused_complete = !rr_proof_partial(&ctx->proof);
         return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+    }
     return fallback_pending ? ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING
                             : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }
@@ -3639,11 +3644,26 @@ int zcl_devloop_restart_event(const char *repo_root,
                               size_t source_count,
                               enum zcl_devloop_publish_mode publish_mode)
 {
+    bool focused_complete = false;
+    return zcl_devloop_restart_event_proving(repo_root, source_tus,
+                                             source_count, publish_mode,
+                                             &focused_complete);
+}
+
+int zcl_devloop_restart_event_proving(const char *repo_root,
+                                      const char *const *source_tus,
+                                      size_t source_count,
+                                      enum zcl_devloop_publish_mode publish_mode,
+                                      bool *focused_complete)
+{
+    bool ignored = false;
     struct rr_event_ctx ctx = {
         .repo_root = repo_root, .source_tus = source_tus,
         .source_count = source_count, .publish_mode = publish_mode,
         .started = platform_time_monotonic_us(),
+        .focused_complete = focused_complete ? focused_complete : &ignored,
     };
+    *ctx.focused_complete = false;
     if (!rr_event_validate(repo_root, source_tus, source_count, &ctx))
         return 0;
     bool ok = rr_event_build_phase(&ctx);
