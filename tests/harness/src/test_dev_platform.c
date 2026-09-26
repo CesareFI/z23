@@ -6715,7 +6715,11 @@ static bool dp_hs_probe_header(const char *rel, const char *text)
 
 /* A header the resident object was built from changes, or the candidate
  * includes one the resident object never saw: the candidate is not an edit
- * of the program the resident runs even when its object shape matches. */
+ * of the program the resident runs even when its object shape matches.
+ * A header replaced after the build is refused even when its mtime is set
+ * back to before the build (cp -p, touch -d, rsync -t, tar): its ctime
+ * cannot be set back. Restoring the original bytes with an old mtime is
+ * the same fact and is refused the same way until the resident rebuilds. */
 static bool dp_hs_header_cases(const char *base, const char *added)
 {
     return dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
@@ -6724,15 +6728,22 @@ static bool dp_hs_header_cases(const char *base, const char *added)
            dp_mk_write(k_dp_hf_root, k_dp_hf_owner, base) &&
            dp_hs_resident(10) && dp_hs_predrive(base, false) &&
            dp_hs_story_green("header-kept", base) &&
+           dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 2u\n") &&
+           dp_hs_predrive(base, true) &&
+           dp_hs_refused("header-replaced-old-mtime", base,
+                         "HOT_FORK_SHAPE_HEADER_DRIFT") &&
            dp_mk_write(k_dp_hf_root, DP_HS_PROBE_H,
                        "#define VCS_POLICY_PROBE 1u\n") &&
            dp_hs_predrive(base, true) &&
            dp_hs_refused("header-changed", base,
                          "HOT_FORK_SHAPE_HEADER_DRIFT") &&
            dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
-           dp_hs_predrive(base, false) &&
+           dp_hs_predrive(base, true) &&
+           dp_hs_refused("header-restored-old-mtime", base,
+                         "HOT_FORK_SHAPE_HEADER_DRIFT") &&
+           dp_hs_resident(11) && dp_hs_predrive(base, false) &&
            dp_hs_story_green("header-restored", base) &&
-           dp_hs_resident(11) && dp_hs_predrive(added, true) &&
+           dp_hs_resident(12) && dp_hs_predrive(added, true) &&
            dp_hs_refused("header-added", added, "HOT_FORK_SHAPE_HEADER_DRIFT");
 }
 
