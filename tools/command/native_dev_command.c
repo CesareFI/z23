@@ -3145,7 +3145,7 @@ static void dev_watch_test_stall(void)
     if (member == 0) {
         (void)signal(SIGTERM, SIG_IGN);
         for (;;)
-            (void)pause();
+            platform_sleep_ms(1000);
     }
     char line[64];
     int n = snprintf(line, sizeof(line), "%ld %ld\n", (long)getpid(),
@@ -3156,7 +3156,7 @@ static void dev_watch_test_stall(void)
     if (fd >= 0)
         (void)close(fd);
     for (;;)
-        (void)pause();
+        platform_sleep_ms(1000);
 }
 
 /* The watcher leads its own session, so a stop can retire everything it
