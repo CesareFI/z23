@@ -4744,6 +4744,25 @@ static bool dp_restart_focused_scope_ok(const char *root,
         dp_restart_event_verdicts_ok(root, changed);
 }
 
+static bool dp_restart_remembered_red_names_group(
+    const char *root, const char *const *changed,
+    const struct zcl_devloop_plan *proof_plan,
+    struct zcl_devloop_process_result *process)
+{
+    char why[256] = {0};
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    memset(process, 0, sizeof(*process));
+    return !zcl_devloop_restart_prove(root, changed, 1, proof_plan, &proof,
+                                      process, why, sizeof(why)) &&
+        strcmp(proof.priority_group, "test_make_lint_gates") == 0 &&
+        strcmp(proof.priority_reason, "previous_failure") == 0 &&
+        strcmp(why,
+               "previously failing group test_make_lint_gates is still red "
+               "(runs first until it passes)") == 0 &&
+        proof.groups_failed == 2 &&
+        !proof.immediate_proof_complete && !proof.proof_complete;
+}
+
 static bool run_resident_restart_fixture(void)
 {
     char root[PATH_MAX], cache_rel[PATH_MAX], compiler_rel[PATH_MAX];
@@ -5049,18 +5068,8 @@ static bool run_resident_restart_fixture(void)
      * a stale previous_failure group must never read as a verdict on this
      * unrelated edit. */
     stage = "remembered red still failing";
-    memset(why, 0, sizeof(why));
-    memset(&proof, 0, sizeof(proof));
-    memset(&process, 0, sizeof(process));
-    if (zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
-                                  &process, why, sizeof(why)) ||
-        strcmp(proof.priority_group, "test_make_lint_gates") != 0 ||
-        strcmp(proof.priority_reason, "previous_failure") != 0 ||
-        strcmp(why,
-               "previously failing group test_make_lint_gates is still red "
-               "(runs first until it passes)") != 0 ||
-        proof.groups_failed != 2 ||
-        proof.immediate_proof_complete || proof.proof_complete)
+    if (!dp_restart_remembered_red_names_group(root, changed, &proof_plan,
+                                               &process))
         goto out;
     if (platform_environment_set("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "0", 1) != 0)
         goto out;
