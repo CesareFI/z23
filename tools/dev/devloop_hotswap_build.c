@@ -3562,7 +3562,7 @@ int zcl_devloop_hotswap_batch_event(
             "candidate_compile", false,
             platform_time_monotonic_us() - started, &build, 0, NULL,
             &process, "exact shell object compiled; candidate bytes were not executed",
-            true) ? ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING : -1;
+            true) ? ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED : -1;
     }
     if (!zcl_devloop_hotswap_build(repo_root, owner, &build, &process,
                                    why, sizeof(why))) {

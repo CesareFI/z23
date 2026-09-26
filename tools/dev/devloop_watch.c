@@ -4722,7 +4722,12 @@ int zcl_devloop_watch_mode_until(const char *repo_root,
         if (fast == 0)
             fast = zcl_devloop_hotswap_batch_event(
                 ctx.root, files, epoch_count, publish_mode);
-        if (fast == 0)
+        /* COMPILE_ONLY is the first reply for a static shell; its bytes still
+         * need the restart candidate lane to execute them. */
+        bool shell_compiled = fast == ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
+        if (shell_compiled)
+            fast = 0;
+        else if (fast == 0)
             fast = service_contract_restart_event(ctx.root, files,
                                                   epoch_count);
         if (fast == 0) {
@@ -4736,6 +4741,8 @@ int zcl_devloop_watch_mode_until(const char *repo_root,
             }
             fast = zcl_devloop_restart_event(
                 ctx.root, proof_files, proof_count, publish_mode);
+            if (shell_compiled && fast == 0)
+                fast = ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
         }
         watch_trace_mark(&ctx.trace.reflex_return_us);
         /* Candidate emitters seal through their already-visible terminal

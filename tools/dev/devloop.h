@@ -499,6 +499,9 @@ enum zcl_devloop_restart_event_result {
     ZCL_DEVLOOP_RESTART_EVENT_CANCELLED = 2,
     ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING = 3,
     ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING = 4,
+    /* A static authority shell compiled but nothing executed its bytes; the
+     * caller must still run the restart candidate lane for this epoch. */
+    ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED = 5,
 };
 
 /* Try the resident process-candidate lane for a bounded set of changed C TUs.
