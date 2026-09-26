@@ -225,3 +225,42 @@ bool utxo_apply_delta_undo_next_unapplied(sqlite3 *db, uint64_t *next_out,
     *found_out = r.found;
     return true;
 }
+
+enum utxo_apply_delta_undo_status utxo_apply_delta_undo_row_branch(
+    sqlite3 *db, int height, const struct uint256 *block_hash)
+{
+    if (!db || !block_hash || height < 0) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] row_branch: invalid args h=%d",
+                 height);
+        return UTXO_DELTA_UNDO_ERROR;
+    }
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT branch_hash FROM utxo_apply_delta WHERE height = ?",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        const char *msg = sqlite3_errmsg(db);
+        if (msg && strstr(msg, "no such table"))
+            return UTXO_DELTA_UNDO_ABSENT;
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] row_branch h=%d prepare rc=%d: "
+                 "%s", height, rc, msg ? msg : "(null)");
+        return UTXO_DELTA_UNDO_ERROR;
+    }
+    sqlite3_bind_int(st, 1, height);
+    rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    enum utxo_apply_delta_undo_status status;
+    if (rc == SQLITE_DONE) {
+        status = UTXO_DELTA_UNDO_ABSENT;
+    } else if (rc != SQLITE_ROW) {
+        LOG_WARN(UNDO_TAG, "[utxo_apply_undo] row_branch h=%d step rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        status = UTXO_DELTA_UNDO_ERROR;
+    } else {
+        status = sqlite3_column_type(st, 0) == SQLITE_BLOB &&
+                 sqlite3_column_bytes(st, 0) == 32 &&
+                 memcmp(sqlite3_column_blob(st, 0), block_hash->data, 32) == 0
+            ? UTXO_DELTA_UNDO_FOUND : UTXO_DELTA_UNDO_OTHER_BRANCH;
+    }
+    sqlite3_finalize(st);
+    return status;
+}

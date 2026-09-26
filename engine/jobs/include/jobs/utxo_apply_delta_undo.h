@@ -63,6 +63,14 @@ enum utxo_apply_delta_undo_status utxo_apply_delta_block_undo_load(
     sqlite3 *db, int height, const struct uint256 *block_hash,
     const struct block *blk, struct block_undo *out);
 
+/* Which block the delta row at `height` was written for, without decoding
+ * it: FOUND when it is `block_hash`'s row, OTHER_BRANCH when the fold still
+ * holds another block there (the active chain switched and the reducer has
+ * not rewound yet), ABSENT when there is no row, ERROR on a store failure.
+ * Takes no locks — the caller owns the connection's serialization. */
+enum utxo_apply_delta_undo_status utxo_apply_delta_undo_row_branch(
+    sqlite3 *db, int height, const struct uint256 *block_hash);
+
 /* The utxo_apply stage's durable cursor: the next height it will apply, so
  * no height at or above it has a delta row yet. *found_out is false when the
  * stage has never committed on this store (nothing to wait for). Returns

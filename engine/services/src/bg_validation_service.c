@@ -286,50 +286,80 @@ static uint64_t bg_validation_applied_next(void)
     return found ? next : UINT64_MAX;
 }
 
-/* Wait, stop-responsive and heartbeating, until the reducer has applied `h`.
- * `*applied_next` caches the last observed cursor so the store is read only
- * when the walk reaches it. A persistent read error does not wedge the walk:
- * after a bounded retry the block is verified with whatever undo exists and
- * any skip is counted honestly. Returns false only when stop is requested. */
+/* One stop-responsive, heartbeating second of waiting on the fold. The
+ * reason is logged on the first wait at a height and then once a minute, so
+ * a wedged reducer is named without flooding the log. */
+static void bg_validation_fold_backoff(struct bg_validation_service *svc,
+                                       int h, const char *reason,
+                                       unsigned *waits)
+{
+    if (*waits % 60 == 0)
+        LOG_INFO("bg_validation",
+                 "[bg-valid] h=%d waits for the reducer: %s (waited %us)",
+                 h, reason, *waits);
+    (*waits)++;
+    bg_validation_supervisor_heartbeat(svc);
+    if (!atomic_load(&svc->stop_requested))
+        platform_sleep_ms(1000);
+}
+
+/* Wait until the reducer has applied `h`. `*applied_next` caches the last
+ * observed cursor so the store is read only when the walk reaches it. An
+ * unreadable cursor is waited out like an unapplied height: verifying
+ * without knowing the frontier could book a transient absence as a
+ * permanent skip. Returns false only when stop is requested. */
 static bool bg_validation_wait_until_applied(
     struct bg_validation_service *svc, int h, uint64_t *applied_next)
 {
-    unsigned read_errors = 0;
-    bool announced = false;
+    unsigned waits = 0;
     while (!atomic_load(&svc->stop_requested)) {
         if ((uint64_t)h < *applied_next)
             return true;
         uint64_t next = bg_validation_applied_next();
-        if (next == 0 && ++read_errors >= 5)
-            return true;
         if (next != 0)
             *applied_next = next;
         if ((uint64_t)h < *applied_next)
             return true;
-        if (!announced && next != 0) {
-            LOG_INFO("bg_validation",
-                     "[bg-valid] h=%d waits for the reducer to apply it "
-                     "(utxo_apply next=%llu)",
-                     h, (unsigned long long)next);
-            announced = true;
-        }
-        bg_validation_supervisor_heartbeat(svc);
-        platform_sleep_ms(1000);
+        bg_validation_fold_backoff(
+            svc, h, next == 0 ? "utxo_apply cursor unreadable"
+                              : "height not applied yet", &waits);
     }
     return false;
 }
 
-/* A rewind can pull the fold's cursor back under a cached value, so a skip
- * is re-checked against a fresh cursor before it is booked: true when `h`
- * is not (or no longer) applied and must be retried, not counted. */
-static bool bg_validation_skip_is_premature(int h, int64_t block_skips,
-                                            uint64_t *applied_next)
+/* Why a block that verified with undo-missing skips must be retried rather
+ * than booked, or NULL when the skips are real. A rewind can pull the fold's
+ * cursor back under a cached value, and after the active chain switches
+ * branches the fold still holds the abandoned block's delta row at `h`
+ * until it rewinds: neither is a missing undo, both resolve once the
+ * reducer catches up. A store error is also retried: the answer is unknown,
+ * not negative. */
+static const char *bg_validation_skip_retry_reason(
+    int h, const struct block_index *pindex, int64_t block_skips,
+    uint64_t *applied_next)
 {
     if (block_skips <= 0)
-        return false;
+        return NULL;
     *applied_next = bg_validation_applied_next();
-    return *applied_next != 0 && *applied_next != UINT64_MAX &&
-           (uint64_t)h >= *applied_next;
+    if (*applied_next == 0)
+        return "utxo_apply cursor unreadable";
+    if (*applied_next == UINT64_MAX)
+        return NULL;  /* this store has no fold: nothing will ever appear */
+    if ((uint64_t)h >= *applied_next)
+        return "height no longer applied";
+    if (!pindex || !pindex->phashBlock)
+        return NULL;
+    progress_store_tx_lock();
+    sqlite3 *db = progress_store_db();
+    enum utxo_apply_delta_undo_status row = db
+        ? utxo_apply_delta_undo_row_branch(db, h, pindex->phashBlock)
+        : UTXO_DELTA_UNDO_ABSENT;
+    progress_store_tx_unlock();
+    if (row == UTXO_DELTA_UNDO_OTHER_BRANCH)
+        return "fold still holds another branch's block";
+    if (row == UTXO_DELTA_UNDO_ERROR)
+        return "delta row unreadable";
+    return NULL;
 }
 
 /* ── Where a walk campaign starts ─────────────────────────────
@@ -517,6 +547,7 @@ static void *bg_validation_thread(void *arg)
     int64_t total_proofs = 0;
     int64_t total_skips = ws.skips;
     uint64_t applied_next = 0;
+    unsigned retry_waits = 0;
     atomic_store(&svc->progress.script_verif_skipped_no_undo, total_skips);
 
     for (int h = start_height; h <= chain_height; h++) {
@@ -572,10 +603,14 @@ static void *bg_validation_thread(void *arg)
         }
 
         block_free(&blk);
-        if (bg_validation_skip_is_premature(h, block_skips, &applied_next)) {
+        const char *retry = bg_validation_skip_retry_reason(
+            h, pindex, block_skips, &applied_next);
+        if (retry) {
+            bg_validation_fold_backoff(svc, h, retry, &retry_waits);
             h--;
             continue;
         }
+        retry_waits = 0;
         total_sigs += block_sigs;
         total_proofs += block_proofs;
         total_skips += block_skips;

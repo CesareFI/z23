@@ -30,6 +30,7 @@
 #include "jobs/utxo_apply_delta_undo.h"
 #include "jobs/utxo_apply_stage.h"
 #include "mining/miner.h"
+#include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "services/bg_validation_service.h"
@@ -42,6 +43,7 @@
 #include "validation/main_state.h"
 
 #include <signal.h>
+#include <stdatomic.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -530,6 +532,129 @@ static int du_case_unfolded_store(struct du_fixture *fx)
     return failures;
 }
 
+/* ── The walk across a branch switch the fold has not caught up with ──
+ * Height 1's delta row is left stamped with another block (the fixture's
+ * other-branch case), which is what the store holds after the active chain
+ * switches and before the reducer rewinds: the stage cursor is still above
+ * the height. The walk must wait that out instead of booking the skips, and
+ * verify the block once the fold re-applies it. The verifier is the real
+ * one, given a parentless copy of the index (the contextual header rules
+ * are not what this group exercises). */
+static struct du_fixture *g_wk_fx;
+static _Atomic int g_wk_h1_attempts;
+static int g_wk_progress = -1;
+static int64_t g_wk_version = 0;
+static int64_t g_wk_skips = -1;
+
+static bool wk_load_progress(void *self, int *out)
+{ (void)self; *out = g_wk_progress; return true; }
+static bool wk_save_progress(void *self, int h)
+{ (void)self; g_wk_progress = h; return true; }
+static bool wk_load_skips(void *self, int64_t *out)
+{ (void)self; *out = g_wk_skips; return true; }
+static bool wk_save_skips(void *self, int64_t v)
+{ (void)self; g_wk_skips = v; return true; }
+static bool wk_load_version(void *self, int64_t *out)
+{ (void)self; *out = g_wk_version; return true; }
+static bool wk_save_version(void *self, int64_t v)
+{ (void)self; g_wk_version = v; return true; }
+
+static bool wk_read_body(struct block *out, const struct block_index *bi,
+                         const char *datadir)
+{
+    (void)datadir;
+    if (!bi || bi->nHeight < 0 || bi->nHeight >= DU_BLOCKS)
+        return false;
+    block_free(out);
+    return test_block_copy(out, &g_wk_fx->c.body[bi->nHeight], "wk_read");
+}
+
+/* The reducer's rewind + re-apply of the active block at h=1. */
+static bool wk_reapply_h1(void)
+{
+    struct delta_summary s;
+    memset(&s, 0, sizeof(s));
+    utxo_apply_compute_block_delta(&g_wk_fx->c.body[1], 1, du_lookup,
+                                   &g_wk_fx->c, &s);
+    if (!s.ok)
+        return false;
+    progress_store_tx_lock();
+    bool ok = utxo_apply_delta_persist(progress_store_db(), 1,
+                                       &g_wk_fx->c.hash[1], &s);
+    progress_store_tx_unlock();
+    free_delta(&s);
+    return ok;
+}
+
+static bool wk_validate(const struct block *block, struct block_index *index,
+                        const char *datadir, const struct chain_params *params,
+                        int num_workers, size_t max_script_batch,
+                        int64_t *sigs_out, int64_t *proofs_out,
+                        int64_t *skips_out)
+{
+    if (index->nHeight == 1 && atomic_fetch_add(&g_wk_h1_attempts, 1) == 1 &&
+        !wk_reapply_h1())
+        return false;
+    struct block_index parentless = *index;
+    parentless.pprev = NULL;
+    return bg_validation_validate_block_proofs(
+        block, &parentless, datadir, params, num_workers, max_script_batch,
+        sigs_out, proofs_out, skips_out);
+}
+
+static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
+{
+    int failures = 0;
+    struct bg_validation_service svc;
+    memset(&svc, 0, sizeof(svc));
+    bool started = false;
+    TEST("delta_undo: a branch switch the fold lags is waited out, not booked") {
+        ASSERT(fx->opened);
+        struct block_undo u;
+        ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_OTHER_BRANCH);
+        g_wk_fx = fx;
+        atomic_store(&g_wk_h1_attempts, 0);
+        g_wk_progress = -1;
+        g_wk_version = 0;
+        g_wk_skips = -1;
+        svc.ms = &fx->ms;
+        svc.datadir = fx->dir;
+        svc.params = fx->cp;
+        svc.num_workers = 1;
+        svc.progress_store = (struct bg_validation_store_port) {
+            .self = &svc,
+            .load_progress = wk_load_progress,
+            .save_progress = wk_save_progress,
+            .load_skips = wk_load_skips,
+            .save_skips = wk_save_skips,
+            .load_coverage_version = wk_load_version,
+            .save_coverage_version = wk_save_version,
+        };
+        bg_validation_test_set_body_repair_stubs(wk_read_body, NULL);
+        bg_validation_test_set_validate_stub(wk_validate);
+        started = bg_validation_start(&svc);
+        ASSERT(started);
+        for (int i = 0; i < 200 &&
+             atomic_load(&svc.progress.state) != BG_VALIDATION_COMPLETE &&
+             atomic_load(&svc.progress.state) != BG_VALIDATION_FAILED; i++)
+            platform_sleep_ms(100);
+        ASSERT_EQ(atomic_load(&svc.progress.state), BG_VALIDATION_COMPLETE);
+        ASSERT_EQ(atomic_load(&svc.progress.verified_height), DU_BLOCKS - 1);
+        /* First attempt saw the other branch; the retry saw the re-apply. */
+        ASSERT(atomic_load(&g_wk_h1_attempts) >= 2);
+        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 0);
+        ASSERT_EQ(g_wk_skips, 0);
+        ASSERT_EQ(atomic_load(&svc.progress.sigs_verified),
+                  (int64_t)(3 * (DU_BLOCKS - 1)));
+        PASS();
+    } _test_next:;
+    if (started)
+        bg_validation_stop(&svc);
+    bg_validation_test_set_validate_stub(NULL);
+    bg_validation_test_set_body_repair_stubs(NULL, NULL);
+    return failures;
+}
+
 static int test_delta_undo_forward_record(const struct chain_params *cp)
 {
     struct du_fixture fx;
@@ -542,6 +667,7 @@ static int test_delta_undo_forward_record(const struct chain_params *cp)
     failures += du_case_other_branch(&fx);
     failures += du_case_input_mismatch(&fx);
     failures += du_case_unfolded_store(&fx);
+    failures += du_case_walk_waits_out_branch_switch(&fx);
     if (fx.opened)
         du_close(&fx.ms);
     if (fx.built)
