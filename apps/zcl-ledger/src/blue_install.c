@@ -63,6 +63,12 @@ static const app_profile profiles[] = {
     }
 };
 
+static const app_profile *profile_named(const char *name) {
+    for (size_t i = 0; i < sizeof profiles / sizeof profiles[0]; ++i)
+        if (strcmp(profiles[i].name, name) == 0) return &profiles[i];
+    return NULL;
+}
+
 typedef struct {
     int fd;
     bool secure;
@@ -460,20 +466,20 @@ static bool parse_ca_args(int argc, char **argv, install_args *args) {
     } else if (argc == 4 && strcmp(argv[2], "--ca-delete-fixture") == 0) {
         args->ca_path = argv[3];
         args->delete_app = true;
-        args->profile = &profiles[1];
+        args->profile = profile_named("ZCL Fixture");
     } else if (argc == 4 && strcmp(argv[2], "--ca-delete-review") == 0) {
         args->ca_path = argv[3];
         args->delete_app = true;
-        args->profile = &profiles[2];
+        args->profile = profile_named("ZCL Review");
     } else if (argc == 4 && strcmp(argv[2], "--ca-delete-sign-test") == 0) {
         args->ca_path = argv[3];
         args->delete_app = true;
-        args->profile = &profiles[3];
+        args->profile = profile_named("ZCL Sign Test");
     } else if (argc == 5 && strcmp(argv[2], "--ca-install") == 0) {
         args->ca_path = argv[3];
         args->image_path = argv[4];
     } else return false;
-    return true;
+    return !args->delete_app || args->profile != NULL;
 }
 
 static bool parse_plain_args(int argc, char **argv, install_args *args) {
@@ -483,20 +489,20 @@ static bool parse_plain_args(int argc, char **argv, install_args *args) {
         args->channel_only = true;
     else if (argc == 3 && strcmp(argv[2], "--delete") == 0) {
         args->delete_app = true;
-        args->profile = &profiles[0];
+        args->profile = profile_named("ZCL Probe");
     } else if (argc == 3 && strcmp(argv[2], "--delete-fixture") == 0) {
         args->delete_app = true;
-        args->profile = &profiles[1];
+        args->profile = profile_named("ZCL Fixture");
     } else if (argc == 3 && strcmp(argv[2], "--delete-review") == 0) {
         args->delete_app = true;
-        args->profile = &profiles[2];
+        args->profile = profile_named("ZCL Review");
     } else if (argc == 3 && strcmp(argv[2], "--delete-sign-test") == 0) {
         args->delete_app = true;
-        args->profile = &profiles[3];
+        args->profile = profile_named("ZCL Sign Test");
     } else if (argc == 3)
         args->image_path = argv[2];
     else return false;
-    return true;
+    return !args->delete_app || args->profile != NULL;
 }
 
 static int parse_args(int argc, char **argv, install_args *args) {
