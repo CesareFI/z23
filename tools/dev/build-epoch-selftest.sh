@@ -1708,5 +1708,84 @@ SHIM_ID_WRAP_SMALL="$(shim_home_compiler_id "$SHIM_CCACHE_WRAPPER")" ||
     fail 'rewriting ccache.conf left the identity of a ccache-wrapped compiler unchanged'
 
 
-printf 'build-epoch-selftest: PASS toolchain_keyed=true stable_namespace=true source_bound_publish=true concurrent_publish=true late_marker_refusal=true make_recovery=true warm_no_rewrite=true degraded_probe_refused=true flake_retried=true wrapper_config_scoped=true compiler_id=%s\n' \
+# A7 (cache-environment-scoped-to-wrapper): CCACHE_* and SCCACHE_* belong to
+# the compiler identity only when ccache or sccache is the compile command,
+# directly or as the compiler the in-tree zcc wrapper delegates to. The
+# resident watcher exports a checkout-local CCACHE_DIR for its own ff ladder,
+# and binding that variable for `build/bin/zcc cc` (zcc never reads it) gave
+# every watcher-spawned make a different identity from the same checkout's
+# shell builds, so HOT_FORK refused every save as a toolchain change. Anything
+# the rule cannot classify still binds both families: it may never under-bind.
+SHIM_SCOPE="$SHIM_DIR/scope"
+mkdir -p "$SHIM_SCOPE/build/bin" "$SHIM_DIR/wrap"
+SHIM_ZCC="$SHIM_SCOPE/build/bin/zcc"
+printf '#!/bin/sh\nexec "$@"\n' > "$SHIM_ZCC"
+for shim_wrapper in ccache sccache mystery; do
+    printf '#!/bin/sh\ncase "${1:-}" in --show-config) printf "fixture %%s\\n" "$0"; exit 0 ;; esac\nshift\nexec "%s" "$@"\n' \
+        "$SHIM_CC" > "$SHIM_DIR/wrap/$shim_wrapper"
+done
+chmod +x "$SHIM_ZCC" "$SHIM_DIR/wrap/ccache" "$SHIM_DIR/wrap/sccache" \
+    "$SHIM_DIR/wrap/mystery"
+
+# One derivation under a private HOME with none of the caller's cache
+# variables; the remaining arguments are the pair's only difference.
+cache_env_compiler_id()
+{
+    local cc="$1" name
+    local -a clear=()
+    shift
+    for name in $(compgen -e); do
+        case "$name" in CCACHE_*|SCCACHE_*) clear+=(-u "$name") ;; esac
+    done
+    env "${clear[@]}" PATH="$SHIM_PATH" HOME="$SHIM_HOME" "$@" \
+        "$KEY_TOOL" compiler-id "$cc" "$cc" "$SHIM_SCOPE"
+}
+
+# Both derivations must succeed and differ (`differ`) or agree (`agree`).
+cache_env_pair()
+{
+    local want="$1" label="$2" cc="$3" left="$4" right="$5" a b
+    a="$(cache_env_compiler_id "$cc" "$left")" ||
+        fail "$label: no compiler fingerprint with $left"
+    b="$(cache_env_compiler_id "$cc" "$right")" ||
+        fail "$label: no compiler fingerprint with $right"
+    if [ "$want" = differ ] && [ "$a" = "$b" ]; then
+        fail "$label: $left and $right gave the same compiler identity"
+    fi
+    if [ "$want" = agree ] && [ "$a" != "$b" ]; then
+        fail "$label: $left and $right gave different compiler identities"
+    fi
+    return 0
+}
+
+# (a) ccache as the compile command binds every CCACHE_* value.
+cache_env_pair differ 'ccache cc, CCACHE_BASEDIR' "$SHIM_DIR/wrap/ccache cc" \
+    CCACHE_BASEDIR=/a CCACHE_BASEDIR=/b
+cache_env_pair differ 'ccache cc, CCACHE_DIR' "$SHIM_DIR/wrap/ccache cc" \
+    CCACHE_DIR=/a CCACHE_DIR=/b
+# (b) sccache binds SCCACHE_*.
+cache_env_pair differ 'sccache cc, SCCACHE_DIR' "$SHIM_DIR/wrap/sccache cc" \
+    SCCACHE_DIR=/a SCCACHE_DIR=/b
+# (c) an `env VAR=...` spelling and an unclassifiable argv[0] fail closed.
+cache_env_pair differ 'env X=1 ccache cc, CCACHE_BASEDIR' \
+    "env X=1 $SHIM_DIR/wrap/ccache cc" CCACHE_BASEDIR=/a CCACHE_BASEDIR=/b
+cache_env_pair differ 'unknown wrapper, CCACHE_DIR' "$SHIM_DIR/wrap/mystery cc" \
+    CCACHE_DIR=/a CCACHE_DIR=/b
+cache_env_pair differ 'unknown wrapper, SCCACHE_DIR' "$SHIM_DIR/wrap/mystery cc" \
+    SCCACHE_DIR=/a SCCACHE_DIR=/b
+# (d) zcc delegating to ccache binds, because ccache is what zcc executes.
+cache_env_pair differ 'zcc ccache cc, CCACHE_BASEDIR' \
+    "$SHIM_ZCC $SHIM_DIR/wrap/ccache cc" CCACHE_BASEDIR=/a CCACHE_BASEDIR=/b
+# (e) zcc delegating to a plain compiler does not observe either family.
+cache_env_pair agree 'zcc cc, CCACHE_DIR/CCACHE_MAXSIZE' "$SHIM_ZCC $SHIM_CC" \
+    CCACHE_DIR=/unset-marker 'CCACHE_DIR=/checkout/.cache/devloop-ccache-v1'
+cache_env_pair agree 'zcc cc, CCACHE_MAXSIZE' "$SHIM_ZCC $SHIM_CC" \
+    CCACHE_MAXSIZE=20G CCACHE_MAXSIZE=512M
+cache_env_pair agree 'zcc cc, SCCACHE_DIR' "$SHIM_ZCC $SHIM_CC" \
+    SCCACHE_DIR=/a SCCACHE_DIR=/b
+[ "$(cache_env_compiler_id "$SHIM_ZCC $SHIM_CC")" = \
+  "$(cache_env_compiler_id "$SHIM_ZCC $SHIM_CC" CCACHE_DIR=/a CCACHE_MAXSIZE=512M)" ] ||
+    fail 'zcc cc: setting CCACHE_DIR and CCACHE_MAXSIZE moved the compiler identity'
+
+printf 'build-epoch-selftest: PASS toolchain_keyed=true stable_namespace=true source_bound_publish=true concurrent_publish=true late_marker_refusal=true make_recovery=true warm_no_rewrite=true degraded_probe_refused=true flake_retried=true wrapper_config_scoped=true cache_env_scoped=true compiler_id=%s\n' \
     "$COMPILER_ID"
