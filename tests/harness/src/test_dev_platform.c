@@ -6413,6 +6413,10 @@ static const char k_dp_hs_object[] =
     "build/dev-obj/epochs/"
     "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/"
     "contexts/commons/modules/vcs/src/package_policy.o";
+static const char k_dp_hs_depfile[] =
+    "build/dev-obj/epochs/"
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/"
+    "contexts/commons/modules/vcs/src/package_policy.d";
 static const char k_dp_hs_session[] =
     "build/dev-obj/epochs/"
     "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/"
@@ -6478,7 +6482,7 @@ static bool dp_hs_resident(long seq)
         !dp_mk_write(k_dp_hf_root, "build/dev-obj/.current-epoch", epoch) ||
         !dp_hs_session(compiler) ||
         !dp_mk_write(k_dp_hf_root, k_dp_hs_object, "") ||
-        snprintf(cmd, sizeof(cmd), "cd '%s' && %s %s -c %s -o %s",
+        snprintf(cmd, sizeof(cmd), "cd '%s' && %s %s -MMD -c %s -o %s",
                  k_dp_hf_root, cc, cflags, k_dp_hf_owner, k_dp_hs_object) >=
             (int)sizeof(cmd))
         return false;
@@ -6579,6 +6583,12 @@ static const struct dp_hs_case k_dp_hs_edits[] = {
       DP_HS_QUEUE "    static uint32_t calls;\n"
       "    if (calls++ == UINT32_MAX)\n        return 0;\n", false,
       "HOT_FORK_SHAPE_STATE_CHANGED" },
+    /* Never taken by the story, so RTLD_LAZY would admit it green. */
+    { "undefined-reference", DP_HS_QUEUE_RETURN,
+      "    extern uint32_t vcs_policy_shape_probe_missing(uint32_t v);\n"
+      "    if ((int)tier == -7)\n"
+      "        return vcs_policy_shape_probe_missing(0u);\n" DP_HS_QUEUE_RETURN,
+      false, "HOT_FORK_SHAPE_UNRESOLVED" },
     { "constructor", DP_HS_QUEUE,
       "__attribute__((constructor)) static void policy_shape_probe_ctor(void)\n"
       "{\n}\n\n" DP_HS_QUEUE, false, "HOT_FORK_SHAPE_INIT_FINI" },
@@ -6632,13 +6642,16 @@ static bool dp_hs_toolchain_drift(const char *owner)
  * not. A private struct layout is implementation detail. */
 #define DP_HS_STATE_BASE \
     "struct policy_shape_probe_pair {\n    uint32_t a;\n};\n" \
-    "static uint32_t policy_shape_probe_ring[4];\n\n" DP_HS_QUEUE \
+    "static uint32_t policy_shape_probe_ring[4];\n" \
+    "static const char *policy_shape_probe_names[2] = { \"a\", NULL };\n\n" \
+    DP_HS_QUEUE \
     "    struct policy_shape_probe_pair pair = { .a = 1u };\n" \
-    "    policy_shape_probe_ring[0] += pair.a;\n"
+    "    policy_shape_probe_ring[0] += pair.a;\n" \
+    "    policy_shape_probe_names[1] = policy_shape_probe_names[0];\n"
 
 static bool dp_hs_state_matrix(const char *owner)
 {
-    static char base[16384], resized[16384], layout[16384];
+    static char base[16384], resized[16384], layout[16384], relocs[16384];
     return dp_hs_edit(owner, DP_HS_QUEUE, DP_HS_STATE_BASE, false, base,
                       sizeof(base)) &&
            dp_hs_edit(base, "ring[4]", "ring[8]", false, resized,
@@ -6646,12 +6659,68 @@ static bool dp_hs_state_matrix(const char *owner)
            dp_hs_edit(base, "    uint32_t a;\n",
                       "    uint32_t a;\n    uint32_t b;\n", false, layout,
                       sizeof(layout)) &&
+           dp_hs_edit(base, "{ \"a\", NULL }", "{ \"a\", \"b\" }", false,
+                      relocs, sizeof(relocs)) &&
            dp_mk_write(k_dp_hf_root, k_dp_hf_owner, base) &&
            dp_hs_resident(2) &&
            dp_hs_story_green("resident-static-kept", base) &&
            dp_hs_refused("static-array-resized", resized,
                          "HOT_FORK_SHAPE_STATE_CHANGED") &&
+           dp_hs_refused("static-relocations-changed", relocs,
+                         "HOT_FORK_SHAPE_STATE_CHANGED") &&
            dp_hs_story_green("private-struct-layout", layout);
+}
+
+/* One save whose outcome the watcher's own dependency baseline may decide
+ * (a changed closure or header answers COMPILE_RED once); a refusal case
+ * must still never reach the story. */
+static bool dp_hs_predrive(const char *text, bool must_refuse)
+{
+    struct dp_hf_seen seen = {0};
+    return dp_mk_write(k_dp_hf_root, k_dp_hf_owner, text) &&
+           dp_hf_drive(&seen) &&
+           (!must_refuse || strcmp(seen.phase, "STORY_GREEN") != 0);
+}
+
+#define DP_HS_PROBE_H "contexts/commons/modules/vcs/src/package_policy_probe.h"
+#define DP_HS_PROBE2_H \
+    "contexts/commons/modules/vcs/src/package_policy_probe2.h"
+#define DP_HS_PROBE_INCLUDE "#include \"package_policy_probe.h\"\n"
+
+static bool dp_hs_probe_header(const char *rel, const char *text)
+{
+    return dp_mk_write(k_dp_hf_root, rel, text) &&
+           dp_settle(k_dp_hf_root, rel, 9);
+}
+
+/* A header the resident object was built from changes, or the candidate
+ * includes one the resident object never saw: the candidate is not an edit
+ * of the program the resident runs even when its object shape matches. */
+static bool dp_hs_header_drift(const char *owner)
+{
+    static char base[16384], added[16384];
+    return dp_hs_edit(owner, DP_HS_INCLUDE, DP_HS_INCLUDE DP_HS_PROBE_INCLUDE,
+                      false, base, sizeof(base)) &&
+           dp_hs_edit(base, DP_HS_PROBE_INCLUDE,
+                      DP_HS_PROBE_INCLUDE
+                      "#include \"package_policy_probe2.h\"\n",
+                      false, added, sizeof(added)) &&
+           dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
+           dp_hs_probe_header(DP_HS_PROBE2_H,
+                              "#define VCS_POLICY_PROBE2 0u\n") &&
+           dp_mk_write(k_dp_hf_root, k_dp_hf_owner, base) &&
+           dp_hs_resident(10) && dp_hs_predrive(base, false) &&
+           dp_hs_story_green("header-kept", base) &&
+           dp_mk_write(k_dp_hf_root, DP_HS_PROBE_H,
+                       "#define VCS_POLICY_PROBE 1u\n") &&
+           dp_hs_predrive(base, true) &&
+           dp_hs_refused("header-changed", base,
+                         "HOT_FORK_SHAPE_HEADER_DRIFT") &&
+           dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
+           dp_hs_predrive(base, false) &&
+           dp_hs_story_green("header-restored", base) &&
+           dp_hs_resident(11) && dp_hs_predrive(added, true) &&
+           dp_hs_refused("header-added", added, "HOT_FORK_SHAPE_HEADER_DRIFT");
 }
 
 static bool dp_hs_write_object(const char *bytes, size_t len, long seq)
@@ -6729,6 +6798,9 @@ static bool dp_hs_missing_facts(void)
            dp_hs_unlink(k_dp_hs_object) &&
            dp_hs_refused("object-missing", NULL,
                          "HOT_FORK_SHAPE_NO_BASELINE") &&
+           dp_hs_resident(8) && dp_hs_unlink(k_dp_hs_depfile) &&
+           dp_hs_refused("depfile-missing", NULL,
+                         "HOT_FORK_SHAPE_NO_BASELINE") &&
            dp_hs_resident(7) && dp_hs_unlink(k_dp_hs_session) &&
            dp_hs_refused("session-missing", NULL,
                          "HOT_FORK_SHAPE_NO_BASELINE");
@@ -6765,7 +6837,7 @@ static bool dp_hs_edit_matrix(const char *owner)
 static int test_hotfork_shape_refusals(void)
 {
     int failures = 0;
-    TEST("dev platform: HOT_FORK refuses ABI, writable-state, init/fini, toolchain, closure and missing-fact shapes by name and admits implementation-only edits") {
+    TEST("dev platform: HOT_FORK refuses ABI, writable-state, init/fini, unresolved-reference, header-drift, toolchain, closure and missing-fact shapes by name and admits implementation-only edits") {
         static char owner[16384], story[16384];
         char cwd[PATH_MAX];
         ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
@@ -6780,12 +6852,14 @@ static int test_hotfork_shape_refusals(void)
         ASSERT(dp_hf_env(cwd, true));
         bool edits = dp_hs_edit_matrix(owner);
         bool state = dp_hs_state_matrix(owner);
+        bool drift = dp_hs_header_drift(owner);
         bool facts = dp_hs_resident_facts(owner) && dp_hs_missing_facts();
         ASSERT(dp_hf_env(cwd, false));
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
         ASSERT(edits);
         ASSERT(state);
+        ASSERT(drift);
         ASSERT(facts);
         PASS();
     } _test_next:;
