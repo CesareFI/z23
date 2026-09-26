@@ -77,7 +77,8 @@ struct shadow_row {
 };
 
 /* Splits one line into exactly SHADOW_CMP_FIELDS tab-separated fields. */
-static bool shadow_split(const char *line, size_t len, struct shadow_row *row)
+static bool shadow_cmp_split(const char *line, size_t len,
+                             struct shadow_row *row)
 {
     size_t f = 0, start = 0;
     for (size_t i = 0; i <= len; i++) {
@@ -92,7 +93,7 @@ static bool shadow_split(const char *line, size_t len, struct shadow_row *row)
     return f == SHADOW_CMP_FIELDS;
 }
 
-static bool shadow_copy(char *dst, size_t cap, const char *src, size_t len)
+static bool shadow_cmp_copy(char *dst, size_t cap, const char *src, size_t len)
 {
     if (len >= cap) return false;
     memcpy(dst, src, len);
@@ -123,7 +124,7 @@ static bool shadow_rows_each(const char *text, size_t len, shadow_row_fn fn,
         pos = nl ? end + 1 : len;
         if (n == 0 || line[0] == '#') continue;
         struct shadow_row row;
-        if (!shadow_split(line, n, &row)) {
+        if (!shadow_cmp_split(line, n, &row)) {
             shadow_cmp_why(why, why_len, "line_%zu_needs_%d_fields", line_no,
                            SHADOW_CMP_FIELDS);
             return false;
@@ -156,7 +157,7 @@ static bool shadow_names_parse(const struct shadow_row *row, size_t f,
         dst[0] = '\0';
         return true;
     }
-    return shadow_copy(dst, cap, row->field[f], row->len[f]) &&
+    return shadow_cmp_copy(dst, cap, row->field[f], row->len[f]) &&
            !shadow_names_truncated(dst);
 }
 
@@ -165,7 +166,7 @@ static bool shadow_prediction_row(const struct shadow_row *row, void *ctx,
 {
     struct zcl_shadow_predictions *p = ctx;
     struct zcl_shadow_prediction *out = &p->rows[p->count];
-    bool ok = shadow_copy(out->id, sizeof(out->id), row->field[0],
+    bool ok = shadow_cmp_copy(out->id, sizeof(out->id), row->field[0],
                           row->len[0]) &&
               shadow_mode_parse(row, 1, &out->selector_mode) &&
               shadow_names_parse(row, 2, out->selector_names,
@@ -246,9 +247,9 @@ static bool shadow_observation_row(const struct shadow_row *row, void *ctx,
 {
     struct zcl_shadow_observations *o = ctx;
     struct zcl_shadow_observation *out = &o->rows[o->count];
-    bool ok = shadow_copy(out->id, sizeof(out->id), row->field[0],
+    bool ok = shadow_cmp_copy(out->id, sizeof(out->id), row->field[0],
                           row->len[0]) &&
-              shadow_copy(out->group, sizeof(out->group), row->field[1],
+              shadow_cmp_copy(out->group, sizeof(out->group), row->field[1],
                           row->len[1]) &&
               shadow_verdict_parse(row, 2, &out->base) &&
               shadow_verdict_parse(row, 3, &out->patched);

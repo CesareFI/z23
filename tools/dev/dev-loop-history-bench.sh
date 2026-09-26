@@ -286,6 +286,11 @@ if [ "$MODE" = "--self-test" ]; then
         fail 'first HOT_FORK sibling TU classification regressed'
     [ "$(classify engine/modules/kernel/src/command_registry_devagent_input.c | cut -f1)" = HOT_FORK ] ||
         fail 'last HOT_FORK sibling TU classification regressed'
+    [ "$(classify tools/dev/dev_shadow_rule.c | cut -f1)" = HOT_FORK ] &&
+        [ "$(classify tools/dev/dev_shadow_render.c | cut -f1)" = HOT_FORK ] ||
+        fail 'shadow selector core HOT_FORK classification regressed'
+    [ "$(classify tools/dev/dev_shadow_eval.c | cut -f1)" != HOT_FORK ] ||
+        fail 'shadow evaluator (code index, processes) must stay outside HOT_FORK'
     for path in contexts/commons/modules/vcs/src/package_policy.c \
                 engine/modules/kernel/src/command_registry.c engine/entry/main.c \
                 platform/modules/codec/src/cursor.c core/modules/crypto/src/sha256.c \
