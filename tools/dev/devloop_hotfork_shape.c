@@ -522,6 +522,21 @@ static void shape_remove_kept(const char *dir)
     (void)rmdir(dir);
 }
 
+/* Drops every kept-object directory under `parent` except `keep`'s. */
+static void shape_kept_prune(const char *parent, const char *keep)
+{
+    DIR *d = opendir(parent);
+    for (struct dirent *e = d ? readdir(d) : NULL; e; e = readdir(d)) {
+        char other[PATH_MAX];
+        if (e->d_name[0] != '.' && strcmp(e->d_name, keep) != 0 &&
+            snprintf(other, sizeof(other), "%s/%s", parent, e->d_name) <
+                (int)sizeof(other))
+            shape_remove_kept(other);
+    }
+    if (d)
+        closedir(d);
+}
+
 /* The kept-object directory of the running image exists; the first save
  * under a new image drops every other image's directory. */
 static bool shape_kept_ready(struct zcl_hotfork_shape *shape)
@@ -535,16 +550,8 @@ static bool shape_kept_ready(struct zcl_hotfork_shape *shape)
                  (int)sizeof(path) &&
              (mkdir(path, 0700) == 0 || errno == EEXIST);
     bool created = ok && mkdir(dir, 0700) == 0;
-    DIR *d = created ? opendir(path) : NULL;
-    for (struct dirent *e = d ? readdir(d) : NULL; e; e = readdir(d)) {
-        char other[PATH_MAX];
-        if (e->d_name[0] != '.' && strcmp(e->d_name, shape->image) != 0 &&
-            snprintf(other, sizeof(other), "%s/%s", path, e->d_name) <
-                (int)sizeof(other))
-            shape_remove_kept(other);
-    }
-    if (d)
-        closedir(d);
+    if (created)
+        shape_kept_prune(path, shape->image);
     return created || (ok && errno == EEXIST) ||
            shape_unbound(shape, "RECORD_UNWRITABLE", "build/hotswap-fast/resident",
                          "the resident's build objects cannot be kept for "
