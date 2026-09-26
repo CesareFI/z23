@@ -9,12 +9,34 @@
  * compiler identity, no object is newer than the running image, and every
  * global the objects define is defined by the running image.
  *
+ * The capsule's TUs are the owner, its siblings and every source the story
+ * adapter itself includes (a view contract compiles its service .c).
+ *
  * Shape, compared per capsule:
  *   ABI    defined GLOBAL/WEAK symbols (functions, objects, TLS, common)
  *   state  writable, thread-local and common objects of any binding, by
- *          name (a local static's ".N" suffix is dropped) and size;
- *          .data.rel.ro is read-only after relocation and is not state
+ *          name (a local static's ".N" suffix is dropped), size and the
+ *          number of relocations inside the object (its initializer's
+ *          pointers); .data.rel.ro is read-only after relocation and is not
+ *          state
  *   init   .preinit_array, .init_array, .fini_array, .ctors, .dtors
+ *   refs   every symbol the candidate leaves undefined is in the running
+ *          image's dynamic symbol table or defined by a library the image
+ *          names (DT_NEEDED) or its interpreter, as mapped in this process
+ *   deps   every prerequisite of each resident object's depfile under the
+ *          source root, except the edited owner and siblings, still exists
+ *          and is not newer than that object (make's own freshness fact; no
+ *          per-input digest is recorded for dev objects), and every
+ *          prerequisite under the source root the candidate compiled after
+ *          the owner is one some resident object was built from. Paths
+ *          outside the source root are the toolchain's, bound by the
+ *          compiler identity; headers the adapter includes before the owner
+ *          are the adapter's.
+ *
+ * Section totals (.data/.bss/.tdata) are not compared: the unity packs every
+ * TU plus the adapter into one object, so its padding and the adapter's own
+ * objects make totals differ for implementation-only edits. Per-object size
+ * and relocation counts carry the same facts at object granularity.
  * LOCAL function symbols are not shape: a static function has internal
  * linkage, holds no state, cannot be bound from outside its TU, and appears
  * or disappears with inlining decisions. Adding, renaming or removing one is
@@ -27,7 +49,8 @@
  * therefore refused.
  *
  * Every read failure refuses: an unreadable or malformed object, a missing
- * symbol table, a missing session or object, an unreadable binding record.
+ * symbol table, a missing session, object or depfile, an unreadable binding
+ * record.
  */
 #include "devloop_hotfork_shape.h"
 
@@ -78,8 +101,10 @@ static const char *const k_shape_init_fini[] = {
 enum {
     SHAPE_SECTION_MAX = 64 << 20, /* bytes read from one ELF section */
     SHAPE_TEXT_MAX = 16 << 20,    /* bytes read from one closure file */
-    SHAPE_TU_MAX = 1 + ZCL_HOTFORK_UNITY_SIBLING_MAX,
+    SHAPE_ADAPTER_TU_MAX = 4,     /* sources one story adapter includes */
+    SHAPE_TU_MAX = 1 + ZCL_HOTFORK_UNITY_SIBLING_MAX + SHAPE_ADAPTER_TU_MAX,
     SHAPE_DEPS_MAX = 4096,
+    SHAPE_LIBS_MAX = 32,          /* DT_NEEDED entries of the image */
 };
 
 enum shape_kind { SHAPE_GLOBAL, SHAPE_DATA, SHAPE_TLS };
@@ -96,6 +121,7 @@ struct shape_elf {
     size_t nsym;
     char *str;
     size_t str_len;
+    size_t strndx; /* section index of `str` */
 };
 
 struct shape_sym {
@@ -103,6 +129,15 @@ struct shape_sym {
     size_t len;       /* compared length */
     uint64_t size;
     enum shape_kind kind;
+    uint64_t value;   /* offset in its section (state entries) */
+    size_t shndx;     /* its section in the owning object (state entries) */
+    uint32_t relocs;  /* relocations inside the object (state entries) */
+};
+
+struct shape_paths {
+    char **items;
+    size_t count;
+    size_t cap;
 };
 
 struct shape_set {
@@ -129,6 +164,8 @@ struct shape_run {
     struct shape_elf cand;
     struct shape_set base;
     struct shape_set next;
+    struct shape_set undefined; /* the candidate's undefined references */
+    struct shape_paths resident_deps; /* sorted, root-relative */
     char *deps_text;
     char *deps[SHAPE_DEPS_MAX];
     size_t dep_count;
@@ -283,27 +320,180 @@ static bool shape_read_session(struct zcl_hotfork_shape *shape,
     return true;
 }
 
+/* ── source paths ────────────────────────────────────────────────────── */
+
+/* `path` relative to the source root, or NULL when it lies outside it. */
+static const char *shape_in_root(const char *root, const char *path)
+{
+    size_t n = strlen(root);
+    while (n > 1 && root[n - 1] == '/')
+        n--;
+    if (path[0] != '/')
+        return path;
+    return strncmp(path, root, n) == 0 && path[n] == '/' ? path + n + 1
+                                                         : NULL;
+}
+
+/* Drops the last segment of out[0..*n). False when there is none. */
+static bool shape_pop(char *out, size_t *n)
+{
+    if (*n == 0)
+        return false;
+    while (*n > 0 && out[*n - 1] != '/')
+        (*n)--;
+    if (*n > 0)
+        (*n)--;
+    return true;
+}
+
+/* Collapses "." and ".." segments of a relative path; false when it
+ * escapes its base or does not fit. */
+static bool shape_collapse(const char *p, char *out, size_t cap)
+{
+    size_t n = 0;
+    while (*p) {
+        size_t len = strcspn(p, "/");
+        const char *seg = p;
+        p += len + (p[len] == '/');
+        bool dot = len == 1 && seg[0] == '.';
+        bool up = len == 2 && seg[0] == '.' && seg[1] == '.';
+        if (up && !shape_pop(out, &n))
+            return false;
+        if (len == 0 || dot || up)
+            continue;
+        if (n + 1 + len >= cap)
+            return false;
+        if (n)
+            out[n++] = '/';
+        memcpy(out + n, seg, len);
+        n += len;
+    }
+    out[n] = 0;
+    return n > 0;
+}
+
+/* `path` as a collapsed root-relative path; false when outside the root. */
+static bool shape_normal(const char *root, const char *path, char *out,
+                         size_t cap)
+{
+    const char *rel = shape_in_root(root, path);
+    return rel && shape_collapse(rel, out, cap);
+}
+
 static bool shape_object_path(const struct zcl_hotfork_shape *shape,
-                              const char *tu, char *out, size_t cap)
+                              const char *tu, const char *ext, char *out,
+                              size_t cap)
 {
     size_t n = strlen(tu);
     return n > 2 && strcmp(tu + n - 2, ".c") == 0 &&
-           snprintf(out, cap, "%s/build/dev-obj/epochs/%s/%.*s.o", shape->root,
-                    shape->epoch, (int)(n - 2), tu) < (int)cap;
+           snprintf(out, cap, "%s/build/dev-obj/epochs/%s/%.*s%s",
+                    shape->root, shape->epoch, (int)(n - 2), tu, ext) <
+               (int)cap;
 }
 
-/* TU `index` of the capsule: the owner first, then each sibling. */
+static size_t shape_edit_tu_count(const struct zcl_hotfork_shape *shape)
+{
+    return 1 + zcl_hotfork_tu_list_count(shape->sibling_tus);
+}
+
+/* TU `index` of the capsule: the owner, each sibling, then each source the
+ * story adapter includes. */
 static bool shape_tu_at(const struct zcl_hotfork_shape *shape, size_t index,
                         char *out, size_t cap)
 {
+    size_t edits = shape_edit_tu_count(shape);
     if (index == 0)
         return snprintf(out, cap, "%s", shape->source_tu) < (int)cap;
-    return zcl_hotfork_tu_list_at(shape->sibling_tus, index - 1, out, cap);
+    if (index < edits)
+        return zcl_hotfork_tu_list_at(shape->sibling_tus, index - 1, out, cap);
+    return zcl_hotfork_tu_list_at(shape->adapter_tus, index - edits, out, cap);
 }
 
 static size_t shape_tu_count(const struct zcl_hotfork_shape *shape)
 {
-    return 1 + zcl_hotfork_tu_list_count(shape->sibling_tus);
+    return shape_edit_tu_count(shape) +
+           zcl_hotfork_tu_list_count(shape->adapter_tus);
+}
+
+/* True for the owner and its siblings: the files the edit may touch. */
+static bool shape_is_edit_tu(const struct zcl_hotfork_shape *shape,
+                             const char *rel)
+{
+    size_t edits = shape_edit_tu_count(shape);
+    for (size_t i = 0; i < edits; i++) {
+        char tu[ZCL_HOTFORK_UNITY_TU_MAX];
+        if (shape_tu_at(shape, i, tu, sizeof(tu)) && strcmp(tu, rel) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Appends the adapter's `#include "<dir>/<len bytes>"` source. */
+static bool shape_adapter_tu_add(struct zcl_hotfork_shape *shape,
+                                 const char *story, const char *inc,
+                                 size_t len)
+{
+    char joined[PATH_MAX], tu[ZCL_HOTFORK_UNITY_TU_MAX];
+    const char *slash = strrchr(story, '/');
+    size_t used = strlen(shape->adapter_tus);
+    int dir = slash ? (int)(slash - story) : 0;
+    if (zcl_hotfork_tu_list_count(shape->adapter_tus) >= SHAPE_ADAPTER_TU_MAX ||
+        snprintf(joined, sizeof(joined), "%.*s%s%.*s", dir, story,
+                 dir ? "/" : "", (int)len, inc) >= (int)sizeof(joined) ||
+        !shape_collapse(joined, tu, sizeof(tu)))
+        return false;
+    return snprintf(shape->adapter_tus + used, sizeof(shape->adapter_tus) - used,
+                    "%s%s", used ? "|" : "", tu) <
+           (int)(sizeof(shape->adapter_tus) - used);
+}
+
+/* Every `#include "….c"` in the story adapter is a capsule TU too. */
+static bool shape_adapter_tus(struct zcl_hotfork_shape *shape)
+{
+    static const char directive[] = "#include \"";
+    char story[ZCL_HOTFORK_UNITY_TU_MAX], path[PATH_MAX];
+    char *text = zcl_hotfork_story_path(shape->adapter_id, story,
+                                        sizeof(story)) &&
+                         snprintf(path, sizeof(path), "%s/%s", shape->root,
+                                  story) < (int)sizeof(path)
+                     ? shape_slurp(path, SHAPE_TEXT_MAX, NULL) : NULL;
+    bool ok = text != NULL;
+    for (const char *p = text; ok && (p = strstr(p, directive)) != NULL;) {
+        p += sizeof(directive) - 1;
+        size_t len = strcspn(p, "\"\n");
+        if (len > 2 && p[len] == '"' && memcmp(p + len - 2, ".c", 2) == 0)
+            ok = shape_adapter_tu_add(shape, story, p, len);
+        p += len;
+    }
+    free(text);
+    return ok || shape_unbound(shape, "NO_BASELINE",
+                               shape->adapter_id ? shape->adapter_id : "-",
+                               "the story adapter or a source it includes "
+                               "does not resolve");
+}
+
+/* The resident object of one TU and its depfile, both present and no newer
+ * than the running image. */
+static bool shape_bind_tu(struct zcl_hotfork_shape *shape, const char *tu,
+                          const struct stat *resident, struct sha3_256_ctx *ctx)
+{
+    char path[PATH_MAX], dep[PATH_MAX];
+    struct stat st, dst;
+    if (!shape_object_path(shape, tu, ".o", path, sizeof(path)) ||
+        !shape_regular(path, &st))
+        return shape_unbound(shape, "NO_BASELINE", tu,
+                             "the resident build object for this TU is missing");
+    if (!shape_object_path(shape, tu, ".d", dep, sizeof(dep)) ||
+        !shape_regular(dep, &dst))
+        return shape_unbound(shape, "NO_BASELINE", tu,
+                             "the resident build object's depfile is missing");
+    if (shape_newer(&st, resident))
+        return shape_unbound(shape, "RESIDENT_STALE", tu,
+                             "the resident build object is newer than the "
+                             "running image; restart the resident");
+    shape_hash_stat(ctx, tu, &st);
+    shape_hash_stat(ctx, dep, &dst);
+    return true;
 }
 
 static bool shape_bind_objects(struct zcl_hotfork_shape *shape,
@@ -312,18 +502,12 @@ static bool shape_bind_objects(struct zcl_hotfork_shape *shape,
 {
     size_t count = shape_tu_count(shape);
     for (size_t i = 0; i < count; i++) {
-        char tu[ZCL_HOTFORK_UNITY_TU_MAX], path[PATH_MAX];
-        struct stat st;
-        if (!shape_tu_at(shape, i, tu, sizeof(tu)) ||
-            !shape_object_path(shape, tu, path, sizeof(path)) ||
-            !shape_regular(path, &st))
-            return shape_unbound(shape, "NO_BASELINE", tu,
-                                 "the resident build object for this TU is missing");
-        if (shape_newer(&st, resident))
-            return shape_unbound(shape, "RESIDENT_STALE", tu,
-                                 "the resident build object is newer than the "
-                                 "running image; restart the resident");
-        shape_hash_stat(ctx, tu, &st);
+        char tu[ZCL_HOTFORK_UNITY_TU_MAX];
+        if (!shape_tu_at(shape, i, tu, sizeof(tu)))
+            return shape_unbound(shape, "NO_BASELINE", shape->source_tu,
+                                 "a capsule TU does not resolve");
+        if (!shape_bind_tu(shape, tu, resident, ctx))
+            return false;
     }
     return true;
 }
@@ -369,7 +553,7 @@ void zcl_hotfork_shape_begin(struct zcl_hotfork_shape *shape, const char *root,
     }
     shape_hash_stat(&ctx, "resident", &resident);
     if (shape_read_epoch(shape) && shape_read_session(shape, &ctx) &&
-        shape_bind_objects(shape, &resident, &ctx))
+        shape_adapter_tus(shape) && shape_bind_objects(shape, &resident, &ctx))
         shape_hex_root(&ctx, shape->generation);
 }
 
@@ -428,14 +612,15 @@ static bool shape_ehdr_valid(const Elf64_Ehdr *eh, uint64_t size)
 
 /* The one SHT_SYMTAB; NULL with *bad set when the table is malformed or
  * extended section indices are in use (not supported: refuse). */
-static const Elf64_Shdr *shape_find_symtab(const struct shape_elf *e, bool *bad)
+static const Elf64_Shdr *shape_find_symtab(const struct shape_elf *e,
+                                           unsigned type, bool *bad)
 {
     const Elf64_Shdr *symtab = NULL;
     for (size_t i = 0; i < e->eh.e_shnum; i++) {
         if (e->sh[i].sh_type == SHT_SYMTAB_SHNDX ||
-            (e->sh[i].sh_type == SHT_SYMTAB && symtab))
+            (e->sh[i].sh_type == type && symtab))
             *bad = true;
-        if (e->sh[i].sh_type == SHT_SYMTAB)
+        if (e->sh[i].sh_type == type)
             symtab = &e->sh[i];
     }
     return *bad ? NULL : symtab;
@@ -451,10 +636,11 @@ static bool shape_load_names(struct shape_elf *e)
     return e->shstr != NULL;
 }
 
-static enum shape_read shape_load_symtab(struct shape_elf *e, bool names)
+static enum shape_read shape_load_symtab(struct shape_elf *e, bool names,
+                                        unsigned type)
 {
     bool bad = false;
-    const Elf64_Shdr *symtab = shape_find_symtab(e, &bad);
+    const Elf64_Shdr *symtab = shape_find_symtab(e, type, &bad);
     if (bad)
         return SHAPE_READ_UNREADABLE;
     if (!symtab)
@@ -465,6 +651,7 @@ static enum shape_read shape_load_symtab(struct shape_elf *e, bool names)
         e->sh[symtab->sh_link].sh_type != SHT_STRTAB)
         return SHAPE_READ_UNREADABLE;
     const Elf64_Shdr *strs = &e->sh[symtab->sh_link];
+    e->strndx = symtab->sh_link;
     e->sym = shape_pread(e->fd, symtab->sh_offset, symtab->sh_size, e->size);
     e->nsym = (size_t)(symtab->sh_size / sizeof(Elf64_Sym));
     e->str = shape_pread(e->fd, strs->sh_offset, strs->sh_size, e->size);
@@ -473,10 +660,10 @@ static enum shape_read shape_load_symtab(struct shape_elf *e, bool names)
     return ok ? SHAPE_READ_OK : SHAPE_READ_UNREADABLE;
 }
 
-/* Opens one ELF64 file of the host byte order. `names` also loads section
- * names (relocatable objects; the resident image needs only symbols). */
-static enum shape_read shape_elf_open(struct shape_elf *e, const char *path,
-                                      bool names)
+/* Opens one ELF64 file of the host byte order with its `type` symbol table
+ * (SHT_SYMTAB or SHT_DYNSYM). `names` also loads section names. */
+static enum shape_read shape_elf_open_as(struct shape_elf *e, const char *path,
+                                         bool names, unsigned type)
 {
     struct stat st;
     memset(e, 0, sizeof(*e));
@@ -492,7 +679,13 @@ static enum shape_read shape_elf_open(struct shape_elf *e, const char *path,
         return SHAPE_READ_NO_SYMTAB;
     e->sh = shape_pread(e->fd, e->eh.e_shoff,
                         (uint64_t)e->eh.e_shnum * sizeof(Elf64_Shdr), e->size);
-    return e->sh ? shape_load_symtab(e, names) : SHAPE_READ_UNREADABLE;
+    return e->sh ? shape_load_symtab(e, names, type) : SHAPE_READ_UNREADABLE;
+}
+
+static enum shape_read shape_elf_open(struct shape_elf *e, const char *path,
+                                      bool names)
+{
+    return shape_elf_open_as(e, path, names, SHT_SYMTAB);
 }
 
 static bool shape_open_refuse(enum shape_read got, const char *subject,
@@ -520,8 +713,7 @@ static const char *shape_section_name(const struct shape_elf *e,
 
 /* ── shape of one relocatable object ─────────────────────────────────── */
 
-static bool shape_push(struct shape_set *set, const char *name, size_t len,
-                       uint64_t size, enum shape_kind kind)
+static bool shape_push(struct shape_set *set, struct shape_sym sym)
 {
     if (set->count == set->cap) {
         size_t cap = set->cap ? set->cap * 2 : 256;
@@ -532,7 +724,7 @@ static bool shape_push(struct shape_set *set, const char *name, size_t len,
         set->items = grown;
         set->cap = cap;
     }
-    set->items[set->count++] = (struct shape_sym){ name, len, size, kind };
+    set->items[set->count++] = sym;
     return true;
 }
 
@@ -599,8 +791,64 @@ static void shape_note_init_fini(const struct shape_elf *e,
     }
 }
 
+/* Counts one relocation at `at` in section `shndx` against the state entry
+ * of this object that holds it; a relocation outside every state object
+ * (padding, anonymous data) belongs to no entry. */
+static void shape_attribute(struct shape_set *set, size_t first, size_t shndx,
+                            uint64_t at)
+{
+    for (size_t j = first; j < set->count; j++) {
+        struct shape_sym *s = &set->items[j];
+        if (s->kind != SHAPE_GLOBAL && s->shndx == shndx && at >= s->value &&
+            at - s->value < s->size) {
+            s->relocs++;
+            return;
+        }
+    }
+}
+
+static bool shape_section_relocs(const struct shape_elf *e,
+                                 const Elf64_Shdr *rs, struct shape_set *set,
+                                 size_t first)
+{
+    size_t entsize = rs->sh_type == SHT_RELA ? sizeof(Elf64_Rela)
+                                             : sizeof(Elf64_Rel);
+    if (rs->sh_entsize != entsize || rs->sh_size % entsize != 0)
+        return false;
+    if (rs->sh_size == 0)
+        return true;
+    unsigned char *raw = shape_pread(e->fd, rs->sh_offset, rs->sh_size, e->size);
+    if (!raw)
+        return false;
+    for (uint64_t off = 0; off < rs->sh_size; off += entsize) {
+        uint64_t at; /* r_offset leads both Elf64_Rel and Elf64_Rela */
+        memcpy(&at, raw + off, sizeof(at));
+        shape_attribute(set, first, rs->sh_info, at);
+    }
+    free(raw);
+    return true;
+}
+
+/* Relocations applied inside writable or thread-local sections: the
+ * pointers an object's initializer holds. */
+static bool shape_count_relocs(const struct shape_elf *e,
+                               struct shape_set *set, size_t first)
+{
+    for (size_t i = 0; i < e->eh.e_shnum; i++) {
+        const Elf64_Shdr *rs = &e->sh[i];
+        if ((rs->sh_type != SHT_RELA && rs->sh_type != SHT_REL) ||
+            rs->sh_info >= e->eh.e_shnum ||
+            !(e->sh[rs->sh_info].sh_flags & (SHF_WRITE | SHF_TLS)))
+            continue;
+        if (!shape_section_relocs(e, rs, set, first))
+            return false;
+    }
+    return true;
+}
+
 static bool shape_collect(const struct shape_elf *e, struct shape_set *set)
 {
+    size_t first = set->count;
     for (size_t i = 1; i < e->nsym; i++) {
         const Elf64_Sym *s = &e->sym[i];
         const char *name = shape_sym_name(e, s);
@@ -608,15 +856,39 @@ static bool shape_collect(const struct shape_elf *e, struct shape_set *set)
             continue;
         enum shape_kind state = shape_state_kind(e, s);
         bool local = ELF64_ST_BIND(s->st_info) == STB_LOCAL;
-        if (shape_is_global(s) &&
-            !shape_push(set, name, strlen(name), s->st_size, SHAPE_GLOBAL))
+        struct shape_sym sym = { .name = name, .len = strlen(name),
+                                 .size = s->st_size, .kind = SHAPE_GLOBAL };
+        if (shape_is_global(s) && !shape_push(set, sym))
             return false;
-        if (state != SHAPE_GLOBAL &&
-            !shape_push(set, name, shape_canonical_len(name, local),
-                        s->st_size, state))
+        sym.len = shape_canonical_len(name, local);
+        sym.kind = state;
+        sym.value = s->st_value;
+        sym.shndx = s->st_shndx;
+        if (state != SHAPE_GLOBAL && !shape_push(set, sym))
             return false;
     }
     shape_note_init_fini(e, set);
+    return shape_count_relocs(e, set, first);
+}
+
+/* The candidate's undefined references, by name. */
+static bool shape_collect_undefined(const struct shape_elf *e,
+                                    struct shape_set *set)
+{
+    for (size_t i = 1; i < e->nsym; i++) {
+        const Elf64_Sym *s = &e->sym[i];
+        const char *name = shape_sym_name(e, s);
+        unsigned bind = ELF64_ST_BIND(s->st_info);
+        unsigned type = ELF64_ST_TYPE(s->st_info);
+        if (!name || !name[0] || s->st_shndx != SHN_UNDEF ||
+            (bind != STB_GLOBAL && bind != STB_WEAK) || type == STT_SECTION ||
+            type == STT_FILE)
+            continue;
+        struct shape_sym sym = { .name = name, .len = strlen(name),
+                                 .kind = SHAPE_GLOBAL };
+        if (!shape_push(set, sym))
+            return false;
+    }
     return true;
 }
 
@@ -630,9 +902,13 @@ static int shape_cmp(const void *pa, const void *pb)
         return c;
     if (a->len != b->len)
         return a->len < b->len ? -1 : 1;
-    if (a->kind == SHAPE_GLOBAL || a->size == b->size)
+    if (a->kind == SHAPE_GLOBAL)
         return 0;
-    return a->size < b->size ? -1 : 1;
+    if (a->size != b->size)
+        return a->size < b->size ? -1 : 1;
+    if (a->relocs != b->relocs)
+        return a->relocs < b->relocs ? -1 : 1;
+    return 0;
 }
 
 /* ── baseline objects and the running image ──────────────────────────── */
@@ -644,7 +920,7 @@ static bool shape_load_baseline(struct shape_run *run, char *why,
     for (size_t i = 0; i < count; i++) {
         char tu[ZCL_HOTFORK_UNITY_TU_MAX], path[PATH_MAX];
         if (!shape_tu_at(run->shape, i, tu, sizeof(tu)) ||
-            !shape_object_path(run->shape, tu, path, sizeof(path)))
+            !shape_object_path(run->shape, tu, ".o", path, sizeof(path)))
             return shape_refuse(why, why_len, "NO_BASELINE", tu,
                                 "the resident build object path does not resolve");
         enum shape_read got = shape_elf_open(&run->objects[i], path, true);
@@ -655,7 +931,7 @@ static bool shape_load_baseline(struct shape_run *run, char *why,
                                      tu, why, why_len);
         if (!shape_collect(&run->objects[i], &run->base))
             return shape_refuse(why, why_len, "OBJECT_UNREADABLE", tu,
-                                "out of memory reading the object's shape");
+                                "the object's symbols or relocations cannot be read");
     }
     qsort(run->base.items, run->base.count, sizeof(run->base.items[0]),
           shape_cmp);
@@ -755,37 +1031,49 @@ static bool shape_resident_defines(const struct shape_set *base, char *why,
 
 /* ── dependency closure and the binding record ───────────────────────── */
 
-static bool shape_depfile_index(struct shape_run *run, char *text,
-                                const char *end)
+/* Length of a backslash line continuation at `in`, 0 when there is none. */
+static size_t shape_continuation(const char *in)
 {
-    for (char *t = text; t < end && run->dep_count < SHAPE_DEPS_MAX;
-         t += strlen(t) + 1)
-        if (*t)
-            run->deps[run->dep_count++] = t;
-    return run->dep_count > 0 && run->dep_count < SHAPE_DEPS_MAX;
+    if (in[0] != '\\')
+        return 0;
+    if (in[1] == '\n')
+        return 2;
+    return in[1] == '\r' && in[2] == '\n' ? 3 : 0;
 }
 
-/* Splits a make depfile into its prerequisite paths, in place, one NUL
- * between paths; the target and its ':' are dropped, a backslash-newline is
- * a separator and a backslash-space is a space inside a path. */
-static bool shape_depfile_split(struct shape_run *run)
+static bool shape_depfile_index(char *text, const char *end, char **deps,
+                                size_t *count, size_t max)
 {
-    char *text = shape_slurp(run->depfile, 1 << 20, NULL);
+    size_t n = 0;
+    for (char *t = text; t < end && n < max; t += strlen(t) + 1)
+        if (*t)
+            deps[n++] = t;
+    *count = n;
+    return n > 0 && n < max;
+}
+
+/* Splits the first rule of a make depfile into its prerequisite paths, in
+ * place, one NUL between paths; the target and its ':' are dropped, a
+ * backslash-newline is a separator, a backslash-space is a space inside a
+ * path, and the rule ends at its first bare newline (any -MP phony rules
+ * after it name no new prerequisite). */
+static bool shape_depfile_split(char *text, char **deps, size_t *count,
+                                size_t max)
+{
     char *colon = text ? strchr(text, ':') : NULL;
-    run->deps_text = text;
     if (!colon)
         return false;
     char *out = text;
-    for (const char *in = colon + 1; *in; in++) {
-        bool joined = in[0] == '\\' && (in[1] == '\n' || in[1] == '\r');
+    for (const char *in = colon + 1; *in && *in != '\n'; in++) {
+        size_t joined = shape_continuation(in);
         bool escaped = in[0] == '\\' && in[1] == ' ';
-        in += escaped;
-        char c = joined || (!escaped && strchr(" \t\r\n", *in)) ? 0 : *in;
+        in += joined ? joined - 1 : escaped;
+        char c = joined || (!escaped && strchr(" \t\r", *in)) ? 0 : *in;
         if (c != 0 || (out > text && out[-1] != 0))
             *out++ = c;
     }
     *out = 0;
-    return shape_depfile_index(run, text, out);
+    return shape_depfile_index(text, out, deps, count, max);
 }
 
 /* Every prerequisite after the first (the generated unity, a fresh temp
@@ -824,13 +1112,22 @@ static bool shape_record_field(const char *text, const char *key,
     return shape_hex64(out);
 }
 
-static bool shape_record_check(struct shape_run *run, char *why,
-                               size_t why_len)
+static bool shape_candidate_deps(struct shape_run *run, char *why,
+                                 size_t why_len)
 {
-    if (!shape_depfile_split(run) || !shape_record_path(run))
+    run->deps_text = shape_slurp(run->depfile, 1 << 20, NULL);
+    if (!shape_depfile_split(run->deps_text, run->deps, &run->dep_count,
+                             SHAPE_DEPS_MAX) ||
+        !shape_record_path(run))
         return shape_refuse(why, why_len, "CLOSURE_UNREADABLE", run->depfile,
                             "the candidate's dependency closure cannot be read");
     shape_closure_root(run);
+    return true;
+}
+
+static bool shape_record_check(struct shape_run *run, char *why,
+                               size_t why_len)
+{
     struct stat st;
     if (!shape_regular(run->record, &st))
         return true;
@@ -885,6 +1182,300 @@ static bool shape_record_commit(struct shape_run *run, char *why,
                             "the shape binding record could not be written");
     }
     return true;
+}
+
+/* ── header drift ────────────────────────────────────────────────────── */
+
+static int shape_path_cmp(const void *pa, const void *pb)
+{
+    return strcmp(*(char *const *)pa, *(char *const *)pb);
+}
+
+static bool shape_paths_push(struct shape_paths *p, const char *s)
+{
+    if (p->count == p->cap) {
+        size_t cap = p->cap ? p->cap * 2 : 64;
+        char **grown = zcl_realloc(p->items, cap * sizeof(*grown),
+                                   "HOT_FORK shape paths");
+        if (!grown)
+            return false;
+        p->items = grown;
+        p->cap = cap;
+    }
+    size_t n = strlen(s);
+    char *copy = zcl_malloc(n + 1, "HOT_FORK shape path");
+    if (!copy)
+        return false;
+    memcpy(copy, s, n + 1);
+    p->items[p->count++] = copy;
+    return true;
+}
+
+static bool shape_paths_has(const struct shape_paths *p, const char *s)
+{
+    return p->count &&
+           bsearch(&s, p->items, p->count, sizeof(p->items[0]),
+                   shape_path_cmp) != NULL;
+}
+
+static bool shape_drift(char *why, size_t why_len, const char *subject,
+                        const char *detail)
+{
+    return shape_refuse(why, why_len, "HEADER_DRIFT", subject, detail);
+}
+
+/* One prerequisite of a resident object last written at `built`. */
+static bool shape_resident_dep(struct shape_run *run, const char *dep,
+                               const struct stat *built, char *why,
+                               size_t why_len)
+{
+    char rel[PATH_MAX], path[PATH_MAX];
+    struct stat st;
+    if (!shape_normal(run->shape->root, dep, rel, sizeof(rel)))
+        return true; /* the toolchain's, bound by the compiler identity */
+    if (!shape_paths_push(&run->resident_deps, rel))
+        return shape_refuse(why, why_len, "NO_BASELINE", rel,
+                            "out of memory recording the resident's inputs");
+    if (shape_is_edit_tu(run->shape, rel))
+        return true;
+    if (snprintf(path, sizeof(path), "%s/%s", run->shape->root, rel) >=
+            (int)sizeof(path) ||
+        !shape_regular(path, &st))
+        return shape_drift(why, why_len, rel,
+                           "an input the resident object was built from is gone");
+    return !shape_newer(&st, built) ||
+           shape_drift(why, why_len, rel,
+                       "changed after the resident object was built from it");
+}
+
+/* Every input one resident object's depfile names. */
+static bool shape_resident_tu_deps(struct shape_run *run, const char *tu,
+                                   char *why, size_t why_len)
+{
+    char obj[PATH_MAX], dep[PATH_MAX];
+    struct stat built = {0};
+    size_t count = 0;
+    char **deps = zcl_calloc(SHAPE_DEPS_MAX, sizeof(*deps),
+                             "HOT_FORK resident depfile");
+    char *text = deps && shape_object_path(run->shape, tu, ".o", obj,
+                                           sizeof(obj)) &&
+                         shape_regular(obj, &built) &&
+                         shape_object_path(run->shape, tu, ".d", dep,
+                                           sizeof(dep))
+                     ? shape_slurp(dep, 1 << 20, NULL) : NULL;
+    bool ok = shape_depfile_split(text, deps, &count, SHAPE_DEPS_MAX);
+    if (!ok)
+        (void)shape_refuse(why, why_len, "NO_BASELINE", tu,
+                           "the resident build object's depfile cannot be read");
+    for (size_t i = 0; ok && i < count; i++)
+        ok = shape_resident_dep(run, deps[i], &built, why, why_len);
+    free(deps);
+    free(text);
+    return ok;
+}
+
+/* Every input under the source root the candidate compiled after the owner
+ * is one some resident object was built from. Inputs before the owner are
+ * the story adapter's phase-1 includes. */
+static bool shape_candidate_added(struct shape_run *run, char *why,
+                                  size_t why_len)
+{
+    bool after_owner = false;
+    for (size_t i = 1; i < run->dep_count; i++) {
+        char rel[PATH_MAX];
+        if (!shape_normal(run->shape->root, run->deps[i], rel, sizeof(rel)))
+            continue;
+        if (!after_owner) {
+            after_owner = strcmp(rel, run->shape->source_tu) == 0;
+            continue;
+        }
+        if (!shape_paths_has(&run->resident_deps, rel))
+            return shape_drift(why, why_len, rel,
+                               "the candidate compiles an input no resident "
+                               "object was built from");
+    }
+    return after_owner ||
+           shape_refuse(why, why_len, "CLOSURE_UNREADABLE",
+                        run->shape->source_tu,
+                        "the owner is not in the candidate's dependency closure");
+}
+
+static bool shape_header_check(struct shape_run *run, char *why,
+                               size_t why_len)
+{
+    size_t count = shape_tu_count(run->shape);
+    for (size_t i = 0; i < count; i++) {
+        char tu[ZCL_HOTFORK_UNITY_TU_MAX];
+        if (!shape_tu_at(run->shape, i, tu, sizeof(tu)))
+            return shape_refuse(why, why_len, "NO_BASELINE",
+                                run->shape->source_tu,
+                                "a capsule TU does not resolve");
+        if (!shape_resident_tu_deps(run, tu, why, why_len))
+            return false;
+    }
+    if (run->resident_deps.count)
+        qsort(run->resident_deps.items, run->resident_deps.count,
+              sizeof(run->resident_deps.items[0]), shape_path_cmp);
+    return shape_candidate_added(run, why, why_len);
+}
+
+/* ── unresolved references ───────────────────────────────────────────── */
+
+static void shape_mark_defined(const struct shape_elf *e,
+                               const struct shape_set *set,
+                               struct shape_index *ix)
+{
+    for (size_t i = 1; i < e->nsym; i++) {
+        const char *name = shape_sym_name(e, &e->sym[i]);
+        if (name && name[0] && e->sym[i].st_shndx != SHN_UNDEF)
+            shape_index_mark(set, ix, name);
+    }
+}
+
+struct shape_libs {
+    const char *needed[SHAPE_LIBS_MAX]; /* basenames, borrowed */
+    size_t count;
+    char interp[PATH_MAX];
+};
+
+static const char *shape_basename(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static bool shape_dynamic_needed(const struct shape_elf *img,
+                                 const Elf64_Shdr *sec, struct shape_libs *libs)
+{
+    if (sec->sh_link != img->strndx || sec->sh_entsize != sizeof(Elf64_Dyn))
+        return false;
+    unsigned char *raw = shape_pread(img->fd, sec->sh_offset, sec->sh_size,
+                                     img->size);
+    bool ok = raw != NULL;
+    for (size_t k = 0; ok && k < sec->sh_size / sizeof(Elf64_Dyn); k++) {
+        Elf64_Dyn d;
+        memcpy(&d, raw + k * sizeof(d), sizeof(d));
+        if (d.d_tag != DT_NEEDED)
+            continue;
+        ok = d.d_un.d_val < img->str_len && libs->count < SHAPE_LIBS_MAX;
+        if (ok)
+            libs->needed[libs->count++] = img->str + d.d_un.d_val;
+    }
+    free(raw);
+    return ok;
+}
+
+static bool shape_interp(const struct shape_elf *img, const Elf64_Shdr *sec,
+                         struct shape_libs *libs)
+{
+    char *raw = shape_pread(img->fd, sec->sh_offset, sec->sh_size, img->size);
+    bool ok = raw && snprintf(libs->interp, sizeof(libs->interp), "%s", raw) <
+                         (int)sizeof(libs->interp);
+    free(raw);
+    return ok;
+}
+
+/* The image's DT_NEEDED names (in its dynamic string table) and its
+ * program interpreter. */
+static bool shape_image_libs(const struct shape_elf *img,
+                             struct shape_libs *libs)
+{
+    bool ok = true;
+    for (size_t i = 0; ok && i < img->eh.e_shnum; i++) {
+        const Elf64_Shdr *sec = &img->sh[i];
+        const char *name = shape_section_name(img, sec);
+        if (sec->sh_type == SHT_DYNAMIC)
+            ok = shape_dynamic_needed(img, sec, libs);
+        else if (name && strcmp(name, ".interp") == 0)
+            ok = shape_interp(img, sec, libs);
+    }
+    return ok;
+}
+
+static bool shape_lib_wanted(const struct shape_libs *libs, const char *path)
+{
+    const char *base = shape_basename(path);
+    if (libs->interp[0] && strcmp(base, shape_basename(libs->interp)) == 0)
+        return true;
+    for (size_t i = 0; i < libs->count; i++)
+        if (strcmp(base, libs->needed[i]) == 0)
+            return true;
+    return false;
+}
+
+/* Marks every name defined by a library the image names, as this process
+ * mapped it (the reflex runner execs the same image). */
+static bool shape_mark_libs(const struct shape_libs *libs,
+                            const struct shape_set *set,
+                            struct shape_index *ix)
+{
+    char *maps = shape_slurp("/proc/self/maps", 4 << 20, NULL);
+    const char *last = "";
+    bool ok = maps != NULL;
+    for (char *line = maps; ok && line && *line;) {
+        char *end = strchr(line, '\n');
+        if (end)
+            *end = 0;
+        const char *path = strchr(line, '/');
+        if (path && strcmp(path, last) != 0 && !strstr(path, " (deleted)") &&
+            shape_lib_wanted(libs, path)) {
+            struct shape_elf lib;
+            ok = shape_elf_open_as(&lib, path, false, SHT_DYNSYM) ==
+                 SHAPE_READ_OK;
+            if (ok)
+                shape_mark_defined(&lib, set, ix);
+            shape_elf_close(&lib);
+            last = path;
+        }
+        line = end ? end + 1 : NULL;
+    }
+    free(maps);
+    return ok;
+}
+
+static const struct shape_sym *shape_first_unmarked(const struct shape_set *set,
+                                                    const struct shape_index *ix)
+{
+    for (size_t i = 0; i < set->count; i++)
+        if (!ix->seen[i] &&
+            strcmp(set->items[i].name, "_GLOBAL_OFFSET_TABLE_") != 0)
+            return &set->items[i];
+    return NULL;
+}
+
+/* Every symbol the candidate leaves undefined is defined by the running
+ * image's dynamic symbol table or by a library it loads; the linker's own
+ * _GLOBAL_OFFSET_TABLE_ is not a reference to anything. */
+static bool shape_resolve(struct shape_run *run, char *why, size_t why_len)
+{
+    struct shape_elf img;
+    struct shape_index ix = {0};
+    struct shape_libs libs = {0};
+    enum shape_read got =
+        shape_elf_open_as(&img, "/proc/self/exe", true, SHT_DYNSYM);
+    bool ok = got == SHAPE_READ_OK && shape_index_build(&run->undefined, &ix) &&
+              shape_image_libs(&img, &libs);
+    if (ok)
+        shape_mark_defined(&img, &run->undefined, &ix);
+    ok = ok && shape_mark_libs(&libs, &run->undefined, &ix);
+    const struct shape_sym *missing = ok ? shape_first_unmarked(&run->undefined,
+                                                                &ix)
+                                         : NULL;
+    char subject[512];
+    if (missing)
+        (void)snprintf(subject, sizeof(subject), "%s", missing->name);
+    shape_elf_close(&img);
+    free(ix.slots);
+    free(ix.seen);
+    if (!ok)
+        return shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
+                            "/proc/self/exe",
+                            "the running image's dynamic symbols or libraries "
+                            "cannot be read");
+    return !missing ||
+           shape_refuse(why, why_len, "UNRESOLVED", subject,
+                        "referenced by the candidate but defined neither by "
+                        "the running image nor by a library it loads");
 }
 
 /* ── adapter attribution ─────────────────────────────────────────────── */
@@ -1073,9 +1664,11 @@ static bool shape_report(const struct shape_diff *d, char *why, size_t why_len)
                             "build of the capsule");
     return shape_refuse(why, why_len, "STATE_CHANGED", subject,
                         d->state_in_resident
-                            ? "writable state of the resident build is absent "
-                              "or resized in the candidate"
-                            : "the candidate adds or resizes writable state");
+                            ? "writable state of the resident build is absent, "
+                              "resized or initialized with other relocations "
+                              "in the candidate"
+                            : "the candidate adds, resizes or re-relocates "
+                              "writable state");
 }
 
 static bool shape_compare(struct shape_run *run, char *why, size_t why_len)
@@ -1085,9 +1678,10 @@ static bool shape_compare(struct shape_run *run, char *why, size_t why_len)
         return shape_open_refuse(got == SHAPE_READ_OK ? SHAPE_READ_UNREADABLE
                                                       : got,
                                  "candidate", why, why_len);
-    if (!shape_collect(&run->cand, &run->next))
+    if (!shape_collect(&run->cand, &run->next) ||
+        !shape_collect_undefined(&run->cand, &run->undefined))
         return shape_refuse(why, why_len, "OBJECT_UNREADABLE", "candidate",
-                            "out of memory reading the candidate's shape");
+                            "the candidate's symbols or relocations cannot be read");
     if (run->next.init_fini[0])
         return shape_refuse(why, why_len, "INIT_FINI", run->next.init_fini,
                             "the candidate carries a constructor or destructor "
@@ -1106,6 +1700,10 @@ static void shape_run_free(struct shape_run *run)
     shape_elf_close(&run->cand);
     free(run->base.items);
     free(run->next.items);
+    free(run->undefined.items);
+    for (size_t i = 0; i < run->resident_deps.count; i++)
+        free(run->resident_deps.items[i]);
+    free(run->resident_deps.items);
     free(run->deps_text);
     free(run->adapter);
     for (size_t i = 0; i < run->texts.count; i++)
@@ -1130,6 +1728,20 @@ static bool shape_still_bound(const struct zcl_hotfork_shape *shape,
                         "while the candidate compiled");
 }
 
+/* Each check names the first fact it finds missing or contradicted. */
+static bool shape_run_checks(struct shape_run *run, char *why, size_t why_len)
+{
+    return shape_still_bound(run->shape, why, why_len) &&
+           shape_load_baseline(run, why, why_len) &&
+           shape_resident_defines(&run->base, why, why_len) &&
+           shape_candidate_deps(run, why, why_len) &&
+           shape_header_check(run, why, why_len) &&
+           shape_record_check(run, why, why_len) &&
+           shape_compare(run, why, why_len) &&
+           shape_resolve(run, why, why_len) &&
+           shape_record_commit(run, why, why_len);
+}
+
 bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
                              const char *candidate_object, const char *depfile,
                              char *why, size_t why_len)
@@ -1143,15 +1755,11 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
     if (!run)
         return shape_refuse(why, why_len, "OBJECT_UNREADABLE", "-",
                             "out of memory");
-    *run = (struct shape_run){ .shape = shape, .candidate = candidate_object,
-                               .depfile = depfile };
+    run->shape = shape;
+    run->candidate = candidate_object;
+    run->depfile = depfile;
     run->cand.fd = -1;
-    bool ok = shape_still_bound(shape, why, why_len) &&
-              shape_load_baseline(run, why, why_len) &&
-              shape_resident_defines(&run->base, why, why_len) &&
-              shape_record_check(run, why, why_len) &&
-              shape_compare(run, why, why_len) &&
-              shape_record_commit(run, why, why_len);
+    bool ok = shape_run_checks(run, why, why_len);
     shape_run_free(run);
     free(run);
     return ok;

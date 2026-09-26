@@ -5,11 +5,15 @@
  * defines binds RTLD_LAZY to the resident's own (stale) copy, and every
  * constructor it carries runs at load. The HOT_FORK lane therefore admits
  * only implementation-only edits. The candidate unity object's ELF shape
- * (defined global symbols, writable and thread-local state, init/fini
- * sections) must equal the shape of the resident's own build objects,
- * build/dev-obj/epochs/<epoch>/<tu>.o for every TU of the capsule. Anything
- * else — including every missing or contradicting fact — is refused by a
- * named HOT_FORK_SHAPE_* reason and the save falls back to the restart path.
+ * (defined global symbols, writable and thread-local state with its size
+ * and initializer relocations, init/fini sections) must equal the shape of
+ * the resident's own build objects, build/dev-obj/epochs/<epoch>/<tu>.o for
+ * every TU the capsule compiles; every header those objects were built from
+ * must be unchanged and the candidate may include no other; and every symbol
+ * the candidate leaves undefined must resolve in the running image or the
+ * libraries it loads. Anything else — including every missing or
+ * contradicting fact — is refused by a named HOT_FORK_SHAPE_* reason and the
+ * save falls back to the restart path.
  *
  * Linux/ELF only; every other platform refuses by name.
  */
@@ -24,10 +28,10 @@
 
 /* The facts one HOT_FORK build is judged against, captured before the
  * candidate compile. `generation` names the resident image, its epoch build
- * session and the capsule's resident build objects; it joins the artifact
- * cache key, so a cached artifact is only ever reused inside the resident
- * generation that admitted it. `unbound` holds the refusal for the first
- * missing or contradicting fact ("" when every fact is present). */
+ * session and the capsule's resident build objects and depfiles; it joins
+ * the artifact cache key, so a cached artifact is only ever reused inside
+ * the resident generation that admitted it. `unbound` holds the refusal for
+ * the first missing or contradicting fact ("" when every fact is present). */
 struct zcl_hotfork_shape {
     const char *root;
     const char *source_tu;
@@ -39,6 +43,7 @@ struct zcl_hotfork_shape {
     char epoch[65];
     char toolchain[65];
     char generation[65];
+    char adapter_tus[1024]; /* sources the story adapter compiles, '|'-joined */
     char unbound[320];
 };
 
