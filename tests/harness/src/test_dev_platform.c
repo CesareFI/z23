@@ -6701,16 +6701,9 @@ static bool dp_hs_probe_header(const char *rel, const char *text)
 /* A header the resident object was built from changes, or the candidate
  * includes one the resident object never saw: the candidate is not an edit
  * of the program the resident runs even when its object shape matches. */
-static bool dp_hs_header_drift(const char *owner)
+static bool dp_hs_header_cases(const char *base, const char *added)
 {
-    static char base[16384], added[16384];
-    return dp_hs_edit(owner, DP_HS_INCLUDE, DP_HS_INCLUDE DP_HS_PROBE_INCLUDE,
-                      false, base, sizeof(base)) &&
-           dp_hs_edit(base, DP_HS_PROBE_INCLUDE,
-                      DP_HS_PROBE_INCLUDE
-                      "#include \"package_policy_probe2.h\"\n",
-                      false, added, sizeof(added)) &&
-           dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
+    return dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
            dp_hs_probe_header(DP_HS_PROBE2_H,
                               "#define VCS_POLICY_PROBE2 0u\n") &&
            dp_mk_write(k_dp_hf_root, k_dp_hf_owner, base) &&
@@ -6726,6 +6719,18 @@ static bool dp_hs_header_drift(const char *owner)
            dp_hs_story_green("header-restored", base) &&
            dp_hs_resident(11) && dp_hs_predrive(added, true) &&
            dp_hs_refused("header-added", added, "HOT_FORK_SHAPE_HEADER_DRIFT");
+}
+
+static bool dp_hs_header_drift(const char *owner)
+{
+    static char base[16384], added[16384];
+    return dp_hs_edit(owner, DP_HS_INCLUDE, DP_HS_INCLUDE DP_HS_PROBE_INCLUDE,
+                      false, base, sizeof(base)) &&
+           dp_hs_edit(base, DP_HS_PROBE_INCLUDE,
+                      DP_HS_PROBE_INCLUDE
+                      "#include \"package_policy_probe2.h\"\n",
+                      false, added, sizeof(added)) &&
+           dp_hs_header_cases(base, added);
 }
 
 static bool dp_hs_write_object(const char *bytes, size_t len, long seq)
