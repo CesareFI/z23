@@ -4875,6 +4875,7 @@ landed-journey-bench: dev-bin
 	@tools/dev/landed-journey-bench.sh
 
 reflex-coverage-audit: dev-bin
+	@tools/dev/dev-loop-history-bench.sh --self-test
 	@ZCL_DEV_HISTORY_BASE_REF=HEAD \
 	 ZCL_DEV_HISTORY_OUTPUT=build/dev-loop/substrate-history-benchmark.json \
 	 tools/dev/dev-loop-history-bench.sh run
