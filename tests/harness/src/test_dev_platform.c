@@ -7697,6 +7697,107 @@ static int test_watch_session_forget_spares_rewritten_record(void)
     return failures;
 }
 
+/* True while `pid` is a child of this process that has not been reaped
+ * (running or a zombie). */
+static bool dp_unreaped_child(pid_t pid)
+{
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    return pid > 1 &&
+           waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0;
+}
+
+/* A watcher that never came up: a setsid() leader working from `root` with
+ * one member that ignores SIGTERM. Returns the leader (this process's
+ * child) and the member in `member`. */
+static pid_t dp_stalled_watcher(const char *root, pid_t *member)
+{
+    int report[2];
+    *member = -1;
+    if (!dp_pipe_cloexec(report))
+        return -1;
+    pid_t leader = fork();
+    if (leader == 0) {
+        (void)close(report[0]);
+        (void)setsid();
+        if (chdir(root) != 0)
+            _exit(2);
+        pid_t worker = fork();
+        if (worker == 0) {
+            (void)signal(SIGTERM, SIG_IGN);
+            for (;;)
+                (void)pause();
+        }
+        if (worker < 0 ||
+            write(report[1], &worker, sizeof(worker)) != sizeof(worker))
+            _exit(3);
+        for (;;)
+            (void)pause();
+    }
+    (void)close(report[1]);
+    struct pollfd ready = {.fd = report[0], .events = POLLIN};
+    bool ok = leader > 1 && poll(&ready, 1, 10000) == 1 &&
+              read(report[0], member, sizeof(*member)) == sizeof(*member);
+    (void)close(report[0]);
+    return ok ? leader : -leader;
+}
+
+static int test_watch_session_abort_child(void)
+{
+    int failures = 0;
+    char root[PATH_MAX] = {0};
+    pid_t leader = -1, member = -1;
+    TEST("dev platform: a launcher retires the watcher it forked only by parentage, escalating past SIGTERM, and leaves no process or record") {
+#if !defined(__linux__)
+        PASS(); /* launch identity needs /proc */
+        goto _test_next;
+#endif
+        ASSERT(dp_watch_session_root(root, "watch-abort"));
+        leader = dp_stalled_watcher(root, &member);
+        ASSERT(leader > 1 && member > 1);
+        ASSERT(zcl_devloop_watch_session_record(root, leader));
+        char path[PATH_MAX];
+        ASSERT(dp_record_path(root, leader, path));
+        ASSERT(dp_path_exists(path));
+        /* Nothing that is not an unreaped child of the caller is touched:
+         * not the caller itself, not the watcher's own member. */
+        struct zcl_devloop_watch_stop stop = {.budget_ms = 300};
+        ASSERT_EQ((int)zcl_devloop_watch_session_abort_child(root, getpid(),
+                                                             &stop),
+                  (int)ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH);
+        ASSERT_EQ((int)zcl_devloop_watch_session_abort_child(root, member,
+                                                             &stop),
+                  (int)ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH);
+        ASSERT_EQ(stop.escalation, 0);
+        ASSERT(dp_pid_running(member));
+        ASSERT(dp_pid_running(leader));
+        /* The member ignores SIGTERM: only the SIGKILL tail ends it. */
+        ASSERT_EQ((int)zcl_devloop_watch_session_abort_child(root, leader,
+                                                             &stop),
+                  (int)ZCL_DEVLOOP_WATCH_STOPPED);
+        ASSERT_EQ(stop.escalation, 2);
+        ASSERT_EQ(stop.members_left, (size_t)0);
+        ASSERT(!dp_unreaped_child(leader));
+        ASSERT(!dp_pid_running(member));
+        ASSERT(!dp_path_exists(path));
+        /* Once reaped, the pid proves nothing: a second call is refused. */
+        ASSERT_EQ((int)zcl_devloop_watch_session_abort_child(root, leader,
+                                                             &stop),
+                  (int)ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH);
+        PASS();
+    } _test_next:;
+    /* A leaked leader is still this process's child, so its session id
+     * cannot have been reused: killing that session is safe. */
+    if (dp_unreaped_child(leader)) {
+        dp_session_kill(leader);
+        (void)kill(leader, SIGKILL);
+        (void)waitpid(leader, NULL, 0);
+    }
+    if (root[0])
+        (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
 /* Case identity and ownership are kept in one table. The registered base
  * group proves the partition; each child group runs its assigned cases. */
 struct dp_shard_case {
@@ -7744,6 +7845,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_watch_session_stop_binds_birth, 3),
     DP_CASE(test_watch_session_reused_pid_other_user, 6),
     DP_CASE(test_watch_session_forget_spares_rewritten_record, 7),
+    DP_CASE(test_watch_session_abort_child, 1),
     DP_CASE(test_ephemeral_fixture_leaves_source_identity, 2),
     DP_CASE(test_native_identity_tokens_match_oracle, 1),
     DP_CASE(test_cold_epoch_integrity_gate, 0),
@@ -7872,7 +7974,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 58u + (unsigned)(
+    if (DP_CASE_COUNT != 59u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

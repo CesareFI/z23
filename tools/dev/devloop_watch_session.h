@@ -41,8 +41,9 @@
  * UNPROVEN: it is kept, it is never signalled, and a launcher treats it as
  * a watcher still retiring, so it never forks beside it.
  *
- * A live leader is never signalled through this library: `dev loop stop`
- * asks the lock owner to stop through its bound session endpoint
+ * A live leader is never signalled through this library, except by the
+ * launcher that forked it and has not reaped it (abort_child below): `dev
+ * loop stop` asks the lock owner to stop through its bound session endpoint
  * (zcl_devloop_watch_stop_endpoint_path), and only then retires what its
  * session left behind here. A session whose leader is already gone is
  * listed by `dev loop status` (retiring_sessions) and stopped by its pid and
@@ -151,6 +152,19 @@ int64_t zcl_devloop_watch_session_admit(const char *root,
  * refused untouched. */
 enum zcl_devloop_watch_stop_result zcl_devloop_watch_session_stop(
     const char *root, int64_t requested, struct zcl_devloop_watch_stop *io);
+
+/* Retire a watcher the caller itself forked and is now reporting as failed
+ * to start. While `child` is an unreaped child of the caller its pid, and
+ * with it its session id, can name no other process: that parentage, not
+ * the record, is the proof, and it is re-checked before each escalation.
+ * SIGTERM to the whole session for io->budget_ms, then the SIGKILL tail;
+ * the leader is reaped once it has exited, and its record is removed once
+ * nothing of the session is left (STOPPED). TIMEOUT keeps the record so a
+ * bound stop can retire what survived. A `child` that is not an unreaped
+ * child of the caller is refused (ID_MISMATCH) with nothing signalled.
+ * io->expect_born is not used. */
+enum zcl_devloop_watch_stop_result zcl_devloop_watch_session_abort_child(
+    const char *root, int64_t child, struct zcl_devloop_watch_stop *io);
 
 #if defined(ZCL_TESTING) && !defined(_WIN32)
 /* Deterministic stand-ins for what a test cannot stage: another user's

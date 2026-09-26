@@ -3210,6 +3210,37 @@ static pid_t dev_watch_spawn(const char *root, const char *log,
                       (long)child, root, strerror(errno));
     return child;
 }
+
+/* A launch that is reported as failed must not leave its watcher behind.
+ * The watcher is still this launcher's unreaped child, so its session is
+ * retired by that parentage (bounded SIGTERM, then SIGKILL), the watcher
+ * is reaped, and its launch record removed. The evidence names the log,
+ * or the watcher when something of it could not be retired (it is then
+ * listed by `dev loop status` and stopped by its record). A watcher that
+ * owns the lock but is still reconciling (WATCH_STARTING) is attached to
+ * later and is never retired here. */
+#define DEV_WATCH_ABORT_BUDGET_MS 2000
+static void dev_watch_start_failed(
+    const char *root, pid_t spawned,
+    const struct zcl_dev_watch_start_wait_reply_internal *wait,
+    const char *log, struct zcl_command_reply *reply)
+{
+    struct zcl_devloop_watch_stop stop = {
+        .budget_ms = DEV_WATCH_ABORT_BUDGET_MS};
+    enum zcl_devloop_watch_stop_result result =
+        zcl_devloop_watch_session_abort_child(root, (int64_t)spawned, &stop);
+    char kept[128];
+    const char *evidence = log;
+    if (result != ZCL_DEVLOOP_WATCH_STOPPED) {
+        (void)snprintf(kept, sizeof(kept),
+                       "watcher_id=%ld watcher_retired=false members_left=%zu",
+                       (long)spawned, stop.members_left);
+        evidence = kept;
+    }
+    zcl_command_reply_fail(reply, wait->status, wait->exit_code, wait->code,
+                           "start", wait->retryable, false, wait->message,
+                           evidence);
+}
 #endif
 
 /* A zclassic23 checkout: a canonical directory holding a readable Makefile. */
@@ -3336,7 +3367,8 @@ static void dev_loop_ensure(
     }
     platform_watcher_launch_close(&launch);
 #else
-    if (dev_watch_spawn(root, log, requested_mode) < 0) {
+    pid_t spawned = dev_watch_spawn(root, log, requested_mode);
+    if (spawned < 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "WATCH_FORK_FAILED",
                                "start", false, false,
@@ -3386,12 +3418,14 @@ static void dev_loop_ensure(
         return;
     }
     if (wait.status != ZCL_COMMAND_STATUS_PASSED) {
+#if defined(_WIN32)
         zcl_command_reply_fail(reply, wait.status, wait.exit_code, wait.code,
                                "start", wait.retryable, false, wait.message,
                                log);
-#if defined(_WIN32)
         (void)platform_process_terminate(&child, 1);
         platform_process_close(&child);
+#else
+        dev_watch_start_failed(root, spawned, &wait, log, reply);
 #endif
         return;
     }

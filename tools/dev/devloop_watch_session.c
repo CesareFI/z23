@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define SESSION_SCHEMA "zcl.dev_watch_session.v2"
@@ -425,6 +426,16 @@ static bool session_born(const char *root, int64_t pid, uint64_t *born)
     *born = rec.born;
     return true;
 }
+
+/* The identity of the trusted record file for `pid`, to remove later. */
+static bool session_seen(const char *root, int64_t pid, struct stat *seen)
+{
+    struct session_record rec = {0};
+    if (!session_read(root, pid, &rec))
+        return false;
+    *seen = rec.file;
+    return true;
+}
 #else /* POSIX without /proc: no launch identity is recorded. */
 static bool session_record(const char *root, int64_t pid)
 {
@@ -453,6 +464,14 @@ static bool session_born(const char *root, int64_t pid, uint64_t *born)
     (void)root;
     (void)pid;
     (void)born;
+    return false;
+}
+
+static bool session_seen(const char *root, int64_t pid, struct stat *seen)
+{
+    (void)root;
+    (void)pid;
+    (void)seen;
     return false;
 }
 #endif
@@ -563,22 +582,55 @@ static int64_t session_admit(const char *root,
     }
 }
 
-/* What one stop is allowed to touch: a leaderless recorded session,
- * re-proven by its record before each escalation. */
+/* What one stop is allowed to touch, re-proven before each escalation: a
+ * leaderless recorded session, proven by its record, or (`child`) the
+ * caller's own watcher child and its session, proven by being an unreaped
+ * child of the caller. */
 struct stop_target {
     const char *root;
     int64_t pid;
+    bool child;
 };
+
+/* `pid` is a child of the caller that has not been reaped (running, or a
+ * zombie): until it is reaped its pid, and with it its session id, can
+ * name no other process. `exited` says which. */
+static bool child_unreaped(int64_t pid, bool *exited)
+{
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    if (pid <= 1 || pid > INT_MAX ||
+        waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) != 0)
+        return false;
+    if (exited)
+        *exited = info.si_pid == (pid_t)pid;
+    return true;
+}
 
 static bool target_still_ours(const struct stop_target *t)
 {
+    if (t->child)
+        return child_unreaped(t->pid, NULL);
     return session_probe(t->root, t->pid, NULL) ==
            ZCL_DEVLOOP_WATCH_SESSION_ORPHANED;
 }
 
+/* A child target is quiet only once the child itself has exited as well:
+ * one whose setsid() failed leads no session, so an empty session alone
+ * would not show it still running. */
 static bool target_quiet(const struct stop_target *t)
 {
-    return !session_running(t->pid);
+    bool exited = true;
+    if (t->child && !child_unreaped(t->pid, &exited))
+        exited = true;
+    return exited && !session_running(t->pid);
+}
+
+static void target_signal(const struct stop_target *t, int sig)
+{
+    (void)zcl_devloop_process_session_members(t->pid, sig);
+    if (t->child)
+        (void)kill((pid_t)t->pid, sig);
 }
 
 /* In the SIGKILL tail every poll kills again, so a member forked while the
@@ -594,7 +646,7 @@ static bool target_wait(const struct stop_target *t, int64_t budget_ms,
             return false;
         platform_sleep_ms(SESSION_POLL_MS);
         if (rekill && target_still_ours(t))
-            (void)zcl_devloop_process_session_members(t->pid, SIGKILL);
+            target_signal(t, SIGKILL);
     }
 }
 
@@ -617,7 +669,7 @@ static enum zcl_devloop_watch_stop_result session_drain(
             return target_quiet(t) ? ZCL_DEVLOOP_WATCH_STOPPED
                                    : ZCL_DEVLOOP_WATCH_STOP_TIMEOUT;
         io->escalation = step + 1;
-        (void)zcl_devloop_process_session_members(t->pid, k_signal[step]);
+        target_signal(t, k_signal[step]);
         if (target_wait(t, budgets[step], step == 1))
             return ZCL_DEVLOOP_WATCH_STOPPED;
     }
@@ -676,6 +728,37 @@ static enum zcl_devloop_watch_stop_result session_stop(
     io->members_left = zcl_devloop_process_session_members(requested, 0);
     if (result == ZCL_DEVLOOP_WATCH_STOPPED)
         session_forget(root, requested, &seen);
+    return result;
+}
+
+/* Reap a child leader that has exited; a running one is left alone. */
+static void child_reap_exited(int64_t pid)
+{
+    bool exited = false;
+    if (child_unreaped(pid, &exited) && exited)
+        (void)waitpid((pid_t)pid, NULL, 0);
+}
+
+static enum zcl_devloop_watch_stop_result session_abort_child(
+    const char *root, int64_t child, struct zcl_devloop_watch_stop *io)
+{
+    if (!io)
+        return ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH;
+    io->escalation = 0;
+    io->members_left = 0;
+    if (!child_unreaped(child, NULL))
+        return ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH;
+    /* The record is judged while the pid is still pinned by parentage. */
+    struct stat seen = {0};
+    bool recorded = session_seen(root, child, &seen);
+    struct stop_target target = {.root = root, .pid = child, .child = true};
+    enum zcl_devloop_watch_stop_result result = session_drain(
+        &target,
+        io->budget_ms > 0 ? io->budget_ms : SESSION_DEFAULT_BUDGET_MS, io);
+    io->members_left = zcl_devloop_process_session_members(child, 0);
+    child_reap_exited(child);
+    if (result == ZCL_DEVLOOP_WATCH_STOPPED && recorded)
+        session_forget(root, child, &seen);
     return result;
 }
 #endif
@@ -767,5 +850,18 @@ enum zcl_devloop_watch_stop_result zcl_devloop_watch_session_stop(
     return ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH;
 #else
     return session_stop(root, requested, io);
+#endif
+}
+
+enum zcl_devloop_watch_stop_result zcl_devloop_watch_session_abort_child(
+    const char *root, int64_t child, struct zcl_devloop_watch_stop *io)
+{
+#if defined(_WIN32)
+    (void)root;
+    (void)child;
+    (void)io;
+    return ZCL_DEVLOOP_WATCH_STOP_ID_MISMATCH;
+#else
+    return session_abort_child(root, child, io);
 #endif
 }

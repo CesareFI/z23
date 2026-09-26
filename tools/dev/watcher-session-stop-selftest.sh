@@ -136,6 +136,8 @@ root="$(new_root stall)"
 out="$(ZCL_DEVLOOP_TEST_PROCESS=1 ZCL_DEVLOOP_TEST_WATCH_STALL="$root/stall.pids" \
     run "$root" dev begin --input="{\"root\":\"$root\"}")"
 grep -q '"WATCH_START_FAILED"' <<<"$out" || fail "stalled begin: $out"
+grep -q '"evidence":"[^"]*/native-watch.log"' <<<"$out" ||
+    fail "failed begin did not retire its watcher: $out"
 [[ -s "$root/stall.pids" ]] || fail 'stalled watcher did not report'
 read -r pid worker < "$root/stall.pids"
 if [[ "$(session_members "$pid")" != 0 ]]; then
