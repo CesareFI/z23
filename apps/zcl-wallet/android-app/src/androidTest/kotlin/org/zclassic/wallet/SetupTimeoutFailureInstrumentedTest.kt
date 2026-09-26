@@ -148,6 +148,17 @@ class SetupTimeoutFailureInstrumentedTest {
             } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
         }
 
+        fun fail() {
+            try {
+                MainActivity::class.java.getDeclaredMethod("showFailure", Int::class.javaPrimitiveType)
+                    .apply { isAccessible = true }.invoke(controller, R.string.operation_failed)
+            } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        }
+
+        fun failSessionClose(problem: Throwable) {
+            assertTrue(worker.submit({ throw problem }) { error("Cancelled public cleanup fixture ran") })
+        }
+
         fun failCancellation(problem: Throwable): CancellationSignal {
             val type = WalletAuthentication::class.java.declaredClasses.single { it.simpleName == "Pending" }
             val prepared = PreparedWalletAction(WalletAction.CREATE,
@@ -251,6 +262,57 @@ class SetupTimeoutFailureInstrumentedTest {
     @Test fun falsePostStillClosesTheWorkerAndReportsRefusal() = withFixture { fixture ->
         onMain { assertFalse(fixture.start()); fixture.assertRetired(); fixture.assertMessage(R.string.operation_failed) }
         fixture.finishWorker()
+    }
+
+    private fun shownSecret(fixture: Fixture, input: Boolean): Pair<CharArray, View> {
+        if (!input) {
+            val words = charArrayOf('a', 'b', 'c')
+            fixture.screens.backup(words, {}, {})
+            return words to fixture.host.findViewById<RecoveryWordsView>(R.id.recovery_words)
+        }
+        fixture.screens.enterRecovery(false, false, {}, {})
+        val view = fixture.host.findViewById<RecoveryInputView>(R.id.recovery_input)
+        for (character in "abc") view.append(character)
+        val buffer = RecoveryInputView::class.java.getDeclaredField("characters")
+            .apply { isAccessible = true }.get(view) as CharArray
+        val preview = RecoveryInputView::class.java.getDeclaredField("preview")
+            .apply { isAccessible = true }.get(view) as TextView
+        return buffer to preview
+    }
+
+    private fun failedSessionClose(input: Boolean, rendering: Boolean) {
+        for (fatal in listOf(false, true)) withFixture { fixture ->
+            val problem = if (fatal) OutOfMemoryError("Public session cleanup failure")
+                else IllegalStateException("Public session cleanup failure")
+            onMain {
+                fixture.handler.enqueue = true
+                assertTrue(fixture.start())
+                val (words, view) = shownSecret(fixture, input)
+                try {
+                    assertEquals(View.VISIBLE, view.visibility)
+                    assertEquals("abc", (view as TextView).text.toString())
+                    fixture.failSessionClose(problem)
+                    if (rendering) fixture.failRendering(OutOfMemoryError("Public secondary failure UI error"))
+                    assertSame(problem, assertThrows(Throwable::class.java) { fixture.fail() })
+                    assertTrue("Failure left the displayed phrase owned by the view", words.all { it == '\u0000' })
+                    assertEquals(View.INVISIBLE, view.visibility)
+                    fixture.assertRetired()
+                    assertFalse(field("busy").getBoolean(fixture.controller))
+                    if (!rendering) fixture.assertMessage(R.string.operation_failed)
+                } finally { words.fill('\u0000') }
+            }
+            fixture.finishWorker()
+        }
+    }
+
+    @Test fun sessionCleanupFailureStillRetiresTheScreenAndOwner() {
+        failedSessionClose(input = false, rendering = false)
+        failedSessionClose(input = false, rendering = true)
+    }
+
+    @Test fun sessionCleanupFailureStillClearsRecoveryInput() {
+        failedSessionClose(input = true, rendering = false)
+        failedSessionClose(input = true, rendering = true)
     }
 
     @Test fun exactExpiryClosesTheWorkerWithoutPosting() = withFixture { fixture ->

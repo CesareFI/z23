@@ -58,6 +58,12 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   without allocating suppressed-exception storage. Partial construction is
   supported. An active worker still owns its secret until safe termination;
   destruction must not race it by clearing worker-owned entropy from the UI.
+* Wallet failure handling detaches its session before attempting timer removal,
+  worker closure and secret-view clearing. One cleanup error cannot skip the
+  other owners or leave the recovery display active. Secret views are cleared
+  before allocating the retry callback or failure UI. The first error still
+  propagates even if later cleanup/rendering also fails; active worker entropy
+  retains its existing safe termination ownership.
 * Camera startup returns its single process admission if worker construction or
   startup fails before publishing a handler, including on fatal allocation
   errors. That failed lifetime cannot retry itself. Once an OS camera open is

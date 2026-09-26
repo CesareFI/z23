@@ -7476,3 +7476,57 @@ was again refused by the unchanged hook policy; the remote remains
 `b4d5d6a8f3da81a0078e943a397a1077d9d91f50`. Continue within the permitted wallet
 lifecycle/custody-error-path audit, preserving hardware qualification and TLS
 quarantine boundaries.
+
+## Failure handling retires secret views despite cleanup errors — 2026-09-26
+
+The initial 23 authentication/callback/window/executor/session fixtures passed
+on both APIs. A subsequent device regression reproduced a missing cleanup
+boundary: when session close throws, MainActivity.showFailure previously left
+its session attached and skipped the screen transition. The public marker
+phrase remained owned by the visible recovery view. The preserved API30 failure
+is `Failure left the displayed phrase owned by the view`; no real seed, wallet,
+authentication, key or storage operation participated.
+
+Failure handling now detaches the session first and independently attempts
+timer removal, worker closure, secret-view clearing and failure rendering.
+Owned characters clear before allocating the retry callback/UI. It propagates
+the first error even when subsequent rendering also fails, without allocating
+suppressed-exception storage. Active worker entropy remains worker-owned until
+safe termination. No provider, hardware authentication or native custody rule
+changes; SECURITY.md records this lifecycle invariant.
+
+Two regressions cover backup words and recovery input, each with injected
+ordinary/fatal cleanup failures and a second rendering failure. They check
+erasure, concealment, detached session/timer state, worker closure and eventual
+entropy clearing, plus the original exception identity. All 60 focused device
+tests pass with CheckJNI on isolated API30/36 in 11.742/30.559 seconds, with no
+skips. These include authentication, allocation/scheduling errors, setup
+expiry, activity destruction and secret-view saved-state/lifecycle behavior.
+The fixtures use the storage-free debug host and an unlaunched controller;
+they do not establish successful hardware custody or real device OOM behavior.
+The final two regressions additionally enqueue an actual setup timeout before
+failure, making timer-retirement assertions non-vacuous. They pass again on
+both APIs in 4.449/9.331 seconds; test rebuilding, lint and isolation also pass.
+
+Full Gradle build/lint/isolation/alignment succeeds in 36 seconds. App JVM tests
+rerun successfully; the unchanged core JVM tests are up-to-date (149 total
+passing results). Four related native record/JNI/custody groups pass in both
+sanitizer profiles in 0.48/1.01 seconds. The unchanged record fuzzer completes
+1018151 runs in 31 seconds without a finding, with 1024-byte inputs, five-second
+case and 512 MiB RSS limits (207 MiB observed). Native production/test complexity
+caps 10/15 and whitespace checks pass; no native source is changed.
+
+The compiled MainActivity bytecode confirms clearSecrets precedes allocation
+of the failure callback. Both packaged native libraries compare byte-for-byte
+with the prior release. Fresh packaging keeps the unsigned APK at 641659 bytes,
+SHA256 `9f8956045bfd50500f640224e1f35ca16062b7e3f608a5648dfe6a221a750b32`.
+Source-only tree `c7d3bb63c2a496c1152c586c6f55150c5ce1c8d1`, with the final
+implementation/tests and preceding notes, reproduces it exactly: all 57 release
+tasks execute without build caching in 48 seconds. This adds no
+persistent owner or worker; no UI latency/heap-allocation benchmark is claimed.
+
+Original source, baseline APKs and failing instrumentation, final artifacts,
+bytecode, both device runs, fuzz corpus and source archive are preserved under
+`.cache/auth-lifecycle-20260926/` in the isolated validation worktree. The earlier
+four commits remain local because the installed hook refuses the authorized
+development ref with `remote-ref-not-main`; publication has not been bypassed.

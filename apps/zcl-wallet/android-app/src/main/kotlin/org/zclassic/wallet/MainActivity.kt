@@ -202,11 +202,22 @@ class MainActivity : Activity() {
     })
 
     private fun showFailure(message: Int) {
-        clearSetupTimeout()
-        session?.close()
+        val previous = session
         session = null
         busy = false
-        screens.failure(message, ::restart)
+        // Retire every owner even if cleanup fails. Clear secret views before
+        // allocating the failure UI or its callback, preserving the first error
+        // without allocating suppressed-exception storage.
+        var failure: Throwable? = null
+        try { clearSetupTimeout() }
+        catch (problem: Throwable) { failure = problem }
+        try { previous?.close() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        try { screens.clearSecrets() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        try { screens.failure(message, ::restart) }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        if (failure != null) throw failure
     }
 
     private fun restart() {
