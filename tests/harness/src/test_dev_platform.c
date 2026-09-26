@@ -6152,6 +6152,7 @@ struct dp_hf_seen {
     char phase[32];
     char key[65];
     char detail[96];
+    char capsule[256];
 };
 
 static bool dp_hf_slurp(const char *path, char *buf, size_t cap)
@@ -6307,6 +6308,8 @@ static bool dp_hf_drive(struct dp_hf_seen *seen)
                                      "artifact_cache_key")));
     dp_hf_copy(seen->detail, sizeof(seen->detail),
                json_get_str(json_get(&doc, "story_detail")));
+    dp_hf_copy(seen->capsule, sizeof(seen->capsule),
+               json_get_str(json_get(&doc, "failure_capsule")));
     json_free(&doc);
     return strlen(seen->key) == 64;
 }
@@ -6398,6 +6401,380 @@ static bool dp_hf_env(const char *cwd, bool set)
                                                 sizeof(why));
 }
 
+/* HOT_FORK compares a candidate's ELF shape with the resident's own build
+ * objects, build/dev-obj/epochs/<epoch>/<tu>.o, before it links anything.
+ * The fixture models that resident: the owner is compiled with the fixture's
+ * frozen action plan into the epoch the dev build names, beside a completed
+ * build session carrying the plan's compiler identity, and is dated before
+ * the running test binary that plays the resident image. */
+static const char k_dp_hs_epoch[] =
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+static const char k_dp_hs_object[] =
+    "build/dev-obj/epochs/"
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/"
+    "contexts/commons/modules/vcs/src/package_policy.o";
+static const char k_dp_hs_session[] =
+    "build/dev-obj/epochs/"
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/"
+    ".build-session";
+
+/* Value of `key=` in the fixture's frozen action plan. */
+static bool dp_hs_plan_value(const char *key, char *out, size_t cap)
+{
+    static char plan[8192];
+    char path[PATH_MAX];
+    size_t klen = strlen(key);
+    if (snprintf(path, sizeof(path), "%s/build/hotswap-fast/flags.env",
+                 k_dp_hf_root) >= (int)sizeof(path) ||
+        !dp_hf_slurp(path, plan, sizeof(plan)))
+        return false;
+    for (char *line = plan; line && *line;) {
+        char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len > klen && strncmp(line, key, klen) == 0 && line[klen] == '=')
+            return snprintf(out, cap, "%.*s", (int)(len - klen - 1),
+                            line + klen + 1) < (int)cap;
+        line = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+static bool dp_hs_run(const char *command)
+{
+    pid_t child = fork();
+    if (child < 0)
+        return false;
+    if (child == 0) {
+        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    return waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0;
+}
+
+static bool dp_hs_session(const char *compiler)
+{
+    char text[512];
+    return snprintf(text, sizeof(text),
+                    "schema=zcl.build_epoch_session.v1\ncomplete=1\n"
+                    "compiler_id=%s\nepoch=%s\nprofile=dev-v2\n"
+                    "flags_sha256=%064x\n",
+                    compiler, k_dp_hs_epoch, 7) < (int)sizeof(text) &&
+           dp_mk_write(k_dp_hf_root, k_dp_hs_session, text);
+}
+
+/* Compiles the fixture owner as it now stands into the resident build
+ * object, dated `seq` seconds after the settled base. */
+static bool dp_hs_resident(long seq)
+{
+    static char cc[1024], cflags[6144], cmd[8192];
+    char compiler[80], epoch[80];
+    if (!dp_hs_plan_value("CC", cc, sizeof(cc)) ||
+        !dp_hs_plan_value("DEV_CFLAGS", cflags, sizeof(cflags)) ||
+        !dp_hs_plan_value("COMPILER_ID", compiler, sizeof(compiler)) ||
+        snprintf(epoch, sizeof(epoch), "%s\n", k_dp_hs_epoch) >=
+            (int)sizeof(epoch) ||
+        !dp_mk_write(k_dp_hf_root, "build/dev-obj/.current-epoch", epoch) ||
+        !dp_hs_session(compiler) ||
+        !dp_mk_write(k_dp_hf_root, k_dp_hs_object, "") ||
+        snprintf(cmd, sizeof(cmd), "cd '%s' && %s %s -c %s -o %s",
+                 k_dp_hf_root, cc, cflags, k_dp_hf_owner, k_dp_hs_object) >=
+            (int)sizeof(cmd))
+        return false;
+    return dp_hs_run(cmd) && dp_settle(k_dp_hf_root, k_dp_hs_object, seq);
+}
+
+/* `out` is `base` with `from` replaced by `to` (every occurrence when
+ * `all`); false when `from` is absent or the result does not fit. */
+static bool dp_hs_edit(const char *base, const char *from, const char *to,
+                       bool all, char *out, size_t cap)
+{
+    size_t used = 0, from_len = strlen(from), to_len = strlen(to);
+    bool hit = false;
+    for (const char *at = base; *at;) {
+        const char *next = (!hit || all) ? strstr(at, from) : NULL;
+        size_t keep = next ? (size_t)(next - at) : strlen(at);
+        if (used + keep + (next ? to_len : 0) >= cap)
+            return false;
+        memcpy(out + used, at, keep);
+        used += keep;
+        if (!next)
+            break;
+        memcpy(out + used, to, to_len);
+        used += to_len;
+        at = next + from_len;
+        hit = true;
+    }
+    out[used] = 0;
+    return hit;
+}
+
+static bool dp_hs_story_green(const char *stage, const char *text)
+{
+    struct dp_hf_seen seen;
+    return dp_mk_write(k_dp_hf_root, k_dp_hf_owner, text) &&
+           dp_hf_drive(&seen) &&
+           dp_hf_expect(stage, &seen, "STORY_GREEN", "checks=15/15");
+}
+
+/* A refused candidate compiled, is reported as progress with the named
+ * reason, and hands the save back to the watcher (event 0), whose next lane
+ * is the restart path. It never reaches the story. */
+static bool dp_hs_refused(const char *stage, const char *text,
+                          const char *reason)
+{
+    struct dp_hf_seen seen = {0};
+    bool driven = (!text || dp_mk_write(k_dp_hf_root, k_dp_hf_owner, text)) &&
+                  dp_hf_drive(&seen);
+    bool ok = driven && seen.event == 0 &&
+              strcmp(seen.phase, "COMPILE_GREEN") == 0 &&
+              strncmp(seen.capsule, reason, strlen(reason)) == 0 &&
+              strstr(seen.capsule, "fallback=restart") != NULL;
+    if (!ok)
+        fprintf(stderr, "hotfork shape stage %s: event=%d phase=%s "
+                "capsule=%s detail=%s (want refusal %s)\n", stage, seen.event,
+                seen.phase, seen.capsule, seen.detail, reason);
+    return ok;
+}
+
+struct dp_hs_case {
+    const char *stage;
+    const char *from;
+    const char *to;
+    bool all;
+    const char *reason; /* NULL: must stay STORY_GREEN */
+};
+
+/* Anchors in contexts/commons/modules/vcs/src/package_policy.c. */
+#define DP_HS_QUEUE "uint32_t vcs_policy_queue_priority(enum vcs_policy_tier tier)\n{\n"
+#define DP_HS_QUEUE_RETURN "    return vcs_policy_limits_for(tier)->queue_priority;\n"
+#define DP_HS_RATIO "uint64_t vcs_policy_ratio_milli("
+#define DP_HS_WEEK "    return day - ((int64_t)policy_iso_weekday(day) - 1);\n"
+#define DP_HS_INCLUDE "#include \"vcs/package_policy.h\"\n"
+
+static const struct dp_hs_case k_dp_hs_edits[] = {
+    { "body-only", DP_HS_WEEK,
+      "    int64_t shift = (int64_t)policy_iso_weekday(day) - 1;\n"
+      "    return day - shift;\n", false, NULL },
+    { "private-helper-added", DP_HS_QUEUE_RETURN,
+      "    return policy_shape_probe_helper(\n"
+      "        vcs_policy_limits_for(tier)->queue_priority);\n", false, NULL },
+    { "private-helper-renamed", "policy_allow", "policy_permit", true, NULL },
+    /* The story does not check its own bindings: the resident's stale copy
+     * of the removed function would answer it green. */
+    { "exported-function-removed", DP_HS_RATIO,
+      "[[maybe_unused]] static uint64_t policy_ratio_removed(", false,
+      "HOT_FORK_SHAPE_ABI_REMOVED" },
+    { "exported-function-added", DP_HS_QUEUE,
+      "uint32_t vcs_policy_shape_probe_added(uint32_t v);\n"
+      "uint32_t vcs_policy_shape_probe_added(uint32_t v)\n{\n"
+      "    return v + 1u;\n}\n\n" DP_HS_QUEUE, false,
+      "HOT_FORK_SHAPE_ABI_ADDED" },
+    { "file-scope-static", DP_HS_QUEUE,
+      "static uint32_t policy_shape_probe_calls;\n\n" DP_HS_QUEUE
+      "    if (policy_shape_probe_calls++ == UINT32_MAX)\n        return 0;\n",
+      false, "HOT_FORK_SHAPE_STATE_CHANGED" },
+    { "function-local-static", DP_HS_QUEUE,
+      DP_HS_QUEUE "    static uint32_t calls;\n"
+      "    if (calls++ == UINT32_MAX)\n        return 0;\n", false,
+      "HOT_FORK_SHAPE_STATE_CHANGED" },
+    { "constructor", DP_HS_QUEUE,
+      "__attribute__((constructor)) static void policy_shape_probe_ctor(void)\n"
+      "{\n}\n\n" DP_HS_QUEUE, false, "HOT_FORK_SHAPE_INIT_FINI" },
+    { "closure-changed", DP_HS_INCLUDE, DP_HS_INCLUDE "#include <limits.h>\n",
+      false, "HOT_FORK_SHAPE_CLOSURE_CHANGED" },
+};
+
+static bool dp_hs_case_text(const char *base, const struct dp_hs_case *c,
+                            char *out, size_t cap)
+{
+    if (strcmp(c->stage, "private-helper-added") != 0)
+        return dp_hs_edit(base, c->from, c->to, c->all, out, cap);
+    static char tmp[16384];
+    return dp_hs_edit(base, c->from, c->to, false, tmp, sizeof(tmp)) &&
+           dp_hs_edit(tmp, DP_HS_QUEUE,
+                      "static uint32_t policy_shape_probe_helper(uint32_t v)\n"
+                      "{\n    return v;\n}\n\n" DP_HS_QUEUE, false, out, cap);
+}
+
+static bool dp_hs_run_case(const char *base, const struct dp_hs_case *c)
+{
+    static char text[16384];
+    if (!dp_hs_case_text(base, c, text, sizeof(text))) {
+        fprintf(stderr, "hotfork shape stage %s: anchor missing\n", c->stage);
+        return false;
+    }
+    return c->reason ? dp_hs_refused(c->stage, text, c->reason)
+                     : dp_hs_story_green(c->stage, text);
+}
+
+/* The resident's plan changes under the same resident objects: a baseline
+ * bound to one compiler, driver and flags identity must not judge a
+ * candidate built by another. Restoring the plan restores admission. */
+static bool dp_hs_toolchain_drift(const char *owner)
+{
+    static char plan[8192], drifted[8192];
+    char path[PATH_MAX];
+    return snprintf(path, sizeof(path), "%s/build/hotswap-fast/flags.env",
+                    k_dp_hf_root) < (int)sizeof(path) &&
+           dp_hf_slurp(path, plan, sizeof(plan)) &&
+           dp_hs_edit(plan, "DEV_CFLAGS=",
+                      "DEV_CFLAGS=-DZCL_SHAPE_TOOLCHAIN_PROBE=1 ", false,
+                      drifted, sizeof(drifted)) &&
+           dp_mk_write(k_dp_hf_root, "build/hotswap-fast/flags.env",
+                       drifted) &&
+           dp_hs_refused("toolchain-flags", owner,
+                         "HOT_FORK_SHAPE_TOOLCHAIN_CHANGED") &&
+           dp_mk_write(k_dp_hf_root, "build/hotswap-fast/flags.env", plan) &&
+           dp_hs_story_green("toolchain-restored", owner);
+}
+
+/* A writable static the resident already has is admitted; resizing it is
+ * not. A private struct layout is implementation detail. */
+#define DP_HS_STATE_BASE \
+    "struct policy_shape_probe_pair {\n    uint32_t a;\n};\n" \
+    "static uint32_t policy_shape_probe_ring[4];\n\n" DP_HS_QUEUE \
+    "    struct policy_shape_probe_pair pair = { .a = 1u };\n" \
+    "    policy_shape_probe_ring[0] += pair.a;\n"
+
+static bool dp_hs_state_matrix(const char *owner)
+{
+    static char base[16384], resized[16384], layout[16384];
+    return dp_hs_edit(owner, DP_HS_QUEUE, DP_HS_STATE_BASE, false, base,
+                      sizeof(base)) &&
+           dp_hs_edit(base, "ring[4]", "ring[8]", false, resized,
+                      sizeof(resized)) &&
+           dp_hs_edit(base, "    uint32_t a;\n",
+                      "    uint32_t a;\n    uint32_t b;\n", false, layout,
+                      sizeof(layout)) &&
+           dp_mk_write(k_dp_hf_root, k_dp_hf_owner, base) &&
+           dp_hs_resident(2) &&
+           dp_hs_story_green("resident-static-kept", base) &&
+           dp_hs_refused("static-array-resized", resized,
+                         "HOT_FORK_SHAPE_STATE_CHANGED") &&
+           dp_hs_story_green("private-struct-layout", layout);
+}
+
+static bool dp_hs_write_object(const char *bytes, size_t len, long seq)
+{
+    char full[PATH_MAX];
+    FILE *f = snprintf(full, sizeof(full), "%s/%s", k_dp_hf_root,
+                       k_dp_hs_object) < (int)sizeof(full)
+                  ? fopen(full, "wb") : NULL;
+    bool ok = f && fwrite(bytes, 1, len, f) == len;
+    if (f && fclose(f) != 0)
+        ok = false;
+    return ok && dp_settle(k_dp_hf_root, k_dp_hs_object, seq);
+}
+
+/* A valid ELF64 header naming no sections: parseable, no symbol table. */
+static bool dp_hs_headless_object(long seq)
+{
+    unsigned char ehdr[64] = { 0x7f, 'E', 'L', 'F', 2, 1, 1 };
+    ehdr[16] = 1;                    /* e_type ET_REL */
+    ehdr[18] = 62;                   /* e_machine EM_X86_64 */
+    ehdr[20] = 1;                    /* e_version */
+    ehdr[52] = 64;                   /* e_ehsize */
+    ehdr[58] = 64;                   /* e_shentsize */
+    return dp_hs_write_object((const char *)ehdr, sizeof(ehdr), seq);
+}
+
+#define DP_HS_OTHER_COMPILER \
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+static bool dp_hs_object_ahead(void)
+{
+    char full[PATH_MAX];
+    struct timespec ahead[2];
+    ahead[0].tv_sec = ahead[1].tv_sec = time(NULL) + 3600;
+    ahead[0].tv_nsec = ahead[1].tv_nsec = 0;
+    return snprintf(full, sizeof(full), "%s/%s", k_dp_hf_root,
+                    k_dp_hs_object) < (int)sizeof(full) &&
+           utimensat(AT_FDCWD, full, ahead, 0) == 0;
+}
+
+static bool dp_hs_unlink(const char *rel)
+{
+    char full[PATH_MAX];
+    return snprintf(full, sizeof(full), "%s/%s", k_dp_hf_root, rel) <
+               (int)sizeof(full) &&
+           unlink(full) == 0;
+}
+
+/* Objects rebuilt after the resident linked, or by another compiler. */
+static bool dp_hs_resident_facts(const char *owner)
+{
+    char compiler[80];
+    return dp_mk_write(k_dp_hf_root, k_dp_hf_owner, owner) &&
+           dp_hs_resident(3) && dp_hs_story_green("facts-green", owner) &&
+           dp_hs_object_ahead() &&
+           dp_hs_refused("objects-newer-than-resident", NULL,
+                         "HOT_FORK_SHAPE_RESIDENT_STALE") &&
+           dp_hs_resident(4) && dp_hs_session(DP_HS_OTHER_COMPILER) &&
+           dp_hs_refused("objects-from-other-compiler", NULL,
+                         "HOT_FORK_SHAPE_TOOLCHAIN_CHANGED") &&
+           dp_hs_plan_value("COMPILER_ID", compiler, sizeof(compiler)) &&
+           dp_hs_session(compiler);
+}
+
+/* No object, an unparseable one, one without a symbol table, no session. */
+static bool dp_hs_missing_facts(void)
+{
+    static const char garbage[] = "not an ELF object";
+    return dp_hs_write_object(garbage, sizeof(garbage) - 1, 5) &&
+           dp_hs_refused("object-unparseable", NULL,
+                         "HOT_FORK_SHAPE_OBJECT_UNREADABLE") &&
+           dp_hs_headless_object(6) &&
+           dp_hs_refused("object-without-symtab", NULL,
+                         "HOT_FORK_SHAPE_SYMTAB_MISSING") &&
+           dp_hs_unlink(k_dp_hs_object) &&
+           dp_hs_refused("object-missing", NULL,
+                         "HOT_FORK_SHAPE_NO_BASELINE") &&
+           dp_hs_resident(7) && dp_hs_unlink(k_dp_hs_session) &&
+           dp_hs_refused("session-missing", NULL,
+                         "HOT_FORK_SHAPE_NO_BASELINE");
+}
+
+static bool dp_hs_edit_matrix(const char *owner)
+{
+    bool ok = dp_hs_story_green("baseline", owner);
+    for (size_t i = 0; i < sizeof(k_dp_hs_edits) /
+                                     sizeof(k_dp_hs_edits[0]); i++)
+        ok = dp_hs_run_case(owner, &k_dp_hs_edits[i]) && ok;
+    return ok && dp_hs_toolchain_drift(owner);
+}
+
+static int test_hotfork_shape_refusals(void)
+{
+    int failures = 0;
+    TEST("dev platform: HOT_FORK refuses ABI, writable-state, init/fini, toolchain, closure and missing-fact shapes by name and admits implementation-only edits") {
+        static char owner[16384], story[16384];
+        char cwd[PATH_MAX];
+        ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
+        ASSERT(!getenv("ZCL_DEV_ARTIFACT_CACHE") &&
+               !getenv("ZCL_DEVLOOP_TEST_PROCESS"));
+        ASSERT(dp_hf_slurp(k_dp_hf_owner, owner, sizeof(owner)));
+        ASSERT(dp_hf_slurp(k_dp_hf_story, story, sizeof(story)));
+        test_rm_rf_recursive(k_dp_hf_root);
+        test_rm_rf_recursive(k_dp_hf_cache);
+        ASSERT(dp_hf_fixture_init(cwd, owner, story));
+        ASSERT(dp_hs_resident(1));
+        ASSERT(dp_hf_env(cwd, true));
+        bool edits = dp_hs_edit_matrix(owner);
+        bool state = dp_hs_state_matrix(owner);
+        bool facts = dp_hs_resident_facts(owner) && dp_hs_missing_facts();
+        ASSERT(dp_hf_env(cwd, false));
+        test_rm_rf_recursive(k_dp_hf_root);
+        test_rm_rf_recursive(k_dp_hf_cache);
+        ASSERT(edits);
+        ASSERT(state);
+        ASSERT(facts);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_hotfork_story_file_green_and_red(void)
 {
     int failures = 0;
@@ -6414,6 +6791,7 @@ static int test_hotfork_story_file_green_and_red(void)
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
         ASSERT(dp_hf_fixture_init(cwd, owner, story));
+        ASSERT(dp_hs_resident(1));
         ASSERT(dp_hf_env(cwd, true));
         bool owner_ok = dp_hf_owner_cycle(owner, mutated, &green);
         bool story_ok = owner_ok && dp_hf_story_cycle(story, edited, &green);
@@ -7814,6 +8192,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_distill_first_error, 7),
     DP_CASE(test_hotswap_artifact_cache, 5),
     DP_CASE(test_hotfork_story_file_green_and_red, 5),
+    DP_CASE(test_hotfork_shape_refusals, 5),
     DP_CASE(test_resident_restart_builder, 4),
 #if defined(__APPLE__)
     DP_CASE(test_darwin_attested_descriptor_process, 4),
