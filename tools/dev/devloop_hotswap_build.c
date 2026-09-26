@@ -3709,7 +3709,7 @@ int zcl_devloop_hotfork_batch_event(
                 repo_root, def->source_tu, 1, "reflex_ready",
                 "hotfork_shape_refused", false,
                 platform_time_monotonic_us() - started, &build, 0, NULL,
-                &process, why, false) ? 0 : -1;
+                &process, why, true) ? 0 : -1;
         return hs_emit_event(
             repo_root, def->source_tu, 1, "rejected", "compile", false,
             platform_time_monotonic_us() - started, &build, 0, NULL,

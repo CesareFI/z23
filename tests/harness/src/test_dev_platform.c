@@ -6677,9 +6677,14 @@ static bool dp_hs_state_matrix(const char *owner)
 static bool dp_hs_predrive(const char *text, bool must_refuse)
 {
     struct dp_hf_seen seen = {0};
-    return dp_mk_write(k_dp_hf_root, k_dp_hf_owner, text) &&
-           dp_hf_drive(&seen) &&
-           (!must_refuse || strcmp(seen.phase, "STORY_GREEN") != 0);
+    bool ok = dp_mk_write(k_dp_hf_root, k_dp_hf_owner, text) &&
+              dp_hf_drive(&seen) &&
+              (!must_refuse || strcmp(seen.phase, "STORY_GREEN") != 0);
+    if (!ok)
+        fprintf(stderr, "hotfork shape predrive: event=%d phase=%s "
+                "capsule=%s (refusal required: %d)\n", seen.event, seen.phase,
+                seen.capsule, must_refuse);
+    return ok;
 }
 
 #define DP_HS_PROBE_H "contexts/commons/modules/vcs/src/package_policy_probe.h"
@@ -6774,7 +6779,8 @@ static bool dp_hs_resident_facts(const char *owner)
 {
     char compiler[80];
     return dp_mk_write(k_dp_hf_root, k_dp_hf_owner, owner) &&
-           dp_hs_resident(3) && dp_hs_story_green("facts-green", owner) &&
+           dp_hs_resident(3) && dp_hs_predrive(owner, false) &&
+           dp_hs_story_green("facts-green", owner) &&
            dp_hs_object_ahead() &&
            dp_hs_refused("objects-newer-than-resident", NULL,
                          "HOT_FORK_SHAPE_RESIDENT_STALE") &&
