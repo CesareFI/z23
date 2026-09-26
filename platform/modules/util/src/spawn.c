@@ -746,6 +746,24 @@ static bool spawn_capture_anchor_parent(struct spawn_capture_anchor *anchor)
     return launched;
 }
 
+/* Initialize the two optional out-params and validate/prep the capture
+ * buffer. Folded out of spawn_capture_impl() to keep that function's
+ * cyclomatic complexity under the cap: this carries every early-exit
+ * decision point that precedes the fork(). Returns -1 (via LOG_ERR) on bad
+ * args, 0 otherwise. */
+static int spawn_capture_impl_prepare(
+    const char *const argv[], char *buf, size_t cap, bool *cancelled,
+    bool *timed_out_out, struct zcl_spawn_binary_observation *exact)
+{
+    if (cancelled) *cancelled = false;
+    if (timed_out_out) *timed_out_out = false;
+    if (!argv || !argv[0] || !buf || cap == 0)
+        LOG_ERR("spawn", "bad args (argv=%p buf=%p cap=%zu)",
+                (const void *)argv, (void *)buf, cap);
+    if (!exact) buf[0] = '\0';
+    return 0;
+}
+
 static int spawn_capture_impl(
     const char *const argv[], char *buf, size_t cap, int timeout_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
@@ -756,12 +774,9 @@ static int spawn_capture_impl(
 #if !defined(__linux__)
     (void)executable_fd;
 #endif
-    if (cancelled) *cancelled = false;
-    if (timed_out_out) *timed_out_out = false;
-    if (!argv || !argv[0] || !buf || cap == 0)
-        LOG_ERR("spawn", "bad args (argv=%p buf=%p cap=%zu)",
-                (const void *)argv, (void *)buf, cap);
-    if (!exact) buf[0] = '\0';
+    if (spawn_capture_impl_prepare(argv, buf, cap, cancelled, timed_out_out,
+                                   exact) != 0)
+        return -1;
 
     int outpipe[2];
     if (pipe(outpipe) != 0)
