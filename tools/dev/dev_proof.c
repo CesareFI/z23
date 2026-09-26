@@ -2168,8 +2168,9 @@ static bool depfile_tree_copy(const char *source, const char *target,
  * 4. The donor is stable. Only a generation carrying a build-complete
  *    marker for the checkout's own root, still checked out at the marked
  *    commit, with no live proof lease, may donate. Its build tree cannot
- *    change under the reader: the proof never rebuilds a completed
- *    build-only tree, and epoch publishers replace rather than mutate.
+ *    change under the reader: the proof runs no make in a generation after
+ *    the marker is written, and epoch publishers replace rather than
+ *    mutate.
  *
  * Cold is always correct; warm start is only an optimisation. Every step
  * below refuses rather than guesses. */
@@ -2271,10 +2272,10 @@ static bool warm_seed_is_wrapper(const char *rel)
 /* LINK: immutable compiler outputs, replaced rather than rewritten by the
  * epoch publishers, so sharing an inode with the donor is safe. COPY: the
  * small executed wrapper binary, which must not share an inode across
- * generations, and every file inside a dependency room. SKIP: everything
- * else, including anything rewritten in place (archives, linked binaries,
- * session stamps, locks). `rel` is relative to the generation's build/
- * directory.
+ * generations, every file inside a dependency room, and every regular file
+ * under bin/. SKIP: everything else, including anything rewritten in place
+ * (archives, session stamps, locks). `rel` is relative to the generation's
+ * build/ directory.
  *
  * The dependency rooms (build/hotswap, build/githooks — the table lives in
  * tools/dev/dependency_links.c) are graded by the hardlink-isolation gate,
@@ -2283,17 +2284,28 @@ static bool warm_seed_is_wrapper(const char *rel)
  * The suffix rule alone admitted the rollback fixtures' own .d files, so a
  * warm proof seeded exactly the two paths that gate then refused. Nothing
  * else about a room changes here: a file the suffix rule would not have
- * seeded at all is still skipped. */
+ * seeded at all is still skipped.
+ *
+ * bin/ holds the executed tools and admitted executables. They are COPY, not
+ * LINK, for the same reason as the wrapper: a copy owns its inode, so a
+ * relink in either tree replaces its own bytes and never the other tree's.
+ * Seeding them is what lets a landing proof — whose compile dimension reused
+ * the checkout's z23-dev and never built build/obj — donate its prefork
+ * bundle: linking those ~70 standalone tools is half of a cold bundle's
+ * wall clock. Make still decides freshness from the restamped graph, so a
+ * tool whose inputs changed is rebuilt rather than trusted. */
 static enum warm_seed_class warm_classify_rel(const char *rel, bool is_reg)
 {
     if (!rel || !rel[0] || !is_reg || warm_path_hidden(rel))
         return WARM_SEED_SKIP;
     if (warm_seed_is_wrapper(rel))
         return WARM_SEED_COPY;
-    if (!warm_has_suffix(rel, ".o") && !warm_has_suffix(rel, ".d"))
-        return WARM_SEED_SKIP;
-    return zcl_dependency_build_room_path(rel) ? WARM_SEED_COPY
-                                               : WARM_SEED_LINK;
+    if (warm_has_suffix(rel, ".o") || warm_has_suffix(rel, ".d"))
+        return zcl_dependency_build_room_path(rel) ? WARM_SEED_COPY
+                                                   : WARM_SEED_LINK;
+    if (strncmp(rel, "bin/", 4) == 0)
+        return WARM_SEED_COPY;
+    return WARM_SEED_SKIP;
 }
 
 static bool generation_gitlink_prepare(const struct proof_paths *paths,
@@ -2910,10 +2922,12 @@ static bool proof_build_identity_equal(
            memcmp(a->build_graph, b->build_graph, 32) == 0;
 }
 
-/* The build-complete marker is the donor gate: it says a full `make
- * build-only` finished in this generation for the marked commit under the
- * sealed `identity`. Written best effort after the compile dimension; a
- * missing marker only costs a cold build. */
+/* The build-complete marker is the donor gate: it says this generation's
+ * build finished for the marked commit under the sealed `identity` — a full
+ * `make build-only` when the compile dimension builds, or the prefork bundle
+ * when the compile dimension reused the checkout's admitted z23-dev (a
+ * landing proof's only build). Written best effort after whichever of the
+ * two ran; a missing marker only costs a cold build. */
 static bool warm_marker_write_at(const char *generation, const char *root,
                                    const char *local, const char *base,
                                    int64_t completed,
@@ -3430,11 +3444,20 @@ static bool dp_donor_survey(
                               "--verify", "HEAD", NULL};
     bool head_ok = git_capture(root, head_argv, head, sizeof(head)) &&
                    strcmp(head, marker_local) == 0;
-    char obj[PATH_MAX];
+    /* A landing proof reuses the checkout's admitted z23-dev, so its
+     * generation runs the prefork bundle but never `make build-only`:
+     * it carries build/bin and the dev/test/lint object rooms and has no
+     * build/obj at all. Either subtree is a build tree worth donating;
+     * the marker above already proved the build completed, and whatever
+     * a donor simply does not have seeds nothing. */
+    char obj[PATH_MAX], bin[PATH_MAX];
     int64_t touched = 0;
     if (snprintf(obj, sizeof(obj), "%s/build/obj", candidate_path) >=
             (int)sizeof(obj) ||
-        !warm_generation_touched(obj, NULL) ||
+        snprintf(bin, sizeof(bin), "%s/build/bin", candidate_path) >=
+            (int)sizeof(bin) ||
+        !(warm_generation_touched(obj, NULL) ||
+          warm_generation_touched(bin, NULL)) ||
         !warm_generation_touched(candidate_path, &touched))
         return false;
     memset(slot, 0, sizeof(*slot));
@@ -6913,6 +6936,15 @@ static bool dp_worker_bundle(struct dp_worker *w, bool test_selected,
             proof_why(why, why_len, "proof_bundle_admission_failed");
         return false;
     }
+    /* A landing proof reaches here with the compile dimension reused, so
+     * its build-only branch never ran and never wrote the donor marker —
+     * without this write no land-lane generation could donate and every
+     * measured landing seeded cold (warm=0 reason=no_eligible_donor). The
+     * bundle just built this generation's tree for this commit under the
+     * sealed identity, which is exactly what the marker certifies. Best
+     * effort, same as the compile dimension's own write. */
+    (void)warm_marker_write(w->generation, w->paths->root, w->local,
+                            w->base);
     /* Both build phases are timed now: refresh the sidecar so the
      * receipt directory carries the full compile story. */
     warm_sidecar_write(w->paths, w->warm, w->warm_compile_mode,

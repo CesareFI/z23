@@ -3897,9 +3897,20 @@ static int test_pw_classify_link_copy_skip(void)
         ASSERT(!zcl_dependency_build_room_path(NULL));
         ASSERT(zcl_dependency_build_room_path("hotswap/a.d"));
         ASSERT(zcl_dependency_build_room_path("githooks/pre-push"));
-        /* Rewritten in place or live: never shared across generations. */
+        /* Executed binaries are copied, never linked: the copy owns its
+         * inode in the new generation, so a relink there replaces the
+         * copy and can never reach the donor's bytes. Seeded under the
+         * donor's sealed build identity and retimed like any other seed,
+         * they let a warm proof skip the prefork bundle's standalone-tool
+         * compile+links while make still rebuilds what the candidate
+         * actually changed. */
         ASSERT(zcl_dev_proof_warm_classify("bin/z23-dev", true) ==
-               ZCL_DEV_PROOF_WARM_SKIP);
+               ZCL_DEV_PROOF_WARM_COPY);
+        ASSERT(zcl_dev_proof_warm_classify("bin/gen_templates", true) ==
+               ZCL_DEV_PROOF_WARM_COPY);
+        ASSERT(zcl_dev_proof_warm_classify("bin/c3-mutex-probe.so", true) ==
+               ZCL_DEV_PROOF_WARM_COPY);
+        /* Rewritten in place or live: never shared across generations. */
         ASSERT(zcl_dev_proof_warm_classify("obj/epochs/e/a.a", true) ==
                ZCL_DEV_PROOF_WARM_SKIP);
         ASSERT(zcl_dev_proof_warm_classify("obj/epochs/e/.build-session",
@@ -4951,8 +4962,9 @@ static int test_pw_seed_links_replaces_and_copies(void)
         ASSERT(ic_write(root, "donor/build/obj/epochs/E/sub/b.o",
                         "OBJECT-B-V1!"));
         ASSERT(ic_write(root, "donor/build/bin/zcc", "WRAPPER-V1"));
-        /* Decoys the seed must never touch: live state, crash staging,
-         * in-place outputs, and the product binary. */
+        /* Decoys the seed must never touch: live state, crash staging, and
+         * in-place outputs. The product binary is seeded — as a copy on its
+         * own inode, the executed-file rule, same as the wrapper. */
         ASSERT(ic_write(root, "donor/build/obj/epochs/E/.build-session",
                         "SESSION"));
         ASSERT(ic_write(root, "donor/build/obj/epochs/E/.leases/L1",
@@ -4978,10 +4990,11 @@ static int test_pw_seed_links_replaces_and_copies(void)
         struct zcl_dev_proof_warm_stats stats = {0};
         ASSERT(zcl_dev_proof_warm_seed_and_retime(donor, gen, gen_src, true,
                                                   changed, 1, &stats));
-        ASSERT(stats.files_linked == 5);
+        ASSERT(stats.files_linked == 6);
         ASSERT(stats.bytes_linked == strlen("OBJECT-A-V1") +
                strlen("DEP-A") + strlen("OBJECT-B-V1!") +
-               strlen("WRAPPER-V1") + strlen("ROOM-DEP-A"));
+               strlen("WRAPPER-V1") + strlen("ROOM-DEP-A") +
+               strlen("PRODUCT"));
         char gen_a_o[4096], donor_a_o[4096], gen_zcc[4096], donor_zcc[4096];
         ASSERT(snprintf(gen_a_o, sizeof(gen_a_o),
                         "%s/obj/epochs/E/mod/a.o", gen) > 0);
@@ -5020,6 +5033,20 @@ static int test_pw_seed_links_replaces_and_copies(void)
         ASSERT(gen_room_ino != donor_room_ino);
         ASSERT(pw_read_all(gen_room, buf, sizeof(buf), NULL));
         ASSERT(strcmp(buf, "ROOM-DEP-A") == 0);
+        /* The product binary is copied too: seeded so a warm proof need not
+         * relink the admitted executables, owned so a relink in either tree
+         * can never reach the other's bytes. */
+        char gen_prod[4096], donor_prod[4096];
+        unsigned long long gen_prod_ino = 0, donor_prod_ino = 0;
+        ASSERT(snprintf(gen_prod, sizeof(gen_prod), "%s/bin/z23-dev",
+                        gen) > 0);
+        ASSERT(snprintf(donor_prod, sizeof(donor_prod), "%s/bin/z23-dev",
+                        donor) > 0);
+        ASSERT(pw_stat_ino(gen_prod, &gen_prod_ino));
+        ASSERT(pw_stat_ino(donor_prod, &donor_prod_ino));
+        ASSERT(gen_prod_ino != donor_prod_ino);
+        ASSERT(pw_read_all(gen_prod, buf, sizeof(buf), NULL));
+        ASSERT(strcmp(buf, "PRODUCT") == 0);
         /* Decoys never arrive. */
         char probe[4096];
         static const char *const absent[] = {
@@ -5029,7 +5056,6 @@ static int test_pw_seed_links_replaces_and_copies(void)
             "obj/epochs/E/mod/tool",
             "obj/epochs/E/mod/lib.a",
             "obj/.hidden/x.o",
-            "bin/z23-dev",
             "hotswap/fixture.so",
         };
         for (size_t i = 0; i < sizeof(absent) / sizeof(absent[0]); i++) {
@@ -5087,6 +5113,14 @@ static int test_pw_seed_links_replaces_and_copies(void)
         ASSERT(pw_stat_ino(donor_zcc, &donor_zcc_ino));
         ASSERT(pw_stat_ino(gen_zcc, &gen_zcc_ino));
         ASSERT(gen_zcc_ino != donor_zcc_ino);
+        /* Same in-place rewrite proof for the seeded product binary. */
+        rewrite = fopen(gen_prod, "r+b");
+        ASSERT(rewrite != NULL);
+        ASSERT(fwrite("MUTATED!!!", 1, strlen("MUTATED!!!"), rewrite) ==
+               strlen("MUTATED!!!"));
+        ASSERT(fclose(rewrite) == 0);
+        ASSERT(pw_read_all(donor_prod, buf, sizeof(buf), NULL));
+        ASSERT(strcmp(buf, "PRODUCT") == 0);
         ASSERT(test_rm_rf_recursive(root) == 0);
 #endif
         PASS();
