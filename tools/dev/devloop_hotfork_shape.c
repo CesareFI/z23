@@ -1481,9 +1481,12 @@ static bool shape_names_has(const struct shape_names *n, const char *name,
            n->slots[shape_names_slot(n->slots, n->mask, n->arena, name, len)];
 }
 
-static bool shape_names_rehash(struct shape_names *n)
+/* Regrows the index to hold at least `want` names at half load. */
+static bool shape_names_rehash(struct shape_names *n, size_t want)
 {
     size_t cap = n->slots ? (n->mask + 1) * 2 : 1024;
+    while (cap < want * 2)
+        cap *= 2;
     size_t *slots = zcl_calloc(cap, sizeof(*slots), "HOT_FORK image names");
     for (size_t i = 0; slots && n->slots && i <= n->mask; i++) {
         if (!n->slots[i])
@@ -1504,7 +1507,7 @@ static bool shape_names_add(struct shape_names *n, const char *name)
 {
     size_t len = strlen(name);
     if ((!n->slots || (n->count + 1) * 2 > n->mask + 1) &&
-        !shape_names_rehash(n))
+        !shape_names_rehash(n, n->count + 1))
         return false;
     size_t at = shape_names_slot(n->slots, n->mask, n->arena, name, len);
     if (n->slots[at])
@@ -1556,7 +1559,9 @@ static uint64_t shape_fold(uint64_t h, const void *bytes, size_t len)
 static bool shape_add_defined(const struct shape_elf *e, bool globals,
                               struct shape_names *into)
 {
-    bool ok = true;
+    /* One index size for the whole table: no regrowth while adding. */
+    bool ok = (into->slots && (into->count + e->nsym) * 2 <= into->mask + 1) ||
+              shape_names_rehash(into, into->count + e->nsym);
     for (size_t i = 1; ok && i < e->nsym; i++) {
         const Elf64_Sym *s = &e->sym[i];
         const char *name = shape_sym_name(e, s);
