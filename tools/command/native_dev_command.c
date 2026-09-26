@@ -3130,6 +3130,35 @@ static void dev_watch_spawn_settled(int fd)
     (void)close(fd);
 }
 
+/* Test seam for the isolated selftest: a watcher that never takes its
+ * lock. With ZCL_DEVLOOP_TEST_PROCESS=1 and ZCL_DEVLOOP_TEST_WATCH_STALL
+ * naming a file, the forked watcher starts one member that ignores SIGTERM
+ * (a proof worker that does not honour it), writes "<pid> <member>" there,
+ * and waits to be killed. */
+static void dev_watch_test_stall(void)
+{
+    const char *opt_in = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    const char *path = getenv("ZCL_DEVLOOP_TEST_WATCH_STALL");
+    if (!opt_in || strcmp(opt_in, "1") != 0 || !path || !path[0])
+        return;
+    pid_t member = fork();
+    if (member == 0) {
+        (void)signal(SIGTERM, SIG_IGN);
+        for (;;)
+            (void)pause();
+    }
+    char line[64];
+    int n = snprintf(line, sizeof(line), "%ld %ld\n", (long)getpid(),
+                     (long)member);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd >= 0 && n > 0 && n < (int)sizeof(line))
+        (void)!write(fd, line, (size_t)n);
+    if (fd >= 0)
+        (void)close(fd);
+    for (;;)
+        (void)pause();
+}
+
 /* The watcher leads its own session, so a stop can retire everything it
  * forks, and the launcher records that session as soon as it exists:
  * identity never depends on who last wrote the lock text. The watcher works
@@ -3159,6 +3188,7 @@ static pid_t dev_watch_spawn(const char *root, const char *log,
             (void)dup2(log_fd, STDERR_FILENO);
             close(log_fd);
         }
+        dev_watch_test_stall();
         int rc = rooted ? zcl_devloop_watch_mode(root, mode) : 1;
         zcl_devloop_watch_session_release(root, (int64_t)getpid());
         (void)fflush(NULL);

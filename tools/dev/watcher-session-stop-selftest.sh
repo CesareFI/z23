@@ -116,4 +116,33 @@ grep -q '"session_retired":"retired"' <<<"$out" ||
 gone "$pid" || fail 'leader survived its stop'
 gone "$worker" || fail 'worker survived its session stop'
 
-printf 'watcher session stop: begin refuses beside an orphan; orphan retired only by its birth; bound stop leaves no process\n'
+# Live members of session $1 (zombies excluded).
+session_members()
+{
+    local stat rest fields count=0
+    for stat in /proc/[0-9]*/stat; do
+        rest="$(cat "$stat" 2>/dev/null)" || continue
+        rest="${rest##*) }"
+        read -r -a fields <<<"$rest"
+        [[ "${fields[3]:-}" == "$1" && "${fields[0]}" != Z ]] && count=$((count + 1))
+    done
+    printf '%s\n' "$count"
+}
+
+# (d) A begin whose watcher never takes its lock reports WATCH_START_FAILED
+# and leaves nothing of that launch: no process of its session (not even a
+# member that ignores SIGTERM) and no launch record.
+root="$(new_root stall)"
+out="$(ZCL_DEVLOOP_TEST_PROCESS=1 ZCL_DEVLOOP_TEST_WATCH_STALL="$root/stall.pids" \
+    run "$root" dev begin --input="{\"root\":\"$root\"}")"
+grep -q '"WATCH_START_FAILED"' <<<"$out" || fail "stalled begin: $out"
+[[ -s "$root/stall.pids" ]] || fail 'stalled watcher did not report'
+read -r pid worker < "$root/stall.pids"
+if [[ "$(session_members "$pid")" != 0 ]]; then
+    holders+=("$pid")
+    fail "failed begin left its watcher session running (watcher $pid)"
+fi
+[[ ! -e "$root/.cache/zcl-dev-watch.d/$pid" ]] ||
+    fail "failed begin left its launch record (watcher $pid)"
+
+printf 'watcher session stop: begin refuses beside an orphan; orphan retired only by its birth; bound stop leaves no process; failed begin leaves no watcher\n'
