@@ -991,6 +991,65 @@ static int store_case_exact_cache_replay(
     return failures;
 }
 
+/* Withdraw the executing worker's authority and require a named refusal:
+ * a revoked or expired signer is not a stale-evidence miss the caller may
+ * retry around, it is a signer the host no longer trusts. */
+static bool zs_cache_worker_authority_refused(
+    struct exact_cache_ctx *ctx, const char *reason)
+{
+    bool hit = true;
+    uint64_t bytes = 1;
+    struct vcs_zcode_work_receipt_v1 receipt;
+    memset(&receipt, 0x5a, sizeof(receipt));
+    struct zcl_result reused = build_fabric_cache_replay_receipt(
+        ctx->ndb, ctx->dd, ctx->store, ctx->job, ctx->action, 160,
+        &hit, &receipt, &bytes);
+    static const struct vcs_zcode_work_receipt_v1 zero;
+    return !reused.ok && !hit && bytes == 0 &&
+        strstr(reused.message, reason) != NULL &&
+        memcmp(&receipt, &zero, sizeof(zero)) == 0;
+}
+
+static int store_case_exact_cache_replay_worker_authority(
+    struct exact_cache_ctx *ctx)
+{
+    int failures = 0;
+    struct db_build_receipt rows[2];
+    struct db_build_worker worker, original;
+    bool found = db_build_job_receipts(
+            ctx->ndb, ctx->job->job_id, rows, 2) == 1 &&
+        db_build_worker_find(ctx->ndb, rows[0].worker_id, &original);
+    ZS_CHECK("exact cache: executing worker row loads for authority fixture",
+             found);
+    if (!found) return failures;
+    ZS_CHECK("exact cache: executing worker revoked by the service",
+             build_fabric_worker_revoke(
+                 ctx->ndb, original.worker_id, 158).ok &&
+             db_build_worker_find(ctx->ndb, original.worker_id, &worker) &&
+             worker.revoked);
+    ZS_CHECK("exact cache: revoked worker refuses replay by name",
+             zs_cache_worker_authority_refused(
+                 ctx, "historical replay worker revoked"));
+    worker = original;
+    worker.expires_at = 155;
+    ZS_CHECK("exact cache: executing worker expires before replay",
+             db_build_worker_save(ctx->ndb, &worker));
+    ZS_CHECK("exact cache: expired worker refuses replay by name",
+             zs_cache_worker_authority_refused(
+                 ctx, "historical replay worker expired"));
+    ZS_CHECK("exact cache: executing worker authority restores",
+             db_build_worker_save(ctx->ndb, &original));
+    bool hit = false;
+    uint64_t bytes = 0;
+    struct vcs_zcode_work_receipt_v1 receipt;
+    struct zcl_result reused = build_fabric_cache_replay_receipt(
+        ctx->ndb, ctx->dd, ctx->store, ctx->job, ctx->action, 160,
+        &hit, &receipt, &bytes);
+    ZS_CHECK("exact cache: restored worker authority replays again",
+             reused.ok && hit && bytes > 0);
+    return failures;
+}
+
 static int store_case_exact_cache_missing_source_blob(
     struct exact_cache_ctx *ctx)
 {
@@ -1211,6 +1270,7 @@ int t_store_exact_cache_restore(void)
         &ctx, object, sizeof(object), output_root);
     failures += store_case_exact_cache_replay(&ctx, sizeof(object));
     failures += store_case_exact_cache_replay_tampered_receipt(&ctx);
+    failures += store_case_exact_cache_replay_worker_authority(&ctx);
     failures += store_case_exact_cache_stable_identity(&ctx);
     failures += store_case_exact_cache_missing_source_blob(&ctx);
     failures += store_case_exact_cache_miss_and_repair(&ctx, object,
