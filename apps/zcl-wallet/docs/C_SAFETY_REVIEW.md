@@ -4305,3 +4305,63 @@ release counterpart. Both SHA256 values are
 `166e6102ca78dbe4d336d6cd9e320f89184681d1f7b0fd7f6447ab2e206cf10a`.
 This qualifies two paths on one Linux host, not other toolchains, independent
 hosts, signed releases or physical-device custody.
+
+## 2026-09-26: bound active JNI reply storage to the checked input size
+
+Reviewed the JNI sizing helper, its single-owner cleanup path, allocator and
+exception fixtures, expanded fuzz assertions and Android boundary cases. The
+regression against the preceding implementation reports a 16384-byte allocation
+for a valid 42-byte reply. The candidate requests exactly 42, 128, 1024 and 16384
+bytes for those inputs. Empty input reserves one byte for the shared reader's
+non-NULL contract and still fails normal parsing. NULL, negative fake-VM lengths
+and over-limit arrays refuse before allocation. This measures requested bytes
+and cleared spans; it does not establish allocator overhead, RSS or latency.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The signed JNI length is checked before conversion and bounded at 16384. Capacity is exactly the positive length or one for empty input. The existing reader independently checks its length and copy bounds. Cleanup clears capacity, including partial/failed reads, before freeing. The fake allocator now observes every JNI allocation, fills the entire span with a sentinel and verifies its complete erasure. |
+| Integer overflow/underflow; signed/unsigned conversions | No allocation multiplication or addition is introduced. Only nonnegative bounded jsize values convert to size_t. Fuzz payload subtraction occurs after the existing 1..16385 input check; counters reset per bounded invocation. Unit capacity casts follow explicit 16384-byte checks. |
+| Use-after-free; double-free; leaks; dangling pointers | One local allocation owns the frame. A successful allocation reaches one clear/free path whether copying or parsing succeeds or fails. Allocation refusal owns no buffer. The synchronous parser does not retain the borrowed frame. No Java reference, pin, new persistent state or escaped pointer is introduced. |
+| NULL dereferences; uninitialized memory | The JNI entry retains missing-env/pending-exception checks. The private helper receives that checked environment and a live local capacity pointer; it rejects NULL input before JNI use. Capacity and returned length initialize to zero. Failed allocation is checked. Partial input is never parsed, and uninitialized allocation bytes are overwritten during cleanup. |
+| Pointer arithmetic; format strings | No new production pointer arithmetic or formatting. Fixture padding and comparisons remain within checked capacity. Fixed diagnostics include only public lengths/counts, never frame contents, wallet records, keys or addresses. |
+| Stack usage; allocation limits; resource exhaustion | Maximum frame ownership remains 16384 bytes, off-stack; short replies reserve and clear less. There is one extra checked GetArrayLength call per active reply, retaining the shared reader rather than duplicating copying logic. Measured syncReply/reply_frame frames remain 72/72 bytes on x86-64 and 80/96 on ARM64; callees/providers add their frames. JNI BSS remains 6096 bytes. Native text grows 93/120 bytes and the unsigned APK grows 80 bytes to 641659. No pool, recursion, VLA, thread, retry or persistent allocation is added. |
+| Malformed input; races; failure behavior | The registry lock still covers owner/token lookup, sizing, copying and parsing. Java array length is immutable; callers retain the existing stable-content contract. Exceptions from either length read and partial region failures retire the attempt without further JNI calls and clear any owned span. Invalid shape now wins over hypothetical allocation failure because it is checked first. Current valid input still reaches the authoritative C ordering/deadline/clock checks; retired tokens still allocate/copy nothing. |
+| Secret leakage and authority | Frames and fixtures contain public read-only data. Full-span erasure remains mandatory and observed even after partial read failure. No endpoint, custody, source-trust, transaction, consensus, certificate, hostname or TLS-quarantine policy changes. Both emulator packages use disposable public fixtures without wallet records or Keystore aliases. |
+
+The allocator regression fails against the previous production code. A temporary
+cleanup mutation that clears returned length instead of capacity fails on empty
+input; running the existing allocation/partial-read cases first also rejects it
+after a partially written failed read. Both failures are retained. Unit and fuzz
+fixtures pass strict Clang/GCC analysis, including optimized GCC. The largest
+optimized unit frame is 784 bytes, the new sizing case is 624, and the fuzz entry
+is 208. Production/test complexity caps remain 10/15 without exceptions.
+
+The complete safety script passes Clang 138/138 sanitizer groups in 129.51
+seconds and optimized GCC 137/137 in 197.39 seconds, including the new fixtures.
+
+All 149 JVM tests, Android builds/lint, fixture isolation, 16 KiB alignment,
+architecture and whitespace checks pass. All 15 focused sync/history/queued
+delivery/background/recreation tests pass with CheckJNI on isolated API 30/36
+in 5.613/9.509 seconds. The new case exercises both networks and owner modes at
+zero, one, valid short, 1024, 16384 and 16385 bytes, preserving borrowed input and
+checking attempt retirement. Both owned emulators exit zero; the five existing
+devices and 31 ADB zombies remain unchanged. Physical ARM64 is untested.
+
+The existing opt-in process controller also passes balance and history profiles
+on both APIs: it verifies a displayed public report, records and terminates that
+exact app process, observes STOPPED, then checks an empty display and fresh sync
+in a different PID. All four relaunch results pass the no-skip result checker.
+
+JNI/watch fuzzing completes 45449/34289 runs, each in 121 seconds, without a
+finding. Caps remain 16385/16384 bytes, five seconds per case and 512 MiB RSS
+(281/93 MiB observed). A separate 255-run JNI replay covers the maximum input
+and valid padded replies. JNI fuzzer SHA256 is
+`9747e28fcb1176d8493f264bf1004d4fe29bb362e993b54d8a88df008065ab75`.
+
+Fresh source-only tree `cec0cf71ce1d6a31567a46e1400efdf799bdc15f` contains the
+exact implementation and tests with preceding documentation. All 57 release
+tasks execute with build caching disabled in 47 seconds. Its complete unsigned
+APK equals the fresh packaged artifact, SHA256
+`caf7e74f0ac0740971a280adbec9a377de25bbede347ddaa7b6627fd9ad84d3a`.
+Logs, original source, mutation binaries, corpora, budget reports and the source
+archive are retained in `.cache/active-frame-20260926/` in the isolated worktree.

@@ -155,17 +155,32 @@ Java_org_zclassic_wallet_core_NativeCore_syncRequest(JNIEnv *env, jclass type,
     return unlock_registry(ZCL_OK) == ZCL_OK ? packet : NULL;
 }
 
+static zcl_status reply_capacity(JNIEnv *env, jbyteArray input, size_t *capacity)
+{
+    if (input == NULL) return ZCL_INVALID_ARGUMENT;
+    const jsize count = (*env)->GetArrayLength(env, input);
+    if ((*env)->ExceptionCheck(env)) return ZCL_INVALID_ARGUMENT;
+    if (count < 0 || (size_t)count > ZCL_ELECTRUM_FRAME_MAX) return ZCL_OUT_OF_RANGE;
+    /* The shared reader requires non-NULL storage even for an empty span. */
+    *capacity = count == 0 ? 1 : (size_t)count;
+    return ZCL_OK;
+}
+
 static zcl_status reply_frame(JNIEnv *env, zcl_sync_watch *watch, uint64_t token,
     uint64_t now, jbyteArray input)
 {
-    /* One checked, fixed-capacity owner; never place a network frame on stack. */
-    uint8_t *frame = malloc(ZCL_ELECTRUM_FRAME_MAX);
+    size_t capacity = 0;
+    zcl_status status = reply_capacity(env, input, &capacity);
+    if (status != ZCL_OK) return zcl_sync_watch_fail(watch, token, status);
+    /* One bounded owner. Array lengths are immutable; the shared reader still
+     * checks the copy bounds and exceptions. Never place a frame on stack. */
+    uint8_t *frame = malloc(capacity);
     if (frame == NULL) return zcl_sync_watch_fail(watch, token, ZCL_RESOURCE_EXHAUSTED);
     size_t length = 0;
-    zcl_status status = zcl_jni_read_bytes(env, input, frame, ZCL_ELECTRUM_FRAME_MAX, &length);
+    status = zcl_jni_read_bytes(env, input, frame, capacity, &length);
     if (status == ZCL_OK) status = zcl_sync_watch_reply(watch, token, now, frame, length);
     else status = zcl_sync_watch_fail(watch, token, status);
-    zcl_secure_zero(frame, ZCL_ELECTRUM_FRAME_MAX);
+    zcl_secure_zero(frame, capacity);
     free(frame);
     return status;
 }

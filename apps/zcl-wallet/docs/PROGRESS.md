@@ -7389,3 +7389,54 @@ push was refused by the installed hook with `remote-ref-not-main`; its precise
 checkpoint is in `.cache/header-contract-20260926/CHECKPOINT.md`. No hook was
 bypassed and main was not pushed. Continue locally with measured active-reply
 buffer sizing while preserving the separate publication and product gates.
+
+## Active reply storage follows checked input length — 2026-09-26
+
+JNI previously reserved and cleared 16384 bytes for every active reply; the new
+regression reproduces that cost for a valid 42-byte response. It now checks the
+array length before allocation, keeps the existing 16384-byte maximum and
+reserves exactly the positive length. Empty input uses a one-byte owner for the
+shared reader's contract and retains normal refusal. NULL/invalid lengths
+allocate nothing. Full allocated storage is erased after successful, rejected
+or partially copied input. The existing reader, authoritative C validation,
+registry lock and retired-token precheck remain in place.
+
+The allocator fixture observes exact 42/128/1024/16384-byte requests, untouched
+borrowed input, current-attempt progression, zero/over-limit refusal and failures
+from either JNI length read. Existing allocation/partial-region fault cases
+retain complete-erasure checks. A cleanup mutation using returned length fails
+both empty-input and partial-read cases. The fuzzer additionally demands one
+exact-sized allocation for every current reply, including injected failures.
+One extra GetArrayLength call preserves central copy validation; no measured
+phone latency or allocator-RSS claim is made.
+
+Complete safety passes Clang 138/138 and optimized GCC 137/137 ASan/UBSan groups
+in 129.51/197.39 seconds. Strict fixture analysis, production/test complexity
+caps 10/15, all 149 JVM tests, Android builds/lint, isolation, alignment,
+architecture and whitespace checks pass. JNI/watch fuzzing completes
+45449/34289 runs, each in 121 seconds, without a finding; a 255-run JNI replay
+includes maximum input and valid padded replies. Bounds are 16385/16384 bytes,
+five seconds per case and 512 MiB RSS (281/93 MiB observed).
+
+All 15 focused sync/history/queued-delivery/background/recreation cases pass
+with CheckJNI on isolated API 30/36 in 5.613/9.509 seconds. The new boundary case
+covers both networks and owner modes. Separate balance/history process-kill
+fixtures pass on both APIs, proving verified public displays vanish and sync
+starts fresh in a different PID. No wallet, key, endpoint or production state
+participates. ARM64 is compiled only; physical custody remains unqualified.
+
+JNI native text grows 93/120 bytes on x86-64/ARM64, with unchanged 6096-byte BSS
+and measured reply call frames. The fresh unsigned APK grows 80 bytes to 641659.
+Source-only tree `cec0cf71ce1d6a31567a46e1400efdf799bdc15f` reproduces it exactly
+with all 57 release tasks executed without build caching in 47 seconds:
+`caf7e74f0ac0740971a280adbec9a377de25bbede347ddaa7b6627fd9ad84d3a`.
+The complete hazard review is in C_SAFETY_REVIEW.md; sources, regression/mutation
+failures, corpora, device results and artifact identities remain in
+`.cache/active-frame-20260926/` in the isolated validation worktree.
+
+Publication of the preceding two commits remains blocked by the installed
+hook's `remote-ref-not-main` refusal for the authorized wallet development
+branch. No hook or authority boundary is bypassed. Next independent check:
+extend direct native JNI race coverage to active reply copying and owner
+replacement; the existing threaded native fixture covers requests/snapshots,
+while managed reply concurrency is serialized by the Kotlin owner.

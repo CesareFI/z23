@@ -39,8 +39,9 @@ typedef struct {
 static fake_array *references[32];
 static size_t reference_count;
 static bool pending_exception, fail_set, fail_get, fail_frame;
-static unsigned fail_new;
+static unsigned fail_new, fail_length;
 static uint8_t *owned_frame;
+static size_t owned_frame_capacity, last_frame_capacity;
 static uintptr_t snapshot_identity, output_identity;
 static unsigned snapshot_calls, snapshot_clears, output_clears;
 static unsigned snapshot_fault;
@@ -137,7 +138,7 @@ void zcl_jni_sync_test_zero(void *buffer, size_t length)
     if (retire_open_copy(buffer, length)) return;
     if (retire_request_copy(buffer, length)) return;
     if (buffer == owned_frame) {
-        CHECK(length == ZCL_ELECTRUM_FRAME_MAX);
+        CHECK(length == owned_frame_capacity);
     } else if ((uintptr_t)buffer == snapshot_identity) {
         CHECK(length == sizeof(zcl_sync_snapshot));
         snapshot_identity = 0;
@@ -153,19 +154,24 @@ void zcl_jni_sync_test_zero(void *buffer, size_t length)
 
 void *zcl_jni_test_malloc(size_t size)
 {
-    if (size != ZCL_ELECTRUM_FRAME_MAX) return malloc(size);
-    CHECK(owned_frame == NULL);
+    CHECK(size > 0 && size <= ZCL_ELECTRUM_FRAME_MAX);
+    CHECK(owned_frame == NULL && owned_frame_capacity == 0);
+    last_frame_capacity = size;
     ++frame_allocations;
     if (fail_frame) { fail_frame = false; return NULL; }
     owned_frame = malloc(size);
+    if (owned_frame != NULL) {
+        owned_frame_capacity = size;
+        memset(owned_frame, 0xa5, size); /* Detect incomplete cleanup after partial reads. */
+    }
     return owned_frame;
 }
 void zcl_jni_test_free(void *pointer)
 {
-    if (pointer != NULL && pointer == owned_frame) {
-        for (size_t i = 0; i < ZCL_ELECTRUM_FRAME_MAX; ++i) CHECK(owned_frame[i] == 0);
-        owned_frame = NULL;
-    }
+    CHECK(pointer != NULL && pointer == owned_frame && owned_frame_capacity > 0);
+    for (size_t i = 0; i < owned_frame_capacity; ++i) CHECK(owned_frame[i] == 0);
+    owned_frame = NULL;
+    owned_frame_capacity = 0;
     free(pointer);
 }
 
@@ -191,7 +197,8 @@ static jbyteArray bytes(const uint8_t *data, size_t length)
 
 static void release_references(void)
 {
-    CHECK(owned_frame == NULL);
+    CHECK(owned_frame == NULL && owned_frame_capacity == 0);
+    last_frame_capacity = 0;
     CHECK(!opening && address_identity == 0 && source_identity == 0);
     address_clears = source_clears = opening_reads = 0;
     fail_open_get = 0;
@@ -205,7 +212,7 @@ static void release_references(void)
     for (size_t i = 0; i < reference_count; ++i) { free(references[i]); references[i] = NULL; }
     reference_count = 0;
     pending_exception = false;
-    fail_new = false; fail_set = false; fail_get = false; fail_frame = false;
+    fail_new = fail_length = 0; fail_set = false; fail_get = false; fail_frame = false;
     frame_allocations = byte_regions = 0;
 }
 
@@ -218,6 +225,7 @@ static jsize JNICALL array_length(JNIEnv *env, jarray input)
 {
     (void)env;
     CHECK(input != NULL && !pending_exception);
+    if (fail_length != 0 && --fail_length == 0) pending_exception = true;
     return ((fake_array *)input)->length;
 }
 static fake_array *region(jarray input, jsize offset, jsize count, bool longs)
@@ -537,6 +545,68 @@ static void frame_allocation_and_region_failure(void)
     release_references();
 }
 
+static void exact_frame_allocation(size_t capacity)
+{
+    const jlong id = open_owner();
+    const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+    CHECK(token > 0 && checked_request(&environment, NULL, id, token, 0) != NULL);
+    char reply[512];
+    const size_t length = sync_fixture_reply(ZCL_MAINNET, ZCL_SYNC_VERSION, 1, reply, sizeof(reply));
+    if (capacity == 0) capacity = length;
+    CHECK(length > 0 && length <= capacity && capacity <= ZCL_ELECTRUM_FRAME_MAX);
+    fake_array *frame = array_new((jsize)capacity, false);
+    memset(frame->data.bytes, ' ', capacity);
+    memcpy(frame->data.bytes, reply, length);
+    const unsigned reads = byte_regions;
+    CHECK(API(syncReply)(&environment, NULL, id, token, 0, (jbyteArray)frame) == ZCL_OK);
+    fprintf(stderr, "Active reply: bytes=%zu allocation=%zu\n", capacity, last_frame_capacity);
+    CHECK(frame_allocations == 1 && last_frame_capacity == capacity && byte_regions == reads + 1);
+    CHECK(memcmp(frame->data.bytes, reply, length) == 0);
+    for (size_t i = length; i < capacity; ++i) CHECK(frame->data.bytes[i] == ' ');
+    CHECK(checked_request(&environment, NULL, id, token, 0) != NULL);
+    CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+    release_references();
+}
+
+static void frame_shape_refusals(void)
+{
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        const jlong id = open_owner();
+        const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+        CHECK(token > 0 && checked_request(&environment, NULL, id, token, 0) != NULL);
+        fake_array *frame = mode == 0 ? NULL : array_new(0, false);
+        if (mode == 2) frame->length = -1;
+        if (mode == 3) frame->length = (jsize)ZCL_ELECTRUM_FRAME_MAX + 1;
+        const unsigned reads = byte_regions;
+        const jint expected = mode == 0 ? (jint)ZCL_INVALID_ARGUMENT : (jint)ZCL_OUT_OF_RANGE;
+        CHECK(API(syncReply)(&environment, NULL, id, token, 0, (jbyteArray)frame) == expected);
+        const unsigned count = mode == 1 ? 1 : 0; /* Empty input uses a one-byte owner. */
+        CHECK(frame_allocations == count && last_frame_capacity == count && byte_regions == reads + count);
+        CHECK(!pending_exception && snapshot(id, 0)[3] == expected);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
+}
+
+static void frame_length_exceptions(void)
+{
+    for (unsigned call = 1; call <= 2; ++call) {
+        const jlong id = open_owner();
+        const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+        CHECK(token > 0 && checked_request(&environment, NULL, id, token, 0) != NULL);
+        const jbyteArray frame = bytes((const uint8_t *)"{}", 2);
+        const unsigned reads = byte_regions;
+        fail_length = call;
+        CHECK(API(syncReply)(&environment, NULL, id, token, 0, frame) == ZCL_INVALID_ARGUMENT);
+        CHECK(pending_exception && fail_length == 0 && byte_regions == reads);
+        CHECK(frame_allocations == call - 1 && owned_frame == NULL);
+        pending_exception = false;
+        CHECK(snapshot(id, 0)[3] == ZCL_INVALID_ARGUMENT);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
+}
+
 static void retired_reply_batch(jlong id, jlong token, jbyteArray frame)
 {
     jlong before[10];
@@ -739,6 +809,9 @@ static void history_packet_and_owner_replacement(void)
 
 int main(void)
 {
+    exact_frame_allocation(0); exact_frame_allocation(128);
+    exact_frame_allocation(1024); exact_frame_allocation(ZCL_ELECTRUM_FRAME_MAX);
+    frame_shape_refusals(); frame_length_exceptions();
     opening_refusals();
     stale_request_failure_preserves_attempt();
     snapshot_projection_refusals();
@@ -834,7 +907,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
         const jbyteArray input = bytes(data + 1, length - 1);
         fail_get = (data[0] & 0x20) != 0;
         fail_frame = (data[0] & 0x10) != 0;
+        const unsigned allocations = frame_allocations;
         const jint status = API(syncReply)(&environment, NULL, id, token, (jlong)step, input);
+        CHECK(frame_allocations == allocations + 1);
+        CHECK(last_frame_capacity == (length > 1 ? length - 1 : 1));
         CHECK(status >= ZCL_OK && status <= ZCL_TLS_FAILURE);
         pending_exception = false; fail_get = false; fail_frame = false;
     }

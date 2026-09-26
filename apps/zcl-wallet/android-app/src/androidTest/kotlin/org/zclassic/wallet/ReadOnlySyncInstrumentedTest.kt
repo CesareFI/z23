@@ -4,6 +4,7 @@ package org.zclassic.wallet
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.util.concurrent.atomic.AtomicLong
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -19,6 +20,38 @@ import org.zclassic.wallet.core.Zatoshi
 /** Public local fixtures only. No endpoint, socket, wallet record or Keystore. */
 @RunWith(AndroidJUnit4::class)
 class ReadOnlySyncInstrumentedTest {
+    @Test fun activeReplySizesPreserveParsingAndRetireRefusedAttempts() {
+        val assets = InstrumentationRegistry.getInstrumentation().context.assets
+        for (network in Network.entries) for (history in listOf(false, true)) {
+            val address = TransparentAddress.fromPublicKeyHash(ByteArray(20), network)
+            val name = if (network == Network.MAINNET) "mainnet" else "testnet"
+            val version = assets.open("sync/$name-1.json").use { it.readBytes() }
+            for (size in listOf(0, 1, version.size, 1024, 16384, 16385)) {
+                val frame = ByteArray(size) { 32 }
+                if (size >= version.size) version.copyInto(frame)
+                val before = frame.copyOf()
+                val sync = if (history) ReadOnlySync.withHistory(address, ByteArray(32) { 1 }) { 0 }
+                    else ReadOnlySync(address, ByteArray(32) { 1 }) { 0 }
+                sync.use {
+                    val current = sync.begin(100)
+                    assertTrue(current.request().isNotEmpty())
+                    val expected = when (size) {
+                        0, 16385 -> CoreStatus.OUT_OF_RANGE
+                        1 -> CoreStatus.INVALID_ENCODING
+                        else -> CoreStatus.OK
+                    }
+                    assertEquals(expected, current.reply(frame))
+                    assertArrayEquals(before, frame)
+                    val state = sync.snapshot()
+                    assertEquals(expected, state.lastFault)
+                    assertEquals(expected == CoreStatus.OK, state.refreshing)
+                    assertNull(state.report)
+                    if (expected == CoreStatus.OK) assertTrue(current.request().isNotEmpty())
+                }
+            }
+        }
+    }
+
     @Test fun retiredReplyBurstCannotExpireOrPoisonTheCurrentAttempt() {
         val assets = InstrumentationRegistry.getInstrumentation().context.assets
         val frame = ByteArray(16384) { 42 } // Public bytes, never parsed for a retired token.
