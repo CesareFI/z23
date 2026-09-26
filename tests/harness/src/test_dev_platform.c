@@ -6719,15 +6719,11 @@ static bool dp_hs_probe_header(const char *rel, const char *text)
            dp_settle(k_dp_hf_root, rel, 9);
 }
 
-/* A header the resident object was built from changes, or the candidate
- * includes one the resident object never saw: the candidate is not an edit
- * of the program the resident runs even when its object shape matches.
- * A header replaced after the build is refused even when its mtime is set
- * back to before the build (cp -p, touch -d, rsync -t, tar): its ctime
- * cannot be set back. Restoring the exact bytes the resident was built
- * from reuses the artifact admitted for them in this generation (its key
- * binds every header's content). */
-static bool dp_hs_header_cases(const char *base, const char *added)
+/* The resident object is built with the probe headers in place; replacing
+ * one with other bytes and setting its mtime back to before the build
+ * (cp -p, touch -d, rsync -t, tar) is refused: its ctime cannot be set
+ * back. */
+static bool dp_hs_header_kept(const char *base)
 {
     return dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 0u\n") &&
            dp_hs_probe_header(DP_HS_PROBE2_H,
@@ -6738,7 +6734,18 @@ static bool dp_hs_header_cases(const char *base, const char *added)
            dp_hs_probe_header(DP_HS_PROBE_H, "#define VCS_POLICY_PROBE 2u\n") &&
            dp_hs_predrive(base, true) &&
            dp_hs_refused("header-replaced-old-mtime", base,
-                         "HOT_FORK_SHAPE_HEADER_DRIFT") &&
+                         "HOT_FORK_SHAPE_HEADER_DRIFT");
+}
+
+/* A header the resident object was built from changes, or the candidate
+ * includes one the resident object never saw: the candidate is not an edit
+ * of the program the resident runs even when its object shape matches.
+ * Restoring the exact bytes the resident was built from reuses the
+ * artifact admitted for them in this generation (its key binds every
+ * header's content). */
+static bool dp_hs_header_cases(const char *base, const char *added)
+{
+    return dp_hs_header_kept(base) &&
            dp_mk_write(k_dp_hf_root, DP_HS_PROBE_H,
                        "#define VCS_POLICY_PROBE 1u\n") &&
            dp_hs_predrive(base, true) &&
