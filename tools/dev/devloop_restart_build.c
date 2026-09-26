@@ -2743,6 +2743,8 @@ static bool rr_prove_priority_run_and_parse(
 static void rr_prove_priority_why(char *why, size_t why_len,
                                   const char *reason, const char *group)
 {
+    if (!why || !why_len)
+        return;
     if (strcmp(reason, "previous_failure") == 0) {
         (void)snprintf(why, why_len,
                        "previously failing group %s is still red (runs "
