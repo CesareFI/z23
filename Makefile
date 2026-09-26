@@ -960,8 +960,7 @@ SHADOW_SELECT_SRCS = tools/dev/dev_shadow_rule.c tools/dev/dev_shadow_corpus.c \
 	tools/dev/dev_shadow_eval.c tools/dev/dev_shadow_render.c \
 	tools/dev/dev_shadow_graph.c tools/dev/dev_shadow_compare.c
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
-	tools/dev/devloop_app_scaffold.c \
-	tools/dev/devloop_hotfork_shape.c \
+	tools/dev/devloop_app_scaffold.c tools/dev/devloop_hotfork_shape.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_watch_classify.c tools/dev/devloop_process.c \
 	tools/dev/devloop_watch_session.c \
 	tools/dev/devloop_hotswap_build.c tools/dev/devloop_restart_build.c \
@@ -4832,7 +4831,13 @@ fast-changed-compile:
 # import unrelated compiler depfiles.
 watcher-safety-gates: check-core-seal check-consensus-parity check-dev-loop-profiles
 
-.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench landed-journey-bench reflex-coverage-audit reflex-coverage-audit-selftest reflex-hotfork-transport-acceptance reflex-hotfork-source-bundle-acceptance reflex-hotfork-test-catalog-acceptance reflex-hotfork-shop-want-view-acceptance reflex-hotfork-zcode-package-view-acceptance reflex-hotfork-shop-status-acceptance reflex-hotfork-shop-reputation-acceptance reflex-hotfork-zcode-work-acceptance reflex-hotfork-watch-core-acceptance reflex-hotfork-cycle-core-acceptance reflex-hotfork-corpus-core-acceptance reflex-hotfork-plan-core-acceptance reflex-hotfork-shop-want-core-acceptance reflex-hotfork-command-input-core-acceptance reflex-hotfork-native-dev-core-acceptance reflex-hotfork-curve25519-acceptance reflex-hotfork-package-policy-acceptance reflex-hotfork-shadow-select-core-acceptance reflex-hotfork-shadow-select-sibling-acceptance
+.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench landed-journey-bench reflex-coverage-audit reflex-coverage-audit-selftest reflex-hotfork-transport-acceptance reflex-hotfork-source-bundle-acceptance reflex-hotfork-test-catalog-acceptance reflex-hotfork-shop-want-view-acceptance reflex-hotfork-zcode-package-view-acceptance reflex-hotfork-shop-status-acceptance reflex-hotfork-shop-reputation-acceptance reflex-hotfork-zcode-work-acceptance reflex-hotfork-watch-core-acceptance reflex-hotfork-cycle-core-acceptance reflex-hotfork-corpus-core-acceptance reflex-hotfork-plan-core-acceptance
+# Split from the .PHONY block above: a single Makefile rule-header line this
+# long trips check-vcs-no-sha1's identity_publications_verified() header
+# buffer (VCS_HEADER, tools/lint/lintc/gate_vcs_sha1_fence.c) into a silent
+# refusal (bad=1, no diagnostic) instead of growing that authority-scan
+# buffer. Two .PHONY: lines are exactly as phony as one.
+.PHONY: reflex-hotfork-shop-want-core-acceptance reflex-hotfork-command-input-core-acceptance reflex-hotfork-native-dev-core-acceptance reflex-hotfork-curve25519-acceptance reflex-hotfork-package-policy-acceptance reflex-hotfork-shadow-select-core-acceptance reflex-hotfork-shadow-select-sibling-acceptance
 dev-loop-profile-flags:
 	@printf 'DEV_LIVE\t%s\t%s\n' '$(DEV_LIVE_CFLAGS)' '$(HOTSWAP_MODULE_LDFLAGS)'
 	@printf 'DEV_RESTART\t%s\t%s\n' '$(DEV_RESTART_CFLAGS)' '$(DEV_RESTART_LDFLAGS)'
