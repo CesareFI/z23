@@ -5026,10 +5026,60 @@ static int test_zd_improve_command(void)
                                   300, &action, &claimed).ok);
         ASSERT(claimed);
         struct db_build_receipt receipt;
-        struct zcl_result executed_compile = build_fabric_worker_execute(
-            &ndb, workspace, workspace, action_id, lease_hex, worker_secret,
-            worker_key, &receipt, NULL);
+        struct build_fabric_host_accounting compile_accounting;
+        uint64_t host_launches = zcl_spawn_launch_count();
+        uint64_t thread_launches = zcl_spawn_thread_launch_count();
+        struct zcl_result executed_compile =
+            build_fabric_worker_execute_measured(
+                &ndb, workspace, workspace, action_id, lease_hex,
+                worker_secret, worker_key, &receipt, NULL,
+                &compile_accounting);
+        uint64_t host_launched = zcl_spawn_launch_count() - host_launches;
+        uint64_t thread_launched =
+            zcl_spawn_thread_launch_count() - thread_launches;
         ASSERT_RESULT_OK(executed_compile);
+        /* The host, not the sandboxed child, counts what it launched for
+         * this action: exactly one confined executor, plus any toolchain
+         * probe the capsule recheck needed, all on this thread. */
+        ASSERT(compile_accounting.measured && compile_accounting.reaped);
+        ASSERT(compile_accounting.host_executor_launches == 1u);
+        ASSERT(compile_accounting.host_processes_launched == thread_launched);
+        ASSERT(compile_accounting.host_processes_launched >= 1u);
+        ASSERT(host_launched >= thread_launched);
+        ASSERT(compile_accounting.host_wall_us > 0);
+        ASSERT(compile_accounting.host_cpu_user_us +
+               compile_accounting.host_cpu_system_us > 0);
+        ASSERT(!compile_accounting.io_observed ||
+               compile_accounting.host_write_bytes > 0);
+        printf("  measured: execute host_processes=%llu executor=%llu "
+               "process_wide=%llu wall_us=%lld cpu_user_us=%lld "
+               "cpu_system_us=%lld max_rss_kib=%lld in_blocks=%lld "
+               "out_blocks=%lld io_observed=%d io_error=%d read_bytes=%llu "
+               "write_bytes=%llu storage_read=%llu storage_write=%llu "
+               "child_reported_unverified=%llu/%llu/%llu\n",
+               (unsigned long long)compile_accounting.host_processes_launched,
+               (unsigned long long)compile_accounting.host_executor_launches,
+               (unsigned long long)host_launched,
+               (long long)compile_accounting.host_wall_us,
+               (long long)compile_accounting.host_cpu_user_us,
+               (long long)compile_accounting.host_cpu_system_us,
+               (long long)compile_accounting.host_max_rss_kib,
+               (long long)compile_accounting.host_in_blocks,
+               (long long)compile_accounting.host_out_blocks,
+               compile_accounting.io_observed ? 1 : 0,
+               compile_accounting.io_error,
+               (unsigned long long)compile_accounting.host_read_bytes,
+               (unsigned long long)compile_accounting.host_write_bytes,
+               (unsigned long long)
+                   compile_accounting.host_storage_read_bytes,
+               (unsigned long long)
+                   compile_accounting.host_storage_write_bytes,
+               (unsigned long long)compile_accounting
+                   .child_reported_processes_unverified,
+               (unsigned long long)compile_accounting
+                   .child_reported_compiler_processes_unverified,
+               (unsigned long long)compile_accounting
+                   .child_reported_test_processes_unverified);
         ASSERT(build_fabric_receipt_admit(
             &ndb, workspace, receipt.receipt_id, now + 1).ok);
         ASSERT(strlen(receipt.work_receipt_sha3) == 64);

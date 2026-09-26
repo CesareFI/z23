@@ -39,7 +39,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define BFW_PATH_MAX 4096
@@ -58,25 +57,53 @@ struct bfw_paths {
     char input[BFW_PATH_MAX];
     char output[BFW_PATH_MAX];
 };
-static int64_t bfw_children_cpu_us(void)
+/* The sandboxed child's own `key=value` stdout claim, matched only at a
+ * token start so `processes` never reads `compiler_processes`. */
+static uint64_t bfw_capture_metric(const char *capture, const char *key)
 {
-    struct rusage usage;
-    if (getrusage(RUSAGE_CHILDREN, &usage) != 0) return 0;
-    return (int64_t)usage.ru_utime.tv_sec * INT64_C(1000000) +
-           usage.ru_utime.tv_usec +
-           (int64_t)usage.ru_stime.tv_sec * INT64_C(1000000) +
-           usage.ru_stime.tv_usec;
+    size_t key_len = key ? strlen(key) : 0;
+    for (const char *at = capture && key_len ? strstr(capture, key) : NULL;
+         at; at = strstr(at + 1, key)) {
+        bool token_start = at == capture || at[-1] == ' ' ||
+                           at[-1] == '\n' || at[-1] == '\t';
+        if (!token_start || at[key_len] != '=') continue;
+        char *end = NULL;
+        unsigned long long value = strtoull(at + key_len + 1, &end, 10);
+        return end != at + key_len + 1 ? (uint64_t)value : 0;
+    }
+    return 0;
 }
-static uint64_t bfw_capture_metric(const char *capture, const char *key,
-                                   uint64_t fallback)
+/* Host-observed accounting of the confined executor. The child's process
+ * counts are copied only into the separately named unverified fields. */
+static void bfw_accounting_record(
+    struct build_fabric_host_accounting *out,
+    const struct zcl_spawn_measure *measure, const char *capture,
+    uint64_t thread_launches_before)
 {
-    const char *at = capture && key ? strstr(capture, key) : NULL;
-    if (!at) return fallback;
-    at += strlen(key);
-    if (*at != '=') return fallback;
-    char *end = NULL;
-    unsigned long long value = strtoull(at + 1, &end, 10);
-    return end != at + 1 ? (uint64_t)value : fallback;
+    if (!out) return;
+    out->measured = measure->launched;
+    out->reaped = measure->reaped;
+    out->io_observed = measure->io_observed;
+    out->io_error = measure->io_error;
+    out->host_processes_launched =
+        zcl_spawn_thread_launch_count() - thread_launches_before;
+    out->host_executor_launches = measure->launched ? 1u : 0u;
+    out->host_wall_us = measure->wall_us;
+    out->host_cpu_user_us = measure->cpu_user_us;
+    out->host_cpu_system_us = measure->cpu_system_us;
+    out->host_max_rss_kib = measure->max_rss_kib;
+    out->host_in_blocks = measure->in_blocks;
+    out->host_out_blocks = measure->out_blocks;
+    out->host_read_bytes = measure->read_bytes;
+    out->host_write_bytes = measure->write_bytes;
+    out->host_storage_read_bytes = measure->storage_read_bytes;
+    out->host_storage_write_bytes = measure->storage_write_bytes;
+    out->child_reported_processes_unverified =
+        bfw_capture_metric(capture, "processes");
+    out->child_reported_compiler_processes_unverified =
+        bfw_capture_metric(capture, "compiler_processes");
+    out->child_reported_test_processes_unverified =
+        bfw_capture_metric(capture, "test_processes");
 }
 static bool bfw_capability_has(const char *capabilities, const char *wanted)
 {
@@ -288,14 +315,17 @@ static struct zcl_result bfw_fail(struct node_db *ndb,
 // long-function-ok:one-confined-action — every recheck brackets the exact
 // sandbox/CAS/signature sequence; splitting it would make stale publication
 // reachable between independently callable phases.
-struct zcl_result build_fabric_worker_execute(
+struct zcl_result build_fabric_worker_execute_measured(
     struct node_db *ndb, const char *workspace, const char *datadir,
     const char *action_id,
     const char *lease_id, const uint8_t signer_secret[32],
     const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
-    struct build_fabric_worker_feedback *out_feedback)
+    struct build_fabric_worker_feedback *out_feedback,
+    struct build_fabric_host_accounting *out_accounting)
 {
     if (out_feedback) memset(out_feedback, 0, sizeof(*out_feedback));
+    if (out_accounting) memset(out_accounting, 0, sizeof(*out_accounting));
+    uint64_t thread_launches_before = zcl_spawn_thread_launch_count();
     if (!ndb || !ndb->open || !workspace || !datadir || !action_id ||
         !lease_id ||
         !signer_secret || !signer_pubkey || !out_receipt)
@@ -513,19 +543,23 @@ struct zcl_result build_fabric_worker_execute(
     bool spawn_cancelled = false;
     struct build_fabric_executor_identity checked_identity;
     bool attach_identity_stable = false;
-    int64_t child_cpu_before_us = bfw_children_cpu_us();
+    /* The only launch of the confined executor. Its accounting is what this
+     * host's kernel observed, never what the child printed about itself. */
+    struct zcl_spawn_measure measure;
     int64_t execution_started_us = platform_time_monotonic_us();
     int rc = bfw_attach_spawn(workspace, paths.worker, work_kind,
                                package_action, spawn_argv, capture,
                                sizeof(capture), execute_timeout,
                                bfw_cancel_requested, &cancel_context,
                                &spawn_cancelled, &checked_identity,
-                               &attach_identity_stable);
+                               &attach_identity_stable, &measure);
     int64_t action_execution_us =
         platform_time_monotonic_us() - execution_started_us;
+    bfw_accounting_record(out_accounting, &measure, capture,
+                          thread_launches_before);
     if (package_action)
         build_fabric_worker_feedback_capture(out_feedback, capture, paths.src);
-    int64_t child_cpu_us = bfw_children_cpu_us() - child_cpu_before_us;
+    int64_t child_cpu_us = measure.cpu_user_us + measure.cpu_system_us;
     if (spawn_cancelled) {
         bfw_paths_cleanup(&paths);
         return ZCL_ERR(-1, "%s",
@@ -759,12 +793,10 @@ struct zcl_result build_fabric_worker_execute(
     if (!accepted.ok) return accepted;
     int64_t projection_us =
         platform_time_monotonic_us() - projection_started_us;
-    uint64_t child_processes = bfw_capture_metric(
-        capture, "processes", 1);
-    uint64_t compiler_processes = bfw_capture_metric(
-        capture, "compiler_processes", package_action ? 0 : 1);
-    uint64_t test_processes = bfw_capture_metric(
-        capture, "test_processes", test_action || fuzz_action ? 1 : 0);
+    bfw_accounting_record(out_accounting, &measure, capture,
+                          thread_launches_before);
+    uint64_t host_processes =
+        zcl_spawn_thread_launch_count() - thread_launches_before;
     LOG_INFO("zcode.proof_perf",
              "schema=zcl.async_proof_perf.v1 action=%s stage=worker_execute "
              "at_unix_us=%lld "
@@ -772,8 +804,13 @@ struct zcl_result build_fabric_worker_execute(
              "sandbox_prepare_us=%lld execution_us=%lld child_cpu_us=%lld "
              "output_verify_us=%lld output_cas_us=%lld revalidation_us=%lld "
              "receipt_sign_us=%lld projection_us=%lld input_bytes=%llu "
-             "output_bytes=%zu processes=%llu compiler_processes=%llu "
-             "test_processes=%llu cache_hit=%d total_us=%lld",
+             "output_bytes=%zu host_processes=%llu host_executor_launches=%u "
+             "host_wall_us=%lld host_io_observed=%d host_read_bytes=%llu "
+             "host_write_bytes=%llu "
+             "child_reported_processes_unverified=%llu "
+             "child_reported_compiler_processes_unverified=%llu "
+             "child_reported_test_processes_unverified=%llu "
+             "cache_hit=%d total_us=%lld",
              action.action_id, (long long)platform_time_realtime_us(),
              (long long)action_lookup_us,
              (long long)input_reconstruction_us,
@@ -782,13 +819,32 @@ struct zcl_result build_fabric_worker_execute(
              (long long)output_verify_us, (long long)output_cas_us,
              (long long)revalidation_us, (long long)receipt_sign_us,
              (long long)projection_us, (unsigned long long)input_bytes,
-             output_len, (unsigned long long)child_processes,
-             (unsigned long long)compiler_processes,
-             (unsigned long long)test_processes,
+             output_len, (unsigned long long)host_processes,
+             measure.launched ? 1u : 0u, (long long)measure.wall_us,
+             measure.io_observed ? 1 : 0,
+             (unsigned long long)measure.read_bytes,
+             (unsigned long long)measure.write_bytes,
+             (unsigned long long)bfw_capture_metric(capture, "processes"),
+             (unsigned long long)bfw_capture_metric(
+                 capture, "compiler_processes"),
+             (unsigned long long)bfw_capture_metric(
+                 capture, "test_processes"),
              strcmp(action.state, "CACHE_HIT") == 0 ? 1 : 0,
              (long long)(platform_time_monotonic_us() - worker_started_us));
     *out_receipt = receipt;
     return ZCL_OK;
+}
+
+struct zcl_result build_fabric_worker_execute(
+    struct node_db *ndb, const char *workspace, const char *datadir,
+    const char *action_id,
+    const char *lease_id, const uint8_t signer_secret[32],
+    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
+    struct build_fabric_worker_feedback *out_feedback)
+{
+    return build_fabric_worker_execute_measured(
+        ndb, workspace, datadir, action_id, lease_id, signer_secret,
+        signer_pubkey, out_receipt, out_feedback, NULL);
 }
 
 #endif

@@ -10,8 +10,10 @@
 #include "crypto/random_secret.h"
 #include "crypto/sha3.h"
 #include "platform/private_file.h"
+#include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "util/safe_alloc.h"
+#include "util/spawn.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/source_bundle.h"
@@ -424,6 +426,20 @@ static bool bfc_replay_args_valid(
         now > 0 && hit && receipt && verified_output_bytes;
 }
 
+/* Withdrawn signer authority is a refusal, not a stale-evidence miss: the
+ * host no longer trusts this key to vouch for any physical run. Checked
+ * before proof evaluation, which silently drops such signers, and again
+ * against the row the signed receipt is verified with. */
+static struct zcl_result bfc_replay_worker_authority(
+    const struct db_build_worker *worker, int64_t now)
+{
+    if (worker->revoked)
+        return ZCL_ERR(-1, "historical replay worker revoked");
+    if (worker->expires_at != 0 && now >= worker->expires_at)
+        return ZCL_ERR(-1, "historical replay worker expired");
+    return ZCL_OK;
+}
+
 static struct zcl_result bfc_replay_record_current(
     struct node_db *ndb, const char *workspace,
     const struct db_build_job *expected_job,
@@ -449,6 +465,11 @@ static struct zcl_result bfc_replay_record_current(
     if (!bfc_has_one_accepted_receipt(
             ndb, workspace, job, action, accepted))
         return ZCL_ERR(-1, "historical replay lacks one local receipt");
+    struct db_build_worker signer;
+    if (!db_build_worker_find(ndb, accepted->worker_id, &signer))
+        return ZCL_ERR(-1, "historical replay signer is unknown");
+    struct zcl_result authority = bfc_replay_worker_authority(&signer, now);
+    if (!authority.ok) return authority;
     struct build_fabric_proof_evaluation proof;
     struct zcl_result evaluated = build_fabric_proof_evaluate_readonly(
         ndb, workspace, action->action_id, now, &proof);
@@ -543,31 +564,36 @@ static struct zcl_result bfc_replay_receipt_current(
     const struct db_build_worker *worker, int64_t now, bool *eligible)
 {
     *eligible = false;
+    struct zcl_result authority = bfc_replay_worker_authority(worker, now);
+    if (!authority.ok) return authority;
     struct vcs_zcode_proof_policy_v1 policy;
     if (!bfc_replay_policy_load(workspace, roots->policy, &policy))
         return ZCL_ERR(-1, "historical replay policy is invalid");
     if (!bfc_replay_candidate_valid(workspace, roots, receipt, now))
         return ZCL_ERR(-1, "historical replay receipt candidate is invalid");
     /* A newer matching proof must never refresh this old physical run. */
-    *eligible = !worker->revoked &&
-        (worker->expires_at == 0 || now < worker->expires_at) &&
-        receipt->finished_unix <= now &&
+    *eligible = receipt->finished_unix <= now &&
         (policy.maximum_proof_age_seconds == 0 ||
          receipt->finished_unix >=
              now - (int64_t)policy.maximum_proof_age_seconds);
     return ZCL_OK;
 }
 
-struct zcl_result build_fabric_cache_replay_receipt(
+static int64_t bfc_elapsed_us(int64_t *mark)
+{
+    int64_t now = platform_time_monotonic_us();
+    int64_t elapsed = now - *mark;
+    *mark = now;
+    return elapsed;
+}
+
+static struct zcl_result bfc_replay(
     struct node_db *ndb, const char *workspace,
     struct vcs_package_store *store, const struct db_build_job *expected_job,
     const struct db_build_action *expected_action, int64_t now, bool *hit,
     struct vcs_zcode_work_receipt_v1 *receipt,
-    uint64_t *verified_output_bytes)
+    uint64_t *verified_output_bytes, struct build_fabric_replay_cost *cost)
 {
-    if (hit) *hit = false;
-    if (receipt) memset(receipt, 0, sizeof(*receipt));
-    if (verified_output_bytes) *verified_output_bytes = 0;
     if (!bfc_replay_args_valid(
             ndb, workspace, store, expected_job, expected_action, now,
             hit, receipt, verified_output_bytes))
@@ -578,9 +604,11 @@ struct zcl_result build_fabric_cache_replay_receipt(
     struct db_build_action action;
     struct db_build_receipt accepted;
     bool eligible = false;
+    int64_t mark = platform_time_monotonic_us();
     struct zcl_result selected = bfc_replay_record_current(
         ndb, workspace, expected_job, expected_action, now,
         &job, &action, &accepted, &eligible);
+    cost->record_verify_us = bfc_elapsed_us(&mark);
     if (!selected.ok || !eligible) return selected;
     struct bfc_replay_roots roots;
     if (!bfc_replay_roots_decode(&job, &action, &accepted, &roots))
@@ -590,16 +618,21 @@ struct zcl_result build_fabric_cache_replay_receipt(
     enum vcs_zcode_work_output_result got = vcs_zcode_work_output_get(
         store, roots.output, roots.action, &output, &output_len);
     free(output);
+    cost->output_cas_verify_us = bfc_elapsed_us(&mark);
     if (got == VCS_ZCODE_WORK_OUTPUT_ABSENT) return ZCL_OK;
     if (got != VCS_ZCODE_WORK_OUTPUT_OK)
         return ZCL_ERR(-1, "historical replay output: %s",
                        vcs_zcode_work_output_result_string(got));
+    cost->output_cas_bytes_verified = output_len;
     struct db_build_worker worker;
     struct zcl_result loaded = bfc_replay_signed_receipt_load(
         ndb, workspace, &accepted, &roots, receipt, &worker);
+    cost->receipt_verify_us = bfc_elapsed_us(&mark);
     if (!loaded.ok) return loaded;
+    cost->receipt_cas_bytes_verified = VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES;
     struct zcl_result current = bfc_replay_receipt_current(
         workspace, &roots, receipt, &worker, now, &eligible);
+    cost->currency_verify_us = bfc_elapsed_us(&mark);
     if (!current.ok || !eligible) {
         memset(receipt, 0, sizeof(*receipt));
         return current;
@@ -607,4 +640,40 @@ struct zcl_result build_fabric_cache_replay_receipt(
     *verified_output_bytes = output_len;
     *hit = true;
     return ZCL_OK;
+}
+
+struct zcl_result build_fabric_cache_replay_receipt_measured(
+    struct node_db *ndb, const char *workspace,
+    struct vcs_package_store *store, const struct db_build_job *expected_job,
+    const struct db_build_action *expected_action, int64_t now, bool *hit,
+    struct vcs_zcode_work_receipt_v1 *receipt,
+    uint64_t *verified_output_bytes, struct build_fabric_replay_cost *cost)
+{
+    if (hit) *hit = false;
+    if (receipt) memset(receipt, 0, sizeof(*receipt));
+    if (verified_output_bytes) *verified_output_bytes = 0;
+    struct build_fabric_replay_cost local;
+    if (!cost) cost = &local;
+    memset(cost, 0, sizeof(*cost));
+    uint64_t launches_before = zcl_spawn_thread_launch_count();
+    int64_t started_us = platform_time_monotonic_us();
+    struct zcl_result result = bfc_replay(
+        ndb, workspace, store, expected_job, expected_action, now, hit,
+        receipt, verified_output_bytes, cost);
+    cost->total_us = platform_time_monotonic_us() - started_us;
+    cost->host_processes_launched =
+        zcl_spawn_thread_launch_count() - launches_before;
+    return result;
+}
+
+struct zcl_result build_fabric_cache_replay_receipt(
+    struct node_db *ndb, const char *workspace,
+    struct vcs_package_store *store, const struct db_build_job *expected_job,
+    const struct db_build_action *expected_action, int64_t now, bool *hit,
+    struct vcs_zcode_work_receipt_v1 *receipt,
+    uint64_t *verified_output_bytes)
+{
+    return build_fabric_cache_replay_receipt_measured(
+        ndb, workspace, store, expected_job, expected_action, now, hit,
+        receipt, verified_output_bytes, NULL);
 }

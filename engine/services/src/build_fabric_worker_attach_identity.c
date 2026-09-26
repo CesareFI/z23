@@ -63,7 +63,8 @@ int bfw_attach_spawn(
     uint8_t work_kind, bool package_action, const char *const argv[],
     char *capture, size_t capture_cap, int timeout_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
-    struct build_fabric_executor_identity *identity, bool *stable)
+    struct build_fabric_executor_identity *identity, bool *stable,
+    struct zcl_spawn_measure *measure)
 {
     struct bfat_verifier_snapshot snapshot = { .fd = -1 };
     if (work_kind == VCS_ZCODE_WORK_BUILD && !package_action) {
@@ -77,12 +78,12 @@ int bfw_attach_spawn(
                                           &snapshot, work_kind,
                                           package_action, identity);
     int rc = snapshot.fd >= 0
-        ? zcl_spawn_capture_cancelable_fd(
+        ? zcl_spawn_capture_cancelable_fd_measured(
             snapshot.fd, argv, capture, capture_cap, timeout_ms,
-            should_cancel, cancel_ctx, cancelled)
-        : zcl_spawn_capture_cancelable(
+            should_cancel, cancel_ctx, cancelled, measure)
+        : zcl_spawn_capture_cancelable_measured(
             argv, capture, capture_cap, timeout_ms,
-            should_cancel, cancel_ctx, cancelled);
+            should_cancel, cancel_ctx, cancelled, measure);
     *stable = bfw_attach_identity_finish(workspace, selected_verifier,
                                           &snapshot, *stable, identity);
     bfat_verifier_snapshot_close(&snapshot);

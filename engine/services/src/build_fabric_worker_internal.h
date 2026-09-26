@@ -30,7 +30,8 @@ int bfw_attach_spawn(
     uint8_t work_kind, bool package_action, const char *const argv[],
     char *capture, size_t capture_cap, int timeout_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
-    struct build_fabric_executor_identity *identity, bool *stable);
+    struct build_fabric_executor_identity *identity, bool *stable,
+    struct zcl_spawn_measure *measure);
 
 /* The source tree named by `root_hex` is still exactly in the workspace CAS
  * and still hashes to its own name. */

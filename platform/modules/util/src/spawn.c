@@ -13,6 +13,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,10 +25,33 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
+
+/* Launch accounting shared by both platforms. The thread-local count lets a
+ * caller attribute launches to one unit of single-threaded work. */
+static atomic_uint_fast64_t s_spawn_launches;
+static _Thread_local uint64_t s_spawn_thread_launches;
+
+[[maybe_unused]] static void spawn_count_launch(void)
+{
+    atomic_fetch_add_explicit(&s_spawn_launches, 1, memory_order_relaxed);
+    s_spawn_thread_launches++;
+}
+
+uint64_t zcl_spawn_launch_count(void)
+{
+    return (uint64_t)atomic_load_explicit(&s_spawn_launches,
+                                          memory_order_relaxed);
+}
+
+uint64_t zcl_spawn_thread_launch_count(void)
+{
+    return s_spawn_thread_launches;
+}
 
 #ifdef _WIN32
 
@@ -110,6 +134,112 @@ static bool spawn_reap(pid_t pid, int *status)
         if (r < 0 && errno == EINTR) continue;
         return false;   /* ECHILD (SA_NOCLDWAIT) or another wait failure */
     }
+}
+
+static int64_t spawn_timeval_us(struct timeval tv)
+{
+    return (int64_t)tv.tv_sec * INT64_C(1000000) + (int64_t)tv.tv_usec;
+}
+
+static void spawn_measure_usage(struct zcl_spawn_measure *m,
+                                const struct rusage *usage)
+{
+    m->reaped = true;
+    m->cpu_user_us = spawn_timeval_us(usage->ru_utime);
+    m->cpu_system_us = spawn_timeval_us(usage->ru_stime);
+#if defined(__APPLE__)
+    m->max_rss_kib = (int64_t)usage->ru_maxrss / 1024; /* bytes on Darwin */
+#else
+    m->max_rss_kib = (int64_t)usage->ru_maxrss;
+#endif
+    m->in_blocks = (int64_t)usage->ru_inblock;
+    m->out_blocks = (int64_t)usage->ru_oublock;
+}
+
+#if defined(__linux__)
+/* Read the kernel's I/O accounting for an exited, not yet reaped child. A
+ * reaped descendant's counters were folded into it when it waited. */
+static void spawn_measure_io(pid_t pid, struct zcl_spawn_measure *m)
+{
+    char path[48], text[640];
+    (void)snprintf(path, sizeof(path), "/proc/%d/io", (int)pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { m->io_error = errno; return; }
+    ssize_t n = read(fd, text, sizeof(text) - 1);
+    int read_error = n < 0 ? errno : 0;
+    close(fd);
+    if (n <= 0) { m->io_error = n < 0 ? read_error : ENODATA; return; }
+    text[n] = '\0';
+    static const char *const keys[] = {
+        "rchar: ", "wchar: ", "read_bytes: ", "write_bytes: ",
+    };
+    uint64_t *slots[] = {
+        &m->read_bytes, &m->write_bytes,
+        &m->storage_read_bytes, &m->storage_write_bytes,
+    };
+    unsigned seen = 0;
+    for (char *line = text; line && *line;) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            size_t len = strlen(keys[i]);
+            if (strncmp(line, keys[i], len) != 0) continue;
+            *slots[i] = strtoull(line + len, NULL, 10);
+            seen |= 1u << i;
+        }
+        line = next;
+    }
+    m->io_observed = seen == 0xfu;
+    if (!m->io_observed) m->io_error = EPROTO;
+}
+#endif
+
+/* Reap `pid` like spawn_reap(), recording host accounting when asked: the
+ * exited child is inspected before wait4() releases it. */
+static bool spawn_reap_measured(pid_t pid, int *status,
+                                struct zcl_spawn_measure *m)
+{
+    if (!m) return spawn_reap(pid, status);
+#if defined(__linux__)
+    siginfo_t info;
+    int waited;
+    do {
+        memset(&info, 0, sizeof(info));
+        waited = waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT);
+    } while (waited < 0 && errno == EINTR);
+    if (waited == 0) spawn_measure_io(pid, m);
+    else m->io_error = errno;
+#endif
+    for (;;) {
+        struct rusage usage;
+        pid_t r = wait4(pid, status, 0, &usage);
+        if (r == pid) {
+            spawn_measure_usage(m, &usage);
+            return true;
+        }
+        if (r < 0 && errno == EINTR) continue;
+        return false;
+    }
+}
+
+/* One non-blocking exit probe: 1 reaped (status valid), 0 still running,
+ * -1 wait failure. A measured probe peeks with WNOWAIT so the zombie's
+ * accounting is still readable when it is reaped. */
+static int spawn_probe_exit(pid_t pid, int *status,
+                            struct zcl_spawn_measure *m)
+{
+    if (!m) {
+        pid_t observed = waitpid(pid, status, WNOHANG);
+        if (observed == pid) return 1;
+        if (observed == 0) return 0;
+        return errno == EINTR ? 0 : -1;
+    }
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    if (waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) != 0)
+        return errno == EINTR ? 0 : -1;
+    if (info.si_pid != pid) return 0;
+    return spawn_reap_measured(pid, status, m) ? 1 : -1;
 }
 
 /* ── zcl_spawn_detached ──────────────────────────────────────────────── */
@@ -240,6 +370,7 @@ struct zcl_result zcl_spawn_detached_input(const char *const argv[],
     }
 
     /* Parent. */
+    spawn_count_launch();
     close(errpipe[1]);   /* close our own copy, else read() below never sees EOF */
     if (input_pair[1] >= 0) close(input_pair[1]);
 
@@ -311,21 +442,22 @@ static void spawn_capture_kill_group(pid_t pid, bool anchored)
 static bool spawn_capture_reap(
     pid_t pid, int *status, int64_t deadline_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx,
-    bool *timed_out, bool *cancelled, bool anchored)
+    bool *timed_out, bool *cancelled, bool anchored,
+    struct zcl_spawn_measure *measure)
 {
-    if (*timed_out || *cancelled) return spawn_reap(pid, status);
+    if (*timed_out || *cancelled)
+        return spawn_reap_measured(pid, status, measure);
     for (;;) {
         if (should_cancel && should_cancel(cancel_ctx)) *cancelled = true;
         if (deadline_ms && platform_time_monotonic_ms() >= deadline_ms)
             *timed_out = true;
         if (*timed_out || *cancelled) {
             spawn_capture_kill_group(pid, anchored);
-            return spawn_reap(pid, status);
+            return spawn_reap_measured(pid, status, measure);
         }
-        pid_t observed = waitpid(pid, status, WNOHANG);
-        if (observed == pid) return true;
-        if (observed < 0) {
-            if (errno == EINTR) continue;
+        int probe = spawn_probe_exit(pid, status, measure);
+        if (probe > 0) return true;
+        if (probe < 0) {
             if (errno != ECHILD)
                 LOG_WARN("spawn", "waitpid() after EOF failed: %s", strerror(errno));
             return false;
@@ -451,7 +583,8 @@ static int spawn_capture_drain(
     pid_t pid, int output_fd, char *buf, size_t cap, int timeout_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
     bool *timed_out_out, bool pty_eio_is_eof,
-    struct zcl_spawn_binary_observation *exact, int anchor_write_fd)
+    struct zcl_spawn_binary_observation *exact, int anchor_write_fd,
+    struct zcl_spawn_measure *measure)
 {
     struct spawn_capture_buffer capture = {
         .bytes = buf, .limit = exact ? cap : cap - 1, .exact = exact
@@ -496,7 +629,7 @@ static int spawn_capture_drain(
     int status = 0;
     bool reaped = !exit_state.gone && spawn_capture_reap(
         pid, &status, deadline_ms, should_cancel, cancel_ctx,
-        &timed_out, &was_cancelled, anchor_write_fd >= 0);
+        &timed_out, &was_cancelled, anchor_write_fd >= 0, measure);
     if (anchor_write_fd >= 0) close(anchor_write_fd);
     if (cancelled) *cancelled = was_cancelled;
     if (timed_out_out) *timed_out_out = timed_out;
@@ -617,7 +750,8 @@ static int spawn_capture_impl(
     const char *const argv[], char *buf, size_t cap, int timeout_ms,
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
     bool *timed_out_out, bool merge_stderr,
-    struct zcl_spawn_binary_observation *exact, int executable_fd)
+    struct zcl_spawn_binary_observation *exact, int executable_fd,
+    struct zcl_spawn_measure *measure)
 {
 #if !defined(__linux__)
     (void)executable_fd;
@@ -643,6 +777,7 @@ static int spawn_capture_impl(
         LOG_ERR("spawn", "capture anchor setup failed: %s", strerror(saved));
     }
 
+    int64_t launched_us = platform_time_monotonic_us();
     pid_t pid = fork();
     if (pid < 0) {
         close(outpipe[0]); close(outpipe[1]);
@@ -667,6 +802,8 @@ static int spawn_capture_impl(
     }
 
     /* Parent. */
+    spawn_count_launch();
+    if (measure) measure->launched = true;
     close(outpipe[1]);
     (void)setpgid(pid, pid); /* child also does this; either side may win */
     if (!spawn_capture_anchor_parent(&anchor)) {
@@ -676,10 +813,13 @@ static int spawn_capture_impl(
         LOG_ERR("spawn", "capture group anchor did not start");
     }
 
-    return spawn_capture_drain(
+    int rc = spawn_capture_drain(
         pid, outpipe[0], buf, cap, timeout_ms, should_cancel, cancel_ctx,
         cancelled, timed_out_out, false, exact,
-        anchor.enabled ? anchor.hold[1] : -1);
+        anchor.enabled ? anchor.hold[1] : -1, measure);
+    if (measure)
+        measure->wall_us = platform_time_monotonic_us() - launched_us;
+    return rc;
 }
 
 int zcl_spawn_capture_cancelable(
@@ -687,7 +827,8 @@ int zcl_spawn_capture_cancelable(
     zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled)
 {
     return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
-                              cancel_ctx, cancelled, NULL, false, NULL, -1);
+                              cancel_ctx, cancelled, NULL, false, NULL, -1,
+                              NULL);
 }
 
 static int spawn_capture_observed_platform(
@@ -695,7 +836,7 @@ static int spawn_capture_observed_platform(
     bool *timed_out)
 {
     return spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL, NULL,
-                              timed_out, false, NULL, -1);
+                              timed_out, false, NULL, -1, NULL);
 }
 
 static int spawn_capture_merged_observed_platform(
@@ -703,7 +844,7 @@ static int spawn_capture_merged_observed_platform(
     bool *timed_out)
 {
     return spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL, NULL,
-                              timed_out, true, NULL, -1);
+                              timed_out, true, NULL, -1, NULL);
 }
 
 /* PTY capture is deliberately a transport sibling of pipe capture, not a
@@ -755,6 +896,7 @@ static int spawn_pty_capture_observed_platform(
         close(master);
         LOG_ERR("spawn", "PTY fork() failed: %s", strerror(saved));
     }
+    if (pid > 0) spawn_count_launch();
     if (pid == 0) {
         /* Child: no allocator, logger, or other shared-process state before
          * exec. Failure stages use conventional 126/127 exit status. */
@@ -781,7 +923,7 @@ static int spawn_pty_capture_observed_platform(
 
     return spawn_capture_drain(
         pid, master, buf, cap, timeout_ms, NULL, NULL, NULL, timed_out, true,
-        NULL, -1);
+        NULL, -1, NULL);
 }
 
 int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
@@ -801,7 +943,47 @@ int zcl_spawn_capture_cancelable_fd(
     if (executable_fd < 0) return -1;
     return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
                               cancel_ctx, cancelled, NULL, false, NULL,
-                              executable_fd);
+                              executable_fd, NULL);
+#else
+    (void)executable_fd; (void)argv; (void)buf; (void)cap;
+    (void)timeout_ms; (void)should_cancel; (void)cancel_ctx;
+    if (cancelled) *cancelled = false;
+    return -1;
+#endif
+}
+
+/* One definition for both platforms; Windows refuses like every capture
+ * primitive here, with `launched` false. */
+int zcl_spawn_capture_cancelable_measured(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms,
+    zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
+    struct zcl_spawn_measure *measure)
+{
+    if (measure) memset(measure, 0, sizeof(*measure));
+#ifdef _WIN32
+    return zcl_spawn_capture_cancelable(argv, buf, cap, timeout_ms,
+                                        should_cancel, cancel_ctx, cancelled);
+#else
+    return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
+                              cancel_ctx, cancelled, NULL, false, NULL,
+                              -1, measure);
+#endif
+}
+
+/* zcl_spawn_capture_cancelable_fd() with the same host accounting as
+ * zcl_spawn_capture_cancelable_measured(). Linux only, like the fd path
+ * itself; other platforms refuse with -1 and a zeroed `measure`. */
+int zcl_spawn_capture_cancelable_fd_measured(
+    int executable_fd, const char *const argv[], char *buf, size_t cap,
+    int timeout_ms, zcl_spawn_cancel_fn should_cancel, void *cancel_ctx,
+    bool *cancelled, struct zcl_spawn_measure *measure)
+{
+    if (measure) memset(measure, 0, sizeof(*measure));
+#if defined(__linux__)
+    if (executable_fd < 0) return -1;
+    return spawn_capture_impl(argv, buf, cap, timeout_ms, should_cancel,
+                              cancel_ctx, cancelled, NULL, false, NULL,
+                              executable_fd, measure);
 #else
     (void)executable_fd; (void)argv; (void)buf; (void)cap;
     (void)timeout_ms; (void)should_cancel; (void)cancel_ctx;
@@ -828,7 +1010,7 @@ static struct zcl_result spawn_capture_binary_impl(
     return ZCL_ERR(-1, "spawn: Windows binary capture is unavailable");
 #else
     int rc = spawn_capture_impl(argv, buf, cap, timeout_ms, NULL, NULL,
-                                NULL, NULL, merge_stderr, out, -1);
+                                NULL, NULL, merge_stderr, out, -1, NULL);
     if (rc != 0 || out->exit_code != 0 || !out->eof || out->overflow || out->timed_out ||
         !out->exit_observed)
         return ZCL_ERR(-1, "spawn: incomplete binary capture (exit=%d eof=%d overflow=%d timeout=%d observed=%d)",

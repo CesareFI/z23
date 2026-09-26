@@ -12,6 +12,36 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* What the executing host itself observed for one action. `host_*` fields
+ * come from this process: its own launch counter and the kernel's wait4()
+ * and /proc accounting of the confined child (see util/spawn.h). The
+ * `child_reported_*_unverified` fields are the sandboxed child's own stdout
+ * claims about processes it started; they are kept for diagnosis only and
+ * must never support a claim that work was avoided or performed.
+ * Not a receipt, proof, or acceptance authority. */
+struct build_fabric_host_accounting {
+    bool measured;                    /* the confined executor was launched */
+    bool reaped;                      /* wait4() returned its usage */
+    bool io_observed;                 /* /proc/<pid>/io read before reap */
+    int io_error;                     /* errno when it was not */
+    uint64_t host_processes_launched; /* every launch this worker thread made
+                                         for the action, through publication */
+    uint64_t host_executor_launches;  /* the confined executor itself: 0 or 1 */
+    int64_t host_wall_us;
+    int64_t host_cpu_user_us;         /* executor plus descendants it reaped */
+    int64_t host_cpu_system_us;
+    int64_t host_max_rss_kib;
+    int64_t host_in_blocks;
+    int64_t host_out_blocks;
+    uint64_t host_read_bytes;
+    uint64_t host_write_bytes;
+    uint64_t host_storage_read_bytes;
+    uint64_t host_storage_write_bytes;
+    uint64_t child_reported_processes_unverified;
+    uint64_t child_reported_compiler_processes_unverified;
+    uint64_t child_reported_test_processes_unverified;
+};
+
 /* Execute one already-claimed action. The caller owns lease acquisition;
  * this path rechecks it at start, verification, and signed publication. */
 struct zcl_result build_fabric_worker_execute(
@@ -20,6 +50,18 @@ struct zcl_result build_fabric_worker_execute(
     const char *lease_id, const uint8_t signer_secret[32],
     const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
     struct build_fabric_worker_feedback *out_feedback);
+
+/* build_fabric_worker_execute() that also returns the host's own accounting
+ * of the action. `out_accounting` may be NULL; when present it is zeroed on
+ * entry and filled as far as the action got, including on refusal after the
+ * executor ran. */
+struct zcl_result build_fabric_worker_execute_measured(
+    struct node_db *ndb, const char *workspace_root, const char *datadir,
+    const char *action_id,
+    const char *lease_id, const uint8_t signer_secret[32],
+    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
+    struct build_fabric_worker_feedback *out_feedback,
+    struct build_fabric_host_accounting *out_accounting);
 
 /* Load or atomically create the operator-owned local worker key. The returned
  * row is suitable for explicit -buildworker self-approval. A host that

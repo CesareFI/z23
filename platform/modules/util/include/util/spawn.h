@@ -51,7 +51,9 @@
 
 #include "util/result.h"
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* Launch argv[0] detached from the current process: double-fork + setsid()
  * so the grandchild is reparented to init/subreaper and can NEVER become a
@@ -201,6 +203,57 @@ int zcl_spawn_capture_cancelable_fd(
     int executable_fd, const char *const argv[], char *buf, size_t cap,
     int timeout_ms, zcl_spawn_cancel_fn should_cancel, void *cancel_ctx,
     bool *cancelled);
+
+/* What this host's kernel accounted to one captured child. Nothing here is
+ * parsed from the child's output. `launched` is set once fork() succeeds.
+ * Usage comes from wait4() on that exact child: its own CPU plus every
+ * descendant it reaped. On Linux the byte counters are read from
+ * /proc/<pid>/io while the exited child is still an unreaped zombie
+ * (waitid WNOWAIT), so they cover the same reaped descendants. `reaped`
+ * false (ECHILD under SA_NOCLDWAIT, see the file header) leaves usage zero;
+ * `io_observed` false means the kernel refused or lacks that file;
+ * `io_error` then holds the errno of that refusal (0: not attempted). */
+struct zcl_spawn_measure {
+    bool launched;
+    bool reaped;
+    bool io_observed;
+    int io_error;
+    int64_t wall_us;             /* fork() to reap, host monotonic clock */
+    int64_t cpu_user_us;
+    int64_t cpu_system_us;
+    int64_t max_rss_kib;
+    int64_t in_blocks;           /* ru_inblock: block-layer reads */
+    int64_t out_blocks;          /* ru_oublock: block-layer writes */
+    uint64_t read_bytes;         /* rchar: bytes through read-like calls */
+    uint64_t write_bytes;        /* wchar: bytes through write-like calls */
+    uint64_t storage_read_bytes; /* read_bytes: fetched from storage */
+    uint64_t storage_write_bytes;/* write_bytes: sent toward storage */
+};
+
+/* zcl_spawn_capture_cancelable() with host accounting. `measure` may be
+ * NULL; when present it is always initialized. Windows returns -1 with
+ * `launched` false, like every capture primitive here on that platform. */
+int zcl_spawn_capture_cancelable_measured(
+    const char *const argv[], char *buf, size_t cap, int timeout_ms,
+    zcl_spawn_cancel_fn should_cancel, void *cancel_ctx, bool *cancelled,
+    struct zcl_spawn_measure *measure);
+
+/* zcl_spawn_capture_cancelable_fd() with the same host accounting as
+ * zcl_spawn_capture_cancelable_measured(). Linux only; other platforms
+ * refuse with -1 and a zeroed `measure`. */
+int zcl_spawn_capture_cancelable_fd_measured(
+    int executable_fd, const char *const argv[], char *buf, size_t cap,
+    int timeout_ms, zcl_spawn_cancel_fn should_cancel, void *cancel_ctx,
+    bool *cancelled, struct zcl_spawn_measure *measure);
+
+/* Programs launched by this file's primitives: one per successful fork()
+ * that leads to the requested exec (the detached launcher's intermediate
+ * child is not a second program). The process-wide count answers "did this
+ * host launch anything"; the calling thread's count attributes launches to
+ * work that runs on one thread without counting concurrent threads. Both
+ * only ever increase. */
+uint64_t zcl_spawn_launch_count(void);
+uint64_t zcl_spawn_thread_launch_count(void);
 
 /* Split `str` in place into whitespace-separated tokens (space/tab/CR/LF),
  * writing a pointer to each into argv[0..n-1] and argv[n] = NULL. `str` is

@@ -13,6 +13,20 @@ struct zcl_result build_fabric_worker_execute(
     struct db_build_receipt *out_receipt,
     struct build_fabric_worker_feedback *out_feedback)
 {
+    return build_fabric_worker_execute_measured(
+        ndb, workspace, datadir, action_id, lease_id, signer_secret,
+        signer_pubkey, out_receipt, out_feedback, NULL);
+}
+
+struct zcl_result build_fabric_worker_execute_measured(
+    struct node_db *ndb, const char *workspace, const char *datadir,
+    const char *action_id, const char *lease_id,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct db_build_receipt *out_receipt,
+    struct build_fabric_worker_feedback *out_feedback,
+    struct build_fabric_host_accounting *out_accounting)
+{
+    if (out_accounting) memset(out_accounting, 0, sizeof(*out_accounting));
     (void)ndb;
     (void)workspace;
     (void)datadir;
