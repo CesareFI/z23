@@ -231,7 +231,7 @@ static bool att_physical_run(struct node_db *ndb, const char *workspace,
     int64_t started = platform_time_monotonic_us();
     struct zcl_result executed = build_fabric_worker_execute(
         ndb, workspace, workspace, action_id, lease_id, secret, pubkey,
-        out_receipt, NULL);
+        out_receipt, NULL, NULL);
     *wall_us = platform_time_monotonic_us() - started;
     if (!executed.ok) {
         printf("worker detail: %s\n", executed.message);
@@ -836,7 +836,7 @@ static int test_bf_attach_unobserved_assembler_input_refused(void)
         ASSERT(got);
         struct zcl_result executed = build_fabric_worker_execute(
             &ndb, dir, dir, action.action_id, att_lease_b, secret, pubkey,
-            &receipt, NULL);
+            &receipt, NULL, NULL);
         ASSERT(!executed.ok);
         ASSERT_EQ(att_build_work_entries(dir), 0);
         node_db_close(&ndb);
