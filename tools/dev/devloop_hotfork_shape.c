@@ -58,6 +58,10 @@
  * Every read failure refuses: an unreadable or malformed object, a missing
  * symbol table, a missing session, object or depfile, an unreadable binding
  * record.
+ *
+ * The running image's .symtab globals and its .dynsym plus mapped
+ * libraries' names are parsed once per process and reused while the
+ * image's and libraries' file identities are unchanged (shape_image_acquire).
  */
 #include "devloop_hotfork_shape.h"
 
@@ -1629,6 +1633,29 @@ static enum shape_read shape_image_parse(struct shape_image *im, unsigned kind)
     return ok ? SHAPE_READ_OK : SHAPE_READ_UNREADABLE;
 }
 
+static bool shape_same_file(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_size == b->st_size &&
+           a->st_mtim.tv_sec == b->st_mtim.tv_sec &&
+           a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+           a->st_ctim.tv_sec == b->st_ctim.tv_sec &&
+           a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+}
+
+/* The kept parse still describes `path`: same path and file identity and,
+ * for DYNAMIC, the same mapped libraries by path and file identity. */
+static bool shape_image_current(const struct shape_image *im, unsigned kind,
+                                 const char *path, const struct stat *st)
+{
+    uint64_t libs_id = 0;
+    return im->valid && strcmp(im->path, path) == 0 &&
+           shape_same_file(&im->id, st) &&
+           (kind != SHAPE_IMAGE_DYNAMIC ||
+            (shape_libs_scan(&im->libs, NULL, &libs_id) &&
+             libs_id == im->libs_id));
+}
+
 static enum shape_read shape_image_load(struct shape_image *im, unsigned kind,
                                         const char *path,
                                         const struct stat *st)
@@ -1649,18 +1676,24 @@ static enum shape_read shape_image_load(struct shape_image *im, unsigned kind,
     return got;
 }
 
-/* The names `path` defines as `kind`. On SHAPE_READ_OK g_shape_image_mu
- * is held until shape_image_release(); on failure nothing is held and
- * nothing is kept. */
+/* The names `path` defines as `kind`. A parse is kept for the process and
+ * reused while the image's identity is unchanged: its path, device, inode,
+ * size, mtime and ctime and, for DYNAMIC, each mapped library's path and
+ * file identity. Any change re-parses; a failed parse is never kept, so a
+ * missing fact is read again (and refused again) on the next call. On
+ * SHAPE_READ_OK g_shape_image_mu is held until shape_image_release(); on
+ * failure nothing is held. */
 static enum shape_read shape_image_acquire(unsigned kind, const char *path,
                                            const struct shape_names **names)
 {
     struct shape_image *im = &g_shape_images[kind];
     struct stat st;
     pthread_mutex_lock(&g_shape_image_mu);
-    enum shape_read got = stat(path, &st) != 0
-                              ? SHAPE_READ_UNREADABLE
-                              : shape_image_load(im, kind, path, &st);
+    enum shape_read got = SHAPE_READ_UNREADABLE;
+    if (stat(path, &st) == 0)
+        got = shape_image_current(im, kind, path, &st)
+                  ? SHAPE_READ_OK
+                  : shape_image_load(im, kind, path, &st);
     if (got == SHAPE_READ_OK) {
         *names = &im->names;
         return got;
