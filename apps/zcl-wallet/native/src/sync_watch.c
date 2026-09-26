@@ -55,7 +55,7 @@ static zcl_status clock_update(zcl_sync_watch *watch, uint64_t now_ms)
     return ZCL_OK;
 }
 
-static zcl_status owns_attempt(const zcl_sync_watch *watch, uint64_t token)
+zcl_status zcl_sync_watch_check_attempt(const zcl_sync_watch *watch, uint64_t token)
 {
     if (watch == NULL || !watch->initialized) return ZCL_INVALID_ARGUMENT;
     if (token == 0 || token != watch->sequence || !watch->in_flight) return ZCL_CANCELLED;
@@ -102,7 +102,7 @@ zcl_status zcl_sync_watch_begin(zcl_sync_watch *watch, uint64_t now_ms, uint64_t
 zcl_status zcl_sync_watch_request(zcl_sync_watch *watch, uint64_t token, uint64_t now_ms,
     uint8_t *output, size_t capacity, size_t *length)
 {
-    const zcl_status owner = owns_attempt(watch, token);
+    const zcl_status owner = zcl_sync_watch_check_attempt(watch, token);
     if (owner != ZCL_OK) return owner;
     const zcl_status clock = clock_update(watch, now_ms);
     if (clock != ZCL_OK) return clock;
@@ -127,7 +127,7 @@ static zcl_status publish(zcl_sync_watch *watch, uint64_t now_ms)
 zcl_status zcl_sync_watch_reply(zcl_sync_watch *watch, uint64_t token, uint64_t now_ms,
     const uint8_t *frame, size_t length)
 {
-    const zcl_status owner = owns_attempt(watch, token);
+    const zcl_status owner = zcl_sync_watch_check_attempt(watch, token);
     if (owner != ZCL_OK) return owner;
     const zcl_status clock = clock_update(watch, now_ms);
     if (clock != ZCL_OK) return clock;
@@ -139,7 +139,7 @@ zcl_status zcl_sync_watch_reply(zcl_sync_watch *watch, uint64_t token, uint64_t 
 
 zcl_status zcl_sync_watch_fail(zcl_sync_watch *watch, uint64_t token, zcl_status reason)
 {
-    const zcl_status owner = owns_attempt(watch, token);
+    const zcl_status owner = zcl_sync_watch_check_attempt(watch, token);
     if (owner != ZCL_OK) return owner;
     if (reason <= ZCL_OK || reason > ZCL_TLS_FAILURE) return ZCL_INVALID_ARGUMENT;
     return stop(watch, reason);

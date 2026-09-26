@@ -747,7 +747,7 @@ if(NOT ANDROID)
     target_compile_definitions(sync_watch_tests PRIVATE zcl_secure_zero=zcl_watch_test_zero
         zcl_address_parse=zcl_watch_test_parse zcl_sync_get_report=zcl_watch_test_report)
     target_compile_options(sync_watch_tests PRIVATE -Wall -Wextra -Wpedantic -Werror
-        -Wconversion -Wsign-conversion)
+        -Wconversion -Wsign-conversion -Wformat=2 -Wshadow -Wvla -Wframe-larger-than=4096)
     add_test(NAME wallet_sync_watch COMMAND sync_watch_tests)
     set_tests_properties(wallet_sync_watch PROPERTIES TIMEOUT 15)
     add_executable(sync_owner_tests tests/test_sync_owners.c tests/sync_fixture.c)

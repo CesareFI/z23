@@ -4242,3 +4242,66 @@ All 154 Gradle tasks execute successfully in the fresh worktree. The complete
 `0eb29e8352139bce06b25fd46b9f10013c99acca14653ef92c34075569b8eaae`.
 The standalone host contract executable and APK identities are retained with
 the logs, mutation runs, public corpus and measured 440-byte test frame.
+
+## 2026-09-26: retired sync replies refuse before frame allocation
+
+Reviewed the recovered sync-watch/JNI patch, its header contract, native and
+Android fixtures, the expanded JNI fuzzer and the watch test's frame-budget
+refactor. Original dirty files in `/root/z23-android` remain byte-identical.
+The existing private token predicate becomes `zcl_sync_watch_check_attempt`;
+request/reply/failure paths reuse it. JNI calls it while holding the existing
+registry lock before allocating or copying reply input. It neither advances
+time nor admits a response; active replies retain all normal validation.
+
+A copied regression against unchanged JNI observes 64 allocations and input
+copies for 64 retired replies: 1 MiB cumulatively at 16384 bytes each. The
+candidate checks 64-call batches before issuance, after cancellation and during
+a replacement, for both balance/history owners, with zero frame allocations
+or region copies and unchanged snapshots. Current replies still allocate,
+validate and progress. The extended JNI fuzzer additionally preserves injected
+allocation/read faults during retired replies. Linking it with the previous
+JNI reproduces its assertion failure; a maximum-size input replay passes with
+the new implementation. These are owned synthetic faults, not actual OOM.
+
+| Hazard | Review |
+| --- | --- |
+| Buffer overflow/underflow; out-of-bounds access | The precheck reads only the existing valid owner fields. Active input retains the 16384-byte allocation/copy cap and existing independent parser validation. Fake arrays keep their fixed capacities and reference limit; the new fuzz path uses payload length-1 only after length is 1..16385. Native snapshots remain ten checked jlong fields. |
+| Integer overflow/underflow; signed/unsigned conversions | Positive jlong token and nonnegative time checks still precede conversion. The predicate compares uint64_t identities without arithmetic. Fuzz replacement requires current>old>0 before current-1; clocks deliberately reach INT64_MAX without advancing a retired attempt. Per-case counters reset on reference release and are bounded by the small fixture loops. |
+| Use-after-free; double-free; leaks; dangling pointers | No production owner, pointer or allocation is added. The registry owns the watch throughout the check/reply sequence. Accepted replies retain full clearing before exactly one free; retired replies acquire no frame. Fake VM references are checked and released per case, with no increased capacity. Refactored watch snapshots write to live caller-owned buffers instead of returning large structures by value. |
+| NULL dereferences; uninitialized memory | The predicate rejects NULL/uninitialized watches. JNI retains missing-env and pending-exception refusal before locking. Snapshots and before-images initialize before comparison; the test snapshot helper checks its output pointer. The precheck is not a substitute for valid function-table or owner-lifetime contracts. |
+| Pointer arithmetic; format strings | Existing bounded frame copying remains unchanged. New snapshots use exact typed array sizes; no new production pointer arithmetic. Diagnostics contain only fixed messages, source lines and allocation counts. No input text, key, wallet record or address is logged. |
+| Stack usage; allocation limits; resource exhaustion | Retired frames avoid allocation, copy and complete-buffer clearing. Combined native object text grows 308 bytes on x86-64 and 352 on ARM64; BSS remains 6096 bytes in the JNI object. Compiler outlining changes active syncReply+reply_frame frames from 72 to 144 bytes on x86-64 and 112 to 176 on ARM64; providers add their frames. The new predicate has a zero-byte measured frame. Release grows 352 bytes to 641579. This measures requests/copies and artifacts, not phone RSS or latency. |
+| Malformed input; races; failure behavior | A retired token returns CANCELLED without inspecting its frame or consuming injected allocation/read failures. Missing env, pending exceptions, nonpositive tokens and invalid times retain earlier checks. Active replies still enforce framing, identity, ordering, deadlines and clock rules. The same registry mutex prevents token replacement between precheck and reply; the public helper documents exclusive access. Unit fixtures are serialized; no production shared state is added. |
+| Secret leakage and authority | Fixtures use public addresses, source markers and local protocol replies, without endpoints, wallet records or Keystore aliases. Production active-frame erasure remains tested. No trust, TLS, certificate, consensus, transaction, signing or custody policy changes; the predicate only avoids processing an already retired response. |
+
+Separate strict fixture compilation exposed pre-existing oversized watch-test
+frames (6832, 4816 and 5296 bytes). Reusing caller-owned snapshot buffers and
+separating closed-owner and invalid-failure scenarios preserves all assertions.
+The largest final uninstrumented GCC frame is 3056 bytes; the JNI unit main and
+fuzz entry measure 776/200. No new fixture heap or global storage is needed.
+The registered watch target now enforces `-Wframe-larger-than=4096` as an error,
+including its Clang and optimized GCC sanitizer builds. Debug/optimized analyzer
+checks and both focused registered runs pass; intermediate failures are retained.
+
+The full safety run passes Clang 138/138 in 126.56 seconds and optimized GCC
+137/137 in 197.08 seconds. The subsequent host-only fixture refactor passes
+both focused groups again, strict analysis and unchanged complexity limits.
+All 149 JVM tests, Android builds/lint, isolation, alignment, architecture and
+whitespace checks pass. All 14 sync/history/main-queue/lifecycle cases pass on
+isolated API 30/36 emulators in 5.846/9.948 seconds. Both owned emulators exit
+zero without adding to the 31 existing ADB zombies. ARM64 is compiled only.
+
+JNI/watch fuzzing completes 24705/65906 cases, each in 121 seconds, with no
+finding. Input caps are 16385/16384 bytes, per-case timeout five seconds and RSS
+cap 512 MiB (275/100 MiB observed). A separate JNI corpus replay includes the
+maximum 16385-byte input and passes 107 cases. Exact hashes and retained failure
+evidence are under `.cache/retired-sync-20260926/` in the isolated worktree.
+
+Fresh source-only tree `115d6c5bc21ea5a3462c808f5076a24347c44a17` includes the
+final implementation, tests and CMake guard, with preceding documentation.
+With build caching disabled, all 57 release tasks execute in 47 seconds and
+the complete unsigned APK compares byte-for-byte with the device-test build's
+release counterpart. Both SHA256 values are
+`166e6102ca78dbe4d336d6cd9e320f89184681d1f7b0fd7f6447ab2e206cf10a`.
+This qualifies two paths on one Linux host, not other toolchains, independent
+hosts, signed releases or physical-device custody.

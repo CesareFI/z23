@@ -52,6 +52,7 @@ static bool opening;
 static unsigned opening_reads, address_clears, source_clears;
 static unsigned fail_open_get;
 static uintptr_t address_identity, source_identity;
+static unsigned frame_allocations, byte_regions;
 
 zcl_status zcl_jni_sync_test_snapshot(zcl_sync_watch *watch, uint64_t now, zcl_sync_snapshot *snapshot);
 void zcl_jni_sync_test_zero(void *buffer, size_t length);
@@ -154,6 +155,7 @@ void *zcl_jni_test_malloc(size_t size)
 {
     if (size != ZCL_ELECTRUM_FRAME_MAX) return malloc(size);
     CHECK(owned_frame == NULL);
+    ++frame_allocations;
     if (fail_frame) { fail_frame = false; return NULL; }
     owned_frame = malloc(size);
     return owned_frame;
@@ -204,6 +206,7 @@ static void release_references(void)
     reference_count = 0;
     pending_exception = false;
     fail_new = false; fail_set = false; fail_get = false; fail_frame = false;
+    frame_allocations = byte_regions = 0;
 }
 
 static jboolean JNICALL exception_check(JNIEnv *env)
@@ -228,6 +231,7 @@ static void JNICALL get_bytes(JNIEnv *env, jbyteArray input, jsize offset, jsize
 {
     (void)env;
     fake_array *array = region(input, offset, count, false);
+    ++byte_regions;
     if (opening) {
         if (opening_reads++ == 0) address_identity = (uintptr_t)output;
         else source_identity = (uintptr_t)output;
@@ -533,6 +537,46 @@ static void frame_allocation_and_region_failure(void)
     release_references();
 }
 
+static void retired_reply_batch(jlong id, jlong token, jbyteArray frame)
+{
+    jlong before[10];
+    memcpy(before, snapshot(id, 100), sizeof(before));
+    const unsigned allocations = frame_allocations, reads = byte_regions;
+    for (unsigned i = 0; i < 64; ++i)
+        CHECK(API(syncReply)(&environment, NULL, id, token, INT64_MAX, frame) == ZCL_CANCELLED);
+    CHECK(!pending_exception && owned_frame == NULL);
+    CHECK(memcmp(before, snapshot(id, 100), sizeof(before)) == 0);
+    if (frame_allocations != allocations || byte_regions != reads)
+        fprintf(stderr, "Retired reply batch: allocations=%u byte_regions=%u (expected zero)\n",
+            frame_allocations - allocations, byte_regions - reads);
+    CHECK(frame_allocations == allocations && byte_regions == reads);
+}
+
+static void retired_replies_need_no_frame_allocation_or_copy(void)
+{
+    for (unsigned history = 0; history < 2; ++history) {
+        const jlong id = open_owner_mode(history != 0);
+        const jbyteArray frame = (jbyteArray)array_new((jsize)ZCL_ELECTRUM_FRAME_MAX, false);
+        retired_reply_batch(id, 1, frame); /* No attempt has been issued. */
+        const jlong old = API(beginSyncAttempt)(&environment, NULL, id, 100, 100, 1);
+        CHECK(old > 0);
+        CHECK(API(failSyncAttempt)(&environment, NULL, id, old, ZCL_CANCELLED) == ZCL_CANCELLED);
+        retired_reply_batch(id, old, frame);
+        const jlong current = API(beginSyncAttempt)(&environment, NULL, id, 100, 100, 1);
+        CHECK(current > old && checked_request(&environment, NULL, id, current, 100) != NULL);
+        retired_reply_batch(id, old, frame); /* A future timestamp cannot expire the replacement. */
+        char reply[512];
+        const size_t length = sync_fixture_reply(ZCL_MAINNET, ZCL_SYNC_VERSION, 1, reply, sizeof(reply));
+        const unsigned allocations = frame_allocations, reads = byte_regions;
+        CHECK(API(syncReply)(&environment, NULL, id, current, 101,
+            bytes((const uint8_t *)reply, length)) == ZCL_OK);
+        CHECK(frame_allocations == allocations + 1 && byte_regions == reads + 1);
+        CHECK(checked_request(&environment, NULL, id, current, 101) != NULL);
+        CHECK(API(closeSyncOwner)(&environment, NULL, id) == ZCL_OK);
+        release_references();
+    }
+}
+
 static void pending_snapshot_reads(void)
 {
     for (unsigned mode = 0; mode < 2; ++mode) {
@@ -700,6 +744,7 @@ int main(void)
     snapshot_projection_refusals();
     snapshot_publication_races();
     request_allocation_and_region_failure(); frame_allocation_and_region_failure();
+    retired_replies_need_no_frame_allocation_or_copy();
     pending_snapshot_reads(); pending_begin_preserves_owner();
     pending_request_reply_preserve_attempt();
     snapshot_failure_preserves_timeout();
@@ -708,6 +753,30 @@ int main(void)
     return 0;
 }
 #else
+static jlong begin_replacement(jlong id)
+{
+    const jlong old = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+    CHECK(old > 0);
+    CHECK(API(failSyncAttempt)(&environment, NULL, id, old, ZCL_CANCELLED) == ZCL_CANCELLED);
+    const jlong current = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
+    CHECK(current > old);
+    return current;
+}
+
+static void fuzz_retired_reply(jlong id, jlong current, const uint8_t *data, size_t length)
+{
+    jlong before[10];
+    memcpy(before, snapshot(id, 0), sizeof(before));
+    const jbyteArray input = bytes(data, length);
+    const unsigned allocations = frame_allocations, reads = byte_regions;
+    fail_frame = fail_get = true; /* A stale reply must not consume either fault. */
+    CHECK(API(syncReply)(&environment, NULL, id, current - 1, INT64_MAX, input) == ZCL_CANCELLED);
+    CHECK(fail_frame && fail_get && !pending_exception && owned_frame == NULL);
+    CHECK(frame_allocations == allocations && byte_regions == reads);
+    fail_frame = fail_get = false;
+    CHECK(memcmp(before, snapshot(id, 0), sizeof(before)) == 0);
+}
+
 static jbyteArray fuzz_request(jlong id, jlong token, jlong now, uint8_t mode)
 {
     fail_new = (mode & 0x80) != 0 ? 1U + (mode >> 1) % 3 : 0;
@@ -755,8 +824,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t length)
     if (length == 0 || length > ZCL_ELECTRUM_FRAME_MAX + 1) return 0;
     const bool history = (data[0] & 8) != 0;
     const jlong id = history ? open_owner_mode(true) : open_owner();
-    const jlong token = API(beginSyncAttempt)(&environment, NULL, id, 0, 100, 1);
-    CHECK(token > 0);
+    const jlong token = begin_replacement(id);
+    fuzz_retired_reply(id, token, data + 1, length - 1);
     const unsigned step = (unsigned)data[0] % (history ? 7u : 6u) + 1;
     advance_fuzz_owner(id, token, history, step);
     jbyteArray request = fuzz_request(id, token, (jlong)step, data[0]);

@@ -182,7 +182,11 @@ Java_org_zclassic_wallet_core_NativeCore_syncReply(JNIEnv *env, jclass type,
     zcl_sync_watch *watch = NULL;
     zcl_status status = enter_owner(id, &watch);
     if (status != ZCL_OK) return (jint)status;
-    status = reply_frame(env, watch, (uint64_t)token, (uint64_t)now, input);
+    /* The registry lock keeps this token decision stable until reply_frame.
+     * Reuse C's check before allocating/copying an already retired reply. */
+    status = zcl_sync_watch_check_attempt(watch, (uint64_t)token);
+    if (status == ZCL_OK)
+        status = reply_frame(env, watch, (uint64_t)token, (uint64_t)now, input);
     return (jint)unlock_registry(status);
 }
 

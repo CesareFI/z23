@@ -60,6 +60,11 @@ void zcl_sync_watch_close(zcl_sync_watch *watch);
  * Token output stays unchanged on failure. Only one attempt can be active. */
 zcl_status zcl_sync_watch_begin(zcl_sync_watch *watch, uint64_t now_ms, uint64_t timeout_ms,
     uint32_t first_id, uint64_t *token);
+/* Read-only active-token check for adapters before allocating/copying input.
+ * Same owner lifetime/exclusive access as every other operation. OK does not
+ * check time or admit a reply; request/reply still enforce their full contract.
+ * No watch state, clock or output changes, including on refusal. */
+zcl_status zcl_sync_watch_check_attempt(const zcl_sync_watch *watch, uint64_t token);
 /* Old/completed/cancelled tokens return CANCELLED without mutating current
  * state or outputs, including without advancing its clock. A current attempt
  * fails at now_ms >= deadline; a backward clock discards cached reports too. */

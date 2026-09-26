@@ -7335,3 +7335,57 @@ Its original dirty files remain unchanged; a copied regression against the
 current implementation observes 64 allocations and 64 JNI input copies for
 64 retired replies. The candidate reuses the existing C token check while
 holding the registry lock, without replacing request/reply validation.
+
+## Retired sync reply allocation and bounded fixtures — 2026-09-26
+
+Recovered the six unfinished sync files from `/root/z23-android` into the
+isolated validation branch, preserving their original bytes. JNI now reuses
+the C active-token predicate while holding its existing registry lock, before
+allocating/copying a reply frame. The helper neither checks time nor admits a
+reply; active processing retains all normal validation. No endpoint, source
+trust, TLS, custody or signing path is enabled.
+
+The copied regression fails unchanged JNI with 64 unnecessary allocations and
+64 input copies for a retired-reply burst: 1 MiB cumulatively. The new fixture
+checks zero allocation/copy and unchanged state before issuance, after cancel,
+and during replacement, in balance/history modes. The JNI fuzzer now also
+requires stale replies to leave allocation/read-failure injections untouched.
+It fails when linked with the previous JNI and passes with the precheck.
+
+Separate strict analysis exposed existing oversized watch-test stack frames.
+Caller-owned snapshot buffers and separated closed-owner/invalid-failure cases
+retain every assertion while removing large return-value temporaries. The
+largest uninstrumented GCC frame is now 3056 bytes; the original compiler
+reported frames up to 6832. The registered target now enforces the unchanged
+4096-byte frame limit, including both sanitizer profiles, with no suppression,
+new heap or global buffer. Initial and intermediate failure logs are preserved.
+
+Full safety passes Clang 138/138 and optimized GCC 137/137 in 126.56/197.08
+seconds. The final host-only fixture refactor then passes both focused groups,
+debug/optimized strict analysis and the existing complexity caps. All 149 JVM
+tests, Android builds/lint, fixture isolation, alignment, architecture and diff
+checks pass. All 14 sync/history/queued-delivery/background/recreation cases
+pass on isolated API 30/36 in 5.846/9.948 seconds. JNI/watch fuzzing completes
+24705/65906 runs, each in 121 seconds, without a finding; caps are 16385/16384
+bytes, five seconds per case and 512 MiB RSS (275/100 MiB observed). A separate
+107-case replay includes maximum-size JNI input. Both owned emulators exit zero
+with the existing devices and 31 ADB zombies unchanged; ARM64 is compiled only.
+
+Combined native text grows 308/352 bytes on x86-64/ARM64, with unchanged BSS.
+Active-reply caller/helper frames grow a combined 72/64 bytes because of
+compiler outlining; the token predicate has a zero-byte frame. The unsigned
+release grows 352 bytes to 641579. Source-only tree
+`115d6c5bc21ea5a3462c808f5076a24347c44a17`, including the final CMake/test changes,
+reproduces that complete APK with all 57 tasks executed and caching disabled
+(47 seconds): SHA256
+`166e6102ca78dbe4d336d6cd9e320f89184681d1f7b0fd7f6447ab2e206cf10a`.
+These are bounded-allocation, emulator and same-host reproduction results,
+not physical-phone memory/latency or hardware-custody claims.
+
+Full hazard review is in C_SAFETY_REVIEW.md. Patch identities, failures, budgets,
+tests, corpora, exact artifacts and source archives remain in
+`.cache/retired-sync-20260926/`. The preceding header commit's normal development
+push was refused by the installed hook with `remote-ref-not-main`; its precise
+checkpoint is in `.cache/header-contract-20260926/CHECKPOINT.md`. No hook was
+bypassed and main was not pushed. Continue locally with measured active-reply
+buffer sizing while preserving the separate publication and product gates.
