@@ -9,6 +9,13 @@
  * compiler identity, no object is newer than the running image, and every
  * global the objects define is defined by the running image.
  *
+ * Each object and depfile the running image was linked from is kept for
+ * that image under build/hotswap-fast/resident/<image>/ (hard links, taken
+ * while the epoch object is still no newer than the image). zcc republishes
+ * a rebuilt object under a new inode, so a later dev build of the same TU
+ * in the same epoch leaves the kept baseline intact; without a kept object
+ * a newer epoch object is RESIDENT_STALE.
+ *
  * The capsule's TUs are the owner, its siblings and every source the story
  * adapter itself includes (a view contract compiles its service .c).
  *
@@ -81,10 +88,12 @@ static bool shape_refuse(char *why, size_t why_len, const char *reason,
 #include "util/safe_alloc.h"
 #include "sha3/sha3.h"
 
+#include <dirent.h>
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -380,15 +389,40 @@ static bool shape_normal(const char *root, const char *path, char *out,
     return rel && shape_collapse(rel, out, cap);
 }
 
-static bool shape_object_path(const struct zcl_hotfork_shape *shape,
-                              const char *tu, const char *ext, char *out,
-                              size_t cap)
+/* The epoch's current build object (`ext` ".o" or ".d") of `tu`. */
+static bool shape_epoch_path(const struct zcl_hotfork_shape *shape,
+                             const char *tu, const char *ext, char *out,
+                             size_t cap)
 {
     size_t n = strlen(tu);
     return n > 2 && strcmp(tu + n - 2, ".c") == 0 &&
            snprintf(out, cap, "%s/build/dev-obj/epochs/%s/%.*s%s",
                     shape->root, shape->epoch, (int)(n - 2), tu, ext) <
                (int)cap;
+}
+
+static bool shape_kept_dir(const struct zcl_hotfork_shape *shape, char *out,
+                           size_t cap)
+{
+    return snprintf(out, cap, "%s/build/hotswap-fast/resident/%s", shape->root,
+                    shape->image) < (int)cap;
+}
+
+/* The build object of `tu` the running image was linked from, as kept for
+ * this image (see shape_bind_tu): one flat file per TU, '/' as '%'. */
+static bool shape_object_path(const struct zcl_hotfork_shape *shape,
+                              const char *tu, const char *ext, char *out,
+                              size_t cap)
+{
+    char dir[PATH_MAX], flat[ZCL_HOTFORK_UNITY_TU_MAX];
+    size_t n = strlen(tu);
+    if (n <= 2 || n >= sizeof(flat) || strcmp(tu + n - 2, ".c") != 0 ||
+        strchr(tu, '%') || !shape_kept_dir(shape, dir, sizeof(dir)))
+        return false;
+    for (size_t i = 0; i <= n; i++)
+        flat[i] = tu[i] == '/' ? '%' : tu[i];
+    return snprintf(out, cap, "%s/%.*s%s", dir, (int)(n - 2), flat, ext) <
+           (int)cap;
 }
 
 static size_t shape_edit_tu_count(const struct zcl_hotfork_shape *shape)
@@ -472,27 +506,105 @@ static bool shape_adapter_tus(struct zcl_hotfork_shape *shape)
                                "does not resolve");
 }
 
-/* The resident object of one TU and its depfile, both present and no newer
- * than the running image. */
+/* Removes the files of one kept-object directory, then the directory. */
+static void shape_remove_kept(const char *dir)
+{
+    DIR *d = opendir(dir);
+    for (struct dirent *e = d ? readdir(d) : NULL; e; e = readdir(d)) {
+        char path[PATH_MAX];
+        if (e->d_name[0] != '.' &&
+            snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) <
+                (int)sizeof(path))
+            (void)unlink(path);
+    }
+    if (d)
+        closedir(d);
+    (void)rmdir(dir);
+}
+
+/* The kept-object directory of the running image exists; the first save
+ * under a new image drops every other image's directory. */
+static bool shape_kept_ready(struct zcl_hotfork_shape *shape)
+{
+    static const char *const levels[] = {"build", "build/hotswap-fast",
+                                         "build/hotswap-fast/resident"};
+    char path[PATH_MAX], dir[PATH_MAX];
+    bool ok = shape_kept_dir(shape, dir, sizeof(dir));
+    for (size_t i = 0; ok && i < sizeof(levels) / sizeof(levels[0]); i++)
+        ok = snprintf(path, sizeof(path), "%s/%s", shape->root, levels[i]) <
+                 (int)sizeof(path) &&
+             (mkdir(path, 0700) == 0 || errno == EEXIST);
+    bool created = ok && mkdir(dir, 0700) == 0;
+    DIR *d = created ? opendir(path) : NULL;
+    for (struct dirent *e = d ? readdir(d) : NULL; e; e = readdir(d)) {
+        char other[PATH_MAX];
+        if (e->d_name[0] != '.' && strcmp(e->d_name, shape->image) != 0 &&
+            snprintf(other, sizeof(other), "%s/%s", path, e->d_name) <
+                (int)sizeof(other))
+            shape_remove_kept(other);
+    }
+    if (d)
+        closedir(d);
+    return created || (ok && errno == EEXIST) ||
+           shape_unbound(shape, "RECORD_UNWRITABLE", "build/hotswap-fast/resident",
+                         "the resident's build objects cannot be kept for "
+                         "the running image");
+}
+
+/* `to` names the same file as `from`: a hard link, replaced atomically. */
+static bool shape_link_current(const char *from, const char *to)
+{
+    static atomic_uint seq;
+    struct stat a, b;
+    char tmp[PATH_MAX];
+    if (stat(from, &a) == 0 && stat(to, &b) == 0 && a.st_dev == b.st_dev &&
+        a.st_ino == b.st_ino)
+        return true;
+    if (snprintf(tmp, sizeof(tmp), "%s.%ld.%u.tmp", to, (long)getpid(),
+                 atomic_fetch_add(&seq, 1u)) >= (int)sizeof(tmp))
+        return false;
+    bool ok = link(from, tmp) == 0 && rename(tmp, to) == 0;
+    if (!ok)
+        (void)unlink(tmp);
+    return ok;
+}
+
+/* The resident object of one TU and its depfile. The epoch's object and
+ * depfile must exist. While the object is no newer than the running image
+ * it is the image's input and is kept for this image (hard links); zcc
+ * republishes a rebuilt object under a new inode, so after the proof ladder
+ * recompiles the TU the kept object is still the one the image was linked
+ * from and stays the baseline. An object changed in place after the image
+ * linked, or rebuilt before anything was kept, is stale. */
 static bool shape_bind_tu(struct zcl_hotfork_shape *shape, const char *tu,
                           const struct stat *resident, struct sha3_256_ctx *ctx)
 {
-    char path[PATH_MAX], dep[PATH_MAX];
+    char obj[PATH_MAX], dep[PATH_MAX], kept[PATH_MAX], kept_dep[PATH_MAX];
     struct stat st, dst;
-    if (!shape_object_path(shape, tu, ".o", path, sizeof(path)) ||
-        !shape_regular(path, &st))
+    if (!shape_epoch_path(shape, tu, ".o", obj, sizeof(obj)) ||
+        !shape_regular(obj, &st))
         return shape_unbound(shape, "NO_BASELINE", tu,
                              "the resident build object for this TU is missing");
-    if (!shape_object_path(shape, tu, ".d", dep, sizeof(dep)) ||
+    if (!shape_epoch_path(shape, tu, ".d", dep, sizeof(dep)) ||
         !shape_regular(dep, &dst))
         return shape_unbound(shape, "NO_BASELINE", tu,
                              "the resident build object's depfile is missing");
-    if (shape_newer(&st, resident))
+    if (!shape_object_path(shape, tu, ".o", kept, sizeof(kept)) ||
+        !shape_object_path(shape, tu, ".d", kept_dep, sizeof(kept_dep)))
+        return shape_unbound(shape, "NO_BASELINE", tu,
+                             "the TU has no kept-object path");
+    if (!shape_newer(&st, resident) &&
+        !(shape_link_current(obj, kept) && shape_link_current(dep, kept_dep)))
+        return shape_unbound(shape, "RECORD_UNWRITABLE", tu,
+                             "the resident build object cannot be kept for "
+                             "the running image");
+    if (!shape_regular(kept, &st) || !shape_regular(kept_dep, &dst) ||
+        shape_newer(&st, resident))
         return shape_unbound(shape, "RESIDENT_STALE", tu,
                              "the resident build object is newer than the "
                              "running image; restart the resident");
     shape_hash_stat(ctx, tu, &st);
-    shape_hash_stat(ctx, dep, &dst);
+    shape_hash_stat(ctx, kept_dep, &dst);
     return true;
 }
 
@@ -552,8 +664,15 @@ void zcl_hotfork_shape_begin(struct zcl_hotfork_shape *shape, const char *root,
         return;
     }
     shape_hash_stat(&ctx, "resident", &resident);
+    (void)snprintf(shape->image, sizeof(shape->image), "%llx-%llx-%llx-%llx.%09ld",
+                   (unsigned long long)resident.st_dev,
+                   (unsigned long long)resident.st_ino,
+                   (unsigned long long)resident.st_size,
+                   (unsigned long long)resident.st_mtim.tv_sec,
+                   (long)resident.st_mtim.tv_nsec);
     if (shape_read_epoch(shape) && shape_read_session(shape, &ctx) &&
-        shape_adapter_tus(shape) && shape_bind_objects(shape, &resident, &ctx))
+        shape_adapter_tus(shape) && shape_kept_ready(shape) &&
+        shape_bind_objects(shape, &resident, &ctx))
         shape_hex_root(&ctx, shape->generation);
 }
 

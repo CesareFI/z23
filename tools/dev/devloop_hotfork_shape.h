@@ -43,6 +43,7 @@ struct zcl_hotfork_shape {
     char epoch[65];
     char toolchain[65];
     char generation[65];
+    char image[96]; /* running image dev-ino-size-mtime; names its kept objects */
     char adapter_tus[1024]; /* sources the story adapter compiles, '|'-joined */
     char unbound[320];
 };
