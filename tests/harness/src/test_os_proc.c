@@ -234,6 +234,44 @@ static int os_proc_seccomp_filters_parse_checks(void)
     return failures;
 }
 
+/* self-exe open path (magic pathname, never a once-resolved one):
+ * os_proc_self_exe_open_path() exists so a caller that must itself
+ * stat()/open() the running image BY NAME (e.g. to feed a general
+ * path-taking reader) never types the pseudo-file literally: on Linux it
+ * hands back "/proc/self/exe" verbatim, which the kernel re-resolves to
+ * the CURRENT running inode on every traversal, unlike a once-resolved
+ * os_proc_exe_path() string that a later replace-at-that-path deploy
+ * could make stale. A live rename of the test binary out from under
+ * itself mid-test is impractical to construct here, so the check below
+ * proves the weaker but still load-bearing fact: right now, opening the
+ * running image BY this path and opening it through
+ * os_proc_open_self_exe() (the kernel-pinned descriptor) name the exact
+ * same file. */
+static int os_proc_self_exe_open_path_checks(void)
+{
+    int failures = 0;
+    char path[4096];
+    bool ok = os_proc_self_exe_open_path(path, sizeof(path));
+    OSPROC_CHECK("self_exe_open_path resolves", ok);
+    OSPROC_CHECK("self_exe_open_path is absolute", ok && path[0] == '/');
+    struct stat by_path;
+    bool by_path_ok = ok && stat(path, &by_path) == 0;
+    OSPROC_CHECK("self_exe_open_path names an existing file", by_path_ok);
+    FILE *pinned = os_proc_open_self_exe();
+    struct stat by_pinned;
+    bool by_pinned_ok = pinned && fstat(fileno(pinned), &by_pinned) == 0;
+    if (pinned)
+        fclose(pinned);
+    OSPROC_CHECK("self_exe_open_path identifies the same running image "
+                 "os_proc_open_self_exe() pins (dev/inode/size/mtime)",
+                 by_path_ok && by_pinned_ok &&
+                 by_path.st_dev == by_pinned.st_dev &&
+                 by_path.st_ino == by_pinned.st_ino &&
+                 by_path.st_size == by_pinned.st_size &&
+                 by_path.st_mtime == by_pinned.st_mtime);
+    return failures;
+}
+
 int test_os_proc(void);
 int test_os_proc(void)
 {
@@ -243,6 +281,7 @@ int test_os_proc(void)
     failures += os_proc_cgroup_stat_fixture_checks();
     failures += os_proc_preserved_report_fd_checks();
     failures += os_proc_seccomp_filters_parse_checks();
+    failures += os_proc_self_exe_open_path_checks();
 
     OSPROC_CHECK("native Linux release classification",
                  os_proc_environment_classify_kernel_release(

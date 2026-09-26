@@ -411,6 +411,21 @@ bool os_proc_exe_path(char *buf, size_t n)
 #endif
 }
 
+bool os_proc_self_exe_open_path(char *buf, size_t n)
+{
+    if (!buf || n == 0)
+        return false; // raw-return-ok:null-arg
+#if defined(__linux__)
+    static const char k_magic[] = "/proc/self/exe";
+    if (sizeof(k_magic) > n)
+        return false;
+    memcpy(buf, k_magic, sizeof(k_magic));
+    return true;
+#else
+    return os_proc_exe_path(buf, n);
+#endif
+}
+
 bool os_proc_pid_exe_path(uint64_t pid, char *buf, size_t n)
 {
     if (pid == 0 || pid > UINT32_MAX || !buf || n == 0) return false;
@@ -976,3 +991,30 @@ bool os_proc_thread_work_read(long tid, struct os_proc_thread_work *out)
 }
 
 #endif /* __linux__ */
+
+char *os_proc_self_maps_read(size_t max, size_t *len_out)
+{
+#if defined(__linux__)
+    FILE *f = fopen("/proc/self/maps", "rb");
+    if (!f)
+        return NULL; // raw-return-ok:platform-cannot-answer
+    char *buf = malloc(max + 1); // raw-alloc-ok:standalone-platform-package
+    size_t n = buf ? fread(buf, 1, max + 1, f) : 0;
+    bool whole = buf && !ferror(f) && feof(f) && n <= max &&
+                 !memchr(buf, 0, n);
+    fclose(f);
+    if (!whole) {
+        free(buf);
+        return NULL; // raw-return-ok:platform-cannot-answer
+    }
+    buf[n] = 0;
+    if (len_out)
+        *len_out = n;
+    return buf;
+#else
+    (void)max;
+    if (len_out)
+        *len_out = 0;
+    return NULL; // raw-return-ok:platform-cannot-answer
+#endif
+}

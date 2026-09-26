@@ -161,6 +161,21 @@ int64_t os_proc_load1_centi(void);
  * themselves. */
 bool os_proc_exe_path(char *buf, size_t n);
 
+/* The literal pathname that reaches the running image through kernel magic
+ * (Linux's self-referencing "/proc/self/exe" symlink), for a caller that
+ * must itself stat()/open() the running image BY NAME, repeatedly, rather
+ * than hold one os_proc_open_self_exe() FILE* across every read. The
+ * kernel re-resolves this name to the process's CURRENT running inode on
+ * every traversal, so — unlike a once-resolved os_proc_exe_path() string —
+ * a later replace-at-that-path deploy never makes a later stat()/open() of
+ * THIS name read the wrong file. Darwin and Windows have no such magic
+ * name, so there this reports the same resolved pathname os_proc_exe_path()
+ * would (the weaker RESOLVED_PATH rung; see os_proc_self_exe_identity()); a
+ * caller on those platforms that needs the stronger guarantee must use
+ * os_proc_open_self_exe() instead and keep its FILE* open across every
+ * read. False on any failure; `buf` is left untouched. */
+bool os_proc_self_exe_open_path(char *buf, size_t n);
+
 /* Resolve the executable image of a live process. Windows holds a process
  * HANDLE while querying its UTF-16 image path, avoiding PID/path races during
  * the query. POSIX uses the platform's process-image authority. */
@@ -338,6 +353,17 @@ bool os_proc_pid_start_token(uint64_t pid, uint64_t *token);
  * proc_pid_rusage disk-I/O byte counters; other POSIX targets use getrusage
  * block counts converted from their specified 512-byte units. */
 bool os_proc_io_bytes(uint64_t *out);
+
+/* This process's mapping table (Linux /proc/self/maps), read whole into a
+ * heap-allocated NUL-terminated buffer the caller frees. NULL when the read
+ * is more than `max` bytes, holds an embedded NUL, fails, or the platform
+ * keeps no such table (Darwin, Windows): callers must treat NULL as "no
+ * evidence", never as "no libraries mapped". `len_out` receives the byte
+ * count when non-NULL. Exists so a caller that enumerates the shared
+ * libraries mapped into this process — to bind a running image's exported
+ * ABI, for instance — reads through the platform seam instead of opening
+ * /proc/self/maps directly. */
+char *os_proc_self_maps_read(size_t max, size_t *len_out);
 
 #ifdef __cplusplus
 }

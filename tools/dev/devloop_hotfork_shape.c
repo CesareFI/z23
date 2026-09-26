@@ -93,6 +93,7 @@ static bool shape_refuse(char *why, size_t why_len, const char *reason,
 #if defined(__linux__)
 
 #include "base/hex.h"
+#include "platform/os_proc.h"
 #include "util/safe_alloc.h"
 #include "sha3/sha3.h"
 
@@ -241,6 +242,21 @@ static bool shape_newer(const struct stat *a, const struct stat *b)
 static bool shape_regular(const char *path, struct stat *st)
 {
     return stat(path, st) == 0 && S_ISREG(st->st_mode);
+}
+
+/* The running image's own file identity (device, inode, size, mtime),
+ * read off the SAME descriptor os_proc_open_self_exe() pins to the kernel's
+ * exe_file reference — never a resolved pathname re-looked-up by name,
+ * which a later replace-at-that-path deploy could point at a different
+ * file by the time of this call. */
+static bool shape_resident_stat(struct stat *out)
+{
+    FILE *f = os_proc_open_self_exe();
+    if (!f)
+        return false;
+    bool ok = fstat(fileno(f), out) == 0 && S_ISREG(out->st_mode);
+    fclose(f);
+    return ok;
 }
 
 /* Reads a small text file whole; NULL when absent, unreadable, too large or
@@ -723,10 +739,10 @@ static void shape_toolchain(struct zcl_hotfork_shape *shape)
     shape_hex_root(&ctx, shape->toolchain);
 }
 
-void zcl_hotfork_shape_begin(struct zcl_hotfork_shape *shape, const char *root,
-                             const char *source_tu, const char *sibling_tus,
-                             const char *adapter_id, const char *cc,
-                             const char *compiler_id, const char *cflags)
+static void shape_begin_linux(struct zcl_hotfork_shape *shape, const char *root,
+                              const char *source_tu, const char *sibling_tus,
+                              const char *adapter_id, const char *cc,
+                              const char *compiler_id, const char *cflags)
 {
     memset(shape, 0, sizeof(*shape));
     shape->root = root;
@@ -746,8 +762,8 @@ void zcl_hotfork_shape_begin(struct zcl_hotfork_shape *shape, const char *root,
         (void)shape_unbound(shape, "NO_BASELINE", "-", "no capsule named");
         return;
     }
-    if (!shape_regular("/proc/self/exe", &resident)) {
-        (void)shape_unbound(shape, "RESIDENT_UNREADABLE", "/proc/self/exe",
+    if (!shape_resident_stat(&resident)) {
+        (void)shape_unbound(shape, "RESIDENT_UNREADABLE", "running image",
                             "the running image cannot be identified");
         return;
     }
@@ -1690,7 +1706,7 @@ static bool shape_lib_scan(const char *path, struct shape_names *into,
 static bool shape_libs_scan(const struct shape_libs *libs,
                             struct shape_names *into, uint64_t *id)
 {
-    char *maps = shape_slurp("/proc/self/maps", 4 << 20, NULL);
+    char *maps = os_proc_self_maps_read(4 << 20, NULL);
     const char *last = "";
     bool ok = maps != NULL;
     *id = 1469598103934665603ull;
@@ -1808,14 +1824,16 @@ static bool shape_resident_defines(const struct shape_set *base, char *why,
                                    size_t why_len)
 {
     const struct shape_names *names = NULL;
-    enum shape_read got =
-        shape_image_acquire(SHAPE_IMAGE_SYMTAB, "/proc/self/exe", &names);
+    char exe[PATH_MAX];
+    enum shape_read got = os_proc_self_exe_open_path(exe, sizeof(exe))
+        ? shape_image_acquire(SHAPE_IMAGE_SYMTAB, exe, &names)
+        : SHAPE_READ_UNREADABLE;
     if (got != SHAPE_READ_OK)
         return got == SHAPE_READ_NO_SYMTAB
-                   ? shape_refuse(why, why_len, "SYMTAB_MISSING", "/proc/self/exe",
+                   ? shape_refuse(why, why_len, "SYMTAB_MISSING", "running image",
                                   "the running image has no symbol table")
                    : shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
-                                  "/proc/self/exe",
+                                  "running image",
                                   "the running image cannot be read");
     const struct shape_sym *missing = NULL;
     for (size_t i = 0; !missing && i < base->count; i++)
@@ -1836,10 +1854,11 @@ static bool shape_resolve(struct shape_run *run, char *why, size_t why_len)
 {
     const struct shape_names *names = NULL;
     const struct shape_set *refs = &run->undefined;
-    if (shape_image_acquire(SHAPE_IMAGE_DYNAMIC, "/proc/self/exe", &names) !=
-        SHAPE_READ_OK)
+    char exe[PATH_MAX];
+    if (!os_proc_self_exe_open_path(exe, sizeof(exe)) ||
+        shape_image_acquire(SHAPE_IMAGE_DYNAMIC, exe, &names) != SHAPE_READ_OK)
         return shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
-                            "/proc/self/exe",
+                            "running image",
                             "the running image's dynamic symbols or libraries "
                             "cannot be read");
     const struct shape_sym *missing = NULL;
@@ -1858,8 +1877,8 @@ static bool shape_resolve(struct shape_run *run, char *why, size_t why_len)
 }
 
 #if defined(ZCL_TESTING)
-int zcl_hotfork_shape_test_image_defines(const char *image, const char *name,
-                                         bool dynamic, unsigned long *parses)
+static int shape_test_image_defines_linux(const char *image, const char *name,
+                                          bool dynamic, unsigned long *parses)
 {
     const struct shape_names *names = NULL;
     unsigned kind = dynamic ? SHAPE_IMAGE_DYNAMIC : SHAPE_IMAGE_SYMTAB;
@@ -2112,9 +2131,9 @@ static bool shape_still_bound(const struct zcl_hotfork_shape *shape,
                               char *why, size_t why_len)
 {
     struct zcl_hotfork_shape now;
-    zcl_hotfork_shape_begin(&now, shape->root, shape->source_tu,
-                            shape->sibling_tus, shape->adapter_id, shape->cc,
-                            shape->compiler_id, shape->cflags);
+    shape_begin_linux(&now, shape->root, shape->source_tu,
+                      shape->sibling_tus, shape->adapter_id, shape->cc,
+                      shape->compiler_id, shape->cflags);
     if (now.unbound[0]) {
         if (why && why_len)
             (void)snprintf(why, why_len, "%s", now.unbound);
@@ -2140,9 +2159,9 @@ static bool shape_run_checks(struct shape_run *run, char *why, size_t why_len)
            shape_record_commit(run, why, why_len);
 }
 
-bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
-                             const char *candidate_object, const char *depfile,
-                             char *why, size_t why_len)
+static bool shape_admit_linux(bool prior, const struct zcl_hotfork_shape *shape,
+                              const char *candidate_object, const char *depfile,
+                              char *why, size_t why_len)
 {
     if (!prior)
         return false;
@@ -2163,13 +2182,21 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
     return ok;
 }
 
-#else /* !__linux__ */
+#endif /* __linux__ */
 
+/* Per-arm bodies (shape_begin_linux etc., above) hold the real Linux/ELF
+ * facts; every other platform refuses by name. One definition per public
+ * entry point regardless of arm, so the two bodies never appear as
+ * duplicate top-level definitions of the same symbol. */
 void zcl_hotfork_shape_begin(struct zcl_hotfork_shape *shape, const char *root,
                              const char *source_tu, const char *sibling_tus,
                              const char *adapter_id, const char *cc,
                              const char *compiler_id, const char *cflags)
 {
+#if defined(__linux__)
+    shape_begin_linux(shape, root, source_tu, sibling_tus, adapter_id, cc,
+                      compiler_id, cflags);
+#else
     memset(shape, 0, sizeof(*shape));
     shape->root = root;
     shape->source_tu = source_tu;
@@ -2181,12 +2208,17 @@ void zcl_hotfork_shape_begin(struct zcl_hotfork_shape *shape, const char *root,
     (void)snprintf(shape->generation, sizeof(shape->generation), "unbound");
     (void)shape_refuse(shape->unbound, sizeof(shape->unbound), "UNSUPPORTED",
                        source_tu, "ELF shape facts are read on Linux only");
+#endif
 }
 
 bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
                              const char *candidate_object, const char *depfile,
                              char *why, size_t why_len)
 {
+#if defined(__linux__)
+    return shape_admit_linux(prior, shape, candidate_object, depfile, why,
+                             why_len);
+#else
     (void)candidate_object;
     (void)depfile;
     (void)shape;
@@ -2194,19 +2226,22 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
         return false;
     return shape_refuse(why, why_len, "UNSUPPORTED", "-",
                         "ELF shape facts are read on Linux only");
+#endif
 }
 
 #if defined(ZCL_TESTING)
 int zcl_hotfork_shape_test_image_defines(const char *image, const char *name,
                                          bool dynamic, unsigned long *parses)
 {
+#if defined(__linux__)
+    return shape_test_image_defines_linux(image, name, dynamic, parses);
+#else
     (void)image;
     (void)name;
     (void)dynamic;
     if (parses)
         *parses = 0;
     return -1;
-}
 #endif
-
+}
 #endif
