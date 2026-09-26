@@ -6205,6 +6205,17 @@ static bool dp_hf_mkdirs(const char *path)
     return platform_directory_ensure(tmp, 0755);
 }
 
+/* A checked-in header is older than every resident object built from it
+ * (dp_settle dates those objects 1600000000 + seq): a copy dated now would
+ * read to the HOT_FORK shape guard as a header changed after the resident
+ * object was built. The copy keeps the checkout's order instead. */
+static bool dp_hf_settled_copy(const char *src, const char *dst)
+{
+    struct timespec settled[2] = {{1600000000, 0}, {1600000000, 0}};
+    return dp_hf_copy_file(src, dst) &&
+           utimensat(AT_FDCWD, dst, settled, 0) == 0;
+}
+
 /* Copy one checked-in tree (regular files and real directories only) into
  * the fixture root, so every header the compile reads lies inside the
  * checkout its action root is derived for. */
@@ -6224,7 +6235,7 @@ static bool dp_hf_copy_tree(const char *src, const char *dst)
                  snprintf(to, sizeof(to), "%s/%s", dst, l->entries[i].name) <
                      (int)sizeof(to) &&
                  (pass ? dp_hf_copy_tree(from, to)
-                       : dp_hf_copy_file(from, to));
+                       : dp_hf_settled_copy(from, to));
         }
     }
     platform_directory_list_free(&dirs);
