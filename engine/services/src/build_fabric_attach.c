@@ -1370,6 +1370,9 @@ struct zcl_result build_fabric_attach(
     c.now = (int64_t)platform_time_wall_unix();
 
     const char *refusal = bfat_check_request_identity(&c);
+    if (!refusal && strcmp(c.job.profile,
+                           VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1) == 0)
+        refusal = "attach-refused-independent-run-required";
     if (!refusal)
         refusal = bfat_check_requester_worker(&c);
     if (!refusal)

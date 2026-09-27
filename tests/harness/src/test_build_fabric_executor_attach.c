@@ -702,9 +702,31 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         ASSERT_EQ(report.compiler_processes, 0);
         ASSERT_EQ(att_build_work_entries(dir), 0);
 
-        /* A record that does not re-derive to its own address is poison. */
         uint8_t key[32];
         ASSERT(zcl_hex_decode_lower(report.executor_key, key, 32));
+
+        /* Even without a donor, a physical reproduction is never an
+         * attachment request: it must reach the independent executor. */
+        struct db_build_job repro_job;
+        struct db_build_action repro_action;
+        ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_c, capsule_hex,
+                                input_root,
+                                VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1,
+                                &repro_job, &repro_action));
+        struct zcl_result repro = build_fabric_attach(
+            &ndb, dir, NULL, &repro_job, &repro_action, secret, pubkey,
+            &receipt, &report);
+        ASSERT(!repro.ok);
+        ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_REFUSED);
+        ASSERT_STR_EQ(report.refusal,
+                      "attach-refused-independent-run-required");
+        ASSERT_EQ(report.compiler_processes, 0);
+        ASSERT_EQ(att_build_work_entries(dir), 0);
+        struct db_build_action durable;
+        ASSERT(db_build_action_find(&ndb, repro_action.action_id, &durable));
+        ASSERT_STR_EQ(durable.state, "QUEUED");
+
+        /* A record that does not re-derive to its own address is poison. */
         static const uint8_t garbage[] = "not-an-executor-key-record";
         ASSERT(vcs_object_put_addressed(dir, key, garbage,
                                         sizeof(garbage) - 1u));
@@ -713,9 +735,9 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         ASSERT(!poisoned.ok);
         ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_REFUSED);
         ASSERT_STR_EQ(report.refusal, "executor-key-record-poisoned");
-        struct db_build_action durable;
         ASSERT(db_build_action_find(&ndb, action.action_id, &durable));
         ASSERT_STR_EQ(durable.state, "QUEUED");
+
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
