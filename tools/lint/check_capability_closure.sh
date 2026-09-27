@@ -633,7 +633,30 @@ check_root() {
     # restart-base.o is a generated relocatable aggregate of the exact object
     # list already scanned below. Treating it as an ordinary TU both doubles
     # every undefined edge and invents a nonexistent restart-base.c owner.
-    find "$epoch" -name '*.o' ! -name 'restart-base.o' -print0 > "$work/objs.z"
+    find "$epoch" -name '*.o' ! -name 'restart-base.o' -print0 > "$work/objs_all.z"
+    # The epoch is shared by every tree built in this checkout. A candidate
+    # that added a source and then failed leaves its object behind; a later
+    # tree has no such source, so that object is not part of the tree being
+    # proven. Grade only objects whose translation unit (epoch-relative path,
+    # .o -> .c) exists here, and name every other one as foreign. The floors
+    # below count the graded objects only.
+    local obj_rel
+    while IFS= read -r -d '' obj; do
+        obj_rel="${obj#"$epoch"/}"
+        if [ -f "$root/${obj_rel%.o}.c" ]; then
+            printf '%s\0' "$obj"
+        else
+            printf '%s\n' "$obj_rel" >&3
+        fi
+    done < "$work/objs_all.z" > "$work/objs.z" 3> "$work/foreign_objs.txt"
+    local n_foreign
+    n_foreign="$(wc -l < "$work/foreign_objs.txt" | tr -d ' ')"
+    if [ "$n_foreign" -gt 0 ]; then
+        echo "check_capability_closure: $n_foreign foreign object(s) under $epoch"
+        echo "  have no source in this tree (a failed candidate's leftovers);"
+        echo "  not graded. First 5:"
+        sed -n '1,5p' "$work/foreign_objs.txt" | sed 's/^/    /'
+    fi
     local n_obj
     n_obj="$(tr -cd '\0' < "$work/objs.z" | wc -c | tr -d ' ')"
     if [ -z "$n_obj" ] || [ "$n_obj" -lt "$CAP_CLOSURE_MIN_OBJECTS_SCANNED" ]; then
@@ -968,6 +991,7 @@ check_root() {
     echo "  missing-source-rows=$missing_src raw-syscall=$syscall_violations"
     echo "  declared-but-unobserved=$unobserved (coverage baseline=$CAP_CLOSURE_COVERAGE_BASELINE)"
     echo "  platform-target-excluded=$platform_excluded"
+    echo "  foreign-objects=$n_foreign (no source in this tree; not graded)"
     echo "  platform-exact-overrides=$CAP_MOD_PLATFORM_COUNT"
     echo "  compiled-out-unobserved=$compiled_out (never a violation, never a pass — see UNOBSERVED lines above)"
     if [ "$compiled_out" -gt 0 ]; then
@@ -1023,12 +1047,15 @@ check_root() {
 #      VIOLATIONs (N2), so the softening cannot launder an ordinary defect.
 FIXTURE_ROOT=""
 FILLER_TEMPLATE=""
+FILLER_SRC_TEMPLATE=""
 selftest_cleanup() { [ -n "$FIXTURE_ROOT" ] && rm -rf "$FIXTURE_ROOT"; }
 
 # make_epoch <dir> — populate <dir>/build/dev-obj/epochs/fx0/ with
 # CAP_CLOSURE_MIN_OBJECTS_SCANNED harmless filler objects (zero undefined
 # symbols each, so they cannot affect closure/declaration/symmetry) plus
 # whatever real synthetic objects the caller compiles in afterward.
+# Each filler object has its source in the fixture tree (filler/filler_N.c),
+# because an object with no source in the tree is foreign and not graded.
 # The same bytes serve every fixture: build the filler set once and copy the
 # whole set for each case, avoiding one cp process per object per fixture.
 make_epoch() {
@@ -1037,7 +1064,8 @@ make_epoch() {
     if [ -z "$FILLER_TEMPLATE" ]; then
         local src="$FIXTURE_ROOT/.filler.c" obj="$FIXTURE_ROOT/.filler.o"
         local template="$FIXTURE_ROOT/.filler-template"
-        mkdir -p "$template" || return 2
+        local src_template="$FIXTURE_ROOT/.filler-src-template"
+        mkdir -p "$template/filler" "$src_template/filler" || return 2
         cat > "$src" <<'EOF'
 static int filler_fn(int x) { return x + 1; }
 int filler_export(int x) { return filler_fn(x) + 1; }
@@ -1046,11 +1074,14 @@ EOF
             cc -c "$src" -o "$obj" || return 2
         local i
         for ((i = 1; i <= CAP_CLOSURE_MIN_OBJECTS_SCANNED; i++)); do
-            cp "$obj" "$template/filler_$i.o" || return 2
+            cp "$obj" "$template/filler/filler_$i.o" || return 2
+            cp "$src" "$src_template/filler/filler_$i.c" || return 2
         done
         FILLER_TEMPLATE="$template"
+        FILLER_SRC_TEMPLATE="$src_template"
     fi
     cp -R "$FILLER_TEMPLATE/." "$epoch/" || return 2
+    cp -R "$FILLER_SRC_TEMPLATE/." "$d/" || return 2
 }
 
 # fixture_symbols <dir> — a minimal, real capability_symbols.def: just
