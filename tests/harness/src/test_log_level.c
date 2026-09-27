@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the opt-in log-level filter (platform/modules/util/src/log_level.c,
- * consulted by ZCL_LOG_EMIT_AT in platform/modules/util/include/util/log_macros.h).
+ * Unit tests for the opt-in log-level filter (platform/modules/base/src/log_level.c,
+ * consulted by ZCL_LOG_EMIT_AT) and the ERROR-rank origin= stamp added by
+ * platform/modules/util/include/util/log_macros.h.
  *
  * Coverage:
  *   - level ordering: ALL/INFO < WARN < ERROR < FATAL < OFF
@@ -88,6 +89,27 @@ static void emit_test_info(void)
 {
     LOG_INFO("test_log_level", "info line marker=%s", "IMARK");
 }
+
+/* The exact source line the LOG_ERROR call below sits on, kept in sync by
+ * hand (the "matches the call site" assertion re-derives it independently
+ * via __LINE__, so a future edit that moves the call without updating this
+ * constant fails loudly instead of silently). */
+enum { kEmitTestErrorLine = __LINE__ + 3 };
+static void emit_test_error(void)
+{
+    LOG_ERROR("test_log_level", "error line marker=%s", "EMARK");
+}
+
+/* A call site whose free-text message already contains the literal
+ * substring "origin=" (e.g. logging a field named that) — the appended
+ * stamp must still land once, at the true end of the line. */
+static void emit_test_error_with_embedded_origin_text(void)
+{
+    LOG_ERROR("test_log_level",
+              "existing origin=user-supplied-value in the message body");
+}
+
+static int test_log_level_origin_checks(void);
 
 int test_log_level(void)
 {
@@ -204,10 +226,124 @@ int test_log_level(void)
                   captured && strstr(buf, "Z INFO [test_log_level]") != NULL);
     }
 
+    failures += test_log_level_origin_checks();
+
     /* Restore whatever level this process had on entry so later test
      * groups in the same binary (test_zcl runs groups sequentially) are
      * unaffected by this group's probing. */
     zcl_log_level_set(prev);
+
+    return failures;
+}
+
+/* Split out of test_log_level() to keep that function under the cyclomatic
+ * complexity cap: the origin=<file>:<line> stamping checks (the reason this
+ * test file exists) below, and only those, live here. */
+static int test_log_level_origin_checks(void)
+{
+    int failures = 0;
+
+    /* ── ERROR-and-above lines carry a trailing origin=<basename>:<line>
+     * token matching the call site (the fix this file exists to prove:
+     * an AI reading node.log can `grep -a -m1 'origin='` straight to the
+     * fault instead of trusting the first incidental file:line string in
+     * ambient instrumentation) ── */
+    {
+        char buf[512];
+        char want[64];
+        snprintf(want, sizeof(want), "origin=test_log_level.c:%d\n",
+                 (int)kEmitTestErrorLine);
+        zcl_log_level_set(ZCL_LOG_ALL);
+        bool captured = log_level_capture(emit_test_error, buf, sizeof(buf));
+        size_t buf_len = strlen(buf);
+        size_t want_len = strlen(want);
+        bool ends_with_origin = captured && buf_len >= want_len &&
+            !memcmp(buf + buf_len - want_len, want, want_len);
+        LVL_CHECK("LOG_ERROR line ends with origin=<basename>:<line> "
+                  "matching the call site", ends_with_origin);
+    }
+
+    /* ── INFO/WARN lines are byte-for-byte unchanged: no origin= token is
+     * appended below ERROR rank ── */
+    {
+        char buf[512];
+        zcl_log_level_set(ZCL_LOG_ALL);
+        bool captured = log_level_capture(emit_test_info, buf, sizeof(buf));
+        LVL_CHECK("LOG_INFO line carries no origin= token",
+                  captured && strstr(buf, "origin=") == NULL);
+    }
+    {
+        char buf[512];
+        zcl_log_level_set(ZCL_LOG_ALL);
+        bool captured = log_level_capture(emit_test_warn, buf, sizeof(buf));
+        LVL_CHECK("LOG_WARN line carries no origin= token",
+                  captured && strstr(buf, "origin=") == NULL);
+    }
+
+    /* ── a message that already contains the substring "origin=" is not
+     * double-stamped, and the real origin= token (added once, at the true
+     * end of the line) still parses correctly by anchoring on end-of-line
+     * rather than on the first occurrence ── */
+    {
+        char buf[512];
+        zcl_log_level_set(ZCL_LOG_ALL);
+        bool captured = log_level_capture(
+            emit_test_error_with_embedded_origin_text, buf, sizeof(buf));
+        size_t buf_len = strlen(buf);
+        int origin_occurrences = 0;
+        const char *scan = buf;
+        while ((scan = strstr(scan, "origin=")) != NULL) {
+            origin_occurrences++;
+            scan++;
+        }
+        char want_tail[64];
+        snprintf(want_tail, sizeof(want_tail), "origin=test_log_level.c:%d\n",
+                 (int)(kEmitTestErrorLine + 8));
+        size_t want_len = strlen(want_tail);
+        bool real_stamp_at_end = buf_len >= want_len &&
+            !memcmp(buf + buf_len - want_len, want_tail, want_len);
+        /* Exactly two textual occurrences (the embedded free-text one plus
+         * our one real stamp) but only one is the structured end-of-line
+         * token a parser anchored on "origin=<file>:<digits>$" would find. */
+        LVL_CHECK("embedded 'origin=' text is not double-stamped and the "
+                  "real stamp still anchors at end-of-line",
+                  captured && origin_occurrences == 2 && real_stamp_at_end);
+    }
+
+    /* ── `grep -a -m1 'origin='` on a fixture log of 200 INFO lines plus
+     * one ERROR line finds the ERROR line, exactly as
+     * docs/DEVELOPING.md tells an AI to read a failing node.log ── */
+    {
+        char path[PATH_MAX];
+        int fd = test_mkstemp(path, sizeof(path), "log_level_origin_fixture");
+        LVL_CHECK("fixture log file created", fd >= 0);
+        if (fd >= 0) {
+            FILE *f = fdopen(fd, "w");
+            for (int i = 0; i < 200; i++)
+                fprintf(f, "2026-09-08T00:00:00Z INFO [fixture] filler.c:%d "
+                           "noise(): line %d\n", i, i);
+            fprintf(f, "2026-09-08T00:00:00Z ERROR [fixture] "
+                       "chain_restore_repair.c:802 "
+                       "chain_restore_finalize_verified(): post-restore "
+                       "integrity FAILED origin=chain_restore_repair.c:802\n");
+            fclose(f);
+
+            char cmd[PATH_MAX + 64];
+            snprintf(cmd, sizeof(cmd), "grep -a -m1 'origin=' '%s'", path);
+            FILE *p = popen(cmd, "r");
+            char hit[256] = {0};
+            if (p) {
+                if (!fgets(hit, sizeof(hit), p))
+                    hit[0] = '\0';
+                pclose(p);
+            }
+            LVL_CHECK("grep -a -m1 'origin=' finds the ERROR line, not "
+                      "any of the 200 INFO lines",
+                      strstr(hit, "post-restore integrity FAILED") != NULL &&
+                      strstr(hit, "ERROR") != NULL);
+            unlink(path);
+        }
+    }
 
     return failures;
 }
