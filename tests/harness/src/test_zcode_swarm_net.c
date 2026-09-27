@@ -7163,13 +7163,18 @@ static const char *const g_zwn_original[] = {
 };
 #define ZWN_ORIGINAL_COUNT (sizeof(g_zwn_original) / sizeof(g_zwn_original[0]))
 
-static long long zwn_elapsed_ms(const struct timespec *from)
+/* Row wall for the balance log only; no assertion reads it. The clock
+ * variables carry names used nowhere else in this file, because the
+ * wall-clock assertion gate taints identifiers by name across the whole
+ * file, and a reading stored in a common name such as `now` would mark every
+ * unrelated helper that takes a `now` parameter as a clock reader. */
+static long long zwn_elapsed_ms(const struct timespec *row_started)
 {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    struct timespec row_ended;
+    if (clock_gettime(CLOCK_MONOTONIC, &row_ended) != 0)
         return -1;
-    return (long long)(now.tv_sec - from->tv_sec) * 1000 +
-           (now.tv_nsec - from->tv_nsec) / 1000000;
+    return (long long)(row_ended.tv_sec - row_started->tv_sec) * 1000 +
+           (row_ended.tv_nsec - row_started->tv_nsec) / 1000000;
 }
 
 /* How many rows name `name`. */
@@ -7241,16 +7246,17 @@ static int zwn_run_rows(unsigned shard)
     chain_params_select(CHAIN_MAIN);
     const struct chain_params *params = chain_params_get();
     for (size_t i = 0; i < ZWN_CASE_COUNT; i++) {
-        struct timespec started;
+        struct timespec zwn_row_started;
         if (shard != ZWN_ALL_SHARDS && g_zwn_cases[i].shard != shard)
             continue;
-        (void)clock_gettime(CLOCK_MONOTONIC, &started);
+        (void)clock_gettime(CLOCK_MONOTONIC, &zwn_row_started);
         int added = g_zwn_cases[i].run(params);
         failures += added;
         ran++;
         printf("[zcode-swarm-net-case] shard=%u name=%s ms=%lld "
                "failures=%d\n", g_zwn_cases[i].shard + 1u,
-               g_zwn_cases[i].name, zwn_elapsed_ms(&started), added);
+               g_zwn_cases[i].name, zwn_elapsed_ms(&zwn_row_started),
+               added);
     }
     if (failures == 0 && g_zwn_sovereign_receipt.ready)
         zwn_print_sovereign_receipt();

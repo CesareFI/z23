@@ -6174,13 +6174,16 @@ static const char *const g_zpd_original[] = {
 };
 #define ZPD_ORIGINAL_COUNT (sizeof(g_zpd_original) / sizeof(g_zpd_original[0]))
 
-static long long zpd_elapsed_ms(const struct timespec *from)
+/* Row wall for the balance log only; no assertion reads it. Its clock
+ * variables carry file-unique names: the wall-clock assertion gate taints
+ * identifiers by name across the whole file. */
+static long long zpd_elapsed_ms(const struct timespec *row_started)
 {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    struct timespec row_ended;
+    if (clock_gettime(CLOCK_MONOTONIC, &row_ended) != 0)
         return -1;
-    return (long long)(now.tv_sec - from->tv_sec) * 1000 +
-           (now.tv_nsec - from->tv_nsec) / 1000000;
+    return (long long)(row_ended.tv_sec - row_started->tv_sec) * 1000 +
+           (row_ended.tv_nsec - row_started->tv_nsec) / 1000000;
 }
 
 /* How many rows name `name`. */
@@ -6248,16 +6251,17 @@ static int zpd_run_rows(const struct zpd_keys *keys, unsigned shard)
     int failures = 0;
     size_t ran = 0;
     for (size_t i = 0; i < ZPD_CASE_COUNT; i++) {
-        struct timespec started;
+        struct timespec zpd_row_started;
         if (shard != ZPD_ALL_SHARDS && g_zpd_cases[i].shard != shard)
             continue;
-        (void)clock_gettime(CLOCK_MONOTONIC, &started);
+        (void)clock_gettime(CLOCK_MONOTONIC, &zpd_row_started);
         int added = g_zpd_cases[i].run(keys);
         failures += added;
         ran++;
         printf("[zcode-package-dev-case] shard=%u name=%s ms=%lld "
                "failures=%d\n", g_zpd_cases[i].shard + 1u,
-               g_zpd_cases[i].name, zpd_elapsed_ms(&started), added);
+               g_zpd_cases[i].name, zpd_elapsed_ms(&zpd_row_started),
+               added);
     }
     printf("zcode_package_dev: ran %zu of %zu sub-suites (%s), %d failed\n",
            ran, ZPD_CASE_COUNT,
