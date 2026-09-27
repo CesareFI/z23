@@ -1289,7 +1289,22 @@ different miss, or a PASS, which means the mark is stale) fails the group.
 At 64370952d5 the known-RED reproducers are F7 (a `cleanup()` handler
 inlined into a function that is not seeded) and both F8 shapes (a `.c`
 that `#include`s another `.c`: an edit to the included file does not seed
-the includer's functions). Cases run four at once, each in its own
+the includer's functions). F7_cleanup_same_name repeats F7 while another
+file's same-name static also changes, which a seed matched by bare name
+would have hidden.
+
+Four generator kinds edit only data: `data_string` (a string literal in
+a body, of the same length or longer, so a later literal moves),
+`data_table` (an entry of a file-scope static const table read at a
+runtime index), `data_hconst` (an entry of a header static const table
+that several TUs read) and `data_index` (a header index macro into a
+global array another TU defines). They render a data layer only in their
+own cases, so every other kind's project stays byte-identical for its
+seed, and an unforced draw picks one of them one time in five. The
+reproducers D1 to D6 pin the same shapes plus a header macro that
+initializes a global const and a static const table inside a function.
+
+Cases run four at once, each in its own
 process with two compiles or sensor runs at once. A compile or sensor
 run still going after 120 s, or a case process that has not reported
 after 240 s, is killed with SIGKILL and the case is an ERROR. Every

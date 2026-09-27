@@ -291,11 +291,14 @@ static const char *const k_kinds[] = {
     "macro_cond",    "signature",   "shadow",    "flag",         "comment_ws",
     "header_inline", "enum_value",  "macro_new", "header_const", "counter_c",
     "hasinc",        "multi",
+    /* the data layer: after "multi", so a seed draws its kind as before */
+    "data_string",   "data_table",  "data_hconst", "data_index",
 };
 #define NKINDS (sizeof(k_kinds) / sizeof(k_kinds[0]))
 #define KIND_FLAG 8
 #define KIND_COUNTER_C 14
 #define KIND_MULTI 16
+#define KIND_DATA 17 /* the first data_* kind */
 
 /* One mutation of header k / TU i (both drawn before the kind's own draws). */
 struct mut {
@@ -562,11 +565,71 @@ static void mut_hasinc(struct mut *u)
                    u->k, h->opt_file ? "created" : "deleted", h->opt_inc);
 }
 
-static void (*const k_mut[KIND_MULTI])(struct mut *u) = {
+/* ---- the data layer ------------------------------------------------------------ */
+
+/* Its starting values, drawn only for a data_* kind so every other kind's
+ * projects stay byte-identical for a seed. */
+static void gen_data(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->data = true;
+    for (int k = 0; k < m->nh; k++) {
+        m->h[k].idx = ri(g, 0, 3);
+        m->h[k].dtab1 = ri(g, 10, 99);
+    }
+    for (int i = 0; i < m->nt; i++) {
+        m->t[i].str_n = ri(g, 0, 9);
+        m->t[i].str_pad = ri(g, 0, 3);
+        for (int q = 0; q < 4; q++)
+            m->t[i].dt[q] = ri(g, 1, 99);
+    }
+}
+
+/* a string literal in tN_str: the same length, or longer (tN_str2's
+ * literal then moves) */
+static void mut_data_string(struct mut *u)
+{
+    struct sfz_tu *t = &u->m->t[u->i];
+    if (rp(u->g, 50)) {
+        t->str_n = (t->str_n + ri(u->g, 1, 8)) % 10;
+        (void)snprintf(u->detail, u->cap, "src/t%d.c t%d_str literal digit", u->i,
+                       u->i);
+        return;
+    }
+    t->str_pad += ri(u->g, 1, 3);
+    (void)snprintf(u->detail, u->cap, "src/t%d.c t%d_str literal grows to pad %d",
+                   u->i, u->i, t->str_pad);
+}
+
+static void mut_data_table(struct mut *u)
+{
+    struct sfz_tu *t = &u->m->t[u->i];
+    int q = ri(u->g, 0, 3);
+    t->dt[q] += ri(u->g, 1, 3);
+    (void)snprintf(u->detail, u->cap, "src/t%d.c t%d_dt[%d] -> %d", u->i, u->i,
+                   q, t->dt[q]);
+}
+
+static void mut_data_hconst(struct mut *u)
+{
+    struct sfz_hdr *h = &u->m->h[u->k];
+    h->dtab1 += ri(u->g, 1, 3);
+    (void)snprintf(u->detail, u->cap, "h%d_dtab[1] -> %d", u->k, h->dtab1);
+}
+
+static void mut_data_index(struct mut *u)
+{
+    struct sfz_hdr *h = &u->m->h[u->k];
+    h->idx = (h->idx + ri(u->g, 1, 3)) % 4;
+    (void)snprintf(u->detail, u->cap, "H%d_IDX -> %d", u->k, h->idx);
+}
+
+static void (*const k_mut[NKINDS])(struct mut *u) = {
     mut_body_static,   mut_body_extern, mut_typedef,     mut_layout,
     mut_macro_value,   mut_macro_cond,  mut_signature,   mut_shadow,
     mut_flag,          mut_comment_ws,  mut_header_inline, mut_enum_value,
     mut_macro_new,     mut_header_const, mut_counter_c,  mut_hasinc,
+    [KIND_DATA] = mut_data_string, mut_data_table, mut_data_hconst,
+    mut_data_index,
 };
 
 static void mutate(struct sfz_gen *g, struct sfz_model *m, int kind,
@@ -595,13 +658,18 @@ static void mutate_multi(struct sfz_gen *g, struct sfz_model *m, char *detail,
     }
 }
 
+/* The kind: drawn over the kinds before the data layer exactly as before
+ * it existed, so a forced kind leaves the draws that follow unchanged; an
+ * unforced draw then takes a data_* kind one time in five. */
 static int pick_kind(struct sfz_gen *g, const char *want)
 {
     int kind;
     do
-        kind = ri(g, 0, (int)NKINDS - 1);
+        kind = ri(g, 0, KIND_DATA - 1);
     while ((g->noflag && kind == KIND_FLAG) ||
            (g->noctr && kind == KIND_COUNTER_C));
+    if (want == NULL && rp(g, 20))
+        kind = ri(g, KIND_DATA, (int)NKINDS - 1);
     for (size_t q = 0; want != NULL && q < NKINDS; q++)
         if (strcmp(want, k_kinds[q]) == 0)
             kind = (int)q;
@@ -637,6 +705,8 @@ bool sfz_generate(uint64_t seed, unsigned profile, const char *kind_name,
     if (ok) {
         gen_model(&g, m);
         kind = pick_kind(&g, kind_name);
+        if (kind >= KIND_DATA)
+            gen_data(&g, m);
         (void)snprintf(path, sizeof(path), "%s/before", dir);
         ok = render(m, path);
     }

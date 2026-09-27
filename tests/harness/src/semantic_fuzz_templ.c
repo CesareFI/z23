@@ -106,6 +106,41 @@ static void hdr_tail(const struct sfz_model *m, int k, const struct sfz_hdr *h,
            h->sa_min, k);
 }
 
+/* ---- the data layer (the data_* kinds) --------------------------------------- */
+
+/* An index macro, a static const table read at a runtime index, and a
+ * global array its owner defines. */
+static void hdr_data(int k, const struct sfz_hdr *h, struct sfz_buf *b)
+{
+    sfz_bp(b, "#define H%d_IDX %d\n", k, h->idx);
+    sfz_bp(b, "static const int h%d_dtab[4] = {1, %d, 3, 4};\n", k, h->dtab1);
+    sfz_bp(b, "extern int h%d_garr[4];\n", k);
+}
+
+/* Two string literals (the second moves when the first grows), a static
+ * const table, and a reader of its first header's data. */
+static void tu_data(const struct sfz_model *m, int i, struct sfz_buf *b)
+{
+    const struct sfz_tu *t = &m->t[i];
+    int k = -1;
+    sfz_bp(b, "const char *t%d_str(void)\n{\n    return \"s%d-%d%.*s\";\n}\n",
+           i, i, t->str_n, t->str_pad, "xxxxxxxxxxxxxxxx");
+    sfz_bp(b, "const char *t%d_str2(void)\n{\n    return \"tail%d\";\n}\n", i, i);
+    sfz_bp(b, "static const int t%d_dt[4] = {%d, %d, %d, %d};\n"
+              "int t%d_dtab(int x)\n{\n    return t%d_dt[x & 3];\n}\n",
+           i, t->dt[0], t->dt[1], t->dt[2], t->dt[3], i, i);
+    for (int q = 0; k < 0 && q < m->nh; q++)
+        k = t->inc[q] ? q : -1;
+    if (k >= 0)
+        sfz_bp(b, "int t%d_hd(int x)\n{\n    return h%d_dtab[x & 3] + "
+                  "h%d_garr[H%d_IDX];\n}\n",
+               i, k, k, k);
+    for (int q = 0; q < m->nh; q++)
+        if (m->h[q].owner == i)
+            sfz_bp(b, "int h%d_garr[4] = {5, 6, 7, 8};\n", q);
+    sfz_bp(b, "\n");
+}
+
 void sfz_render_header(const struct sfz_model *m, int k, const struct sfz_hdr *h,
                        struct sfz_buf *b)
 {
@@ -118,6 +153,8 @@ void sfz_render_header(const struct sfz_model *m, int k, const struct sfz_hdr *h
     hdr_types(k, h, b);
     hdr_inlines(k, h, b);
     hdr_tail(m, k, h, b);
+    if (m->data)
+        hdr_data(k, h, b);
     sfz_bp(b, "#endif\n");
 }
 
@@ -506,4 +543,6 @@ void sfz_render_tu(const struct sfz_model *m, int i, struct sfz_buf *b)
             templ(m, i, j, b);
     /* each header this TU owns: its function and variable definitions */
     tu_owned(m, i, b);
+    if (m->data)
+        tu_data(m, i, b);
 }

@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: The semantic-facts fuzzer's fixed reproducers: each minimized project pair a differential run found (F<n>) or that pins a shape the consumer must keep planning safely (pass_*). */
+ * purpose: The semantic-facts fuzzer's fixed reproducers: each minimized project pair a differential run found (F<n>) or that pins a shape the consumer must keep planning safely (pass_*, and D<n> for edits that change only data a function addresses or an object defines). */
 #include "test/semantic_fuzz.h"
 
 #include "base/log_macros.h"
@@ -574,6 +574,183 @@ static const struct sfz_file k_pass_undefbody[] = {
          "}\n"},
 };
 
+/* The data shapes: each edit changes only data a function addresses
+ * through a relocation, or data the object defines. */
+
+static const struct sfz_file k_d1_string_literal[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "const char *t0_name(void);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "const char *t0_name(void)\n"
+         "{\n"
+         "    return \"alpha\";\n"
+         "}\n"
+         "const char *t0_tail(void)\n"
+         "{\n"
+         "    return \"omega\";\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "const char *t0_name(void)\n"
+         "{\n"
+         "    return \"alphabet\";\n"
+         "}\n"
+         "const char *t0_tail(void)\n"
+         "{\n"
+         "    return \"omega\";\n"
+         "}\n"},
+};
+
+static const struct sfz_file k_d2_static_const_table[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t0_pick(int i);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "static const int t0_tab[4] = {3, 5, 7, 9};\n"
+         "int t0_pick(int i)\n"
+         "{\n"
+         "    return t0_tab[i & 3];\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "static const int t0_tab[4] = {3, 5, 8, 9};\n"
+         "int t0_pick(int i)\n"
+         "{\n"
+         "    return t0_tab[i & 3];\n"
+         "}\n"},
+};
+
+static const struct sfz_file k_d3_header_const_table[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "static const int h_ctab[3] = {10, 20, 30};\n"
+         "int t0_get(int i);\n"
+         "#endif\n",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "static const int h_ctab[3] = {10, 21, 30};\n"
+         "int t0_get(int i);\n"
+         "#endif\n"},
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "int t0_get(int i)\n"
+         "{\n"
+         "    return h_ctab[i % 3];\n"
+         "}\n",
+         SFZ_SAME},
+    {"src/t1.c",
+         "#include \"h.h\"\n"
+         "int t1_get(int i)\n"
+         "{\n"
+         "    return t0_get(i) + h_ctab[i & 1];\n"
+         "}\n",
+         SFZ_SAME},
+};
+
+static const struct sfz_file k_d4_header_index_macro[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "#define H_IDX 1\n"
+         "extern int h_arr[4];\n"
+         "#endif\n",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "#define H_IDX 2\n"
+         "extern int h_arr[4];\n"
+         "#endif\n"},
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "int h_arr[4] = {2, 4, 6, 8};\n",
+         SFZ_SAME},
+    {"src/t1.c",
+         "#include \"h.h\"\n"
+         "int t1_at(void)\n"
+         "{\n"
+         "    return h_arr[H_IDX];\n"
+         "}\n",
+         SFZ_SAME},
+};
+
+static const struct sfz_file k_d5_extern_const_init[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "#define H_LIMIT 40\n"
+         "extern const int h_limit;\n"
+         "#endif\n",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "#define H_LIMIT 41\n"
+         "extern const int h_limit;\n"
+         "#endif\n"},
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "const int h_limit = H_LIMIT;\n",
+         SFZ_SAME},
+    {"src/t1.c",
+         "#include \"h.h\"\n"
+         "int t1_lim(void)\n"
+         "{\n"
+         "    return h_limit + 1;\n"
+         "}\n",
+         SFZ_SAME},
+};
+
+static const struct sfz_file k_d6_function_static_table[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t0_pick(int i);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "int t0_pick(int i)\n"
+         "{\n"
+         "    static const int tab[4] = {3, 5, 7, 9};\n"
+         "    return tab[i & 3];\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "int t0_pick(int i)\n"
+         "{\n"
+         "    static const int tab[4] = {3, 5, 8, 9};\n"
+         "    return tab[i & 3];\n"
+         "}\n"},
+};
+
 #define SFZ_FILES(a) a, sizeof(a) / sizeof((a)[0])
 
 const struct sfz_repro k_sfz_repros[] = {
@@ -642,6 +819,25 @@ const struct sfz_repro k_sfz_repros[] = {
      SFZ_FILES(k_pass_undef), NULL},
     {"pass_undefbody", "body_extern", "#undef inside t0_f changes #ifdef in t0_g",
      false, NULL, SFZ_FILES(k_pass_undefbody), NULL},
+    {"D1_string_literal", "data_string",
+     "t0_name returns a longer literal; t0_tail's literal moves in the "
+     "merged string section",
+     false, NULL, SFZ_FILES(k_d1_string_literal), NULL},
+    {"D2_static_const_table", "data_table",
+     "one entry of a file-scope static const table that t0_pick indexes",
+     false, NULL, SFZ_FILES(k_d2_static_const_table), NULL},
+    {"D3_header_const_table", "data_hconst",
+     "one entry of a header static const table that t0 and t1 index",
+     false, NULL, SFZ_FILES(k_d3_header_const_table), NULL},
+    {"D4_header_index_macro", "data_index",
+     "H_IDX 1->2 moves t1_at's read of the global array t0 defines", false,
+     NULL, SFZ_FILES(k_d4_header_index_macro), NULL},
+    {"D5_extern_const_init", "header_const",
+     "H_LIMIT 40->41 initializes the global const t0 defines, which t1 reads",
+     false, NULL, SFZ_FILES(k_d5_extern_const_init), NULL},
+    {"D6_function_static_table", "data_table",
+     "one entry of a static const table inside t0_pick", false, NULL,
+     SFZ_FILES(k_d6_function_static_table), NULL},
 };
 const size_t k_sfz_nrepros = sizeof(k_sfz_repros) / sizeof(k_sfz_repros[0]);
 

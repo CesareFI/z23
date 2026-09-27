@@ -50,8 +50,9 @@ struct sfz_file {
 };
 
 struct sfz_repro {
-    const char *name;   /* F<n>_... a false negative found and fixed, or
-                           pass_... a shape that must keep passing */
+    const char *name;   /* F<n>_... a false negative found (fixed, or
+                           known-RED), pass_... or D<n>_... (a data
+                           edit) a shape that must keep passing */
     const char *kind, *detail;
     bool gcc_deps;      /* the depfiles come from gcc, as the dev compile's */
     const char *known_red; /* non-NULL: expected to fail until this lands */

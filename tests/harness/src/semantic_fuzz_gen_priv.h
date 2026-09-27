@@ -53,6 +53,9 @@ struct sfz_hdr {
     int opt_file;           /* inc1/h{k}_opt.h exists (a __has_include probe) */
     int opt_inc;            /* ...and the header includes it when present */
     int K;                  /* constexpr h{k}_K */
+    /* the data layer (rendered only for the data_* kinds) */
+    int idx;                /* H{k}_IDX, an index into h{k}_garr */
+    int dtab1;              /* h{k}_dtab[1], a header static const table */
 };
 
 struct sfz_tu {
@@ -68,6 +71,9 @@ struct sfz_tu {
                                head, 5 blank line inside a body */
     int comment_t;          /* template the comment targets */
     int ctr_j;              /* template whose body gains a __COUNTER__ (-1 none) */
+    /* the data layer (rendered only for the data_* kinds) */
+    int str_n, str_pad;     /* tN_str: "sN-<str_n>" then str_pad x characters */
+    int dt[4];              /* the static const table tN_dt */
 };
 
 struct sfz_model {
@@ -80,6 +86,7 @@ struct sfz_model {
     int shadow_variant;     /* 0 identical, 1 A+1, 2 inline body change */
     int util_owner;
     bool noctr, noline;     /* the profile drops __COUNTER__ / __LINE__ */
+    bool data;              /* render the data layer */
 };
 
 enum {
