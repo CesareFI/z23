@@ -7132,6 +7132,14 @@ static int test_cold_epoch_integrity_gate(void)
         pid_t child = fork();
         ASSERT(child >= 0);
         if (child == 0) {
+            /* The cold probe can outlive the runner's silence bound. Give its
+             * real phases a path to this group while retaining the full log. */
+            int progress_fd = dup(STDOUT_FILENO);
+            char progress_text[24];
+            if (progress_fd < 0 ||
+                snprintf(progress_text, sizeof(progress_text), "%d", progress_fd) <= 0 ||
+                setenv("EPOCH_SELFTEST_PROGRESS_FD", progress_text, 1) != 0)
+                _exit(127);
             execlp("bash", "bash", "-c",
                    "set -eu\n"
                    "origin=\"$(pwd -P)\"\n"
