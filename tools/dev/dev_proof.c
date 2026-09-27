@@ -6696,9 +6696,14 @@ static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
     if (!zcl_devloop_plan_add_closure(w->paths->root, files, file_count,
                                       &w->plan) ||
         !zcl_devloop_plan_proof_admissible(&w->plan, &admission_reason)) {
+        /* The failure record carries the refusal's evidence too, e.g.
+         * "closure-truncated: prereq_not_regular build/x.d -> gone.h". */
+        char refusal[256] = "";
+        if (admission_reason && admission_reason[0])
+            (void)zcl_devloop_plan_refusal_text(&w->plan, refusal,
+                                                sizeof refusal);
         proof_why(why, why_len,
-                  admission_reason && admission_reason[0]
-                      ? admission_reason : "impact_plan_incomplete");
+                  refusal[0] ? refusal : "impact_plan_incomplete");
         return false;
     }
     proof_phase_mark(w->phases, "impact_plan_closure");

@@ -181,10 +181,13 @@ static bool store_include_narrow_meta(struct ci_store *store)
 {
     uint8_t edges[32];
     const char *bit = ci_deps_include_narrow_unsafe() ? "1" : "0";
+    const char *cause = ci_deps_include_narrow_cause();
     return ci_deps_include_edge_root(edges) &&
            ci_store_meta_set(store, "include_edge_root_sha3", edges,
                              sizeof edges) &&
-           ci_store_meta_set(store, "include_narrow_unsafe", bit, 1);
+           ci_store_meta_set(store, "include_narrow_unsafe", bit, 1) &&
+           ci_store_meta_set(store, "include_narrow_cause", cause,
+                             strlen(cause));
 }
 
 static bool write_cold_receipt_and_counts(struct ci_store *store,

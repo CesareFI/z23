@@ -706,19 +706,27 @@ static enum codeindex_include_dim filled_include_dim(bool refused)
                    : CODEINDEX_INCLUDE_DIM_COMPLETE;
 }
 
-static bool include_narrow_refused(const struct codeindex *ci)
+/* NULL when narrow include answers are trusted. Otherwise why they are not:
+ * a label when the stored bit itself cannot be read, or "" when the bit is set
+ * and the stored cause names the depfile rule behind it. */
+static const char *include_narrow_refusal(const struct codeindex *ci)
 {
     char bit[4];
     size_t len = 0;
     bool found = false;
     if (!ci || !ci->store)
-        return true;
+        return "no_index_store";
     if (!ci_store_meta_get(ci->store, "include_narrow_unsafe", bit, sizeof bit,
                            &len, &found))
-        return true;
+        return "include_meta_unreadable";
     if (!found || len != 1)
-        return true;
-    return bit[0] == '1';
+        return "include_meta_missing";
+    return bit[0] == '1' ? "" : NULL;
+}
+
+static bool include_narrow_refused(const struct codeindex *ci)
+{
+    return include_narrow_refusal(ci) != NULL;
 }
 
 const char *codeindex_include_dim_label(enum codeindex_include_dim dim)
@@ -731,12 +739,34 @@ const char *codeindex_include_dim_label(enum codeindex_include_dim dim)
     return "unknown";
 }
 
+/* A set bit with no stored cause (or an unreadable one) still refuses; it
+ * just cannot say why. */
+static const char *include_stored_cause(const struct codeindex *ci,
+                                        char *buf, size_t cap)
+{
+    size_t len = 0;
+    bool found = false;
+    if (!ci_store_meta_get(ci->store, "include_narrow_cause", buf, cap - 1,
+                           &len, &found) ||
+        !found || len == 0 || len >= cap)
+        return "unrecorded";
+    buf[len] = '\0';
+    return buf;
+}
+
 bool codeindex_include_unsafe_cause(struct codeindex *ci, char *out,
                                     size_t cap)
 {
-    (void)ci;
     if (out && cap) out[0] = '\0';
-    return false;
+    const char *refusal = include_narrow_refusal(ci);
+    if (!refusal)
+        return false;
+    char stored[CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX];
+    if (!refusal[0])
+        refusal = include_stored_cause(ci, stored, sizeof stored);
+    if (out && cap)
+        (void)snprintf(out, cap, "%s", refusal);
+    return true;
 }
 
 int codeindex_reverse_includes(struct codeindex *ci, const char *path,

@@ -48,8 +48,10 @@
  * replace only its own derived rows without weakening that logical seal.
  * "ret3" invalidates generations seeded across different depfile graphs.
  * "ret4" keeps a depfile prerequisite the checkout no longer holds; a ret3
- * generation dropped that edge while its depfile bytes were unchanged. */
-#define CI_SCHEMA_VERSION "ret4"
+ * generation dropped that edge while its depfile bytes were unchanged.
+ * "ret5" stores include_narrow_cause beside include_narrow_unsafe, so a
+ * refused narrow include answer names the rule and file behind it. */
+#define CI_SCHEMA_VERSION "ret5"
 #define CI_STORE_FORMAT "zcl.codeindex.store.v5"
 #define CI_RETRIEVAL_PROJECTION_META "retrieval_projection_root_sha3"
 
@@ -398,6 +400,9 @@ bool ci_deps_scan(const char *root, ci_dep_cb cb, void *user,
 /* True after the latest deps scan saw a depfile that must not be answered
  * as a complete narrow include closure. */
 bool ci_deps_include_narrow_unsafe(void);
+/* The first rule that set that bit and the file it fired on, "" when the bit
+ * is clear. Stored beside the bit as meta "include_narrow_cause". */
+const char *ci_deps_include_narrow_cause(void);
 bool ci_deps_scan_roots(const char *root, ci_dep_cb cb, void *user,
                         uint8_t exact_out[32], uint8_t stat_out[32]);
 /* Metadata cache key for ci_deps_scan's exact root. Both functions read the

@@ -420,7 +420,21 @@ size_t zcl_devloop_plan_refusal_text(const struct zcl_devloop_plan *plan,
     const char *reason = "";
     if (zcl_devloop_plan_proof_admissible(plan, &reason))
         return 0;
-    int n = snprintf(out, cap, "%s", reason);
+    /* The cause belongs to the refusal only when the first refusing
+     * dimension is the one zcl_devloop_plan_proof_admissible() named. */
+    const char *cause = "";
+    for (int d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++) {
+        enum zcl_devloop_dim_status st = plan->dims[d].status;
+        if (st == ZCL_DEVLOOP_DIM_COMPLETE ||
+            st == ZCL_DEVLOOP_DIM_NOT_APPLICABLE)
+            continue;
+        if (plan->dims[d].reason && strcmp(plan->dims[d].reason, reason) == 0)
+            cause = plan->dims[d].cause;
+        break;
+    }
+    size_t limit = cap < 256 ? cap : 256;
+    int n = cause[0] ? snprintf(out, limit, "%s: %s", reason, cause)
+                     : snprintf(out, limit, "%s", reason);
     return n > 0 ? strlen(out) : 0;
 }
 
@@ -742,6 +756,21 @@ static int plan_include_capacity_only(struct codeindex *ci, const char *path,
     return wide_dim == CODEINDEX_INCLUDE_DIM_COMPLETE && n > plan_cap;
 }
 
+/* The evidence behind an INCLUDE refusal. An untrusted graph names the first
+ * depfile rule that made it unsafe and the file it fired on; the index holds
+ * one such cause, so the first recorded one stands. A graph that is trusted
+ * but still truncated at the index maximum names that instead. */
+static void plan_include_note_cause(struct zcl_devloop_plan *plan,
+                                    struct codeindex *ci, const char *path)
+{
+    struct zcl_devloop_dim_state *st = &plan->dims[ZCL_DEVLOOP_DIM_INCLUDE];
+    if (st->cause[0])
+        return;
+    if (!codeindex_include_unsafe_cause(ci, st->cause, sizeof st->cause))
+        (void)snprintf(st->cause, sizeof st->cause,
+                       "dependents_exceed_index_cap %s", path);
+}
+
 /* Fold one changed file's reverse-include verdict into the INCLUDE dimension.
  * A capacity bound widens to the universal closure exactly as the SEMANTIC
  * bound does; an unavailable or untrusted graph keeps refusing. Returns false
@@ -767,12 +796,14 @@ static bool plan_include_verdict(struct zcl_devloop_plan *plan,
                      ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
         return false;
     }
-    if (capacity > 0)
+    if (capacity > 0) {
         plan_go_universal(plan, ZCL_DEVLOOP_DIM_INCLUDE);
-    else
+    } else {
         plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
                      ZCL_DEVLOOP_DIM_INCOMPLETE,
                      codeindex_include_dim_label(idim));
+        plan_include_note_cause(plan, ci, path);
+    }
     return true;
 }
 
@@ -802,9 +833,11 @@ static bool plan_add_closure(const char *repo_root,
     plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].status =
         ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
     plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].reason = "";
+    plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].cause[0] = '\0';
     plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].status =
         ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
     plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].reason = "";
+    plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].cause[0] = '\0';
     if (file_count == 0) {
         plan->closure_truncated = false;
         return true;
@@ -1017,8 +1050,9 @@ static bool append_json_string(char *out, size_t out_sz, size_t *pos,
 /* Bytes held back while rendering the (droppable) selection ledger so the
  * per-dimension completeness verdict and the document tail always fit. The
  * verdict is what a proof consumer reads; it must never be the thing that
- * falls off the end. */
-#define PLAN_TAIL_RESERVE 1536
+ * falls off the end. The second term is room for the dimension rows' "cause"
+ * fields: one full cause plus the empty ones. */
+#define PLAN_TAIL_RESERVE (1536 + ZCL_DEVLOOP_CAUSE_MAX + 64)
 #define PLAN_GROUPS_LIST_MAX 48
 #define PLAN_FILES_LIST_MAX 16
 
@@ -1181,6 +1215,25 @@ static const char *plan_first_non_live_path(const struct zcl_devloop_plan *plan,
     return files[0];
 }
 
+/* One per-dimension completeness row: its verdict, the stable reason, and
+ * the evidence behind that reason ("" when there is none). */
+static bool append_dimension_row(char *out, size_t out_sz, size_t *pos,
+                                 enum zcl_devloop_dim dim,
+                                 const struct zcl_devloop_dim_state *st)
+{
+    return appendf(out, out_sz, pos, "{\"name\":") &&
+           append_json_string(out, out_sz, pos, zcl_devloop_dim_name(dim)) &&
+           appendf(out, out_sz, pos, ",\"status\":") &&
+           append_json_string(out, out_sz, pos,
+                              zcl_devloop_dim_status_name(st->status)) &&
+           appendf(out, out_sz, pos, ",\"reason\":") &&
+           append_json_string(out, out_sz, pos,
+                              st->reason ? st->reason : "") &&
+           appendf(out, out_sz, pos, ",\"cause\":") &&
+           append_json_string(out, out_sz, pos, st->cause) &&
+           appendf(out, out_sz, pos, "}");
+}
+
 /* Shared serializer for a fully-computed plan. When `include_closure` is set,
  * the closure_groups + closure_truncated fields are emitted too; path_groups is
  * always emitted (additive; existing readers ignore unknown keys). */
@@ -1300,19 +1353,10 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
         /* C5: and what might be MISSING — one row per dimension, each naming
          * its own completeness and the reason it is not complete. */
         for (int d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++) {
-            const struct zcl_devloop_dim_state *st = &plan->dims[d];
             if ((d && !appendf(out, out_sz, &pos, ",")) ||
-                !appendf(out, out_sz, &pos, "{\"name\":") ||
-                !append_json_string(out, out_sz, &pos,
-                                    zcl_devloop_dim_name(
-                                        (enum zcl_devloop_dim)d)) ||
-                !appendf(out, out_sz, &pos, ",\"status\":") ||
-                !append_json_string(out, out_sz, &pos,
-                                    zcl_devloop_dim_status_name(st->status)) ||
-                !appendf(out, out_sz, &pos, ",\"reason\":") ||
-                !append_json_string(out, out_sz, &pos,
-                                    st->reason ? st->reason : "") ||
-                !appendf(out, out_sz, &pos, "}"))
+                !append_dimension_row(out, out_sz, &pos,
+                                      (enum zcl_devloop_dim)d,
+                                      &plan->dims[d]))
                 return 0;
         }
         /* C4: the one field a caller that needs PROOF must read. False means

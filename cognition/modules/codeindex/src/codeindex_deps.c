@@ -154,16 +154,39 @@ static bool rel_is_regular_file(const char *root, const char *rel)
 }
 
 /* Set when a scanned depfile cannot support a complete narrow include answer.
- * Reset at the start of each deps scan. The build stores the bit. */
+ * Reset at the start of each deps scan. The build stores the bit, and beside
+ * it the FIRST rule that set it and the file that rule fired on: the scan
+ * order is sorted, so that first cause is deterministic, and it is what a
+ * closure-truncated refusal reports as its evidence. */
 static int g_include_narrow_unsafe;
+static char g_include_narrow_cause[CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX];
+/* The depfile whose text is being checked, named in every cause. */
+static const char *g_scan_depfile = "";
 
 bool ci_deps_include_narrow_unsafe(void)
 {
     return g_include_narrow_unsafe != 0;
 }
 
-static void note_include_narrow_unsafe(void)
+const char *ci_deps_include_narrow_cause(void)
 {
+    return g_include_narrow_cause;
+}
+
+/* `rule` is a short stable tag; `path` is the repo-relative file it fired
+ * on, or NULL when the depfile itself is the evidence. */
+static void note_include_narrow_unsafe(const char *rule, const char *path)
+{
+    if (!g_include_narrow_unsafe) {
+        if (path && path[0])
+            (void)snprintf(g_include_narrow_cause,
+                           sizeof g_include_narrow_cause, "%s %s -> %s", rule,
+                           g_scan_depfile, path);
+        else
+            (void)snprintf(g_include_narrow_cause,
+                           sizeof g_include_narrow_cause, "%s %s", rule,
+                           g_scan_depfile);
+    }
     g_include_narrow_unsafe = 1;
 }
 
@@ -213,7 +236,7 @@ static bool dep_prerequisite_kept(const char *root, const char *rel)
 {
     if (rel_is_regular_file(root, rel))
         return true;
-    note_include_narrow_unsafe();
+    note_include_narrow_unsafe("prereq_not_regular", rel);
     return true;
 }
 
@@ -480,7 +503,7 @@ static void note_depfile_incomplete(const char *text, size_t len)
     if (len == 0)
         return;
     if (text[len - 1] != '\n' || (len >= 2 && text[len - 2] == '\\'))
-        note_include_narrow_unsafe();
+        note_include_narrow_unsafe("depfile_incomplete", NULL);
 }
 
 static bool dep_text_lists(const char *text, const char *token)
@@ -555,7 +578,7 @@ static void text_include_candidate(struct text_includes *t,
         return;
     if (t->added.count >= CI_TEXT_INCLUDE_FILES ||
         !dep_paths_push(&t->added, rel)) {
-        note_include_narrow_unsafe();
+        note_include_narrow_unsafe("text_include_cap", t->unit);
         return;
     }
     dep_emit_edge(t->unit, rel, t->cb, t->user);
@@ -605,7 +628,7 @@ static void text_scan_file(struct text_includes *t, const char *from)
     int n = snprintf(path, sizeof path, "%s/%s", t->root, from);
     FILE *file = n > 0 && (size_t)n < sizeof path ? fopen(path, "r") : NULL;
     if (!file) {
-        note_include_narrow_unsafe();
+        note_include_narrow_unsafe("scan_unreadable", from);
         return;
     }
     char line[1024];
@@ -657,7 +680,7 @@ static void note_source_newer_than_depfile(
     struct stat st;
     int n = snprintf(path, sizeof path, "%s/%s", root, src);
     if (n <= 0 || (size_t)n >= sizeof path || stat(path, &st) != 0) {
-        note_include_narrow_unsafe();
+        note_include_narrow_unsafe("prereq_unstatable", src);
         return;
     }
 #if defined(_WIN32)
@@ -669,7 +692,7 @@ static void note_source_newer_than_depfile(
 #endif
     if (sec > dep->modified_seconds ||
         (sec == dep->modified_seconds && nsec > dep->modified_nanoseconds))
-        note_include_narrow_unsafe();
+        note_include_narrow_unsafe("prereq_newer_than_depfile", src);
 }
 
 static bool dep_take_token(const char *text, size_t len, size_t *io,
@@ -733,7 +756,7 @@ static void note_depfile_rule_gaps(
             note_unit_text_includes(root, token, text, cb, user);
         }
         if (!rel_is_regular_file(root, token))
-            note_include_narrow_unsafe();
+            note_include_narrow_unsafe("prereq_not_regular", token);
         else
             note_source_newer_than_depfile(root, token, dep);
     }
@@ -801,8 +824,10 @@ static bool scan_one_depfile(const char *root, const char *relpath,
     sha3_256_write(sha, (const unsigned char *)buf, len);
     ci_test_note_exact_bytes((uint64_t)len);
     if (stat_sha) dep_stat_root_add(stat_sha, relpath, &after);
+    g_scan_depfile = relpath;
     note_depfile_narrow_safety(root, buf, len, &after, cb, user);
     parse_depfile(root, buf, len, cb, user);
+    g_scan_depfile = "";
     free(buf);
     return true;
 }
@@ -811,6 +836,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
                             uint8_t exact_out[32], uint8_t stat_out[32])
 {
     g_include_narrow_unsafe = 0;
+    g_include_narrow_cause[0] = '\0';
     dep_edge_root_begin();
     if (!root || !exact_out)
         LOG_FAIL("codeindex", "null arg to deps_scan");

@@ -183,7 +183,13 @@ static bool incremental_refresh_include_narrow(const char *root,
                         memcmp(stored, edges, sizeof edges) == 0;
     const char *bit =
         (!rows_current || ci_deps_include_narrow_unsafe()) ? "1" : "0";
-    return ci_store_meta_set(store, "include_narrow_unsafe", bit, 1);
+    /* The depfile rule is the more specific evidence when both hold. */
+    const char *cause = ci_deps_include_narrow_unsafe()
+        ? ci_deps_include_narrow_cause()
+        : (!rows_current ? "include_rows_stale" : "");
+    return ci_store_meta_set(store, "include_narrow_unsafe", bit, 1) &&
+           ci_store_meta_set(store, "include_narrow_cause", cause,
+                             strlen(cause));
 }
 
 static bool incremental_stamp_projection_and_counts(const char *root,
