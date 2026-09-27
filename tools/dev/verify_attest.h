@@ -47,6 +47,7 @@
 /* Trust-root refusals. */
 #define ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY "no_verifier_key"
 #define ZCL_VERIFY_ATTEST_WHY_KEY_PATH_NOT_ABSOLUTE "verifier_key_path_not_absolute"
+#define ZCL_VERIFY_ATTEST_WHY_KEY_PATH_NOT_CANONICAL "verifier_key_path_not_canonical"
 #define ZCL_VERIFY_ATTEST_WHY_KEY_UNREADABLE "verifier_key_unreadable"
 #define ZCL_VERIFY_ATTEST_WHY_KEY_NOT_REGULAR "verifier_key_not_regular_file"
 #define ZCL_VERIFY_ATTEST_WHY_KEY_NOT_ROOT_OWNED "verifier_key_not_root_owned"
@@ -59,6 +60,7 @@
 #define ZCL_VERIFY_ATTEST_WHY_BOX_KEY_UNKNOWN "box_signer_key_unknown"
 #define ZCL_VERIFY_ATTEST_WHY_PLATFORM "verifier_key_platform_unsupported"
 #define ZCL_VERIFY_ATTEST_WHY_ARGUMENTS "verify_attest_arguments_invalid"
+#define ZCL_VERIFY_ATTEST_WHY_NO_MEMORY "verify_attest_out_of_memory"
 
 /* Record refusals. */
 #define ZCL_VERIFY_ATTEST_WHY_SCHEMA_UNKNOWN "attest_schema_unknown"

@@ -234,12 +234,14 @@ static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
 }
 
 /* Pinned SHA3-256 of the hand-built body above and of the store key for
- * (VA_TOOLCHAIN, VA_ARGV, pp=0x01..). Recomputing either is a format
- * change and needs a new schema string. */
+ * (VA_TOOLCHAIN, VA_ARGV, pp=0x01..). The store key is SHA3-256 over
+ * "zcl.verify_attest.store.v1\0", then each text as u64le length and
+ * bytes, then pp_sha3; it was computed outside the subject. Recomputing
+ * either is a format change and needs a new schema string. */
 #define VA_BODY_SHA3 \
-    "0000000000000000000000000000000000000000000000000000000000000000"
+    "4f587c7eb83e548084deed2806d472936e19d5b3e31063bdfd4a6a417f631828"
 #define VA_STORE_KEY \
-    "0000000000000000000000000000000000000000000000000000000000000000"
+    "1642743adaad642e38b3b61bc4360c847aa2354b3f5cfe630eda7d2bee6ac2e8"
 
 static int test_va_encoding_vector(void)
 {

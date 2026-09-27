@@ -85,6 +85,7 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`palace-design.md`](./palace-design.md) | DESIGN | code-legibility layer: file/group purpose, `code room`, the three P1/P2/P3 lint gates (§3 cited by `test_make_lint_gates.c`) |
 | [`service-result-convergence.md`](./service-result-convergence.md) | LIVE | `struct zcl_result` convergence ratchet inventory + lane plan for `engine/services/`; gate is live, this is the shrinking-floor inventory |
 | [`secure-transport-design.md`](./secure-transport-design.md) | DESIGN | Noise_XX transport protocol contract (implemented, default off) |
+| [`separate-verifier.md`](./separate-verifier.md) | DESIGN | separate-account proof verifier: threat model, root setup and teardown, and slices; slice 1a (signed record, root-pinned key, admission) is `tools/dev/verify_attest.{h,c}` |
 | [`wire-next-wave-specs.md`](./wire-next-wave-specs.md) | DESIGN | next-wave `simnet_wire` lane specs (eclipse/partition, bandwidth/reorder, app-layer flows) |
 | [`session-substrate-probes.md`](./session-substrate-probes.md) | DESIGN | measured rootless-sandboxing capability probes for the multi-user-server program |
 | [`LLM-C23-APP-PLATFORM-CHECKLIST.md`](./LLM-C23-APP-PLATFORM-CHECKLIST.md) | DESIGN | future LLM/App platform execution checklist (Phases 3–5); not the current execution queue, cannot displace the sovereign cure |
