@@ -2,10 +2,12 @@
 #define _POSIX_C_SOURCE 200809L
 #include "blue_payment_live.h"
 #include "ledger_hid.h"
+#include "zcl_tx_prevout.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/hidraw.h>
+#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +17,16 @@
 #include <unistd.h>
 
 typedef struct { int fd; } live_device;
+
+static bool sha256_bytes(const uint8_t *bytes, size_t length,
+    uint8_t digest[32]) {
+    return SHA256(bytes, length, digest) != NULL;
+}
+
+static void free_previous(uint8_t *bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS],
+    size_t count) {
+    for (size_t i = 0; i < count; ++i) free(bytes[i]);
+}
 
 static bool parse_branch(const char *text, uint32_t *branch) {
     if (!text || strlen(text) != 8) return false;
@@ -34,6 +46,18 @@ static bool parse_branch(const char *text, uint32_t *branch) {
     return true;
 }
 
+static bool read_exact(int fd, uint8_t *bytes, size_t length) {
+    size_t position = 0;
+    while (position < length) {
+        ssize_t got = read(fd, bytes + position, length - position);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) return false;
+        position += (size_t)got;
+    }
+    uint8_t extra;
+    return read(fd, &extra, 1) == 0;
+}
+
 static bool read_wire(const char *path, uint8_t **wire, size_t *length) {
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) return false;
@@ -42,15 +66,8 @@ static bool read_wire(const char *path, uint8_t **wire, size_t *length) {
         info.st_size > 0 && info.st_size <= ZCL_TX_STREAM_MAX_BYTES;
     uint8_t *bytes = valid ? malloc((size_t)info.st_size) : NULL;
     if (!bytes) valid = false;
-    size_t position = 0, expected = valid ? (size_t)info.st_size : 0;
-    while (valid && position < expected) {
-        ssize_t got = read(fd, bytes + position, expected - position);
-        if (got < 0 && errno == EINTR) continue;
-        if (got <= 0) valid = false;
-        else position += (size_t)got;
-    }
-    uint8_t extra;
-    if (valid && read(fd, &extra, 1) != 0) valid = false;
+    size_t expected = valid ? (size_t)info.st_size : 0;
+    if (valid) valid = read_exact(fd, bytes, expected);
     if (close(fd) != 0) valid = false;
     if (!valid) { free(bytes); return false; }
     *wire = bytes;
@@ -117,8 +134,9 @@ static bool wait_for_touch(void *context, uint32_t index,
 }
 
 int main(int argc, char **argv) {
-    if (argc != 5 || strcmp(argv[1], "--test") != 0) {
-        fprintf(stderr, "Usage: %s --test /dev/hidrawN BRANCH_ID_HEX UNSIGNED_TX.bin\n",
+    if (argc < 6 || argc > 5 + ZCL_TX_PREFLIGHT_MAX_INPUTS ||
+        strcmp(argv[1], "--test") != 0) {
+        fprintf(stderr, "Usage: %s --test /dev/hidrawN BRANCH_ID_HEX UNSIGNED_TX.bin PREVIOUS_TX.bin...\n",
             argv[0]);
         return 2;
     }
@@ -138,6 +156,29 @@ int main(int argc, char **argv) {
         free(wire);
         return 1;
     }
+    size_t previous_count = (size_t)argc - 5;
+    uint8_t *previous_bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS] = {0};
+    zcl_tx_previous_transaction previous[ZCL_TX_PREFLIGHT_MAX_INPUTS] = {0};
+    bool loaded = true;
+    for (size_t i = 0; i < previous_count; ++i) {
+        if (!read_wire(argv[i + 5], &previous_bytes[i],
+                &previous[i].length)) {
+            loaded = false;
+            break;
+        }
+        previous[i].wire = previous_bytes[i];
+    }
+    zcl_tx_transparent_facts facts;
+    if (!loaded || zcl_tx_transparent_preflight(wire, length,
+            previous, previous_count, sha256_bytes, &facts) < 0) {
+        fputs("Input outpoints do not match the supplied previous transactions.\n",
+              stderr);
+        free_previous(previous_bytes, previous_count);
+        free(plan);
+        free(wire);
+        return 1;
+    }
+    free_previous(previous_bytes, previous_count);
     live_device device = {.fd = open_blue(argv[2])};
     if (device.fd < 0) {
         fputs("The selected interface is not an accessible Ledger Blue.\n",
@@ -146,7 +187,11 @@ int main(int argc, char **argv) {
         free(wire);
         return 1;
     }
-    puts("Read-only test review. This app cannot sign a payment.");
+    printf("Read-only test review: %u hash-bound input(s), %u output(s), "
+           "fee %llu zatoshi. Chain inclusion and UTXO status are unverified.\n",
+           facts.transparent_inputs, facts.transparent_outputs,
+           (unsigned long long)facts.fee_zat);
+    puts("The app cannot sign a payment.");
     fflush(stdout);
     bool valid = blue_payment_live_run(wire, length, plan,
         live_exchange, wait_for_touch, &device);

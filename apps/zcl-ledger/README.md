@@ -62,11 +62,14 @@ build/zcl-ledger/test-blue-payment-review /tmp/zcl-unsigned-fixture.bin
 build/zcl-ledger/zcl-blue-payment-sim 76b809bb /tmp/zcl-unsigned-fixture.bin /tmp/zcl-payment
 ```
 
-`zcl-blue-wallet-review --test /dev/hidrawN BRANCH_ID_HEX UNSIGNED_TX.bin`
-is a read-only physical review driver for an installed compatible Wallet. It
-preflights the entire transaction and stops each third-pass upload exactly at
-the next output. It cannot sign. Version 0.2.2 must pass separate device
-checks before this driver is used on the Blue again.
+`zcl-blue-wallet-review --test /dev/hidrawN BRANCH_ID_HEX UNSIGNED_TX.bin
+PREVIOUS_TX.bin...` is a read-only physical review driver for an installed
+compatible Wallet. Supply one complete previous transaction per input, in
+input order. It verifies every outpoint against those bytes, derives the fee,
+and stops each third-pass upload exactly at the next output. The previous
+transaction bytes do not establish chain inclusion or unspent status. It
+cannot sign. Version 0.2.2 must pass separate device checks before this
+driver is used on the Blue again.
 
 Find accessible Ledger HID interfaces without Ledger Live:
 
