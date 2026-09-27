@@ -19,9 +19,9 @@
  * summary, then as many TU entries as fit, so the whole reply stays inside
  * the dev.change.plan contract budget. A reader pages the rest with
  * "facts_offset". */
-#define FX_FACTS_PAGE 4096u
-#define FX_UNIVERSE_JSON_MAX 512u
-#define FX_ENTRY_MAX 1024u
+#define FX_TUS_PAGE 3584u
+#define FX_GROUPS_PAGE 1536u
+#define FX_ENTRY_MAX (ZCL_DEVLOOP_PATH_MAX * 2u + 1024u)
 #define FX_CONSUMER_SCHEMA "zcl.semantic_consumer.v1"
 
 bool zcl_devloop_facts_read(const char *root, const char *dir, const char *file,
@@ -240,8 +240,8 @@ static void fx_tu_json(const struct zcl_devloop_facts_tu_verdict *t,
     fw_raw(w, "}");
 }
 
-/* "tus":[...]: entries from `offset` while w stays under `limit` bytes;
- * the number listed goes to *listed. */
+/* "tus":[...]: entries from `offset` while w stays under `limit` bytes,
+ * and always the first, so each page advances; *listed counts them. */
 static void fx_tus_json(const struct zcl_devloop_facts_report *r,
                         size_t offset, size_t limit, struct fxw *w,
                         size_t *listed)
@@ -254,8 +254,12 @@ static void fx_tus_json(const struct zcl_devloop_facts_report *r,
     for (size_t k = offset; w->ok && k < r->ntus; k++) {
         struct fxw e = {.out = entry, .cap = FX_ENTRY_MAX, .ok = true};
         fx_tu_json(&r->tus[k], &e);
-        if (!e.ok || w->at + e.at + 2 > limit)
+        if (!e.ok) {
+            w->ok = false; /* an entry that cannot render fails the reply */
             break;
+        }
+        if (*listed > 0 && w->at + e.at + 2 > limit)
+            break; /* the first entry always lists, so paging advances */
         if (*listed > 0)
             fw_raw(w, ",");
         fw_raw(w, entry);
@@ -290,11 +294,20 @@ static void fx_universe_json(const struct zcl_devloop_facts_report *r,
     fw_raw(w, "}");
 }
 
-static void fx_group_json(struct fxw *w, bool first, const char *group,
-                          const char *reason)
+/* One {"group","reason"} while the list stays under FX_GROUPS_PAGE bytes
+ * from `start`; *listed counts those written. The first that does not fit
+ * ends the list, so the listed groups are a prefix. */
+static void fx_group_json(struct fxw *w, size_t start, size_t *listed,
+                          bool *full, const char *group, const char *reason)
 {
-    if (!first)
+    *full = *full ||
+            w->at - start + strlen(group) + strlen(reason ? reason : "") + 32 >
+                FX_GROUPS_PAGE;
+    if (*full)
+        return;
+    if (*listed > 0)
         fw_raw(w, ",");
+    (*listed)++;
     fw_raw(w, "{");
     fw_kstr(w, "group", group);
     fw_kstr(w, "reason", reason);
@@ -302,12 +315,15 @@ static void fx_group_json(struct fxw *w, bool first, const char *group,
 }
 
 /* "obligations":{"reason":S,"plain":N,"plain_universal":B,"facts":N,
- *  "groups":[{"group":S,"reason":S}...]}: every path group, then every
- * closure group with the rule that reached it. */
+ *  "groups":[{"group":S,"reason":S}...],"groups_listed":N}: every path
+ * group, then every closure group with the rule that reached it, as many
+ * as fit FX_GROUPS_PAGE ("facts" is the total). */
 static void fx_obligations_json(const struct zcl_devloop_facts_report *r,
                                 const struct zcl_devloop_plan *p,
                                 struct fxw *w)
 {
+    size_t start, listed = 0;
+    bool full = false;
     fw_key(w, "obligations");
     fw_raw(w, "{");
     fw_kstr(w, "reason", r->obligations_reason);
@@ -316,12 +332,15 @@ static void fx_obligations_json(const struct zcl_devloop_facts_report *r,
     fw_knum(w, "facts", p->path_groups_len + p->closure_groups_len);
     fw_key(w, "groups");
     fw_raw(w, "[");
+    start = w->at;
     for (size_t k = 0; k < p->path_groups_len; k++)
-        fx_group_json(w, k == 0, p->path_groups[k], r->path_reason);
+        fx_group_json(w, start, &listed, &full, p->path_groups[k], r->path_reason);
     for (size_t k = 0; k < p->closure_groups_len; k++)
-        fx_group_json(w, k + p->path_groups_len == 0, p->closure_groups[k],
+        fx_group_json(w, start, &listed, &full, p->closure_groups[k],
                       r->group_reason[k]);
-    fw_raw(w, "]}");
+    fw_raw(w, "]");
+    fw_knum(w, "groups_listed", listed);
+    fw_raw(w, "}");
 }
 
 /* ,"facts":{verdict,"consumer":S,obligations,universe,tus}} closing the
@@ -332,7 +351,7 @@ static bool fx_facts_json(const struct zcl_devloop_facts_verdict *v,
                           const struct zcl_devloop_plan *p, size_t offset,
                           struct fxw *w)
 {
-    size_t start = w->at, listed = 0, mark;
+    size_t listed = 0;
     struct fxw t = {.out = zcl_malloc(w->cap, "facts.tus_json"),
                     .cap = w->cap, .ok = true};
     t.ok = t.out != NULL;
@@ -340,9 +359,8 @@ static bool fx_facts_json(const struct zcl_devloop_facts_verdict *v,
     fx_verdict_json(v, w);
     fw_kstr(w, "consumer", FX_CONSUMER_SCHEMA);
     fx_obligations_json(r, p, w);
-    mark = w->at + FX_UNIVERSE_JSON_MAX;
-    if (mark < start + FX_FACTS_PAGE && offset <= r->ntus)
-        fx_tus_json(r, offset, start + FX_FACTS_PAGE - mark, &t, &listed);
+    if (offset < r->ntus)
+        fx_tus_json(r, offset, FX_TUS_PAGE, &t, &listed);
     else
         fw_raw(&t, ",\"tus\":[]");
     fx_universe_json(r, offset, listed, w);
