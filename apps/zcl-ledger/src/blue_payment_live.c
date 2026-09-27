@@ -122,7 +122,7 @@ bool blue_payment_live_run(const uint8_t *wire, size_t length,
     const blue_payment_live_plan *plan,
     blue_payment_live_exchange exchange,
     blue_payment_live_continue continuation, void *context) {
-    static const uint8_t identity[] = {'Z', 'C', 'L', 10, 7};
+    static const uint8_t identity[] = {'Z', 'C', 'L', 11, 15};
     if (!wire || !plan || !exchange || !continuation ||
         !plan->count || plan->count > BLUE_PAYMENT_REVIEW_MAX_OUTPUTS ||
         length != plan->wire_length) return false;
@@ -153,6 +153,7 @@ bool blue_payment_live_run(const uint8_t *wire, size_t length,
 
 static bool send_previous(zcl_tx_previous_transaction previous,
     uint8_t index, uint8_t total, uint64_t fee_zat,
+    const uint8_t digest[32],
     blue_payment_live_exchange exchange, void *context) {
     if (!previous.wire || !previous.length ||
         previous.length > ZCL_TX_PREVIOUS_STREAM_MAX_BYTES) return false;
@@ -168,8 +169,9 @@ static bool send_previous(zcl_tx_previous_transaction previous,
             return false;
         offset += count;
     }
-    uint8_t expected[11] = {index, total, index == total};
+    uint8_t expected[43] = {index, total, index == total};
     if (index == total) put_u64(expected + 3, fee_zat);
+    memcpy(expected + 11, digest, 32);
     return send_command(exchange, context, 0x28, NULL, 0,
                         expected, sizeof expected);
 }
@@ -177,9 +179,10 @@ static bool send_previous(zcl_tx_previous_transaction previous,
 bool blue_payment_live_run_bound(const uint8_t *wire, size_t length,
     const blue_payment_live_plan *plan,
     const zcl_tx_previous_transaction *previous, size_t previous_count,
-    uint64_t expected_fee_zat, blue_payment_live_exchange exchange,
+    uint64_t expected_fee_zat, const uint8_t (*expected_digests)[32],
+    blue_payment_live_exchange exchange,
     blue_payment_live_continue continuation, void *context) {
-    if (!plan || !previous || !previous_count ||
+    if (!plan || !previous || !expected_digests || !previous_count ||
         previous_count != plan->inputs ||
         previous_count > ZCL_TX_PREFLIGHT_MAX_INPUTS || !exchange ||
         !blue_payment_live_run(wire, length, plan,
@@ -187,6 +190,7 @@ bool blue_payment_live_run_bound(const uint8_t *wire, size_t length,
     for (size_t i = 0; i < previous_count; ++i) {
         if (!send_previous(previous[i], (uint8_t)(i + 1),
                            (uint8_t)previous_count, expected_fee_zat,
+                           expected_digests[i],
                            exchange, context)) {
             (void)send_command(exchange, context, 0x24, NULL, 0, NULL, 0);
             return false;

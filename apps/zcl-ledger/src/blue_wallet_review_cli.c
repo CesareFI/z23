@@ -3,6 +3,8 @@
 #include "blue_payment_live.h"
 #include "ledger_hid.h"
 #include "zcl_tx_prevout.h"
+#include "zcl_zip243_host.h"
+#include "crypto/blake2b.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -172,9 +174,13 @@ int main(int argc, char **argv) {
         previous[i].wire = previous_bytes[i];
     }
     zcl_tx_transparent_facts facts;
-    if (!loaded || zcl_tx_transparent_preflight(wire, length,
-            previous, previous_count, sha256_bytes, &facts) < 0) {
-        fputs("Input outpoints do not match the supplied previous transactions.\n",
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    struct blake2b_ctx blake_context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&blake_context);
+    if (!loaded || zcl_tx_transparent_bound_digests(wire, length,
+            previous, previous_count, branch_id, sha256_bytes, &hasher,
+            &facts, digests, ZCL_TX_PREFLIGHT_MAX_INPUTS) < 0) {
+        fputs("Input outpoints do not match previous transactions or digest calculation failed.\n",
               stderr);
         free_previous(previous_bytes, previous_count);
         free(plan);
@@ -198,6 +204,7 @@ int main(int argc, char **argv) {
     fflush(stdout);
     bool valid = blue_payment_live_run_bound(wire, length, plan,
         previous, previous_count, facts.fee_zat,
+        (const uint8_t (*)[32])digests,
         live_exchange, wait_for_touch, &device);
     close(device.fd);
     free_previous(previous_bytes, previous_count);
@@ -207,6 +214,6 @@ int main(int argc, char **argv) {
         fputs("Blue review stopped; no payment was signed.\n", stderr);
         return 1;
     }
-    puts("Blue verified all supplied previous wires and displayed the fee; NO SIGNING. Tap EXIT on the Blue.");
+    puts("Blue matched every input digest and displayed the fee; NO SIGNING. Tap EXIT on the Blue.");
     return 0;
 }

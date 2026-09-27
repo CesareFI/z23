@@ -371,7 +371,7 @@ add_test(NAME zcl-tx-stream COMMAND test-zcl-tx-stream)
 add_executable(test-blue-payment-review tests/test_blue_payment_review.c)
 target_link_libraries(test-blue-payment-review PRIVATE blue_payment_review
     blue_payment_screen blue_payment_apdu blue_payment_simulate
-    blue_payment_live zcl_zip243
+    blue_payment_live zcl_zip243 zcl_tx_prevout
     zcl_zip243_host_hash OpenSSL::Crypto)
 target_compile_options(test-blue-payment-review PRIVATE -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

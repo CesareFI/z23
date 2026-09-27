@@ -61,6 +61,9 @@ int main(void) {
     const uint8_t retired_v9[7] = {'Z', 'C', 'L', 9, 3, 0x90, 0};
     assert(!blue_wallet_identity_matches(retired_v9,
         sizeof retired_v9));
+    const uint8_t retired_v10[7] = {'Z', 'C', 'L', 10, 7, 0x90, 0};
+    assert(!blue_wallet_identity_matches(retired_v10,
+        sizeof retired_v10));
     assert(!blue_wallet_identity_matches(identity_v8, 6));
     blue_wallet_state state = {0};
     const uint8_t identify[] = {0xa5, 1, 0, 0, 0};

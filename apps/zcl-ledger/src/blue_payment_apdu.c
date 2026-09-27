@@ -14,13 +14,14 @@ static void put_u64(uint8_t bytes[8], uint64_t value) {
 }
 
 static bool capture_input(void *context, uint32_t index,
-    const uint8_t outpoint[36]) {
+    const uint8_t outpoint[36], uint32_t sequence) {
     blue_payment_apdu *state = context;
     if (index != state->input_count ||
         index >= ZCL_TX_STREAM_MAX_INPUTS) return false;
     for (uint32_t i = 0; i < index; ++i)
         if (memcmp(state->outpoints[i], outpoint, 36) == 0) return false;
     memcpy(state->outpoints[index], outpoint, 36);
+    state->sequences[index] = sequence;
     ++state->input_count;
     return true;
 }
@@ -123,11 +124,15 @@ static uint16_t previous_feed(blue_payment_apdu *state,
 static uint16_t previous_finish(blue_payment_apdu *state, uint8_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length) {
     if (!state->previous_active) return 0x6985;
-    if (length || capacity < 11) return 0x6700;
+    if (length || capacity < 43) return 0x6700;
     zcl_tx_previous_p2pkh output;
     const uint8_t *txid = state->outpoints[state->bound_inputs];
+    uint8_t digest[32];
     if (!zcl_tx_previous_stream_finish(&state->previous, txid, &output) ||
-        output.value_zat > 2100000000000000ULL - state->input_zat)
+        output.value_zat > 2100000000000000ULL - state->input_zat ||
+        !zcl_tx_replay_zip243_bound_digest(&state->review.replay,
+            txid, state->sequences[state->bound_inputs], output.script,
+            output.value_zat, digest))
         return 0x6a80;
     state->input_zat += output.value_zat;
     ++state->bound_inputs;
@@ -141,7 +146,8 @@ static uint16_t previous_finish(blue_payment_apdu *state, uint8_t length,
     reply[1] = (uint8_t)state->input_count;
     reply[2] = state->fee_ready;
     put_u64(reply + 3, state->fee_zat);
-    *reply_length = 11;
+    memcpy(reply + 11, digest, sizeof digest);
+    *reply_length = 43;
     return 0x9000;
 }
 

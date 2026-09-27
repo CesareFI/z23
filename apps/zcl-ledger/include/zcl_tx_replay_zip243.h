@@ -17,13 +17,14 @@ typedef struct {
 } zcl_tx_replay_sha256;
 
 typedef bool (*zcl_tx_replay_input_fn)(void *context, uint32_t index,
-    const uint8_t outpoint[36]);
+    const uint8_t outpoint[36], uint32_t sequence);
 
 typedef struct {
     zcl_tx_stream wire;
     zcl_zip243_hasher blake;
     zcl_tx_replay_sha256 sha;
-    uint8_t commitment[32], prevouts[32], sequences[32], selected[40];
+    uint8_t commitment[32], prevouts[32], sequences[32], outputs[32];
+    uint8_t selected[40];
     uint32_t expected, selected_index, branch_id;
     zcl_tx_replay_input_fn input_observer;
     void *input_context;
@@ -57,5 +58,15 @@ bool zcl_tx_replay_zip243_next(zcl_tx_replay_zip243 *state);
 bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
     const uint8_t *script_code, size_t script_code_length,
     uint64_t amount_zat, zcl_tx_stream_facts *facts, uint8_t digest[32]);
+
+/* After a complete three-pass replay, computes SIGHASH_ALL for one supplied
+ * input. The caller must bind outpoint and sequence to the replayed input,
+ * script and amount to its exact previous wire, and branch to consensus.
+ * This read-only result grants no signing authority. Failure leaves digest
+ * unchanged and invalidates the replay on a hash failure. */
+bool zcl_tx_replay_zip243_bound_digest(zcl_tx_replay_zip243 *state,
+    const uint8_t outpoint[36], uint32_t sequence,
+    const uint8_t script_code[25], uint64_t amount_zat,
+    uint8_t digest[32]);
 
 #endif

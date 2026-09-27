@@ -67,7 +67,7 @@ static bool input_seen(void *context, uint32_t index,
     if (state->pass == 1)
         return state->blake.update(state->blake.context, outpoint, 36) &&
             (!state->input_observer || state->input_observer(
-                state->input_context, index, outpoint));
+                state->input_context, index, outpoint, sequence));
     uint8_t bytes[4];
     put_u32(bytes, sequence);
     if (state->pass == 2)
@@ -177,6 +177,7 @@ static bool append_parts(zcl_tx_replay_zip243 *state,
 }
 
 static bool final_digest(zcl_tx_replay_zip243 *state,
+    const uint8_t selected[40],
     const uint8_t *script_code, size_t script_code_length,
     uint64_t amount_zat, const zcl_tx_stream_facts *facts,
     const uint8_t outputs[32], uint8_t digest[32]) {
@@ -195,12 +196,12 @@ static bool final_digest(zcl_tx_replay_zip243 *state,
         append_parts(state, outputs) &&
         hash->update(hash->context, tail, sizeof tail) &&
         hash->update(hash->context, sighash_all, sizeof sighash_all) &&
-        hash->update(hash->context, state->selected, 36) &&
+        hash->update(hash->context, selected, 36) &&
         hash->update(hash->context, prefix, prefix_length) &&
         (!script_code_length || hash->update(hash->context, script_code,
                                               script_code_length)) &&
         hash->update(hash->context, amount, sizeof amount) &&
-        hash->update(hash->context, state->selected + 36, 4) &&
+        hash->update(hash->context, selected + 36, 4) &&
         hash->final(hash->context, digest);
 }
 
@@ -212,16 +213,36 @@ bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
     memset(facts, 0, sizeof *facts);
     memset(digest, 0, 32);
     zcl_tx_stream_facts checked;
-    uint8_t outputs[32], result[32];
+    uint8_t result[32];
     if (state->pass != 3 || !state->selected_found ||
         (script_code_length && !script_code) ||
         script_code_length > ZCL_TX_STREAM_MAX_BYTES ||
         amount_zat > ZCL_MAX_MONEY_ZAT ||
-        !complete_pass(state, &checked, outputs) ||
-        !final_digest(state, script_code, script_code_length, amount_zat,
-                      &checked, outputs, result)) return fail(state);
+        !complete_pass(state, &checked, state->outputs) ||
+        !final_digest(state, state->selected, script_code,
+                      script_code_length, amount_zat, &checked,
+                      state->outputs, result)) return fail(state);
     *facts = checked;
     memcpy(digest, result, 32);
     state->pass = 4;
+    return true;
+}
+
+bool zcl_tx_replay_zip243_bound_digest(zcl_tx_replay_zip243 *state,
+    const uint8_t outpoint[36], uint32_t sequence,
+    const uint8_t script_code[25], uint64_t amount_zat,
+    uint8_t digest[32]) {
+    if (!state || !outpoint || !script_code || !digest ||
+        state->pass != 4 || !state->wire.finished ||
+        amount_zat > ZCL_MAX_MONEY_ZAT ||
+        script_code[0] != 0x76 || script_code[1] != 0xa9 ||
+        script_code[2] != 0x14 || script_code[23] != 0x88 ||
+        script_code[24] != 0xac) return false;
+    uint8_t selected[40], result[32];
+    memcpy(selected, outpoint, 36);
+    put_u32(selected + 36, sequence);
+    if (!final_digest(state, selected, script_code, 25, amount_zat,
+            &state->wire.facts, state->outputs, result)) return fail(state);
+    memcpy(digest, result, sizeof result);
     return true;
 }

@@ -111,6 +111,18 @@ static bool screen_hash(const uint8_t *bytes, size_t length,
     return SHA256(bytes, length, digest) != NULL;
 }
 
+static uint64_t expected_bound_digests(const fixture *spend,
+    const zcl_tx_previous_transaction *previous, size_t count,
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32]) {
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_transparent_facts facts;
+    assert(zcl_tx_transparent_bound_digests(spend->bytes, spend->length,
+        previous, count, 0x76b809bb, screen_hash, &hasher,
+        &facts, digests, ZCL_TX_PREFLIGHT_MAX_INPUTS) == 0);
+    return facts.fee_zat;
+}
+
 static void begin(blue_payment_review *review, const fixture *item,
     struct blake2b_ctx *blake_context, EVP_MD_CTX *sha_context) {
     zcl_zip243_hasher blake = zcl_zip243_host_hasher(blake_context);
@@ -178,6 +190,17 @@ static void test_success(const fixture *item) {
         script_code, sizeof script_code, 300000001, 0x76b809bb,
         &reference, expected) == 0);
     assert(memcmp(actual, expected, sizeof actual) == 0);
+    uint8_t rebound[32];
+    assert(zcl_tx_replay_zip243_bound_digest(&review.replay,
+        item->bytes + 9, UINT32_MAX - 1, script_code, 300000001,
+        rebound));
+    assert(memcmp(rebound, expected, sizeof rebound) == 0);
+    script_code[0] = 0x6a;
+    memset(rebound, 0x5a, sizeof rebound);
+    assert(!zcl_tx_replay_zip243_bound_digest(&review.replay,
+        item->bytes + 9, UINT32_MAX - 1, script_code, 300000001,
+        rebound));
+    for (size_t i = 0; i < sizeof rebound; ++i) assert(rebound[i] == 0x5a);
     assert(!blue_payment_review_acknowledge(&review));
     EVP_MD_CTX_free(sha_context);
 }
@@ -458,7 +481,7 @@ static bool live_exchange(void *context, const uint8_t *apdu,
     if (live->fail_previous_chunk && apdu[1] == 0x27) return false;
     if (apdu[1] == 0x01) {
         const uint8_t identity[7] = {'Z', 'C', 'L',
-            live->wrong_identity ? 8 : 10, 7, 0x90, 0};
+            live->wrong_identity ? 8 : 11, 15, 0x90, 0};
         memcpy(reply, identity, sizeof identity);
         *reply_length = sizeof identity;
         return true;
@@ -534,10 +557,13 @@ static void test_live_bound(void) {
     assert(plan.inputs == 1);
     zcl_tx_previous_transaction source = {
         .wire = previous.bytes, .length = previous.length};
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    assert(expected_bound_digests(&spend, &source, 1, digests) ==
+        100000000);
     live_fixture live = {0};
     apdu_init(&live.apdu);
     assert(blue_payment_live_run_bound(spend.bytes, spend.length,
-        &plan, &source, 1, 100000000,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.bound_inputs == 1 &&
@@ -547,15 +573,26 @@ static void test_live_bound(void) {
     live = (live_fixture){0};
     apdu_init(&live.apdu);
     assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
-        &plan, &source, 1, 100000001,
+        &plan, &source, 1, 100000001, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(!live.apdu.state.fee_ready);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
-    live = (live_fixture){.fail_previous_chunk = true};
+    digests[0][0] ^= 1;
+    live = (live_fixture){0};
     apdu_init(&live.apdu);
     assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
         &plan, &source, 1, 100000000,
+        (const uint8_t (*)[32])digests,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+    digests[0][0] ^= 1;
+
+    live = (live_fixture){.fail_previous_chunk = true};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
     EVP_MD_CTX_free(live.apdu.sha_context);
@@ -564,7 +601,7 @@ static void test_live_bound(void) {
     live = (live_fixture){0};
     apdu_init(&live.apdu);
     assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
-        &plan, &source, 1, 100000000,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
     EVP_MD_CTX_free(live.apdu.sha_context);
@@ -598,10 +635,13 @@ static void test_live_two_inputs(void) {
         {.wire = first.bytes, .length = first.length},
         {.wire = second.bytes, .length = second.length}
     };
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    assert(expected_bound_digests(&spend, previous, 2, digests) ==
+        500000000);
     live_fixture live = {0};
     apdu_init(&live.apdu);
     assert(blue_payment_live_run_bound(spend.bytes, spend.length,
-        &plan, previous, 2, 500000000,
+        &plan, previous, 2, 500000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.bound_inputs == 2 &&
@@ -613,7 +653,7 @@ static void test_live_two_inputs(void) {
     apdu_init(&live.apdu);
     zcl_tx_previous_transaction reversed[2] = {previous[1], previous[0]};
     assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
-        &plan, reversed, 2, 500000000,
+        &plan, reversed, 2, 500000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(!live.apdu.state.fee_ready);
     EVP_MD_CTX_free(live.apdu.sha_context);
@@ -624,7 +664,7 @@ static void test_live_two_inputs(void) {
     live = (live_fixture){0};
     apdu_init(&live.apdu);
     assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
-        &plan, previous, 2, 500000000,
+        &plan, previous, 2, 500000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(!live.apdu.state.fee_ready);
     EVP_MD_CTX_free(live.apdu.sha_context);

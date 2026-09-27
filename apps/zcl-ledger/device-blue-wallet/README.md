@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.5 derives
+Version 0.2.6 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -18,11 +18,15 @@ EXIT cancels and returns home. After the three-pass review, Z23 uploads each
 complete previous transaction in input order. The app checks SHA-256d against
 its captured outpoint, selects the indexed P2PKH output, derives all input
 amounts, and displays the fee calculated from those inputs and the reviewed
-outputs. The Blue does not verify chain inclusion, UTXO status, maturity, or
+outputs. For each bound input it also returns a device-computed ZIP-243
+SIGHASH_ALL digest using that previous output's exact script and amount, the
+reviewed spending wire, and the supplied branch ID. Z23 compares each digest
+with its independent host calculation. The Blue does not verify that the
+branch ID is active, nor chain inclusion, UTXO status, maturity, or
 ownership. There is no USB output acknowledgement, payment signature,
 private-key export, path selection, Sapling spend, multisig, or token command.
-The supplied branch ID remains unauthenticated; the replay digest is
-discarded. Version 0.2.1 reached the Blue: its receive
+The fee page therefore says `CHAIN UNCHECKED`, `BRANCH UNCHECKED`, and
+`NO SIGNING`. Version 0.2.1 reached the Blue: its receive
 screen and EXIT worked, and all 35 address characters matched the host result
 `t1RAmKL4KFauUXGswvMvk66aS5UL33ck1Uz`. A synthetic transaction review
 then stopped USB replies and left EXIT unresponsive. The owner restarted the
@@ -36,7 +40,7 @@ Version 0.2.4 labels an exact P2PKH hash match to the
 Blue-derived fixed account as “THIS ACCOUNT,” other P2PKH outputs as “OTHER
 ADDRESS,” and P2SH outputs as “P2SH ADDRESS.” It does not infer ownership of
 P2SH or call an output change without verified inputs and account context.
-Version 0.2.5 remains uninstalled. Do not receive funds or sign payments with it.
+Version 0.2.6 remains uninstalled. Do not receive funds or sign payments with it.
 
 ## Build
 
@@ -61,12 +65,14 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.5 image has 29,952 bytes of `.text`, 5,084
+512-byte margin. The linked 0.2.6 image has 30,464 bytes of `.text`, 5,180
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
-stack; 1,060 bytes remain after that section in the 6,144-byte app SRAM
-region. The largest named C path sums to 672 bytes, excluding BOLOS firmware
-frames. Two independent builds using patched SDK trees produced image SHA-256
-`6c484545832c006cd620401e4e0c14f56f1a88550ccad9c440b988dc8c333a16`.
+stack; 964 bytes remain after that section in the 6,144-byte app SRAM
+region. The largest named C path sums to 680 bytes, excluding BOLOS firmware
+frames. Two independent builds using patched SDK trees produced `.text`
+SHA-256 `fdecd676292997d1733e992d6baad0ceda8b9949513404188d21d54f1e8bb68d`.
+The [digest experiment](../../../docs/experiments/2026-09-27-ledger-blue-device-digests.md)
+records the tests and limits.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.
 
@@ -76,7 +82,7 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 
 | INS | Reply before `9000` |
 | --- | --- |
-| `01` | `ZCL`, protocol version `0A`, receive, review, and previous-wire capability `07` |
+| `01` | `ZCL`, protocol version `0B`, receive, review, previous-wire, and digest capability `0F` |
 | `02` | 33-byte compressed public key when the address is ready |
 | `20` | Begin read-only replay: 12-byte length, input index, branch ID |
 | `21` | Feed one chunk; reply reports pass and pending output |
@@ -86,7 +92,7 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 | `25` | Query six nonsecret review-state bytes |
 | `26` | Begin the next previous wire with a four-byte little-endian length |
 | `27` | Feed previous-wire bytes; exact SHA-256d and structure are checked at finish |
-| `28` | Finish the previous wire; reply contains bound count, input count, fee-ready flag, and eight-byte fee |
+| `28` | Finish the previous wire; reply contains bound count, input count, fee-ready flag, eight-byte fee, and 32-byte input ZIP-243 digest |
 
 INS `02` returns `6985` if derivation or address formatting fails. A review
 upload chunk must stop on the exact output boundary. Only the touchscreen

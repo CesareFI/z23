@@ -10,6 +10,7 @@ typedef struct {
     blue_payment_screen screen;
     zcl_tx_previous_stream previous;
     uint8_t outpoints[ZCL_TX_STREAM_MAX_INPUTS][36];
+    uint32_t sequences[ZCL_TX_STREAM_MAX_INPUTS];
     uint64_t input_zat, output_zat, fee_zat;
     uint32_t input_count, bound_inputs;
     bool active, previous_active, fee_ready;
@@ -18,6 +19,7 @@ typedef struct {
 /* Read-only CLA A5 commands 20-28. A physical touch acknowledges each
  * spending output. Previous wires can be uploaded only after a verified
  * three-pass review; each one must match the next captured input outpoint.
+ * A finished previous wire yields that input's device-derived ZIP-243 digest.
  * No command accesses a key, approves a payment, or signs. */
 uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     const uint8_t *apdu, size_t apdu_length,

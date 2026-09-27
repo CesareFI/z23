@@ -10,7 +10,7 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 39, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+enum { FRAME_COUNT = 40, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
        PATH_COUNT = 12 };
 
 static const char *const frame_names[FRAME_COUNT] = {
@@ -29,7 +29,8 @@ static const char *const frame_names[FRAME_COUNT] = {
     "wallet_payment_display", "blue_payment_review_next_pass",
     "zcl_tx_replay_zip243_next", "zcl_tx_previous_stream_begin",
     "zcl_tx_previous_stream_feed", "zcl_tx_previous_stream_finish",
-    "previous_compact_done", "previous_output_done", "capture_input"
+    "previous_compact_done", "previous_output_done", "capture_input",
+    "zcl_tx_replay_zip243_bound_digest"
 };
 
 typedef struct {
@@ -138,7 +139,8 @@ static void report_paths(const stack_frames *frames, bool wallet,
     static const unsigned wallet_previous_begin[] = {0, 14, 15, 16, 33};
     static const unsigned wallet_previous_feed[] = {0, 14, 15, 16,
         34, 36, 37};
-    static const unsigned wallet_previous_finish[] = {0, 14, 15, 16, 35};
+    static const unsigned wallet_previous_finish[] = {0, 14, 15, 16, 35,
+        39, 26};
     memset(paths, 0, sizeof(unsigned) * PATH_COUNT);
     if (wallet) {
         paths[0] = sum_frames(frames, wallet_derive, 2);
