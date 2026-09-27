@@ -6,7 +6,34 @@
 #undef NDEBUG
 #include <assert.h>
 #include <openssl/sha.h>
+#include <stdio.h>
 #include <string.h>
+
+static int nibble(char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    return -1;
+}
+
+static size_t read_vector(const char *path, uint8_t wire[245]) {
+    FILE *file = fopen(path, "r");
+    assert(file);
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof line, file)) {
+        if (line[0] != '#') { found = true; break; }
+    }
+    assert(found);
+    size_t length = strcspn(line, "\r\n");
+    assert(!ferror(file) && length == 490);
+    for (size_t i = 0; i < 245; ++i) {
+        int hi = nibble(line[2 * i]), lo = nibble(line[2 * i + 1]);
+        assert(hi >= 0 && lo >= 0);
+        wire[i] = (uint8_t)((hi << 4) | lo);
+    }
+    assert(fclose(file) == 0);
+    return length / 2;
+}
 
 static bool transaction_digest(const uint8_t *wire, size_t length,
                                uint8_t digest[32]) {
@@ -84,10 +111,10 @@ static void test_state_and_bounds(void) {
     apdu[1] = 0x10;
     apdu[4] = 2;
     apdu[5] = 0x80;
-    apdu[6] = 14;
+    apdu[6] = 9;
     assert(call(&state, apdu, 7, &reply_length) == 0x9000);
-    assert(state.expected == 3712);
-    apdu[6] = 15;
+    assert(state.expected == 2432);
+    apdu[6] = 10;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
     apdu[5] = 1;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
@@ -112,8 +139,39 @@ static void test_state_and_bounds(void) {
                               &hasher) == 0x6a80);
 }
 
-int main(void) {
+static void test_published_transaction(const char *path) {
+    uint8_t wire[245];
+    size_t length = read_vector(path, wire);
+    blue_review_state state = {0};
+    uint8_t apdu[260] = {0xa5, 0x10, 0, 0, 2, 245, 0};
+    size_t reply_length;
+    assert(call(&state, apdu, 7, &reply_length) == 0x9000);
+    for (size_t offset = 0; offset < length; offset += 220) {
+        size_t count = length - offset < 220 ? length - offset : 220;
+        apdu[1] = 0x11;
+        apdu[4] = (uint8_t)count;
+        memcpy(apdu + 5, wire + offset, count);
+        assert(call(&state, apdu, 5 + count, &reply_length) == 0x9000);
+    }
+    static const uint8_t branch[] = {
+        0xa5, 0x14, 0, 0, 4, 0xbb, 0x09, 0xb8, 0x76
+    };
+    memcpy(apdu, branch, sizeof branch);
+    assert(call(&state, apdu, sizeof branch, &reply_length) == 0x9000);
+    assert(reply_length == 32);
+    memcpy(apdu, (const uint8_t[]){0xa5, 0x12, 0, 0, 0}, 5);
+    assert(call(&state, apdu, 5, &reply_length) == 0x9000);
+    assert(reply_length == 76 && state.reviewed_length == 245);
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
+    assert(blue_review_screen_format(apdu, lines));
+    assert(strcmp(lines[0], "PUBLIC IN/OUT: 1/2") == 0);
+    assert(strcmp(lines[1], "PUBLIC: 0.49999755 ZCL") == 0);
+}
+
+int main(int argc, char **argv) {
+    assert(argc == 2);
     test_minimal_review();
     test_state_and_bounds();
+    test_published_transaction(argv[1]);
     return 0;
 }

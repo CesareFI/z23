@@ -113,7 +113,7 @@ input when given its spent output's scriptCode and amount. Its result matched
 ZIP 243's published transparent test vector. Z23 does not yet validate the
 provenance of those spent-output facts or expose a transparent payment signing
 command, so this digest alone is not payment authorization.
-The optional `--blue` mode sends at most 3,712 transaction bytes to the
+The optional `--blue` mode sends at most 2,432 transaction bytes to the
 [ZCL Review app](device-blue-review/README.md), verifies its review-only
 identity, and requires its structural summary and transaction SHA-256 digest
 to match the host's values. This checks the exact bytes received by the Blue.

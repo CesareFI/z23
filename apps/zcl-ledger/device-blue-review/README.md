@@ -2,7 +2,7 @@
 
 # ZCL Review for Ledger Blue
 
-This C23 app accepts up to 3,712 bytes of a raw ZCL Sapling-v4 transaction
+This C23 app accepts up to 2,432 bytes of a raw ZCL Sapling-v4 transaction
 over USB and returns a structural summary and SHA-256 digest of the exact
 transaction bytes. It counts transparent inputs and
 outputs, Sapling spends and outputs, and Sprout JoinSplits. It also reports
@@ -15,14 +15,17 @@ each transparent output's amount in ZCL and, for P2PKH or P2SH, its independentl
 derived ZCL mainnet address. Other script pages show the script length and
 the first ten bytes of its SHA-256 digest. OP_RETURN pages say `TOKEN STATUS
 UNVERIFIED`; a token marker alone is not token validation. After the final
-output, NEXT PAGE returns to the summary. `EXIT` returns to
+output, NEXT PAGE returns to the summary. The `EXIT` callback requests
 the Blue home screen. The app has no key derivation, approval, or signing
 command. Given an explicit consensus branch ID, it also computes the ZIP-243
 shielded SIGHASH_ALL digest. Its screen does not display recipients,
 shielded recipients, shielded amounts, or a verified fee. Its response is not user
 authorization of a payment.
 
-Build with the reviewed Blue SDK and an ISO C23 compiler:
+Build with the reviewed Blue SDK, the additional
+[`blue-review-stack.patch`](blue-review-stack.patch), and an ISO C23
+compiler. Apply the stack patch to a separate copy of the SDK after the
+base C23 SDK patch; the Review build rejects the base 1 KiB stack reserve:
 
 ```sh
 make -C apps/zcl-ledger/device-blue-review \
@@ -32,8 +35,8 @@ make -C apps/zcl-ledger/device-blue-review \
   CLANGPATH=/path/to/clang/bin/
 ```
 
-The build checks for an empty `.data` section. Extract the 29,952-byte code
-image and check its SHA-256 before installing:
+The build checks for an empty `.data` section and a bounded ARM stack
+path. Extract the code image and check its SHA-256 before installing:
 
 ```sh
 llvm-objcopy -O binary --only-section=.text \
@@ -44,18 +47,21 @@ sha256sum /tmp/zcl-review.bin
 Version 0.4.0's former image hash was
 `f442caa2e21e3b2f830f48f71ba23531ba6cfdf51bd4d888ee59bfd0e0e72dae`.
 It is no longer accepted by the installer after a live USB lockup.
-The measured `.bss`, including the reserved stack, is 6,024 bytes. The
-3,712-byte transaction limit leaves room for the reply cache and screen
-strings within the Blue's SRAM.
-Install only on the dedicated test Blue at its home screen using
+Review 0.4.1 is a stack candidate that has not been installed. Its
+2,432-byte transaction limit reserves an additional 1 KiB of Blue SRAM
+for stack compared with 0.4.0. The build checks the known call paths
+against the 2 KiB stack reserve and keeps 512 bytes of headroom. The
+same C23 app controller runs in the host simulator, including the published
+transparent fixture and all three review pages. The device result remains
+unverified; the candidate is not pinned for installation.
+After a new image hash is pinned, install only on the dedicated test Blue at
+its home screen using
 `zcl-blue-install /dev/hidrawN --ca-install CA_KEY_FILE /tmp/zcl-review.bin`.
 Delete an older ZCL Review app first; the Blue rejected installation over
 an existing icon with status `6a80` at commit.
-If the signed install is rejected, the unsigned install command is
-`zcl-blue-install /dev/hidrawN /tmp/zcl-review.bin`; Blue will show its
-non-genuine application warning when the app opens. EXIT returns to home.
-Remove it from home using `zcl-blue-install /dev/hidrawN --ca-delete-review
-CA_KEY_FILE` for a signed install, or `--delete-review` for an unsigned one.
+If a signed install is rejected, diagnose its exact status before another
+install attempt. Remove a signed Review app from home using
+`zcl-blue-install /dev/hidrawN --ca-delete-review CA_KEY_FILE`.
 
 The host's `zcl-tx-review`
 command can compare the app's reply to its own parser using

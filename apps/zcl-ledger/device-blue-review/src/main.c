@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "os.h"
 #include "os_io_seproxyhal.h"
-#include "blue_review_protocol.h"
-#include "blue_review_screen.h"
+#include "blue_review_app.h"
 #include <string.h>
 
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
@@ -11,21 +10,8 @@
 
 unsigned char G_io_seproxyhal_spi_buffer[IO_SEPROXYHAL_BUFFER_SIZE_B];
 ux_state_t ux;
-static blue_review_state review_state;
-static char review_lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
-static uint8_t review_reply[76];
-static uint32_t review_page;
-
-static void clear_review_screen(void) {
-    review_page = 0;
-    memset(review_reply, 0, sizeof review_reply);
-    strcpy(review_lines[0], "CONNECT Z23");
-    strcpy(review_lines[1], "SEND A TRANSACTION");
-    strcpy(review_lines[2], "TAP NEXT PAGE TO VIEW");
-    review_lines[3][0] = 0;
-    strcpy(review_lines[4], "READ ONLY; NO SIGNING");
-    review_lines[5][0] = 0;
-}
+static blue_review_app review_app;
+static cx_blake2b_t zip_context;
 
 static bool transaction_digest(const uint8_t *wire, size_t length,
                                uint8_t digest[32]) {
@@ -95,7 +81,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = review_lines[0]
+        .text = review_app.lines[0]
     },
     {
         .component = {
@@ -104,7 +90,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = review_lines[1]
+        .text = review_app.lines[1]
     },
     {
         .component = {
@@ -113,7 +99,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = review_lines[2]
+        .text = review_app.lines[2]
     },
     {
         .component = {
@@ -122,7 +108,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = review_lines[3]
+        .text = review_app.lines[3]
     },
     {
         .component = {
@@ -131,7 +117,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = review_lines[4]
+        .text = review_app.lines[4]
     },
     {
         .component = {
@@ -140,7 +126,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
-        .text = review_lines[5]
+        .text = review_app.lines[5]
     },
     {
         .component = {
@@ -173,28 +159,7 @@ static const bagl_element_t review_ui[] = {
 
 static const bagl_element_t *show_latest(const bagl_element_t *element) {
     (void)element;
-    if (review_state.expected || !review_state.reviewed_length) {
-        clear_review_screen();
-        UX_DISPLAY(review_ui, NULL);
-        return NULL;
-    }
-    uint32_t count = (uint32_t)review_reply[4] |
-        ((uint32_t)review_reply[5] << 8) |
-        ((uint32_t)review_reply[6] << 16) |
-        ((uint32_t)review_reply[7] << 24);
-    uint32_t next = review_page;
-    bool formatted = next == 0 ?
-        blue_review_screen_format(review_reply, review_lines) :
-        blue_review_screen_output(review_state.wire,
-                                  review_state.reviewed_length, next - 1,
-                                  transaction_digest, review_lines);
-    if (!formatted) {
-        clear_review_screen();
-        review_state.reviewed_length = 0;
-        UX_DISPLAY(review_ui, NULL);
-        return NULL;
-    }
-    review_page = next >= count ? 0 : next + 1;
+    blue_review_app_next(&review_app, transaction_digest);
     UX_DISPLAY(review_ui, NULL);
     return NULL;
 }
@@ -245,42 +210,23 @@ static void answer_command(void) {
                 rx = io_exchange(CHANNEL_APDU, tx);
                 tx = 0;
                 size_t reply_length = 0;
-                uint8_t instruction = rx >= 2 ? G_io_apdu_buffer[1] : 0;
-                cx_blake2b_t zip_context;
                 zcl_zip243_hasher hasher = {
                     .context = &zip_context, .init = zip243_start,
                     .update = zip243_update, .final = zip243_finish
                 };
-                sw = blue_review_handle(&review_state, G_io_apdu_buffer,
-                                        rx, G_io_apdu_buffer,
-                                        sizeof G_io_apdu_buffer - 2,
-                                        &reply_length, transaction_digest,
-                                        &hasher);
-                if (instruction == 0x10 || instruction == 0x13 ||
-                    (instruction == 0x11 && sw != 0x9000))
-                    clear_review_screen();
-                if (instruction == 0x12) {
-                    if (sw != 0x9000 || reply_length != 76 ||
-                        !blue_review_screen_format(G_io_apdu_buffer,
-                                                   review_lines)) {
-                        clear_review_screen();
-                        if (sw == 0x9000) sw = 0x6a80;
-                        reply_length = 0;
-                    } else {
-                        memcpy(review_reply, G_io_apdu_buffer,
-                               sizeof review_reply);
-                        review_page = 0;
-                    }
-                }
+                sw = blue_review_app_command(&review_app, G_io_apdu_buffer,
+                    rx, G_io_apdu_buffer, sizeof G_io_apdu_buffer - 2,
+                    &reply_length, transaction_digest, &hasher);
                 tx = reply_length;
             }
             CATCH_OTHER(error) {
                 sw = (error & 0xf000) == 0x6000 ||
                      (error & 0xf000) == 0x9000
                          ? error : (0x6800 | (error & 0x07ff));
-                review_state.expected = review_state.received = 0;
-                review_state.reviewed_length = 0;
-                clear_review_screen();
+                review_app.transaction.expected = 0;
+                review_app.transaction.received = 0;
+                review_app.transaction.reviewed_length = 0;
+                blue_review_app_reset(&review_app);
             }
             FINALLY {}
         }
@@ -299,7 +245,7 @@ __attribute__((section(".boot"))) int main(void) {
             io_seproxyhal_init();
             USB_power(0);
             USB_power(1);
-            clear_review_screen();
+            blue_review_app_reset(&review_app);
             UX_DISPLAY(review_ui, NULL);
             answer_command();
         }

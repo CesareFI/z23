@@ -12,7 +12,7 @@ $(error The SDK must target Ledger Blue firmware 2.1.x)
 endif
 
 APPNAME = "ZCL Review"
-APPVERSION = 0.4.0
+APPVERSION = 0.4.1
 APP_FLAGS = 0x00
 APP_SOURCE_PATH += src
 SDK_SOURCE_PATH += lib_stusb lib_stusb_impl
@@ -25,14 +25,23 @@ DEFINES += CX_COMPLIANCE_141
 CC := $(CLANGPATH)clang
 AS := $(GCCPATH)arm-none-eabi-gcc
 LD := $(GCCPATH)arm-none-eabi-gcc
-CFLAGS += -std=c23 -O2 -Wall -Wextra -Werror -pedantic -I../include
+CFLAGS += -std=c23 -O2 -Wall -Wextra -Werror -pedantic -fstack-usage -I../include
 LDFLAGS += -O2 -Wl,-z,noexecstack
 LDLIBS += -lgcc -lc
 
-all: default check-image
+all: default check-image check-stack
 
 include $(BOLOS_SDK)/Makefile.rules
 
 check-image: default
 	@data_size=$$($(GCCPATH)arm-none-eabi-size -A bin/app.elf | awk '$$1 == ".data" { print $$2 }'); \
 	  test "$$data_size" = 0 || { echo "Initialized .data requires loader allocation; refusing image" >&2; exit 1; }
+
+obj/blue_stack_check: ../tools/blue_stack_check.c
+	@mkdir -p obj
+	$(HOST_CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $< -o $@
+
+HOST_CC ?= clang
+
+check-stack: default obj/blue_stack_check
+	@obj/blue_stack_check $(BOLOS_SDK)/script.ld obj/*.su

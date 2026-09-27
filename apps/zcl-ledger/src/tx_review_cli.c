@@ -64,13 +64,19 @@ static int send_transaction(int fd, const uint8_t *wire, size_t length) {
     uint8_t command[5 + 220] = {0xa5, 0x10, 0, 0, 2};
     command[5] = (uint8_t)length;
     command[6] = (uint8_t)(length >> 8);
-    if (send_expected(fd, command, 7, NULL, 0) < 0) return -1;
+    if (send_expected(fd, command, 7, NULL, 0) < 0) {
+        fputs("Blue review begin failed.\n", stderr);
+        return -1;
+    }
     for (size_t offset = 0; offset < length; offset += 220) {
         size_t count = length - offset < 220 ? length - offset : 220;
         command[1] = 0x11;
         command[4] = (uint8_t)count;
         memcpy(command + 5, wire + offset, count);
-        if (send_expected(fd, command, 5 + count, NULL, 0) < 0) return -1;
+        if (send_expected(fd, command, 5 + count, NULL, 0) < 0) {
+            fprintf(stderr, "Blue review chunk at byte %zu failed.\n", offset);
+            return -1;
+        }
     }
     return 0;
 }
@@ -99,14 +105,24 @@ static int blue_review(const char *device, const uint8_t *wire, size_t length,
         close(fd);
         return -1;
     }
-    int result = send_expected(fd, probe, sizeof probe,
-                               identity, sizeof identity) == 0 &&
-                 send_transaction(fd, wire, length) == 0 &&
-                 (!has_branch ||
-                  send_expected(fd, zip_command, sizeof zip_command,
-                                zip_digest, 32) == 0) &&
-                 send_expected(fd, final, sizeof final,
-                               summary, sizeof summary) == 0 ? 0 : -1;
+    int result = 0;
+    if (send_expected(fd, probe, sizeof probe,
+                      identity, sizeof identity) < 0) {
+        fputs("Blue review identity failed.\n", stderr);
+        result = -1;
+    }
+    if (result == 0 && send_transaction(fd, wire, length) < 0) result = -1;
+    if (result == 0 && has_branch &&
+        send_expected(fd, zip_command, sizeof zip_command,
+                      zip_digest, 32) < 0) {
+        fputs("Blue ZIP-243 digest request failed.\n", stderr);
+        result = -1;
+    }
+    if (result == 0 && send_expected(fd, final, sizeof final,
+                                     summary, sizeof summary) < 0) {
+        fputs("Blue review summary failed.\n", stderr);
+        result = -1;
+    }
     close(fd);
     return result;
 }
