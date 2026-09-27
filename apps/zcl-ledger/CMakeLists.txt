@@ -34,6 +34,11 @@ add_library(zcl_tx_review STATIC src/zcl_tx_review.c)
 target_include_directories(zcl_tx_review PUBLIC include)
 target_compile_options(zcl_tx_review PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(zcl_tx_previous_stream STATIC src/zcl_tx_previous_stream.c)
+target_include_directories(zcl_tx_previous_stream PUBLIC include)
+target_compile_options(zcl_tx_previous_stream PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+
 add_library(zcl_tx_script_facts STATIC src/zcl_tx_script_facts.c)
 target_include_directories(zcl_tx_script_facts PUBLIC include)
 target_link_libraries(zcl_tx_script_facts PUBLIC zcl_tx_review)
@@ -205,13 +210,26 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_apdu blue_payment_render blue_payment_simulate blue_payment_live zcl-blue-payment-sim zcl-blue-wallet-review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_apdu blue_payment_render blue_payment_simulate blue_payment_live zcl-blue-payment-sim zcl-blue-wallet-review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
 endif()
 
 enable_testing()
+add_executable(test-zcl-tx-previous-stream
+    tests/test_zcl_tx_previous_stream.c)
+target_link_libraries(test-zcl-tx-previous-stream PRIVATE
+    zcl_tx_previous_stream zcl_tx_review OpenSSL::Crypto)
+target_compile_options(test-zcl-tx-previous-stream PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-zcl-tx-previous-stream PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-zcl-tx-previous-stream PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME zcl-tx-previous-stream COMMAND test-zcl-tx-previous-stream)
 add_executable(test-blue-bagl-canvas tests/test_blue_bagl_canvas.c)
 target_link_libraries(test-blue-bagl-canvas PRIVATE blue_bagl_canvas)
 target_compile_options(test-blue-bagl-canvas PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -391,7 +409,8 @@ if(ZCL_LEDGER_FUZZ)
        NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         message(FATAL_ERROR "ZCL_LEDGER_FUZZ requires Clang Debug")
     endif()
-    foreach(target zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_tx_stream
+    foreach(target zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts
+                   zcl_zip243 zcl_tx_stream
                    zcl_tx_stream_zip243 zcl_tx_replay_zip243
                    zcl_zip243_host_hash)
         target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
@@ -407,6 +426,14 @@ if(ZCL_LEDGER_FUZZ)
     target_compile_options(fuzz-zcl-previous-output PRIVATE -Wall -Wextra
         -Werror -pedantic -fsanitize=fuzzer,address,undefined)
     target_link_options(fuzz-zcl-previous-output PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz-zcl-previous-stream
+        tests/fuzz_zcl_previous_stream.c)
+    target_link_libraries(fuzz-zcl-previous-stream PRIVATE
+        zcl_tx_previous_stream zcl_tx_review OpenSSL::Crypto)
+    target_compile_options(fuzz-zcl-previous-stream PRIVATE -Wall -Wextra
+        -Werror -pedantic -fsanitize=fuzzer,address,undefined)
+    target_link_options(fuzz-zcl-previous-stream PRIVATE
         -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz-zcl-tx-stream tests/fuzz_zcl_tx_stream.c)
     target_link_libraries(fuzz-zcl-tx-stream PRIVATE zcl_tx_stream

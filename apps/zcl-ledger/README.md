@@ -203,6 +203,12 @@ prove that a prevout is unspent, mature, included in the accepted chain, or
 owned by the selected Ledger path. The Blue has not verified these facts and
 no transparent payment signing command exists, so this digest grants no
 payment authority.
+A separate C23 streaming selector now parses complete v1-v4 previous
+transactions with 168 bytes of host parser state, checks SHA-256d against
+an expected transaction ID, and returns the selected P2PKH script and amount.
+Its host unit and differential fuzz tests pass. The Blue app does not yet
+call this selector or establish that an output is unspent or owned; the host
+preflight result remains insufficient to authorize signing.
 The optional `--blue` mode sends at most 2,304 transaction bytes to the
 [ZCL Review app](device-blue-review/README.md), verifies its review-only
 identity, and requires its structural summary and transaction SHA-256 digest
