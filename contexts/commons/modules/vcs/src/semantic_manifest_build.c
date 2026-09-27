@@ -235,6 +235,10 @@ static void sm_clear(struct sm_list *l)
 static void sm_dedupe(struct sm_list *l)
 {
     size_t w = 0;
+    if (l->n == 0)
+        return; /* qsort's base is a nonnull param; an untouched section's
+                  * items array is still NULL, so an empty list must return
+                  * before the call rather than pass NULL with n==0. */
     qsort(l->items, l->n, sizeof(*l->items), sm_span_cmp);
     for (size_t k = 0; k < l->n; k++) {
         if (w > 0 && sm_span_cmp(&l->items[w - 1], &l->items[k]) == 0) {

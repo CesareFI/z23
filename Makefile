@@ -9797,7 +9797,7 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-fno-sanitize=alignment $(ZCL_FUZZ_EXTRA_CFLAGS)
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay $(BIN_DIR)/fuzz_ecdsa $(BIN_DIR)/fuzz_zcode_commons $(BIN_DIR)/fuzz_zcode_dht $(BIN_DIR)/fuzz_zcode_science $(BIN_DIR)/fuzz_mesh_status_proto
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay $(BIN_DIR)/fuzz_ecdsa $(BIN_DIR)/fuzz_zcode_commons $(BIN_DIR)/fuzz_zcode_dht $(BIN_DIR)/fuzz_zcode_science $(BIN_DIR)/fuzz_mesh_status_proto $(BIN_DIR)/fuzz_semantic_manifest
 # Keep the line above literal and keep one `$(BIN_DIR)/fuzz_<kind>:` rule per
 # harness below: check_fuzz_artifact_replay.sh derives the corpus<->binary map
 # from those rule lines, and background_quality_lane.sh derives its kind list
@@ -9871,7 +9871,8 @@ check-fuzz-ci-tools: check-fuzz-toolchain
 
 fuzz: check-fuzz-toolchain $(FUZZ_TARGETS)
 
-.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_zcode_commons fuzz_zcode_dht fuzz_zcode_science fuzz_mesh_status_proto
+.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_zcode_commons fuzz_zcode_dht fuzz_zcode_science fuzz_mesh_status_proto fuzz_semantic_manifest
+fuzz_semantic_manifest: $(BIN_DIR)/fuzz_semantic_manifest
 fuzz_ecdsa: $(BIN_DIR)/fuzz_ecdsa
 fuzz_zcode_commons: $(BIN_DIR)/fuzz_zcode_commons
 fuzz_zcode_dht: $(BIN_DIR)/fuzz_zcode_dht
@@ -9941,6 +9942,9 @@ $(BIN_DIR)/fuzz_zcode_science: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_zcode_science.o $
 	$(FUZZ_LINK)
 
 $(BIN_DIR)/fuzz_mesh_status_proto: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_mesh_status_proto.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
+
+$(BIN_DIR)/fuzz_semantic_manifest: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_semantic_manifest.o $(FUZZ_OBJS) | check-fuzz-toolchain
 	$(FUZZ_LINK)
 
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)

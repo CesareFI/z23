@@ -578,6 +578,51 @@ static int smt_t_golden_fold(void)
     return failures;
 }
 
+/* fuzz_semantic_manifest (tools/fuzz/fuzz_semantic_manifest.c) hit this on
+ * its very first seed: a builder with the identity plus the one required
+ * main file, and every other section (LOOKUPS, MACROS, DECLS, LAYOUTS,
+ * ENUMS, FUNCTIONS, SPANS — every TU can genuinely have zero of some of
+ * these, e.g. a header with no functions) untouched. finish() called
+ * sm_dedupe() on every section including the untouched ones, whose
+ * `items` array is still NULL because add() was never called for them.
+ * sm_dedupe() called qsort(NULL, 0, ...) unconditionally: 0 elements is a
+ * no-op for glibc's qsort, but qsort's `base` parameter carries a nonnull
+ * attribute, so UBSan flagged real undefined behavior on every manifest
+ * with at least one empty cappable section — which is most of them. Fixed
+ * by returning before the qsort call when the list is empty. */
+static int smt_t_empty_sections_finish(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_manifest: finish() tolerates sections nobody added to") {
+        struct vcs_semantic_builder_v1 *b = vcs_semantic_builder_v1_new();
+        struct vcs_semantic_record_v1 r = {0};
+        uint8_t *out = NULL;
+        size_t out_len = 0;
+        char why[256];
+        ASSERT(b != NULL);
+        ASSERT(smt_golden_identity(b, &r));
+        ASSERT(smt_golden_file(b, &r, "src/a.c", "int f(void) { return 0; }\n",
+                               VCS_SEMANTIC_ORIGIN_V1_MAIN));
+        /* LOOKUPS, MACROS, DECLS, LAYOUTS, ENUMS, FUNCTIONS, SPANS: none
+         * added. Before the fix, this finish() aborted under UBSan. */
+        ASSERT(vcs_semantic_builder_v1_finish(b, &out, &out_len, why,
+                                              sizeof(why)));
+        ASSERT(vcs_semantic_manifest_v1_validate(out, out_len, why,
+                                                 sizeof(why)));
+        for (int t = VCS_SEMANTIC_SECTION_V1_LOOKUPS;
+             t <= VCS_SEMANTIC_SECTION_V1_SPANS; t++) {
+            uint32_t count = 1;
+            ASSERT(vcs_semantic_section_count_v1(
+                out, out_len, (enum vcs_semantic_section_v1)t, &count));
+            ASSERT_EQ(count, 0u);
+        }
+        vcs_semantic_record_v1_free(&r);
+        vcs_semantic_builder_v1_free(b);
+        free(out);
+    } TEST_END
+    return failures;
+}
+
 /* ── the text dump of composite list elements ─────────────────────────────── */
 
 /* The golden vector plus the facts extension and one PROBES record with two
@@ -879,6 +924,7 @@ int test_semantic_manifest(void)
     int failures = 0;
     failures += smt_t_golden();
     failures += smt_t_golden_fold();
+    failures += smt_t_empty_sections_finish();
     failures += smt_t_dump_composites();
     failures += smt_t_facts_revision();
     failures += smt_t_refusals();
