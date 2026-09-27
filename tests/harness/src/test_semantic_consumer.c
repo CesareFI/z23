@@ -19,11 +19,14 @@
  *               the file-seeded obligations, and a struct named only inside
  *               a function body the TU defining that function. The seeds
  *               hold every function the compile may re-emit: a caller that
- *               may inline a changed static is one.
+ *               may inline a changed static is one. A makefile no compile
+ *               records reading, or a flag every compile gains, affects
+ *               every TU and puts the whole catalog in scope.
  *   mutants     dropping the type closure, the macro closure, the header
- *               position rule, the bare-tag alias or the code-generation
- *               closure leaves a table-affected TU unaffected or a required
- *               seed out, so each rule is load-bearing.
+ *               position rule, the bare-tag alias, the code-generation
+ *               closure or the outsider scan leaves a table-affected TU
+ *               unaffected, a required seed out or the whole catalog out
+ *               of scope, so each rule is load-bearing.
  *   model       -O0, -O1 and -Og bound the re-emitted code; -O2 and above,
  *               LTO, IPA clone or merge flags and profile feedback do not.
  *   fallback    a reader without facts is affected ("facts-missing"); with
@@ -148,12 +151,13 @@ static size_t sct_mutant_unsafe(const struct sct_fixtures *f,
 static int sct_t_mutants(const struct sct_fixtures *f, struct scx_result *res)
 {
     int failures = 0;
-    TEST_CASE("semantic_consumer: dropping the type, macro, position, tag-alias or code-generation rule misses an affected TU or seed") {
+    TEST_CASE("semantic_consumer: dropping the type, macro, position, tag-alias, code-generation or outsider rule misses an affected TU or seed") {
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_TYPE_CLOSURE, res) > 0);
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_MACRO_CLOSURE, res) > 0);
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_POSITION, res) > 0);
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_TAG_ALIAS, res) > 0);
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_CODEGEN_CLOSURE, res) > 0);
+        ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_OUTSIDER, res) > 0);
         ASSERT_EQ(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NONE, res), (size_t)0);
     } TEST_END
     zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NONE;

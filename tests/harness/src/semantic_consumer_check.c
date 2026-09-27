@@ -179,6 +179,21 @@ static size_t scx_compare_whole(const struct scx_edit *e,
     return 1;
 }
 
+/* The whole catalog is in scope exactly when the table says nothing bounds
+ * the change; a missing one is unsafe. */
+static size_t scx_compare_universal(const struct scx_edit *e,
+                                    const struct scx_result *r, size_t *unsafe,
+                                    FILE *why)
+{
+    if (r->plan.closure_universal == e->universal)
+        return 0;
+    *unsafe += e->universal;
+    if (why != NULL)
+        fprintf(why, "  %s universal: want %d, got %d\n", e->name,
+                (int)e->universal, (int)r->plan.closure_universal);
+    return 1;
+}
+
 /* Each function the table says the compile may re-emit must be a seed: a
  * missing one is unsafe (its callers' obligations may go unselected). */
 static size_t scx_compare_seeds(const struct scx_edit *e,
@@ -214,7 +229,8 @@ size_t scx_compare(enum scx_variant v, const struct scx_result *r,
     for (size_t k = 0; k < SCX_TU_COUNT; k++)
         bad += scx_compare_tu(e, k, r, unsafe, why);
     return bad + scx_compare_whole(e, r, why) +
-           scx_compare_seeds(e, r, unsafe, why);
+           scx_compare_seeds(e, r, unsafe, why) +
+           scx_compare_universal(e, r, unsafe, why);
 }
 
 void scx_result_free(struct scx_result *r)

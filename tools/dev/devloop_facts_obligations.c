@@ -121,6 +121,17 @@ static bool fxc_plain(struct fxc *c, const struct zcl_devloop_plan *given,
     return zcl_devloop_plan_add_closure(c->root, c->files, c->nfiles, plan);
 }
 
+bool fxc_fallback(struct fxc *c, const struct zcl_devloop_plan *given,
+                  struct zcl_devloop_plan *plan,
+                  struct zcl_devloop_facts_verdict *v)
+{
+    const struct zcl_devloop_facts_report *r = c->report;
+    if (!fxc_plain(c, given, plan, v, r->reason, r->detail))
+        return false;
+    plan->closure_universal |= c->universal;
+    return true;
+}
+
 static bool fxc_has_group(const struct zcl_devloop_plan *p, const char *g)
 {
     for (size_t k = 0; k < p->path_groups_len; k++)
@@ -211,7 +222,7 @@ bool fxc_obligations(struct fxc *c, const struct zcl_devloop_plan *given,
     size_t nfold;
     bool ok;
     if (!r->complete)
-        return fxc_plain(c, given, plan, v, r->reason, r->detail);
+        return fxc_fallback(c, given, plan, v);
     fxc_check_addresses(c, c->seeds, c->nseeds);
     if (c->seed_reason != NULL)
         return fxc_plain(c, given, plan, v, c->seed_reason, c->seed_detail);

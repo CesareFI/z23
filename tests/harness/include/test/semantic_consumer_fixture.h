@@ -16,6 +16,8 @@
 #define SCX_E SCX_DIR "/src/cx_e.c"   /* reads the header, names nothing in it */
 /* `#include "cx.h"` searches the includer's directory first. */
 #define SCX_SHADOW SCX_DIR "/src/cx.h"
+/* A build input: no compile records reading it. */
+#define SCX_MAKEFILE SCX_DIR "/cx.mk"
 #define SCX_FIXTURES "tests/fixtures/semantic_consumer"
 #define SCX_FILE_COUNT 6
 #define SCX_TU_COUNT 5
@@ -35,6 +37,8 @@ enum scx_variant {
     SCX_SHADOWED,   /* a byte-identical cx.h appears beside the TUs */
     SCX_DRIFT,      /* a flag every TU compiles with, plus a tail comment */
     SCX_LOCAL,      /* CX_PAD sizes cx_small, named only in cx_sum's body */
+    SCX_BUILD,      /* a makefile no compile records reading changes */
+    SCX_TOOL,       /* ...and every compile gains a flag: every TU drifts */
     SCX_VARIANT_COUNT
 };
 
@@ -53,6 +57,7 @@ struct scx_edit {
     const char *reason[SCX_TU_COUNT];
     const char *obligations; /* "" narrowed, else the fallback reason */
     const char *incomplete;  /* NULL: the universe is complete, else why not */
+    bool universal;          /* nothing bounds the change: every group */
     /* Functions the verdict's seeds must include: the compile may re-emit
      * each, so the walk has to start from it. */
     const char *seeds[3];

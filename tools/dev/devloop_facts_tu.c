@@ -564,6 +564,57 @@ static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
                    "no changed id reaches its code");
 }
 
+/* ---- outsiders: TUs that read no changed file ------------------------------------ */
+
+/* Why a TU that read no changed file still recompiles, or NULL: its compile
+ * identity, its include resolution or another file it read changed under
+ * it, or its before side is missing so nothing says it did not. */
+static const char *fxc_outsider_reason(const struct fxc *c,
+                                       const struct fxc_pair *p)
+{
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_OUTSIDER)
+        return NULL;
+#endif
+    if (p->xb == NULL)
+        return "facts-missing";
+    if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY) ||
+        strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
+        return "identity-drift";
+    if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||
+        !fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_PROBES) ||
+        !fxc_same_file_set(p))
+        return "include-resolution-change";
+    return fxc_unrequested(c, p) != NULL ? "unrequested-change" : NULL;
+}
+
+/* Such a TU is affected whole, and no fact bounds the change to the files
+ * asked about: the universe is incomplete and every group is in scope. */
+static bool fxc_outsider(struct fxc *c, const struct fxc_pair *p)
+{
+    const char *why = fxc_outsider_reason(c, p);
+    struct zcl_devloop_facts_tu_verdict *t;
+    if (why == NULL)
+        return true;
+    t = fxc_tu_new(c, p->path);
+    if (t == NULL)
+        return false;
+    fxc_identities(c, p, t);
+    fxc_set(t, true, true, why, "it read none of the changed files");
+    fxc_incomplete(c, why, p->path);
+    c->universal = true;
+    return true;
+}
+
+/* Mark each changed file some side of this pair read. */
+static void fxc_note_reads(struct fxc *c, const struct fxc_pair *p)
+{
+    for (size_t k = 0; k < c->nfiles; k++)
+        if (fxi_file_digest(p->xa, c->files[k]) != NULL ||
+            (p->xb != NULL && fxi_file_digest(p->xb, c->files[k]) != NULL))
+            c->hdrs[k].read = true;
+}
+
 bool fxc_tu_eval(struct fxc *c, const char *path)
 {
     struct fxc_pair p = {0};
@@ -571,15 +622,20 @@ bool fxc_tu_eval(struct fxc *c, const char *path)
     bool ok = true;
     if (!fxc_load_pair(c, path, &p)) {
         fxc_pair_free(&p);
-        return true; /* unreadable: the depfile cross-check names it */
+        /* nothing says whether it read a changed file or drifted */
+        fxc_incomplete(c, "facts-invalid", path);
+        c->universal = true;
+        return true;
     }
     if (!fxc_collect_addresses(c, p.xa) || !fxc_collect_addresses(c, p.xb)) {
         fxc_pair_free(&p);
         return false;
     }
+    fxc_note_reads(c, &p);
     if (!fxc_member(c, &p)) {
+        ok = fxc_outsider(c, &p);
         fxc_pair_free(&p);
-        return true;
+        return ok;
     }
     t = fxc_tu_new(c, path);
     ok = t != NULL;

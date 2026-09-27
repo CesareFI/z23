@@ -13,6 +13,7 @@ struct codeindex;
 struct fxc_hdr {
     const char *path;
     bool loaded;
+    bool read;          /* some candidate manifest read it */
     const char *reason; /* NULL when both texts are bound */
     uint8_t *before, *after;
     size_t blen, alen;
@@ -44,6 +45,7 @@ struct fxc {
     const char *seed_reason;    /* a seed the walk cannot bound, or NULL */
     struct fxc_strs checked;    /* declaring headers whose readers were checked */
     bool strict;                /* no include graph refuses a seed (header path) */
+    bool universal;             /* nothing bounds the change: every group is in scope */
     char seed_detail[192];
     struct codeindex *ci;       /* NULL when the index cannot open */
     int graph;                  /* codeindex_include_dim of the last query */
@@ -61,6 +63,8 @@ struct zcl_devloop_facts_tu_verdict *fxc_tu_new(struct fxc *c,
 /* The TUs the depfile graph says read `path`; -1 when the graph cannot
  * answer (c->graph names why). */
 int fxc_readers(struct fxc *c, const char *path, char (*out)[256], int cap);
+/* The universe is not known: the first reason and path win. */
+void fxc_incomplete(struct fxc *c, const char *reason, const char *path);
 
 /* tu.c: decide one candidate TU; false only for memory. */
 bool fxc_tu_eval(struct fxc *c, const char *path);
@@ -82,6 +86,11 @@ void fxc_check_addresses(struct fxc *c,
 bool fxc_obligations(struct fxc *c, const struct zcl_devloop_plan *given,
                      struct zcl_devloop_plan *plan,
                      struct zcl_devloop_facts_verdict *v);
+/* An incomplete universe: the file-seeded plan, and the whole catalog
+ * when nothing bounds the change (c->universal). */
+bool fxc_fallback(struct fxc *c, const struct zcl_devloop_plan *given,
+                  struct zcl_devloop_plan *plan,
+                  struct zcl_devloop_facts_verdict *v);
 /* report->plain_groups: the groups of the file-seeded plan. */
 bool fxc_plain_count(struct fxc *c, const struct zcl_devloop_plan *given);
 

@@ -168,7 +168,7 @@ static int fxc_str_cmp(const void *a, const void *b)
 
 /* ---- the depfile cross-check ---------------------------------------------------- */
 
-static void fxc_incomplete(struct fxc *c, const char *reason, const char *path)
+void fxc_incomplete(struct fxc *c, const char *reason, const char *path)
 {
     struct zcl_devloop_facts_report *r = c->report;
     if (!r->complete)
@@ -223,6 +223,46 @@ static bool fxc_cross_check(struct fxc *c)
     return ok;
 }
 
+/* ---- build inputs: changed files no compile records reading -------------------- */
+
+/* A changed file that is not C text or prose: a makefile, a flag file, a
+ * wrapper. The compiles it drives record no read of it. */
+static bool fxc_build_input(const char *path)
+{
+    return !fxc_ends_with(path, ".c") && !fxc_ends_with(path, ".h") &&
+           !fxc_ends_with(path, ".md") && strncmp(path, "docs/", 5) != 0;
+}
+
+/* Every candidate is affected by a build input no manifest read: nothing
+ * bounds what it changes, so the universe is incomplete and every group is
+ * in scope. */
+static bool fxc_build_inputs(struct fxc *c)
+{
+    const char *hit = NULL;
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_OUTSIDER)
+        return true;
+#endif
+    for (size_t k = 0; hit == NULL && k < c->nfiles; k++)
+        if (!c->hdrs[k].read && fxc_build_input(c->files[k]))
+            hit = c->files[k];
+    if (hit == NULL)
+        return true;
+    fxc_incomplete(c, "build-input-changed", hit);
+    c->universal = true;
+    for (size_t k = 0; k < c->cand.n; k++) {
+        struct zcl_devloop_facts_tu_verdict *t = fxc_tu_find(c, c->cand.v[k]);
+        if (t == NULL && (t = fxc_tu_new(c, c->cand.v[k])) == NULL)
+            return false;
+        if (t->affected)
+            continue;
+        t->affected = t->broadened = true;
+        t->reason = "build-input-changed";
+        (void)snprintf(t->detail, sizeof(t->detail), "%s", hit);
+    }
+    return true;
+}
+
 /* ---- the entry point ----------------------------------------------------------- */
 
 static int fxc_tu_cmp(const void *a, const void *b)
@@ -241,7 +281,8 @@ static bool fxc_universe(struct fxc *c)
     ok = true;
     for (size_t k = 0; ok && k < c->cand.n; k++)
         ok = fxc_tu_eval(c, c->cand.v[k]);
-    ok = ok && fxc_cross_check(c) && fxc_name_collisions(c);
+    ok = ok && fxc_build_inputs(c) && fxc_cross_check(c) &&
+         fxc_name_collisions(c);
     if (c->mixed)
         fxc_incomplete(c, "producer-mismatch", "two producers in the universe");
     qsort(r->tus, r->ntus, sizeof(*r->tus), fxc_tu_cmp);
@@ -296,6 +337,8 @@ static bool fxc_c_path(struct fxc *c, const struct zcl_devloop_facts_tu *tus,
                        struct zcl_devloop_facts_verdict *v)
 {
     struct zcl_devloop_facts_seed *s;
+    if (c->universal) /* a TU outside the changed files drifted */
+        return fxc_fallback(c, given, plan, v);
     if (!zcl_devloop_facts_add_closure_in(c->root, c->files, c->nfiles, tus,
                                           c->nfiles, c->facts_dir, plan, v))
         return false;
