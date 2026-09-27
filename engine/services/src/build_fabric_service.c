@@ -201,6 +201,14 @@ static bool bf_capability_has(const char *capabilities, const char *wanted)
     return false;
 }
 
+struct zcl_result build_fabric_worker_capability_check(
+    const char *capabilities, const char *wanted)
+{
+    if (!bf_capability_has(capabilities, wanted))
+        return ZCL_ERR(-1, "worker lacks requested build capability");
+    return ZCL_OK;
+}
+
 static bool bf_action_identity_current(const struct db_build_job *job,
                                        const struct db_build_action *action)
 {
@@ -389,7 +397,8 @@ struct zcl_result build_fabric_claim(
     int count = db_build_actions_queued(ndb, queued,
                                         BUILD_FABRIC_ACTION_LIMIT);
     for (int i = 0; i < count; i++) {
-        if (!bf_capability_has(worker.capabilities, queued[i].kind))
+        if (!build_fabric_worker_capability_check(worker.capabilities,
+                                                  queued[i].kind).ok)
             continue;
         struct db_build_job job;
         if (!db_build_job_find(ndb, queued[i].job_id, &job) ||

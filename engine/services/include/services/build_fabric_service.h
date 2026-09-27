@@ -51,6 +51,8 @@ struct zcl_result build_fabric_submit(struct node_db *ndb,
 /* A worker lease is an atomic, expiring ownership token. Every transition
  * after claim compares the exact prior state and lease id; restart recovery
  * returns expired work to QUEUED without allowing the old owner to publish. */
+struct zcl_result build_fabric_worker_capability_check(
+    const char *capabilities, const char *kind);
 struct zcl_result build_fabric_claim(
     struct node_db *ndb, const char *worker_id, const char *lease_id,
     int64_t now, int64_t lease_seconds, struct db_build_action *out,

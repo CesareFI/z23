@@ -4,6 +4,7 @@
 #include "services/build_fabric_runtime.h"
 
 #include "base/hex.h"
+#include "services/build_fabric_attach.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "services/subordinate_work_admission.h"
@@ -20,6 +21,7 @@
 #include "util/supervisor.h"
 #include "util/thread_qos.h"
 #include "util/thread_registry.h"
+#include "vcs/build_action.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -96,6 +98,50 @@ static bool bf_runtime_execution_workspace(
     int n = snprintf(out, 4096, "%s", g_worker_workspace);
     return n > 0 && n < 4096;
 }
+
+/* Peek only at the next local compile before taking a physical lease. The
+ * attach service fences the complete donor replay and publishes atomically;
+ * a miss or named refusal leaves the ordinary claim/execution path intact. */
+static struct zcl_result bf_runtime_try_attach_queued(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct db_build_receipt *receipt,
+    struct build_fabric_attach_report *report)
+{
+    if (!ndb || !workspace || !signer_secret || !signer_pubkey ||
+        !receipt || !report)
+        return ZCL_ERR(-1, "queued attachment requires workspace and worker");
+    memset(report, 0, sizeof(*report));
+    struct db_build_action action;
+    if (db_build_actions_queued(ndb, &action, 1) != 1 ||
+        strcmp(action.kind, VCS_BUILD_ACTION_KIND_V1) != 0 ||
+        action.task_root_sha3[0] || action.candidate_root_sha3[0] ||
+        action.proof_policy_root_sha3[0])
+        return ZCL_OK;
+    struct db_build_job job;
+    if (!db_build_job_find(ndb, action.job_id, &job)) {
+        report->disposition = BUILD_FABRIC_ATTACH_REFUSED;
+        (void)snprintf(report->refusal, sizeof(report->refusal),
+                       "attach-refused-job-missing");
+        return ZCL_ERR(-1, "%s", report->refusal);
+    }
+    if (strcmp(job.profile, VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1) == 0)
+        return ZCL_OK;
+    return build_fabric_attach(ndb, workspace, NULL, &job, &action,
+                               signer_secret, signer_pubkey, receipt, report);
+}
+
+#ifdef ZCL_TESTING
+struct zcl_result build_fabric_runtime_try_attach_queued_for_test(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct db_build_receipt *receipt,
+    struct build_fabric_attach_report *report)
+{
+    return bf_runtime_try_attach_queued(ndb, workspace, signer_secret,
+                                        signer_pubkey, receipt, report);
+}
+#endif
 
 static bool bf_runtime_state_active(const char *state)
 {
@@ -224,6 +270,47 @@ enum subordinate_work_refusal build_fabric_worker_admission_step_for_test(
 }
 #endif
 
+static void bf_runtime_execute_claimed(struct node_db *ndb,
+                                       const struct db_build_action *action,
+                                       const char *lease_id,
+                                       supervisor_child_id id,
+                                       uint64_t *completed)
+{
+    char execution_workspace[4096];
+    if (!bf_runtime_execution_workspace(ndb, action, execution_workspace)) {
+        struct zcl_result failed = build_fabric_finish_leased(
+            ndb, action->action_id, action->lease_id, "LOCAL_FALLBACK",
+            "zcode-workspace-locator-unavailable",
+            (int64_t)platform_time_wall_unix());
+        if (!failed.ok)
+            LOG_ERROR("build_fabric",
+                      "workspace locator failure could not finish %s: %s",
+                      action->action_id, failed.message);
+        atomic_fetch_add(&g_worker_failures, 1);
+        supervisor_tick(id);
+        return;
+    }
+    struct db_build_receipt receipt;
+    struct zcl_result run = build_fabric_worker_execute(
+        ndb, execution_workspace, g_worker_datadir, action->action_id,
+        lease_id, g_local_secret, g_local_pubkey, &receipt, NULL, NULL);
+    if (run.ok) {
+        struct zcl_result admitted = build_fabric_receipt_admit(
+            ndb, execution_workspace, receipt.receipt_id,
+            (int64_t)platform_time_wall_unix());
+        if (admitted.ok)
+            supervisor_progress(id, (int64_t)++*completed);
+        else {
+            LOG_ERROR("build_fabric",
+                      "supervisor refused quarantined result %s: %s",
+                      receipt.receipt_id, admitted.message);
+            atomic_fetch_add(&g_worker_failures, 1);
+        }
+    } else
+        atomic_fetch_add(&g_worker_failures, 1);
+    supervisor_tick(id);
+}
+
 static void *bf_worker_loop(void *arg)
 {
     (void)arg;
@@ -255,6 +342,21 @@ static void *bf_worker_loop(void *arg)
             platform_sleep_ms(250);
             continue;
         }
+        struct db_build_receipt attached_receipt;
+        struct build_fabric_attach_report attach_report;
+        struct zcl_result attach = bf_runtime_try_attach_queued(
+            ndb, g_worker_workspace, g_local_secret, g_local_pubkey,
+            &attached_receipt, &attach_report);
+        if (attach.ok &&
+            attach_report.disposition == BUILD_FABRIC_ATTACH_HIT) {
+            supervisor_progress(id, (int64_t)++completed);
+            supervisor_tick(id);
+            continue;
+        }
+        if (!attach.ok)
+            LOG_WARN("build_fabric", "queued attachment refused: %s",
+                     attach_report.refusal[0] ? attach_report.refusal
+                                              : attach.message);
         uint8_t lease_raw[32];
         char lease_id[65];
         if (!zcl_random_secret_bytes(lease_raw, sizeof(lease_raw),
@@ -298,41 +400,7 @@ static void *bf_worker_loop(void *arg)
                  (long long)(queue_us < 0 ? 0 : queue_us),
                  (long long)action.attempt_count);
         atomic_fetch_add(&g_worker_dispatches, 1);
-        char execution_workspace[4096];
-        if (!bf_runtime_execution_workspace(
-                ndb, &action, execution_workspace)) {
-            struct zcl_result failed = build_fabric_finish_leased(
-                ndb, action.action_id, action.lease_id, "LOCAL_FALLBACK",
-                "zcode-workspace-locator-unavailable",
-                (int64_t)platform_time_wall_unix());
-            if (!failed.ok)
-                LOG_ERROR("build_fabric",
-                          "workspace locator failure could not finish %s: %s",
-                          action.action_id, failed.message);
-            atomic_fetch_add(&g_worker_failures, 1);
-            supervisor_tick(id);
-            continue;
-        }
-        struct db_build_receipt receipt;
-        struct zcl_result run = build_fabric_worker_execute(
-            ndb, execution_workspace, g_worker_datadir, action.action_id,
-            lease_id,
-            g_local_secret, g_local_pubkey, &receipt, NULL, NULL);
-        if (run.ok) {
-            struct zcl_result admitted = build_fabric_receipt_admit(
-                ndb, execution_workspace, receipt.receipt_id,
-                (int64_t)platform_time_wall_unix());
-            if (admitted.ok)
-                supervisor_progress(id, (int64_t)++completed);
-            else {
-                LOG_ERROR("build_fabric",
-                          "supervisor refused quarantined result %s: %s",
-                          receipt.receipt_id, admitted.message);
-                atomic_fetch_add(&g_worker_failures, 1);
-            }
-        } else
-            atomic_fetch_add(&g_worker_failures, 1);
-        supervisor_tick(id);
+        bf_runtime_execute_claimed(ndb, &action, lease_id, id, &completed);
     }
     return NULL;
 }

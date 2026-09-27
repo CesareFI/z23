@@ -2,17 +2,11 @@
  * purpose: Executor-keyed attachment of a duplicate fixed compile request to
  * one already-qualified physical result, with its own signed receipt.
  *
- * The executor key is derived from the immutable bytes the trusted BUILD
- * stage actually consumes: the fixed action descriptor (kind, target,
- * resource policy, declared outputs, recomputed fixed flags/environment
- * roots, proof-policy root), the current host's compiler driver, backend,
- * and ASSEMBLER FILE BYTES (the toolchain capsule binds only the assembler
- * --version string; hashing the bytes here closes the same-version
- * tool-byte-mutation gap executor-side), and the exact .i payload bytes.
- * A physical compile publishes a self-describing CAS record at object id ==
- * key; a second eligible request attaches to the first request's qualified
- * result instead of re-running the compiler.  Reproduction (independent
- * verification) requests carry a distinct profile and are refused by name. */
+ * The key binds the fixed action descriptor, recomputed flags/environment,
+ * proof policy, exact .i bytes, and current driver/backend/assembler file
+ * bytes. The capsule binds the assembler version string; this key also binds
+ * its bytes. A physical compile publishes the CAS record at its key. An
+ * eligible duplicate attaches to that result. Reproduction refuses by name. */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
@@ -876,6 +870,9 @@ static const char *bfat_check_request_identity(struct bfat_attach_ctx *c)
     if (strcmp(c->action.state, "SNAPSHOTTED") != 0 &&
         strcmp(c->action.state, "QUEUED") != 0)
         return "attach-refused-action-state";
+    if (strcmp(c->action.state, "QUEUED") == 0 &&
+        strcmp(c->job.state, "QUEUED") != 0)
+        return "attach-refused-job-state";
     if (c->job.cancel_requested)
         return "attach-refused-job-cancelled";
     return NULL;
@@ -890,7 +887,9 @@ static const char *bfat_check_requester_worker(struct bfat_attach_ctx *c)
     if (!db_build_worker_find(c->ndb, c->requester_worker_id, &worker) ||
         !worker.approved || worker.revoked ||
         (worker.expires_at != 0 && c->now >= worker.expires_at) ||
-        strcmp(worker.signer_pubkey, signer_hex) != 0)
+        strcmp(worker.signer_pubkey, signer_hex) != 0 ||
+        !build_fabric_worker_capability_check(worker.capabilities,
+                                               c->action.kind).ok)
         return "attach-refused-worker-not-approved";
     return NULL;
 }

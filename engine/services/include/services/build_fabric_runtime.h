@@ -16,6 +16,7 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key);
 
 #ifdef ZCL_TESTING
 #include "services/subordinate_work_admission.h"
+#include "services/build_fabric_attach.h"
 
 /* Run exactly the worker loop's admission step — observe, decide, publish the
  * standing reason, count and log a refusal — without the thread, lease or
@@ -29,6 +30,12 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key);
  * path, NOT the running worker. */
 enum subordinate_work_refusal build_fabric_worker_admission_step_for_test(
     bool running, bool persistence_ready, struct node_db *ndb);
+
+struct zcl_result build_fabric_runtime_try_attach_queued_for_test(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
+    struct db_build_receipt *receipt,
+    struct build_fabric_attach_report *report);
 #endif
 
 #endif /* ZCL_SERVICES_BUILD_FABRIC_RUNTIME_H */

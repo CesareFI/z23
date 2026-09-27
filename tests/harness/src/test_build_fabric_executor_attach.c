@@ -5,7 +5,6 @@
 #endif
 
 #include "test/test_core.h"
-
 #include "base/hex.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
@@ -13,6 +12,7 @@
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_attach.h"
+#include "services/build_fabric_runtime.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "services/build_fabric_worker_evidence.h"
@@ -146,7 +146,6 @@ static void att_set_now_after_scan(void *context)
 { build_fabric_attach_test_now(*(const int64_t *)context); }
 extern void db_build_attach_test_before_settle(void (*hook)(void *),
                                               void *context);
-
 struct att_same_handle_revoke {
     struct node_db *ndb;
     char donor_worker_id[65];
@@ -698,13 +697,11 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(vcs_toolchain_capsule_v1_capture(&capsule));
         ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_root));
         zcl_hex_encode(capsule_root, 32, capsule_hex);
-
         uint8_t seed[32], pubkey[32], secret[32];
         memset(seed, 29, sizeof(seed));
         ed25519_keypair(pubkey, secret, seed);
         int64_t now = (int64_t)platform_time_wall_unix();
         ASSERT(att_approve_worker(&ndb, pubkey, now));
-
         struct db_build_job job_a;
         struct db_build_action action_a;
         ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_c, capsule_hex,
@@ -720,9 +717,7 @@ static int test_bf_attach_avoids_second_compile(void)
         struct db_build_action durable_a;
         ASSERT(db_build_action_find(&ndb, action_a.action_id, &durable_a));
         ASSERT_STR_EQ(durable_a.state, "ACCEPTED");
-
-        /* The physical run published its executor-key record: object id ==
-         * key, derived from the exact bytes the executor consumed. */
+        /* Physical execution published a self-addressed executor key. */
         uint8_t input_bytes_root[32], key[32];
         sha3_256(att_unit, sizeof(att_unit) - 1u, input_bytes_root);
 #if defined(__linux__)
@@ -741,7 +736,6 @@ static int test_bf_attach_avoids_second_compile(void)
 #endif
         ASSERT_RESULT_OK(composed);
         ASSERT(vcs_object_has(dir, key));
-
         /* Reconstruct the donor's compiler-action preimage independently. */
         uint8_t driver[32], backend[32], assembler[32];
         ASSERT_RESULT_OK(build_fabric_executor_host_tool_hashes(
@@ -811,9 +805,7 @@ static int test_bf_attach_avoids_second_compile(void)
                                                      &proof_changed));
         ASSERT_EQ(vcs_component_proof_key_diff(&proof_a, &proof_changed),
                   1u << VCS_CPK_POLICY);
-
-        /* Request B: distinct task/candidate/job provenance, identical .i
-         * bytes, toolchain, flags, environment, target, policy, profile. */
+        /* B changes provenance while keeping every executor input. */
         struct db_build_job job_b;
         struct db_build_action action_b;
         ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_b, capsule_hex,
@@ -844,9 +836,38 @@ static int test_bf_attach_avoids_second_compile(void)
 #endif
         int entries_before = att_build_work_entries(dir);
         ASSERT(entries_before >= 0);
-
         struct db_build_receipt receipt_b;
         struct build_fabric_attach_report report;
+        struct db_build_worker requester_worker;
+        ASSERT(db_build_worker_find(&ndb, receipt_a.worker_id,
+                                    &requester_worker));
+        struct db_build_worker qualified_worker = requester_worker;
+        (void)snprintf(requester_worker.capabilities,
+                       sizeof(requester_worker.capabilities), "linux");
+        ASSERT(db_build_worker_save(&ndb, &requester_worker));
+        bool capability_claimed = false;
+        struct db_build_action capability_action;
+        ASSERT(build_fabric_claim(&ndb, requester_worker.worker_id, att_id_d,
+                                  now, 300, &capability_action,
+                                  &capability_claimed).ok);
+        ASSERT(!capability_claimed);
+        struct zcl_result capability_attach =
+            build_fabric_runtime_try_attach_queued_for_test(
+                &ndb, dir, secret, pubkey, &receipt_b, &report);
+        ASSERT(!capability_attach.ok);
+        ASSERT_STR_EQ(report.refusal, "attach-refused-worker-not-approved");
+        ASSERT(db_build_worker_save(&ndb, &qualified_worker));
+        struct db_build_job queued_job;
+        ASSERT(db_build_job_find(&ndb, job_b.job_id, &queued_job));
+        struct db_build_job unqueued_job = queued_job;
+        (void)snprintf(unqueued_job.state, sizeof(unqueued_job.state),
+                       "PLANNED");
+        ASSERT(db_build_job_save(&ndb, &unqueued_job));
+        capability_attach = build_fabric_runtime_try_attach_queued_for_test(
+            &ndb, dir, secret, pubkey, &receipt_b, &report);
+        ASSERT(!capability_attach.ok);
+        ASSERT_STR_EQ(report.refusal, "attach-refused-job-state");
+        ASSERT(db_build_job_save(&ndb, &queued_job));
 #if defined(__linux__)
         int fds_before_attach = att_open_fd_count();
         int64_t attach_self_before, attach_child_before;
@@ -855,9 +876,9 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(att_cpu_us(RUSAGE_SELF, &attach_self_before));
         ASSERT(att_cpu_us(RUSAGE_CHILDREN, &attach_child_before));
 #endif
-        struct zcl_result attached = build_fabric_attach(
-            &ndb, dir, NULL, &job_b, &action_b, secret, pubkey, &receipt_b,
-            &report);
+        struct zcl_result attached =
+            build_fabric_runtime_try_attach_queued_for_test(
+                &ndb, dir, secret, pubkey, &receipt_b, &report);
 #if defined(__linux__)
         ASSERT(att_cpu_us(RUSAGE_SELF, &attach_self_after));
         ASSERT(att_cpu_us(RUSAGE_CHILDREN, &attach_child_after));
@@ -873,7 +894,6 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT_STR_EQ(report.donor_receipt_id, receipt_a.receipt_id);
         ASSERT(report.requester_receipt_id[0]);
         ASSERT(report.restored_bytes > 0);
-
         struct db_build_action durable_b;
         ASSERT(db_build_action_find(&ndb, action_b.action_id, &durable_b));
         ASSERT_STR_EQ(durable_b.state, "CACHE_HIT");
@@ -883,9 +903,7 @@ static int test_bf_attach_avoids_second_compile(void)
         struct db_build_job durable_job_b;
         ASSERT(db_build_job_find(&ndb, job_b.job_id, &durable_job_b));
         ASSERT_STR_EQ(durable_job_b.state, "CACHE_HIT");
-
-        /* Two distinct signed receipts keep one physical observation, while
-         * each output root binds its own action. */
+        /* Both receipts share one observation and bind distinct actions. */
         ASSERT(strcmp(receipt_b.receipt_id, receipt_a.receipt_id) != 0);
         ASSERT_STR_EQ(receipt_b.action_id, action_b.action_id);
         ASSERT_STR_EQ(receipt_b.action_sha3, action_b.action_id);
@@ -898,7 +916,6 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(db_build_receipt_find(&ndb, receipt_b.receipt_id,
                                      &persisted_b));
         ASSERT_STR_EQ(persisted_b.signature, receipt_b.signature);
-
         /* The requester's restored output bytes equal the donor's. */
         uint8_t *bytes_a = NULL, *bytes_b = NULL;
         size_t len_a = 0, len_b = 0;
@@ -910,13 +927,10 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT_EQ(memcmp(bytes_a, bytes_b, len_a), 0);
         free(bytes_a);
         free(bytes_b);
-
         /* No staging area and no compiler process for B. */
         ASSERT_EQ(att_build_work_entries(dir), entries_before);
-
 #if !defined(_WIN32)
-        /* A separate connection revokes the donor after the full scan but
-         * before publication. The receiver must keep the requester queued. */
+        /* Cross-connection revocation before publication keeps B queued. */
         struct db_build_job race_job; struct db_build_action race_action;
         ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
                                 input_root, "dev-x86-64-v3", &race_job,
@@ -941,7 +955,6 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT_EQ(db_build_job_receipts_checked(&ndb, race_job.job_id,
                                                 race_rows, 1), 0);
         ASSERT(att_approve_worker(&ndb, pubkey, now));
-
         /* Revoking a distinct donor cannot race the signed commit. */
         uint8_t requester_seed[32], requester_pubkey[32];
         uint8_t requester_secret[32];
@@ -1059,7 +1072,6 @@ static int test_bf_attach_executor_key_binds_tool_bytes(void)
         ASSERT(vcs_toolchain_capsule_v1_capture(&capsule));
         /* Capsule binds assembler version; executor key binds file bytes. */
         ASSERT(memcmp(capsule.assembler_sha3, assembler, 32) != 0);
-
         const char *old_compiler_path = getenv("COMPILER_PATH");
         char *saved_compiler_path = old_compiler_path
             ? strdup(old_compiler_path) : NULL;
@@ -1085,7 +1097,6 @@ static int test_bf_attach_executor_key_binds_tool_bytes(void)
         ASSERT_EQ(memcmp(driver_override, driver, 32), 0);
         ASSERT_EQ(memcmp(backend_override, backend, 32), 0);
         ASSERT_EQ(memcmp(assembler_override, assembler, 32), 0);
-
         uint8_t fixed_flags[32], fixed_environment[32], input_root[32];
         ASSERT(vcs_build_action_v1_fixed_flags_root_for_kind(
             VCS_BUILD_ACTION_KIND_V1, fixed_flags));
@@ -1113,9 +1124,7 @@ static int test_bf_attach_executor_key_binds_tool_bytes(void)
             key_b);
         ASSERT(memcmp(toolchain_root, mutated_toolchain_root, 32) != 0);
         ASSERT(memcmp(key_a, key_b, 32) != 0);
-
-        /* A changed fixed-flags root is a different executor key, so a
-         * flag-mutated request can never see a donor record: a clean MISS. */
+        /* A changed flags root yields a clean different-key MISS. */
         uint8_t mutated_flags[32], key_c[32];
         memcpy(mutated_flags, fixed_flags, 32);
         mutated_flags[0] ^= 1u;
@@ -1156,7 +1165,6 @@ static int test_bf_attach_executor_key_binds_tool_bytes(void)
     } _test_next:;
     return failures;
 }
-
 static int test_bf_attach_miss_and_poisoned_record(void)
 {
     int failures = 0;
@@ -1184,7 +1192,6 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         struct db_build_action action;
         ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_c, capsule_hex,
                                 input_root, "dev-x86-64-v3", &job, &action));
-
         struct db_build_receipt receipt;
         struct build_fabric_attach_report report;
         struct zcl_result miss = build_fabric_attach(
@@ -1193,12 +1200,9 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_MISS);
         ASSERT_EQ(report.compiler_processes, 0);
         ASSERT_EQ(att_build_work_entries(dir), 0);
-
         uint8_t key[32];
         ASSERT(zcl_hex_decode_lower(report.executor_key, key, 32));
-
-        /* Even without a donor, a physical reproduction is never an
-         * attachment request: it must reach the independent executor. */
+        /* Physical reproduction always requires an independent executor. */
         struct db_build_job repro_job;
         struct db_build_action repro_action;
         ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_c, capsule_hex,
@@ -1217,7 +1221,6 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         struct db_build_action durable;
         ASSERT(db_build_action_find(&ndb, repro_action.action_id, &durable));
         ASSERT_STR_EQ(durable.state, "QUEUED");
-
         /* A record that does not re-derive to its own address is poison. */
         static const uint8_t garbage[] = "not-an-executor-key-record";
         ASSERT(vcs_object_put_addressed(dir, key, garbage,
@@ -1229,7 +1232,6 @@ static int test_bf_attach_miss_and_poisoned_record(void)
         ASSERT_STR_EQ(report.refusal, "executor-key-record-poisoned");
         ASSERT(db_build_action_find(&ndb, action.action_id, &durable));
         ASSERT_STR_EQ(durable.state, "QUEUED");
-
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -1432,8 +1434,7 @@ static int test_bf_attach_reproduction_never_attaches(void)
         ASSERT(strcmp(receipt_c.receipt_id, receipt_a.receipt_id) != 0);
         ASSERT(strcmp(receipt_c.action_id, receipt_a.action_id) != 0);
         ASSERT(strcmp(receipt_c.observation_sha3, receipt_a.observation_sha3) != 0);
-        /* Manifests bind different actions; their compiled object bytes must
-         * still agree across the two lease directories. */
+        /* Different action manifests must agree on compiled object bytes. */
         uint8_t *object_a = NULL, *object_c = NULL;
         size_t object_a_len = 0, object_c_len = 0;
         ASSERT(att_read_artifact_bytes(dir, receipt_a.output_sha3,
@@ -1450,8 +1451,7 @@ static int test_bf_attach_reproduction_never_attaches(void)
                "(primary_us=%lld reproduction_us=%lld) attaches=0\n",
                (long long)wall_a, (long long)wall_c);
 
-        /* A second reproduction has the same profile as the first, but it
-         * still requires its own physical compiler execution. */
+        /* A second reproduction still executes its own compiler. */
         struct db_build_job job_d;
         struct db_build_action action_d;
         ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_d, capsule_hex,
