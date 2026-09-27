@@ -6,6 +6,7 @@
 
 #include "base/safe_alloc.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -153,4 +154,44 @@ bool fxi_codegen_closure(const struct fxi *x, enum fxi_codegen model,
         fxg_expand(x, model, mark, q, &tail, q[head++]);
     free(q);
     return true;
+}
+
+/* ---- positions: builtins that expand to where or how often -------------- */
+
+static bool fxg_ident_byte(unsigned char c)
+{
+    return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9');
+}
+
+static bool fxg_body_names(const struct fxi_macro *m, const char *ident)
+{
+    size_t n = strlen(ident);
+    for (size_t i = 0; i + n <= m->len; i++) {
+        if (memcmp(m->body + i, ident, n) != 0)
+            continue;
+        if ((i == 0 || !fxg_ident_byte((unsigned char)m->body[i - 1])) &&
+            (i + n == m->len || !fxg_ident_byte((unsigned char)m->body[i + n])))
+            return true;
+    }
+    return false;
+}
+
+bool fxi_expands_builtin(const struct fxi *x, const char *ident, size_t *via)
+{
+    char id[64];
+    uint32_t e;
+    uint8_t *flags = zcl_calloc(x->nents + 1, 1, "facts_codegen.builtin");
+    bool ok;
+    if (flags == NULL)
+        return false;
+    int w = snprintf(id, sizeof(id), "m:@builtin:%s", ident);
+    if (w > 0 && (size_t)w < sizeof(id) && fxi_lookup(x, id, (size_t)w, &e))
+        flags[e] = 1;
+    for (size_t k = 0; k < x->nmacros; k++)
+        if (fxg_body_names(&x->macros[k], ident))
+            flags[x->macros[k].ent] = flags[x->macros[k].group] = 1;
+    ok = fxi_taint(x, flags, via);
+    free(flags);
+    return ok;
 }

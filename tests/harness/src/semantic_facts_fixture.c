@@ -16,6 +16,7 @@ static const char k_sft_header[] =
     "#ifndef FX_H\n"
     "#define FX_H\n"
     "#define FX_SCALE 2\n"
+    "#define FX_WHERE() (__LINE__ + 0)\n"
     "typedef int fx_num;\n"
     "struct fx_pair { int a; int b; };\n"
     "int fx_helper(int v);\n"
@@ -25,7 +26,8 @@ static const char k_sft_header[] =
 
 /* fx_helper is called from fx_a.c, fx_other from fx_b.c: a file-seeded
  * closure of fx_core.c reaches both callers, a closure seeded by fx_helper
- * alone reaches only fx_a.c. */
+ * alone reaches only fx_a.c. fx_where expands __LINE__ through FX_WHERE:
+ * an edit above it that moves its lines changes its code. */
 static const char k_sft_core[] =
     "#include \"fx.h\"\n"
     "static int fx_table[2] = {1, 2};\n"
@@ -35,7 +37,8 @@ static const char k_sft_core[] =
     "static int fx_cb(int v) { return v - 1; }\n"
     "int fx_use(void) { return fx_run(fx_cb, 1); }\n"
     "int fx_spin(void) { __asm__ volatile(\"\" ::: \"memory\"); return 0; }\n"
-    "int fx_size(void) { return (int)sizeof(struct fx_pair); }\n";
+    "int fx_size(void) { return (int)sizeof(struct fx_pair); }\n"
+    "int fx_where(void) { return FX_WHERE(); }\n";
 
 static const char k_sft_a[] =
     "#include \"fx.h\"\n"
@@ -62,7 +65,7 @@ const struct sft_edit k_sft_edits[SFT_VARIANT_COUNT] = {
                   "return v * FX_SCALE + 1; }", "", "fx_helper", 0},
     [SFT_COMMENT] = {"comment", SFT_CORE, "int fx_helper(int v) { return",
                      "\n/* scaled */\nint fx_helper(int v) { /* x2 */ return",
-                     "", NULL, 0},
+                     "", "fx_where", 0},
     [SFT_LAYOUT] = {"layout", SFT_HEADER, "int a; int b; };",
                     "int a; int b; int c; };", "layout-changed", NULL, 0},
     [SFT_MACRO] = {"macro", SFT_HEADER, "#define FX_SCALE 2",
@@ -106,7 +109,7 @@ const struct sft_edit k_sft_edits[SFT_VARIANT_COUNT] = {
                    "int fx_run(int (*cb)(int), int v) { return cb(v); }",
                    "int fx_run(int (*cb)(int),\n           int v)\n{\n"
                    "    return  cb(v);\n}\n",
-                   "", NULL, 0},
+                   "", "fx_where", 0},
     /* No fact changes, but the header's bytes do: an included file is
      * never narrowed through. */
     [SFT_HDRCOMMENT] = {"hdrcomment", SFT_HEADER, "#define FX_SCALE 2",

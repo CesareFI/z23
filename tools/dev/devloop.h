@@ -278,7 +278,7 @@ enum zcl_devloop_consumer_mutant {
     ZCL_DEVLOOP_MUTANT_NONE = 0,
     ZCL_DEVLOOP_MUTANT_NO_TYPE_CLOSURE,  /* typedef/tag edges dropped */
     ZCL_DEVLOOP_MUTANT_NO_MACRO_CLOSURE, /* macro-body edges dropped */
-    ZCL_DEVLOOP_MUTANT_NO_POSITION,      /* header text positions ignored */
+    ZCL_DEVLOOP_MUTANT_NO_POSITION,      /* header positions and moved __LINE__ users ignored */
     ZCL_DEVLOOP_MUTANT_NO_TAG_ALIAS,     /* s:N no longer reaches s:<path>:N */
     ZCL_DEVLOOP_MUTANT_NO_CODEGEN_CLOSURE, /* seeds are the changed functions only */
     ZCL_DEVLOOP_MUTANT_NO_OUTSIDER,      /* TUs reading no changed file never drift */

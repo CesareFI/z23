@@ -39,6 +39,10 @@
  *  10. The compile identity names an optimizer whose re-emitted code the
  *      facts can bound (devloop_facts_codegen.c; else
  *      "inline-closure-unknown").
+ *  11. Every main-file function that expands __LINE__ (directly or through
+ *      a macro) and whose lines moved or changed joins the seeds; file-
+ *      scope code that expands __LINE__, or any use of __COUNTER__, is
+ *      "position-dependent".
  * The seeds are the functions whose FUNCTIONS record changed, grown on both
  * sides to every main-file function the compile may re-emit with them. */
 
@@ -571,6 +575,112 @@ static bool fx_codegen_side(struct fx_ctx *c, const uint8_t *m, size_t n,
     return ok;
 }
 
+
+/* ---- rule 11: positions ------------------------------------------------ */
+
+/* The bytes of lines [lo, hi] (1-based) of src; false when src lacks them. */
+static bool fx_line_range(const uint8_t *src, size_t len, uint32_t lo,
+                          uint32_t hi, size_t *b, size_t *e)
+{
+    uint32_t line = 1;
+    size_t i = 0;
+    if (src == NULL)
+        return false;
+    while (i < len && line < lo)
+        line += src[i++] == '\n';
+    if (line != lo)
+        return false;
+    *b = i;
+    while (i < len && line <= hi)
+        line += src[i++] == '\n';
+    *e = i;
+    return true;
+}
+
+/* A __LINE__ in function e of xa may now expand to another number: its
+ * lines moved, or their bytes changed without its tokens changing (a
+ * comment moved across the expansion). */
+static bool fx_moved(const struct fx_ctx *c, const struct fxi *xa,
+                     const struct fxi *xb, size_t e)
+{
+    const struct zcl_devloop_facts_tu *t = c->tu;
+    const char *main = fxi_main(xa);
+    uint32_t alo, ahi, blo, bhi;
+    size_t eb, ab, ae, bb, be;
+    if (!fxi_find(xb, fxi_id(xa, e), &eb) || !fxi_span(xa, e, main, &alo, &ahi) ||
+        !fxi_span(xb, eb, main, &blo, &bhi) || alo != blo || ahi != bhi ||
+        !fx_line_range(t->after_src, t->after_src_len, alo, ahi, &ab, &ae) ||
+        !fx_line_range(t->before_src, t->before_src_len, blo, bhi, &bb, &be))
+        return true;
+    return ae - ab != be - bb ||
+           memcmp(t->after_src + ab, t->before_src + bb, ae - ab) != 0;
+}
+
+/* __COUNTER__ counts expansions across the TU: any change may renumber
+ * every later one, so a TU that expands it anywhere is not narrowed. */
+static bool fx_counter(struct fx_ctx *c, const struct fxi *x, size_t *via)
+{
+    if (!fxi_expands_builtin(x, "__COUNTER__", via))
+        return fx_fail(c, "out-of-memory", "%s", c->tu->source);
+    for (size_t e = 0; e < fxi_count(x); e++)
+        if (via[e] != SIZE_MAX &&
+            (fxi_defined_function(x, e) || fxi_is_site(x, e, "@")))
+            return fx_fail(c, "position-dependent", "%s expands __COUNTER__",
+                           fxi_id(x, e));
+    return true;
+}
+
+/* Every main-file function that expands __LINE__ and whose lines moved
+ * joins the seeds; file-scope code that expands it is not narrowed, since
+ * no span says where it sits. */
+static bool fx_lines(struct fx_ctx *c, const struct fxi *xa,
+                     const struct fxi *xb, size_t *via)
+{
+    if (!fxi_expands_builtin(xa, "__LINE__", via))
+        return fx_fail(c, "out-of-memory", "%s", c->tu->source);
+    for (size_t e = 0; e < fxi_count(xa); e++) {
+        if (via[e] == SIZE_MAX || fx_has_seed(c, fxi_id(xa, e)))
+            continue;
+        if (fxi_is_site(xa, e, "@scope:"))
+            return fx_fail(c, "position-dependent",
+                           "file-scope code of %s expands __LINE__",
+                           c->tu->source);
+        if (fxi_main_function(xa, e) && fx_moved(c, xa, xb, e) &&
+            !fx_seed_push(c, fxi_bare(xa, e), fxi_id(xa, e)))
+            return false;
+    }
+    return true;
+}
+
+/* __LINE__ and __COUNTER__ expand to where and how often, which no token of
+ * a function records: their users join the seeds or refuse the narrowing. */
+static bool fx_positions(struct fx_ctx *c)
+{
+    const char *why = "";
+    struct fxi *xa, *xb = NULL;
+    size_t *via = NULL, cap;
+    bool ok;
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_POSITION)
+        return true;
+#endif
+    xa = fxi_open(c->tu->after, c->tu->after_len, &why);
+    if (xa != NULL)
+        xb = fxi_open(c->tu->before, c->tu->before_len, &why);
+    if (xb == NULL) {
+        fxi_free(xa);
+        return fx_fail(c, "invalid-manifest", "%s: %s", c->tu->source, why);
+    }
+    cap = fxi_count(xa) > fxi_count(xb) ? fxi_count(xa) : fxi_count(xb);
+    via = zcl_calloc(cap + 1, sizeof(*via), "facts.positions");
+    ok = via != NULL || fx_fail(c, "out-of-memory", "%s", c->tu->source);
+    ok = ok && fx_counter(c, xb, via) && fx_counter(c, xa, via) &&
+         fx_lines(c, xa, xb, via);
+    free(via);
+    fxi_free(xb);
+    fxi_free(xa);
+    return ok;
+}
 /* The seeds so far are the functions whose source changed; the compile may
  * re-emit more (their callers inline them, their internal callees take
  * their constants). Both sides' closures join the seeds. */
@@ -622,7 +732,7 @@ static bool fx_decide(const char *root, const char *const *files, size_t n,
         else if (c->tu == NULL)
             ok = fx_fail(c, "no-manifest", "%s", files[k]);
         else
-            ok = fx_check_tu(c) && fx_codegen(c);
+            ok = fx_check_tu(c) && fx_positions(c) && fx_codegen(c);
     }
     free(c->ranges);
     free(c);

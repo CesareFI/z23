@@ -131,4 +131,11 @@ enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
 bool fxi_codegen_closure(const struct fxi *x, enum fxi_codegen model,
                          uint8_t *mark);
 
+/* via (fxi_count() slots): for every entity that expands the builtin macro
+ * `ident` (__LINE__, __COUNTER__), directly or through the body of a macro
+ * it expands, the entity it reaches; SIZE_MAX for every other. A builtin
+ * expanded only inside a macro has no id of its own, so each macro whose
+ * body names it stands in. False only for memory. */
+bool fxi_expands_builtin(const struct fxi *x, const char *ident, size_t *via);
+
 #endif /* ZCL_TOOLS_DEV_DEVLOOP_FACTS_INDEX_H */
