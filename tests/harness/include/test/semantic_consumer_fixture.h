@@ -11,8 +11,8 @@
 #define SCX_HEADER SCX_DIR "/include/cx.h"
 #define SCX_A SCX_DIR "/src/cx_a.c"   /* cx_big's layout, a static cx_twice */
 #define SCX_B SCX_DIR "/src/cx_b.c"   /* cx_count, CX_MODE in #if, cx_twice */
-#define SCX_C SCX_DIR "/src/cx_c.c"   /* defines cx_sum (CX_SCALE) and cx_hook */
-#define SCX_D SCX_DIR "/src/cx_d.c"   /* calls cx_sum, takes cx_hook's address */
+#define SCX_C SCX_DIR "/src/cx_c.c"   /* cx_sum (CX_SCALE, a local cx_small), cx_hook */
+#define SCX_D SCX_DIR "/src/cx_d.c"   /* calls cx_sum, takes cx_hook's address, sizes cx_big_t */
 #define SCX_E SCX_DIR "/src/cx_e.c"   /* reads the header, names nothing in it */
 /* `#include "cx.h"` searches the includer's directory first. */
 #define SCX_SHADOW SCX_DIR "/src/cx.h"
@@ -22,8 +22,8 @@
 
 enum scx_variant {
     SCX_BASE,
-    SCX_LAYOUT,     /* cx_big gains a field: only its user is affected */
-    SCX_MACRO,      /* CX_CAP 64 -> 65 sizes cx_big: only its user */
+    SCX_LAYOUT,     /* cx_big gains a field: its users cx_a and (cx_big_t) cx_d */
+    SCX_MACRO,      /* CX_CAP 64 -> 65 sizes cx_big: only its two users */
     SCX_COND,       /* CX_MODE, tested in cx_b.c's #if, changes value */
     SCX_NESTED,     /* CX_BASE, used only inside CX_SCALE's body, changes */
     SCX_TYPEDEF,    /* cx_count becomes long: only the TU naming it */
@@ -34,6 +34,7 @@ enum scx_variant {
     SCX_ADDRESS,    /* cx_hook's body, whose address cx_d.c takes */
     SCX_SHADOWED,   /* a byte-identical cx.h appears beside the TUs */
     SCX_DRIFT,      /* a flag every TU compiles with, plus a tail comment */
+    SCX_LOCAL,      /* CX_PAD sizes cx_small, named only in cx_sum's body */
     SCX_VARIANT_COUNT
 };
 
@@ -52,6 +53,9 @@ struct scx_edit {
     const char *reason[SCX_TU_COUNT];
     const char *obligations; /* "" narrowed, else the fallback reason */
     const char *incomplete;  /* NULL: the universe is complete, else why not */
+    /* Functions the verdict's seeds must include: the compile may re-emit
+     * each, so the walk has to start from it. */
+    const char *seeds[3];
 };
 
 extern const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT];

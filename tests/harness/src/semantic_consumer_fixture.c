@@ -17,9 +17,11 @@ static const char k_scx_header[] =
     "#define CX_MODE 1\n"
     "#define CX_BASE 3\n"
     "#define CX_SCALE (CX_BASE * 2)\n"
+    "#define CX_PAD 4\n"
     "typedef int cx_count;\n"
     "struct cx_big { int a; char buf[CX_CAP]; };\n"
-    "struct cx_small { int n; };\n"
+    "struct cx_small { char pad[CX_PAD]; int n; };\n"
+    "typedef struct cx_big cx_big_t;\n"
     "int cx_fill(struct cx_big *b);\n"
     "int cx_count_of(cx_count c);\n"
     "int cx_sum(int v);\n"
@@ -46,14 +48,17 @@ static const char k_scx_b[] =
 
 static const char k_scx_c[] =
     "#include \"cx.h\"\n"
-    "int cx_sum(int v) { struct cx_small s = {v}; return s.n + CX_SCALE; }\n"
+    "int cx_sum(int v) { struct cx_small s = {.n = v};"
+    " return s.n + (int)sizeof(s) + CX_SCALE; }\n"
     "int cx_hook(int v) { return v - 1; }\n";
 
 static const char k_scx_d[] =
     "#include \"cx.h\"\n"
     "int (*const cx_hook_ref)(int) = cx_hook;\n"
     "int cx_top_d(void);\n"
-    "int cx_top_d(void) { return cx_sum(3); }\n";
+    "int cx_top_d(void) { return cx_sum(3); }\n"
+    "int cx_size_d(void);\n"
+    "int cx_size_d(void) { return (int)sizeof(cx_big_t); }\n";
 
 static const char k_scx_e[] =
     "#include \"cx.h\"\n"
@@ -81,16 +86,16 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                     .from = "char buf[CX_CAP]; };",
                     .to = "char buf[CX_CAP]; int extra; };",
                     .changed = {SCX_HEADER},
-                    .affected = {true, false, false, false, false},
+                    .affected = {true, false, false, true, false},
                     .reason = {"interface", "unaffected", "unaffected",
-                               "unaffected", "unaffected"},
+                               "interface", "unaffected"},
                     .obligations = ""},
     [SCX_MACRO] = {.name = "macro", .file = SCX_HEADER,
                    .from = "#define CX_CAP 64", .to = "#define CX_CAP 65",
                    .changed = {SCX_HEADER},
-                   .affected = {true, false, false, false, false},
+                   .affected = {true, false, false, true, false},
                    .reason = {"interface", "unaffected", "unaffected",
-                              "unaffected", "unaffected"},
+                              "interface", "unaffected"},
                    .obligations = ""},
     [SCX_COND] = {.name = "cond", .file = SCX_HEADER,
                   .from = "#define CX_MODE 1", .to = "#define CX_MODE 2",
@@ -141,7 +146,9 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                     .changed = {SCX_A},
                     .affected = {true, false, false, false, false},
                     .reason = {"source-changed", NULL, NULL, NULL, NULL},
-                    .obligations = ""},
+                    .obligations = "",
+                    /* cx_top_a calls cx_twice: -O1 may inline it */
+                    .seeds = {"cx_twice", "cx_top_a"}},
     [SCX_ADDRESS] = {.name = "address", .file = SCX_C,
                      .from = "return v - 1; }", .to = "return v - 2; }",
                      .changed = {SCX_C},
@@ -169,6 +176,13 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                               "identity-drift", "identity-drift",
                               "identity-drift"},
                    .obligations = ""},
+    [SCX_LOCAL] = {.name = "local", .file = SCX_HEADER,
+                   .from = "#define CX_PAD 4", .to = "#define CX_PAD 8",
+                   .changed = {SCX_HEADER},
+                   .affected = {false, false, true, false, false},
+                   .reason = {"unaffected", "unaffected", "interface",
+                              "unaffected", "unaffected"},
+                   .obligations = "", .seeds = {"cx_sum"}},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,

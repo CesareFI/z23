@@ -15,11 +15,17 @@
  *               before them every TU whose debug positions move, a signature
  *               the definer and its callers, a static body only its TU (not
  *               the TU with a same-name static), a shadowing header and
- *               flag drift every reader, and a seed whose address is taken
- *               the file-seeded obligations.
- *   mutants     dropping the type closure, the macro closure or the header
- *               position rule leaves a table-affected TU unaffected, so each
- *               rule is load-bearing.
+ *               flag drift every reader, a seed whose address is taken
+ *               the file-seeded obligations, and a struct named only inside
+ *               a function body the TU defining that function. The seeds
+ *               hold every function the compile may re-emit: a caller that
+ *               may inline a changed static is one.
+ *   mutants     dropping the type closure, the macro closure, the header
+ *               position rule, the bare-tag alias or the code-generation
+ *               closure leaves a table-affected TU unaffected or a required
+ *               seed out, so each rule is load-bearing.
+ *   model       -O0, -O1 and -Og bound the re-emitted code; -O2 and above,
+ *               LTO, IPA clone or merge flags and profile feedback do not.
  *   fallback    a reader without facts is affected ("facts-missing"); with
  *               no depfile graph the universe is incomplete and the
  *               obligations are exactly the file-seeded plan.
@@ -43,6 +49,7 @@
 #include "test/semantic_facts_fixture.h"
 
 #include "devloop.h"
+#include "devloop_facts_index.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -141,10 +148,12 @@ static size_t sct_mutant_unsafe(const struct sct_fixtures *f,
 static int sct_t_mutants(const struct sct_fixtures *f, struct scx_result *res)
 {
     int failures = 0;
-    TEST_CASE("semantic_consumer: dropping the type, macro or position rule misses an affected TU") {
+    TEST_CASE("semantic_consumer: dropping the type, macro, position, tag-alias or code-generation rule misses an affected TU or seed") {
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_TYPE_CLOSURE, res) > 0);
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_MACRO_CLOSURE, res) > 0);
         ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_POSITION, res) > 0);
+        ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_TAG_ALIAS, res) > 0);
+        ASSERT(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NO_CODEGEN_CLOSURE, res) > 0);
         ASSERT_EQ(sct_mutant_unsafe(f, ZCL_DEVLOOP_MUTANT_NONE, res), (size_t)0);
     } TEST_END
     zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NONE;
@@ -303,6 +312,41 @@ static int sct_t_command(const struct sct_fixtures *f, struct scx_result *res)
     return failures;
 }
 
+static int sct_t_codegen_model(void)
+{
+    static const struct {
+        const char *identity;
+        enum fxi_codegen want;
+    } k[] = {
+        {"-std=c23 -Wall", FXI_CODEGEN_CALLERS},
+        {"-O0 -g", FXI_CODEGEN_CALLERS},
+        {"-Og -g", FXI_CODEGEN_COMPONENT},
+        {"-O1", FXI_CODEGEN_COMPONENT},
+        {"-O", FXI_CODEGEN_COMPONENT},
+        {"-O0 -O2", FXI_CODEGEN_UNBOUNDED},
+        {"-O3", FXI_CODEGEN_UNBOUNDED},
+        {"-Os", FXI_CODEGEN_UNBOUNDED},
+        {"-Og -flto", FXI_CODEGEN_UNBOUNDED},
+        {"-O1 -fipa-cp", FXI_CODEGEN_UNBOUNDED},
+        {"-O1 -fipa-icf", FXI_CODEGEN_UNBOUNDED},
+        {"-Og -fprofile-use", FXI_CODEGEN_UNBOUNDED},
+    };
+    int failures = 0;
+    TEST_CASE("semantic_consumer: the optimizer model bounds -O0, -O1 and -Og and refuses -O2 and above, LTO, IPA clones and profile feedback") {
+        for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+            const char *token = NULL;
+            enum fxi_codegen got = fxi_codegen_model_of(
+                (const uint8_t *)k[i].identity, strlen(k[i].identity), &token);
+            if (got != k[i].want)
+                printf("[%s: model %d, want %d] ", k[i].identity, (int)got,
+                       (int)k[i].want);
+            ASSERT_EQ((int)got, (int)k[i].want);
+            ASSERT(token != NULL);
+        }
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_consumer(void)
 {
     int failures = 0;
@@ -319,6 +363,7 @@ int test_semantic_consumer(void)
         failures += sct_t_nograph(f, res);
         failures += sct_t_identities(f, res);
         failures += sct_t_command(f, res);
+        failures += sct_t_codegen_model();
     }
     for (int v = 0; f != NULL && v < SCX_VARIANT_COUNT; v++)
         for (size_t tu = 0; tu < SCX_TU_COUNT; tu++)

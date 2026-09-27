@@ -179,9 +179,32 @@ static size_t scx_compare_whole(const struct scx_edit *e,
     return 1;
 }
 
+/* Each function the table says the compile may re-emit must be a seed: a
+ * missing one is unsafe (its callers' obligations may go unselected). */
+static size_t scx_compare_seeds(const struct scx_edit *e,
+                                const struct scx_result *r, size_t *unsafe,
+                                FILE *why)
+{
+    size_t bad = 0;
+    for (size_t i = 0; i < sizeof(e->seeds) / sizeof(e->seeds[0]); i++) {
+        bool found = e->seeds[i] == NULL;
+        for (size_t k = 0; !found && k < r->verdict.seeds_len; k++)
+            found = strcmp(r->verdict.seeds[k], e->seeds[i]) == 0;
+        if (found)
+            continue;
+        bad++;
+        (*unsafe)++;
+        if (why != NULL)
+            fprintf(why, "  %s seeds: %s missing (%zu seed(s))\n", e->name,
+                    e->seeds[i], r->verdict.seeds_len);
+    }
+    return bad;
+}
+
 /* One line per disagreement with the edit table on `why` (when not NULL);
  * *unsafe counts TUs the table says are affected that the consumer calls
- * unaffected or leaves out. Returns the number of disagreements. */
+ * unaffected or leaves out, and seeds it must start from that it lacks.
+ * Returns the number of disagreements. */
 size_t scx_compare(enum scx_variant v, const struct scx_result *r,
                    size_t *unsafe, FILE *why)
 {
@@ -190,7 +213,8 @@ size_t scx_compare(enum scx_variant v, const struct scx_result *r,
     *unsafe = 0;
     for (size_t k = 0; k < SCX_TU_COUNT; k++)
         bad += scx_compare_tu(e, k, r, unsafe, why);
-    return bad + scx_compare_whole(e, r, why);
+    return bad + scx_compare_whole(e, r, why) +
+           scx_compare_seeds(e, r, unsafe, why);
 }
 
 void scx_result_free(struct scx_result *r)
