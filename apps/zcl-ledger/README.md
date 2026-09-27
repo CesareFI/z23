@@ -35,6 +35,12 @@ build/zcl-ledger/zcl-ledger app-info /dev/hidraw1
 build/zcl-ledger/zcl-ledger app-info --json /dev/hidraw1
 ```
 
+The HID exchange clears its response buffer and sets the returned length to
+zero after a timeout, malformed sequence, or partial reply. A caller must
+close and recheck the device after such a failure. Local socket-backed tests
+exercise these cases; they do not substitute for a physical USB disconnect
+test.
+
 After the [ZCL Probe device app](device-blue/README.md) is installed and open,
 `zcl-ledger probe --json /dev/hidrawN` checks its exact version 1 capability
 reply. Version 1 reports address and signing capabilities as false. The probe

@@ -105,10 +105,17 @@ static int recv_response(int fd, uint8_t *response, size_t response_cap,
 int ledger_hid_exchange_timeout(int fd, const uint8_t *apdu, size_t apdu_len,
                                 uint8_t *response, size_t response_cap,
                                 size_t *response_len, int timeout_ms) {
+    if (response_len) *response_len = 0;
     if (fd < 0 || !apdu || !apdu_len || apdu_len > UINT16_MAX ||
         !response || !response_len || response_cap < 2 || timeout_ms < 1) return -1;
-    if (send_apdu(fd, apdu, apdu_len, timeout_ms) < 0) return -1;
-    return recv_response(fd, response, response_cap, response_len, timeout_ms);
+    size_t received = 0;
+    if (send_apdu(fd, apdu, apdu_len, timeout_ms) < 0 ||
+        recv_response(fd, response, response_cap, &received, timeout_ms) < 0) {
+        memset(response, 0, response_cap);
+        return -1;
+    }
+    *response_len = received;
+    return 0;
 }
 
 int ledger_hid_exchange(int fd, const uint8_t *apdu, size_t apdu_len,
