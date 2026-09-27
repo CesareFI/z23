@@ -9,9 +9,10 @@
  * produce; each must be refused with its own token. The one admit is a
  * record sealed with a key the fixture holds and the trust root pins.
  *
- * Fixtures live under test-tmp/ with XDG_STATE_HOME redirected into it, so
- * no assertion reads or writes the operator's real signing key, and no
- * assertion depends on whether this host has a verifier installed. */
+ * Signer fixtures live under test-tmp/ with XDG_STATE_HOME redirected into
+ * it. The loader key fixture uses a private system-temp directory because
+ * the loader checks every parent for writable-path attacks. No assertion
+ * reads or writes the operator's real signing key. */
 
 #include "test/test_core.h"
 
@@ -19,6 +20,8 @@
 #include "base/safe_alloc.h"
 #include "crypto/ed25519.h"
 #include "dev_proof_signer.h"
+#include "platform/directory_compat.h"
+#include "platform/temp_directory.h"
 #include "sha3/sha3.h"
 #include "verify_attest.h"
 
@@ -638,6 +641,25 @@ static int test_va_seal_null_out(void)
 /* ── 4. trust root: loader on real files ────────────────────────────────── */
 
 #if !defined(_WIN32)
+static bool va_system_temp_create(char *out, size_t cap, bool *created)
+{
+    const char *prior = getenv("TMPDIR");
+    char saved[PATH_MAX];
+    *created = false;
+    if (prior) {
+        int n = snprintf(saved, sizeof(saved), "%s", prior);
+        if (n < 0 || (size_t)n >= sizeof(saved)) return false;
+    }
+    /* This trust-root fixture needs the system temp root even if the test
+     * runner confines its own scratch files beneath a writable checkout. */
+    if (unsetenv("TMPDIR") != 0) return false;
+    *created = platform_temp_directory_create(
+        "z23-verify-attest-", out, cap);
+    bool restored = prior ? setenv("TMPDIR", saved, 1) == 0
+                          : unsetenv("TMPDIR") == 0;
+    return restored && *created;
+}
+
 static bool va_load_refuses(const char *path, bool via_env,
                             const struct zcl_verify_attest_box_key *box,
                             const char *want)
@@ -662,7 +684,10 @@ static bool va_load_refuses(const char *path, bool via_env,
 static int test_va_loader(void)
 {
     int failures = 0;
-    char dir[PATH_MAX - 128], key[PATH_MAX], sub[PATH_MAX], subkey[PATH_MAX];
+    char dir[PATH_MAX - 128] = {0}, key[PATH_MAX], sub[PATH_MAX],
+         subkey[PATH_MAX];
+    char temporary[PLATFORM_TEMP_PATH_MAX] = {0};
+    bool fixture_dir_created = false;
     char hex[66];
     uint8_t pub[32], box_sig[64], box_pub[32];
     const char *why = NULL;
@@ -671,8 +696,12 @@ static int test_va_loader(void)
         va_isolate("loader");
         ASSERT(zcl_verify_attest_test_override_compiled());
         struct zcl_verify_attest_box_key none = va_no_box();
-        (void)snprintf(dir, sizeof(dir), "%s", g_va_state);
-        ASSERT(mkdir(dir, 0700) == 0 || errno == EEXIST);
+        /* The loader checks every parent of the pinned key. The checkout
+         * may be group writable, so place this key beneath the canonical
+         * sticky system temp directory and keep XDG signer state isolated. */
+        ASSERT(va_system_temp_create(temporary, sizeof(temporary),
+                                     &fixture_dir_created));
+        ASSERT(platform_directory_canonical_real(temporary, dir, sizeof(dir)));
         (void)snprintf(key, sizeof(key), "%s/verifier.pub", dir);
         /* Missing is the normal state and is named. */
         ASSERT(va_load_refuses(key, true, &none,
@@ -734,9 +763,11 @@ static int test_va_loader(void)
         ASSERT(va_write(key, hex, 0644));
         ASSERT(va_load_refuses(key, true, &box,
                                ZCL_VERIFY_ATTEST_WHY_KEY_IS_BOX_SIGNER));
-        va_restore();
         PASS();
     } _test_next:;
+    if (fixture_dir_created)
+        test_rm_rf_recursive(temporary);
+    va_restore();
     return failures;
 }
 
