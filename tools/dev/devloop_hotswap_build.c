@@ -58,10 +58,14 @@
  * leaves use O_EXCL or live below a component-validated cache directory. */
 #define O_NOFOLLOW 0
 #endif
+#ifndef O_BINARY
+#define O_BINARY _O_BINARY
+#endif
 #else
 #include <sys/file.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#define O_BINARY 0
 #endif
 #include <sys/stat.h>
 #include <unistd.h>
@@ -97,6 +101,7 @@ static int hs_flock(int fd, int op)
 #endif
 
 #define HS_PLAN_TEXT_MAX 12288
+#define HS_PLAN_FILE_MAX 65536
 #define HS_ARG_MAX 256
 #define HS_DEP_MAX 512
 
@@ -108,6 +113,7 @@ struct hs_action_plan {
     char cflags[HS_PLAN_TEXT_MAX];
     char ldflags[2048];
     struct stat stamp;
+    unsigned char plan_sha256[SHA256_OUTPUT_SIZE];
     bool loaded;
     /* The one child environment this build spawns every compile and link
      * under and keys by (hs_plan_take); never part of the cached plan. */
@@ -308,6 +314,21 @@ static bool hs_stat_equal(const struct stat *a, const struct stat *b)
 #endif
 }
 
+static bool hs_stat_stable(const struct stat *a, const struct stat *b)
+{
+#if defined(_WIN32)
+    return hs_stat_equal(a, b);
+#elif defined(__APPLE__)
+    return hs_stat_equal(a, b) &&
+           a->st_ctimespec.tv_sec == b->st_ctimespec.tv_sec &&
+           a->st_ctimespec.tv_nsec == b->st_ctimespec.tv_nsec;
+#else
+    return hs_stat_equal(a, b) &&
+           a->st_ctim.tv_sec == b->st_ctim.tv_sec &&
+           a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+#endif
+}
+
 static bool hs_mtime_after(const struct stat *a, const struct stat *b)
 {
 #if defined(_WIN32)
@@ -376,6 +397,80 @@ static bool hs_plan_apply_field(struct hs_action_plan *plan, const char *line)
                         "HOTSWAP_MODULE_LDFLAGS=");
 }
 
+static bool hs_plan_read_exact(int fd, char *text, size_t want)
+{
+    size_t done = 0;
+    while (done < want) {
+        ssize_t n = read(fd, text + done, want - done);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return false;
+        done += (size_t)n;
+    }
+    return !memchr(text, '\0', want);
+}
+
+static bool hs_plan_fd_stable(int fd, const char *path,
+                              const struct stat *before)
+{
+    struct stat after, named;
+    return fstat(fd, &after) == 0 && hs_stat_stable(before, &after) &&
+           hs_regular(path, &named) && hs_stat_stable(&after, &named);
+}
+
+/* Read one bounded, stable regular file. The cache decision and parser both
+ * use these exact bytes, including when metadata was restored after an edit. */
+static char *hs_plan_bytes(const char *path, const struct stat *stamp,
+                           unsigned char digest[SHA256_OUTPUT_SIZE])
+{
+    int fd = open(path, O_RDONLY | O_BINARY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat before;
+    if (fd < 0)
+        return NULL;
+    bool ok = fstat(fd, &before) == 0 && S_ISREG(before.st_mode) &&
+              before.st_size > 0 && before.st_size <= HS_PLAN_FILE_MAX &&
+              hs_stat_stable(stamp, &before);
+    size_t want = ok ? (size_t)before.st_size : 0;
+    char *text = ok ? zcl_malloc(want + 1, "resident action plan") : NULL;
+    ok = text && hs_plan_read_exact(fd, text, want) &&
+         hs_plan_fd_stable(fd, path, &before);
+    if (close(fd) != 0)
+        ok = false;
+    if (!ok) {
+        free(text);
+        return NULL;
+    }
+    text[want] = '\0';
+    struct sha256_ctx sha;
+    sha256_init(&sha);
+    sha256_write(&sha, (const unsigned char *)text, want);
+    sha256_finalize(&sha, digest);
+    return text;
+}
+
+static bool hs_plan_cache_matches(const char *root, const struct stat *stamp,
+                                  const unsigned char digest[SHA256_OUTPUT_SIZE])
+{
+    return g_plan.loaded && strcmp(g_plan.root, root) == 0 &&
+           hs_stat_equal(&g_plan.stamp, stamp) &&
+           memcmp(g_plan.plan_sha256, digest, SHA256_OUTPUT_SIZE) == 0;
+}
+
+static bool hs_plan_parse(char *text, struct hs_action_plan *next)
+{
+    for (char *line = text; line && *line;) {
+        char *end = strchr(line, '\n');
+        if (end)
+            *end = '\0';
+        if (line[0] != '#' && line[0] != '\0' && line[0] != '\r' &&
+            !hs_plan_apply_field(next, line))
+            return false;
+        line = end ? end + 1 : NULL;
+    }
+    return true;
+}
+
 static bool hs_plan_load_locked(const char *root, bool *cache_hit,
                                 int64_t *elapsed_us, char *why,
                                 size_t why_len)
@@ -434,32 +529,27 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
                "resident action plan stale; refresh after build-system change");
         return false;
     }
-    if (g_plan.loaded && strcmp(g_plan.root, root) == 0 &&
-        hs_stat_equal(&g_plan.stamp, &stamp)) {
+    unsigned char plan_sha256[SHA256_OUTPUT_SIZE];
+    char *text = hs_plan_bytes(flags_path, &stamp, plan_sha256);
+    if (!text) {
+        hs_why(why, why_len,
+               "resident action plan unreadable or changed during read");
+        return false;
+    }
+    if (hs_plan_cache_matches(root, &stamp, plan_sha256)) {
+        free(text);
         *cache_hit = true;
         *elapsed_us = platform_time_monotonic_us() - started;
         return true;
     }
-
-    FILE *f = fopen(flags_path, "r");
-    if (!f) {
-        hs_why(why, why_len, "resident action plan could not be opened");
-        return false;
-    }
     struct hs_action_plan next = {0};
-    char line[HS_PLAN_TEXT_MAX + 32];
-    while (fgets(line, sizeof(line), f)) {
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
-            continue;
-        if (hs_plan_apply_field(&next, line))
-            continue;
-        fclose(f);
+    bool parsed = hs_plan_parse(text, &next);
+    free(text);
+    if (!parsed) {
         hs_why(why, why_len, "resident action plan has an unknown field");
         return false;
     }
-    bool read_error = ferror(f) != 0;
-    fclose(f);
-    if (read_error || !next.cc[0] || !next.cxx[0] ||
+    if (!next.cc[0] || !next.cxx[0] ||
         !hs_lower_hex64(next.compiler_id) ||
         !next.cflags[0] || !next.ldflags[0] ||
         !strstr(next.cflags, "-DZCL_DEV_BUILD") ||
@@ -478,6 +568,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
     }
     (void)snprintf(next.root, sizeof(next.root), "%s", root);
     next.stamp = stamp;
+    memcpy(next.plan_sha256, plan_sha256, sizeof(plan_sha256));
     next.loaded = true;
     g_plan = next;
     *cache_hit = false;

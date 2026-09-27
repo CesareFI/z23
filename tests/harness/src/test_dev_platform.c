@@ -6559,6 +6559,7 @@ static const char k_dp_hf_rule[] = "publishes_this_week >= ";
 
 struct dp_hf_seen {
     int event;
+    bool plan_cache_hit;
     char phase[32];
     char key[65];
     char detail[96];
@@ -6731,6 +6732,8 @@ static bool dp_hf_drive(struct dp_hf_seen *seen)
                json_get_str(json_get(&doc, "story_detail")));
     dp_hf_copy(seen->capsule, sizeof(seen->capsule),
                json_get_str(json_get(&doc, "failure_capsule")));
+    seen->plan_cache_hit = json_get_bool(json_get(
+        json_get(&doc, "build_receipt"), "plan_cache_hit"));
     json_free(&doc);
     return strlen(seen->key) == 64;
 }
@@ -6961,7 +6964,9 @@ static bool dp_hs_refused(const char *stage, const char *text,
     bool ok = driven && seen.event == 0 &&
               strcmp(seen.phase, "COMPILE_GREEN") == 0 &&
               strncmp(seen.capsule, reason, strlen(reason)) == 0 &&
-              strstr(seen.capsule, "fallback=restart") != NULL;
+              strstr(seen.capsule, "fallback=restart") != NULL &&
+              (strcmp(stage, "toolchain-same-stat") != 0 ||
+               !seen.plan_cache_hit);
     if (!ok)
         fprintf(stderr, "hotfork shape stage %s: event=%d phase=%s "
                 "capsule=%s detail=%s (want refusal %s)\n", stage, seen.event,
@@ -7051,8 +7056,11 @@ static bool dp_hs_toolchain_drift(const char *owner)
 {
     static char plan[8192], drifted[8192];
     char path[PATH_MAX];
-    return snprintf(path, sizeof(path), "%s/build/hotswap-fast/flags.env",
-                    k_dp_hf_root) < (int)sizeof(path) &&
+    struct stat before;
+    struct timespec restore[2];
+    bool ordinary = snprintf(path, sizeof(path),
+                             "%s/build/hotswap-fast/flags.env",
+                             k_dp_hf_root) < (int)sizeof(path) &&
            dp_hf_slurp(path, plan, sizeof(plan)) &&
            dp_hs_edit(plan, "DEV_CFLAGS=",
                       "DEV_CFLAGS=-DZCL_SHAPE_TOOLCHAIN_PROBE=1 ", false,
@@ -7063,6 +7071,25 @@ static bool dp_hs_toolchain_drift(const char *owner)
                          "HOT_FORK_SHAPE_TOOLCHAIN_CHANGED") &&
            dp_mk_write(k_dp_hf_root, "build/hotswap-fast/flags.env", plan) &&
            dp_hs_story_green("toolchain-restored", owner);
+    if (!ordinary || stat(path, &before) != 0 ||
+        !dp_hs_edit(plan, "COMPILER_ID=aaaaaaaa",
+                    "COMPILER_ID=baaaaaaa", false, drifted,
+                    sizeof(drifted)))
+        return false;
+    restore[0] = (struct timespec){ .tv_nsec = UTIME_OMIT };
+#if defined(__APPLE__)
+    restore[1] = before.st_mtimespec;
+#else
+    restore[1] = before.st_mtim;
+#endif
+    /* Same inode, size and mtime as the cached plan, but different bytes. */
+    return dp_mk_write(k_dp_hf_root, "build/hotswap-fast/flags.env",
+                       drifted) &&
+           utimensat(AT_FDCWD, path, restore, 0) == 0 &&
+           dp_hs_refused("toolchain-same-stat", owner,
+                         "HOT_FORK_SHAPE_TOOLCHAIN_CHANGED") &&
+           dp_mk_write(k_dp_hf_root, "build/hotswap-fast/flags.env", plan) &&
+           dp_hs_story_green("toolchain-same-stat-restored", owner);
 }
 
 /* A writable static the resident already has is admitted; resizing it is
