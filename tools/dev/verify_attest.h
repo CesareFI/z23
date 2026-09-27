@@ -183,7 +183,8 @@ const char *zcl_verify_attest_path_check(
     const struct zcl_verify_attest_path_policy *policy);
 
 /* Parse a public key file's bytes: exactly 64 lowercase hex digits and an
- * optional single trailing newline, not the all-zero key. */
+ * optional single trailing newline, and not any encoding of a small-order
+ * point (order 1, 2, 4 or 8, either sign bit, canonical or not). */
 bool zcl_verify_attest_pubkey_parse(
     const uint8_t *bytes, size_t len,
     uint8_t out[ZCL_VERIFY_ATTEST_PUBKEY_BYTES]);
