@@ -454,6 +454,20 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                                        "facts-missing"},
                             .obligations = "facts-missing",
                             .incomplete = "facts-missing"},
+    /* ...and one the depfile graph alone says reads the changed .c: a
+     * static there has no header a facts-less reader could name. */
+    [SCX_UNITY_NOFACTS] = {.name = "unity_nofacts", .before = SCX_P_UNITY_AB,
+                           .file = SCX_A,
+                           .from = "static int cx_twice(int v) { return v * 2; }",
+                           .to = "static int cx_twice(int v) { return v * 3; }",
+                           .file2 = SCX_E, .from2 = SCX_E_END,
+                           .to2 = SCX_UNITY_AB_E, .withhold = SCX_E,
+                           .changed = {SCX_A},
+                           .affected = {true, false, false, false, true},
+                           .reason = {"source-changed", NULL, NULL, NULL,
+                                      "facts-missing"},
+                           .obligations = "facts-missing",
+                           .incomplete = "facts-missing"},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,

@@ -69,6 +69,7 @@ enum scx_variant {
     SCX_UNITY_ADDR, /* cx_sum's body: the includer seeds cx_e_hook, address-taken */
     SCX_UNITY_TRUNC, /* unity, the includer's after manifest cut by a record cap */
     SCX_UNITY_NOBEFORE, /* unity, the includer's before manifest withheld */
+    SCX_UNITY_NOFACTS, /* unity_ab, cx_a.c's static changes, the includer has no manifest */
     SCX_VARIANT_COUNT
 };
 

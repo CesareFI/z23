@@ -188,7 +188,9 @@ static const char *fxc_graph_reason(const struct fxc *c)
 }
 
 /* A TU the depfile graph says reads `file` that no manifest pair here
- * describes as reading it is affected: without facts nothing narrows it. */
+ * describes as reading it is affected: without facts nothing narrows it.
+ * When `file` is a .c it compiles as an include, nothing names the
+ * functions it defines from it either, so the universe is incomplete. */
 static bool fxc_reader(struct fxc *c, const char *file, const char *reader)
 {
     struct zcl_devloop_facts_tu_verdict *t;
@@ -203,6 +205,8 @@ static bool fxc_reader(struct fxc *c, const char *file, const char *reader)
                                                : "facts-missing";
     (void)snprintf(t->detail, sizeof(t->detail),
                    "the depfile graph says it reads %s", file);
+    if (fxc_ends_with(file, ".c") && strcmp(file, reader) != 0)
+        fxc_incomplete(c, t->reason, reader);
     return true;
 }
 
