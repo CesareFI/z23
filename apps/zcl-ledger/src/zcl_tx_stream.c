@@ -66,6 +66,27 @@ static bool output_done(zcl_tx_stream *stream,
     return true;
 }
 
+static bool input_done(zcl_tx_stream *stream,
+    zcl_tx_stream_input_fn input, void *context) {
+    if (input && !input(context, stream->input_index, stream->outpoint,
+                        little_u32(stream->field))) return false;
+    ++stream->input_index;
+    if (stream->input_index < stream->facts.inputs)
+        fixed(stream, OUTPOINT, 36);
+    else compact(stream, OUTPUT_COUNT);
+    return true;
+}
+
+static bool amount_done(zcl_tx_stream *stream) {
+    stream->amount = little_u64(stream->field);
+    if (stream->amount > ZCL_MAX_MONEY_ZAT ||
+        stream->amount > ZCL_MAX_MONEY_ZAT - stream->facts.output_zat)
+        return false;
+    stream->facts.output_zat += stream->amount;
+    compact(stream, OUTPUT_SCRIPT_LENGTH);
+    return true;
+}
+
 static bool fixed_done(zcl_tx_stream *stream,
     zcl_tx_stream_input_fn input, zcl_tx_stream_output_fn output,
     void *context) {
@@ -82,21 +103,9 @@ static bool fixed_done(zcl_tx_stream *stream,
         compact(stream, INPUT_SCRIPT_LENGTH);
         return true;
     case SEQUENCE:
-        if (input && !input(context, stream->input_index, stream->outpoint,
-                            little_u32(stream->field))) return false;
-        ++stream->input_index;
-        if (stream->input_index < stream->facts.inputs)
-            fixed(stream, OUTPOINT, 36);
-        else compact(stream, OUTPUT_COUNT);
-        return true;
+        return input_done(stream, input, context);
     case AMOUNT:
-        stream->amount = little_u64(stream->field);
-        if (stream->amount > ZCL_MAX_MONEY_ZAT ||
-            stream->amount > ZCL_MAX_MONEY_ZAT - stream->facts.output_zat)
-            return false;
-        stream->facts.output_zat += stream->amount;
-        compact(stream, OUTPUT_SCRIPT_LENGTH);
-        return true;
+        return amount_done(stream);
     case OUTPUT_SCRIPT:
         return output_done(stream, output, context);
     case LOCK_TIME:
@@ -116,7 +125,7 @@ static bool fixed_done(zcl_tx_stream *stream,
     }
 }
 
-static bool compact_done(zcl_tx_stream *stream) {
+static bool compact_count_done(zcl_tx_stream *stream) {
     switch ((phase)stream->phase) {
     case INPUT_COUNT:
         if (!stream->var_value ||
@@ -137,6 +146,16 @@ static bool compact_done(zcl_tx_stream *stream) {
         if (stream->var_value != 23 && stream->var_value != 25) return false;
         fixed(stream, OUTPUT_SCRIPT, (uint8_t)stream->var_value);
         return true;
+    default:
+        return false;
+    }
+}
+
+static bool compact_done(zcl_tx_stream *stream) {
+    if (stream->phase == INPUT_COUNT || stream->phase == INPUT_SCRIPT_LENGTH ||
+        stream->phase == OUTPUT_COUNT || stream->phase == OUTPUT_SCRIPT_LENGTH)
+        return compact_count_done(stream);
+    switch ((phase)stream->phase) {
     case SAPLING_SPENDS:
         if (stream->var_value) return false;
         compact(stream, SAPLING_OUTPUTS);
@@ -152,6 +171,25 @@ static bool compact_done(zcl_tx_stream *stream) {
     default:
         return false;
     }
+}
+
+static bool compact_phase(uint8_t current) {
+    return current == INPUT_COUNT || current == INPUT_SCRIPT_LENGTH ||
+           current == OUTPUT_COUNT || current == OUTPUT_SCRIPT_LENGTH ||
+           current == SAPLING_SPENDS || current == SAPLING_OUTPUTS ||
+           current == JOIN_SPLITS;
+}
+
+static bool compact_byte(zcl_tx_stream *stream, uint8_t byte);
+
+static bool consume_byte(zcl_tx_stream *stream, uint8_t byte,
+    zcl_tx_stream_input_fn input, zcl_tx_stream_output_fn output,
+    void *context) {
+    if (stream->phase == DONE) return false;
+    if (compact_phase(stream->phase)) return compact_byte(stream, byte);
+    stream->field[stream->field_used++] = byte;
+    return stream->field_used < stream->field_need ||
+           fixed_done(stream, input, output, context);
 }
 
 static bool compact_byte(zcl_tx_stream *stream, uint8_t byte) {
@@ -190,22 +228,8 @@ bool zcl_tx_stream_feed(zcl_tx_stream *stream, const uint8_t *bytes,
         stream->received > stream->expected ||
         length > stream->expected - stream->received) return fail(stream);
     for (size_t i = 0; i < length; ++i) {
-        if (stream->phase == DONE) return fail(stream);
-        bool valid;
-        if (stream->phase == INPUT_COUNT ||
-            stream->phase == INPUT_SCRIPT_LENGTH ||
-            stream->phase == OUTPUT_COUNT ||
-            stream->phase == OUTPUT_SCRIPT_LENGTH ||
-            stream->phase == SAPLING_SPENDS ||
-            stream->phase == SAPLING_OUTPUTS ||
-            stream->phase == JOIN_SPLITS) {
-            valid = compact_byte(stream, bytes[i]);
-        } else {
-            stream->field[stream->field_used++] = bytes[i];
-            valid = stream->field_used < stream->field_need ||
-                    fixed_done(stream, input, output, context);
-        }
-        if (!valid) return fail(stream);
+        if (!consume_byte(stream, bytes[i], input, output, context))
+            return fail(stream);
         ++stream->received;
     }
     return true;

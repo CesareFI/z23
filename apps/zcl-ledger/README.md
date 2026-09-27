@@ -17,6 +17,11 @@ arrive. It emits provisional input and P2PKH/P2SH output facts, then returns
 aggregate facts only after the declared byte count and trailing fields pass.
 This offline component is not yet connected to a Blue payment app and does not
 authorize signing.
+The related [`zcl_tx_stream_zip243` API](include/zcl_tx_stream_zip243.h)
+computes an input-specific ZIP-243 SIGHASH_ALL digest from accepted chunks
+using two independent BLAKE2b contexts. Its scriptCode, spent amount, and
+consensus branch still require independent verification before a device may
+use that digest to approve a payment.
 
 ## Build and test
 

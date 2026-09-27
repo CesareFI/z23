@@ -55,3 +55,8 @@ device-computed transaction and input digests, prove prevout amounts and
 scripts, derive change from the device account, and present every output and
 fee before explicit approval. Its integrated ARM image needs a fresh SRAM,
 stack, simulator, fuzz, and physical Blue check.
+
+The later same-day complexity refactor kept parser behavior under the
+repository's cyclomatic cap. Its recompiled ARM object measured 2,168 bytes
+of `.text`, zero `.data`, and zero `.bss`. The original 2,092-byte object
+measurement above remains the measurement for the earlier source revision.

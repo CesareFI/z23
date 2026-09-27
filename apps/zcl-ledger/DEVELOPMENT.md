@@ -108,6 +108,18 @@ parser does not authenticate prevouts, calculate a ZIP-243 digest, prove
 chain state, derive change, or permit signing. The
 [streaming experiment](../../docs/experiments/2026-09-27-ledger-blue-tx-stream.md)
 records its measured tests and limits.
+[`zcl_tx_stream_zip243.h`](include/zcl_tx_stream_zip243.h) adds an exact
+transparent input SIGHASH_ALL calculation over this bounded parser. It
+reconstructs standard output bytes independently from parsed amounts and
+hash160 values, hashes input outpoints and sequences in separate personalized
+BLAKE2b contexts, and matches the complete-transaction ZIP-243 implementation
+on an unsigned variant of the published transparent fixture. Its final
+scriptCode, spent amount, and branch ID are caller supplied; they are not
+authenticated by this component. The
+[streaming digest experiment](../../docs/experiments/2026-09-27-ledger-blue-streaming-zip243.md)
+records ARM memory costs. The two SDK hash contexts plus wrapper state exceed
+the receive app's currently measured free SRAM before payment UI state, so
+the code remains offline and is not linked into either Blue image.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

@@ -2,8 +2,12 @@
 #include "zcl_tx_stream.h"
 #include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
+#include "zcl_tx_stream_zip243.h"
+#include "zcl_zip243_host.h"
+#include "crypto/blake2b.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
     uint32_t inputs, outputs;
@@ -30,33 +34,82 @@ static bool see_output(void *context, uint32_t index, uint64_t amount,
     return true;
 }
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size > ZCL_TX_STREAM_MAX_BYTES) return 0;
+static bool parse_stream(const uint8_t *data, size_t size,
+    observations *seen, zcl_tx_stream_facts *facts) {
     zcl_tx_stream stream;
-    if (!zcl_tx_stream_begin(&stream, (uint32_t)size)) return 0;
-    observations seen = {0};
+    if (!zcl_tx_stream_begin(&stream, (uint32_t)size)) return false;
     for (size_t offset = 0; offset < size;) {
         size_t chunk = 1 + data[offset] % 64;
         if (chunk > size - offset) chunk = size - offset;
         if (!zcl_tx_stream_feed(&stream, data + offset, chunk,
-                                see_input, see_output, &seen)) return 0;
+                                see_input, see_output, seen)) return false;
         offset += chunk;
     }
-    zcl_tx_stream_facts facts;
-    if (!zcl_tx_stream_finish(&stream, &facts)) return 0;
+    return zcl_tx_stream_finish(&stream, facts);
+}
+
+static void compare_types(const zcl_tx_review *full,
+    const zcl_tx_script_facts *scripts, uint32_t outputs) {
+    if (scripts->p2pkh_outputs + scripts->p2sh_outputs != outputs ||
+        full->sapling_spends || full->sapling_outputs ||
+        full->sprout_joinsplits || full->value_balance_zat) abort();
+}
+
+static void compare_review(const uint8_t *data, size_t size,
+    const observations *seen, const zcl_tx_stream_facts *facts) {
     zcl_tx_review full;
     zcl_tx_script_facts scripts;
     if (zcl_tx_review_parse(data, size, &full) < 0 ||
         zcl_tx_script_facts_parse(data, size, &scripts) < 0 ||
-        facts.inputs != full.transparent_inputs ||
-        facts.outputs != full.transparent_outputs ||
-        facts.output_zat != full.transparent_output_zat ||
-        facts.lock_time != full.lock_time ||
-        facts.expiry_height != full.expiry_height ||
-        facts.inputs != seen.inputs || facts.outputs != seen.outputs ||
-        facts.output_zat != seen.output_zat ||
-        scripts.p2pkh_outputs + scripts.p2sh_outputs != facts.outputs ||
-        full.sapling_spends || full.sapling_outputs ||
-        full.sprout_joinsplits || full.value_balance_zat) abort();
+        facts->inputs != full.transparent_inputs ||
+        facts->outputs != full.transparent_outputs ||
+        facts->output_zat != full.transparent_output_zat ||
+        facts->lock_time != full.lock_time ||
+        facts->expiry_height != full.expiry_height ||
+        facts->inputs != seen->inputs || facts->outputs != seen->outputs ||
+        facts->output_zat != seen->output_zat) abort();
+    compare_types(&full, &scripts, facts->outputs);
+}
+
+static void compare_digest(const uint8_t *data, size_t size,
+    const zcl_tx_stream_facts *facts) {
+    static const uint8_t script[25] = {
+        0x76, 0xa9, 0x14, 0x50, 0x71, 0x73, 0x52, 0x7b,
+        0x4c, 0x33, 0x18, 0xa2, 0xae, 0xcd, 0x79, 0x3b,
+        0xf1, 0xcf, 0xed, 0x70, 0x59, 0x50, 0xcf, 0x88,
+        0xac
+    };
+    struct blake2b_ctx first_context, second_context, complete_context;
+    zcl_zip243_hasher first = zcl_zip243_host_hasher(&first_context);
+    zcl_zip243_hasher second = zcl_zip243_host_hasher(&second_context);
+    zcl_zip243_hasher complete = zcl_zip243_host_hasher(&complete_context);
+    zcl_tx_stream_zip243 hashed;
+    if (!zcl_tx_stream_zip243_begin(&hashed, (uint32_t)size, 0,
+                                    0x76b809bb, &first, &second)) abort();
+    for (size_t offset = 0; offset < size;) {
+        size_t chunk = 1 + data[offset] % 64;
+        if (chunk > size - offset) chunk = size - offset;
+        if (!zcl_tx_stream_zip243_feed(&hashed, data + offset, chunk)) abort();
+        offset += chunk;
+    }
+    zcl_tx_stream_facts hashed_facts;
+    uint8_t actual[32], expected[32];
+    if (!zcl_tx_stream_zip243_finish(&hashed, script, sizeof script,
+          50000000, &hashed_facts, actual) ||
+        zcl_zip243_transparent_digest(data, size, 0, script, sizeof script,
+          50000000, 0x76b809bb, &complete, expected) < 0 ||
+        hashed_facts.inputs != facts->inputs ||
+        hashed_facts.outputs != facts->outputs ||
+        hashed_facts.output_zat != facts->output_zat ||
+        memcmp(actual, expected, sizeof actual)) abort();
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    if (size > ZCL_TX_STREAM_MAX_BYTES) return 0;
+    observations seen = {0};
+    zcl_tx_stream_facts facts;
+    if (!parse_stream(data, size, &seen, &facts)) return 0;
+    compare_review(data, size, &seen, &facts);
+    compare_digest(data, size, &facts);
     return 0;
 }

@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_zip243.h"
+#include "zcl_tx_stream_zip243.h"
 #include "crypto/blake2b.h"
 #include "zcl_zip243_host.h"
 
@@ -29,6 +30,65 @@ static size_t read_vector(const char *path, uint8_t wire[8192]) {
     }
     assert(fclose(file) == 0);
     return length / 2;
+}
+
+static void test_streaming(const uint8_t *wire, size_t length,
+    const uint8_t script_code[25]) {
+    uint8_t unsigned_wire[8192];
+    assert(length < sizeof unsigned_wire && wire[45] == 107);
+    memcpy(unsigned_wire, wire, 46);
+    memcpy(unsigned_wire + 46, wire + 46 + 107, length - 46 - 107);
+    unsigned_wire[45] = 0;
+    length -= 107;
+    struct blake2b_ctx reference_context;
+    zcl_zip243_hasher reference = zcl_zip243_host_hasher(&reference_context);
+    uint8_t expected[32];
+    assert(zcl_zip243_transparent_digest(unsigned_wire, length, 0,
+        script_code, 25, 50000000, 0x76b809bb, &reference, expected) == 0);
+    for (size_t chunk = 1; chunk <= length; ++chunk) {
+        struct blake2b_ctx first_context, second_context;
+        zcl_zip243_hasher first = zcl_zip243_host_hasher(&first_context);
+        zcl_zip243_hasher second = zcl_zip243_host_hasher(&second_context);
+        zcl_tx_stream_zip243 state;
+        zcl_tx_stream_facts facts;
+        uint8_t digest[32];
+        assert(zcl_tx_stream_zip243_begin(&state, (uint32_t)length, 0,
+            0x76b809bb, &first, &second));
+        for (size_t offset = 0; offset < length;) {
+            size_t count = length - offset < chunk ? length - offset : chunk;
+            assert(zcl_tx_stream_zip243_feed(&state, unsigned_wire + offset,
+                                            count));
+            offset += count;
+        }
+        assert(zcl_tx_stream_zip243_finish(&state, script_code, 25,
+            50000000, &facts, digest));
+        assert(memcmp(digest, expected, 32) == 0);
+        assert(facts.inputs == 1 && facts.outputs == 2);
+        assert(facts.output_zat == 49999755);
+        assert(!zcl_tx_stream_zip243_finish(&state, script_code, 25,
+            50000000, &facts, digest));
+    }
+    struct blake2b_ctx first_context, second_context;
+    zcl_zip243_hasher first = zcl_zip243_host_hasher(&first_context);
+    zcl_zip243_hasher second = zcl_zip243_host_hasher(&second_context);
+    zcl_tx_stream_zip243 state;
+    zcl_tx_stream_facts facts = {.inputs = 99};
+    uint8_t digest[32];
+    memset(digest, 0xff, sizeof digest);
+    assert(!zcl_tx_stream_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &first, &first));
+    assert(zcl_tx_stream_zip243_begin(&state, (uint32_t)length, 1,
+        0x76b809bb, &first, &second));
+    assert(zcl_tx_stream_zip243_feed(&state, unsigned_wire, length));
+    assert(!zcl_tx_stream_zip243_finish(&state, script_code, 25,
+        50000000, &facts, digest));
+    assert(facts.inputs == 0);
+    for (size_t i = 0; i < sizeof digest; ++i) assert(digest[i] == 0);
+    assert(zcl_tx_stream_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &first, &second));
+    assert(zcl_tx_stream_zip243_feed(&state, unsigned_wire, length - 1));
+    assert(!zcl_tx_stream_zip243_finish(&state, script_code, 25,
+        50000000, &facts, digest));
 }
 
 int main(int argc, char **argv) {
@@ -81,6 +141,7 @@ int main(int argc, char **argv) {
                                          50000000, 0x76b809bb,
                                          &hasher, digest) == 0);
     assert(memcmp(digest, transparent_expected, 32) == 0);
+    test_streaming(wire, length, script_code);
     assert(zcl_zip243_transparent_digest(wire, length, 0,
                                          script_code, sizeof script_code,
                                          50000001, 0x76b809bb,
