@@ -16,16 +16,22 @@ typedef struct {
     bool active, previous_active, fee_ready;
 } blue_payment_apdu;
 
+typedef struct {
+    uint8_t external[20];
+    uint8_t internal[20];
+} blue_payment_owned_hashes;
+
 /* Read-only CLA A5 commands 20-28. A physical touch acknowledges each
  * spending output. Previous wires can be uploaded only after a verified
  * three-pass review; each one must match the next captured input outpoint.
- * A finished previous wire yields that input's device-derived ZIP-243 digest.
+ * A finished previous wire must pay to one of the device-derived hashes and
+ * yields that input's device-derived ZIP-243 digest.
  * No command accesses a key, approves a payment, or signs. */
 uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     const uint8_t *apdu, size_t apdu_length,
     uint8_t *reply, size_t reply_capacity, size_t *reply_length,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha,
-    blue_payment_hash_fn hash);
+    blue_payment_hash_fn hash, const blue_payment_owned_hashes *owned);
 
 /* Only a physical touchscreen callback may call this function on device. */
 bool blue_payment_apdu_touch_continue(blue_payment_apdu *state);

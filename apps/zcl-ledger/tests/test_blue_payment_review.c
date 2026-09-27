@@ -291,6 +291,7 @@ static void test_simulation(const fixture *item) {
 
 typedef struct {
     blue_payment_apdu state;
+    blue_payment_owned_hashes owned;
     struct blake2b_ctx blake_context;
     EVP_MD_CTX *sha_context;
     zcl_zip243_hasher blake;
@@ -304,6 +305,8 @@ static void apdu_init(apdu_fixture *session) {
     session->blake = zcl_zip243_host_hasher(&session->blake_context);
     session->sha = (zcl_tx_replay_sha256){.context = session->sha_context,
         .init = sha_init, .update = sha_update, .final = sha_final};
+    memset(session->owned.external, 0x33, 20);
+    memset(session->owned.internal, 0x44, 20);
 }
 
 static uint16_t command(apdu_fixture *session, uint8_t instruction,
@@ -314,7 +317,7 @@ static uint16_t command(apdu_fixture *session, uint8_t instruction,
     if (length) memcpy(apdu + 5, body, length);
     return blue_payment_apdu_handle(&session->state, apdu, length + 5,
         reply, 8, reply_length, &session->blake, &session->sha,
-        screen_hash);
+        screen_hash, &session->owned);
 }
 
 static void apdu_begin(apdu_fixture *session, const fixture *item) {
@@ -424,7 +427,8 @@ static void test_apdu_fail_closed(const fixture *item) {
     uint8_t malformed[] = {0xa5, 0x21, 0, 0, 1};
     assert(blue_payment_apdu_handle(&session.state, malformed,
         sizeof malformed, reply, sizeof reply, &reply_length,
-        &session.blake, &session.sha, screen_hash) == 0x6700);
+        &session.blake, &session.sha, screen_hash,
+        &session.owned) == 0x6700);
     assert(reply_length == 0 && !session.state.active);
     apdu_begin(&session, item);
     apdu_passes(&session, item);
@@ -455,7 +459,7 @@ static void test_apdu_mutations(void) {
         size_t reply_length = 99;
         uint16_t status = blue_payment_apdu_handle(&session.state, apdu,
             length, reply, sizeof reply, &reply_length, &session.blake,
-            &session.sha, screen_hash);
+            &session.sha, screen_hash, &session.owned);
         assert(reply_length <= sizeof reply);
         if (status != 0x9000)
             assert(reply_length == 0 && !session.state.active);
@@ -469,7 +473,7 @@ static void test_apdu_mutations(void) {
 typedef struct {
     apdu_fixture apdu;
     unsigned exchanges, continued;
-    bool refuse_touch, wrong_identity, fail_previous_chunk;
+    bool refuse_touch, wrong_identity, fail_previous_chunk, no_owned_hashes;
 } live_fixture;
 
 static bool live_exchange(void *context, const uint8_t *apdu,
@@ -489,7 +493,8 @@ static bool live_exchange(void *context, const uint8_t *apdu,
     size_t payload = 0;
     uint16_t status = blue_payment_apdu_handle(&live->apdu.state,
         apdu, apdu_length, reply, capacity - 2, &payload,
-        &live->apdu.blake, &live->apdu.sha, screen_hash);
+        &live->apdu.blake, &live->apdu.sha, screen_hash,
+        live->no_owned_hashes ? NULL : &live->apdu.owned);
     reply[payload] = (uint8_t)(status >> 8);
     reply[payload + 1] = (uint8_t)status;
     *reply_length = payload + 2;
@@ -568,6 +573,34 @@ static void test_live_bound(void) {
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.bound_inputs == 1 &&
         live.apdu.state.fee_zat == 100000000);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    memset(live.apdu.owned.external, 0x55, 20);
+    memset(live.apdu.owned.internal, 0x33, 20);
+    assert(blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
+        live_exchange, live_continue, &live));
+    assert(live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    memset(live.apdu.owned.external, 0x55, 20);
+    memset(live.apdu.owned.internal, 0x66, 20);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){.no_owned_hashes = true};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};

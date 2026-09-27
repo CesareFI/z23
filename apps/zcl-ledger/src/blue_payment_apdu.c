@@ -122,13 +122,17 @@ static uint16_t previous_feed(blue_payment_apdu *state,
 }
 
 static uint16_t previous_finish(blue_payment_apdu *state, uint8_t length,
-    uint8_t *reply, size_t capacity, size_t *reply_length) {
+    uint8_t *reply, size_t capacity, size_t *reply_length,
+    const blue_payment_owned_hashes *owned) {
     if (!state->previous_active) return 0x6985;
     if (length || capacity < 43) return 0x6700;
     zcl_tx_previous_p2pkh output;
     const uint8_t *txid = state->outpoints[state->bound_inputs];
     uint8_t digest[32];
     if (!zcl_tx_previous_stream_finish(&state->previous, txid, &output) ||
+        !owned ||
+        (memcmp(output.script + 3, owned->external, 20) != 0 &&
+         memcmp(output.script + 3, owned->internal, 20) != 0) ||
         output.value_zat > 2100000000000000ULL - state->input_zat ||
         !zcl_tx_replay_zip243_bound_digest(&state->review.replay,
             txid, state->sequences[state->bound_inputs], output.script,
@@ -167,7 +171,7 @@ static uint16_t status(const blue_payment_apdu *state, uint8_t length,
 static uint16_t dispatch(blue_payment_apdu *state, const uint8_t *apdu,
     uint8_t *reply, size_t capacity, size_t *reply_length,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha,
-    blue_payment_hash_fn hash) {
+    blue_payment_hash_fn hash, const blue_payment_owned_hashes *owned) {
     const uint8_t *body = apdu + 5;
     uint8_t length = apdu[4];
     switch (apdu[1]) {
@@ -184,7 +188,7 @@ static uint16_t dispatch(blue_payment_apdu *state, const uint8_t *apdu,
     case 0x26: return previous_begin(state, body, length, sha);
     case 0x27: return previous_feed(state, body, length);
     case 0x28: return previous_finish(state, length, reply, capacity,
-                                      reply_length);
+                                      reply_length, owned);
     default: return 0x6d00;
     }
 }
@@ -193,7 +197,7 @@ uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     const uint8_t *apdu, size_t apdu_length,
     uint8_t *reply, size_t reply_capacity, size_t *reply_length,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha,
-    blue_payment_hash_fn hash) {
+    blue_payment_hash_fn hash, const blue_payment_owned_hashes *owned) {
     if (!state || !reply_length) return 0x6f00;
     *reply_length = 0;
     if (!apdu || !reply || !hash) {
@@ -206,7 +210,7 @@ uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     else if (apdu[0] != 0xa5) result = 0x6e00;
     else if (apdu[2] || apdu[3]) result = 0x6b00;
     else result = dispatch(state, apdu, reply, reply_capacity,
-                           reply_length, blake, sha, hash);
+                           reply_length, blake, sha, hash, owned);
     if (result != 0x9000) {
         blue_payment_apdu_abort(state);
         *reply_length = 0;

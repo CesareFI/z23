@@ -74,8 +74,11 @@ uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
         .init = blake_init, .update = hash_update, .final = hash_final};
     zcl_tx_replay_sha256 sha = {.context = &payment_sha,
         .init = sha_init, .update = hash_update, .final = hash_final};
+    blue_payment_owned_hashes owned;
+    memcpy(owned.external, account_hash160, sizeof owned.external);
+    memcpy(owned.internal, internal_hash160, sizeof owned.internal);
     uint16_t status = blue_payment_apdu_handle(&payment, apdu, length,
-        reply, capacity, reply_length, &blake, &sha, hash_sha256);
+        reply, capacity, reply_length, &blake, &sha, hash_sha256, &owned);
     visible = true;
     return status;
 }
