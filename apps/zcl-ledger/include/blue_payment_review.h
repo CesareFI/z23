@@ -20,13 +20,14 @@ typedef struct {
 typedef struct {
     zcl_tx_replay_zip243 replay;
     blue_payment_output output;
-    uint32_t total_outputs, acknowledged;
+    uint32_t total_outputs, acknowledged, output_end;
     bool pending, verified;
 } blue_payment_review;
 
 /* These calls do not use keys or authorize signing. During the third pass,
- * feed refuses further bytes while an output awaits a physical touch. The
- * pending output is provisional until finish checks the full wire replay. */
+ * a feed completing an output must end on that output's final byte. Further
+ * bytes require a separate physical-touch acknowledgement. The pending
+ * output is provisional until finish checks the full wire replay. */
 bool blue_payment_review_begin(blue_payment_review *review,
     uint32_t expected_length, uint32_t selected_index, uint32_t branch_id,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha);

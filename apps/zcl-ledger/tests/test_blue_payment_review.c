@@ -176,6 +176,12 @@ static void test_failures(const fixture *item) {
     begin(&review, item, &blake_context, sha_context);
     first_two_passes(&review, item);
     assert(!blue_payment_review_feed(&review, item->bytes,
+        item->output_end[0] + 1));
+    assert(!blue_payment_review_pending(&review));
+
+    begin(&review, item, &blake_context, sha_context);
+    first_two_passes(&review, item);
+    assert(!blue_payment_review_feed(&review, item->bytes,
         item->output_end[1]));
     assert(!blue_payment_review_pending(&review));
 

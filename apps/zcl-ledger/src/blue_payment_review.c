@@ -32,6 +32,7 @@ static bool capture_output(void *context, uint32_t index,
     review->output.amount_zat = amount_zat;
     review->output.type = type;
     memcpy(review->output.hash160, hash160, 20);
+    review->output_end = review->replay.wire.received + 1;
     review->pending = true;
     return true;
 }
@@ -41,7 +42,9 @@ bool blue_payment_review_feed(blue_payment_review *review,
     if (!review) return false;
     if (review->pending || review->verified ||
         !zcl_tx_replay_zip243_feed_review(&review->replay, bytes, length,
-                                           capture_output, review)) {
+                                           capture_output, review) ||
+        (review->pending && review->replay.wire.received !=
+                            review->output_end)) {
         blue_payment_review_abort(review);
         return false;
     }
@@ -72,6 +75,7 @@ bool blue_payment_review_acknowledge(blue_payment_review *review) {
     if (!review || !review->pending || review->verified ||
         review->replay.pass != 3) return false;
     review->pending = false;
+    review->output_end = 0;
     memset(&review->output, 0, sizeof review->output);
     ++review->acknowledged;
     return true;

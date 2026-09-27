@@ -29,8 +29,9 @@ BLAKE2b context for ZIP-243. It has not been linked into a Blue app.
 The [`blue_payment_review` API](include/blue_payment_review.h) adds a bounded,
 read-only output acknowledgement controller to that replay. It stops accepting
 bytes after each public output until the caller acknowledges it, and rejects
-chunks that cross two outputs. A device app must call acknowledgement only
-from a real touchscreen action. The controller is host-tested but is not yet
+chunks with even one byte beyond an output. A device app must call
+acknowledgement only from a real touchscreen action. The controller is
+host-tested but is not yet
 connected to a Blue screen, USB payment command, or signing key.
 The [`blue_payment_screen` API](include/blue_payment_screen.h) formats the
 pending output into a full 35-character mainnet address and exact ZCL amount.

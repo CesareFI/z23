@@ -133,12 +133,15 @@ transport and UI state, plus stack, display, and physical behavior.
 [`blue_payment_review.h`](include/blue_payment_review.h) adds a C23,
 read-only review controller. It retains one standard transparent output,
 halts upload until that output is acknowledged, and limits a session to 16
-outputs. Every output is provisional until the final replay commitment
-validates. Its acknowledgement function must be bound to a touchscreen
+outputs. A chunk must end exactly when an output completes; a chunk with
+trailing bytes invalidates the session. Every output is provisional until
+the final replay commitment validates. Its acknowledgement function must be bound to a touchscreen
 callback in a future device image; a USB command must never call it. The
 [output review experiment](../../docs/experiments/2026-09-27-ledger-blue-output-review.md)
 records host tests and the isolated ARM state measurement. No Blue image
 links this controller yet, and it has no signing operation or verified fee.
+The [exact-stop follow-up](../../docs/experiments/2026-09-27-ledger-blue-exact-output-stop.md)
+records the rejected trailing-byte case and unchanged ARM state size.
 [`blue_payment_screen.h`](include/blue_payment_screen.h) formats a pending
 controller output with the complete 35-character P2PKH or P2SH address,
 amount to eight decimals, position, and output type. On a hash failure it
