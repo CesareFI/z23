@@ -24,7 +24,6 @@
 
 #include "build_fabric_observation_internal.h"
 #include "build_fabric_attach_identity_internal.h"
-#include "build_fabric_attach_ledger_internal.h"
 #include "build_fabric_worker_internal.h"
 
 #include "base/hex.h"
@@ -53,6 +52,7 @@
 enum {
     BFAT_RECEIPT_SCAN_CAP = 257,
     BFAT_RECORD_CAP = 4096,
+    BFAT_SCAN_CAP = BUILD_FABRIC_ATTACH_SCAN_CAP,
 };
 
 /* Fixed canonical field order of the executor-key record. The serialized
@@ -1383,7 +1383,7 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
     if (!node_db_begin_immediate(c->ndb))
         return "attach-persist-failed: transaction";
     sqlite3_int64 current_version = 0;
-    if (!bfat_ledger_version(c->ndb, &current_version) ||
+    if (!db_build_attach_ledger_version(c->ndb, &current_version) ||
         current_version != c->db_version ||
         sqlite3_total_changes64(c->ndb->db) != c->db_changes) {
         if (!node_db_rollback(c->ndb))
@@ -1391,7 +1391,7 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
         return "attach-refused-history-stale";
     }
     bool ok = db_build_action_save(c->ndb, &next) &&
-        bfat_ledger_settle_job(c->ndb, &c->job, c->now) &&
+        db_build_attach_settle_job(c->ndb, &c->job, c->now) &&
         db_build_receipt_save(c->ndb, &c->receipt) &&
         node_db_commit(c->ndb);
     if (!ok) {
@@ -1427,7 +1427,7 @@ struct zcl_result build_fabric_attach(
     out_report->disposition = BUILD_FABRIC_ATTACH_MISS;
     out_report->compiler_processes = 0;
     c.now = (int64_t)platform_time_wall_unix();
-    if (!bfat_ledger_version(ndb, &c.db_version))
+    if (!db_build_attach_ledger_version(ndb, &c.db_version))
         return bfat_refuse(out_report, "attach-refused-history-incomplete");
     c.db_changes = sqlite3_total_changes64(ndb->db);
 

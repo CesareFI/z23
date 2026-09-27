@@ -4,11 +4,14 @@
 #include "models/build_fabric.h"
 
 #include "models/model_text.h"
+#include "base/safe_alloc.h"
 #include "platform/time_compat.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 DEFINE_MODEL_CALLBACKS(build_job)
@@ -672,6 +675,70 @@ int db_build_job_actions_checked(struct node_db *ndb, const char *job_id,
         "SELECT " BUILD_ACTION_COLS " FROM build_actions WHERE job_id=? "
         "ORDER BY sequence,action_id LIMIT ?", job_id,
         out, sizeof(*out), max, build_action_read_any);
+}
+
+bool db_build_attach_ledger_version(struct node_db *ndb, sqlite3_int64 *out)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !out ||
+        sqlite3_prepare_v2(ndb->db, "PRAGMA data_version", -1, &st, NULL) !=
+            SQLITE_OK) {
+        LOG_ERROR("build_fabric", "attach data_version prepare failed");
+        return false;
+    }
+    int rc = AR_STEP_ROW_READONLY(st);
+    bool ok = rc == SQLITE_ROW &&
+              sqlite3_column_type(st, 0) == SQLITE_INTEGER;
+    if (ok) *out = sqlite3_column_int64(st, 0);
+    rc = ok ? AR_STEP_ROW_READONLY(st) : SQLITE_ERROR;
+    ok = ok && rc == SQLITE_DONE;
+    if (sqlite3_finalize(st) != SQLITE_OK) ok = false;
+    if (!ok)
+        LOG_ERROR("build_fabric", "attach data_version read incomplete");
+    return ok;
+}
+
+bool db_build_attach_settle_job(struct node_db *ndb,
+                                const struct db_build_job *job, int64_t now)
+{
+    if (!ndb || !job) {
+        LOG_ERROR("build_fabric", "attach settlement missing job or database");
+        return false;
+    }
+    struct db_build_action *siblings = zcl_malloc(
+        (BUILD_FABRIC_ATTACH_SCAN_CAP + 1u) * sizeof(*siblings),
+        "build.attach.siblings");
+    if (!siblings) {
+        LOG_ERROR("build_fabric", "attach sibling allocation failed");
+        return false;
+    }
+    int count = db_build_job_actions_checked(
+        ndb, job->job_id, siblings, BUILD_FABRIC_ATTACH_SCAN_CAP + 1u);
+    if (count < 1 || count > BUILD_FABRIC_ATTACH_SCAN_CAP) {
+        free(siblings);
+        LOG_ERROR("build_fabric", "attach sibling history incomplete");
+        return false;
+    }
+    bool all_done = true, all_cache_hit = true;
+    for (int i = 0; i < count; i++) {
+        bool accepted = strcmp(siblings[i].state, "ACCEPTED") == 0 ||
+            strcmp(siblings[i].state, "CACHE_HIT") == 0;
+        all_done = all_done && accepted;
+        all_cache_hit = all_cache_hit &&
+            strcmp(siblings[i].state, "CACHE_HIT") == 0;
+    }
+    bool ok = true;
+    if (all_done) {
+        struct db_build_job done_job = *job;
+        const char *outcome = all_cache_hit ? "CACHE_HIT" : "ACCEPTED";
+        (void)snprintf(done_job.state, sizeof(done_job.state), "%s", outcome);
+        (void)snprintf(done_job.outcome, sizeof(done_job.outcome), "%s",
+                       outcome);
+        done_job.updated_at = now;
+        ok = db_build_job_save(ndb, &done_job);
+    }
+    free(siblings);
+    return ok;
 }
 
 int db_build_job_actions(struct node_db *ndb, const char *job_id,

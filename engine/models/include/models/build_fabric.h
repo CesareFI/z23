@@ -27,6 +27,7 @@ enum {
     BUILD_FABRIC_DESCRIPTOR_MAX = 255,
     BUILD_FABRIC_SIGNATURE_HEX = 128,
     BUILD_FABRIC_TRUST_STATE_MAX = 23,
+    BUILD_FABRIC_ATTACH_SCAN_CAP = 256,
 };
 
 struct db_build_job {
@@ -144,6 +145,11 @@ int db_build_jobs_recent_checked(struct node_db *ndb,
                                  struct db_build_job *out, size_t max);
 int db_build_job_actions_checked(struct node_db *ndb, const char *job_id,
                                  struct db_build_action *out, size_t max);
+/* Attachment refuses a partial sibling history and settles only under the
+ * caller's BEGIN IMMEDIATE transaction and complete donor-scan fence. */
+bool db_build_attach_ledger_version(struct node_db *ndb, sqlite3_int64 *out);
+bool db_build_attach_settle_job(struct node_db *ndb,
+                                const struct db_build_job *job, int64_t now);
 int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
                           size_t max);
 int db_build_job_receipts(struct node_db *ndb, const char *job_id,
