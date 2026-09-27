@@ -8230,6 +8230,65 @@ static int test_pw_live_donor_is_never_seeded_from(void)
     } _test_next:;
     return failures;
 }
+
+/* Every generation in the pool ran candidate code as this uid, so any of
+ * them can hold an object its source never compiled to -- stamped in the
+ * future so make's mtime test never finds it stale -- or have one written
+ * in place through a hard link. Reuse may shape an authoritative proof
+ * only when a signer outside the candidate trust domain produced it, and
+ * no such verifier is qualified: the proof must build from source. */
+static int test_pw_authoritative_proof_refuses_same_uid_donor(void)
+{
+    int failures = 0;
+    TEST("proof warm start: an authoritative proof never builds on an "
+         "object planted in a donor from its own trust domain") {
+        struct ic_warm_tree t;
+        char donor[33] = {0}, reason[32] = {0}, rejected[128];
+        char donor_epoch[65] = {0}, gen_epoch[65] = {0}, planted_rel[256];
+        char donor_b[8192], gen_b[8192], gen_obj[8192];
+        uint64_t files = 0;
+        struct stat st, donor_b_st, gen_b_st;
+        ASSERT(ic_warm_setup(&t, "planted", NULL));
+        ASSERT(ic_warm_epoch(t.donor, donor_epoch));
+        ASSERT(ic_warm_obj(t.donor, donor_epoch, "b.o", donor_b,
+                           sizeof(donor_b)));
+        /* b.c is identical at c1 and c2, so a warm seed keeps this object
+         * as-is: bytes b.c never compiles to, a day newer than any
+         * source. */
+        ASSERT(snprintf(planted_rel, sizeof(planted_rel),
+                        "build/obj/epochs/%s/b.o", donor_epoch) <
+               (int)sizeof(planted_rel));
+        ASSERT(ic_write(t.donor, planted_rel, "planted object\n"));
+        const struct timespec future[2] = {
+            {.tv_sec = (time_t)platform_time_wall_unix() + 86400},
+            {.tv_sec = (time_t)platform_time_wall_unix() + 86400},
+        };
+        ASSERT(utimensat(AT_FDCWD, donor_b, future, 0) == 0);
+        ASSERT(!ic_warm_start(&t, donor, reason, &files));
+        ASSERT(strcmp(reason, "donor_untrusted_same_uid") == 0);
+        ASSERT(donor[0] == 0 && files == 0);
+        ASSERT(snprintf(rejected, sizeof(rejected),
+                        "warm_donor_rejected=%s donor_untrusted_same_uid",
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") > 0);
+        ASSERT(ic_file_has(t.phases, rejected));
+        ASSERT(ic_file_has(t.phases, "cold: donor_untrusted_same_uid"));
+        ASSERT(snprintf(gen_obj, sizeof(gen_obj), "%s/build/obj", t.gen) >
+               0);
+        ASSERT(stat(gen_obj, &st) != 0 && errno == ENOENT);
+        /* Cold: the generation's own build compiles b.c from source. */
+        ASSERT(ic_warm_make(&t, t.gen));
+        ASSERT(ic_warm_epoch(t.gen, gen_epoch));
+        ASSERT(ic_warm_obj(t.gen, gen_epoch, "b.o", gen_b, sizeof(gen_b)));
+        ASSERT(stat(donor_b, &donor_b_st) == 0);
+        ASSERT(stat(gen_b, &gen_b_st) == 0);
+        ASSERT(gen_b_st.st_ino != donor_b_st.st_ino);
+        ASSERT(ic_file_has(gen_b, "int b;"));
+        ASSERT(!ic_file_has(gen_b, "planted object"));
+        ASSERT(test_rm_rf_recursive(t.root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
 #endif
 
 int test_impact_composition(void)
@@ -8361,6 +8420,7 @@ int test_impact_composition(void)
     failures += test_pw_next_proof_seeds_from_the_finished_generation();
     failures += test_pw_identity_mismatch_stays_cold_with_its_reason();
     failures += test_pw_live_donor_is_never_seeded_from();
+    failures += test_pw_authoritative_proof_refuses_same_uid_donor();
 #endif
     return failures;
 }
