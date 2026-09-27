@@ -7270,3 +7270,29 @@ int test_zcode_swarm_net(void)
 {
     return zwn_run_shard(ZWN_ALL_SHARDS);
 }
+
+/* The registered shard groups, one per owner in the table above. */
+int test_zcode_swarm_net_shard_01(void)
+{
+    return zwn_run_shard(0u);
+}
+
+int test_zcode_swarm_net_shard_02(void)
+{
+    return zwn_run_shard(1u);
+}
+
+int test_zcode_swarm_net_shard_03(void)
+{
+    return zwn_run_shard(2u);
+}
+
+int test_zcode_swarm_net_shard_04(void)
+{
+    return zwn_run_shard(3u);
+}
+
+int test_zcode_swarm_net_shard_05(void)
+{
+    return zwn_run_shard(4u);
+}

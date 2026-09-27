@@ -130,6 +130,35 @@ static bool ic_selector_has(const char *selector, const char *full)
     return false;
 }
 
+/* The universal selector carries every catalog group except an umbrella
+ * whose shards it all carries: the shards are the umbrella's body, run
+ * concurrently, and the umbrella itself runs whole only when named exactly.
+ * True when `selector` is exactly that set minus `gated` host-gated groups
+ * (none of which is a shard or an umbrella), each umbrella absent and each
+ * of its shards present. */
+static bool ic_selector_is_universal(const char *selector, uint32_t selected,
+                                     size_t gated)
+{
+    size_t umbrellas = 0;
+    for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
+        const char *full = zcl_test_group_catalog_at(i);
+        if (!zcl_test_group_is_umbrella(full))
+            continue;
+        umbrellas++;
+        if (ic_selector_has(selector, full) ||
+            zcl_test_group_umbrella_shard_count(full) < 2)
+            return false;
+        for (size_t k = 0; k < zcl_test_group_catalog_count(); k++)
+            if (zcl_test_group_is_umbrella_shard(
+                    full, zcl_test_group_catalog_at(k)) &&
+                !ic_selector_has(selector, zcl_test_group_catalog_at(k)))
+                return false;
+    }
+    return umbrellas > 0 &&
+           (size_t)selected == zcl_test_group_catalog_count() - umbrellas -
+                                   gated;
+}
+
 /* A tree shaped like a proof generation: real enough to name as a root, with
  * no build/bin/z23 in it. */
 static bool ic_host_need_bare_root(const char *dir)
@@ -846,13 +875,14 @@ static int test_ic_capacity_bound_runs_everything(void)
                    &capped, IC_FIX_HOST_BARE, false, selector,
                    sizeof(selector), &selected, gated, sizeof(gated)));
         ASSERT(zcl_test_group_catalog_count() > 2);
-        ASSERT((size_t)selected == zcl_test_group_catalog_count() - 2);
+        ASSERT(ic_selector_is_universal(selector, selected, 2));
         ASSERT(!ic_selector_has(selector, "test_onion_pair_watch_live"));
         ASSERT(!ic_selector_has(selector, "test_self_folded_anchor_heavy"));
         for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
             const char *full = zcl_test_group_catalog_at(i);
             if (strcmp(full, "test_onion_pair_watch_live") == 0 ||
-                strcmp(full, "test_self_folded_anchor_heavy") == 0)
+                strcmp(full, "test_self_folded_anchor_heavy") == 0 ||
+                zcl_test_group_is_umbrella(full))
                 continue;
             ASSERT(ic_selector_has(selector, full));
         }
@@ -876,10 +906,11 @@ static int test_ic_capacity_bound_runs_everything(void)
         ASSERT(zcl_dev_proof_test_build_test_selector(
                    &capped, IC_FIX_HOST_FULL, false, selector,
                    sizeof(selector), &selected, gated, sizeof(gated)));
-        ASSERT((size_t)selected == zcl_test_group_catalog_count());
+        ASSERT(ic_selector_is_universal(selector, selected, 0));
         ASSERT(gated[0] == '\0');
         for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
-            ASSERT(ic_selector_has(selector, zcl_test_group_catalog_at(i)));
+            ASSERT(zcl_test_group_is_umbrella(zcl_test_group_catalog_at(i)) ||
+                   ic_selector_has(selector, zcl_test_group_catalog_at(i)));
         ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
 
         uint32_t exact_selected = 0;
@@ -8174,10 +8205,11 @@ static int test_ic_include_capacity_runs_everything(void)
                    &plan, IC_FIX_HOST_FULL, false, selector, sizeof(selector),
                    &selected, gated, sizeof(gated)));
         ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
-        ASSERT((size_t)selected == zcl_test_group_catalog_count());
+        ASSERT(ic_selector_is_universal(selector, selected, 0));
         ASSERT(gated[0] == '\0');
         for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
-            ASSERT(ic_selector_has(selector, zcl_test_group_catalog_at(i)));
+            ASSERT(zcl_test_group_is_umbrella(zcl_test_group_catalog_at(i)) ||
+                   ic_selector_has(selector, zcl_test_group_catalog_at(i)));
 
         /* (b) an untrusted graph is missing evidence: it refuses. */
         ASSERT(ic_write_include_fanout(IC_FIX_INCCAP, true));

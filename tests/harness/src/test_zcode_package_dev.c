@@ -6011,10 +6011,16 @@ static int zpd_test_candidate_cannot_edit_acceptance_tests(void)
  * fixtures under per-pid test-tmp and /tmp roots.
  *
  * Owners are balanced by measured wall ([zcode-package-dev-case] ms=, printed
- * per row by every run). Every run -- umbrella or shard -- first proves the
- * partition: the rows are exactly the sub-suite list written down below,
- * each owned by one shard, every shard owns a row, and the catalog registers
- * exactly those shards under the umbrella. */
+ * per row by every run): the twelve-task benchmark, work start and the
+ * standard profile are each one indivisible sub-suite and each anchors a
+ * shard. A task's zbuild workspace is host-global by task root, so rows that
+ * start the same goal on the same fixture ("Fix x": work start, package
+ * bounds, single interpretation, acceptance-test edits; the license-choice
+ * goal: both license rows) share one owner and stay serial. Every run --
+ * umbrella or shard -- first proves the partition: the rows are exactly the
+ * sub-suite list written down below, each owned by one shard, every shard
+ * owns a row, and the catalog registers exactly those shards under the
+ * umbrella. */
 #include "test_group_catalog.h"
 #include <time.h>
 
@@ -6123,24 +6129,24 @@ struct zpd_case {
 };
 #define ZPD_CASE(fn, owner) {#fn, fn, owner}
 static const struct zpd_case g_zpd_cases[] = {
-    ZPD_CASE(zpd_row_base, 1),
-    ZPD_CASE(zpd_row_control_stores, 1),
-    ZPD_CASE(zpd_row_default_chain_id, 1),
-    ZPD_CASE(zpd_row_exact_file_selection, 1),
-    ZPD_CASE(zpd_row_fail_closed, 1),
-    ZPD_CASE(zpd_row_prepare_programs, 1),
-    ZPD_CASE(zpd_row_project_inspect, 1),
+    ZPD_CASE(zpd_row_base, 2),
+    ZPD_CASE(zpd_row_control_stores, 2),
+    ZPD_CASE(zpd_row_default_chain_id, 2),
+    ZPD_CASE(zpd_row_exact_file_selection, 2),
+    ZPD_CASE(zpd_row_fail_closed, 2),
+    ZPD_CASE(zpd_row_prepare_programs, 2),
+    ZPD_CASE(zpd_row_project_inspect, 2),
     ZPD_CASE(zpd_row_project_init, 2),
     ZPD_CASE(zpd_row_reuse_plan, 2),
     ZPD_CASE(zpd_row_work_start_license_filter, 2),
     ZPD_CASE(zpd_row_work_start_license_lifecycle, 2),
-    ZPD_CASE(zpd_row_work_start_package_bounds, 2),
+    ZPD_CASE(zpd_row_work_start_package_bounds, 1),
     ZPD_CASE(zpd_row_work_toolchain, 2),
     ZPD_CASE(zpd_row_commons_join_front_doors, 2),
-    ZPD_CASE(zpd_row_admitted_single_interpretation, 2),
-    ZPD_CASE(zpd_row_candidate_cannot_edit_acceptance_tests, 2),
+    ZPD_CASE(zpd_row_admitted_single_interpretation, 1),
+    ZPD_CASE(zpd_row_candidate_cannot_edit_acceptance_tests, 1),
     ZPD_CASE(zpd_row_work_start, 1),
-    ZPD_CASE(zpd_row_standard_profile, 1),
+    ZPD_CASE(zpd_row_standard_profile, 2),
     ZPD_CASE(zpd_row_twelve_task_benchmark, 0),
 };
 #undef ZPD_CASE
@@ -6282,6 +6288,22 @@ int test_zcode_package_dev(void)
     if (fork_role && fork_role[0])
         return zpd_focus_worker_role(fork_role);
     return zpd_run_shard(ZPD_ALL_SHARDS);
+}
+
+/* The registered shard groups, one per owner in the table above. */
+int test_zcode_package_dev_shard_01(void)
+{
+    return zpd_run_shard(0u);
+}
+
+int test_zcode_package_dev_shard_02(void)
+{
+    return zpd_run_shard(1u);
+}
+
+int test_zcode_package_dev_shard_03(void)
+{
+    return zpd_run_shard(2u);
 }
 
 /* Local-only accepted source and no-clobber publication regression. */
