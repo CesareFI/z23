@@ -510,6 +510,89 @@ static int test_bf_attach_conflicting_physical_outputs(void)
     return failures;
 }
 
+static int test_bf_attach_ambiguous_donor_vetoes_other_donor(void)
+{
+    int failures = 0;
+    TEST("build_fabric_attach: ambiguous accepted donor vetoes another donor") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(att_open(&ndb, dir, sizeof(dir), path, sizeof(path), "ambiguous"));
+        ASSERT(vcs_object_store_init(dir));
+        uint8_t input_root[32];
+        sha3_256(att_unit, sizeof(att_unit) - 1u, input_root);
+        ASSERT(vcs_object_put_addressed(dir, input_root, att_unit,
+                                        sizeof(att_unit) - 1u));
+        struct vcs_toolchain_capsule_v1 capsule;
+        uint8_t capsule_root[32];
+        char capsule_hex[65];
+        ASSERT(vcs_toolchain_capsule_v1_capture(&capsule));
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_root));
+        zcl_hex_encode(capsule_root, 32, capsule_hex);
+        uint8_t seed[32], pubkey[32], secret[32];
+        memset(seed, 41, sizeof(seed));
+        ed25519_keypair(pubkey, secret, seed);
+        ASSERT(att_approve_worker(&ndb, pubkey,
+                                  (int64_t)platform_time_wall_unix()));
+
+        struct db_build_job jobs[3];
+        struct db_build_action actions[3];
+        struct db_build_receipt receipts[3] = {0};
+        ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_c, capsule_hex,
+                                input_root, "dev-x86-64-v3", &jobs[0],
+                                &actions[0]));
+        int64_t wall_us = 0;
+        att_worker_id_from_pubkey(pubkey, receipts[0].worker_id);
+        ASSERT(att_physical_run(&ndb, dir, actions[0].action_id, att_id_d,
+                                secret, pubkey, &receipts[0], &wall_us, true));
+        ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_b, capsule_hex,
+                                input_root, "dev-x86-64-v3", &jobs[1],
+                                &actions[1]));
+        att_worker_id_from_pubkey(pubkey, receipts[1].worker_id);
+        ASSERT(att_physical_run(&ndb, dir, actions[1].action_id, att_lease_b,
+                                secret, pubkey, &receipts[1], &wall_us, true));
+        ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
+                                input_root, "dev-x86-64-v3", &jobs[2],
+                                &actions[2]));
+
+        /* Two distinct, signed LOCAL_ACCEPTED rows bind donor B. Donor A
+         * remains fully qualified; neither may authorize attachment while
+         * the same-key accepted history is ambiguous. */
+        struct db_build_receipt duplicate;
+        ASSERT(db_build_receipt_find(&ndb, receipts[1].receipt_id,
+                                     &duplicate));
+        ASSERT_STR_EQ(duplicate.trust_state, "LOCAL_ACCEPTED");
+        (void)snprintf(duplicate.lease_id, sizeof duplicate.lease_id, "%s",
+                       att_id_b);
+        ASSERT(build_fabric_receipt_id(&duplicate, duplicate.receipt_id).ok);
+        uint8_t id[32], signature[64];
+        ASSERT(zcl_hex_decode_lower(duplicate.receipt_id, id, sizeof id));
+        ed25519_sign(signature, id, sizeof id, secret, pubkey);
+        zcl_hex_encode(signature, sizeof signature, duplicate.signature);
+        ASSERT(db_build_receipt_save(&ndb, &duplicate));
+        struct db_build_receipt check[3];
+        ASSERT_EQ(db_build_job_receipts_checked(&ndb, jobs[1].job_id,
+                                                check, 3), 2);
+        ASSERT_STR_EQ(check[0].trust_state, "LOCAL_ACCEPTED");
+        ASSERT_STR_EQ(check[1].trust_state, "LOCAL_ACCEPTED");
+
+        struct build_fabric_attach_report report;
+        struct zcl_result attached = build_fabric_attach(
+            &ndb, dir, NULL, &jobs[2], &actions[2], secret, pubkey,
+            &receipts[2], &report);
+        ASSERT(!attached.ok);
+        ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_REFUSED);
+        ASSERT_STR_EQ(report.refusal, "attach-refused-history-incomplete");
+        ASSERT_EQ(report.compiler_processes, 0);
+        struct db_build_action durable;
+        ASSERT(db_build_action_find(&ndb, actions[2].action_id, &durable));
+        ASSERT_STR_EQ(durable.state, "QUEUED");
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_attach_avoids_second_compile(void)
 {
     int failures = 0;
@@ -1227,6 +1310,7 @@ int test_build_fabric_attach(void)
     failures += test_bf_attach_unobserved_assembler_input_refused();
     failures += test_bf_attach_avoids_second_compile();
     failures += test_bf_attach_conflicting_physical_outputs();
+    failures += test_bf_attach_ambiguous_donor_vetoes_other_donor();
     failures += test_bf_attach_reproduction_never_attaches();
     printf("=== build_fabric_attach: %d failures ===\n", failures);
     return failures;

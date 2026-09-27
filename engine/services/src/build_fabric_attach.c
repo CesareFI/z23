@@ -620,6 +620,7 @@ static bool bfat_donor_receipt_scan(
         if (accepted ||
             !bfat_row_binding_exact(&rows[i], donor_job, donor_action)) {
             complete = false;
+            *history_incomplete = true;
             break;
         }
         accepted = &rows[i];
@@ -654,9 +655,8 @@ static bool bfat_donor_qualified(
     struct db_build_receipt accepted;
     if (!bfat_donor_receipt_scan(ndb, donor_job, donor_action, &accepted,
                                  history_incomplete))
-        return false; /* raw-return-ok:disqualified donor; the scan logs its
-                         own alloc failure and the caller reports
-                         attach-refused-donor-not-qualified */
+        return false; /* raw-return-ok:disqualified donor; the caller reports
+                         incomplete history or an unqualified donor */
     if (!bfat_donor_worker_live(ndb, accepted.worker_id, now) ||
         !bfat_receipt_signature_valid(ndb, &accepted))
         return false;
