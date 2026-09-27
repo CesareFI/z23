@@ -213,6 +213,98 @@ static int provider_case_post_cancel_restart(struct sw_node *n,
     return failures;
 }
 
+static bool local_case_corrupt_first_chunk(const struct sw_node *n,
+                                           const struct sw_pkg *p)
+{
+    char hash_hex[65], cas_path[1400];
+    zcl_hex_encode(p->manifest.files[0].chunk_hashes, 32, hash_hex);
+    int len = snprintf(cas_path, sizeof(cas_path), "%s/cas/sha3/%.2s/%s",
+                       n->zcode_dir, hash_hex, hash_hex);
+    if (len <= 0 || (size_t)len >= sizeof(cas_path))
+        return false;
+    FILE *file = fopen(cas_path, "r+b");
+    if (!file)
+        return false;
+    int first = fgetc(file);
+    rewind(file);
+    bool written = first != EOF && fputc(first ^ 0x80, file) != EOF;
+    return fclose(file) == 0 && written;
+}
+
+static int local_case_route_source(void)
+{
+    int failures = 0;
+    struct vcs_zcode_dht_provider_route none = {.authenticated_count = 0};
+    struct json_value json;
+    json_init(&json);
+    boot_zcode_dht_provider_route_test_render(
+        &json, &none, VCS_SWARM_FETCH_ALREADY_COMPLETE);
+    const char *source = json_get_str(json_get(&json, "source"));
+    SW_CHECK("local store: zero-provider answer names local_store source",
+             json_get_bool_or(&json, "ok", false) && source &&
+             strcmp(source, "local_store") == 0);
+    json_free(&json);
+    json_init(&json);
+    boot_zcode_dht_provider_route_test_render(&json, &none,
+                                              VCS_SWARM_FETCH_NO_PROVIDER);
+    SW_CHECK("local store: refused route names no byte source",
+             !json_get_bool_or(&json, "ok", true) &&
+             json_get(&json, "source") == NULL);
+    json_free(&json);
+    return failures;
+}
+
+/* A restricted fetch with no authenticated provider may be answered only
+ * by this node's own complete, possession-proven copy of the exact root.
+ * It never registers work, never obeys a looser byte ceiling, and a
+ * corrupt local chunk restores the original no-provider refusal. */
+static int provider_case_local_store(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t key[33];
+    sw_key(96, key);
+    const uint64_t peer = 906;
+    uint32_t max_inflight = 0;
+    if (!sw_node_open(&n, "provider_local", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 34))
+        return 1;
+    SW_CHECK("local store: ordinary provider registers",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    SW_CHECK("local store: ordinary fetch completes",
+             vcs_swarm_engine_fetch(n.engine, p.root, SW_DAY, 1) ==
+                 VCS_SWARM_FETCH_OK &&
+             sw_drive_complete(&n, &peer, 1, &p, &max_inflight));
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("local store: verified complete root answers zero providers",
+             n.engine != NULL &&
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 2, NULL,
+                                         0) ==
+                 VCS_SWARM_FETCH_ALREADY_COMPLETE);
+    SW_CHECK("local store: zero-provider answer obeys the byte ceiling",
+             vcs_swarm_engine_fetch_from_bounded(n.engine, p.root, SW_DAY, 2,
+                                                 NULL, 0, 1) ==
+                 VCS_SWARM_FETCH_BYTE_LIMIT);
+    failures += local_case_route_source();
+    struct vcs_package_store_status st;
+    memset(&st, 0, sizeof(st));
+    SW_CHECK("local store: corrupt chunk keeps the complete presence bit",
+             local_case_corrupt_first_chunk(&n, &p) &&
+             vcs_package_store_package_status(n.store, p.root, &st) &&
+             st.complete);
+    SW_CHECK("local store: failed possession proof keeps the refusal",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 3, NULL,
+                                         0) == VCS_SWARM_FETCH_NO_PROVIDER);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
 int t_swarm_provider_restricted(void)
 {
     int failures = 0;
@@ -234,6 +326,7 @@ int t_swarm_provider_restricted(void)
     failures += provider_case_cancel(&n, &p);
     failures += provider_case_post_cancel_restart(&n, &p, bad, honest,
                                                   bad_key, honest_key);
+    failures += provider_case_local_store();
 
     sw_free_package(&p);
     sw_node_close(&n);
