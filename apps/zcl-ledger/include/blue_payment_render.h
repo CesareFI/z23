@@ -12,4 +12,8 @@ bool blue_payment_render_png(const char *path,
 bool blue_payment_render_fee_png(const char *path, uint64_t fee_zat,
     uint8_t input_paths, bool dark);
 
+/* Mirrors the device-derived output totals and fee page. */
+bool blue_payment_render_totals_png(const char *path, uint64_t output_zat,
+    uint64_t own_output_zat, uint64_t fee_zat, bool dark);
+
 #endif

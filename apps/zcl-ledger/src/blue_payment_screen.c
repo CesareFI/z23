@@ -70,7 +70,8 @@ static bool append_number(char *text, size_t capacity, size_t *used,
     return true;
 }
 
-static bool amount_text(uint64_t zat, char text[32]) {
+bool blue_payment_amount_text(uint64_t zat, char text[32]) {
+    if (!text || zat > ZCL_MAX_MONEY_ZAT) return false;
     size_t used = 0;
     if (!append_number(text, 32, &used, zat / 100000000)) return false;
     text[used++] = '.';
@@ -82,11 +83,6 @@ static bool amount_text(uint64_t zat, char text[32]) {
     }
     memcpy(text + used, " ZCL", 5);
     return true;
-}
-
-bool blue_payment_fee_text(uint64_t fee_zat, char text[32]) {
-    return text && fee_zat <= ZCL_MAX_MONEY_ZAT &&
-        amount_text(fee_zat, text);
 }
 
 static bool output_address(const blue_payment_output *output,
@@ -126,7 +122,7 @@ bool blue_payment_screen_format(const blue_payment_output *output,
     screen->title[used++] = '/';
     if (!append_number(screen->title, sizeof screen->title, &used,
             total_outputs) ||
-        !amount_text(output->amount_zat, screen->amount) ||
+        !blue_payment_amount_text(output->amount_zat, screen->amount) ||
         !output_address(output, hash, screen->address)) {
         memset(screen, 0, sizeof *screen);
         return false;

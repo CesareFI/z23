@@ -33,9 +33,21 @@ void blue_payment_apdu_abort(blue_payment_apdu *state) {
     blue_payment_review_abort(&state->review);
 }
 
-bool blue_payment_apdu_touch_continue(blue_payment_apdu *state) {
-    if (!state || !state->active ||
-        !blue_payment_review_acknowledge(&state->review)) return false;
+bool blue_payment_apdu_touch_continue(blue_payment_apdu *state,
+    const blue_payment_owned_hashes *owned) {
+    if (!state || !state->active || !owned) return false;
+    const blue_payment_output *pending =
+        blue_payment_review_pending(&state->review);
+    blue_payment_account_relation relation = blue_payment_account_classify(
+        pending, owned->external, owned->internal, true);
+    if (relation == BLUE_PAYMENT_ACCOUNT_UNKNOWN) return false;
+    bool own = relation == BLUE_PAYMENT_THIS_ACCOUNT ||
+               relation == BLUE_PAYMENT_OWN_INTERNAL;
+    if (own && pending->amount_zat >
+            2100000000000000ULL - state->own_output_zat) return false;
+    uint64_t amount = pending->amount_zat;
+    if (!blue_payment_review_acknowledge(&state->review)) return false;
+    if (own) state->own_output_zat += amount;
     memset(&state->screen, 0, sizeof state->screen);
     return true;
 }
@@ -89,7 +101,8 @@ static uint16_t finish(blue_payment_apdu *state, uint8_t length,
     zcl_tx_stream_facts facts;
     uint8_t unused_digest[32];
     if (!blue_payment_review_finish(&state->review, NULL, 0, 0,
-            &facts, unused_digest) || facts.inputs != state->input_count)
+            &facts, unused_digest) || facts.inputs != state->input_count ||
+        state->own_output_zat > facts.output_zat)
         return 0x6a80;
     state->active = false;
     state->output_zat = facts.output_zat;

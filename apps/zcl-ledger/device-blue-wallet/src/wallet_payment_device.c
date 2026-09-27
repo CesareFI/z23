@@ -13,7 +13,10 @@ static cx_sha256_t payment_sha;
 static bool visible;
 static uint8_t displayed_view;
 static char fee_text[32];
+static char others_text[32];
+static char own_text[32];
 static char input_path_text[20];
+static bool totals_view;
 static uint8_t account_hash160[20];
 static uint8_t internal_hash160[20];
 static bool account_ready;
@@ -57,9 +60,12 @@ void wallet_payment_abort(void) {
     memset(&payment_blake, 0, sizeof payment_blake);
     memset(&payment_sha, 0, sizeof payment_sha);
     memset(fee_text, 0, sizeof fee_text);
+    memset(others_text, 0, sizeof others_text);
+    memset(own_text, 0, sizeof own_text);
     memset(input_path_text, 0, sizeof input_path_text);
     visible = false;
     displayed_view = 0;
+    totals_view = false;
 }
 
 bool wallet_payment_visible(void) {
@@ -93,6 +99,8 @@ static const bagl_element_t *exit_review(const bagl_element_t *element) {
 }
 
 static const bagl_element_t *continue_review(const bagl_element_t *element);
+static const bagl_element_t *show_totals(const bagl_element_t *element);
+static const bagl_element_t *show_fee(const bagl_element_t *element);
 
 static unsigned int output_ui_button(unsigned int mask, unsigned int count) {
     (void)mask;
@@ -109,6 +117,10 @@ static unsigned int complete_ui_button(unsigned int mask, unsigned int count) {
 }
 
 static unsigned int fee_ui_button(unsigned int mask, unsigned int count) {
+    return output_ui_button(mask, count);
+}
+
+static unsigned int totals_ui_button(unsigned int mask, unsigned int count) {
     return output_ui_button(mask, count);
 }
 
@@ -176,6 +188,22 @@ static const bagl_element_t fee_ui[] = {
     LABEL(283, "CHAIN UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
     LABEL(315, "BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
     LABEL(347, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    BUTTON(20, "TOTALS", show_totals),
+    BUTTON(165, "EXIT", exit_review)
+};
+
+static const bagl_element_t totals_ui[] = {
+    BACKGROUND,
+    LABEL(25, "OUTPUT TOTALS", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(75, "TO OTHER ADDRESSES", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(110, others_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(165, "TO YOUR ADDRESSES", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(200, own_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(250, "FEE", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(280, fee_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(329, "CHAIN + BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(355, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    BUTTON(20, "BACK", show_fee),
     BUTTON(165, "EXIT", exit_review)
 };
 
@@ -193,43 +221,83 @@ static const bagl_element_t ended_ui[] = {
 #undef TEXT
 #undef BODY
 
+static void display_output(void) {
+    if (!blue_payment_screen_mark_account(&payment.screen,
+            &payment.review.output, account_hash160,
+            internal_hash160, account_ready)) {
+        wallet_payment_abort();
+        UX_DISPLAY(ended_ui, NULL);
+        return;
+    }
+    UX_DISPLAY(output_ui, NULL);
+}
+
+static void display_fee(void) {
+    const char *paths = blue_payment_input_paths_label(payment.input_paths);
+    if (!paths || strlen(paths) >= sizeof input_path_text ||
+        !blue_payment_amount_text(payment.fee_zat, fee_text)) {
+        wallet_payment_abort();
+        UX_DISPLAY(ended_ui, NULL);
+        return;
+    }
+    strcpy(input_path_text, paths);
+    UX_DISPLAY(fee_ui, NULL);
+}
+
+static void display_totals(void) {
+    if (payment.own_output_zat > payment.output_zat ||
+        !blue_payment_amount_text(payment.output_zat -
+            payment.own_output_zat, others_text) ||
+        !blue_payment_amount_text(payment.own_output_zat, own_text) ||
+        !blue_payment_amount_text(payment.fee_zat, fee_text)) {
+        wallet_payment_abort();
+        UX_DISPLAY(ended_ui, NULL);
+        return;
+    }
+    UX_DISPLAY(totals_ui, NULL);
+}
+
 void wallet_payment_display(void) {
     uint8_t view = payment.review.pending ? 2 :
-        payment.fee_ready ? 6 : payment.review.verified ? 3 :
+        payment.fee_ready ? (totals_view ? 7 : 6) :
+        payment.review.verified ? 3 :
         payment.active ? 1 : 4;
     if (view == displayed_view) return;
     displayed_view = view;
-    if (view == 2) {
-        if (!blue_payment_screen_mark_account(&payment.screen,
-                &payment.review.output, account_hash160,
-                internal_hash160, account_ready)) {
-            wallet_payment_abort();
-            UX_DISPLAY(ended_ui, NULL);
-            return;
-        }
-        UX_DISPLAY(output_ui, NULL);
-    } else if (view == 6) {
-        const char *paths = blue_payment_input_paths_label(payment.input_paths);
-        if (!paths || strlen(paths) >= sizeof input_path_text ||
-            !blue_payment_fee_text(payment.fee_zat, fee_text)) {
-            wallet_payment_abort();
-            UX_DISPLAY(ended_ui, NULL);
-            return;
-        }
-        strcpy(input_path_text, paths);
-        UX_DISPLAY(fee_ui, NULL);
-    } else if (view == 3) {
-        UX_DISPLAY(complete_ui, NULL);
-    } else if (view == 1) {
-        UX_DISPLAY(waiting_ui, NULL);
-    } else {
-        UX_DISPLAY(ended_ui, NULL);
+    if (view == 2) display_output();
+    else if (view == 6) display_fee();
+    else if (view == 7) display_totals();
+    else if (view == 3) { UX_DISPLAY(complete_ui, NULL); }
+    else if (view == 1) { UX_DISPLAY(waiting_ui, NULL); }
+    else { UX_DISPLAY(ended_ui, NULL); }
+}
+
+static const bagl_element_t *show_totals(const bagl_element_t *element) {
+    (void)element;
+    if (payment.fee_ready) {
+        totals_view = true;
+        displayed_view = 0;
+        wallet_payment_display();
     }
+    return NULL;
+}
+
+static const bagl_element_t *show_fee(const bagl_element_t *element) {
+    (void)element;
+    if (payment.fee_ready) {
+        totals_view = false;
+        displayed_view = 0;
+        wallet_payment_display();
+    }
+    return NULL;
 }
 
 static const bagl_element_t *continue_review(const bagl_element_t *element) {
     (void)element;
-    if (!blue_payment_apdu_touch_continue(&payment))
+    blue_payment_owned_hashes owned;
+    memcpy(owned.external, account_hash160, sizeof owned.external);
+    memcpy(owned.internal, internal_hash160, sizeof owned.internal);
+    if (!account_ready || !blue_payment_apdu_touch_continue(&payment, &owned))
         blue_payment_apdu_abort(&payment);
     wallet_payment_display();
     return NULL;

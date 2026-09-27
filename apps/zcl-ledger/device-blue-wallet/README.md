@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.10 derives
+Version 0.2.11 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -34,7 +34,12 @@ There is no USB output acknowledgement, payment signature,
 private-key export, path selection, Sapling spend, multisig, or token command.
 The fee page shows the Blue-derived account prefix `m/44'/147'/0'`, the
 verified input path or both paths, `CHAIN UNCHECKED`, `BRANCH UNCHECKED`,
-and `NO SIGNING`. Version 0.2.1 reached the Blue: its receive
+and `NO SIGNING`. Its TOTALS button shows device-derived output value to
+other addresses, value to the two fixed Blue addresses, and the fee. P2SH
+outputs remain in the other-address total even if their script hash equals
+a public-key hash. BACK returns to the fee page. These totals appear only
+after full transaction replay and input binding. Version 0.2.1 reached the
+Blue: its receive
 screen and EXIT worked, and all 35 address characters matched the host result
 `t1RAmKL4KFauUXGswvMvk66aS5UL33ck1Uz`. A synthetic transaction review
 then stopped USB replies and left EXIT unresponsive. The owner restarted the
@@ -48,7 +53,7 @@ Version 0.2.4 labels an exact P2PKH hash match to the
 Blue-derived fixed account as “THIS ACCOUNT,” other P2PKH outputs as “OTHER
 ADDRESS,” and P2SH outputs as “P2SH ADDRESS.” It does not infer ownership of
 P2SH or call an output change without verified inputs and account context.
-Version 0.2.10 remains uninstalled. Do not receive funds or sign payments with it.
+Version 0.2.11 remains uninstalled. Do not receive funds or sign payments with it.
 
 ## Build
 
@@ -73,13 +78,13 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.10 image has 31,232 bytes of `.text`, 5,224
+512-byte margin. The linked 0.2.11 image has 32,512 bytes of `.text`, 5,296
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
-stack; 920 bytes remain after that section in the 6,144-byte app SRAM
-region. The largest named C path sums to 744 bytes, excluding BOLOS firmware
+stack; 848 bytes remain after that section in the 6,144-byte app SRAM
+region. The largest named C path sums to 752 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced `.text`
-SHA-256 `10a75e3f4edd39c0e60d0ae0956e6f6da1901c38af53f53d73cd3b83dfd9cc23`.
-The [input path experiment](../../../docs/experiments/2026-09-27-ledger-blue-input-path-fee-screen.md)
+SHA-256 `eca26a7cb7465cbbe65164a0b37bcd7cc43a8d882db59654620e186e9b27606d`.
+The [output totals experiment](../../../docs/experiments/2026-09-27-ledger-blue-output-totals.md)
 records the tests and limits.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.

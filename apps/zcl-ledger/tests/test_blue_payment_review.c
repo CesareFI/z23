@@ -18,7 +18,8 @@
 
 typedef struct {
     uint8_t bytes[256];
-    size_t length, output_end[2], second_amount, previous_hash;
+    size_t length, output_end[2], second_amount, previous_hash,
+        first_output_hash, second_output_hash;
 } fixture;
 
 static void append_u32(fixture *item, uint32_t value) {
@@ -47,6 +48,7 @@ static fixture make_fixture(void) {
     const uint8_t p2pkh[3] = {0x76, 0xa9, 0x14};
     memcpy(item.bytes + item.length, p2pkh, sizeof p2pkh);
     item.length += sizeof p2pkh;
+    item.first_output_hash = item.length;
     memset(item.bytes + item.length, 0x11, 20);
     item.length += 20;
     item.bytes[item.length++] = 0x88;
@@ -57,6 +59,7 @@ static fixture make_fixture(void) {
     item.bytes[item.length++] = 23;
     item.bytes[item.length++] = 0xa9;
     item.bytes[item.length++] = 0x14;
+    item.second_output_hash = item.length;
     memset(item.bytes + item.length, 0x22, 20);
     item.length += 20;
     item.bytes[item.length++] = 0x87;
@@ -352,7 +355,7 @@ static void apdu_passes(apdu_fixture *session, const fixture *item) {
 static void test_apdu(const fixture *item) {
     apdu_fixture session;
     apdu_init(&session);
-    assert(!blue_payment_apdu_touch_continue(&session.state));
+    assert(!blue_payment_apdu_touch_continue(&session.state, &session.owned));
     apdu_begin(&session, item);
     apdu_passes(&session, item);
     uint8_t reply[8];
@@ -364,14 +367,16 @@ static void test_apdu(const fixture *item) {
     assert(command(&session, 0x25, NULL, 0,
         reply, &reply_length) == 0x9000);
     assert(reply_length == 6 && reply[0] == 1 && reply[2] == 1);
-    assert(blue_payment_apdu_touch_continue(&session.state));
+    assert(!blue_payment_apdu_touch_continue(&session.state, NULL));
+    assert(session.state.review.pending && session.state.own_output_zat == 0);
+    assert(blue_payment_apdu_touch_continue(&session.state, &session.owned));
     assert(session.state.screen.title[0] == 0);
     assert(command(&session, 0x21, item->bytes + item->output_end[0],
         item->output_end[1] - item->output_end[0],
         reply, &reply_length) == 0x9000);
     assert(reply[1] == 1 &&
         strcmp(session.state.screen.title, "OUTPUT 2/2") == 0);
-    assert(blue_payment_apdu_touch_continue(&session.state));
+    assert(blue_payment_apdu_touch_continue(&session.state, &session.owned));
     assert(command(&session, 0x21, item->bytes + item->output_end[1],
         item->length - item->output_end[1],
         reply, &reply_length) == 0x9000);
@@ -383,7 +388,8 @@ static void test_apdu(const fixture *item) {
         reply, &reply_length) == 0x9000);
     assert(reply_length == 6 && reply[0] == 0 && reply[3] == 1 &&
         reply[4] == 2 && reply[5] == 2);
-    assert(!blue_payment_apdu_touch_continue(&session.state));
+    assert(session.state.own_output_zat == 0);
+    assert(!blue_payment_apdu_touch_continue(&session.state, &session.owned));
     EVP_MD_CTX_free(session.sha_context);
 }
 
@@ -420,7 +426,7 @@ static void test_apdu_fail_closed(const fixture *item) {
         item->output_end[0], reply, &reply_length) == 0x9000);
     assert(command(&session, 0x21, item->bytes + item->output_end[0],
         1, reply, &reply_length) == 0x6a80);
-    assert(!blue_payment_apdu_touch_continue(&session.state));
+    assert(!blue_payment_apdu_touch_continue(&session.state, &session.owned));
 
     apdu_begin(&session, item);
     apdu_passes(&session, item);
@@ -519,7 +525,7 @@ static bool live_continue(void *context, uint32_t index,
     assert(strcmp(screen->address, live->apdu.state.screen.address) == 0);
     if (live->refuse_touch) return false;
     ++live->continued;
-    return blue_payment_apdu_touch_continue(&live->apdu.state);
+    return blue_payment_apdu_touch_continue(&live->apdu.state, &live->apdu.owned);
 }
 
 static void test_live_driver(const fixture *item) {
@@ -559,6 +565,8 @@ static void test_live_driver(const fixture *item) {
 
 static void test_live_bound(void) {
     fixture spend = make_fixture();
+    memset(spend.bytes + spend.first_output_hash, 0x44, 20);
+    memset(spend.bytes + spend.second_output_hash, 0x44, 20);
     fixture previous = make_previous();
     uint8_t first[32], txid[32];
     assert(SHA256(previous.bytes, previous.length, first));
@@ -581,17 +589,21 @@ static void test_live_bound(void) {
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.bound_inputs == 1 &&
         live.apdu.state.fee_zat == 100000000 &&
+        live.apdu.state.own_output_zat == 100000000 &&
+        live.apdu.state.output_zat - live.apdu.state.own_output_zat ==
+            200000000 &&
         live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_EXTERNAL);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};
     apdu_init(&live.apdu);
-    memset(live.apdu.owned.external, 0x55, 20);
+    memset(live.apdu.owned.external, 0x44, 20);
     memset(live.apdu.owned.internal, 0x33, 20);
     assert(blue_payment_live_run_bound(spend.bytes, spend.length,
         &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(live.apdu.state.fee_ready &&
+        live.apdu.state.own_output_zat == 100000000 &&
         live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_INTERNAL);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
@@ -603,7 +615,8 @@ static void test_live_bound(void) {
         &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
     assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified &&
-        live.apdu.state.input_paths == 0);
+        live.apdu.state.input_paths == 0 &&
+        live.apdu.state.own_output_zat == 0);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){.no_owned_hashes = true};

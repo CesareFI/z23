@@ -122,6 +122,12 @@ int main(int argc, char **argv) {
         2100000000000001ULL, BLUE_PAYMENT_INPUT_EXTERNAL, true));
     if (argc >= 5) assert(blue_payment_render_fee_png(argv[4], 100000000,
         BLUE_PAYMENT_INPUT_EXTERNAL | BLUE_PAYMENT_INPUT_INTERNAL, true));
+    assert(!blue_payment_render_totals_png(NULL, 300000000,
+        100000000, 100000000, true));
+    assert(!blue_payment_render_totals_png("/tmp/invalid-totals.png",
+        100000000, 200000000, 100000000, true));
+    if (argc >= 6) assert(blue_payment_render_totals_png(argv[5],
+        300000000, 100000000, 100000000, true));
 
     assert(!blue_payment_screen_mark_account(&screen, NULL,
         account_hash160, internal_hash160, true));
