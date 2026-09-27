@@ -5748,6 +5748,67 @@ static bool dl_proof_intent_bind(const struct dl_dirs *d, struct dl_row *row)
     return n > 0 && (size_t)n < sizeof(row->proof_intent);
 }
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+/* The settled failure's evidence digest, read through the same status
+ * reader the verdict came from. Empty when the record carries none. */
+static void dl_proof_evidence_read(const char *wt, const char *local,
+                                   const char *base, char *out, size_t cap)
+{
+    const char *stub = dl_stub();
+    out[0] = '\0';
+#if defined(ZCL_DEV_BUILD)
+    if (stub && strcmp(stub, "status") != 0) return;
+#else
+    if (!stub || strcmp(stub, "status") != 0) return;
+#endif
+    struct zcl_dev_proof_status status = {0};
+    if (zcl_dev_proof_status_read(wt, local, base, &status) &&
+        status.state == ZCL_DEV_PROOF_STATE_FAILED)
+        (void)snprintf(out, cap, "%s", status.evidence);
+}
+
+/* Name what failed on the settled row. The digest's first line leads the
+ * detail with the settled token kept after it, its first word becomes the
+ * dimension, and the whole digest is written beside the attempt's land log
+ * (land-N-aK.evidence) so it outlives the proof's attempt directory. The
+ * failure was already classified on the bare token; nothing here feeds
+ * back into a retry or a verdict. */
+static void dl_failed_proof_evidence(const struct dl_dirs *d,
+                                     struct dl_row *row, const char *token)
+{
+    char evidence[1280], first[256], path[sizeof(row->log_path) + 16];
+    dl_proof_evidence_read(d->wt, row->local, row->base, evidence,
+                           sizeof(evidence));
+    if (!evidence[0]) return;
+    size_t n = strcspn(evidence, "\n");
+    char line[1280];
+    (void)snprintf(line, sizeof(line), "%.*s", (int)n, evidence);
+    dl_sanitize_copy(line, first, sizeof(first));
+    size_t word = strcspn(first, " :");
+    if (word > 0 && word < sizeof(row->dimension))
+        (void)snprintf(row->dimension, sizeof(row->dimension), "%.*s",
+                       (int)word, first);
+    size_t tlen = strlen(token) < 96 ? strlen(token) : 96;
+    size_t room = sizeof(row->detail) - tlen - 4;
+    size_t cut = strlen(first) < room ? strlen(first) : room;
+    while (cut > 0 && ((unsigned char)first[cut] & 0xC0) == 0x80) cut--;
+    (void)snprintf(row->detail, sizeof(row->detail), "%.*s [%.*s]",
+                   (int)cut, first, (int)tlen, token);
+    dl_log(row, "proof evidence:\n");
+    dl_log(row, evidence);
+    dl_log(row, "\n");
+    size_t len = strlen(row->log_path);
+    if (len < 4 || strcmp(row->log_path + len - 4, ".log") != 0) return;
+    (void)snprintf(path, sizeof(path), "%.*s.evidence", (int)(len - 4),
+                   row->log_path);
+    (void)remove(path);
+    (void)dl_append_text(path, token);
+    (void)dl_append_text(path, "\n");
+    (void)dl_append_text(path, evidence);
+    (void)dl_append_text(path, "\n");
+}
+#endif
+
 static void dl_start_proof(const struct dl_dirs *d, struct dl_row *row,
                             const char *regen_note,
                             struct zcl_command_reply *reply)
@@ -5779,6 +5840,10 @@ static void dl_start_proof(const struct dl_dirs *d, struct dl_row *row,
     if (p == DL_PROOF_UNAVAILABLE || p == DL_PROOF_FAILED) {
         (void)snprintf(row->state, sizeof(row->state), "failed");
         (void)snprintf(row->dimension, sizeof(row->dimension), "proof");
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+        if (p == DL_PROOF_FAILED)
+            dl_failed_proof_evidence(d, row, detail);
+#endif
         if (dl_commit_or_report(d, row, true, reply, "failed"))
             dl_step_reply(reply, row, "failed");
         return;
@@ -6572,67 +6637,6 @@ static bool dl_resume_interrupted_proof(const struct dl_dirs *d,
     if (dl_commit_or_report(d, row, false, reply, "proving"))
         dl_step_reply(reply, row, "proving");
     return true;
-}
-#endif
-
-#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
-/* The settled failure's evidence digest, read through the same status
- * reader the verdict came from. Empty when the record carries none. */
-static void dl_proof_evidence_read(const char *wt, const char *local,
-                                   const char *base, char *out, size_t cap)
-{
-    const char *stub = dl_stub();
-    out[0] = '\0';
-#if defined(ZCL_DEV_BUILD)
-    if (stub && strcmp(stub, "status") != 0) return;
-#else
-    if (!stub || strcmp(stub, "status") != 0) return;
-#endif
-    struct zcl_dev_proof_status status = {0};
-    if (zcl_dev_proof_status_read(wt, local, base, &status) &&
-        status.state == ZCL_DEV_PROOF_STATE_FAILED)
-        (void)snprintf(out, cap, "%s", status.evidence);
-}
-
-/* Name what failed on the settled row. The digest's first line leads the
- * detail with the settled token kept after it, its first word becomes the
- * dimension, and the whole digest is written beside the attempt's land log
- * (land-N-aK.evidence) so it outlives the proof's attempt directory. The
- * failure was already classified on the bare token; nothing here feeds
- * back into a retry or a verdict. */
-static void dl_failed_proof_evidence(const struct dl_dirs *d,
-                                     struct dl_row *row, const char *token)
-{
-    char evidence[1280], first[256], path[sizeof(row->log_path) + 16];
-    dl_proof_evidence_read(d->wt, row->local, row->base, evidence,
-                           sizeof(evidence));
-    if (!evidence[0]) return;
-    size_t n = strcspn(evidence, "\n");
-    char line[1280];
-    (void)snprintf(line, sizeof(line), "%.*s", (int)n, evidence);
-    dl_sanitize_copy(line, first, sizeof(first));
-    size_t word = strcspn(first, " :");
-    if (word > 0 && word < sizeof(row->dimension))
-        (void)snprintf(row->dimension, sizeof(row->dimension), "%.*s",
-                       (int)word, first);
-    size_t tlen = strlen(token) < 96 ? strlen(token) : 96;
-    size_t room = sizeof(row->detail) - tlen - 4;
-    size_t cut = strlen(first) < room ? strlen(first) : room;
-    while (cut > 0 && ((unsigned char)first[cut] & 0xC0) == 0x80) cut--;
-    (void)snprintf(row->detail, sizeof(row->detail), "%.*s [%.*s]",
-                   (int)cut, first, (int)tlen, token);
-    dl_log(row, "proof evidence:\n");
-    dl_log(row, evidence);
-    dl_log(row, "\n");
-    size_t len = strlen(row->log_path);
-    if (len < 4 || strcmp(row->log_path + len - 4, ".log") != 0) return;
-    (void)snprintf(path, sizeof(path), "%.*s.evidence", (int)(len - 4),
-                   row->log_path);
-    (void)remove(path);
-    (void)dl_append_text(path, token);
-    (void)dl_append_text(path, "\n");
-    (void)dl_append_text(path, evidence);
-    (void)dl_append_text(path, "\n");
 }
 #endif
 
