@@ -9,12 +9,13 @@ typedef struct {
     blue_payment_review review;
     blue_payment_screen screen;
     zcl_tx_previous_stream previous;
-    uint8_t outpoints[ZCL_TX_STREAM_MAX_INPUTS][36];
+    /* Outpoint until bound; then ZIP-243 digest plus derivation path byte. */
+    uint8_t input_record[ZCL_TX_STREAM_MAX_INPUTS][36];
     uint32_t sequences[ZCL_TX_STREAM_MAX_INPUTS];
     uint64_t input_zat, output_zat, own_output_zat, fee_zat;
     uint32_t input_count, bound_inputs;
-    bool active, previous_active, fee_ready;
-    uint8_t input_paths;
+    bool active, previous_active, fee_ready, approved;
+    uint8_t input_paths, next_sign_index;
 } blue_payment_apdu;
 
 typedef struct {
@@ -40,6 +41,12 @@ uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
  * It counts an output as owned only on an exact Blue-derived P2PKH match. */
 bool blue_payment_apdu_touch_continue(blue_payment_apdu *state,
     const blue_payment_owned_hashes *owned);
+/* Only the device's final touchscreen callback may arm a verified review.
+ * APDU dispatch must never call this function. */
+bool blue_payment_apdu_touch_approve(blue_payment_apdu *state);
+/* Consumes one approved digest in input order. Signing failure must abort. */
+bool blue_payment_apdu_take_digest(blue_payment_apdu *state,
+    uint32_t index, uint8_t digest[32], uint8_t *path);
 void blue_payment_apdu_abort(blue_payment_apdu *state);
 
 #endif

@@ -29,13 +29,16 @@ The C23 renderer produced:
 | Fee | `2609788f7ff98111bd8aaef24d482e30a62774a3dad84f52b7540e2b4f5137cd` |
 | Totals | `31ca25fc35f003cdaab93cbb7e0e8471dfafbba49dc943be2931bfd22d4de32d` |
 
-Regenerate both images with:
+At commit `5d87be535`, regenerate both images with:
 
 ```sh
 cmake -S apps/zcl-ledger -B build/zcl-ledger -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/zcl-ledger --target test-blue-wallet-device-ui
 build/zcl-ledger/test-blue-wallet-device-ui /tmp/zcl-fee.png /tmp/zcl-totals.png
 ```
+
+Later versions add a third screenshot argument for the confirmation page;
+their image hashes are recorded in the confirmation experiment.
 
 Clang 22.1.6 Debug with AddressSanitizer and UndefinedBehaviorSanitizer and
 GCC 16.1.1 Release each passed 27/27 local tests. Two independently patched

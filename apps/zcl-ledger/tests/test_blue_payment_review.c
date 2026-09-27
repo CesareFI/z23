@@ -546,6 +546,15 @@ static bool live_continue(void *context, uint32_t index,
     return blue_payment_apdu_touch_continue(&live->apdu.state, &live->apdu.owned);
 }
 
+static void expect_bound_digest(blue_payment_apdu *state,
+    uint32_t index, const uint8_t expected[32], uint8_t expected_path) {
+    uint8_t digest[32] = {0};
+    uint8_t path = 0;
+    assert(blue_payment_apdu_take_digest(state, index, digest, &path));
+    assert(memcmp(digest, expected, sizeof digest) == 0);
+    assert(path == expected_path);
+}
+
 static void test_live_usb_interruptions(const fixture *spend,
     const blue_payment_live_plan *plan,
     const zcl_tx_previous_transaction *source,
@@ -607,6 +616,11 @@ static void test_live_driver(const fixture *item) {
         live_exchange, live_continue, &live));
     assert(live.continued == 2 && live.apdu.state.review.verified);
     assert(!live.apdu.state.active);
+    assert(!blue_payment_apdu_touch_approve(&live.apdu.state));
+    uint8_t unbound_digest[32] = {0};
+    uint8_t unbound_path = 0;
+    assert(!blue_payment_apdu_take_digest(&live.apdu.state, 0,
+        unbound_digest, &unbound_path));
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     uint8_t changed[sizeof item->bytes];
@@ -659,6 +673,27 @@ static void test_live_bound(void) {
         live.apdu.state.output_zat - live.apdu.state.own_output_zat ==
             200000000 &&
         live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_EXTERNAL);
+    uint8_t unapproved_digest[32] = {0};
+    uint8_t unapproved_path = 0;
+    assert(!blue_payment_apdu_take_digest(&live.apdu.state, 0,
+        unapproved_digest, &unapproved_path));
+    ++live.apdu.state.fee_zat;
+    assert(!blue_payment_apdu_touch_approve(&live.apdu.state));
+    --live.apdu.state.fee_zat;
+    live.apdu.state.input_record[0][32] = 0;
+    assert(!blue_payment_apdu_touch_approve(&live.apdu.state));
+    live.apdu.state.input_record[0][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    assert(blue_payment_apdu_touch_approve(&live.apdu.state));
+    assert(!blue_payment_apdu_touch_approve(&live.apdu.state));
+    expect_bound_digest(&live.apdu.state, 0, digests[0],
+        BLUE_PAYMENT_INPUT_EXTERNAL);
+    uint8_t absent_digest[32] = {0};
+    uint8_t absent_path = 0;
+    assert(!blue_payment_apdu_take_digest(&live.apdu.state, 1,
+        absent_digest, &absent_path));
+    assert(!blue_payment_apdu_take_digest(&live.apdu.state, 0,
+        absent_digest, &absent_path));
+    assert(!blue_payment_apdu_touch_approve(&live.apdu.state));
     test_live_usb_interruptions(&spend, &plan, &source,
         (const uint8_t (*)[32])digests, live.exchanges);
     EVP_MD_CTX_free(live.apdu.sha_context);
@@ -673,6 +708,9 @@ static void test_live_bound(void) {
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.own_output_zat == 100000000 &&
         live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_INTERNAL);
+    assert(blue_payment_apdu_touch_approve(&live.apdu.state));
+    expect_bound_digest(&live.apdu.state, 0, digests[0],
+        BLUE_PAYMENT_INPUT_INTERNAL);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};
@@ -775,6 +813,16 @@ static void test_live_two_inputs(void) {
         live.apdu.state.fee_zat == 500000000 &&
         live.apdu.state.input_paths ==
             (BLUE_PAYMENT_INPUT_EXTERNAL | BLUE_PAYMENT_INPUT_INTERNAL));
+    assert(blue_payment_apdu_touch_approve(&live.apdu.state));
+    uint8_t out_of_order_digest[32] = {0};
+    uint8_t out_of_order_path = 0;
+    assert(!blue_payment_apdu_take_digest(&live.apdu.state, 1,
+        out_of_order_digest, &out_of_order_path));
+    expect_bound_digest(&live.apdu.state, 0, digests[0],
+        BLUE_PAYMENT_INPUT_EXTERNAL);
+    expect_bound_digest(&live.apdu.state, 1, digests[1],
+        BLUE_PAYMENT_INPUT_INTERNAL);
+    assert(!blue_payment_apdu_touch_approve(&live.apdu.state));
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};

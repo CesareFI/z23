@@ -11,7 +11,7 @@ static const bagl_element_t *shown;
 static size_t shown_count;
 static unsigned displays, exits;
 static blue_bagl_canvas *last_canvas;
-static const char *fee_snapshot, *totals_snapshot;
+static const char *fee_snapshot, *totals_snapshot, *confirmed_snapshot;
 
 void blue_wallet_test_display(const bagl_element_t *elements, size_t count,
     unsigned int (*button)(unsigned int, unsigned int)) {
@@ -137,15 +137,56 @@ static void test_invalid_totals_end_review(void) {
     assert(exits == 2);
 }
 
+static void test_confirm_review(void) {
+    wallet_payment_abort();
+    payment.review.verified = true;
+    payment.fee_ready = true;
+    payment.input_count = 1;
+    payment.bound_inputs = 1;
+    payment.input_paths = BLUE_PAYMENT_INPUT_EXTERNAL;
+    payment.input_record[0][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    payment.input_zat = 200000000;
+    payment.output_zat = 100000000;
+    payment.fee_zat = 100000000;
+    visible = true;
+    wallet_payment_display();
+    tap("TOTALS");
+    assert(shown == totals_ui && find_text("CONFIRM"));
+    tap("CONFIRM");
+    assert(shown == confirmed_ui && payment.approved);
+    assert(find_text("REVIEW CONFIRMED") && find_text("NO SIGNING"));
+    if (confirmed_snapshot)
+        assert(blue_bagl_write_png(last_canvas, confirmed_snapshot));
+    tap("EXIT");
+    assert(exits == 3 && !payment.approved);
+}
+
+static void test_confirm_requires_totals(void) {
+    wallet_payment_abort();
+    payment.review.verified = true;
+    payment.fee_ready = true;
+    payment.input_count = payment.bound_inputs = 1;
+    payment.input_paths = BLUE_PAYMENT_INPUT_EXTERNAL;
+    visible = true;
+    wallet_payment_display();
+    (void)confirm_review(NULL);
+    assert(shown == ended_ui && !payment.approved);
+    tap("EXIT");
+    assert(exits == 4);
+}
+
 int main(int argc, char **argv) {
-    assert(argc == 1 || argc == 3);
-    if (argc == 3) {
+    assert(argc == 1 || argc == 4);
+    if (argc == 4) {
         fee_snapshot = argv[1];
         totals_snapshot = argv[2];
+        confirmed_snapshot = argv[3];
     }
     test_fee_totals_exit();
     test_invalid_totals_end_review();
-    assert(displays == 5);
+    test_confirm_review();
+    test_confirm_requires_totals();
+    assert(displays == 10);
     blue_bagl_canvas_destroy(last_canvas);
     return 0;
 }

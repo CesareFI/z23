@@ -101,6 +101,7 @@ static const bagl_element_t *exit_review(const bagl_element_t *element) {
 static const bagl_element_t *continue_review(const bagl_element_t *element);
 static const bagl_element_t *show_totals(const bagl_element_t *element);
 static const bagl_element_t *show_fee(const bagl_element_t *element);
+static const bagl_element_t *confirm_review(const bagl_element_t *element);
 
 static unsigned int output_ui_button(unsigned int mask, unsigned int count) {
     (void)mask;
@@ -125,6 +126,10 @@ static unsigned int totals_ui_button(unsigned int mask, unsigned int count) {
 }
 
 static unsigned int ended_ui_button(unsigned int mask, unsigned int count) {
+    return output_ui_button(mask, count);
+}
+
+static unsigned int confirmed_ui_button(unsigned int mask, unsigned int count) {
     return output_ui_button(mask, count);
 }
 
@@ -204,6 +209,14 @@ static const bagl_element_t totals_ui[] = {
     LABEL(329, "CHAIN + BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
     LABEL(355, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     BUTTON(20, "BACK", show_fee),
+    BUTTON(165, "CONFIRM", confirm_review)
+};
+
+static const bagl_element_t confirmed_ui[] = {
+    BACKGROUND,
+    LABEL(105, "REVIEW CONFIRMED", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(180, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(245, "EXIT WHEN DONE", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     BUTTON(165, "EXIT", exit_review)
 };
 
@@ -258,13 +271,15 @@ static void display_totals(void) {
 }
 
 void wallet_payment_display(void) {
-    uint8_t view = payment.review.pending ? 2 :
+    uint8_t view = payment.approved ? 8 :
+        payment.review.pending ? 2 :
         payment.fee_ready ? (totals_view ? 7 : 6) :
         payment.review.verified ? 3 :
         payment.active ? 1 : 4;
     if (view == displayed_view) return;
     displayed_view = view;
     if (view == 2) display_output();
+    else if (view == 8) { UX_DISPLAY(confirmed_ui, NULL); }
     else if (view == 6) display_fee();
     else if (view == 7) display_totals();
     else if (view == 3) { UX_DISPLAY(complete_ui, NULL); }
@@ -289,6 +304,18 @@ static const bagl_element_t *show_fee(const bagl_element_t *element) {
         displayed_view = 0;
         wallet_payment_display();
     }
+    return NULL;
+}
+
+static const bagl_element_t *confirm_review(const bagl_element_t *element) {
+    (void)element;
+    if (!totals_view || !blue_payment_apdu_touch_approve(&payment)) {
+        wallet_payment_abort();
+        UX_DISPLAY(ended_ui, NULL);
+        return NULL;
+    }
+    displayed_view = 0;
+    wallet_payment_display();
     return NULL;
 }
 

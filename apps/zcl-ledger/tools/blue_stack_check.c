@@ -10,8 +10,8 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 45, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
-       PATH_COUNT = 16 };
+enum { FRAME_COUNT = 47, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+       PATH_COUNT = 17 };
 
 static const char *const frame_names[FRAME_COUNT] = {
     "answer_command", "blue_review_app_command", "blue_review_handle",
@@ -32,7 +32,8 @@ static const char *const frame_names[FRAME_COUNT] = {
     "previous_compact_done", "previous_output_done", "capture_input",
     "zcl_tx_replay_zip243_bound_digest", "show_totals", "show_fee",
     "blue_payment_amount_text", "blue_payment_account_classify",
-    "blue_payment_screen_mark_account"
+    "blue_payment_screen_mark_account", "confirm_review",
+    "blue_payment_apdu_touch_approve"
 };
 
 typedef struct {
@@ -147,6 +148,7 @@ static void report_paths(const stack_frames *frames, bool wallet,
     static const unsigned wallet_output_display[] = {0, 30, 44, 43};
     static const unsigned wallet_totals_touch[] = {5, 40, 30, 42};
     static const unsigned wallet_fee_touch[] = {5, 41, 30, 42};
+    static const unsigned wallet_confirm_touch[] = {5, 45, 46, 30, 42};
     memset(paths, 0, sizeof(unsigned) * PATH_COUNT);
     if (wallet) {
         paths[0] = sum_frames(frames, wallet_derive, 2);
@@ -177,10 +179,13 @@ static void report_paths(const stack_frames *frames, bool wallet,
             sizeof wallet_totals_touch / sizeof *wallet_totals_touch);
         paths[15] = sum_frames(frames, wallet_fee_touch,
             sizeof wallet_fee_touch / sizeof *wallet_fee_touch);
-        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; post-reply fee %u; output display %u; totals touch %u; fee touch %u; margin %u\n",
+        paths[16] = sum_frames(frames, wallet_confirm_touch,
+            sizeof wallet_confirm_touch / sizeof *wallet_confirm_touch);
+        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; post-reply fee %u; output display %u; totals touch %u; fee touch %u; confirm touch %u; margin %u\n",
                reserve, paths[0], paths[1], paths[2], paths[3], paths[4],
                paths[5], paths[6], paths[7], paths[8], paths[9], paths[10],
                paths[11], paths[12], paths[13], paths[14], paths[15],
+               paths[16],
                STACK_MARGIN);
     } else {
         paths[0] = sum_frames(frames, apdu, sizeof apdu / sizeof *apdu);

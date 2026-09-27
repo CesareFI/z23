@@ -20,8 +20,8 @@ static bool capture_input(void *context, uint32_t index,
     if (index != state->input_count ||
         index >= ZCL_TX_STREAM_MAX_INPUTS) return false;
     for (uint32_t i = 0; i < index; ++i)
-        if (memcmp(state->outpoints[i], outpoint, 36) == 0) return false;
-    memcpy(state->outpoints[index], outpoint, 36);
+        if (memcmp(state->input_record[i], outpoint, 36) == 0) return false;
+    memcpy(state->input_record[index], outpoint, 36);
     state->sequences[index] = sequence;
     ++state->input_count;
     return true;
@@ -31,6 +31,50 @@ void blue_payment_apdu_abort(blue_payment_apdu *state) {
     if (!state) return;
     memset(state, 0, sizeof *state);
     blue_payment_review_abort(&state->review);
+}
+
+static bool bound_paths_valid(const blue_payment_apdu *state) {
+    uint8_t paths = 0;
+    for (uint32_t i = 0; i < state->input_count; ++i) {
+        uint8_t path = state->input_record[i][32];
+        if (path != BLUE_PAYMENT_INPUT_EXTERNAL &&
+            path != BLUE_PAYMENT_INPUT_INTERNAL) return false;
+        paths |= path;
+    }
+    return paths == state->input_paths;
+}
+
+bool blue_payment_apdu_touch_approve(blue_payment_apdu *state) {
+    if (!state || !state->review.verified || !state->fee_ready ||
+        state->active || state->previous_active || state->approved ||
+        state->next_sign_index || !state->input_count ||
+        state->bound_inputs != state->input_count ||
+        state->own_output_zat > state->output_zat ||
+        state->input_zat < state->output_zat ||
+        state->fee_zat != state->input_zat - state->output_zat ||
+        !bound_paths_valid(state)) return false;
+    state->approved = true;
+    return true;
+}
+
+bool blue_payment_apdu_take_digest(blue_payment_apdu *state,
+    uint32_t index, uint8_t digest[32], uint8_t *path) {
+    if (!state || !digest || !path || !state->approved ||
+        !state->review.verified ||
+        !state->fee_ready || state->active || state->previous_active ||
+        state->bound_inputs != state->input_count ||
+        index != state->next_sign_index ||
+        index >= state->input_count) return false;
+    uint8_t *record = state->input_record[index];
+    if (record[32] != BLUE_PAYMENT_INPUT_EXTERNAL &&
+        record[32] != BLUE_PAYMENT_INPUT_INTERNAL) return false;
+    memcpy(digest, record, 32);
+    *path = record[32];
+    memset(record, 0, 36);
+    ++state->next_sign_index;
+    if (state->next_sign_index == state->input_count)
+        state->approved = false;
+    return true;
 }
 
 bool blue_payment_apdu_touch_continue(blue_payment_apdu *state,
@@ -122,7 +166,8 @@ static uint16_t previous_begin(blue_payment_apdu *state,
     zcl_tx_previous_sha256 hash = {.context = sha->context,
         .init = sha->init, .update = sha->update, .final = sha->final};
     if (!zcl_tx_previous_stream_begin(&state->previous,
-            read_u32(body), read_u32(state->outpoints[state->bound_inputs] + 32),
+            read_u32(body),
+            read_u32(state->input_record[state->bound_inputs] + 32),
             hash)) return 0x6a80;
     state->previous_active = true;
     return 0x9000;
@@ -142,7 +187,8 @@ static uint16_t previous_finish(blue_payment_apdu *state, uint8_t length,
     if (!state->previous_active) return 0x6985;
     if (length || capacity < 43) return 0x6700;
     zcl_tx_previous_p2pkh output;
-    const uint8_t *txid = state->outpoints[state->bound_inputs];
+    uint8_t *record = state->input_record[state->bound_inputs];
+    const uint8_t *txid = record;
     uint8_t digest[32];
     if (!zcl_tx_previous_stream_finish(&state->previous, txid, &output) ||
         !owned) return 0x6a80;
@@ -156,6 +202,10 @@ static uint16_t previous_finish(blue_payment_apdu *state, uint8_t length,
             txid, state->sequences[state->bound_inputs], output.script,
             output.value_zat, digest))
         return 0x6a80;
+    memcpy(record, digest, sizeof digest);
+    record[32] = path;
+    memset(record + 33, 0, 3);
+    state->sequences[state->bound_inputs] = 0;
     state->input_zat += output.value_zat;
     state->input_paths |= path;
     ++state->bound_inputs;

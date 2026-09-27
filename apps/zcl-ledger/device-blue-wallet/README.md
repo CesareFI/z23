@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.12 derives
+Version 0.2.13 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -53,11 +53,18 @@ Version 0.2.4 labels an exact P2PKH hash match to the
 Blue-derived fixed account as “THIS ACCOUNT,” other P2PKH outputs as “OTHER
 ADDRESS,” and P2SH outputs as “P2SH ADDRESS.” It does not infer ownership of
 P2SH or call an output change without verified inputs and account context.
-Version 0.2.12 enlarges the fee and totals labels and touch-control text.
+Version 0.2.12 enlarged the fee and totals labels and touch-control text.
 The host UI test compiles the actual wallet screen code with SDK shims,
 checks that its labels fit the Blue viewport, follows TOTALS, BACK, and EXIT,
-and verifies that invalid output accounting ends review. Version 0.2.12
-remains uninstalled. Do not receive funds or sign payments with it.
+and verifies that invalid output accounting ends review. Version 0.2.13
+adds CONFIRM on the totals page and a read-only REVIEW CONFIRMED screen. The
+tap arms a one-use, ordered digest latch after every previous output and the
+fee have been verified. Verified digests reuse the completed outpoint slots,
+so the input limit remains 16 without increasing `.bss`. No APDU can consume
+the confirmation latch or request a signature. INS `28` still returns each
+computed digest before confirmation for host comparison. Version 0.2.13
+remains uninstalled.
+Do not receive funds or sign payments with it.
 
 ## Build
 
@@ -82,13 +89,13 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.12 image has 32,512 bytes of `.text`, 5,296
+512-byte margin. The linked 0.2.13 image has 33,536 bytes of `.text`, 5,296
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
 stack; 848 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 752 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced `.text`
-SHA-256 `8fc5957810c7d2a77f01e4deb7046206b061b8ffcb1dcdac96dbaad4deed0a64`.
-The [device UI experiment](../../../docs/experiments/2026-09-27-ledger-blue-device-ui-harness.md)
+SHA-256 `079b0606e90c3bf55f9c28d8faa3546b7e866fda7bb61801865762a0f5ec8de0`.
+The [confirmation experiment](../../../docs/experiments/2026-09-27-ledger-blue-review-confirmation.md)
 records the tests and limits.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.
