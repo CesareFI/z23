@@ -698,6 +698,16 @@ bool db_build_attach_ledger_version(struct node_db *ndb, sqlite3_int64 *out)
     return ok;
 }
 
+#ifdef ZCL_TESTING
+static void (*db_build_attach_before_settle_hook)(void *);
+static void *db_build_attach_before_settle_context;
+void db_build_attach_test_before_settle(void (*hook)(void *), void *context)
+{
+    db_build_attach_before_settle_hook = hook;
+    db_build_attach_before_settle_context = context;
+}
+#endif
+
 bool db_build_attach_settle_job(struct node_db *ndb,
                                 const struct db_build_job *job, int64_t now)
 {
@@ -705,6 +715,10 @@ bool db_build_attach_settle_job(struct node_db *ndb,
         LOG_ERROR("build_fabric", "attach settlement missing job or database");
         return false;
     }
+#ifdef ZCL_TESTING
+    if (db_build_attach_before_settle_hook)
+        db_build_attach_before_settle_hook(db_build_attach_before_settle_context);
+#endif
     struct db_build_action *siblings = zcl_malloc(
         (BUILD_FABRIC_ATTACH_SCAN_CAP + 1u) * sizeof(*siblings),
         "build.attach.siblings");

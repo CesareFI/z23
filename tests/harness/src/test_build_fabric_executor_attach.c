@@ -38,6 +38,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 static const char att_id_b[] =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -141,6 +144,40 @@ extern void build_fabric_attach_test_before_donor_scan(void (*hook)(void *),
                                                        void *context);
 extern void build_fabric_attach_test_after_scan(void (*hook)(void *),
                                                 void *context);
+extern void db_build_attach_test_before_settle(void (*hook)(void *),
+                                              void *context);
+
+struct att_same_handle_revoke {
+    struct node_db *ndb;
+    char donor_worker_id[65];
+    int try_rc;
+    bool called;
+    bool revoked;
+};
+
+static void *att_same_handle_revoke_thread(void *context)
+{
+    struct att_same_handle_revoke *race = context;
+    sqlite3_mutex *mutex = sqlite3_db_mutex(race->ndb->db);
+    race->try_rc = sqlite3_mutex_try(mutex);
+    if (race->try_rc == SQLITE_OK) {
+        race->revoked = build_fabric_worker_revoke(
+            race->ndb, race->donor_worker_id, 0).ok;
+        sqlite3_mutex_leave(mutex);
+    }
+    return NULL;
+}
+
+static void att_same_handle_revoke_at_settle(void *context)
+{
+    struct att_same_handle_revoke *race = context;
+    pthread_t thread;
+    race->called = true;
+    race->try_rc = SQLITE_ERROR;
+    if (pthread_create(&thread, NULL, att_same_handle_revoke_thread,
+                       race) == 0)
+        (void)pthread_join(thread, NULL);
+}
 
 struct att_remove_before_scan {
     char path[600];
@@ -916,6 +953,40 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT_EQ(db_build_job_receipts_checked(&ndb, race_job.job_id,
                                                 race_rows, 1), 0);
         ASSERT(att_approve_worker(&ndb, pubkey, now));
+
+        /* A same-handle writer must be excluded between the final history
+         * fence and the signed receipt commit. The donor and requester have
+         * distinct keys so revoking one cannot mask the other. */
+        uint8_t requester_seed[32], requester_pubkey[32];
+        uint8_t requester_secret[32];
+        memset(requester_seed, 30, sizeof(requester_seed));
+        ed25519_keypair(requester_pubkey, requester_secret, requester_seed);
+        ASSERT(att_approve_worker(&ndb, requester_pubkey, now));
+        struct db_build_job same_handle_job;
+        struct db_build_action same_handle_action;
+        ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_d, capsule_hex,
+                                input_root, "dev-x86-64-v3", &same_handle_job,
+                                &same_handle_action));
+        struct att_same_handle_revoke same_handle = { .ndb = &ndb };
+        att_worker_id_from_pubkey(pubkey, same_handle.donor_worker_id);
+        db_build_attach_test_before_settle(att_same_handle_revoke_at_settle,
+                                           &same_handle);
+        struct db_build_receipt same_handle_receipt;
+        struct build_fabric_attach_report same_handle_report;
+        struct zcl_result same_handle_attached = build_fabric_attach(
+            &ndb, dir, NULL, &same_handle_job, &same_handle_action,
+            requester_secret, requester_pubkey, &same_handle_receipt,
+            &same_handle_report);
+        db_build_attach_test_before_settle(NULL, NULL);
+        ASSERT(same_handle.called);
+        ASSERT_EQ(same_handle.try_rc, SQLITE_BUSY);
+        ASSERT(!same_handle.revoked);
+        ASSERT_RESULT_OK(same_handle_attached);
+        ASSERT_EQ(same_handle_report.disposition, BUILD_FABRIC_ATTACH_HIT);
+        struct db_build_worker donor_after_publish;
+        ASSERT(db_build_worker_find(&ndb, same_handle.donor_worker_id,
+                                    &donor_after_publish));
+        ASSERT(!donor_after_publish.revoked);
 #endif
 
         /* A distinct, real submitted request with changed compiler input

@@ -1342,9 +1342,7 @@ static const char *bfat_receipt_prepare(struct bfat_attach_ctx *c)
     return NULL;
 }
 
-/* Advance the job row when every sibling action settled; the job outcome is
- * CACHE_HIT only when every action settled by attach. A sibling scan error
- * leaves the job row untouched without failing the transaction. */
+/* Re-read the stored receipt and verify its signed identity. */
 static const char *bfat_receipt_reread_verify(struct bfat_attach_ctx *c)
 {
     struct db_build_receipt persisted;
@@ -1361,9 +1359,7 @@ static const char *bfat_receipt_reread_verify(struct bfat_attach_ctx *c)
     return NULL;
 }
 
-/* Advance the requester action and persist its OWN signed receipt in one
- * transaction; the persisted receipt is re-read and re-verified before the
- * attach is reported. */
+/* Publish action, job and signed receipt under the connection mutex. */
 static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
 {
     struct db_build_action next = c->action;
@@ -1380,14 +1376,21 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
     const char *refusal = bfat_receipt_prepare(c);
     if (refusal)
         return refusal;
-    if (!node_db_begin_immediate(c->ndb))
+    sqlite3_mutex *mutex = sqlite3_db_mutex(c->ndb->db);
+    if (!mutex)
+        return "attach-persist-failed: connection mutex";
+    sqlite3_mutex_enter(mutex);
+    if (!node_db_begin_immediate(c->ndb)) {
+        sqlite3_mutex_leave(mutex);
         return "attach-persist-failed: transaction";
+    }
     sqlite3_int64 current_version = 0;
     if (!db_build_attach_ledger_version(c->ndb, &current_version) ||
         current_version != c->db_version ||
         sqlite3_total_changes64(c->ndb->db) != c->db_changes) {
         if (!node_db_rollback(c->ndb))
             LOG_ERROR("build_fabric", "attach stale history rollback failed");
+        sqlite3_mutex_leave(mutex);
         return "attach-refused-history-stale";
     }
     bool ok = db_build_action_save(c->ndb, &next) &&
@@ -1397,9 +1400,12 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
     if (!ok) {
         if (!node_db_rollback(c->ndb))
             LOG_ERROR("build_fabric", "attach persist and rollback failed");
+        sqlite3_mutex_leave(mutex);
         return "attach-persist-failed";
     }
-    return bfat_receipt_reread_verify(c);
+    refusal = bfat_receipt_reread_verify(c);
+    sqlite3_mutex_leave(mutex);
+    return refusal;
 }
 
 struct zcl_result build_fabric_attach(
@@ -1430,7 +1436,6 @@ struct zcl_result build_fabric_attach(
     if (!db_build_attach_ledger_version(ndb, &c.db_version))
         return bfat_refuse(out_report, "attach-refused-history-incomplete");
     c.db_changes = sqlite3_total_changes64(ndb->db);
-
     const char *refusal = bfat_check_request_identity(&c);
     if (!refusal && strcmp(c.job.profile,
                            VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1) == 0)
@@ -1449,17 +1454,13 @@ struct zcl_result build_fabric_attach(
     if (bfat_after_scan_hook)
         bfat_after_scan_hook(bfat_after_scan_context);
 #endif
-
     (void)snprintf(out_report->donor_action_id,
                    sizeof(out_report->donor_action_id), "%s",
                    c.donor_action.action_id);
     (void)snprintf(out_report->donor_receipt_id,
                    sizeof(out_report->donor_receipt_id), "%s",
                    c.donor_receipt.receipt_id);
-
-    /* Materialize the requester's output WITHOUT compiling: fetch the donor
-     * output bytes, prove them against the donor's physical observation, and
-     * store a copy bound to the requester action root. */
+    /* Verify donor bytes, then store a requester-bound CAS copy. */
     uint8_t *bytes = NULL;
     size_t len = 0;
     uint8_t copy_root[32];
@@ -1477,8 +1478,7 @@ struct zcl_result build_fabric_attach(
                    c.receipt.receipt_id);
     out_report->disposition = BUILD_FABRIC_ATTACH_HIT;
     out_report->attach_wall_us = platform_time_monotonic_us() - c.started_us;
-    /* Runtime closure capture starts one direct ldd probe for each of the
-     * driver, backend, assembler, and verifier. None is a compiler run. */
+    /* Closure capture's four ldd probes do not run the compiler. */
     LOG_INFO("zcode.proof_perf",
              "schema=zcl.async_proof_perf.v1 action=%s stage=worker_attach "
              "at_unix_us=%lld executor_key=%s donor_action=%s "
