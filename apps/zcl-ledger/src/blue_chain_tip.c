@@ -164,3 +164,10 @@ bool blue_chain_tip_query(const char *rpc_binary, blue_chain_tip *tip) {
                             reply, sizeof reply, &length) &&
         blue_chain_tip_parse(reply, length, tip);
 }
+
+bool blue_chain_tip_still_current(const char *rpc_binary,
+                                  const blue_chain_tip *initial) {
+    blue_chain_tip current;
+    return initial && blue_chain_tip_query(rpc_binary, &current) &&
+        blue_chain_tip_same(initial, &current);
+}

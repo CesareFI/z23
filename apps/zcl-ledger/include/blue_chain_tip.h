@@ -19,5 +19,7 @@ bool blue_rpc_capture(const char *rpc_binary, const char *method,
                       const char *argument, char *reply, size_t capacity,
                       size_t *length);
 bool blue_chain_tip_query(const char *rpc_binary, blue_chain_tip *tip);
+bool blue_chain_tip_still_current(const char *rpc_binary,
+                                  const blue_chain_tip *initial);
 
 #endif

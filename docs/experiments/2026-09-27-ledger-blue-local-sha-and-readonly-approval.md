@@ -65,6 +65,14 @@ for previous-transaction identifiers. On 2026-09-27T06:55:23-04:00
 reviewer. `readelf -d` on the GCC fixture test listed only `libc.so.6` as a
 runtime dependency. CPU: AMD Ryzen 7 PRO 8840U with Radeon 780M Graphics.
 
+The CLI now queries the local node tip again after the read-only Blue review
+and rejects the result if the tip changed or the RPC failed. The shared
+comparison function passed matching-tip, changed-block-hash, missing-RPC,
+and null-initial-tip cases in the chain-tip test. The wallet CLI fixture and
+chain-tip tests passed 2/2 in Clang 22.1.6 Debug/ASan/UBSan and GCC 16.1.1
+Release at 2026-09-27T06:56:59-04:00 (2026-09-27T10:56:59Z). The final
+post-USB branch remains unexercised on physical Blue hardware.
+
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel
 key exchange, custom-CA signing, public-key validation, and signing-test
 verification. Wallet 0.2.15 is uninstalled and read-only. Host UI tests do

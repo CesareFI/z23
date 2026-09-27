@@ -104,10 +104,11 @@ input-specific ZIP-243 digest checks. The host derives the branch ID from
 Z23's mainnet activation heights and rejects heights before Sapling. The
 local node responses do not independently prove peer synchronization or
 account ownership. A second tip query must match the first height and block
-hash before USB access. It stops each third-pass upload exactly at the next
+hash before USB access, and a third query must still match after the Blue
+review before the host reports success. It stops each third-pass upload exactly at the next
 output. The previous transaction bytes alone do not establish chain
 inclusion or unspent status. It
-cannot sign. Version 0.2.11 must pass separate device checks before this
+cannot sign. Version 0.2.15 must pass separate device checks before this
 driver is used on the Blue again.
 
 Find accessible Ledger HID interfaces without Ledger Live:

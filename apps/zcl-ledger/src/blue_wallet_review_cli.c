@@ -136,10 +136,13 @@ static bool wait_for_touch(void *context, uint32_t index,
     return false;
 }
 
-static bool stable_tip(const char *rpc_binary, const blue_chain_tip *initial) {
-    blue_chain_tip current;
-    return blue_chain_tip_query(rpc_binary, &current) &&
-        blue_chain_tip_same(initial, &current);
+static bool review_tip_unchanged(bool reviewed, const char *rpc_binary,
+                                 const blue_chain_tip *initial) {
+    if (!reviewed) return false;
+    if (blue_chain_tip_still_current(rpc_binary, initial)) return true;
+    fputs("Cannot confirm the local node tip remained unchanged during Blue review; discard this result.\n",
+          stderr);
+    return false;
 }
 
 int main(int argc, char **argv) {
@@ -199,7 +202,7 @@ int main(int argc, char **argv) {
         free(wire);
         return 1;
     }
-    if (!stable_tip(argv[3], &tip)) {
+    if (!blue_chain_tip_still_current(argv[3], &tip)) {
         fputs("The local node tip changed during input checks; review stopped.\n",
               stderr);
         free_previous(previous_bytes, previous_count);
@@ -228,6 +231,7 @@ int main(int argc, char **argv) {
         previous, previous_count, facts.fee_zat,
         (const uint8_t (*)[32])digests,
         live_exchange, wait_for_touch, &device);
+    valid = review_tip_unchanged(valid, argv[3], &tip);
     close(device.fd);
     free_previous(previous_bytes, previous_count);
     free(plan);

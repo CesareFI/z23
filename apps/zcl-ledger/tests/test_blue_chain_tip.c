@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #undef NDEBUG
 #include <assert.h>
@@ -155,6 +156,19 @@ int main(int argc, char **argv) {
     assert(tip.next_height == 707002);
     assert(blue_chain_tip_parse(good, strlen(good), &same));
     assert(blue_chain_tip_same(&tip, &same));
+    assert(blue_chain_tip_still_current(argv[0], &tip));
+    assert(!blue_chain_tip_still_current("/bin/false", &tip));
+    assert(!blue_chain_tip_still_current(argv[0], NULL));
+    char marker[] = "/tmp/zcl-blue-tip-test-XXXXXX";
+    int marker_fd = mkstemp(marker);
+    assert(marker_fd >= 0);
+    assert(close(marker_fd) == 0);
+    assert(unlink(marker) == 0);
+    assert(setenv("BLUE_TIP_REORG_MARKER", marker, 1) == 0);
+    assert(blue_chain_tip_still_current(argv[0], &tip));
+    assert(!blue_chain_tip_still_current(argv[0], &tip));
+    assert(unsetenv("BLUE_TIP_REORG_MARKER") == 0);
+    assert(unlink(marker) == 0);
     assert(!blue_chain_tip_query("relative/path", &tip));
     assert(!blue_chain_tip_query("/bin/false", &tip));
     assert(setenv("BLUE_CHAIN_TIP_TEST_STALL", "1", 1) == 0);
