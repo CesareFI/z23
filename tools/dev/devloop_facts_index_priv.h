@@ -45,7 +45,7 @@ struct fxi_macro {
 };
 
 struct fxi_file {
-    const char *path;
+    char *path; /* NUL-terminated copy */
     size_t path_len;
     const uint8_t *digest;
     uint8_t origin;

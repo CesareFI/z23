@@ -7,12 +7,14 @@
 #include "base/safe_alloc.h"
 #include "base/serialize_le.h"
 #include "sha3/sha3.h"
+#include "vcs/semantic_manifest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define FXI_ENTITY_DOMAIN "zcl.semantic.entity.v1"
+#define ZCL_FXI_SITE_MAX 4200
 
 static bool fxi_ident_start(unsigned char c)
 {
@@ -217,6 +219,47 @@ static bool fxi_typedef_edges(struct fxi *x)
     return true;
 }
 
+/* ---- file-scope sites of a header ------------------------------------------------ */
+
+/* A header's file-scope expansions and conditionals shape its declarations,
+ * layouts and enumerators, whose own records carry the result; what no record
+ * carries is a variable's initializer and attributes. So "@scope:<header>"
+ * and "@cond:<header>" are reached through the variables that header
+ * declares, not from every reader of it. */
+static bool fxi_site_edge(struct fxi *x, uint32_t from, const char *site,
+                          const char *p, size_t n)
+{
+    char id[ZCL_FXI_SITE_MAX];
+    uint32_t to;
+    int w = snprintf(id, sizeof(id), "%s%.*s", site, (int)n, p);
+    if (w <= 0 || (size_t)w >= sizeof(id) || !fxi_lookup(x, id, (size_t)w, &to))
+        return true;
+    return fxi_edge_add(x, from, to, 0);
+}
+
+static bool fxi_site_edges(struct fxi *x)
+{
+    size_t nents = x->nents;
+    for (size_t e = 0; e < nents; e++) {
+        const char *id = x->ents[e].id;
+        if (id[0] != 'v' || id[1] != ':')
+            continue;
+        for (size_t k = 0; k < fxi_nrows(x, e); k++) {
+            const char *p;
+            size_t n;
+            if (!fxi_row_path_at(x, e, k, &p, &n) ||
+                (strlen(x->main) == n && memcmp(p, x->main, n) == 0))
+                continue;
+            if (!fxi_site_edge(x, (uint32_t)e, VCS_SEMANTIC_FACTS_SCOPE_SITE,
+                               p, n) ||
+                !fxi_site_edge(x, (uint32_t)e, VCS_SEMANTIC_FACTS_COND_SITE,
+                               p, n))
+                return false;
+        }
+    }
+    return true;
+}
+
 /* ---- adjacency ------------------------------------------------------------------ */
 
 static bool fxi_csr(struct fxi *x)
@@ -269,7 +312,7 @@ bool fxi_graph_build(struct fxi *x)
          (!types || (fxi_typedef_edges(x) && fxi_tags_build(x, &tags) &&
                      fxi_anon_edges(x, &tags, anon) &&
                      fxi_type_edges(x, &tags, anon))) &&
-         fxi_csr(x);
+         fxi_site_edges(x) && fxi_csr(x);
     free(tags.e);
     return ok;
 }

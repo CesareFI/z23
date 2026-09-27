@@ -79,8 +79,9 @@ static bool fxi_path_is(const char *p, size_t n, const char *s)
     return s != NULL && strlen(s) == n && memcmp(p, s, n) == 0;
 }
 
-/* A pseudo-site "@scope:<path>" or "@cond:<path>": a root, owned by the
- * main file when <path> is it. */
+/* A pseudo-site "@scope:<path>" or "@cond:<path>": owned by, and a root
+ * of, the main file when <path> is it. A header's sites are reached through
+ * the variables it declares (devloop_facts_graph.c). */
 static void fxi_site_flags(struct fxi *x, struct fxi_ent *t)
 {
     static const char *const k[] = {VCS_SEMANTIC_FACTS_SCOPE_SITE,
@@ -89,8 +90,8 @@ static void fxi_site_flags(struct fxi *x, struct fxi_ent *t)
         size_t n = strlen(k[i]);
         if (strncmp(t->id, k[i], n) != 0)
             continue;
-        t->root = true;
         t->main_owned = x->main != NULL && strcmp(t->id + n, x->main) == 0;
+        t->root = t->main_owned;
     }
 }
 
@@ -187,10 +188,17 @@ static bool fxi_on_file(struct fxi *x, const struct vcs_semantic_fields_v1 *f)
     if (f->ntext < 1 || f->nnum < 1 || f->ndigest < 1 ||
         !fxi_grow((void **)&x->files, &x->capfiles, x->nfiles, sizeof(*x->files)))
         return false;
-    file = &x->files[x->nfiles++];
-    *file = (struct fxi_file){.path = f->text[0], .path_len = f->text_len[0],
+    file = &x->files[x->nfiles];
+    *file = (struct fxi_file){.path = zcl_malloc(f->text_len[0] + 1,
+                                                 "facts_index.file"),
+                              .path_len = f->text_len[0],
                               .digest = f->digest[0],
                               .origin = (uint8_t)f->num[0]};
+    if (file->path == NULL)
+        return false;
+    x->nfiles++;
+    memcpy(file->path, f->text[0], f->text_len[0]);
+    file->path[f->text_len[0]] = '\0';
     if (f->num[0] != VCS_SEMANTIC_ORIGIN_V1_MAIN)
         return true;
     x->main = zcl_malloc(f->text_len[0] + 1, "facts_index.main");
@@ -356,8 +364,8 @@ static bool fxi_on_symbol(struct fxi_load *L, const struct vcs_semantic_fields_v
     main = fxi_main_of(x, f->text[1], f->text_len[1]);
     if (!fxi_ent_get(x, f->text[0], f->text_len[0], &e) || !fxi_row(L, e, main))
         return false;
-    /* An external variable a header defines is emitted by every reader. */
-    x->ents[e].root |= main == 0 && f->num[1] == 1 && f->num[0] == 4 &&
+    /* A variable a header defines may be emitted by every reader. */
+    x->ents[e].root |= main == 0 && f->num[1] == 1 &&
                        fxi_path_is(f->text[2], f->text_len[2], "variable");
     return true;
 }
@@ -523,6 +531,8 @@ void fxi_free(struct fxi *x)
     free(x->rows);
     free(x->macros);
     free(x->edges);
+    for (size_t k = 0; x->files != NULL && k < x->nfiles; k++)
+        free(x->files[k].path);
     free(x->files);
     free(x->main);
     free(x->out_off);
