@@ -41,3 +41,13 @@ check each page's address and amount against the host, then exit. Any
 freeze or disagreement blocks signing work until diagnosed. Shielded
 recipient and amount review, trusted prevout values, fee computation,
 key policy, and approval-bound signatures remain unimplemented.
+
+Host comparison recorded: 2026-09-26T20:29:08-04:00
+(2026-09-27T00:29:08Z). The host review now prints eight-decimal ZCL
+amounts beside exact zatoshi values. For ZIP 243's 245-byte transparent
+vector 3, both Clang Debug and GCC Release JSON output agreed: public
+total `49,999,755` zatoshi (`0.49999755` ZCL), output 0 `40,000,000`
+zatoshi (`0.40000000` ZCL), and output 1 `9,999,755` zatoshi
+(`0.09999755` ZCL). Both local Ledger suites passed 12/12 tests. The
+host output still reports `signing_ready:false` and does not establish the
+spent-output provenance or payment fee.

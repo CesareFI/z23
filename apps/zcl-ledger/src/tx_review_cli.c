@@ -174,11 +174,19 @@ static const char *output_type_name(zcl_tx_output_type type) {
     return "other";
 }
 
+static bool format_zcl_amount(uint64_t zat, char amount[32]) {
+    int count = snprintf(amount, 32, "%" PRIu64 ".%08" PRIu64,
+                         zat / 100000000, zat % 100000000);
+    return count > 0 && count < 32;
+}
+
 static bool print_output(void *context, const zcl_tx_output *output) {
     output_view *view = context;
     if (output->index >= 32) return true;
     bool address_type = output->type == ZCL_TX_OUTPUT_P2PKH ||
                         output->type == ZCL_TX_OUTPUT_P2SH;
+    char amount[32];
+    if (!format_zcl_amount(output->value_zat, amount)) return false;
     char address[ZCL_ADDRESS_SIZE];
     if (address_type) {
         const uint8_t *hash = output->script +
@@ -191,9 +199,9 @@ static bool print_output(void *context, const zcl_tx_output *output) {
                                  script_digest)) return false;
     if (view->json) {
         printf("%s{\"index\":%" PRIu32 ",\"value_zat\":%" PRIu64
-               ",\"type\":\"%s\"",
+               ",\"amount_zcl\":\"%s\",\"type\":\"%s\"",
                view->shown ? "," : "", output->index, output->value_zat,
-               output_type_name(output->type));
+               amount, output_type_name(output->type));
         if (address_type) printf(",\"address\":\"%s\"", address);
         else {
             printf(",\"script_bytes\":%zu,\"script_sha256\":\"",
@@ -203,8 +211,8 @@ static bool print_output(void *context, const zcl_tx_output *output) {
         }
         putchar('}');
     } else {
-        printf("Output %" PRIu32 ": %" PRIu64 " zatoshi, %s",
-               output->index, output->value_zat,
+        printf("Output %" PRIu32 ": %s ZCL (%" PRIu64 " zatoshi), %s",
+               output->index, amount, output->value_zat,
                output_type_name(output->type));
         if (address_type) printf(" -> %s\n", address);
         else {
@@ -232,6 +240,9 @@ typedef struct {
 static bool print_json(const review_report *report) {
     const zcl_tx_review *review = report->review;
     const zcl_tx_script_facts *scripts = report->scripts;
+    char public_amount[32];
+    if (!format_zcl_amount(review->transparent_output_zat,
+                           public_amount)) return false;
     printf("{\"ok\":true,\"format\":\"zcl-sapling-v4\","
            "\"transparent_inputs\":%" PRIu32 ","
            "\"transparent_outputs\":%" PRIu32 ","
@@ -244,6 +255,7 @@ static bool print_json(const review_report *report) {
            "\"other_outputs\":%" PRIu32 ","
            "\"zslp_marker\":%s,"
            "\"transparent_output_zat\":%" PRIu64 ","
+           "\"transparent_output_zcl\":\"%s\","
            "\"value_balance_zat\":%" PRId64 ","
            "\"lock_time\":%" PRIu32 ","
            "\"expiry_height\":%" PRIu32 ","
@@ -256,7 +268,7 @@ static bool print_json(const review_report *report) {
            scripts->p2sh_outputs, scripts->op_return_outputs,
            scripts->other_outputs,
            scripts->zslp_marker ? "true" : "false",
-           review->transparent_output_zat,
+           review->transparent_output_zat, public_amount,
            review->value_balance_zat, review->lock_time,
            review->expiry_height, report->blue_parsed ? "true" : "false");
     if (report->has_branch) {
@@ -280,6 +292,9 @@ static bool print_json(const review_report *report) {
 static bool print_text(const review_report *report) {
     const zcl_tx_review *review = report->review;
     const zcl_tx_script_facts *scripts = report->scripts;
+    char public_amount[32];
+    if (!format_zcl_amount(review->transparent_output_zat,
+                           public_amount)) return false;
     printf("ZCL Sapling v4: %" PRIu32 " transparent input(s), %" PRIu32
            " output(s), %" PRIu32 " Sapling spend(s), %" PRIu32
            " Sapling output(s), %" PRIu32 " Sprout JoinSplit(s).\n",
@@ -296,8 +311,9 @@ static bool print_text(const review_report *report) {
     if (review->transparent_outputs > view.shown)
         printf("%" PRIu32 " additional output(s) omitted.\n",
                review->transparent_outputs - view.shown);
-    printf("Public output total: %" PRIu64 " zatoshi; value balance: %" PRId64
-           " zatoshi.\n", review->transparent_output_zat,
+    printf("Public output total: %s ZCL (%" PRIu64
+           " zatoshi); value balance: %" PRId64 " zatoshi.\n",
+           public_amount, review->transparent_output_zat,
            review->value_balance_zat);
     puts("Structural review only. Shielded recipients, amounts, fee, proofs, and signatures are unverified.");
     if (report->blue_parsed)

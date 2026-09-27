@@ -80,11 +80,15 @@ three script facts are checked by the host only, including when `--blue` is
 used. A P2SH output does not establish a multisig threshold; the redeem
 script is needed. An SLP marker does not establish a valid ZSLP transfer;
 token fields, input lineage, and amounts still need verification.
-The CLI lists up to 32 transparent outputs with their values and standard
-P2PKH or P2SH addresses. Other scripts show their length and SHA-256 digest
-without inventing a recipient. JSON sets `output_details_truncated` when
-additional outputs exist. The Blue's current review app does not display or
-verify this host-only address list, so the list is not payment approval.
+The CLI lists up to 32 transparent outputs with their amounts in ZCL and
+zatoshi and standard P2PKH or P2SH addresses. Other scripts show their
+length and SHA-256 digest without inventing a recipient. JSON sets
+`output_details_truncated` when additional outputs exist. It also includes
+`amount_zcl` for each listed output and `transparent_output_zcl` for the
+public output total as exact eight-decimal strings alongside integer
+zatoshi values. The Blue's Review app independently derives and displays
+the same standard addresses, but its image has not yet been tested on the
+device; neither display is payment approval.
 
 ```sh
 build/zcl-ledger/zcl-tx-review --json transaction.bin
