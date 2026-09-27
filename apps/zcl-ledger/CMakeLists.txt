@@ -437,6 +437,20 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-payment-sign COMMAND test-blue-payment-sign)
 
+add_executable(test-blue-wallet-signer-device
+    tests/test_blue_wallet_signer_device.c)
+target_include_directories(test-blue-wallet-signer-device PRIVATE
+    tests/blue_wallet_signer_stub include device-blue-wallet/src)
+target_compile_options(test-blue-wallet-signer-device PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-signer-device PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-signer-device PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-signer-device COMMAND test-blue-wallet-signer-device)
+
 add_executable(test-blue-wallet-device-ui tests/test_blue_wallet_device_ui.c)
 target_include_directories(test-blue-wallet-device-ui PRIVATE
     tests/blue_wallet_sdk_stub include device-blue-wallet/src)

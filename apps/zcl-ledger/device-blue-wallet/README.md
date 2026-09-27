@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.13 derives
+Version 0.2.14 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -66,7 +66,12 @@ fee have been verified. Verified digests reuse the completed outpoint slots,
 so the input limit remains 16 without increasing `.bss`. No APDU can consume
 the confirmation latch or request a signature. INS `28` still returns each
 computed digest before confirmation for host comparison. Version 0.2.13
-remains uninstalled.
+remains uninstalled. Version 0.2.14 compiles a fixed-path SDK signing
+callback and wipes its private state during command, USB, and exit cleanup.
+The callback has no reachable APDU, is removed from the linked image, and
+has not signed on this Blue. A host SDK shim tests both fixed paths, locked
+PIN rejection, malformed SDK results, zeroed replies, and private-state
+erasure.
 Do not receive funds or sign payments with it.
 
 ## Build
@@ -92,13 +97,13 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.13 image has 33,536 bytes of `.text`, 5,296
+512-byte margin. The linked 0.2.14 image has 33,792 bytes of `.text`, 5,472
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
-stack; 848 bytes remain after that section in the 6,144-byte app SRAM
+stack; 672 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 752 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced `.text`
-SHA-256 `079b0606e90c3bf55f9c28d8faa3546b7e866fda7bb61801865762a0f5ec8de0`.
-The [confirmation experiment](../../../docs/experiments/2026-09-27-ledger-blue-review-confirmation.md)
+SHA-256 `067744e45fbad645850dd7a8cf8cdfb1f1b4b8ede585d4c57c61fa5f962788b7`.
+The [signing callback experiment](../../../docs/experiments/2026-09-27-ledger-blue-signing-callback.md)
 records the tests and limits.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.

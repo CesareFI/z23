@@ -5,6 +5,7 @@
 #include "blue_wallet_protocol.h"
 #include "blue_wallet_receive.h"
 #include "wallet_payment_device.h"
+#include "blue_wallet_signer_device.h"
 #include "zcl_base58.h"
 
 #include <stdbool.h>
@@ -45,6 +46,7 @@ static const bagl_element_t *exit_app(const bagl_element_t *element) {
     (void)element;
     wallet_payment_abort();
     wipe(&secret, sizeof secret);
+    blue_wallet_signer_wipe();
     os_sched_exit(0);
     return NULL;
 }
@@ -239,6 +241,7 @@ unsigned char io_event(unsigned char channel) {
                  SEPROXYHAL_TAG_USB_EVENT_SUSPENDED) &&
             wallet_payment_visible()) {
             wallet_payment_abort();
+            blue_wallet_signer_wipe();
             UX_DISPLAY(receive_ui, NULL);
         }
         break;
@@ -299,6 +302,7 @@ static void answer_command(void) {
                 if (!received) {
                     wallet_payment_abort();
                     wipe(&secret, sizeof secret);
+                    blue_wallet_signer_wipe();
                     CLOSE_TRY;
                     THROW(error);
                 }
@@ -309,7 +313,10 @@ static void answer_command(void) {
                 wallet_payment_abort();
                 redraw_receive = true;
             }
-            FINALLY { wipe(&secret, sizeof secret); }
+            FINALLY {
+                wipe(&secret, sizeof secret);
+                blue_wallet_signer_wipe();
+            }
         }
         END_TRY;
         G_io_apdu_buffer[sent++] = (uint8_t)(status >> 8);
@@ -341,7 +348,10 @@ __attribute__((section(".boot"))) int main(void) {
             answer_command();
         }
         CATCH_OTHER(error) { (void)error; }
-        FINALLY { wipe(&secret, sizeof secret); }
+        FINALLY {
+            wipe(&secret, sizeof secret);
+            blue_wallet_signer_wipe();
+        }
     }
     END_TRY;
     return 0;
