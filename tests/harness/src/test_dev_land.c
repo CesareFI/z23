@@ -108,6 +108,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+    unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
@@ -137,6 +138,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_OUTCOME");
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
+    unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
@@ -8336,35 +8338,55 @@ _test_next:;
     return failures;
 }
 
-static int test_dev_land_queued_checked_once_per_main(void)
+/* Lines of logs/precheck.log that name `needle`. */
+static long dlx_qp_log_count(const char *needle)
+{
+    static char text[262144];
+    char landdir[1200], path[1400];
+    size_t len = 0;
+    long n = 0;
+    char *save = NULL;
+    dlx_landdir(landdir, sizeof(landdir));
+    if (snprintf(path, sizeof(path), "%s/logs/precheck.log", landdir) >=
+            (int)sizeof(path) ||
+        !dlx_slurp(path, text, sizeof(text) - 1, &len))
+        return -1;
+    text[len] = '\0';
+    for (char *line = strtok_r(text, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save))
+        n += strstr(line, needle) != NULL;
+    return n;
+}
+
+static int test_dev_land_queued_tool_failure_kept(void)
 {
     int failures = 0;
-    TEST("land: a queued row is checked once per observed main, not once "
-         "per beat") {
+    TEST("land: a precheck tool failure leaves the queued row queued and "
+         "unmarked, and the next beat asks again") {
         struct dlx_rig rig;
-        char b[64], m1[64], landdir[1200], log[1400];
-        dlx_isolate("qp_once");
-        ASSERT(dlx_rig_make(&rig, "qp_once_rig"));
-        ASSERT(dlx_qp_branch(&rig, "qp-b", "b.txt", "mine\n", NULL, NULL, b));
-        ASSERT(dlx_qp_push_main(&rig, "other.txt", "theirs\n", m1));
+        char b[64], m1[64], detail[512];
+        dlx_isolate("qp_toolfail");
+        ASSERT(dlx_rig_make(&rig, "qp_toolfail_rig"));
+        ASSERT(dlx_qp_branch(&rig, "qp-b", "seed.txt", "mine\n", NULL, NULL,
+                             b));
         ASSERT(dlx_qp_start(&rig, b));
         ASSERT(dlx_qp_beat("started", 1, 0));
-        dlx_landdir(landdir, sizeof(landdir));
-        ASSERT(snprintf(log, sizeof(log), "%s/logs/precheck.log", landdir) <
-               (int)sizeof(log));
-        ASSERT(dlx_qp_file_has(log, b));
-        /* Same main, next beats: nothing re-checked. */
-        ASSERT(dlx_qp_beat("proving", 0, 0));
-        ASSERT(dlx_qp_beat("proving", 0, 0));
-        {
-            static char text[65536];
-            size_t len = 0, lines = 0;
-            ASSERT(dlx_slurp(log, text, sizeof(text) - 1, &len));
-            for (size_t i = 0; i < len; i++)
-                lines += text[i] == '\n';
-            ASSERT_EQ(lines, 1);
-        }
+        ASSERT(dlx_qp_push_main(&rig, "seed.txt", "theirs\n", m1));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        /* The merge step itself fails: a real conflict, but no certainty
+         * about it, so nothing is ended. */
+        setenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL", "1", 1);
+        ASSERT(dlx_qp_beat("started", 1, 0));
+        unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
         ASSERT(dlx_qp_queued_has(b, 1));
+        ASSERT(!dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT_EQ(dlx_qp_log_count("uncertain: merge-tree failed"), 1);
+        ASSERT(dlx_qp_a_in_flight(m1));
+        /* Main has not moved, yet the row is asked again: an uncertain
+         * answer never marks it checked. */
+        ASSERT(dlx_qp_beat("proving", 1, 1));
+        ASSERT(dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT(strstr(detail, "detected while queued") != NULL);
         dlx_restore();
         PASS();
     }
@@ -8373,13 +8395,56 @@ _test_next:;
     return failures;
 }
 
+static int test_dev_land_queued_main_moves_twice(void)
+{
+    int failures = 0;
+    TEST("land: a queued row is checked once per observed main: clean on the "
+         "first new main, ended on the second, never rechecked between") {
+        struct dlx_rig rig;
+        char b[64], m1[64], m2[64], detail[512];
+        dlx_isolate("qp_twice");
+        ASSERT(dlx_rig_make(&rig, "qp_twice_rig"));
+        ASSERT(dlx_qp_branch(&rig, "qp-b", "b.txt", "mine\n", NULL, NULL, b));
+        ASSERT(dlx_qp_start(&rig, b));
+        ASSERT(dlx_qp_beat("started", 1, 0));
+        /* First new main: clean for B. */
+        ASSERT(dlx_qp_push_main(&rig, "other.txt", "theirs\n", m1));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        ASSERT(dlx_qp_beat("started", 1, 0));
+        ASSERT_EQ(dlx_qp_log_count(m1), 1);
+        /* Unchanged main: no recheck, however many beats. */
+        ASSERT(dlx_qp_beat("proving", 0, 0));
+        ASSERT(dlx_qp_beat("proving", 0, 0));
+        ASSERT_EQ(dlx_qp_log_count(m1), 1);
+        ASSERT(dlx_qp_queued_has(b, 1));
+        /* Second new main: over B's own line. */
+        ASSERT(dlx_qp_push_main(&rig, "b.txt", "theirs\n", m2));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        ASSERT(dlx_qp_beat("started", 1, 1));
+        ASSERT_EQ(dlx_qp_log_count(m2), 1);
+        ASSERT(dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT(strstr(detail, "detected while queued") != NULL);
+        ASSERT(strstr(detail, m2) != NULL);
+        ASSERT(strstr(detail, "b.txt") != NULL);
+        ASSERT(dlx_qp_a_in_flight(m2));
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+/* (a) true conflict, (b) clean then lands, (c) regenerated artifacts only,
+ * (d) tool failure, (e) main moving twice. */
 static int test_dev_land_queued_precheck_cases(void)
 {
     int failures = 0;
     failures += test_dev_land_queued_conflict_detected();
-    failures += test_dev_land_queued_regen_only_kept();
     failures += test_dev_land_queued_mergeable_lands();
-    failures += test_dev_land_queued_checked_once_per_main();
+    failures += test_dev_land_queued_regen_only_kept();
+    failures += test_dev_land_queued_tool_failure_kept();
+    failures += test_dev_land_queued_main_moves_twice();
     return failures;
 }
 
