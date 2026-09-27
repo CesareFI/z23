@@ -134,6 +134,12 @@ static bool wait_for_touch(void *context, uint32_t index,
     return false;
 }
 
+static bool stable_tip(const char *rpc_binary, const blue_chain_tip *initial) {
+    blue_chain_tip current;
+    return blue_chain_tip_query(rpc_binary, &current) &&
+        blue_chain_tip_same(initial, &current);
+}
+
 int main(int argc, char **argv) {
     if (argc < 6 || argc > 5 + ZCL_TX_PREFLIGHT_MAX_INPUTS ||
         strcmp(argv[1], "--test") != 0) {
@@ -141,11 +147,12 @@ int main(int argc, char **argv) {
             argv[0]);
         return 2;
     }
-    uint32_t branch_id, height;
+    uint32_t branch_id;
+    blue_chain_tip tip;
     uint8_t *wire = NULL;
     size_t length = 0;
-    if (!blue_chain_tip_query(argv[3], &height) ||
-        !blue_mainnet_branch_for_height(height, &branch_id)) {
+    if (!blue_chain_tip_query(argv[3], &tip) ||
+        !blue_mainnet_branch_for_height(tip.next_height, &branch_id)) {
         fputs("Cannot verify a synced ZCL mainnet tip at or after Sapling activation.\n",
               stderr);
         return 1;
@@ -182,8 +189,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!blue_utxo_check_inputs(argv[3], wire, length, previous,
-                                previous_count, height)) {
+                                previous_count, tip.next_height)) {
         fputs("A supplied input is not confirmed, unspent, mature, and amount-matched in the local node.\n",
+              stderr);
+        free_previous(previous_bytes, previous_count);
+        free(plan);
+        free(wire);
+        return 1;
+    }
+    if (!stable_tip(argv[3], &tip)) {
+        fputs("The local node tip changed during input checks; review stopped.\n",
               stderr);
         free_previous(previous_bytes, previous_count);
         free(plan);
@@ -202,7 +217,7 @@ int main(int argc, char **argv) {
     printf("Read-only mainnet test review at node next height %u "
            "(branch %08x): %u hash-bound input(s), %u output(s), "
            "fee %llu zatoshi. Local UTXO status checked; independent peer sync and account ownership remain unverified.\n",
-           height, branch_id,
+           tip.next_height, branch_id,
            facts.transparent_inputs, facts.transparent_outputs,
            (unsigned long long)facts.fee_zat);
     puts("The app cannot sign a payment.");

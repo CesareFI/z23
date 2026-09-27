@@ -25,9 +25,9 @@ static const char utxo[] =
     "\"script_size\":25}]},\"error\":null}";
 
 static bool accepts(const char *reply) {
-    uint32_t height = 0;
-    return blue_chain_tip_parse(reply, strlen(reply), &height) &&
-           height == 707002;
+    blue_chain_tip tip;
+    return blue_chain_tip_parse(reply, strlen(reply), &tip) &&
+           tip.next_height == 707002;
 }
 
 static void replace_once(const char *source, const char *old,
@@ -61,6 +61,22 @@ int main(int argc, char **argv) {
         if (getenv("BLUE_CHAIN_TIP_TEST_STALL")) {
             struct timespec delay = {.tv_sec = 9};
             nanosleep(&delay, NULL);
+        }
+        const char *marker = getenv("BLUE_TIP_REORG_MARKER");
+        if (marker) {
+            FILE *file = fopen(marker, "r");
+            if (file) {
+                assert(fclose(file) == 0);
+                char changed[sizeof good];
+                memcpy(changed, good, sizeof good);
+                char *hash = strstr(changed, "0123456789abcdef");
+                assert(hash);
+                hash[0] = '1';
+                puts(changed);
+                return 0;
+            }
+            file = fopen(marker, "w");
+            assert(file && fclose(file) == 0);
         }
         puts(good);
         return 0;
@@ -104,13 +120,15 @@ int main(int argc, char **argv) {
                     "\"headers\":2,\"bestblockhash\":\"00\"},\"error\":null}"));
     assert(!accepts("{\"result\":{\"chain\":\"main\",\"blocks\":1,"
                     "\"headers\":1,\"bestblockhash\":\"00\"},\"error\":null}"));
-    uint32_t height = 0;
-    assert(blue_chain_tip_query(argv[0], &height));
-    assert(height == 707002);
-    assert(!blue_chain_tip_query("relative/path", &height));
-    assert(!blue_chain_tip_query("/bin/false", &height));
+    blue_chain_tip tip, same;
+    assert(blue_chain_tip_query(argv[0], &tip));
+    assert(tip.next_height == 707002);
+    assert(blue_chain_tip_parse(good, strlen(good), &same));
+    assert(blue_chain_tip_same(&tip, &same));
+    assert(!blue_chain_tip_query("relative/path", &tip));
+    assert(!blue_chain_tip_query("/bin/false", &tip));
     assert(setenv("BLUE_CHAIN_TIP_TEST_STALL", "1", 1) == 0);
-    assert(!blue_chain_tip_query(argv[0], &height));
+    assert(!blue_chain_tip_query(argv[0], &tip));
     assert(unsetenv("BLUE_CHAIN_TIP_TEST_STALL") == 0);
     return 0;
 }

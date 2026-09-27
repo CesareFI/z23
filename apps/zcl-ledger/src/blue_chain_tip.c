@@ -37,6 +37,13 @@ static bool hex_hash(const char *text) {
     return true;
 }
 
+static void copy_hash_lowercase(char dest[65], const char source[65]) {
+    for (size_t i = 0; i < 64; ++i)
+        dest[i] = (source[i] >= 'A' && source[i] <= 'F')
+            ? (char)(source[i] - 'A' + 'a') : source[i];
+    dest[64] = 0;
+}
+
 static bool mainnet_identity(const struct json_value *result) {
     const struct json_value *chain = unique_field(result, "chain");
     const struct json_value *hash = unique_field(result, "bestblockhash");
@@ -59,17 +66,29 @@ static bool synced_next_height(const struct json_value *result,
 }
 
 bool blue_chain_tip_parse(const char *reply, size_t length,
-                          uint32_t *next_height) {
-    if (!reply || !next_height || !length || length > 65535) return false;
+                          blue_chain_tip *tip) {
+    if (!reply || !tip || !length || length > 65535) return false;
     struct json_value root = {0};
     bool valid = json_read(&root, reply, length);
     const struct json_value *result = valid ? unique_field(&root, "result") : NULL;
     const struct json_value *error = valid ? unique_field(&root, "error") : NULL;
+    uint32_t next_height = 0;
     valid = result && result->type == JSON_OBJ && error &&
         error->type == JSON_NULL && mainnet_identity(result) &&
-        synced_next_height(result, next_height);
+        synced_next_height(result, &next_height);
+    if (valid) {
+        const char *hash = unique_field(result, "bestblockhash")->val.s;
+        tip->next_height = next_height;
+        copy_hash_lowercase(tip->block_hash, hash);
+    }
     json_free(&root);
     return valid;
+}
+
+bool blue_chain_tip_same(const blue_chain_tip *first,
+                         const blue_chain_tip *second) {
+    return first && second && first->next_height == second->next_height &&
+        strcmp(first->block_hash, second->block_hash) == 0;
 }
 
 static int64_t monotonic_ms(void) {
@@ -137,11 +156,11 @@ bool blue_rpc_capture(const char *rpc_binary, const char *method,
     return finish_child(child, complete);
 }
 
-bool blue_chain_tip_query(const char *rpc_binary, uint32_t *next_height) {
-    if (!next_height) return false;
+bool blue_chain_tip_query(const char *rpc_binary, blue_chain_tip *tip) {
+    if (!tip) return false;
     char reply[65536];
     size_t length = 0;
     return blue_rpc_capture(rpc_binary, "getblockchaininfo", NULL,
                             reply, sizeof reply, &length) &&
-        blue_chain_tip_parse(reply, length, next_height);
+        blue_chain_tip_parse(reply, length, tip);
 }

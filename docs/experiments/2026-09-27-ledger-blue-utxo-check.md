@@ -20,6 +20,11 @@ length but does not return the script itself.
 
 This establishes local-node UTXO evidence only. The RPC calls are separate
 reads, so a concurrent reorganization can change the view between inputs.
+The driver now queries `getblockchaininfo` again after every UTXO check and
+requires the same next height and best-block hash before opening the Blue.
+An advancing tip or reorganization fails closed. This comparison does not
+make the individual reads atomic; a transient reorganization that returns
+to the same tip is outside this check.
 Local headers matching local blocks do not prove an independently current
 network tip. Ownership, change, and final signing approval remain unproved;
 the device app remains read-only and uninstalled.
@@ -28,6 +33,7 @@ Clang 22.1.6 Debug with AddressSanitizer and UndefinedBehaviorSanitizer passed
 26/26 local tests. GCC 16.1.1 Release passed 26/26. Parser tests rejected
 spent outputs, changed amounts, changed script length, future heights,
 immature coinbase outputs, and duplicate output indexes. The CLI integration
-test rejected a simulated spent UTXO before opening a Blue device. The
+test rejected a simulated spent UTXO and a same-height block-hash change
+before opening a Blue device. The
 cyclomatic complexity gate passed at cap 15. No live node answered RPC on this
 laptop, so local-node UTXO results remain unverified outside simulation.

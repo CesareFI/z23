@@ -90,10 +90,13 @@ int main(int argc, char **argv) {
     char directory[] = "/tmp/zcl-wallet-review-cli-XXXXXX";
     assert(mkdtemp(directory));
     char fixture[256], spend_path[256], previous_path[256], error[512];
+    char marker_path[256];
     assert(snprintf(fixture, sizeof fixture, "%s/fixture.bin", directory) > 0);
     assert(snprintf(spend_path, sizeof spend_path, "%s/spend.bin", directory) > 0);
     assert(snprintf(previous_path, sizeof previous_path,
                     "%s/previous.bin", directory) > 0);
+    assert(snprintf(marker_path, sizeof marker_path,
+                    "%s/reorg.marker", directory) > 0);
     assert(run(argv[1], argv[3], fixture, NULL, NULL, error,
                sizeof error) == 0);
     uint8_t base[256], previous[256], spend[256], first[32], txid[32];
@@ -123,6 +126,12 @@ int main(int argc, char **argv) {
                        previous_path, error, sizeof error) == 1);
             assert(strstr(error, "not confirmed, unspent") != NULL);
             assert(unsetenv("BLUE_UTXO_TEST_SPENT") == 0);
+            assert(setenv("BLUE_TIP_REORG_MARKER", marker_path, 1) == 0);
+            assert(run(argv[2], argv[3], NULL, spend_path,
+                       previous_path, error, sizeof error) == 1);
+            assert(strstr(error, "tip changed") != NULL);
+            assert(unsetenv("BLUE_TIP_REORG_MARKER") == 0);
+            assert(unlink(marker_path) == 0);
         }
         assert(run(argv[2], argv[3], NULL, spend_path, previous_path, error,
                    sizeof error) == 1);

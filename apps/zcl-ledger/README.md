@@ -77,7 +77,8 @@ same bytes to the Blue for independent SHA-256d, P2PKH amount, fee, and
 input-specific ZIP-243 digest checks. The host derives the branch ID from
 Z23's mainnet activation heights and rejects heights before Sapling. The
 local node responses do not independently prove peer synchronization or
-account ownership. It stops each third-pass upload exactly at the next
+account ownership. A second tip query must match the first height and block
+hash before USB access. It stops each third-pass upload exactly at the next
 output. The previous transaction bytes alone do not establish chain
 inclusion or unspent status. It
 cannot sign. Version 0.2.6 must pass separate device checks before this
