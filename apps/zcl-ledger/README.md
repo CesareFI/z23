@@ -61,8 +61,8 @@ The portable [signing command candidate](include/blue_payment_sign.h)
 accepts exactly one input index after physical review approval, binds the
 signing public key to a device-derived account hash, and returns canonical
 low-S DER. Host tests verify a real secp256k1 signature and reject malformed
-APDUs. Wallet 0.2.15 does not route this command or sign payments. Its
-read-only CONFIRM action cannot set the signing approval flag.
+APDUs. Wallet 0.2.16 does not route this command or sign payments. Its
+read-only DONE action cannot set the signing approval flag.
 
 ## Build and test
 
@@ -108,7 +108,7 @@ hash before USB access, and a third query must still match after the Blue
 review before the host reports success. It stops each third-pass upload exactly at the next
 output. The previous transaction bytes alone do not establish chain
 inclusion or unspent status. It
-cannot sign. Version 0.2.15 must pass separate device checks before this
+cannot sign. Version 0.2.16 must pass separate device checks before this
 driver is used on the Blue again.
 
 Find accessible Ledger HID interfaces without Ledger Live:

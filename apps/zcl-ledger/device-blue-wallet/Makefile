@@ -27,7 +27,7 @@ endif
 endif
 
 APPNAME = "ZCL Wallet"
-APPVERSION = 0.2.15
+APPVERSION = 0.2.16
 APP_FLAGS = 0x00
 APP_SOURCE_PATH += src
 SDK_SOURCE_PATH += lib_stusb lib_stusb_impl

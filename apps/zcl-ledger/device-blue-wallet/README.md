@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.15 derives
+Version 0.2.16 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -76,6 +76,10 @@ Version 0.2.15 separates read-only REVIEW CONFIRMED from signing approval.
 The Blue's CONFIRM button cannot arm the digest latch or authorize the
 unrouted signing command. A separate signing approval flow would be required
 before any payment signer could be enabled.
+Version 0.2.16 labels the read-only totals action DONE, labels its final
+page REVIEW COMPLETE, and displays the unchecked chain and branch warnings
+on separate 22-pixel lines. The simulator verifies that every label fits
+the Blue viewport. This image has not been installed on a physical Blue.
 Do not receive funds or sign payments with it.
 
 ## Build
@@ -112,6 +116,11 @@ SHA-256 `067744e45fbad645850dd7a8cf8cdfb1f1b4b8ede585d4c57c61fa5f962788b7`.
 Version 0.2.15 produced 33,792 bytes of `.text`, 5,472 bytes of `.bss`,
 zero `.data`, and identical `.text` SHA-256
 `7cefe528eeee5407edd40306951bb604f467ef526619828f246a2fe519ebf3e6`
+in two independently patched SDK trees. Its largest named C stack path
+remains 752 bytes, excluding BOLOS frames.
+Version 0.2.16 produced 33,792 bytes of `.text`, 5,472 bytes of `.bss`,
+zero `.data`, and identical `.text` SHA-256
+`2c6000584ccd6826c5ea92133bad0ab0dd3926afbc3015c9f8ab868a77f38fb6`
 in two independently patched SDK trees. Its largest named C stack path
 remains 752 bytes, excluding BOLOS frames.
 The stack gate also checks four currently unreachable signing paths through

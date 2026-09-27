@@ -56,7 +56,7 @@ patch-mismatch error; the canonical patched SDK passed the same build gate.
 CPU: AMD Ryzen 7 PRO 8840U with Radeon 780M Graphics. Test date:
 2026-09-27.
 
-## Limit
+## Additional verification
 
 The wallet CLI fixture test now uses the in-tree C23 SHA-256 implementation
 for previous-transaction identifiers. On 2026-09-27T06:55:23-04:00
@@ -73,8 +73,30 @@ chain-tip tests passed 2/2 in Clang 22.1.6 Debug/ASan/UBSan and GCC 16.1.1
 Release at 2026-09-27T06:56:59-04:00 (2026-09-27T10:56:59Z). The final
 post-USB branch remains unexercised on physical Blue hardware.
 
+Wallet 0.2.16 uses DONE on the totals page and REVIEW COMPLETE on the final
+read-only page. A single-line 22-pixel chain/branch warning failed the
+viewport-fit assertion, so the final layout uses two 22-pixel lines. The
+actual wallet UI test passed with Clang 22.1.6 Debug/ASan/UBSan and GCC
+16.1.1 Release. Both complete Ledger host suites passed 30/30, and the
+cyclomatic-complexity gate passed 60,769 functions in 4,430 files. The
+320×480 totals and completion PNG SHA-256 values are
+`4bd3ea009b00183e889315bacaa42fab5a65169dc52ce39a505eca116ca9c28a`
+and `ae189901222483118f1b98b2b70278695e979ef4551975da04c69f67b7a4f422`;
+the fee PNG remained
+`2609788f7ff98111bd8aaef24d482e30a62774a3dad84f52b7540e2b4f5137cd`.
+The PNGs were visually inspected at their native 320×480 resolution. Two
+clean ARM builds from separately patched, byte-identical SDK checkouts
+produced the same 33,792-byte `.text` SHA-256
+`2c6000584ccd6826c5ea92133bad0ab0dd3926afbc3015c9f8ab868a77f38fb6`.
+Both had zero `.data`, 5,472 bytes of `.bss`, and a largest named C stack
+path of 752 bytes against the 2,048-byte reserve and 512-byte margin.
+Observed 2026-09-27T07:02:25-04:00 (2026-09-27T11:02:25Z) on an AMD
+Ryzen 7 PRO 8840U with Radeon 780M Graphics.
+
+## Limit
+
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel
 key exchange, custom-CA signing, public-key validation, and signing-test
-verification. Wallet 0.2.15 is uninstalled and read-only. Host UI tests do
+verification. Wallet 0.2.16 is uninstalled and read-only. Host UI tests do
 not prove physical Blue USB, touchscreen timing, EXIT, or restart behavior.
 No Blue payment signature was requested or produced.

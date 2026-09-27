@@ -151,14 +151,14 @@ static void test_confirm_review(void) {
     visible = true;
     wallet_payment_display();
     tap("TOTALS");
-    assert(shown == totals_ui && find_text("CONFIRM"));
-    tap("CONFIRM");
+    assert(shown == totals_ui && find_text("DONE"));
+    tap("DONE");
     assert(shown == confirmed_ui && payment.review_confirmed);
     assert(!payment.approved);
     assert(!blue_payment_apdu_touch_approve(&payment));
     uint8_t digest[32] = {0}, path = 0;
     assert(!blue_payment_apdu_take_digest(&payment, 0, digest, &path));
-    assert(find_text("REVIEW CONFIRMED") && find_text("NO SIGNING"));
+    assert(find_text("REVIEW COMPLETE") && find_text("NO SIGNING"));
     if (confirmed_snapshot)
         assert(blue_bagl_write_png(last_canvas, confirmed_snapshot));
     tap("EXIT");
