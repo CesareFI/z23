@@ -39,7 +39,12 @@
 #include <unistd.h>
 
 #define CM_SESSION_LINE_MAX (1u << 20)
-#define CM_SESSION_TUS_DEFAULT 8
+/* The TU table. A table smaller than the caller's working set evicts every TU
+ * before its next request, and each request then pays a warm parse plus the
+ * cold verification of a first emit: about twice a cold emit (measured in
+ * docs/work/SEMANTIC_MANIFEST.md). A hotswap TU costs about 4 MiB resident
+ * with its preamble in memory, so the default covers a module-sized batch. */
+#define CM_SESSION_TUS_DEFAULT 64
 #define CM_WARM_OPTIONS                                                        \
     (CXTranslationUnit_DetailedPreprocessingRecord |                          \
      CXTranslationUnit_PrecompiledPreamble |                                  \
@@ -68,7 +73,7 @@ struct cm_warm_tu {
 
 struct cm_session_stats {
     unsigned requests, refused, warm_written, cold_written;
-    unsigned verified_equal, mismatches, created, reparsed, recreated;
+    unsigned verified_equal, mismatches, evicted, created, reparsed, recreated;
 };
 
 struct cm_session {
@@ -159,10 +164,10 @@ static void cm_reply_summary(const struct cm_session *ss)
     const struct cm_session_stats *s = &ss->s;
     printf("{\"session\":\"end\",\"requests\":%u,\"refused\":%u,"
            "\"warm_written\":%u,\"cold_written\":%u,\"verified_equal\":%u,"
-           "\"mismatches\":%u,\"created\":%u,\"reparsed\":%u,"
+           "\"mismatches\":%u,\"evicted\":%u,\"created\":%u,\"reparsed\":%u,"
            "\"recreated\":%u}\n",
            s->requests, s->refused, s->warm_written, s->cold_written,
-           s->verified_equal, s->mismatches, s->created, s->reparsed,
+           s->verified_equal, s->mismatches, s->evicted, s->created, s->reparsed,
            s->recreated);
     (void)fflush(stdout);
 }
@@ -249,6 +254,7 @@ static struct cm_warm_tu *cm_tu_add(struct cm_session *ss, const char *root,
                 lru = k;
         }
         cm_tu_free(&ss->tus[lru]);
+        ss->s.evicted++;
         ss->tus[lru] = ss->tus[--ss->ntus];
     }
     if (!cm_grow((void **)&ss->tus, &ss->cap, ss->ntus, sizeof(*ss->tus)))
