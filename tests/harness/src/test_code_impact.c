@@ -712,10 +712,10 @@ static int test_code_impact_rule_predicate(void)
     return failures;
 }
 
-/* A depfile that is incomplete, stale, missing a prerequisite, or behind
- * the source include graph must not be answered as a complete narrow impact.
- * The clean control stays complete, and the three compile-scope refusals
- * still fire. */
+/* A depfile that is incomplete, stale, or missing a prerequisite must not
+ * be answered as a complete narrow impact. An in-tree quoted include it omits
+ * is an added edge instead. The clean control stays complete, and the three
+ * compile-scope refusals still fire. */
 #define CI_NARROW_FIX "test-tmp/code_impact_narrow"
 
 static bool ci_narrow_dim(const char *root, const char *path,
@@ -822,9 +822,9 @@ static int test_code_impact_unsafe_narrow(void)
     failures += ci_narrow_one("stale", src_plain, dep_clean,
                               "core/modules/net/include/net/real.h", false);
     failures += ci_narrow_one("changed", src_changed, dep_clean,
-                              "core/modules/net/include/net/extra.h", false);
+                              "core/modules/net/include/net/extra.h", true);
     failures += ci_narrow_one("quoted", src_quoted, dep_clean,
-                              "core/modules/net/include/net/real.h", false);
+                              "core/modules/net/include/net/real.h", true);
     failures += ci_narrow_one("stale-header", src_plain, dep_clean,
                               "core/modules/net/include/net/real.h", false);
     system("rm -rf " CI_NARROW_FIX);
@@ -897,6 +897,174 @@ static int test_code_impact_scope_refusals(void)
     return failures;
 }
 
+/* A quoted include the depfile omits — here one inside an inactive
+ * preprocessor conditional — names an in-tree file this configuration never
+ * read. It is kept as an extra include edge from the translation unit, so the
+ * graph holds a superset of the true edges and stays trusted. What the added
+ * file includes is reached the same way. Every depfile hazard still refuses a
+ * complete answer with such an include present, and the incremental index
+ * still refuses once a source edit adds an edge its stored graph lacks. */
+#define CI_COND_FIX "test-tmp/code_impact_conditional"
+#define CI_COND_UNIT "core/modules/net/src/narrow.c"
+#define CI_COND_INC "core/modules/net/src/narrow_win.inc"
+#define CI_COND_DEF "core/modules/net/include/net/win_only.def"
+#define CI_COND_REAL "core/modules/net/include/net/real.h"
+
+static const char *const ci_cond_src =
+    "/* narrow */\n#include \"net/real.h\"\n#ifdef _WIN32\n"
+    "#include \"narrow_win.inc\"\n#endif\nint ci_narrow(void){return 1;}\n";
+static const char *const ci_cond_dep =
+    "build/obj/narrow.o: " CI_COND_UNIT " " CI_COND_REAL "\n";
+
+static bool ci_cond_fixture(const char *dir, const char *dep)
+{
+    return ci_impact_mk_write(dir, CI_COND_INC,
+                              "#include \"narrow_win.inc\"\n"
+                              "#include \"net/win_only.def\"\n"
+                              "static int ci_narrow_win;\n") &&
+           ci_impact_mk_write(dir, CI_COND_DEF, "WIN_ROW(1)\n") &&
+           ci_narrow_base(dir, ci_cond_src, dep);
+}
+
+/* Query `path`; report its include dimension and whether `want` is one of
+ * its listed include dependents. */
+static bool ci_cond_query(const char *root, const char *path,
+                          const char *want, char *dim, size_t cap, bool *has)
+{
+    struct zcl_command_reply reply;
+    ci_impact_call(path, root, &reply);
+    const char *got = json_get_str(json_get(&reply.data, "include_dimension"));
+    snprintf(dim, cap, "%s", got ? got : "");
+    const struct json_value *arr = json_get(&reply.data, "include_dependents");
+    *has = false;
+    for (size_t i = 0; arr && arr->type == JSON_ARR && i < arr->num_children;
+         i++) {
+        const char *item = json_get_str(&arr->children[i]);
+        if (item && strcmp(item, want) == 0)
+            *has = true;
+    }
+    bool ok = reply.exit_code == ZCL_COMMAND_EXIT_OK;
+    zcl_command_reply_free(&reply);
+    return ok;
+}
+
+static int test_code_impact_conditional_include_edge(void)
+{
+    int failures = 0;
+    const char *dir = CI_COND_FIX "/edge";
+    system("rm -rf " CI_COND_FIX);
+    bool ready = ci_cond_fixture(dir, ci_cond_dep);
+    char inc_dim[64] = "", def_dim[64] = "", real_dim[64] = "";
+    bool inc_has = false, def_has = false, real_has = false;
+    bool ok = ready &&
+              ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, inc_dim,
+                            sizeof inc_dim, &inc_has) &&
+              ci_cond_query(dir, CI_COND_DEF, CI_COND_UNIT, def_dim,
+                            sizeof def_dim, &def_has) &&
+              ci_cond_query(dir, CI_COND_REAL, CI_COND_UNIT, real_dim,
+                            sizeof real_dim, &real_has);
+    printf("invariant=conditional_include_edge inc=%s/%d def=%s/%d "
+           "real=%s/%d ok=%d\n", inc_dim, inc_has ? 1 : 0, def_dim,
+           def_has ? 1 : 0, real_dim, real_has ? 1 : 0, ok ? 1 : 0);
+    TEST("code_impact: a conditional include the depfile omits is an edge that reaches what it includes") {
+        ASSERT(ok);
+        ASSERT(strcmp(inc_dim, "complete") == 0);
+        ASSERT(inc_has);
+        ASSERT(strcmp(def_dim, "complete") == 0);
+        ASSERT(def_has);
+        ASSERT(strcmp(real_dim, "complete") == 0);
+        ASSERT(real_has);
+        PASS();
+    } _test_next:;
+    system("rm -rf " CI_COND_FIX);
+    return failures;
+}
+
+static int ci_cond_hazard(const char *name, const char *dep,
+                          const char *touch, int delta)
+{
+    int failures = 0;
+    char dir[256];
+    snprintf(dir, sizeof dir, CI_COND_FIX "/%s", name);
+    system("rm -rf " CI_COND_FIX);
+    bool ready = ci_cond_fixture(dir, dep);
+    if (ready && touch)
+        ci_narrow_touch_rel(dir, touch, delta);
+    char dim[64] = "";
+    bool has = false;
+    bool ok = ready && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, dim,
+                                     sizeof dim, &has);
+    printf("invariant=conditional_include_hazard case=%s "
+           "include_dimension=%s ok=%d\n", name, dim, ok ? 1 : 0);
+    TEST("code_impact: a conditional include edge never masks a depfile hazard") {
+        ASSERT(ok);
+        ASSERT(strcmp(dim, "complete") != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_code_impact_conditional_hazards(void)
+{
+    static const char *const dep_missing =
+        "build/obj/narrow.o: " CI_COND_UNIT " " CI_COND_REAL " "
+        "core/modules/net/include/net/missing.h\n";
+    static const char *const dep_incomplete =
+        "build/obj/narrow.o: " CI_COND_UNIT " " CI_COND_REAL;
+    int failures = 0;
+    failures += ci_cond_hazard("missing", dep_missing, NULL, 0);
+    failures += ci_cond_hazard("incomplete", dep_incomplete, NULL, 0);
+    failures += ci_cond_hazard("stale", ci_cond_dep, CI_COND_UNIT, 5);
+    failures += ci_cond_hazard("stale-header", ci_cond_dep, CI_COND_REAL, 5);
+    system("rm -rf " CI_COND_FIX);
+    return failures;
+}
+
+/* The incremental index reuses the stored include rows. A body-only edit
+ * keeps the added edge and the complete answer; an edit that adds an include
+ * the stored rows lack is refused until a cold rebuild records it. */
+static int test_code_impact_conditional_incremental(void)
+{
+    int failures = 0;
+    const char *dir = CI_COND_FIX "/incremental";
+    static const char *const src_body =
+        "/* narrow */\n#include \"net/real.h\"\n#ifdef _WIN32\n"
+        "#include \"narrow_win.inc\"\n#endif\nint ci_narrow(void){return 2;}\n";
+    static const char *const src_more =
+        "/* narrow */\n#include \"net/real.h\"\n#ifdef _WIN32\n"
+        "#include \"narrow_win.inc\"\n#include \"net/extra.h\"\n#endif\n"
+        "int ci_narrow(void){return 3;}\n";
+    system("rm -rf " CI_COND_FIX);
+    bool ready = ci_impact_mk_write(dir, "core/modules/net/include/net/extra.h",
+                                    "int ci_narrow_extra(void);\n") &&
+                 ci_cond_fixture(dir, ci_cond_dep);
+    char first[64] = "", second[64] = "", third[64] = "";
+    bool has_first = false, has_second = false, has_third = false;
+    bool ok = ready && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, first,
+                                     sizeof first, &has_first);
+    ok = ok && ci_impact_mk_write(dir, CI_COND_UNIT, src_body);
+    ci_narrow_touch_rel(dir, CI_COND_UNIT, -5);
+    ok = ok && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, second,
+                             sizeof second, &has_second);
+    ok = ok && ci_impact_mk_write(dir, CI_COND_UNIT, src_more);
+    ci_narrow_touch_rel(dir, CI_COND_UNIT, -5);
+    ci_narrow_touch_rel(dir, "core/modules/net/include/net/extra.h", -5);
+    ok = ok && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, third,
+                             sizeof third, &has_third);
+    printf("invariant=conditional_include_incremental "
+           "include_dimension=%s then %s then %s ok=%d\n",
+           first, second, third, ok ? 1 : 0);
+    TEST("code_impact: an incremental index keeps a stored conditional edge and refuses one it never stored") {
+        ASSERT(ok);
+        ASSERT(strcmp(first, "complete") == 0 && has_first);
+        ASSERT(strcmp(second, "complete") == 0 && has_second);
+        ASSERT(strcmp(third, "complete") != 0);
+        PASS();
+    } _test_next:;
+    system("rm -rf " CI_COND_FIX);
+    return failures;
+}
+
 int test_code_impact(void)
 {
     int failures = 0;
@@ -914,5 +1082,8 @@ int test_code_impact(void)
     failures += test_code_context_map_complete_pages();
     failures += test_code_context_map_shape_overflow();
     failures += test_code_guide();
+    failures += test_code_impact_conditional_include_edge();
+    failures += test_code_impact_conditional_hazards();
+    failures += test_code_impact_conditional_incremental();
     return failures;
 }
