@@ -64,7 +64,9 @@ decoder on its own output and refuses anything the decoder would refuse.
 `@sys/<absolute path>` for anything outside the checkout. The components `.`
 and `..`, empty components, a leading `/` and a leading `@` other than `@sys`
 are refused. The producer refuses a path under `$HOME` that lies outside the
-checkout, because such a path has no host-independent spelling. **Argv/env
+checkout, because such a path has no host-independent spelling, and it
+refuses to run at all when `$HOME` is unset, relative or does not resolve,
+since it could not then tell such a path from a system one. **Argv/env
 text** may contain `@root`, meaning the checkout root. A `/` at a path
 boundary is refused unless it begins `/zclassic23` or `/zbuild`. A path
 boundary is the start of the text, the position after one of the characters

@@ -1212,6 +1212,67 @@ static int smt_t_sensor_seeds(struct smt_run *r)
     return failures;
 }
 
+/* The home guard (cm_spell refuses a host path under $HOME outside the
+ * checkout) needs a resolved home. Run the sensor through env(1) with HOME
+ * unset, relative or naming no directory: each run must refuse with the
+ * guard's reason and leave no manifest behind, never spell a path under the
+ * real home as @sys/<abs>. */
+static bool smt_home_refuses(const char *root, const char *out,
+                             const char *const *env_args)
+{
+    const char *argv[24];
+    size_t k = 0;
+    char message[4096];
+    bool timed_out = false;
+    struct stat sb;
+    argv[k++] = "env";
+    for (size_t i = 0; env_args[i] != NULL; i++)
+        argv[k++] = env_args[i];
+    argv[k++] = SMT_SENSOR;
+    argv[k++] = "emit";
+    argv[k++] = "--root";
+    argv[k++] = root;
+    argv[k++] = "--source";
+    argv[k++] = "home.c";
+    argv[k++] = "--out";
+    argv[k++] = out;
+    argv[k++] = "--";
+    argv[k++] = "-std=c23";
+    argv[k] = NULL;
+    int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                               60000, &timed_out);
+    bool refused = !timed_out && rc != 0 &&
+                   strstr(message, "home directory unresolved") != NULL;
+    bool absent = stat(out, &sb) != 0 && errno == ENOENT;
+    if (!refused || !absent)
+        printf("  home guard (env %s %s): rc=%d absent=%d: %s\n", env_args[1],
+               env_args[2] != NULL ? env_args[2] : "", rc,
+               (int)absent, message);
+    return refused && absent;
+}
+
+static int smt_t_sensor_home_guard(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, out[PATH_MAX];
+    static const char *const unset[] = {"-u", "HOME", NULL};
+    static const char *const relative[] = {"-u", "HOME", "HOME=relative/home",
+                                           NULL};
+    static const char *const missing[] = {"-u", "HOME",
+                                          "HOME=/nonexistent/smt-home", NULL};
+    TEST_CASE("semantic_sensor: refuses without a resolved home and writes nothing") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_home") != NULL);
+        ASSERT(smt_write(dir, "home.c", "int home_value(void) { return 1; }\n"));
+        (void)snprintf(out, sizeof(out), "%s/home.bin", dir);
+        ASSERT(smt_home_refuses(dir, out, unset));
+        ASSERT(smt_home_refuses(dir, out, relative));
+        ASSERT(smt_home_refuses(dir, out, missing));
+    } TEST_END
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
 #if defined(__APPLE__)
 /* Exercise the Apple libclang type-spelling adapter with facts enabled, so
  * these assertions also require a verified, nonzero producer identity. */
@@ -1366,6 +1427,7 @@ int test_semantic_sensor(void)
     }
     failures += smt_t_sensor_invariance(&r);
     failures += smt_t_sensor_seeds(&r);
+    failures += smt_t_sensor_home_guard();
 #if defined(__APPLE__)
     failures += smt_t_darwin_types();
     failures += smt_t_darwin_refusals();

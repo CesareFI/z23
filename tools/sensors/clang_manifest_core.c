@@ -104,8 +104,16 @@ bool cm_core_init(struct cm_core *c, const char *root)
     if (realpath(root, c->root) == NULL || chdir(c->root) != 0)
         return cm_fail(c, "cannot enter root %s", root);
     c->root_len = strlen(c->root);
-    if (home != NULL && home[0] == '/' && realpath(home, c->home) != NULL)
-        c->home_len = strlen(c->home);
+    /* cm_spell refuses a host path under the home directory; with no
+     * resolved home it would spell such a path @sys/<abs> and write the
+     * host's user name into the manifest. Refuse before any artifact. */
+    if (home == NULL || home[0] != '/' || realpath(home, c->home) == NULL)
+        return cm_fail(c, "home directory unresolved: cannot guard host-path "
+                          "leakage (HOME %s)",
+                       home == NULL ? "unset"
+                                    : home[0] != '/' ? "not absolute"
+                                                     : "does not resolve");
+    c->home_len = strlen(c->home);
     c->b = vcs_semantic_builder_v1_new();
     return c->b != NULL || cm_fail(c, "cannot create the manifest builder");
 }

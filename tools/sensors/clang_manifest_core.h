@@ -134,7 +134,8 @@ struct cm_identity {
 
 /* ---- lifecycle and helpers ------------------------------------------------ */
 
-/* Enter root (chdir), record $HOME, create the builder. */
+/* Enter root (chdir), resolve $HOME (refused when unset, relative or
+ * unresolvable), create the builder. */
 bool cm_core_init(struct cm_core *c, const char *root);
 void cm_core_free(struct cm_core *c);
 bool cm_fail(struct cm_core *c, const char *fmt, ...)
