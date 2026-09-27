@@ -1,0 +1,719 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_verify_attest — proof that an object is reused only on the word of a
+ * separate verifier account, and that every other word is refused by name.
+ *
+ * The attacker here runs as the same account as the proof. It can write any
+ * cache, read the per-box proof signer key, and hand the proof any bytes it
+ * likes. Each negative below is a record or a key file that attacker can
+ * produce; each must be refused with its own token. The one admit is a
+ * record sealed with a key the fixture holds and the trust root pins.
+ *
+ * Fixtures live under test-tmp/ with XDG_STATE_HOME redirected into it, so
+ * no assertion reads or writes the operator's real signing key, and no
+ * assertion depends on whether this host has a verifier installed. */
+
+#include "test/test_core.h"
+
+#include "base/hex.h"
+#include "base/safe_alloc.h"
+#include "crypto/ed25519.h"
+#include "dev_proof_signer.h"
+#include "sha3/sha3.h"
+#include "verify_attest.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
+/* Repeated verbatim from verify_attest.c on purpose: a test that asks the
+ * subject for its own domain string cannot notice the string changing. */
+#define VA_SIGN_DOMAIN "zcl.verify_attest.sig.v1"
+#define VA_SIGN_DOMAIN_BYTES (sizeof(VA_SIGN_DOMAIN)) /* includes the NUL */
+#define VA_ENV "ZCL_TEST_VERIFY_ATTEST_PUBKEY"
+
+#define VA_TOOLCHAIN "gcc-13.2.0-x86_64-linux-gnu"
+#define VA_ARGV "-std=c2x -O2 -Iinclude -c src/a.c -o build/a.o"
+#define VA_CWD "/src"
+#define VA_OBJ "\x7f" "ELF-object-bytes"
+
+static char g_va_state[PATH_MAX];
+static char g_va_saved_xdg[PATH_MAX];
+static bool g_va_had_xdg;
+
+static const uint8_t k_va_verifier_seed[32] = {
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+};
+static const uint8_t k_va_stranger_seed[32] = {
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+};
+
+static void va_isolate(const char *tag)
+{
+    char base[PATH_MAX - 64];
+    test_make_tmpdir(base, sizeof(base), "verify_attest", tag);
+    (void)snprintf(g_va_state, sizeof(g_va_state), "%s/state", base);
+    if (!g_va_had_xdg && getenv("XDG_STATE_HOME")) {
+        g_va_had_xdg = true;
+        (void)snprintf(g_va_saved_xdg, sizeof(g_va_saved_xdg), "%s",
+                       getenv("XDG_STATE_HOME"));
+    }
+    setenv("XDG_STATE_HOME", g_va_state, 1);
+    unsetenv(VA_ENV);
+}
+
+static void va_restore(void)
+{
+    if (g_va_had_xdg)
+        setenv("XDG_STATE_HOME", g_va_saved_xdg, 1);
+    else
+        unsetenv("XDG_STATE_HOME");
+    unsetenv(VA_ENV);
+}
+
+static struct zcl_verify_attest_text va_text(const char *s)
+{
+    struct zcl_verify_attest_text t = {s, strlen(s)};
+    return t;
+}
+
+static void va_obj_hash(uint8_t out[32])
+{
+    zcl_sha3_256((const unsigned char *)VA_OBJ, sizeof(VA_OBJ) - 1u, out);
+}
+
+static struct zcl_verify_attest_record va_record(void)
+{
+    struct zcl_verify_attest_record r;
+    memset(&r, 0, sizeof(r));
+    r.toolchain_id = va_text(VA_TOOLCHAIN);
+    r.argv_norm = va_text(VA_ARGV);
+    r.recorded_cwd = va_text(VA_CWD);
+    memset(r.pp_sha3, 0x01, sizeof(r.pp_sha3));
+    memset(r.closure_sha3, 0x02, sizeof(r.closure_sha3));
+    va_obj_hash(r.obj_sha3);
+    memset(r.dep_sha3, 0x03, sizeof(r.dep_sha3));
+    memset(r.stderr_sha3, 0x04, sizeof(r.stderr_sha3));
+    r.exit_code = 0;
+    return r;
+}
+
+static struct zcl_verify_attest_expected va_expected(void)
+{
+    struct zcl_verify_attest_expected e;
+    memset(&e, 0, sizeof(e));
+    e.toolchain_id = va_text(VA_TOOLCHAIN);
+    e.argv_norm = va_text(VA_ARGV);
+    memset(e.pp_sha3, 0x01, sizeof(e.pp_sha3));
+    return e;
+}
+
+static void va_pub(const uint8_t seed[32], uint8_t pub[32])
+{
+    uint8_t secret[32];
+    ed25519_keypair(pub, secret, seed);
+}
+
+/* A trust root pinned to the fixture verifier, excluding `box`. */
+static struct zcl_verify_attest_trust_root va_root(const uint8_t box[32])
+{
+    struct zcl_verify_attest_trust_root root;
+    memset(&root, 0, sizeof(root));
+    root.loaded = true;
+    va_pub(k_va_verifier_seed, root.verifier_pubkey);
+    root.box.known = true;
+    root.box.present = box != NULL;
+    if (box)
+        memcpy(root.box.pubkey, box, 32);
+    return root;
+}
+
+static struct zcl_verify_attest_decision va_admit(
+    const uint8_t *rec, size_t len,
+    const struct zcl_verify_attest_expected *e,
+    const struct zcl_verify_attest_trust_root *root)
+{
+    return zcl_verify_attest_admit(rec, len, (const uint8_t *)VA_OBJ,
+                                   sizeof(VA_OBJ) - 1u, e, root);
+}
+
+static bool va_refused(struct zcl_verify_attest_decision d, const char *why)
+{
+    return d.verdict == ZCL_VERIFY_ATTEST_REFUSE && d.reason &&
+           strcmp(d.reason, why) == 0;
+}
+
+/* Replace the trailer of a sealed record with `pub` and a signature over
+ * the body made by `sign`, exactly as a hostile producer would. */
+static void va_resign(uint8_t *rec, size_t len, const uint8_t seed[32],
+                      const uint8_t claimed_pub[32])
+{
+    size_t body = len - 96u;
+    uint8_t *msg = zcl_malloc(VA_SIGN_DOMAIN_BYTES + body, "va-resign");
+    uint8_t pub[32], secret[32];
+    if (!msg)
+        return;
+    ed25519_keypair(pub, secret, seed);
+    memcpy(msg, VA_SIGN_DOMAIN, VA_SIGN_DOMAIN_BYTES);
+    memcpy(msg + VA_SIGN_DOMAIN_BYTES, rec, body);
+    ed25519_sign(rec + body + 32u, msg, VA_SIGN_DOMAIN_BYTES + body, seed,
+                 pub);
+    memcpy(rec + body, claimed_pub ? claimed_pub : pub, 32);
+    free(msg);
+}
+
+static bool va_write(const char *path, const char *data, unsigned mode)
+{
+    FILE *f = fopen(path, "wb");
+    size_t len = strlen(data);
+    bool ok = f && (len == 0 || fwrite(data, 1, len, f) == len);
+    if (f) ok = fclose(f) == 0 && ok;
+#if !defined(_WIN32)
+    if (ok) ok = chmod(path, (mode_t)mode) == 0;
+#else
+    (void)mode;
+#endif
+    return ok;
+}
+
+static struct zcl_verify_attest_box_key va_no_box(void)
+{
+    struct zcl_verify_attest_box_key box = {.known = true, .present = false};
+    return box;
+}
+
+/* ── 1. canonical encoding ─────────────────────────────────────────────── */
+
+/* The body of va_record(), spelled out by hand. Any change to field order,
+ * width, endianness or the schema string changes these bytes. */
+static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
+{
+    static const char schema[] = "zcl.verify_attest.v1";
+    const char *texts[3] = {VA_TOOLCHAIN, VA_ARGV, VA_CWD};
+    size_t n = 0;
+    uint8_t obj[32];
+    if (cap < 2u + 20u + 3u * 4u + 128u + 5u * 32u + 4u)
+        return false;
+    out[n++] = 20u;
+    out[n++] = 0u;
+    memcpy(out + n, schema, 20u);
+    n += 20u;
+    for (size_t i = 0; i < 3; i++) {
+        size_t tl = strlen(texts[i]);
+        out[n++] = (uint8_t)tl;
+        out[n++] = 0u;
+        out[n++] = 0u;
+        out[n++] = 0u;
+        memcpy(out + n, texts[i], tl);
+        n += tl;
+    }
+    for (uint8_t fill = 1; fill <= 5; fill++) {
+        if (fill == 3) {
+            va_obj_hash(obj);
+            memcpy(out + n, obj, 32);
+        } else {
+            memset(out + n, fill < 3 ? fill : fill - 1, 32);
+        }
+        n += 32u;
+    }
+    memset(out + n, 0, 4);
+    n += 4u;
+    *len = n;
+    return true;
+}
+
+/* Pinned SHA3-256 of the hand-built body above and of the store key for
+ * (VA_TOOLCHAIN, VA_ARGV, pp=0x01..). Recomputing either is a format
+ * change and needs a new schema string. */
+#define VA_BODY_SHA3 \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+#define VA_STORE_KEY \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+
+static int test_va_encoding_vector(void)
+{
+    int failures = 0;
+    uint8_t want[512];
+    size_t want_len = 0;
+    uint8_t *body = NULL;
+    size_t body_len = 0;
+    uint8_t digest[32];
+    char hex[65];
+    const char *why = NULL;
+    TEST("verify attest: the canonical body is fixed bytes with a fixed "
+         "hash, and the store key is fixed too") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        ASSERT(va_expected_body(want, sizeof(want), &want_len));
+        ASSERT(zcl_verify_attest_body_encode(&r, &body, &body_len, &why));
+        ASSERT(body_len == want_len);
+        ASSERT(memcmp(body, want, want_len) == 0);
+        zcl_sha3_256(body, body_len, digest);
+        zcl_hex_encode(digest, 32, hex);
+        if (strcmp(hex, VA_BODY_SHA3) != 0)
+            printf("body sha3 = %s ", hex);
+        ASSERT_STR_EQ(hex, VA_BODY_SHA3);
+        zcl_verify_attest_store_key_hex(&e.toolchain_id, &e.argv_norm,
+                                        e.pp_sha3, hex);
+        if (strcmp(hex, VA_STORE_KEY) != 0)
+            printf("store key = %s ", hex);
+        ASSERT_STR_EQ(hex, VA_STORE_KEY);
+        /* The store key binds every input: one changed byte, new key. */
+        char other[65];
+        e.pp_sha3[31] ^= 1u;
+        zcl_verify_attest_store_key_hex(&e.toolchain_id, &e.argv_norm,
+                                        e.pp_sha3, other);
+        ASSERT(strcmp(other, hex) != 0);
+        PASS();
+    } _test_next:;
+    free(body);
+    return failures;
+}
+
+static int test_va_parse_strict(void)
+{
+    int failures = 0;
+    uint8_t *rec = NULL, *body = NULL;
+    size_t len = 0, body_len = 0;
+    const char *why = NULL;
+    struct zcl_verify_attest_signed parsed;
+    TEST("verify attest: parse is strict and re-encodes to the same bytes") {
+        struct zcl_verify_attest_record r = va_record();
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        ASSERT(zcl_verify_attest_parse(rec, len, &parsed, &why));
+        ASSERT(parsed.body_len == len - 96u);
+        ASSERT(zcl_verify_attest_body_encode(&parsed.record, &body,
+                                             &body_len, &why));
+        ASSERT(body_len == parsed.body_len);
+        ASSERT(memcmp(body, rec, body_len) == 0);
+        ASSERT(!zcl_verify_attest_parse(rec, len - 1u, &parsed, &why));
+        ASSERT_STR_EQ(why, ZCL_VERIFY_ATTEST_WHY_MALFORMED);
+        uint8_t *longer = zcl_malloc(len + 1u, "va-longer");
+        ASSERT(longer);
+        memcpy(longer, rec, len);
+        longer[len] = 0;
+        bool parsed_long = zcl_verify_attest_parse(longer, len + 1u, &parsed,
+                                                   &why);
+        free(longer);
+        ASSERT(!parsed_long);
+        ASSERT_STR_EQ(why, ZCL_VERIFY_ATTEST_WHY_MALFORMED);
+        /* A zero-length toolchain is malformed, not a wildcard. */
+        r.toolchain_id = va_text("");
+        free(body);
+        body = NULL;
+        ASSERT(!zcl_verify_attest_body_encode(&r, &body, &body_len, &why));
+        ASSERT_STR_EQ(why, ZCL_VERIFY_ATTEST_WHY_MALFORMED);
+        PASS();
+    } _test_next:;
+    free(rec);
+    free(body);
+    return failures;
+}
+
+/* ── 2. admission ──────────────────────────────────────────────────────── */
+
+static int test_va_admit(void)
+{
+    int failures = 0;
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    TEST("verify attest: a record sealed by the pinned verifier admits") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        struct zcl_verify_attest_decision d = va_admit(rec, len, &e, &root);
+        ASSERT(d.verdict == ZCL_VERIFY_ATTEST_ADMIT);
+        ASSERT(d.reason == NULL);
+        PASS();
+    } _test_next:;
+    free(rec);
+    return failures;
+}
+
+/* One sealed record, one mutation, one expected refusal token. */
+static int va_refuse_case(const char *name,
+                          struct zcl_verify_attest_record r,
+                          struct zcl_verify_attest_expected e,
+                          size_t flip_at, const char *want)
+{
+    int failures = 0;
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    TEST(name) {
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        if (flip_at != SIZE_MAX)
+            rec[flip_at < len ? flip_at : len - 1u] ^= 0x01u;
+        ASSERT(va_refused(va_admit(rec, len, &e, &root), want));
+        PASS();
+    } _test_next:;
+    free(rec);
+    return failures;
+}
+
+static int test_va_refuse_fields(void)
+{
+    int failures = 0;
+    struct zcl_verify_attest_record r = va_record();
+    struct zcl_verify_attest_expected e = va_expected();
+    failures += va_refuse_case("verify attest: a flipped signature byte "
+                               "refuses attest_signature_invalid",
+                               r, e, SIZE_MAX - 1u,
+                               ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID);
+    failures += va_refuse_case("verify attest: an edited body under the "
+                               "old signature refuses attest_signature_invalid",
+                               r, e, 30u,
+                               ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID);
+    e.toolchain_id = va_text("gcc-14.1.0-x86_64-linux-gnu");
+    failures += va_refuse_case("verify attest: another compiler refuses "
+                               "attest_toolchain_mismatch",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH);
+    e = va_expected();
+    e.argv_norm = va_text("-std=c2x -O0 -Iinclude -c src/a.c -o build/a.o");
+    failures += va_refuse_case("verify attest: other flags refuse "
+                               "attest_argv_mismatch",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_ARGV_MISMATCH);
+    e = va_expected();
+    e.pp_sha3[0] ^= 0x80u;
+    failures += va_refuse_case("verify attest: other preprocessed input "
+                               "refuses attest_pp_mismatch",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH);
+    e = va_expected();
+    r.obj_sha3[5] ^= 0x10u;
+    failures += va_refuse_case("verify attest: an object that is not the "
+                               "attested bytes refuses attest_obj_hash_mismatch",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH);
+    r = va_record();
+    r.exit_code = 1;
+    failures += va_refuse_case("verify attest: a failed compile refuses "
+                               "attest_exit_nonzero",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
+    /* Byte 21 is the schema's last character: "v1" becomes "v0". */
+    failures += va_refuse_case("verify attest: another schema refuses "
+                               "attest_schema_unknown",
+                               va_record(), e, 21u,
+                               ZCL_VERIFY_ATTEST_WHY_SCHEMA_UNKNOWN);
+    return failures;
+}
+
+static int test_va_refuse_signers(void)
+{
+    int failures = 0;
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    uint8_t box_pub[32], box_sig[64], verifier_pub[32];
+    TEST("verify attest: a record signed by the per-box proof signer is "
+         "refused by name, whatever key it claims") {
+        va_isolate("box_signer");
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        /* The real per-box signer, the key the proof account can read. */
+        size_t body = len - 96u;
+        uint8_t *msg = zcl_malloc(VA_SIGN_DOMAIN_BYTES + body, "va-msg");
+        ASSERT(msg);
+        memcpy(msg, VA_SIGN_DOMAIN, VA_SIGN_DOMAIN_BYTES);
+        memcpy(msg + VA_SIGN_DOMAIN_BYTES, rec, body);
+        bool signed_ok = zcl_dev_proof_signer_sign(
+            msg, VA_SIGN_DOMAIN_BYTES + body, box_pub, box_sig, &why);
+        free(msg);
+        ASSERT(signed_ok);
+        struct zcl_verify_attest_trust_root root = va_root(box_pub);
+        memcpy(rec + body, box_pub, 32);
+        memcpy(rec + body + 32u, box_sig, 64);
+        ASSERT(va_refused(va_admit(rec, len, &e, &root),
+                          ZCL_VERIFY_ATTEST_WHY_SIGNED_BY_BOX));
+        /* Same box signature, trailer claiming the verifier's key. */
+        va_pub(k_va_verifier_seed, verifier_pub);
+        memcpy(rec + body, verifier_pub, 32);
+        ASSERT(va_refused(va_admit(rec, len, &e, &root),
+                          ZCL_VERIFY_ATTEST_WHY_SIGNED_BY_BOX));
+        /* A stranger's key is not the verifier. */
+        va_resign(rec, len, k_va_stranger_seed, NULL);
+        ASSERT(va_refused(va_admit(rec, len, &e, &root),
+                          ZCL_VERIFY_ATTEST_WHY_SIGNER_NOT_VERIFIER));
+        /* A trust root that pins the box key itself admits nothing. */
+        memcpy(root.verifier_pubkey, box_pub, 32);
+        ASSERT(va_refused(va_admit(rec, len, &e, &root),
+                          ZCL_VERIFY_ATTEST_WHY_KEY_IS_BOX_SIGNER));
+        /* No trust root at all is the normal state today. */
+        root.loaded = false;
+        ASSERT(va_refused(va_admit(rec, len, &e, &root),
+                          ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY));
+        ASSERT(va_refused(va_admit(rec, len, &e, NULL),
+                          ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY));
+        va_restore();
+        PASS();
+    } _test_next:;
+    free(rec);
+    return failures;
+}
+
+/* ── 3. trust root: pure policy ─────────────────────────────────────────── */
+
+static const char *va_chain(uint32_t fuid, uint32_t fmode, uint32_t duid,
+                            uint32_t dmode, bool sticky_ok, uint32_t trusted)
+{
+    struct zcl_verify_attest_path_entry chain[3] = {
+        {.uid = fuid, .mode = fmode, .is_regular = true},
+        {.uid = duid, .mode = dmode, .is_dir = true},
+        {.uid = 0, .mode = 0755, .is_dir = true},
+    };
+    struct zcl_verify_attest_path_policy policy = {
+        .trusted_uid = trusted, .allow_sticky_root = sticky_ok};
+    return zcl_verify_attest_path_check(chain, 3, &policy);
+}
+
+static int test_va_path_policy(void)
+{
+    int failures = 0;
+    TEST("verify attest: the key path policy names every ownership and "
+         "mode refusal") {
+        ASSERT(va_chain(0, 0644, 0, 0755, false, 0) == NULL);
+        ASSERT_STR_EQ(va_chain(1000, 0644, 0, 0755, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_KEY_NOT_ROOT_OWNED);
+        ASSERT_STR_EQ(va_chain(0, 0664, 0, 0755, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_KEY_WRITABLE);
+        ASSERT_STR_EQ(va_chain(0, 0646, 0, 0755, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_KEY_WRITABLE);
+        ASSERT_STR_EQ(va_chain(0, 0644, 1000, 0755, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_DIR_NOT_ROOT_OWNED);
+        ASSERT_STR_EQ(va_chain(0, 0644, 0, 0775, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE);
+        ASSERT_STR_EQ(va_chain(0, 0644, 0, 0757, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE);
+        /* Sticky root-owned tmpfs parents only under the test policy. */
+        ASSERT_STR_EQ(va_chain(0, 0644, 0, 01777, false, 0),
+                      ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE);
+        ASSERT(va_chain(0, 0644, 0, 01777, true, 0) == NULL);
+        ASSERT_STR_EQ(va_chain(0, 0644, 1000, 01777, true, 1000),
+                      ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE);
+        /* A trusted non-root owner is the test policy, never production. */
+        ASSERT(va_chain(1000, 0644, 1000, 0700, false, 1000) == NULL);
+        ASSERT_STR_EQ(va_chain(1001, 0644, 0, 0755, false, 1000),
+                      ZCL_VERIFY_ATTEST_WHY_KEY_NOT_ROOT_OWNED);
+        struct zcl_verify_attest_path_entry odd[2] = {
+            {.uid = 0, .mode = 0644, .is_regular = false},
+            {.uid = 0, .mode = 0755, .is_dir = true},
+        };
+        struct zcl_verify_attest_path_policy prod = {0};
+        ASSERT_STR_EQ(zcl_verify_attest_path_check(odd, 2, &prod),
+                      ZCL_VERIFY_ATTEST_WHY_KEY_NOT_REGULAR);
+        odd[0].is_regular = true;
+        odd[1].is_dir = false;
+        ASSERT_STR_EQ(zcl_verify_attest_path_check(odd, 2, &prod),
+                      ZCL_VERIFY_ATTEST_WHY_DIR_NOT_DIRECTORY);
+        ASSERT_STR_EQ(zcl_verify_attest_path_check(odd, 0, &prod),
+                      ZCL_VERIFY_ATTEST_WHY_ARGUMENTS);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_va_pubkey_parse(void)
+{
+    int failures = 0;
+    uint8_t want[32], got[32];
+    char hex[66];
+    TEST("verify attest: a public key file is 64 lowercase hex digits and "
+         "at most one newline") {
+        va_pub(k_va_verifier_seed, want);
+        zcl_hex_encode(want, 32, hex);
+        ASSERT(zcl_verify_attest_pubkey_parse((const uint8_t *)hex, 64, got));
+        ASSERT(memcmp(got, want, 32) == 0);
+        hex[64] = '\n';
+        hex[65] = 0;
+        ASSERT(zcl_verify_attest_pubkey_parse((const uint8_t *)hex, 65, got));
+        ASSERT(!zcl_verify_attest_pubkey_parse((const uint8_t *)hex, 63, got));
+        ASSERT(!zcl_verify_attest_pubkey_parse((const uint8_t *)"\n\n", 2,
+                                               got));
+        char upper[65];
+        memcpy(upper, hex, 64);
+        upper[64] = 0;
+        for (size_t i = 0; i < 64; i++)
+            if (upper[i] >= 'a' && upper[i] <= 'f')
+                upper[i] = (char)(upper[i] - 'a' + 'A');
+        ASSERT(!zcl_verify_attest_pubkey_parse((const uint8_t *)upper, 64,
+                                               got));
+        char zero[65];
+        memset(zero, '0', 64);
+        zero[64] = 0;
+        ASSERT(!zcl_verify_attest_pubkey_parse((const uint8_t *)zero, 64,
+                                               got));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 4. trust root: loader on real files ────────────────────────────────── */
+
+#if !defined(_WIN32)
+static bool va_load_refuses(const char *path, bool via_env,
+                            const struct zcl_verify_attest_box_key *box,
+                            const char *want)
+{
+    struct zcl_verify_attest_trust_root root;
+    const char *why = NULL;
+    if (via_env)
+        setenv(VA_ENV, path, 1);
+    else
+        unsetenv(VA_ENV);
+    bool ok = zcl_verify_attest_trust_root_load(via_env ? NULL : path, box,
+                                                &root, &why);
+    unsetenv(VA_ENV);
+    if (ok || root.loaded || !why || strcmp(why, want) != 0) {
+        printf("[load %s -> %s, want %s] ", path, why ? why : "(admit)",
+               want);
+        return false;
+    }
+    return true;
+}
+
+static int test_va_loader(void)
+{
+    int failures = 0;
+    char dir[PATH_MAX - 128], key[PATH_MAX], sub[PATH_MAX], subkey[PATH_MAX];
+    char hex[66];
+    uint8_t pub[32], box_sig[64], box_pub[32];
+    const char *why = NULL;
+    TEST("verify attest: the loader admits only a pinned key file and "
+         "refuses every other file by name") {
+        va_isolate("loader");
+        ASSERT(zcl_verify_attest_test_override_compiled());
+        struct zcl_verify_attest_box_key none = va_no_box();
+        (void)snprintf(dir, sizeof(dir), "%s", g_va_state);
+        ASSERT(mkdir(dir, 0700) == 0 || errno == EEXIST);
+        (void)snprintf(key, sizeof(key), "%s/verifier.pub", dir);
+        /* Missing is the normal state and is named. */
+        ASSERT(va_load_refuses(key, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY));
+        va_pub(k_va_verifier_seed, pub);
+        zcl_hex_encode(pub, 32, hex);
+        hex[64] = '\n';
+        hex[65] = 0;
+        ASSERT(va_write(key, hex, 0644));
+        /* Production policy: a file this account owns is not root's. */
+        if (geteuid() != 0)
+            ASSERT(va_load_refuses(key, false, &none,
+                                   ZCL_VERIFY_ATTEST_WHY_KEY_NOT_ROOT_OWNED));
+        ASSERT(va_load_refuses("relative/verifier.pub", false, &none,
+                               ZCL_VERIFY_ATTEST_WHY_KEY_PATH_NOT_ABSOLUTE));
+        /* Test override: the same file, owned by this account, loads. */
+        struct zcl_verify_attest_trust_root root;
+        setenv(VA_ENV, key, 1);
+        bool loaded = zcl_verify_attest_trust_root_load(NULL, &none, &root,
+                                                        &why);
+        unsetenv(VA_ENV);
+        ASSERT(loaded && root.loaded);
+        ASSERT(memcmp(root.verifier_pubkey, pub, 32) == 0);
+        struct zcl_verify_attest_box_key unknown = {0};
+        ASSERT(va_load_refuses(key, true, &unknown,
+                               ZCL_VERIFY_ATTEST_WHY_BOX_KEY_UNKNOWN));
+        ASSERT(chmod(key, 0664) == 0);
+        ASSERT(va_load_refuses(key, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_KEY_WRITABLE));
+        ASSERT(chmod(key, 0646) == 0);
+        ASSERT(va_load_refuses(key, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_KEY_WRITABLE));
+        ASSERT(chmod(key, 0644) == 0);
+        (void)snprintf(sub, sizeof(sub), "%s/open", dir);
+        ASSERT(mkdir(sub, 0700) == 0);
+        (void)snprintf(subkey, sizeof(subkey), "%s/verifier.pub", sub);
+        ASSERT(va_write(subkey, hex, 0644));
+        ASSERT(chmod(sub, 0770) == 0);
+        ASSERT(va_load_refuses(subkey, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE));
+        ASSERT(chmod(sub, 0702) == 0);
+        ASSERT(va_load_refuses(subkey, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE));
+        ASSERT(chmod(sub, 0700) == 0);
+        ASSERT(va_write(subkey, "not a key\n", 0644));
+        ASSERT(va_load_refuses(subkey, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_KEY_MALFORMED));
+        (void)snprintf(subkey, sizeof(subkey), "%s/link.pub", sub);
+        ASSERT(symlink(key, subkey) == 0);
+        ASSERT(va_load_refuses(subkey, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_KEY_NOT_REGULAR));
+        /* A key file that names the per-box proof signer is refused. */
+        ASSERT(zcl_dev_proof_signer_sign((const uint8_t *)"x", 1, box_pub,
+                                         box_sig, &why));
+        struct zcl_verify_attest_box_key box = {.known = true,
+                                                .present = true};
+        memcpy(box.pubkey, box_pub, 32);
+        zcl_hex_encode(box_pub, 32, hex);
+        ASSERT(va_write(key, hex, 0644));
+        ASSERT(va_load_refuses(key, true, &box,
+                               ZCL_VERIFY_ATTEST_WHY_KEY_IS_BOX_SIGNER));
+        va_restore();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The default path is refused as missing on any host without a verifier;
+ * on a host with one installed it must load. Either way it never admits a
+ * file this account could have written. */
+static int test_va_default_path(void)
+{
+    int failures = 0;
+    struct stat st;
+    const char *why = NULL;
+    TEST("verify attest: the default key path is missing or root-pinned") {
+        va_isolate("default_path");
+        struct zcl_verify_attest_box_key none = va_no_box();
+        struct zcl_verify_attest_trust_root root;
+        bool ok = zcl_verify_attest_trust_root_load(NULL, &none, &root, &why);
+        if (lstat(ZCL_VERIFY_ATTEST_DEFAULT_PUBKEY_PATH, &st) != 0) {
+            ASSERT(!ok);
+            ASSERT_STR_EQ(why, ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY);
+        } else if (ok) {
+            ASSERT(st.st_uid == 0);
+        }
+        va_restore();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
+int test_verify_attest(void)
+{
+    int failures = 0;
+    failures += test_va_encoding_vector();
+    failures += test_va_parse_strict();
+    failures += test_va_admit();
+    failures += test_va_refuse_fields();
+    failures += test_va_refuse_signers();
+    failures += test_va_path_policy();
+    failures += test_va_pubkey_parse();
+#if !defined(_WIN32)
+    failures += test_va_loader();
+    failures += test_va_default_path();
+#endif
+    va_restore();
+    return failures;
+}
