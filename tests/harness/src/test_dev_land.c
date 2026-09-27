@@ -109,6 +109,7 @@ static void dlx_isolate(const char *tag)
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
     unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
+    unsetenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS");
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
@@ -139,6 +140,7 @@ static void dlx_restore(void)
     unsetenv("ZCL_LAND_TEST_DIE_AFTER_PROOF");
     unsetenv("ZCL_LAND_TEST_REFUSE_OUTCOME_APPEND");
     unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
+    unsetenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS");
     unsetenv("ZCL_LAND_REGEN_MAKE_STUB");
     unsetenv("ZCL_LAND_REGEN_GATE_STUB_FAIL");
     unsetenv("ZCL_LAND_DRAIN_IDLE_SEC");
@@ -8107,28 +8109,36 @@ static bool dlx_qp_push_main(struct dlx_rig *rig, const char *path,
            dlx_git(rig->clone, back) == 0;
 }
 
-/* Submit A (the rig tip) then B, and run the beat that starts A. */
-static bool dlx_qp_start(struct dlx_rig *rig, const char *b_tip)
+/* Submit `tip` and require it to take land seq `seq`. */
+static bool dlx_qp_submit(struct dlx_rig *rig, const char *tip, int64_t seq)
 {
     struct dlx_call c;
-    bool ok;
-    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
-    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
-    dlx_submit(&c, rig, rig->tip);
-    ok = dlx_run(&c) && dlx_ok(&c) && dlx_int(&c, "seq") == 1;
-    dlx_end(&c);
-    if (!ok)
-        return false;
-    dlx_submit(&c, rig, b_tip);
-    ok = dlx_run(&c) && dlx_ok(&c) && dlx_int(&c, "seq") == 2;
+    dlx_submit(&c, rig, tip);
+    bool ok = dlx_run(&c) && dlx_ok(&c) && dlx_int(&c, "seq") == seq;
     dlx_end(&c);
     return ok;
 }
 
-/* One step; `state` is what the reply must name, `checked`/`conflicts`
- * what the precheck must report (-1: not asserted). */
-static bool dlx_qp_beat(const char *state, int64_t checked,
-                        int64_t conflicts)
+/* Submit `a_tip` (seq 1, the row that goes in flight) then B (seq 2). */
+static bool dlx_qp_start_a(struct dlx_rig *rig, const char *a_tip,
+                           const char *b_tip)
+{
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    return dlx_qp_submit(rig, a_tip, 1) && dlx_qp_submit(rig, b_tip, 2);
+}
+
+/* Submit A (the rig tip) then B. */
+static bool dlx_qp_start(struct dlx_rig *rig, const char *b_tip)
+{
+    return dlx_qp_start_a(rig, rig->tip, b_tip);
+}
+
+/* One step; `state` is what the reply must name, and `checked`,
+ * `conflicts` and `uncertain` what the precheck must report (-1: not
+ * asserted). */
+static bool dlx_qp_beat_u(const char *state, int64_t checked,
+                          int64_t conflicts, int64_t uncertain)
 {
     struct dlx_call c;
     dlx_begin(&c, "step");
@@ -8136,15 +8146,32 @@ static bool dlx_qp_beat(const char *state, int64_t checked,
               strcmp(dlx_str(&c, "state"), state) == 0 &&
               (checked < 0 || dlx_int(&c, "queued_prechecked") == checked) &&
               (conflicts < 0 ||
-               dlx_int(&c, "queued_conflicts") == conflicts);
+               dlx_int(&c, "queued_conflicts") == conflicts) &&
+              (uncertain < 0 ||
+               dlx_int(&c, "queued_uncertain") == uncertain);
     if (!ok)
-        printf("[step state=%s prechecked=%lld conflicts=%lld detail=%s] ",
+        printf("[step state=%s prechecked=%lld conflicts=%lld "
+               "uncertain=%lld detail=%s] ",
                dlx_str(&c, "state"),
                (long long)dlx_int(&c, "queued_prechecked"),
                (long long)dlx_int(&c, "queued_conflicts"),
+               (long long)dlx_int(&c, "queued_uncertain"),
                dlx_str(&c, "detail"));
     dlx_end(&c);
     return ok;
+}
+
+static bool dlx_qp_beat(const char *state, int64_t checked,
+                        int64_t conflicts)
+{
+    return dlx_qp_beat_u(state, checked, conflicts, -1);
+}
+
+/* Quiet string equality: these helpers scan every row, so a mismatch is
+ * the normal case, not a failure worth printing. */
+static bool dlx_qp_same(const char *got, const char *want)
+{
+    return got && want && strcmp(got, want) == 0;
 }
 
 /* True when `tip` is still a queued row at `attempt`. */
@@ -8157,7 +8184,7 @@ static bool dlx_qp_queued_has(const char *tip, int64_t attempt)
     const struct json_value *rows = dlx_arr(&c, "queued");
     for (size_t i = 0; rows && i < rows->num_children; i++) {
         const struct json_value *r = &rows->children[i];
-        if (dlx_eq_str(dlx_jstr(r, "tip"), tip) &&
+        if (dlx_qp_same(dlx_jstr(r, "tip"), tip) &&
             json_get_int(json_get(r, "attempt")) == attempt)
             found = true;
     }
@@ -8177,10 +8204,10 @@ static bool dlx_qp_outcome(const char *tip, const char *state,
     const struct json_value *rows = dlx_arr(&c, "outcomes");
     for (size_t i = 0; rows && i < rows->num_children; i++) {
         const struct json_value *r = &rows->children[i];
-        if (!dlx_eq_str(dlx_jstr(r, "tip"), tip))
+        if (!dlx_qp_same(dlx_jstr(r, "tip"), tip))
             continue;
-        found = dlx_eq_str(dlx_jstr(r, "state"), state) &&
-                dlx_eq_str(dlx_jstr(r, "dimension"), "rebase");
+        found = dlx_qp_same(dlx_jstr(r, "state"), state) &&
+                dlx_qp_same(dlx_jstr(r, "dimension"), "rebase");
         (void)snprintf(detail, cap, "%s", dlx_jstr(r, "detail"));
     }
     dlx_end(&c);
@@ -8435,8 +8462,311 @@ _test_next:;
     return failures;
 }
 
+/* A branch `name` off origin/main with two commits, `p1` = `b1` then
+ * `p2` = `b2`; the clone goes back to its own main afterwards. */
+static bool dlx_qp_chain(struct dlx_rig *rig, const char *name,
+                         const char *p1, const char *b1, const char *p2,
+                         const char *b2, char out[64])
+{
+    char first[64];
+    const char *to_branch[] = { "checkout", "--quiet", "-b", name,
+                                "origin/main", NULL };
+    const char *back[] = { "checkout", "--quiet", "main", NULL };
+    return dlx_git(rig->clone, to_branch) == 0 &&
+           dlx_write_dep(rig->clone, p1, b1) &&
+           dlx_commit_tree(rig->clone, "first", first) &&
+           dlx_write_dep(rig->clone, p2, b2) &&
+           dlx_commit_tree(rig->clone, "second", out) &&
+           dlx_git(rig->clone, back) == 0;
+}
+
+/* A merge-bearing branch `name` off origin/main: it and a side branch both
+ * add `path` with different bodies, and the merge resolves it by hand.
+ * Replayed commit by commit, the side's commit conflicts with the branch's
+ * own; the resolved tree does not. */
+static bool dlx_qp_merge_row(struct dlx_rig *rig, const char *name,
+                             const char *path, char out[64])
+{
+    char side[64], scratch[64];
+    const char *c = rig->clone;
+    (void)snprintf(side, sizeof(side), "%s-side", name);
+    const char *to_branch[] = { "checkout", "--quiet", "-b", name,
+                                "origin/main", NULL };
+    const char *merge[] = { "-c", "user.name=land", "-c",
+                            "user.email=land@z23.invalid", "merge",
+                            "--quiet", "--no-ff", "--no-edit",
+                            "--no-gpg-sign", side, NULL };
+    const char *back[] = { "checkout", "--quiet", "main", NULL };
+    if (!dlx_qp_branch(rig, side, path, "side\n", NULL, NULL, scratch) ||
+        dlx_git(c, to_branch) != 0 || !dlx_write_dep(c, path, "mine\n") ||
+        !dlx_commit_tree(c, "mine", scratch))
+        return false;
+    /* The merge must stop on the add/add conflict it is built around. */
+    if (dlx_git(c, merge) == 0)
+        return false;
+    return dlx_write_dep(c, path, "resolved\n") &&
+           dlx_commit_tree(c, "resolve", out) && dlx_git(c, back) == 0;
+}
+
+/* Give queued row `seq` the landing priority `prio` in queue.jsonl, the
+ * way a retried row keeps its original place ahead of later requests. */
+static bool dlx_qp_prioritise(long long seq, long long prio)
+{
+    static char text[65536];
+    char landdir[1200], qpath[1300], from[64], to[64];
+    size_t len = 0;
+    dlx_landdir(landdir, sizeof(landdir));
+    if (snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", landdir) >=
+            (int)sizeof(qpath) ||
+        !dlx_slurp(qpath, text, sizeof(text) - 1, &len))
+        return false;
+    text[len] = '\0';
+    (void)snprintf(from, sizeof(from), "\"seq\":%lld,\"priority_seq\":%lld,",
+                   seq, seq);
+    (void)snprintf(to, sizeof(to), "\"seq\":%lld,\"priority_seq\":%lld,",
+                   seq, prio);
+    char *at = strstr(text, from);
+    if (!at || strlen(from) != strlen(to))
+        return false;
+    memcpy(at, to, strlen(to));
+    return dlx_write(qpath, text);
+}
+
+/* True when the first precheck.log line naming `first` comes before the
+ * first line naming `second`. */
+static bool dlx_qp_log_before(const char *first, const char *second)
+{
+    static char text[262144];
+    char landdir[1200], path[1400];
+    size_t len = 0;
+    dlx_landdir(landdir, sizeof(landdir));
+    if (snprintf(path, sizeof(path), "%s/logs/precheck.log", landdir) >=
+            (int)sizeof(path) ||
+        !dlx_slurp(path, text, sizeof(text) - 1, &len))
+        return false;
+    text[len] = '\0';
+    const char *a = strstr(text, first), *b = strstr(text, second);
+    return a && b && a < b;
+}
+
+static int test_dev_land_queued_union_attr_kept(void)
+{
+    int failures = 0;
+    TEST("land: a queued row whose overlap main's own union merge attribute "
+         "settles is not ended, whatever the landing checkout declares") {
+        struct dlx_rig rig;
+        char m1[64], m2[64], a[64], b[64], detail[512], landwt[1300];
+        char attrs[1400];
+        dlx_isolate("qp_union");
+        ASSERT(dlx_rig_make(&rig, "qp_union_rig"));
+        ASSERT(dlx_qp_push_main(&rig, "u.txt", "base\n", m1));
+        ASSERT(dlx_qp_push_main(&rig, ".gitattributes", "u.txt merge=union\n",
+                                m1));
+        /* A, the row that goes in flight, drops the attribute, so the
+         * landing checkout it proves declares no union merge. */
+        ASSERT(dlx_qp_branch(&rig, "qp-a", ".gitattributes", "# none\n", NULL,
+                             NULL, a));
+        ASSERT(dlx_qp_branch(&rig, "qp-b", "u.txt", "base\nb\n", NULL, NULL,
+                             b));
+        ASSERT(dlx_qp_start_a(&rig, a, b));
+        ASSERT(dlx_qp_beat("started", 1, 0));
+        /* Main appends its own line where B appends: a conflict under the
+         * default merge, clean under main's union attribute, which is
+         * what a rebase onto main reads. */
+        ASSERT(dlx_qp_push_main(&rig, "u.txt", "base\nm\n", m2));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        ASSERT(dlx_qp_beat("started", 1, 0));
+        ASSERT(dlx_qp_queued_has(b, 1));
+        ASSERT(!dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT_EQ(dlx_qp_log_count(m2), 1);
+        /* The premise held: A proves on the new main with no union. */
+        ASSERT(dlx_qp_a_in_flight(m2));
+        dlx_land_wt(landwt, sizeof(landwt));
+        ASSERT(snprintf(attrs, sizeof(attrs), "%s/.gitattributes", landwt) <
+               (int)sizeof(attrs));
+        ASSERT(dlx_qp_file_has(attrs, "# none"));
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_queued_uncertain_backoff(void)
+{
+    int failures = 0;
+    TEST("land: a queued row that stays uncertain is asked three times per "
+         "main, then left for its real rebase until main moves") {
+        struct dlx_rig rig;
+        char b[64], m1[64], m2[64], detail[512];
+        dlx_isolate("qp_backoff");
+        ASSERT(dlx_rig_make(&rig, "qp_backoff_rig"));
+        ASSERT(dlx_qp_branch(&rig, "qp-b", "seed.txt", "mine\n", NULL, NULL,
+                             b));
+        ASSERT(dlx_qp_start(&rig, b));
+        ASSERT(dlx_qp_beat("started", 1, 0));
+        ASSERT(dlx_qp_push_main(&rig, "seed.txt", "theirs\n", m1));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        setenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL", "1", 1);
+        ASSERT(dlx_qp_beat_u("started", 1, 0, 1));
+        ASSERT(dlx_qp_beat_u("proving", 1, 0, 1));
+        ASSERT(dlx_qp_beat_u("proving", 1, 0, 1));
+        /* Three strikes on this main: no fourth replay, and one line says
+         * so. */
+        ASSERT(dlx_qp_beat_u("proving", 0, 0, 0));
+        unsetenv("ZCL_LAND_TEST_PRECHECK_TOOL_FAIL");
+        ASSERT(dlx_qp_beat_u("proving", 0, 0, 0));
+        ASSERT_EQ(dlx_qp_log_count("uncertain: merge-tree failed"), 3);
+        ASSERT_EQ(dlx_qp_log_count("not rechecked until main moves"), 1);
+        ASSERT(dlx_qp_queued_has(b, 1));
+        ASSERT(!dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        /* A new main is a new question. */
+        ASSERT(dlx_qp_push_main(&rig, "seed.txt", "theirs2\n", m2));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        ASSERT(dlx_qp_beat_u("started", 1, 1, 0));
+        ASSERT(dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT(strstr(detail, m2) != NULL);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_queued_priority_order(void)
+{
+    int failures = 0;
+    TEST("land: queued rows are checked in the order they will land, not "
+         "the order they were written") {
+        struct dlx_rig rig;
+        char b[64], c[64];
+        dlx_isolate("qp_order");
+        ASSERT(dlx_rig_make(&rig, "qp_order_rig"));
+        ASSERT(dlx_qp_branch(&rig, "qp-b", "b.txt", "mine\n", NULL, NULL, b));
+        ASSERT(dlx_qp_branch(&rig, "qp-c", "c.txt", "mine\n", NULL, NULL, c));
+        ASSERT(dlx_qp_start(&rig, b));
+        ASSERT(dlx_qp_submit(&rig, c, 3));
+        /* C keeps an earlier place in line than B (a retried row does). */
+        ASSERT(dlx_qp_prioritise(3, 1));
+        ASSERT(dlx_qp_beat("started", 2, 0));
+        ASSERT(dlx_qp_log_before("seq=3 ", "seq=2 "));
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_queued_deadline_left(void)
+{
+    int failures = 0;
+    TEST("land: the precheck stops at its per-beat deadline and leaves the "
+         "rows it did not reach unmarked for the next beat") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char b[64];
+        dlx_isolate("qp_deadline");
+        ASSERT(dlx_rig_make(&rig, "qp_deadline_rig"));
+        ASSERT(dlx_qp_branch(&rig, "qp-b", "b.txt", "mine\n", NULL, NULL, b));
+        ASSERT(dlx_qp_start(&rig, b));
+        setenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS", "0", 1);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "started");
+        ASSERT_EQ(dlx_int(&c, "queued_prechecked"), 0);
+        ASSERT_EQ(dlx_int(&c, "queued_uncertain"), 0);
+        ASSERT_EQ(dlx_int(&c, "queued_unchecked"), 1);
+        dlx_end(&c);
+        unsetenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS");
+        ASSERT_EQ(dlx_qp_log_count("deadline"), 1);
+        ASSERT(dlx_qp_queued_has(b, 1));
+        /* Unmarked: the next beat, on the same main, reaches it. */
+        ASSERT(dlx_qp_beat_u("proving", 1, 0, 0));
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_queued_chain(void)
+{
+    int failures = 0;
+    TEST("land: a multi-commit queued row is replayed commit on commit: a "
+         "commit building on an earlier one is clean, a later commit over "
+         "main's change is a conflict") {
+        struct dlx_rig rig;
+        char b[64], c[64], m1[64], detail[512];
+        dlx_isolate("qp_chain");
+        ASSERT(dlx_rig_make(&rig, "qp_chain_rig"));
+        /* B's second commit edits the file its first commit adds. */
+        ASSERT(dlx_qp_chain(&rig, "qp-b", "g.txt", "one\n", "g.txt", "two\n",
+                            b));
+        /* C's first commit is clean on any main; its second is not. */
+        ASSERT(dlx_qp_chain(&rig, "qp-c", "h.txt", "h\n", "seed.txt",
+                            "mine\n", c));
+        ASSERT(dlx_qp_start(&rig, b));
+        ASSERT(dlx_qp_submit(&rig, c, 3));
+        ASSERT(dlx_qp_beat("started", 2, 0));
+        ASSERT(dlx_qp_push_main(&rig, "seed.txt", "theirs\n", m1));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        ASSERT(dlx_qp_beat("started", 2, 1));
+        ASSERT(dlx_qp_queued_has(b, 1));
+        ASSERT(!dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT(dlx_qp_outcome(c, "conflict", detail, sizeof(detail)));
+        ASSERT(strstr(detail, "detected while queued") != NULL);
+        ASSERT(strstr(detail, "seed.txt") != NULL);
+        ASSERT(strstr(detail, "h.txt") == NULL);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_queued_merge_tip(void)
+{
+    int failures = 0;
+    TEST("land: a merge-bearing queued row is judged by its resolved tree, "
+         "the way the rebase that linearises it replays it") {
+        struct dlx_rig rig;
+        char b[64], c[64], m1[64], detail[512];
+        dlx_isolate("qp_mtip");
+        ASSERT(dlx_rig_make(&rig, "qp_mtip_rig"));
+        /* Commit by commit, B's two sides collide on f.txt; its merge
+         * settled that, and main never touches f.txt. */
+        ASSERT(dlx_qp_merge_row(&rig, "qp-b", "f.txt", b));
+        /* C is shaped the same on g.txt, and main adds g.txt too. */
+        ASSERT(dlx_qp_merge_row(&rig, "qp-c", "g.txt", c));
+        ASSERT(dlx_qp_start(&rig, b));
+        ASSERT(dlx_qp_submit(&rig, c, 3));
+        ASSERT(dlx_qp_beat("started", 2, 0));
+        ASSERT(dlx_qp_push_main(&rig, "g.txt", "theirs\n", m1));
+        ASSERT(dlx_qp_beat("rebased", -1, -1));
+        ASSERT(dlx_qp_beat("started", 2, 1));
+        ASSERT(dlx_qp_queued_has(b, 1));
+        ASSERT(!dlx_qp_outcome(b, "conflict", detail, sizeof(detail)));
+        ASSERT(dlx_qp_outcome(c, "conflict", detail, sizeof(detail)));
+        ASSERT(strstr(detail, "g.txt") != NULL);
+        ASSERT(strstr(detail, m1) != NULL);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
 /* (a) true conflict, (b) clean then lands, (c) regenerated artifacts only,
- * (d) tool failure, (e) main moving twice. */
+ * (d) tool failure, (e) main moving twice; then main's merge attributes,
+ * the uncertain backoff, priority order, the beat deadline, multi-commit
+ * chains and merge-bearing tips. */
 static int test_dev_land_queued_precheck_cases(void)
 {
     int failures = 0;
@@ -8445,6 +8775,12 @@ static int test_dev_land_queued_precheck_cases(void)
     failures += test_dev_land_queued_regen_only_kept();
     failures += test_dev_land_queued_tool_failure_kept();
     failures += test_dev_land_queued_main_moves_twice();
+    failures += test_dev_land_queued_union_attr_kept();
+    failures += test_dev_land_queued_uncertain_backoff();
+    failures += test_dev_land_queued_priority_order();
+    failures += test_dev_land_queued_deadline_left();
+    failures += test_dev_land_queued_chain();
+    failures += test_dev_land_queued_merge_tip();
     return failures;
 }
 
