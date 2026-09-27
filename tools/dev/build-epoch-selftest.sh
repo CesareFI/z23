@@ -1501,10 +1501,19 @@ for shim_tool in "${shim_tools[@]}"; do
 done
 SHIM_PATH="$SHIM_ROOT/programs:$SHIM_PATH_DIR"
 
-# Every compiler-identity derivation in this phase, through that PATH.
+# Every shim derivation and session below uses the same hermetic include
+# environment. An inherited include path or SDKROOT is a second, valid root
+# authority: it makes the deliberately empty driver look healthy and moves
+# the session's recheck away from the fixture's expected fingerprint.
+shim_env()
+{
+    env -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
+        -u COMPILER_PATH -u LIBRARY_PATH -u SDKROOT \
+        PATH="$SHIM_PATH" "$@"
+}
 shim_compiler_id()
 {
-    env PATH="$SHIM_PATH" "$@" "$KEY_TOOL" compiler-id "$SHIM_CC" "$SHIM_CC" "$ROOT"
+    shim_env "$@" "$KEY_TOOL" compiler-id "$SHIM_CC" "$SHIM_CC" "$ROOT"
 }
 
 # A4: the whole contract in two lines -- a fingerprint that cannot observe all
@@ -1566,7 +1575,7 @@ shim_acquire()
     local session="$root/epochs/$SHIM_EPOCH/.build-session"
     local lease="$root/epochs/$SHIM_EPOCH/.leases/selftest-$$"
     set_state "$SOURCE_A" "$MUTATION_A1"
-    env PATH="$SHIM_PATH" "$@" TMPDIR="$SHIM_TMP" STATE_FILE="$STATE" \
+    shim_env "$@" TMPDIR="$SHIM_TMP" STATE_FILE="$STATE" \
         "$SESSION_TOOL" acquire "$session" "$lease" \
         "$root" "$WORK/shim-candidates" 5 "$SOURCE_A" 1 "$MUTATION_A1" \
         "$SHIM_ID" "$SHIM_EPOCH" "$PROFILE" "$COMPILE_FLAGS" \
