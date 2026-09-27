@@ -1021,7 +1021,8 @@ static bool zv_fixture_make_dirs(const char *store)
 {
     char dir[4400];
     static const char *const subdirs[] = {
-        "manifests", "releases", "recipes", "attestations", "cas/sha3",
+        "manifests", "staging", "pins", "releases", "recipes",
+        "attestations", "cas/sha3",
     };
     for (size_t i = 0; i < sizeof(subdirs) / sizeof(subdirs[0]); i++) {
         snprintf(dir, sizeof(dir), "%s/%s", store, subdirs[i]);

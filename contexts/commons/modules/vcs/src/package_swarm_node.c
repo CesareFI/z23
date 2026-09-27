@@ -1100,7 +1100,7 @@ static void handle_data_manifest(struct vcs_swarm_engine *engine,
         res->rule = dl->rule;
         return;
     }
-    enum vcs_package_store_result sr = vcs_package_store_put_manifest(
+    enum vcs_package_store_result sr = vcs_package_store_put_manifest_resync(
         engine->store, data->bytes, data->bytes_len, NULL);
     if (sr != VCS_PACKAGE_STORE_OK) {
         req_finish(engine, dl, req, true, false);

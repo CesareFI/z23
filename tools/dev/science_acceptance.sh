@@ -458,6 +458,7 @@ sa_build_fixture() {
         "$REPO_ROOT/contexts/commons/modules/vcs/src/zcode_benchmark_receipt.c" \
         "$REPO_ROOT/contexts/commons/modules/vcs/src/vcs_object.c" \
         "$REPO_ROOT/contexts/commons/modules/vcs/src/package_store.c" \
+        "$REPO_ROOT/contexts/commons/modules/vcs/src/package_store_catalog.c" \
         "$REPO_ROOT/contexts/commons/modules/vcs/src/package_store_io.c" \
         "$REPO_ROOT/contexts/commons/modules/vcs/src/package_manifest.c" \
         "$REPO_ROOT/contexts/commons/modules/vcs/src/build_action.c" \
@@ -473,6 +474,7 @@ sa_build_fixture() {
         "$REPO_ROOT/platform/modules/base/src/result.c" \
         "$REPO_ROOT/platform/modules/base/src/cleanse.c" \
         "$REPO_ROOT/platform/modules/platform/src/clock.c" \
+        "$REPO_ROOT/platform/modules/platform/src/rng.c" \
         "$REPO_ROOT/platform/modules/json/src/json.c" \
         "$REPO_ROOT/platform/modules/util/src/hw_profile.c" \
         "$REPO_ROOT/platform/modules/util/src/spawn.c" \

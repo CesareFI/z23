@@ -71,6 +71,22 @@ static bool fc_fetch_chunk(struct vcs_package_store *dst,
     return true;
 }
 
+static bool fc_fetch_all_chunks(struct vcs_package_store *dst,
+                                struct vcs_package_store *src,
+                                const uint8_t root[32],
+                                const struct vcs_package_manifest *manifest,
+                                char *err, size_t err_cap)
+{
+    for (size_t i = 0; i < manifest->count; i++) {
+        const struct vcs_package_file *f = &manifest->files[i];
+        for (uint32_t c = 0; c < f->chunk_count; c++)
+            if (!fc_fetch_chunk(dst, src, root, (uint32_t)i, f->path, c,
+                                err, err_cap))
+                return false;
+    }
+    return true;
+}
+
 bool vcs_fastobj_carrier_fetch(struct vcs_package_store *dst,
                                struct vcs_package_store *src,
                                const uint8_t root[32],
@@ -102,6 +118,13 @@ bool vcs_fastobj_carrier_fetch(struct vcs_package_store *dst,
         (void)snprintf(err, err_cap,
                        "source manifest does not root to the given root");
     }
+    struct vcs_package_store_status prior;
+    bool already_tracked = ok &&
+        vcs_package_store_package_status(dst, root, &prior);
+    /* An existing manifest's no-op admission checks its present CAS paths.
+     * Repair verified missing bytes first, then require that strict check. */
+    if (already_tracked)
+        ok = fc_fetch_all_chunks(dst, src, root, &manifest, err, err_cap);
     uint8_t dst_root[32] = {0};
     if (ok) {
         enum vcs_package_store_result pr = vcs_package_store_put_manifest(
@@ -112,12 +135,8 @@ bool vcs_fastobj_carrier_fetch(struct vcs_package_store *dst,
             ok = false;
         }
     }
-    for (size_t i = 0; ok && i < manifest.count; i++) {
-        const struct vcs_package_file *f = &manifest.files[i];
-        for (uint32_t c = 0; ok && c < f->chunk_count; c++)
-            ok = fc_fetch_chunk(dst, src, root, (uint32_t)i, f->path, c,
-                                err, err_cap);
-    }
+    if (ok && !already_tracked)
+        ok = fc_fetch_all_chunks(dst, src, root, &manifest, err, err_cap);
     if (ok) {
         struct vcs_package_store_status status;
         /* bool return, not a store result code. */

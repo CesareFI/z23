@@ -319,10 +319,9 @@ bool vcs_proof_reuse_decide(const struct vcs_proof_receiver *r,
     if (class_cap && !classes)
         return ptr_refuse(out, VCS_PROOF_REUSE_WHY_ARGUMENTS);
     size_t n = 0;
-    for (size_t i = 0; i < r->count; i++) {
-        const struct pr_entry *e = &r->entries[i];
-        if (memcmp(e->input_key, l.input_key, VCS_PROOF_ROOT_BYTES) != 0)
-            continue;
+    for (size_t one = pr_entry_key_first(r, l.input_key); one;
+         one = r->entries[one - 1u].next_key) {
+        const struct pr_entry *e = &r->entries[one - 1u];
         if (n >= class_cap || n >= PTR_MAX_TICKETS)
             return ptr_refuse(out, VCS_PROOF_REUSE_WHY_CAPACITY);
         ptr_classify(&l, e, &classes[n++]);

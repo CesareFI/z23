@@ -250,9 +250,11 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
                                   const uint8_t preimage_root[32],
                                   struct vcs_component_proof_key_v1 *out);
 /* Rebuild a receiver from the ticket and checkpoint blobs in `store`: every
- * ticket is retained, then each issuer's checkpoints are replayed in
- * leaf_count order through vcs_proof_receiver_sync(). Other blobs are
- * counted in *skipped. */
+ * ticket is retained, then signed checkpoints are replayed in leaf-count and
+ * ancestry order through vcs_proof_receiver_sync(). Missing delta tickets or
+ * checkpoint ancestors refuse. Previously retained history must survive the
+ * rebuild. The caller's prior receiver remains intact on any failure and
+ * output counts are zero in that case. Unrelated blobs count as *skipped. */
 bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t *tickets, size_t *checkpoints,

@@ -19,6 +19,13 @@ struct pr_entry {
     uint64_t issuer_seq;
     bool covered;
     uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES];
+    size_t next_key;                    /* one-based index, zero ends chain */
+    size_t next_seq;
+};
+
+struct pr_bucket {
+    size_t head;                        /* one-based entry index */
+    size_t tail;
 };
 
 /* One signature-valid checkpoint: verified (it extended the prefix) or
@@ -47,6 +54,10 @@ struct vcs_proof_receiver {
     struct pr_entry *entries;
     size_t count;
     size_t cap;
+    size_t *roots;                      /* observation root -> entry */
+    struct pr_bucket *keys;            /* input key -> all entries */
+    struct pr_bucket *seqs;            /* issuer and sequence -> all entries */
+    size_t index_cap;
     struct pr_issuer *issuers;
     size_t issuer_count;
     size_t issuer_cap;
@@ -54,6 +65,10 @@ struct vcs_proof_receiver {
 
 struct pr_entry *pr_entry_find(const struct vcs_proof_receiver *r,
                                const uint8_t root[VCS_PROOF_ROOT_BYTES]);
+size_t pr_entry_key_first(const struct vcs_proof_receiver *r,
+                          const uint8_t key[VCS_PROOF_ROOT_BYTES]);
+size_t pr_entry_seq_first(const struct vcs_proof_receiver *r,
+                          const uint8_t issuer[32], uint64_t seq);
 /* Append (or find) the entry for a decoded ticket; NULL on allocation
  * failure (logged). */
 struct pr_entry *pr_entry_put(struct vcs_proof_receiver *r,

@@ -16,6 +16,7 @@
 
 #define STORE_PATH_MAX 4096u
 #define STORE_TEMP_SUFFIX ".zstmp"
+#define STORE_HOT_MANIFESTS 256u
 
 /* One unique chunk hash of a package's manifest with its expected size.
  * Presence is derived (hash in the store's CAS set), never cached here. */
@@ -30,6 +31,10 @@ struct store_package {
     struct vcs_package_manifest manifest; /* parsed; owns heap members */
     uint8_t *manifest_wire;               /* canonical wire, for commit */
     size_t manifest_wire_len;
+    uint32_t file_count; /* compact catalog metadata survives cooling */
+    uint32_t total_chunks;
+    bool manifest_loaded;
+    uint64_t hot_clock;
     bool committed;    /* manifests/<hex> (vs staging/<hex>/manifest) */
     bool pinned;
     enum vcs_package_store_class class_;
@@ -44,11 +49,17 @@ struct store_package {
 
 struct vcs_package_store {
     char root[STORE_PATH_MAX]; /* <datadir>/zcode */
+    bool preexisting_root; /* root existed before this open created layout */
     int process_lock_fd;       /* recovery/CAS transaction serialization */
     uint64_t quota;
+    uint64_t manifest_bytes_total;
     struct store_package *pkgs;
     size_t pkg_count;
     size_t pkg_cap;
+    size_t *root_order; /* sorted indexes into pkgs; rebuilt from manifests */
+    size_t hot_count;
+    uint64_t hot_clock;
+    bool catalog_incomplete; /* committed manifest could not be replayed */
     uint8_t (*cas)[32]; /* present chunk hashes, ascending (bsearch) */
     size_t cas_count;
     size_t cas_cap;
@@ -60,6 +71,7 @@ struct vcs_package_store {
     uint8_t last_accept_id[32];
     uint64_t logical_clock;
     uint64_t next_mutation_generation;
+    uint64_t shared_generation; /* derived change detector on disk */
     uint64_t evictions_total;
     uint64_t gc_orphans_total;
     uint64_t quota_rejects_total;
@@ -75,6 +87,7 @@ void store_packages_touch_hash(struct vcs_package_store *store,
 /* ── shared small helpers (package_store_io.c) ────────────────────── */
 
 bool store_name_is_hex64(const char *name);
+bool store_directory_exists(const char *path);
 
 /* mkdir -p (every component); false on failure (logged by caller). */
 bool store_mkdir_p(const char *path);
@@ -106,6 +119,37 @@ void store_cas_remove(struct vcs_package_store *store,
  * GC unreferenced CAS objects, and commit CAS-complete staged packages.
  * Fills store->{pkgs,cas,gc_orphans_total}; false on hard I/O failure. */
 bool store_open_recover(struct vcs_package_store *store);
+bool store_process_lock(struct vcs_package_store *store);
+void store_process_unlock(struct vcs_package_store *store);
+bool store_generation_check(struct vcs_package_store *store);
+bool store_generation_read(struct vcs_package_store *store, uint64_t *value);
+void store_partial_catalog_free(struct vcs_package_store *store);
+struct store_package *store_find(struct vcs_package_store *store,
+                                const uint8_t root[32], size_t *index_out);
+bool store_ensure_room(struct vcs_package_store *store,
+                       enum vcs_package_store_pool pool, uint64_t incoming,
+                       const uint8_t protect_root[32]);
+uint8_t *store_read_file(const char *path, size_t *out_len);
+/* Caller holds the exact-root process lock; advance before recovery mutation. */
+bool store_generation_advance(struct vcs_package_store *store);
+
+/* With the exact-root process lock held, compare the open handle's catalog
+ * with authoritative manifest, pin, and known CAS paths. A second handle or
+ * an external deletion must refuse projection publication. */
+enum vcs_package_store_page_result store_catalog_validate_disk(
+    const struct vcs_package_store *store);
+/* During a generation refresh, require every previously observed object to
+ * remain intact while allowing another handle to have added new names. */
+enum vcs_package_store_page_result store_catalog_validate_observed_disk(
+    const struct vcs_package_store *store);
+/* Validate one cached manifest and its present CAS refs before a no-op put. */
+enum vcs_package_store_page_result store_catalog_validate_record_disk(
+    const struct vcs_package_store *store, const struct store_package *pkg);
+/* Caller holds the handle mutex; recheck and quarantine under process lock. */
+enum vcs_package_store_result store_cas_quarantine_if_bad(
+    struct vcs_package_store *store, const uint8_t hash[32],
+    const struct vcs_package_file *file, uint32_t chunk_index,
+    enum vcs_package_store_result observed);
 
 /* Derived per-package state from the CAS set. */
 void store_package_present(const struct vcs_package_store *store,
@@ -130,5 +174,13 @@ struct store_package *store_record_add(struct vcs_package_store *store,
                                        const uint8_t *wire, size_t wire_len,
                                        const char *expect_hex,
                                        bool committed);
+
+/* The root/chunk catalog is rebuilt from manifests at open. Parsed manifest
+ * trees and wire copies are an LRU hot cache capped independently of corpus
+ * size. Caller holds store->lock (or the open-time process lock). */
+bool store_package_materialize(struct vcs_package_store *store,
+                               struct store_package *pkg);
+void store_package_release_hot(struct vcs_package_store *store,
+                               struct store_package *pkg);
 
 #endif /* ZCL_VCS_PACKAGE_STORE_PRIV_H */

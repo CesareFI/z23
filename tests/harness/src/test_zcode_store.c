@@ -782,6 +782,24 @@ static int t_swarm_receipt_dump_state(void)
 }
 
 
+static int t_store_interrupted_empty_layout(void)
+{
+    int failures = 0;
+    char dd[256], root[512], manifests[512];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_store", "partial_layout");
+    snprintf(root, sizeof(root), "%s/zcode", dd);
+    zs_store_path(manifests, sizeof(manifests), dd, "manifests");
+    bool partial = mkdir(root, 0700) == 0 &&
+                   mkdir(manifests, 0700) == 0;
+    struct vcs_package_store *store =
+        partial ? vcs_package_store_open(dd, 1000000u) : NULL;
+    ZS_CHECK("recovery completes provably empty interrupted layout",
+             partial && store != NULL);
+    vcs_package_store_close(store);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 static int t_store_blocked_manifest_recovery(void)
 {
     int failures = 0;
@@ -807,15 +825,160 @@ static int t_store_blocked_manifest_recovery(void)
     vcs_package_store_close(store);
 
     bool blocked = stored && rename(manifests, saved) == 0;
-    FILE *file = blocked ? fopen(manifests, "wb") : NULL;
-    blocked = file != NULL && fclose(file) == 0;
     struct vcs_package_store *reopened =
         blocked ? vcs_package_store_open(dd, 1000000u) : NULL;
+    ZS_CHECK("recovery refuses missing committed manifest directory",
+             blocked && reopened == NULL);
+    ZS_CHECK("recovery preserves CAS when manifest directory is missing",
+             blocked && zs_path_exists(cas));
+    vcs_package_store_close(reopened);
+    FILE *file = blocked ? fopen(manifests, "wb") : NULL;
+    blocked = file != NULL && fclose(file) == 0;
+    reopened = blocked ? vcs_package_store_open(dd, 1000000u) : NULL;
     ZS_CHECK("recovery refuses a file blocking committed manifests",
              blocked && reopened == NULL);
     ZS_CHECK("recovery leaves committed CAS intact on refusal",
              blocked && zs_path_exists(cas));
     vcs_package_store_close(reopened);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+static int t_store_nonempty_staging_after_commit(void)
+{
+    int failures = 0;
+    char dd[256], stage[640], blocked_manifest[700], cas[640];
+    struct vcs_package_store *store =
+        zs_open(dd, sizeof(dd), "staging-blocker", 1000000u);
+    ZS_CHECK("staging blocker: store opens", store != NULL);
+    if (!store) return failures;
+    static const uint8_t bytes[] = "committed before staging damage";
+    uint8_t root[32] = {0}, chunk[32] = {0};
+    bool stored = vcs_blob_put_to(store, bytes, sizeof(bytes) - 1u, root) ==
+                      VCS_BLOB_OK &&
+                  vcs_package_chunk_hash(bytes, sizeof(bytes) - 1u, chunk);
+    char root_hex[65], chunk_hex[65];
+    zs_hex32(root, root_hex);
+    zs_hex32(chunk, chunk_hex);
+    snprintf(stage, sizeof(stage), "%s/zcode/staging/%s", dd, root_hex);
+    snprintf(blocked_manifest, sizeof(blocked_manifest), "%s/manifest", stage);
+    snprintf(cas, sizeof(cas), "%s/zcode/cas/sha3/%.2s/%s", dd,
+             chunk_hex, chunk_hex);
+    vcs_package_store_close(store);
+    bool blocked = stored && mkdir(stage, 0700) == 0 &&
+                   mkdir(blocked_manifest, 0700) == 0;
+    struct vcs_package_store *reopened =
+        blocked ? vcs_package_store_open(dd, 1000000u) : NULL;
+    ZS_CHECK("recovery refuses nonempty staging remainder", blocked &&
+             reopened == NULL);
+    ZS_CHECK("recovery preserves committed CAS on staging refusal",
+             blocked && zs_path_exists(cas));
+    vcs_package_store_close(reopened);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+static int t_store_stale_noop_pin(void)
+{
+    int failures = 0;
+    char dd[256], pin[640];
+    struct vcs_package_store *a =
+        zs_open(dd, sizeof(dd), "stale-pin", 1000000u);
+    ZS_CHECK("stale pin: first handle opens", a != NULL);
+    if (!a) return failures;
+    static const uint8_t bytes[] = "pin state must be current";
+    uint8_t root[32] = {0};
+    bool stored = vcs_blob_put_to(a, bytes, sizeof(bytes) - 1u, root) ==
+                  VCS_BLOB_OK;
+    char root_hex[65];
+    zs_hex32(root, root_hex);
+    snprintf(pin, sizeof(pin), "%s/zcode/pins/%s", dd, root_hex);
+    bool initially_pinned = stored &&
+        vcs_package_store_pin(a, root, true) == VCS_PACKAGE_STORE_OK;
+    struct vcs_package_store *b =
+        initially_pinned ? vcs_package_store_open(dd, 1000000u) : NULL;
+    ZS_CHECK("stale pin: second handle sees initial pin",
+             b != NULL && zs_path_exists(pin));
+    bool removed = b &&
+        vcs_package_store_pin(b, root, false) == VCS_PACKAGE_STORE_OK;
+    ZS_CHECK("stale pin: second handle removes pin", removed &&
+             !zs_path_exists(pin));
+    ZS_CHECK("stale pin: cached pin no-op refuses old generation",
+             removed && vcs_package_store_pin(a, root, true) ==
+                            VCS_PACKAGE_STORE_ERR_IO && !zs_path_exists(pin));
+    ZS_CHECK("stale class: cached no-op refuses old generation",
+             removed && vcs_package_store_set_class(
+                            a, root, VCS_PACKAGE_STORE_CLASS_RARE, 0) ==
+                            VCS_PACKAGE_STORE_ERR_IO);
+    vcs_package_store_close(b);
+    vcs_package_store_close(a);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+static int zs_refresh_missing_prior(struct vcs_package_store *a,
+                                    const char *dd, const uint8_t first[32])
+{
+    int failures = 0;
+    char first_hex[65], manifest[640];
+    zs_hex32(first, first_hex);
+    snprintf(manifest, sizeof(manifest), "%s/zcode/manifests/%s", dd,
+             first_hex);
+    struct vcs_package_store *c = vcs_package_store_open(dd, 1000000u);
+    static const uint8_t three[] = "another generation";
+    uint8_t third[32] = {0};
+    bool advanced = c &&
+        vcs_blob_put_to(c, three, sizeof(three) - 1u, third) == VCS_BLOB_OK;
+    ZS_CHECK("refresh: third handle advances generation", advanced);
+    bool removed = advanced && unlink(manifest) == 0;
+    ZS_CHECK("refresh: missing old manifest refuses rebuild",
+             removed && !vcs_package_store_refresh(a));
+    struct vcs_package_store_status status;
+    ZS_CHECK("refresh: refused rebuild retains old catalog",
+             removed && vcs_package_store_package_status(a, first, &status) &&
+             status.complete);
+    vcs_package_store_close(c);
+    return failures;
+}
+
+static int t_store_refresh_stale_catalog(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *a =
+        zs_open(dd, sizeof(dd), "stale-refresh", 1000000u);
+    ZS_CHECK("refresh: first handle opens", a != NULL);
+    if (!a) return failures;
+    static const uint8_t one[] = "previously observed bytes";
+    static const uint8_t two[] = "new writer bytes";
+    uint8_t first[32] = {0}, second[32] = {0};
+    bool stored = vcs_blob_put_to(a, one, sizeof(one) - 1u, first) ==
+                  VCS_BLOB_OK;
+    ZS_CHECK("refresh: live class set before second writer",
+             stored && vcs_package_store_set_class(
+                           a, first, VCS_PACKAGE_STORE_CLASS_HOT, 3) ==
+                           VCS_PACKAGE_STORE_OK);
+    struct vcs_package_store *b =
+        stored ? vcs_package_store_open(dd, 1000000u) : NULL;
+    ZS_CHECK("refresh: second handle opens", b != NULL);
+    stored = b && vcs_blob_put_to(b, two, sizeof(two) - 1u, second) ==
+                      VCS_BLOB_OK;
+    ZS_CHECK("refresh: second handle commits a distinct blob", stored);
+    ZS_CHECK("refresh: second handle changes pin authority",
+             stored && vcs_package_store_pin(b, first, true) ==
+                           VCS_PACKAGE_STORE_OK);
+    struct vcs_package_store_status status;
+    ZS_CHECK("refresh: offside catalog includes new blob",
+             stored && vcs_package_store_refresh(a) &&
+             vcs_package_store_package_status(a, second, &status) &&
+             status.complete);
+    ZS_CHECK("refresh: retained root keeps live quota class",
+             stored && vcs_package_store_package_status(a, first, &status) &&
+             status.class_ == VCS_PACKAGE_STORE_CLASS_HOT &&
+             status.replicas == 3 && status.pinned);
+    if (stored) failures += zs_refresh_missing_prior(a, dd, first);
+    vcs_package_store_close(b);
+    vcs_package_store_close(a);
     test_rm_rf_recursive(dd);
     return failures;
 }
@@ -848,9 +1011,8 @@ static int t_store_linked_manifest_recovery(void)
     if (prepared) {
         store = vcs_package_store_open(dd, 1000000u);
         struct vcs_package_store_status status;
-        ZS_CHECK("recovery link: linked manifest is not tracked",
-                 store && !vcs_package_store_package_status(store, p.root,
-                                                              &status));
+        ZS_CHECK("recovery link: partial committed catalog refuses open",
+                 store == NULL);
         vcs_package_store_close(store);
         bool restored = unlink(leaf) == 0 && rename(outside, leaf) == 0;
         store = restored ? vcs_package_store_open(dd, 1000000u) : NULL;
@@ -864,6 +1026,36 @@ static int t_store_linked_manifest_recovery(void)
     return failures;
 }
 
+static int t_store_noop_missing_authority(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *store =
+        zs_open(dd, sizeof(dd), "noop-missing", 1000000u);
+    ZS_CHECK("no-op authority: store opens", store != NULL);
+    if (!store) return failures;
+    struct zs_pkg p;
+    const char *paths[] = { "src/noop.c" };
+    const size_t lens[] = { 16 };
+    bool prepared = zs_make_package(&p, 1, paths, lens, 0x82) &&
+        vcs_package_store_put_manifest(store, p.wire, p.wire_len, NULL) ==
+            VCS_PACKAGE_STORE_OK &&
+        zs_put_all(store, &p) == VCS_PACKAGE_STORE_OK;
+    char root_hex[65], leaf[640];
+    zs_hex32(p.root, root_hex);
+    snprintf(leaf, sizeof(leaf), "%s/zcode/manifests/%s", dd, root_hex);
+    ZS_CHECK("no-op authority: committed fixture", prepared);
+    ZS_CHECK("no-op authority: delete without generation change",
+             prepared && unlink(leaf) == 0);
+    ZS_CHECK("no-op authority: missing manifest refuses cached root",
+             vcs_package_store_put_manifest_resync(
+                 store, p.wire, p.wire_len, NULL) == VCS_PACKAGE_STORE_ERR_IO);
+    zs_free_package(&p);
+    vcs_package_store_close(store);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 int test_zcode_store(void)
 {
     printf("\n=== zcode_store: local content-addressed package store ===\n");
@@ -873,8 +1065,13 @@ int test_zcode_store(void)
     failures += t_store_chunk_flow();
     failures += t_store_dedup();
     failures += t_store_recovery();
+    failures += t_store_interrupted_empty_layout();
+    failures += t_store_nonempty_staging_after_commit();
+    failures += t_store_stale_noop_pin();
+    failures += t_store_refresh_stale_catalog();
     failures += t_store_blocked_manifest_recovery();
     failures += t_store_linked_manifest_recovery();
+    failures += t_store_noop_missing_authority();
     failures += t_store_corrupt_read_repair();
     failures += t_store_staging_quota();
     failures += t_store_hot_eviction();

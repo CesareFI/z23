@@ -19,10 +19,15 @@
 #include "test/proof_ticket_fixture.h"
 
 #include "platform/time_compat.h"
+#include "vcs/package_store.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 #define PTM_UNITS 200u
 #define PTM_CANDIDATES 6u
@@ -52,6 +57,9 @@ struct ptm {
     uint64_t unchanged, unchanged_reused;
     uint64_t false_hits, why[PTM_WHY_COUNT];
     uint64_t tickets_classified, decide_us, full_log_bytes;
+    uint64_t fixture_wall_us, fixture_process_cpu_us;
+    uint64_t process_peak_rss_kib, io_read_ops, io_write_ops;
+    bool io_observed;
 };
 
 static uint32_t ptm_rand(struct ptm *s)
@@ -257,9 +265,12 @@ static void ptm_print(const struct ptm *s)
            "obligations_per_candidate=%u obligations=%llu eligible_proofs=%llu "
            "reused_proofs=%llu fresh_proofs=%llu refused=%llu "
            "unchanged=%llu reuse_rate_unchanged_pct=%.2f "
-           "verify_cpu_us_total=%llu verify_us_per_ticket=%.2f "
+           "verify_wall_us_total=%llu verify_us_per_ticket=%.2f "
            "verify_us_per_checkpoint=%.1f bytes_synced=%llu "
-           "bytes_full_logs=%llu false_hit_refusals=",
+           "bytes_full_logs=%llu fixture_wall_us=%llu "
+           "fixture_process_cpu_us=%llu process_peak_rss_kib=%llu "
+           "io_observed=%u io_read_ops=%llu io_write_ops=%llu "
+           "false_hit_refusals=",
            PTM_CANDIDATES, PTM_UNITS, (unsigned long long)s->obligations,
            (unsigned long long)s->eligible_proofs,
            (unsigned long long)s->reused, (unsigned long long)s->fresh,
@@ -270,7 +281,13 @@ static void ptm_print(const struct ptm *s)
            (double)s->decide_us / (double)seen,
            (double)s->f.sync_verify_us / (double)cps,
            (unsigned long long)s->f.sync_bytes,
-           (unsigned long long)s->full_log_bytes);
+           (unsigned long long)s->full_log_bytes,
+           (unsigned long long)s->fixture_wall_us,
+           (unsigned long long)s->fixture_process_cpu_us,
+           (unsigned long long)s->process_peak_rss_kib,
+           s->io_observed ? 1u : 0u,
+           (unsigned long long)s->io_read_ops,
+           (unsigned long long)s->io_write_ops);
     for (int i = 0; i < PTM_WHY_COUNT; i++)
         printf("%s%s:%llu", i ? "," : "", ptm_why_names[i],
                (unsigned long long)s->why[i]);
@@ -283,11 +300,39 @@ static int ptm_case_measure(void)
     TEST_CASE("proof_ticket: 6 candidates x 3 issuers x 200 obligations") {
         struct ptm *s = calloc(1, sizeof(*s));
         ASSERT(s != NULL);
+        int64_t wall_before = platform_time_monotonic_us();
+        clock_t cpu_before = clock();
+#if !defined(_WIN32)
+        struct rusage usage_before, usage_after;
+        bool usage_started = getrusage(RUSAGE_SELF, &usage_before) == 0;
+#endif
         bool ok = ptf_init(&s->f);
         s->rng = 0x5eed1234abcdull;
         for (s->candidate = 0; ok && s->candidate < PTM_CANDIDATES;
              s->candidate++)
             ok = ptm_candidate(s);
+        s->fixture_wall_us = (uint64_t)(platform_time_monotonic_us() -
+                                        wall_before);
+        clock_t cpu_after = clock();
+        if (cpu_before != (clock_t)-1 && cpu_after != (clock_t)-1 &&
+            cpu_after >= cpu_before)
+            s->fixture_process_cpu_us = (uint64_t)(
+                (double)(cpu_after - cpu_before) * 1000000.0 /
+                (double)CLOCKS_PER_SEC);
+#if !defined(_WIN32)
+        if (usage_started && getrusage(RUSAGE_SELF, &usage_after) == 0) {
+            s->io_observed = true;
+#if defined(__APPLE__)
+            s->process_peak_rss_kib = (uint64_t)usage_after.ru_maxrss / 1024u;
+#else
+            s->process_peak_rss_kib = (uint64_t)usage_after.ru_maxrss;
+#endif
+            s->io_read_ops = (uint64_t)(usage_after.ru_inblock -
+                                        usage_before.ru_inblock);
+            s->io_write_ops = (uint64_t)(usage_after.ru_oublock -
+                                         usage_before.ru_oublock);
+        }
+#endif
         ptm_print(s);
         struct ptm r = *s;
         ptf_free(&s->f);
@@ -301,6 +346,231 @@ static int ptm_case_measure(void)
         ASSERT(r.refused >= 1u);                  /* the contradiction */
         ASSERT(r.unchanged_reused * 100u > r.unchanged * 95u);
         ASSERT(r.f.sync_bytes < r.full_log_bytes);
+    } TEST_END
+    return failures;
+}
+
+/* Optional same-issuer checkpoint density probe. One covered ticket is
+ * followed by signed, same-leaf descendants, so it measures checkpoint
+ * bookkeeping without changing the ticket corpus or receiver policy. */
+static int ptm_case_checkpoint_density(void)
+{
+    if (!getenv("Z23_PROOF_CP_SCAN_BENCH")) return 0;
+    int failures = 0;
+    TEST_CASE("proof_ticket: checkpoint density measurement") {
+        static const size_t sizes[] = {128u, 512u, 2048u};
+        for (size_t k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++) {
+            struct ptf *f = calloc(1, sizeof(*f));
+            ASSERT(f != NULL);
+            ASSERT(ptf_init(f));
+            ASSERT(ptf_emit(f, PTF_A, &f->base, ptf_pass(), NULL, NULL));
+            int64_t wall_before = platform_time_monotonic_us();
+            clock_t cpu_before = clock();
+#if !defined(_WIN32)
+            struct rusage usage_before, usage_after;
+            bool usage_started = getrusage(RUSAGE_SELF, &usage_before) == 0;
+#endif
+            bool ok = true;
+            for (size_t i = 0; ok && i < sizes[k]; i++) {
+                struct vcs_proof_sync_report rep;
+                ok = ptf_sync(f, PTF_A, 1790000001u + i, &rep) &&
+                     rep.outcome == VCS_PROOF_SYNC_ADVANCED;
+            }
+            uint64_t wall_us = (uint64_t)(platform_time_monotonic_us() -
+                                          wall_before);
+            clock_t cpu_after = clock();
+            uint64_t cpu_us = 0, rss_kib = 0, read_ops = 0, write_ops = 0;
+            if (cpu_before != (clock_t)-1 && cpu_after != (clock_t)-1 &&
+                cpu_after >= cpu_before)
+                cpu_us = (uint64_t)((double)(cpu_after - cpu_before) *
+                                    1000000.0 / (double)CLOCKS_PER_SEC);
+#if !defined(_WIN32)
+            if (usage_started && getrusage(RUSAGE_SELF, &usage_after) == 0) {
+#if defined(__APPLE__)
+                rss_kib = (uint64_t)usage_after.ru_maxrss / 1024u;
+#else
+                rss_kib = (uint64_t)usage_after.ru_maxrss;
+#endif
+                read_ops = (uint64_t)(usage_after.ru_inblock -
+                                      usage_before.ru_inblock);
+                write_ops = (uint64_t)(usage_after.ru_oublock -
+                                       usage_before.ru_oublock);
+            }
+#endif
+            printf("\nproof_checkpoint_density checkpoints=%zu tickets=1 "
+                   "wall_us=%llu cpu_us=%llu process_peak_rss_kib=%llu "
+                   "io_read_ops=%llu io_write_ops=%llu\n", sizes[k],
+                   (unsigned long long)wall_us,
+                   (unsigned long long)cpu_us,
+                   (unsigned long long)rss_kib,
+                   (unsigned long long)read_ops,
+                   (unsigned long long)write_ops);
+            ASSERT(ok);
+            ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(f->rx,
+                                                             f->pub[PTF_A]),
+                      sizes[k]);
+            ptf_free(f);
+            free(f);
+        }
+    } TEST_END
+    return failures;
+}
+
+/* Optional CAS reconstruction probe. The store grows in place; each timed
+ * rebuild replays its entire current inventory and checks the old receiver
+ * before publishing the new projection. Store population is outside time. */
+static int ptm_case_rebuild_density(void)
+{
+    if (!getenv("Z23_PROOF_REBUILD_DENSITY_BENCH")) return 0;
+    int failures = 0;
+    TEST_CASE("proof_ticket: CAS checkpoint rebuild density measurement") {
+        static const size_t sizes[] = {128u, 512u, 2048u};
+        struct ptf *f = calloc(1, sizeof(*f));
+        ASSERT(f != NULL);
+        ASSERT(ptf_init(f));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "rebuilddensity");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(128) * 1024 * 1024);
+        ASSERT(store != NULL);
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(f, PTF_A, &f->base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        size_t produced = 0;
+        for (size_t k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++) {
+            uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+            bool populated = true;
+            while (populated && produced < sizes[k]) {
+                populated = vcs_proof_issuer_log_checkpoint(
+                                f->logs[PTF_A], 1790000001u + produced,
+                                cp) &&
+                            vcs_proof_ticket_store_put(store, cp, sizeof(cp),
+                                                       root);
+                produced++;
+            }
+            ASSERT(populated);
+            int64_t wall_before = platform_time_monotonic_us();
+            clock_t cpu_before = clock();
+#if !defined(_WIN32)
+            struct rusage usage_before, usage_after;
+            bool usage_started = getrusage(RUSAGE_SELF, &usage_before) == 0;
+#endif
+            size_t tickets = 0, checkpoints = 0, skipped = 0;
+            bool rebuilt = vcs_proof_receiver_rebuild(
+                f->rx, store, &tickets, &checkpoints, &skipped);
+            uint64_t wall_us = (uint64_t)(platform_time_monotonic_us() -
+                                          wall_before);
+            clock_t cpu_after = clock();
+            uint64_t cpu_us = 0, rss_kib = 0, read_ops = 0, write_ops = 0;
+            if (cpu_before != (clock_t)-1 && cpu_after != (clock_t)-1 &&
+                cpu_after >= cpu_before)
+                cpu_us = (uint64_t)((double)(cpu_after - cpu_before) *
+                                    1000000.0 / (double)CLOCKS_PER_SEC);
+#if !defined(_WIN32)
+            if (usage_started && getrusage(RUSAGE_SELF, &usage_after) == 0) {
+#if defined(__APPLE__)
+                rss_kib = (uint64_t)usage_after.ru_maxrss / 1024u;
+#else
+                rss_kib = (uint64_t)usage_after.ru_maxrss;
+#endif
+                read_ops = (uint64_t)(usage_after.ru_inblock -
+                                      usage_before.ru_inblock);
+                write_ops = (uint64_t)(usage_after.ru_oublock -
+                                       usage_before.ru_oublock);
+            }
+#endif
+            printf("\nproof_rebuild_density listed=%zu tickets=%zu "
+                   "checkpoints=%zu skipped=%zu success=%u wall_us=%llu "
+                   "cpu_us=%llu process_peak_rss_kib=%llu "
+                   "io_read_ops=%llu io_write_ops=%llu\n",
+                   sizes[k] + 1u, tickets, checkpoints, skipped,
+                   rebuilt ? 1u : 0u, (unsigned long long)wall_us,
+                   (unsigned long long)cpu_us,
+                   (unsigned long long)rss_kib,
+                   (unsigned long long)read_ops,
+                   (unsigned long long)write_ops);
+            ASSERT(rebuilt);
+            ASSERT_EQ(tickets, (size_t)1);
+            ASSERT_EQ(checkpoints, sizes[k]);
+            ASSERT_EQ(vcs_proof_receiver_issuer_leaves(f->rx, f->pub[PTF_A]),
+                      (uint64_t)1);
+        }
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+        ptf_free(f);
+        free(f);
+    } TEST_END
+    return failures;
+}
+
+/* Optional receiver-only boundary probe. The issuer log and receiver are
+ * in memory; this isolates index and signed-delta handling from the package
+ * store's separate tracked-object enumeration bound. */
+static int ptm_case_receiver_boundary(void)
+{
+    if (!getenv("Z23_PROOF_RECEIVER_BOUNDARY_BENCH")) return 0;
+    int failures = 0;
+    TEST_CASE("proof_ticket: receiver sync crosses 4096 tickets") {
+        static const size_t sizes[] = {4095u, 4096u, 4097u};
+        struct ptf *f = calloc(1, sizeof(*f));
+        ASSERT(f != NULL);
+        ASSERT(ptf_init(f));
+        size_t emitted = 0;
+        for (size_t k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++) {
+            bool ready = true;
+            while (ready && emitted < sizes[k]) {
+                ready = ptf_emit(f, PTF_A, &f->base, ptf_pass(), NULL, NULL);
+                emitted++;
+            }
+            ASSERT(ready);
+            int64_t wall_before = platform_time_monotonic_us();
+            clock_t cpu_before = clock();
+#if !defined(_WIN32)
+            struct rusage usage_before, usage_after;
+            bool usage_started = getrusage(RUSAGE_SELF, &usage_before) == 0;
+#endif
+            struct vcs_proof_sync_report rep = {0};
+            bool synced = ptf_sync(f, PTF_A, 1790000001u + k, &rep);
+            uint64_t wall_us = (uint64_t)(platform_time_monotonic_us() -
+                                          wall_before);
+            clock_t cpu_after = clock();
+            uint64_t cpu_us = 0, rss_kib = 0, read_ops = 0, write_ops = 0;
+            if (cpu_before != (clock_t)-1 && cpu_after != (clock_t)-1 &&
+                cpu_after >= cpu_before)
+                cpu_us = (uint64_t)((double)(cpu_after - cpu_before) *
+                                    1000000.0 / (double)CLOCKS_PER_SEC);
+#if !defined(_WIN32)
+            if (usage_started && getrusage(RUSAGE_SELF, &usage_after) == 0) {
+#if defined(__APPLE__)
+                rss_kib = (uint64_t)usage_after.ru_maxrss / 1024u;
+#else
+                rss_kib = (uint64_t)usage_after.ru_maxrss;
+#endif
+                read_ops = (uint64_t)(usage_after.ru_inblock -
+                                      usage_before.ru_inblock);
+                write_ops = (uint64_t)(usage_after.ru_oublock -
+                                       usage_before.ru_oublock);
+            }
+#endif
+            printf("\nproof_receiver_boundary tickets=%zu delta=%llu "
+                   "bytes_synced=%llu wall_us=%llu cpu_us=%llu "
+                   "process_peak_rss_kib=%llu io_read_ops=%llu "
+                   "io_write_ops=%llu\n", sizes[k],
+                   (unsigned long long)(rep.leaves_after - rep.leaves_before),
+                   (unsigned long long)rep.bytes,
+                   (unsigned long long)wall_us,
+                   (unsigned long long)cpu_us,
+                   (unsigned long long)rss_kib,
+                   (unsigned long long)read_ops,
+                   (unsigned long long)write_ops);
+            ASSERT(synced);
+            ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+            ASSERT_EQ(vcs_proof_receiver_ticket_count(f->rx), sizes[k]);
+            ASSERT_EQ(vcs_proof_receiver_issuer_leaves(f->rx, f->pub[PTF_A]),
+                      (uint64_t)sizes[k]);
+        }
+        ptf_free(f);
+        free(f);
     } TEST_END
     return failures;
 }
@@ -536,6 +806,9 @@ int test_proof_ticket_measure(void)
 {
     int failures = 0;
     failures += ptm_case_measure();
+    failures += ptm_case_checkpoint_density();
+    failures += ptm_case_rebuild_density();
+    failures += ptm_case_receiver_boundary();
     failures += pta_cases();
     return failures;
 }

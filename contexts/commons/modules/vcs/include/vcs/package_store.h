@@ -99,7 +99,7 @@
 
 #define VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES UINT64_C(10737418240) /* 10 GiB */
 #define VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES (UINT64_C(64) * 1024u * 1024u)
-#define VCS_PACKAGE_STORE_MAX_TRACKED 4096u
+#define VCS_PACKAGE_STORE_PAGE_MAX 256u
 
 /* Frozen pool fractions of the total quota (tenths). */
 #define VCS_PACKAGE_STORE_PINS_TENTHS 2u
@@ -120,7 +120,7 @@ enum vcs_package_store_result {
     VCS_PACKAGE_STORE_ERR_QUOTA,       /* pool full, no eviction victim */
     VCS_PACKAGE_STORE_ERR_ACCEPT,      /* release failed acceptance */
     VCS_PACKAGE_STORE_ERR_ALLOC,       /* allocation failed */
-    VCS_PACKAGE_STORE_ERR_LIMIT,       /* tracked-package bound reached */
+    VCS_PACKAGE_STORE_ERR_LIMIT,       /* bounded operation limit */
     VCS_PACKAGE_STORE_ERR_RECIPE,      /* recipe grammar/parse failure */
 };
 
@@ -210,8 +210,12 @@ bool vcs_package_store_deferred_sync_enabled(void);
  * given quota, or close it. Open runs the full crash recovery described
  * above; returns NULL on I/O or allocation failure (logged). */
 struct vcs_package_store *vcs_package_store_open(const char *datadir,
-                                                 uint64_t quota_bytes);
+                                                  uint64_t quota_bytes);
 void vcs_package_store_close(struct vcs_package_store *store);
+/* Rebuild a stale handle's derived catalog from authoritative manifests and
+ * CAS under the store process lock. A failed rebuild retains the old catalog
+ * and refuses the caller; page continuations still report STALE. */
+bool vcs_package_store_refresh(struct vcs_package_store *store);
 
 /* The directory this handle owns, exactly as it was built: "<datadir>/zcode".
  * A caller that must decide whether the resident store already covers the
@@ -240,11 +244,16 @@ struct vcs_package_store *vcs_package_store_global(void);
 void vcs_package_store_close_global(void);
 
 /* Admit a content.v2 manifest wire. Parses and validates it, enforces the
- * 64 MiB package cap and the tracked-package bound, computes the package
+ * 64 MiB package cap, computes the package
  * root into root_out (when non-NULL), and stages it atomically. A package
  * whose chunks are all already in the CAS (full dedup hit) commits
  * immediately. Re-admitting an identical manifest is an idempotent OK. */
 enum vcs_package_store_result vcs_package_store_put_manifest(
+    struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
+    uint8_t root_out[32]);
+/* Long-lived receiver variant: refresh a changed derived catalog from disk
+ * before admission. A failed or racing refresh returns IO without admission. */
+enum vcs_package_store_result vcs_package_store_put_manifest_resync(
     struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
     uint8_t root_out[32]);
 
@@ -298,6 +307,39 @@ struct vcs_package_store_summary {
     bool complete;
     bool pinned;
 };
+
+/* A page is ordered by immutable manifest root. Pass NULL for after_root and
+ * zero for expected_generation on the first call; then pass next_root and
+ * generation unchanged. A package-catalog mutation invalidates continuation.
+ * Release and recipe files do not change these package summaries. A complete
+ * scan ends only when has_more is false, including an exact full last page. */
+enum vcs_package_store_page_result {
+    VCS_PACKAGE_STORE_PAGE_OK = 0,
+    VCS_PACKAGE_STORE_PAGE_INCOMPLETE,
+    VCS_PACKAGE_STORE_PAGE_STALE,
+    VCS_PACKAGE_STORE_PAGE_IO,
+    VCS_PACKAGE_STORE_PAGE_INPUT,
+};
+
+struct vcs_package_store_page {
+    uint64_t generation;
+    uint8_t next_root[32];
+    size_t count;
+    bool has_more;
+};
+
+enum vcs_package_store_page_result vcs_package_store_page_summaries(
+    struct vcs_package_store *store, const uint8_t after_root[32],
+    size_t limit, uint64_t expected_generation,
+    struct vcs_package_store_summary *rows,
+    struct vcs_package_store_page *page);
+
+/* Publish a fully reconstructed in-memory view while the store's generation
+ * still matches. The callback only swaps prepared pointers and cannot call a
+ * store API or allocate. A stale generation leaves the old view unchanged. */
+enum vcs_package_store_page_result vcs_package_store_publish_if_generation(
+    struct vcs_package_store *store, uint64_t generation,
+    void (*publish)(void *context), void *context);
 size_t vcs_package_store_list_summaries(
     struct vcs_package_store *store, bool complete_only,
     struct vcs_package_store_summary *out, size_t max);
@@ -430,9 +472,9 @@ bool vcs_package_store_dump_state_json(struct json_value *out,
  * frontier dumper.
  *
  * Cost, so the never-blocks contract can be checked by reading it: every
- * field is an O(1) load off the store struct except manifest_bytes_total,
- * which is one integer sum over at most VCS_PACKAGE_STORE_MAX_TRACKED
- * entries. No filesystem access, no hashing, no allocation. In particular
+ * field is an O(1) load off the store struct, including the incrementally
+ * maintained manifest_bytes_total. No filesystem access, no hashing, no
+ * allocation. In particular
  * it does NOT count persisted releases or compute pool usage — both walk
  * per-package chunk sets or the releases directory.
  *

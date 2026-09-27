@@ -65,6 +65,8 @@ int test_projection(void)
 {
     printf("\n=== projection tests ===\n");
     int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "projection", "database");
 
     /* ── open / close validation ─────────────────────────────── */
     {
@@ -81,10 +83,11 @@ int test_projection(void)
 
     /* ── snapshot isolation: reader sees pre-write value ───── */
     {
-        const char *path = "test_projection_snap.db";
+        char path[320];
+        snprintf(path, sizeof(path), "%s/snap.db", dir);
         unlink(path);
-        char wal_path[256];  snprintf(wal_path, sizeof(wal_path), "%s-wal", path);
-        char shm_path[256];  snprintf(shm_path, sizeof(shm_path), "%s-shm", path);
+        char wal_path[384];  snprintf(wal_path, sizeof(wal_path), "%s-wal", path);
+        char shm_path[384];  snprintf(shm_path, sizeof(shm_path), "%s-shm", path);
         unlink(wal_path); unlink(shm_path);
 
         sqlite3 *writer = open_writer_wal(path);
@@ -136,10 +139,11 @@ int test_projection(void)
 
     /* ── post-close calls return -1 ──────────────────────────── */
     {
-        const char *path = "test_projection_close.db";
+        char path[320];
+        snprintf(path, sizeof(path), "%s/close.db", dir);
         unlink(path);
-        char wal_path[256];  snprintf(wal_path, sizeof(wal_path), "%s-wal", path);
-        char shm_path[256];  snprintf(shm_path, sizeof(shm_path), "%s-shm", path);
+        char wal_path[384];  snprintf(wal_path, sizeof(wal_path), "%s-wal", path);
+        char shm_path[384];  snprintf(shm_path, sizeof(shm_path), "%s-shm", path);
         unlink(wal_path); unlink(shm_path);
 
         sqlite3 *writer = open_writer_wal(path);
@@ -169,10 +173,11 @@ int test_projection(void)
 
     /* ── shape failures ──────────────────────────────────────── */
     {
-        const char *path = "test_projection_shape.db";
+        char path[320];
+        snprintf(path, sizeof(path), "%s/shape.db", dir);
         unlink(path);
-        char wal_path[256];  snprintf(wal_path, sizeof(wal_path), "%s-wal", path);
-        char shm_path[256];  snprintf(shm_path, sizeof(shm_path), "%s-shm", path);
+        char wal_path[384];  snprintf(wal_path, sizeof(wal_path), "%s-wal", path);
+        char shm_path[384];  snprintf(shm_path, sizeof(shm_path), "%s-shm", path);
         unlink(wal_path); unlink(shm_path);
 
         sqlite3 *writer = open_writer_wal(path);
@@ -219,6 +224,7 @@ int test_projection(void)
         unlink(shm_path);
     }
 
+    test_rm_rf_recursive(dir);
     if (failures == 0) {
         printf("=== projection tests: ALL PASS ===\n\n");
     } else {

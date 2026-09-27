@@ -28,6 +28,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <wchar.h>
 #include <windows.h>
 #else
 #include <dirent.h>
@@ -294,6 +295,63 @@ bool store_path_exists(const char *path)
 #endif
 }
 
+bool store_directory_exists(const char *path)
+{
+#if defined(_WIN32)
+    wchar_t wide[STORE_PATH_MAX];
+    return store_wide_path(path, wide) && store_win32_real_directory(wide);
+#else
+    struct stat st;
+    return lstat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+static bool store_directory_empty(const char *path)
+{
+#if defined(_WIN32)
+    wchar_t wide[STORE_PATH_MAX];
+    if (!store_wide_path(path, wide) || !store_win32_real_directory(wide))
+        return false;
+    size_t len = wcslen(wide);
+    if (len + 3 >= STORE_PATH_MAX) return false;
+    wide[len++] = L'\\';
+    wide[len++] = L'*';
+    wide[len] = L'\0';
+    WIN32_FIND_DATAW data;
+    HANDLE found = FindFirstFileW(wide, &data);
+    if (found == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_FILE_NOT_FOUND;
+    bool empty = true;
+    do {
+        if (wcscmp(data.cFileName, L".") != 0 &&
+            wcscmp(data.cFileName, L"..") != 0) {
+            empty = false;
+            break;
+        }
+    } while (FindNextFileW(found, &data));
+    DWORD error = GetLastError();
+    FindClose(found);
+    return empty && error == ERROR_NO_MORE_FILES;
+#else
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    for (;;) {
+        errno = 0;
+        struct dirent *ent = readdir(dir);
+        if (!ent) {
+            bool empty = errno == 0;
+            closedir(dir);
+            return empty;
+        }
+        if (strcmp(ent->d_name, ".") != 0 &&
+            strcmp(ent->d_name, "..") != 0) {
+            closedir(dir);
+            return false;
+        }
+    }
+#endif
+}
+
 bool store_unlink(const char *path)
 {
 #if defined(_WIN32)
@@ -488,6 +546,8 @@ bool store_cas_insert(struct vcs_package_store *store,
     if (found)
         return true;
     if (store->cas_count == store->cas_cap) {
+        if (store->cas_cap > SIZE_MAX / 2 / sizeof(*store->cas))
+            LOG_FAIL(STORE_LOG, "CAS catalog capacity overflow");
         size_t cap = store->cas_cap ? store->cas_cap * 2 : 256;
         uint8_t(*cas)[32] =
             zcl_realloc(store->cas, cap * sizeof(*cas), "store_cas");
@@ -711,35 +771,6 @@ static void store_sweep_temps(struct vcs_package_store *store,
 }
 
 /* Read a whole file bounded by VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES. */
-static uint8_t *store_read_file(const char *path, size_t *out_len)
-{
-    *out_len = 0;
-    struct platform_positioned_file file;
-    platform_positioned_file_init(&file);
-    if (!platform_positioned_file_open(&file, path))
-        LOG_NULL(STORE_LOG, "open regular file %s", path);
-    uint64_t size = 0;
-    if (!platform_positioned_file_size(&file, &size) || size == 0 ||
-        size > VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES) {
-        platform_positioned_file_close(&file);
-        LOG_NULL(STORE_LOG, "%s: invalid file or size", path);
-    }
-    size_t len = (size_t)size;
-    uint8_t *buf = zcl_malloc(len, "store_read_file");
-    if (!buf) {
-        platform_positioned_file_close(&file);
-        LOG_NULL(STORE_LOG, "alloc %zu for %s", len, path);
-    }
-    int64_t got = platform_positioned_file_read(&file, buf, len, 0);
-    platform_positioned_file_close(&file);
-    if (got != (int64_t)len) {
-        free(buf);
-        LOG_NULL(STORE_LOG, "read exact file %s", path);
-    }
-    *out_len = len;
-    return buf;
-}
-
 static int store_chunk_hash_cmp(const void *a, const void *b)
 {
     const struct store_unique_chunk *ca = a;
@@ -795,11 +826,72 @@ static bool store_package_build_chunks(struct store_package *pkg)
     return true;
 }
 
-static int store_pkg_root_cmp(const void *a, const void *b)
+void store_package_release_hot(struct vcs_package_store *store,
+                               struct store_package *pkg)
 {
-    const struct store_package *pa = a;
-    const struct store_package *pb = b;
-    return memcmp(pa->root, pb->root, 32);
+    if (!store || !pkg || !pkg->manifest_loaded) return;
+    vcs_package_manifest_free(&pkg->manifest);
+    free(pkg->manifest_wire);
+    pkg->manifest_wire = NULL;
+    pkg->manifest_loaded = false;
+    pkg->hot_clock = 0;
+    if (store->hot_count) store->hot_count--;
+}
+
+static void store_hot_trim(struct vcs_package_store *store,
+                           const struct store_package *protect)
+{
+    while (store->hot_count > STORE_HOT_MANIFESTS) {
+        struct store_package *oldest = NULL;
+        for (size_t i = 0; i < store->pkg_count; i++) {
+            struct store_package *candidate = &store->pkgs[i];
+            if (candidate == protect || !candidate->manifest_loaded)
+                continue;
+            if (!oldest || candidate->hot_clock < oldest->hot_clock)
+                oldest = candidate;
+        }
+        if (!oldest) break;
+        store_package_release_hot(store, oldest);
+    }
+}
+
+bool store_package_materialize(struct vcs_package_store *store,
+                               struct store_package *pkg)
+{
+    if (!store || !pkg) return false;
+    if (pkg->manifest_loaded) {
+        pkg->hot_clock = ++store->hot_clock;
+        return true;
+    }
+    char path[STORE_PATH_MAX];
+    int n = snprintf(path, sizeof(path), pkg->committed
+                     ? "%s/manifests/%s" : "%s/staging/%s/manifest",
+                     store->root, pkg->root_hex);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    size_t wire_len = 0;
+    uint8_t *wire = store_read_file(path, &wire_len);
+    if (!wire) return false;
+    struct vcs_package_manifest manifest;
+    uint8_t root[32];
+    bool valid = wire_len == pkg->manifest_wire_len &&
+                 vcs_package_manifest_parse(wire, wire_len, &manifest);
+    if (valid) {
+        valid = vcs_package_manifest_root(&manifest, root) &&
+                memcmp(root, pkg->root, sizeof(root)) == 0;
+        if (!valid) vcs_package_manifest_free(&manifest);
+    }
+    if (!valid) {
+        free(wire);
+        LOG_ERROR(STORE_LOG, "catalog manifest changed at %s", path);
+        return false;
+    }
+    pkg->manifest = manifest;
+    pkg->manifest_wire = wire;
+    pkg->manifest_loaded = true;
+    pkg->hot_clock = ++store->hot_clock;
+    store->hot_count++;
+    store_hot_trim(store, pkg);
+    return true;
 }
 
 uint32_t store_releases_count(const struct vcs_package_store *store)
@@ -828,6 +920,66 @@ uint32_t store_releases_count(const struct vcs_package_store *store)
     closedir(d);
 #endif
     return count;
+}
+
+static void store_record_dispose(struct store_package *pkg)
+{
+    free(pkg->manifest_wire);
+    free(pkg->chunks);
+    vcs_package_manifest_free(&pkg->manifest);
+}
+
+static bool store_record_reserve(struct vcs_package_store *store)
+{
+    if (store->pkg_count < store->pkg_cap) return true;
+    if (store->pkg_cap > SIZE_MAX / 2 ||
+        store->pkg_cap > SIZE_MAX / sizeof(*store->pkgs) / 2 ||
+        store->pkg_cap > SIZE_MAX / sizeof(*store->root_order) / 2)
+        LOG_FAIL(STORE_LOG, "package catalog capacity overflow");
+    size_t cap = store->pkg_cap ? store->pkg_cap * 2 : 32;
+    struct store_package *pkgs = zcl_realloc(
+        store->pkgs, cap * sizeof(*pkgs), "store_pkgs");
+    if (!pkgs) LOG_FAIL(STORE_LOG, "grow package table");
+    store->pkgs = pkgs;
+    size_t *order = zcl_realloc(store->root_order,
+                                cap * sizeof(*order), "store_root_order");
+    if (!order) LOG_FAIL(STORE_LOG, "grow root index");
+    store->root_order = order;
+    store->pkg_cap = cap;
+    return true;
+}
+
+static struct store_package *store_record_publish(
+    struct vcs_package_store *store, struct store_package *pkg)
+{
+    if (!store_record_reserve(store) ||
+        UINT64_MAX - store->manifest_bytes_total < pkg->total_bytes) {
+        store_record_dispose(pkg);
+        LOG_NULL(STORE_LOG, "package catalog capacity or byte overflow");
+    }
+    size_t lo = 0, hi = store->pkg_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int cmp = memcmp(store->pkgs[store->root_order[mid]].root,
+                         pkg->root, sizeof(pkg->root));
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < store->pkg_count &&
+        memcmp(store->pkgs[store->root_order[lo]].root, pkg->root,
+               sizeof(pkg->root)) == 0) {
+        store_record_dispose(pkg);
+        LOG_NULL(STORE_LOG, "duplicate package root");
+    }
+    memmove(store->root_order + lo + 1, store->root_order + lo,
+            (store->pkg_count - lo) * sizeof(*store->root_order));
+    store->root_order[lo] = store->pkg_count;
+    store->pkgs[store->pkg_count] = *pkg;
+    struct store_package *added = &store->pkgs[store->pkg_count++];
+    store->manifest_bytes_total += added->total_bytes;
+    store->hot_count++;
+    store_hot_trim(store, added);
+    return added;
 }
 
 struct store_package *store_record_add(struct vcs_package_store *store,
@@ -862,6 +1014,11 @@ struct store_package *store_record_add(struct vcs_package_store *store,
     }
     memcpy(pkg.manifest_wire, wire, wire_len);
     pkg.manifest_wire_len = wire_len;
+    pkg.file_count = (uint32_t)pkg.manifest.count;
+    for (size_t i = 0; i < pkg.manifest.count; i++)
+        pkg.total_chunks += pkg.manifest.files[i].chunk_count;
+    pkg.manifest_loaded = true;
+    pkg.hot_clock = ++store->hot_clock;
     pkg.committed = committed;
     /* New packages start RARE: no observed demand or replication yet
      * (the enum's zero value is HOT, so this must be explicit). */
@@ -873,26 +1030,62 @@ struct store_package *store_record_add(struct vcs_package_store *store,
                  pkg.root_hex);
         pkg.pinned = store_path_exists(pin);
     }
-    if (store->pkg_count == store->pkg_cap) {
-        size_t cap = store->pkg_cap ? store->pkg_cap * 2 : 32;
-        struct store_package *pkgs = zcl_realloc(
-            store->pkgs, cap * sizeof(*pkgs), "store_pkgs");
-        if (!pkgs) {
-            free(pkg.manifest_wire);
-            free(pkg.chunks);
-            vcs_package_manifest_free(&pkg.manifest);
-            LOG_NULL(STORE_LOG, "grow package table");
-        }
-        store->pkgs = pkgs;
-        store->pkg_cap = cap;
-    }
-    store->pkgs[store->pkg_count] = pkg;
-    return &store->pkgs[store->pkg_count++];
+    return store_record_publish(store, &pkg);
 }
 
-/* Load every committed manifest (manifests/<hex>) and staged manifest
- * (staging/<hex>/manifest). A staged entry that fails to load is
- * discarded (documented choice); a committed one is logged and skipped. */
+static bool store_committed_root_loaded(const struct vcs_package_store *store,
+                                        const char *root_hex)
+{
+    for (size_t i = 0; i < store->pkg_count; i++)
+        if (store->pkgs[i].committed &&
+            strcmp(store->pkgs[i].root_hex, root_hex) == 0)
+            return true;
+    return false;
+}
+
+static bool store_load_staged_record(struct vcs_package_store *store,
+                                     const char *dir, const char *name)
+{
+    char sdir[STORE_PATH_MAX], path[STORE_PATH_MAX];
+    snprintf(sdir, sizeof(sdir), "%s/%s", dir, name);
+    snprintf(path, sizeof(path), "%s/manifest", sdir);
+    size_t wire_len = 0;
+    uint8_t *wire = store_read_file(path, &wire_len);
+    if (!wire && store_committed_root_loaded(store, name) &&
+        store_directory_empty(sdir)) {
+        if (!store_generation_advance(store) || !store_rm_rf(sdir))
+            LOG_FAIL(STORE_LOG, "clean committed staging remainder %s", sdir);
+        return true;
+    }
+    bool loaded = wire &&
+        store_record_add(store, wire, wire_len, name, false) != NULL;
+    free(wire);
+    if (!loaded)
+        LOG_FAIL(STORE_LOG, "staged manifest unreadable at %s", sdir);
+    return true;
+}
+
+static void store_load_committed_record(struct vcs_package_store *store,
+                                         const char *dir, const char *name)
+{
+    char path[STORE_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    size_t wire_len = 0;
+    uint8_t *wire = store_read_file(path, &wire_len);
+    if (!wire) {
+        store->catalog_incomplete = true;
+        return;
+    }
+    if (!store_record_add(store, wire, wire_len, name, true))
+        store->catalog_incomplete = true;
+    free(wire);
+}
+
+/* Load every committed and staged manifest. Any indeterminate staged read or
+ * catalog failure refuses open without deleting the bytes: allocation and
+ * I/O failures cannot be distinguished safely from malformed staging here.
+ * A manifest already renamed into verified committed storage may leave an
+ * empty staging directory after a crash; that directory alone is discarded. */
 static bool store_load_manifests(struct vcs_package_store *store)
 {
     char dir[STORE_PATH_MAX];
@@ -904,43 +1097,22 @@ static bool store_load_manifests(struct vcs_package_store *store)
             const char *name = files.entries[i].name;
             if (!store_name_is_hex64(name))
                 continue;
-            char path[STORE_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", dir, name);
-            size_t wire_len = 0;
-            uint8_t *wire = store_read_file(path, &wire_len);
-            if (wire) {
-                store_record_add(store, wire, wire_len, name, true);
-                free(wire);
-            }
+            store_load_committed_record(store, dir, name);
         }
         platform_directory_list_free(&files);
-    }
+    } else
+        store->catalog_incomplete = true;
     snprintf(dir, sizeof(dir), "%s/staging", store->root);
     struct platform_directory_list dirs = {0};
     if (!platform_directory_list_real_sorted(dir, &dirs))
-        return true;
+        LOG_FAIL(STORE_LOG, "list staging manifests under %s", dir);
     for (size_t i = 0; i < dirs.count; i++) {
         const char *name = dirs.entries[i].name;
         if (!store_name_is_hex64(name))
             continue;
-        char sdir[STORE_PATH_MAX], path[STORE_PATH_MAX];
-        snprintf(sdir, sizeof(sdir), "%s/%s", dir, name);
-        snprintf(path, sizeof(path), "%s/manifest", sdir);
-        size_t wire_len = 0;
-        uint8_t *wire = store_read_file(path, &wire_len);
-        bool loaded = false;
-        if (wire) {
-            loaded = store_record_add(store, wire, wire_len, name, false) !=
-                     NULL;
-            free(wire);
-        }
-        if (!loaded) {
-            LOG_ERROR(STORE_LOG,
-                      "discarding unrecoverable staging entry %s", sdir);
-            if (!store_rm_rf(sdir)) {
-                platform_directory_list_free(&dirs);
-                LOG_FAIL(STORE_LOG, "discard staging %s", sdir);
-            }
+        if (!store_load_staged_record(store, dir, name)) {
+            platform_directory_list_free(&dirs);
+            return false;
         }
     }
     platform_directory_list_free(&dirs);
@@ -948,60 +1120,93 @@ static bool store_load_manifests(struct vcs_package_store *store)
 #else
     DIR *d = opendir(dir);
     if (d) {
+        errno = 0;
         struct dirent *ent;
         while ((ent = readdir(d)) != NULL) {
             if (!store_name_is_hex64(ent->d_name))
                 continue;
-            char path[STORE_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-            size_t wire_len = 0;
-            uint8_t *wire = store_read_file(path, &wire_len);
-            if (!wire)
-                continue;
-            store_record_add(store, wire, wire_len, ent->d_name, true);
-            free(wire);
+            store_load_committed_record(store, dir, ent->d_name);
+            errno = 0;
         }
+        if (errno != 0)
+            store->catalog_incomplete = true;
         closedir(d);
-    }
+    } else
+        store->catalog_incomplete = true;
     snprintf(dir, sizeof(dir), "%s/staging", store->root);
     d = opendir(dir);
     if (!d)
-        return true;
+        LOG_FAIL(STORE_LOG, "open staging manifests under %s: %s", dir,
+                 strerror(errno));
     struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (!ent) break;
         if (!store_name_is_hex64(ent->d_name))
             continue;
-        char sdir[STORE_PATH_MAX];
-        char path[STORE_PATH_MAX];
-        snprintf(sdir, sizeof(sdir), "%s/%s", dir, ent->d_name);
-        snprintf(path, sizeof(path), "%s/manifest", sdir);
-        size_t wire_len = 0;
-        uint8_t *wire = store_read_file(path, &wire_len);
-        bool loaded = false;
-        if (wire) {
-            loaded = store_record_add(store, wire, wire_len, ent->d_name,
-                                      false) != NULL;
-            free(wire);
+        if (!store_load_staged_record(store, dir, ent->d_name)) {
+            closedir(d);
+            return false;
         }
-        if (!loaded) {
-            LOG_ERROR(STORE_LOG,
-                      "discarding unrecoverable staging entry %s", sdir);
-            if (!store_rm_rf(sdir))
-                LOG_FAIL(STORE_LOG, "discard staging %s", sdir);
-        }
+    }
+    if (errno != 0) {
+        int saved_errno = errno;
+        closedir(d);
+        LOG_FAIL(STORE_LOG, "read staging manifests under %s: %s", dir,
+                 strerror(saved_errno));
     }
     closedir(d);
     return true;
 #endif
 }
 
+static bool store_gc_cas_record(struct vcs_package_store *store,
+                                const uint8_t hash[32], const char *path,
+                                const uint8_t (*refs)[32], size_t ref_count,
+                                bool *marked)
+{
+    bool referenced = ref_count > 0 &&
+        bsearch(hash, refs, ref_count, sizeof(*refs),
+                store_hash_cmp) != NULL;
+    if (referenced)
+        return store_cas_insert(store, hash);
+    if (!*marked && !store_generation_advance(store))
+        LOG_FAIL(STORE_LOG, "mark CAS recovery before orphan GC");
+    *marked = true;
+#if defined(_WIN32)
+    wchar_t wide[STORE_PATH_MAX];
+    if (store_wide_path(path, wide) && DeleteFileW(wide))
+        store->gc_orphans_total++;
+#else
+    if (unlink(path) == 0)
+        store->gc_orphans_total++;
+#endif
+    return true;
+}
+
+static bool store_gc_ref_capacity(const struct vcs_package_store *store,
+                                   size_t *capacity)
+{
+    size_t total = 0;
+    for (size_t i = 0; i < store->pkg_count; i++) {
+        if (store->pkgs[i].chunk_count > SIZE_MAX - total)
+            LOG_FAIL(STORE_LOG, "GC reference count overflow");
+        total += store->pkgs[i].chunk_count;
+    }
+    if (total > SIZE_MAX / sizeof(uint8_t[32]))
+        LOG_FAIL(STORE_LOG, "GC reference bytes overflow");
+    *capacity = total;
+    return true;
+}
+
 /* Delete CAS objects no loaded manifest references; build the CAS set. */
 static bool store_gc_cas(struct vcs_package_store *store)
 {
+    bool marked = false;
     /* Global referenced set: concat every record's unique hashes. */
     size_t ref_cap = 0;
-    for (size_t i = 0; i < store->pkg_count; i++)
-        ref_cap += store->pkgs[i].chunk_count;
+    if (!store_gc_ref_capacity(store, &ref_cap)) return false;
     uint8_t(*refs)[32] = NULL;
     if (ref_cap > 0) {
         refs = zcl_malloc(ref_cap * sizeof(*refs), "store_gc_refs");
@@ -1021,17 +1226,21 @@ static bool store_gc_cas(struct vcs_package_store *store)
     struct platform_directory_list dirs = {0};
     if (!platform_directory_list_real_sorted(cas_dir, &dirs)) {
         free(refs);
-        return true;
+        LOG_FAIL(STORE_LOG, "list CAS directory %s", cas_dir);
     }
     for (size_t i = 0; i < dirs.count; i++) {
         const char *prefix = dirs.entries[i].name;
-        if (strlen(prefix) != 2)
+        uint8_t prefix_byte;
+        if (!zcl_hex_decode_lower(prefix, &prefix_byte, 1))
             continue;
         char sub[STORE_PATH_MAX];
         snprintf(sub, sizeof(sub), "%s/%s", cas_dir, prefix);
         struct platform_directory_list files = {0};
-        if (!platform_directory_list_regular_sorted(sub, &files))
-            continue;
+        if (!platform_directory_list_regular_sorted(sub, &files)) {
+            platform_directory_list_free(&dirs);
+            free(refs);
+            LOG_FAIL(STORE_LOG, "list CAS shard %s", sub);
+        }
         for (size_t c = 0; c < files.count; c++) {
             uint8_t hash[32];
             const char *name = files.entries[c].name;
@@ -1040,20 +1249,12 @@ static bool store_gc_cas(struct vcs_package_store *store)
                 continue;
             char path[STORE_PATH_MAX];
             snprintf(path, sizeof(path), "%s/%s", sub, name);
-            bool referenced = ref_count > 0 &&
-                bsearch(hash, refs, ref_count, sizeof(*refs),
-                        store_hash_cmp) != NULL;
-            if (!referenced) {
-                wchar_t wide[STORE_PATH_MAX];
-                if (store_wide_path(path, wide) && DeleteFileW(wide))
-                    store->gc_orphans_total++;
-                continue;
-            }
-            if (!store_cas_insert(store, hash)) {
+            if (!store_gc_cas_record(store, hash, path, refs,
+                                      ref_count, &marked)) {
                 platform_directory_list_free(&files);
                 platform_directory_list_free(&dirs);
                 free(refs);
-                LOG_FAIL(STORE_LOG, "CAS set insert during GC");
+                LOG_FAIL(STORE_LOG, "CAS object recovery in %s", sub);
             }
         }
         platform_directory_list_free(&files);
@@ -1066,19 +1267,32 @@ static bool store_gc_cas(struct vcs_package_store *store)
     DIR *d = opendir(cas_dir);
     if (!d) {
         free(refs);
-        return true;
+        LOG_FAIL(STORE_LOG, "open CAS directory %s: %s", cas_dir,
+                 strerror(errno));
     }
     struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strlen(ent->d_name) != 2)
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (!ent) break;
+        uint8_t prefix_byte;
+        if (!zcl_hex_decode_lower(ent->d_name, &prefix_byte, 1))
             continue;
         char sub[STORE_PATH_MAX];
         snprintf(sub, sizeof(sub), "%s/%s", cas_dir, ent->d_name);
         DIR *sd = opendir(sub);
-        if (!sd)
-            continue;
+        if (!sd) {
+            int saved_errno = errno;
+            closedir(d);
+            free(refs);
+            LOG_FAIL(STORE_LOG, "open CAS shard %s: %s", sub,
+                     strerror(saved_errno));
+        }
         struct dirent *sent;
-        while ((sent = readdir(sd)) != NULL) {
+        for (;;) {
+            errno = 0;
+            sent = readdir(sd);
+            if (!sent) break;
             uint8_t hash[32];
             if (!zcl_hex_decode_lower(sent->d_name, hash, 32))
                 continue;
@@ -1087,19 +1301,31 @@ static bool store_gc_cas(struct vcs_package_store *store)
                 continue;
             char path[STORE_PATH_MAX];
             snprintf(path, sizeof(path), "%s/%s", sub, sent->d_name);
-            bool referenced = ref_count > 0 &&
-                bsearch(hash, refs, ref_count, sizeof(*refs),
-                        store_hash_cmp) != NULL;
-            if (!referenced) {
-                if (unlink(path) == 0)
-                    store->gc_orphans_total++;
-                continue;
+            if (!store_gc_cas_record(store, hash, path, refs,
+                                      ref_count, &marked)) {
+                closedir(sd);
+                closedir(d);
+                free(refs);
+                LOG_FAIL(STORE_LOG, "CAS object recovery in %s", sub);
             }
-            if (!store_cas_insert(store, hash))
-                LOG_FAIL(STORE_LOG, "CAS set insert during GC");
+        }
+        if (errno != 0) {
+            int saved_errno = errno;
+            closedir(sd);
+            closedir(d);
+            free(refs);
+            LOG_FAIL(STORE_LOG, "read CAS shard %s: %s", sub,
+                     strerror(saved_errno));
         }
         closedir(sd);
         rmdir(sub); /* no-op unless empty */
+    }
+    if (errno != 0) {
+        int saved_errno = errno;
+        closedir(d);
+        free(refs);
+        LOG_FAIL(STORE_LOG, "read CAS directory %s: %s", cas_dir,
+                 strerror(saved_errno));
     }
     closedir(d);
 #endif
@@ -1110,22 +1336,67 @@ static bool store_gc_cas(struct vcs_package_store *store)
 /* Commit every CAS-complete staged package, ascending root hex. */
 static bool store_commit_sweep(struct vcs_package_store *store)
 {
-    /* pkgs stays NULL until the first staged package, and qsort declares
-     * its base argument non-null even for a zero count. */
-    if (store->pkg_count > 1)
-        qsort(store->pkgs, store->pkg_count, sizeof(*store->pkgs),
-              store_pkg_root_cmp);
+    bool marked = false;
     for (size_t i = 0; i < store->pkg_count; i++) {
-        struct store_package *pkg = &store->pkgs[i];
-        if (!pkg->committed && store_package_complete(store, pkg) &&
-            !store_package_commit(store, pkg))
-            LOG_FAIL(STORE_LOG, "commit sweep %s", pkg->root_hex);
+        struct store_package *pkg = &store->pkgs[store->root_order[i]];
+        if (!pkg->committed && store_package_complete(store, pkg)) {
+            if (!marked && !store_generation_advance(store))
+                LOG_FAIL(STORE_LOG, "mark recovery commit before %s",
+                         pkg->root_hex);
+            marked = true;
+            if (!store_package_materialize(store, pkg) ||
+                !store_package_commit(store, pkg))
+                LOG_FAIL(STORE_LOG, "commit sweep %s", pkg->root_hex);
+        }
+    }
+    return true;
+}
+
+static bool store_existing_layout_safe(const struct vcs_package_store *store)
+{
+    if (store->preexisting_root) {
+        static const char *const required[] = {
+            "/manifests", "/staging", "/cas", "/cas/sha3", "/pins",
+        };
+        bool missing = false;
+        for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+            char path[STORE_PATH_MAX];
+            int n = snprintf(path, sizeof(path), "%s%s", store->root,
+                             required[i]);
+            if (n <= 0 || (size_t)n >= sizeof(path))
+                LOG_FAIL(STORE_LOG, "required store path too long");
+            if (!store_directory_exists(path)) missing = true;
+        }
+        if (missing) {
+            /* A crash during first layout creation may leave only empty
+             * directories. Complete that layout, but never synthesize an
+             * empty manifest view while any store evidence still exists. */
+            static const char *const evidence[] = {
+                "/manifests", "/staging", "/cas/sha3", "/pins",
+                "/releases", "/recipes", "/attestations", "/badges",
+            };
+            for (size_t i = 0;
+                 i < sizeof(evidence) / sizeof(evidence[0]); i++) {
+                char path[STORE_PATH_MAX];
+                int n = snprintf(path, sizeof(path), "%s%s", store->root,
+                                 evidence[i]);
+                if (n <= 0 || (size_t)n >= sizeof(path))
+                    LOG_FAIL(STORE_LOG, "evidence path too long");
+                if (store_directory_exists(path) &&
+                    !store_directory_empty(path))
+                    LOG_FAIL(STORE_LOG,
+                             "existing store missing layout with evidence %s",
+                             evidence[i]);
+            }
+        }
     }
     return true;
 }
 
 bool store_open_recover(struct vcs_package_store *store)
 {
+    if (!store_existing_layout_safe(store))
+        LOG_FAIL(STORE_LOG, "existing store layout is incomplete");
     static const char *const k_dirs[] = {
         "", "/manifests", "/releases", "/recipes", "/attestations",
         "/badges", "/cas", "/cas/sha3", "/staging", "/pins",
@@ -1141,6 +1412,12 @@ bool store_open_recover(struct vcs_package_store *store)
     store_sweep_temps(store, store->root);
     if (!store_load_manifests(store))
         LOG_FAIL(STORE_LOG, "load manifests under %s", store->root);
+    /* A committed manifest is authority for its chunks. If even one cannot
+     * be read and root-checked, no orphan decision is justified. Opening a
+     * partial store would also let later quota eviction delete those chunks. */
+    if (store->catalog_incomplete)
+        LOG_FAIL(STORE_LOG, "committed manifest history incomplete under %s",
+                 store->root);
     if (!store_gc_cas(store))
         LOG_FAIL(STORE_LOG, "CAS GC under %s", store->root);
     if (!store_commit_sweep(store))

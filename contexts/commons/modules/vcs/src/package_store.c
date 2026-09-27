@@ -12,10 +12,12 @@
 #include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "platform/positioned_file.h"
 #include "platform/file_metadata.h"
+#include "platform/rng.h"
 #include "util/util.h"
 #include "vcs/package_recipe.h"
 
@@ -38,7 +40,7 @@
 
 #define STORE_LOG "vcs.store"
 
-static bool store_process_lock(struct vcs_package_store *store)
+bool store_process_lock(struct vcs_package_store *store)
 {
 #ifdef _WIN32
     if (!store || store->process_lock_fd < 0)
@@ -60,7 +62,7 @@ static bool store_process_lock(struct vcs_package_store *store)
 #endif
 }
 
-static void store_process_unlock(struct vcs_package_store *store)
+void store_process_unlock(struct vcs_package_store *store)
 {
 #ifdef _WIN32
     if (store && store->process_lock_fd >= 0) {
@@ -73,6 +75,83 @@ static void store_process_unlock(struct vcs_package_store *store)
     if (store && store->process_lock_fd >= 0)
         (void)flock(store->process_lock_fd, LOCK_UN);
 #endif
+}
+
+/* The process lock serializes this atomic change detector. It grants no
+ * object authority: open still rebuilds from manifests and CAS, and final
+ * publication validates those files. A damaged detector is replaced with a
+ * fresh epoch; handles that saw the old epoch then refuse further mutation. */
+static bool store_generation_path(struct vcs_package_store *store,
+                                  char path[STORE_PATH_MAX])
+{
+    int n = snprintf(path, STORE_PATH_MAX, "%s/store-generation", store->root);
+    return n > 0 && n < (int)STORE_PATH_MAX;
+}
+
+bool store_generation_read(struct vcs_package_store *store, uint64_t *value)
+{
+    char path[STORE_PATH_MAX];
+    if (!store_generation_path(store, path)) return false;
+    struct platform_positioned_file file;
+    platform_positioned_file_init(&file);
+    if (!platform_positioned_file_open(&file, path)) return false;
+    uint8_t bytes[9];
+    int64_t n = platform_positioned_file_read(&file, bytes, sizeof(bytes), 0);
+    platform_positioned_file_close(&file);
+    if (n != 8) return false;
+    *value = zcl_read_u64_le(bytes);
+    return true;
+}
+
+static bool store_generation_write(struct vcs_package_store *store,
+                                   uint64_t value)
+{
+    char path[STORE_PATH_MAX];
+    if (!store_generation_path(store, path)) return false;
+    uint8_t bytes[8];
+    zcl_write_u64_le(bytes, value);
+    return store_atomic_write(path, bytes, sizeof(bytes));
+}
+
+bool store_generation_check(struct vcs_package_store *store)
+{
+    uint64_t value = 0;
+    return store_generation_read(store, &value) &&
+           value == store->shared_generation;
+}
+
+bool store_generation_advance(struct vcs_package_store *store)
+{
+    if (!store_generation_check(store) ||
+        store->shared_generation == UINT64_MAX) return false;
+    uint64_t value = store->shared_generation + 1;
+    if (!store_generation_write(store, value)) return false;
+    store->shared_generation = value;
+    return true;
+}
+
+static bool store_generation_initialize(struct vcs_package_store *store)
+{
+    if (store_generation_read(store, &store->shared_generation)) return true;
+    uint64_t seed = 0;
+    if (!rng_fill((uint8_t *)&seed, sizeof(seed)))
+        LOG_FAIL(STORE_LOG, "random store generation seed");
+    if (!seed) seed = 1;
+    if (!store_generation_write(store, seed))
+        LOG_FAIL(STORE_LOG, "write initial store generation");
+    store->shared_generation = seed;
+    return true;
+}
+
+void store_partial_catalog_free(struct vcs_package_store *store)
+{
+    for (size_t i = 0; i < store->pkg_count; i++) {
+        store_package_release_hot(store, &store->pkgs[i]);
+        free(store->pkgs[i].chunks);
+    }
+    free(store->pkgs);
+    free(store->root_order);
+    free(store->cas);
 }
 
 const char *vcs_package_store_result_string(
@@ -134,14 +213,26 @@ static uint64_t store_pool_budget(const struct vcs_package_store *store,
            ((store->quota % 10u) * tenths) / 10u;
 }
 
-static struct store_package *store_find(struct vcs_package_store *store,
+struct store_package *store_find(struct vcs_package_store *store,
                                         const uint8_t root[32],
                                         size_t *index_out)
 {
-    for (size_t i = 0; i < store->pkg_count; i++) {
+    size_t lo = 0, hi = store->pkg_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int cmp = memcmp(store->pkgs[store->root_order[mid]].root,
+                         root, 32);
+        if (cmp < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < store->pkg_count) {
+        size_t i = store->root_order[lo];
         if (memcmp(store->pkgs[i].root, root, 32) == 0) {
-            if (index_out)
-                *index_out = i;
+            if (!store_package_materialize(store, &store->pkgs[i])) {
+                store->catalog_incomplete = true;
+                return NULL;
+            }
+            if (index_out) *index_out = i;
             return &store->pkgs[i];
         }
     }
@@ -169,6 +260,8 @@ static uint64_t store_pool_usage_locked(struct vcs_package_store *store,
             continue;
         uint64_t bytes = 0;
         store_package_present(store, &store->pkgs[i], NULL, &bytes);
+        if (UINT64_MAX - usage < bytes)
+            return UINT64_MAX;
         usage += bytes;
     }
     return usage;
@@ -203,43 +296,58 @@ static bool store_chunk_shared(const struct vcs_package_store *store,
 
 /* Remove a package from the table: delete its manifest (or staging dir),
  * any pin marker, and the CAS chunks no other package references. */
-static void store_drop_package(struct vcs_package_store *store, size_t index)
+static bool store_drop_package(struct vcs_package_store *store, size_t index)
 {
     struct store_package *pkg = &store->pkgs[index];
-    store->next_mutation_generation++;
-    if (!store->next_mutation_generation)
-        store->next_mutation_generation++;
     char path[STORE_PATH_MAX];
     if (pkg->committed) {
         snprintf(path, sizeof(path), "%s/manifests/%s", store->root,
                  pkg->root_hex);
         if (!store_unlink(path))
-            LOG_ERROR(STORE_LOG, "evict unlink %s: %s", path,
-                      strerror(errno));
+            LOG_RETURN(false, STORE_LOG, "evict unlink %s: %s", path,
+                       strerror(errno));
     } else {
         snprintf(path, sizeof(path), "%s/staging/%s", store->root,
                  pkg->root_hex);
         if (!store_rm_rf(path))
-            LOG_ERROR(STORE_LOG, "evict staging cleanup %s", path);
+            LOG_RETURN(false, STORE_LOG, "evict staging cleanup %s", path);
     }
     snprintf(path, sizeof(path), "%s/pins/%s", store->root, pkg->root_hex);
-    if (!store_unlink(path))
-        LOG_ERROR(STORE_LOG, "evict pin unlink %s: %s", path,
-                  strerror(errno));
+    if (!store_unlink(path)) {
+        store->catalog_incomplete = true;
+        LOG_RETURN(false, STORE_LOG, "evict pin unlink %s: %s", path,
+                   strerror(errno));
+    }
+    store->manifest_bytes_total -= pkg->total_bytes;
+    store->next_mutation_generation++;
+    if (!store->next_mutation_generation)
+        store->next_mutation_generation++;
     for (size_t c = 0; c < pkg->chunk_count; c++) {
         if (store_chunk_shared(store, pkg->chunks[c].hash, index))
             continue;
         store_cas_path(store, pkg->chunks[c].hash, path, sizeof(path));
-        if (!store_unlink(path))
+        if (!store_unlink(path)) {
             LOG_ERROR(STORE_LOG, "evict chunk unlink %s: %s", path,
                       strerror(errno));
+            continue; /* leftover CAS bytes are harmless; retain presence */
+        }
         store_cas_remove(store, pkg->chunks[c].hash);
     }
-    vcs_package_manifest_free(&pkg->manifest);
-    free(pkg->manifest_wire);
+    store_package_release_hot(store, pkg);
     free(pkg->chunks);
+    size_t removed = 0;
+    while (removed < store->pkg_count && store->root_order[removed] != index)
+        removed++;
+    if (removed < store->pkg_count) {
+        memmove(store->root_order + removed, store->root_order + removed + 1,
+                (store->pkg_count - removed - 1) * sizeof(*store->root_order));
+    }
+    for (size_t i = 0; i + 1 < store->pkg_count; i++)
+        if (store->root_order[i] == store->pkg_count - 1)
+            store->root_order[i] = index;
     store->pkgs[index] = store->pkgs[store->pkg_count - 1];
     store->pkg_count--;
+    return true;
 }
 
 /* Victim selection — deterministic, frozen (see package_store.h):
@@ -305,30 +413,54 @@ static bool store_manifest_pool_fits(struct vcs_package_store *store,
 
 /* Make room for incoming_bytes in pool, evicting (HOT/RARE only) until
  * it fits. STAGING and PINS never evict. False = no room and no victim. */
-static bool store_ensure_room(struct vcs_package_store *store,
+bool store_ensure_room(struct vcs_package_store *store,
                               enum vcs_package_store_pool pool,
                               uint64_t incoming,
                               const uint8_t protect_root[32])
 {
-    while (store_pool_usage_locked(store, pool) + incoming >
-           store_pool_budget(store, pool)) {
+    uint64_t budget = store_pool_budget(store, pool);
+    uint64_t used;
+    bool catalog_checked = false;
+    while ((used = store_pool_usage_locked(store, pool)) > budget ||
+           incoming > budget - used) {
         if (pool == VCS_PACKAGE_STORE_POOL_PINS ||
             pool == VCS_PACKAGE_STORE_POOL_STAGING)
             return false;
         long victim = store_pick_victim(store, pool, protect_root);
         if (victim < 0)
             return false;
+        /* Eviction may remove CAS bytes. Recheck the authoritative manifest
+         * catalog before deciding that no untracked package references them.
+         * This cold scan happens only when eviction is actually needed. */
+        if (!catalog_checked) {
+            if (store_catalog_validate_disk(store) !=
+                VCS_PACKAGE_STORE_PAGE_OK) {
+                store->catalog_incomplete = true;
+                LOG_ERROR(STORE_LOG,
+                          "eviction refused: package catalog changed");
+                return false;
+            }
+            catalog_checked = true;
+        }
         LOG_INFO(STORE_LOG, "evicting %s package %s (pool %s over budget)",
                  vcs_package_store_pool_string(pool),
                  store->pkgs[victim].root_hex,
                  vcs_package_store_pool_string(pool));
-        store_drop_package(store, (size_t)victim);
+        if (!store_drop_package(store, (size_t)victim)) {
+            store->catalog_incomplete = true;
+            return false;
+        }
         store->evictions_total++;
     }
     return true;
 }
 
 /* ── open / close ─────────────────────────────────────────────────── */
+static bool store_open_lock_ready(struct vcs_package_store *store)
+{
+    return store->process_lock_fd >= 0 && store_process_lock(store);
+}
+
 struct vcs_package_store *vcs_package_store_open(const char *datadir,
                                                  uint64_t quota_bytes)
 {
@@ -345,6 +477,7 @@ struct vcs_package_store *vcs_package_store_open(const char *datadir,
         free(store);
         LOG_NULL(STORE_LOG, "datadir too long");
     }
+    store->preexisting_root = store_directory_exists(store->root);
     if (!store_mkdir_p(store->root)) {
         free(store);
         LOG_NULL(STORE_LOG, "create store root");
@@ -390,11 +523,17 @@ struct vcs_package_store *vcs_package_store_open(const char *datadir,
     store->process_lock_fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC,
                                   0600);
 #endif
-    if (store->process_lock_fd < 0 || !store_process_lock(store)) {
+    if (!store_open_lock_ready(store)) {
         if (store->process_lock_fd >= 0)
             close(store->process_lock_fd);
         free(store);
         LOG_NULL(STORE_LOG, "could not lock store recovery at %s", lock_path);
+    }
+    if (!store_generation_initialize(store)) {
+        store_process_unlock(store);
+        close(store->process_lock_fd);
+        free(store);
+        LOG_NULL(STORE_LOG, "initialize store generation at %s", lock_path);
     }
     store->quota = quota_bytes;
     pthread_mutex_init(&store->lock, NULL);
@@ -409,6 +548,7 @@ struct vcs_package_store *vcs_package_store_open(const char *datadir,
     if (!store_open_recover(store)) {
         char root_copy[STORE_PATH_MAX];
         snprintf(root_copy, sizeof(root_copy), "%s", store->root);
+        store_partial_catalog_free(store);
         vcs_package_accept_free(store->accept);
         store_process_unlock(store);
         close(store->process_lock_fd);
@@ -431,11 +571,11 @@ void vcs_package_store_close(struct vcs_package_store *store)
     if (!store)
         return;
     for (size_t i = 0; i < store->pkg_count; i++) {
-        vcs_package_manifest_free(&store->pkgs[i].manifest);
-        free(store->pkgs[i].manifest_wire);
+        store_package_release_hot(store, &store->pkgs[i]);
         free(store->pkgs[i].chunks);
     }
     free(store->pkgs);
+    free(store->root_order);
     free(store->cas);
     vcs_package_accept_free(store->accept);
     close(store->process_lock_fd);
@@ -541,6 +681,43 @@ static bool store_commit_if_complete(struct vcs_package_store *store,
     return true;
 }
 
+static enum vcs_package_store_result store_finish_dedup_manifest(
+    struct vcs_package_store *store, const uint8_t root[32], size_t index)
+{
+    struct store_package *pkg = &store->pkgs[index];
+    if (!store_package_complete(store, pkg)) return VCS_PACKAGE_STORE_OK;
+    enum vcs_package_store_pool pool =
+        pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
+                    : VCS_PACKAGE_STORE_POOL_RARE;
+    /* The newly added complete package already contributes its bytes. */
+    if (!store_ensure_room(store, pool, 0, pkg->root)) {
+        if (store->catalog_incomplete)
+            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                       "manifest admission stopped: catalog incomplete");
+        if (!store_drop_package(store, index)) {
+            store->catalog_incomplete = true;
+            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                       "manifest rollback failed");
+        }
+        store->quota_rejects_total++;
+        return VCS_PACKAGE_STORE_ERR_QUOTA;
+    }
+    if (!store_commit_if_complete(store, root))
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "commit complete dedup manifest");
+    return VCS_PACKAGE_STORE_OK;
+}
+
+static enum vcs_package_store_result store_existing_manifest_noop(
+    const struct vcs_package_store *store, const struct store_package *existing)
+{
+    if (store_catalog_validate_record_disk(store, existing) !=
+        VCS_PACKAGE_STORE_PAGE_OK)
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "manifest no-op refused: authoritative object missing");
+    return VCS_PACKAGE_STORE_OK;
+}
+
 enum vcs_package_store_result vcs_package_store_put_manifest(
     struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
     uint8_t root_out[32])
@@ -549,6 +726,11 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
         LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
                    "null store/wire");
     pthread_mutex_lock(&store->lock);
+    if (store->catalog_incomplete) {
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "manifest admission refused: catalog incomplete");
+    }
 
     struct vcs_package_manifest manifest;
     if (!vcs_package_manifest_parse(wire, wire_len, &manifest)) {
@@ -570,19 +752,36 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
 
     if (root_out)
         memcpy(root_out, root, 32);
-    if (store_find(store, root, NULL)) {
+    if (!store_process_lock(store)) {
         pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_OK; /* same root = same content: no-op */
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "lock store for manifest admission");
+    }
+    if (!store_generation_check(store)) {
+        store_process_unlock(store);
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "manifest admission refused: stale store handle");
+    }
+    struct store_package *existing = store_find(store, root, NULL);
+    if (store->catalog_incomplete) {
+        store_process_unlock(store);
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "manifest admission refused: catalog changed");
+    }
+    if (existing) {
+        enum vcs_package_store_result result =
+            store_existing_manifest_noop(store, existing);
+        store_process_unlock(store);
+        pthread_mutex_unlock(&store->lock);
+        return result; /* same root = same content: no-op if still present */
     }
     if (total_bytes > VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_PACKAGE_CAP;
     }
-    if (store->pkg_count >= VCS_PACKAGE_STORE_MAX_TRACKED) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_LIMIT;
-    }
-
     /* Early feasibility: the package must fit the pool it will end in.
      * A pin marker charges the pins budget, which never evicts, so a
      * package that does not fit the bytes still free is refused before
@@ -594,6 +793,7 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
         pre_pinned ? VCS_PACKAGE_STORE_POOL_PINS : VCS_PACKAGE_STORE_POOL_RARE;
     if (!store_manifest_pool_fits(store, pre_pinned, total_bytes, eventual)) {
         store->quota_rejects_total++;
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_QUOTA;
     }
@@ -603,7 +803,7 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
     snprintf(staging_dir, sizeof(staging_dir), "%s/staging/%s", store->root,
              root_hex);
     snprintf(staged, sizeof(staged), "%s/manifest", staging_dir);
-    if (!store_process_lock(store) || !store_mkdir_p(staging_dir) ||
+    if (!store_generation_advance(store) || !store_mkdir_p(staging_dir) ||
         !store_atomic_write(staged, wire, wire_len)) {
         store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
@@ -615,36 +815,43 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_ALLOC;
     }
-    size_t index = store->pkg_count - 1;
-    struct store_package *pkg = &store->pkgs[index];
-
-    /* Full-dedup arrival: every chunk already in the CAS. The package is
-     * complete immediately and its bytes charge the eventual pool. */
-    if (store_package_complete(store, pkg)) {
-        uint64_t bytes = 0;
-        store_package_present(store, pkg, NULL, &bytes);
-        enum vcs_package_store_pool pool =
-            pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
-                        : VCS_PACKAGE_STORE_POOL_RARE;
-        if (!store_ensure_room(store, pool, bytes, pkg->root)) {
-            store_drop_package(store, index);
-            store->quota_rejects_total++;
-            store_process_unlock(store);
-            pthread_mutex_unlock(&store->lock);
-            return VCS_PACKAGE_STORE_ERR_QUOTA;
-        }
-        if (!store_commit_if_complete(store, root)) {
-            store_process_unlock(store);
-            pthread_mutex_unlock(&store->lock);
-            return VCS_PACKAGE_STORE_ERR_IO;
-        }
-    }
+    enum vcs_package_store_result result = store_finish_dedup_manifest(
+        store, root, store->pkg_count - 1);
     store_process_unlock(store);
     pthread_mutex_unlock(&store->lock);
-    return VCS_PACKAGE_STORE_OK;
+    return result;
 }
 
 /* ── admission: chunks ────────────────────────────────────────────── */
+static enum vcs_package_store_result store_chunk_room(
+    struct vcs_package_store *store, struct store_package *pkg,
+    size_t chunk_len, const uint8_t package_root[32], bool *will_complete)
+{
+    uint32_t present_before = 0;
+    uint64_t bytes_before = 0;
+    store_package_present(store, pkg, &present_before, &bytes_before);
+    *will_complete = (uint64_t)present_before + 1u == pkg->chunk_count;
+    enum vcs_package_store_pool pool;
+    uint64_t incoming;
+    if (*will_complete) {
+        pool = pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
+               : pkg->class_ == VCS_PACKAGE_STORE_CLASS_HOT
+                     ? VCS_PACKAGE_STORE_POOL_HOT : VCS_PACKAGE_STORE_POOL_RARE;
+        incoming = bytes_before + chunk_len;
+    } else {
+        pool = pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
+                           : VCS_PACKAGE_STORE_POOL_STAGING;
+        incoming = chunk_len;
+    }
+    if (store_ensure_room(store, pool, incoming, package_root))
+        return VCS_PACKAGE_STORE_OK;
+    if (store->catalog_incomplete)
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "chunk admission stopped: catalog incomplete");
+    store->quota_rejects_total++;
+    return VCS_PACKAGE_STORE_ERR_QUOTA;
+}
+
 /* Resolve (path, chunk_index) to a manifest file; NULL = bad coords. */
 static const struct vcs_package_file *store_resolve_file(
     const struct store_package *pkg, const char *path)
@@ -665,17 +872,38 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
                    "null store/root/path/chunk");
     pthread_mutex_lock(&store->lock);
 
+    if (!store_process_lock(store)) {
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "lock store for chunk admission");
+    }
+    if (!store_generation_check(store)) {
+        store_process_unlock(store);
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "chunk admission refused: stale store handle");
+    }
+
     struct store_package *pkg = store_find(store, package_root, NULL);
+    if (store->catalog_incomplete) {
+        store_process_unlock(store);
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "chunk admission refused: catalog incomplete");
+    }
     if (!pkg) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
     }
     const struct vcs_package_file *file = store_resolve_file(pkg, path);
     if (!file || chunk_index >= file->chunk_count) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_CHUNK_COORD;
     }
     if (!vcs_package_verify_chunk(file, chunk_index, chunk, chunk_len)) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_CHUNK_HASH;
     }
@@ -685,43 +913,20 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
     /* Dedup: the content is already in the CAS, so it was already
      * present-for-this-package too — nothing changes. */
     if (store_cas_contains(store, hash)) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_OK;
     }
-    if (!store_process_lock(store)) {
+    if (!store_generation_advance(store)) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_IO;
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                   "advance store generation for chunk admission");
     }
 
-    uint32_t present_before = 0;
-    uint64_t bytes_before = 0;
-    store_package_present(store, pkg, &present_before, &bytes_before);
-    bool will_complete =
-        (uint64_t)present_before + 1u == (uint64_t)pkg->chunk_count;
-
-    enum vcs_package_store_result result = VCS_PACKAGE_STORE_OK;
-    if (will_complete) {
-        /* The whole package's bytes move into its destination pool with
-         * this chunk; enforce that pool (with eviction) up front. */
-        enum vcs_package_store_pool pool =
-            pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
-                        : (pkg->class_ == VCS_PACKAGE_STORE_CLASS_HOT
-                               ? VCS_PACKAGE_STORE_POOL_HOT
-                               : VCS_PACKAGE_STORE_POOL_RARE);
-        if (!store_ensure_room(store, pool, bytes_before + chunk_len,
-                               package_root)) {
-            store->quota_rejects_total++;
-            result = VCS_PACKAGE_STORE_ERR_QUOTA;
-        }
-    } else {
-        enum vcs_package_store_pool pool =
-            pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
-                        : VCS_PACKAGE_STORE_POOL_STAGING;
-        if (!store_ensure_room(store, pool, chunk_len, package_root)) {
-            store->quota_rejects_total++;
-            result = VCS_PACKAGE_STORE_ERR_QUOTA;
-        }
-    }
+    bool will_complete = false;
+    enum vcs_package_store_result result = store_chunk_room(
+        store, pkg, chunk_len, package_root, &will_complete);
     if (result != VCS_PACKAGE_STORE_OK) {
         store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
@@ -894,11 +1099,12 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
     if (!platform_positioned_file_open(&cas_file, cas_path)) {
         int saved_errno = errno;
         if (saved_errno == ENOENT) {
-            store_cas_remove(store, hash);
-            store_packages_touch_hash(store, hash);
+            enum vcs_package_store_result result =
+                store_cas_quarantine_if_bad(
+                    store, hash, file, chunk_index,
+                    VCS_PACKAGE_STORE_ERR_CHUNK_MISSING);
             pthread_mutex_unlock(&store->lock);
-            LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_MISSING, STORE_LOG,
-                       "CAS index named missing object %s", cas_path);
+            return result;
         }
         pthread_mutex_unlock(&store->lock);
         LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
@@ -913,21 +1119,10 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
     }
     if (file_size == 0 || file_size > VCS_PACKAGE_CHUNK_BYTES) {
         platform_positioned_file_close(&cas_file);
-        int remove_errno = 0;
-        if (!store_unlink(cas_path))
-            remove_errno = errno;
-        if (!remove_errno) {
-            store_cas_remove(store, hash);
-            store_packages_touch_hash(store, hash);
-        }
+        enum vcs_package_store_result result = store_cas_quarantine_if_bad(
+            store, hash, file, chunk_index, VCS_PACKAGE_STORE_ERR_CHUNK_HASH);
         pthread_mutex_unlock(&store->lock);
-        if (remove_errno)
-            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                       "quarantine corrupt CAS object %s: %s", cas_path,
-                       strerror(remove_errno));
-        LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_HASH, STORE_LOG,
-                   "quarantined corrupt CAS object %s with invalid size %llu",
-                   cas_path, (unsigned long long)file_size);
+        return result;
     }
     size_t len = (size_t)file_size;
     uint8_t *buf = zcl_malloc(len, "vcs_store_get_chunk");
@@ -947,21 +1142,10 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
     }
     if (!vcs_package_verify_chunk(file, chunk_index, buf, len)) {
         free(buf);
-        int remove_errno = 0;
-        if (!store_unlink(cas_path))
-            remove_errno = errno;
-        if (!remove_errno) {
-            store_cas_remove(store, hash);
-            store_packages_touch_hash(store, hash);
-        }
+        enum vcs_package_store_result result = store_cas_quarantine_if_bad(
+            store, hash, file, chunk_index, VCS_PACKAGE_STORE_ERR_CHUNK_HASH);
         pthread_mutex_unlock(&store->lock);
-        if (remove_errno)
-            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                       "quarantine corrupt CAS object %s: %s", cas_path,
-                       strerror(remove_errno));
-        LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_HASH, STORE_LOG,
-                   "quarantined CAS object whose bytes do not match address %s",
-                   cas_path);
+        return result;
     }
     pkg->access_count++;
     pkg->last_access = ++store->logical_clock;
@@ -1062,141 +1246,6 @@ bool vcs_package_store_chunk_present(
     return present;
 }
 
-size_t vcs_package_store_list_summaries(
-    struct vcs_package_store *store, bool complete_only,
-    struct vcs_package_store_summary *out, size_t max)
-{
-    if (!store || (!out && max > 0))
-        LOG_RETURN(0, STORE_LOG, "null store/summaries out");
-    size_t n = 0;
-    pthread_mutex_lock(&store->lock);
-    for (size_t i = 0; i < store->pkg_count && n < max; i++) {
-        struct store_package *pkg = &store->pkgs[i];
-        bool complete = store_package_complete(store, pkg);
-        if (complete_only && !complete)
-            continue;
-        struct vcs_package_store_summary *s = &out[n++];
-        memset(s, 0, sizeof(*s));
-        memcpy(s->root, pkg->root, 32);
-        s->manifest_bytes = (uint32_t)pkg->manifest_wire_len;
-        s->file_count = (uint32_t)pkg->manifest.count;
-        s->total_bytes = pkg->total_bytes;
-        /* The true coordinate total (the announce consistency rules speak
-         * of every chunk position, not the deduped unique-hash count). */
-        for (size_t f = 0; f < pkg->manifest.count; f++)
-            s->total_chunks += pkg->manifest.files[f].chunk_count;
-        s->complete = complete;
-        s->pinned = pkg->pinned;
-    }
-    pthread_mutex_unlock(&store->lock);
-    return n;
-}
-
-/* ── operator: pins and class ─────────────────────────────────────── */
-enum vcs_package_store_result vcs_package_store_pin(
-    struct vcs_package_store *store, const uint8_t package_root[32],
-    bool pinned)
-{
-    if (!store || !package_root)
-        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
-                   "null store/root");
-    pthread_mutex_lock(&store->lock);
-    struct store_package *pkg = store_find(store, package_root, NULL);
-    if (!pkg) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
-    }
-    if (pkg->pinned == pinned) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_OK;
-    }
-    char pin[STORE_PATH_MAX];
-    snprintf(pin, sizeof(pin), "%s/pins/%s", store->root, pkg->root_hex);
-    if (pinned) {
-        /* Pins are never made room for by eviction: the package's bytes
-         * must fit the pins budget as-is. */
-        uint64_t bytes = 0;
-        store_package_present(store, pkg, NULL, &bytes);
-        if (!store_ensure_room(store, VCS_PACKAGE_STORE_POOL_PINS, bytes,
-                               package_root)) {
-            store->quota_rejects_total++;
-            pthread_mutex_unlock(&store->lock);
-            return VCS_PACKAGE_STORE_ERR_QUOTA;
-        }
-        if (!store_atomic_write(pin, NULL, 0)) {
-            pthread_mutex_unlock(&store->lock);
-            return VCS_PACKAGE_STORE_ERR_IO;
-        }
-        pkg = store_find(store, package_root, NULL);
-        if (!pkg) {
-            pthread_mutex_unlock(&store->lock);
-            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                       "pinned package vanished mid-pin");
-        }
-        pkg->pinned = true;
-        store_package_touch(store, pkg);
-    } else {
-        if (!store_unlink(pin)) {
-            pthread_mutex_unlock(&store->lock);
-            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                       "unlink pin %s: %s", pin, strerror(errno));
-        }
-        pkg->pinned = false;
-        store_package_touch(store, pkg);
-    }
-    pthread_mutex_unlock(&store->lock);
-    return VCS_PACKAGE_STORE_OK;
-}
-
-enum vcs_package_store_result vcs_package_store_set_class(
-    struct vcs_package_store *store, const uint8_t package_root[32],
-    enum vcs_package_store_class class_, uint32_t replicas)
-{
-    if (!store || !package_root)
-        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
-                   "null store/root");
-    pthread_mutex_lock(&store->lock);
-    struct store_package *pkg = store_find(store, package_root, NULL);
-    if (!pkg) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE;
-    }
-    if (pkg->class_ == class_ && pkg->replicas == replicas) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_OK;
-    }
-    /* A complete package changes pools only when its class changes:
-     * enforce the target pool (with eviction) before the move. A replica
-     * update under an unchanged class moves nothing and must not charge
-     * the pool a second time. An incomplete package charges staging
-     * regardless; the class takes effect at completion. */
-    if (pkg->class_ != class_ && store_package_complete(store, pkg) &&
-        !pkg->pinned) {
-        uint64_t bytes = 0;
-        store_package_present(store, pkg, NULL, &bytes);
-        enum vcs_package_store_pool pool =
-            class_ == VCS_PACKAGE_STORE_CLASS_HOT
-                ? VCS_PACKAGE_STORE_POOL_HOT
-                : VCS_PACKAGE_STORE_POOL_RARE;
-        if (!store_ensure_room(store, pool, bytes, package_root)) {
-            store->quota_rejects_total++;
-            pthread_mutex_unlock(&store->lock);
-            return VCS_PACKAGE_STORE_ERR_QUOTA;
-        }
-        pkg = store_find(store, package_root, NULL);
-        if (!pkg) {
-            pthread_mutex_unlock(&store->lock);
-            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                       "package vanished mid-reclassify");
-        }
-    }
-    pkg->class_ = class_;
-    pkg->replicas = replicas;
-    pthread_mutex_unlock(&store->lock);
-    return VCS_PACKAGE_STORE_OK;
-}
-
-/* ── status + introspection ───────────────────────────────────────── */
 /* Lock-held status fill shared by the public snapshot and the dump. */
 static bool store_status_locked(struct vcs_package_store *store,
                                 const uint8_t package_root[32],
@@ -1370,8 +1419,7 @@ enum vcs_package_store_totals_result vcs_package_store_try_totals(
     out->quota_bytes = store->quota;
     out->tracked_packages = (uint64_t)store->pkg_count;
     out->cas_chunks = (uint64_t)store->cas_count;
-    for (size_t i = 0; i < store->pkg_count; i++)
-        out->manifest_bytes_total += store->pkgs[i].total_bytes;
+    out->manifest_bytes_total = store->manifest_bytes_total;
     out->evictions_total = store->evictions_total;
     out->gc_orphans_total = store->gc_orphans_total;
     out->quota_rejects_total = store->quota_rejects_total;

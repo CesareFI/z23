@@ -5,14 +5,80 @@
 #include "test/test_core.h"
 
 #include "test/proof_ticket_fixture.h"
+#include "base/hex.h"
+#include "base/safe_alloc.h"
+#include "platform/time_compat.h"
+#include "vcs/blob_store.h"
+#include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
+#include "../../../contexts/commons/modules/vcs/src/proof_reuse_priv.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 static struct ptf g_l;
 
 #define PTL_CAP 16u
+
+struct ptl_cost_sample {
+    int64_t wall_before;
+    clock_t cpu_before;
+#if !defined(_WIN32)
+    struct rusage usage_before;
+    bool usage_started;
+#endif
+};
+
+static struct ptl_cost_sample ptl_cost_begin(void)
+{
+    struct ptl_cost_sample sample = {
+        .wall_before = platform_time_monotonic_us(), .cpu_before = clock(),
+    };
+#if !defined(_WIN32)
+    sample.usage_started = getrusage(RUSAGE_SELF, &sample.usage_before) == 0;
+#endif
+    return sample;
+}
+
+static void ptl_cost_print(const char *phase, size_t listed, bool success,
+                           const struct ptl_cost_sample *sample)
+{
+    uint64_t wall_us = (uint64_t)(platform_time_monotonic_us() -
+                                  sample->wall_before);
+    clock_t cpu_after = clock();
+    uint64_t cpu_us = 0, rss_kib = 0, read_ops = 0, write_ops = 0;
+    if (sample->cpu_before != (clock_t)-1 && cpu_after != (clock_t)-1 &&
+        cpu_after >= sample->cpu_before)
+        cpu_us = (uint64_t)((double)(cpu_after - sample->cpu_before) *
+                            1000000.0 / (double)CLOCKS_PER_SEC);
+#if !defined(_WIN32)
+    struct rusage usage_after;
+    if (sample->usage_started &&
+        getrusage(RUSAGE_SELF, &usage_after) == 0) {
+#if defined(__APPLE__)
+        rss_kib = (uint64_t)usage_after.ru_maxrss / 1024u;
+#else
+        rss_kib = (uint64_t)usage_after.ru_maxrss;
+#endif
+        read_ops = (uint64_t)(usage_after.ru_inblock -
+                              sample->usage_before.ru_inblock);
+        write_ops = (uint64_t)(usage_after.ru_oublock -
+                               sample->usage_before.ru_oublock);
+    }
+#endif
+    printf("\nproof_store_boundary phase=%s listed=%zu success=%u "
+           "wall_us=%llu cpu_us=%llu process_peak_rss_kib=%llu "
+           "io_read_ops=%llu io_write_ops=%llu\n", phase, listed,
+           success ? 1u : 0u, (unsigned long long)wall_us,
+           (unsigned long long)cpu_us, (unsigned long long)rss_kib,
+           (unsigned long long)read_ops, (unsigned long long)write_ops);
+}
 
 static bool ptl_fresh(void)
 {
@@ -76,6 +142,100 @@ static int ptl_case_same_count(void)
                           PTL_CAP, &d));
         ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_MISS);
         ASSERT_STR_EQ(cls[0].reason, VCS_PROOF_TICKET_EQUIVOCATION);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_same_size_ancestry(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: same-size checkpoint ancestry survives rebuild") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp2[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp3[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cp2));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 13, cp3));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {first};
+        const uint8_t *two[] = {second};
+        ASSERT(ptl_sync_wires(cp1, one, 1, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        ASSERT(ptl_sync_wires(cp2, NULL, 0, &rep));
+        ASSERT(rep.outcome == VCS_PROOF_SYNC_CURRENT ||
+               rep.outcome == VCS_PROOF_SYNC_ADVANCED);
+        ASSERT(ptl_sync_wires(cp3, two, 1, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx, g_l.pub[PTF_A]),
+                  (size_t)3);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "sameleaf");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, cp3, sizeof(cp3), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
+        ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(cps, (size_t)3);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)2);
+        uint8_t expected[32];
+        ASSERT(vcs_proof_checkpoint_root(cp3, sizeof(cp3), expected));
+        const struct pr_issuer *recovered =
+            pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(recovered != NULL);
+        ASSERT(memcmp(recovered->last_root, expected, sizeof(expected)) == 0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_late_same_size_fork(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: late same-size fork remains equivocation") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp2[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp3[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t fork1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t fork2[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cp2));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        struct vcs_proof_ticket_v1 ticket;
+        uint8_t replay[VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(vcs_proof_ticket_decode(first, sizeof(first), &ticket));
+        ASSERT(vcs_proof_issuer_log_append(fork, &ticket, replay));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fork, 11, fork1));
+        ASSERT(memcmp(cp1, fork1, sizeof(cp1)) == 0);
+        ASSERT(vcs_proof_issuer_log_checkpoint(fork, 14, fork2));
+        vcs_proof_issuer_log_free(fork);
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 13, cp3));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {first}, *two[] = {second};
+        ASSERT(ptl_sync_wires(cp1, one, 1, &rep));
+        ASSERT(ptl_sync_wires(cp2, NULL, 0, &rep));
+        ASSERT(ptl_sync_wires(cp3, two, 1, &rep));
+        ASSERT(ptl_sync_wires(fork2, NULL, 0, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_EQUIVOCATION);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx, g_l.pub[PTF_A]));
     } TEST_END
     return failures;
 }
@@ -284,16 +444,1142 @@ static int ptl_case_rebuild(void)
     return failures;
 }
 
+static int ptl_case_empty_issuer_rebuild(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: refused sync adds no recovery obligation") {
+        ASSERT(ptl_fresh());
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), NULL, NULL));
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        struct vcs_proof_sync_report rep;
+        ASSERT(ptl_sync_wires(cp, NULL, 0, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_REFUSED);
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx,
+                                                        g_l.pub[PTF_A]),
+                  (size_t)0);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "emptyissuer");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_missing_ticket(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: signed checkpoint with missing ticket refuses rebuild") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {ticket};
+        ASSERT(ptl_sync_wires(cp, one, 1, &rep));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "missing");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)1);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_missing_chunk(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: listed proof blob with missing chunk refuses") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "lostchunk");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        uint8_t chunk[32];
+        char hex[65], path[640];
+        ASSERT(vcs_package_chunk_hash(ticket, sizeof(ticket), chunk));
+        zcl_hex_encode(chunk, sizeof(chunk), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/cas/sha3/%.2s/%s",
+                        dir, hex, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_mid_scan_resume(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: late unreadable blob refuses; restart and replay") {
+        ASSERT(ptl_fresh());
+        uint8_t wires[3][VCS_PROOF_TICKET_WIRE_BYTES];
+        for (size_t i = 0; i < 3; i++)
+            ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), wires[i], NULL));
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "midscan");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, wires[0], sizeof(wires[0]),
+                                          root));
+        ASSERT(vcs_proof_ticket_store_put(store, wires[1], sizeof(wires[1]),
+                                          root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        uint8_t late_root[32];
+        ASSERT(vcs_proof_ticket_store_put(store, wires[2], sizeof(wires[2]),
+                                          late_root));
+        uint8_t chunk[32];
+        char hex[65], path[640];
+        ASSERT(vcs_package_chunk_hash(wires[2], sizeof(wires[2]), chunk));
+        zcl_hex_encode(chunk, sizeof(chunk), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/cas/sha3/%.2s/%s",
+                        dir, hex, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_package_store_put_chunk(store, late_root, VCS_BLOB_PATH,
+                                           0u, wires[2], sizeof(wires[2])) ==
+               VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)3);
+        ASSERT_EQ(cps, (size_t)1);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)3);
+        uint8_t expected[32];
+        ASSERT(vcs_proof_checkpoint_root(cp, sizeof(cp), expected));
+        const struct pr_issuer *recovered =
+            pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(recovered != NULL);
+        ASSERT(memcmp(recovered->last_root, expected, sizeof(expected)) == 0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_staged_ticket(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: staged ticket blob refuses partial rebuild") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "staged");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        uint8_t chunk[32];
+        ASSERT(vcs_package_chunk_hash(ticket, sizeof(ticket), chunk));
+        struct vcs_package_manifest manifest;
+        vcs_package_manifest_init(&manifest);
+        ASSERT(vcs_package_manifest_add(&manifest, VCS_BLOB_PATH,
+                                        VCS_PACKAGE_MODE_FILE, sizeof(ticket),
+                                        chunk, 1u));
+        uint8_t *wire = NULL;
+        size_t wire_len = 0;
+        ASSERT(vcs_package_manifest_serialize(&manifest, &wire, &wire_len));
+        vcs_package_manifest_free(&manifest);
+        ASSERT(vcs_package_store_put_manifest(store, wire, wire_len, root) ==
+               VCS_PACKAGE_STORE_OK);
+        uint8_t ticket_root[32];
+        memcpy(ticket_root, root, sizeof(ticket_root));
+        free(wire);
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_package_store_put_chunk(store, ticket_root, VCS_BLOB_PATH,
+                                           0u, ticket, sizeof(ticket)) ==
+               VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)1);
+        ASSERT_EQ(cps, (size_t)1);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_deleted_history_resume(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: deleted checkpoint refuses; restart and restore") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp2[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cp2));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "restore");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), root));
+        ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)2);
+        uint8_t expected[32];
+        ASSERT(vcs_proof_checkpoint_root(cp2, sizeof(cp2), expected));
+        const struct pr_issuer *recovered =
+            pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(recovered != NULL);
+        ASSERT(memcmp(recovered->last_root, expected, sizeof(expected)) == 0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_late_replay_failure(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: late replay gap publishes no partial checkpoint") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp2[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cp2));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "latereplay");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)0);
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)2);
+        uint8_t expected[32];
+        ASSERT(vcs_proof_checkpoint_root(cp2, sizeof(cp2), expected));
+        const struct pr_issuer *recovered =
+            pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(recovered != NULL);
+        ASSERT(memcmp(recovered->last_root, expected, sizeof(expected)) == 0);
+        char head_hex[65];
+        zcl_hex_encode(expected, sizeof(expected), head_hex);
+        printf("\nproof_recovery_root case=late_replay head=%s\n", head_hex);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_deleted_head(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: live head prevents silent history rollback") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp2[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cp2));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {first}, *two[] = {second};
+        ASSERT(ptl_sync_wires(cp1, one, 1, &rep));
+        ASSERT(ptl_sync_wires(cp2, two, 1, &rep));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "missinghead");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), root));
+        ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx, g_l.pub[PTF_A]),
+                  (size_t)2);
+        ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(cps, (size_t)2);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_conflict(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: reordered and duplicate CAS blobs retain conflict") {
+        ASSERT(ptl_fresh());
+        uint8_t pass[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t fail[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t b[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), pass, NULL));
+        ASSERT(ptf_emit(&g_l, PTF_B, &g_l.base, ptf_fail(), fail, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, a));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_B], 11, b));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *pass_delta[] = {pass}, *fail_delta[] = {fail};
+        ASSERT(ptl_sync_wires(a, pass_delta, 1, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        ASSERT(ptl_sync_wires(b, fail_delta, 1, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        struct vcs_proof_ticket_class before_cls[PTL_CAP];
+        struct vcs_proof_reuse_decision before;
+        ASSERT(ptf_decide(&g_l, &g_l.base, VCS_PROOF_ACTION_CHECK, NULL,
+                          before_cls, PTL_CAP, &before));
+        ASSERT_EQ(before.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_EQ(before.eligible_pass, (uint32_t)1);
+        ASSERT_EQ(before.eligible_fail, (uint32_t)1);
+        ASSERT_EQ(before.used_count, (uint32_t)2);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "conflict");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, b, sizeof(b), root));
+        ASSERT(vcs_proof_ticket_store_put(store, fail, sizeof(fail), root));
+        ASSERT(vcs_proof_ticket_store_put(store, a, sizeof(a), root));
+        ASSERT(vcs_proof_ticket_store_put(store, pass, sizeof(pass), root));
+        ASSERT(vcs_proof_ticket_store_put(store, pass, sizeof(pass), root));
+        struct vcs_proof_receiver *recovered = vcs_proof_receiver_new();
+        ASSERT(recovered != NULL);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(recovered, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        struct vcs_proof_ticket_class cls[PTL_CAP];
+        struct vcs_proof_reuse_decision d;
+        struct vcs_proof_reuse_request req = {
+            .local = &g_l.base, .action_class = VCS_PROOF_ACTION_CHECK,
+            .domain = &g_l.domain, .policy = &g_l.policy,
+            .artifacts = &g_l.source,
+        };
+        ASSERT(vcs_proof_reuse_decide(recovered, &req, cls, PTL_CAP, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        ASSERT_EQ(d.eligible_pass, before.eligible_pass);
+        ASSERT_EQ(d.eligible_fail, before.eligible_fail);
+        ASSERT_EQ(d.used_count, before.used_count);
+        ASSERT((memcmp(d.used[0], before.used[0], 32) == 0 &&
+                memcmp(d.used[1], before.used[1], 32) == 0) ||
+               (memcmp(d.used[0], before.used[1], 32) == 0 &&
+                memcmp(d.used[1], before.used[0], 32) == 0));
+        uint8_t pass_root[32], fail_root[32];
+        ASSERT(vcs_proof_ticket_observation_root(pass, sizeof(pass),
+                                                  pass_root));
+        ASSERT(vcs_proof_ticket_observation_root(fail, sizeof(fail),
+                                                  fail_root));
+        ASSERT((memcmp(d.used[0], pass_root, 32) == 0 &&
+                memcmp(d.used[1], fail_root, 32) == 0) ||
+               (memcmp(d.used[0], fail_root, 32) == 0 &&
+                memcmp(d.used[1], pass_root, 32) == 0));
+        char pass_hex[65], fail_hex[65];
+        zcl_hex_encode(pass_root, sizeof(pass_root), pass_hex);
+        zcl_hex_encode(fail_root, sizeof(fail_root), fail_hex);
+        printf("\nproof_recovery_roots case=eligible_conflict pass=%s "
+               "fail=%s\n", pass_hex, fail_hex);
+        struct vcs_proof_admission_context admission = ptf_context(&g_l);
+        admission.receiver = recovered;
+        struct vcs_proof_change change = {
+            .component_id = "fixture", .scope_known = true,
+        };
+        struct vcs_proof_obligation obligation = {
+            .name = "fixture/check", .component_id = "fixture",
+            .action_class = VCS_PROOF_ACTION_CHECK, .preimage = &g_l.base,
+            .in_reach = true,
+        };
+        struct vcs_proof_admission_result admitted;
+        struct vcs_proof_admission_report report;
+        ASSERT(vcs_proof_admission_run(&admission, &change, &obligation, 1u,
+                                       &admitted, &report));
+        ASSERT_EQ(admitted.status, VCS_PROOF_ADMIT_FRESH);
+        ASSERT_STR_EQ(admitted.reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        ASSERT_STR_EQ(report.fallback_reason, VCS_PROOF_FALLBACK_CONFLICT);
+        ASSERT_EQ(report.proofs_fresh, (uint32_t)1);
+        vcs_proof_receiver_free(recovered);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_seq_reorder(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: forged seq predecessor cannot hide valid ticket") {
+        ASSERT(ptl_fresh());
+        uint8_t valid[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forged[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), valid, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        memcpy(forged, valid, sizeof(forged));
+        forged[sizeof(forged) - 1u] ^= 1u;
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "forgedfirst");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, forged, sizeof(forged), root));
+        ASSERT(vcs_proof_ticket_store_put(store, valid, sizeof(valid), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        uint8_t valid_root[32];
+        ASSERT(vcs_proof_ticket_observation_root(valid, sizeof(valid),
+                                                  valid_root));
+        struct pr_entry *e = pr_entry_find(g_l.rx, valid_root);
+        ASSERT(e != NULL && e->covered);
+        ASSERT(!vcs_proof_receiver_issuer_equivocating(g_l.rx,
+                                                       g_l.pub[PTF_A]));
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_signed_seq_fork(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: two signed seq roots remain equivocation") {
+        ASSERT(ptl_fresh());
+        uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), original, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        ASSERT(ptl_append(fork, ptf_fail(), forked));
+        vcs_proof_issuer_log_free(fork);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "seqfork");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, original, sizeof(original), root));
+        ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx, g_l.pub[PTF_A]));
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_live_signed_seq_fork(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: live signed sequence fork marks issuer") {
+        ASSERT(ptl_fresh());
+        uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), original, NULL));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        ASSERT(ptl_append(fork, ptf_fail(), forked));
+        vcs_proof_issuer_log_free(fork);
+        bool added = false;
+        ASSERT(vcs_proof_receiver_add_ticket(g_l.rx, original,
+                                             sizeof(original), &added));
+        ASSERT(added);
+        ASSERT(vcs_proof_receiver_add_ticket(g_l.rx, forked,
+                                             sizeof(forked), &added));
+        ASSERT(added);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx,
+                                                       g_l.pub[PTF_A]));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)2);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_after_live_seq_fork(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: complete CAS preserves pre-fork verified head") {
+        ASSERT(ptl_fresh());
+        uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), original, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        const uint8_t *delta[] = {original};
+        struct vcs_proof_sync_report rep;
+        ASSERT(ptl_sync_wires(cp, delta, 1u, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        ASSERT(ptl_append(fork, ptf_fail(), forked));
+        vcs_proof_issuer_log_free(fork);
+        bool added = false;
+        ASSERT(vcs_proof_receiver_add_ticket(g_l.rx, forked,
+                                             sizeof(forked), &added));
+        ASSERT(added);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx,
+                                                       g_l.pub[PTF_A]));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "livefork");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        ASSERT(vcs_proof_ticket_store_put(store, original,
+                                          sizeof(original), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)1);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)1);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx,
+                                                       g_l.pub[PTF_A]));
+        const struct pr_issuer *is = pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(is != NULL && is->cp_count == 1u && is->cps[0].verified);
+        uint8_t observed[32];
+        ASSERT(vcs_proof_ticket_observation_root(original, sizeof(original),
+                                                  observed));
+        const struct pr_entry *entry = pr_entry_find(g_l.rx, observed);
+        ASSERT(entry != NULL && entry->covered);
+        struct vcs_proof_ticket_class classes[PTL_CAP];
+        struct vcs_proof_reuse_decision decision;
+        ASSERT(ptf_decide(&g_l, &g_l.base, VCS_PROOF_ACTION_CHECK, NULL,
+                          classes, PTL_CAP, &decision));
+        ASSERT(decision.outcome != VCS_PROOF_REUSE_HIT_PASS &&
+               decision.outcome != VCS_PROOF_REUSE_HIT_FAIL);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_fork_checkpoint_alloc(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: fork checkpoint allocation cannot drop history") {
+        ASSERT(ptl_fresh());
+        uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cps_wire[9][VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), original, NULL));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {original};
+        for (size_t i = 0; i < 8u; i++) {
+            ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A],
+                                                     11u + i, cps_wire[i]));
+            ASSERT(ptl_sync_wires(cps_wire[i], i ? NULL : one,
+                                  i ? 0u : 1u, &rep));
+            ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        }
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 19,
+                                                cps_wire[8]));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        ASSERT(ptl_append(fork, ptf_fail(), forked));
+        vcs_proof_issuer_log_free(fork);
+        bool added = false;
+        ASSERT(vcs_proof_receiver_add_ticket(g_l.rx, forked,
+                                             sizeof(forked), &added));
+        ASSERT(added);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "forkalloc");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, original,
+                                          sizeof(original), root));
+        ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
+        for (size_t i = 0; i < 9u; i++)
+            ASSERT(vcs_proof_ticket_store_put(store, cps_wire[i],
+                                               sizeof(cps_wire[i]), root));
+        size_t tickets = 7, cps = 8, skipped = 9;
+        zcl_alloc_fault_fail_nth("proof_checkpoints", 2u);
+        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+                                                   &cps, &skipped);
+        bool consumed = zcl_alloc_fault_armed_label() == NULL;
+        zcl_alloc_fault_clear();
+        ASSERT(consumed);
+        ASSERT(!rebuilt);
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(skipped, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)1);
+        const struct pr_issuer *is = pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(is != NULL && is->cp_count == 8u);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_invalid_outputs(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: early rebuild refusal clears output counts") {
+        size_t tickets = 7, cps = 8, skipped = 9;
+        ASSERT(!vcs_proof_receiver_rebuild(NULL, NULL, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(skipped, (size_t)0);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_equivocation(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: rebuild retains both signed checkpoint forks") {
+        ASSERT(ptl_fresh());
+        uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t b[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), original, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, a));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        bool made = ptl_append(fork, ptf_fail(), forked) &&
+                    vcs_proof_issuer_log_checkpoint(fork, 12, b);
+        vcs_proof_issuer_log_free(fork);
+        ASSERT(made);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "forkrebuild");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, b, sizeof(b), root));
+        ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
+        ASSERT(vcs_proof_ticket_store_put(store, a, sizeof(a), root));
+        ASSERT(vcs_proof_ticket_store_put(store, original, sizeof(original), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx, g_l.pub[PTF_A]));
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx, g_l.pub[PTF_A]),
+                  (size_t)2);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_preserves_covered_branch(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: rebuild cannot erase a verified fork branch") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t a[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t b[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cpa[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cpb[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        struct vcs_proof_ticket_v1 decoded;
+        uint8_t copy[VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(vcs_proof_ticket_decode(first, sizeof(first), &decoded));
+        ASSERT(vcs_proof_issuer_log_append(fork, &decoded, copy));
+        uint8_t fork_cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(vcs_proof_issuer_log_checkpoint(fork, 11, fork_cp1));
+        ASSERT(memcmp(cp1, fork_cp1, sizeof(cp1)) == 0);
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), a, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cpa));
+        ASSERT(ptl_append(fork, ptf_fail(), b));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fork, 12, cpb));
+        vcs_proof_issuer_log_free(fork);
+        bool a_later = memcmp(cpa, cpb, sizeof(cpa)) > 0;
+        const uint8_t *later_cp = a_later ? cpa : cpb;
+        const uint8_t *earlier_cp = a_later ? cpb : cpa;
+        const uint8_t *later_ticket = a_later ? a : b;
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {first}, *second[] = {later_ticket};
+        ASSERT(ptl_sync_wires(cp1, one, 1, &rep));
+        ASSERT(ptl_sync_wires(later_cp, second, 1, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        ASSERT(ptl_sync_wires(earlier_cp, NULL, 0, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_EQUIVOCATION);
+        uint8_t later_root[32];
+        ASSERT(vcs_proof_ticket_observation_root(later_ticket,
+                                                  VCS_PROOF_TICKET_WIRE_BYTES,
+                                                  later_root));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "coveredfork");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), root));
+        ASSERT(vcs_proof_ticket_store_put(store, a, sizeof(a), root));
+        ASSERT(vcs_proof_ticket_store_put(store, b, sizeof(b), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cpa, sizeof(cpa), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cpb, sizeof(cpb), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        struct pr_entry *retained = pr_entry_find(g_l.rx, later_root);
+        ASSERT(retained != NULL && retained->covered);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)2);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_preserves_checkpoint_head(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: rebuild cannot switch verified checkpoint head") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cpa[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cpb[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp1));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cpa));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        struct vcs_proof_ticket_v1 decoded;
+        uint8_t copy[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t fork_cp1[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(vcs_proof_ticket_decode(ticket, sizeof(ticket), &decoded));
+        ASSERT(vcs_proof_issuer_log_append(fork, &decoded, copy));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fork, 11, fork_cp1));
+        ASSERT(memcmp(cp1, fork_cp1, sizeof(cp1)) == 0);
+        ASSERT(vcs_proof_issuer_log_checkpoint(fork, 13, cpb));
+        vcs_proof_issuer_log_free(fork);
+        const uint8_t *later = memcmp(cpa, cpb, sizeof(cpa)) > 0 ? cpa : cpb;
+        const uint8_t *earlier = later == cpa ? cpb : cpa;
+        struct vcs_proof_sync_report rep;
+        const uint8_t *one[] = {ticket};
+        ASSERT(ptl_sync_wires(cp1, one, 1, &rep));
+        ASSERT(ptl_sync_wires(later, NULL, 0, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_ADVANCED);
+        ASSERT(ptl_sync_wires(earlier, NULL, 0, &rep));
+        ASSERT_EQ(rep.outcome, VCS_PROOF_SYNC_EQUIVOCATION);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "headfork");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cpa, sizeof(cpa), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cpb, sizeof(cpb), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        uint8_t expected[32];
+        ASSERT(vcs_proof_checkpoint_root(later, sizeof(cpa), expected));
+        const struct pr_issuer *is = pr_issuer_find(g_l.rx, g_l.pub[PTF_A]);
+        ASSERT(is != NULL);
+        ASSERT(memcmp(is->last_root, expected, sizeof(expected)) == 0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_corrupt_index(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: corrupt local index rebuilt from signed CAS") {
+        ASSERT(ptl_fresh());
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), NULL, NULL));
+        ASSERT(ptf_emit(&g_l, PTF_B, &g_l.base, ptf_fail(), NULL, NULL));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "badindex");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(ptl_store_logs(store));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT(g_l.rx->index_cap > 0);
+        memset(g_l.rx->keys, 0,
+               g_l.rx->index_cap * sizeof(*g_l.rx->keys));
+        memset(g_l.rx->seqs, 0,
+               g_l.rx->index_cap * sizeof(*g_l.rx->seqs));
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        struct vcs_proof_ticket_class cls[PTL_CAP];
+        struct vcs_proof_reuse_decision d;
+        ASSERT(ptf_decide(&g_l, &g_l.base, VCS_PROOF_ACTION_CHECK, NULL, cls,
+                          PTL_CAP, &d));
+        ASSERT_EQ(d.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_STR_EQ(d.reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static void ptl_publish_marker(void *context)
+{
+    *(bool *)context = true;
+}
+
+static int ptl_case_deleted_catalog_manifest(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: deleted committed manifest blocks publication") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t ticket_root[32], cp_root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "lostmanifest");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket),
+                                          ticket_root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), cp_root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)1);
+        ASSERT_EQ(cps, (size_t)1);
+        struct vcs_package_store_summary rows[2];
+        struct vcs_package_store_page page;
+        ASSERT_EQ(vcs_package_store_page_summaries(store, NULL, 2, 0,
+                                                    rows, &page),
+                  VCS_PACKAGE_STORE_PAGE_OK);
+        char hex[65], path[640];
+        zcl_hex_encode(cp_root, sizeof(cp_root), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/manifests/%s",
+                        dir, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+        bool published = false;
+        ASSERT_EQ(vcs_package_store_publish_if_generation(
+                      store, page.generation, ptl_publish_marker,
+                      &published), VCS_PACKAGE_STORE_PAGE_INCOMPLETE);
+        ASSERT(!published);
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx,
+                                                        g_l.pub[PTF_A]),
+                  (size_t)1);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_rebuild_boundary(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: actual store crosses the 4096 object boundary") {
+        ASSERT(ptl_fresh());
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "boundary");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(128) * 1024 * 1024);
+        ASSERT(store != NULL);
+        uint8_t root[32];
+        bool ok = true;
+        struct ptl_cost_sample cost = ptl_cost_begin();
+        for (uint32_t i = 0; i < 4095 && ok; i++) {
+            uint8_t blob[4] = {(uint8_t)i, (uint8_t)(i >> 8),
+                               (uint8_t)(i >> 16), (uint8_t)(i >> 24)};
+            ok = vcs_proof_ticket_store_put(store, blob, sizeof(blob), root);
+        }
+        ptl_cost_print("populate", 4095u, ok, &cost);
+        ASSERT(ok);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        cost = ptl_cost_begin();
+        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+                                                   &cps, &skipped);
+        ptl_cost_print("rebuild", 4095u, rebuilt, &cost);
+        ASSERT(rebuilt);
+        ASSERT_EQ(skipped, (size_t)4095);
+        const uint8_t last[4] = {0xff, 0x0f, 0, 0};
+        ASSERT(vcs_proof_ticket_store_put(store, last, sizeof(last), root));
+        cost = ptl_cost_begin();
+        rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                             &skipped);
+        ptl_cost_print("rebuild", 4096u, rebuilt, &cost);
+        ASSERT(rebuilt);
+        ASSERT_EQ(skipped, (size_t)4096);
+        struct vcs_package_store_summary rows[VCS_PACKAGE_STORE_PAGE_MAX];
+        struct vcs_package_store_page page;
+        ASSERT_EQ(vcs_package_store_page_summaries(
+                      store, NULL, VCS_PACKAGE_STORE_PAGE_MAX, 0, rows,
+                      &page), VCS_PACKAGE_STORE_PAGE_OK);
+        ASSERT_EQ(page.count, (size_t)VCS_PACKAGE_STORE_PAGE_MAX);
+        ASSERT(page.has_more);
+        uint8_t stale_cursor[32];
+        memcpy(stale_cursor, page.next_root, sizeof(stale_cursor));
+        uint64_t stale_generation = page.generation;
+        const uint8_t next[4] = {0, 0x10, 0, 0};
+        ASSERT(vcs_proof_ticket_store_put(store, next, sizeof(next), root));
+        ASSERT_EQ(vcs_package_store_page_summaries(
+                      store, stale_cursor, VCS_PACKAGE_STORE_PAGE_MAX,
+                      stale_generation, rows, &page),
+                  VCS_PACKAGE_STORE_PAGE_STALE);
+        bool published = false;
+        ASSERT_EQ(vcs_package_store_publish_if_generation(
+                      store, stale_generation, ptl_publish_marker,
+                      &published), VCS_PACKAGE_STORE_PAGE_STALE);
+        ASSERT(!published);
+        cost = ptl_cost_begin();
+        rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                             &skipped);
+        ptl_cost_print("rebuild", 4097u, rebuilt, &cost);
+        ASSERT(rebuilt);
+        ASSERT_EQ(skipped, (size_t)4097);
+        size_t enumerated = 0;
+        bool resume = false;
+        uint8_t cursor[32] = {0};
+        uint64_t generation = 0;
+        do {
+            ASSERT_EQ(vcs_package_store_page_summaries(
+                          store, resume ? cursor : NULL,
+                          VCS_PACKAGE_STORE_PAGE_MAX,
+                          resume ? generation : 0, rows, &page),
+                      VCS_PACKAGE_STORE_PAGE_OK);
+            ASSERT(page.count > 0);
+            generation = page.generation;
+            memcpy(cursor, page.next_root, sizeof(cursor));
+            enumerated += page.count;
+            resume = true;
+        } while (page.has_more);
+        ASSERT_EQ(enumerated, (size_t)4097);
+        vcs_package_store_close(store);
+        cost = ptl_cost_begin();
+        store = vcs_package_store_open(dir, UINT64_C(128) * 1024 * 1024);
+        ptl_cost_print("reopen", 4097u, store != NULL, &cost);
+        ASSERT(store != NULL);
+        cost = ptl_cost_begin();
+        rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                             &skipped);
+        ptl_cost_print("rebuild_after_reopen", 4097u, rebuilt, &cost);
+        ASSERT(rebuilt);
+        ASSERT_EQ(skipped, (size_t)4097);
+        struct vcs_package_store *observer =
+            vcs_package_store_open(dir, UINT64_C(128) * 1024 * 1024);
+        ASSERT(observer != NULL);
+        ASSERT_EQ(vcs_package_store_set_class(
+                      store, root, VCS_PACKAGE_STORE_CLASS_HOT, 0),
+                  VCS_PACKAGE_STORE_OK);
+        ASSERT_EQ(vcs_package_store_page_summaries(
+                      observer, NULL, VCS_PACKAGE_STORE_PAGE_MAX, 0, rows,
+                      &page), VCS_PACKAGE_STORE_PAGE_STALE);
+        const uint8_t stale_write[4] = {0xfd, 0xfe, 0xff, 0x7f};
+        uint8_t stale_root[32];
+        ASSERT(!vcs_proof_ticket_store_put(observer, stale_write,
+                                            sizeof(stale_write), stale_root));
+        vcs_package_store_close(observer);
+        const char *large = getenv("Z23_PROOF_STORE_LARGE_CORPUS");
+        if (large && large[0] == '1') {
+            cost = ptl_cost_begin();
+            for (uint32_t i = 4097; i < 8193 && ok; i++) {
+                uint8_t blob[4] = {(uint8_t)i, (uint8_t)(i >> 8),
+                                   (uint8_t)(i >> 16), (uint8_t)(i >> 24)};
+                ok = vcs_proof_ticket_store_put(store, blob, sizeof(blob),
+                                                root);
+            }
+            ptl_cost_print("populate", 8193u, ok, &cost);
+            ASSERT(ok);
+            cost = ptl_cost_begin();
+            rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+                                                 &cps, &skipped);
+            ptl_cost_print("rebuild", 8193u, rebuilt, &cost);
+            ASSERT(rebuilt);
+            ASSERT_EQ(skipped, (size_t)8193);
+        }
+        uint8_t pass[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t fail[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t pass_blob[32], fail_blob[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), pass, NULL));
+        ASSERT(ptf_emit(&g_l, PTF_B, &g_l.base, ptf_fail(), fail, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp_a));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_B], 11, cp_b));
+        ASSERT(vcs_proof_ticket_store_put(store, pass, sizeof(pass),
+                                          pass_blob));
+        ASSERT(vcs_proof_ticket_store_put(store, fail, sizeof(fail),
+                                          fail_blob));
+        ASSERT(vcs_proof_ticket_store_put(store, cp_a, sizeof(cp_a), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp_b, sizeof(cp_b), root));
+        ASSERT_EQ(vcs_package_store_page_summaries(
+                      store, NULL, VCS_PACKAGE_STORE_PAGE_MAX, 0, rows,
+                      &page), VCS_PACKAGE_STORE_PAGE_OK);
+        ASSERT_EQ(page.count, (size_t)VCS_PACKAGE_STORE_PAGE_MAX);
+        ASSERT(memcmp(pass_blob, page.next_root, 32) > 0 ||
+               memcmp(fail_blob, page.next_root, 32) > 0);
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        struct vcs_proof_ticket_class cls[PTL_CAP];
+        struct vcs_proof_reuse_decision decision;
+        struct vcs_proof_reuse_request req = {
+            .local = &g_l.base, .action_class = VCS_PROOF_ACTION_CHECK,
+            .domain = &g_l.domain, .policy = &g_l.policy,
+            .artifacts = &g_l.source,
+        };
+        ASSERT(vcs_proof_reuse_decide(g_l.rx, &req, cls, PTL_CAP,
+                                      &decision));
+        ASSERT_EQ(decision.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_STR_EQ(decision.reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        ASSERT_EQ(decision.eligible_pass, (uint32_t)1);
+        ASSERT_EQ(decision.eligible_fail, (uint32_t)1);
+        struct vcs_proof_reuse_policy revoked = g_l.policy;
+        revoked.revoked = (const uint8_t (*)[32])&g_l.pub[PTF_A];
+        revoked.revoked_count = 1;
+        req.policy = &revoked;
+        ASSERT(vcs_proof_reuse_decide(g_l.rx, &req, cls, PTL_CAP,
+                                      &decision));
+        ASSERT(decision.outcome != VCS_PROOF_REUSE_HIT_PASS);
+        ASSERT_EQ(decision.eligible_pass, (uint32_t)0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 int ptf_log_cases(void)
 {
     int failures = 0;
     failures += ptl_case_same_count();
+    failures += ptl_case_same_size_ancestry();
+    failures += ptl_case_late_same_size_fork();
     failures += ptl_case_fork();
     failures += ptl_case_not_extension();
     failures += ptl_case_delta_bytes();
     failures += ptl_case_artifact();
     failures += ptl_case_output_conflict();
     failures += ptl_case_rebuild();
+    failures += ptl_case_empty_issuer_rebuild();
+    failures += ptl_case_rebuild_missing_ticket();
+    failures += ptl_case_rebuild_missing_chunk();
+    failures += ptl_case_rebuild_mid_scan_resume();
+    failures += ptl_case_staged_ticket();
+    failures += ptl_case_deleted_history_resume();
+    failures += ptl_case_late_replay_failure();
+    failures += ptl_case_deleted_head();
+    failures += ptl_case_rebuild_conflict();
+    failures += ptl_case_seq_reorder();
+    failures += ptl_case_signed_seq_fork();
+    failures += ptl_case_live_signed_seq_fork();
+    failures += ptl_case_rebuild_after_live_seq_fork();
+    failures += ptl_case_rebuild_fork_checkpoint_alloc();
+    failures += ptl_case_rebuild_invalid_outputs();
+    failures += ptl_case_rebuild_equivocation();
+    failures += ptl_case_rebuild_preserves_covered_branch();
+    failures += ptl_case_rebuild_preserves_checkpoint_head();
+    failures += ptl_case_rebuild_corrupt_index();
+    failures += ptl_case_deleted_catalog_manifest();
+    if (getenv("Z23_PROOF_STORE_BOUNDARY_RED"))
+        failures += ptl_case_rebuild_boundary();
     ptf_free(&g_l);
     return failures;
 }

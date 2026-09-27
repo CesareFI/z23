@@ -334,6 +334,39 @@ static bool proof_read_chunk(struct vcs_package_possession_proof *proof,
     return verified;
 }
 
+static bool proof_capture_manifest(struct vcs_package_store *store,
+                                   const uint8_t package_root[32],
+                                   struct vcs_package_possession_proof *proof,
+                                   uint8_t **wire, size_t *wire_len,
+                                   bool *complete, bool *pinned)
+{
+    bool found = false;
+    pthread_mutex_lock(&store->lock);
+    for (size_t i = 0; i < store->pkg_count; i++) {
+        struct store_package *package = &store->pkgs[i];
+        if (memcmp(package->root, package_root, 32) != 0) continue;
+        found = true;
+        proof->generation = package->mutation_generation;
+        *complete = package->committed;
+        *pinned = package->pinned;
+        (void)snprintf(proof->store_root, sizeof(proof->store_root), "%s",
+                       store->root);
+        if (*complete && (!proof->require_pinned || *pinned) &&
+            store_package_materialize(store, package)) {
+            *wire = zcl_malloc(package->manifest_wire_len,
+                               "possession_manifest_wire");
+            if (*wire) {
+                memcpy(*wire, package->manifest_wire,
+                       package->manifest_wire_len);
+                *wire_len = package->manifest_wire_len;
+            }
+        }
+        break;
+    }
+    pthread_mutex_unlock(&store->lock);
+    return found;
+}
+
 struct vcs_package_possession_proof *vcs_package_store_possession_begin(
     struct vcs_package_store *store, const uint8_t package_root[32],
     bool require_pinned, struct vcs_package_possession_receipt *receipt)
@@ -358,33 +391,11 @@ struct vcs_package_possession_proof *vcs_package_store_possession_begin(
     size_t wire_len = 0;
     bool complete = false;
     bool pinned = false;
-    pthread_mutex_lock(&store->lock);
-    struct store_package *package = NULL;
-    for (size_t i = 0; i < store->pkg_count; i++)
-        if (memcmp(store->pkgs[i].root, package_root, 32) == 0) {
-            package = &store->pkgs[i];
-            break;
-        }
-    if (package) {
-        proof->generation = package->mutation_generation;
-        complete = package->committed;
-        pinned = package->pinned;
-        (void)snprintf(proof->store_root, sizeof(proof->store_root), "%s",
-                       store->root);
-        if (complete && (!require_pinned || pinned)) {
-            wire = zcl_malloc(package->manifest_wire_len,
-                              "possession_manifest_wire");
-            if (wire) {
-                memcpy(wire, package->manifest_wire,
-                       package->manifest_wire_len);
-                wire_len = package->manifest_wire_len;
-            }
-        }
-    }
-    pthread_mutex_unlock(&store->lock);
-    if (!package || !complete || (require_pinned && !pinned) || !wire) {
+    bool found = proof_capture_manifest(store, package_root, proof, &wire,
+                                         &wire_len, &complete, &pinned);
+    if (!found || !complete || (require_pinned && !pinned) || !wire) {
         enum vcs_package_possession_failure failure =
-            !package ? VCS_PACKAGE_POSSESSION_UNTRACKED
+            !found ? VCS_PACKAGE_POSSESSION_UNTRACKED
                      : (!complete ? VCS_PACKAGE_POSSESSION_INCOMPLETE
                                   : (require_pinned && !pinned
                                          ? VCS_PACKAGE_POSSESSION_UNPINNED

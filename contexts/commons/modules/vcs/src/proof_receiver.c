@@ -6,11 +6,15 @@
 
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
+#include "base/serialize_le.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #define PRV_LOG "vcs.proof_receiver"
+
+static struct pr_issuer *pr_issuer_get(struct vcs_proof_receiver *r,
+                                       const uint8_t pubkey[32]);
 
 struct vcs_proof_receiver *vcs_proof_receiver_new(void)
 {
@@ -25,20 +29,132 @@ void vcs_proof_receiver_free(struct vcs_proof_receiver *r)
     if (!r) return;
     for (size_t i = 0; i < r->issuer_count; i++) free(r->issuers[i].cps);
     free(r->issuers);
+    free(r->roots);
+    free(r->keys);
+    free(r->seqs);
     free(r->entries);
     free(r);
 }
 
 /* ── Retained tickets ───────────────────────────────────────────────── */
 
+static size_t pr_hash(const uint8_t *bytes, size_t len)
+{
+    size_t h = (size_t)UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < len; i++) h = (h ^ bytes[i]) *
+                                             (size_t)UINT64_C(1099511628211);
+    return h;
+}
+
+static size_t pr_seq_hash(const uint8_t issuer[32], uint64_t seq)
+{
+    size_t h = pr_hash(issuer, 32);
+    uint8_t sequence[8];
+    zcl_write_u64_le(sequence, seq);
+    for (unsigned i = 0; i < 8; i++)
+        h = (h ^ sequence[i]) *
+            (size_t)UINT64_C(1099511628211);
+    return h;
+}
+
+static size_t pr_root_slot(const struct vcs_proof_receiver *r,
+                           const uint8_t root[32])
+{
+    size_t slot = pr_hash(root, 32) & (r->index_cap - 1u);
+    while (r->roots[slot] &&
+           memcmp(r->entries[r->roots[slot] - 1u].observation_root,
+                  root, 32) != 0)
+        slot = (slot + 1u) & (r->index_cap - 1u);
+    return slot;
+}
+
+static size_t pr_key_slot(const struct vcs_proof_receiver *r,
+                          const uint8_t key[32])
+{
+    size_t slot = pr_hash(key, 32) & (r->index_cap - 1u);
+    while (r->keys[slot].head &&
+           memcmp(r->entries[r->keys[slot].head - 1u].input_key,
+                  key, 32) != 0)
+        slot = (slot + 1u) & (r->index_cap - 1u);
+    return slot;
+}
+
+static size_t pr_seq_slot(const struct vcs_proof_receiver *r,
+                          const uint8_t issuer[32], uint64_t seq)
+{
+    size_t slot = pr_seq_hash(issuer, seq) & (r->index_cap - 1u);
+    while (r->seqs[slot].head) {
+        const struct pr_entry *e = &r->entries[r->seqs[slot].head - 1u];
+        if (e->issuer_seq == seq && memcmp(e->producer, issuer, 32) == 0)
+            break;
+        slot = (slot + 1u) & (r->index_cap - 1u);
+    }
+    return slot;
+}
+
+static void pr_index_entry(struct vcs_proof_receiver *r, size_t index)
+{
+    struct pr_entry *e = &r->entries[index];
+    size_t one = index + 1u;
+    r->roots[pr_root_slot(r, e->observation_root)] = one;
+    struct pr_bucket *key = &r->keys[pr_key_slot(r, e->input_key)];
+    if (key->tail) r->entries[key->tail - 1u].next_key = one;
+    else key->head = one;
+    key->tail = one;
+    struct pr_bucket *seq = &r->seqs[pr_seq_slot(r, e->producer,
+                                                  e->issuer_seq)];
+    if (seq->tail) r->entries[seq->tail - 1u].next_seq = one;
+    else seq->head = one;
+    seq->tail = one;
+}
+
 struct pr_entry *pr_entry_find(const struct vcs_proof_receiver *r,
                                const uint8_t root[VCS_PROOF_ROOT_BYTES])
 {
-    for (size_t i = 0; i < r->count; i++)
-        if (memcmp(r->entries[i].observation_root, root,
-                   VCS_PROOF_ROOT_BYTES) == 0)
-            return &r->entries[i];
-    return NULL;
+    if (!r || !r->index_cap) return NULL;
+    size_t one = r->roots[pr_root_slot(r, root)];
+    return one ? &r->entries[one - 1u] : NULL;
+}
+
+size_t pr_entry_key_first(const struct vcs_proof_receiver *r,
+                          const uint8_t key[VCS_PROOF_ROOT_BYTES])
+{
+    return r && r->index_cap ? r->keys[pr_key_slot(r, key)].head : 0;
+}
+
+size_t pr_entry_seq_first(const struct vcs_proof_receiver *r,
+                          const uint8_t issuer[32], uint64_t seq)
+{
+    return r && r->index_cap ? r->seqs[pr_seq_slot(r, issuer, seq)].head : 0;
+}
+
+static bool pr_index_reserve(struct vcs_proof_receiver *r, size_t needed)
+{
+    if (r->index_cap && needed < r->index_cap / 2u) return true;
+    size_t index_cap = r->index_cap ? r->index_cap : 128u;
+    while (needed >= index_cap / 2u) {
+        if (index_cap > SIZE_MAX / 2u)
+            LOG_RETURN(false, PRV_LOG, "receiver index capacity overflow");
+        index_cap *= 2u;
+    }
+    size_t *roots = zcl_calloc(index_cap, sizeof(*roots), "proof_root_index");
+    struct pr_bucket *keys = zcl_calloc(index_cap, sizeof(*keys),
+                                         "proof_key_index");
+    struct pr_bucket *seqs = zcl_calloc(index_cap, sizeof(*seqs),
+                                         "proof_seq_index");
+    if (!roots || !keys || !seqs) {
+        free(roots); free(keys); free(seqs);
+        LOG_RETURN(false, PRV_LOG, "receiver indexes: out of memory");
+    }
+    free(r->roots); free(r->keys); free(r->seqs);
+    r->roots = roots; r->keys = keys; r->seqs = seqs;
+    r->index_cap = index_cap;
+    for (size_t i = 0; i < r->count; i++) {
+        r->entries[i].next_key = 0;
+        r->entries[i].next_seq = 0;
+        pr_index_entry(r, i);
+    }
+    return true;
 }
 
 static bool pr_entries_reserve(struct vcs_proof_receiver *r, size_t additional)
@@ -46,23 +162,24 @@ static bool pr_entries_reserve(struct vcs_proof_receiver *r, size_t additional)
     if (additional > SIZE_MAX - r->count)
         LOG_RETURN(false, PRV_LOG, "receiver ticket count overflow");
     size_t needed = r->count + additional;
-    if (needed <= r->cap) return true;
-    size_t cap = r->cap ? r->cap : 64u;
-    while (cap < needed) {
-        if (cap > SIZE_MAX / 2u) {
-            cap = needed;
-            break;
+    if (needed > r->cap) {
+        size_t cap = r->cap ? r->cap : 64u;
+        while (cap < needed) {
+            if (cap > SIZE_MAX / 2u) {
+                cap = needed;
+                break;
+            }
+            cap *= 2u;
         }
-        cap *= 2u;
+        if (cap > SIZE_MAX / sizeof(struct pr_entry))
+            LOG_RETURN(false, PRV_LOG, "receiver ticket capacity overflow");
+        struct pr_entry *grown = zcl_realloc(
+            r->entries, cap * sizeof(*grown), "proof_receiver_entries");
+        if (!grown) LOG_RETURN(false, PRV_LOG, "receiver: out of memory");
+        r->entries = grown;
+        r->cap = cap;
     }
-    if (cap > SIZE_MAX / sizeof(struct pr_entry))
-        LOG_RETURN(false, PRV_LOG, "receiver ticket capacity overflow");
-    struct pr_entry *grown =
-        zcl_realloc(r->entries, cap * sizeof(*grown), "proof_receiver_entries");
-    if (!grown) LOG_RETURN(false, PRV_LOG, "receiver: out of memory");
-    r->entries = grown;
-    r->cap = cap;
-    return true;
+    return pr_index_reserve(r, needed);
 }
 
 struct pr_entry *pr_entry_put(struct vcs_proof_receiver *r,
@@ -80,7 +197,27 @@ struct pr_entry *pr_entry_put(struct vcs_proof_receiver *r,
     memcpy(e->producer, t->producer_pubkey, VCS_PROOF_PUBKEY_BYTES);
     e->issuer_seq = t->issuer_seq;
     memcpy(e->wire, wire, VCS_PROOF_TICKET_WIRE_BYTES);
+    pr_index_entry(r, r->count - 1u);
     return e;
+}
+
+static bool pr_signed_seq_fork(const struct vcs_proof_receiver *r,
+                               const struct vcs_proof_ticket_v1 *t,
+                               const uint8_t root[32])
+{
+    size_t one = pr_entry_seq_first(r, t->producer_pubkey, t->issuer_seq);
+    if (!one || !vcs_proof_ticket_signature_valid(t)) return false;
+    for (; one; one = r->entries[one - 1u].next_seq) {
+        const struct pr_entry *other = &r->entries[one - 1u];
+        if (memcmp(other->observation_root, root, 32) == 0) continue;
+        struct vcs_proof_ticket_v1 previous;
+        if (vcs_proof_ticket_decode(other->wire,
+                                     VCS_PROOF_TICKET_WIRE_BYTES,
+                                     &previous) &&
+            vcs_proof_ticket_signature_valid(&previous))
+            return true;
+    }
+    return false;
 }
 
 bool vcs_proof_receiver_add_ticket(struct vcs_proof_receiver *r,
@@ -95,9 +232,18 @@ bool vcs_proof_receiver_add_ticket(struct vcs_proof_receiver *r,
     if (!vcs_proof_ticket_decode(wire, len, &t) ||
         !vcs_proof_ticket_observation_root(wire, len, root))
         LOG_RETURN(false, PRV_LOG, "receiver add: undecodable ticket");
+    struct pr_issuer *fork_issuer = NULL;
+    if (pr_signed_seq_fork(r, &t, root)) {
+        fork_issuer = pr_issuer_get(r, t.producer_pubkey);
+        if (!fork_issuer) return false;
+    }
     size_t before = r->count;
     if (!pr_entry_put(r, wire, &t, root)) return false;
     if (added) *added = r->count > before;
+    if (fork_issuer) {
+        fork_issuer->equivocating = true;
+        LOG_WARN(PRV_LOG, "issuer signed conflicting tickets at one sequence");
+    }
     return true;
 }
 
@@ -107,11 +253,9 @@ size_t vcs_proof_receiver_lookup(const struct vcs_proof_receiver *r,
 {
     if (!r || !input_key) return 0;
     size_t total = 0;
-    for (size_t i = 0; i < r->count; i++) {
-        if (memcmp(r->entries[i].input_key, input_key,
-                   VCS_PROOF_ROOT_BYTES) != 0)
-            continue;
-        if (wires && total < cap) wires[total] = r->entries[i].wire;
+    for (size_t one = pr_entry_key_first(r, input_key); one;
+         one = r->entries[one - 1u].next_key) {
+        if (wires && total < cap) wires[total] = r->entries[one - 1u].wire;
         total++;
     }
     return total;
@@ -254,6 +398,16 @@ static bool pr_verified_prev(const struct pr_issuer *is,
     return false;
 }
 
+static bool pr_verified_root(const struct pr_issuer *is,
+                             const uint8_t root[VCS_PROOF_ROOT_BYTES])
+{
+    for (size_t i = 0; i < is->cp_count; i++)
+        if (is->cps[i].verified &&
+            memcmp(is->cps[i].root, root, VCS_PROOF_ROOT_BYTES) == 0)
+            return true;
+    return false;
+}
+
 /* Check each delta ticket is this issuer's, at its position. Fills roots. */
 static bool pr_delta_shape(const struct pr_sync *s, uint8_t (*roots)[32],
                            struct vcs_proof_ticket_v1 *tickets)
@@ -331,9 +485,10 @@ static bool pr_extend(struct pr_sync *s)
 {
     if (s->n != s->c.leaf_count - s->is->mmr.num_leaves)
         return pr_done(s->out, VCS_PROOF_SYNC_REFUSED, VCS_PROOF_SYNC_WHY_COUNT);
-    uint8_t (*roots)[32] = zcl_calloc(s->n, 32, "proof_sync_roots");
+    uint8_t (*roots)[32] = zcl_calloc(s->n ? s->n : 1u, 32,
+                                    "proof_sync_roots");
     struct vcs_proof_ticket_v1 *tickets =
-        zcl_calloc(s->n, sizeof(*tickets), "proof_sync_tickets");
+        zcl_calloc(s->n ? s->n : 1u, sizeof(*tickets), "proof_sync_tickets");
     bool ok;
     if (!roots || !tickets) {
         ok = pr_done(s->out, VCS_PROOF_SYNC_REFUSED,
@@ -355,21 +510,20 @@ static bool pr_classify(struct pr_sync *s)
 {
     struct pr_issuer *is = s->is;
     if (is->equivocating) return pr_equivocate(s);
+    if (pr_verified_root(is, s->root))
+        return pr_done(s->out, VCS_PROOF_SYNC_CURRENT, VCS_PROOF_SYNC_WHY_OK);
     const struct pr_checkpoint *same = pr_verified_at(is, s->c.leaf_count);
-    if (same)
-        return memcmp(same->mmr_root, s->c.mmr_root, 32) == 0 ?
-                   pr_done(s->out, VCS_PROOF_SYNC_CURRENT,
-                           VCS_PROOF_SYNC_WHY_OK) :
-                   pr_equivocate(s);
-    if (s->c.leaf_count < is->mmr.num_leaves)
-        return pr_done(s->out, VCS_PROOF_SYNC_REFUSED,
-                       VCS_PROOF_SYNC_WHY_UNVERIFIABLE);
+    if (same && memcmp(same->mmr_root, s->c.mmr_root, 32) != 0)
+        return pr_equivocate(s);
     if (is->verified_count > 0 &&
         memcmp(s->c.prev_checkpoint_root, is->last_root, 32) != 0)
         return pr_verified_prev(is, s->c.prev_checkpoint_root) ?
                    pr_equivocate(s) :
                    pr_done(s->out, VCS_PROOF_SYNC_REFUSED,
                            VCS_PROOF_SYNC_WHY_GAP);
+    if (s->c.leaf_count < is->mmr.num_leaves)
+        return pr_done(s->out, VCS_PROOF_SYNC_REFUSED,
+                       VCS_PROOF_SYNC_WHY_UNVERIFIABLE);
     return pr_extend(s);
 }
 
