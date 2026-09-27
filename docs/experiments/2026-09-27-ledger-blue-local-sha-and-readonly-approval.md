@@ -58,6 +58,13 @@ CPU: AMD Ryzen 7 PRO 8840U with Radeon 780M Graphics. Test date:
 
 ## Limit
 
+The wallet CLI fixture test now uses the in-tree C23 SHA-256 implementation
+for previous-transaction identifiers. On 2026-09-27T06:55:23-04:00
+(2026-09-27T10:55:23Z), its unchanged fixture assertions passed with Clang
+22.1.6 Debug/ASan/UBSan and GCC 16.1.1 Release, each against the standalone
+reviewer. `readelf -d` on the GCC fixture test listed only `libc.so.6` as a
+runtime dependency. CPU: AMD Ryzen 7 PRO 8840U with Radeon 780M Graphics.
+
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel
 key exchange, custom-CA signing, public-key validation, and signing-test
 verification. Wallet 0.2.15 is uninstalled and read-only. Host UI tests do

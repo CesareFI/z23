@@ -480,7 +480,7 @@ endif()
 add_test(NAME blue-wallet-device-ui COMMAND test-blue-wallet-device-ui)
 
 add_executable(test-blue-wallet-review-cli tests/test_blue_wallet_review_cli.c)
-target_link_libraries(test-blue-wallet-review-cli PRIVATE OpenSSL::Crypto)
+target_link_libraries(test-blue-wallet-review-cli PRIVATE zcl_sha256)
 target_compile_options(test-blue-wallet-review-cli PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

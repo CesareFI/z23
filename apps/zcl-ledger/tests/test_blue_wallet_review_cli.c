@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
-#include <openssl/sha.h>
+#include "zsha256/zsha256.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,8 +108,8 @@ int main(int argc, char **argv) {
         size_t amount_offset = version >= 3 ? 51 : 47;
         for (unsigned i = 0; i < 8; ++i)
             previous[amount_offset + i] = (uint8_t)(amount >> (i * 8));
-        assert(SHA256(previous, previous_length, first));
-        assert(SHA256(first, sizeof first, txid));
+        zsha256(previous, previous_length, first);
+        zsha256(first, sizeof first, txid);
         memcpy(spend, base, length);
         memcpy(spend + 9, txid, sizeof txid);
         write_file(spend_path, spend, length);
