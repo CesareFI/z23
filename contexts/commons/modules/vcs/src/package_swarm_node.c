@@ -1647,49 +1647,6 @@ struct vcs_swarm_frame_result vcs_swarm_engine_handle_frame(
     return res;
 }
 
-static enum vcs_swarm_fetch_result provider_input_result(
-    const uint64_t *provider_peers, size_t provider_count)
-{
-    if ((!provider_peers && provider_count) ||
-        provider_count > VCS_SWARM_PROVIDER_MAX)
-        return VCS_SWARM_FETCH_BAD_INPUT;
-    for (size_t i = 0; i < provider_count; i++)
-        if (provider_peers[i] != 0)
-            return VCS_SWARM_FETCH_OK;
-    return VCS_SWARM_FETCH_NO_PROVIDER;
-}
-
-/* A restricted fetch that names no authenticated provider can still be
- * answered from this node's own store: it needs no remote bytes. The
- * store's `complete` bit is a presence index (every committed coordinate
- * has a CAS object, each hash-checked when it was admitted), not a fresh
- * read of the bytes on disk, so success here also requires a full
- * possession proof: the manifest re-parsed and bound to this exact root,
- * every chunk re-read and re-hashed. Partial, untracked, corrupt, or
- * foreign-root bytes keep the original no-provider refusal. Runs without
- * the engine lock (the proof reads the whole package); engine->store is
- * fixed at create. */
-static enum vcs_swarm_fetch_result swarm_local_complete_result(
-    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
-    uint64_t maximum_package_bytes)
-{
-    struct vcs_package_store_status st;
-    memset(&st, 0, sizeof(st));
-    if (!engine->store ||
-        !vcs_package_store_package_status(engine->store, package_root,
-                                          &st) ||
-        !st.tracked || !st.complete)
-        return VCS_SWARM_FETCH_NO_PROVIDER;
-    enum vcs_swarm_fetch_result cached =
-        vcs_swarm_cached_fetch_result(&st, maximum_package_bytes);
-    if (cached != VCS_SWARM_FETCH_ALREADY_COMPLETE)
-        return cached;
-    return vcs_package_store_verify_possession(engine->store, package_root,
-                                               false)
-        ? VCS_SWARM_FETCH_ALREADY_COMPLETE
-        : VCS_SWARM_FETCH_NO_PROVIDER;
-}
-
 static enum vcs_swarm_fetch_result swarm_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now, const uint64_t *provider_peers,
@@ -1702,11 +1659,9 @@ static enum vcs_swarm_fetch_result swarm_fetch(
     if (memcmp(package_root, zero, 32) == 0)
         return VCS_SWARM_FETCH_BAD_INPUT;
     if (restricted) {
-        enum vcs_swarm_fetch_result input =
-            provider_input_result(provider_peers, provider_count);
-        if (input == VCS_SWARM_FETCH_NO_PROVIDER)
-            return swarm_local_complete_result(engine, package_root,
-                                               maximum_package_bytes);
+        enum vcs_swarm_fetch_result input = vcs_swarm_restricted_precheck(
+            engine, package_root, provider_peers, provider_count,
+            maximum_package_bytes);
         if (input != VCS_SWARM_FETCH_OK)
             return input;
     }

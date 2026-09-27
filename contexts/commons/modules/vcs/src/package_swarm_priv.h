@@ -183,4 +183,15 @@ void vcs_swarm_record_delete_dl(struct vcs_swarm_engine *engine,
 void vcs_swarm_complete_download(struct vcs_swarm_engine *engine,
                                  struct swarm_download *dl);
 
+/* Lock NOT held. Implemented in package_swarm_complete.c. Admission for a
+ * provider-restricted fetch before any state is registered: OK when at
+ * least one nonzero authenticated handle is named; BAD_INPUT for a
+ * malformed set; otherwise ALREADY_COMPLETE (or BYTE_LIMIT) only for a
+ * complete, possession-proven local copy of the exact root, else
+ * NO_PROVIDER. Never registers work or queues a frame. */
+enum vcs_swarm_fetch_result vcs_swarm_restricted_precheck(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    const uint64_t *provider_peers, size_t provider_count,
+    uint64_t maximum_package_bytes);
+
 #endif /* ZCL_VCS_PACKAGE_SWARM_PRIV_H */
