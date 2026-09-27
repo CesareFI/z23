@@ -29,10 +29,19 @@ CFLAGS += -std=c23 -O2 -Wall -Wextra -Werror -pedantic -fstack-usage -I../includ
 LDFLAGS += -O2 -Wl,-z,noexecstack
 LDLIBS += -lgcc -lc
 
-all: default check-image
+all: default check-image check-stack
 
 include $(BOLOS_SDK)/Makefile.rules
 
 check-image: default
 	@data_size=$$($(GCCPATH)arm-none-eabi-size -A bin/app.elf | awk '$$1 == ".data" { print $$2 }'); \
 	  test "$$data_size" = 0 || { echo "Initialized .data requires loader allocation; refusing image" >&2; exit 1; }
+
+HOST_CC ?= clang
+
+obj/blue_stack_check: ../tools/blue_stack_check.c
+	@mkdir -p obj
+	$(HOST_CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $< -o $@
+
+check-stack: default obj/blue_stack_check
+	@obj/blue_stack_check --wallet $(BOLOS_SDK)/script.ld obj/*.su

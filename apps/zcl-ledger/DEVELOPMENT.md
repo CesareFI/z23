@@ -41,13 +41,14 @@ make -C apps/zcl-ledger/device-blue-review \
   CLANGPATH=/path/to/clang/bin/
 ```
 
-The device Makefile requires `-std=c23 -Wall -Wextra -Werror -pedantic`.
+The device Makefiles require `-std=c23 -Wall -Wextra -Werror -pedantic`.
 The Blue linker rejects an SRAM overflow, and the Makefile rejects a
 nonempty initialized `.data` section. It also compiles with
 `-fstack-usage` and runs a C23 stack-budget check across the deepest
 known APDU and screen call paths with a 512-byte reserve for intermediate
-frames. This is a conservative build gate, not a complete firmware stack
-proof. The code image is the ELF's `.text`
+frames. The Wallet receive candidate uses the same checker for its
+derivation, address formatting, APDU, and event paths. This is a conservative
+build gate, not a complete firmware stack proof. The code image is the ELF's `.text`
 section, extracted with `arm-none-eabi-objcopy -O binary
 --only-section=.text`. Record its byte count and SHA-256. The C23 installer
 accepts only explicitly pinned hashes; source changes require a new app

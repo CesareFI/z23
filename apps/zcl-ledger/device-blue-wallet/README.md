@@ -32,7 +32,10 @@ arm-none-eabi-objcopy -O binary --only-section=.text \
 sha256sum /tmp/zcl-wallet.bin
 ```
 
-The build rejects initialized `.data`. The C23 installer accepts only the
+The build rejects initialized `.data` and checks named derivation, address,
+APDU, and screen-event stack paths against the SDK's stack reserve with a
+512-byte margin. This gate cannot measure BOLOS firmware frames. The C23
+installer accepts only the
 exact 14,848-byte image with SHA-256
 `baf36150563cecd659692434800d5bb106a9679a9fa6e36598a3e38fb0836df2`.
 Its BOLOS metadata grants the fixed ZCL path needed for derivation. After
