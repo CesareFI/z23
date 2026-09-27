@@ -210,10 +210,19 @@ aggregate()
        . as $entry | (observed(.path)) as $sample |
        $entry + {sample:$sample,
          useful:($sample != null and $sample.result_bound and
-                 ($sample.feedback_us//0)>0),
+                 ($sample.feedback_us//0)>0 and
+                 ($sample.feedback_us//0)<1000000),
+         claims:{compiled_new_bytes:false,
+           executed_exact_new_bytes:false,
+           compiled_candidate_artifact:($sample.result_bound//false),
+           executed_bound_candidate_artifact:($sample.result_bound//false),
+           externally_checked_behavior:false,
+           independent_proof:false},
          feedback_us:($sample.feedback_us//null),
          fallback_reason:(if $sample == null then
              (.class + ": " + .reason)
+           elif $sample.result_bound and ($sample.feedback_us//0)>=1000000
+             then "bound candidate story exceeded 1s feedback target"
            elif $sample.result_bound then ""
            else ($sample.failure//"registered fast owner returned no bound story")
            end)}] as $rows |
@@ -230,6 +239,8 @@ aggregate()
        history_rows_sha256:$h.history.frozen_rows_sha256,
        production_c_commits:$h.history.production_c_commits,
        nonforbidden_edit_occurrences:$total,
+       behavior_coverage:{status:"unmeasured",
+         reason:"timed edits are comments; behavior mutation receipts are separate"},
        measured_fast_paths:($s|length),
        coverage:{under_100ms_occurrences:covered(100000),
          under_100ms_percent:(10000*covered(100000)/$total|round/100),
@@ -254,15 +265,23 @@ self_test()
     trap "rm -rf -- '$scratch'" EXIT INT TERM
     history="$scratch/history.json"; samples="$scratch/samples.jsonl"
     output="$scratch/output.json"
-    printf '%s\n' '{"source_head":"abc","history":{"frozen_rows_sha256":"def","production_c_commits":2},"entries":[{"path":"a.c","class":"HOT_SHADOW_CORE","reason":"registered"},{"path":"a.c","class":"HOT_SHADOW_CORE","reason":"registered"},{"path":"b.c","class":"requires_fast_restart","reason":"restart"},{"path":"c.c","class":"forbidden_authority_surface","reason":"forbidden"}]}' >"$history"
+    printf '%s\n' '{"source_head":"abc","history":{"frozen_rows_sha256":"def","production_c_commits":2},"entries":[{"path":"a.c","class":"HOT_SHADOW_CORE","reason":"registered"},{"path":"a.c","class":"HOT_SHADOW_CORE","reason":"registered"},{"path":"b.c","class":"requires_fast_restart","reason":"restart"},{"path":"d.c","class":"HOT_FORK","reason":"registered"},{"path":"c.c","class":"forbidden_authority_surface","reason":"forbidden"}]}' >"$history"
     printf '%s\n' '{"path":"a.c","frequency":2,"result_bound":true,"feedback_class":"HOT_SHADOW_CORE","feedback_us":90000,"event":"STORY_GREEN","failure":""}' >"$samples"
+    printf '%s\n' '{"path":"d.c","frequency":1,"result_bound":true,"feedback_class":"HOT_FORK","feedback_us":1200000,"event":"STORY_GREEN","failure":""}' >>"$samples"
     aggregate "$history" "$samples" "$output"
     jq -e '.status=="complete" and .coverage_basis=="comment_only_edits" and
-      .nonforbidden_edit_occurrences==3 and
+      .behavior_coverage.status=="unmeasured" and
+      .rows[0].claims.compiled_new_bytes==false and
+      .rows[0].claims.executed_exact_new_bytes==false and
+      .rows[0].claims.compiled_candidate_artifact==true and
+      .rows[0].claims.executed_bound_candidate_artifact==true and
+      .rows[0].claims.externally_checked_behavior==false and
+      .nonforbidden_edit_occurrences==4 and
       .coverage.under_100ms_occurrences==2 and
-      .coverage.under_100ms_percent==66.67 and
-      .coverage.slower_fallback_occurrences==1 and
-      .fallbacks[0].edit_occurrences==1' "$output" >/dev/null ||
+      .coverage.under_100ms_percent==50 and
+      .coverage.slower_fallback_occurrences==2 and
+      any(.fallbacks[]; .reason=="bound candidate story exceeded 1s feedback target" and
+          .edit_occurrences==1)' "$output" >/dev/null ||
         fail 'aggregation contract regressed'
     local good impact compact bad root_a root_b candidate_epoch inputs_root
     root_a="$(printf '%064d' 1)"; root_b="$(printf '%064d' 2)"
@@ -485,6 +504,11 @@ while IFS= read -r row; do
     binding_evidence='null'
     if [[ "$result_bound" == true ]]; then
         failure=''
+        binding_evidence="$(jq -cn --argjson sealed "$sealed" \
+          --argjson impact "$impact" --argjson compact "$result" \
+          --arg local_leaf "$leaf" --argjson local_size "$source_size" \
+          '{sealed:$sealed,impact:$impact,compact:$compact,
+            local_leaf:$local_leaf,local_size:$local_size}')"
     elif [[ "$event" == STORY_GREEN ]]; then
         if [[ "$sealed" == '{}' ]]; then
             failure='sealed_event_unavailable'

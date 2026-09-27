@@ -69,8 +69,46 @@ elif [[ "$OWNER_KIND" == package-policy ]]; then
     MUTANT_OLD='VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW,'
     MUTANT_NEW='VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW - 1u,'
 fi
+EDITED_PATH="${SOURCE#$ROOT/}"
+CAPSULE_OWNER="$EDITED_PATH"
+if [[ "$OWNER_KIND" == command-input ]]; then
+    CAPSULE_OWNER='engine/modules/kernel/src/command_registry_input_validate.c'
+fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }
+
+source_leaf_sha3()
+{
+    local path="$1" file="$2" size i octet
+    size="$(wc -c <"$file")" || return 1
+    {
+        printf '\020%s\0%s\0' 'zcl.codeindex.merkle.leaf.v1' "$path"
+        for ((i=0; i<8; i++)); do
+            octet="$(printf '%03o' "$(( (size >> (8*i)) & 255 ))")"
+            printf '%b' "\\$octet"
+        done
+        cat -- "$file"
+    } | openssl dgst -sha3-256 | awk '{print $NF}'
+}
+
+find_impact()
+{
+    local cursor="$1" terminal="$2" edit="$3" raw next phase observed i
+    for ((i=0; i<16 && cursor<terminal; i++)); do
+        raw="$($BIN dev loop wait --input="{\"after_epoch\":$cursor,\"timeout_ms\":100}")" || return 1
+        next="$(jq -r '.data.epoch//0' <<<"$raw")"
+        [[ "$next" =~ ^[0-9]+$ && "$next" -gt "$cursor" &&
+           "$next" -le "$terminal" ]] || return 1
+        phase="$(jq -r '.data.phase//""' <<<"$raw")"
+        observed="$(jq -r '.data.edit_epoch//""' <<<"$raw")"
+        if [[ "$phase" == IMPACT_READY && "$observed" == "$edit" ]]; then
+            printf '%s\n' "$raw"
+            return 0
+        fi
+        cursor="$next"
+    done
+    return 1
+}
 [[ -x "$BIN" ]] || fail "missing dev binary: $BIN"
 [[ -f "$SOURCE" && ! -L "$SOURCE" ]] || fail "owner source is not a regular file: $SOURCE"
 command -v jq >/dev/null || fail 'jq is required'
@@ -102,6 +140,7 @@ drive_candidate()
 {
     local candidate="$1" expected="$2" wait_for_edit=true event='' next loops
     chmod --reference="$SOURCE" "$candidate"
+    start_cursor="$after"
     mv -f -- "$candidate" "$SOURCE"
     result=''
     for ((loops = 0; loops < 16; loops++)); do
@@ -138,6 +177,11 @@ cp -p -- "$backup" "$green"
 printf '\n/* ZCL_REFLEX_WATCH_CORE_ACCEPTANCE:%s */\n' "$nonce" >>"$green"
 drive_candidate "$green" STORY_GREEN
 green_result="$result"
+green_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
+green_leaf="$(source_leaf_sha3 "${SOURCE#$ROOT/}" "$SOURCE")"
+green_size="$(wc -c <"$SOURCE")"
+green_impact="$(find_impact "$start_cursor" "$after" "$(jq -r '.data.edit_epoch' <<<"$green_result")")" ||
+    fail 'green immutable source impact missing'
 
 printf '\n/* ZCL_REFLEX_WATCH_CORE_UNRELATED:%s */\n' "$nonce" >>"$UNRELATED"
 unrelated_wait=true
@@ -170,6 +214,11 @@ MUTANT_OLD="$MUTANT_OLD" MUTANT_NEW="$MUTANT_NEW" perl -0pi -e '
 ' "$mutant"
 drive_candidate "$mutant" STORY_RED
 red_result="$result"
+red_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
+red_leaf="$(source_leaf_sha3 "${SOURCE#$ROOT/}" "$SOURCE")"
+red_size="$(wc -c <"$SOURCE")"
+red_impact="$(find_impact "$start_cursor" "$after" "$(jq -r '.data.edit_epoch' <<<"$red_result")")" ||
+    fail 'red immutable source impact missing'
 
 revert="$(mktemp "$ROOT/tools/dev/.reflex-watch-core-revert.XXXXXX")"
 cp -p -- "$backup" "$revert"
@@ -177,6 +226,10 @@ printf '\n/* ZCL_REFLEX_WATCH_CORE_ACCEPTANCE:%s */\n' "$nonce" >>"$revert"
 drive_candidate "$revert" STORY_GREEN
 revert_result="$result"
 revert_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
+revert_leaf="$(source_leaf_sha3 "${SOURCE#$ROOT/}" "$SOURCE")"
+revert_size="$(wc -c <"$SOURCE")"
+revert_impact="$(find_impact "$start_cursor" "$after" "$(jq -r '.data.edit_epoch' <<<"$revert_result")")" ||
+    fail 'revert immutable source impact missing'
 
 object="$(jq -r '.data.candidate_object_root' <<<"$green_result")"
 module="$(jq -r '.data.candidate_module_root' <<<"$green_result")"
@@ -189,12 +242,120 @@ for raw in "$unrelated_raw" "$revert_raw"; do
       <<<"$raw" >/dev/null || fail 'exact candidate cache identity was not reused'
 done
 
+# These are three separate observations. The source mutation is chosen by
+# this resident acceptance script, while the fast story itself remains
+# candidate-influenced feedback. Keep the exact build and mapped-image roots
+# beside the independently expected green/red/revert sequence.
+jq -e --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
+  --argjson green "$green_raw" --argjson red "$red_raw" \
+  --argjson revert "$revert_raw" \
+  --argjson green_reply "$green_result" \
+  --argjson red_reply "$red_result" \
+  --argjson revert_reply "$revert_result" \
+  --argjson green_impact "$green_impact" \
+  --argjson red_impact "$red_impact" \
+  --argjson revert_impact "$revert_impact" \
+  --arg green_leaf "$green_leaf" --arg red_leaf "$red_leaf" \
+  --arg revert_leaf "$revert_leaf" \
+  --argjson green_size "$green_size" \
+  --argjson red_size "$red_size" \
+  --argjson revert_size "$revert_size" '
+  def hex64: type=="string" and test("^[0-9a-f]{64}$");
+  all([$green,$red,$revert][];
+    .ok==true and .data.source_tu==$owner and
+    .data.build_receipt.source_tu==$owner and
+    (.data.build_receipt.candidate_object_root|hex64) and
+    (.data.build_receipt.candidate_module_root|hex64) and
+    .data.build_receipt.artifact_sha256==.data.candidate_module_root and
+    .data.build_receipt.candidate_object_root==.data.candidate_object_root and
+    .data.build_receipt.candidate_module_root==.data.candidate_module_root and
+    .data.loaded_mapping_root==.data.candidate_module_root and
+    .data.resident.loaded_mapping_root==.data.candidate_module_root and
+    .data.resident.candidate_object_root==.data.candidate_object_root and
+    .data.resident.candidate_module_root==.data.candidate_module_root and
+    .data.resident.observation_root==.data.observation_root and
+    (.data.observation_root|hex64) and
+    .data.resident.forked==true and
+    .data.candidate_bytes_executed==true and
+    .data.resident.candidate_bytes_executed==true) and
+  $green.data.phase=="STORY_GREEN" and
+  $red.data.phase=="STORY_RED" and
+  $revert.data.phase=="STORY_GREEN" and
+  $green.data.resident.story_checks_run>0 and
+  $green.data.resident.story_checks_passed==
+    $green.data.resident.story_checks_run and
+  $red.data.resident.story_checks_passed<
+    $red.data.resident.story_checks_run and
+  $revert.data.resident.story_checks_passed==
+    $revert.data.resident.story_checks_run and
+  $green.data.epoch<$red.data.epoch and
+  $red.data.epoch<$revert.data.epoch and
+  ($green.data.edit_epoch|hex64) and
+  ($red.data.edit_epoch|hex64) and
+  ($revert.data.edit_epoch|hex64) and
+  $green.data.edit_epoch!=$red.data.edit_epoch and
+  $red.data.edit_epoch!=$revert.data.edit_epoch and
+  all([[$green,$green_reply],[$red,$red_reply],[$revert,$revert_reply]][];
+    .[0].data.epoch==.[1].data.epoch and
+    .[0].data.phase==.[1].data.event and
+    .[0].data.edit_epoch==.[1].data.edit_epoch and
+    .[0].data.candidate_object_root==.[1].data.candidate_object_root and
+    .[0].data.candidate_module_root==.[1].data.candidate_module_root and
+    .[0].data.observation_root==.[1].data.observation_root) and
+  all([[$green,$green_impact,$green_leaf,$green_size],
+       [$red,$red_impact,$red_leaf,$red_size],
+       [$revert,$revert_impact,$revert_leaf,$revert_size]][];
+    .[1].ok==true and .[1].data.phase=="IMPACT_READY" and
+    .[1].data.epoch<.[0].data.epoch and
+    .[1].data.edit_epoch==.[0].data.edit_epoch and
+    .[1].data.file_count==1 and
+    (.[1].data.blobs|length)==1 and
+    .[1].data.blobs[0].path==$edited and
+    .[1].data.blobs[0].new_present==true and
+    .[1].data.blobs[0].new_blob_sha3==.[2] and
+    .[1].data.blobs[0].new_size==.[3]) and
+  $green_leaf!=$red_leaf and $green_leaf==$revert_leaf and
+  $red.data.candidate_object_root!=$green.data.candidate_object_root and
+  $red.data.candidate_module_root!=$green.data.candidate_module_root and
+  $revert.data.candidate_object_root==$green.data.candidate_object_root and
+  $revert.data.candidate_module_root==$green.data.candidate_module_root
+' <<<"$green_raw" >/dev/null ||
+    fail 'green/red/revert did not bind compiled bytes, mapped bytes, and expected behavior'
+
 mkdir -p "$(dirname "$OUTPUT")"
-jq -n --arg owner "${SOURCE#$ROOT/}" \
+jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
   --argjson green "$green_result" --argjson red "$red_result" \
+  --argjson green_raw "$green_raw" --argjson red_raw "$red_raw" \
+  --argjson green_impact "$green_impact" --argjson red_impact "$red_impact" \
   --argjson unrelated "$unrelated_result" --argjson unrelated_raw "$unrelated_raw" \
   --argjson revert "$revert_result" --argjson revert_raw "$revert_raw" '
   {schema:"zcl.reflex_owner_acceptance.v1",owner:$owner,
+   edited_path:$edited,
+   claims:{compiled_new_bytes:true,executed_exact_new_bytes:true,
+     externally_checked_behavior:true,independent_proof:false,
+     scope:"frozen mutation vector; candidate story is feedback"},
+   exact_roots:{green:{edit_epoch:$green_raw.data.edit_epoch,
+       source_blob:$green_impact.data.blobs[0].new_blob_sha3,
+       object:$green_raw.data.candidate_object_root,
+       module:$green_raw.data.candidate_module_root,
+       loaded:$green_raw.data.loaded_mapping_root,
+       observation:$green_raw.data.observation_root},
+     born_red:{edit_epoch:$red_raw.data.edit_epoch,
+       source_blob:$red_impact.data.blobs[0].new_blob_sha3,
+       object:$red_raw.data.candidate_object_root,
+       module:$red_raw.data.candidate_module_root,
+       loaded:$red_raw.data.loaded_mapping_root,
+       observation:$red_raw.data.observation_root}},
+   resources:{green_wall_us:$green_raw.data.elapsed_us,
+     born_red_wall_us:$red_raw.data.elapsed_us,
+     revert_wall_us:$revert_raw.data.elapsed_us,
+     compiler_launches:([$green_raw,$red_raw,$revert_raw] |
+       map(.data.build_receipt.compiler_processes//0)|add),
+     linker_launches:([$green_raw,$red_raw,$revert_raw] |
+       map(.data.build_receipt.linker_processes//0)|add),
+     story_forks:([$green_raw,$red_raw,$revert_raw] |
+       map(if .data.resident.forked then 1 else 0 end)|add), cpu_us:null,
+     cpu_note:"per-story CPU is not present in the sealed event"},
    green:{event:$green.data.event,feedback_us:$green.data.feedback_us,
      candidate_object_root:$green.data.candidate_object_root,
      candidate_module_root:$green.data.candidate_module_root,
