@@ -31,6 +31,7 @@ struct sfz_run {
     struct sfz_paths changed; /* files that differ between the sides */
     struct sfz_paths tus;     /* src/ .c files on either side */
     bool header_changed;      /* a changed file is not a .c */
+    size_t killed;            /* compile or sensor runs killed at their deadline */
 };
 
 /* Append one line to out->why (bounded; the first lines win). */

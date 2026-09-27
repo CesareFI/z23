@@ -50,6 +50,8 @@
 #include "platform/clock.h"
 
 #include <errno.h>
+#include <poll.h>
+#include <signal.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +65,10 @@
  * SFZ_JOBS files at once: eight processes in all. */
 #define SFZ_CASES_AT_ONCE 4
 #define SFZ_JOBS 2
+/* A case of at most eight TUs compiles and senses each twice, SFZ_JOBS
+ * runs at once, every run bounded by its own deadline; a case whose
+ * process has not reported after this is killed and is an ERROR. */
+#define SFZ_CASE_BUDGET_S 240
 
 enum sfz_profile { PROF_ALL, PROF_NO_CTR_LINE, PROF_GCC_DEPS, PROF_COUNT };
 
@@ -258,6 +264,7 @@ struct sfz_item {
     bool ok;               /* passed, or held as recorded (NOOP only in a
                               range run) */
     pid_t pid;
+    int64_t deadline;      /* monotonic ns: killed and an ERROR after it */
     int fd;
     struct sfz_outcome o;
 };
@@ -277,19 +284,29 @@ static bool write_all(int fd, const void *buf, size_t n)
     return true;
 }
 
-static bool read_all(int fd, void *buf, size_t n)
+/* Read n bytes from fd by `deadline` (monotonic ns): 1 read, 0 closed or
+ * failed, -1 out of time. */
+static int read_by(int fd, void *buf, size_t n, int64_t deadline)
 {
     uint8_t *p = buf;
     while (n > 0) {
-        ssize_t r = read(fd, p, n);
+        int64_t left = (deadline - clock_now_monotonic_ns()) / 1000000;
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int ready = left > 0 ? poll(&pfd, 1, left > INT_MAX ? INT_MAX : (int)left) : 0;
+        ssize_t r;
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready == 0)
+            return -1;
+        r = ready > 0 ? read(fd, p, n) : -1;
         if (r < 0 && errno == EINTR)
             continue;
         if (r <= 0)
-            return false;
+            return 0;
         p += r;
         n -= (size_t)r;
     }
-    return true;
+    return 1;
 }
 
 static void item_start(const struct sfz_env *env, struct sfz_item *it)
@@ -316,6 +333,7 @@ static void item_start(const struct sfz_env *env, struct sfz_item *it)
         return;
     }
     it->fd = p[0];
+    it->deadline = clock_now_monotonic_ns() + (int64_t)SFZ_CASE_BUDGET_S * 1000000000;
 }
 
 /* True when `why` is exactly the lines of `want`, each reported with the
@@ -376,16 +394,24 @@ static void judge_item(struct sfz_group *g, struct sfz_item *it)
 static void item_finish(struct sfz_group *g, struct sfz_item *it)
 {
     int st = 0;
-    bool got = it->fd >= 0 && read_all(it->fd, &it->o, sizeof(it->o));
+    int got = it->fd >= 0 ? read_by(it->fd, &it->o, sizeof(it->o), it->deadline) : 0;
     if (it->fd >= 0)
         (void)close(it->fd);
+    /* out of time: its compile and sensor runs die with it (PDEATHSIG) */
+    if (got < 0 && it->pid > 0)
+        (void)kill(it->pid, SIGKILL);
     if (it->pid > 0 && waitpid(it->pid, &st, 0) != it->pid)
         fprintf(stderr, "sfz: waitpid for %s: %s\n", it->c.label, strerror(errno));
-    if (!got) {
+    if (got != 1) {
         memset(&it->o, 0, sizeof(it->o));
         it->o.status = SFZ_ERROR;
-        (void)snprintf(it->o.why, sizeof(it->o.why),
-                       "the case process did not report (status %d)\n", st);
+        if (got < 0)
+            (void)snprintf(it->o.why, sizeof(it->o.why),
+                           "the case process ran past its %d s budget and was "
+                           "killed\n", SFZ_CASE_BUDGET_S);
+        else
+            (void)snprintf(it->o.why, sizeof(it->o.why),
+                           "the case process did not report (status %d)\n", st);
     }
     tally(&g->t, &it->o);
     report(&it->c, &it->o);

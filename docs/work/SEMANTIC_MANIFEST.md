@@ -1274,7 +1274,10 @@ At 64370952d5 the known-RED reproducers are F7 (a `cleanup()` handler
 inlined into a function that is not seeded) and both F8 shapes (a `.c`
 that `#include`s another `.c`: an edit to the included file does not seed
 the includer's functions). Cases run four at once, each in its own
-process with two compiles or sensor runs at once; the default run of 55
+process with two compiles or sensor runs at once. A compile or sensor
+run still going after 120 s, or a case process that has not reported
+after 240 s, is killed with SIGKILL and the case is an ERROR. The default
+run of 55
 cases takes about 17 s and yields 46 narrowed verdicts and 26 seeded
 changed functions.
 
