@@ -7258,6 +7258,99 @@ $(BIN_DIR)/arena_view: tools/arena_view.c \
 	    -ffunction-sections -fdata-sections $(ZCL_GC_SECTIONS_LDFLAG) \
 	    $(ARENA_VIEW_INCLUDES) \
 	    -o $@ $^ $(RAYLIB_LIBS) -lm
+# z23-clang-manifest: optional libclang SEMANTIC SENSOR (tools/sensors/).
+# Emits the canonical semantic manifest of one C23 translation unit
+# (docs/work/SEMANTIC_MANIFEST.md). It is an external tool: it links libclang
+# and is never linked into z23, z23-dev, the test harness or core; Z23 reads
+# only the manifest bytes, through the libclang-free reader in
+# contexts/commons/modules/vcs/src/semantic_manifest*.c. Builds only where
+# libclang's C API is installed (apt install libclang-20-dev); point
+# CLANG_MANIFEST_LLVM_DIR at another LLVM prefix to use a different one.
+.PHONY: clang-manifest
+CLANG_MANIFEST_LLVM_DIR ?= $(patsubst %/include/clang-c/Index.h,%,$(firstword \
+	$(wildcard /usr/lib/llvm-20/include/clang-c/Index.h \
+	           /usr/lib/llvm-21/include/clang-c/Index.h \
+	           /usr/lib/llvm-19/include/clang-c/Index.h \
+	           /usr/lib/llvm-18/include/clang-c/Index.h)))
+CLANG_MANIFEST_CORE_SRCS := tools/sensors/clang_manifest_core.c \
+	tools/sensors/clang_manifest_paths.c \
+	tools/sensors/clang_manifest_lookup.c \
+	tools/sensors/clang_manifest_records.c \
+	tools/sensors/clang_manifest_facts.c \
+	tools/sensors/clang_manifest_cond.c \
+	tools/sensors/clang_manifest_producer.c \
+	contexts/commons/modules/vcs/src/semantic_manifest.c \
+	contexts/commons/modules/vcs/src/semantic_manifest_build.c \
+	contexts/commons/modules/vcs/src/semantic_manifest_dump.c \
+	contexts/commons/modules/vcs/src/semantic_manifest_facts.c \
+	contexts/commons/modules/vcs/src/semantic_namespace.c \
+	contexts/commons/modules/vcs/src/vcs_path_policy.c \
+	platform/modules/base/src/safe_alloc.c \
+	platform/modules/platform/src/os_proc.c \
+	platform/modules/sha3/src/sha3.c
+CLANG_MANIFEST_CORE_HDRS := tools/sensors/clang_manifest_core.h \
+	contexts/commons/modules/vcs/include/vcs/semantic_manifest.h \
+	contexts/commons/modules/vcs/include/vcs/semantic_namespace.h \
+	contexts/commons/modules/vcs/src/semantic_manifest_priv.h
+CLANG_MANIFEST_SRCS := tools/sensors/clang_manifest.c \
+	tools/sensors/clang_manifest_ast.c \
+	$(CLANG_MANIFEST_CORE_SRCS)
+clang-manifest: $(BIN_DIR)/z23-clang-manifest
+# The type spelling call is chosen by a LINK probe, not by CINDEX_VERSION:
+# Apple's libclang.dylib declares clang_getTypePrettyPrinted and does not
+# export it. The sensor then spells types by clang_getTypeSpelling, a
+# different grammar that its producer digest names (CM_TYPE_GRAMMAR).
+$(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manifest.h \
+		$(CLANG_MANIFEST_CORE_HDRS)
+	@mkdir -p $(dir $@)
+	@if [ -z "$(CLANG_MANIFEST_LLVM_DIR)" ] || \
+	    [ ! -f "$(CLANG_MANIFEST_LLVM_DIR)/include/clang-c/Index.h" ]; then \
+	    echo "clang-manifest: libclang C API not found."; \
+	    echo "  install it (e.g. apt install libclang-20-dev) or set CLANG_MANIFEST_LLVM_DIR=/usr/lib/llvm-NN"; \
+	    exit 1; fi
+	@probe=$@.probe; \
+	printf '#include <clang-c/Index.h>\nint main(void) { CXType t = {0}; clang_disposeString(clang_getTypePrettyPrinted(t, 0)); return 0; }\n' > $$probe.c; \
+	if $(CC) -std=c23 -I$(CLANG_MANIFEST_LLVM_DIR)/include -o $$probe $$probe.c \
+	    -L$(CLANG_MANIFEST_LLVM_DIR)/lib -lclang >/dev/null 2>&1; then pretty=1; else pretty=0; fi; \
+	rm -f $$probe $$probe.c; \
+	echo "clang-manifest: clang_getTypePrettyPrinted exported: $$pretty"; \
+	echo "$(CC) -DCM_TYPE_PRETTY_PRINTED=$$pretty ... -o $@"; \
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) -DCM_TYPE_PRETTY_PRINTED=$$pretty \
+	    -D_POSIX_C_SOURCE=200809L $(ZCL_PLATFORM_CPPFLAGS) \
+	    -I$(CLANG_MANIFEST_LLVM_DIR)/include -Itools/sensors \
+	    -Icontexts/commons/modules/vcs/include \
+	    -Iplatform/modules/platform/include \
+	    -Iplatform/modules/base/include -Iplatform/modules/util/include \
+	    -Iplatform/modules/sha3/include -Iplatform/modules/support/include -Ivendor/include \
+	    -o $@ $(CLANG_MANIFEST_SRCS) \
+	    -L$(CLANG_MANIFEST_LLVM_DIR)/lib -lclang -Wl,-rpath,$(CLANG_MANIFEST_LLVM_DIR)/lib
+
+# make clang-facts: the semantic manifest, with the facts extension, of every
+# TU of ONE component (default engine/modules/hotswap), written by the libclang
+# sensor above to build/clang-facts/<src>.zsm. The sensor is the only producer:
+# it parses each TU a second time with the real dev compile argv
+# ($(DEV_COMPILE_CFLAGS)), at 1.2-1.6x the cost of `clang -fsyntax-only`, and
+# never compiles an object. Nothing on main reads these manifests yet: no
+# planner consumes them, so they change no plan. Opt-in only: nothing else
+# depends on this target, so no default build, test link or proof ever reaches
+# it. A manifest is rewritten when its source, any header of the component or
+# the sensor changes. CLANG_FACTS_TREE=<hex> names the ZVCS tree the namespace
+# probes are proved against.
+.PHONY: clang-facts
+CLANG_FACTS_COMPONENT ?= engine/modules/hotswap
+CLANG_FACTS_SRCS = $(sort $(wildcard $(CLANG_FACTS_COMPONENT)/src/*.c))
+CLANG_FACTS_HDRS = $(wildcard $(CLANG_FACTS_COMPONENT)/include/*/*.h \
+	$(CLANG_FACTS_COMPONENT)/src/*.h)
+CLANG_FACTS_OUT_DIR := build/clang-facts
+CLANG_FACTS_ZSMS = $(patsubst %.c,$(CLANG_FACTS_OUT_DIR)/%.zsm,$(CLANG_FACTS_SRCS))
+clang-facts: $(CLANG_FACTS_ZSMS)
+$(CLANG_FACTS_OUT_DIR)/%.zsm: %.c $(CLANG_FACTS_HDRS) $(BIN_DIR)/z23-clang-manifest
+	@mkdir -p $(dir $@)
+	$(BIN_DIR)/z23-clang-manifest emit --root . --source $< --out $@ --facts \
+	    $(if $(CLANG_FACTS_TREE),--tree $(CLANG_FACTS_TREE)) \
+	    -- $(DEV_COMPILE_CFLAGS)
+
 # The raylib 6.0 stub must keep compiling against the window TU on every
 # host, raylib installed or not: hosts WITH raylib build the linked window
 # against the real headers and never see stub drift, so skipping the stub

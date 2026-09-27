@@ -113,6 +113,7 @@ declare -A EXEMPT=(
     # Outside the base toolchain.
     [zcl-blog]="needs webkit2gtk-4.1 via pkg-config (not a base toolchain dep)"
     [arena_view]="optional raylib GUI; needs raylib via pkg-config (not a base toolchain dep)"
+    [z23-clang-manifest]="optional semantic sensor; needs libclang's C API (libclang-NN-dev, not a base toolchain dep)"
 )
 
 # ── Host-bound exemptions (consulted only when building on THAT host) ────

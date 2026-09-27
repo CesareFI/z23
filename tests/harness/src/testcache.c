@@ -439,6 +439,11 @@ static bool group_reads_external_inputs(const char *name)
         "replay_canary_verdict",
         "secrets_hygiene",
         "self_folded_anchor",
+        /* reads tests/fixtures/semantic_manifest/<name>.bin; the sibling execs
+         * build/bin/z23-clang-manifest (an optional libclang tool whose
+         * link the test closure never reaches). */
+        "semantic_manifest",
+        "semantic_sensor",
         "shielded_payment_gate",
         /* sources tools/scripts/source_identity_lib.sh and execs a shell
          * fixture: the reader whose behaviour it pins is a repo file outside

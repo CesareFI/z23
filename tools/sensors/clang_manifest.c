@@ -1,0 +1,523 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: Optional libclang semantic sensor: emit, root and diff canonical semantic manifests of one C23 TU.
+ *
+ * This is an EXTERNAL, optional tool. It links libclang and is built only by
+ * `make clang-manifest` when libclang is present; it is never linked into
+ * z23, z23-dev or core. Z23 consumes only the manifest bytes it writes,
+ * through contexts/commons/modules/vcs/src/semantic_manifest.c, which has no
+ * compiler dependency. Format: docs/work/SEMANTIC_MANIFEST.md. It is the
+ * only facts producer; it hands every observation to the compiler-API-free
+ * core, clang_manifest_core.h.
+ *
+ *   z23-clang-manifest emit --root DIR --source FILE --out FILE
+ *                           [--facts] [--tree HEX] [--max-records N]
+ *                           [--max-section-bytes N] -- ARGV...
+ *   z23-clang-manifest root FILE
+ *   z23-clang-manifest dump FILE
+ *   z23-clang-manifest diff OLD NEW
+ */
+/* realpath() is declared only under _DEFAULT_SOURCE on glibc without the
+ * fortify inline; set it before the first header pulls in <features.h>. */
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
+
+#include "clang_manifest.h"
+
+#include "base/safe_alloc.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* Appended to the caller's argv for the parse only (never to the identity):
+ * -v makes the front end print its exact include search list; the two
+ * warning flags keep gcc-only warning options and -Werror from turning a
+ * semantic parse into a refusal. Real errors still refuse. */
+static const char *const k_cm_suffix[] = {"-v", "-Wno-unknown-warning-option",
+                                          "-Wno-error"};
+#define CM_SUFFIX_N (sizeof(k_cm_suffix) / sizeof(k_cm_suffix[0]))
+
+char *cm_take_string(CXString s)
+{
+    const char *cs = clang_getCString(s);
+    char *out = cm_strdup(cs != NULL ? cs : "");
+    clang_disposeString(s);
+    return out;
+}
+
+/* ---- argv --------------------------------------------------------------------- */
+
+struct cm_args {
+    const char **parse;
+    size_t nparse;
+    char **identity;
+    size_t nidentity;
+};
+
+static bool cm_filter_args(struct cm_state *st, char **argv, int argc,
+                           const char *source, struct cm_args *out)
+{
+    struct cm_core *c = &st->core;
+    out->parse = zcl_calloc((size_t)argc + CM_SUFFIX_N + 1, sizeof(char *),
+                            "clang_manifest.parse_args");
+    out->identity = zcl_calloc((size_t)argc + 1, sizeof(char *),
+                               "clang_manifest.identity_args");
+    if (out->parse == NULL || out->identity == NULL)
+        return cm_fail(c, "out of memory");
+    for (int k = 0; k < argc; k++) {
+        int drop = cm_output_arg(argv[k]);
+        if (drop == 2) {
+            k++;
+            continue;
+        }
+        if (drop == 1 || strcmp(argv[k], source) == 0)
+            continue;
+        out->parse[out->nparse++] = argv[k];
+        if (!cm_norm_arg(c, argv[k], &out->identity[out->nidentity++]))
+            return false;
+    }
+    for (size_t k = 0; k < CM_SUFFIX_N; k++)
+        out->parse[out->nparse++] = k_cm_suffix[k];
+    return true;
+}
+
+/* ---- parse with the front end's -v report captured ------------------------- */
+
+static bool cm_parse(struct cm_state *st, const char *source,
+                     const struct cm_args *args, const char *capture_path,
+                     char **report)
+{
+    int saved = dup(2);
+    int fd = open(capture_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+    enum CXErrorCode rc;
+    size_t len = 0;
+    if (saved < 0 || fd < 0 || dup2(fd, 2) < 0) {
+        if (saved >= 0)
+            (void)close(saved);
+        if (fd >= 0)
+            (void)close(fd);
+        return cm_fail(&st->core, "cannot capture the front end report: %s",
+                       strerror(errno));
+    }
+    rc = clang_parseTranslationUnit2(
+        st->index, source, args->parse, (int)args->nparse, NULL, 0,
+        CXTranslationUnit_DetailedPreprocessingRecord, &st->tu);
+    (void)fflush(stderr);
+    (void)dup2(saved, 2);
+    (void)close(saved);
+    (void)close(fd);
+    if (!cm_read_file(capture_path, (uint8_t **)report, &len))
+        *report = NULL;
+    (void)unlink(capture_path);
+    if (rc != CXError_Success || st->tu == NULL)
+        return cm_fail(&st->core, "libclang parse failed (code %d)", (int)rc);
+    return *report != NULL || cm_fail(&st->core, "front end report unreadable");
+}
+
+static bool cm_check_diagnostics(struct cm_state *st)
+{
+    unsigned n = clang_getNumDiagnostics(st->tu), errors = 0;
+    for (unsigned k = 0; k < n; k++) {
+        CXDiagnostic d = clang_getDiagnostic(st->tu, k);
+        if (clang_getDiagnosticSeverity(d) >= CXDiagnostic_Error) {
+            CXString s = clang_formatDiagnostic(
+                d, clang_defaultDiagnosticDisplayOptions());
+            if (errors < 8)
+                fprintf(stderr, "clang-manifest: %s\n", clang_getCString(s));
+            clang_disposeString(s);
+            errors++;
+        }
+        clang_disposeDiagnostic(d);
+    }
+    if (errors > 0)
+        return cm_fail(&st->core,
+                       "%u front end error(s); no manifest for a TU that does not parse",
+                       errors);
+    return true;
+}
+
+/* ---- files --------------------------------------------------------------------- */
+
+static bool cm_file_real(struct cm_state *st, CXFile f, char out[PATH_MAX])
+{
+    char *real = cm_take_string(clang_File_tryGetRealPathName(f));
+    if (real != NULL && real[0] == '/') {
+        if (realpath(real, out) == NULL)
+            (void)snprintf(out, PATH_MAX, "%s", real);
+        free(real);
+        return true;
+    }
+    free(real);
+    {
+        char *name = cm_take_string(clang_getFileName(f));
+        bool ok = name != NULL && cm_absolute(&st->core, name, out);
+        free(name);
+        return ok || cm_fail(&st->core, "cannot resolve an included file name");
+    }
+}
+
+static void cm_inclusion(CXFile f, CXSourceLocation *stack, unsigned depth,
+                         CXClientData data)
+{
+    struct cm_state *st = data;
+    char real[PATH_MAX];
+    char *opened;
+    const char *contents;
+    size_t size = 0;
+    (void)stack;
+    if (st->core.failed)
+        return;
+    for (size_t k = 0; k < st->core.nfiles; k++) {
+        if (clang_File_isEqual((CXFile)st->core.files[k].key, f))
+            return;
+    }
+    if (!cm_file_real(st, f, real))
+        return;
+    opened = cm_take_string(clang_getFileName(f));
+    contents = clang_getFileContents(st->tu, f, &size);
+    if (opened == NULL) {
+        (void)cm_fail(&st->core, "out of memory");
+        return;
+    }
+    (void)cm_file_add(&st->core, f, real, opened, depth == 0, contents, size);
+    free(opened);
+}
+
+const struct cm_file *cm_file_of(struct cm_state *st, CXFile f)
+{
+    const struct cm_file *hit = cm_file_by_key(&st->core, f);
+    if (hit != NULL || f == NULL)
+        return hit;
+    for (size_t k = 0; k < st->core.nfiles; k++) {
+        if (clang_File_isEqual((CXFile)st->core.files[k].key, f)) {
+            st->core.file_hint = k;
+            return &st->core.files[k];
+        }
+    }
+    return NULL;
+}
+
+const struct cm_file *cm_cursor_file(struct cm_state *st, CXCursor c,
+                                     unsigned *line, unsigned *offset)
+{
+    CXFile f = NULL;
+    unsigned l = 0, col = 0, off = 0;
+    clang_getExpansionLocation(clang_getCursorLocation(c), &f, &l, &col, &off);
+    if (line != NULL)
+        *line = l;
+    if (offset != NULL)
+        *offset = off;
+    return cm_file_of(st, f);
+}
+
+/* ---- the front end's own printed search list (-v) --------------------------- */
+
+static const char k_cm_framework[] = " (framework directory)";
+
+static bool cm_line_is(const char *line, size_t len, const char *lit)
+{
+    return strlen(lit) == len && memcmp(line, lit, len) == 0;
+}
+
+static bool cm_search_line(struct cm_core *c, const char *line, size_t len,
+                           int *mode)
+{
+    static const char ign[] = "ignoring nonexistent directory \"";
+    if (len >= sizeof(ign) - 1 && memcmp(line, ign, sizeof(ign) - 1) == 0) {
+        const char *s = line + sizeof(ign) - 1;
+        const char *q = memchr(s, '"', len - (size_t)(s - line));
+        return q == NULL || cm_push_dir(c, &c->ignored, s, (size_t)(q - s));
+    }
+    if (cm_line_is(line, len, "#include \"...\" search starts here:"))
+        *mode = 1;
+    else if (cm_line_is(line, len, "#include <...> search starts here:"))
+        *mode = 2;
+    else if (cm_line_is(line, len, "End of search list."))
+        *mode = 0;
+    else if (*mode != 0 && len > 1 && line[0] == ' ') {
+        size_t fl = sizeof(k_cm_framework) - 1;
+        if (len > fl && memcmp(line + len - fl, k_cm_framework, fl) == 0)
+            len -= fl;
+        return cm_push_dir(c, *mode == 1 ? &c->quote : &c->angled, line + 1,
+                           len - 1);
+    }
+    return true;
+}
+
+static bool cm_parse_search_list(struct cm_core *c, const char *text)
+{
+    int mode = 0;
+    bool saw_end = false;
+    for (const char *p = text; *p != '\0';) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl != NULL ? (size_t)(nl - p) : strlen(p);
+        if (len > 0 && p[len - 1] == '\r')
+            len--;
+        saw_end = saw_end || cm_line_is(p, len, "End of search list.");
+        if (!cm_search_line(c, p, len, &mode))
+            return false;
+        p = nl != NULL ? nl + 1 : p + len;
+    }
+    if (!saw_end || c->angled.n == 0)
+        return cm_fail(c, "front end printed no include search list");
+    cm_find_resource_dir(c);
+    return true;
+}
+
+/* ---- emit ------------------------------------------------------------------------- */
+
+struct cm_opts {
+    const char *root;
+    const char *source;
+    const char *out;
+    const char *tree;
+    bool facts;
+    uint32_t max_records;
+    uint64_t max_section_bytes;
+    char **argv;
+    int argc;
+};
+
+static bool cm_emit_identity_libclang(struct cm_state *st, const char *main_path,
+                                      const struct cm_args *args)
+{
+    CXTargetInfo ti = clang_getTranslationUnitTargetInfo(st->tu);
+    char *version = cm_take_string(clang_getClangVersion());
+    char *triple = cm_take_string(clang_TargetInfo_getTriple(ti));
+    struct cm_identity id = {.compiler = version, .triple = triple,
+                             .main_path = main_path, .argv = args->identity,
+                             .argc = args->nidentity};
+    bool ok;
+    clang_TargetInfo_dispose(ti);
+    ok = version != NULL && triple != NULL && cm_emit_identity(&st->core, &id);
+    free(version);
+    free(triple);
+    return ok;
+}
+
+static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
+                       const char *main_path, const struct cm_args *args,
+                       const char *report)
+{
+    struct cm_core *c = &st->core;
+#if CM_TYPE_PRETTY_PRINTED
+    st->policy = clang_getCursorPrintingPolicy(
+        clang_getTranslationUnitCursor(st->tu));
+    clang_PrintingPolicy_setProperty(st->policy,
+                                     CXPrintingPolicy_AnonymousTagLocations, 0);
+#endif
+    if (!cm_check_diagnostics(st))
+        return false;
+    clang_getInclusions(st->tu, cm_inclusion, st);
+    if (c->failed || !cm_parse_search_list(c, report))
+        return false;
+    if (o->facts && !cm_facts_begin(c, o->tree))
+        return false;
+    return cm_walk(st) && cm_scan_has_include(c) && cm_emit_files(c) &&
+           cm_emit_deferred(c) && cm_emit_identity_libclang(st, main_path, args) &&
+           cm_emit_facts(c, o->max_records, o->max_section_bytes);
+}
+
+static bool cm_emit_parse(struct cm_state *st, const struct cm_opts *o,
+                          const char *main_path, struct cm_args *args,
+                          const char *capture, char **report)
+{
+    st->core.type_grammar = CM_TYPE_GRAMMAR;
+#if defined(__APPLE__)
+    uint8_t producer_after[32];
+    if (o->facts &&
+        !cm_producer_digest(st->core.type_grammar,
+                            st->core.producer_before))
+        return cm_fail(&st->core, "darwin producer image identity unavailable");
+    st->core.producer_before_valid = o->facts;
+#endif
+    if (!cm_filter_args(st, o->argv, o->argc, o->source, args) ||
+        !cm_parse(st, o->source, args, capture, report) ||
+        !cm_extract(st, o, main_path, args, *report))
+        return false;
+#if defined(__APPLE__)
+    if (o->facts &&
+        (!cm_producer_digest(st->core.type_grammar, producer_after) ||
+         memcmp(st->core.producer_before, producer_after,
+                sizeof(producer_after)) != 0))
+        return cm_fail(&st->core, "darwin producer image changed during parse");
+#endif
+    return true;
+}
+
+static int cm_emit(const struct cm_opts *o)
+{
+    struct cm_state *st = zcl_calloc(1, sizeof(*st), "clang_manifest.state");
+    struct cm_args args = {0};
+    char *main_path = NULL, *report = NULL, capture[PATH_MAX + 16];
+    bool ok;
+    if (st == NULL)
+        return 1;
+    (void)snprintf(capture, sizeof(capture), "%s.clang-v", o->out);
+    ok = cm_core_init(&st->core, o->root) &&
+         cm_norm_path(&st->core, o->source, &main_path);
+    if (ok && (main_path[0] == '@' || strcmp(main_path, ".") == 0))
+        ok = cm_fail(&st->core, "source %s is not inside the root", o->source);
+    if (ok) {
+        st->index = clang_createIndex(0, 0);
+        ok = st->index != NULL || cm_fail(&st->core, "cannot create index");
+    }
+    ok = ok && cm_emit_parse(st, o, main_path, &args, capture, &report) &&
+         cm_finish_write(&st->core, o->out, true);
+    if (!ok)
+        fprintf(stderr, "clang-manifest: refused: %s\n", st->core.why);
+    return ok ? 0 : 3;
+}
+
+/* ---- root / diff (no parse; the same reader Z23 uses) ----------------------------- */
+
+static int cm_cmd_root(const char *path)
+{
+    uint8_t *b = NULL, d[32];
+    size_t n = 0;
+    char why[256], hex[65];
+    if (!cm_read_file(path, &b, &n) || !vcs_semantic_root_v1(b, n, d, why, sizeof(why))) {
+        fprintf(stderr, "clang-manifest: %s: not a valid manifest: %s\n", path,
+                b == NULL ? "unreadable" : why);
+        free(b);
+        return 2;
+    }
+    cm_hex(d, hex);
+    printf("root %s\n", hex);
+    if (vcs_semantic_hint_root_v1(b, n, d, why, sizeof(why))) {
+        cm_hex(d, hex);
+        printf("hint %s (candidate-match hint only)\n", hex);
+    }
+    for (int t = 1; t < VCS_SEMANTIC_SECTION_V1_COUNT; t++) {
+        uint32_t count = 0;
+        if (!vcs_semantic_section_root_v1(b, n, (enum vcs_semantic_section_v1)t, d) ||
+            !vcs_semantic_section_count_v1(b, n, (enum vcs_semantic_section_v1)t,
+                                           &count))
+            continue;
+        cm_hex(d, hex);
+        printf("section %s records %u root %s\n",
+               vcs_semantic_section_v1_name((enum vcs_semantic_section_v1)t),
+               count, hex);
+    }
+    free(b);
+    return 0;
+}
+
+static int cm_cmd_dump(const char *path)
+{
+    uint8_t *b = NULL;
+    size_t n = 0;
+    bool ok = cm_read_file(path, &b, &n) && vcs_semantic_manifest_v1_dump(b, n, stdout);
+    free(b);
+    if (!ok)
+        fprintf(stderr, "clang-manifest: %s: not a valid manifest\n", path);
+    return ok ? 0 : 2;
+}
+
+static void cm_print_fn(void *ctx, enum vcs_semantic_fn_change_v1 change,
+                        const char *path, size_t path_len, const char *name,
+                        size_t name_len)
+{
+    (void)ctx;
+    printf("function %c %.*s %.*s\n", (char)change, (int)path_len, path,
+           (int)name_len, name);
+}
+
+static int cm_cmd_diff(const char *a_path, const char *b_path)
+{
+    uint8_t *a = NULL, *b = NULL;
+    size_t an = 0, bn = 0;
+    struct vcs_semantic_diff_v1 d;
+    bool ok = cm_read_file(a_path, &a, &an) && cm_read_file(b_path, &b, &bn) &&
+              vcs_semantic_manifest_v1_diff(a, an, b, bn, &d, cm_print_fn, NULL);
+    if (!ok) {
+        fprintf(stderr, "clang-manifest: diff needs two valid manifests\n");
+        free(a);
+        free(b);
+        return 2;
+    }
+    printf("changed");
+    for (int t = 1; t < VCS_SEMANTIC_SECTION_V1_COUNT; t++) {
+        if (d.changed_sections & (1u << t))
+            printf(" %s", vcs_semantic_section_v1_name((enum vcs_semantic_section_v1)t));
+    }
+    printf("%s\nexact %s hint %s\nfunctions added %u removed %u changed %u same %u\n",
+           d.changed_sections ? "" : " none", d.exact_equal ? "equal" : "differs",
+           d.hint_equal ? "equal" : "differs", d.functions_added,
+           d.functions_removed, d.functions_changed, d.functions_same);
+    free(a);
+    free(b);
+    return d.changed_sections ? 1 : 0;
+}
+
+static int cm_usage(void)
+{
+    fprintf(stderr,
+            "usage: z23-clang-manifest emit --root DIR --source FILE --out FILE\n"
+            "           [--facts] [--tree HEX] [--max-records N]\n"
+            "           [--max-section-bytes N] -- ARGV...\n"
+            "       z23-clang-manifest root FILE\n"
+            "       z23-clang-manifest dump FILE\n"
+            "       z23-clang-manifest diff OLD NEW\n");
+    return 2;
+}
+
+static bool cm_opt_value(struct cm_opts *o, const char *key, const char *v)
+{
+    if (strcmp(key, "--root") == 0)
+        o->root = v;
+    else if (strcmp(key, "--source") == 0)
+        o->source = v;
+    else if (strcmp(key, "--out") == 0)
+        o->out = v;
+    else if (strcmp(key, "--tree") == 0)
+        o->tree = v;
+    else if (strcmp(key, "--max-records") == 0)
+        o->max_records = (uint32_t)strtoul(v, NULL, 10);
+    else if (strcmp(key, "--max-section-bytes") == 0)
+        o->max_section_bytes = strtoull(v, NULL, 10);
+    else
+        return false;
+    return true;
+}
+
+static bool cm_parse_opts(int argc, char **argv, struct cm_opts *o)
+{
+    int k = 2;
+    while (k < argc && strcmp(argv[k], "--") != 0) {
+        if (strcmp(argv[k], "--facts") == 0) {
+            o->facts = true;
+            k++;
+            continue;
+        }
+        if (k + 1 >= argc || !cm_opt_value(o, argv[k], argv[k + 1]))
+            return false;
+        k += 2;
+    }
+    if (k >= argc || strcmp(argv[k], "--") != 0)
+        return false;
+    o->argv = argv + k + 1;
+    o->argc = argc - k - 1;
+    o->facts = o->facts || o->tree != NULL || o->max_records != 0 ||
+               o->max_section_bytes != 0;
+    return o->root != NULL && o->source != NULL && o->out != NULL;
+}
+
+int main(int argc, char **argv)
+{
+    struct cm_opts o = {0};
+    if (argc >= 3 && strcmp(argv[1], "root") == 0)
+        return cm_cmd_root(argv[2]);
+    if (argc >= 3 && strcmp(argv[1], "dump") == 0)
+        return cm_cmd_dump(argv[2]);
+    if (argc >= 4 && strcmp(argv[1], "diff") == 0)
+        return cm_cmd_diff(argv[2], argv[3]);
+    if (argc >= 2 && strcmp(argv[1], "emit") == 0 && cm_parse_opts(argc, argv, &o))
+        return cm_emit(&o);
+    return cm_usage();
+}

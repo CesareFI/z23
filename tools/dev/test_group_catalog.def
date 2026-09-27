@@ -1399,6 +1399,17 @@ ZCL_TEST_GROUP(freebsd_sh)
  * from this encoder, because a stock beta6 binary — which nobody here can
  * change — is the only consumer that matters. */
 ZCL_TEST_GROUP(beta6_bootstrap)
+/* Semantic manifest v1 (contexts/commons/modules/vcs/src/semantic_manifest*.c):
+ * the libclang-free reader. Pins the hand-built golden vector (bytes, exact
+ * root, candidate-match hint root), proves the builder canonicalizes and the
+ * decoder refuses non-canonical bytes, and replays every adversarial seed
+ * over the sensor manifests checked in under tests/fixtures/semantic_manifest. */
+ZCL_TEST_GROUP(semantic_manifest)
+/* The optional libclang sensor (build/bin/z23-clang-manifest) run live:
+ * identical roots before/after git commit and at two absolute roots, and
+ * every adversarial seed changes exactly its sections. Self-skips, visibly,
+ * where the sensor is not built. */
+ZCL_TEST_GROUP(semantic_sensor)
 ZCL_SPEC_GROUP(wallet_dashboard)
 ZCL_SPEC_GROUP(wallet_send)
 ZCL_SPEC_GROUP(wallet_receive)

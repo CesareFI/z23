@@ -480,7 +480,6 @@ contexts/commons/modules/vcs/src/vcs_manifest.c:vcs_manifest_parse:16
 contexts/commons/modules/vcs/src/vcs_object.c:object_write_mode:20
 contexts/commons/modules/vcs/src/vcs_revert.c:vcs_revert:25
 contexts/commons/modules/vcs/src/vcs_seal.c:vcs_seal_load_globs:21
-contexts/commons/modules/vcs/src/vcs_walk.c:vcs_path_ignored:25
 contexts/commons/modules/vcs/src/vcs_walk.c:walk_dir:32
 contexts/commons/modules/vcs/src/vcs_walk.c:walk_dir_windows:34
 contexts/commons/modules/vcs/src/zcode_accepted_work.c:vcs_zcode_accepted_work_resolve:28
