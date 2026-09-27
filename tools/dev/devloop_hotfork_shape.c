@@ -475,17 +475,23 @@ static size_t shape_tu_count(const struct zcl_hotfork_shape *shape)
            zcl_hotfork_tu_list_count(shape->adapter_tus);
 }
 
-/* True for the owner and its siblings: the files the edit may touch. */
-static bool shape_is_edit_tu(const struct zcl_hotfork_shape *shape,
-                             const char *rel)
+/* True when `rel` is one of the capsule's first `limit` TUs. */
+static bool shape_tu_among(const struct zcl_hotfork_shape *shape,
+                           const char *rel, size_t limit)
 {
-    size_t edits = shape_edit_tu_count(shape);
-    for (size_t i = 0; i < edits; i++) {
+    for (size_t i = 0; i < limit; i++) {
         char tu[ZCL_HOTFORK_UNITY_TU_MAX];
         if (shape_tu_at(shape, i, tu, sizeof(tu)) && strcmp(tu, rel) == 0)
             return true;
     }
     return false;
+}
+
+/* True for the owner and its siblings: the files the edit may touch. */
+static bool shape_is_edit_tu(const struct zcl_hotfork_shape *shape,
+                             const char *rel)
+{
+    return shape_tu_among(shape, rel, shape_edit_tu_count(shape));
 }
 
 /* Appends the adapter's `#include "<dir>/<len bytes>"` source. */
@@ -2137,18 +2143,6 @@ struct shape_closure {
     size_t placed;            /* seeds the index placed in-tree */
 };
 
-static bool shape_is_capsule_tu(const struct zcl_hotfork_shape *shape,
-                                const char *rel)
-{
-    size_t count = shape_tu_count(shape);
-    for (size_t i = 0; i < count; i++) {
-        char tu[ZCL_HOTFORK_UNITY_TU_MAX];
-        if (shape_tu_at(shape, i, tu, sizeof(tu)) && strcmp(tu, rel) == 0)
-            return true;
-    }
-    return false;
-}
-
 static bool shape_call_unknown(char *why, size_t why_len, const char *subject,
                                const char *detail)
 {
@@ -2271,7 +2265,7 @@ static bool shape_closure_tu(const struct zcl_hotfork_shape *shape,
     char obj[PATH_MAX], dep[PATH_MAX];
     struct stat built;
     size_t count = 0;
-    if (shape_is_capsule_tu(shape, tu) ||
+    if (shape_tu_among(shape, tu, shape_tu_count(shape)) ||
         !shape_epoch_path(shape, tu, ".o", obj, sizeof(obj)) ||
         !shape_regular(obj, &built))
         return true;
