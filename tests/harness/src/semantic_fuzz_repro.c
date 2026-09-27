@@ -314,11 +314,18 @@ static const struct sfz_file k_f7_cleanup_handler[] = {
  * handler whose body changed, and t1's own static work() changed too. A
  * seed matched by bare name would let t1's seed cover t0's work. */
 static const struct sfz_file k_f7_cleanup_same_name[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t1_run(int x);\n"
+         "#endif\n",
+         SFZ_SAME},
     {"Makefile",
          "# p\n"
          "CFLAGS_EXTRA = \n",
          SFZ_SAME},
     {"src/t0.c",
+         "#include \"h.h\"\n"
          "int t0_sink;\n"
          "static void t0_release(int *p)\n"
          "{\n"
@@ -329,6 +336,7 @@ static const struct sfz_file k_f7_cleanup_same_name[] = {
          "    __attribute__((cleanup(t0_release))) int v = x * 2;\n"
          "    return v + 3;\n"
          "}\n",
+         "#include \"h.h\"\n"
          "int t0_sink;\n"
          "static void t0_release(int *p)\n"
          "{\n"
@@ -340,6 +348,7 @@ static const struct sfz_file k_f7_cleanup_same_name[] = {
          "    return v + 3;\n"
          "}\n"},
     {"src/t1.c",
+         "#include \"h.h\"\n"
          "static int work(int x)\n"
          "{\n"
          "    return x * 5 + 1;\n"
@@ -348,6 +357,7 @@ static const struct sfz_file k_f7_cleanup_same_name[] = {
          "{\n"
          "    return work(x) + 2;\n"
          "}\n",
+         "#include \"h.h\"\n"
          "static int work(int x)\n"
          "{\n"
          "    return x * 5 + 4;\n"
