@@ -12,9 +12,13 @@ target_compile_options(ledger_hid PRIVATE -Wall -Wextra -Werror -pedantic)
 
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 find_package(PNG REQUIRED)
+add_library(zcl_base58 STATIC src/zcl_base58.c)
+target_include_directories(zcl_base58 PUBLIC include)
+target_compile_options(zcl_base58 PRIVATE -Wall -Wextra -Werror -pedantic)
+
 add_library(zcl_address STATIC src/zcl_address.c)
 target_include_directories(zcl_address PUBLIC include)
-target_link_libraries(zcl_address PUBLIC OpenSSL::Crypto)
+target_link_libraries(zcl_address PUBLIC zcl_base58 OpenSSL::Crypto)
 target_compile_options(zcl_address PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(zcl_sign_test STATIC src/zcl_sign_test.c)
@@ -87,6 +91,23 @@ target_include_directories(blue_bagl_canvas PUBLIC include)
 target_link_libraries(blue_bagl_canvas PUBLIC PNG::PNG)
 target_compile_options(blue_bagl_canvas PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(blue_wallet_receive STATIC src/blue_wallet_receive.c)
+target_include_directories(blue_wallet_receive PUBLIC include)
+target_compile_options(blue_wallet_receive PRIVATE -Wall -Wextra -Werror -pedantic)
+
+add_library(blue_wallet_protocol STATIC src/blue_wallet_protocol.c)
+target_include_directories(blue_wallet_protocol PUBLIC include)
+target_compile_options(blue_wallet_protocol PRIVATE -Wall -Wextra -Werror -pedantic)
+
+add_library(blue_wallet_render STATIC src/blue_wallet_render.c)
+target_include_directories(blue_wallet_render PUBLIC include)
+target_link_libraries(blue_wallet_render PUBLIC blue_wallet_receive blue_bagl_canvas)
+target_compile_options(blue_wallet_render PRIVATE -Wall -Wextra -Werror -pedantic)
+
+add_executable(zcl-blue-wallet-preview src/blue_wallet_preview_cli.c)
+target_link_libraries(zcl-blue-wallet-preview PRIVATE blue_wallet_render zcl_address)
+target_compile_options(zcl-blue-wallet-preview PRIVATE -Wall -Wextra -Werror -pedantic)
+
 add_library(blue_review_render STATIC src/blue_review_render.c)
 target_include_directories(blue_review_render PUBLIC include)
 target_link_libraries(blue_review_render PUBLIC blue_review_app blue_bagl_canvas)
@@ -97,7 +118,7 @@ target_link_libraries(zcl-blue-screen-sim PRIVATE blue_review_render blue_review
 target_compile_options(zcl-blue-screen-sim PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_executable(zcl-ledger src/main.c)
-target_link_libraries(zcl-ledger PRIVATE ledger_hid zcl_address)
+target_link_libraries(zcl-ledger PRIVATE ledger_hid zcl_address blue_wallet_protocol)
 target_compile_options(zcl-ledger PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(blue_secure STATIC src/blue_secure.c)
@@ -127,7 +148,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -142,6 +163,24 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_link_options(test-blue-bagl-canvas PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME blue-bagl-canvas COMMAND test-blue-bagl-canvas)
+
+add_executable(test-blue-wallet-receive tests/test_blue_wallet_receive.c)
+target_link_libraries(test-blue-wallet-receive PRIVATE blue_wallet_receive)
+target_compile_options(test-blue-wallet-receive PRIVATE -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-receive PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-receive PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-receive COMMAND test-blue-wallet-receive)
+
+add_executable(test-blue-wallet-protocol tests/test_blue_wallet_protocol.c)
+target_link_libraries(test-blue-wallet-protocol PRIVATE blue_wallet_protocol)
+target_compile_options(test-blue-wallet-protocol PRIVATE -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-protocol PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-protocol PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-protocol COMMAND test-blue-wallet-protocol)
 
 add_executable(test-ledger-hid tests/test_ledger_hid.c)
 target_link_libraries(test-ledger-hid PRIVATE ledger_hid)

@@ -1,11 +1,21 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_address.h"
+#include "zcl_base58.h"
 
 #undef NDEBUG
 #include <assert.h>
 #include <string.h>
 
 int main(void) {
+    const uint8_t leading_zeros[] = {0, 0, 1};
+    char base58[ZCL_ADDRESS_SIZE];
+    assert(zcl_base58_encode(leading_zeros, sizeof leading_zeros,
+                             base58, sizeof base58) == 0);
+    assert(strcmp(base58, "112") == 0);
+    assert(zcl_base58_encode(leading_zeros, sizeof leading_zeros,
+                             base58, 3) < 0);
+    assert(zcl_base58_encode(NULL, sizeof leading_zeros,
+                             base58, sizeof base58) < 0);
     const uint8_t generator[ZCL_COMPRESSED_PUBKEY_SIZE] = {
         0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb,
         0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b,

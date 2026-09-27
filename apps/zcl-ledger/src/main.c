@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
 #include "ledger_hid.h"
+#include "blue_wallet_protocol.h"
 #include "zcl_address.h"
 
 #include <fcntl.h>
@@ -263,8 +264,61 @@ static int fixture_info(const char *path, bool json) {
     return 0;
 }
 
+static bool wallet_reply(const uint8_t *reply, size_t length,
+                         const uint8_t *expected, size_t expected_length) {
+    return length == expected_length + 2 &&
+           memcmp(reply, expected, expected_length) == 0 &&
+           reply[length - 2] == 0x90 && reply[length - 1] == 0;
+}
+
+static int receive_address(const char *path, bool json) {
+    if (!hidraw_path(path))
+        return error_result(json, "invalid_device_path", "Expected /dev/hidrawN.");
+    int fd = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return error_result(json, "open_failed", "Cannot open the selected HID device.");
+    struct hidraw_devinfo info;
+    if (ioctl(fd, HIDIOCGRAWINFO, &info) < 0 ||
+        info.vendor != 0x2c97 || info.product != 0) {
+        close(fd);
+        return error_result(json, "not_blue", "The selected device is not a Ledger Blue.");
+    }
+    static const uint8_t identify[] = {0xa5, 1, 0, 0, 0};
+    static const uint8_t get_key[] = {0xa5, 2, 0, 0, 0};
+    static const uint8_t identity[] = {
+        'Z', 'C', 'L', BLUE_WALLET_PROTOCOL_VERSION, 1
+    };
+    uint8_t reply[LEDGER_HID_MAX_RESPONSE];
+    size_t length = 0;
+    bool identified = ledger_hid_exchange_timeout(
+        fd, identify, sizeof identify, reply, sizeof reply, &length, 2000) == 0 &&
+        wallet_reply(reply, length, identity, sizeof identity);
+    if (!identified) {
+        close(fd);
+        return error_result(json, "wrong_app", "Open ZCL Wallet on the Blue first.");
+    }
+    bool received = ledger_hid_exchange_timeout(
+        fd, get_key, sizeof get_key, reply, sizeof reply, &length, 2000) == 0;
+    close(fd);
+    if (!received || length != BLUE_WALLET_PUBLIC_KEY_SIZE + 2 ||
+        reply[length - 2] != 0x90 || reply[length - 1] != 0)
+        return error_result(json, "no_address", "The Blue did not return a receive key.");
+    char address[ZCL_ADDRESS_SIZE];
+    if (zcl_address_from_pubkey(reply, address) < 0)
+        return error_result(json, "invalid_key", "The Blue returned an invalid public key.");
+    if (json)
+        printf("{\"ok\":true,\"path\":\"m/44'/147'/0'/0/0\","
+               "\"address\":\"%s\",\"device_confirmation_required\":true,"
+               "\"signing\":false}\n", address);
+    else printf("%s\nCompare all 35 characters with the Blue screen before receiving ZCL.\n",
+                address);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     bool json;
+    if (parse_command(argc, argv, "receive-address", 3, &json))
+        return receive_address(argv[argc - 1], json);
     if (parse_command(argc, argv, "fixture-address", 3, &json))
         return fixture_info(argv[argc - 1], json);
     if (argc == 3 && strcmp(argv[1], "address-from-pubkey") == 0)
@@ -279,10 +333,11 @@ int main(int argc, char **argv) {
         return error_result(false, "unsupported",
                             "USB quit froze the Blue in a live test. Use the app's touchscreen EXIT.");
     fprintf(stderr, "Usage: %s fixture-address [--json] /dev/hidrawN\n"
+                    "       %s receive-address [--json] /dev/hidrawN\n"
                     "       %s address-from-pubkey COMPRESSED_PUBKEY_HEX\n"
                     "       %s devices [--json]\n"
                     "       %s app-info [--json] /dev/hidrawN\n"
                     "       %s probe [--json] /dev/hidrawN\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0]);
+            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
 }

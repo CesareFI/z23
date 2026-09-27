@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_address.h"
+#include "zcl_base58.h"
 
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
@@ -32,36 +33,6 @@ static int valid_pubkey(const uint8_t pubkey[ZCL_COMPRESSED_PUBKEY_SIZE]) {
     return valid;
 }
 
-static int base58(const uint8_t *input, size_t length,
-                  char output[ZCL_ADDRESS_SIZE]) {
-    static const char alphabet[] =
-        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    uint8_t digits[40] = {0};
-    size_t used = 1;
-    for (size_t i = 0; i < length; ++i) {
-        unsigned int carry = input[i];
-        for (size_t j = 0; j < used; ++j) {
-            carry += (unsigned int)digits[j] * 256u;
-            digits[j] = (uint8_t)(carry % 58u);
-            carry /= 58u;
-        }
-        while (carry) {
-            if (used == sizeof digits) return -1;
-            digits[used++] = (uint8_t)(carry % 58u);
-            carry /= 58u;
-        }
-    }
-    size_t zeros = 0;
-    while (zeros < length && input[zeros] == 0) ++zeros;
-    while (used && digits[used - 1] == 0) --used;
-    if (zeros + used >= ZCL_ADDRESS_SIZE) return -1;
-    size_t pos = 0;
-    while (zeros--) output[pos++] = '1';
-    while (used) output[pos++] = alphabet[digits[--used]];
-    output[pos] = '\0';
-    return 0;
-}
-
 int zcl_address_from_hash160(const uint8_t hash[ZCL_HASH160_SIZE],
                               bool script_hash,
                               char address[ZCL_ADDRESS_SIZE]) {
@@ -74,7 +45,8 @@ int zcl_address_from_hash160(const uint8_t hash[ZCL_HASH160_SIZE],
     if (!SHA256(payload, 22, digest) ||
         !SHA256(digest, sizeof digest, checksum)) return -1;
     memcpy(payload + 22, checksum, 4);
-    return base58(payload, sizeof payload, address);
+    return zcl_base58_encode(payload, sizeof payload, address,
+                             ZCL_ADDRESS_SIZE);
 }
 
 int zcl_address_from_pubkey(const uint8_t pubkey[ZCL_COMPRESSED_PUBKEY_SIZE],

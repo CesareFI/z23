@@ -3,12 +3,12 @@
 # ZCL Ledger transport experiment
 
 This standalone C23 host communicates with Ledger Blue over Linux `hidraw`.
-It reads app information, probes the ZCL device app, and
-installs or deletes the reviewed no-key ZCL Probe or ZCL Fixture images through
-the Blue's secure channel. It does not need Ledger Live, Python, Rust, or a
-network connection at runtime. The host can encode a transparent address from
-a public key supplied separately or by the public fixture app. It does not
-derive device keys or addresses, sign transactions, or access recovery words.
+It reads app information, probes ZCL device apps, and installs or deletes
+byte-pinned development images through the Blue's secure channel. It does not
+need Ledger Live, Python, Rust, or a network connection at runtime. The host
+can encode a transparent address from a supplied public key or the receive
+candidate's device-derived public key. The host does not derive device keys,
+sign transactions, or access recovery words.
 The [Blue development guide](DEVELOPMENT.md) records the open-source C23
 toolchain, image checks, and evidence gates for extending the device app.
 
@@ -48,8 +48,9 @@ and a BOLOS app-info reply before sending manager commands.
 The separate `zcl-blue-install` executable uses OpenSSL 3's open-source C
 crypto implementation for the Blue's secp256k1 and AES secure channel. It
 checks the Blue's USB product ID, verifies the session's device certificate,
-checks an encrypted target-ID response, and accepts only the pinned ZCL Probe
-or ZCL Fixture binary. `--channel-only` checks the secure channel without
+checks an encrypted target-ID response, and accepts only pinned image
+profiles, including the unverified receive candidate. `--channel-only`
+checks the secure channel without
 installing. The installer targets the connected Blue v2 (`0x31010004`). See the
 [device app instructions](device-blue/README.md) for the exact build and
 install commands.
@@ -63,8 +64,13 @@ Blue returned ZCL Review in this catalog even while its icon was not visible
 to the owner; the catalog alone does not establish that Review can open.
 
 The intended everyday interface is one [ZCL Wallet device app](ROADMAP.md)
-controlled by Z23. Probe, Fixture, Review, and Sign Test are development
-images with limited permissions and no payment signing.
+controlled by Z23. The [receive candidate](device-blue-wallet/README.md)
+derives a fixed transparent key on the Blue, displays its address, and exposes
+only its public key over USB. Its host command is
+`zcl-ledger receive-address --json /dev/hidrawN`. The candidate is built and
+simulated offline but is not installed or hardware-verified. Probe, Fixture,
+Review, and Sign Test are development images with limited permissions and no
+payment signing.
 
 ## Sapling transaction structure review
 
@@ -178,8 +184,8 @@ build/zcl-ledger/zcl-ledger address-from-pubkey \
 This example prints `t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs`. The command
 checks the public key is on secp256k1, then computes SHA-256, RIPEMD-160, the
 ZCL mainnet P2PKH prefix, and Base58Check. It uses no device or private key.
-It is a validation component for later device-derived public keys, not a
-Ledger address derivation command.
+It is a validation component for device-derived public keys. It does not
+query the Ledger or derive a device key.
 
 `app-info --json` error codes are `open_failed`, `not_ledger`,
 `no_app_info_response`, `device_status`, and `invalid_app_info`. Device

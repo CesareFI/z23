@@ -68,6 +68,13 @@ static const app_profile profiles[] = {
          0x09, 0x09, 0x53, 0x53, 0x84, 0x95, 0xc9, 0x64,
          0x8b, 0x3e, 0x47, 0x56, 0x21, 0x85, 0x3a, 0xc4,
          0xc2, 0xdc, 0x7e, 0x56, 0x88, 0x74, 0x59, 0x0b}, true
+    },
+    {
+        "ZCL Wallet", "0.1.0",
+        {0xba, 0xf3, 0x61, 0x50, 0x56, 0x3c, 0xec, 0xd6,
+         0x59, 0x69, 0x24, 0x34, 0x80, 0x0d, 0x5b, 0xb1,
+         0x06, 0xa9, 0x67, 0x9a, 0x9f, 0xa6, 0xe3, 0x65,
+         0x98, 0xa3, 0xe3, 0x8f, 0xb0, 0x83, 0x6d, 0xf2}, true
     }
 };
 
@@ -522,6 +529,10 @@ static bool parse_ca_args(int argc, char **argv, install_args *args) {
         args->ca_path = argv[3];
         args->delete_app = true;
         args->profile = profile_named("ZCL Sign Test");
+    } else if (argc == 4 && strcmp(argv[2], "--ca-delete-wallet") == 0) {
+        args->ca_path = argv[3];
+        args->delete_app = true;
+        args->profile = profile_named("ZCL Wallet");
     } else if (argc == 5 && strcmp(argv[2], "--ca-install") == 0) {
         args->ca_path = argv[3];
         args->image_path = argv[4];
@@ -546,6 +557,9 @@ static bool parse_plain_args(int argc, char **argv, install_args *args) {
     } else if (argc == 3 && strcmp(argv[2], "--delete-sign-test") == 0) {
         args->delete_app = true;
         args->profile = profile_named("ZCL Sign Test");
+    } else if (argc == 3 && strcmp(argv[2], "--delete-wallet") == 0) {
+        args->delete_app = true;
+        args->profile = profile_named("ZCL Wallet");
     } else if (argc == 3)
         args->image_path = argv[2];
     else return false;
@@ -561,15 +575,16 @@ static int parse_args(int argc, char **argv, install_args *args) {
 int main(int argc, char **argv) {
     install_args args;
     if (parse_args(argc, argv, &args) < 0) {
-        fprintf(stderr, "Usage: %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-sign-test|--ca-reset\n"
+        fprintf(stderr, "Usage: %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-sign-test|--delete-wallet|--ca-reset\n"
                         "       %s /dev/hidrawN --ca-enroll PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-channel-only PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-list PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-fixture PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-review PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-sign-test PRIVATE_KEY_FILE\n"
+                        "       %s /dev/hidrawN --ca-delete-wallet PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-install PRIVATE_KEY_FILE app.bin\n",
-                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     uint8_t *code = NULL;

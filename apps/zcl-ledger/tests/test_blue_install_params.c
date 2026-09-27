@@ -26,6 +26,11 @@ int main(void) {
     };
     length = blue_install_params("ZCL Review", "0.3.0", false, output);
     assert(length == sizeof review && memcmp(output, review, length) == 0);
+    length = blue_install_params("ZCL Wallet", "0.1.0", true, output);
+    assert(length == sizeof expected - 3);
+    assert(output[0] == 1 && output[1] == 10);
+    assert(memcmp(output + 2, "ZCL Wallet", 10) == 0);
+    assert(output[19] == 0x04 && output[20] == 22);
     assert(blue_install_params("", "0.1.0", true, output) == 0);
     assert(blue_install_params("ZCL", "0.1", true, output) == 0);
     assert(blue_install_params(NULL, "0.1.0", true, output) == 0);
