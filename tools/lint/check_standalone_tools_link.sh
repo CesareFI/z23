@@ -129,6 +129,7 @@ declare -A DARWIN_EXEMPT=(
     [fuzz_zcode_dht]="host lacks libclang_rt.fuzzer_osx.a (standalone CLT ships no libFuzzer runtime)"
     [fuzz_zcode_science]="host lacks libclang_rt.fuzzer_osx.a (standalone CLT ships no libFuzzer runtime)"
     [fuzz_mesh_status_proto]="host lacks libclang_rt.fuzzer_osx.a (standalone CLT ships no libFuzzer runtime)"
+    [fuzz_semantic_manifest]="host lacks libclang_rt.fuzzer_osx.a (standalone CLT ships no libFuzzer runtime)"
 )
 
 # ── Windows-only tools (exempt on every host that is NOT Windows) ────────
@@ -231,8 +232,39 @@ gate_require_scanned "${#TOOLS[@]}" 20 check-standalone-tools-link \
 
 # ── Partition into covered vs must-build ─────────────────────────────────
 GATE_HOST_OS="$(uname -s 2>/dev/null)"
+fuzz_target_line="$(gate_grep -m1 '^FUZZ_TARGETS = ' Makefile || true)"
+fuzz_target_assignments="$(gate_grep -E '^FUZZ_TARGETS[[:space:]]*[:+?]?=' Makefile || true)"
+# This fast literal reader is a coverage gate, not a Make interpreter. Refuse
+# comments or a second assignment rather than treating dead text as fuzz-ci.
+if [[ "$GATE_HOST_OS" == Darwin &&
+      ( -z "$fuzz_target_line" || "$fuzz_target_assignments" != "$fuzz_target_line" ||
+        "$fuzz_target_line" == *'#'* || "$fuzz_target_line" == *'\'* ) ]]; then
+    echo "check-standalone-tools-link: FATAL — FUZZ_TARGETS is not one literal uncommented assignment" >&2
+    exit 2
+fi
+read -r -a fuzz_target_tokens <<< "$fuzz_target_line"
+declare -A FUZZ_CI_TARGETS=()
+for token in "${fuzz_target_tokens[@]}"; do
+    [[ "$token" == '$(BIN_DIR)/fuzz_'* ]] || continue
+    FUZZ_CI_TARGETS["${token#'$(BIN_DIR)/'}"]=1
+done
 targets=()
 for name in $(printf '%s\n' "${!TOOLS[@]}" | sort); do
+    # A new fuzzer belongs to the fuzz-ci corpus. On Darwin's base CLT,
+    # linking it here fails only after a costly whole-program compile because
+    # libclang_rt.fuzzer_osx.a is absent. Require an explicit host decision
+    # before the proof's prefork build schedules that work.
+    if [[ "$GATE_HOST_OS" == Darwin && "$name" == fuzz_* ]]; then
+        if [[ -z "${FUZZ_CI_TARGETS[$name]:-}" ]]; then
+            echo "check-standalone-tools-link: FATAL — $name has no fuzz-ci target" >&2
+            exit 2
+        fi
+        if [[ -z "${EXEMPT[$name]:-}" && -z "${DARWIN_EXEMPT[$name]:-}" ]]; then
+            echo "check-standalone-tools-link: FATAL — unclassified Darwin fuzz target $name" >&2
+            echo "  Declare its fuzz-ci coverage and host-runtime policy before prefork." >&2
+            exit 2
+        fi
+    fi
     [[ -n "${EXEMPT[$name]:-}" ]] && continue
     # A bare non-windows exemption used to sit here. It skipped the tool on
     # sight, with no check that anything still compiled the source — the exact
