@@ -607,4 +607,17 @@ int codeindex_reverse_includes(struct codeindex *ci, const char *path,
  * never describe the same incompleteness with two different words. */
 const char *codeindex_include_dim_label(enum codeindex_include_dim dim);
 
+/* Why this index refuses every narrow include answer: the FIRST depfile rule
+ * that made the include graph unsafe and the repo-relative file it fired on,
+ * e.g. "prereq_not_regular build/obj/x.d -> net/gone.h". The scan is sorted,
+ * so the first cause is deterministic. Observability only: the refusal itself
+ * is decided by the stored narrow-unsafe bit exactly as before.
+ *
+ * Returns true and writes the cause when the graph is narrow-unsafe (a cause
+ * the index could not attribute reads "unrecorded"); returns false and writes
+ * "" when narrow answers are trusted. `out` is always NUL-terminated. */
+#define CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX 192
+bool codeindex_include_unsafe_cause(struct codeindex *ci, char *out,
+                                    size_t cap);
+
 #endif /* ZCL_CODEINDEX_H */

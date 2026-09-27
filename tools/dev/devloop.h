@@ -40,6 +40,10 @@ extern "C" {
 /* The intermediate file a selection came through. Repo-relative; the longest
  * tracked path is well under this. */
 #define ZCL_DEVLOOP_VIA_MAX 160
+/* One dimension's refusal evidence (zcl_devloop_dim_state.cause). Matches
+ * CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX, and with "closure-truncated: " in front
+ * it still fits the 256-byte proof failure record. */
+#define ZCL_DEVLOOP_CAUSE_MAX 192
 /* Byte ceiling the composed plan DOCUMENT renders into, independent of how
  * large a buffer the caller happens to hand us.
  *
@@ -109,6 +113,10 @@ struct zcl_devloop_dim_state {
      * so the plan and the result cache never describe the same incompleteness
      * with two different words. */
     const char *reason;
+    /* The evidence behind `reason`, "" when there is none: for an INCLUDE
+     * refusal, the first depfile rule and path that made the include graph
+     * unsafe (codeindex_include_unsafe_cause). Observability only. */
+    char cause[ZCL_DEVLOOP_CAUSE_MAX];
 };
 
 /* One selected proof group and the evidence that selected it. */
@@ -243,6 +251,15 @@ struct zcl_devloop_plan {
  * or "" when admissible. Never NULL-terminated garbage; always a literal. */
 bool zcl_devloop_plan_proof_admissible(const struct zcl_devloop_plan *plan,
                                        const char **out_reason);
+
+/* The same refusal as one line of evidence for a proof failure record and
+ * `dev land status`: the reason zcl_devloop_plan_proof_admissible() names,
+ * followed by ": <cause>" when the refusing dimension recorded one, e.g.
+ * "closure-truncated: prereq_not_regular build/obj/x.d -> net/gone.h".
+ * Writes "" when the plan is admissible. The text is clipped below 256 bytes
+ * so it always fits the proof failure record. Returns the length written. */
+size_t zcl_devloop_plan_refusal_text(const struct zcl_devloop_plan *plan,
+                                     char *out, size_t cap);
 
 #if defined(ZCL_TESTING)
 /* Pure capacity seam for the corpus-sized closure regression. */

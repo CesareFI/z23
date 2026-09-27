@@ -7598,6 +7598,9 @@ extern size_t zcl_devloop_test_closure_file_ceiling;
 
 #define IC_FIX_INCCAP IC_FIX_ROOT "/include_capacity"
 #define IC_INCCAP_DEF "engine/composition/zcode_package_registry.def"
+#define IC_GONE_CAUSE \
+    "prereq_not_regular build/obj/download.d -> " \
+    "core/modules/net/include/net/ic_gone.h"
 
 /* A registry both leaves were compiled against. `unsafe` adds a prerequisite
  * the checkout does not hold, which makes the index refuse every narrow
@@ -7657,6 +7660,7 @@ static int test_ic_include_capacity_runs_everything(void)
         ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
                ZCL_DEVLOOP_DIM_COMPLETE);
         ASSERT(strcmp(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].reason, "") == 0);
+        ASSERT_STR_EQ(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].cause, "");
         ASSERT(!plan.closure_universal);
         ASSERT(ic_planned(&plan, "download"));
         ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
@@ -7700,6 +7704,21 @@ static int test_ic_include_capacity_runs_everything(void)
         why = "unset";
         ASSERT(!zcl_devloop_plan_proof_admissible(&plan, &why));
         ASSERT(strcmp(why, "closure-truncated") == 0);
+        /* ... and names the rule and file that made the graph unsafe: in the
+         * plan, in its JSON, and in the proof's refusal line. */
+        ASSERT_STR_EQ(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].cause, IC_GONE_CAUSE);
+        {
+            char refusal[256];
+            static char body[16384];
+            const char *files[] = { IC_INCCAP_DEF };
+            ASSERT(zcl_devloop_plan_refusal_text(&plan, refusal,
+                                                 sizeof refusal) > 0);
+            ASSERT_STR_EQ(refusal, "closure-truncated: " IC_GONE_CAUSE);
+            ASSERT(zcl_devloop_plan_json_render(&plan, files, 1, body,
+                                                sizeof body) > 0);
+            ASSERT(strstr(body, "\"reason\":\"closure-truncated\","
+                                "\"cause\":\"" IC_GONE_CAUSE "\"") != NULL);
+        }
 
         /* (b2) and a capacity bound on that same untrusted graph does not
          * erase the refusal: capacity is not allowed to launder it. */

@@ -731,6 +731,14 @@ const char *codeindex_include_dim_label(enum codeindex_include_dim dim)
     return "unknown";
 }
 
+bool codeindex_include_unsafe_cause(struct codeindex *ci, char *out,
+                                    size_t cap)
+{
+    (void)ci;
+    if (out && cap) out[0] = '\0';
+    return false;
+}
+
 int codeindex_reverse_includes(struct codeindex *ci, const char *path,
                                char (*out)[256], int cap,
                                enum codeindex_include_dim *dim)

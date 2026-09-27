@@ -832,6 +832,68 @@ static int test_code_impact_unsafe_narrow(void)
     return failures;
 }
 
+/* A narrow-unsafe include graph names WHICH rule made it unsafe and on WHICH
+ * file, so a closure-truncated refusal is diagnosed from evidence. The first
+ * cause in the sorted scan is kept; a clean graph names none. */
+static int ci_unsafe_cause_one(const char *name, const char *dep,
+                               const char *touch, const char *want)
+{
+    static const char *const src =
+        "/* narrow */\n#include \"net/real.h\"\nint ci_narrow(void){return 1;}\n";
+    int failures = 0;
+    char dir[256];
+    snprintf(dir, sizeof dir, CI_NARROW_FIX "/cause_%s", name);
+    system("rm -rf " CI_NARROW_FIX);
+    bool ready = ci_narrow_base(dir, src, dep);
+    if (ready && touch)
+        ci_narrow_touch_rel(dir, touch, 5);
+    char cause[CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX] = "unset";
+    bool unsafe = false;
+    struct codeindex *index = ready ? codeindex_open(dir) : NULL;
+    if (index) {
+        unsafe = codeindex_include_unsafe_cause(index, cause, sizeof cause);
+        codeindex_close(index);
+    }
+    printf("invariant=include_unsafe_cause case=%s unsafe=%d cause=\"%s\" "
+           "ok=%d\n", name, unsafe ? 1 : 0, cause, index ? 1 : 0);
+    TEST("code_impact: a narrow-unsafe include graph names its first rule and file") {
+        ASSERT(index != NULL);
+        ASSERT(unsafe == (want[0] != '\0'));
+        ASSERT_STR_EQ(cause, want);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_code_impact_unsafe_cause(void)
+{
+    static const char *const dep_clean =
+        "build/obj/narrow.o: core/modules/net/src/narrow.c "
+        "core/modules/net/include/net/real.h\n";
+    static const char *const dep_missing =
+        "build/obj/narrow.o: core/modules/net/src/narrow.c "
+        "core/modules/net/include/net/real.h "
+        "core/modules/net/include/net/missing.h\n";
+    static const char *const dep_incomplete =
+        "build/obj/narrow.o: core/modules/net/src/narrow.c "
+        "core/modules/net/include/net/real.h";
+    int failures = 0;
+    failures += ci_unsafe_cause_one("clean", dep_clean, NULL, "");
+    failures += ci_unsafe_cause_one(
+        "missing", dep_missing, NULL,
+        "prereq_not_regular build/obj/narrow.d -> "
+        "core/modules/net/include/net/missing.h");
+    failures += ci_unsafe_cause_one(
+        "incomplete", dep_incomplete, NULL,
+        "depfile_incomplete build/obj/narrow.d");
+    failures += ci_unsafe_cause_one(
+        "stale", dep_clean, "core/modules/net/src/narrow.c",
+        "prereq_newer_than_depfile build/obj/narrow.d -> "
+        "core/modules/net/src/narrow.c");
+    system("rm -rf " CI_NARROW_FIX);
+    return failures;
+}
+
 /* HOT_FORK caches depfiles for deleted .resident unity wrappers. They are
  * not the ordinary compiler graph and must not poison a live unit's impact. */
 static int test_code_impact_hotfork_cache_scope(void)
@@ -1217,6 +1279,7 @@ int test_code_impact(void)
     int failures = 0;
     failures += test_code_impact_rule_predicate();
     failures += test_code_impact_unsafe_narrow();
+    failures += test_code_impact_unsafe_cause();
     failures += test_code_impact_hotfork_cache_scope();
     failures += test_code_impact_incremental_include();
     failures += test_code_impact_scope_refusals();

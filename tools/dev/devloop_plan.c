@@ -411,6 +411,19 @@ bool zcl_devloop_plan_proof_admissible(const struct zcl_devloop_plan *plan,
     return true;
 }
 
+size_t zcl_devloop_plan_refusal_text(const struct zcl_devloop_plan *plan,
+                                     char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return 0;
+    out[0] = '\0';
+    const char *reason = "";
+    if (zcl_devloop_plan_proof_admissible(plan, &reason))
+        return 0;
+    int n = snprintf(out, cap, "%s", reason);
+    return n > 0 ? strlen(out) : 0;
+}
+
 static bool path_is_consensus_risk(const char *path)
 {
     static const char *const prefixes[] = {
