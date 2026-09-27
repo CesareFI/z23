@@ -2557,13 +2557,139 @@ static bool dp_seed_subdir_ready(const char *gen_child)
     return S_ISDIR(gen_st.st_mode) && !S_ISLNK(gen_st.st_mode);
 }
 
+/* The dev profile maps dev-obj/epochs/<key>/<source>.{o,d} to
+ * <generation>/<source>.c. A retired source has no make target, so its
+ * donor depfile would survive the bundle and make the include graph refuse.
+ * Check the generation, not the donor, before importing either output. */
+static bool dp_seed_dev_source_present(const char *gen_src, const char *rel)
+{
+    static const char prefix[] = "dev-obj/epochs/";
+    if (strncmp(rel, "dev-obj/", 8) != 0 ||
+        (!warm_has_suffix(rel, ".o") && !warm_has_suffix(rel, ".d")))
+        return true;
+    if (strncmp(rel, prefix, sizeof(prefix) - 1) != 0) return false;
+    const char *epoch = rel + sizeof(prefix) - 1;
+    const char *slash = strchr(epoch, '/');
+    if (!slash || slash == epoch || !slash[1]) return false;
+    const char *stem = slash + 1;
+    size_t stem_len = strlen(stem) - 2;
+    char source[PATH_MAX];
+    if (stem_len == 0 || stem_len > INT_MAX ||
+        snprintf(source, sizeof(source), "%s/%.*s.c", gen_src,
+                 (int)stem_len, stem) >= (int)sizeof(source))
+        return false;
+    struct stat st;
+    return lstat(source, &st) == 0 && S_ISREG(st.st_mode) &&
+           !S_ISLNK(st.st_mode);
+}
+
+/* A pool slot may have been used before this donor was chosen. Walk its
+ * existing dev objects as well as the donor: an orphan absent from the donor
+ * would otherwise keep its old depfile and poison the exact include graph.
+ * Directory descriptors and O_NOFOLLOW keep the cleanup inside the private
+ * generation even if an ignored build path has been replaced by a symlink. */
+#if !defined(_WIN32)
+static bool dp_prune_dev_orphans_dir(int fd, const char *gen_src,
+                                     const char *prefix);
+
+static bool dp_prune_dev_orphans_entry(int fd, const char *gen_src,
+                                       const char *prefix, const char *name)
+{
+    char rel[PATH_MAX];
+    if (snprintf(rel, sizeof(rel), "%s/%s", prefix, name) >=
+        (int)sizeof(rel)) return false;
+    struct stat st;
+    if (fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) return false;
+    if (S_ISDIR(st.st_mode)) {
+        int child = openat(fd, name,
+                           O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        return child >= 0 && dp_prune_dev_orphans_dir(child, gen_src, rel);
+    }
+    if ((S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) &&
+        (warm_has_suffix(rel, ".o") || warm_has_suffix(rel, ".d")) &&
+        (S_ISLNK(st.st_mode) ||
+         !dp_seed_dev_source_present(gen_src, rel)))
+        return unlinkat(fd, name, 0) == 0;
+    return true;
+}
+
+static bool dp_prune_dev_orphans_dir(int fd, const char *gen_src,
+                                     const char *prefix)
+{
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        (void)close(fd);
+        return false;
+    }
+    bool ok = true;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) ok = false;
+            break;
+        }
+        if (entry->d_name[0] == '.') continue;
+        if (!dp_prune_dev_orphans_entry(dirfd(dir), gen_src, prefix,
+                                        entry->d_name)) {
+            ok = false;
+            break;
+        }
+    }
+    if (closedir(dir) != 0) ok = false;
+    return ok;
+}
+
+static bool dp_prune_dev_orphans(const char *gen_build, const char *gen_src)
+{
+    if (!gen_build || !gen_src) return false;
+    struct stat st;
+    if (lstat(gen_build, &st) != 0) return errno == ENOENT;
+    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) return false;
+    int build_fd = open(gen_build,
+                        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (build_fd < 0) return false;
+    if (fstatat(build_fd, "dev-obj", &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        bool missing = errno == ENOENT;
+        (void)close(build_fd);
+        return missing;
+    }
+    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+        (void)close(build_fd);
+        return false;
+    }
+    int fd = openat(build_fd, "dev-obj",
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    (void)close(build_fd);
+    return fd >= 0 && dp_prune_dev_orphans_dir(fd, gen_src, "dev-obj");
+}
+#else
+static bool dp_prune_dev_orphans(const char *gen_build, const char *gen_src)
+{
+    (void)gen_build;
+    (void)gen_src;
+    return false;
+}
+#endif
+
 static void dp_seed_regular(const char *donor_child, const char *gen_child,
-                            const char *rel, bool copy_wrapper,
+                            const char *gen_src, const char *rel,
+                            bool copy_wrapper,
                             const struct stat *donor_st,
                             struct warm_seed_accum *accum)
 {
     enum warm_seed_class class = warm_classify_rel(rel, true);
     if (class == WARM_SEED_SKIP) return;
+    if (!dp_seed_dev_source_present(gen_src, rel)) {
+        /* A reused private generation can already hold this old output.
+         * Remove the matching regular file too; never follow a symlink. */
+        struct stat st;
+        if (lstat(gen_child, &st) == 0 &&
+            (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) &&
+            unlink(gen_child) != 0)
+            accum->failed = true;
+        return;
+    }
     /* The wrapper copy is caller-gated: bin/zcc is a bootstrap input this
      * generation may inherit only while the inputs that built it are
      * unchanged. A dependency room file is also COPY class, but for an
@@ -2579,7 +2705,8 @@ static void dp_seed_regular(const char *donor_child, const char *gen_child,
 /* One donor entry. Returns false only when the whole seed must fail;
  * `*descend` says the caller should recurse into the paths it filled in. */
 static bool dp_seed_entry(const char *donor_dir, const char *gen_dir,
-                          const char *rel_prefix, const char *name,
+                          const char *gen_src, const char *rel_prefix,
+                          const char *name,
                           bool copy_wrapper, struct warm_seed_accum *accum,
                           char rel[PATH_MAX], char donor_child[PATH_MAX],
                           char gen_child[PATH_MAX], bool *descend)
@@ -2601,13 +2728,14 @@ static bool dp_seed_entry(const char *donor_dir, const char *gen_dir,
         return true;
     }
     if (!S_ISREG(donor_st.st_mode)) return true;
-    dp_seed_regular(donor_child, gen_child, rel, copy_wrapper, &donor_st,
+    dp_seed_regular(donor_child, gen_child, gen_src, rel, copy_wrapper, &donor_st,
                     accum);
     return true;
 }
 
 static void warm_seed_walk(const char *donor_dir, const char *gen_dir,
-                           const char *rel_prefix, bool copy_wrapper,
+                           const char *gen_src, const char *rel_prefix,
+                           bool copy_wrapper,
                            struct warm_seed_accum *accum)
 {
     if (!accum || accum->failed) return;
@@ -2622,14 +2750,16 @@ static void warm_seed_walk(const char *donor_dir, const char *gen_dir,
         char rel[PATH_MAX], donor_child[PATH_MAX], gen_child[PATH_MAX];
         bool descend = false;
         if (accum->failed) break;
-        if (!dp_seed_entry(donor_dir, gen_dir, rel_prefix, entry->d_name,
+        if (!dp_seed_entry(donor_dir, gen_dir, gen_src, rel_prefix,
+                           entry->d_name,
                            copy_wrapper, accum, rel, donor_child, gen_child,
                            &descend)) {
             accum->failed = true;
             break;
         }
         if (descend)
-            warm_seed_walk(donor_child, gen_child, rel, copy_wrapper, accum);
+            warm_seed_walk(donor_child, gen_child, gen_src, rel, copy_wrapper,
+                           accum);
     }
     (void)closedir(dir);
 }
@@ -3695,14 +3825,19 @@ static bool warm_start_generation(const struct proof_paths *paths,
     if (!paths || !parent || !generation || !local || !warm) return false;
     memset(&donor, 0, sizeof(donor));
     memset(warm, 0, sizeof(*warm));
+    char donor_build[PATH_MAX], gen_build[PATH_MAX];
+    if (snprintf(gen_build, sizeof(gen_build), "%s/build", generation) >=
+            (int)sizeof(gen_build) ||
+        !dp_prune_dev_orphans(gen_build, generation)) {
+        (void)snprintf(warm->cold_reason, sizeof(warm->cold_reason), "%s",
+                       "orphan_cleanup_failed");
+        return false;
+    }
     if (!warm_donor_scan(parent, paths->root, generation, paths->phases,
                          &donor, warm->cold_reason))
         return false;
-    char donor_build[PATH_MAX], gen_build[PATH_MAX];
     if (snprintf(donor_build, sizeof(donor_build), "%s/build", donor.path) >=
-            (int)sizeof(donor_build) ||
-        snprintf(gen_build, sizeof(gen_build), "%s/build", generation) >=
-            (int)sizeof(gen_build)) {
+            (int)sizeof(donor_build)) {
         (void)snprintf(warm->cold_reason, sizeof(warm->cold_reason), "%s",
                        "seed_failed");
         return false;
@@ -3719,7 +3854,8 @@ static bool warm_start_generation(const struct proof_paths *paths,
      * its new mtime correctly invalidates every object. */
     bool copy_wrapper =
         warm_wrapper_inputs_unchanged(paths->root, donor.local, local);
-    warm_seed_walk(donor_build, gen_build, "", copy_wrapper, &accum);
+    warm_seed_walk(donor_build, gen_build, generation, "", copy_wrapper,
+                   &accum);
     struct timespec seed_stamp = {0};
     bool armed = !accum.failed && accum.files > 0 &&
                  warm_retime_outputs(gen_build, &accum, &seed_stamp) &&
@@ -4299,8 +4435,10 @@ bool zcl_dev_proof_warm_seed_and_retime(const char *donor_build,
 {
     if (!donor_build || !gen_build || !gen_src || !stats) return false;
     memset(stats, 0, sizeof(*stats));
+    if (!dp_prune_dev_orphans(gen_build, gen_src)) return false;
     struct warm_seed_accum accum = {0};
-    warm_seed_walk(donor_build, gen_build, "", copy_wrapper, &accum);
+    warm_seed_walk(donor_build, gen_build, gen_src, "", copy_wrapper,
+                   &accum);
     struct timespec seed_stamp = {0}, source_stamp = {0};
     bool ok = !accum.failed && accum.files > 0 &&
               warm_retime_outputs(gen_build, &accum, &seed_stamp) &&
@@ -4716,6 +4854,14 @@ static void dp_generation_warm(const struct proof_paths *paths,
 {
     if (!warm) return;
     if (warm_start_disabled()) {
+        char gen_build[PATH_MAX];
+        if (snprintf(gen_build, sizeof(gen_build), "%s/build", generation) >=
+                (int)sizeof(gen_build) ||
+            !dp_prune_dev_orphans(gen_build, generation)) {
+            (void)snprintf(warm->cold_reason, sizeof(warm->cold_reason), "%s",
+                           "orphan_cleanup_failed");
+            return;
+        }
         (void)snprintf(warm->cold_reason, sizeof(warm->cold_reason), "%s",
                        "disabled");
         return;

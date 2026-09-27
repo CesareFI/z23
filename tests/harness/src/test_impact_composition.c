@@ -5517,6 +5517,96 @@ static int test_pw_seed_cold_without_seedables(void)
     return failures;
 }
 
+static int test_pw_seed_skips_removed_dev_source(void)
+{
+    int failures = 0;
+    TEST("proof warm start: removed dev source cannot donate object or depfile") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], donor[4096], gen[4096], gen_src[4096];
+        char path[4096];
+        test_make_tmpdir(root, sizeof(root), "proof_warm", "removed_dev");
+        ASSERT(snprintf(donor, sizeof(donor), "%s/donor/build", root) > 0);
+        ASSERT(snprintf(gen, sizeof(gen), "%s/gen/build", root) > 0);
+        ASSERT(snprintf(gen_src, sizeof(gen_src), "%s/gen", root) > 0);
+        ASSERT(ic_write(root,
+                        "donor/build/dev-obj/epochs/E/tools/dev/gone.o",
+                        "OLD-OBJECT"));
+        ASSERT(ic_write(root,
+                        "donor/build/dev-obj/epochs/E/tools/dev/gone.d",
+                        "gone.o: tools/dev/gone.c\n"));
+        ASSERT(ic_write(root,
+                        "donor/build/dev-obj/epochs/E/tools/dev/keep.o",
+                        "KEEP-OBJECT"));
+        ASSERT(ic_write(root,
+                        "donor/build/dev-obj/epochs/E/tools/dev/keep.d",
+                        "keep.o: tools/dev/keep.c\n"));
+        ASSERT(ic_write(root, "gen/tools/dev/keep.c", "int keep;\n"));
+        struct zcl_dev_proof_warm_stats stats = {0};
+        ASSERT(zcl_dev_proof_warm_seed_and_retime(donor, gen, gen_src, true,
+                                                  NULL, 0, &stats));
+        ASSERT(stats.files_linked == 2);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.o", gen) > 0);
+        ASSERT(access(path, F_OK) != 0);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.d", gen) > 0);
+        ASSERT(access(path, F_OK) != 0);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/keep.o", gen) > 0);
+        ASSERT(access(path, F_OK) == 0);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/keep.d", gen) > 0);
+        ASSERT(access(path, F_OK) == 0);
+        /* A reused generation can carry an orphan that the chosen donor
+         * does not have. Pruning only donor entries would miss this one. */
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.o", donor) > 0);
+        ASSERT(unlink(path) == 0);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.d", donor) > 0);
+        ASSERT(unlink(path) == 0);
+        ASSERT(ic_write(root,
+                        "gen/build/dev-obj/epochs/E/tools/dev/gone.o",
+                        "STALE-OBJECT"));
+        ASSERT(ic_write(root,
+                        "gen/build/dev-obj/epochs/E/tools/dev/gone.d",
+                        "gone.o: tools/dev/gone.c\n"));
+        ASSERT(zcl_dev_proof_warm_seed_and_retime(donor, gen, gen_src, true,
+                                                  NULL, 0, &stats));
+        ASSERT(stats.files_linked == 2);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.o", gen) > 0);
+        ASSERT(access(path, F_OK) != 0);
+        ASSERT(snprintf(path, sizeof(path),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.d", gen) > 0);
+        ASSERT(access(path, F_OK) != 0);
+        char saved_build[4096], outside_build[4096], outside_dep[4096];
+        ASSERT(snprintf(saved_build, sizeof(saved_build),
+                        "%s/gen/build-saved", root) > 0);
+        ASSERT(snprintf(outside_build, sizeof(outside_build),
+                        "%s/outside/build", root) > 0);
+        ASSERT(ic_write(root,
+                        "outside/build/dev-obj/epochs/E/tools/dev/gone.d",
+                        "OUTSIDE-DEPFILE"));
+        ASSERT(rename(gen, saved_build) == 0);
+        ASSERT(symlink(outside_build, gen) == 0);
+        ASSERT(!zcl_dev_proof_warm_seed_and_retime(donor, gen, gen_src, true,
+                                                   NULL, 0, &stats));
+        ASSERT(snprintf(outside_dep, sizeof(outside_dep),
+                        "%s/dev-obj/epochs/E/tools/dev/gone.d",
+                        outside_build) > 0);
+        ASSERT(access(outside_dep, F_OK) == 0);
+        ASSERT(unlink(gen) == 0);
+        ASSERT(rename(saved_build, gen) == 0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 #if !defined(_WIN32)
 static bool ic_proof_environment_child(void)
 {
@@ -8206,6 +8296,7 @@ int test_impact_composition(void)
     failures += test_ic_landing_step_share_waits_out_a_step();
     failures += test_pw_seed_links_replaces_and_copies();
     failures += test_pw_seed_room_copy_survives_a_stale_wrapper();
+    failures += test_pw_seed_skips_removed_dev_source();
     failures += test_pw_seed_cold_without_seedables();
     failures += test_pw_disable_switch_forces_cold();
     failures += test_ic_fast_sync_splits_keep_proof_lane();
