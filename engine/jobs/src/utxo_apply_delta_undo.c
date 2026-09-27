@@ -14,6 +14,7 @@
 
 #include "jobs/utxo_apply_delta_undo.h"
 
+#include "base/serialize_le.h"
 #include "coins/undo.h"
 #include "jobs/stage_helpers.h"
 #include "primitives/block.h"
@@ -58,8 +59,7 @@ static bool take_u32(struct spent_cursor *c, uint32_t *out)
     uint8_t b[4];
     if (!take_bytes(c, b, sizeof(b)))
         return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
-    *out = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
-           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    *out = zcl_read_u32_le(b);
     return true;
 }
 
@@ -68,10 +68,7 @@ static bool take_i64(struct spent_cursor *c, int64_t *out)
     uint8_t b[8];
     if (!take_bytes(c, b, sizeof(b)))
         return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
-    uint64_t u = 0;
-    for (int i = 7; i >= 0; i--)
-        u = (u << 8) | b[i];
-    *out = (int64_t)u;
+    *out = zcl_read_i64_le(b);
     return true;
 }
 
