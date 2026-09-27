@@ -117,8 +117,9 @@ struct zcl_devloop_facts_report {
  * consumer selects the affected TUs by declaration identity and seeds the
  * walk from the functions that reach a changed id. Either way the report
  * lists the universe with its identities. Fills plan, verdict and report
- * (free it with zcl_devloop_facts_report_free). False only for invalid
- * arguments or memory. */
+ * (free it with zcl_devloop_facts_report_free). A non-NULL verdict and
+ * report are zeroed before anything can fail, so the free is safe on every
+ * path. False only for invalid arguments or memory. */
 bool zcl_devloop_facts_consume(const char *root, const char *const *files,
                                size_t n, const char *facts_dir,
                                const struct zcl_devloop_facts_tu *tus,

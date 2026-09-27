@@ -204,22 +204,27 @@ static size_t fxh_token(const struct fxh_lex *x, bool *ident)
 
 /* ---- pieces ------------------------------------------------------------------------ */
 
+/* Takes *names on every path: it is zeroed before anything can fail and
+ * freed when the piece cannot be stored. */
 static bool fxh_emit(struct fxh_lex *x, uint8_t kind, const struct fxh_buf *text,
                      struct fxh_names *names)
 {
+    struct fxh_names own = *names;
     struct fxh_piece *p;
     struct sha3_256_ctx h;
+    memset(names, 0, sizeof(*names));
     if (!fxh_grow((void **)&x->out->v, &x->out->cap, x->out->n,
-                  sizeof(*x->out->v)))
+                  sizeof(*x->out->v))) {
+        fxh_names_free(&own);
         return false;
+    }
     p = &x->out->v[x->out->n++];
     p->kind = kind;
     sha3_256_init(&h);
     sha3_256_write(&h, &kind, 1);
     sha3_256_write(&h, (const unsigned char *)text->s, text->n);
     sha3_256_finalize(&h, p->digest);
-    p->names = *names;
-    memset(names, 0, sizeof(*names));
+    p->names = own;
     return true;
 }
 

@@ -354,11 +354,13 @@ bool zcl_devloop_facts_consume(const char *root, const char *const *files,
                     .strict = tus == NULL};
     struct zcl_devloop_plan *given = NULL;
     bool ok;
+    if (report != NULL)
+        memset(report, 0, sizeof(*report));
+    if (verdict != NULL)
+        memset(verdict, 0, sizeof(*verdict));
     if (!fxc_args_ok(files, n, facts_dir, plan, verdict, report) ||
         (given = zcl_malloc(sizeof(*given), "facts.given")) == NULL)
         return false;
-    memset(report, 0, sizeof(*report));
-    memset(verdict, 0, sizeof(*verdict));
     report->reason = verdict->reason = "";
     report->complete = true;
     memcpy(given, plan, sizeof(*given));

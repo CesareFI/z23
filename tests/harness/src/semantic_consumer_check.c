@@ -131,6 +131,54 @@ scx_tu_of(const struct scx_result *r, const char *path)
     return NULL;
 }
 
+/* One TU against its row of the edit table: 0 when they agree. */
+static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
+                             const struct scx_result *r, size_t *unsafe,
+                             FILE *why)
+{
+    const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
+    bool got_aff = t != NULL && t->affected;
+    const char *got = t != NULL ? t->reason : NULL;
+    bool same = e->reason[k] == NULL
+                    ? t == NULL
+                    : t != NULL && got_aff == e->affected[k] &&
+                          strcmp(got, e->reason[k]) == 0;
+    if (e->affected[k] && !got_aff)
+        (*unsafe)++;
+    if (same)
+        return 0;
+    if (why != NULL)
+        fprintf(why, "  %s %s: want %s/%s, got %s/%s (%s)\n", e->name,
+                k_scx_tus[k], e->affected[k] ? "affected" : "unaffected",
+                e->reason[k] ? e->reason[k] : "absent",
+                got_aff ? "affected" : "unaffected", got ? got : "absent",
+                t != NULL ? t->detail : "");
+    return 1;
+}
+
+static const char *scx_or_empty(const char *s)
+{
+    return s != NULL ? s : "";
+}
+
+/* The universe and the obligations against the edit table: 0 on agreement. */
+static size_t scx_compare_whole(const struct scx_edit *e,
+                                const struct scx_result *r, FILE *why)
+{
+    const char *want_ob = scx_or_empty(e->obligations);
+    const char *got_ob = r->verdict.narrowed ? "" : scx_or_empty(r->verdict.reason);
+    const char *want_u = scx_or_empty(e->incomplete);
+    const char *got_u = r->report.complete ? "" : scx_or_empty(r->report.reason);
+    if (strcmp(want_u, got_u) == 0 && strcmp(want_ob, got_ob) == 0)
+        return 0;
+    if (why != NULL)
+        fprintf(why, "  %s obligations: want \"%s\", got \"%s\" (%s; universe %s %s)\n",
+                e->name, want_ob, got_ob, r->verdict.detail,
+                r->report.complete ? "complete" : "incomplete",
+                scx_or_empty(r->report.reason));
+    return 1;
+}
+
 /* One line per disagreement with the edit table on `why` (when not NULL);
  * *unsafe counts TUs the table says are affected that the consumer calls
  * unaffected or leaves out. Returns the number of disagreements. */
@@ -138,42 +186,11 @@ size_t scx_compare(enum scx_variant v, const struct scx_result *r,
                    size_t *unsafe, FILE *why)
 {
     const struct scx_edit *e = &k_scx_edits[v];
-    const char *want_ob = e->obligations ? e->obligations : "";
-    const char *got_ob = r->verdict.narrowed ? "" : r->verdict.reason;
     size_t bad = 0;
     *unsafe = 0;
-    for (size_t k = 0; k < SCX_TU_COUNT; k++) {
-        const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
-        bool got_aff = t != NULL && t->affected;
-        const char *got = t != NULL ? t->reason : NULL;
-        bool same = e->reason[k] == NULL
-                        ? t == NULL
-                        : t != NULL && got_aff == e->affected[k] &&
-                              strcmp(got, e->reason[k]) == 0;
-        if (e->affected[k] && !got_aff)
-            (*unsafe)++;
-        if (same)
-            continue;
-        bad++;
-        if (why != NULL)
-            fprintf(why, "  %s %s: want %s/%s, got %s/%s (%s)\n", e->name,
-                    k_scx_tus[k], e->affected[k] ? "affected" : "unaffected",
-                    e->reason[k] ? e->reason[k] : "absent",
-                    got_aff ? "affected" : "unaffected", got ? got : "absent",
-                    t != NULL ? t->detail : "");
-    }
-    const char *want_u = e->incomplete ? e->incomplete : "";
-    const char *got_u = r->report.complete ? "" : r->report.reason;
-    if (strcmp(want_u, got_u ? got_u : "") != 0 ||
-        strcmp(want_ob, got_ob ? got_ob : "") != 0) {
-        bad++;
-        if (why != NULL)
-            fprintf(why, "  %s obligations: want \"%s\", got \"%s\" (%s; universe %s %s)\n",
-                    e->name, want_ob, got_ob ? got_ob : "", r->verdict.detail,
-                    r->report.complete ? "complete" : "incomplete",
-                    r->report.reason ? r->report.reason : "");
-    }
-    return bad;
+    for (size_t k = 0; k < SCX_TU_COUNT; k++)
+        bad += scx_compare_tu(e, k, r, unsafe, why);
+    return bad + scx_compare_whole(e, r, why);
 }
 
 void scx_result_free(struct scx_result *r)
