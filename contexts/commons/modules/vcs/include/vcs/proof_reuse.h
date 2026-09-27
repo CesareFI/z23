@@ -34,6 +34,16 @@ struct vcs_proof_issuer_log;
 
 /* The seed stays in memory for this log's lifetime and is wiped on free. */
 struct vcs_proof_issuer_log *vcs_proof_issuer_log_new(const uint8_t seed[32]);
+/* Rebuild a writable issuer log from complete signed ticket wires covered by
+ * the caller's durable exact checkpoint head. The caller must establish that
+ * expected_head_root is the latest published head for this issuer, and must
+ * not expose an uncheckpointed tail. A missing page, stale head or replay
+ * above max_tickets refuses; no partial log is returned. */
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore(
+    const uint8_t seed[32], const uint8_t *const *tickets,
+    const size_t *ticket_lens, size_t count, size_t max_tickets,
+    const uint8_t *checkpoint, size_t checkpoint_len,
+    const uint8_t expected_head_root[VCS_PROOF_ROOT_BYTES]);
 void vcs_proof_issuer_log_free(struct vcs_proof_issuer_log *log);
 void vcs_proof_issuer_log_pubkey(const struct vcs_proof_issuer_log *log,
                                  uint8_t out[VCS_PROOF_PUBKEY_BYTES]);

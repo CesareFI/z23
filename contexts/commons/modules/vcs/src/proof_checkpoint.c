@@ -209,6 +209,80 @@ static bool pck_log_reserve(struct vcs_proof_issuer_log *log)
     return true;
 }
 
+static bool pck_restore_head(const uint8_t *checkpoint, size_t checkpoint_len,
+                             const uint8_t expected[VCS_PROOF_ROOT_BYTES],
+                             size_t count, struct vcs_proof_checkpoint_v1 *head,
+                             uint8_t root[VCS_PROOF_ROOT_BYTES])
+{
+    return vcs_proof_checkpoint_decode(checkpoint, checkpoint_len, head) &&
+           vcs_proof_checkpoint_signature_valid(head) &&
+           vcs_proof_checkpoint_root(checkpoint, checkpoint_len, root) &&
+           memcmp(root, expected, VCS_PROOF_ROOT_BYTES) == 0 &&
+           head->leaf_count == (uint64_t)count;
+}
+
+static bool pck_restore_ticket(struct vcs_proof_issuer_log *log,
+                                const uint8_t *wire, size_t len, size_t seq)
+{
+    struct vcs_proof_ticket_v1 ticket;
+    uint8_t root[VCS_PROOF_ROOT_BYTES];
+    if (!wire || !vcs_proof_ticket_decode(wire, len, &ticket) ||
+        !vcs_proof_ticket_signature_valid(&ticket) ||
+        memcmp(ticket.producer_pubkey, log->pubkey,
+               sizeof(log->pubkey)) != 0 ||
+        ticket.issuer_seq != (uint64_t)seq ||
+        !vcs_proof_ticket_observation_root(wire, len, root) ||
+        !pck_log_reserve(log))
+        return false;
+    mmr_append(&log->mmr, root);
+    memcpy(log->wires[log->count++], wire, VCS_PROOF_TICKET_WIRE_BYTES);
+    return true;
+}
+
+static bool pck_restore_mmr_matches(const struct vcs_proof_issuer_log *log,
+                                    const struct vcs_proof_checkpoint_v1 *head)
+{
+    uint8_t mmr_root_bytes[VCS_PROOF_ROOT_BYTES];
+    uint8_t peaks_root[VCS_PROOF_ROOT_BYTES];
+    mmr_root(&log->mmr, mmr_root_bytes);
+    return vcs_proof_checkpoint_peaks_root(&log->mmr, peaks_root) &&
+           memcmp(head->mmr_root, mmr_root_bytes,
+                  sizeof(mmr_root_bytes)) == 0 &&
+           memcmp(head->peaks_root, peaks_root, sizeof(peaks_root)) == 0;
+}
+
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore(
+    const uint8_t seed[32], const uint8_t *const *tickets,
+    const size_t *ticket_lens, size_t count, size_t max_tickets,
+    const uint8_t *checkpoint, size_t checkpoint_len,
+    const uint8_t expected_head_root[VCS_PROOF_ROOT_BYTES])
+{
+    if (!seed || !tickets || !ticket_lens || !checkpoint ||
+        !expected_head_root || count == 0 || count > max_tickets ||
+        count > SIZE_MAX / VCS_PROOF_TICKET_WIRE_BYTES)
+        LOG_RETURN(NULL, PCK_LOG, "issuer restore: missing or unbounded replay");
+    struct vcs_proof_checkpoint_v1 head;
+    uint8_t head_root[VCS_PROOF_ROOT_BYTES];
+    if (!pck_restore_head(checkpoint, checkpoint_len, expected_head_root,
+                          count, &head, head_root))
+        LOG_RETURN(NULL, PCK_LOG, "issuer restore: checkpoint head invalid");
+    struct vcs_proof_issuer_log *log = vcs_proof_issuer_log_new(seed);
+    if (!log) return NULL;
+    if (memcmp(head.issuer_pubkey, log->pubkey,
+               sizeof(log->pubkey)) != 0)
+        goto refuse;
+    for (size_t i = 0; i < count; i++)
+        if (!pck_restore_ticket(log, tickets[i], ticket_lens[i], i))
+            goto refuse;
+    if (!pck_restore_mmr_matches(log, &head)) goto refuse;
+    memcpy(log->last_root, head_root, sizeof(log->last_root));
+    return log;
+refuse:
+    vcs_proof_issuer_log_free(log);
+    LOG_RETURN(NULL, PCK_LOG,
+               "issuer restore: incomplete or contradictory replay");
+}
+
 bool vcs_proof_issuer_log_append(struct vcs_proof_issuer_log *log,
                                  struct vcs_proof_ticket_v1 *ticket,
                                  uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES])

@@ -114,6 +114,72 @@ static bool ptl_append(struct vcs_proof_issuer_log *log, struct ptf_spec s,
     return vcs_proof_issuer_log_append(log, &t, wire);
 }
 
+static int ptl_case_issuer_restore(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: issuer resumes only from complete exact head") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t next[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t next_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t head_root[VCS_PROOF_ROOT_BYTES];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_fail(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        ASSERT(vcs_proof_checkpoint_root(cp, sizeof(cp), head_root));
+        const uint8_t *wires[] = {first, second};
+        size_t lens[] = {sizeof(first), sizeof(second)};
+        struct vcs_proof_issuer_log *restored =
+            vcs_proof_issuer_log_restore(g_l.seed[PTF_A], wires, lens, 2, 2,
+                                         cp, sizeof(cp), head_root);
+        ASSERT(restored != NULL);
+        ASSERT_EQ(vcs_proof_issuer_log_count(restored), (uint64_t)2);
+        ASSERT(ptl_append(restored, ptf_pass(), next));
+        struct vcs_proof_ticket_v1 decoded;
+        ASSERT(vcs_proof_ticket_decode(next, sizeof(next), &decoded));
+        ASSERT_EQ(decoded.issuer_seq, (uint64_t)2);
+        ASSERT(vcs_proof_issuer_log_checkpoint(restored, 12, next_cp));
+        struct vcs_proof_checkpoint_v1 next_head;
+        ASSERT(vcs_proof_checkpoint_decode(next_cp, sizeof(next_cp),
+                                           &next_head));
+        ASSERT_EQ(memcmp(next_head.prev_checkpoint_root, head_root,
+                         sizeof(head_root)), 0);
+        vcs_proof_issuer_log_free(restored);
+
+        uint8_t wrong_root[VCS_PROOF_ROOT_BYTES];
+        memcpy(wrong_root, head_root, sizeof(wrong_root));
+        wrong_root[0] ^= 1u;
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], wires, lens, 2,
+                    2, cp, sizeof(cp), wrong_root) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], wires, lens, 1,
+                    2, cp, sizeof(cp), head_root) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], wires, lens, 2,
+                    1, cp, sizeof(cp), head_root) == NULL);
+        const uint8_t *missing[] = {first, NULL};
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], missing, lens, 2,
+                    2, cp, sizeof(cp), head_root) == NULL);
+        const uint8_t *reordered[] = {second, first};
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], reordered, lens, 2,
+                    2, cp, sizeof(cp), head_root) == NULL);
+        size_t short_lens[] = {sizeof(first) - 1u, sizeof(second)};
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], wires,
+                    short_lens, 2, 2, cp, sizeof(cp), head_root) == NULL);
+        uint8_t tampered[VCS_PROOF_TICKET_WIRE_BYTES];
+        memcpy(tampered, second, sizeof(tampered));
+        tampered[sizeof(tampered) - 1u] ^= 1u;
+        const uint8_t *bad_sig[] = {first, tampered};
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], bad_sig, lens, 2,
+                    2, cp, sizeof(cp), head_root) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_B], wires, lens, 2,
+                    2, cp, sizeof(cp), head_root) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore(g_l.seed[PTF_A], wires, lens, 2,
+                    2, cp, sizeof(cp) - 1u, head_root) == NULL);
+    } TEST_END
+    return failures;
+}
+
 static int ptl_case_same_count(void)
 {
     int failures = 0;
@@ -1701,6 +1767,7 @@ static int ptl_case_missing_third_fork_checkpoint(void)
 int ptf_log_cases(void)
 {
     int failures = 0;
+    failures += ptl_case_issuer_restore();
     failures += ptl_case_same_count();
     failures += ptl_case_same_size_ancestry();
     failures += ptl_case_late_same_size_fork();

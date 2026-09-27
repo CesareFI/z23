@@ -196,6 +196,14 @@ Four identities are kept separate. None stands in for another:
   ticket's Ed25519 signature before checking that the delta reproduces the
   signed root and peaks. Coverage requires both checks. The reuse decision
   verifies each retained ticket's signature again before eligibility.
+- An issuer restarting under the same key must replay the complete signed
+  ticket prefix covered by its latest durable exact checkpoint head before
+  signing another sequence number. `vcs_proof_issuer_log_restore` checks the
+  caller's head root, every ticket signature and sequence, and both MMR roots;
+  it returns no writable log for a missing page or mismatched head. The
+  caller must establish that the supplied head is latest and that no signed
+  uncheckpointed ticket escaped. A signed checkpoint alone cannot prove
+  either fact.
 - The issuer is marked equivocating, and every signed checkpoint involved is
   retained, when any of these holds:
   - two signed checkpoints have the same leaf_count and different roots;
