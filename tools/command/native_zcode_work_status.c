@@ -798,6 +798,9 @@ void zcl_native_handle_zcode_work_status(
     const char *workspace = zwork_str(request->input, "workspace");
     const char *work = zwork_str(request->input, "work");
     const char *proof_datadir = zwork_str(request->input, "datadir");
+    if ((!proof_datadir || !proof_datadir[0]) &&
+        zcl_native_command_datadir_is_explicit())
+        proof_datadir = zcl_native_command_datadir();
     bool details = zwork_bool(request->input, "details");
     if (zcl_native_forward_live_command(
             request, proof_datadir, "zcode_work_status",

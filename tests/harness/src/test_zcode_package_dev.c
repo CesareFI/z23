@@ -331,6 +331,47 @@ static char *zpd_read_bounded(const char *path, size_t maximum_bytes)
     return text;
 }
 
+#if !defined(_WIN32)
+static bool zpd_cli_work_status_stage(const char *workspace,
+                                      const char *work_id,
+                                      const char *datadir, bool explicit_datadir,
+                                      char *stage, size_t stage_size)
+{
+    char input[4600], path[256];
+    (void)snprintf(input, sizeof(input),
+                   "--input={\"workspace\":\"%s\",\"work\":\"%s\"}",
+                   workspace, work_id);
+    (void)snprintf(path, sizeof(path), "test-tmp/zcode-status-cli-%ld-%d",
+                   (long)getpid(), explicit_datadir ? 1 : 0);
+    pid_t child = fork();
+    if (child == 0) {
+        FILE *output = freopen(path, "wb", stdout);
+        if (!output) _exit(1);
+        const char *args[] = { "work", "status", input };
+        int rc = zcl_native_command_main("zcode", args, 3, datadir, 0,
+                                         CHAIN_MAIN, explicit_datadir);
+        (void)fflush(stdout);
+        _exit(rc);
+    }
+    if (child < 0) return false;
+    int status = 0;
+    bool ok = waitpid(child, &status, 0) == child &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    char *wire = ok ? zpd_read_bounded(path, 65536) : NULL;
+    struct json_value result;
+    json_init(&result);
+    ok = wire && json_read(&result, wire, strlen(wire));
+    const char *value = ok ? json_get_str(json_get(
+        json_get(&result, "data"), "stage")) : NULL;
+    ok = value && strlen(value) < stage_size;
+    if (ok) (void)snprintf(stage, stage_size, "%s", value);
+    json_free(&result);
+    free(wire);
+    (void)unlink(path);
+    return ok;
+}
+#endif
+
 static bool zpd_array_has_string(const struct json_value *array,
                                  const char *expected)
 {
@@ -5565,6 +5606,18 @@ static int zpd_test_admitted_single_interpretation(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
                       "Run zcode work toolchain here and on the proving node; independent compile evidence needs the same capsule_root.") == 0);
         zcl_command_reply_free(&reply); json_free(&input);
+
+#if !defined(_WIN32)
+        /* The CLI's explicit datadir must reach the same ledger as the JSON
+         * continuation; an implicit process default grants no such scope. */
+        char cli_stage[80];
+        ASSERT(zpd_cli_work_status_stage(root, work_id, datadir, true,
+                                         cli_stage, sizeof(cli_stage)));
+        ASSERT(strcmp(cli_stage, "Waiting for independent reproduction") == 0);
+        ASSERT(zpd_cli_work_status_stage(root, work_id, datadir, false,
+                                         cli_stage, sizeof(cli_stage)));
+        ASSERT(strcmp(cli_stage, "Proof status unknown") == 0);
+#endif
 
         /* Without the admitting datadir both surfaces stay blind, not
          * contradictory: status names the missing ledger, and run stays
