@@ -987,16 +987,21 @@ static bool proof_request_matches_pair(const char *path, const char *local,
  * proof_attempt_paths_prepare) holding that attempt's real logs
  * (lint.log/test.log/bundle.log/helpers.log under its own `logs/`
  * subdirectory) — the flat `.cache/zcl-dev-proof/logs` directory is never
- * written to. A settled `.failed` marker names only the failing reason
- * string, not where the evidence lives, so a caller diagnosing a failure
+ * written to. A settled `.failed` marker's first line is the failing reason
+ * token; any lines after it are the bounded evidence digest
+ * dp_failure_evidence() lifted from the failing step's log, ending with a
+ * `logs:` pointer at the attempt. A caller that needs the whole log still
  * needs the newest attempt directory for this exact pair. mkdtemp's
  * suffix is random, not time-ordered, so "newest" means highest mtime,
  * not lexicographic order. */
-static bool proof_failure_bytes(const char *path, uint8_t bytes[256],
-                                 size_t *size)
+#define DP_FAILURE_RECORD_MAX 2048
+static bool proof_failure_bytes(const char *path,
+                                uint8_t bytes[DP_FAILURE_RECORD_MAX],
+                                size_t *size)
 {
     struct stat st;
-    if (lstat(path, &st) != 0 || st.st_size <= 0 || st.st_size > 256 ||
+    if (lstat(path, &st) != 0 || st.st_size <= 0 ||
+        st.st_size > DP_FAILURE_RECORD_MAX ||
         !read_exact_file(path, bytes, (size_t)st.st_size))
         return false;
     *size = (size_t)st.st_size;
@@ -1021,7 +1026,7 @@ static bool dp_attempt_failure_matches(const char *attempt,
     }
     if (lstat(archive, &st) != 0 && errno == ENOENT) return false;
     *archives_seen = true;
-    uint8_t bytes[256];
+    uint8_t bytes[DP_FAILURE_RECORD_MAX];
     return read_exact_file(archive, bytes, size) &&
            memcmp(bytes, failure, size) == 0;
 }
@@ -1065,7 +1070,7 @@ static bool proof_failure_attempt_logs(const struct proof_paths *paths,
 {
     if (archive_conflict) *archive_conflict = false;
     if (!paths || !out || out_len == 0) return false;
-    uint8_t failure[256];
+    uint8_t failure[DP_FAILURE_RECORD_MAX];
     size_t size = 0;
     if (!proof_failure_bytes(paths->failure, failure, &size)) return false;
     char prefix[160];
@@ -8099,6 +8104,62 @@ static bool proof_worker(const struct proof_paths *paths,
     return ok;
 }
 
+/* Settle a failed attempt: the pair's `.failed` record and the attempt's
+ * own `logs/failure.txt` archive carry the same bytes. */
+static void dp_failure_settle(const struct proof_paths *paths, const char *why)
+{
+    const char *message = why && why[0]
+        ? why : "background_verification_failed";
+    /* A run cancelled from outside (requester signal, or the base
+     * probe) says so in its settled text, whichever phase it was in,
+     * so the lander can tell an interrupted run from a verdict on the
+     * candidate. Still a failure: nothing here can read as PASS. */
+    char interrupted[256];
+    if (zcl_devloop_process_cancel_requested() &&
+        !zcl_dev_proof_failure_interrupted(message) &&
+        snprintf(interrupted, sizeof(interrupted), "%s%s",
+                 ZCL_DEV_PROOF_INTERRUPTED_PREFIX, message) > 0)
+        message = interrupted;
+    char failure_log[PATH_MAX];
+    if (snprintf(failure_log, sizeof(failure_log), "%s/failure.txt",
+                 paths->logs) < (int)sizeof(failure_log))
+        (void)proof_write_if_current(paths, failure_log, message,
+                                     strlen(message), 0600);
+    (void)proof_write_if_current(paths, paths->failure, message,
+                                 strlen(message), 0600);
+}
+
+#if defined(ZCL_TESTING)
+/* Run one stub child as dimension `id` of a fresh attempt for the exact
+ * pair under `repo_root`, then settle its failure exactly as
+ * proof_worker_run() does. Returns true when the child failed and the
+ * failure was settled. No generation, receipt, or admission is involved. */
+bool zcl_dev_proof_test_settle_child(const char *repo_root, const char *local,
+                                     const char *base,
+                                     enum zcl_dev_proof_dimension_id id,
+                                     const char *const argv[], char *why,
+                                     size_t why_len)
+{
+    struct proof_paths pair, attempt;
+    if (!argv || !why || why_len == 0 ||
+        !proof_paths_fill(repo_root, local, base, &pair) ||
+        !proof_state_prepare(&pair) ||
+        !proof_attempt_paths_prepare(&pair, &attempt) ||
+        !proof_lease_publish(&attempt))
+        return false;
+    why[0] = '\0';
+    struct zcl_dev_proof_dimension dim = {0};
+    dim.selected = 1;
+    struct zcl_dev_proof_budget budget =
+        zcl_dev_proof_budget_make(60000, PROOF_STEP_FLOOR_MS);
+    bool passed = run_dimension(&attempt, id, argv, &dim, false, &budget,
+                                why, why_len);
+    if (!passed) dp_failure_settle(&attempt, why);
+    proof_lease_release(&attempt);
+    return !passed;
+}
+#endif
+
 static bool proof_worker_run(const struct proof_paths *paths,
                              const char *local, const char *base,
                              int64_t queue_lock_wait_ms,
@@ -8118,27 +8179,7 @@ static bool proof_worker_run(const struct proof_paths *paths,
     if (cpu_timed) proof_cpu_note(paths, &self_before, &children_before);
     if (!ok && (!why || !why[0]))
         proof_why(why, why_len, "proof_child_reaping_unavailable");
-    if (!ok) {
-        const char *message = why && why[0]
-            ? why : "background_verification_failed";
-        /* A run cancelled from outside (requester signal, or the base
-         * probe) says so in its settled text, whichever phase it was in,
-         * so the lander can tell an interrupted run from a verdict on the
-         * candidate. Still a failure: nothing here can read as PASS. */
-        char interrupted[256];
-        if (zcl_devloop_process_cancel_requested() &&
-            !zcl_dev_proof_failure_interrupted(message) &&
-            snprintf(interrupted, sizeof(interrupted), "%s%s",
-                     ZCL_DEV_PROOF_INTERRUPTED_PREFIX, message) > 0)
-            message = interrupted;
-        char failure_log[PATH_MAX];
-        if (snprintf(failure_log, sizeof(failure_log), "%s/failure.txt",
-                     paths->logs) < (int)sizeof(failure_log))
-            (void)proof_write_if_current(paths, failure_log, message,
-                                         strlen(message), 0600);
-        (void)proof_write_if_current(paths, paths->failure, message,
-                                     strlen(message), 0600);
-    }
+    if (!ok) dp_failure_settle(paths, why);
     proof_lease_release(paths);
     /* This attempt is the generation's life where RAM scratch is concerned:
      * its reserved room goes back to the pool the moment the worker is done,
@@ -8611,7 +8652,7 @@ static bool dp_retry_archive_failure(const struct proof_paths *paths,
 {
     char logs[PATH_MAX], archive[PATH_MAX];
     struct stat st;
-    uint8_t failure[256], prior[256];
+    uint8_t failure[DP_FAILURE_RECORD_MAX], prior[DP_FAILURE_RECORD_MAX];
     size_t size = 0;
     if (!proof_failure_bytes(paths->failure, failure, &size)) {
         proof_why(why, why_len, "proof_retry_failure_evidence_invalid");

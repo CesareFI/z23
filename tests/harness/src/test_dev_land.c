@@ -5899,6 +5899,214 @@ _test_next:;
     return failures;
 }
 
+#if !defined(_WIN32)
+/* ── a failed proof keeps what failed ─────────────────────────────────────
+ *
+ * A real attempt directory, a real stub child run as one proof dimension,
+ * and the production failure settle and status reader: the only stand-in
+ * is the child itself. Land seqs 163-167 failed with nothing but
+ * `child_proof_failed_exit_N`; the first FAIL line has to survive into the
+ * `.failed` record, the land outcome, and the attempt's evidence file,
+ * while the record's first line stays the exact token every classifier
+ * reads. */
+struct dlx_evidence_case {
+    const char *tag;
+    enum zcl_dev_proof_dimension_id dimension;
+    const char *script;         /* the stub child: its output and exit */
+    const char *token;          /* the settled first line, unchanged */
+    const char *land_dimension; /* the outcome's dimension */
+    const char *detail;         /* what the outcome detail leads with */
+    const char *absent;         /* noise the evidence must not carry */
+};
+
+static const char k_dlx_evidence_test_script[] =
+    "printf '%s\\n' \\\n"
+    " '==================== test_dev_land_noise (PASS, 0s) ====================' \\\n"
+    " 'assert macros: FAIL names file:line and both values... OK' \\\n"
+    " '==================== test_golden_dev_cycle (FAIL, 3s) ====================' \\\n"
+    " 'golden dev cycle: a hot swap lands under a second... ' \\\n"
+    " 'FAIL at tests/harness/src/test_golden_dev_cycle.c:367 (hotswap_ms < 1000.0)' \\\n"
+    " 'SOME TESTS FAILED - 1/2 groups failed' \\\n"
+    " 'Failed groups:' \\\n"
+    " '  - test_golden_dev_cycle: exit code=1 log=./test-tmp/test_parallel_1_822.log'\n"
+    "exit 1\n";
+
+static const char k_dlx_evidence_compile_script[] =
+    "root=$(pwd -P)\n"
+    "echo \"cc -c $root/tools/dev/widget.c\"\n"
+    "echo \"$root/tools/dev/widget.c:12:5: error: unknown type name 'widget_t'\"\n"
+    "echo \"$root/tools/dev/widget.c:14:1: error: expected ';' before '}' token\"\n"
+    "echo 'make: *** [Makefile:1: build-only] Error 1'\n"
+    "exit 2\n";
+
+/* The in-flight pair a `running` stub step left proving. */
+static bool dlx_proving_pair(char local[64], char base[64])
+{
+    struct dlx_call c;
+    if (!dlx_status_json(&c))
+        return false;
+    const struct json_value *f = json_get(&c.reply.data, "in_flight");
+    (void)snprintf(local, 64, "%s", f ? dlx_jstr(f, "local") : "");
+    (void)snprintf(base, 64, "%s", f ? dlx_jstr(f, "base") : "");
+    dlx_end(&c);
+    return local[0] != '\0' && base[0] != '\0';
+}
+
+/* Submit, start proving, then settle one stub child's failure as the
+ * proof of exactly the in-flight pair in the landing worktree. */
+static bool dlx_evidence_settle(const struct dlx_evidence_case *k,
+                                char real_wt[PATH_MAX], char local[64],
+                                char base[64])
+{
+    struct dlx_rig rig;
+    struct dlx_call c;
+    char tag[64], landwt[1300], landdir[1200], script[1300], why[256];
+    (void)snprintf(tag, sizeof(tag), "%s_rig", k->tag);
+    if (!dlx_rig_make(&rig, tag))
+        return false;
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    dlx_submit(&c, &rig, rig.tip);
+    bool ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    dlx_begin(&c, "step");
+    ok = ok && dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    dlx_land_wt(landwt, sizeof(landwt));
+    dlx_landdir(landdir, sizeof(landdir));
+    (void)snprintf(script, sizeof(script), "%s/stub-child.sh", landdir);
+    const char *argv[] = { "/bin/sh", script, NULL };
+    return ok && dlx_proving_pair(local, base) &&
+           realpath(landwt, real_wt) != NULL &&
+           dlx_write(script, k->script) &&
+           zcl_dev_proof_test_settle_child(real_wt, local, base,
+                                           k->dimension, argv, why,
+                                           sizeof(why)) &&
+           dlx_eq_str(why, k->token);
+}
+
+/* The evidence text: present, relative, and free of the named noise. */
+static bool dlx_evidence_text_ok(const struct dlx_evidence_case *k,
+                                 const char *text, const char *real_wt)
+{
+    if (!dlx_has(text, k->detail))
+        return false;
+    if (strstr(text, k->absent) || strstr(text, real_wt)) {
+        printf("FAIL evidence carries '%s' or an absolute path: %s\n",
+               k->absent, text);
+        return false;
+    }
+    return true;
+}
+
+/* The pair's `.failed` record: the unchanged token, then the evidence. */
+static bool dlx_evidence_record_ok(const struct dlx_evidence_case *k,
+                                   const char *real_wt, const char *local,
+                                   const char *base)
+{
+    char path[PATH_MAX + 200], record[4096];
+    size_t len = 0, token_len = strlen(k->token);
+    (void)snprintf(path, sizeof(path), "%s/.cache/zcl-dev-proof/%s-%s.failed",
+                   real_wt, local, base);
+    if (!dlx_slurp(path, record, sizeof(record) - 1, &len))
+        return false;
+    record[len] = '\0';
+    if (strncmp(record, k->token, token_len) != 0 ||
+        record[token_len] != '\n') {
+        printf("FAIL record first line is not the bare token: %s\n", record);
+        return false;
+    }
+    return dlx_evidence_text_ok(k, record + token_len, real_wt);
+}
+
+/* Consume the settled failure through the production status reader and
+ * check the outcome row and the attempt's evidence file. */
+static bool dlx_evidence_outcome_ok(const struct dlx_evidence_case *k,
+                                    const char *real_wt)
+{
+    struct dlx_call c;
+    char landdir[1200], path[1400], text[4096];
+    size_t len = 0;
+    setenv("ZCL_LAND_PROOF_STUB", "status", 1);
+    dlx_begin(&c, "step");
+    bool ok = dlx_run(&c) && dlx_ok(&c) &&
+              dlx_eq_str(dlx_str(&c, "state"), "failed") &&
+              dlx_eq_str(dlx_str(&c, "dimension"), k->land_dimension) &&
+              dlx_has(dlx_str(&c, "detail"), k->detail) &&
+              strncmp(dlx_str(&c, "detail"), k->detail,
+                      strlen(k->detail)) == 0;
+    if (!ok)
+        printf("FAIL outcome dimension='%s' detail='%s'\n",
+               dlx_str(&c, "dimension"), dlx_str(&c, "detail"));
+    dlx_end(&c);
+    dlx_landdir(landdir, sizeof(landdir));
+    (void)snprintf(path, sizeof(path), "%s/logs/land-1-a1.evidence",
+                   landdir);
+    if (!ok || !dlx_slurp(path, text, sizeof(text) - 1, &len)) {
+        if (ok)
+            printf("FAIL no evidence file at %s\n", path);
+        return false;
+    }
+    text[len] = '\0';
+    return dlx_has(text, k->token) &&
+           dlx_evidence_text_ok(k, text, real_wt);
+}
+
+static bool dlx_evidence_case_run(const struct dlx_evidence_case *k)
+{
+    char real_wt[PATH_MAX], local[64], base[64];
+    dlx_isolate(k->tag);
+    bool ok = dlx_evidence_settle(k, real_wt, local, base) &&
+              dlx_evidence_record_ok(k, real_wt, local, base) &&
+              dlx_evidence_outcome_ok(k, real_wt);
+    dlx_restore();
+    return ok;
+}
+
+static int test_dev_land_proof_evidence_test(void)
+{
+    int failures = 0;
+    TEST("land: a failed test group names its FAIL line in the outcome") {
+        const struct dlx_evidence_case k = {
+            .tag = "evidence_test",
+            .dimension = ZCL_DEV_PROOF_TEST,
+            .script = k_dlx_evidence_test_script,
+            .token = "child_proof_failed_exit_1",
+            .land_dimension = "test",
+            .detail = "test test_golden_dev_cycle: FAIL at "
+                      "tests/harness/src/test_golden_dev_cycle.c:367 "
+                      "(hotswap_ms < 1000.0)",
+            .absent = "assert macros",
+        };
+        ASSERT(dlx_evidence_case_run(&k));
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+
+static int test_dev_land_proof_evidence_compile(void)
+{
+    int failures = 0;
+    TEST("land: a failed build names its first compiler error, relative") {
+        const struct dlx_evidence_case k = {
+            .tag = "evidence_compile",
+            .dimension = ZCL_DEV_PROOF_COMPILE,
+            .script = k_dlx_evidence_compile_script,
+            .token = "child_proof_failed_exit_2",
+            .land_dimension = "compile",
+            .detail = "compile: tools/dev/widget.c:12:5: error: unknown "
+                      "type name 'widget_t'",
+            .absent = "expected ';'",
+        };
+        ASSERT(dlx_evidence_case_run(&k));
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+#endif
+
 int test_dev_land(void)
 {
     int failures = 0;
@@ -5920,6 +6128,8 @@ int test_dev_land(void)
     failures += test_dev_land_tree_malformed();
     failures += test_dev_land_tree_replacements();
     failures += test_dev_land_tree_missing();
+    failures += test_dev_land_proof_evidence_test();
+    failures += test_dev_land_proof_evidence_compile();
 #endif
 
     TEST("land: the leaf is registered with its verb and row keys") {

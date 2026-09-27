@@ -298,6 +298,14 @@ static inline bool zcl_dev_proof_failure_interrupted(const char *detail)
 int zcl_dev_proof_test_foreground_wait(
     int worker_pid, const struct zcl_dev_proof_base_probe *probe,
     bool *superseded);
+/* Run one stub child as dimension `id` of a fresh attempt for the exact
+ * pair under `repo_root` and settle its failure exactly as a proof worker
+ * does. True when the child failed and its failure was settled. */
+bool zcl_dev_proof_test_settle_child(const char *repo_root, const char *local,
+                                     const char *base,
+                                     enum zcl_dev_proof_dimension_id id,
+                                     const char *const argv[], char *why,
+                                     size_t why_len);
 #endif
 /* Notifications publish immutable requests. All consumers share execution
  * exclusion; queue claim remains separately locked and bounded. */

@@ -2150,11 +2150,69 @@ int64_t zcl_native_dev_land_test_idle_bound(void)
 }
 #endif
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+/* The land verdict a settled proof status maps to. A failure names its
+ * settled reason as the dimension, exactly as it always has. */
+static enum dl_proof dl_proof_status_map(
+    const struct zcl_dev_proof_status *status, char *dimension,
+    size_t dim_cap)
+{
+    switch (status->state) {
+    case ZCL_DEV_PROOF_STATE_PASSED:
+        return DL_PROOF_PASSED;
+    case ZCL_DEV_PROOF_STATE_FAILED:
+        (void)snprintf(dimension, dim_cap, "%s",
+                       status->detail[0] ? status->detail : "proof");
+        return DL_PROOF_FAILED;
+    case ZCL_DEV_PROOF_STATE_INVALID:
+        return DL_PROOF_UNAVAILABLE;
+    case ZCL_DEV_PROOF_STATE_MISSING:
+        return DL_PROOF_MISSING;
+    default:
+        return DL_PROOF_PENDING;
+    }
+}
+#endif
+
+/* Stub "status": the proof itself is not run, but its settled state is
+ * read through the production status reader, so a test can plant a real
+ * attempt's failure record and watch the queue consume it. */
+static enum dl_proof dl_proof_stub_status(const char *wt, const char *local,
+                                          const char *base, char *dimension,
+                                          size_t dim_cap, char *detail,
+                                          size_t cap)
+{
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    struct zcl_dev_proof_status status = {0};
+    if (!zcl_dev_proof_status_read(wt, local, base, &status)) {
+        (void)snprintf(detail, cap, "%s",
+                       status.detail[0] ? status.detail
+                                        : "proof_status_unreadable");
+        return DL_PROOF_FAILED;
+    }
+    (void)snprintf(detail, cap, "%s",
+                   status.detail[0] ? status.detail
+                                    : zcl_dev_proof_state_name(status.state));
+    return dl_proof_status_map(&status, dimension, dim_cap);
+#else
+    (void)wt;
+    (void)local;
+    (void)base;
+    (void)dimension;
+    (void)dim_cap;
+    (void)snprintf(detail, cap, "%s", "proof stub: status unavailable");
+    return DL_PROOF_UNAVAILABLE;
+#endif
+}
+
 static enum dl_proof dl_proof_stub_read(const char *stub, const char *wt,
                                         const char *local, const char *base,
                                         char *dimension, size_t dim_cap,
                                         char *detail, size_t cap)
 {
+    if (strcmp(stub, "status") == 0)
+        return dl_proof_stub_status(wt, local, base, dimension, dim_cap,
+                                    detail, cap);
     if (strcmp(stub, "pass") == 0) {
         (void)snprintf(detail, cap, "proof stub: pass");
         return DL_PROOF_PASSED;
@@ -2215,20 +2273,7 @@ static enum dl_proof dl_proof_read(const char *wt, const char *local,
          * request sat 36 hours behind an alive-but-silent watcher while
          * every consumer read an ordinary "proving" state. */
         dl_proof_idle_note_append(status.request_age_s, detail, cap);
-        switch (status.state) {
-        case ZCL_DEV_PROOF_STATE_PASSED:
-            return DL_PROOF_PASSED;
-        case ZCL_DEV_PROOF_STATE_FAILED:
-            (void)snprintf(dimension, dim_cap, "%s",
-                           status.detail[0] ? status.detail : "proof");
-            return DL_PROOF_FAILED;
-        case ZCL_DEV_PROOF_STATE_INVALID:
-            return DL_PROOF_UNAVAILABLE;
-        case ZCL_DEV_PROOF_STATE_MISSING:
-            return DL_PROOF_MISSING;
-        default:
-            return DL_PROOF_PENDING;
-        }
+        return dl_proof_status_map(&status, dimension, dim_cap);
     }
 #else
     (void)wt;
