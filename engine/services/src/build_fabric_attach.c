@@ -453,11 +453,7 @@ struct zcl_result build_fabric_executor_key_publish(
     return ZCL_OK;
 }
 
-/* Publish the executor-key record so a later eligible duplicate request can
- * attach to this physical result instead of recompiling. The record is an
- * attach index only: the observation, output, and receipt stand on their
- * own, so a publish failure is logged and degrades to a future MISS rather
- * than failing a completed physical build. */
+/* The key record indexes eligible attaches; failure only loses future reuse. */
 void build_fabric_executor_key_publish_logged(
     const char *workspace, const struct db_build_job *job,
     const struct db_build_action *action, const uint8_t input_bytes_root[32],
@@ -640,12 +636,8 @@ static bool bfat_donor_worker_live(struct node_db *ndb, const char *worker_id,
         (worker.expires_at == 0 || now < worker.expires_at);
 }
 
-/* Donor qualification: exactly one canonical LOCAL_ACCEPTED receipt for the
- * donor action, signature valid, donor worker approved and live, and the
- * physical observation verified against the DONOR job/action. An attached
- * receipt references the donor's observation and fails this check against
- * its own action, so an attached action can never become a donor — chains
- * of attaches are impossible. */
+/* Require one signed, live physical donor receipt and matching observation.
+ * An attached receipt cannot qualify as a donor. */
 static bool bfat_donor_qualified(
     struct node_db *ndb, const char *workspace,
     const struct db_build_job *donor_job,
@@ -767,11 +759,7 @@ static struct zcl_result bfat_artifact_read(
     return ZCL_OK;
 }
 
-/* The fixed executor consumes identical bytes only when every immutable
- * action input matches. Sequence participates: two fixed steps of one job
- * are distinct actions even when their payloads coincide. task/candidate
- * roots deliberately do NOT participate — distinct provenance is exactly
- * what attaches. */
+/* Match executor inputs and sequence; provenance roots may differ. */
 static bool bfat_donor_fields_match(const struct db_build_action *donor,
                                     const struct db_build_action *req)
 {
@@ -800,12 +788,7 @@ static void bfat_worker_id_from_pubkey(const uint8_t pubkey[32], char out[65])
     zcl_hex_encode(digest, 32, out);
 }
 
-/* Shared state for one attach pipeline run. The phases below execute in one
- * fixed verify-before-mutate order — request identity, requester worker,
- * executor key, key record, donor scan, output materialization, and only
- * then the single persist transaction — so a half-qualified donor can never
- * reach publication. Each phase returns a refusal token (NULL = proceed);
- * the scan phases also stop the pipeline cleanly on a MISS. */
+/* Verify identity, worker, key, donor, and output before publication. */
 struct bfat_attach_ctx {
     struct node_db *ndb;
     const char *workspace;
@@ -839,10 +822,7 @@ struct bfat_attach_ctx {
     char refusal[BUILD_FABRIC_ERROR_MAX + 1];
 };
 
-/* A result of a bounded scan is usable only while its source ledger is the
- * same. data_version detects commits by another handle; total_changes covers
- * writes through this handle. Recheck after BEGIN IMMEDIATE has excluded new
- * writers, before changing the requester or signing its receipt. */
+/* Fence other handles with data_version and this handle with total_changes. */
 static bool bfat_attach_args_ok(const struct bfat_attach_ctx *c)
 {
     return c->ndb && c->ndb->open && c->workspace && c->req_job &&
@@ -1039,10 +1019,7 @@ static bool bfat_key_record_checked(struct bfat_attach_ctx *c,
     return false;
 }
 
-/* One scan candidate keys to the requester only when its immutable inputs
- * match, its job ran under the current capsule, its input reloads and
- * verifies, and its key re-derives from donor fields plus the CURRENT tool
- * bytes to the requester's key. */
+/* Re-derive the donor key from verified input and current tool bytes. */
 static bool bfat_donor_key_matches(const struct bfat_attach_ctx *c,
                                    const struct db_build_job *job,
                                    const struct db_build_action *candidate,
@@ -1203,7 +1180,17 @@ static void (*bfat_after_scan_hook)(void *);
 static void *bfat_after_scan_context;
 void build_fabric_attach_test_after_scan(void (*hook)(void *), void *context)
 { bfat_after_scan_hook = hook; bfat_after_scan_context = context; }
+static int64_t bfat_test_now = -1;
+void build_fabric_attach_test_now(int64_t now) { bfat_test_now = now; }
 #endif
+
+static int64_t bfat_now(void)
+{
+#ifdef ZCL_TESTING
+    if (bfat_test_now >= 0) return bfat_test_now;
+#endif
+    return (int64_t)platform_time_wall_unix();
+}
 
 /* Fetch the donor output bytes WITHOUT compiling and prove them against the
  * donor's physical observation. */
@@ -1254,9 +1241,7 @@ static const char *bfat_output_fetch(struct bfat_attach_ctx *c,
     return NULL;
 }
 
-/* Store a copy of the verified donor output bound to the requester action
- * root, then re-read and byte-compare the copy before any durable state
- * moves. */
+/* Re-read and compare the requester-bound output copy before publication. */
 static const char *bfat_output_store_copy(struct bfat_attach_ctx *c,
                                           const uint8_t *bytes, size_t len,
                                           uint8_t copy_root[32])
@@ -1302,9 +1287,7 @@ static const char *bfat_output_store_copy(struct bfat_attach_ctx *c,
     return NULL;
 }
 
-/* The attached receipt names the donor's physical observation (v3 id) and
- * uses the executor key hex as its lease slot: an attach holds no process
- * lease, and the slot stays self-describing. */
+/* Attach receipt binds donor observation; its lease slot holds the key. */
 static const char *bfat_receipt_prepare(struct bfat_attach_ctx *c)
 {
     struct db_build_receipt *receipt = &c->receipt;
@@ -1359,6 +1342,21 @@ static const char *bfat_receipt_reread_verify(struct bfat_attach_ctx *c)
     return NULL;
 }
 
+static const char *bfat_publication_authority(struct bfat_attach_ctx *c,
+                                              struct db_build_action *next)
+{
+    int64_t publish_now = bfat_now();
+    if (publish_now < c->now) publish_now = c->now;
+    c->now = publish_now;
+    const char *refusal = bfat_check_requester_worker(c);
+    if (!refusal && !bfat_donor_worker_live(c->ndb,
+                                            c->donor_receipt.worker_id,
+                                            publish_now))
+        refusal = "attach-refused-donor-not-qualified";
+    next->finished_at = next->updated_at = publish_now;
+    return refusal ? refusal : bfat_receipt_prepare(c);
+}
+
 /* Publish action, job and signed receipt under the connection mutex. */
 static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
 {
@@ -1371,11 +1369,6 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
                    c->requester_worker_id);
     (void)snprintf(next.lease_id, sizeof(next.lease_id), "%s",
                    c->report->executor_key);
-    next.finished_at = c->now;
-    next.updated_at = c->now;
-    const char *refusal = bfat_receipt_prepare(c);
-    if (refusal)
-        return refusal;
     sqlite3_mutex *mutex = sqlite3_db_mutex(c->ndb->db);
     if (!mutex)
         return "attach-persist-failed: connection mutex";
@@ -1392,6 +1385,13 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
             LOG_ERROR("build_fabric", "attach stale history rollback failed");
         sqlite3_mutex_leave(mutex);
         return "attach-refused-history-stale";
+    }
+    const char *refusal = bfat_publication_authority(c, &next);
+    if (refusal) {
+        if (!node_db_rollback(c->ndb))
+            LOG_ERROR("build_fabric", "attach expired authority rollback failed");
+        sqlite3_mutex_leave(mutex);
+        return refusal;
     }
     bool ok = db_build_action_save(c->ndb, &next) &&
         db_build_attach_settle_job(c->ndb, &c->job, c->now) &&
@@ -1432,7 +1432,7 @@ struct zcl_result build_fabric_attach(
     c.started_us = platform_time_monotonic_us();
     out_report->disposition = BUILD_FABRIC_ATTACH_MISS;
     out_report->compiler_processes = 0;
-    c.now = (int64_t)platform_time_wall_unix();
+    c.now = bfat_now();
     if (!db_build_attach_ledger_version(ndb, &c.db_version))
         return bfat_refuse(out_report, "attach-refused-history-incomplete");
     c.db_changes = sqlite3_total_changes64(ndb->db);

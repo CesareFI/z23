@@ -1,8 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Prove one real avoided build: a second eligible fixed-compile
- * request attaches to the first request's qualified physical result with its
- * own signed receipt, while reproduction requests and poisoned evidence are
- * refused by name and never reach a compiler. */
+ * purpose: Verify fixed-compile attachment, refusals, and physical replay. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -144,6 +141,9 @@ extern void build_fabric_attach_test_before_donor_scan(void (*hook)(void *),
                                                        void *context);
 extern void build_fabric_attach_test_after_scan(void (*hook)(void *),
                                                 void *context);
+extern void build_fabric_attach_test_now(int64_t now);
+static void att_set_now_after_scan(void *context)
+{ build_fabric_attach_test_now(*(const int64_t *)context); }
 extern void db_build_attach_test_before_settle(void (*hook)(void *),
                                               void *context);
 
@@ -224,9 +224,7 @@ static void att_worker_id_from_pubkey(const uint8_t pubkey[32], char out[65])
     zcl_hex_encode(digest, 32, out);
 }
 
-/* A planned, canonical, submitted compile request. source_id/source_cas_id
- * carry the request's provenance; distinct requests differ there while every
- * executor-consumed input stays identical. */
+/* Distinct source IDs vary provenance without changing executor inputs. */
 static bool att_plan_request(struct node_db *ndb, const char *workspace,
                              const char *source_id, const char *source_cas_id,
                              const char *toolchain_hex,
@@ -407,9 +405,7 @@ static int att_deny_table_reads(void *ctx, int operation,
            strcmp(table, denied) == 0 ? SQLITE_DENY : SQLITE_OK;
 }
 
-/* Model an approved worker reporting a different physical output for the
- * same executor key before admission. The original physical receipt stays
- * quarantined; the divergent signed receipt advances through normal admission. */
+/* Create a divergent signed physical result while the first is quarantined. */
 static bool att_diverge_quarantined_output(struct node_db *ndb,
                                          const char *workspace,
                                          struct db_build_action *action,
@@ -647,9 +643,7 @@ static int test_bf_attach_ambiguous_donor_vetoes_other_donor(void)
                                 input_root, "dev-x86-64-v3", &jobs[2],
                                 &actions[2]));
 
-        /* Two distinct, signed LOCAL_ACCEPTED rows bind donor B. Donor A
-         * remains fully qualified; neither may authorize attachment while
-         * the same-key accepted history is ambiguous. */
+        /* Same-key accepted history is ambiguous despite a qualified donor. */
         struct db_build_receipt duplicate;
         ASSERT(db_build_receipt_find(&ndb, receipts[1].receipt_id,
                                      &duplicate));
@@ -748,9 +742,7 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT_RESULT_OK(composed);
         ASSERT(vcs_object_has(dir, key));
 
-        /* The donor also stores the canonical 19-field compiler-action
-         * preimage. Reconstruct it independently from input and host facts,
-         * then verify its CAS bytes and single-input key changes. */
+        /* Reconstruct the donor's compiler-action preimage independently. */
         uint8_t driver[32], backend[32], assembler[32];
         ASSERT_RESULT_OK(build_fabric_executor_host_tool_hashes(
             driver, backend, assembler));
@@ -829,9 +821,7 @@ static int test_bf_attach_avoids_second_compile(void)
                                 &action_b));
         ASSERT(strcmp(action_b.action_id, action_a.action_id) != 0);
 #if !defined(_WIN32)
-        /* The requester loaded its input, then its referenced CAS leaf was
-         * interrupted before donor reconstruction. A partial donor scan may
-         * not authorize a hit or report a clean miss. */
+        /* Interrupted donor reconstruction must refuse, never miss. */
         struct att_remove_before_scan missing = {0};
         char input_hex[65];
         zcl_hex_encode(input_root, 32, input_hex);
@@ -927,8 +917,7 @@ static int test_bf_attach_avoids_second_compile(void)
 #if !defined(_WIN32)
         /* A separate connection revokes the donor after the full scan but
          * before publication. The receiver must keep the requester queued. */
-        struct db_build_job race_job;
-        struct db_build_action race_action;
+        struct db_build_job race_job; struct db_build_action race_action;
         ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
                                 input_root, "dev-x86-64-v3", &race_job,
                                 &race_action));
@@ -936,8 +925,7 @@ static int test_bf_attach_avoids_second_compile(void)
         att_worker_id_from_pubkey(pubkey, race.worker_id);
         build_fabric_attach_test_after_scan(att_revoke_donor_after_scan,
                                             &race);
-        struct db_build_receipt race_receipt;
-        struct build_fabric_attach_report race_report;
+        struct db_build_receipt race_receipt; struct build_fabric_attach_report race_report;
         struct zcl_result raced = build_fabric_attach(
             &ndb, dir, NULL, &race_job, &race_action, secret, pubkey,
             &race_receipt, &race_report);
@@ -954,16 +942,13 @@ static int test_bf_attach_avoids_second_compile(void)
                                                 race_rows, 1), 0);
         ASSERT(att_approve_worker(&ndb, pubkey, now));
 
-        /* A same-handle writer must be excluded between the final history
-         * fence and the signed receipt commit. The donor and requester have
-         * distinct keys so revoking one cannot mask the other. */
+        /* Revoking a distinct donor cannot race the signed commit. */
         uint8_t requester_seed[32], requester_pubkey[32];
         uint8_t requester_secret[32];
         memset(requester_seed, 30, sizeof(requester_seed));
         ed25519_keypair(requester_pubkey, requester_secret, requester_seed);
         ASSERT(att_approve_worker(&ndb, requester_pubkey, now));
-        struct db_build_job same_handle_job;
-        struct db_build_action same_handle_action;
+        struct db_build_job same_handle_job; struct db_build_action same_handle_action;
         ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_d, capsule_hex,
                                 input_root, "dev-x86-64-v3", &same_handle_job,
                                 &same_handle_action));
@@ -985,25 +970,45 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT_EQ(same_handle_report.disposition, BUILD_FABRIC_ATTACH_HIT);
         struct db_build_worker donor_after_publish;
         ASSERT(db_build_worker_find(&ndb, same_handle.donor_worker_id,
-                                    &donor_after_publish));
+                                   &donor_after_publish));
         ASSERT(!donor_after_publish.revoked);
+        /* Time can cross expiry without changing any ledger row. */
+        int64_t clock_start = (int64_t)platform_time_wall_unix() + 3600;
+        donor_after_publish.expires_at = clock_start + 1;
+        ASSERT(db_build_worker_save(&ndb, &donor_after_publish));
+        ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_d, capsule_hex,
+                                input_root, "dev-x86-64-v3", &same_handle_job,
+                                &same_handle_action));
+        int64_t expired_now = clock_start + 1;
+        build_fabric_attach_test_now(clock_start);
+        build_fabric_attach_test_after_scan(att_set_now_after_scan, &expired_now);
+        same_handle_attached = build_fabric_attach(
+            &ndb, dir, NULL, &same_handle_job, &same_handle_action,
+            requester_secret, requester_pubkey, &same_handle_receipt,
+            &same_handle_report);
+        build_fabric_attach_test_after_scan(NULL, NULL);
+        build_fabric_attach_test_now(-1);
+        ASSERT(!same_handle_attached.ok);
+        ASSERT_STR_EQ(same_handle_report.refusal,
+                      "attach-refused-donor-not-qualified");
+        ASSERT(db_build_action_find(&ndb, same_handle_action.action_id,
+                                    &race_durable));
+        ASSERT_STR_EQ(race_durable.state, "QUEUED");
+        ASSERT_EQ(db_build_job_receipts_checked(&ndb, same_handle_job.job_id,
+                                                race_rows, 1), 0);
 #endif
-
-        /* A distinct, real submitted request with changed compiler input
-         * cannot borrow A's physical result. */
+        /* Changed compiler input cannot borrow A's physical result. */
         static const uint8_t changed_unit[] =
             "int zbuild_fixture(void) { return 24; }\n";
         uint8_t changed_root[32];
         sha3_256(changed_unit, sizeof(changed_unit) - 1u, changed_root);
         ASSERT(vcs_object_put_addressed(dir, changed_root, changed_unit,
                                         sizeof(changed_unit) - 1u));
-        struct db_build_job job_c;
-        struct db_build_action action_c;
+        struct db_build_job job_c; struct db_build_action action_c;
         ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_b, capsule_hex,
                                 changed_root, "dev-x86-64-v3", &job_c,
                                 &action_c));
-        struct db_build_receipt receipt_c;
-        struct build_fabric_attach_report miss;
+        struct db_build_receipt receipt_c; struct build_fabric_attach_report miss;
         struct zcl_result distinct = build_fabric_attach(
             &ndb, dir, NULL, &job_c, &action_c, secret, pubkey, &receipt_c,
             &miss);
@@ -1027,7 +1032,6 @@ static int test_bf_attach_avoids_second_compile(void)
                (long long)(attach_child_after - attach_child_before));
 #endif
         printf("\n");
-
         /* A second attach of the now-completed action refuses by name. */
         struct build_fabric_attach_report again;
         struct zcl_result repeat = build_fabric_attach(
@@ -1053,11 +1057,7 @@ static int test_bf_attach_executor_key_binds_tool_bytes(void)
         ASSERT_RESULT_OK(tools);
         struct vcs_toolchain_capsule_v1 capsule;
         ASSERT(vcs_toolchain_capsule_v1_capture(&capsule));
-        /* The capsule's assembler identity is the --version STRING hash; it
-         * provably is not the assembler file-bytes hash. That is the gap the
-         * executor key closes. (No end-to-end stub-assembler variant exists:
-         * platform_toolchain_capture_descriptor resolves the fixed compiled-in
-         * toolchain paths and honors no environment override.) */
+        /* Capsule binds assembler version; executor key binds file bytes. */
         ASSERT(memcmp(capsule.assembler_sha3, assembler, 32) != 0);
 
         const char *old_compiler_path = getenv("COMPILER_PATH");
