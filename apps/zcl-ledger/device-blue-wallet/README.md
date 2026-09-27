@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.0 derives
+Version 0.2.1 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -17,9 +17,14 @@ characters, and requires a touchscreen CONTINUE tap before the next chunk.
 EXIT cancels and returns home. There is no USB acknowledgement, payment
 signature, private-key export, path selection, Sapling spend, multisig, or
 token command. The supplied branch ID and spent output are not authenticated;
-the replay digest is discarded. The image has not been installed or tested
-on physical hardware. Its BAGL preview and host tests do not prove Blue
-touch, USB, or display behavior, so no funds should be received with it yet.
+the replay digest is discarded. The signed image is installed on the dedicated
+test Blue, and the authenticated app catalog lists ZCL Wallet. The owner
+observed a steady receive screen and EXIT returning home. The host returned
+`t1RAmKL4KFauUXGswvMvk66aS5UL33ck1Uz`; the owner confirmed all 35
+characters match the Blue display. USB review behavior remains unverified.
+Its BAGL preview and host tests do
+not prove Blue review touch, USB, or display behavior, so no funds should be
+received with it yet.
 
 ## Build
 
@@ -44,7 +49,7 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.0 image has 24,832 bytes of `.text`, 4,236
+512-byte margin. The linked 0.2.1 image has 24,832 bytes of `.text`, 4,236
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
 stack; 1,908 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 648 bytes, excluding BOLOS firmware
@@ -52,10 +57,10 @@ frames. Two clean builds, using the original patched SDK and a fresh SDK
 checkout with the repository patch applied, produced the same image SHA-256:
 `97db7a9ab725b03fd55365a057a552488f88f106ab8cd957bbda0faad1875113`.
 The installer accepts only byte-pinned images. Its BOLOS metadata grants the
-fixed ZCL derivation path. Physical install, open, USB, touchscreen, EXIT,
-and recovery checks are still required for this exact image.
+fixed ZCL derivation path. Physical USB review and recovery checks are still
+required for this exact image.
 
-The owner-controlled CA install command, after those checks are planned, is:
+The owner-controlled CA install command used for this image is:
 
 ```sh
 zcl-blue-install /dev/hidrawN --ca-install CA_KEY_FILE /tmp/zcl-wallet.bin

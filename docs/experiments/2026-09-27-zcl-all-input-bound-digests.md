@@ -19,7 +19,8 @@ transaction into temporary storage. Only after all checks pass does it copy
 the facts and digests to the caller. The test exercises one and two inputs,
 compares the selected digest with the direct ZIP-243 result, rejects an
 insufficient digest buffer, and verifies that a changed previous transaction
-leaves caller outputs unchanged. Clang Debug with address and undefined
+or injected hash failure on the second input leaves caller outputs unchanged.
+Clang Debug with address and undefined
 behavior sanitizers and GCC Release each passed the 22-test local suite.
 
 This operation establishes consistency with supplied transaction bytes. It

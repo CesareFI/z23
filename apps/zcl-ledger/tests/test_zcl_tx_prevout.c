@@ -5,6 +5,7 @@
 #include "crypto/blake2b.h"
 
 #include <openssl/sha.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,6 +79,28 @@ static transaction previous_transaction(void) {
 static bool sha256_bytes(const uint8_t *bytes, size_t length,
                          uint8_t digest[32]) {
     return SHA256(bytes, length, digest) != NULL;
+}
+
+typedef struct {
+    struct blake2b_ctx blake;
+    unsigned starts, fail_at;
+} failing_hasher;
+
+static bool fail_start(void *context, const uint8_t personal[16]) {
+    failing_hasher *state = context;
+    if (++state->starts == state->fail_at) return false;
+    return blake2b_init_salt_personal(&state->blake, 32, NULL, 0,
+                                      NULL, personal) == 0;
+}
+
+static bool fail_update(void *context, const uint8_t *bytes, size_t length) {
+    failing_hasher *state = context;
+    return blake2b_update(&state->blake, bytes, length) == 0;
+}
+
+static bool fail_final(void *context, uint8_t digest[32]) {
+    failing_hasher *state = context;
+    return blake2b_final(&state->blake, digest, 32) == 0;
 }
 
 static transaction spending_transaction(const uint8_t txid[32],
@@ -255,6 +278,23 @@ int main(int argc, char **argv) {
     CHECK(facts.output_zat == 49000000 && facts.fee_zat == 51000000);
     CHECK(zcl_tx_hash_bound_digest(duplicate.bytes, duplicate.length, 1,
         two[1], 0x76b809bb, sha256_bytes, &hasher, bound) == 0);
+    failing_hasher failure = {.fail_at = UINT_MAX};
+    zcl_zip243_hasher injected = {.context = &failure, .init = fail_start,
+        .update = fail_update, .final = fail_final};
+    uint8_t first_digest[32];
+    CHECK(zcl_tx_hash_bound_digest(duplicate.bytes, duplicate.length, 0,
+        two[0], 0x76b809bb, sha256_bytes, &injected, first_digest) == 0);
+    unsigned first_starts = failure.starts;
+    failure.starts = 0;
+    failure.fail_at = first_starts + 1;
+    bound_facts.fee_zat = UINT64_MAX;
+    memset(all_digests, 0x5a, sizeof all_digests);
+    CHECK(zcl_tx_transparent_bound_digests(duplicate.bytes, duplicate.length,
+        two, 2, 0x76b809bb, sha256_bytes, &injected,
+        &bound_facts, all_digests, 2) < 0);
+    CHECK(bound_facts.fee_zat == UINT64_MAX);
+    for (size_t i = 0; i < sizeof all_digests; ++i)
+        CHECK(((uint8_t *)all_digests)[i] == 0x5a);
     CHECK(zcl_tx_transparent_bound_digests(duplicate.bytes, duplicate.length,
         two, 2, 0x76b809bb, sha256_bytes, &hasher,
         &bound_facts, all_digests, 2) == 0);
