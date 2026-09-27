@@ -167,7 +167,8 @@ Each slice fails closed by default.
      `object_reuse_admit=unqualified(no_verifier_key)`. RED: an object
      planted in the same-account cache is served by a proof-mode compile
      today. GREEN: it compiles for real.
-2. **Daemon compile core.** `tools/verify/z23_verifyd.c`, using the existing
+2. **Daemon compile core.** tools/verify/z23_verifyd.c (planned; not yet in
+   the tree), using the existing
    Landlock code. Tests run it unprivileged with a trust root injected only
    under `ZCL_TESTING`. The refused flags, an out-of-snapshot include, a
    mismatched preprocessed hash and a device file are all refused; an honest
