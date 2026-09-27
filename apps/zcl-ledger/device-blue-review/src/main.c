@@ -2,6 +2,7 @@
 #include "os.h"
 #include "os_io_seproxyhal.h"
 #include "blue_review_app.h"
+#include "blue_review_layout.h"
 #include <string.h>
 
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
@@ -52,23 +53,30 @@ static unsigned int review_ui_button(unsigned int button_mask,
 static const bagl_element_t review_ui[] = {
     {
         .component = {
-            .type = BAGL_RECTANGLE, .x = 0, .y = 60, .width = 320,
-            .height = 420, .fill = BAGL_FILL,
-            .fgcolor = 0xf9f9f9, .bgcolor = 0xf9f9f9
+            .type = BAGL_RECTANGLE, .x = 0, .y = ZCL_BLUE_HEADER_HEIGHT,
+            .width = ZCL_BLUE_SCREEN_WIDTH,
+            .height = ZCL_BLUE_SCREEN_HEIGHT - ZCL_BLUE_HEADER_HEIGHT,
+            .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_BODY,
+            .bgcolor = ZCL_BLUE_COLOR_BODY
         }
     },
     {
         .component = {
-            .type = BAGL_RECTANGLE, .x = 0, .y = 0, .width = 320,
-            .height = 60, .fill = BAGL_FILL,
-            .fgcolor = 0x1d2028, .bgcolor = 0x1d2028
+            .type = BAGL_RECTANGLE, .x = 0, .y = 0,
+            .width = ZCL_BLUE_SCREEN_WIDTH,
+            .height = ZCL_BLUE_HEADER_HEIGHT, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_HEADER,
+            .bgcolor = ZCL_BLUE_COLOR_HEADER
         }
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 20, .y = 0, .width = 280,
-            .height = 60, .fill = BAGL_FILL, .fgcolor = 0xffffff,
-            .bgcolor = 0x1d2028,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_HEADER_TEXT_X, .y = 0,
+            .width = ZCL_BLUE_HEADER_TEXT_WIDTH,
+            .height = ZCL_BLUE_HEADER_HEIGHT, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_WHITE,
+            .bgcolor = ZCL_BLUE_COLOR_HEADER,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_MIDDLE
         },
@@ -76,8 +84,12 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 10, .y = 80, .width = 300,
-            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
+            .y = ZCL_BLUE_LINE_FIRST_Y,
+            .width = ZCL_BLUE_LINE_WIDTH,
+            .height = ZCL_BLUE_LINE_HEIGHT,
+            .fgcolor = ZCL_BLUE_COLOR_TEXT,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
@@ -85,8 +97,12 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 10, .y = 125, .width = 300,
-            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
+            .y = ZCL_BLUE_LINE_FIRST_Y + ZCL_BLUE_LINE_STEP_Y,
+            .width = ZCL_BLUE_LINE_WIDTH,
+            .height = ZCL_BLUE_LINE_HEIGHT,
+            .fgcolor = ZCL_BLUE_COLOR_TEXT,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
@@ -94,8 +110,12 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 10, .y = 170, .width = 300,
-            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
+            .y = ZCL_BLUE_LINE_FIRST_Y + 2 * ZCL_BLUE_LINE_STEP_Y,
+            .width = ZCL_BLUE_LINE_WIDTH,
+            .height = ZCL_BLUE_LINE_HEIGHT,
+            .fgcolor = ZCL_BLUE_COLOR_TEXT,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
@@ -103,8 +123,12 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 10, .y = 215, .width = 300,
-            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
+            .y = ZCL_BLUE_LINE_FIRST_Y + 3 * ZCL_BLUE_LINE_STEP_Y,
+            .width = ZCL_BLUE_LINE_WIDTH,
+            .height = ZCL_BLUE_LINE_HEIGHT,
+            .fgcolor = ZCL_BLUE_COLOR_TEXT,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
@@ -112,8 +136,12 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 10, .y = 260, .width = 300,
-            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
+            .y = ZCL_BLUE_LINE_FIRST_Y + 4 * ZCL_BLUE_LINE_STEP_Y,
+            .width = ZCL_BLUE_LINE_WIDTH,
+            .height = ZCL_BLUE_LINE_HEIGHT,
+            .fgcolor = ZCL_BLUE_COLOR_TEXT,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
@@ -121,8 +149,12 @@ static const bagl_element_t review_ui[] = {
     },
     {
         .component = {
-            .type = BAGL_LABEL, .x = 10, .y = 305, .width = 300,
-            .height = 40, .fgcolor = 0x1d2028, .bgcolor = 0xf9f9f9,
+            .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
+            .y = ZCL_BLUE_LINE_FIRST_Y + 5 * ZCL_BLUE_LINE_STEP_Y,
+            .width = ZCL_BLUE_LINE_WIDTH,
+            .height = ZCL_BLUE_LINE_HEIGHT,
+            .fgcolor = ZCL_BLUE_COLOR_TEXT,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER
         },
@@ -131,9 +163,12 @@ static const bagl_element_t review_ui[] = {
     {
         .component = {
             .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
-            .x = 20, .y = 390, .width = 130, .height = 40,
+            .x = ZCL_BLUE_NEXT_X, .y = ZCL_BLUE_BUTTON_Y,
+            .width = ZCL_BLUE_BUTTON_WIDTH,
+            .height = ZCL_BLUE_BUTTON_HEIGHT,
             .radius = 6, .fill = BAGL_FILL,
-            .fgcolor = 0x41ccb4, .bgcolor = 0xf9f9f9,
+            .fgcolor = ZCL_BLUE_COLOR_BUTTON,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER |
                        BAGL_FONT_ALIGNMENT_MIDDLE
@@ -143,9 +178,12 @@ static const bagl_element_t review_ui[] = {
     {
         .component = {
             .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
-            .x = 170, .y = 390, .width = 130, .height = 40,
+            .x = ZCL_BLUE_EXIT_X, .y = ZCL_BLUE_BUTTON_Y,
+            .width = ZCL_BLUE_BUTTON_WIDTH,
+            .height = ZCL_BLUE_BUTTON_HEIGHT,
             .radius = 6, .fill = BAGL_FILL,
-            .fgcolor = 0x41ccb4, .bgcolor = 0xf9f9f9,
+            .fgcolor = ZCL_BLUE_COLOR_BUTTON,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_CENTER |
                        BAGL_FONT_ALIGNMENT_MIDDLE

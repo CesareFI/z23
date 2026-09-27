@@ -61,8 +61,21 @@ static int capture(char *const argv[], char output[4096]) {
     return WEXITSTATUS(status);
 }
 
+static void check_png(const char *path) {
+    FILE *png = fopen(path, "rb");
+    assert(png);
+    uint8_t header[24];
+    assert(fread(header, 1, sizeof header, png) == sizeof header);
+    assert(memcmp(header, "\x89PNG\r\n\x1a\n", 8) == 0);
+    assert(header[16] == 0 && header[17] == 0 &&
+           header[18] == 1 && header[19] == 64);
+    assert(header[20] == 0 && header[21] == 0 &&
+           header[22] == 1 && header[23] == 224);
+    assert(fclose(png) == 0 && unlink(path) == 0);
+}
+
 int main(int argc, char **argv) {
-    assert(argc == 3);
+    assert(argc == 4);
     char path[] = "/tmp/zcl-review-cli-XXXXXX";
     int file = mkstemp(path);
     assert(file >= 0);
@@ -75,6 +88,31 @@ int main(int argc, char **argv) {
     assert(strstr(output, "\"blue_parsed\":false,\"app_simulated\":true"));
     assert(strstr(output, "\"simulated_zip243_matched\":true"));
     assert(strstr(output, "\"signing_ready\":false"));
+    char prefix[] = "/tmp/zcl-screen-cli-XXXXXX";
+    int directory = mkstemp(prefix);
+    assert(directory >= 0 && close(directory) == 0 && unlink(prefix) == 0);
+    char *const screenshot[] = {argv[3], path, prefix, NULL};
+    assert(capture(screenshot, output) == 0);
+    for (unsigned page = 0; page < 4; ++page) {
+        char png_path[128];
+        assert(snprintf(png_path, sizeof png_path, "%s-%02u.png", prefix,
+                        page) > 0);
+        check_png(png_path);
+    }
+    char final_page[128];
+    assert(snprintf(final_page, sizeof final_page, "%s-04.png", prefix) > 0);
+    check_png(final_page);
+    char *const accessible[] = {argv[3], path, prefix,
+        "--large-text", "--dark", NULL};
+    assert(capture(accessible, output) == 0);
+    unsigned images = 0;
+    char *save = NULL;
+    for (char *name = strtok_r(output, "\n", &save); name;
+         name = strtok_r(NULL, "\n", &save)) {
+        check_png(name);
+        ++images;
+    }
+    assert(images == 29);
     char *const invalid[] = {argv[1], "--json", "--simulate-app",
         "--blue", "/dev/hidraw1", path, NULL};
     assert(capture(invalid, output) == 2);

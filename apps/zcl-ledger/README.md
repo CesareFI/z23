@@ -94,6 +94,10 @@ device; neither display is payment approval.
 build/zcl-ledger/zcl-tx-review --json transaction.bin
 # Run the C23 app controller and all output pages without USB:
 build/zcl-ledger/zcl-tx-review --json --simulate-app transaction.bin
+# Save simulated 320 x 480 Ledger Blue screen PNGs without USB:
+build/zcl-ledger/zcl-blue-screen-sim transaction.bin /tmp/zcl-blue-preview
+# Preview larger text and dark colors, offline:
+build/zcl-ledger/zcl-blue-screen-sim transaction.bin /tmp/zcl-blue-accessible --large-text --dark
 # Compute the shielded signature digest with an explicit branch ID:
 build/zcl-ledger/zcl-tx-review --json --branch-id 0x76b809bb transaction.bin
 # After a separately reviewed ZCL Review app is installed and open:

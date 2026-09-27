@@ -53,24 +53,29 @@ static bool compare_summary(blue_review_app *app, const uint8_t *wire,
 }
 
 static bool review_pages(blue_review_app *app,
-                         const zcl_tx_review *review) {
+                         const zcl_tx_review *review,
+                         blue_review_page_fn page, void *context) {
     if (!blue_review_app_next(app, sha256) ||
-        strcmp(app->lines[4], "SHIELDED HIDDEN; NO SIGNING") != 0)
+        strcmp(app->lines[4], "SHIELDED HIDDEN; NO SIGNING") != 0 ||
+        (page && !page(app, context)))
         return false;
     for (uint32_t i = 0; i < review->transparent_outputs; ++i)
         if (!blue_review_app_next(app, sha256) ||
-            strncmp(app->lines[0], "OUTPUT ", 7) != 0)
-            return false;
+            strncmp(app->lines[0], "OUTPUT ", 7) != 0 ||
+            (page && !page(app, context)))
+        return false;
     return blue_review_app_next(app, sha256) &&
-           strncmp(app->lines[0], "PUBLIC IN/OUT: ", 15) == 0;
+           strncmp(app->lines[0], "PUBLIC IN/OUT: ", 15) == 0 &&
+           (!page || page(app, context));
 }
 
-bool blue_review_simulate(const uint8_t *wire, size_t length,
+static bool simulate(const uint8_t *wire, size_t length,
     const zcl_tx_review *review, bool has_branch, uint32_t branch_id,
-    const uint8_t zip_digest[32]) {
+    const uint8_t zip_digest[32], blue_review_page_fn page, void *context) {
     if (!wire || !review || length > ZCL_BLUE_REVIEW_MAX_BYTES) return false;
     blue_review_app app = {0};
     blue_review_app_reset(&app);
+    if (page && !page(&app, context)) return false;
     uint8_t probe[260] = {0xa5, 1, 0, 0, 0};
     static const uint8_t identity[] = {'Z', 'C', 'L', 6, 0x40};
     return exchange(&app, probe, 5, identity, sizeof identity) &&
@@ -78,5 +83,18 @@ bool blue_review_simulate(const uint8_t *wire, size_t length,
            (!has_branch ||
             (zip_digest && compare_digest(&app, branch_id, zip_digest))) &&
            compare_summary(&app, wire, length, review) &&
-           review_pages(&app, review);
+           review_pages(&app, review, page, context);
+}
+
+bool blue_review_simulate(const uint8_t *wire, size_t length,
+    const zcl_tx_review *review, bool has_branch, uint32_t branch_id,
+    const uint8_t zip_digest[32]) {
+    return simulate(wire, length, review, has_branch, branch_id,
+                    zip_digest, NULL, NULL);
+}
+
+bool blue_review_simulate_pages(const uint8_t *wire, size_t length,
+    const zcl_tx_review *review, blue_review_page_fn page, void *context) {
+    if (!page) return false;
+    return simulate(wire, length, review, false, 0, NULL, page, context);
 }

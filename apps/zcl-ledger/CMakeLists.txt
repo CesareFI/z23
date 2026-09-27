@@ -11,6 +11,7 @@ target_include_directories(ledger_hid PUBLIC include)
 target_compile_options(ledger_hid PRIVATE -Wall -Wextra -Werror -pedantic)
 
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+find_package(PNG REQUIRED)
 add_library(zcl_address STATIC src/zcl_address.c)
 target_include_directories(zcl_address PUBLIC include)
 target_link_libraries(zcl_address PUBLIC OpenSSL::Crypto)
@@ -75,6 +76,15 @@ add_executable(zcl-tx-review src/tx_review_cli.c)
 target_link_libraries(zcl-tx-review PRIVATE zcl_address zcl_tx_review zcl_tx_script_facts zcl_zip243_host_hash blue_review_protocol blue_review_simulate ledger_hid OpenSSL::Crypto)
 target_compile_options(zcl-tx-review PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(blue_review_render STATIC src/blue_review_render.c)
+target_include_directories(blue_review_render PUBLIC include)
+target_link_libraries(blue_review_render PUBLIC blue_review_app PNG::PNG)
+target_compile_options(blue_review_render PRIVATE -Wall -Wextra -Werror -pedantic)
+
+add_executable(zcl-blue-screen-sim src/blue_screen_sim_cli.c)
+target_link_libraries(zcl-blue-screen-sim PRIVATE blue_review_render blue_review_simulate)
+target_compile_options(zcl-blue-screen-sim PRIVATE -Wall -Wextra -Werror -pedantic)
+
 add_executable(zcl-ledger src/main.c)
 target_link_libraries(zcl-ledger PRIVATE ledger_hid zcl_address)
 target_compile_options(zcl-ledger PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -106,7 +116,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash blue_review_protocol blue_review_screen blue_review_app blue_review_simulate zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -242,4 +252,5 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME zcl-tx-review-cli COMMAND test-zcl-tx-review-cli
     $<TARGET_FILE:zcl-tx-review>
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-transparent-vector3.hex)
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-transparent-vector3.hex
+    $<TARGET_FILE:zcl-blue-screen-sim>)
