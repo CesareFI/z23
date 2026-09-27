@@ -7454,6 +7454,151 @@ static int test_ic_harness_no_owner_stays_unmatched(void)
     return failures;
 }
 
+/* ── T4b2: the INCLUDE dimension's capacity bound is capacity too ──────
+ *
+ * codeindex_reverse_includes() says "closure-truncated" for two different
+ * facts: the dependent set outgrew the plan's cap, or the include graph cannot
+ * support a narrow answer at all (a stale, dangling, or incomplete depfile).
+ * Only the first is the index answering "too much to list", and it must widen
+ * exactly as the SEMANTIC bound does. The second is missing evidence and must
+ * keep refusing, including when both happen at once. */
+
+/* Defined in tools/dev/devloop_plan.c under ZCL_TESTING. */
+extern size_t zcl_devloop_test_closure_file_ceiling;
+
+#define IC_FIX_INCCAP IC_FIX_ROOT "/include_capacity"
+#define IC_INCCAP_DEF "engine/composition/zcode_package_registry.def"
+
+/* A registry both leaves were compiled against. `unsafe` adds a prerequisite
+ * the checkout does not hold, which makes the index refuse every narrow
+ * include answer for this tree. */
+static bool ic_write_include_fanout(const char *root, bool unsafe)
+{
+    char rm[4096];
+    (void)snprintf(rm, sizeof(rm), "rm -rf %s", root);
+    system(rm);
+    return ic_write_call_pair(root) &&
+           ic_write(root, IC_INCCAP_DEF, "/* registry fixture */\n"
+                                         "IC_ROW(alpha, 1)\n") &&
+           ic_write(root, "build/obj/tor_integration.d",
+                    "build/obj/tor_integration.o: "
+                    "core/modules/net/src/tor_integration.c "
+                    "core/modules/net/include/net/clp.h " IC_INCCAP_DEF
+                    "\n") &&
+           ic_write(root, "build/obj/download.d",
+                    unsafe ? "build/obj/download.o: "
+                             "core/modules/net/src/download.c "
+                             "core/modules/net/include/net/clp.h "
+                             IC_INCCAP_DEF " "
+                             "core/modules/net/include/net/ic_gone.h\n"
+                           : "build/obj/download.o: "
+                             "core/modules/net/src/download.c "
+                             "core/modules/net/include/net/clp.h "
+                             IC_INCCAP_DEF "\n");
+}
+
+static bool ic_include_plan(size_t ceiling, struct zcl_devloop_plan *plan)
+{
+    const char *files[] = { IC_INCCAP_DEF };
+    zcl_devloop_test_closure_file_ceiling = ceiling;
+    bool built = zcl_devloop_plan_files(files, 1, plan) &&
+                 zcl_devloop_plan_add_closure(IC_FIX_INCCAP, files, 1, plan);
+    zcl_devloop_test_closure_file_ceiling = 0;
+    return built;
+}
+
+static int test_ic_include_capacity_runs_everything(void)
+{
+    int failures = 0;
+    static char ic_fixture_saved[4096];
+    bool ic_fixture_was_set =
+        ic_host_fixture_save(ic_fixture_saved, sizeof(ic_fixture_saved));
+    TEST("impact composition: an include capacity bound runs the whole catalog") {
+        static struct zcl_devloop_plan plan;
+        const char *why = "unset";
+
+        /* Control: the same trustworthy graph under the production cap is an
+         * exact, complete answer that names both dependents. */
+        ASSERT(ic_write_include_fanout(IC_FIX_INCCAP, false));
+        ASSERT(ic_include_plan(0, &plan));
+        ASSERT(plan.path_groups_len > 0);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status ==
+               ZCL_DEVLOOP_DIM_NOT_APPLICABLE);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+               ZCL_DEVLOOP_DIM_COMPLETE);
+        ASSERT(strcmp(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].reason, "") == 0);
+        ASSERT(!plan.closure_universal);
+        ASSERT(ic_planned(&plan, "download"));
+        ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
+
+        /* (a) two dependents, room for one: capacity. The dimension answers
+         * with the universal closure and the plan is admissible proof. */
+        ASSERT(ic_include_plan(1, &plan));
+        ASSERT(plan.closure_universal);
+        ASSERT(!plan.closure_truncated);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+               ZCL_DEVLOOP_DIM_COMPLETE);
+        ASSERT(strcmp(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].reason,
+                      "closure-universal") == 0);
+        why = "unset";
+        ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT(strcmp(why, "") == 0);
+
+        /* ... and the proof runner turns it into every registered group. */
+        static char selector[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS *
+                             (ZCL_TEST_GROUP_FULL_MAX + 1)];
+        char gated[PROOF_HOST_GATED_MAX];
+        uint32_t selected = 0;
+        memset(selector, 0, sizeof(selector));
+        ASSERT(ic_host_need_full_root(IC_FIX_HOST_FULL));
+        ic_host_fixture_env(true);
+        ASSERT(zcl_dev_proof_test_build_test_selector(
+                   &plan, IC_FIX_HOST_FULL, false, selector, sizeof(selector),
+                   &selected, gated, sizeof(gated)));
+        ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
+        ASSERT((size_t)selected == zcl_test_group_catalog_count());
+        ASSERT(gated[0] == '\0');
+        for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
+            ASSERT(ic_selector_has(selector, zcl_test_group_catalog_at(i)));
+
+        /* (b) an untrusted graph is missing evidence: it refuses. */
+        ASSERT(ic_write_include_fanout(IC_FIX_INCCAP, true));
+        ASSERT(ic_include_plan(0, &plan));
+        ASSERT(!plan.closure_universal);
+        ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+               ZCL_DEVLOOP_DIM_INCOMPLETE);
+        why = "unset";
+        ASSERT(!zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT(strcmp(why, "closure-truncated") == 0);
+
+        /* (b2) and a capacity bound on that same untrusted graph does not
+         * erase the refusal: capacity is not allowed to launder it. */
+        ASSERT(ic_include_plan(1, &plan));
+        ASSERT(!plan.closure_universal);
+        ASSERT(plan.closure_truncated);
+        why = "unset";
+        ASSERT(!zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT(strcmp(why, "closure-truncated") == 0);
+
+        /* (b3) no include graph at all still refuses with its own word. */
+        system("rm -rf " IC_FIX_INCCAP);
+        ASSERT(ic_write_call_pair(IC_FIX_INCCAP));
+        ASSERT(ic_write(IC_FIX_INCCAP, IC_INCCAP_DEF, "IC_ROW(alpha, 1)\n"));
+        ASSERT(ic_include_plan(1, &plan));
+        ASSERT(!plan.closure_universal);
+        why = "unset";
+        ASSERT(!zcl_devloop_plan_proof_admissible(&plan, &why));
+        ASSERT(strcmp(why, "no-include-graph") == 0);
+
+        system("rm -rf " IC_FIX_INCCAP);
+        system("rm -rf " IC_FIX_HOST_FULL);
+        PASS();
+    } _test_next:;
+    zcl_devloop_test_closure_file_ceiling = 0;
+    ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -7476,6 +7621,7 @@ int test_impact_composition(void)
     failures += test_ic_macro_only_header_has_dependents();
     failures += test_ic_incomplete_dimension_refuses_proof();
     failures += test_ic_capacity_bound_runs_everything();
+    failures += test_ic_include_capacity_runs_everything();
     failures += test_ic_host_need_table_is_closed();
     failures += test_ic_every_selection_has_a_reason();
     failures += test_ic_union_never_loses_a_rule_group();

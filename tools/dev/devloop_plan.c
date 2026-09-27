@@ -599,10 +599,25 @@ int zcl_devloop_test_closure_file_cap(int indexed, size_t changed_count)
 }
 #endif
 
+#if defined(ZCL_TESTING)
+/* Test-only ceiling on the per-query closure file cap, so a capacity bound on
+ * the reverse-include walk is reachable from a fixture of a few files. 0 (the
+ * default) means the corpus-sized production cap; it can only lower it. The
+ * test declares it itself: a header would put every includer in the plan. */
+extern size_t zcl_devloop_test_closure_file_ceiling;
+size_t zcl_devloop_test_closure_file_ceiling = 0;
+#endif
+
 static int plan_closure_file_cap(struct codeindex *ci, size_t changed_count)
 {
-    return plan_closure_file_cap_from_count(codeindex_file_count(ci),
-                                             changed_count);
+    int cap = plan_closure_file_cap_from_count(codeindex_file_count(ci),
+                                               changed_count);
+#if defined(ZCL_TESTING)
+    if (cap > 0 && zcl_devloop_test_closure_file_ceiling > 0 &&
+        zcl_devloop_test_closure_file_ceiling < (size_t)cap)
+        cap = (int)zcl_devloop_test_closure_file_ceiling;
+#endif
+    return cap;
 }
 
 #if defined(ZCL_TESTING)
@@ -685,6 +700,67 @@ static void plan_go_universal(struct zcl_devloop_plan *plan,
      * tell a plan that enumerated everything from one that gave up listing. */
     plan->dims[dim].status = ZCL_DEVLOOP_DIM_COMPLETE;
     plan->dims[dim].reason = "closure-universal";
+}
+
+/* Did a "closure-truncated" reverse-include answer come from CAPACITY alone?
+ * codeindex_reverse_includes() uses one verdict for two facts: the dependent
+ * set outgrew `plan_cap`, or the include graph cannot support a narrow answer
+ * at all (a stale, dangling or incomplete depfile). Only the first is the
+ * index answering "too much to list"; the second is missing evidence. Asking
+ * again at the index's own hard maximum separates them: a COMPLETE answer
+ * longer than this plan can hold is pure capacity. Still truncated there, or
+ * an untrusted graph, is not. Returns 1 capacity, 0 not, -1 query failure. */
+static int plan_include_capacity_only(struct codeindex *ci, const char *path,
+                                      int plan_cap)
+{
+    if (plan_cap >= CI_IMPACT_CLOSURE_MAX_FILES)
+        return 0;  /* already at the index maximum: capacity is unprovable */
+    char (*wide)[256] = zcl_malloc(
+        sizeof(*wide) * (size_t)CI_IMPACT_CLOSURE_MAX_FILES,
+        "closure_include_wide");
+    if (!wide)
+        return -1;
+    enum codeindex_include_dim wide_dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+    int n = codeindex_reverse_includes(ci, path, wide,
+                                       CI_IMPACT_CLOSURE_MAX_FILES, &wide_dim);
+    free(wide);
+    if (n < 0)
+        return -1;
+    return wide_dim == CODEINDEX_INCLUDE_DIM_COMPLETE && n > plan_cap;
+}
+
+/* Fold one changed file's reverse-include verdict into the INCLUDE dimension.
+ * A capacity bound widens to the universal closure exactly as the SEMANTIC
+ * bound does; an unavailable or untrusted graph keeps refusing. Returns false
+ * only when the index could not be asked. */
+static bool plan_include_verdict(struct zcl_devloop_plan *plan,
+                                 struct codeindex *ci, const char *path,
+                                 enum codeindex_include_dim idim, int nd,
+                                 int plan_cap)
+{
+    if (idim == CODEINDEX_INCLUDE_DIM_UNAVAILABLE) {
+        plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
+                     ZCL_DEVLOOP_DIM_UNAVAILABLE,
+                     codeindex_include_dim_label(idim));
+        return true;
+    }
+    if (idim != CODEINDEX_INCLUDE_DIM_TRUNCATED)
+        return true;
+    /* An answer that did not fill the cap was not clipped by it. */
+    int capacity = nd < plan_cap
+        ? 0 : plan_include_capacity_only(ci, path, plan_cap);
+    if (capacity < 0) {
+        plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
+                     ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
+        return false;
+    }
+    if (capacity > 0)
+        plan_go_universal(plan, ZCL_DEVLOOP_DIM_INCLUDE);
+    else
+        plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
+                     ZCL_DEVLOOP_DIM_INCOMPLETE,
+                     codeindex_include_dim_label(idim));
+    return true;
 }
 
 static bool plan_reached_proof_owner(const char *path, void *user)
@@ -841,15 +917,13 @@ static bool plan_add_closure(const char *repo_root,
             ok = false;
             goto out;
         }
-        if (idim == CODEINDEX_INCLUDE_DIM_UNAVAILABLE) {
-            plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
-                         ZCL_DEVLOOP_DIM_UNAVAILABLE,
-                         codeindex_include_dim_label(idim));
-        } else if (idim == CODEINDEX_INCLUDE_DIM_TRUNCATED) {
-            plan_dim_set(plan, ZCL_DEVLOOP_DIM_INCLUDE,
-                         ZCL_DEVLOOP_DIM_INCOMPLETE,
-                         codeindex_include_dim_label(idim));
+        if (!plan_include_verdict(plan, ci, files[i], idim, nd,
+                                  closure_file_cap)) {
+            ok = false;
+            goto out;
         }
+        /* What fit is still folded in: a universal answer keeps the partial
+         * evidence, and the loop ends because universal already covers it. */
         for (int d = 0; d < nd; d++) {
             if (!plan_fold_reached_file(plan, impacted[d],
                                         ZCL_DEVLOOP_DIM_INCLUDE)) {
