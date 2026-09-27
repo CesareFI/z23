@@ -624,8 +624,14 @@ static int du_case_decode_out_of_range(struct du_fixture *fx)
 
 /* F4: a stored spent_blob of length zero (SQLite may hand back a NULL
  * pointer for it) must not become `NULL + 0` pointer arithmetic. A
- * coinbase-only block needs zero spent entries, so this is the real shape
- * that produces a zero-length blob in production, not a contrived one. */
+ * coinbase-only block never enters build_undo's per-tx loop at all (its
+ * ntx is zero), which would leave this a decode-path test in name only, so
+ * the block here carries a real non-coinbase transaction too: one with no
+ * transparent inputs at all, the shape a shielded-only (Sapling/Sprout, no
+ * transparent vin) transaction actually has. That tx's tx_undo_alloc(0)
+ * DOES run inside the loop, and its trivial zero-iteration vin loop is
+ * exactly the real zero-transparent-input shape that produces a
+ * zero-length spent blob in production. */
 static int du_case_decode_empty_blob(struct du_fixture *fx)
 {
     int failures = 0;
@@ -637,12 +643,16 @@ static int du_case_decode_empty_blob(struct du_fixture *fx)
 
         struct block blk;
         block_init(&blk);
-        blk.vtx = zcl_calloc(1, sizeof(*blk.vtx), "du_empty_vtx");
+        blk.vtx = zcl_calloc(2, sizeof(*blk.vtx), "du_empty_vtx");
         ASSERT(blk.vtx);
-        blk.num_vtx = 1;
+        blk.num_vtx = 2;
         ASSERT(du_tx(&blk.vtx[0], 1, 1000));
         outpoint_set_null(&blk.vtx[0].vin[0].prevout);
         ASSERT(transaction_is_coinbase(&blk.vtx[0]));
+
+        transaction_init(&blk.vtx[1]);
+        ASSERT(transaction_alloc(&blk.vtx[1], 0, 0));
+        ASSERT(!transaction_is_coinbase(&blk.vtx[1]));
 
         ASSERT(du_persist_raw_delta(progress_store_db(), h, &branch_hash,
                                     (const uint8_t *)"", 0));
@@ -651,7 +661,10 @@ static int du_case_decode_empty_blob(struct du_fixture *fx)
             utxo_apply_delta_block_undo_load(progress_store_db(), h,
                                              &branch_hash, &blk, &u);
         ASSERT_EQ(st, UTXO_DELTA_UNDO_FOUND);
-        ASSERT_EQ(u.num_txundo, 0);
+        /* One tx_undo entry (the shielded-only tx), with zero prevouts —
+         * the loop ran, and correctly found nothing to undo for it. */
+        ASSERT_EQ(u.num_txundo, 1);
+        ASSERT_EQ(u.vtxundo[0].num_prevout, 0);
 
         block_undo_free(&u);
         block_free(&blk);
@@ -693,7 +706,14 @@ static int du_case_unfolded_store(struct du_fixture *fx)
  * one, given a parentless copy of the index (the contextual header rules
  * are not what this group exercises). */
 static struct du_fixture *g_wk_fx;
+/* Set by the test right after bg_validation_start, so wk_validate can tell
+ * a forward-walk call from the always-on sampled re-verify loop's own call
+ * (both share this one stub): reverify_active flips true before its first
+ * sample, strictly before it reaches validate, so checking it here is race
+ * free against the loop starting the instant COMPLETE is set. */
+static struct bg_validation_service *g_wk_svc;
 static _Atomic int g_wk_h1_probes;
+static _Atomic int g_wk_validate_calls;
 static int g_wk_progress = -1;
 static int64_t g_wk_version = 0;
 static int64_t g_wk_skips = -1;
@@ -744,6 +764,13 @@ static bool wk_validate(const struct block *block, struct block_index *index,
                         int64_t *sigs_out, int64_t *proofs_out,
                         int64_t *skips_out)
 {
+    /* Only count the forward walk's own validations: the always-on sampled
+     * re-verify loop shares this same stub and can start sampling the
+     * instant COMPLETE is set, strictly before any test code can react —
+     * reverify_active is set true at that loop's entry, before it ever
+     * reaches a validate call, so this check is race free. */
+    if (!g_wk_svc || !atomic_load(&g_wk_svc->progress.reverify_active))
+        atomic_fetch_add(&g_wk_validate_calls, 1);
     struct block_index parentless = *index;
     parentless.pprev = NULL;
     return bg_validation_validate_block_proofs(
@@ -784,7 +811,9 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
         struct block_undo u;
         ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_OTHER_BRANCH);
         g_wk_fx = fx;
+        g_wk_svc = &svc;
         atomic_store(&g_wk_h1_probes, 0);
+        atomic_store(&g_wk_validate_calls, 0);
         g_wk_progress = -1;
         g_wk_version = 0;
         g_wk_skips = -1;
@@ -810,7 +839,15 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
              atomic_load(&svc.progress.state) != BG_VALIDATION_COMPLETE &&
              atomic_load(&svc.progress.state) != BG_VALIDATION_FAILED; i++)
             platform_sleep_ms(100);
+        /* Stop the service NOW, before any assertion: the always-on sampled
+         * re-verify loop starts immediately after COMPLETE and is otherwise
+         * free to re-sample (and re-validate) an already-verified height
+         * before this test's own checks run — a real race, not a bug in
+         * the walk (see g_wk_validate_calls below, which must count only
+         * the forward walk's own validations). */
         ASSERT_EQ(atomic_load(&svc.progress.state), BG_VALIDATION_COMPLETE);
+        bg_validation_stop(&svc);
+        started = false;
         ASSERT_EQ(atomic_load(&svc.progress.verified_height), DU_BLOCKS - 1);
         /* First probe saw the other branch; the second saw the re-apply —
          * and the FULL block validation for h=1 never ran until the row
@@ -821,10 +858,17 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
         ASSERT_EQ(g_wk_skips, 0);
         ASSERT_EQ(atomic_load(&svc.progress.sigs_verified),
                   (int64_t)(3 * (DU_BLOCKS - 1)));
+        /* Exactly one full validation ran for h=1: the pre-check waited out
+         * the branch switch entirely on the cheap probe, never paying for
+         * crypto while the row was unresolved, and never re-validating a
+         * height it had already booked. One call per height, DU_BLOCKS-1
+         * non-genesis heights. */
+        ASSERT_EQ(atomic_load(&g_wk_validate_calls), DU_BLOCKS - 1);
         PASS();
     } _test_next:;
     if (started)
         bg_validation_stop(&svc);
+    g_wk_svc = NULL;
     bg_validation_test_set_validate_stub(NULL);
     bg_validation_test_set_body_repair_stubs(NULL, NULL);
     bg_validation_test_set_row_backoff_stubs(NULL, NULL);
@@ -832,10 +876,12 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
 }
 
 /* A row that reports "other branch" on EVERY probe — the reducer lost the
- * race for good and will never revisit this height. Proves the walk gives
- * up waiting after a bounded number of attempts and advances (books the
- * skip) rather than spinning on the cheap probe forever, and that the ONE
- * full validation this actually runs counts h=1's skip exactly once. */
+ * race for good and will never revisit this height, or has not yet (there
+ * is no way to tell the two apart from a single point read). A booked skip
+ * is permanent and blocks C6 authority for the whole walk, so the walk must
+ * NEVER book here: it keeps polling forever at the growing/capped backoff
+ * instead, and this stub's caller-recorded wait_ms proves the backoff kept
+ * growing rather than the walk spinning the CPU on the probe. */
 static const char *wk_row_probe_stuck(int h, const struct block_index *pindex)
 {
     (void)pindex;
@@ -844,13 +890,31 @@ static const char *wk_row_probe_stuck(int h, const struct block_index *pindex)
     return h == 1 ? "fold still holds another branch's block" : NULL;
 }
 
+/* Records each backoff sleep instead of actually sleeping, so the test can
+ * bound how many attempts it lets the walk make (and, separately, prove the
+ * requested delay grows) without paying any wall-clock cost. */
+static _Atomic int g_wk_stuck_sleep_calls;
+static _Atomic int g_wk_stuck_last_wait_ms;
+static void wk_capture_sleep(int ms)
+{
+    atomic_store(&g_wk_stuck_last_wait_ms, ms);
+    atomic_fetch_add(&g_wk_stuck_sleep_calls, 1);
+}
+
+/* A row that reports "other branch" on EVERY probe, forever. A booked skip
+ * is permanent and blocks C6 authority for the whole walk, so the walk must
+ * NEVER book it, no matter how long the row stays stuck — the probe is a
+ * single cheap point read, so there is no CPU reason to ever give up and
+ * book a skip it could not confirm. Proves: the walk does not reach
+ * COMPLETE, verified_height never advances past h=0, no skip is ever
+ * booked, and the backoff between probes keeps growing (not spinning). */
 static int du_case_walk_row_never_resolves(struct du_fixture *fx)
 {
     int failures = 0;
     struct bg_validation_service svc;
     memset(&svc, 0, sizeof(svc));
     bool started = false;
-    TEST("delta_undo: a row stuck on another branch advances, not spins") {
+    TEST("delta_undo: a row stuck on another branch never books a skip") {
         ASSERT(fx->opened);
         /* Re-seed h=1 on the wrong branch: the prior case fixed it via its
          * own reapply. */
@@ -860,7 +924,10 @@ static int du_case_walk_row_never_resolves(struct du_fixture *fx)
         struct block_undo u;
         ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_OTHER_BRANCH);
         g_wk_fx = fx;
+        g_wk_svc = &svc;
         atomic_store(&g_wk_h1_probes, 0);
+        atomic_store(&g_wk_stuck_sleep_calls, 0);
+        atomic_store(&g_wk_stuck_last_wait_ms, 0);
         g_wk_progress = -1;
         g_wk_version = 0;
         g_wk_skips = -1;
@@ -881,42 +948,148 @@ static int du_case_walk_row_never_resolves(struct du_fixture *fx)
         bg_validation_test_set_body_repair_stubs(wk_read_body, NULL);
         bg_validation_test_set_validate_stub(wk_validate);
         bg_validation_test_set_row_backoff_stubs(wk_row_probe_stuck,
-                                                 wk_no_sleep);
+                                                 wk_capture_sleep);
         started = bg_validation_start(&svc);
         ASSERT(started);
+        /* Let it accumulate a bounded number of backoff attempts — never
+         * wait for COMPLETE, since a correct walk must never reach it here. */
         for (int i = 0; i < 200 &&
-             atomic_load(&svc.progress.state) != BG_VALIDATION_COMPLETE &&
+             atomic_load(&g_wk_stuck_sleep_calls) < 6 &&
              atomic_load(&svc.progress.state) != BG_VALIDATION_FAILED; i++)
-            platform_sleep_ms(100);
-        /* The walk must advance (COMPLETE), never spin forever on h=1. */
-        ASSERT_EQ(atomic_load(&svc.progress.state), BG_VALIDATION_COMPLETE);
-        ASSERT_EQ(atomic_load(&svc.progress.verified_height), DU_BLOCKS - 1);
-        /* Stop the service NOW: h=1's row is deliberately left stuck
-         * forever, and the always-on sampled reverify loop that starts
-         * right after COMPLETE is otherwise free to re-sample h=1 — a
-         * real, separate event this case is not testing. */
+            platform_sleep_ms(20);
         bg_validation_stop(&svc);
         started = false;
-        /* Bounded: more than one probe attempt (it did wait), but a small,
-         * fixed number — never unbounded. */
-        int probes = atomic_load(&g_wk_h1_probes);
-        ASSERT(probes > 1);
-        ASSERT(probes < 100);
-        /* F2/F3: the walk fell back to booking the skip instead of
-         * spinning, and the per-service tally is EXACTLY h=1's 2
-         * transparent inputs — not 4, 6, ... — proving the one full
-         * validation that ran counted this height's skip exactly once,
-         * not once per backoff attempt (the accumulator this checks,
-         * svc.progress.script_verif_skipped_no_undo, is owned solely by
-         * this walk's own loop, unlike the global undo-skip stats which
-         * the always-on reverify loop above also feeds). */
-        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo),
-                  2);
+        /* Never reached COMPLETE, never advanced past genesis, never booked
+         * the skip it could not confirm. */
+        ASSERT(atomic_load(&svc.progress.state) != BG_VALIDATION_COMPLETE);
+        ASSERT_EQ(atomic_load(&svc.progress.verified_height), 0);
+        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 0);
+        ASSERT_EQ(bg_validation_get_undo_skip_stats().blocks, (uint64_t)0);
+        /* It did retry (more than one attempt), and the retries were
+         * genuinely backed off rather than the probe spinning: the last
+         * captured wait grew past the first attempt's 1s starting point. */
+        int sleeps = atomic_load(&g_wk_stuck_sleep_calls);
+        ASSERT(sleeps >= 2);
+        ASSERT(atomic_load(&g_wk_stuck_last_wait_ms) > 1000);
         PASS();
     } _test_next:;
     if (started)
         bg_validation_stop(&svc);
+    g_wk_svc = NULL;
     bg_validation_test_set_validate_stub(NULL);
+    bg_validation_test_set_body_repair_stubs(NULL, NULL);
+    bg_validation_test_set_row_backoff_stubs(NULL, NULL);
+    return failures;
+}
+
+/* The reorg race: bg_validation_read_body_resilient can swap `pindex` under
+ * cs_main between the pre-check probe and the body read landing (a one-block
+ * reorg at the tip). The first read for h=1 both (a) returns the pre-reorg
+ * body, so the resilient reader's own still-active recheck sees the swap and
+ * retries, and (b) performs the reorg itself, moving the active chain's
+ * window tip at h=1 onto a different block identity whose delta row was
+ * never seeded (the seeded row still names the ORIGINAL hash). This deliberately
+ * does NOT stub the row probe — only the sleep is stubbed — so the walk's
+ * post-check runs the real, unstubbed bg_validation_row_unresolved_reason
+ * against the pindex bg_validation_read_body_resilient actually returned,
+ * and must refuse to book. */
+static struct du_fixture *g_wk_reorg_fx;
+static struct block_index g_wk_reorg_alt_idx;
+static struct uint256 g_wk_reorg_alt_hash;
+static _Atomic int g_wk_reorg_read_calls;
+
+static bool wk_read_body_reorg(struct block *out, const struct block_index *bi,
+                               const char *datadir)
+{
+    (void)datadir;
+    if (!bi || bi->nHeight < 0 || bi->nHeight >= DU_BLOCKS)
+        return false;
+    if (bi->nHeight == 1 &&
+        atomic_fetch_add(&g_wk_reorg_read_calls, 1) == 0) {
+        zcl_mutex_lock(&g_wk_reorg_fx->ms.cs_main);
+        active_chain_move_window_tip(&g_wk_reorg_fx->ms.chain_active,
+                                     &g_wk_reorg_alt_idx);
+        zcl_mutex_unlock(&g_wk_reorg_fx->ms.cs_main);
+    }
+    block_free(out);
+    return test_block_copy(out, &g_wk_reorg_fx->c.body[bi->nHeight],
+                           "wk_reorg_read");
+}
+
+static int du_case_walk_reorg_race(struct du_fixture *fx)
+{
+    int failures = 0;
+    struct bg_validation_service svc;
+    memset(&svc, 0, sizeof(svc));
+    bool started = false;
+    TEST("delta_undo: a reorg between the probe and the body read books "
+        "no skip") {
+        ASSERT(fx->opened);
+        /* Re-seed h=1's row against its ORIGINAL identity: FOUND for the
+         * pre-reorg block, so the pre-check resolves before the reorg. */
+        ASSERT(wk_reapply_h1());
+        struct block_undo u;
+        ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_FOUND);
+        block_undo_free(&u);
+
+        g_wk_fx = fx;
+        g_wk_reorg_fx = fx;
+        memset(g_wk_reorg_alt_hash.data, 0x77,
+               sizeof(g_wk_reorg_alt_hash.data));
+        g_wk_reorg_alt_idx = fx->c.idx[1];
+        g_wk_reorg_alt_idx.phashBlock = &g_wk_reorg_alt_hash;
+        atomic_store(&g_wk_reorg_read_calls, 0);
+        atomic_store(&g_wk_stuck_sleep_calls, 0);
+        g_wk_progress = -1;
+        g_wk_version = 0;
+        g_wk_skips = -1;
+        svc.ms = &fx->ms;
+        svc.datadir = fx->dir;
+        svc.params = fx->cp;
+        svc.num_workers = 1;
+        svc.progress_store = (struct bg_validation_store_port) {
+            .self = &svc,
+            .load_progress = wk_load_progress,
+            .save_progress = wk_save_progress,
+            .load_skips = wk_load_skips,
+            .save_skips = wk_save_skips,
+            .load_coverage_version = wk_load_version,
+            .save_coverage_version = wk_save_version,
+        };
+        bg_validation_reset_undo_skip_stats();
+        bg_validation_test_set_body_repair_stubs(wk_read_body_reorg, NULL);
+        /* Real validate function (not stubbed) and real row probe (only the
+         * sleep is stubbed): the post-check this proves out must run
+         * bg_validation_row_unresolved_reason itself, against the pindex
+         * bg_validation_read_body_resilient actually handed back after the
+         * reorg, not a test double standing in for it. */
+        bg_validation_test_set_row_backoff_stubs(NULL, wk_capture_sleep);
+        started = bg_validation_start(&svc);
+        ASSERT(started);
+        /* The reorged identity's row will never resolve (never seeded), so
+         * this never reaches COMPLETE either — wait for a bounded number of
+         * backoff attempts past the reorg instead. */
+        for (int i = 0; i < 200 &&
+             atomic_load(&g_wk_stuck_sleep_calls) < 4 &&
+             atomic_load(&svc.progress.state) != BG_VALIDATION_FAILED; i++)
+            platform_sleep_ms(20);
+        bg_validation_stop(&svc);
+        started = false;
+        /* The reorg actually happened (read called at least twice for h=1:
+         * once pre-reorg, retried post-reorg by the resilient reader's own
+         * still-active check). */
+        ASSERT(atomic_load(&g_wk_reorg_read_calls) >= 2);
+        /* And, despite the block validating with the mismatched undo
+         * (block_skips > 0 inside that one validation), the post-check
+         * caught the reorged identity's unresolved row and refused to book
+         * it: no skip, no advance past genesis, never COMPLETE. */
+        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 0);
+        ASSERT_EQ(atomic_load(&svc.progress.verified_height), 0);
+        ASSERT(atomic_load(&svc.progress.state) != BG_VALIDATION_COMPLETE);
+        PASS();
+    } _test_next:;
+    if (started)
+        bg_validation_stop(&svc);
     bg_validation_test_set_body_repair_stubs(NULL, NULL);
     bg_validation_test_set_row_backoff_stubs(NULL, NULL);
     return failures;
@@ -938,6 +1111,7 @@ static int test_delta_undo_forward_record(const struct chain_params *cp)
     failures += du_case_unfolded_store(&fx);
     failures += du_case_walk_waits_out_branch_switch(&fx);
     failures += du_case_walk_row_never_resolves(&fx);
+    failures += du_case_walk_reorg_race(&fx);
     if (fx.opened)
         du_close(&fx.ms);
     if (fx.built)

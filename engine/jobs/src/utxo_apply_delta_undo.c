@@ -16,6 +16,7 @@
 
 #include "base/serialize_le.h"
 #include "coins/undo.h"
+#include "core/amount.h"
 #include "jobs/stage_helpers.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -25,11 +26,6 @@
 #include <string.h>
 
 #define UNDO_TAG "utxo_apply_undo"
-
-/* Matches the encoder's own bound (utxo_apply_delta.c MAX_MONEY_ZAT). core/
- * is sealed and not includable here, so this engine module carries its own
- * copy of the same consensus constant, as utxo_apply_delta.c already does. */
-#define MAX_MONEY_ZAT 2100000000000000LL
 
 const char *utxo_apply_delta_undo_status_name(
     enum utxo_apply_delta_undo_status status)
@@ -49,13 +45,22 @@ struct spent_cursor {
     const uint8_t *end;
 };
 
+/* A one-byte, never-dereferenced sentinel: `c->p == c->end == NULL` (an
+ * empty blob whose row gave back a NULL pointer) would otherwise subtract
+ * two null pointers to measure the remaining length, which is undefined
+ * pointer arithmetic even though both operands agree. Rebasing a null
+ * cursor onto this sentinel keeps `end - p` a same-object subtraction. */
+static const uint8_t g_empty_cursor_sentinel;
+
 static bool take_bytes(struct spent_cursor *c, void *dst, size_t n)
 {
-    if ((size_t)(c->end - c->p) < n)
+    const uint8_t *p = c->p ? c->p : &g_empty_cursor_sentinel;
+    const uint8_t *end = c->end ? c->end : &g_empty_cursor_sentinel;
+    if ((size_t)(end - p) < n)
         return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
     if (dst)
-        memcpy(dst, c->p, n);
-    c->p += n;
+        memcpy(dst, p, n);
+    c->p = p + n;
     return true;
 }
 
@@ -83,8 +88,7 @@ static bool take_i64(struct spent_cursor *c, int64_t *out)
  * re-derives it), never let it read as a valid-but-wrong undo entry. */
 static bool spent_value_and_coinbase_ok(int64_t value, uint8_t coinbase)
 {
-    return value >= 0 && value <= MAX_MONEY_ZAT &&
-           (coinbase == 0 || coinbase == 1);
+    return MoneyRange(value) && (coinbase == 0 || coinbase == 1);
 }
 
 /* Does this entry name `prevout` and fit within the cursor's remaining
