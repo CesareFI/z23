@@ -336,6 +336,11 @@ const uint8_t *fxi_digest(const struct fxi *x, size_t e)
     return x->ents[e].digest;
 }
 
+const uint8_t *fxi_whole_digest(const struct fxi *x, size_t e)
+{
+    return x->ents[e].whole;
+}
+
 const char *fxi_file_path(const struct fxi *x, size_t k)
 {
     return x->files[k].path;

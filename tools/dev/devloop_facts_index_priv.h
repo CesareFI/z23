@@ -11,6 +11,7 @@ struct fxi_ent {
     char *id;         /* owned, NUL-terminated */
     const char *bare; /* the name after the last ':' */
     uint8_t digest[32];
+    uint8_t whole[32]; /* every record of it, the main file's included */
     bool main_owned;  /* a record of it lies in the main file */
     bool other_row;   /* a record of it lies outside the main file */
     bool root;

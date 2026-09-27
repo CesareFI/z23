@@ -490,12 +490,14 @@ static void fxi_digests(struct fxi *x)
     qsort(x->rows, x->nrows, sizeof(*x->rows), fxi_row_cmp);
     for (size_t k = 0; k < x->nrows;) {
         struct fxi_ent *t = &x->ents[x->rows[k].ent];
-        struct sha3_256_ctx h;
+        struct sha3_256_ctx h, w;
         size_t j = k;
         sha3_256_init(&h);
         sha3_256_write(&h, (const unsigned char *)"zcl.semantic.entity.v1", 22);
+        w = h;
         t->first_row = (uint32_t)k;
         for (; j < x->nrows && x->rows[j].ent == x->rows[k].ent; j++) {
+            fxi_hash_row(&w, &x->rows[j]);
             if (x->rows[j].main != 0)
                 continue;
             fxi_hash_row(&h, &x->rows[j]);
@@ -503,12 +505,15 @@ static void fxi_digests(struct fxi *x)
         }
         t->nrows = (uint32_t)(j - k);
         sha3_256_finalize(&h, t->digest);
+        sha3_256_finalize(&w, t->whole);
         k = j;
     }
     for (size_t k = 0; k < x->nents; k++) {
-        if (x->ents[k].nrows == 0)
+        if (x->ents[k].nrows == 0) {
             zcl_sha3_256((const unsigned char *)"zcl.semantic.entity.v1", 22,
                          x->ents[k].digest);
+            memcpy(x->ents[k].whole, x->ents[k].digest, 32);
+        }
         x->ents[k].root |= x->ents[k].main_owned;
     }
 }

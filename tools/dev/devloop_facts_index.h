@@ -62,6 +62,9 @@ const char *fxi_id(const struct fxi *x, size_t e);
 const char *fxi_bare(const struct fxi *x, size_t e);
 bool fxi_find(const struct fxi *x, const char *id, size_t *e);
 const uint8_t *fxi_digest(const struct fxi *x, size_t e);
+/* Every record of e, the main file's included: a main-file entity whose
+ * records a header change re-expanded differs here and not in fxi_digest. */
+const uint8_t *fxi_whole_digest(const struct fxi *x, size_t e);
 bool fxi_main_owned(const struct fxi *x, size_t e);
 /* A record of e names `path` as its file (the file that declares it). */
 bool fxi_has_path(const struct fxi *x, size_t e, const char *path);

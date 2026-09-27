@@ -366,7 +366,8 @@ static void fxc_mark_digests(const struct fxi *x, const struct fxi *other,
     for (size_t e = 0; e < fxi_count(x); e++) {
         size_t o;
         if (!fxi_find(other, fxi_id(x, e), &o) ||
-            memcmp(fxi_digest(x, e), fxi_digest(other, o), 32) != 0)
+            memcmp(fxi_whole_digest(x, e), fxi_whole_digest(other, o),
+                   32) != 0)
             flags[e] |= FXI_DIRTY_DIGEST;
     }
 }
@@ -401,11 +402,17 @@ static size_t fxc_first_root(const struct fxi *x, const uint8_t *flags,
         m[e] = flags[e] & mask;
     if (!fxi_taint(x, m, via))
         hit = SIZE_MAX - 1;
-    for (size_t e = 0; hit == SIZE_MAX && e < fxi_count(x); e++)
-        if (fxi_root(x, e) && via[e] != SIZE_MAX) {
-            hit = e;
-            *dirty = via[e];
-        }
+    /* The main file's own #if names the cause best when it moved. */
+    for (size_t e = 0; hit != SIZE_MAX - 1 && e < fxi_count(x); e++) {
+        bool cond = fxi_is_site(x, e, VCS_SEMANTIC_FACTS_COND_SITE);
+        if (!fxi_root(x, e) || via[e] == SIZE_MAX ||
+            (hit != SIZE_MAX && !cond))
+            continue;
+        hit = e;
+        *dirty = via[e];
+        if (cond)
+            break;
+    }
     free(m);
     return hit;
 }
