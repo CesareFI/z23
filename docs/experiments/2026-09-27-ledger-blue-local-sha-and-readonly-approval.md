@@ -103,6 +103,13 @@ tests passed 2/2 with Clang 22.1.6 Debug/ASan/UBSan and GCC 16.1.1 Release;
 the complexity gate passed 60,771 functions in 4,430 files. These hashes
 pin the host simulator output, not the Blue's physical display.
 
+A fresh GCC 16.1.1 Release build with
+`ZCL_LEDGER_REVIEW_ONLY=ON`, `CMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON`, and
+`CMAKE_DISABLE_FIND_PACKAGE_PNG=ON` configured and built successfully. CMake
+reported both disable variables unused because this mode never searches for
+those packages. Its executable passed the wallet CLI fixture and `readelf -d`
+listed only `libc.so.6` as a runtime dependency.
+
 ## Limit
 
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel
