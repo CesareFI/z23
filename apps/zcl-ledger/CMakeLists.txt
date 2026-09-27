@@ -153,7 +153,7 @@ target_compile_options(blue_chain_tip PRIVATE -Wall -Wextra -Werror -pedantic)
 add_library(blue_utxo STATIC src/blue_utxo.c)
 target_include_directories(blue_utxo PUBLIC include)
 target_link_libraries(blue_utxo PUBLIC blue_chain_tip zcl_tx_prevout
-    zcl_tx_script_facts)
+    zcl_tx_script_facts OpenSSL::Crypto)
 target_compile_options(blue_utxo PRIVATE -Wall -Wextra -Werror -pedantic)
 add_executable(zcl-blue-wallet-review src/blue_wallet_review_cli.c
     src/blue_mainnet_branch.c)

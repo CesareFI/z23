@@ -15,6 +15,8 @@
 #include "chain/subsidy.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
+#include "crypto/sha256.h"
+#include "encoding/utilstrencodings.h"
 #include "consensus/upgrades.h"
 #include "core/uint256.h"
 #include "core/serialize.h"
@@ -254,6 +256,19 @@ static bool rpc_chainstats(const struct json_value *params, bool help,
 
 /* gettxdetail txid
  * Returns full transaction details from chainstate. */
+static void push_script_sha256(struct json_value *out,
+                               const struct script *script)
+{
+    struct sha256_ctx context;
+    uint8_t digest[32];
+    char hex[65];
+    sha256_init(&context);
+    sha256_write(&context, script->data, script->size);
+    sha256_finalize(&context, digest);
+    HexStr(digest, sizeof digest, false, hex, sizeof hex);
+    json_push_kv_str(out, "script_sha256", hex);
+}
+
 static bool rpc_gettxdetail(const struct json_value *params, bool help,
                               struct json_value *result)
 {
@@ -261,7 +276,7 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "gettxdetail txid\n"
         "Returns UTXO details for a transaction from chainstate.\n"
-        "Shows which outputs are spent vs unspent, values, script types.\n"
+        "Shows spent status, values, and hashes of unspent scripts.\n"
         "\nArguments:\n"
         "1. txid  (hex, required) Transaction ID\n");
 
@@ -323,6 +338,7 @@ static bool rpc_gettxdetail(const struct json_value *params, bool help,
             json_push_kv_str(&out, "amount", amt);
             json_push_kv_int(&out, "script_size",
                              (int64_t)c.vout[i].script_pub_key.size);
+            push_script_sha256(&out, &c.vout[i].script_pub_key);
             total_unspent += c.vout[i].value;
             unspent_count++;
         }

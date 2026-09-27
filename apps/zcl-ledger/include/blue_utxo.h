@@ -6,7 +6,8 @@
 
 bool blue_utxo_parse(const char *reply, size_t length, const char *txid_hex,
                      uint32_t output_index, uint64_t value_zat,
-                     size_t script_length, uint32_t next_height);
+                     const uint8_t *script, size_t script_length,
+                     uint32_t next_height);
 bool blue_utxo_check_inputs(const char *rpc_binary, const uint8_t *wire,
                             size_t length,
                             const zcl_tx_previous_transaction *previous,

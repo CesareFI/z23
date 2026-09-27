@@ -190,7 +190,7 @@ int main(int argc, char **argv) {
     }
     if (!blue_utxo_check_inputs(argv[3], wire, length, previous,
                                 previous_count, tip.next_height)) {
-        fputs("A supplied input is not confirmed, unspent, mature, and amount-matched in the local node.\n",
+        fputs("A supplied input failed the local node's confirmation, UTXO, maturity, amount, or script check.\n",
               stderr);
         free_previous(previous_bytes, previous_count);
         free(plan);

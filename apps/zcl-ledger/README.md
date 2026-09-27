@@ -82,7 +82,8 @@ and one complete previous transaction per input, in input order. It requires
 `initialblockdownload:false`, then derives
 the intended next height and branch, and preflights every outpoint against
 those bytes. It also queries `gettxdetail` for each input and requires an
-unspent output with the same amount and script length, a confirmed height,
+unspent output with the same amount, script length, and SHA-256 script hash,
+a confirmed height,
 and coinbase maturity. It then sends the
 same bytes to the Blue for independent SHA-256d, P2PKH amount, fee, and
 input-specific ZIP-243 digest checks. The host derives the branch ID from

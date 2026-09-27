@@ -18,11 +18,20 @@ static const char good[] =
     "\"error\":null,\"id\":1}";
 static const char txid[] =
     "0000000000000000000000000000000000000000000000000000000000000000";
+static const uint8_t script[25] = {
+    0x76, 0xa9, 0x14,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x88, 0xac
+};
+static const char live_script_hash[] =
+    "e2f6c234985456932db846b2bf1a2fed2cb98b5b0f246f30711ea6148a76860e";
 static const char utxo[] =
     "{\"result\":{\"txid\":\"0000000000000000000000000000000000000000000000000000000000000000\","
     "\"coinbase\":false,\"height\":700000,\"num_outputs\":1,"
     "\"outputs\":[{\"n\":0,\"spent\":false,\"amount\":\"4.00000000\","
-    "\"script_size\":25}]},\"error\":null}";
+    "\"script_size\":25,\"script_sha256\":"
+    "\"46402f61b3239cd80b93294e10b552d66a31b79c8fe7fdd92a832d00f832e82e\"}]},\"error\":null}";
 
 static bool accepts(const char *reply) {
     blue_chain_tip tip;
@@ -53,7 +62,7 @@ static bool utxo_replacement(const char *old, const char *new_text) {
     char changed[512];
     replace_once(utxo, old, new_text, changed);
     return blue_utxo_parse(changed, strlen(changed), txid, 0,
-                           400000000, 25, 707002);
+                           400000000, script, sizeof script, 707002);
 }
 
 int main(int argc, char **argv) {
@@ -83,11 +92,15 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "gettxdetail") == 0) {
         const char *spent = getenv("BLUE_UTXO_TEST_SPENT") ? "true" : "false";
+        const char *hash = getenv("BLUE_UTXO_TEST_BAD_SCRIPT")
+            ? "12f6c234985456932db846b2bf1a2fed2cb98b5b0f246f30711ea6148a76860e"
+            : live_script_hash;
         printf("{\"result\":{\"txid\":%s,\"coinbase\":false,"
                "\"height\":700000,\"num_outputs\":1,\"outputs\":["
                "{\"n\":0,\"spent\":%s,\"amount\":\"4.00000000\","
-               "\"script_size\":25}]},\"error\":null,\"id\":1}\n",
-               argv[2], spent);
+               "\"script_size\":25,\"script_sha256\":\"%s\"}]},"
+               "\"error\":null,\"id\":1}\n",
+               argv[2], spent, hash);
         return 0;
     }
     assert(argc == 1);
@@ -109,13 +122,24 @@ int main(int argc, char **argv) {
     assert(!accepts_replacement("abcdef", "abcdeg"));
     assert(!accepts_replacement("\"chain\":\"main\",", ""));
     assert(blue_utxo_parse(utxo, strlen(utxo), txid, 0,
-                           400000000, 25, 707002));
+                           400000000, script, sizeof script, 707002));
+    uint8_t wrong_script[sizeof script];
+    memcpy(wrong_script, script, sizeof script);
+    wrong_script[3] ^= 1;
+    assert(!blue_utxo_parse(utxo, strlen(utxo), txid, 0,
+                            400000000, wrong_script, sizeof wrong_script,
+                            707002));
     assert(!utxo_replacement("\"spent\":false", "\"spent\":true"));
     assert(!utxo_replacement("4.00000000", "4.00000001"));
     assert(!utxo_replacement("\"height\":700000",
                              "\"height\":707002"));
     assert(!utxo_replacement("\"script_size\":25",
                              "\"script_size\":24"));
+    assert(!utxo_replacement("\"script_sha256\":", "\"unused\":"));
+    assert(!utxo_replacement("\"script_sha256\":",
+                             "\"script_sha256\":\"46402f61b3239cd80b93294e10b552d66a31b79c8fe7fdd92a832d00f832e82e\",\"script_sha256\":"));
+    assert(!utxo_replacement("46402f61b3239cd80b93294e10b552d66a31b79c8fe7fdd92a832d00f832e82e",
+                             "16402f61b3239cd80b93294e10b552d66a31b79c8fe7fdd92a832d00f832e82e"));
     assert(!utxo_replacement("\"coinbase\":false,\"height\":700000",
                              "\"coinbase\":true,\"height\":706950"));
     assert(!utxo_replacement("\"n\":0,", "\"n\":0,\"n\":0,"));

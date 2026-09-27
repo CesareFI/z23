@@ -5,6 +5,7 @@
 #include "zcl_tx_script_facts.h"
 #include "json/json.h"
 
+#include <openssl/sha.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -40,21 +41,25 @@ static bool amount_zat(const char *text, uint64_t *value) {
 }
 
 static bool row_matches(const struct json_value *row, uint64_t value_zat,
-                        size_t script_length) {
+                        size_t script_length, const char script_hash[65]) {
     const struct json_value *spent = field(row, "spent");
     const struct json_value *amount = field(row, "amount");
     const struct json_value *size = field(row, "script_size");
+    const struct json_value *hash = field(row, "script_sha256");
     uint64_t parsed = 0;
     return spent && spent->type == JSON_BOOL && !spent->val.b &&
         amount && amount->type == JSON_STR &&
         amount_zat(amount->val.s, &parsed) && parsed == value_zat &&
         size && size->type == JSON_INT &&
-        size->val.i == (int64_t)script_length;
+        size->val.i == (int64_t)script_length && hash &&
+        hash->type == JSON_STR &&
+        strcmp(hash->val.s, script_hash) == 0;
 }
 
 static bool output_matches(const struct json_value *result,
                            uint32_t index, uint64_t value_zat,
-                           size_t script_length) {
+                           size_t script_length,
+                           const char script_hash[65]) {
     const struct json_value *outputs = field(result, "outputs");
     const struct json_value *count = field(result, "num_outputs");
     if (!outputs || outputs->type != JSON_ARR || !count ||
@@ -65,7 +70,8 @@ static bool output_matches(const struct json_value *result,
         const struct json_value *row = json_at(outputs, i);
         const struct json_value *n = field(row, "n");
         if (!n || n->type != JSON_INT || n->val.i != index) continue;
-        if (found || !row_matches(row, value_zat, script_length)) return false;
+        if (found || !row_matches(row, value_zat, script_length,
+                                  script_hash)) return false;
         found = true;
     }
     return found;
@@ -85,11 +91,34 @@ static bool metadata_matches(const struct json_value *result,
         next_height - (uint32_t)height->val.i >= 100;
 }
 
+static bool script_sha256_hex(const uint8_t *script, size_t length,
+                              char hex_digest[65]) {
+    uint8_t digest[32];
+    static const char hex[] = "0123456789abcdef";
+    if (!SHA256(script, length, digest)) return false;
+    for (size_t i = 0; i < sizeof digest; ++i) {
+        hex_digest[2 * i] = hex[digest[i] >> 4];
+        hex_digest[2 * i + 1] = hex[digest[i] & 15];
+    }
+    hex_digest[64] = 0;
+    return true;
+}
+
+static bool valid_query(const char *reply, size_t length,
+                        const char *txid_hex, const uint8_t *script,
+                        uint32_t next_height) {
+    return reply && length && length <= 65535 && txid_hex &&
+        strlen(txid_hex) == 64 && script && next_height;
+}
+
 bool blue_utxo_parse(const char *reply, size_t length, const char *txid_hex,
                      uint32_t output_index, uint64_t value_zat,
-                     size_t script_length, uint32_t next_height) {
-    if (!reply || !length || length > 65535 || !txid_hex ||
-        strlen(txid_hex) != 64 || !next_height) return false;
+                     const uint8_t *script, size_t script_length,
+                     uint32_t next_height) {
+    if (!valid_query(reply, length, txid_hex, script, next_height))
+        return false;
+    char script_hash[65];
+    if (!script_sha256_hex(script, script_length, script_hash)) return false;
     struct json_value root = {0};
     bool valid = json_read(&root, reply, length);
     const struct json_value *result = valid ? field(&root, "result") : NULL;
@@ -97,7 +126,8 @@ bool blue_utxo_parse(const char *reply, size_t length, const char *txid_hex,
     valid = result && result->type == JSON_OBJ && error &&
         error->type == JSON_NULL &&
         metadata_matches(result, txid_hex, next_height) &&
-        output_matches(result, output_index, value_zat, script_length);
+        output_matches(result, output_index, value_zat, script_length,
+                       script_hash);
     json_free(&root);
     return valid;
 }
@@ -131,7 +161,8 @@ static bool check_input(void *context, const zcl_tx_input *input) {
     return blue_rpc_capture(check->rpc_binary, "gettxdetail", argument,
                             reply, sizeof reply, &length) &&
         blue_utxo_parse(reply, length, txid, input->previous_output_index,
-                        output.value_zat, output.script_length,
+                        output.value_zat, output.script,
+                        output.script_length,
                         check->next_height);
 }
 

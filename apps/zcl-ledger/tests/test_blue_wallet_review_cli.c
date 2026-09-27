@@ -124,8 +124,13 @@ int main(int argc, char **argv) {
             assert(setenv("BLUE_UTXO_TEST_SPENT", "1", 1) == 0);
             assert(run(argv[2], argv[3], NULL, spend_path,
                        previous_path, error, sizeof error) == 1);
-            assert(strstr(error, "not confirmed, unspent") != NULL);
+            assert(strstr(error, "UTXO, maturity, amount, or script") != NULL);
             assert(unsetenv("BLUE_UTXO_TEST_SPENT") == 0);
+            assert(setenv("BLUE_UTXO_TEST_BAD_SCRIPT", "1", 1) == 0);
+            assert(run(argv[2], argv[3], NULL, spend_path,
+                       previous_path, error, sizeof error) == 1);
+            assert(strstr(error, "UTXO, maturity, amount, or script") != NULL);
+            assert(unsetenv("BLUE_UTXO_TEST_BAD_SCRIPT") == 0);
             assert(setenv("BLUE_TIP_REORG_MARKER", marker_path, 1) == 0);
             assert(run(argv[2], argv[3], NULL, spend_path,
                        previous_path, error, sizeof error) == 1);
