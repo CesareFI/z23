@@ -89,6 +89,10 @@ renderers can link `blue_bagl_canvas` and keep their app-specific layout in a
 separate source file. Review now uses this API; its 68 fixture PNGs across
 regular, large-text, dark, and large-text dark modes are byte-identical to
 the previous renderer.
+`blue_bagl_wrap_ascii` uses actual glyph advances and explicit input length,
+output capacity, line width, and line count. It wraps at spaces where
+possible, breaks long words when needed, and rejects unsupported bytes or
+content that cannot fit. Its output is only valid when it returns true.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

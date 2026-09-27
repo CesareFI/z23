@@ -4,6 +4,7 @@
 #include <png.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
     unsigned char char_width;
@@ -136,6 +137,72 @@ bool blue_bagl_text(blue_bagl_canvas *image, const char *label,
                       blend(background, foreground, alpha));
             }
         cursor += glyph->char_width;
+    }
+    return true;
+}
+
+static bool append_span(char *output, size_t capacity, size_t *used,
+                        const char *source, size_t length) {
+    if (length >= capacity - *used) return false;
+    memcpy(output + *used, source, length);
+    *used += length;
+    output[*used] = 0;
+    return true;
+}
+
+typedef struct {
+    size_t end;
+    size_t next;
+    bool finished;
+} wrap_segment;
+
+static bool select_segment(const char *source, size_t length, size_t offset,
+                           unsigned max_width, const bagl_font_t *font,
+                           wrap_segment *segment) {
+    size_t cursor = offset, last_space = length;
+    unsigned width = 0;
+    while (cursor < length) {
+        unsigned char ch = (unsigned char)source[cursor];
+        if (ch < 0x20 || ch > 0x7e) return false;
+        unsigned advance = font->characters[ch - 0x20].char_width;
+        if (advance > max_width - width) break;
+        width += advance;
+        if (ch == ' ') last_space = cursor;
+        ++cursor;
+    }
+    if (cursor == offset) return false;
+    *segment = (wrap_segment){ .end = cursor, .next = cursor,
+                               .finished = cursor == length };
+    if (segment->finished) return true;
+    if (source[cursor] == ' ') segment->next = cursor + 1;
+    else if (last_space != length && last_space > offset) {
+        segment->end = last_space;
+        segment->next = last_space + 1;
+    }
+    return true;
+}
+
+bool blue_bagl_wrap_ascii(const char *source, size_t source_length,
+                          char *output, size_t output_capacity,
+                          unsigned max_width, unsigned max_lines,
+                          blue_bagl_font font_choice) {
+    const bagl_font_t *font = select_font(font_choice);
+    if (!source || !output || !output_capacity || !font ||
+        !max_width || max_width > BLUE_BAGL_WIDTH || !max_lines) return false;
+    output[0] = 0;
+    size_t offset = 0, used = 0;
+    unsigned lines = 1;
+    while (offset < source_length) {
+        wrap_segment segment;
+        if (!select_segment(source, source_length, offset, max_width,
+                            font, &segment)) return false;
+        if (!append_span(output, output_capacity, &used,
+                         source + offset, segment.end - offset)) return false;
+        if (segment.finished || segment.next == source_length) return true;
+        if (lines >= max_lines ||
+            !append_span(output, output_capacity, &used, "\n", 1)) return false;
+        offset = segment.next;
+        ++lines;
     }
     return true;
 }

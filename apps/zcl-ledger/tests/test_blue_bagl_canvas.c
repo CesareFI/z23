@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
@@ -37,6 +38,31 @@ int main(void) {
                            0xffffff, 0x112233, BLUE_BAGL_TEXT_14));
     CHECK(!blue_bagl_text(image, "A", 319, 40, 10, false,
                            0xffffff, 0x112233, BLUE_BAGL_TEXT_14));
+    char wrapped[24];
+    CHECK(blue_bagl_wrap_ascii("AAAA BBBB", 9, wrapped, sizeof wrapped,
+                               52, 2, BLUE_BAGL_TEXT_22));
+    CHECK(strcmp(wrapped, "AAAA\nBBBB") == 0);
+    CHECK(blue_bagl_wrap_ascii("AAAAA", 5, wrapped, sizeof wrapped,
+                               52, 2, BLUE_BAGL_TEXT_22));
+    CHECK(strcmp(wrapped, "AAAA\nA") == 0);
+    CHECK(blue_bagl_wrap_ascii("AAAA ", 5, wrapped, sizeof wrapped,
+                               52, 1, BLUE_BAGL_TEXT_22));
+    CHECK(strcmp(wrapped, "AAAA") == 0);
+    CHECK(!blue_bagl_wrap_ascii("AAAA BBBB", 9, wrapped, sizeof wrapped,
+                                52, 1, BLUE_BAGL_TEXT_22));
+    CHECK(!blue_bagl_wrap_ascii("AAAA BBBB", 9, wrapped, 5,
+                                52, 2, BLUE_BAGL_TEXT_22));
+    CHECK(!blue_bagl_wrap_ascii("\xc3\xa9", 2, wrapped, sizeof wrapped,
+                                52, 2, BLUE_BAGL_TEXT_22));
+    char memo[512], memo_lines[640];
+    memset(memo, 'A', sizeof memo);
+    CHECK(blue_bagl_wrap_ascii(memo, sizeof memo, memo_lines,
+                               sizeof memo_lines, 52, 128,
+                               BLUE_BAGL_TEXT_22));
+    CHECK(strlen(memo_lines) == 639);
+    CHECK(!blue_bagl_wrap_ascii(memo, sizeof memo, memo_lines,
+                                sizeof memo_lines, 52, 127,
+                                BLUE_BAGL_TEXT_22));
     char path[] = "/tmp/zcl-blue-canvas-XXXXXX";
     int fd = mkstemp(path);
     CHECK(fd >= 0);

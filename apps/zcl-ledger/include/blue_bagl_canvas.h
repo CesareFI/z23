@@ -3,6 +3,7 @@
 #define ZCL_BLUE_BAGL_CANVAS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 enum { BLUE_BAGL_WIDTH = 320, BLUE_BAGL_HEIGHT = 480 };
@@ -20,6 +21,10 @@ bool blue_bagl_text(blue_bagl_canvas *canvas, const char *label,
                     uint32_t foreground, uint32_t background,
                     blue_bagl_font font);
 int blue_bagl_font_height(blue_bagl_font font);
+bool blue_bagl_wrap_ascii(const char *source, size_t source_length,
+                          char *output, size_t output_capacity,
+                          unsigned max_width, unsigned max_lines,
+                          blue_bagl_font font);
 bool blue_bagl_write_png(const blue_bagl_canvas *canvas, const char *path);
 
 #endif
