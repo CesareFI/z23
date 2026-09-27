@@ -135,8 +135,9 @@ read-only review controller. It retains one standard transparent output,
 halts upload until that output is acknowledged, and limits a session to 16
 outputs. A chunk must end exactly when an output completes; a chunk with
 trailing bytes invalidates the session. Every output is provisional until
-the final replay commitment validates. Its acknowledgement function must be bound to a touchscreen
-callback in a future device image; a USB command must never call it. The
+the final replay commitment validates. Its acknowledgement function must be
+bound to a touchscreen callback in a future device image; a USB command must
+never call it. The
 [output review experiment](../../docs/experiments/2026-09-27-ledger-blue-output-review.md)
 records host tests and the isolated ARM state measurement. No Blue image
 links this controller yet, and it has no signing operation or verified fee.
@@ -160,6 +161,13 @@ caller supplied and not authenticated. The
 [transaction-driven simulator experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-simulator.md)
 records the reproducible fixture and failure checks. This harness does not
 emulate BOLOS USB or hardware touch timing.
+[`blue_payment_apdu.h`](include/blue_payment_apdu.h) defines the C23,
+read-only Wallet command state machine. USB can start, feed, advance passes,
+finish, cancel, and query the review. Only a separate touchscreen function
+acknowledges a pending output. The
+[APDU experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-apdu.md)
+records malformed-command and memory tests. The handler is host-tested but
+not linked into a Blue image.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

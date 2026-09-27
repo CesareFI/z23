@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_review.h"
+#include "blue_payment_apdu.h"
 #include "blue_payment_screen.h"
 #include "blue_payment_simulate.h"
 #include "zcl_zip243_host.h"
@@ -241,11 +242,179 @@ static void test_simulation(const fixture *item) {
     assert(count == 0 && screens[0].title[0] == 0);
 }
 
+typedef struct {
+    blue_payment_apdu state;
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context;
+    zcl_zip243_hasher blake;
+    zcl_tx_replay_sha256 sha;
+} apdu_fixture;
+
+static void apdu_init(apdu_fixture *session) {
+    memset(session, 0, sizeof *session);
+    session->sha_context = EVP_MD_CTX_new();
+    assert(session->sha_context);
+    session->blake = zcl_zip243_host_hasher(&session->blake_context);
+    session->sha = (zcl_tx_replay_sha256){.context = session->sha_context,
+        .init = sha_init, .update = sha_update, .final = sha_final};
+}
+
+static uint16_t command(apdu_fixture *session, uint8_t instruction,
+    const uint8_t *body, size_t length, uint8_t reply[8],
+    size_t *reply_length) {
+    assert(length <= 255);
+    uint8_t apdu[260] = {0xa5, instruction, 0, 0, (uint8_t)length};
+    if (length) memcpy(apdu + 5, body, length);
+    return blue_payment_apdu_handle(&session->state, apdu, length + 5,
+        reply, 8, reply_length, &session->blake, &session->sha,
+        screen_hash);
+}
+
+static void apdu_begin(apdu_fixture *session, const fixture *item) {
+    uint8_t body[12] = {0};
+    uint32_t length = (uint32_t)item->length;
+    for (unsigned i = 0; i < 4; ++i)
+        body[i] = (uint8_t)(length >> (8 * i));
+    const uint8_t branch[4] = {0xbb, 0x09, 0xb8, 0x76};
+    memcpy(body + 8, branch, sizeof branch);
+    uint8_t reply[8];
+    size_t reply_length = 99;
+    assert(command(session, 0x20, body, sizeof body, reply,
+        &reply_length) == 0x9000);
+    assert(reply_length == 0);
+}
+
+static void apdu_passes(apdu_fixture *session, const fixture *item) {
+    uint8_t reply[8];
+    size_t reply_length;
+    for (unsigned i = 0; i < 2; ++i) {
+        assert(command(session, 0x21, item->bytes, item->length,
+            reply, &reply_length) == 0x9000);
+        assert(reply_length == 2 && reply[1] == 0);
+        assert(command(session, 0x22, NULL, 0,
+            reply, &reply_length) == 0x9000);
+        assert(reply_length == 2 && reply[0] == i + 2);
+    }
+    assert(reply[1] == 2);
+}
+
+static void test_apdu(const fixture *item) {
+    apdu_fixture session;
+    apdu_init(&session);
+    assert(!blue_payment_apdu_touch_continue(&session.state));
+    apdu_begin(&session, item);
+    apdu_passes(&session, item);
+    uint8_t reply[8];
+    size_t reply_length;
+    assert(command(&session, 0x21, item->bytes,
+        item->output_end[0], reply, &reply_length) == 0x9000);
+    assert(reply_length == 2 && reply[0] == 3 && reply[1] == 1);
+    assert(strcmp(session.state.screen.title, "OUTPUT 1/2") == 0);
+    assert(command(&session, 0x25, NULL, 0,
+        reply, &reply_length) == 0x9000);
+    assert(reply_length == 6 && reply[0] == 1 && reply[2] == 1);
+    assert(blue_payment_apdu_touch_continue(&session.state));
+    assert(session.state.screen.title[0] == 0);
+    assert(command(&session, 0x21, item->bytes + item->output_end[0],
+        item->output_end[1] - item->output_end[0],
+        reply, &reply_length) == 0x9000);
+    assert(reply[1] == 1 &&
+        strcmp(session.state.screen.title, "OUTPUT 2/2") == 0);
+    assert(blue_payment_apdu_touch_continue(&session.state));
+    assert(command(&session, 0x21, item->bytes + item->output_end[1],
+        item->length - item->output_end[1],
+        reply, &reply_length) == 0x9000);
+    assert(reply[1] == 0);
+    assert(command(&session, 0x23, NULL, 0,
+        reply, &reply_length) == 0x9000);
+    assert(reply_length == 1 && reply[0] == 2);
+    assert(command(&session, 0x25, NULL, 0,
+        reply, &reply_length) == 0x9000);
+    assert(reply_length == 6 && reply[0] == 0 && reply[3] == 1 &&
+        reply[4] == 2 && reply[5] == 2);
+    assert(!blue_payment_apdu_touch_continue(&session.state));
+    EVP_MD_CTX_free(session.sha_context);
+}
+
+static void test_apdu_fail_closed(const fixture *item) {
+    apdu_fixture session;
+    apdu_init(&session);
+    apdu_begin(&session, item);
+    apdu_passes(&session, item);
+    uint8_t reply[8];
+    size_t reply_length;
+    assert(command(&session, 0x21, item->bytes,
+        item->output_end[0], reply, &reply_length) == 0x9000);
+    assert(command(&session, 0x26, NULL, 0,
+        reply, &reply_length) == 0x6d00);
+    assert(!session.state.active && !session.state.review.pending);
+    assert(session.state.screen.title[0] == 0);
+
+    apdu_begin(&session, item);
+    apdu_passes(&session, item);
+    assert(command(&session, 0x21, item->bytes,
+        item->output_end[0], reply, &reply_length) == 0x9000);
+    assert(command(&session, 0x21, item->bytes + item->output_end[0],
+        1, reply, &reply_length) == 0x6a80);
+    assert(!blue_payment_apdu_touch_continue(&session.state));
+
+    apdu_begin(&session, item);
+    apdu_passes(&session, item);
+    assert(command(&session, 0x21, item->bytes,
+        item->output_end[0] + 1, reply, &reply_length) == 0x6a80);
+    assert(!session.state.active && !session.state.review.pending);
+    apdu_begin(&session, item);
+    assert(command(&session, 0x24, NULL, 0,
+        reply, &reply_length) == 0x9000);
+    assert(!session.state.active);
+    apdu_begin(&session, item);
+    uint8_t malformed[] = {0xa5, 0x21, 0, 0, 1};
+    assert(blue_payment_apdu_handle(&session.state, malformed,
+        sizeof malformed, reply, sizeof reply, &reply_length,
+        &session.blake, &session.sha, screen_hash) == 0x6700);
+    assert(reply_length == 0 && !session.state.active);
+    EVP_MD_CTX_free(session.sha_context);
+}
+
+static void test_apdu_mutations(void) {
+    apdu_fixture session;
+    apdu_init(&session);
+    uint32_t random = 0x23c1a55u;
+    for (unsigned run = 0; run < 10000; ++run) {
+        uint8_t apdu[260] = {0xa5, (uint8_t)(0x20 + run % 7), 0, 0, 0};
+        random = random * 1664525u + 1013904223u;
+        apdu[4] = (uint8_t)(random >> 24);
+        for (size_t i = 5; i < sizeof apdu; ++i) {
+            random = random * 1664525u + 1013904223u;
+            apdu[i] = (uint8_t)(random >> 24);
+        }
+        random = random * 1664525u + 1013904223u;
+        size_t length = run % 3 == 0 ? (size_t)apdu[4] + 5 :
+            random % (sizeof apdu + 1);
+        uint8_t reply[8];
+        memset(reply, 0xa5, sizeof reply);
+        size_t reply_length = 99;
+        uint16_t status = blue_payment_apdu_handle(&session.state, apdu,
+            length, reply, sizeof reply, &reply_length, &session.blake,
+            &session.sha, screen_hash);
+        assert(reply_length <= sizeof reply);
+        if (status != 0x9000)
+            assert(reply_length == 0 && !session.state.active);
+        for (size_t i = reply_length; i < sizeof reply; ++i)
+            assert(reply[i] == 0xa5);
+    }
+    blue_payment_apdu_abort(&session.state);
+    EVP_MD_CTX_free(session.sha_context);
+}
+
 int main(int argc, char **argv) {
     fixture item = make_fixture();
     test_success(&item);
     test_failures(&item);
     test_simulation(&item);
+    test_apdu(&item);
+    test_apdu_fail_closed(&item);
+    test_apdu_mutations();
     if (argc == 2) {
         FILE *file = fopen(argv[1], "wb");
         assert(file);

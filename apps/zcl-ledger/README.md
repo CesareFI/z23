@@ -31,8 +31,8 @@ read-only output acknowledgement controller to that replay. It stops accepting
 bytes after each public output until the caller acknowledges it, and rejects
 chunks with even one byte beyond an output. A device app must call
 acknowledgement only from a real touchscreen action. The controller is
-host-tested but is not yet
-connected to a Blue screen, USB payment command, or signing key.
+host-tested but is not yet connected to a Blue screen, USB payment command,
+or signing key.
 The [`blue_payment_screen` API](include/blue_payment_screen.h) formats the
 pending output into a full 35-character mainnet address and exact ZCL amount.
 The host-only renderer previews a 320 × 480 light or dark screen using the
@@ -41,6 +41,11 @@ Blue SDK font bitmap. It has not been installed on the Blue.
 through the three replay passes, simulates one acknowledgement per output,
 and writes each output PNG only after the full replay validates. The branch
 ID is supplied by the caller and is not checked against ZCL consensus.
+The [`blue_payment_apdu` API](include/blue_payment_apdu.h) is a host-tested,
+read-only Wallet command candidate. It accepts begin, feed, next pass,
+finish, cancel, and status commands. USB has no output-acknowledgement
+command; only a future Blue touchscreen callback may advance a pending
+output. This protocol is not linked into the Wallet image yet.
 
 ## Build and test
 
