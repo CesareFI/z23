@@ -754,6 +754,26 @@ static bool cm_aliases(struct cm_state *st, CXCursor d)
     return ok;
 }
 
+/* The facts a file-scope function or variable adds beyond its decl record:
+ * its second entries (alias, weakref, ifunc, asm label) and, for a variable
+ * definition, the sites its initializer names. A function definition's own
+ * sites come from cm_function_def. */
+static bool cm_value_facts(struct cm_state *st, CXCursor c,
+                           enum CXCursorKind k)
+{
+    bool ok;
+    if (!st->core.facts ||
+        (k != CXCursor_FunctionDecl && k != CXCursor_VarDecl))
+        return true;
+    ok = cm_aliases(st, c);
+    if (ok && k == CXCursor_VarDecl && clang_isCursorDefinition(c)) {
+        char *id = cm_entity_id(st, c);
+        ok = id == NULL || cm_walk_site(st, c, id, NULL);
+        free(id);
+    }
+    return ok;
+}
+
 static bool cm_value_decl(struct cm_state *st, const struct cm_file *f,
                           CXCursor c, const char *kind)
 {
@@ -761,18 +781,10 @@ static bool cm_value_decl(struct cm_state *st, const struct cm_file *f,
     char *type = cm_type_str(st, clang_getCursorType(c));
     enum CXCursorKind k = clang_getCursorKind(c);
     bool ok = name != NULL && type != NULL &&
-              cm_emit_decl_symbol(st, f, kind, name, type, c);
-    if (ok && st->core.facts &&
-        (k == CXCursor_FunctionDecl || k == CXCursor_VarDecl))
-        ok = cm_aliases(st, c);
+              cm_emit_decl_symbol(st, f, kind, name, type, c) &&
+              cm_value_facts(st, c, k);
     if (ok && k == CXCursor_FunctionDecl && clang_isCursorDefinition(c))
         ok = cm_function_def(st, f, c, name, type);
-    if (ok && st->core.facts && k == CXCursor_VarDecl &&
-        clang_isCursorDefinition(c)) {
-        char *id = cm_entity_id(st, c);
-        ok = id == NULL || cm_walk_site(st, c, id, NULL);
-        free(id);
-    }
     free(name);
     free(type);
     return ok || cm_fail(&st->core, "declaration capture failed");
