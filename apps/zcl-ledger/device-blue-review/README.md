@@ -41,8 +41,9 @@ llvm-objcopy -O binary --only-section=.text \
 sha256sum /tmp/zcl-review.bin
 ```
 
-The pinned image hash is
+Version 0.4.0's former image hash was
 `f442caa2e21e3b2f830f48f71ba23531ba6cfdf51bd4d888ee59bfd0e0e72dae`.
+It is no longer accepted by the installer after a live USB lockup.
 The measured `.bss`, including the reserved stack, is 6,024 bytes. The
 3,712-byte transaction limit leaves room for the reply cache and screen
 strings within the Blue's SRAM.
@@ -66,7 +67,9 @@ without BOLOS's non-genuine warning and exited normally. Version 0.2.0
 received a successful install response after the previous Review icon was
 deleted, but its icon is absent from the owner's home screen. Installation,
 touchscreen operation, and live ZIP-243 behavior remain unverified. Version 0.4.0
-passed offline tests and builds but has not been installed. Running
+installed and opened, but a 245-byte test-vector review stopped USB replies
+and EXIT did not respond. The owner restarted the Blue and Z23 deleted the
+app. Do not install version 0.4.0. Running
 the host command without `--blue` only parses a local file.
 
 Protocol commands use CLA `A5`, P1/P2 zero, and one-byte `Lc`:

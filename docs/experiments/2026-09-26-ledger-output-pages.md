@@ -51,3 +51,16 @@ zatoshi (`0.40000000` ZCL), and output 1 `9,999,755` zatoshi
 (`0.09999755` ZCL). Both local Ledger suites passed 12/12 tests. The
 host output still reports `signing_ready:false` and does not establish the
 spent-output provenance or payment fee.
+
+Device observation: Review 0.4.0 installed through the owner CA and
+`app-info` reported its exact name and version. A read-only ZIP-243 vector 3
+review failed before reporting a result; subsequent app-info had no reply.
+The screen stayed steady but EXIT did not respond. The owner restarted the
+Blue to BOLOS 2.1.1 home, after which Z23 deleted Review and verified its
+catalog entry was absent. No signing request was sent. The image's offline
+tests missed this device failure. ARM disassembly shows the long-lived APDU
+loop uses a 376-byte stack frame, the ZIP-243 digest uses 312 bytes, and
+the transaction parser uses 192 bytes, within a 1,024-byte reserved stack
+only before intermediate frames and callbacks. Stack exhaustion is a
+plausible cause, not yet a proven diagnosis. This image is excluded from
+the installer allowlist pending a measured stack fix and emulator testing.
