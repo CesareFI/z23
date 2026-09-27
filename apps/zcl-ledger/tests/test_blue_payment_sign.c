@@ -164,6 +164,133 @@ static void test_fail_closed(signer_fixture *signer,
     expect_failed_reply(&state, reply, length);
 }
 
+static void test_sign_command(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    blue_payment_apdu state;
+    uint8_t digest[32], frame[BLUE_PAYMENT_SIGN_REPLY_MAX] =
+        {0xa5, 0x29, 0, 0, 1, 0};
+    initialize_review(&state, digest);
+    assert(blue_payment_apdu_touch_approve(&state));
+    size_t length = 0;
+    unsigned calls = signer->calls;
+    assert(blue_payment_sign_command(&state, frame, 6, owned,
+        sign_digest, signer, hash_public_key, frame, sizeof frame,
+        &length) == 0x9000);
+    assert(signer->calls == calls + 1 && length >= 44);
+    assert(frame[0] == 0 && frame[1] == BLUE_PAYMENT_INPUT_EXTERNAL);
+    EVP_PKEY_CTX *verify = EVP_PKEY_CTX_new(signer->key, NULL);
+    assert(verify && EVP_PKEY_verify_init(verify) > 0);
+    assert(EVP_PKEY_CTX_set_signature_md(verify, EVP_sha256()) > 0);
+    assert(EVP_PKEY_verify(verify, frame + 36, frame[35],
+                           digest, sizeof digest) == 1);
+    EVP_PKEY_CTX_free(verify);
+    static const uint8_t request[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    memcpy(frame, request, sizeof request);
+    assert(blue_payment_sign_command(&state, frame, sizeof request, owned,
+        sign_digest, signer, hash_public_key, frame, sizeof frame,
+        &length) == 0x6985);
+    assert(length == 0 && signer->calls == calls + 1);
+    for (size_t i = 0; i < sizeof frame; ++i) assert(frame[i] == 0);
+}
+
+static void reject_sign_command(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned, const uint8_t request[6],
+    size_t request_length, size_t capacity, uint16_t expected,
+    bool approve) {
+    blue_payment_apdu state;
+    uint8_t digest[32], frame[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    initialize_review(&state, digest);
+    if (approve) assert(blue_payment_apdu_touch_approve(&state));
+    memset(frame, 0xcc, sizeof frame);
+    memcpy(frame, request, 6);
+    unsigned calls = signer->calls;
+    size_t length = 99;
+    assert(blue_payment_sign_command(&state, frame, request_length, owned,
+        sign_digest, signer, hash_public_key, frame, capacity,
+        &length) == expected);
+    assert(calls == signer->calls && length == 0 && !state.fee_ready);
+    for (size_t i = 0; i < capacity; ++i) assert(frame[i] == 0);
+}
+
+static void test_sign_command_rejections(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    const uint8_t valid[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    reject_sign_command(signer, owned, valid, 6, BLUE_PAYMENT_SIGN_REPLY_MAX,
+        0x6985, false);
+    reject_sign_command(signer, owned, valid, 5, BLUE_PAYMENT_SIGN_REPLY_MAX,
+        0x6700, true);
+    reject_sign_command(signer, owned, valid, 7, BLUE_PAYMENT_SIGN_REPLY_MAX,
+        0x6700, true);
+    reject_sign_command(signer, owned, valid, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX - 1, 0x6700, true);
+    uint8_t malformed[6];
+    memcpy(malformed, valid, sizeof malformed);
+    malformed[4] = 0;
+    reject_sign_command(signer, owned, malformed, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6700, true);
+    memcpy(malformed, valid, sizeof malformed);
+    malformed[0] = 0xa4;
+    reject_sign_command(signer, owned, malformed, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6e00, true);
+    memcpy(malformed, valid, sizeof malformed);
+    malformed[1] = 0x28;
+    reject_sign_command(signer, owned, malformed, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6d00, true);
+    memcpy(malformed, valid, sizeof malformed);
+    malformed[2] = 1;
+    reject_sign_command(signer, owned, malformed, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6b00, true);
+    memcpy(malformed, valid, sizeof malformed);
+    malformed[3] = 1;
+    reject_sign_command(signer, owned, malformed, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6b00, true);
+    memcpy(malformed, valid, sizeof malformed);
+    malformed[5] = 1;
+    reject_sign_command(signer, owned, malformed, 6,
+        BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6985, true);
+}
+
+static void test_wrong_indices(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    uint8_t request[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    for (unsigned index = 1; index <= UINT8_MAX; ++index) {
+        request[5] = (uint8_t)index;
+        reject_sign_command(signer, owned, request, sizeof request,
+            BLUE_PAYMENT_SIGN_REPLY_MAX, 0x6985, true);
+    }
+}
+
+static void test_malformed_command_fuzz(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    uint32_t random = 0x75c10d23;
+    const uint8_t valid[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    for (unsigned trial = 0; trial < 10000; ++trial) {
+        uint8_t request[8];
+        for (size_t i = 0; i < sizeof request; ++i) {
+            random = random * 1664525u + 1013904223u;
+            request[i] = (uint8_t)(random >> 24);
+        }
+        size_t length = random % (sizeof request + 1);
+        if (length == 6 && memcmp(request, valid, 6) == 0)
+            request[5] = 1;
+        blue_payment_apdu state;
+        uint8_t digest[32], frame[BLUE_PAYMENT_SIGN_REPLY_MAX];
+        initialize_review(&state, digest);
+        assert(blue_payment_apdu_touch_approve(&state));
+        memset(frame, 0xcc, sizeof frame);
+        memcpy(frame, request, sizeof request);
+        size_t reply_length = 99;
+        unsigned calls = signer->calls;
+        assert(blue_payment_sign_command(&state, frame, length, owned,
+            sign_digest, signer, hash_public_key, frame, sizeof frame,
+            &reply_length) != 0x9000);
+        assert(reply_length == 0 && signer->calls == calls);
+        assert(!state.fee_ready);
+        for (size_t i = 0; i < sizeof frame; ++i)
+            assert(frame[i] == 0);
+    }
+}
+
 int main(void) {
     signer_fixture signer = {0};
     initialize_signer(&signer);
@@ -171,6 +298,10 @@ int main(void) {
     assert(hash_public_key(signer.public_key, owned.external));
     test_signed_reply(&signer, &owned);
     test_fail_closed(&signer, &owned);
+    test_sign_command(&signer, &owned);
+    test_sign_command_rejections(&signer, &owned);
+    test_wrong_indices(&signer, &owned);
+    test_malformed_command_fuzz(&signer, &owned);
     EVP_PKEY_free(signer.key);
     return 0;
 }

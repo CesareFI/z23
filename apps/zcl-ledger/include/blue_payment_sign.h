@@ -23,4 +23,14 @@ bool blue_payment_sign_next(blue_payment_apdu *state, uint8_t index,
     blue_payment_pubkey_hash_fn hash,
     uint8_t *reply, size_t capacity, size_t *reply_length);
 
+/* Candidate CLA A5 / INS 29 command: exactly one input-index byte. The
+ * device must route it only after touchscreen approval and independent
+ * chain and branch checks. The current Blue app does not route INS 29. */
+uint16_t blue_payment_sign_command(blue_payment_apdu *state,
+    const uint8_t *apdu, size_t apdu_length,
+    const blue_payment_owned_hashes *owned,
+    blue_payment_sign_digest_fn signer, void *signer_context,
+    blue_payment_pubkey_hash_fn hash,
+    uint8_t *reply, size_t capacity, size_t *reply_length);
+
 #endif

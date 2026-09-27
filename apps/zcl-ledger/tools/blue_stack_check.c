@@ -10,7 +10,7 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 52, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+enum { FRAME_COUNT = 53, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
        PATH_COUNT = 21 };
 
 static const char *const frame_names[FRAME_COUNT] = {
@@ -35,7 +35,8 @@ static const char *const frame_names[FRAME_COUNT] = {
     "blue_payment_screen_mark_account", "confirm_review",
     "blue_payment_apdu_touch_approve", "blue_payment_sign_next",
     "blue_wallet_sign_digest", "blue_payment_apdu_take_digest",
-    "blue_ecdsa_der_low_s", "public_hash160"
+    "blue_ecdsa_der_low_s", "public_hash160",
+    "blue_payment_sign_command"
 };
 
 typedef struct {
@@ -106,8 +107,8 @@ static unsigned sum_frames(const stack_frames *frames,
 
 static void report_signing_candidate(const stack_frames *frames,
                                      unsigned paths[PATH_COUNT]) {
-    static const unsigned prefix[] = {0, 14, 47};
-    const unsigned base = sum_frames(frames, prefix, 3);
+    static const unsigned prefix[] = {0, 14, 52, 47};
+    const unsigned base = sum_frames(frames, prefix, 4);
     paths[17] = base + frames->bytes[48];
     paths[18] = base + frames->bytes[49];
     paths[19] = base + frames->bytes[50];

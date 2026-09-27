@@ -61,3 +61,39 @@ bool blue_payment_sign_next(blue_payment_apdu *state, uint8_t index,
     wipe(hash160, sizeof hash160);
     return valid;
 }
+
+static uint16_t command_frame_status(const uint8_t *apdu,
+    size_t apdu_length, size_t reply_capacity) {
+    if (apdu_length != 6 || apdu[4] != 1 ||
+        reply_capacity < BLUE_PAYMENT_SIGN_REPLY_MAX) return 0x6700;
+    if (apdu[0] != 0xa5) return 0x6e00;
+    if (apdu[2] || apdu[3]) return 0x6b00;
+    if (apdu[1] != 0x29) return 0x6d00;
+    return 0x9000;
+}
+
+uint16_t blue_payment_sign_command(blue_payment_apdu *state,
+    const uint8_t *apdu, size_t apdu_length,
+    const blue_payment_owned_hashes *owned,
+    blue_payment_sign_digest_fn signer, void *signer_context,
+    blue_payment_pubkey_hash_fn hash,
+    uint8_t *reply, size_t capacity, size_t *reply_length) {
+    if (reply_length) *reply_length = 0;
+    if (!state || !apdu || !owned || !signer || !hash ||
+        !reply || !reply_length) {
+        if (reply) memset(reply, 0, capacity);
+        blue_payment_apdu_abort(state);
+        return 0x6f00;
+    }
+    uint16_t status = command_frame_status(apdu, apdu_length, capacity);
+    uint8_t index = status == 0x9000 ? apdu[5] : 0;
+    if (status == 0x9000 && !blue_payment_sign_next(state, index, owned,
+            signer, signer_context, hash, reply, capacity, reply_length))
+        status = 0x6985;
+    if (status != 0x9000) {
+        memset(reply, 0, capacity);
+        blue_payment_apdu_abort(state);
+        *reply_length = 0;
+    }
+    return status;
+}

@@ -57,6 +57,11 @@ It cannot establish which known branch is currently active. USB has no
 output-acknowledgement command; the Wallet 0.2.1 candidate wires it only to a
 Blue touchscreen callback. Physical payment-review behavior failed on 0.2.1;
 0.2.11 is uninstalled and unverified on hardware.
+The portable [signing command candidate](include/blue_payment_sign.h)
+accepts exactly one input index after physical review approval, binds the
+signing public key to a device-derived account hash, and returns canonical
+low-S DER. Host tests verify a real secp256k1 signature and reject malformed
+APDUs. Wallet 0.2.14 does not route this command or sign payments.
 
 ## Build and test
 
