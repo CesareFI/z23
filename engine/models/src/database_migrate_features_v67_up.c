@@ -232,6 +232,54 @@ static int db_migrate_step_84(struct node_db *ndb, int *current_ver,
     return 0;
 }
 
+/* v85 adds only a pointer to the latest issuer checkpoint. Immutable proof
+ * objects stay in CAS. The guard permits retry after an interrupted ALTER;
+ * triggers prevent a stale worker write from erasing or rebinding a live
+ * head. Older readers can ignore this additive column. */
+static int db_migrate_step_85(struct node_db *ndb, int *current_ver,
+                              int *floor_ver, int *applied)
+{
+    if (*current_ver >= 85) return 0;
+    const char *type = NULL;
+    bool present = sqlite3_table_column_metadata(
+        ndb->db, NULL, "build_workers", "proof_checkpoint_head_sha3",
+        &type, NULL, NULL, NULL, NULL) == SQLITE_OK;
+    if (!present && !node_db_exec(ndb,
+            "ALTER TABLE build_workers ADD COLUMN "
+            "proof_checkpoint_head_sha3 TEXT NOT NULL DEFAULT '' "
+            "CHECK(length(proof_checkpoint_head_sha3)=0 OR "
+            "(length(proof_checkpoint_head_sha3)=64 AND "
+            "proof_checkpoint_head_sha3 NOT GLOB '*[^0-9a-f]*'))"))
+        LOG_RETURN(-1, "db", "migrate v85: proof head column failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_head_signer "
+            "BEFORE UPDATE OF signer_pubkey ON build_workers "
+            "WHEN OLD.proof_checkpoint_head_sha3<>'' AND "
+            "NEW.signer_pubkey<>OLD.signer_pubkey "
+            "BEGIN SELECT RAISE(ABORT,'proof checkpoint signer changed'); END"))
+        LOG_RETURN(-1, "db", "migrate v85: signer guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_head_delete "
+            "BEFORE DELETE ON build_workers "
+            "WHEN OLD.proof_checkpoint_head_sha3<>'' "
+            "BEGIN SELECT RAISE(ABORT,'proof checkpoint head deleted'); END"))
+        LOG_RETURN(-1, "db", "migrate v85: delete guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_head_clear "
+            "BEFORE UPDATE OF proof_checkpoint_head_sha3 ON build_workers "
+            "WHEN OLD.proof_checkpoint_head_sha3<>'' AND "
+            "NEW.proof_checkpoint_head_sha3='' "
+            "BEGIN SELECT RAISE(ABORT,'proof checkpoint head cleared'); END"))
+        LOG_RETURN(-1, "db", "migrate v85: clear guard failed");
+    if (!node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('085')"))
+        LOG_RETURN(-1, "db", "migrate v85: migration stamp failed");
+    DB_MIGRATE_PERSIST_VERSION_FLOOR(ndb, 85, *floor_ver);
+    *current_ver = 85;
+    (*applied)++;
+    return 0;
+}
+
 /* v69: new async events bind the candidate source root directly. Existing
  * v68 rows retain their v1 event roots and an empty source; the next
  * append upgrades that chain to the v2 root domain.
@@ -468,6 +516,17 @@ static int db_migrate_step_81(struct node_db *ndb, int *current_ver,
     *current_ver = 81;
     (*applied)++;
     return 0;
+}
+
+static int db_migrate_finish_85(struct node_db *ndb, int *current_ver,
+                                int *floor_ver, int *applied,
+                                int *version_out, int *floor_out)
+{
+    if (db_migrate_step_85(ndb, current_ver, floor_ver, applied) < 0)
+        return DB_MIGRATE_SCHEMA_FAILED_PROPAGATE;
+    *version_out = *current_ver;
+    *floor_out = *floor_ver;
+    return *applied;
 }
 
 int node_db_migrate_features_v67_up(struct node_db *ndb, int *version,
@@ -872,7 +931,6 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version,
     (void)db_migrate_step_82(ndb, &current_ver, &applied, floor_ver);
     (void)db_migrate_step_83(ndb, &current_ver, &floor_ver, &applied);
     (void)db_migrate_step_84(ndb, &current_ver, &floor_ver, &applied);
-    *version = current_ver;
-    *floor = floor_ver;
-    return applied;
+    return db_migrate_finish_85(ndb, &current_ver, &floor_ver, &applied,
+                                version, floor);
 }

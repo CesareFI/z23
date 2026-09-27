@@ -525,6 +525,21 @@ static bool db_mig_seed_v81_board_schema(sqlite3 *raw)
     ok = ok && db_mig_exec_raw(raw,
         "CREATE UNIQUE INDEX idx_store_purchases_order "
         "ON store_purchases(order_id)");
+    /* A real v81 database also has the v45 worker table. The v85 issuer
+     * head migration extends that exact table, so preserve it in this
+     * board-focused historical seed. */
+    ok = ok && db_mig_exec_raw(raw,
+        "CREATE TABLE build_workers("
+        "worker_id TEXT PRIMARY KEY CHECK(length(worker_id)=64),"
+        "signer_pubkey TEXT NOT NULL UNIQUE CHECK(length(signer_pubkey)=64),"
+        "capabilities TEXT NOT NULL DEFAULT '' "
+        "CHECK(length(capabilities)<=1023),"
+        "approved INTEGER NOT NULL DEFAULT 0 CHECK(approved IN (0,1)),"
+        "revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),"
+        "approved_at INTEGER NOT NULL DEFAULT 0 CHECK(approved_at>=0),"
+        "expires_at INTEGER NOT NULL DEFAULT 0 CHECK(expires_at>=0),"
+        "last_seen_at INTEGER NOT NULL DEFAULT 0 CHECK(last_seen_at>=0)) "
+        "WITHOUT ROWID");
     return ok;
 }
 
@@ -686,6 +701,41 @@ static int t_fresh_reaches_latest(void)
         int v = node_db_schema_version(&ndb);
         ASSERT(v >= 18);
         node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_v85_missing_worker_table_refuses(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "v85_missing_workers");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: missing v85 worker table refuses without stamping") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        node_db_close(&seed);
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_stamp_schema(raw, 84));
+        ASSERT(db_mig_exec_raw(raw,
+            "DELETE FROM schema_migrations WHERE version='085'"));
+        ASSERT(db_mig_exec_raw(raw, "DROP TABLE build_workers"));
+        sqlite3_close(raw);
+        struct node_db ndb;
+        ASSERT(db_mig_open_raw_handle(&ndb, dbpath));
+        ASSERT_EQ(node_db_migrate(&ndb, NULL), -1);
+        ASSERT_EQ(node_db_schema_version(&ndb), 84);
+        db_mig_close_raw_handle(&ndb);
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT_EQ(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations WHERE version='085'"),
+            0);
+        sqlite3_close(raw);
         PASS();
     } _test_next:;
     test_cleanup_tmpdir(dir);
@@ -1887,6 +1937,7 @@ int test_db_migration_idempotent(void)
     int failures = 0;
     mkdir_p("./test-tmp");
     failures += t_fresh_reaches_latest();
+    failures += t_v85_missing_worker_table_refuses();
     failures += t_v20_wallet_notes_upgrade_adds_source();
     failures += t_reopen_is_idempotent();
     failures += t_market_content_registry_schema();

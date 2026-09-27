@@ -216,6 +216,13 @@ static int test_bf_migration(void)
         ASSERT_EQ(sqlite3_column_int(st, 0), 2);
         sqlite3_finalize(st);
         ASSERT(sqlite3_prepare_v2(ndb.db,
+            "SELECT count(*) FROM pragma_table_info('build_workers') "
+            "WHERE name='proof_checkpoint_head_sha3'", -1, &st,
+            NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
+        ASSERT_EQ(sqlite3_column_int(st, 0), 1);
+        sqlite3_finalize(st);
+        ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
             "name='zcode_lane_receipts'", -1, &st, NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
@@ -299,6 +306,63 @@ static int test_bf_lifecycle(void)
         ASSERT_EQ(action.finished_at, 490);
         ASSERT_EQ(db_build_job_receipts(&ndb, id_a, receipts, 4), 1);
         node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_proof_head_cas(void)
+{
+    int failures = 0;
+    TEST("build_fabric: issuer checkpoint head survives stale saves and restart") {
+        struct node_db first, second;
+        char dir[256], path[320];
+        ASSERT(bf_open(&first, dir, sizeof(dir), path, sizeof(path),
+                       "proof_head"));
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        ASSERT(db_build_worker_save(&first, &worker));
+        memset(&second, 0, sizeof(second));
+        ASSERT(node_db_open(&second, path));
+        struct db_build_worker observed;
+        ASSERT(db_build_worker_find(&second, id_c, &observed));
+        ASSERT_STR_EQ(observed.proof_checkpoint_head_sha3, "");
+        ASSERT(db_build_worker_proof_head_cas(&first, id_c, id_d, "", id_a));
+        ASSERT(!db_build_worker_proof_head_cas(&second, id_c, id_d, "", id_b));
+        ASSERT(db_build_worker_find(&second, id_c, &observed));
+        ASSERT_STR_EQ(observed.proof_checkpoint_head_sha3, id_a);
+        /* No receipts exist yet: the proof head itself must bar deletion. */
+        ASSERT(sqlite3_exec(second.db,
+            "DELETE FROM build_workers WHERE worker_id="
+            "'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+            NULL, NULL, NULL) != SQLITE_OK);
+        ASSERT(sqlite3_exec(second.db,
+            "UPDATE build_workers SET proof_checkpoint_head_sha3='' "
+            "WHERE worker_id="
+            "'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+            NULL, NULL, NULL) != SQLITE_OK);
+        worker.last_seen_at++;
+        ASSERT(db_build_worker_save(&second, &worker));
+        ASSERT(db_build_worker_find(&first, id_c, &observed));
+        ASSERT_STR_EQ(observed.proof_checkpoint_head_sha3, id_a);
+        (void)snprintf(worker.signer_pubkey, sizeof(worker.signer_pubkey),
+                       "%s", id_b);
+        ASSERT(!db_build_worker_save(&first, &worker));
+        ASSERT(db_build_worker_find(&first, id_c, &observed));
+        ASSERT_STR_EQ(observed.signer_pubkey, id_d);
+        ASSERT_STR_EQ(observed.proof_checkpoint_head_sha3, id_a);
+        ASSERT(db_build_worker_proof_head_cas(&second, id_c, id_d, id_a,
+                                              id_b));
+        ASSERT(!db_build_worker_proof_head_cas(&first, id_c, id_d, id_a,
+                                               id_c));
+        node_db_close(&second);
+        node_db_close(&first);
+        ASSERT(node_db_open(&first, path));
+        ASSERT(db_build_worker_find(&first, id_c, &observed));
+        ASSERT_STR_EQ(observed.proof_checkpoint_head_sha3, id_b);
+        ASSERT_STR_EQ(observed.signer_pubkey, id_d);
+        node_db_close(&first);
         test_rm_rf(dir);
         PASS();
     } _test_next:;
@@ -4046,6 +4110,7 @@ int test_build_fabric(void)
     failures += test_bf_candidate_query_errors();
     failures += test_bf_candidate_query_partial();
     failures += test_bf_lifecycle();
+    failures += test_bf_proof_head_cas();
     failures += test_bf_async_proof_events();
     failures += test_bf_async_timing_samples();
     failures += test_bf_async_timing_capacity();

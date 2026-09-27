@@ -225,6 +225,11 @@ bool db_build_worker_validate(const struct db_build_worker *row,
                      "must be a 64-byte hex id");
     validates_custom(errors, build_hex_id(row->signer_pubkey),
                      "signer_pubkey", "must be a 32-byte Ed25519 key");
+    validates_custom(errors,
+                     !row->proof_checkpoint_head_sha3[0] ||
+                         build_hex_id(row->proof_checkpoint_head_sha3),
+                     "proof_checkpoint_head_sha3",
+                     "must be empty or a lowercase 32-byte root");
     validates_custom(errors, row->approved == 0 || row->approved == 1,
                      "approved", "must be 0 or 1");
     validates_custom(errors, row->revoked == 0 || row->revoked == 1,
@@ -393,6 +398,50 @@ bool db_build_worker_save(struct node_db *ndb,
         AR_BIND_INT(st, 8, row->last_seen_at));
 }
 
+static bool build_worker_proof_head_inputs_valid(
+    struct node_db *ndb, const char *worker_id, const char *expected_signer,
+    const char *expected_head, const char *next_head)
+{
+    return ndb && ndb->open && build_hex_id(worker_id) &&
+           build_hex_id(expected_signer) && expected_head &&
+           (!expected_head[0] || build_hex_id(expected_head)) &&
+           build_hex_id(next_head) &&
+           strcmp(expected_head, next_head) != 0;
+}
+
+bool db_build_worker_proof_head_cas(struct node_db *ndb,
+    const char *worker_id, const char *expected_signer,
+    const char *expected_head, const char *next_head)
+{
+    if (!build_worker_proof_head_inputs_valid(ndb, worker_id,
+            expected_signer, expected_head, next_head))
+        LOG_FAIL("model", "proof head CAS: invalid input");
+    struct db_build_worker row;
+    if (!db_build_worker_find(ndb, worker_id, &row) ||
+        strcmp(row.signer_pubkey, expected_signer) != 0 ||
+        strcmp(row.proof_checkpoint_head_sha3, expected_head) != 0)
+        LOG_FAIL("model", "proof head CAS: signer or head changed");
+    (void)snprintf(row.proof_checkpoint_head_sha3,
+                   sizeof(row.proof_checkpoint_head_sha3), "%s", next_head);
+    sqlite3_stmt *st = NULL;
+    AR_BEGIN_SAVE(build_worker_callbacks_ready(), "build_worker", &row,
+                  db_build_worker_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "UPDATE build_workers SET proof_checkpoint_head_sha3=? "
+        "WHERE worker_id=? AND signer_pubkey=? AND "
+        "proof_checkpoint_head_sha3=? RETURNING worker_id");
+    AR_BIND_TEXT(st, 1, next_head);
+    AR_BIND_TEXT(st, 2, worker_id);
+    AR_BIND_TEXT(st, 3, expected_signer);
+    AR_BIND_TEXT(st, 4, expected_head);
+    bool matched = AR_STEP_ROW(st);
+    bool complete = matched && AR_STEP_DONE(st);
+    int final_rc = sqlite3_finalize(st);
+    bool ok = matched && complete && final_rc == SQLITE_OK;
+    if (!ok) LOG_FAIL("model", "proof head CAS: conditional update refused");
+    AR_FINISH_SAVE(build_worker_callbacks_ready(), &row, ok);
+}
+
 bool db_build_receipt_save(struct node_db *ndb,
                            const struct db_build_receipt *row)
 {
@@ -482,6 +531,8 @@ static void build_worker_read(struct db_build_worker *out, sqlite3_stmt *st)
     out->approved_at = AR_COL_INT(st, 5);
     out->expires_at = AR_COL_INT(st, 6);
     out->last_seen_at = AR_COL_INT(st, 7);
+    AR_READ_STR(st, 8, out->proof_checkpoint_head_sha3,
+                sizeof(out->proof_checkpoint_head_sha3));
 }
 
 static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
@@ -513,7 +564,8 @@ static void build_receipt_read(struct db_build_receipt *out, sqlite3_stmt *st)
     "started_at,finished_at,created_at,updated_at,task_root_sha3," \
     "candidate_root_sha3,proof_policy_root_sha3,context_root_sha3"
 #define BUILD_WORKER_COLS "worker_id,signer_pubkey,capabilities,approved," \
-    "revoked,approved_at,expires_at,last_seen_at"
+    "revoked,approved_at,expires_at,last_seen_at," \
+    "proof_checkpoint_head_sha3"
 #define BUILD_RECEIPT_COLS "receipt_id,action_id,job_id,worker_id,lease_id," \
     "action_sha3,output_sha3,signature,confinement,exit_status,created_at," \
     "work_receipt_sha3,trust_state,observation_sha3"
