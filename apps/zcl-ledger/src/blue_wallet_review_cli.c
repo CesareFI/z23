@@ -97,7 +97,10 @@ static bool live_exchange(void *context, const uint8_t *apdu,
             apdu_length >= 2 ? apdu[1] : 0);
         return false;
     }
-    if (apdu_length >= 2 && apdu[1] != 0x25 && *reply_length >= 2)
+    if (apdu_length >= 2 && *reply_length >= 2 &&
+        (reply[*reply_length - 2] != 0x90 ||
+         reply[*reply_length - 1] != 0 ||
+         (apdu[1] != 0x21 && apdu[1] != 0x27 && apdu[1] != 0x25)))
         fprintf(stderr, "Blue USB command %02x replied %02x%02x.\n",
             apdu[1], reply[*reply_length - 2], reply[*reply_length - 1]);
     return true;
@@ -178,11 +181,11 @@ int main(int argc, char **argv) {
         free(wire);
         return 1;
     }
-    free_previous(previous_bytes, previous_count);
     live_device device = {.fd = open_blue(argv[2])};
     if (device.fd < 0) {
         fputs("The selected interface is not an accessible Ledger Blue.\n",
               stderr);
+        free_previous(previous_bytes, previous_count);
         free(plan);
         free(wire);
         return 1;
@@ -193,15 +196,17 @@ int main(int argc, char **argv) {
            (unsigned long long)facts.fee_zat);
     puts("The app cannot sign a payment.");
     fflush(stdout);
-    bool valid = blue_payment_live_run(wire, length, plan,
+    bool valid = blue_payment_live_run_bound(wire, length, plan,
+        previous, previous_count, facts.fee_zat,
         live_exchange, wait_for_touch, &device);
     close(device.fd);
+    free_previous(previous_bytes, previous_count);
     free(plan);
     free(wire);
     if (!valid) {
         fputs("Blue review stopped; no payment was signed.\n", stderr);
         return 1;
     }
-    puts("Blue reported REVIEW COMPLETE; NO SIGNING. Tap EXIT on the Blue.");
+    puts("Blue verified all supplied previous wires and displayed the fee; NO SIGNING. Tap EXIT on the Blue.");
     return 0;
 }

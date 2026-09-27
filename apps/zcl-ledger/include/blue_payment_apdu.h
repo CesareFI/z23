@@ -3,16 +3,22 @@
 #define ZCL_BLUE_PAYMENT_APDU_H
 
 #include "blue_payment_screen.h"
+#include "zcl_tx_previous_stream.h"
 
 typedef struct {
     blue_payment_review review;
     blue_payment_screen screen;
-    bool active;
+    zcl_tx_previous_stream previous;
+    uint8_t outpoints[ZCL_TX_STREAM_MAX_INPUTS][36];
+    uint64_t input_zat, output_zat, fee_zat;
+    uint32_t input_count, bound_inputs;
+    bool active, previous_active, fee_ready;
 } blue_payment_apdu;
 
-/* Read-only CLA A5 commands 20-25. No command acknowledges an output,
- * accesses a key, or produces a signature. A nonpayment command must cancel
- * an active review before the caller dispatches it elsewhere. */
+/* Read-only CLA A5 commands 20-28. A physical touch acknowledges each
+ * spending output. Previous wires can be uploaded only after a verified
+ * three-pass review; each one must match the next captured input outpoint.
+ * No command accesses a key, approves a payment, or signs. */
 uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
     const uint8_t *apdu, size_t apdu_length,
     uint8_t *reply, size_t reply_capacity, size_t *reply_length,

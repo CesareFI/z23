@@ -57,7 +57,7 @@ static void after_joins(zcl_tx_previous_stream *stream) {
     else stream->phase = DONE;
 }
 
-static bool output_done(zcl_tx_previous_stream *stream) {
+static bool previous_output_done(zcl_tx_previous_stream *stream) {
     if (stream->index == stream->selected_index) {
         const uint8_t *script = stream->selected_script;
         if (stream->item_remaining != 0 ||
@@ -77,7 +77,7 @@ static bool skip_done(zcl_tx_previous_stream *stream) {
     switch ((phase)stream->phase) {
     case INPUT_OUTPOINT: compact(stream, INPUT_SCRIPT_LENGTH); return true;
     case INPUT_SCRIPT: fixed(stream, SEQUENCE, 4); return true;
-    case OUTPUT_SCRIPT: return output_done(stream);
+    case OUTPUT_SCRIPT: return previous_output_done(stream);
     case SPEND_ITEMS: compact(stream, SHIELDED_OUTPUT_COUNT); return true;
     case SHIELDED_OUTPUT_ITEMS: compact(stream, JOIN_COUNT); return true;
     case JOIN_ITEMS: skip(stream, JOIN_AUTH, 96); return true;
@@ -183,7 +183,7 @@ static bool compact_wire_done(zcl_tx_previous_stream *stream) {
             (stream->index == stream->selected_index &&
              stream->var_value != sizeof stream->selected_script))
             return false;
-        if (!stream->var_value) return output_done(stream);
+        if (!stream->var_value) return previous_output_done(stream);
         skip(stream, OUTPUT_SCRIPT, (uint32_t)stream->var_value);
         return true;
     default: return false;
@@ -208,7 +208,7 @@ static bool compact_tail_done(zcl_tx_previous_stream *stream) {
     }
 }
 
-static bool compact_done(zcl_tx_previous_stream *stream) {
+static bool previous_compact_done(zcl_tx_previous_stream *stream) {
     return stream->phase <= OUTPUT_SCRIPT_LENGTH ?
         compact_wire_done(stream) : compact_tail_done(stream);
 }
@@ -224,7 +224,7 @@ static bool compact_byte(zcl_tx_previous_stream *stream, uint8_t byte) {
     if (!stream->var_width) {
         if (byte < 0xfd) {
             stream->var_value = byte;
-            return compact_done(stream);
+            return previous_compact_done(stream);
         }
         stream->var_width = byte == 0xfd ? 2 : byte == 0xfe ? 4 : 8;
         return true;
@@ -235,7 +235,7 @@ static bool compact_byte(zcl_tx_previous_stream *stream, uint8_t byte) {
         (stream->var_width == 4 && stream->var_value <= UINT16_MAX) ||
         (stream->var_width == 8 && stream->var_value <= UINT32_MAX))
         return false;
-    return compact_done(stream);
+    return previous_compact_done(stream);
 }
 
 static bool skip_phase(uint8_t current) {
@@ -266,7 +266,7 @@ bool zcl_tx_previous_stream_begin(zcl_tx_previous_stream *stream,
     zcl_tx_previous_stream_abort(stream);
     if (expected_length < 10 ||
         expected_length > ZCL_TX_PREVIOUS_STREAM_MAX_BYTES ||
-        !hash.init || !hash.update || !hash.final ||
+        !hash.context || !hash.init || !hash.update || !hash.final ||
         !hash.init(hash.context)) return false;
     stream->failed = false;
     stream->expected = expected_length;

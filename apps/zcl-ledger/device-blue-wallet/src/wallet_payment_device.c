@@ -12,6 +12,7 @@ static cx_blake2b_t payment_blake;
 static cx_sha256_t payment_sha;
 static bool visible;
 static uint8_t displayed_view;
+static char fee_text[32];
 static uint8_t account_hash160[20];
 static bool account_ready;
 
@@ -51,6 +52,7 @@ void wallet_payment_abort(void) {
     blue_payment_apdu_abort(&payment);
     memset(&payment_blake, 0, sizeof payment_blake);
     memset(&payment_sha, 0, sizeof payment_sha);
+    memset(fee_text, 0, sizeof fee_text);
     visible = false;
     displayed_view = 0;
 }
@@ -95,6 +97,10 @@ static unsigned int waiting_ui_button(unsigned int mask, unsigned int count) {
 }
 
 static unsigned int complete_ui_button(unsigned int mask, unsigned int count) {
+    return output_ui_button(mask, count);
+}
+
+static unsigned int fee_ui_button(unsigned int mask, unsigned int count) {
     return output_ui_button(mask, count);
 }
 
@@ -147,8 +153,18 @@ static const bagl_element_t waiting_ui[] = {
 
 static const bagl_element_t complete_ui[] = {
     BACKGROUND,
-    LABEL(90, "REVIEW COMPLETE", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
-    LABEL(170, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(90, "CHECKING INPUTS", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(170, "WAIT FOR Z23", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(220, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    BUTTON(165, "EXIT", exit_review)
+};
+
+static const bagl_element_t fee_ui[] = {
+    BACKGROUND,
+    LABEL(70, "CALCULATED FEE", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(145, fee_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(220, "CHAIN UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(265, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
     BUTTON(165, "EXIT", exit_review)
 };
 
@@ -168,7 +184,8 @@ static const bagl_element_t ended_ui[] = {
 
 void wallet_payment_display(void) {
     uint8_t view = payment.review.pending ? 2 :
-        payment.review.verified ? 3 : payment.active ? 1 : 4;
+        payment.fee_ready ? 6 : payment.review.verified ? 3 :
+        payment.active ? 1 : 4;
     if (view == displayed_view) return;
     displayed_view = view;
     if (view == 2) {
@@ -179,6 +196,13 @@ void wallet_payment_display(void) {
             return;
         }
         UX_DISPLAY(output_ui, NULL);
+    } else if (view == 6) {
+        if (!blue_payment_fee_text(payment.fee_zat, fee_text)) {
+            wallet_payment_abort();
+            UX_DISPLAY(ended_ui, NULL);
+            return;
+        }
+        UX_DISPLAY(fee_ui, NULL);
     } else if (view == 3) {
         UX_DISPLAY(complete_ui, NULL);
     } else if (view == 1) {

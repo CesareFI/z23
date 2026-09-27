@@ -10,8 +10,8 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 33, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
-       PATH_COUNT = 9 };
+enum { FRAME_COUNT = 39, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+       PATH_COUNT = 12 };
 
 static const char *const frame_names[FRAME_COUNT] = {
     "answer_command", "blue_review_app_command", "blue_review_handle",
@@ -27,7 +27,9 @@ static const char *const frame_names[FRAME_COUNT] = {
     "final_digest", "continue_review",
     "blue_payment_apdu_touch_continue", "blue_payment_review_acknowledge",
     "wallet_payment_display", "blue_payment_review_next_pass",
-    "zcl_tx_replay_zip243_next"
+    "zcl_tx_replay_zip243_next", "zcl_tx_previous_stream_begin",
+    "zcl_tx_previous_stream_feed", "zcl_tx_previous_stream_finish",
+    "previous_compact_done", "previous_output_done", "capture_input"
 };
 
 typedef struct {
@@ -128,11 +130,15 @@ static void report_paths(const stack_frames *frames, bool wallet,
     static const unsigned wallet_apdu[] = {0, 11};
     static const unsigned wallet_event[] = {5};
     static const unsigned wallet_upload[] = {0, 14, 15, 16, 17, 18,
-        19, 20, 21};
+        19, 20, 21, 38};
     static const unsigned wallet_format[] = {0, 14, 15, 16, 22, 23, 13};
     static const unsigned wallet_finish[] = {0, 14, 15, 16, 24, 25, 26};
     static const unsigned wallet_next[] = {0, 14, 15, 16, 31, 32};
     static const unsigned wallet_touch[] = {5, 27, 28, 29, 30};
+    static const unsigned wallet_previous_begin[] = {0, 14, 15, 16, 33};
+    static const unsigned wallet_previous_feed[] = {0, 14, 15, 16,
+        34, 36, 37};
+    static const unsigned wallet_previous_finish[] = {0, 14, 15, 16, 35};
     memset(paths, 0, sizeof(unsigned) * PATH_COUNT);
     if (wallet) {
         paths[0] = sum_frames(frames, wallet_derive, 2);
@@ -149,9 +155,16 @@ static void report_paths(const stack_frames *frames, bool wallet,
             sizeof wallet_next / sizeof *wallet_next);
         paths[8] = sum_frames(frames, wallet_touch,
             sizeof wallet_touch / sizeof *wallet_touch);
-        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; margin %u\n",
+        paths[9] = sum_frames(frames, wallet_previous_begin,
+            sizeof wallet_previous_begin / sizeof *wallet_previous_begin);
+        paths[10] = sum_frames(frames, wallet_previous_feed,
+            sizeof wallet_previous_feed / sizeof *wallet_previous_feed);
+        paths[11] = sum_frames(frames, wallet_previous_finish,
+            sizeof wallet_previous_finish / sizeof *wallet_previous_finish);
+        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; margin %u\n",
                reserve, paths[0], paths[1], paths[2], paths[3], paths[4],
-               paths[5], paths[6], paths[7], paths[8], STACK_MARGIN);
+               paths[5], paths[6], paths[7], paths[8], paths[9], paths[10],
+               paths[11], STACK_MARGIN);
     } else {
         paths[0] = sum_frames(frames, apdu, sizeof apdu / sizeof *apdu);
         paths[1] = sum_frames(frames, ui, sizeof ui / sizeof *ui);

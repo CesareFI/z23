@@ -40,4 +40,7 @@ bool blue_payment_screen_format(const blue_payment_output *output,
     uint32_t total_outputs, blue_payment_hash_fn hash,
     blue_payment_screen *screen);
 
+/* Formats only a fee derived from all device-verified previous wires. */
+bool blue_payment_fee_text(uint64_t fee_zat, char text[32]);
+
 #endif

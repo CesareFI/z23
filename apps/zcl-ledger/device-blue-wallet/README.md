@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.4 derives
+Version 0.2.5 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -14,10 +14,15 @@ The same app now has read-only transaction review commands. It accepts an
 unsigned, all-transparent v4 transaction in three complete passes, pauses
 at each P2PKH or P2SH output, displays the exact amount and all 35 address
 characters, and requires a touchscreen CONTINUE tap before the next chunk.
-EXIT cancels and returns home. There is no USB acknowledgement, payment
-signature, private-key export, path selection, Sapling spend, multisig, or
-token command. The supplied branch ID and spent output are not authenticated;
-the replay digest is discarded. Version 0.2.1 reached the Blue: its receive
+EXIT cancels and returns home. After the three-pass review, Z23 uploads each
+complete previous transaction in input order. The app checks SHA-256d against
+its captured outpoint, selects the indexed P2PKH output, derives all input
+amounts, and displays the fee calculated from those inputs and the reviewed
+outputs. The Blue does not verify chain inclusion, UTXO status, maturity, or
+ownership. There is no USB output acknowledgement, payment signature,
+private-key export, path selection, Sapling spend, multisig, or token command.
+The supplied branch ID remains unauthenticated; the replay digest is
+discarded. Version 0.2.1 reached the Blue: its receive
 screen and EXIT worked, and all 35 address characters matched the host result
 `t1RAmKL4KFauUXGswvMvk66aS5UL33ck1Uz`. A synthetic transaction review
 then stopped USB replies and left EXIT unresponsive. The owner restarted the
@@ -31,7 +36,7 @@ Version 0.2.4 labels an exact P2PKH hash match to the
 Blue-derived fixed account as “THIS ACCOUNT,” other P2PKH outputs as “OTHER
 ADDRESS,” and P2SH outputs as “P2SH ADDRESS.” It does not infer ownership of
 P2SH or call an output change without verified inputs and account context.
-Version 0.2.4 remains uninstalled. Do not receive funds or sign payments with it.
+Version 0.2.5 remains uninstalled. Do not receive funds or sign payments with it.
 
 ## Build
 
@@ -56,12 +61,12 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.4 image has 25,600 bytes of `.text`, 4,276
+512-byte margin. The linked 0.2.5 image has 29,952 bytes of `.text`, 5,084
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
-stack; 1,868 bytes remain after that section in the 6,144-byte app SRAM
-region. The largest named C path sums to 656 bytes, excluding BOLOS firmware
+stack; 1,060 bytes remain after that section in the 6,144-byte app SRAM
+region. The largest named C path sums to 672 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced image SHA-256
-`fb138d05d3c5c9a3b0850f02d00572779dafc8f2aab292d44bc54634c98a8abb`.
+`6c484545832c006cd620401e4e0c14f56f1a88550ccad9c440b988dc8c333a16`.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.
 
@@ -71,7 +76,7 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 
 | INS | Reply before `9000` |
 | --- | --- |
-| `01` | `ZCL`, protocol version `09`, receive and review capability `03` |
+| `01` | `ZCL`, protocol version `0A`, receive, review, and previous-wire capability `07` |
 | `02` | 33-byte compressed public key when the address is ready |
 | `20` | Begin read-only replay: 12-byte length, input index, branch ID |
 | `21` | Feed one chunk; reply reports pass and pending output |
@@ -79,12 +84,17 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 | `23` | Finish complete replay; reply reports output count |
 | `24` | Cancel review |
 | `25` | Query six nonsecret review-state bytes |
+| `26` | Begin the next previous wire with a four-byte little-endian length |
+| `27` | Feed previous-wire bytes; exact SHA-256d and structure are checked at finish |
+| `28` | Finish the previous wire; reply contains bound count, input count, fee-ready flag, and eight-byte fee |
 
 INS `02` returns `6985` if derivation or address formatting fails. A review
 upload chunk must stop on the exact output boundary. Only the touchscreen
-CONTINUE callback acknowledges that output; USB cannot do so. Any malformed
-command invalidates the review. USB reset or suspend also cancels an idle
-review and returns to the receive screen. No command signs or approves a payment.
+CONTINUE callback acknowledges that output; USB cannot do so. Previous-wire
+commands are accepted only after all outputs and the complete spending wire
+have been reviewed. Any malformed command invalidates the review. USB reset
+or suspend also cancels an idle review and returns to the receive screen. No
+command signs or approves a payment.
 After hardware validation, run
 `zcl-ledger receive-address --json /dev/hidrawN` while the app is open and
 compare the returned address with all characters on the Blue screen.

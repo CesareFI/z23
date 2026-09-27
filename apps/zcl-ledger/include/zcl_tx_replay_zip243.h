@@ -16,12 +16,17 @@ typedef struct {
     bool (*final)(void *context, uint8_t digest[32]);
 } zcl_tx_replay_sha256;
 
+typedef bool (*zcl_tx_replay_input_fn)(void *context, uint32_t index,
+    const uint8_t outpoint[36]);
+
 typedef struct {
     zcl_tx_stream wire;
     zcl_zip243_hasher blake;
     zcl_tx_replay_sha256 sha;
     uint8_t commitment[32], prevouts[32], sequences[32], selected[40];
     uint32_t expected, selected_index, branch_id;
+    zcl_tx_replay_input_fn input_observer;
+    void *input_context;
     uint8_t pass;
     bool selected_found;
 } zcl_tx_replay_zip243;
@@ -37,6 +42,10 @@ typedef bool (*zcl_tx_replay_output_fn)(void *context, uint32_t index,
 bool zcl_tx_replay_zip243_begin(zcl_tx_replay_zip243 *state,
     uint32_t expected_length, uint32_t selected_index, uint32_t branch_id,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha);
+/* The observer receives provisional pass-one outpoints. Their caller must
+ * defer use until the full three-pass replay succeeds. */
+bool zcl_tx_replay_zip243_observe_inputs(zcl_tx_replay_zip243 *state,
+    zcl_tx_replay_input_fn observer, void *context);
 bool zcl_tx_replay_zip243_feed(zcl_tx_replay_zip243 *state,
     const uint8_t *bytes, size_t length);
 /* The observer sees provisional output facts only during pass three. It must

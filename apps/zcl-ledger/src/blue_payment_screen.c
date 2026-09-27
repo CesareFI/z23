@@ -69,6 +69,11 @@ static bool amount_text(uint64_t zat, char text[32]) {
     return true;
 }
 
+bool blue_payment_fee_text(uint64_t fee_zat, char text[32]) {
+    return text && fee_zat <= ZCL_MAX_MONEY_ZAT &&
+        amount_text(fee_zat, text);
+}
+
 static bool output_address(const blue_payment_output *output,
     blue_payment_hash_fn hash, char address[40]) {
     uint8_t payload[26] = {0x1c};

@@ -70,6 +70,29 @@ static fixture make_fixture(void) {
     return item;
 }
 
+static fixture make_previous(void) {
+    fixture item = {0};
+    append_u32(&item, 1);
+    item.bytes[item.length++] = 1;
+    memset(item.bytes + item.length, 0, 32);
+    item.length += 32;
+    append_u32(&item, UINT32_MAX);
+    item.bytes[item.length++] = 0;
+    append_u32(&item, UINT32_MAX);
+    item.bytes[item.length++] = 1;
+    append_u64(&item, 400000000);
+    item.bytes[item.length++] = 25;
+    const uint8_t prefix[] = {0x76, 0xa9, 0x14};
+    memcpy(item.bytes + item.length, prefix, sizeof prefix);
+    item.length += sizeof prefix;
+    memset(item.bytes + item.length, 0x33, 20);
+    item.length += 20;
+    item.bytes[item.length++] = 0x88;
+    item.bytes[item.length++] = 0xac;
+    append_u32(&item, 0);
+    return item;
+}
+
 static bool sha_init(void *context) {
     return EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1;
 }
@@ -346,10 +369,16 @@ static void test_apdu_fail_closed(const fixture *item) {
     size_t reply_length;
     assert(command(&session, 0x21, item->bytes,
         item->output_end[0], reply, &reply_length) == 0x9000);
-    assert(command(&session, 0x26, NULL, 0,
+    assert(command(&session, 0x29, NULL, 0,
         reply, &reply_length) == 0x6d00);
     assert(!session.state.active && !session.state.review.pending);
     assert(session.state.screen.title[0] == 0);
+
+    apdu_begin(&session, item);
+    const uint8_t previous_length[4] = {85, 0, 0, 0};
+    assert(command(&session, 0x26, previous_length,
+        sizeof previous_length, reply, &reply_length) == 0x6985);
+    assert(!session.state.active && !session.state.review.verified);
 
     apdu_begin(&session, item);
     apdu_passes(&session, item);
@@ -388,7 +417,7 @@ static void test_apdu_mutations(void) {
     apdu_init(&session);
     uint32_t random = 0x23c1a55u;
     for (unsigned run = 0; run < 10000; ++run) {
-        uint8_t apdu[260] = {0xa5, (uint8_t)(0x20 + run % 7), 0, 0, 0};
+        uint8_t apdu[260] = {0xa5, (uint8_t)(0x20 + run % 9), 0, 0, 0};
         random = random * 1664525u + 1013904223u;
         apdu[4] = (uint8_t)(random >> 24);
         for (size_t i = 5; i < sizeof apdu; ++i) {
@@ -417,7 +446,7 @@ static void test_apdu_mutations(void) {
 typedef struct {
     apdu_fixture apdu;
     unsigned exchanges, continued;
-    bool refuse_touch, wrong_identity;
+    bool refuse_touch, wrong_identity, fail_previous_chunk;
 } live_fixture;
 
 static bool live_exchange(void *context, const uint8_t *apdu,
@@ -426,9 +455,10 @@ static bool live_exchange(void *context, const uint8_t *apdu,
     live_fixture *live = context;
     ++live->exchanges;
     if (capacity < 7 || apdu_length < 5) return false;
+    if (live->fail_previous_chunk && apdu[1] == 0x27) return false;
     if (apdu[1] == 0x01) {
         const uint8_t identity[7] = {'Z', 'C', 'L',
-            live->wrong_identity ? 8 : 9, 3, 0x90, 0};
+            live->wrong_identity ? 8 : 10, 7, 0x90, 0};
         memcpy(reply, identity, sizeof identity);
         *reply_length = sizeof identity;
         return true;
@@ -491,6 +521,115 @@ static void test_live_driver(const fixture *item) {
     EVP_MD_CTX_free(live.apdu.sha_context);
 }
 
+static void test_live_bound(void) {
+    fixture spend = make_fixture();
+    fixture previous = make_previous();
+    uint8_t first[32], txid[32];
+    assert(SHA256(previous.bytes, previous.length, first));
+    assert(SHA256(first, sizeof first, txid));
+    memcpy(spend.bytes + 9, txid, sizeof txid);
+    blue_payment_live_plan plan;
+    assert(blue_payment_live_prepare(spend.bytes, spend.length,
+        0x76b809bb, &plan));
+    assert(plan.inputs == 1);
+    zcl_tx_previous_transaction source = {
+        .wire = previous.bytes, .length = previous.length};
+    live_fixture live = {0};
+    apdu_init(&live.apdu);
+    assert(blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000,
+        live_exchange, live_continue, &live));
+    assert(live.apdu.state.fee_ready &&
+        live.apdu.state.bound_inputs == 1 &&
+        live.apdu.state.fee_zat == 100000000);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000001,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){.fail_previous_chunk = true};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    previous.bytes[previous.length - 1] ^= 1;
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+}
+
+static void test_live_two_inputs(void) {
+    fixture spend = make_fixture();
+    fixture first = make_previous();
+    fixture second = make_previous();
+    second.bytes[second.length - 1] = 1;
+    assert(spend.length + 41 <= sizeof spend.bytes);
+    memmove(spend.bytes + 91, spend.bytes + 50, spend.length - 50);
+    memcpy(spend.bytes + 50, spend.bytes + 9, 41);
+    spend.bytes[8] = 2;
+    spend.length += 41;
+    spend.output_end[0] += 41;
+    spend.output_end[1] += 41;
+    spend.second_amount += 41;
+    uint8_t first_hash[32], txid[32];
+    assert(SHA256(first.bytes, first.length, first_hash));
+    assert(SHA256(first_hash, sizeof first_hash, txid));
+    memcpy(spend.bytes + 9, txid, sizeof txid);
+    assert(SHA256(second.bytes, second.length, first_hash));
+    assert(SHA256(first_hash, sizeof first_hash, txid));
+    memcpy(spend.bytes + 50, txid, sizeof txid);
+    blue_payment_live_plan plan;
+    assert(blue_payment_live_prepare(spend.bytes, spend.length,
+        0x76b809bb, &plan));
+    assert(plan.inputs == 2);
+    zcl_tx_previous_transaction previous[2] = {
+        {.wire = first.bytes, .length = first.length},
+        {.wire = second.bytes, .length = second.length}
+    };
+    live_fixture live = {0};
+    apdu_init(&live.apdu);
+    assert(blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, previous, 2, 500000000,
+        live_exchange, live_continue, &live));
+    assert(live.apdu.state.fee_ready &&
+        live.apdu.state.bound_inputs == 2 &&
+        live.apdu.state.input_zat == 800000000 &&
+        live.apdu.state.fee_zat == 500000000);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    zcl_tx_previous_transaction reversed[2] = {previous[1], previous[0]};
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, reversed, 2, 500000000,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    memcpy(spend.bytes + 50, spend.bytes + 9, 36);
+    assert(blue_payment_live_prepare(spend.bytes, spend.length,
+        0x76b809bb, &plan));
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, previous, 2, 500000000,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+}
+
 int main(int argc, char **argv) {
     fixture item = make_fixture();
     test_success(&item);
@@ -500,6 +639,8 @@ int main(int argc, char **argv) {
     test_apdu_fail_closed(&item);
     test_apdu_mutations();
     test_live_driver(&item);
+    test_live_bound();
+    test_live_two_inputs();
     if (argc == 2) {
         FILE *file = fopen(argv[1], "wb");
         assert(file);

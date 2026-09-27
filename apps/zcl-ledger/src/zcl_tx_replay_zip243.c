@@ -52,11 +52,22 @@ bool zcl_tx_replay_zip243_begin(zcl_tx_replay_zip243 *state,
     return start_pass(state) ? true : fail(state);
 }
 
+bool zcl_tx_replay_zip243_observe_inputs(zcl_tx_replay_zip243 *state,
+    zcl_tx_replay_input_fn observer, void *context) {
+    if (!state || !observer || !context || state->pass != 1 ||
+        state->wire.received || state->wire.failed) return false;
+    state->input_observer = observer;
+    state->input_context = context;
+    return true;
+}
+
 static bool input_seen(void *context, uint32_t index,
     const uint8_t outpoint[36], uint32_t sequence) {
     zcl_tx_replay_zip243 *state = ((callback_context *)context)->state;
     if (state->pass == 1)
-        return state->blake.update(state->blake.context, outpoint, 36);
+        return state->blake.update(state->blake.context, outpoint, 36) &&
+            (!state->input_observer || state->input_observer(
+                state->input_context, index, outpoint));
     uint8_t bytes[4];
     put_u32(bytes, sequence);
     if (state->pass == 2)

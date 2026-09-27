@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_live.h"
+#include "zcl_tx_previous_stream.h"
 
 #include <openssl/sha.h>
 #include <string.h>
@@ -43,6 +44,7 @@ bool blue_payment_live_prepare(const uint8_t *wire, size_t length,
         !zcl_tx_stream_finish(&parser, &facts) ||
         capture.seen != checked.count || facts.outputs != checked.count ||
         !SHA256(wire, length, checked.wire_hash)) return false;
+    checked.inputs = facts.inputs;
     *plan = checked;
     return true;
 }
@@ -63,6 +65,10 @@ static bool send_command(blue_payment_live_exchange exchange, void *context,
 
 static void put_u32(uint8_t bytes[4], uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) bytes[i] = (uint8_t)(value >> (i * 8));
+}
+
+static void put_u64(uint8_t bytes[8], uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i) bytes[i] = (uint8_t)(value >> (i * 8));
 }
 
 static bool feed_range(const uint8_t *wire, size_t start, size_t end,
@@ -116,7 +122,7 @@ bool blue_payment_live_run(const uint8_t *wire, size_t length,
     const blue_payment_live_plan *plan,
     blue_payment_live_exchange exchange,
     blue_payment_live_continue continuation, void *context) {
-    static const uint8_t identity[] = {'Z', 'C', 'L', 9, 3};
+    static const uint8_t identity[] = {'Z', 'C', 'L', 10, 7};
     if (!wire || !plan || !exchange || !continuation ||
         !plan->count || plan->count > BLUE_PAYMENT_REVIEW_MAX_OUTPUTS ||
         length != plan->wire_length) return false;
@@ -143,4 +149,48 @@ bool blue_payment_live_run(const uint8_t *wire, size_t length,
                                     &count, 1);
     if (!valid) (void)send_command(exchange, context, 0x24, NULL, 0, NULL, 0);
     return valid;
+}
+
+static bool send_previous(zcl_tx_previous_transaction previous,
+    uint8_t index, uint8_t total, uint64_t fee_zat,
+    blue_payment_live_exchange exchange, void *context) {
+    if (!previous.wire || !previous.length ||
+        previous.length > ZCL_TX_PREVIOUS_STREAM_MAX_BYTES) return false;
+    uint8_t length[4];
+    put_u32(length, (uint32_t)previous.length);
+    if (!send_command(exchange, context, 0x26, length, sizeof length,
+                      NULL, 0)) return false;
+    for (size_t offset = 0; offset < previous.length;) {
+        size_t count = previous.length - offset < 128 ?
+            previous.length - offset : 128;
+        if (!send_command(exchange, context, 0x27,
+                previous.wire + offset, (uint8_t)count, NULL, 0))
+            return false;
+        offset += count;
+    }
+    uint8_t expected[11] = {index, total, index == total};
+    if (index == total) put_u64(expected + 3, fee_zat);
+    return send_command(exchange, context, 0x28, NULL, 0,
+                        expected, sizeof expected);
+}
+
+bool blue_payment_live_run_bound(const uint8_t *wire, size_t length,
+    const blue_payment_live_plan *plan,
+    const zcl_tx_previous_transaction *previous, size_t previous_count,
+    uint64_t expected_fee_zat, blue_payment_live_exchange exchange,
+    blue_payment_live_continue continuation, void *context) {
+    if (!plan || !previous || !previous_count ||
+        previous_count != plan->inputs ||
+        previous_count > ZCL_TX_PREFLIGHT_MAX_INPUTS || !exchange ||
+        !blue_payment_live_run(wire, length, plan,
+                               exchange, continuation, context)) return false;
+    for (size_t i = 0; i < previous_count; ++i) {
+        if (!send_previous(previous[i], (uint8_t)(i + 1),
+                           (uint8_t)previous_count, expected_fee_zat,
+                           exchange, context)) {
+            (void)send_command(exchange, context, 0x24, NULL, 0, NULL, 0);
+            return false;
+        }
+    }
+    return true;
 }

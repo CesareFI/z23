@@ -12,7 +12,7 @@ $(error The SDK must target Ledger Blue firmware 2.1.x)
 endif
 
 APPNAME = "ZCL Wallet"
-APPVERSION = 0.2.4
+APPVERSION = 0.2.5
 APP_FLAGS = 0x00
 APP_SOURCE_PATH += src
 SDK_SOURCE_PATH += lib_stusb lib_stusb_impl
