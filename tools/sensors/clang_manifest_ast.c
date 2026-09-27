@@ -619,8 +619,13 @@ static bool cm_attr_args(struct cm_state *st, CXCursor a, const char *from)
     for (; k < n; k++) {
         char *s = cm_take_string(clang_getTokenSpelling(st->tu, toks[k]));
         bool punct = clang_getTokenKind(toks[k]) == CXToken_Punctuation;
-        bool stop = s == NULL || (punct && strcmp(s, "::") != 0);
-        if (!punct && s != NULL) {
+        bool stop;
+        if (s == NULL) {
+            ok = cm_fail(&st->core, "out of memory");
+            break;
+        }
+        stop = punct && strcmp(s, "::") != 0;
+        if (!punct) {
             free(name);
             name = s;
         } else {
@@ -817,6 +822,10 @@ static bool cm_alias_ref(struct cm_state *st, const char *from,
         free(id);
         return ok;
     }
+    /* A cut name would address some other id: no manifest instead. */
+    if (strlen(target) + 3 > sizeof(ext))
+        return cm_fail(&st->core, "alias target longer than %zu bytes",
+                       sizeof(ext) - 3);
     (void)snprintf(ext, sizeof(ext), "f:%s", target);
     ok = cm_ref(&st->core, from, VCS_SEMANTIC_REF_V1_ADDRESS, ext);
     (void)snprintf(ext, sizeof(ext), "v:%s", target);
