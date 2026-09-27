@@ -1293,6 +1293,20 @@ static bool proof_request_body(const char *local, const char *base,
     return true;
 }
 
+/* The per-attempt step logs, each under the attempt's own logs/. */
+static bool proof_attempt_log_paths(struct proof_paths *attempt)
+{
+    return snprintf(attempt->bundle_log, sizeof(attempt->bundle_log),
+                    "%s/logs/bundle.log", attempt->attempt) <
+               (int)sizeof(attempt->bundle_log) &&
+           snprintf(attempt->prefork_log, sizeof(attempt->prefork_log),
+                    "%s/logs/prefork.log", attempt->attempt) <
+               (int)sizeof(attempt->prefork_log) &&
+           snprintf(attempt->test_needs_log, sizeof(attempt->test_needs_log),
+                    "%s/logs/test-needs.log", attempt->attempt) <
+               (int)sizeof(attempt->test_needs_log);
+}
+
 static bool proof_attempt_paths_prepare(const struct proof_paths *pair,
                                         struct proof_paths *attempt)
 {
@@ -1316,15 +1330,7 @@ static bool proof_attempt_paths_prepare(const struct proof_paths *pair,
         snprintf(attempt->changed, sizeof(attempt->changed),
                  "%s/changed.files", attempt->attempt) >=
             (int)sizeof(attempt->changed) ||
-        snprintf(attempt->bundle_log, sizeof(attempt->bundle_log),
-                 "%s/logs/bundle.log", attempt->attempt) >=
-            (int)sizeof(attempt->bundle_log) ||
-        snprintf(attempt->prefork_log, sizeof(attempt->prefork_log),
-                 "%s/logs/prefork.log", attempt->attempt) >=
-            (int)sizeof(attempt->prefork_log) ||
-        snprintf(attempt->test_needs_log, sizeof(attempt->test_needs_log),
-                 "%s/logs/test-needs.log", attempt->attempt) >=
-            (int)sizeof(attempt->test_needs_log) ||
+        !proof_attempt_log_paths(attempt) ||
         snprintf(attempt->phases, sizeof(attempt->phases), "%s/phases.txt",
                  attempt->attempt) >= (int)sizeof(attempt->phases) ||
         !platform_private_directory_ensure(attempt->logs))
