@@ -133,7 +133,7 @@ its full image measurements are recorded in the
 [linked Wallet experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-link.md).
 Wallet 0.2.1 receive display and EXIT worked on the Blue, but a later
 read-only payment review stopped USB replies and made EXIT unresponsive.
-Version 0.2.1 was deleted; 0.2.2 remains uninstalled.
+Version 0.2.1 was deleted; 0.2.3 remains uninstalled.
 [`blue_payment_review.h`](include/blue_payment_review.h) adds a C23,
 read-only review controller. It retains one standard transparent output,
 halts upload until that output is acknowledged, and limits a session to 16
@@ -176,7 +176,9 @@ is verified; the owner saw a steady receive screen and working EXIT, then
 matched all 35 address characters with the host's read-only result. Review
 USB behavior failed on a synthetic physical test. The
 [failure experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-failure.md)
-records the observed fault and the offline-only 0.2.2 response.
+records the observed fault and the offline-only 0.2.2 response. Version 0.2.3
+also prevents a post-reply display exception or an incomplete receive from
+creating an APDU response without a request.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

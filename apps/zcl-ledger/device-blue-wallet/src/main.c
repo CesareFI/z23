@@ -254,19 +254,20 @@ static void answer_command(void) {
     volatile unsigned int received = 0, sent = 0;
     volatile bool redraw_receive = false;
     for (;;) {
+        if (sent) {
+            (void)io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, sent);
+            sent = 0;
+            if (redraw_receive) {
+                UX_DISPLAY(receive_ui, NULL);
+                redraw_receive = false;
+            } else if (wallet_payment_visible()) {
+                wallet_payment_display();
+            }
+        }
         volatile uint16_t status = 0x6f00;
         BEGIN_TRY {
             TRY {
-                if (sent) {
-                    (void)io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, sent);
-                    sent = 0;
-                    if (redraw_receive) {
-                        UX_DISPLAY(receive_ui, NULL);
-                        redraw_receive = false;
-                    } else if (wallet_payment_visible()) {
-                        wallet_payment_display();
-                    }
-                }
+                received = 0;
                 received = io_exchange(CHANNEL_APDU, 0);
                 size_t length = 0;
                 if (received >= 2 && G_io_apdu_buffer[1] >= 0x20) {
@@ -284,6 +285,12 @@ static void answer_command(void) {
                 sent = length;
             }
             CATCH_OTHER(error) {
+                if (!received) {
+                    wallet_payment_abort();
+                    wipe(&secret, sizeof secret);
+                    CLOSE_TRY;
+                    THROW(error);
+                }
                 status = (error & 0xf000) == 0x6000 ||
                          (error & 0xf000) == 0x9000
                              ? error : (0x6800 | (error & 0x07ff));

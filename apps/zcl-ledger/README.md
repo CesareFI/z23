@@ -15,7 +15,7 @@ The reusable [`zcl_tx_stream` API](include/zcl_tx_stream.h) parses unsigned,
 all-transparent Sapling-v4 transaction bytes in bounded C23 state as chunks
 arrive. It emits provisional input and P2PKH/P2SH output facts, then returns
 aggregate facts only after the declared byte count and trailing fields pass.
-It is linked into the withdrawn Blue Wallet 0.2.1 and the uninstalled 0.2.2
+It is linked into the withdrawn Blue Wallet 0.2.1 and the uninstalled 0.2.3
 review candidate. It does not authorize signing.
 The related [`zcl_tx_stream_zip243` API](include/zcl_tx_stream_zip243.h)
 computes an input-specific ZIP-243 SIGHASH_ALL digest from accepted chunks
@@ -33,13 +33,13 @@ bytes after each public output until the caller acknowledges it, and rejects
 chunks with even one byte beyond an output. A device app must call
 acknowledgement only from a real touchscreen action. The controller is
 host-tested and linked to a Blue screen and USB payment review in the
-uninstalled Wallet 0.2.2 candidate. It has no signing key operation.
+uninstalled Wallet 0.2.3 candidate. It has no signing key operation.
 The [`blue_payment_screen` API](include/blue_payment_screen.h) formats the
 pending output into a full 35-character mainnet address and exact ZCL amount.
 The host-only renderer previews a 320 × 480 light or dark screen using the
 Blue SDK font bitmap. Wallet 0.2.1 froze during a physical read-only review;
 the owner restarted the Blue, and Z23 deleted all remaining ZCL apps. The
-0.2.2 review screens have not been physically checked.
+0.2.3 review screens have not been physically checked.
 `zcl-blue-payment-sim` runs an unsigned, all-transparent v4 transaction
 through the three replay passes, simulates one acknowledgement per output,
 and writes each output PNG only after the full replay validates. The branch
@@ -49,7 +49,7 @@ read-only Wallet command candidate. It accepts begin, feed, next pass,
 finish, cancel, and status commands. USB has no output-acknowledgement
 command; the Wallet 0.2.1 candidate wires the acknowledgement only to a
 Blue touchscreen callback. Physical payment-review behavior failed on 0.2.1;
-0.2.2 is uninstalled and unverified.
+0.2.3 is uninstalled and unverified.
 
 ## Build and test
 
@@ -68,7 +68,7 @@ compatible Wallet. Supply one complete previous transaction per input, in
 input order. It verifies every outpoint against those bytes, derives the fee,
 and stops each third-pass upload exactly at the next output. The previous
 transaction bytes do not establish chain inclusion or unspent status. It
-cannot sign. Version 0.2.2 must pass separate device checks before this
+cannot sign. Version 0.2.3 must pass separate device checks before this
 driver is used on the Blue again.
 
 Find accessible Ledger HID interfaces without Ledger Live:
@@ -121,7 +121,7 @@ Blue returned ZCL Review in this catalog even while its icon was not visible
 to the owner; the catalog alone does not establish that Review can open.
 
 The intended everyday interface is one [ZCL Wallet device app](ROADMAP.md)
-controlled by Z23. The [Wallet 0.2.2 candidate](device-blue-wallet/README.md)
+controlled by Z23. The [Wallet 0.2.3 candidate](device-blue-wallet/README.md)
 derives a fixed transparent key on the Blue, displays its address, and exposes
 only its public key over USB. It also links read-only transparent output
 review with a touchscreen CONTINUE action and no payment signing. Its host
@@ -129,7 +129,7 @@ receive command is
 `zcl-ledger receive-address --json /dev/hidrawN`. Wallet 0.2.1 physically
 matched the receive address, then froze on a synthetic review request and was
 deleted. Probe and Sign Test were also deleted; the authenticated Blue catalog
-reported zero apps. Version 0.2.2 is built and simulated offline but is not
+reported zero apps. Version 0.2.3 is built and simulated offline but is not
 installed or hardware-verified. Probe, Fixture, Review, and Sign Test remain
 development images, not payment signers.
 

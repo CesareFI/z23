@@ -32,9 +32,9 @@ on the Blue for the exact transaction facts.
 | Capability | Proven today | Required before payment use |
 | --- | --- | --- |
 | USB and app management | Authenticated CA install and app catalog on BOLOS 2.1.1 | Repeatable install, open, exit, and recovery checks for the final app |
-| Screen accessibility | C23 offline screenshots, word-wrapped 22-pixel text, and light/dark controls in the uninstalled Review 0.4.4 candidate; Wallet 0.2.1 linked large address and amount pages, but physical review froze; 0.2.2 is uninstalled | Physical font, color, tap, page, EXIT, and USB checks before inclusion in a signing app |
+| Screen accessibility | C23 offline screenshots, word-wrapped 22-pixel text, and light/dark controls in the uninstalled Review 0.4.4 candidate; Wallet 0.2.1 linked large address and amount pages, but physical review froze; 0.2.3 is uninstalled | Physical font, color, tap, page, EXIT, and USB checks before inclusion in a signing app |
 | Transparent addresses | Public-key fixture and fixed-message seed-derived signing test; Wallet 0.2.1 opened to a steady receive screen with working EXIT, and its 35-character address matched the host result; the app was later deleted after a review freeze | Selectable path and account, repeated receive and interruption checks |
-| Transparent payments | Host displays P2PKH/P2SH output facts, computes ZIP-243 input digests against a published vector, and preflights up to 16 P2PKH inputs against supplied previous transactions; the 0.2.1 physical review froze before an output was confirmed; a C23 exact-boundary host driver and deferred-redraw 0.2.2 image pass offline tests only | Diagnose and pass BOLOS USB/touch and recovery tests; chain-verified unspent prevouts, device-derived change and account, on-device fee and all-output confirmation, input-specific approval and signatures |
+| Transparent payments | Host displays P2PKH/P2SH output facts, computes ZIP-243 input digests against a published vector, and preflights up to 16 P2PKH inputs against supplied previous transactions; the 0.2.1 physical review froze before an output was confirmed; a C23 exact-boundary host driver and 0.2.3 image pass offline tests only | Diagnose and pass BOLOS USB/touch and recovery tests; chain-verified unspent prevouts, device-derived change and account, on-device fee and all-output confirmation, input-specific approval and signatures |
 | Sapling payments | Host and Review compute ZIP-243 digests; no Sapling keys or signing in Review | ZCL branch selection, key derivation, note and output binding, exact on-device review, spend authorization, and end-to-end test transactions |
 | Sapling memos | Z23 wallet stores 512-byte decrypted note memos; Review sees only encrypted transaction bytes | Classify absent, UTF-8, and opaque memo forms; show text or an explicit binary warning; bind any displayed outgoing memo to a device-verifiable transaction commitment before signing |
 | Transparent multisig | Host recognizes P2SH scripts but cannot infer a threshold | Redeem-script and cosigner validation, device confirmation, and independently verified signatures |
@@ -47,7 +47,7 @@ payment signing on synthetic fixtures; test-network transactions; Sapling
 spends and receives; token-aware and multisig flows. Every signing path must
 reject a transaction type it cannot fully review. The Blue has 6 KiB of app
 SRAM, including its reserved stack, so larger transactions require bounded
-streaming and measured stack use. The uninstalled, read-only Wallet 0.2.2 candidate
+streaming and measured stack use. The uninstalled, read-only Wallet 0.2.3 candidate
 uses one BLAKE2b context and a SHA-256 commitment across three identical
 uploads. Its 4,236-byte `.bss` includes the 2 KiB stack reservation and
 leaves 1,908 bytes after the section. A signing design still needs trusted
