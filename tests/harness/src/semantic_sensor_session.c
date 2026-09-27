@@ -10,7 +10,9 @@
  * the TU reuse the contract requires:
  *   - a function-body edit and a main-file macro edit reparse the live TU;
  *   - a header macro edit, a header layout edit, a header that newly shadows
- *     the one used and a flag change each recreate it;
+ *     the one used, a header that newly shadows one a system header
+ *     includes (no LOOKUPS record covers that include) and a flag change
+ *     each recreate it;
  *   - with ZCL_CLANG_MANIFEST_INJECT_WARM_MISMATCH=1 the warm bytes are
  *     corrupted, the oracle reports the mismatch, the cold bytes are written
  *     and warm reuse stays off for that TU for the rest of the session.
@@ -20,6 +22,7 @@
 
 #include "test/test_core.h"
 #include "util/spawn.h"
+#include "vcs/semantic_manifest.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -42,6 +45,7 @@ static const char k_sss_header[] =
 
 static const char k_sss_main[] =
     "#include \"fx.h\"\n"
+    "#include <stdint.h>\n"
     "#define FX_LOCAL 2\n"
     "int fx_sum(const struct fx_pair *p) { return p->a + p->b; }\n"
     "int fx_run(int v)\n"
@@ -171,13 +175,85 @@ static bool sss_layout(const char *root)
     return sss_edit(root, "inc/b/fx.h", "int b; };", "int b; long c; };");
 }
 
-/* inc/a is searched before inc/b: the new file shadows the one in use. */
+/* inc/a is searched before inc/b: the new file shadows the one in use. The
+ * shadow candidates see it before the reparse. */
 static bool sss_shadow(const char *root)
 {
     return sss_write(root, "inc/a/fx.h",
                      "#ifndef FX_H\n#define FX_H\n#define FX_SCALE 9\n"
                      "struct fx_pair { long a; int b; };\n"
                      "int fx_sum(const struct fx_pair *p);\n#endif\n");
+}
+
+/* The includer's own directory is searched first for a quoted include and is
+ * no search dir: only the fresh probes of the LOOKUPS record see this one,
+ * after the reparse, which is then retried as a fresh parse. */
+static bool sss_shadow_beside(const char *root)
+{
+    return sss_write(root, "src/fx.h",
+                     "#ifndef FX_H\n#define FX_H\n#define FX_SCALE 11\n"
+                     "struct fx_pair { short a; int b; };\n"
+                     "int fx_sum(const struct fx_pair *p);\n#endif\n");
+}
+
+/* A leaf system header that the base TU read only through another system
+ * header: no LOOKUPS record covers its include. */
+struct sss_leaf {
+    char path[PATH_MAX];
+    char *body;
+};
+
+/* The host path of a system file's manifest path: "@sys/x" is "/x". */
+static bool sss_sys_path(const char *p, size_t n, char *out, size_t cap)
+{
+    int w;
+    if (n < 5 || memcmp(p, "@sys/", 5) != 0)
+        return false;
+    w = snprintf(out, cap, "/%.*s", (int)(n - 5), p + 5);
+    return w > 0 && (size_t)w < cap;
+}
+
+static bool sss_leaf_cb(void *ctx, const struct vcs_semantic_fields_v1 *f)
+{
+    struct sss_leaf *l = ctx;
+    size_t n = 0;
+    if (l->body != NULL || f->ntext < 1 || f->nnum < 1 ||
+        f->num[0] != VCS_SEMANTIC_ORIGIN_V1_SYSTEM ||
+        !sss_sys_path(f->text[0], f->text_len[0], l->path, sizeof(l->path)) ||
+        !sss_read(l->path, &l->body, &n))
+        return true;
+    if (n == 0 || strstr(l->body, "include") != NULL) {
+        free(l->body);
+        l->body = NULL;
+    }
+    return true;
+}
+
+/* A copy of that header in inc/a, the first angled dir, under every tail of
+ * its path, so whichever relative name the system header spelled now finds
+ * the copy first. A cold parse reads the copy; a reused preamble would not. */
+static bool sss_system_shadow(const char *root)
+{
+    struct sss_leaf l = {0};
+    char base[PATH_MAX], rel[PATH_MAX], *m = NULL;
+    size_t n = 0;
+    bool ok;
+    (void)snprintf(base, sizeof(base), "%s/base.cold.bin", root);
+    ok = sss_read(base, &m, &n) &&
+         vcs_semantic_section_v1_each((const uint8_t *)m, n,
+                                      VCS_SEMANTIC_SECTION_V1_FILES,
+                                      sss_leaf_cb, &l) &&
+         l.body != NULL;
+    free(m);
+    if (!ok)
+        printf("FAIL no leaf system header in %s\n", base);
+    for (const char *s = strchr(l.path + 1, '/'); ok && s != NULL;
+         s = strchr(s + 1, '/')) {
+        (void)snprintf(rel, sizeof(rel), "inc/a/%s", s + 1);
+        ok = sss_write(root, rel, l.body);
+    }
+    free(l.body);
+    return ok;
 }
 
 static bool sss_body_again(const char *root)
@@ -203,7 +279,11 @@ static const struct sss_step k_sss_steps[] = {
      "file-changed inc/b/fx.h"},
     {"header-layout",sss_layout, false, "recreated", "file-changed inc/b/fx.h"},
     {"shadow-header", sss_shadow, false, "recreated",
+     "include-shadow-appeared inc/a/fx.h"},
+    {"shadow-beside", sss_shadow_beside, false, "recreated",
      "warm-unusable: lookup-moved fx.h"},
+    {"system-shadow", sss_system_shadow, false, "recreated",
+     "include-shadow-appeared inc/a/"},
     {"flag", sss_none, true, "recreated", "argv-changed"},
     {"body-after-flag", sss_body_again, true, "reparsed", ""},
 };
@@ -492,7 +572,7 @@ static int sss_t_verified(struct sss_ctx *c)
         ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 0);
         ASSERT(strstr(reply, "\"mismatches\":0,") != NULL);
         ASSERT(strstr(reply, "\"reparsed\":3,") != NULL);
-        ASSERT(strstr(reply, "\"recreated\":5}") != NULL);
+        ASSERT(strstr(reply, "\"recreated\":7}") != NULL);
     } TEST_END
     if (started)
         (void)sss_finish(&p, reply, sizeof(reply));
@@ -518,6 +598,11 @@ static int sss_t_qualified(struct sss_ctx *c)
         ASSERT(sss_step(c, &p, 1, reply, sizeof(reply)));
         ASSERT(sss_is(reply, "written", "warm"));
         ASSERT(sss_is(reply, "verify", "skipped"));
+        /* A verified TU, then a shadow of an include made inside a system
+         * header: only the shadow candidates can see it. Unseen, the warm
+         * bytes written here would differ from the cold ones. */
+        ASSERT(sss_step(c, &p, 8, reply, sizeof(reply)));
+        ASSERT(sss_is(reply, "verify", "equal"));
         ASSERT(sss_step(c, &p, 2, reply, sizeof(reply)));
         ASSERT(sss_is(reply, "written", "warm"));
         ASSERT(sss_step(c, &p, 3, reply, sizeof(reply)));

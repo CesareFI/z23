@@ -65,6 +65,10 @@ struct cm_warm_tu {
     uint8_t *main_bytes; /* the main file bytes handed to this parse */
     size_t main_len;
     uint8_t main_sha3[32];
+    /* The shadow candidates (cm_warm_shadows) taken right after the parse that
+     * built the preamble, before its cold check. */
+    char *shadows;
+    size_t shadows_len;
     bool verified;  /* a cold-equal emit since the TU was (re)created */
     bool disabled;  /* a mismatch: cold only for the rest of the session */
     double parse_ms; /* the front end's share of the last warm emit */
@@ -200,6 +204,7 @@ static void cm_tu_free(struct cm_warm_tu *w)
     cm_tu_free_argv(w);
     free(w->source);
     free(w->accepted);
+    free(w->shadows);
     free(w->main_bytes);
     memset(w, 0, sizeof(*w));
 }
@@ -327,6 +332,44 @@ static bool cm_warm_parse(struct cm_state *st, const struct cm_opts *o,
 
 /* ---- deciding how one emit may use its TU ------------------------------------ */
 
+/* Does the tree still hold the shadow candidates w's preamble was built
+ * against? */
+static bool cm_tu_shadows_same(const struct cm_warm_tu *w, char *why,
+                               size_t why_len)
+{
+    char *now = NULL;
+    size_t now_len = 0;
+    bool same;
+    if (w->shadows == NULL) {
+        (void)snprintf(why, why_len, "no-shadow-baseline");
+        return false;
+    }
+    if (!cm_warm_shadows(w->root, w->accepted, w->accepted_len, &now,
+                         &now_len)) {
+        (void)snprintf(why, why_len, "shadow-candidates-unreadable");
+        return false;
+    }
+    same = cm_warm_shadows_same(w->shadows, w->shadows_len, now, now_len, why,
+                                why_len);
+    free(now);
+    return same;
+}
+
+/* The baseline of a fresh parse: its shadow candidates, taken before the cold
+ * check, so a header that appears between the parse and this listing makes
+ * the cold oracle differ instead of hiding in the baseline. */
+static bool cm_tu_baseline(struct cm_warm_tu *w, const uint8_t *m, size_t n,
+                           char *why, size_t why_len)
+{
+    free(w->shadows);
+    w->shadows = NULL;
+    w->shadows_len = 0;
+    if (cm_warm_shadows(w->root, m, n, &w->shadows, &w->shadows_len))
+        return true;
+    (void)snprintf(why, why_len, "shadow-candidates-unreadable");
+    return false;
+}
+
 /* Why the TU must be (re)created, or NULL when a reparse may be tried. */
 static const char *cm_tu_stale(struct cm_warm_tu *w, const struct cm_opts *o,
                                const uint8_t producer[32], bool named,
@@ -343,6 +386,8 @@ static const char *cm_tu_stale(struct cm_warm_tu *w, const struct cm_opts *o,
     if (w->accepted == NULL)
         return "nothing-accepted";
     if (!cm_warm_bound(w->root, w->accepted, w->accepted_len, why, why_len))
+        return why;
+    if (!cm_tu_shadows_same(w, why, why_len))
         return why;
     return NULL;
 }
@@ -407,6 +452,8 @@ static uint8_t *cm_warm_emit(struct cm_warm_tu *w, const struct cm_opts *o,
         (void)snprintf(why, sizeof(why), "main file bytes differ");
         ok = false;
     }
+    if (ok && !reparse)
+        ok = cm_tu_baseline(w, m, *len, why, sizeof(why));
     if (ok && reparse && w->accepted != NULL)
         ok = cm_warm_files_agree(w->accepted, w->accepted_len, m, *len, why,
                                  sizeof(why)) &&

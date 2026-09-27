@@ -248,13 +248,12 @@ bool cm_write_file(const char *path, const uint8_t *b, size_t n);
 /* ---- warm binding (clang_manifest_warm.c) -------------------------------- */
 
 /* Does the tree under root still hold what manifest m describes, outside its
- * main file? Every other file it read (repo or system) still has its SHA3,
- * every ignored search dir still does not exist, through
- * vcs_semantic_absent_v1_each, the enumeration dev.change.plan binds an after
- * manifest with. A lookup without a negative claim (include_next, a computed
- * or an absolute include) cannot be re-checked, so it fails too. The absent
- * slots of every lookup are checked after the reparse, by
- * cm_warm_lookups_agree. On failure why names the first input that moved. */
+ * main file? Every other file it read (repo or system) still has its SHA3. A
+ * lookup without a negative claim (include_next, a computed or an absolute
+ * include) cannot be re-checked, so it fails too. The absent slots of every
+ * lookup are checked after the reparse, by cm_warm_lookups_agree; includes
+ * no lookup records, by cm_warm_shadows. On failure why names the first
+ * input that moved. */
 bool cm_warm_bound(const char *root, const uint8_t *m, size_t n, char *why,
                    size_t why_len);
 /* Do two manifests agree on every non-main file both read? (A warm reparse
@@ -274,6 +273,19 @@ bool cm_warm_lookups_agree(const uint8_t *prev, size_t prev_len,
                            size_t why_len);
 /* The FILES digest m records for its main file; false when there is none. */
 bool cm_warm_main_digest(const uint8_t *m, size_t n, uint8_t out[32]);
+/* The shadow candidates of m, one per line into *out (caller frees; an empty
+ * list is ""): for every non-main file, under every search dir that holds
+ * it, each earlier search dir (quote dirs, then angled) that now holds the
+ * same relative name ("<dir>/<name>"), or that no longer exists ("gone
+ * <dir>/"). This covers the includes LOOKUPS does not record, those made
+ * inside system headers, whose resolution a reused preamble never repeats.
+ * False when m or a search dir cannot be read. */
+bool cm_warm_shadows(const char *root, const uint8_t *m, size_t n, char **out,
+                     size_t *out_len);
+/* Are two shadow lists the same? On a difference why names the first line
+ * that appeared or vanished. */
+bool cm_warm_shadows_same(const char *then, size_t then_len, const char *now,
+                          size_t now_len, char *why, size_t why_len);
 
 #ifdef __cplusplus
 }

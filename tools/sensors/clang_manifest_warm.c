@@ -1,7 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Compiler-API-free binding of a warm semantic-sensor TU to the tree: file digests, absent include slots and main-file identity. */
+ * purpose: Compiler-API-free binding of a warm semantic-sensor TU to the tree: file digests, include probes, shadow candidates and main-file identity. */
 #include "clang_manifest_core.h"
 
+#include "base/safe_alloc.h"
+
+#include <dirent.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,10 +15,10 @@
 /* A warm session reparses a TU whose preamble (the headers) clang reuses
  * after checking each header's size and modification time only. These
  * checks are what the session trusts instead, all against the last manifest
- * it accepted for the TU: the exact bytes of every file it read, and the
- * absence of every include slot it saw missing. They are the checks
- * dev.change.plan applies to an after manifest (tools/dev/
- * devloop_facts_bind.c), over the same reader enumeration. */
+ * it accepted for the TU: the exact bytes of every file it read (before the
+ * reparse), the fresh probes of every include a repo file made (after it),
+ * and the shadow candidates of every include no LOOKUPS record covers
+ * (before it). Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
 
 struct cm_bind {
     const char *root;
@@ -320,4 +324,310 @@ bool cm_warm_bound(const char *root, const uint8_t *m, size_t n, char *why,
     }
     free(s.v);
     return ok;
+}
+
+/* ---- shadow candidates: includes no LOOKUPS record covers ------------------- */
+
+/* A preamble keeps the resolution of every include made while it was built,
+ * including the ones inside system headers, which LOOKUPS does not record.
+ * The front end revalidates the files it read, never the slots it skipped,
+ * so a header that appears in an earlier search dir under the same relative
+ * name leaves the reparse stale while a cold parse would read the new file.
+ * The candidates are: for every non-main file of the manifest, for every
+ * search dir (quote, then angled) that holds it, every earlier search dir
+ * that now holds the same relative name, or that no longer exists. The list
+ * is compared, not judged: a TU is recreated when it differs from the list
+ * taken right after the parse that built its preamble. */
+
+struct cm_sdir {
+    const char *dir; /* manifest spelling, not NUL-terminated */
+    size_t len;
+    char host[PATH_MAX];
+    char **names; /* its entries, sorted, read on first use */
+    size_t nnames, cap;
+    int state;    /* 0 unread, 1 read, 2 gone */
+    bool listed;  /* its "gone" line is written */
+};
+
+struct cm_shadow {
+    const char *root;
+    struct cm_sdir *dirs;
+    size_t ndirs, cap;
+    char *out;
+    size_t len, outcap;
+    bool bad;
+};
+
+static bool cm_shadow_bad(struct cm_shadow *s)
+{
+    s->bad = true;
+    return false;
+}
+
+static bool cm_u32_at(const uint8_t *raw, size_t len, size_t *at, uint32_t *v)
+{
+    if (len - *at < 4)
+        return false;
+    *v = (uint32_t)raw[*at] | (uint32_t)raw[*at + 1] << 8 |
+         (uint32_t)raw[*at + 2] << 16 | (uint32_t)raw[*at + 3] << 24;
+    *at += 4;
+    return true;
+}
+
+/* One IDENTITY dir list: u32 count || text*. keep: record its dirs. */
+static bool cm_shadow_list(struct cm_shadow *s, const uint8_t *raw, size_t len,
+                           size_t *at, bool keep)
+{
+    uint32_t count;
+    if (!cm_u32_at(raw, len, at, &count))
+        return false;
+    for (uint32_t k = 0; k < count; k++) {
+        size_t start = *at;
+        if (!cm_text_end(raw, len, at))
+            return false;
+        if (!keep)
+            continue;
+        if (!cm_grow((void **)&s->dirs, &s->cap, s->ndirs, sizeof(*s->dirs)))
+            return false;
+        s->dirs[s->ndirs++] = (struct cm_sdir){
+            .dir = (const char *)raw + start + 4, .len = *at - start - 4};
+    }
+    return true;
+}
+
+/* IDENTITY: compiler, resource dir, target, main file, argv, quote dirs,
+ * angled dirs, ignored dirs, env. */
+static bool cm_shadow_ident_cb(void *ctx, enum vcs_semantic_section_v1 section,
+                               const struct vcs_semantic_fields_v1 *fields,
+                               const uint8_t *raw, size_t raw_len)
+{
+    struct cm_shadow *s = ctx;
+    size_t at = 0;
+    (void)fields;
+    if (section != VCS_SEMANTIC_SECTION_V1_IDENTITY)
+        return true;
+    for (int k = 0; k < 4; k++)
+        if (!cm_text_end(raw, raw_len, &at))
+            return cm_shadow_bad(s);
+    if (!cm_shadow_list(s, raw, raw_len, &at, false) ||
+        !cm_shadow_list(s, raw, raw_len, &at, true) ||
+        !cm_shadow_list(s, raw, raw_len, &at, true))
+        return cm_shadow_bad(s);
+    return true;
+}
+
+static int cm_name_cmp(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static bool cm_sdir_add(struct cm_sdir *d, const char *name)
+{
+    if (!cm_grow((void **)&d->names, &d->cap, d->nnames, sizeof(*d->names)))
+        return false;
+    d->names[d->nnames] = cm_strdup(name);
+    return d->names[d->nnames++] != NULL;
+}
+
+static bool cm_sdir_read(struct cm_shadow *s, struct cm_sdir *d)
+{
+    DIR *dp;
+    struct dirent *e;
+    bool ok = true;
+    if (d->state != 0)
+        return true;
+    if (!cm_host_path(s->root, d->dir, d->len, d->host, sizeof(d->host)))
+        return false;
+    dp = opendir(d->host);
+    d->state = dp == NULL ? 2 : 1;
+    if (dp == NULL)
+        return errno == ENOENT || errno == ENOTDIR;
+    errno = 0;
+    while (ok && (e = readdir(dp)) != NULL) {
+        if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0)
+            ok = cm_sdir_add(d, e->d_name);
+    }
+    ok = ok && errno == 0;
+    if (closedir(dp) != 0)
+        ok = false;
+    if (d->nnames > 1)
+        qsort(d->names, d->nnames, sizeof(*d->names), cm_name_cmp);
+    return ok;
+}
+
+static bool cm_shadow_line(struct cm_shadow *s, const char *tag,
+                           const struct cm_sdir *d, const char *name,
+                           size_t name_len)
+{
+    size_t need = strlen(tag) + d->len + 1 + name_len + 1;
+    while (s->outcap - s->len < need + 1) {
+        size_t next = s->outcap ? s->outcap * 2 : 256;
+        char *grown = zcl_realloc(s->out, next, "clang_manifest.shadows");
+        if (grown == NULL)
+            return false;
+        s->out = grown;
+        s->outcap = next;
+    }
+    s->len += (size_t)snprintf(s->out + s->len, s->outcap - s->len,
+                               "%s%.*s/%.*s\n", tag, (int)d->len, d->dir,
+                               (int)name_len, name);
+    return true;
+}
+
+/* Does search dir d now hold `name` (a relative path)? A present line when
+ * it does, a gone line (once) when d itself no longer exists. */
+static bool cm_shadow_probe(struct cm_shadow *s, struct cm_sdir *d,
+                            const char *name, size_t len)
+{
+    const char *slash = memchr(name, '/', len);
+    size_t first = slash != NULL ? (size_t)(slash - name) : len;
+    char key[256], path[PATH_MAX * 2];
+    const char *pkey = key;
+    struct stat st;
+    if (!cm_sdir_read(s, d))
+        return false;
+    if (d->state == 2) {
+        if (d->listed)
+            return true;
+        d->listed = true;
+        return cm_shadow_line(s, "gone ", d, "", 0);
+    }
+    if (first >= sizeof(key))
+        return true;
+    memcpy(key, name, first);
+    key[first] = '\0';
+    if (bsearch(&pkey, d->names, d->nnames, sizeof(*d->names),
+                cm_name_cmp) == NULL)
+        return true;
+    if (slash != NULL) {
+        int w = snprintf(path, sizeof(path), "%s/%.*s", d->host, (int)len,
+                         name);
+        if (w < 0 || (size_t)w >= sizeof(path))
+            return false;
+        if (stat(path, &st) != 0 && (errno == ENOENT || errno == ENOTDIR))
+            return true;
+    }
+    return cm_shadow_line(s, "", d, name, len);
+}
+
+/* Where path lies under search dir d, the offset of its relative name. */
+static bool cm_shadow_under(const struct cm_sdir *d, const char *path,
+                            size_t len, size_t *off)
+{
+    if (d->len == 1 && d->dir[0] == '.') {
+        *off = 0;
+        return !(len >= 4 && memcmp(path, "@sys", 4) == 0);
+    }
+    if (len <= d->len + 1 || memcmp(path, d->dir, d->len) != 0 ||
+        path[d->len] != '/')
+        return false;
+    *off = d->len + 1;
+    return true;
+}
+
+static bool cm_shadow_file_cb(void *ctx, const struct vcs_semantic_fields_v1 *f)
+{
+    struct cm_shadow *s = ctx;
+    if (f->ntext < 1 || f->nnum < 1)
+        return cm_shadow_bad(s);
+    if (f->num[0] == VCS_SEMANTIC_ORIGIN_V1_MAIN)
+        return true;
+    for (size_t i = 0; i < s->ndirs; i++) {
+        size_t off;
+        if (!cm_shadow_under(&s->dirs[i], f->text[0], f->text_len[0], &off))
+            continue;
+        for (size_t j = 0; j < i; j++) {
+            if (!cm_shadow_probe(s, &s->dirs[j], f->text[0] + off,
+                                 f->text_len[0] - off))
+                return cm_shadow_bad(s);
+        }
+    }
+    return true;
+}
+
+/* An empty list is still a list: the buffer exists and is NUL-terminated. */
+static bool cm_shadow_line_end(struct cm_shadow *s)
+{
+    if (s->out != NULL)
+        return true;
+    s->out = zcl_malloc(1, "clang_manifest.shadows");
+    if (s->out == NULL)
+        return false;
+    s->out[0] = '\0';
+    s->outcap = 1;
+    return true;
+}
+
+static void cm_shadow_free(struct cm_shadow *s)
+{
+    for (size_t k = 0; k < s->ndirs; k++) {
+        for (size_t n = 0; n < s->dirs[k].nnames; n++)
+            free(s->dirs[k].names[n]);
+        free(s->dirs[k].names);
+    }
+    free(s->dirs);
+}
+
+bool cm_warm_shadows(const char *root, const uint8_t *m, size_t n, char **out,
+                     size_t *out_len)
+{
+    struct cm_shadow s = {.root = root};
+    bool ok = vcs_semantic_manifest_v1_each(m, n, cm_shadow_ident_cb, &s) &&
+              !s.bad &&
+              vcs_semantic_section_v1_each(m, n, VCS_SEMANTIC_SECTION_V1_FILES,
+                                           cm_shadow_file_cb, &s) &&
+              !s.bad && cm_shadow_line_end(&s);
+    cm_shadow_free(&s);
+    if (!ok) {
+        free(s.out);
+        return false;
+    }
+    *out = s.out;
+    *out_len = s.len;
+    return true;
+}
+
+/* The first line of a (newline-terminated lines) missing from b, or NULL. */
+static const char *cm_line_missing(const char *a, size_t an, const char *b,
+                                   size_t bn, size_t *len)
+{
+    for (size_t at = 0; at < an;) {
+        const char *nl = memchr(a + at, '\n', an - at);
+        size_t n = nl != NULL ? (size_t)(nl - (a + at)) + 1 : an - at;
+        bool found = false;
+        for (size_t bt = 0; bt < bn && !found;) {
+            const char *bl = memchr(b + bt, '\n', bn - bt);
+            size_t m = bl != NULL ? (size_t)(bl - (b + bt)) + 1 : bn - bt;
+            found = m == n && memcmp(a + at, b + bt, n) == 0;
+            bt += m;
+        }
+        if (!found) {
+            *len = n > 0 && a[at + n - 1] == '\n' ? n - 1 : n;
+            return a + at;
+        }
+        at += n;
+    }
+    return NULL;
+}
+
+bool cm_warm_shadows_same(const char *then, size_t then_len, const char *now,
+                          size_t now_len, char *why, size_t why_len)
+{
+    const char *line;
+    size_t len = 0;
+    if (then_len == now_len && memcmp(then, now, now_len) == 0)
+        return true;
+    line = cm_line_missing(now, now_len, then, then_len, &len);
+    if (line != NULL) {
+        (void)snprintf(why, why_len, "include-shadow-appeared %.*s", (int)len,
+                       line);
+        return false;
+    }
+    line = cm_line_missing(then, then_len, now, now_len, &len);
+    if (line != NULL)
+        (void)snprintf(why, why_len, "include-shadow-vanished %.*s",
+                       (int)len, line);
+    else
+        (void)snprintf(why, why_len, "include-shadows-reordered");
+    return false;
 }
