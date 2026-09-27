@@ -817,7 +817,10 @@ static bool cm_alias_ref(struct cm_state *st, const char *from,
     bool ok;
     clang_visitChildren(clang_getTranslationUnitCursor(st->tu),
                         cm_alias_find_visit, &q);
-    if (q.found && (id = cm_entity_id(st, q.hit)) != NULL) {
+    if (q.found) {
+        /* a named file-scope definition always has an id: NULL is memory */
+        if ((id = cm_entity_id(st, q.hit)) == NULL)
+            return cm_fail(&st->core, "out of memory");
         ok = cm_ref(&st->core, from, VCS_SEMANTIC_REF_V1_ADDRESS, id);
         free(id);
         return ok;
