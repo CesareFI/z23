@@ -147,11 +147,18 @@ bool zcl_dev_proof_build_plan_verify(
 
 /* One captured base..local changed set. Heap-resident: the row ceiling is a
  * landing-batch ceiling (thousands of paths), which must never sit in a stack
- * frame. `files` holds `count` pointers into `bytes`; release both together. */
+ * frame. `files` holds `count` pointers into `bytes`; release both together.
+ * `structural_path` is the first added, deleted or type-changed row (a
+ * pointer into `bytes`, NULL when every row is a content change) and
+ * `structural_count` how many such rows there are. No old depfile can hold an
+ * edge for a formerly absent path, so such a set is never narrowed: the proof
+ * runs its full closure instead. */
 struct zcl_dev_proof_changed_set {
     char *bytes;
     const char **files;
     size_t count;
+    const char *structural_path;
+    size_t structural_count;
 };
 
 /* Capture the exact base..local changed set the proof worker plans against.
@@ -167,9 +174,12 @@ struct zcl_dev_proof_changed_set {
  *
  * The list is written to `scratch_path` by git and read whole, so no fixed
  * capture buffer can silently shorten it; over-ceiling and unreadable captures
- * refuse with a typed reason naming the observed count. `persist_path` (may be
- * NULL) receives the newline-separated record. On success the caller owns
- * `*out` until zcl_dev_proof_changed_set_release(). */
+ * refuse with a typed reason naming the observed count. An unknown status, an
+ * unsafe path or a short list refuses too. An added, deleted or type-changed
+ * row is kept and marked in `structural_path`, never refused: it widens the
+ * proof to the full closure. `persist_path` (may be NULL) receives the
+ * newline-separated record. On success the caller owns `*out` until
+ * zcl_dev_proof_changed_set_release(). */
 bool zcl_dev_proof_changed_set_capture(const char *repo_root, const char *base,
                                        const char *local,
                                        const char *scratch_path,
@@ -373,6 +383,14 @@ bool zcl_dev_proof_test_build_test_selector(
     const struct zcl_devloop_plan *plan, const char *root, bool inventory_only,
     char *out, size_t out_size, uint32_t *count_out, char *gated_out,
     size_t gated_size);
+/* Seam for the structural-change widening: plan `set`'s files, apply the
+ * same widening the proof worker applies after its plan closes, and build
+ * the selector. `*universal_out` says whether the plan was widened to the
+ * full closure. */
+bool zcl_dev_proof_test_changed_set_selector(
+    const struct zcl_dev_proof_changed_set *set, const char *root, char *out,
+    size_t out_size, uint32_t *count_out, bool *universal_out,
+    char *gated_out, size_t gated_size);
 /* Seam for the preflight parser: the exact reader the proof worker uses to
  * turn the runner's --cache-probe-only output into the account above, so a
  * test can prove the counts (and the summary self-check) without driving a

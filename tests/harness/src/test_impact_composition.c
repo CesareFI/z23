@@ -3694,6 +3694,9 @@ static bool ic_changed_fixture_build(void)
         "rm type.c; ln -s target type.c; echo changed > f0.c; "
         "git add -A; git commit -qm symlink_type; "
         "git rev-parse HEAD > ../symlink_type.sha; "
+        "mkdir -p docs; echo x > docs/CAPABILITY_INVENTORY.jsonl; "
+        "git add -A; git commit -qm add_inventory; "
+        "git rev-parse HEAD > ../add_inventory.sha; "
         ">/dev/null 2>&1");
     return rc == 0;
 }
@@ -3798,50 +3801,118 @@ static int test_ic_changed_set_carries_a_landing_batch(void)
 }
 
 /* Presence changes can alter conditional includes without an old depfile
- * edge; type changes can alter which source bytes the build reads. */
-static int test_ic_changed_set_refuses_structural_changes(void)
+ * edge; type changes can alter which source bytes the build reads. Neither
+ * can be narrowed, and neither may fail the proof: the capture keeps every
+ * row, names the first structural one, and the selector widens to the full
+ * closure -- every catalog group -- instead of the narrowed plan. */
+struct ic_structural_case {
+    const char *base;
+    const char *head;
+    const char *label;
+    const char *path;
+    size_t rows;
+};
+
+static const struct ic_structural_case ic_structural_cases[] = {
+    {"two.sha", "add_h.sha", "add_h", "optional.h", 1},
+    {"add_h.sha", "del_h.sha", "del_h", "optional.h", 1},
+    {"del_h.sha", "add_def.sha", "add_def", "optional.def", 1},
+    {"add_def.sha", "del_def.sha", "del_def", "optional.def", 1},
+    {"del_def.sha", "add_inc.sha", "add_inc", "optional.inc", 1},
+    {"add_inc.sha", "del_inc.sha", "del_inc", "optional.inc", 1},
+    {"del_inc.sha", "add_txt.sha", "add_txt", "switch.txt", 1},
+    {"add_txt.sha", "del_txt.sha", "del_txt", "switch.txt", 1},
+    {"regular_type.sha", "symlink_type.sha", "mixed_type_change", "type.c",
+     2},
+    {"symlink_type.sha", "add_inventory.sha", "add_inventory",
+     "docs/CAPABILITY_INVENTORY.jsonl", 1},
+};
+
+static bool ic_structural_capture(const struct ic_structural_case *c,
+                                  struct zcl_dev_proof_changed_set *set,
+                                  char *why, size_t why_len)
+{
+    char base[65], head[65], capture[640], record[640];
+    if (!ic_read_sha(c->base, base) || !ic_read_sha(c->head, head) ||
+        !ic_changed_path("capture_presence.txt", capture, sizeof(capture)) ||
+        !ic_changed_path("changed_presence", record, sizeof(record)) ||
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        return false;
+    bool captured = zcl_dev_proof_changed_set_capture(
+        IC_CHANGED_REPO, base, head, capture, record, set, why, why_len);
+    (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    return captured;
+}
+
+static int test_ic_changed_set_widens_structural_changes(void)
 {
     int failures = 0;
-    static const struct {
-        const char *base;
-        const char *head;
-        const char *label;
-    } cases[] = {
-        {"two.sha", "add_h.sha", "add_h"},
-        {"add_h.sha", "del_h.sha", "del_h"},
-        {"del_h.sha", "add_def.sha", "add_def"},
-        {"add_def.sha", "del_def.sha", "del_def"},
-        {"del_def.sha", "add_inc.sha", "add_inc"},
-        {"add_inc.sha", "del_inc.sha", "del_inc"},
-        {"del_inc.sha", "add_txt.sha", "add_txt"},
-        {"add_txt.sha", "del_txt.sha", "del_txt"},
-        {"regular_type.sha", "symlink_type.sha", "mixed_type_change"},
-    };
-    TEST("proof changed set: structural changes refuse narrow proof") {
+    static char ic_fixture_saved[4096];
+    bool ic_fixture_was_set =
+        ic_host_fixture_save(ic_fixture_saved, sizeof(ic_fixture_saved));
+    TEST("proof changed set: structural changes widen to the full closure") {
         ASSERT(ic_changed_fixture_build());
-        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-            char base[65], head[65], capture[640], record[640];
-            ASSERT(ic_read_sha(cases[i].base, base));
-            ASSERT(ic_read_sha(cases[i].head, head));
-            ASSERT(ic_changed_path("capture_presence.txt", capture,
-                                   sizeof(capture)));
-            ASSERT(ic_changed_path("changed_presence", record,
-                                   sizeof(record)));
+        ASSERT(ic_host_need_full_root(IC_FIX_HOST_FULL));
+        ic_host_fixture_env(true);
+        size_t catalog = zcl_test_group_catalog_count();
+        ASSERT(catalog > 2);
+        static char selector[ZCL_DEVLOOP_MAX_PLAN_SELECTIONS *
+                             (ZCL_TEST_GROUP_FULL_MAX + 1)];
+        char gated[PROOF_HOST_GATED_MAX];
+        size_t n = sizeof ic_structural_cases / sizeof ic_structural_cases[0];
+        for (size_t i = 0; i < n; i++) {
+            const struct ic_structural_case *c = &ic_structural_cases[i];
             struct zcl_dev_proof_changed_set set = {0};
             char why[256] = {0};
-            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
-            bool captured = zcl_dev_proof_changed_set_capture(
-                IC_CHANGED_REPO, base, head, capture, record, &set, why,
-                sizeof(why));
-            (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+            bool captured = ic_structural_capture(c, &set, why, sizeof(why));
+            uint32_t selected = 0;
+            bool universal = false;
+            memset(selector, 0, sizeof(selector));
+            bool chose = captured &&
+                zcl_dev_proof_test_changed_set_selector(
+                    &set, IC_FIX_HOST_FULL, selector, sizeof(selector),
+                    &selected, &universal, gated, sizeof(gated));
             printf("invariant=structural_change case=%s captured=%d "
-                   "reason=%s\n", cases[i].label, captured ? 1 : 0, why);
-            ASSERT(!captured);
-            ASSERT(strstr(why, "changed_input_structure") != NULL);
-            ASSERT(set.count == 0 && set.files == NULL && set.bytes == NULL);
+                   "path=%s rows=%zu universal=%d selected=%u of %zu "
+                   "reason=%s\n", c->label, captured ? 1 : 0,
+                   set.structural_path ? set.structural_path : "-",
+                   set.count, universal ? 1 : 0, (unsigned)selected,
+                   catalog, why[0] ? why : "-");
+            /* Widened, not refused: every row kept, the structural one named. */
+            ASSERT(captured);
+            ASSERT(why[0] == '\0');
+            ASSERT(set.count == c->rows && set.files && set.bytes);
+            ASSERT(set.structural_count == 1);
+            ASSERT(set.structural_path &&
+                   strcmp(set.structural_path, c->path) == 0);
+            /* The full closure: every catalog group, never a narrowed plan,
+             * never an inventory-only or empty selection. */
+            ASSERT(chose);
+            ASSERT(universal);
+            ASSERT((size_t)selected == catalog);
+            ASSERT(gated[0] == '\0');
+            for (size_t g = 0; g < catalog; g++)
+                ASSERT(ic_selector_has(selector,
+                                       zcl_test_group_catalog_at(g)));
+            /* The structural mark is what widens: the same rows without it
+             * plan the narrow selection, which is not the catalog. */
+            struct zcl_dev_proof_changed_set narrow = set;
+            narrow.structural_path = NULL;
+            narrow.structural_count = 0;
+            uint32_t narrow_selected = 0;
+            bool narrow_universal = true;
+            memset(selector, 0, sizeof(selector));
+            ASSERT(zcl_dev_proof_test_changed_set_selector(
+                &narrow, IC_FIX_HOST_FULL, selector, sizeof(selector),
+                &narrow_selected, &narrow_universal, gated, sizeof(gated)));
+            ASSERT(!narrow_universal);
+            ASSERT((size_t)narrow_selected < catalog);
+            zcl_dev_proof_changed_set_release(&set);
+            ASSERT(set.structural_path == NULL && set.structural_count == 0);
         }
         PASS();
     } _test_next:;
+    ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
     return failures;
 }
 
@@ -8532,7 +8603,7 @@ int test_impact_composition(void)
     failures += test_ic_ram_scratch_reservations_hold_under_concurrency();
 #endif
     failures += test_ic_changed_set_carries_a_landing_batch();
-    failures += test_ic_changed_set_refuses_structural_changes();
+    failures += test_ic_changed_set_widens_structural_changes();
     failures += test_ic_changed_set_reads_a_private_generation_worktree();
     failures += test_ic_changed_set_refuses_above_its_ceiling();
     failures += test_ic_watch_overlay_keeps_its_own_ceiling();

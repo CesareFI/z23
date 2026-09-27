@@ -1411,6 +1411,8 @@ void zcl_dev_proof_changed_set_release(struct zcl_dev_proof_changed_set *set)
     set->bytes = NULL;
     set->files = NULL;
     set->count = 0;
+    set->structural_path = NULL;
+    set->structural_count = 0;
 }
 
 /* Read a captured list whole. Refuses with the observed byte count rather than
@@ -1534,10 +1536,14 @@ static bool dp_changed_set_structural_change(char status)
 }
 
 /* Point one path reference per status row into the buffer. Presence changes
- * to headers can flip __has_include without leaving any old depfile edge. */
+ * to headers can flip __has_include without leaving any old depfile edge, so
+ * an added, deleted or type-changed row is kept and marked in `mark`: it
+ * widens the proof to its full closure rather than refusing it. An unknown
+ * status, an unsafe path or a short list still refuses the whole set. */
 static bool dp_changed_set_rows(char *bytes, size_t count, const char **refs,
-                                size_t *persist_len, char *why,
-                                size_t why_len)
+                                size_t *persist_len,
+                                struct zcl_dev_proof_changed_set *mark,
+                                char *why, size_t why_len)
 {
     size_t stored = 0;
     char *save = NULL;
@@ -1557,10 +1563,8 @@ static bool dp_changed_set_rows(char *bytes, size_t count, const char **refs,
             return false;
         }
         if (dp_changed_set_structural_change(status)) {
-            proof_whyf(why, why_len,
-                       "changed_input_structure_requires_full_closure path=%s",
-                       path);
-            return false;
+            if (!mark->structural_path) mark->structural_path = path;
+            mark->structural_count++;
         }
         refs[stored++] = path;
         *persist_len += path_len + 1;
@@ -1639,12 +1643,13 @@ bool zcl_dev_proof_changed_set_capture(const char *repo_root, const char *base,
         return false;
     }
     size_t persist_len = 0;
-    if (!dp_changed_set_rows(bytes, count, refs, &persist_len, why,
+    if (!dp_changed_set_rows(bytes, count, refs, &persist_len, out, why,
                              why_len) ||
         !dp_changed_set_persist(persist_path, refs, count, persist_len, why,
                                 why_len)) {
         free((void *)refs);
         free(bytes);
+        memset(out, 0, sizeof(*out));
         return false;
     }
     out->bytes = bytes;
@@ -5655,15 +5660,21 @@ static bool inventory_output_only(const char *const *files, size_t count)
 }
 
 /* Record the test-selection shape beside the dimension logs. "universal" is
- * the whole catalog, chosen because the plan's closure was capacity-bounded;
+ * the whole catalog, chosen because the plan's closure was capacity-bounded
+ * (reason closure-universal) or because an input was added, deleted or
+ * type-changed (reason changed-input-structure);
  * "exact" is the enumerated plan. `host_gated` names every catalog group the
  * universal selector left out because this tree cannot meet the group's
  * declared host need, and which need it was -- so a reader of this file never
  * has to infer a smaller run from a count. "-" means nothing was left out. */
 static bool proof_note_test_selection(const struct proof_paths *paths,
-                                      bool universal, uint32_t selected,
+                                      bool universal, bool widened,
+                                      uint32_t selected,
                                       const char *host_gated)
 {
+    const char *reason = widened     ? "changed-input-structure"
+                         : universal ? "closure-universal"
+                                     : "impact-plan";
     char path[PATH_MAX];
     if (snprintf(path, sizeof(path), "%s/%s.test-selection.log", paths->logs,
                  paths->key) >= (int)sizeof(path))
@@ -5671,8 +5682,7 @@ static bool proof_note_test_selection(const struct proof_paths *paths,
     FILE *f = fopen(path, "w");
     if (!f) return false;
     (void)fprintf(f, "test_selection=%s reason=%s groups_selected=%u\n",
-                  universal ? "universal" : "exact",
-                  universal ? "closure-universal" : "impact-plan",
+                  universal ? "universal" : "exact", reason,
                   (unsigned)selected);
     (void)fprintf(f, "host_gated=%s\n",
                   (host_gated && host_gated[0]) ? host_gated : "-");
@@ -5865,6 +5875,40 @@ bool zcl_dev_proof_test_build_test_selector(
     size_t gated_size)
 {
     return build_test_selector(plan, root, inventory_only, out, out_size,
+                               count_out, gated_out, gated_size);
+}
+#endif
+
+/* An added, deleted or type-changed input cannot be narrowed: no old depfile
+ * holds an edge for a formerly absent path, and __has_include may probe any
+ * name. Such a set runs the full closure -- every catalog group the universal
+ * selector admits, beside the full lint gate set every proof runs -- and
+ * never the inventory-only or docs-only shortcut. */
+static bool dp_changed_set_widen(const struct zcl_dev_proof_changed_set *set,
+                                 struct zcl_devloop_plan *plan,
+                                 bool *inventory_only)
+{
+    if (!set || !set->structural_path) return false;
+    plan->closure_universal = true;
+    plan->docs_only = false;
+    *inventory_only = false;
+    return true;
+}
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_changed_set_selector(
+    const struct zcl_dev_proof_changed_set *set, const char *root, char *out,
+    size_t out_size, uint32_t *count_out, bool *universal_out,
+    char *gated_out, size_t gated_size)
+{
+    if (!set || !set->files || set->count == 0 || !universal_out)
+        return false;
+    struct zcl_devloop_plan plan;
+    if (!zcl_devloop_plan_files(set->files, set->count, &plan)) return false;
+    bool inventory_only = inventory_output_only(set->files, set->count);
+    (void)dp_changed_set_widen(set, &plan, &inventory_only);
+    *universal_out = plan.closure_universal;
+    return build_test_selector(&plan, root, inventory_only, out, out_size,
                                count_out, gated_out, gated_size);
 }
 #endif
@@ -7071,7 +7115,9 @@ struct dp_worker {
     const char *generation;
     struct proof_phase_clock *phases;
     const struct proof_warmstart *warm;
+    const struct zcl_dev_proof_changed_set *changed;
     bool inventory_only;
+    bool structure_widened;
     struct zcl_devloop_plan plan;
     char plan_json[ZCL_DEVLOOP_PLAN_WIRE_MAX];
     size_t plan_len;
@@ -7124,6 +7170,22 @@ static bool dp_worker_refresh_include_graph(struct dp_worker *w,
     return true;
 }
 
+/* A structural change widens the closed plan to the full closure before it
+ * is rendered, so the plan digest in the receipt says what actually ran, and
+ * phases.txt names the row that forced it. */
+static void dp_worker_widen(struct dp_worker *w)
+{
+    w->structure_widened =
+        dp_changed_set_widen(w->changed, &w->plan, &w->inventory_only);
+    if (!w->structure_widened || !w->paths->phases[0]) return;
+    char note[PROOF_CHANGED_PATH_MAX + 96];
+    (void)snprintf(note, sizeof(note),
+                   "widened reason=changed_input_structure path=%s rows=%zu",
+                   w->changed->structural_path,
+                   w->changed->structural_count);
+    (void)zcl_dev_proof_phase_note(w->paths->phases, "changed_set", note);
+}
+
 /* The impact plan, closed and rendered once after any needed graph refresh. */
 static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
                            size_t file_count, char *why, size_t why_len)
@@ -7161,6 +7223,7 @@ static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
         return false;
     }
     proof_phase_mark(w->phases, "impact_plan_closure");
+    dp_worker_widen(w);
     /* Render the plan we just closed. The _closure spelling would open the
      * code index and re-walk the whole reverse-caller graph to rebuild the
      * plan sitting in this frame -- the most expensive phase of the proof,
@@ -7303,7 +7366,8 @@ static bool dp_worker_select(struct dp_worker *w, char *why, size_t why_len)
      * log. Without this a universal selection looks like an unexplained
      * whole-catalog run. */
     if (!proof_note_test_selection(&w->execution, w->plan.closure_universal,
-                                   test_count, host_gated)) {
+                                   w->structure_widened, test_count,
+                                   host_gated)) {
         proof_why(why, why_len, "test_selection_note_unwritable");
         return false;
     }
@@ -7884,7 +7948,7 @@ static bool proof_worker_body(const struct proof_paths *paths,
                               const char *generation, int64_t started_us,
                               struct proof_phase_clock *phases,
                               const struct proof_warmstart *warm,
-                              const char *const *files, size_t file_count,
+                              const struct zcl_dev_proof_changed_set *changed,
                               char *why, size_t why_len)
 {
     struct dp_worker w = {0};
@@ -7897,9 +7961,11 @@ static bool proof_worker_body(const struct proof_paths *paths,
     w.generation = generation;
     w.phases = phases;
     w.warm = warm;
-    w.inventory_only = inventory_output_only(files, file_count);
+    w.changed = changed;
+    w.inventory_only = inventory_output_only(changed->files, changed->count);
     w.warm_compile_mode = "skipped";
-    if (!dp_worker_plan(&w, files, file_count, why, why_len)) return false;
+    if (!dp_worker_plan(&w, changed->files, changed->count, why, why_len))
+        return false;
     if (!dp_worker_seal_source(&w, why, why_len)) return false;
     if (!dp_worker_receipt_identity(&w, why, why_len)) return false;
     if (!dp_worker_build_identity(&w, why, why_len)) return false;
@@ -8116,8 +8182,7 @@ static bool proof_worker(const struct proof_paths *paths,
         return false;
     proof_phase_mark(&phases, "changed_files_capture");
     bool ok = proof_worker_body(paths, local, base, generation, started_us,
-                                &phases, &warm, changed.files, changed.count,
-                                why, why_len);
+                                &phases, &warm, &changed, why, why_len);
     zcl_dev_proof_changed_set_release(&changed);
     return ok;
 }
