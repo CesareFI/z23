@@ -3,7 +3,6 @@
 #include "devloop_facts.h"
 
 #include "base/serialize_le.h"
-#include "codeindex/codeindex.h"
 #include "sha3/sha3.h"
 #include "util/safe_alloc.h"
 #include "vcs/semantic_manifest.h"
@@ -205,6 +204,7 @@ static void fx_fn_cb(void *ctx, enum vcs_semantic_fn_change_v1 change,
         memcpy(v->seeds[v->seeds_len], name, name_len);
         v->seeds[v->seeds_len][name_len] = '\0';
         c->ids[v->seeds_len][0] = '\0';
+        v->seed_ids[v->seeds_len][0] = '\0';
         v->seeds_len++;
     }
 }
@@ -344,6 +344,9 @@ static bool fx_ids_cb(void *ctx, const struct vcs_semantic_fields_v1 *f)
                                 f->num[0] == 3 || f->num[0] == 4, c->ids[k],
                                 sizeof(c->ids[k])))
             return false;
+        /* Too wide for the verdict: the walk then filters nothing. */
+        if (strlen(c->ids[k]) < sizeof(c->v->seed_ids[k]))
+            memcpy(c->v->seed_ids[k], c->ids[k], strlen(c->ids[k]) + 1);
     }
     return true;
 }
@@ -535,207 +538,34 @@ static bool fx_decide(const char *root, const char *const *files, size_t n,
 
 /* ---- the narrowed walk ---------------------------------------------------- */
 
-/* The same bounds as the file-seeded walk (codeindex_impact.c): a caller
- * batch that fills, or the symbol cap, means the answer is not whole, and a
- * narrowing never keeps a partial answer. */
-#define FX_BATCH 4096
-#define FX_MAX_SYMS 50000
-
-/* A set of fixed-width strings, insertion-ordered, open-addressed. */
-struct fx_set {
-    char *items;
-    size_t width, len, cap;
-    uint32_t *slots;
-    size_t nslots;
-};
-
-static uint64_t fx_hash(const char *s)
-{
-    uint64_t h = 1469598103934665603ULL;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        h ^= *p;
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-static const char *fx_at(const struct fx_set *s, size_t k)
-{
-    return s->items + k * s->width;
-}
-
-static bool fx_rehash(struct fx_set *s)
-{
-    size_t n = s->nslots ? s->nslots * 2 : 1024;
-    uint32_t *slots = zcl_calloc(n, sizeof(*slots), "facts.set");
-    if (slots == NULL)
-        return false;
-    for (size_t k = 0; k < s->len; k++) {
-        size_t j = (size_t)fx_hash(fx_at(s, k)) & (n - 1);
-        while (slots[j])
-            j = (j + 1) & (n - 1);
-        slots[j] = (uint32_t)(k + 1);
-    }
-    free(s->slots);
-    s->slots = slots;
-    s->nslots = n;
-    return true;
-}
-
-static bool fx_push(struct fx_set *s, const char *key)
-{
-    if (s->len == s->cap) {
-        size_t next = s->cap ? s->cap * 2 : 256;
-        char *grown = zcl_realloc(s->items, next * s->width, "facts.set");
-        if (grown == NULL)
-            return false;
-        s->items = grown;
-        s->cap = next;
-    }
-    (void)snprintf(s->items + s->len * s->width, s->width, "%s", key);
-    s->len++;
-    return true;
-}
-
-/* Adds `key` (empty keys and keys wider than the set are refused). */
-static bool fx_add(struct fx_set *s, const char *key, bool *added)
-{
-    size_t j;
-    *added = false;
-    if (strlen(key) >= s->width)
-        return false;
-    if (s->len * 2 >= s->nslots && !fx_rehash(s))
-        return false;
-    j = (size_t)fx_hash(key) & (s->nslots - 1);
-    for (; s->slots[j]; j = (j + 1) & (s->nslots - 1))
-        if (strcmp(fx_at(s, s->slots[j] - 1), key) == 0)
-            return true;
-    if (!fx_push(s, key))
-        return false;
-    s->slots[j] = (uint32_t)s->len;
-    *added = true;
-    return true;
-}
-
-static void fx_set_free(struct fx_set *s)
-{
-    free(s->items);
-    free(s->slots);
-}
-
-enum fx_walk_rc { FX_WALK_OK, FX_WALK_BOUNDED, FX_WALK_ERROR };
-
-static enum fx_walk_rc fx_expand(struct codeindex *ci, const char *sym,
-                                 struct fx_set *names, struct fx_set *files,
-                                 struct ci_ref *buf)
-{
-    int nc = codeindex_callers(ci, sym, buf, FX_BATCH);
-    bool added;
-    if (nc < 0)
-        return FX_WALK_ERROR;
-    if (nc == FX_BATCH)
-        return FX_WALK_BOUNDED;
-    for (int i = 0; i < nc; i++) {
-        if (buf[i].ref_file[0] && !fx_add(files, buf[i].ref_file, &added))
-            return FX_WALK_ERROR;
-        if (zcl_devloop_plan_proof_owner(buf[i].ref_file) ||
-            !buf[i].enclosing[0])
-            continue;
-        if (names->len >= FX_MAX_SYMS)
-            return FX_WALK_BOUNDED;
-        if (!fx_add(names, buf[i].enclosing, &added))
-            return FX_WALK_ERROR;
-    }
-    return FX_WALK_OK;
-}
-
-/* Callers of the seeds, then callers of callers, CI_CLOSURE_DEFAULT_DEPTH
- * levels deep, exactly as codeindex_impact_closure_bounded() expands a
- * file's symbols, with the planner's proof-owner files as terminals. */
-static enum fx_walk_rc fx_walk(struct codeindex *ci, struct fx_set *names,
-                               struct fx_set *files)
-{
-    struct ci_ref *buf = zcl_malloc(sizeof(*buf) * FX_BATCH, "facts.refs");
-    enum fx_walk_rc rc = buf != NULL ? FX_WALK_OK : FX_WALK_ERROR;
-    size_t lo = 0;
-    for (int d = 0; rc == FX_WALK_OK && d < CI_CLOSURE_DEFAULT_DEPTH &&
-                    lo < names->len;
-         d++) {
-        size_t hi = names->len;
-        for (size_t k = lo; rc == FX_WALK_OK && k < hi; k++)
-            rc = fx_expand(ci, fx_at(names, k), names, files, buf);
-        lo = hi;
-    }
-    free(buf);
-    return rc;
-}
-
-static int fx_path_cmp(const void *a, const void *b)
-{
-    return strcmp(a, b);
-}
-
-/* Replace the plan's closure with the narrowed file set. */
-static bool fx_fold(struct zcl_devloop_plan *plan, struct fx_set *files)
-{
-    qsort(files->items, files->len, files->width, fx_path_cmp);
-    plan->closure_attempted = true;
-    plan->closure_snapshot = false;
-    plan->closure_universal = false;
-    plan->closure_groups_len = 0;
-    for (size_t k = 0; k < files->len; k++)
-        if (!zcl_devloop_plan_fold_file(plan, fx_at(files, k),
-                                        ZCL_DEVLOOP_DIM_SEMANTIC))
-            return false;
-    /* Feedback only, never proof: see zcl_devloop_plan_proof_admissible(). */
-    plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].status = ZCL_DEVLOOP_DIM_INCOMPLETE;
-    plan->dims[ZCL_DEVLOOP_DIM_SEMANTIC].reason = "facts-narrowed";
-    plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].status =
-        ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
-    plan->dims[ZCL_DEVLOOP_DIM_INCLUDE].reason = "";
-    plan->closure_truncated = true;
-    return true;
-}
-
-static bool fx_narrow(const char *root, const char *const *files, size_t n,
+static bool fx_narrow(const char *root, const char *facts_dir,
+                      const char *const *files, size_t n,
                       struct zcl_devloop_plan *plan,
                       struct zcl_devloop_facts_verdict *v)
 {
-    struct fx_set names = {.width = ZCL_DEVLOOP_FACTS_NAME_MAX};
-    struct fx_set reached = {.width = 256};
-    /* The file-seeded closure's own index: codeindex_open() rebuilds it when
-     * the sources moved past it, or refuses (a live resident owns the
-     * rebuild) and the plan falls back. Never a stale snapshot. */
-    struct codeindex *ci = codeindex_open(root);
-    enum fx_walk_rc rc = FX_WALK_ERROR;
-    bool added, ok = true;
-    if (ci == NULL) {
-        v->reason = "no-code-index";
+    struct zcl_devloop_facts_seed *seeds =
+        zcl_calloc(v->seeds_len + 1, sizeof(*seeds), "facts.seeds");
+    bool ok;
+    if (seeds == NULL) {
+        v->reason = "out-of-memory";
         return false;
     }
-    for (size_t k = 0; ok && k < n; k++)
-        ok = fx_add(&reached, files[k], &added);
-    for (size_t k = 0; ok && k < v->seeds_len; k++)
-        ok = fx_add(&names, v->seeds[k], &added);
-    if (ok)
-        rc = fx_walk(ci, &names, &reached);
-    codeindex_close(ci);
-    v->reason = rc == FX_WALK_OK      ? ""
-                : rc == FX_WALK_BOUNDED ? "closure-bounded"
-                                        : "closure-query-error";
-    v->reached_files = reached.len;
-    ok = rc == FX_WALK_OK && fx_fold(plan, &reached);
-    if (rc == FX_WALK_OK && !ok)
-        v->reason = "group-cap";
-    fx_set_free(&names);
-    fx_set_free(&reached);
+    for (size_t k = 0; k < v->seeds_len; k++) {
+        (void)snprintf(seeds[k].name, sizeof(seeds[k].name), "%s", v->seeds[k]);
+        (void)snprintf(seeds[k].id, sizeof(seeds[k].id), "%s", v->seed_ids[k]);
+    }
+    v->seeds_total = v->seeds_len;
+    ok = zcl_devloop_facts_narrow(root, facts_dir, files, n, seeds,
+                                  v->seeds_len, plan, v);
+    free(seeds);
     return ok;
 }
 
-bool zcl_devloop_plan_add_closure_facts(
+bool zcl_devloop_facts_add_closure_in(
     const char *repo_root, const char *const *files, size_t file_count,
     const struct zcl_devloop_facts_tu *tus, size_t tu_count,
-    struct zcl_devloop_plan *plan, struct zcl_devloop_facts_verdict *verdict)
+    const char *facts_dir, struct zcl_devloop_plan *plan,
+    struct zcl_devloop_facts_verdict *verdict)
 {
     const char *root = repo_root && repo_root[0] ? repo_root : ".";
     struct zcl_devloop_plan *saved;
@@ -750,14 +580,25 @@ bool zcl_devloop_plan_add_closure_facts(
     memcpy(saved, plan, sizeof(*saved));
     verdict->narrowed = fx_decide(root, files, file_count, tus, tu_count,
                                   verdict) &&
-                        fx_narrow(root, files, file_count, plan, verdict);
+                        fx_narrow(root, facts_dir, files, file_count, plan,
+                                  verdict);
     if (!verdict->narrowed) {
         /* The file-seeded closure, from the plan exactly as it was given. */
         memcpy(plan, saved, sizeof(*saved));
         verdict->seeds_len = 0;
+        verdict->seeds_total = 0;
         free(saved);
         return zcl_devloop_plan_add_closure(root, files, file_count, plan);
     }
     free(saved);
     return true;
+}
+
+bool zcl_devloop_plan_add_closure_facts(
+    const char *repo_root, const char *const *files, size_t file_count,
+    const struct zcl_devloop_facts_tu *tus, size_t tu_count,
+    struct zcl_devloop_plan *plan, struct zcl_devloop_facts_verdict *verdict)
+{
+    return zcl_devloop_facts_add_closure_in(repo_root, files, file_count, tus,
+                                            tu_count, NULL, plan, verdict);
 }

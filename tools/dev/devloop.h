@@ -272,6 +272,16 @@ extern size_t zcl_devloop_test_plan_group_cap;
 /* Test-only fault: the facts walk resolves no seed to its canonical id, so
  * the "seed-unresolved" fallback is reachable from the fixture. */
 extern bool zcl_devloop_test_facts_unresolved;
+/* Test-only consumer mutants: each drops one rule of the declaration-
+ * identity consumer, so the fixture proves that rule is load-bearing. */
+enum zcl_devloop_consumer_mutant {
+    ZCL_DEVLOOP_MUTANT_NONE = 0,
+    ZCL_DEVLOOP_MUTANT_NO_TYPE_CLOSURE,  /* typedef/tag edges dropped */
+    ZCL_DEVLOOP_MUTANT_NO_MACRO_CLOSURE, /* macro-body edges dropped */
+    ZCL_DEVLOOP_MUTANT_NO_SAME_NAME,     /* the same-name pass skipped */
+    ZCL_DEVLOOP_MUTANT_NO_POSITION,      /* header text positions ignored */
+};
+extern enum zcl_devloop_consumer_mutant zcl_devloop_test_consumer_mutant;
 /* Watcher stop fixture: a stop requested before the proof fork starts no
  * worker, and a SIGTERM sent the instant fork() returns must reach the
  * worker's cancel state instead of being erased by the child's reset. */
@@ -736,12 +746,17 @@ struct zcl_devloop_facts_tu {
 
 #define ZCL_DEVLOOP_FACTS_MAX_SEEDS 64
 #define ZCL_DEVLOOP_FACTS_NAME_MAX 128
+/* A canonical id wider than this is not kept: its walk filters nothing. */
+#define ZCL_DEVLOOP_FACTS_ID_MAX 256
 struct zcl_devloop_facts_verdict {
     bool narrowed;
     const char *reason; /* "" when narrowed, else the fallback label */
     char detail[192];
     char seeds[ZCL_DEVLOOP_FACTS_MAX_SEEDS][ZCL_DEVLOOP_FACTS_NAME_MAX];
+    /* The canonical id of each seed ("" when unknown or too wide). */
+    char seed_ids[ZCL_DEVLOOP_FACTS_MAX_SEEDS][ZCL_DEVLOOP_FACTS_ID_MAX];
     size_t seeds_len;
+    size_t seeds_total; /* seeds walked; seeds_len lists the first ones */
     size_t reached_files;
 };
 
@@ -755,12 +770,14 @@ bool zcl_devloop_plan_add_closure_facts(
 /* The dev.change.plan document for `files`, narrowed by the evidence in
  * `facts_dir` (relative to repo_root): <facts_dir>/<file>.before.zsm,
  * <file>.after.zsm and <file>.before per changed file; the after source is
- * the working tree. Adds a "facts" object naming the verdict. Returns bytes
+ * the working tree. Adds a "facts" object naming the verdict, the
+ * obligations with their reasons and the TU universe with its identities
+ * (the entries from tu_offset that fit one page). Returns bytes
  * written, or 0 on overflow/bad args. */
 size_t zcl_devloop_plan_json_facts(const char *repo_root,
                                    const char *const *files, size_t file_count,
-                                   const char *facts_dir, char *out,
-                                   size_t out_sz);
+                                   const char *facts_dir, size_t tu_offset,
+                                   char *out, size_t out_sz);
 
 /* Planner internals the facts walk shares (devloop_plan.c). */
 bool zcl_devloop_plan_fold_file(struct zcl_devloop_plan *plan,

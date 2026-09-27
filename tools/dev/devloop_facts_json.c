@@ -2,6 +2,8 @@
  * purpose: dev.change.plan facts input: load before/after manifest evidence from a facts directory and render the narrowed plan with its verdict. */
 #include "devloop_facts.h"
 
+#include "base/hex.h"
+#include "sha3/sha3.h"
 #include "util/safe_alloc.h"
 #include "vcs/semantic_manifest.h"
 
@@ -13,9 +15,18 @@
  * source by the same 16 MiB the facts section cap uses. */
 #define FX_SOURCE_MAX (16u * 1024u * 1024u)
 
-static bool fx_read(const char *root, const char *dir, const char *file,
-                    const char *suffix, size_t max, uint8_t **out,
-                    size_t *len)
+/* The facts object of one reply: the verdict, obligations and universe
+ * summary, then as many TU entries as fit, so the whole reply stays inside
+ * the dev.change.plan contract budget. A reader pages the rest with
+ * "facts_offset". */
+#define FX_FACTS_PAGE 4096u
+#define FX_UNIVERSE_JSON_MAX 512u
+#define FX_ENTRY_MAX 1024u
+#define FX_CONSUMER_SCHEMA "zcl.semantic_consumer.v1"
+
+bool zcl_devloop_facts_read(const char *root, const char *dir, const char *file,
+                            const char *suffix, size_t max, uint8_t **out,
+                            size_t *len)
 {
     char path[ZCL_DEVLOOP_PATH_MAX * 2 + 64];
     FILE *fp;
@@ -35,6 +46,8 @@ static bool fx_read(const char *root, const char *dir, const char *file,
         ok = *out != NULL &&
              fread(*out, 1, (size_t)size, fp) == (size_t)size;
         *len = (size_t)size;
+        if (ok)
+            (*out)[size] = 0;
     }
     (void)fclose(fp);
     if (!ok) {
@@ -50,15 +63,15 @@ static void fx_load(const char *root, const char *dir, const char *file,
                     struct zcl_devloop_facts_tu *tu)
 {
     uint8_t *b = NULL, *a = NULL, *bs = NULL, *as = NULL;
-    bool ok = fx_read(root, dir, file, ".before.zsm",
+    bool ok = zcl_devloop_facts_read(root, dir, file, ".before.zsm",
                       VCS_SEMANTIC_MANIFEST_V1_MAX_BYTES, &b,
                       &tu->before_len) &&
-              fx_read(root, dir, file, ".after.zsm",
+              zcl_devloop_facts_read(root, dir, file, ".after.zsm",
                       VCS_SEMANTIC_MANIFEST_V1_MAX_BYTES, &a,
                       &tu->after_len) &&
-              fx_read(root, dir, file, ".before", FX_SOURCE_MAX, &bs,
+              zcl_devloop_facts_read(root, dir, file, ".before", FX_SOURCE_MAX, &bs,
                       &tu->before_src_len) &&
-              fx_read(root, NULL, file, "", FX_SOURCE_MAX, &as,
+              zcl_devloop_facts_read(root, NULL, file, "", FX_SOURCE_MAX, &as,
                       &tu->after_src_len);
     if (!ok) {
         free(b);
@@ -83,83 +96,306 @@ static void fx_unload(struct zcl_devloop_facts_tu *tu)
     free((void *)tu->after_src);
 }
 
-static bool fx_put(char *out, size_t cap, size_t *at, const char *s)
+/* A bounded JSON writer: the first write that does not fit stops it, and
+ * every later write is a no-op, so a render checks `ok` once at the end. */
+struct fxw {
+    char *out;
+    size_t cap, at;
+    bool ok;
+};
+
+static void fw_raw(struct fxw *w, const char *s)
 {
     size_t n = strlen(s);
-    if (*at + n >= cap)
-        return false;
-    memcpy(out + *at, s, n);
-    *at += n;
-    out[*at] = '\0';
-    return true;
+    if (!w->ok || w->at + n >= w->cap) {
+        w->ok = false;
+        return;
+    }
+    memcpy(w->out + w->at, s, n);
+    w->at += n;
+    w->out[w->at] = '\0';
 }
 
-static bool fx_put_str(char *out, size_t cap, size_t *at, const char *s)
+static void fw_str(struct fxw *w, const char *s)
 {
     char esc[8];
-    bool ok = fx_put(out, cap, at, "\"");
-    for (const unsigned char *p = (const unsigned char *)s; ok && *p; p++) {
+    fw_raw(w, "\"");
+    for (const unsigned char *p = (const unsigned char *)s; w->ok && *p; p++) {
         if (*p == '"' || *p == '\\')
             (void)snprintf(esc, sizeof(esc), "\\%c", *p);
         else if (*p < 0x20)
             (void)snprintf(esc, sizeof(esc), "\\u%04x", *p);
         else
             (void)snprintf(esc, sizeof(esc), "%c", *p);
-        ok = fx_put(out, cap, at, esc);
+        fw_raw(w, esc);
     }
-    return ok && fx_put(out, cap, at, "\"");
+    fw_raw(w, "\"");
 }
 
-/* ,"facts":{"narrowed":B,"reason":S,"detail":S,"seeds":[S...],
- *  "reached_files":N} */
-static bool fx_verdict_json(const struct zcl_devloop_facts_verdict *v,
-                            char *out, size_t cap, size_t *at)
+/* ,"key": the comma is left out right after an opening brace or bracket
+ * (an empty writer takes one: it renders a fragment spliced after others). */
+static void fw_key(struct fxw *w, const char *key)
+{
+    size_t at = w->at;
+    bool first = at > 0 && (w->out[at - 1] == '{' || w->out[at - 1] == '[');
+    if (!first)
+        fw_raw(w, ",");
+    fw_str(w, key);
+    fw_raw(w, ":");
+}
+
+static void fw_kstr(struct fxw *w, const char *key, const char *v)
+{
+    fw_key(w, key);
+    fw_str(w, v ? v : "");
+}
+
+static void fw_kbool(struct fxw *w, const char *key, bool v)
+{
+    fw_key(w, key);
+    fw_raw(w, v ? "true" : "false");
+}
+
+static void fw_knum(struct fxw *w, const char *key, size_t v)
 {
     char num[32];
-    bool ok = fx_put(out, cap, at, ",\"facts\":{\"narrowed\":") &&
-              fx_put(out, cap, at, v->narrowed ? "true" : "false") &&
-              fx_put(out, cap, at, ",\"reason\":") &&
-              fx_put_str(out, cap, at, v->reason) &&
-              fx_put(out, cap, at, ",\"detail\":") &&
-              fx_put_str(out, cap, at, v->detail) &&
-              fx_put(out, cap, at, ",\"seeds\":[");
-    for (size_t k = 0; ok && k < v->seeds_len; k++)
-        ok = (k == 0 || fx_put(out, cap, at, ",")) &&
-             fx_put_str(out, cap, at, v->seeds[k]);
-    (void)snprintf(num, sizeof(num), "%zu", v->reached_files);
-    return ok && fx_put(out, cap, at, "],\"reached_files\":") &&
-           fx_put(out, cap, at, num) && fx_put(out, cap, at, "}}");
+    (void)snprintf(num, sizeof(num), "%zu", v);
+    fw_key(w, key);
+    fw_raw(w, num);
+}
+
+static void fw_khex(struct fxw *w, const char *key, bool has,
+                    const uint8_t d[32])
+{
+    char hex[65];
+    fw_key(w, key);
+    if (!has) {
+        fw_raw(w, "null");
+        return;
+    }
+    zcl_hex_encode(d, 32, hex);
+    fw_str(w, hex);
+}
+
+/* "narrowed":B,"reason":S,"detail":S,"seeds":[S...],"seeds_total":N,
+ * "reached_files":N */
+static void fx_verdict_json(const struct zcl_devloop_facts_verdict *v,
+                            struct fxw *w)
+{
+    fw_kbool(w, "narrowed", v->narrowed);
+    fw_kstr(w, "reason", v->reason);
+    fw_kstr(w, "detail", v->detail);
+    fw_key(w, "seeds");
+    fw_raw(w, "[");
+    for (size_t k = 0; k < v->seeds_len; k++) {
+        if (k > 0)
+            fw_raw(w, ",");
+        fw_str(w, v->seeds[k]);
+    }
+    fw_raw(w, "]");
+    fw_knum(w, "seeds_total", v->seeds_total);
+    fw_knum(w, "reached_files", v->reached_files);
+}
+
+/* The digest of the whole universe listing, so a paged reader can tell the
+ * pages it joined describe one computation. */
+static void fx_universe_digest(const struct zcl_devloop_facts_report *r,
+                               uint8_t out[32])
+{
+    struct sha3_256_ctx h;
+    static const char domain[] = "zcl.semantic_consumer.universe.v1";
+    sha3_256_init(&h);
+    sha3_256_write(&h, (const unsigned char *)domain, sizeof(domain));
+    for (size_t k = 0; k < r->ntus; k++) {
+        const struct zcl_devloop_facts_tu_verdict *t = &r->tus[k];
+        uint8_t flags[3] = {t->affected, t->broadened, t->has_roots};
+        sha3_256_write(&h, (const unsigned char *)t->path, strlen(t->path) + 1);
+        sha3_256_write(&h, (const unsigned char *)t->reason,
+                       strlen(t->reason) + 1);
+        sha3_256_write(&h, flags, sizeof(flags));
+        sha3_256_write(&h, t->interface, 32);
+        sha3_256_write(&h, t->implementation, 32);
+    }
+    sha3_256_finalize(&h, out);
+}
+
+static void fx_tu_json(const struct zcl_devloop_facts_tu_verdict *t,
+                       struct fxw *w)
+{
+    fw_raw(w, "{");
+    fw_kstr(w, "path", t->path);
+    fw_khex(w, "source", t->has_roots, t->source);
+    fw_khex(w, "fact", t->has_roots, t->fact);
+    fw_khex(w, "interface", t->has_roots, t->interface);
+    fw_khex(w, "implementation", t->has_roots, t->implementation);
+    fw_khex(w, "action", t->has_action, t->action);
+    fw_kstr(w, "action_reason", t->action_reason);
+    fw_khex(w, "artifact", t->has_artifact, t->artifact);
+    fw_kstr(w, "artifact_reason",
+            t->has_artifact ? "" : "artifact-evidence-absent");
+    fw_kbool(w, "affected", t->affected);
+    fw_kbool(w, "broadened", t->broadened);
+    fw_kstr(w, "reason", t->reason);
+    fw_kstr(w, "detail", t->detail);
+    fw_raw(w, "}");
+}
+
+/* "tus":[...]: entries from `offset` while w stays under `limit` bytes;
+ * the number listed goes to *listed. */
+static void fx_tus_json(const struct zcl_devloop_facts_report *r,
+                        size_t offset, size_t limit, struct fxw *w,
+                        size_t *listed)
+{
+    char *entry = zcl_malloc(FX_ENTRY_MAX, "facts.entry");
+    *listed = 0;
+    fw_key(w, "tus");
+    fw_raw(w, "[");
+    w->ok = w->ok && entry != NULL;
+    for (size_t k = offset; w->ok && k < r->ntus; k++) {
+        struct fxw e = {.out = entry, .cap = FX_ENTRY_MAX, .ok = true};
+        fx_tu_json(&r->tus[k], &e);
+        if (!e.ok || w->at + e.at + 2 > limit)
+            break;
+        if (*listed > 0)
+            fw_raw(w, ",");
+        fw_raw(w, entry);
+        *listed += w->ok;
+    }
+    free(entry);
+    fw_raw(w, "]");
+}
+
+static void fx_universe_json(const struct zcl_devloop_facts_report *r,
+                             size_t offset, size_t listed, struct fxw *w)
+{
+    uint8_t digest[32];
+    fx_universe_digest(r, digest);
+    fw_key(w, "universe");
+    fw_raw(w, "{");
+    fw_kbool(w, "applied", r->applied);
+    fw_kbool(w, "complete", r->complete);
+    fw_kstr(w, "reason", r->reason);
+    fw_kstr(w, "detail", r->detail);
+    fw_knum(w, "total", r->ntus);
+    fw_knum(w, "affected", r->naffected);
+    fw_knum(w, "offset", offset);
+    fw_knum(w, "listed", listed);
+    if (offset + listed < r->ntus)
+        fw_knum(w, "next_offset", offset + listed);
+    else {
+        fw_key(w, "next_offset");
+        fw_raw(w, "null");
+    }
+    fw_khex(w, "sha3", true, digest);
+    fw_raw(w, "}");
+}
+
+static void fx_group_json(struct fxw *w, bool first, const char *group,
+                          const char *reason)
+{
+    if (!first)
+        fw_raw(w, ",");
+    fw_raw(w, "{");
+    fw_kstr(w, "group", group);
+    fw_kstr(w, "reason", reason);
+    fw_raw(w, "}");
+}
+
+/* "obligations":{"reason":S,"plain":N,"plain_universal":B,"facts":N,
+ *  "groups":[{"group":S,"reason":S}...]}: every path group, then every
+ * closure group with the rule that reached it. */
+static void fx_obligations_json(const struct zcl_devloop_facts_report *r,
+                                const struct zcl_devloop_plan *p,
+                                struct fxw *w)
+{
+    fw_key(w, "obligations");
+    fw_raw(w, "{");
+    fw_kstr(w, "reason", r->obligations_reason);
+    fw_knum(w, "plain", r->plain_groups);
+    fw_kbool(w, "plain_universal", r->plain_universal);
+    fw_knum(w, "facts", p->path_groups_len + p->closure_groups_len);
+    fw_key(w, "groups");
+    fw_raw(w, "[");
+    for (size_t k = 0; k < p->path_groups_len; k++)
+        fx_group_json(w, k == 0, p->path_groups[k], r->path_reason);
+    for (size_t k = 0; k < p->closure_groups_len; k++)
+        fx_group_json(w, k + p->path_groups_len == 0, p->closure_groups[k],
+                      r->group_reason[k]);
+    fw_raw(w, "]}");
+}
+
+/* ,"facts":{verdict,"consumer":S,obligations,universe,tus}} closing the
+ * plan document. The universe summary names how many entries follow, so
+ * the entries render aside first against what remains of the page. */
+static bool fx_facts_json(const struct zcl_devloop_facts_verdict *v,
+                          const struct zcl_devloop_facts_report *r,
+                          const struct zcl_devloop_plan *p, size_t offset,
+                          struct fxw *w)
+{
+    size_t start = w->at, listed = 0, mark;
+    struct fxw t = {.out = zcl_malloc(w->cap, "facts.tus_json"),
+                    .cap = w->cap, .ok = true};
+    t.ok = t.out != NULL;
+    fw_raw(w, ",\"facts\":{");
+    fx_verdict_json(v, w);
+    fw_kstr(w, "consumer", FX_CONSUMER_SCHEMA);
+    fx_obligations_json(r, p, w);
+    mark = w->at + FX_UNIVERSE_JSON_MAX;
+    if (mark < start + FX_FACTS_PAGE && offset <= r->ntus)
+        fx_tus_json(r, offset, start + FX_FACTS_PAGE - mark, &t, &listed);
+    else
+        fw_raw(&t, ",\"tus\":[]");
+    fx_universe_json(r, offset, listed, w);
+    fw_raw(w, t.ok ? t.out : "");
+    w->ok = w->ok && t.ok;
+    fw_raw(w, "}}");
+    free(t.out);
+    return w->ok;
 }
 
 /* Plan with the facts evidence and render the plan document with the
- * verdict spliced in before its closing brace; 0 on any failure. */
+ * facts object spliced in before its closing brace; 0 on any failure. */
 static size_t fx_render(const char *root, const char *const *files,
                         size_t file_count, const char *facts_dir,
-                        struct zcl_devloop_plan *plan,
+                        size_t offset, struct zcl_devloop_plan *plan,
                         struct zcl_devloop_facts_tu *tus,
                         struct zcl_devloop_facts_verdict *v, char *out,
                         size_t out_sz)
 {
+    struct zcl_devloop_facts_report report = {0};
+    bool all_c = file_count > 0, ok;
     size_t n;
     if (!zcl_devloop_plan_files(files, file_count, plan))
         return 0;
-    for (size_t k = 0; k < file_count; k++)
+    for (size_t k = 0; k < file_count; k++) {
+        size_t len = strlen(files[k]);
+        all_c = all_c && len > 2 && strcmp(files[k] + len - 2, ".c") == 0;
+    }
+    for (size_t k = 0; all_c && k < file_count; k++)
         fx_load(root, facts_dir, files[k], &tus[k]);
-    if (!zcl_devloop_plan_add_closure_facts(root, files, file_count, tus,
-                                            file_count, plan, v))
+    ok = zcl_devloop_facts_consume(root, files, file_count, facts_dir,
+                                   all_c ? tus : NULL, plan, v, &report);
+    n = ok ? zcl_devloop_plan_json_render(plan, files, file_count, out, out_sz)
+           : 0;
+    if (n == 0 || out[n - 1] != '}') {
+        zcl_devloop_facts_report_free(&report);
         return 0;
-    n = zcl_devloop_plan_json_render(plan, files, file_count, out, out_sz);
-    if (n == 0 || out[n - 1] != '}')
-        return 0;
+    }
     n--;
     out[n] = '\0';
-    return fx_verdict_json(v, out, out_sz, &n) ? n : 0;
+    {
+        struct fxw w = {.out = out, .cap = out_sz, .at = n, .ok = true};
+        ok = fx_facts_json(v, &report, plan, offset, &w);
+        n = w.at;
+    }
+    zcl_devloop_facts_report_free(&report);
+    return ok ? n : 0;
 }
 
 size_t zcl_devloop_plan_json_facts(const char *repo_root,
                                    const char *const *files, size_t file_count,
-                                   const char *facts_dir, char *out,
-                                   size_t out_sz)
+                                   const char *facts_dir, size_t tu_offset,
+                                   char *out, size_t out_sz)
 {
     const char *root = repo_root && repo_root[0] ? repo_root : ".";
     struct zcl_devloop_plan *plan = zcl_malloc(sizeof(*plan), "facts.plan");
@@ -167,8 +403,8 @@ size_t zcl_devloop_plan_json_facts(const char *repo_root,
         zcl_calloc(file_count ? file_count : 1, sizeof(*tus), "facts.tus");
     struct zcl_devloop_facts_verdict *v = zcl_malloc(sizeof(*v), "facts.v");
     bool ok = plan && tus && v && out && out_sz > 0 && facts_dir;
-    size_t n = ok ? fx_render(root, files, file_count, facts_dir, plan, tus, v,
-                              out, out_sz)
+    size_t n = ok ? fx_render(root, files, file_count, facts_dir, tu_offset,
+                              plan, tus, v, out, out_sz)
                   : 0;
     for (size_t k = 0; tus && k < file_count; k++)
         fx_unload(&tus[k]);

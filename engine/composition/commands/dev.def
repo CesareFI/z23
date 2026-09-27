@@ -465,7 +465,7 @@ ZCL_COMMAND_READY_READ(
     "smallest sufficient proof lane, unioning static path rules with the "
     "bounded source-index closure when available.", ZCL_COMMAND_LIST_BUDGET,
     "change,impact,classify,proof,hotswap,reload", "zcl.dev_change_input.v1",
-    "zcl.dev_plan.v1", "files,facts", "", "z23 dev change plan --input='{\"files\":[\"contexts/commons/apps/social/app.def\"]}'",
+    "zcl.dev_plan.v1", "files,facts,facts_offset", "", "z23 dev change plan --input='{\"files\":[\"contexts/commons/apps/social/app.def\"]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,

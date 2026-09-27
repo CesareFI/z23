@@ -1749,11 +1749,26 @@ void zcl_native_handle_dev_change_plan(
                                "facts");
         return;
     }
+    /* Optional "facts_offset": the first universe entry of this page. */
+    const struct json_value *off_v = json_get(request->input, "facts_offset");
+    if (off_v && (off_v->type != JSON_INT || json_get_int(off_v) < 0 ||
+                  !facts)) {
+        free(file_ptrs);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "INVALID_FACTS_OFFSET",
+                               "normalize", false, false,
+                               "facts_offset must be a non-negative integer "
+                               "beside facts",
+                               "facts_offset");
+        return;
+    }
+    size_t facts_offset = off_v ? (size_t)json_get_int(off_v) : 0;
     /* Path-glob floor + symbol-closure additions (F3). The closure is
      * best-effort: an unavailable/failed index degrades to the path floor, so
      * the reply is always a valid plan. repo_root is the process cwd. */
     size_t n = facts ? zcl_devloop_plan_json_facts(".", file_ptrs, count,
-                                                   facts, body, sizeof(body))
+                                                   facts, facts_offset, body,
+                                                   sizeof(body))
                      : zcl_devloop_plan_json_closure(".", file_ptrs, count,
                                                      body, sizeof(body));
     free(file_ptrs);
