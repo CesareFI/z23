@@ -468,6 +468,17 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                                       "facts-missing"},
                            .obligations = "facts-missing",
                            .incomplete = "facts-missing"},
+    /* Final review: the includer gains the #include in the same change; its
+     * own include set changed, so the .c path widens. */
+    [SCX_UNITY_ADD] = {.name = "unity_add", .file = SCX_C,
+                       .from = "(int)sizeof(s) + CX_SCALE; }",
+                       .to = "(int)sizeof(s) + CX_SCALE + 1; }",
+                       .file2 = SCX_E, .from2 = SCX_E_END, .to2 = SCX_UNITY_E,
+                       .changed = {SCX_C, SCX_E},
+                       .affected = {false, false, true, false, true},
+                       .reason = {NULL, NULL, "source-changed", NULL,
+                                  "include-resolution-change"},
+                       .obligations = "include-resolution-changed"},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,
