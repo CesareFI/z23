@@ -5,6 +5,7 @@
 #include "proof_reuse_priv.h"
 
 #include "vcs/blob_store.h"
+#include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 
 #include "base/log_macros.h"
