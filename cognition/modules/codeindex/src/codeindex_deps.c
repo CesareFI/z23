@@ -78,14 +78,47 @@ static char *dep_strtok(char *text, const char *delimiters, char **save)
     return cursor;
 }
 
-/* Rewrite an absolute or ./-relative depfile token to repo-relative, or return
- * false if the token is outside the tree (a system header). */
+/* Lexically fold "." and ".." segments so an edge names a file by its
+ * checkout path, however the source spelled it ("tools/command/../../x.def"
+ * is "x.def"). False when the path climbs out of the checkout. */
+static bool dep_fold_dots(char path[CI_PATH_MAX])
+{
+    char folded[CI_PATH_MAX];
+    size_t used = 0;
+    const char *seg = path;
+    while (*seg) {
+        const char *slash = strchr(seg, '/');
+        size_t len = slash ? (size_t)(slash - seg) : strlen(seg);
+        if (len == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (used == 0)
+                return false;
+            while (used > 0 && folded[used - 1] != '/')
+                used--;
+            if (used > 0)
+                used--;
+        } else if (len > 0 && !(len == 1 && seg[0] == '.')) {
+            if (used > 0)
+                folded[used++] = '/';
+            memcpy(folded + used, seg, len);
+            used += len;
+        }
+        seg += len;
+        if (*seg == '/')
+            seg++;
+    }
+    folded[used] = '\0';
+    memcpy(path, folded, used + 1);
+    return used > 0;
+}
+
+/* Rewrite an absolute or ./-relative depfile token to a folded repo-relative
+ * path, or return false if the token is outside the tree (a system header). */
 static bool to_relpath(const char *root, const char *tok, char out[CI_PATH_MAX])
 {
     size_t rl = strlen(root);
     if (strncmp(tok, root, rl) == 0 && tok[rl] == '/') {
         snprintf(out, CI_PATH_MAX, "%s", tok + rl + 1);
-        return true;
+        return dep_fold_dots(out);
     }
     if (tok[0] == '/' || (isalpha((unsigned char)tok[0]) && tok[1] == ':'))
         return false;  /* absolute, outside root */
@@ -95,7 +128,7 @@ static bool to_relpath(const char *root, const char *tok, char out[CI_PATH_MAX])
     /* reject paths that escape upward or reference vendored system trees */
     if (strncmp(tok, "../", 3) == 0) return false;
     snprintf(out, CI_PATH_MAX, "%s", tok);
-    return true;
+    return dep_fold_dots(out);
 }
 
 static bool has_ext(const char *s, const char *ext)
@@ -458,42 +491,18 @@ static bool dep_outside_tree(const char *tok)
            (isalpha((unsigned char)tok[0]) && tok[1] == ':');
 }
 
+/* A quoted include is resolved against its candidate directories, so only an
+ * absolute one is outside the checkout; "../x.h" climbs from the includer. */
+static bool dep_quoted_absolute(const char *quoted)
+{
+    return quoted[0] == '/' ||
+           (isalpha((unsigned char)quoted[0]) && quoted[1] == ':');
+}
+
 static bool dep_join(char *out, size_t cap, const char *dir, const char *rel)
 {
     int n = snprintf(out, cap, "%s/%s", dir, rel);
     return n > 0 && (size_t)n < cap;
-}
-
-/* Lexically fold "." and ".." segments so an added edge names the path the
- * index and the depfiles use. False when the path climbs out of the checkout. */
-static bool dep_fold_dots(char path[CI_PATH_MAX])
-{
-    char folded[CI_PATH_MAX];
-    size_t used = 0;
-    const char *seg = path;
-    while (*seg) {
-        const char *slash = strchr(seg, '/');
-        size_t len = slash ? (size_t)(slash - seg) : strlen(seg);
-        if (len == 2 && seg[0] == '.' && seg[1] == '.') {
-            if (used == 0)
-                return false;
-            while (used > 0 && folded[used - 1] != '/')
-                used--;
-            if (used > 0)
-                used--;
-        } else if (len > 0 && !(len == 1 && seg[0] == '.')) {
-            if (used > 0)
-                folded[used++] = '/';
-            memcpy(folded + used, seg, len);
-            used += len;
-        }
-        seg += len;
-        if (*seg == '/')
-            seg++;
-    }
-    folded[used] = '\0';
-    memcpy(path, folded, used + 1);
-    return used > 0;
 }
 
 /* Text-found include edges of one translation unit. `added` holds every file
@@ -595,7 +604,7 @@ static void text_scan_file(struct text_includes *t, const char *from)
         if (!end)
             continue;
         *end = '\0';
-        if (!dep_outside_tree(quoted))
+        if (!dep_quoted_absolute(quoted))
             text_include_resolve(t, from, quoted);
     }
     fclose(file);
