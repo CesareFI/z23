@@ -340,6 +340,13 @@ enum vcs_package_store_page_result vcs_package_store_page_summaries(
 enum vcs_package_store_page_result vcs_package_store_publish_if_generation(
     struct vcs_package_store *store, uint64_t generation,
     void (*publish)(void *context), void *context);
+/* Recheck the exact CAS chunks consumed by a staged projection while holding
+ * the store's publication lock. Each hash names one chunk of at most 1 MiB.
+ * Missing or changed bytes refuse publication without invoking the callback. */
+enum vcs_package_store_page_result vcs_package_store_publish_checked(
+    struct vcs_package_store *store, uint64_t generation,
+    const uint8_t (*chunk_hashes)[32], size_t chunk_count,
+    void (*publish)(void *context), void *context);
 size_t vcs_package_store_list_summaries(
     struct vcs_package_store *store, bool complete_only,
     struct vcs_package_store_summary *out, size_t max);

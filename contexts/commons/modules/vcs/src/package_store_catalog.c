@@ -460,13 +460,33 @@ enum vcs_package_store_page_result vcs_package_store_page_summaries(
     return VCS_PACKAGE_STORE_PAGE_OK;
 }
 
-enum vcs_package_store_page_result vcs_package_store_publish_if_generation(
+static enum vcs_package_store_page_result store_validate_chunks(
+    const struct vcs_package_store *store,
+    const uint8_t (*hashes)[32], size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        char path[STORE_PATH_MAX];
+        store_cas_path(store, hashes[i], path, sizeof(path));
+        size_t len = 0;
+        uint8_t *wire = store_read_file(path, &len);
+        if (!wire) return VCS_PACKAGE_STORE_PAGE_INCOMPLETE;
+        uint8_t actual[32];
+        bool valid = vcs_package_chunk_hash(wire, len, actual) &&
+                     memcmp(actual, hashes[i], sizeof(actual)) == 0;
+        free(wire);
+        if (!valid) return VCS_PACKAGE_STORE_PAGE_INCOMPLETE;
+    }
+    return VCS_PACKAGE_STORE_PAGE_OK;
+}
+
+enum vcs_package_store_page_result vcs_package_store_publish_checked(
     struct vcs_package_store *store, uint64_t generation,
+    const uint8_t (*chunk_hashes)[32], size_t chunk_count,
     void (*publish)(void *context), void *context)
 {
-    if (!store || !publish)
+    if (!store || !publish || (chunk_count && !chunk_hashes))
         LOG_RETURN(VCS_PACKAGE_STORE_PAGE_INPUT, STORE_LOG,
-                   "null store or publish callback");
+                   "invalid guarded publish arguments");
     pthread_mutex_lock(&store->lock);
     if (!store_process_lock(store)) {
         pthread_mutex_unlock(&store->lock);
@@ -479,21 +499,33 @@ enum vcs_package_store_page_result vcs_package_store_publish_if_generation(
         LOG_RETURN(VCS_PACKAGE_STORE_PAGE_STALE, STORE_LOG,
                    "store changed in another handle before publish");
     }
-    enum vcs_package_store_page_result disk =
-        store_catalog_validate_disk(store);
-    if (disk != VCS_PACKAGE_STORE_PAGE_OK ||
-        generation != store->shared_generation) {
-        enum vcs_package_store_page_result result =
-            disk != VCS_PACKAGE_STORE_PAGE_OK
-                ? disk : VCS_PACKAGE_STORE_PAGE_STALE;
+    if (generation != store->shared_generation) {
         store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
-        LOG_RETURN(result, STORE_LOG, "store changed before projection publish");
+        LOG_RETURN(VCS_PACKAGE_STORE_PAGE_STALE, STORE_LOG,
+                   "stale guarded publication");
+    }
+    enum vcs_package_store_page_result disk =
+        store_catalog_validate_disk(store);
+    if (disk == VCS_PACKAGE_STORE_PAGE_OK)
+        disk = store_validate_chunks(store, chunk_hashes, chunk_count);
+    if (disk != VCS_PACKAGE_STORE_PAGE_OK) {
+        store_process_unlock(store);
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(disk, STORE_LOG, "store changed before projection publish");
     }
     publish(context);
     store_process_unlock(store);
     pthread_mutex_unlock(&store->lock);
     return VCS_PACKAGE_STORE_PAGE_OK;
+}
+
+enum vcs_package_store_page_result vcs_package_store_publish_if_generation(
+    struct vcs_package_store *store, uint64_t generation,
+    void (*publish)(void *context), void *context)
+{
+    return vcs_package_store_publish_checked(store, generation, NULL, 0,
+                                             publish, context);
 }
 
 size_t vcs_package_store_list_summaries(
