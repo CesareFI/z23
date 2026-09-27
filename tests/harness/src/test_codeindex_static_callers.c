@@ -57,7 +57,7 @@ static bool sc_write(const char *rel, const char *content)
     return fclose(f) == 0 && ok;
 }
 
-static bool sc_write_fixture(void)
+static bool sc_write_fixture_two_tus(void)
 {
     bool ok = true;
     /* 1: two TUs, one static name. */
@@ -83,7 +83,12 @@ static bool sc_write_fixture(void)
         "int sc_ext_user(void)\n{\n    return sc_ext_fn();\n}\n");
     ok = ok && sc_write("build/obj/sc_ext.d",
         "build/obj/sc_ext.o: " SC_SRC "sc_ext.c " SC_INC "sc_ext.h\n");
+    return ok;
+}
 
+static bool sc_write_fixture_reach(void)
+{
+    bool ok = true;
     /* 3: the ways a file other than sc_x.c CAN reach sc_x.c's helper. */
     ok = ok && sc_write(SC_SRC "sc_inc.c",
         "#include \"sc_x.c\"\n"
@@ -105,7 +110,12 @@ static bool sc_write_fixture(void)
         "build/obj/sc_alt.o: " SC_SRC "sc_alt.c " SC_SRC "sc_x.c\n");
     ok = ok && sc_write("build/obj/sc_inc.d",
         "build/obj/sc_inc.o: " SC_SRC "sc_inc.c " SC_SRC "sc_x.c\n");
+    return ok;
+}
 
+static bool sc_write_fixture_static_caller(void)
+{
+    bool ok = true;
     /* 2: a static caller discovered mid-walk. */
     ok = ok && sc_write(SC_SRC "sc_lib.c",
         "int sc_lib_fn(void)\n{\n    return 7;\n}\n");
@@ -119,7 +129,12 @@ static bool sc_write_fixture(void)
         "int sc_p_user(void)\n{\n    return sc_p_api();\n}\n");
     ok = ok && sc_write(SC_SRC "sc_q_user.c",
         "int sc_q_user(void)\n{\n    return sc_q_api();\n}\n");
+    return ok;
+}
 
+static bool sc_write_fixture_static_inline(void)
+{
+    bool ok = true;
     /* 4: a static inline defined in a header. */
     ok = ok && sc_write(SC_INC "sc_inl.h",
         "#ifndef NET_SC_INL_H\n#define NET_SC_INL_H\n"
@@ -140,6 +155,14 @@ static bool sc_write_fixture(void)
     ok = ok && sc_write("build/obj/sc_hb.d",
         "build/obj/sc_hb.o: " SC_SRC "sc_hb.c " SC_INC "sc_inl.h\n");
     return ok;
+}
+
+static bool sc_write_fixture(void)
+{
+    return sc_write_fixture_two_tus() &&
+           sc_write_fixture_reach() &&
+           sc_write_fixture_static_caller() &&
+           sc_write_fixture_static_inline();
 }
 
 /* Run the store walk (or, with `overlay`, the fresh-bytes walk) for one

@@ -491,6 +491,56 @@ static void ci_overlay_ignore_ref(const char *callee, const char *ref_file,
     (void)callee; (void)ref_file; (void)ref_line; (void)enclosing; (void)user;
 }
 
+static bool ci_closure_seed_all(
+    struct ci_closure_ctx *c, struct codeindex *ci, const char *overlay_root,
+    const char (*changed_files)[256], int n_changed,
+    struct ci_strlist *frontier, bool *truncated, bool stop_at_truncation)
+{
+    for (int i = 0; i < n_changed; i++) {
+        if (stop_at_truncation && *truncated)
+            break;
+        if (!ci_closure_seed_file(c, ci, changed_files[i], frontier,
+                                  truncated))
+            return false;
+        if (overlay_root) {
+            struct ci_overlay_seed seed = {
+                .closure = c,
+                .frontier = frontier,
+                .truncated = truncated,
+            };
+            uint8_t current_sha3[32];
+            if (!ci_scan_file(overlay_root, changed_files[i], ci_overlay_sym,
+                              ci_overlay_ignore_ref, &seed, current_sha3,
+                              NULL) || seed.failed)
+                return false;
+        }
+    }
+    return true;
+}
+
+static int ci_closure_collect_output(struct ci_closure_ctx *c,
+                                      char (*out)[256], int cap,
+                                      bool *truncated)
+{
+    qsort(c->files.items, c->files.len, sizeof(*c->files.items), ci_str_cmp);
+    int n = 0;
+    for (size_t i = 0; i < c->files.len && n < cap; i++) {
+        memset(out[n], 0, sizeof(out[n]));
+        int w = snprintf(out[n], sizeof(out[n]), "%s", c->files.items[i]);
+        /* A path longer than the caller's row lands as a SILENTLY DIFFERENT
+         * path: the caller then hashes whatever the truncated prefix names, or
+         * fails to open it. Either way the set it holds is not the set we
+         * computed, so report truncation — testcache turns that into
+         * UNCACHEABLE and the group runs. */
+        if (w < 0 || (size_t)w >= sizeof(out[n]))
+            *truncated = true;
+        n++;
+    }
+    if ((size_t)n < c->files.len)
+        *truncated = true;  /* caller's cap could not hold the full set */
+    return n;
+}
+
 static int impact_closure_impl(
     struct codeindex *ci, const char *overlay_root,
     const char (*changed_files)[256], int n_changed, int max_depth,
@@ -526,25 +576,9 @@ static int impact_closure_impl(
     struct ci_strlist frontier = {0};
     struct ci_strlist next = {0};
 
-    for (int i = 0; i < n_changed; i++) {
-        if (stop_at_truncation && *truncated)
-            break;
-        if (!ci_closure_seed_file(&c, ci, changed_files[i], &frontier,
-                                  truncated))
-            goto done;
-        if (overlay_root) {
-            struct ci_overlay_seed seed = {
-                .closure = &c,
-                .frontier = &frontier,
-                .truncated = truncated,
-            };
-            uint8_t current_sha3[32];
-            if (!ci_scan_file(overlay_root, changed_files[i], ci_overlay_sym,
-                              ci_overlay_ignore_ref, &seed, current_sha3,
-                              NULL) || seed.failed)
-                goto done;
-        }
-    }
+    if (!ci_closure_seed_all(&c, ci, overlay_root, changed_files, n_changed,
+                             &frontier, truncated, stop_at_truncation))
+        goto done;
 
     for (int d = 0; d < depth && frontier.len > 0; d++) {
         if (stop_at_truncation && *truncated)
@@ -568,23 +602,7 @@ static int impact_closure_impl(
     }
 
     /* Deterministic, unique output. */
-    qsort(c.files.items, c.files.len, sizeof(*c.files.items), ci_str_cmp);
-    int n = 0;
-    for (size_t i = 0; i < c.files.len && n < cap; i++) {
-        memset(out[n], 0, sizeof(out[n]));
-        int w = snprintf(out[n], sizeof(out[n]), "%s", c.files.items[i]);
-        /* A path longer than the caller's row lands as a SILENTLY DIFFERENT
-         * path: the caller then hashes whatever the truncated prefix names, or
-         * fails to open it. Either way the set it holds is not the set we
-         * computed, so report truncation — testcache turns that into
-         * UNCACHEABLE and the group runs. */
-        if (w < 0 || (size_t)w >= sizeof(out[n]))
-            *truncated = true;
-        n++;
-    }
-    if ((size_t)n < c.files.len)
-        *truncated = true;  /* caller's cap could not hold the full set */
-    rc = n;
+    rc = ci_closure_collect_output(&c, out, cap, truncated);
 
 done:
     ci_strlist_free(&frontier);
