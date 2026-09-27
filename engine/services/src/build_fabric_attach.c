@@ -1304,7 +1304,7 @@ static const char *bfat_receipt_prepare(struct bfat_attach_ctx *c)
     (void)snprintf(receipt->action_sha3, sizeof(receipt->action_sha3), "%s",
                    c->action.action_id);
     (void)snprintf(receipt->output_sha3, sizeof(receipt->output_sha3), "%s",
-                   c->donor_action.output_root_sha3);
+                   c->report->output_copy_sha3);
     (void)snprintf(receipt->observation_sha3,
                    sizeof(receipt->observation_sha3), "%s",
                    c->donor_receipt.observation_sha3);
@@ -1354,7 +1354,7 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
     (void)snprintf(next.state, sizeof(next.state), "CACHE_HIT");
     (void)snprintf(next.outcome, sizeof(next.outcome), "CACHE_HIT");
     (void)snprintf(next.output_root_sha3, sizeof(next.output_root_sha3), "%s",
-                   c->donor_action.output_root_sha3);
+                   c->report->output_copy_sha3);
     (void)snprintf(next.worker_id, sizeof(next.worker_id), "%s",
                    c->requester_worker_id);
     (void)snprintf(next.lease_id, sizeof(next.lease_id), "%s",

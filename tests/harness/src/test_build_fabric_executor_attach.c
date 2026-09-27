@@ -313,6 +313,23 @@ static bool att_read_artifact_bytes(const char *workspace,
                                out_len) == 0;
 }
 
+static bool att_artifact_binds_action(const char *workspace,
+                                      const char *manifest_root_hex,
+                                      const char *action_hex)
+{
+    uint8_t root[32], action[32], *wire = NULL;
+    size_t wire_len = 0;
+    if (!zcl_hex_decode_lower(manifest_root_hex, root, 32) ||
+        !zcl_hex_decode_lower(action_hex, action, 32) ||
+        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+        return false;
+    struct vcs_build_artifact_manifest_v1 manifest;
+    bool ok = vcs_build_artifact_manifest_v1_parse(wire, wire_len, &manifest) &&
+        memcmp(manifest.action_sha3, action, 32) == 0;
+    free(wire);
+    return ok;
+}
+
 static bool att_observation_bytes_root(const char *workspace,
                                         const char *root_hex,
                                         uint8_t out[32])
@@ -797,18 +814,19 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(db_build_action_find(&ndb, action_b.action_id, &durable_b));
         ASSERT_STR_EQ(durable_b.state, "CACHE_HIT");
         ASSERT_STR_EQ(durable_b.outcome, "CACHE_HIT");
-        ASSERT_STR_EQ(durable_b.output_root_sha3, durable_a.output_root_sha3);
+        ASSERT(att_artifact_binds_action(dir, durable_b.output_root_sha3,
+                                         action_b.action_id));
         struct db_build_job durable_job_b;
         ASSERT(db_build_job_find(&ndb, job_b.job_id, &durable_job_b));
         ASSERT_STR_EQ(durable_job_b.state, "CACHE_HIT");
 
-        /* Two DISTINCT signed receipts: different ids and action ids, the
-         * SAME physical observation root and output root. */
+        /* Two distinct signed receipts keep one physical observation, while
+         * each output root binds its own action. */
         ASSERT(strcmp(receipt_b.receipt_id, receipt_a.receipt_id) != 0);
         ASSERT_STR_EQ(receipt_b.action_id, action_b.action_id);
         ASSERT_STR_EQ(receipt_b.action_sha3, action_b.action_id);
         ASSERT_STR_EQ(receipt_b.observation_sha3, receipt_a.observation_sha3);
-        ASSERT_STR_EQ(receipt_b.output_sha3, receipt_a.output_sha3);
+        ASSERT_STR_EQ(receipt_b.output_sha3, durable_b.output_root_sha3);
         ASSERT_STR_EQ(receipt_b.trust_state, "LOCAL_ACCEPTED");
         ASSERT_STR_EQ(receipt_b.lease_id, key_hex);
         ASSERT(strstr(receipt_b.confinement, "executor-attach=1") != NULL);
@@ -822,8 +840,8 @@ static int test_bf_attach_avoids_second_compile(void)
         size_t len_a = 0, len_b = 0;
         ASSERT(att_read_artifact_bytes(dir, receipt_a.output_sha3, &bytes_a,
                                        &len_a));
-        ASSERT(att_read_artifact_bytes(dir, report.output_copy_sha3, &bytes_b,
-                                       &len_b));
+        ASSERT(att_read_artifact_bytes(dir, durable_b.output_root_sha3,
+                                       &bytes_b, &len_b));
         ASSERT_EQ(len_a, len_b);
         ASSERT_EQ(memcmp(bytes_a, bytes_b, len_a), 0);
         free(bytes_a);
