@@ -7714,3 +7714,35 @@ exact release-reproduction evidence still applies. The six original dirty
 files in `/root/z23-android` again match their preserved hashes. Continue with
 the existing external UI fixture to qualify the current minified release on
 this owned device, retaining its fresh-profile and no-existing-wallet guards.
+
+## Current minified camera journey at 16 KiB — 2026-09-28
+
+The unchanged unsigned release from `11877db26` was signed locally with the
+existing development certificate. Every original ZIP payload entry compares
+exactly; the signed APK passes 16 KiB ZIP alignment and signature verification.
+No production key, source change, R8 keep-rule exception or fixture host was
+added. The external scanner fixture builds and passes its checks with 70 tasks
+in 28 seconds. Its existing no-wallet-directory, emulator, denied-permission
+and non-debuggable-target guards remain enforced.
+
+On the owned API35 16 KiB profile, actual permission denial passes in 6.365
+seconds. A restart of only this emulator adds the existing generated public
+PNG through the imagefile camera backend. Its initialization log confirms the
+exact file loaded. The full minified journey then passes in 9.833 seconds:
+real permission denial, retry, foreground grant, Camera2 capture, isolated
+decoder and exact address/1.25 amount/CameraFixture review, with no remaining
+preview, camera worker or wallet directory. These are fixture durations, not
+camera latency benchmarks. The running kernel still reports 16384-byte pages;
+camera permission is revoked afterward and both owned launches exit cleanly.
+The five unowned devices and existing 31 adb zombies remain unchanged.
+
+Unsigned release SHA256 remains
+`b67416afc871bf8039f2c419ee186e31b0058383689acd1bccd28386c399d9ec`;
+the locally development-signed APK is
+`56c8f138699a9fca9a06e005d9963fbff22bd1b4a01fb57f28a62e9b89480a76`.
+The deterministic public scene is
+`c6d0f4e7ecc22c8a7091923eb6d1d5a6b97d3b3069d96a7f487b96dfd622810c`.
+Evidence is in `.cache/minified-api35-16k-20260928/`. This adds current minified
+x86_64 emulator runtime evidence; physical optics, arm64 hardware and successful
+hardware-authenticated custody remain open. Publication of preceding work is
+still refused by the installed development-ref policy; no bypass was used.

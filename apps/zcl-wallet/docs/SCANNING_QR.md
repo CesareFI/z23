@@ -442,3 +442,22 @@ Evidence, APK hashes, framework artifact identities and scoped lifecycle logs
 are retained in `.cache/camera-lifecycle-20260926/` in the isolated validation
 worktree. Its release counterpart remains the reproduced 641659-byte unsigned
 APK SHA256 `9f8956045bfd50500f640224e1f35ca16062b7e3f608a5648dfe6a221a750b32`.
+
+2026-09-28: the current normal minified APK also passes on a new owned API35
+Google APIs x86_64 emulator reporting 16384-byte pages. The external UI fixture
+passes actual permission denial in 6.365 seconds, then the complete
+denial/retry/foreground-grant/imagefile-camera/exact-review journey in 9.833
+seconds. It requires no preview, camera worker or wallet directory afterward.
+The emulator confirms loading the generated public PNG; physical optics and
+hardware-authenticated custody remain unqualified. Permission is revoked after
+the run and the owned emulator exits cleanly. Fixture durations are not camera
+latency measurements.
+
+The unsigned APK SHA256 is
+`b67416afc871bf8039f2c419ee186e31b0058383689acd1bccd28386c399d9ec`.
+Its local development-signed copy is
+`56c8f138699a9fca9a06e005d9963fbff22bd1b4a01fb57f28a62e9b89480a76`;
+all original ZIP payload entries compare exactly and signed 16 KiB alignment
+passes. The public scene SHA256 is
+`c6d0f4e7ecc22c8a7091923eb6d1d5a6b97d3b3069d96a7f487b96dfd622810c`.
+Reports and signatures are retained in `.cache/minified-api35-16k-20260928/`.
