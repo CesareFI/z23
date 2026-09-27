@@ -714,9 +714,11 @@ The `.c` path applies the same incomplete-universe fallback. Once its rule
 chain narrows, it also takes the members' seeds: a TU that `#include`s a
 changed `.c` (a unity build, a test reaching its statics) compiles its
 functions under the names its own manifest records, perhaps renamed by a
-macro. When the changed `.c` broadens the includer, every function that
-`.c` defines there, and every includer function that reaches one, joins the
-walk on both sides, whatever the dirty flags marked. The walk runs again
+macro. When a member ends broadened, whichever rule broadened it, every
+changed `.c` it read on either side seeds it: every function that `.c`
+defines there, and every includer function that reaches one, joins the walk
+on both sides, whatever the dirty flags marked. The seeding covers every
+changed `.c` whose digests differ, not only the first one a rule met. The walk runs again
 over every changed file and affected TU whenever a member adds a seed or a
 TU other than a changed file is affected (a moved declaration alone changes
 the includer's `-g1` bytes), and each broadened member other than a changed
@@ -814,15 +816,25 @@ the consumer left unaffected.
 | hasinc | a header only a `__has_include` probes is created | all five (`include-resolution-change`) | narrowed, every TU broadened |
 | hasdel | the same header deleted again (planned against hasinc) | all five | `include-graph-truncated` (the include graph cannot list a deleted input's readers) |
 | cleanup | the body of a `cleanup` handler another function's local names (against a tree with both) | the definer; seeds the handler and the function that runs it | narrowed |
-| unity | `cx_sum`'s body, which another TU compiles by `#include "cx_c.c"` under `#define cx_sum cx_e_sum` (and `cx_hook` as `cx_e_hook`) | the definer, and the includer (`header-unattributed`) | narrowed; seeds `cx_sum`, `cx_e_sum` and `cx_use_e` |
+| unity | `cx_sum`'s body, which another TU compiles by `#include "cx_c.c"` under `#define cx_sum cx_e_sum` (and `cx_hook`, `cx_get`, `cx_tail` as `cx_e_hook`, `cx_e_get`, `cx_e_tail`, so nothing is defined twice) | the definer, and the includer (`header-unattributed`) | narrowed; seeds `cx_sum`, `cx_e_sum` and `cx_use_e` |
 | unity_move | a comment line moves `cx_tail`'s declaration below `cx_get` in the included `cx_c.c` | the definer, and the includer (`position`); the plan reaches both | narrowed |
 | unity2 | `cx_sum`'s body, and a line that moves `cx_sum2` (which returns `__LINE__`, renamed `cx_e_sum2` in the includer) | the definer, and the includer (`header-unattributed`) | narrowed; seeds `cx_sum2`, `cx_e_sum2` and `cx_e_sum` |
+| ctr_unity | `cx_sum`'s body, included by a TU that also expands `__COUNTER__` | the definer, and the includer (`position-dependent`, broadened before any text rule) | narrowed; seeds `cx_sum` and `cx_e_sum` |
+| unity_ab | the bodies of `cx_sum` and `cx_top_a`, both `.c` files included by one TU under renames | `cx_a.c`, `cx_c.c`, and the includer (`header-unattributed`) | narrowed; seeds `cx_e_sum` and `cx_e_top_a`: every changed `.c`, not the first |
+| unity_addr | `cx_sum`'s body, while `cx_d.c` takes the address of `cx_e_hook`, which only the includer defines from `cx_c.c` | the definer, and the includer (`header-unattributed`) | falls back `address-taken` |
 
 The seven from `counter` to `unity` are minimized reproducers of dependencies
 a differential comparison against cold clang objects found missed;
-`unity_move` and `unity2` come from the review of the `unity` fix. A narrowed plan must reach at least as many files
-as there are changed files and affected TUs. Each is planned against its own before tree, a `p_`
-variant the fixture produces but does not judge.
+`unity_move` and `unity2` come from the review of the `unity` fix, and
+`ctr_unity`, `unity_ab` and `unity_addr` from its re-review: without the
+includer seeding the first two miss `cx_e_sum` and `cx_e_top_a`, and
+`unity_addr` narrows with no obligation. A narrowed plan must reach every
+changed file and every affected TU, checked as a set through a test hook on
+the files the fold reached. A count check would not do: with a fold that
+drops the affected TUs, `unity2` reaches 3 files where 2 are needed and
+`unity_ab` 3 where 3 are needed, yet both miss `cx_e.c`, and the set check
+fails them. Each is planned against its own before tree, a `p_` variant the
+fixture produces but does not judge.
 
 A `.c`-only change whose seed a header declares falls back when the depfile
 graph is absent and a reader's facts are withheld (the review finding
