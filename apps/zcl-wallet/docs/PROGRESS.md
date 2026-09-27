@@ -7641,3 +7641,44 @@ unfinished native parser/fuzz/review-race work remains untouched. Publication
 of the preceding seven local commits remains blocked by the installed
 `remote-ref-not-main` policy, not a quota. Continue with permitted UI/lifecycle
 and release quality work without enabling TLS or weakening custody checks.
+
+## Wallet controls stay clear of system bars while scrolling — 2026-09-28
+
+The compact-window audit reproduced an API36 wallet layout bug. At 320x240 dp
+with real system-bar insets, scrolling the requested address/network control
+placed its bottom at y=240 even though the usable viewport ended at y=192.
+Both baseline welcome/receive regressions failed on API36 and passed on API30.
+Padding the ScrollView itself still clipped requested controls on API36; this
+failed intermediate candidate and its evidence are retained. The final layout
+places the insets on a fixed outer FrameLayout, keeping the complete scroller
+inside the usable viewport. The existing content spacing and saved-state
+protection remain in place.
+
+Four device regressions now check actual control bounds and callback delivery
+on welcome, receive, backup and recovery screens. They use the storage-free
+debug host, public addresses/marker text and the device's actual insets without
+changing global display settings. All 85 selected layout, QR, authentication,
+secret-view, report and review lifecycle cases pass with CheckJNI and no skips
+on API30/36 in 26.165/66.748 seconds. Separate process-kill/relaunch fixtures for
+balance, history and full-source review also pass on both APIs: each proves a
+verified public display, termination of that PID and an empty replacement
+process. No camera, endpoint, authentication or real wallet was used.
+
+Full Gradle build/test/lint/isolation/alignment passes in 34 seconds. The 52 app
+JVM tests reran and 97 unchanged core tests remained up-to-date. Four native
+QR/provider/failure groups pass Clang/GCC sanitizers in 7.35/2.36 seconds. The
+unchanged receiving-QR fuzzer completed 3278 runs in 31 seconds without a
+finding, including its generated-address path, with a 128-byte cap, five-second
+case and 512 MiB RSS limits (43 MiB observed). Architecture, whitespace and C
+production/test complexity caps 10/15 pass. No C source changed.
+
+The change adds one fixed view container; the release DEX increases from 91784
+to 91932 bytes. Both native libraries remain byte-identical, and the complete
+unsigned APK remains 641659 bytes with SHA256
+`b67416afc871bf8039f2c419ee186e31b0058383689acd1bccd28386c399d9ec`.
+Source-only tree `04a5aa1a9a0fc02353852ed932d3097a3cc6bb0e`, containing final
+implementation/tests and preceding notes, reproduces it exactly with 57
+uncached release tasks in 47 seconds. No runtime heap or latency improvement is
+claimed. Evidence is in `.cache/wallet-layout-20260928/`; owned emulators exited
+successfully and other sessions' worktrees/devices remain untouched. The eight
+preceding commits remain local under the development-ref hook refusal.

@@ -5,6 +5,7 @@ import android.app.Activity
 import android.graphics.Color
 import android.view.WindowInsets
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -18,28 +19,35 @@ import org.zclassic.wallet.core.TransparentAddress
  * every screen transition; no phrase is placed in saved state, an IME or logs.
  */
 internal class WalletScreens(private val activity: Activity) {
+    private val spacing = (20 * activity.resources.displayMetrics.density).toInt()
     private val content = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         isSaveEnabled = false
+        setPadding(spacing, spacing, spacing, spacing)
     }
     private val scroll = ScrollView(activity).apply {
         isFillViewport = true
         isSaveEnabled = false
-        setBackgroundColor(Color.WHITE)
         addView(content)
+    }
+    // Keep system bars outside the scroller's viewport, including when Android
+    // scrolls a requested control into view.
+    private val root = FrameLayout(activity).apply {
+        isSaveEnabled = false
+        setBackgroundColor(Color.WHITE)
+        addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT))
     }
     private var recoveryWords: RecoveryWordsView? = null
     private var recoveryInput: RecoveryInputView? = null
-    private val spacing = (20 * activity.resources.displayMetrics.density).toInt()
 
     init {
-        scroll.setOnApplyWindowInsetsListener { _, insets ->
+        root.setOnApplyWindowInsetsListener { _, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            content.setPadding(spacing + bars.left, spacing + bars.top,
-                spacing + bars.right, spacing + bars.bottom)
+            root.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
-        activity.setContentView(scroll)
+        activity.setContentView(root)
     }
 
     fun clearSecrets() {
