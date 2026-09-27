@@ -207,10 +207,14 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                                  "include-resolution-change",
                                  "include-resolution-change",
                                  "include-resolution-change"},
-                      .obligations = "include-graph-truncated",
                       /* the module's include/cx.h still exists and no
-                       * depfile lists it: the graph refuses to narrow */
-                      .incomplete = "include-graph-truncated"},
+                       * depfile lists it, but the include graph keeps a
+                       * quoted include the depfile omits as an edge
+                       * (be2e35e22b), so the graph answer is complete: no
+                       * truncation, no fallback, no incompleteness. Each
+                       * TU's own manifests broaden it on shadowing, and the
+                       * graph edge only adds more. */
+                      .obligations = "", .incomplete = NULL},
     [SCX_DRIFT] = {.name = "drift", .file = SCX_HEADER,
                    .from = "int cx_hook(int v);\n#endif",
                    .to = "int cx_hook(int v);\n/* drift */\n#endif",
