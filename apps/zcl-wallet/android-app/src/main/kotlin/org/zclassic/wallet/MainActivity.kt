@@ -222,9 +222,21 @@ class MainActivity : Activity() {
 
     private fun restart() {
         if (!resumed) return
-        authentication.cancel()
-        clearSetupTimeout()
-        session?.close()
+        val previous = session
+        session = null
+        busy = true
+        // Retire the old setup before allocating its replacement. A failed
+        // cancellation or worker cleanup must not retain displayed secrets.
+        var failure: Throwable? = null
+        try { authentication.cancel() }
+        catch (problem: Throwable) { failure = problem }
+        try { clearSetupTimeout() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        try { previous?.close() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        try { screens.clearSecrets() }
+        catch (problem: Throwable) { if (failure == null) failure = problem }
+        if (failure != null) throw failure
         session = WalletPlatformSession(applicationContext, storage, mainExecutor)
         inspect()
     }

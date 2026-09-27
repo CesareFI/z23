@@ -64,6 +64,12 @@ canonical wallet/datadir files, spend real funds, or export existing secrets.
   before allocating the retry callback or failure UI. The first error still
   propagates even if later cleanup/rendering also fails; active worker entropy
   retains its existing safe termination ownership.
+* Setup cancellation/restart detaches its old session and blocks further work
+  before attempting prompt, timer, worker and secret-view cleanup independently.
+  It propagates the first cleanup error and creates no replacement on failure.
+  Secret views clear before replacement-session allocation; active entropy
+  remains owned by the retiring worker until safe termination. A successful
+  restart inspects storage again and requires a fresh explicit user action.
 * Camera startup returns its single process admission if worker construction or
   startup fails before publishing a handler, including on fatal allocation
   errors. That failed lifetime cannot retry itself. Once an OS camera open is

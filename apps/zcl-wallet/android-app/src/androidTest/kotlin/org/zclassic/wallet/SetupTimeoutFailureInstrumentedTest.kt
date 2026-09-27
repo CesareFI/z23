@@ -35,8 +35,9 @@ import org.zclassic.wallet.core.Network
 import org.zclassic.wallet.core.WalletStorage
 
 /** Unlaunched controller on the storage-free debug host. A real worker owns
- * only public marker entropy and an uninitialized cipher. No authentication,
- * key derivation, storage operation or real seed is used. */
+ * only public marker entropy and an uninitialized cipher. The successful
+ * restart reads an absent disposable wallet path, creating only its empty
+ * lock file. No authentication, key derivation, wallet record or real seed is used. */
 @RunWith(AndroidJUnit4::class)
 class SetupTimeoutFailureInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -86,6 +87,7 @@ class SetupTimeoutFailureInstrumentedTest {
     private inner class Fixture(val host: WalletDisplayFixtureActivity) : AutoCloseable {
         private val parent = Files.createTempDirectory(host.cacheDir.toPath(), "public-setup-timeout-").toFile()
         private val directory = File(parent, "untouched")
+        private val restartDirectory = File(parent, "restart-empty")
         val controller = controller()
         val screens = WalletScreens(host)
         val authentication = WalletAuthentication(host,
@@ -155,6 +157,13 @@ class SetupTimeoutFailureInstrumentedTest {
             } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
         }
 
+        fun restart() {
+            try {
+                MainActivity::class.java.getDeclaredMethod("restart").apply { isAccessible = true }
+                    .invoke(controller)
+            } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        }
+
         fun failSessionClose(problem: Throwable) {
             assertTrue(worker.submit({ throw problem }) { error("Cancelled public cleanup fixture ran") })
         }
@@ -174,6 +183,16 @@ class SetupTimeoutFailureInstrumentedTest {
         fun failRendering(problem: Throwable) {
             content.setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
                 override fun onChildViewAdded(parent: View?, child: View?) { throw problem }
+                override fun onChildViewRemoved(parent: View?, child: View?) = Unit
+            })
+        }
+
+        fun observeEmptyRestart(welcome: CountDownLatch) {
+            field("storage").set(controller, WalletStorage(restartDirectory.absolutePath))
+            content.setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
+                override fun onChildViewAdded(parent: View?, child: View?) {
+                    if (child?.id == R.id.create_wallet) welcome.countDown()
+                }
                 override fun onChildViewRemoved(parent: View?, child: View?) = Unit
             })
         }
@@ -211,6 +230,14 @@ class SetupTimeoutFailureInstrumentedTest {
             }
             backend?.let { assertTrue(it.awaitTermination(5, TimeUnit.SECONDS)) }
             entropy.fill(0)
+            if (restartDirectory.exists()) {
+                val entries = checkNotNull(restartDirectory.listFiles())
+                assertEquals(listOf(".lock"), entries.map { it.name })
+                assertTrue(entries.single().isFile)
+                assertEquals(0L, entries.single().length())
+                assertTrue(entries.single().delete())
+                assertTrue(restartDirectory.delete())
+            }
             assertTrue("Unexpected files in public fixture parent", parent.delete())
         }
     }
@@ -313,6 +340,86 @@ class SetupTimeoutFailureInstrumentedTest {
     @Test fun sessionCleanupFailureStillClearsRecoveryInput() {
         failedSessionClose(input = true, rendering = false)
         failedSessionClose(input = true, rendering = true)
+    }
+
+    private fun failedRestart(input: Boolean, cancellation: Boolean = false, clearing: Boolean = false) {
+        for (fatal in listOf(false, true)) withFixture { fixture ->
+            val problem = if (fatal) OutOfMemoryError("Public restart cleanup failure")
+                else IllegalStateException("Public restart cleanup failure")
+            onMain {
+                fixture.handler.enqueue = true
+                assertTrue(fixture.start())
+                val (words, view) = shownSecret(fixture, input)
+                val listener = object : TextWatcher {
+                    override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) {
+                        if (after == 0) throw OutOfMemoryError("Public secondary restart view failure")
+                    }
+                    override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                    override fun afterTextChanged(text: Editable?) = Unit
+                }
+                try {
+                    assertEquals(View.VISIBLE, view.visibility)
+                    assertEquals("abc", (view as TextView).text.toString())
+                    val signal = if (cancellation) fixture.failCancellation(problem) else null
+                    fixture.failSessionClose(if (cancellation)
+                        IllegalStateException("Public secondary restart cleanup failure") else problem)
+                    if (clearing) view.addTextChangedListener(listener)
+                    assertSame(problem, assertThrows(Throwable::class.java) { fixture.restart() })
+                    assertTrue("Restart left the displayed phrase owned by the view", words.all { it == '\u0000' })
+                    assertEquals(View.INVISIBLE, view.visibility)
+                    fixture.assertRetired()
+                    assertFalse(fixture.authentication.hasPending)
+                    signal?.let { assertTrue(it.isCanceled) }
+                    assertTrue(field("busy").getBoolean(fixture.controller))
+                    assertTrue(fixture.entropy.all { it == 0x61.toByte() })
+                } finally { (view as TextView).removeTextChangedListener(listener); words.fill('\u0000') }
+            }
+            fixture.finishWorker()
+        }
+    }
+
+    @Test fun restartCleanupFailureStillRetiresTheScreenAndOwner() = failedRestart(input = false)
+
+    @Test fun restartCleanupFailureStillClearsRecoveryInput() = failedRestart(input = true)
+
+    @Test fun restartRetiresEveryOwnerWhenCancellationAndCleanupFail() {
+        failedRestart(input = false, cancellation = true)
+        failedRestart(input = true, cancellation = true)
+    }
+
+    @Test fun restartPreservesTheFirstErrorWhenSecretViewCleanupAlsoFails() {
+        failedRestart(input = false, cancellation = true, clearing = true)
+        failedRestart(input = true, clearing = true)
+    }
+
+    @Test fun successfulRestartClearsOldSetupAndReturnsToEmptyWalletChoices() = withFixture { fixture ->
+        val welcome = CountDownLatch(1)
+        try {
+            onMain {
+                fixture.handler.enqueue = true
+                assertTrue(fixture.start())
+                val (words, view) = shownSecret(fixture, input = false)
+                try {
+                    fixture.observeEmptyRestart(welcome)
+                    fixture.restart()
+                    assertTrue(words.all { it == '\u0000' })
+                    assertEquals(View.INVISIBLE, view.visibility)
+                    assertTrue(fixture.worker.isClosed)
+                    assertNotNull(field("session").get(fixture.controller))
+                    assertNotSame(fixture.session, field("session").get(fixture.controller))
+                    assertNull(field("setupTimeout").get(fixture.controller))
+                    assertFalse(fixture.handler.hasCallbacks(checkNotNull(fixture.handler.timeout)))
+                } finally { words.fill('\u0000') }
+            }
+            assertTrue("Empty disposable storage did not return to wallet choices", welcome.await(5, TimeUnit.SECONDS))
+            onMain {
+                assertFalse(field("busy").getBoolean(fixture.controller))
+                assertNotNull(fixture.host.findViewById<View>(R.id.restore_wallet))
+            }
+            fixture.finishWorker()
+        } finally {
+            onMain { fixture.destroy(); fixture.assertRetired() }
+        }
     }
 
     @Test fun exactExpiryClosesTheWorkerWithoutPosting() = withFixture { fixture ->

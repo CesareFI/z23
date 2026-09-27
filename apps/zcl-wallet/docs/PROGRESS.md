@@ -7592,3 +7592,52 @@ The normal push of camera documentation commit `7906e3f04` was refused by the
 installed hook with `remote-ref-not-main`; the development remote was verified
 unchanged at `b4d5d6a8f3da81a0078e943a397a1077d9d91f50`. Publication remains a
 separate policy block; continue the permitted wallet UI/lifecycle audit.
+
+## Restart retires the old setup despite cleanup errors — 2026-09-28
+
+The setup cancellation/restart audit reproduced a second controller cleanup
+gap on API30: an injected session-close exception left marker recovery words
+owned by the visible view. The baseline assertion was `Restart left the
+displayed phrase owned by the view`. Restart now detaches the old session and
+blocks further work before independently attempting authentication cancellation,
+timer removal, worker closure and secret-view clearing. It propagates the first
+failure without allocating suppressed-exception storage and creates a new
+session only after successful cleanup. Views clear before replacement allocation;
+active entropy still belongs to the retiring worker until safe termination.
+
+Five regressions cover backup/recovery input, ordinary/fatal cleanup errors,
+authentication cancellation plus worker cleanup failure, secondary view cleanup
+failure and a successful return to wallet choices. They retain actual queued
+timeouts and a held worker, check eventual entropy erasure, and use public marker
+data without authentication, key derivation or wallet records. The successful
+case reads a separate disposable empty storage path. Its initial fixture
+incorrectly expected reads to create no directory; inspection confirmed the
+existing native contract creates an empty `.lock`. The corrected fixture checks
+and removes exactly that expected file, preserving the failure cases' untouched
+storage assertion. The initial failure logs are retained, not suppressed.
+
+All 65 focused authentication/executor/secret-view/lifecycle tests pass with
+CheckJNI and no skips on API30/36 in 17.651/44.286 seconds. The full Gradle
+build/test/lint/isolation/alignment run passed in 44 seconds; 52 app JVM tests
+reran, while 97 unchanged core tests remained up-to-date. Final fixture
+build/lint/isolation passed in 32 seconds. Four related native record/JNI/custody
+groups passed both sanitizer profiles in 0.51/0.96 seconds. The unchanged record
+fuzzer completed 872398 runs in 31 seconds with 1024-byte input, five-second
+case and 512 MiB RSS limits (189 MiB observed). Complexity caps remain 10 for
+production C and 15 for tests; no C code changed.
+
+The unsigned release remains 641659 bytes, SHA256
+`fb001494f191883cff89e672458e711c6ffae7eb07f90881e00e35084fb18511`.
+Both native libraries compare byte-for-byte with the previous release. Compiled
+controller bytecode places secret clearing before replacement-session allocation.
+Source-only tree `d15c347eaddaf7a25baebed50345791c2b6be6fb`, containing final
+implementation/tests and preceding progress notes, reproduces the complete APK
+exactly with 57 uncached release tasks in 48 seconds. No memory or latency
+improvement is claimed. All owned emulators exited successfully; the five
+unowned devices and pre-existing 31 adb zombies were unchanged.
+
+Evidence is retained in `.cache/restart-lifecycle-20260928/`. Other sessions'
+unfinished native parser/fuzz/review-race work remains untouched. Publication
+of the preceding seven local commits remains blocked by the installed
+`remote-ref-not-main` policy, not a quota. Continue with permitted UI/lifecycle
+and release quality work without enabling TLS or weakening custody checks.
