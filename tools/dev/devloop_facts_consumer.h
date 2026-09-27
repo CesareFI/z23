@@ -68,6 +68,9 @@ bool fxc_tu_eval(struct fxc *c, const char *path);
 bool fxc_name_collisions(struct fxc *c);
 
 /* obligations.c */
+/* The first refusal of the narrowed walk wins: reason, "what: path". */
+void fxc_refuse(struct fxc *c, const char *reason, const char *what,
+                const char *path);
 /* Add e of x as a seed; an external seed whose declaring header has a
  * reader without a manifest here sets seed_reason "indirect-unknown". */
 bool fxc_seed_add(struct fxc *c, const struct fxi *x, size_t e);

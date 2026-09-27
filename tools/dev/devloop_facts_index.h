@@ -99,4 +99,33 @@ void fxi_roots(const struct fxi *x, struct fxi_roots *out);
  * fxi_count() slots. */
 bool fxi_taint(const struct fxi *x, const uint8_t *flags, size_t *via);
 
+/* ---- code generation (devloop_facts_codegen.c) ---------------------------- */
+
+/* e is a function some file of this TU defines (a FUNCTIONS record). */
+bool fxi_defined_function(const struct fxi *x, size_t e);
+/* How far a compile of this TU may carry a change of some of its
+ * functions into the bytes of others, by the optimizer its IDENTITY names. */
+enum fxi_codegen {
+    /* -O2 and above, LTO, whole-program, IPA clone, merge or profile-
+     * feedback flags: the facts cannot bound it. */
+    FXI_CODEGEN_UNBOUNDED = 0,
+    /* No -O flag or -O0: only always_inline bodies move into callers. */
+    FXI_CODEGEN_CALLERS,
+    /* -O1, -O and -Og: inlining and callee summaries flow into callers;
+     * coldness, constant and dead-argument propagation flow into internal
+     * callees; read-only and addressability facts of a static variable
+     * flow into every function naming it. */
+    FXI_CODEGEN_COMPONENT,
+};
+/* The model for x; *token names the flag that makes it unbounded. */
+enum fxi_codegen fxi_codegen_model(const struct fxi *x, const char **token);
+/* Same, over raw identity bytes (the test seam). */
+enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
+                                      const char **token);
+/* Grow the set in mark (fxi_count() slots; nonzero: a function whose code
+ * may change) to every defined function or static variable of the TU the
+ * compile may re-emit under `model`. False only for memory. */
+bool fxi_codegen_closure(const struct fxi *x, enum fxi_codegen model,
+                         uint8_t *mark);
+
 #endif /* ZCL_TOOLS_DEV_DEVLOOP_FACTS_INDEX_H */

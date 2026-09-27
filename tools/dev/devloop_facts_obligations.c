@@ -10,8 +10,8 @@
 
 #define FXC_READERS_MAX 4096
 
-static void fxc_refuse(struct fxc *c, const char *reason, const char *what,
-                       const char *path)
+void fxc_refuse(struct fxc *c, const char *reason, const char *what,
+                const char *path)
 {
     if (c->seed_reason != NULL)
         return;

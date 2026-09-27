@@ -2,6 +2,8 @@
  * purpose: Load one semantic manifest into the facts index: attach every record to its canonical id, digest each id's records, and record the TU's files and section digests. */
 #include "devloop_facts_index_priv.h"
 
+#include "devloop.h"
+
 #include "base/safe_alloc.h"
 #include "base/serialize_le.h"
 #include "sha3/sha3.h"
@@ -270,6 +272,25 @@ static bool fxi_decl_ent(struct fxi *x, char prefix, const char *path,
                        (int)name_len, name);
 }
 
+/* The sensor names a tag with linkage by its bare name (s:N, as REFS and
+ * SYMBOLS spell it), while its DECLS, LAYOUTS and ENUMS records live on
+ * s:<path>:N: the bare id reaches them, so a function that names the tag
+ * only in its body still reaches a change of its layout. */
+static bool fxi_tag_alias(struct fxi *x, char prefix, const char *name,
+                          size_t name_len, uint64_t linkage, uint32_t e)
+{
+    uint32_t alias;
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_TAG_ALIAS)
+        return true;
+#endif
+    if ((prefix != 's' && prefix != 'u' && prefix != 'e') ||
+        (linkage != 3 && linkage != 4))
+        return true;
+    return fxi_ent_fmt(x, &alias, "%c:%.*s", prefix, (int)name_len, name) &&
+           fxi_edge_add(x, alias, e, 0);
+}
+
 static bool fxi_on_decl(struct fxi_load *L, const struct vcs_semantic_fields_v1 *f)
 {
     uint32_t e;
@@ -281,7 +302,8 @@ static bool fxi_on_decl(struct fxi_load *L, const struct vcs_semantic_fields_v1 
         return false;
     return fxi_decl_ent(L->x, prefix, f->text[0], f->text_len[0], f->text[2],
                         f->text_len[2], f->num[0], &e) &&
-           fxi_row(L, e, fxi_main_of(L->x, f->text[0], f->text_len[0]));
+           fxi_row(L, e, fxi_main_of(L->x, f->text[0], f->text_len[0])) &&
+           fxi_tag_alias(L->x, prefix, f->text[2], f->text_len[2], f->num[0], e);
 }
 
 static bool fxi_on_layout(struct fxi_load *L, const struct vcs_semantic_fields_v1 *f)
@@ -323,6 +345,7 @@ static bool fxi_on_function(struct fxi_load *L,
         !fxi_row(L, e, main))
         return false;
     x->ents[e].main_fn |= main == 1;
+    x->ents[e].defined_fn = true;
     /* A header definition with external linkage is emitted by every TU
      * that reads it. */
     x->ents[e].root |= main == 0 && (f->num[0] == 3 || f->num[0] == 4);
@@ -423,6 +446,13 @@ static bool fxi_on_record(void *ctx, enum vcs_semantic_section_v1 section,
     L->raw = raw;
     L->raw_len = raw_len;
     L->section = section;
+    if (section == VCS_SEMANTIC_SECTION_V1_IDENTITY) {
+        L->x->identity = raw;
+        L->x->identity_len = raw_len;
+        L->x->target = f->ntext > 2 ? f->text[2] : NULL;
+        L->x->target_len = f->ntext > 2 ? f->text_len[2] : 0;
+        return true;
+    }
     if (section == VCS_SEMANTIC_SECTION_V1_FILES)
         return fxi_on_file(L->x, f);
     if (section == VCS_SEMANTIC_SECTION_V1_FACTS)

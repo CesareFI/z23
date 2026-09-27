@@ -15,6 +15,7 @@ struct fxi_ent {
     bool other_row;   /* a record of it lies outside the main file */
     bool root;
     bool main_fn;     /* the main file defines it as a function */
+    bool defined_fn;  /* a FUNCTIONS record in any file defines it */
     bool has_span;
     const char *span_path; /* into the manifest; not NUL-terminated */
     size_t span_path_len;
@@ -58,6 +59,10 @@ struct fxi {
     const uint8_t *main_digest;
     bool complete;
     uint8_t revision;
+    const uint8_t *identity; /* the IDENTITY record body, into m */
+    size_t identity_len;
+    const char *target;      /* its target text, into m; not NUL-terminated */
+    size_t target_len;
     uint8_t producer[32];
     uint8_t section_digest[VCS_SEMANTIC_SECTION_V1_COUNT][32];
     struct fxi_file *files;

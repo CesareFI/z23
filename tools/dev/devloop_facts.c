@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: Facts-narrowed change closure: decide from semantic manifests which functions changed, then walk callers from those alone. */
 #include "devloop_facts.h"
+#include "devloop_facts_index.h"
 
 #include "base/serialize_le.h"
 #include "sha3/sha3.h"
@@ -35,7 +36,11 @@
  *   9. The after manifest is the compile of the tree under root: every other
  *      file it read has the same bytes and every include slot it saw absent
  *      is still absent (devloop_facts_bind.c).
- * The seeds are the functions whose FUNCTIONS record changed. */
+ *  10. The compile identity names an optimizer whose re-emitted code the
+ *      facts can bound (devloop_facts_codegen.c; else
+ *      "inline-closure-unknown").
+ * The seeds are the functions whose FUNCTIONS record changed, grown on both
+ * sides to every main-file function the compile may re-emit with them. */
 
 #define FX_ID_MAX (ZCL_DEVLOOP_PATH_MAX + ZCL_DEVLOOP_FACTS_NAME_MAX + 8)
 
@@ -488,6 +493,94 @@ static bool fx_check_tu(struct fx_ctx *c)
            fx_compare(c, &side[0], &side[1]) && fx_bind(c);
 }
 
+/* ---- the functions the compile may re-emit -------------------------------- */
+
+static bool fx_has_seed(const struct fx_ctx *c, const char *id)
+{
+    for (size_t k = c->first_seed; k < c->v->seeds_len; k++)
+        if (strcmp(c->ids[k], id) == 0)
+            return true;
+    return false;
+}
+
+static bool fx_seed_push(struct fx_ctx *c, const char *name, const char *id)
+{
+    struct zcl_devloop_facts_verdict *v = c->v;
+    size_t k = v->seeds_len;
+    if (k >= ZCL_DEVLOOP_FACTS_MAX_SEEDS ||
+        strlen(name) >= ZCL_DEVLOOP_FACTS_NAME_MAX ||
+        strlen(id) >= sizeof(c->ids[k]))
+        return fx_fail(c, "too-many-seeds",
+                       "%s: the code-generation closure", c->tu->source);
+    memcpy(v->seeds[k], name, strlen(name) + 1);
+    memcpy(c->ids[k], id, strlen(id) + 1);
+    v->seed_ids[k][0] = '\0';
+    if (strlen(id) < sizeof(v->seed_ids[k]))
+        memcpy(v->seed_ids[k], id, strlen(id) + 1);
+    v->seeds_len++;
+    return true;
+}
+
+/* Every main-file function of x in mark joins the seeds; a header
+ * definition every reader emits cannot be walked from this TU alone. */
+static bool fx_codegen_seeds(struct fx_ctx *c, const struct fxi *x,
+                             const uint8_t *mark)
+{
+    for (size_t e = 0; e < fxi_count(x); e++) {
+        if (!mark[e] || !fxi_defined_function(x, e) ||
+            fx_has_seed(c, fxi_id(x, e)))
+            continue;
+        if (!fxi_main_function(x, e) && fxi_root(x, e))
+            return fx_fail(c, "inline-closure-unknown",
+                           "%s: the closure reaches %s, which every reader "
+                           "emits", c->tu->source, fxi_id(x, e));
+        if (fxi_main_function(x, e) &&
+            !fx_seed_push(c, fxi_bare(x, e), fxi_id(x, e)))
+            return false;
+    }
+    return true;
+}
+
+/* One side's closure from the changed functions [first_seed, changed). */
+static bool fx_codegen_side(struct fx_ctx *c, const uint8_t *m, size_t n,
+                            size_t changed)
+{
+    const char *why = "", *token;
+    struct fxi *x = fxi_open(m, n, &why);
+    uint8_t *mark = NULL;
+    enum fxi_codegen model;
+    bool ok;
+    if (x == NULL)
+        return fx_fail(c, "invalid-manifest", "%s: %s", c->tu->source, why);
+    model = fxi_codegen_model(x, &token);
+    ok = model != FXI_CODEGEN_UNBOUNDED ||
+         fx_fail(c, "inline-closure-unknown",
+                 "%s: the compile identity names %s", c->tu->source, token);
+    if (ok)
+        mark = zcl_calloc(fxi_count(x) + 1, 1, "facts.codegen");
+    ok = ok && mark != NULL;
+    for (size_t k = c->first_seed; ok && k < changed; k++) {
+        size_t e;
+        if (fxi_find(x, c->ids[k], &e))
+            mark[e] = 1;
+    }
+    ok = ok && fxi_codegen_closure(x, model, mark) &&
+         fx_codegen_seeds(c, x, mark);
+    free(mark);
+    fxi_free(x);
+    return ok;
+}
+
+/* The seeds so far are the functions whose source changed; the compile may
+ * re-emit more (their callers inline them, their internal callees take
+ * their constants). Both sides' closures join the seeds. */
+static bool fx_codegen(struct fx_ctx *c)
+{
+    size_t changed = c->v->seeds_len;
+    return fx_codegen_side(c, c->tu->before, c->tu->before_len, changed) &&
+           fx_codegen_side(c, c->tu->after, c->tu->after_len, changed);
+}
+
 static bool fx_ends_with(const char *s, const char *suffix)
 {
     size_t n = strlen(s), m = strlen(suffix);
@@ -529,7 +622,7 @@ static bool fx_decide(const char *root, const char *const *files, size_t n,
         else if (c->tu == NULL)
             ok = fx_fail(c, "no-manifest", "%s", files[k]);
         else
-            ok = fx_check_tu(c);
+            ok = fx_check_tu(c) && fx_codegen(c);
     }
     free(c->ranges);
     free(c);

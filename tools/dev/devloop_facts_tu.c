@@ -410,21 +410,40 @@ static size_t fxc_first_root(const struct fxi *x, const uint8_t *flags,
     return hit;
 }
 
-/* Seeds: every main-file function root that reaches a semantic change;
- * any other root that does (a file-scope site, a header definition) seeds
- * the whole file instead. */
+/* Seeds: every function the compile may re-emit. The functions the TU
+ * defines that reach a semantic change, grown by fxi_codegen_closure under
+ * the optimizer the identity names (unbounded: "inline-closure-unknown");
+ * main-file functions among them seed the walk. Any other root that
+ * reaches a change, or a header definition every reader emits among them,
+ * seeds the whole file instead. */
 static bool fxc_seeds(struct fxc *c, const struct fxi *x, const size_t *via,
                       struct zcl_devloop_facts_tu_verdict *t)
 {
-    bool ok = true;
+    uint8_t *mark = zcl_calloc(fxi_count(x) + 1, 1, "facts_tu.codegen");
+    const char *token;
+    enum fxi_codegen model = fxi_codegen_model(x, &token);
+    bool ok = mark != NULL;
     for (size_t e = 0; ok && e < fxi_count(x); e++) {
-        if (!fxi_root(x, e) || via[e] == SIZE_MAX)
+        if (via[e] == SIZE_MAX)
+            continue;
+        if (fxi_defined_function(x, e))
+            mark[e] = 1;
+        else if (fxi_root(x, e))
+            t->broadened = true;
+    }
+    if (ok && model == FXI_CODEGEN_UNBOUNDED)
+        fxc_refuse(c, "inline-closure-unknown",
+                   "the compile identity names", token);
+    ok = ok && fxi_codegen_closure(x, model, mark);
+    for (size_t e = 0; ok && e < fxi_count(x); e++) {
+        if (!mark[e] || !fxi_defined_function(x, e))
             continue;
         if (fxi_main_function(x, e))
             ok = fxc_seed_add(c, x, e);
-        else
+        else if (fxi_root(x, e))
             t->broadened = true;
     }
+    free(mark);
     return ok;
 }
 
