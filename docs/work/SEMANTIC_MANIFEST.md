@@ -1227,6 +1227,53 @@ object. Which TUs rebuild is decided by object bytes, not by source: a
 source-level seed can leave its object unchanged, and the witness below
 counts a TU as changed only when its object bytes differ.
 
+### Differential fuzzing: `semantic_facts_fuzz`
+
+`semantic_facts_fuzz` holds the whole chain (sensor, facts, `.c` path,
+consumer, closure) to a cold compiler. A case is a small C23 project of
+three to eight TUs and one to four headers before and after one edit:
+
+- **generated** (`tests/harness/src/semantic_fuzz_gen.c`,
+  `semantic_fuzz_templ.c`): 42 function templates (inline, macro,
+  `_Generic`, layout, enum, weak, constructor, `__LINE__`, `__COUNTER__`,
+  `__has_include`, alias, cleanup, header-static, `constexpr` and more)
+  under one of seventeen mutation kinds, the same bytes for the same seed
+  and profile. The `no-ctr-line` profile drops `__COUNTER__` and
+  `__LINE__`, whose users make most plans `position-dependent`, so its
+  plans narrow; `gcc-deps` writes the depfiles with gcc, which omits
+  `__has_include` probes;
+- **fixed** (`tests/harness/src/semantic_fuzz_repro.c`): every minimized
+  reproducer a run found (F1 to F8) and four shapes that must keep
+  passing. They run on every run.
+
+Each TU is compiled with the clang of the LLVM whose libclang the sensor
+links (the sensor's `DT_RUNPATH`), `-std=c23 -O1 -ffunction-sections
+-fdata-sections` plus the project's flags, and sensed with the same argv,
+on both sides. The change set is planned in process exactly as
+`dev.change.plan` with `"facts"` plans it, and two oracles judge the plan:
+
+1. every TU the plan leaves unaffected, or out of its universe, has a
+   byte-identical object;
+2. in a changed object, every function whose bytes or relocations changed
+   (read from the ELF symbol, section and RELA tables; a change only in a
+   relocation addend does not count) is a seed of the narrowed plan, or is
+   covered by a fallback, or by a broadened TU after a header change; and
+   every other symbol at a seed's address (an alias) is a seed too.
+
+A false negative prints the seed, profile, mutation, TU and function and
+fails the group. The default run is a fixed list of 40 (seed, profile,
+kind) cases, and must yield narrowed verdicts that seed a changed
+function, so the group cannot pass on fallbacks alone.
+`ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]` runs a long range
+instead. A reproducer marked known-RED names the fix it waits for and
+still fails the group: at 64370952d5 those are F7 (a `cleanup()` handler
+inlined into a function that is not seeded) and both F8 shapes (a `.c`
+that `#include`s another `.c`: an edit to the included file does not seed
+the includer's functions). Cases run four at once, each in its own
+process with two compiles or sensor runs at once; the default run of 55
+cases takes about 17 s and yields 46 narrowed verdicts and 26 seeded
+changed functions.
+
 ### Measured: the consumer on engine/modules/hotswap (2026-09-27)
 
 A scratch witness (not shipped) extracted the 66 TUs of
