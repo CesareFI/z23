@@ -137,8 +137,21 @@ static bool att_open(struct node_db *ndb, char *dir, size_t dir_cap,
 }
 
 #if !defined(_WIN32)
+extern void build_fabric_attach_test_before_donor_scan(void (*hook)(void *),
+                                                       void *context);
 extern void build_fabric_attach_test_after_scan(void (*hook)(void *),
                                                 void *context);
+
+struct att_remove_before_scan {
+    char path[600];
+    bool removed;
+};
+
+static void att_remove_donor_input_before_scan(void *context)
+{
+    struct att_remove_before_scan *race = context;
+    race->removed = remove(race->path) == 0;
+}
 
 struct att_revoke_after_scan {
     const char *db_path;
@@ -778,6 +791,30 @@ static int test_bf_attach_avoids_second_compile(void)
                                 input_root, "dev-x86-64-v3", &job_b,
                                 &action_b));
         ASSERT(strcmp(action_b.action_id, action_a.action_id) != 0);
+#if !defined(_WIN32)
+        /* The requester loaded its input, then its referenced CAS leaf was
+         * interrupted before donor reconstruction. A partial donor scan may
+         * not authorize a hit or report a clean miss. */
+        struct att_remove_before_scan missing = {0};
+        char input_hex[65];
+        zcl_hex_encode(input_root, 32, input_hex);
+        ASSERT(att_object_path(dir, input_hex, missing.path,
+                               sizeof(missing.path)));
+        build_fabric_attach_test_before_donor_scan(
+            att_remove_donor_input_before_scan, &missing);
+        struct db_build_receipt interrupted_receipt;
+        struct build_fabric_attach_report interrupted_report;
+        struct zcl_result interrupted = build_fabric_attach(
+            &ndb, dir, NULL, &job_b, &action_b, secret, pubkey,
+            &interrupted_receipt, &interrupted_report);
+        build_fabric_attach_test_before_donor_scan(NULL, NULL);
+        ASSERT(missing.removed);
+        ASSERT(!interrupted.ok);
+        ASSERT_STR_EQ(interrupted_report.refusal,
+                      "attach-refused-history-incomplete");
+        ASSERT(vcs_object_put_addressed(dir, input_root, att_unit,
+                                        sizeof(att_unit) - 1u));
+#endif
         int entries_before = att_build_work_entries(dir);
         ASSERT(entries_before >= 0);
 

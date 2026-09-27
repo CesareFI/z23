@@ -1045,16 +1045,18 @@ static bool bfat_key_record_checked(struct bfat_attach_ctx *c,
  * bytes to the requester's key. */
 static bool bfat_donor_key_matches(const struct bfat_attach_ctx *c,
                                    const struct db_build_job *job,
-                                   const struct db_build_action *candidate)
+                                   const struct db_build_action *candidate,
+                                   bool *incomplete)
 {
     if (strcmp(candidate->kind, VCS_BUILD_ACTION_KIND_V1) != 0 ||
         strcmp(candidate->state, "ACCEPTED") != 0 ||
-        !candidate->output_root_sha3[0] ||
         strcmp(candidate->action_id, c->action.action_id) == 0 ||
         !bfat_donor_fields_match(candidate, &c->action))
         return false;
     if (strcmp(job->toolchain_sha3, c->capsule_hex) != 0)
         return false;
+    *incomplete = !candidate->output_root_sha3[0];
+    if (*incomplete) return false;
     uint8_t *input = NULL;
     size_t input_len = 0;
     uint8_t input_root[32];
@@ -1062,8 +1064,8 @@ static bool bfat_donor_key_matches(const struct bfat_attach_ctx *c,
     struct zcl_result loaded = bfat_load_input(
         c->workspace, job, candidate, c->now, &input, &input_len, input_root,
         refusal, sizeof(refusal));
-    if (!loaded.ok)
-        return false;
+    *incomplete = !loaded.ok;
+    if (*incomplete) return false;
     struct bfat_key_fields fields;
     struct zcl_result keyed = bfat_fields_for_action(
         candidate, c->toolchain_root, &c->capsule,
@@ -1071,13 +1073,13 @@ static bool bfat_donor_key_matches(const struct bfat_attach_ctx *c,
         c->assembler_bytes_root, c->runtime_root, c->verifier_root,
         input_root, &fields, NULL);
     free(input);
-    if (!keyed.ok)
-        return false;
+    *incomplete = !keyed.ok;
+    if (*incomplete) return false;
     uint8_t wire[BFAT_RECORD_CAP], key[32];
     size_t wire_len = 0;
-    if (!bfat_record_serialize(&fields, wire, sizeof(wire), &wire_len))
-        return false; /* raw-return-ok:unserializable donor fields cannot key
-                         a match; the candidate is skipped, not errored */
+    *incomplete = !bfat_record_serialize(&fields, wire, sizeof(wire),
+                                         &wire_len);
+    if (*incomplete) return false;
     bfat_record_key(wire, wire_len, key);
     return memcmp(key, c->key, 32) == 0;
 }
@@ -1092,7 +1094,14 @@ static void bfat_scan_one_donor(struct bfat_attach_ctx *c,
                                 const struct db_build_action *action,
                                 struct bfat_scan_state *scan)
 {
-    if (!bfat_donor_key_matches(c, job, action)) return;
+    bool incomplete = false;
+    if (!bfat_donor_key_matches(c, job, action, &incomplete)) {
+        if (incomplete)
+            LOG_ERROR("build_fabric", "attach donor input incomplete: %s",
+                      action->action_id);
+        scan->incomplete = scan->incomplete || incomplete;
+        return;
+    }
     if (strcmp(job->profile, c->job.profile) != 0) {
         scan->cross_profile = true;
         return;
@@ -1145,11 +1154,18 @@ static bool bfat_scan_result(struct bfat_attach_ctx *c,
     return true;
 }
 
-/* Donor scan: durable ACCEPTED compile actions whose executor key re-derives
- * to the requester's key. Returns true when the pipeline must stop: *refusal
- * NULL is a clean MISS (no qualified donor), non-NULL is the refusal token. */
+/* Scan accepted compile actions. Missing or ambiguous history refuses;
+ * only a complete empty scan is a clean MISS. */
+#ifdef ZCL_TESTING
+static void (*bfat_before_donor_scan_hook)(void *);
+static void *bfat_before_donor_scan_context;
+#endif
 static bool bfat_donor_scan(struct bfat_attach_ctx *c, const char **refusal)
 {
+#ifdef ZCL_TESTING
+    if (bfat_before_donor_scan_hook)
+        bfat_before_donor_scan_hook(bfat_before_donor_scan_context);
+#endif
     struct db_build_job *jobs = zcl_malloc((BFAT_SCAN_CAP + 1u) * sizeof(*jobs),
                                            "build.attach.jobs");
     struct db_build_action *actions = zcl_malloc(
@@ -1180,13 +1196,13 @@ static bool bfat_donor_scan(struct bfat_attach_ctx *c, const char **refusal)
 }
 
 #ifdef ZCL_TESTING
+void build_fabric_attach_test_before_donor_scan(void (*hook)(void *),
+                                                void *context)
+{ bfat_before_donor_scan_hook = hook; bfat_before_donor_scan_context = context; }
 static void (*bfat_after_scan_hook)(void *);
 static void *bfat_after_scan_context;
 void build_fabric_attach_test_after_scan(void (*hook)(void *), void *context)
-{
-    bfat_after_scan_hook = hook;
-    bfat_after_scan_context = context;
-}
+{ bfat_after_scan_hook = hook; bfat_after_scan_context = context; }
 #endif
 
 /* Fetch the donor output bytes WITHOUT compiling and prove them against the
