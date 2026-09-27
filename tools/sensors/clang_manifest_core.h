@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "vcs/semantic_manifest.h"
 #include "vcs/semantic_namespace.h"
@@ -148,6 +149,8 @@ char *cm_strndup(const char *s, size_t n);
 bool cm_add(struct cm_core *c, enum vcs_semantic_section_v1 section,
             struct vcs_semantic_record_v1 *rec);
 bool cm_read_file(const char *path, uint8_t **out, size_t *len);
+/* SHA3-256 of a stream's remaining bytes; closes fp (false for NULL). */
+bool cm_stream_sha3(FILE *fp, uint8_t out[32]);
 void cm_hex(const uint8_t d[32], char out[65]);
 
 /* ---- paths (clang_manifest_paths.c) -------------------------------------- */
@@ -236,8 +239,41 @@ bool cm_emit_probe(struct cm_core *c, const struct cm_file *includer,
                    const char *spelled, uint8_t form, uint8_t kind, bool claim,
                    uint32_t hit_slot, const uint32_t *present, size_t npresent);
 
-/* Finish, write `out`, print the root. */
-bool cm_finish_write(struct cm_core *c, const char *out, bool print_root);
+/* Finish the builder into *bytes (caller frees); false, with c->why set,
+ * when the builder refuses. */
+bool cm_finish_bytes(struct cm_core *c, uint8_t **bytes, size_t *len);
+/* Write bytes to path through a same-directory temporary and a rename. */
+bool cm_write_file(const char *path, const uint8_t *b, size_t n);
+
+/* ---- warm binding (clang_manifest_warm.c) -------------------------------- */
+
+/* Does the tree under root still hold what manifest m describes, outside its
+ * main file? Every other file it read (repo or system) still has its SHA3,
+ * every ignored search dir still does not exist, through
+ * vcs_semantic_absent_v1_each, the enumeration dev.change.plan binds an after
+ * manifest with. A lookup without a negative claim (include_next, a computed
+ * or an absolute include) cannot be re-checked, so it fails too. The absent
+ * slots of every lookup are checked after the reparse, by
+ * cm_warm_lookups_agree. On failure why names the first input that moved. */
+bool cm_warm_bound(const char *root, const uint8_t *m, size_t n, char *why,
+                   size_t why_len);
+/* Do two manifests agree on every non-main file both read? (A warm reparse
+ * reuses a preamble that clang validated by size and time only; its FILES
+ * must show the exact bytes the previous accepted manifest did.) */
+bool cm_warm_files_agree(const uint8_t *prev, size_t prev_len,
+                         const uint8_t *next, size_t next_len, char *why,
+                         size_t why_len);
+/* After a warm reparse: the warm manifest has the accepted one's IDENTITY
+ * (the reparse derived the same search list) and every directive both
+ * resolved has an identical LOOKUPS record. The warm extraction probes
+ * every slot below each hit by stat, fresh, so a file that now sits in a
+ * slot the accepted parse saw absent, a present slot that went away, or a
+ * moved hit changes that record. */
+bool cm_warm_lookups_agree(const uint8_t *prev, size_t prev_len,
+                           const uint8_t *next, size_t next_len, char *why,
+                           size_t why_len);
+/* The FILES digest m records for its main file; false when there is none. */
+bool cm_warm_main_digest(const uint8_t *m, size_t n, uint8_t out[32]);
 
 #ifdef __cplusplus
 }

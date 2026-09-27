@@ -342,6 +342,8 @@ Z23_FLAG("ZCL_CC_JOBS", "env_build", "ZCL_HOST_JOBS/2", "-",
           "undocumented; first use tools/lint/check_clang_portability.sh:auto")
 Z23_FLAG("ZCL_CHECKOUT_LOCK_HELD", "env_build", "0", "-",
           "undocumented; first use tools/dev/checkout-lock.sh:auto")
+Z23_FLAG("ZCL_CLANG_MANIFEST_INJECT_WARM_MISMATCH", "env_runtime", "0", "-",
+          "test fault: 1 makes the semantic sensor session corrupt every warm manifest before its cold-oracle comparison, so the semantic_sensor group proves a mismatch disables warm reuse and writes only the cold bytes; first use tools/sensors/clang_manifest_session.c")
 Z23_FLAG("ZCL_CLANG_PORTABILITY_COVERAGE", "env_build", "1", "-",
           "undocumented; first use tools/lint/check_clang_portability.sh:auto")
 Z23_FLAG("ZCL_CLANG_PORTABILITY_COVERAGE_ALLOWANCE", "env_build", "0", "-",

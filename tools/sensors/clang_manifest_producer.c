@@ -79,26 +79,6 @@ static const char *cm_base_name(const char *path)
     return slash != NULL ? slash + 1 : path;
 }
 
-/* SHA3-256 of an open image's bytes; closes fp. */
-#if !defined(__APPLE__)
-static bool cm_file_sha3(FILE *fp, uint8_t out[32])
-{
-    struct sha3_256_ctx h;
-    unsigned char buf[65536];
-    size_t n;
-    bool ok;
-    if (fp == NULL)
-        return false;
-    sha3_256_init(&h);
-    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0)
-        sha3_256_write(&h, buf, n);
-    ok = ferror(fp) == 0;
-    (void)fclose(fp);
-    sha3_256_finalize(&h, out);
-    return ok;
-}
-#endif
-
 static int cm_image_cmp(const void *a, const void *b)
 {
     const struct cm_image *x = a, *y = b;
@@ -223,7 +203,7 @@ static int cm_image_cb(struct dl_phdr_info *info, size_t size, void *ctx)
         im->self_seen = true;
         m->tag = 'S';
         m->id_len = 32;
-        if (!cm_file_sha3(main_program ? os_proc_open_self_exe()
+        if (!cm_stream_sha3(main_program ? os_proc_open_self_exe()
                                        : fopen(name, "rb"),
                           m->id))
             return cm_image_fail(im);
@@ -452,7 +432,6 @@ static void cm_walk_images(struct cm_images *im)
  * stays zero. */
 static void cm_walk_images(struct cm_images *im)
 {
-    (void)cm_file_sha3;
     (void)cm_base_name;
     im->failed = true;
 }

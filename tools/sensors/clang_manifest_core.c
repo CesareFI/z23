@@ -10,6 +10,7 @@
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
+#include "sha3/sha3.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -238,8 +239,7 @@ bool cm_emit_identity(struct cm_core *c, const struct cm_identity *id)
 
 /* ---- finish -------------------------------------------------------------------- */
 
-static bool cm_write(struct cm_core *c, const char *path, const uint8_t *b,
-                     size_t n)
+bool cm_write_file(const char *path, const uint8_t *b, size_t n)
 {
     char tmp[PATH_MAX + 32];
     FILE *fp;
@@ -252,25 +252,37 @@ static bool cm_write(struct cm_core *c, const char *path, const uint8_t *b,
     ok = ok && rename(tmp, path) == 0;
     if (!ok)
         (void)unlink(tmp);
-    return ok || cm_fail(c, "cannot write %s", path);
+    return ok;
 }
 
-bool cm_finish_write(struct cm_core *c, const char *out, bool print_root)
+bool cm_finish_bytes(struct cm_core *c, uint8_t **bytes, size_t *len)
 {
-    uint8_t *bytes = NULL, root[32];
-    size_t len = 0;
-    char hex[65];
-    bool ok = !c->failed &&
-              vcs_semantic_builder_v1_finish(c->b, &bytes, &len, c->why,
-                                             sizeof(c->why));
-    if (!ok)
-        c->failed = true;
-    ok = ok && cm_write(c, out, bytes, len) &&
-         vcs_semantic_root_v1(bytes, len, root, c->why, sizeof(c->why));
-    if (ok && print_root) {
-        cm_hex(root, hex);
-        printf("root %s bytes %zu\n", hex, len);
-    }
-    free(bytes);
+    *bytes = NULL;
+    *len = 0;
+    if (c->failed)
+        return false;
+    if (vcs_semantic_builder_v1_finish(c->b, bytes, len, c->why,
+                                       sizeof(c->why)))
+        return true;
+    c->failed = true;
+    free(*bytes);
+    *bytes = NULL;
+    return false;
+}
+
+bool cm_stream_sha3(FILE *fp, uint8_t out[32])
+{
+    struct sha3_256_ctx h;
+    unsigned char buf[65536];
+    size_t n;
+    bool ok;
+    if (fp == NULL)
+        return false;
+    sha3_256_init(&h);
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0)
+        sha3_256_write(&h, buf, n);
+    ok = ferror(fp) == 0;
+    (void)fclose(fp);
+    sha3_256_finalize(&h, out);
     return ok;
 }

@@ -129,7 +129,8 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
     struct cm_probe p = {.form = form, .name = spelled};
     uint8_t evidence = VCS_SEMANTIC_MISS_V1_DERIVED_STAT;
     if (hit == NULL)
-        return cm_fail(c, "include of %s resolved to no read file", includer->path);
+        return cm_fail(c, "include of \"%s\" in %s resolved to no read file",
+                       spelled, includer->path);
     cm_dir_of(includer->opened, p.includer_dir);
     if (kind == VCS_SEMANTIC_LOOKUP_V1_INCLUDE_NEXT || computed ||
         spelled[0] == '/') {

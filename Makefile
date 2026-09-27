@@ -7280,6 +7280,7 @@ CLANG_MANIFEST_CORE_SRCS := tools/sensors/clang_manifest_core.c \
 	tools/sensors/clang_manifest_facts.c \
 	tools/sensors/clang_manifest_cond.c \
 	tools/sensors/clang_manifest_producer.c \
+	tools/sensors/clang_manifest_warm.c \
 	contexts/commons/modules/vcs/src/semantic_manifest.c \
 	contexts/commons/modules/vcs/src/semantic_manifest_build.c \
 	contexts/commons/modules/vcs/src/semantic_manifest_dump.c \
@@ -7295,6 +7296,7 @@ CLANG_MANIFEST_CORE_HDRS := tools/sensors/clang_manifest_core.h \
 	contexts/commons/modules/vcs/src/semantic_manifest_priv.h
 CLANG_MANIFEST_SRCS := tools/sensors/clang_manifest.c \
 	tools/sensors/clang_manifest_ast.c \
+	tools/sensors/clang_manifest_session.c \
 	$(CLANG_MANIFEST_CORE_SRCS)
 clang-manifest: $(BIN_DIR)/z23-clang-manifest
 # The type spelling call is chosen by a LINK probe, not by CINDEX_VERSION:
