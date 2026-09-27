@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Read the functions of an x86-64 ET_REL object for the semantic-facts fuzz oracle: each STT_FUNC symbol's bytes and relocations, digested with and without addends, and an executable's DT_RUNPATH. */
+ * purpose: Read the functions and data objects of an x86-64 ET_REL object for the semantic-facts fuzz oracle: each symbol's bytes and relocations, digested raw and with each relocation resolved to the content it addresses, and an executable's DT_RUNPATH. */
 #include "test/semantic_fuzz.h"
 
 #include "base/log_macros.h"
@@ -26,18 +26,34 @@
 #define SHT_RELA_ 4u
 #define SHT_DYNAMIC_ 6u
 #define SHT_NOBITS_ 8u
-#define STT_SECTION_ 3u
-#define STT_FUNC_ 2u
+#define SHF_EXECINSTR_ 0x4u
+#define SHF_MERGE_ 0x10u
+#define SHF_STRINGS_ 0x20u
 #define STB_LOCAL_ 0u
+#define STT_NOTYPE_ 0u
+#define STT_OBJECT_ 1u
+#define STT_FUNC_ 2u
+#define STT_SECTION_ 3u
 #define SHN_LORESERVE_ 0xff00u
 #define DT_RPATH_ 15u
 #define DT_RUNPATH_ 29u
 #define MAX_SHNUM 65536u
 #define MAX_IMAGE (256u * 1024u * 1024u)
+/* x86-64 PC-relative relocations whose 4-byte field ends the instruction
+ * in the code a compiler emits: the addressed byte is at addend + 4. */
+#define R_PC32_ 2u
+#define R_PLT32_ 4u
+#define R_GOTPCREL_ 9u
+#define R_GOTPCRELX_ 41u
+#define R_REX_GOTPCRELX_ 42u
+/* An addend beyond this addresses nothing a section of an image can hold. */
+#define MAX_ADDEND ((int64_t)1 << 40)
+/* A NOBITS section may claim any size; past this one nothing resolves. */
+#define MAX_SECTION ((uint64_t)1 << 48)
 
 struct shdr {
     uint32_t name, type, link, info;
-    uint64_t offset, size, entsize;
+    uint64_t flags, offset, size, entsize;
 };
 
 struct elf {
@@ -112,6 +128,7 @@ static bool read_sections(struct elf *e)
         struct shdr *d = &e->sh[k];
         d->name = zcl_read_u32_le(s);
         d->type = zcl_read_u32_le(s + 4);
+        d->flags = zcl_read_u64_le(s + 8);
         d->offset = zcl_read_u64_le(s + 24);
         d->size = zcl_read_u64_le(s + 32);
         d->link = zcl_read_u32_le(s + 40);
@@ -136,18 +153,24 @@ static bool open_elf(struct elf *e, const uint8_t *img, size_t n, bool rel,
     return read_header(e, rel) && read_sections(e);
 }
 
-/* Symbol k of the symbol table: its name, binding, type, section and value. */
+/* Symbol k of the symbol table: its name, binding, type, section, value
+ * and size. */
 struct sym {
     const char *name;
     uint32_t type, bind, shndx;
     uint64_t value, size;
 };
 
+static uint64_t nsyms(const struct elf *e)
+{
+    return e->sh[e->symtab].size / SYM_SIZE;
+}
+
 static bool sym_at(const struct elf *e, uint64_t k, struct sym *out)
 {
     const struct shdr *st = &e->sh[e->symtab];
     const uint8_t *s;
-    if (k >= st->size / SYM_SIZE)
+    if (k >= nsyms(e))
         return false;
     s = e->b + st->offset + k * SYM_SIZE;
     out->type = s[4] & 0xfu;
@@ -163,11 +186,184 @@ static bool sym_at(const struct elf *e, uint64_t k, struct sym *out)
     return out->name != NULL;
 }
 
-/* Digest the RELA entries of section `sec` that patch [lo, hi) into both
- * contexts: offset from lo, type and target name; the addend only into
- * `full`. */
+/* True when symbol s is defined in a section of this image. */
+static bool defined_here(const struct elf *e, const struct sym *s)
+{
+    return s->shndx != 0 && s->shndx < SHN_LORESERVE_ && s->shndx < e->shnum;
+}
+
+/* ---- the resolved relocation target ------------------------------------------ */
+
+static void put_u64(struct sha3_256_ctx *c, uint64_t v)
+{
+    uint8_t b[8];
+    zcl_write_u64_le(b, v);
+    sha3_256_write(c, b, sizeof(b));
+}
+
+static void put_tag(struct sha3_256_ctx *c, uint8_t tag)
+{
+    sha3_256_write(c, &tag, 1);
+}
+
+static void put_str(struct sha3_256_ctx *c, const char *s)
+{
+    sha3_256_write(c, (const unsigned char *)s, strlen(s) + 1);
+}
+
+/* [off, off+len) of section sec, length first; a NOBITS section holds
+ * zeros, so its length alone. */
+static void put_range(const struct elf *e, const struct shdr *sec, uint64_t off,
+                      uint64_t len, struct sha3_256_ctx *c)
+{
+    put_u64(c, len);
+    if (sec->type != SHT_NOBITS_)
+        sha3_256_write(c, e->b + sec->offset + off, (size_t)len);
+}
+
+static bool pc_relative(uint32_t type)
+{
+    return type == R_PC32_ || type == R_PLT32_ || type == R_GOTPCREL_ ||
+           type == R_GOTPCRELX_ || type == R_REX_GOTPCRELX_;
+}
+
+/* In section `shndx`: the function or object whose bytes hold `off`
+ * (held), and the first function, object or label past it (has_next). */
+struct near {
+    struct sym hold, next;
+    bool held, has_next;
+};
+
+/* A function, object or label of section shndx: what bounds content. */
+static bool bounds_content(const struct sym *s, uint32_t shndx)
+{
+    return s->shndx == shndx && (s->type == STT_NOTYPE_ ||
+                                 s->type == STT_OBJECT_ || s->type == STT_FUNC_);
+}
+
+static bool holds(const struct sym *s, uint64_t off)
+{
+    return s->type != STT_NOTYPE_ && s->size > 0 && s->value <= off &&
+           off - s->value < s->size;
+}
+
+/* False, refusing the image, on a malformed symbol. */
+static bool nearest(struct elf *e, uint32_t shndx, uint64_t off, struct near *n)
+{
+    memset(n, 0, sizeof(*n));
+    for (uint64_t k = 1; k < nsyms(e); k++) {
+        struct sym s;
+        if (!sym_at(e, k, &s))
+            return refuse(e, "unterminated symbol name");
+        if (!bounds_content(&s, shndx))
+            continue;
+        if (!n->held && holds(&s, off)) {
+            n->hold = s;
+            n->held = true;
+        }
+        if (s.value > off && (!n->has_next || s.value < n->next.value)) {
+            n->next = s;
+            n->has_next = true;
+        }
+    }
+    return true;
+}
+
+/* A NUL-terminated string of a SHF_MERGE|SHF_STRINGS section at `off`,
+ * each character `es` bytes wide. */
+static bool put_string(struct elf *e, const struct shdr *sec, uint64_t off,
+                       struct sha3_256_ctx *c)
+{
+    uint64_t es = sec->entsize ? sec->entsize : 1, end = off;
+    static const uint8_t zero[16] = {0};
+    if (es > sizeof(zero) || sec->type == SHT_NOBITS_)
+        return refuse(e, "string section with an unexpected entry size");
+    while (end <= sec->size && sec->size - end >= es &&
+           memcmp(e->b + sec->offset + end, zero, (size_t)es) != 0)
+        end += es;
+    if (end > sec->size || sec->size - end < es)
+        return refuse(e, "unterminated string in a merged string section");
+    put_tag(c, 'S');
+    put_range(e, sec, off, end + es - off, c);
+    return true;
+}
+
+/* The function (by name: its bytes are judged as that function's) or the
+ * object (its bytes) that holds `off`, with the position within it. */
+static bool put_held(struct elf *e, const struct shdr *sec, const struct sym *h,
+                     uint64_t off, struct sha3_256_ctx *c)
+{
+    bool code = (sec->flags & SHF_EXECINSTR_) != 0;
+    if (h->value > sec->size || h->size > sec->size - h->value)
+        return refuse(e, "symbol outside its section");
+    put_tag(c, code ? 'C' : 'O');
+    put_str(c, h->name);
+    put_u64(c, off - h->value);
+    if (!code)
+        put_range(e, sec, h->value, h->size, c);
+    return true;
+}
+
+/* The content at `off` of the section a local symbol names: a merged
+ * string or constant, the function or object it lands in, else the bytes
+ * up to the next symbol or the section end. */
+static bool put_content(struct elf *e, uint32_t shndx, uint64_t off,
+                        struct sha3_256_ctx *c)
+{
+    const struct shdr *sec = &e->sh[shndx];
+    struct near n;
+    uint64_t end;
+    if ((sec->flags & (SHF_MERGE_ | SHF_STRINGS_)) == (SHF_MERGE_ | SHF_STRINGS_))
+        return put_string(e, sec, off, c);
+    if ((sec->flags & SHF_MERGE_) != 0 && sec->entsize > 0 &&
+        sec->size - off >= sec->entsize) {
+        put_tag(c, 'E');
+        put_range(e, sec, off, sec->entsize, c);
+        return true;
+    }
+    if (!nearest(e, shndx, off, &n))
+        return false;
+    if (n.held)
+        return put_held(e, sec, &n.hold, off, c);
+    end = n.has_next && n.next.value < sec->size ? n.next.value : sec->size;
+    put_tag(c, 'R');
+    put_range(e, sec, off, end - off, c);
+    return true;
+}
+
+/* The target of one relocation, into c: for a section or local symbol
+ * defined here, the content it addresses; for any other, its name and the
+ * addend, since the addend then says where in that symbol it points. */
+static bool put_target(struct elf *e, const struct sym *t, uint32_t type,
+                       int64_t addend, struct sha3_256_ctx *c)
+{
+    uint64_t size;
+    int64_t off;
+    if ((t->type != STT_SECTION_ && t->bind != STB_LOCAL_) || !defined_here(e, t)) {
+        put_tag(c, 'N');
+        put_str(c, t->name);
+        put_u64(c, (uint64_t)addend);
+        return true;
+    }
+    size = e->sh[t->shndx].size;
+    /* both bounded, so the sum cannot wrap */
+    off = size <= MAX_SECTION && t->value <= size && addend <= MAX_ADDEND &&
+                  addend >= -MAX_ADDEND
+              ? (int64_t)t->value + addend + (pc_relative(type) ? 4 : 0)
+              : -1;
+    if (off < 0 || (uint64_t)off > size) {
+        put_tag(c, 'X'); /* outside the section: nothing to resolve */
+        put_u64(c, (uint64_t)addend);
+        return true;
+    }
+    return put_content(e, t->shndx, (uint64_t)off, c);
+}
+
+/* Digest the RELA entries of section `sec` that patch [lo, hi): offset
+ * from lo and type into both contexts; then the target's name and addend
+ * into `raw`, and the resolved target into `res`. */
 static bool digest_relocs(struct elf *e, uint32_t sec, uint64_t lo, uint64_t hi,
-                          struct sha3_256_ctx *full, struct sha3_256_ctx *noadd)
+                          struct sha3_256_ctx *raw, struct sha3_256_ctx *res)
 {
     for (uint32_t r = 0; r < e->shnum; r++) {
         const struct shdr *rs = &e->sh[r];
@@ -186,50 +382,54 @@ static bool digest_relocs(struct elf *e, uint32_t sec, uint64_t lo, uint64_t hi,
                 return refuse(e, "relocation names no symbol");
             zcl_write_u64_le(rec, off - lo);
             zcl_write_u32_le(rec + 8, (uint32_t)info);
-            sha3_256_write(full, rec, sizeof(rec));
-            sha3_256_write(noadd, rec, sizeof(rec));
-            sha3_256_write(full, (const unsigned char *)t.name, strlen(t.name) + 1);
-            sha3_256_write(noadd, (const unsigned char *)t.name, strlen(t.name) + 1);
-            sha3_256_write(full, p + 16, 8);
+            sha3_256_write(raw, rec, sizeof(rec));
+            sha3_256_write(res, rec, sizeof(rec));
+            put_str(raw, t.name);
+            sha3_256_write(raw, p + 16, 8);
+            if (!put_target(e, &t, (uint32_t)info,
+                            (int64_t)zcl_read_u64_le(p + 16), res))
+                return false;
         }
     }
     return true;
 }
 
-static bool add_func(struct elf *e, const struct sym *s, struct sfz_funcs *out)
+static bool add_sym(struct elf *e, const struct sym *s, struct sfz_syms *out)
 {
     const struct shdr *sec;
-    struct sha3_256_ctx full, noadd;
-    struct sfz_func *f;
-    if (s->shndx == 0 || s->shndx >= SHN_LORESERVE_ || s->shndx >= e->shnum)
-        return true; /* undefined or absolute: no bytes here */
+    struct sha3_256_ctx raw, res;
+    struct sfz_sym *f;
+    if (!defined_here(e, s))
+        return true; /* undefined, absolute or common: no bytes here */
     sec = &e->sh[s->shndx];
-    if (sec->type == SHT_NOBITS_ || s->size > sec->size ||
-        s->value > sec->size - s->size)
-        return refuse(e, "function outside its section");
+    if (s->size > sec->size || s->value > sec->size - s->size)
+        return refuse(e, "symbol outside its section");
+    if (s->type == STT_FUNC_ && sec->type == SHT_NOBITS_)
+        return refuse(e, "function in a NOBITS section");
     if (strlen(s->name) >= SFZ_NAME_MAX)
-        return refuse(e, "function name too long");
+        return refuse(e, "symbol name too long");
     f = &out->v[out->n];
     memset(f, 0, sizeof(*f));
     memcpy(f->name, s->name, strlen(s->name) + 1);
+    f->object = s->type == STT_OBJECT_;
     f->local = s->bind == STB_LOCAL_;
     f->shndx = s->shndx;
     f->value = s->value;
     f->size = s->size;
-    sha3_256_init(&full);
-    sha3_256_init(&noadd);
-    sha3_256_write(&full, e->b + sec->offset + s->value, (size_t)s->size);
-    sha3_256_write(&noadd, e->b + sec->offset + s->value, (size_t)s->size);
-    if (!digest_relocs(e, s->shndx, s->value, s->value + s->size, &full, &noadd))
+    sha3_256_init(&raw);
+    sha3_256_init(&res);
+    put_range(e, sec, s->value, s->size, &raw);
+    put_range(e, sec, s->value, s->size, &res);
+    if (!digest_relocs(e, s->shndx, s->value, s->value + s->size, &raw, &res))
         return false;
-    sha3_256_finalize(&full, f->full);
-    sha3_256_finalize(&noadd, f->noadd);
+    sha3_256_finalize(&raw, f->raw);
+    sha3_256_finalize(&res, f->resolved);
     out->n++;
     return true;
 }
 
-bool sfz_elf_funcs(const uint8_t *img, size_t n, struct sfz_funcs *out,
-                   char *err, size_t errlen)
+bool sfz_elf_syms(const uint8_t *img, size_t n, struct sfz_syms *out,
+                  char *err, size_t errlen)
 {
     struct elf e;
     uint64_t nsym;
@@ -237,31 +437,31 @@ bool sfz_elf_funcs(const uint8_t *img, size_t n, struct sfz_funcs *out,
     memset(out, 0, sizeof(*out));
     ok = open_elf(&e, img, n, true, err, errlen);
     ok = ok && (e.symtab != 0 || refuse(&e, "no symbol table"));
-    nsym = ok ? e.sh[e.symtab].size / SYM_SIZE : 0;
-    out->v = ok ? zcl_calloc(nsym ? nsym : 1, sizeof(*out->v), "sfz.elf.funcs")
+    nsym = ok ? nsyms(&e) : 0;
+    out->v = ok ? zcl_calloc(nsym ? nsym : 1, sizeof(*out->v), "sfz.elf.syms")
                 : NULL;
     ok = ok && (out->v != NULL || refuse(&e, "out of memory"));
     for (uint64_t k = 1; ok && k < nsym; k++) {
         struct sym s;
         ok = sym_at(&e, k, &s) || refuse(&e, "unterminated symbol name");
-        if (ok && s.type == STT_FUNC_)
-            ok = add_func(&e, &s, out);
+        if (ok && (s.type == STT_FUNC_ || s.type == STT_OBJECT_))
+            ok = add_sym(&e, &s, out);
     }
     free(e.sh);
     if (!ok)
-        sfz_funcs_free(out);
+        sfz_syms_free(out);
     return ok;
 }
 
-void sfz_funcs_free(struct sfz_funcs *f)
+void sfz_syms_free(struct sfz_syms *f)
 {
     free(f->v);
     f->v = NULL;
     f->n = 0;
 }
 
-const struct sfz_func *sfz_func_find(const struct sfz_funcs *f,
-                                     const char *name, size_t k)
+const struct sfz_sym *sfz_sym_find(const struct sfz_syms *f, const char *name,
+                                   size_t k)
 {
     for (size_t i = 0; i < f->n; i++)
         if (strcmp(f->v[i].name, name) == 0 && k-- == 0)

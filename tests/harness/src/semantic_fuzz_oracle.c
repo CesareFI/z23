@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: The semantic-facts fuzz oracle: plan one change set in process from its facts directory, then hold the plan to the objects (an unaffected TU's object is byte-identical; a function with new bytes is a seed or covered). */
+ * purpose: The semantic-facts fuzz oracle: plan one change set in process from its facts directory, then hold the plan to the objects (an unaffected TU's object is byte-identical; a function or data object with new bytes or new addressed content is a seed or covered). */
 #include "semantic_fuzz_case_priv.h"
 
 #include "base/safe_alloc.h"
@@ -104,17 +104,19 @@ static bool is_c_path(const char *path, size_t len)
 }
 
 /* True when canonical id `id` names the first `len` bytes of `name` in TU
- * `tu`: "f:<name>" an external function, "f:<path>:<name>" a local one
- * that tu itself defines (path is tu) or that a header defines static
- * (path is no .c file). `any` accepts either binding: a local clone
- * ("t0_e1.constprop.0") runs its external function's code. A seed without
- * a canonical id names nothing. */
-static bool id_names(const char *id, const char *name, size_t len, bool local,
-                     bool any, const char *tu)
+ * `tu` as kind `kind` ('f' a function, 'v' a variable): "<kind>:<name>" an
+ * external symbol, "<kind>:<path>:<name>" a local one that tu itself
+ * defines (path is tu) or that a header defines static (path is no .c
+ * file). `any` accepts either binding: a local clone
+ * ("t0_e1.constprop.0") runs its external function's code, and a
+ * function's static ("t0_kk.a") belongs to that function. A seed without a
+ * canonical id names nothing. */
+static bool id_names(const char *id, char kind, const char *name, size_t len,
+                     bool local, bool any, const char *tu)
 {
     const char *colon, *bare;
     size_t plen;
-    if (strncmp(id, "f:", 2) != 0)
+    if (id[0] != kind || id[1] != ':')
         return false;
     id += 2;
     colon = strrchr(id, ':');
@@ -130,16 +132,19 @@ static bool id_names(const char *id, const char *name, size_t len, bool local,
            !is_c_path(id, plen);
 }
 
-/* A seed of TU tu's function f by canonical id, so a same-name static of
- * another file is no seed. With `bare` a suffix after the first '.' is set
- * aside: "t0_s1.constprop.0" is t0_s1's code. */
+/* A seed of TU tu's symbol s by canonical id, so a same-name static of
+ * another file is no seed. A data object needs a variable seed (v:...).
+ * With `bare` a suffix after the first '.' is set aside:
+ * "t0_s1.constprop.0" is t0_s1's code, and the object "t0_kk.a" (the
+ * static `a` inside t0_kk) is covered by t0_kk's seed. */
 static bool is_seed(const struct sfz_plan *p, const char *tu,
-                    const struct sfz_func *f, bool bare)
+                    const struct sfz_sym *s, bool bare)
 {
-    size_t len = bare ? strcspn(f->name, ".") : strlen(f->name);
-    bool clone = f->name[len] != '\0';
+    size_t len = bare ? strcspn(s->name, ".") : strlen(s->name);
+    bool dotted = s->name[len] != '\0';
+    char kind = s->object && !dotted ? 'v' : 'f';
     for (size_t k = 0; k < p->v.seeds_len; k++)
-        if (id_names(p->v.seed_ids[k], f->name, len, f->local, clone, tu))
+        if (id_names(p->v.seed_ids[k], kind, s->name, len, s->local, dotted, tu))
             return true;
     return false;
 }
@@ -148,30 +153,35 @@ static bool is_seed(const struct sfz_plan *p, const char *tu,
 struct tu_judge {
     const char *tu;
     bool predicted, broadened;
-    struct sfz_funcs before, after;
+    struct sfz_syms before, after;
 };
 
-static bool func_changed(const struct tu_judge *j, const char *name, size_t k)
+/* New bytes or new addressed content: a symbol on one side only, or one
+ * whose raw or resolved digest differs. */
+static bool sym_changed(const struct tu_judge *j, const char *name, size_t k)
 {
-    const struct sfz_func *a = sfz_func_find(&j->before, name, k);
-    const struct sfz_func *b = sfz_func_find(&j->after, name, k);
-    return a == NULL || b == NULL || memcmp(a->full, b->full, 32) != 0;
+    const struct sfz_sym *a = sfz_sym_find(&j->before, name, k);
+    const struct sfz_sym *b = sfz_sym_find(&j->after, name, k);
+    return a == NULL || b == NULL || memcmp(a->raw, b->raw, 32) != 0 ||
+           memcmp(a->resolved, b->resolved, 32) != 0;
 }
 
+/* Only a relocation's target symbol or addend changed, and every changed
+ * relocation still resolves to the same content. */
 static bool reloc_only(const struct tu_judge *j, const char *name, size_t k)
 {
-    const struct sfz_func *a = sfz_func_find(&j->before, name, k);
-    const struct sfz_func *b = sfz_func_find(&j->after, name, k);
-    return a != NULL && b != NULL && memcmp(a->noadd, b->noadd, 32) == 0;
+    const struct sfz_sym *a = sfz_sym_find(&j->before, name, k);
+    const struct sfz_sym *b = sfz_sym_find(&j->after, name, k);
+    return a != NULL && b != NULL && memcmp(a->resolved, b->resolved, 32) == 0;
 }
 
-/* Every other function at f's address in the after object runs f's new
+/* Every other symbol at f's address in the after object is f's new
  * bytes: each must be a seed too. */
 static void judge_aliases(struct sfz_run *r, const struct sfz_plan *p,
-                          const struct tu_judge *j, const struct sfz_func *f)
+                          const struct tu_judge *j, const struct sfz_sym *f)
 {
     for (size_t q = 0; f != NULL && q < j->after.n; q++) {
-        const struct sfz_func *o = &j->after.v[q];
+        const struct sfz_sym *o = &j->after.v[q];
         if (o == f || o->shndx != f->shndx || o->value != f->value ||
             strcmp(o->name, f->name) == 0 || is_seed(p, j->tu, o, false))
             continue;
@@ -181,41 +191,44 @@ static void judge_aliases(struct sfz_run *r, const struct sfz_plan *p,
     }
 }
 
-static void judge_func(struct sfz_run *r, const struct sfz_plan *p,
-                       const struct tu_judge *j, const struct sfz_func *f,
-                       size_t k)
+static void judge_sym(struct sfz_run *r, const struct sfz_plan *p,
+                      const struct tu_judge *j, const struct sfz_sym *s,
+                      size_t k)
 {
     struct sfz_outcome *o = r->out;
-    const char *name = f->name;
-    o->cfun++;
+    const char *name = s->name, *what = s->object ? " (object)" : "";
+    if (s->object)
+        o->cobj++;
+    else
+        o->cfun++;
     if (!p->v.narrowed) {
         o->covered_other++; /* covered-fallback: the file-seeded plan */
         return;
     }
     if (!j->predicted) {
         o->notcov++;
-        sfz_why(o, "  %s %s tu-missed\n", j->tu, name);
+        sfz_why(o, "  %s %s%s tu-missed\n", j->tu, name, what);
         return;
     }
     if (r->header_changed && j->broadened) {
         o->covered_other++; /* covered-tu-broadened: its whole file */
         return;
     }
-    if (is_seed(p, j->tu, f, true))
+    if (is_seed(p, j->tu, s, true))
         o->covered_seed++;
     else if (reloc_only(j, name, k)) {
         o->reloc++;
         return;
     } else {
         o->notcov++;
-        sfz_why(o, "  %s %s NOT-COVERED%s\n", j->tu, name,
+        sfz_why(o, "  %s %s%s NOT-COVERED%s\n", j->tu, name, what,
                 p->v.seeds_total > p->v.seeds_len ? " (seed list truncated)" : "");
     }
-    judge_aliases(r, p, j, sfz_func_find(&j->after, name, k));
+    judge_aliases(r, p, j, sfz_sym_find(&j->after, name, k));
 }
 
 /* The k-th occurrence index of v[i]'s name among v[0..i). */
-static size_t ordinal(const struct sfz_funcs *f, size_t i)
+static size_t ordinal(const struct sfz_syms *f, size_t i)
 {
     size_t k = 0;
     for (size_t q = 0; q < i; q++)
@@ -224,45 +237,45 @@ static size_t ordinal(const struct sfz_funcs *f, size_t i)
 }
 
 static void judge_side(struct sfz_run *r, const struct sfz_plan *p,
-                       const struct tu_judge *j, const struct sfz_funcs *side,
+                       const struct tu_judge *j, const struct sfz_syms *side,
                        bool before)
 {
     for (size_t i = 0; i < side->n; i++) {
         size_t k = ordinal(side, i);
-        /* a function on both sides is judged once, from the after side */
-        if (before && sfz_func_find(&j->after, side->v[i].name, k) != NULL)
+        /* a symbol on both sides is judged once, from the after side */
+        if (before && sfz_sym_find(&j->after, side->v[i].name, k) != NULL)
             continue;
-        if (func_changed(j, side->v[i].name, k))
-            judge_func(r, p, j, &side->v[i], k);
+        if (sym_changed(j, side->v[i].name, k))
+            judge_sym(r, p, j, &side->v[i], k);
     }
 }
 
-static bool read_funcs(struct sfz_run *r, const char *dir, const char *tu,
-                       struct sfz_funcs *out)
+static bool read_syms(struct sfz_run *r, const char *dir, const char *tu,
+                      struct sfz_syms *out)
 {
     char path[PATH_MAX], err[128] = "";
     uint8_t *img = NULL;
     size_t n = 0;
     bool ok;
     sfz_object(path, sizeof(path), dir, tu);
-    ok = sfz_slurp(path, &img, &n) && sfz_elf_funcs(img, n, out, err, sizeof(err));
+    ok = sfz_slurp(path, &img, &n) && sfz_elf_syms(img, n, out, err, sizeof(err));
     if (!ok)
-        sfz_why(r->out, "cannot read the functions of %s: %s\n", path, err);
+        sfz_why(r->out, "cannot read the symbols of %s: %s\n", path, err);
     free(img);
     return ok;
 }
 
-static bool judge_funcs(struct sfz_run *r, const struct sfz_plan *p,
-                        struct tu_judge *j)
+static bool judge_syms(struct sfz_run *r, const struct sfz_plan *p,
+                       struct tu_judge *j)
 {
-    bool ok = read_funcs(r, r->ob, j->tu, &j->before) &&
-              read_funcs(r, r->oa, j->tu, &j->after);
+    bool ok = read_syms(r, r->ob, j->tu, &j->before) &&
+              read_syms(r, r->oa, j->tu, &j->after);
     if (ok) {
         judge_side(r, p, j, &j->after, false);
         judge_side(r, p, j, &j->before, true);
     }
-    sfz_funcs_free(&j->before);
-    sfz_funcs_free(&j->after);
+    sfz_syms_free(&j->before);
+    sfz_syms_free(&j->after);
     return ok;
 }
 
@@ -297,7 +310,7 @@ static bool judge_tu(struct sfz_run *r, const struct sfz_plan *p, const char *tu
         sfz_why(o, "  %s object changed, planned unaffected (%s)\n", tu,
                 t != NULL ? t->reason : "not in the universe");
     }
-    return same || judge_funcs(r, p, &j);
+    return same || judge_syms(r, p, &j);
 }
 
 bool sfz_plan_and_judge(struct sfz_run *r)

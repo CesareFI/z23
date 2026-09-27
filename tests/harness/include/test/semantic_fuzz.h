@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: The semantic-facts differential fuzzer: its project generator, fixed reproducers, relocatable-ELF function reader and the per-case oracle the semantic_facts_fuzz group runs. */
+ * purpose: The semantic-facts differential fuzzer: its project generator, fixed reproducers, relocatable-ELF symbol reader and the per-case oracle the semantic_facts_fuzz group runs. */
 #ifndef ZCL_TEST_SEMANTIC_FUZZ_H
 #define ZCL_TEST_SEMANTIC_FUZZ_H
 
@@ -69,35 +69,45 @@ extern const size_t k_sfz_nrepros;
 /* Write <dir>/before/ and <dir>/after/ of reproducer r. */
 bool sfz_write_repro(const struct sfz_repro *r, const char *dir);
 
-/* ── relocatable ELF64 functions (semantic_fuzz_elf.c) ──────────────────── */
+/* ── relocatable ELF64 symbols (semantic_fuzz_elf.c) ────────────────────── */
 
 #define SFZ_NAME_MAX 128
 
-/* One STT_FUNC symbol of an ET_REL object: its bytes and the RELA entries
- * that patch them, digested twice, with and without the addends. */
-struct sfz_func {
+/* One defined STT_FUNC or STT_OBJECT symbol of an ET_REL object: its
+ * bytes (a NOBITS object: its size) and the RELA entries that patch them,
+ * digested twice. `raw` takes each relocation's offset, type, target
+ * symbol name and addend. `resolved` takes its offset and type and what it
+ * addresses: for a section or local symbol defined in the object, the
+ * content at the addressed offset (a merged string or constant, the object
+ * it lands in with the position inside it, the function it lands in by
+ * name, else the bytes up to the next symbol or the section end); for any
+ * other symbol, its name and the addend. Equal `resolved` digests with
+ * different `raw` ones differ only where the same content sits. */
+struct sfz_sym {
     char name[SFZ_NAME_MAX];
+    bool object;         /* STT_OBJECT, else STT_FUNC */
     bool local;          /* STB_LOCAL: a static, or a compiler-made clone */
     uint32_t shndx;
     uint64_t value, size;
-    uint8_t full[32];    /* bytes, relocation offset, type, target, addend */
-    uint8_t noadd[32];   /* the same without the addends */
+    uint8_t raw[32];
+    uint8_t resolved[32];
 };
 
-struct sfz_funcs {
-    struct sfz_func *v;
+struct sfz_syms {
+    struct sfz_sym *v;
     size_t n;
 };
 
-/* Read every function of the x86-64 little-endian ET_REL image `img`.
- * Fails closed, naming the defect in err, on any other shape, any
- * out-of-range offset or an unterminated name. */
-bool sfz_elf_funcs(const uint8_t *img, size_t n, struct sfz_funcs *out,
-                   char *err, size_t errlen);
-void sfz_funcs_free(struct sfz_funcs *f);
-/* The k-th (0-based) function named `name`, or NULL. */
-const struct sfz_func *sfz_func_find(const struct sfz_funcs *f,
-                                     const char *name, size_t k);
+/* Read every defined function and data object of the x86-64
+ * little-endian ET_REL image `img`. Fails closed, naming the defect in
+ * err, on any other shape, any out-of-range offset, symbol or string, or
+ * an unterminated name. */
+bool sfz_elf_syms(const uint8_t *img, size_t n, struct sfz_syms *out,
+                  char *err, size_t errlen);
+void sfz_syms_free(struct sfz_syms *f);
+/* The k-th (0-based) symbol named `name`, or NULL. */
+const struct sfz_sym *sfz_sym_find(const struct sfz_syms *f, const char *name,
+                                   size_t k);
 
 /* The DT_RUNPATH (else DT_RPATH) string of an ELF64 executable or shared
  * object, from its section headers. False when there is none or the file
@@ -128,6 +138,7 @@ struct sfz_outcome {
     char vreason[64];      /* its fallback reason, "" when narrowed */
     size_t tus, predicted, changed, missed, over;
     size_t cfun;           /* functions with new bytes in changed objects */
+    size_t cobj;           /* data objects with new bytes in changed objects */
     size_t covered_seed, covered_other, reloc, notcov;
     size_t seeds;          /* seeds the verdict names */
     double plan_s;
@@ -137,9 +148,10 @@ struct sfz_outcome {
 /* Compile every TU before and after (clang -std=c23 -O1 with the
  * project's flags), sense each, plan the change set in process with the
  * facts, and judge: (1) every TU the plan leaves unaffected has a
- * byte-identical object; (2) every function with new bytes, beyond a
- * relocation addend, is a seed or is covered by a fallback, a missed TU or
- * a broadened TU after a header change, and so is every alias of a seed.
+ * byte-identical object; (2) every function and data object with new bytes
+ * or new addressed content (an addend alone that resolves to the same
+ * content does not count) is a seed or is covered by a fallback or a
+ * broadened TU after a header change, and so is every alias of a seed.
  * A PASS removes the case directory. */
 bool sfz_run_case(const struct sfz_env *env, const struct sfz_case *c,
                   struct sfz_outcome *out);

@@ -13,9 +13,13 @@
  *
  *   objects     every TU the plan leaves unaffected (or out of its
  *               universe) has a byte-identical object;
- *   functions   in a changed object, every function whose bytes or
- *               relocations changed, beyond a relocation addend, is a seed
- *               of a narrowed plan (or is covered by a fallback, or by a
+ *   symbols     in a changed object, every function and data object
+ *               whose bytes changed, or whose relocations now address
+ *               other content (a relocation into a section or a local
+ *               symbol is resolved to the string, constant or object
+ *               bytes it addresses; an addend that resolves to the same
+ *               content does not count), is a seed of a narrowed plan by
+ *               canonical id (or is covered by a fallback, or by a
  *               broadened TU after a header change), and so is every other
  *               symbol at its address.
  *
@@ -131,7 +135,7 @@ static const struct sfz_seed k_default_seeds[] = {
 
 struct sfz_tally {
     size_t cases, pass, fail, noop, error, skipped, narrowed;
-    size_t tus, predicted, changed, cfun, covered_seed, reloc;
+    size_t tus, predicted, changed, cfun, cobj, covered_seed, reloc;
     double plan_s;
 };
 
@@ -219,6 +223,7 @@ static void tally(struct sfz_tally *t, const struct sfz_outcome *o)
     t->predicted += o->predicted;
     t->changed += o->changed;
     t->cfun += o->cfun;
+    t->cobj += o->cobj;
     t->covered_seed += o->covered_seed;
     t->reloc += o->reloc;
     t->plan_s += o->plan_s;
@@ -233,12 +238,12 @@ static const char *status_name(enum sfz_status s)
 static void report(const struct sfz_case *c, const struct sfz_outcome *o)
 {
     printf("semantic_facts_fuzz: %s kind=%s %s narrowed=%s%s%s tus=%zu "
-           "pred=%zu changed=%zu missed=%zu cfun=%zu seeded=%zu reloc=%zu "
+           "pred=%zu changed=%zu missed=%zu cfun=%zu cobj=%zu seeded=%zu reloc=%zu "
            "notcov=%zu seeds=%zu plan=%.2fs\n",
            c->label, c->kind, status_name(o->status), o->narrowed ? "yes" : "no",
            o->narrowed ? "" : " reason=", o->vreason, o->tus, o->predicted,
-           o->changed, o->missed, o->cfun, o->covered_seed, o->reloc, o->notcov,
-           o->seeds, o->plan_s);
+           o->changed, o->missed, o->cfun, o->cobj, o->covered_seed, o->reloc,
+           o->notcov, o->seeds, o->plan_s);
     if (o->status != SFZ_PASS && o->status != SFZ_NOOP)
         printf("  detail: %s\n  case: %s\n%s", c->detail, c->dir, o->why);
 }
@@ -589,12 +594,13 @@ int test_semantic_facts_fuzz(void)
     }
     printf("semantic_facts_fuzz: %zu cases (%zu fixed) in %.1f s: %zu pass, %zu "
            "fail, %zu noop, %zu error, %zu skipped; %zu narrowed verdicts; %zu "
-           "TUs, %zu predicted, %zu changed; %zu changed functions, %zu seeded, "
+           "TUs, %zu predicted, %zu changed; %zu changed functions, %zu changed "
+           "data objects, %zu seeded, "
            "%zu relocation-only; planning %.1f s\n",
            g->t.cases, k_sfz_nrepros,
            (double)(clock_now_monotonic_ns() - t0) / 1e9, g->t.pass, g->t.fail,
            g->t.noop, g->t.error, g->t.skipped, g->t.narrowed, g->t.tus,
-           g->t.predicted, g->t.changed, g->t.cfun, g->t.covered_seed,
+           g->t.predicted, g->t.changed, g->t.cfun, g->t.cobj, g->t.covered_seed,
            g->t.reloc, g->t.plan_s);
     if (failures == 0 && !g->kept)
         (void)test_rm_rf_recursive(g->scratch);
