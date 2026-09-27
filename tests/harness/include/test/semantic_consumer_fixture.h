@@ -65,6 +65,8 @@ enum scx_variant {
     SCX_CTR_UNITY,  /* cx_sum's body: the includer is broadened before any seed */
     SCX_P_UNITY_AB, /* cx_e.c includes cx_c.c and cx_a.c, renaming both */
     SCX_UNITY_AB,   /* both bodies change: each included .c seeds */
+    SCX_P_UNITY_ADDR, /* unity, and cx_d.c takes &cx_e_hook */
+    SCX_UNITY_ADDR, /* cx_sum's body: the includer seeds cx_e_hook, address-taken */
     SCX_VARIANT_COUNT
 };
 

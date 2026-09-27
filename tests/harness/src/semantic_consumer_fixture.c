@@ -101,9 +101,13 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
                          "; }\nint cx_work(int x);\nint cx_work(int x)\n" \
                          "{\n    __attribute__((cleanup(cx_rel))) int v = x;\n" \
                          "    return v + 3;\n}\n"
+/* The includer renames every external cx_c.c may define, so no symbol is
+ * defined in two TUs. */
 #define SCX_UNITY_E SCX_E_END "#define cx_sum cx_e_sum\n" \
-                    "#define cx_hook cx_e_hook\n#include \"cx_c.c\"\n" \
-                    "#undef cx_sum\n#undef cx_hook\nint cx_use_e(int x);\n" \
+                    "#define cx_hook cx_e_hook\n#define cx_get cx_e_get\n" \
+                    "#define cx_tail cx_e_tail\n#include \"cx_c.c\"\n" \
+                    "#undef cx_sum\n#undef cx_hook\n#undef cx_get\n" \
+                    "#undef cx_tail\nint cx_use_e(int x);\n" \
                     "int cx_use_e(int x) { return cx_e_sum(x) + 2; }\n"
 #define SCX_HOOK_C "CX_SCALE; }\nint cx_hook(int v) { return v - 1; }\n"
 #define SCX_SUM2_C "int cx_sum2(void);\nint cx_sum2(void) { return __LINE__; }\n"
@@ -125,6 +129,8 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
                        "#define cx_fill cx_e_fill\n#define cx_top_a cx_e_top_a\n" \
                        "#include \"cx_a.c\"\n#undef cx_fill\n#undef cx_top_a\n"
 #define SCX_TOP_A "int cx_top_a(void) { return cx_twice(cx_sum(1)); }"
+#define SCX_HOOKREF_D SCX_D_END "int cx_e_hook(int v);\n" \
+                      "int (*const cx_e_hook_ref)(int) = cx_e_hook;\n"
 #define SCX_ALL_POS {"position-dependent", "position-dependent", \
                      "position-dependent", "position-dependent", \
                      "position-dependent"}
@@ -407,6 +413,23 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                                  "header-unattributed"},
                       .obligations = "",
                       .seeds = {"cx_e_sum", "cx_e_top_a"}},
+    /* Re-review E: a function seeded from an includer is address-taken. */
+    [SCX_P_UNITY_ADDR] = {.name = "p_unity_addr", .pre = true, .file = SCX_E,
+                          .from = SCX_E_END, .to = SCX_UNITY_E,
+                          .file2 = SCX_D, .from2 = SCX_D_END,
+                          .to2 = SCX_HOOKREF_D},
+    [SCX_UNITY_ADDR] = {.name = "unity_addr", .before = SCX_P_UNITY_ADDR,
+                        .file = SCX_C,
+                        .from = "(int)sizeof(s) + CX_SCALE; }",
+                        .to = "(int)sizeof(s) + CX_SCALE + 1; }",
+                        .file2 = SCX_E, .from2 = SCX_E_END,
+                        .to2 = SCX_UNITY_E, .file3 = SCX_D,
+                        .from3 = SCX_D_END, .to3 = SCX_HOOKREF_D,
+                        .changed = {SCX_C},
+                        .affected = {false, false, true, false, true},
+                        .reason = {NULL, NULL, "source-changed", NULL,
+                                   "header-unattributed"},
+                        .obligations = "address-taken"},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,
