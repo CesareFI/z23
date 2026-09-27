@@ -535,10 +535,17 @@ static bool pts_recheck(struct vcs_package_store *store,
 #ifdef ZCL_TESTING
 static void (*pts_before_recheck_hook)(void *);
 static void *pts_before_recheck_context;
+static void (*pts_after_recheck_hook)(void *);
+static void *pts_after_recheck_context;
 void vcs_proof_receiver_test_before_recheck(void (*hook)(void *), void *context)
 {
     pts_before_recheck_hook = hook;
     pts_before_recheck_context = context;
+}
+void vcs_proof_receiver_test_after_recheck(void (*hook)(void *), void *context)
+{
+    pts_after_recheck_hook = hook;
+    pts_after_recheck_context = context;
 }
 #endif
 
@@ -566,6 +573,10 @@ static bool pts_publish_rechecked(struct vcs_proof_receiver *live,
         pts_before_recheck_hook(pts_before_recheck_context);
 #endif
     if (!pts_recheck(store, roots)) return false;
+#ifdef ZCL_TESTING
+    if (pts_after_recheck_hook)
+        pts_after_recheck_hook(pts_after_recheck_context);
+#endif
     struct pts_publish_context p = {live, staging};
     return vcs_package_store_publish_if_generation(
         store, generation, pts_publish, &p) == VCS_PACKAGE_STORE_PAGE_OK;

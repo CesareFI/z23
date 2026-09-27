@@ -1325,6 +1325,7 @@ static void ptl_publish_marker(void *context)
 /* Test-only seam: change the CAS leaf after scan/replay and before the
  * receiver's final verified read, without relying on scheduler timing. */
 void vcs_proof_receiver_test_before_recheck(void (*hook)(void *), void *context);
+void vcs_proof_receiver_test_after_recheck(void (*hook)(void *), void *context);
 
 struct ptl_cas_change {
     char path[640];
@@ -1372,6 +1373,45 @@ static int ptl_case_changed_cas_during_rebuild(void)
         bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
                                                    &cps, &skipped);
         vcs_proof_receiver_test_before_recheck(NULL, NULL);
+        ASSERT(change.changed);
+        ASSERT(!rebuilt);
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_changed_cas_after_recheck(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: changed CAS after final read blocks publication") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t root[32], chunk[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_package_chunk_hash(ticket, sizeof(ticket), chunk));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "postcheckcas");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                          &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        char hex[65];
+        zcl_hex_encode(chunk, sizeof(chunk), hex);
+        struct ptl_cas_change change = {0};
+        ASSERT(snprintf(change.path, sizeof(change.path),
+                        "%s/zcode/cas/sha3/%.2s/%s", dir, hex, hex) <
+               (int)sizeof(change.path));
+        vcs_proof_receiver_test_after_recheck(ptl_change_cas, &change);
+        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+                                                   &cps, &skipped);
+        vcs_proof_receiver_test_after_recheck(NULL, NULL);
         ASSERT(change.changed);
         ASSERT(!rebuilt);
         ASSERT_EQ(tickets, (size_t)0);
@@ -1679,6 +1719,7 @@ int ptf_log_cases(void)
     failures += ptl_case_rebuild_corrupt_index();
     failures += ptl_case_deleted_catalog_manifest();
     failures += ptl_case_changed_cas_during_rebuild();
+    failures += ptl_case_changed_cas_after_recheck();
     if (getenv("Z23_PROOF_STORE_BOUNDARY_RED"))
         failures += ptl_case_rebuild_boundary();
     ptf_free(&g_l);
