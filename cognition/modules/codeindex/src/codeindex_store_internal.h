@@ -29,6 +29,8 @@
 
 struct ci_store {
     sqlite3        *db;
+    sqlite3_stmt   *put_file_stmt;   /* reused only inside a write transaction */
+    sqlite3_stmt   *put_symbol_stmt; /* finalized before COMMIT or ROLLBACK */
     pthread_mutex_t lock;   /* recursive: held begin..commit; reads take briefly */
     int             bound_fd; /* immutable canonical inode, -1 for :memory: */
     struct platform_positioned_file bound_file;

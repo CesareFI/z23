@@ -481,6 +481,8 @@ bool ci_store_write_image_child(struct ci_store *s,
 void ci_store_close(struct ci_store *s)
 {
     if (!s) return;
+    if (s->put_file_stmt) sqlite3_finalize(s->put_file_stmt);
+    if (s->put_symbol_stmt) sqlite3_finalize(s->put_symbol_stmt);
     if (s->db) sqlite3_close(s->db);
     platform_read_mapping_close(&s->mapping);
     if (s->has_bound_file)
@@ -497,6 +499,17 @@ void ci_store_close(struct ci_store *s)
 }
 
 /* ── transaction control ────────────────────────────────────────────── */
+
+static bool ci_store_finish_inserts(struct ci_store *s)
+{
+    int file_rc = s->put_file_stmt ? sqlite3_finalize(s->put_file_stmt)
+                                   : SQLITE_OK;
+    int symbol_rc = s->put_symbol_stmt ? sqlite3_finalize(s->put_symbol_stmt)
+                                       : SQLITE_OK;
+    s->put_file_stmt = NULL;
+    s->put_symbol_stmt = NULL;
+    return file_rc == SQLITE_OK && symbol_rc == SQLITE_OK;
+}
 
 bool ci_store_begin(struct ci_store *s)
 {
@@ -515,6 +528,12 @@ bool ci_store_begin(struct ci_store *s)
 bool ci_store_commit(struct ci_store *s)
 {
     if (!s) LOG_FAIL("codeindex", "null store");
+    if (!ci_store_finish_inserts(s)) {
+        int rollback_rc = sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+        pthread_mutex_unlock(&s->lock);
+        LOG_FAIL("codeindex", "finalize pending inserts before COMMIT failed; "
+                 "ROLLBACK rc=%d", rollback_rc);
+    }
     char *err = NULL;
     bool ok = sqlite3_exec(s->db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
     if (err) sqlite3_free(err);
@@ -526,10 +545,14 @@ bool ci_store_commit(struct ci_store *s)
 bool ci_store_rollback(struct ci_store *s)
 {
     if (!s) LOG_FAIL("codeindex", "null store");
+    bool finalized = ci_store_finish_inserts(s);
     char *err = NULL;
-    sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, &err);
+    bool rolled_back = sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, &err) ==
+                       SQLITE_OK;
     if (err) sqlite3_free(err);
     pthread_mutex_unlock(&s->lock);
+    if (!finalized || !rolled_back)
+        LOG_FAIL("codeindex", "ROLLBACK or pending insert finalize failed");
     return true;
 }
 
@@ -551,6 +574,55 @@ bool ci_store_clear(struct ci_store *s)
 
 /* ── writes ─────────────────────────────────────────────────────────── */
 
+static bool ci_store_insert_prepare(struct ci_store *s, sqlite3_stmt **slot,
+                                    const char *sql, sqlite3_stmt **out,
+                                    bool *cached)
+{
+    *cached = sqlite3_get_autocommit(s->db) == 0;
+    *out = *cached ? *slot : NULL;
+    if (*out) return true;
+    if (sqlite3_prepare_v2(s->db, sql, -1, out, NULL) != SQLITE_OK)
+        return false;
+    if (*cached) *slot = *out;
+    return true;
+}
+
+static bool ci_store_insert_finish(sqlite3_stmt *stmt, bool cached, int step_rc)
+{
+    int finish_rc = cached ? sqlite3_reset(stmt) : sqlite3_finalize(stmt);
+    int clear_rc = cached ? sqlite3_clear_bindings(stmt) : SQLITE_OK;
+    return step_rc == SQLITE_DONE && finish_rc == SQLITE_OK &&
+           clear_rc == SQLITE_OK;
+}
+
+static bool ci_store_bind_symbol(sqlite3_stmt *stmt,
+                                  const struct ci_symbol *sym,
+                                  const char kindstr[2],
+                                  const uint8_t row[32])
+{
+    return sqlite3_bind_text(stmt, 1, sym->name, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 2, kindstr, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 3, sym->def_path, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_int(stmt, 4, sym->def_line) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 5, sym->decl_path, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_int(stmt, 6, sym->decl_line) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 7, sym->signature, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 8, sym->doc, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 9, sym->guard, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_text(stmt, 10, sym->group, -1,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+           sqlite3_bind_int(stmt, 11, sym->partial ? 1 : 0) == SQLITE_OK &&
+           sqlite3_bind_blob(stmt, 12, row, 32,
+                              SQLITE_TRANSIENT) == SQLITE_OK;
+}
+
 bool ci_store_put_file(struct ci_store *s, const struct ci_file *f,
                        const uint8_t content_sha3[32], int64_t mtime,
                        int64_t *out_file_id)
@@ -559,20 +631,25 @@ bool ci_store_put_file(struct ci_store *s, const struct ci_file *f,
     if (!s || !f || !content_sha3)
         LOG_FAIL("codeindex", "null arg to put_file");
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(s->db,
+    bool cached = false;
+    if (!ci_store_insert_prepare(s, &s->put_file_stmt,
         "INSERT OR REPLACE INTO files(path,\"group\",purpose,content_sha3,mtime)"
-        " VALUES(?,?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK)
+        " VALUES(?,?,?,?,?)", &stmt, &cached))
         LOG_FAIL("codeindex", "prepare put_file: %s", sqlite3_errmsg(s->db));
-    sqlite3_bind_text(stmt, 1, f->path, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, f->group, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, f->purpose, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt, 4, content_sha3, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 5, mtime);
-    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE)
-        LOG_FAIL("codeindex", "step put_file rc=%d", rc);
-    if (out_file_id) *out_file_id = sqlite3_last_insert_rowid(s->db);
+    bool bound = sqlite3_bind_text(stmt, 1, f->path, -1, SQLITE_TRANSIENT) ==
+                     SQLITE_OK &&
+                 sqlite3_bind_text(stmt, 2, f->group, -1, SQLITE_TRANSIENT) ==
+                     SQLITE_OK &&
+                 sqlite3_bind_text(stmt, 3, f->purpose, -1, SQLITE_TRANSIENT) ==
+                     SQLITE_OK &&
+                 sqlite3_bind_blob(stmt, 4, content_sha3, 32,
+                                   SQLITE_TRANSIENT) == SQLITE_OK &&
+                 sqlite3_bind_int64(stmt, 5, mtime) == SQLITE_OK;
+    int rc = bound ? sqlite3_step(stmt) : SQLITE_ERROR; // raw-sql-ok:codeindex-derived
+    int64_t file_id = rc == SQLITE_DONE ? sqlite3_last_insert_rowid(s->db) : -1;
+    if (!ci_store_insert_finish(stmt, cached, rc))
+        LOG_FAIL("codeindex", "put_file bind/step/reset failed rc=%d", rc);
+    if (out_file_id) *out_file_id = file_id;
     return true;
 }
 
@@ -585,27 +662,16 @@ bool ci_store_put_symbol(struct ci_store *s, const struct ci_symbol *sym)
     ci_symbol_row_hash(sym, row);
     char kindstr[2] = { sym->kind, '\0' };
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(s->db,
+    bool cached = false;
+    if (!ci_store_insert_prepare(s, &s->put_symbol_stmt,
         "INSERT INTO symbols(name,kind,def_path,def_line,decl_path,decl_line,"
         "signature,doc,guard,\"group\",partial,row_sha3)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK)
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", &stmt, &cached))
         LOG_FAIL("codeindex", "prepare put_symbol: %s", sqlite3_errmsg(s->db));
-    sqlite3_bind_text(stmt, 1, sym->name, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, kindstr, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, sym->def_path, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, sym->def_line);
-    sqlite3_bind_text(stmt, 5, sym->decl_path, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 6, sym->decl_line);
-    sqlite3_bind_text(stmt, 7, sym->signature, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 8, sym->doc, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 9, sym->guard, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 10, sym->group, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 11, sym->partial ? 1 : 0);
-    sqlite3_bind_blob(stmt, 12, row, 32, SQLITE_TRANSIENT);
-    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE)
-        LOG_FAIL("codeindex", "step put_symbol rc=%d", rc);
+    bool bound = ci_store_bind_symbol(stmt, sym, kindstr, row);
+    int rc = bound ? sqlite3_step(stmt) : SQLITE_ERROR; // raw-sql-ok:codeindex-derived
+    if (!ci_store_insert_finish(stmt, cached, rc))
+        LOG_FAIL("codeindex", "put_symbol bind/step/reset failed rc=%d", rc);
     return true;
 }
 

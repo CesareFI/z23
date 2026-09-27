@@ -224,6 +224,19 @@ bool ci_store_retrieval_projection_root(struct ci_store *s, uint8_t out[32]);
 /* Compare the recomputed logical root with the sealed meta record. Missing or
  * malformed records are valid observations of an invalid generation. */
 bool ci_store_retrieval_projection_is_valid(struct ci_store *s, bool *valid);
+/* One cold build writes many scan shards in one transaction. Reuse its SQL
+ * statements for that pass; incremental callers keep the single-path API. */
+struct ci_scan_shard_writer {
+    sqlite3_stmt *file;
+    sqlite3_stmt *symbols;
+    sqlite3_stmt *refs;
+    sqlite3_stmt *insert;
+};
+bool ci_scan_shard_writer_open(struct ci_scan_shard_writer *writer,
+                               struct ci_store *store, bool writing);
+bool ci_scan_shard_writer_refresh(struct ci_scan_shard_writer *writer,
+                                  const char *path);
+bool ci_scan_shard_writer_close(struct ci_scan_shard_writer *writer);
 bool ci_store_scan_shard_refresh(struct ci_store *s, const char *path);
 bool ci_store_scan_shards_are_valid(struct ci_store *s, bool *valid);
 bool ci_store_apply_pragmas(sqlite3 *db);

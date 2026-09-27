@@ -58,7 +58,7 @@ cognition/modules/codeindex/src/codeindex_build.c:ci_rebuild_lock_open:17
 cognition/modules/codeindex/src/codeindex_build.c:codeindex_rebuild_internal:61
 cognition/modules/codeindex/src/codeindex_build.c:collect_dir:20
 cognition/modules/codeindex/src/codeindex_build.c:source_file_sha3:21
-cognition/modules/codeindex/src/codeindex_build_store.c:ci_build_store_memory:28
+cognition/modules/codeindex/src/codeindex_build_store.c:ci_build_store_memory:26
 cognition/modules/codeindex/src/codeindex_build_windows.c:codeindex_rebuild_internal:38
 cognition/modules/codeindex/src/codeindex_build_windows.c:collect_directory:20
 cognition/modules/codeindex/src/codeindex_capability.c:cap_scan_symbols:24
@@ -139,8 +139,8 @@ cognition/modules/codeindex/src/codeindex_store.c:ci_store_write_image_fd:19
 cognition/modules/codeindex/src/codeindex_store_hash.c:projection_column:22
 cognition/modules/codeindex/src/codeindex_store_hash.c:projection_meta_value_locked:18
 cognition/modules/codeindex/src/codeindex_store_read.c:ci_store_meta_get:17
-cognition/modules/codeindex/src/codeindex_store_shard.c:ci_store_scan_shards_are_valid:17
-cognition/modules/codeindex/src/codeindex_store_shard.c:scan_shard_digest:31
+cognition/modules/codeindex/src/codeindex_store_shard.c:ci_store_scan_shards_are_valid:10
+cognition/modules/codeindex/src/codeindex_store_shard.c:scan_shard_digest:4
 cognition/modules/codeindex/src/codeindex_vector_hint.c:segment_shape:17
 cognition/modules/codeindex/src/codeindex_vector_hint.c:zcl_code_concept_card_v1_validate_ontology:21
 cognition/modules/codeindex/src/codeindex_vector_hint.c:zcl_code_embedding_segment_v1_parse:36
@@ -2729,7 +2729,7 @@ tests/harness/src/test_codeindex.c:write_fixture:28
 tests/harness/src/test_codeindex_incremental.c:cin_capture:21
 tests/harness/src/test_codeindex_incremental.c:test_codeindex_incremental:26
 tests/harness/src/test_codeindex_projection.c:test_codeindex_projection_integrity:46
-tests/harness/src/test_codeindex_scale.c:test_codeindex_scale_platform_arm:27
+tests/harness/src/test_codeindex_scale.c:test_codeindex_scale_platform_arm:24
 tests/harness/src/test_coins.c:test_coins:168
 tests/harness/src/test_coins_applied_frontier.c:test_coins_applied_frontier:44
 tests/harness/src/test_coins_kv.c:ck_case_anchor_coin_byte_flip:19

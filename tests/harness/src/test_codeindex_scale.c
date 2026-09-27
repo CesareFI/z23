@@ -92,6 +92,38 @@ static bool scale_generate(const char *root, long files)
     return true;
 }
 
+static int scale_check_incremental_edit(struct codeindex **index,
+                                         long long receipt50_ms)
+{
+    int failures = 0;
+    uint8_t source_root_before[32], source_root_after[32];
+    bool root_before = codeindex_source_root_sha3(*index, source_root_before);
+    static const char edit[] = "int scale_edit_00000(void) { return 1; }\n";
+    SCALE_CHECK("edit one indexed file",
+                scale_write(FIX_50K, "src/m000/s00/f00000.c",
+                            edit, sizeof(edit) - 1));
+    codeindex_close(*index);
+    *index = codeindex_open(FIX_50K);
+    long long receipt_after_ms = 0, receipt_after_files = 0;
+    bool receipt_after = *index &&
+        codeindex_build_cold_ms(*index, &receipt_after_ms, &receipt_after_files);
+    bool root_after = *index &&
+        codeindex_source_root_sha3(*index, source_root_after);
+    SCALE_CHECK("incremental refresh keeps the cold-build receipt",
+                receipt_after && receipt_after_ms == receipt50_ms &&
+                receipt_after_files == SCALE_50K_FILES);
+    SCALE_CHECK("incremental edit advances the exact source root",
+                root_before && root_after &&
+                memcmp(source_root_before, source_root_after, 32) != 0);
+    struct ci_symbol edited_syms[4];
+    int edited_count = *index ? codeindex_symbols_in_file(
+        *index, "src/m000/s00/f00000.c", edited_syms, 4) : -1;
+    SCALE_CHECK("incremental edit replaces the indexed symbol",
+                edited_count == 1 &&
+                strcmp(edited_syms[0].name, "scale_edit_00000") == 0);
+    return failures;
+}
+
 static int test_codeindex_scale_platform_arm(void)
 {
     int failures = 0;
@@ -123,18 +155,7 @@ static int test_codeindex_scale_platform_arm(void)
     }
 
     /* ── 2: an incremental refresh leaves the cold-build receipt ── */
-    static const char edit[] = "int scale_sym_00000(void) { return 1; }\n";
-    SCALE_CHECK("edit one indexed file",
-                scale_write(FIX_50K, "src/m000/s00/f00000.c",
-                            edit, sizeof(edit) - 1));
-    codeindex_close(ci);
-    ci = codeindex_open(FIX_50K);
-    long long receipt_after_ms = 0, receipt_after_files = 0;
-    bool receipt_after = ci &&
-        codeindex_build_cold_ms(ci, &receipt_after_ms, &receipt_after_files);
-    SCALE_CHECK("incremental refresh keeps the cold-build receipt",
-                receipt_after && receipt_after_ms == receipt50_ms &&
-                receipt_after_files == SCALE_50K_FILES);
+    failures += scale_check_incremental_edit(&ci, receipt50_ms);
 
     /* ── 3: warm questions, query time only ── */
     if (ci) { codeindex_close(ci); ci = NULL; }

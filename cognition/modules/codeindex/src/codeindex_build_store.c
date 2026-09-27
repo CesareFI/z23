@@ -30,6 +30,7 @@ void ci_source_root_add(struct sha3_256_ctx *sha, const char *relpath,
 struct idmap_ent { char path[256]; int64_t id; };
 struct build_ctx {
     struct ci_store   *store;
+    struct ci_scan_shard_writer shard;
     bool               err;
     struct idmap_ent  *ids;
     size_t             nids, cap_ids;
@@ -137,7 +138,7 @@ static bool build_file_cb(const char *relpath, const struct stat *file_st,
     int64_t id = -1;
     if (!ci_store_put_file(b->store, &file, sha, mtime_ns, &id) ||
         !idmap_push(b, relpath, id) ||
-        !ci_store_scan_shard_refresh(b->store, relpath)) {
+        !ci_scan_shard_writer_refresh(&b->shard, relpath)) {
         b->err = true;
         return false;
     }
@@ -211,6 +212,16 @@ static bool write_cold_receipt_and_counts(struct ci_store *store,
            ci_store_write_table_count_meta(store);
 }
 
+static bool build_files_with_shards(struct build_ctx *build, const char *root)
+{
+    if (!ci_scan_shard_writer_open(&build->shard, build->store, true))
+        return false;
+    struct build_file_env env = { .build = build, .root = root };
+    bool enumerated = ci_enumerate_sources(root, build_file_cb, &env);
+    bool closed = ci_scan_shard_writer_close(&build->shard);
+    return enumerated && closed && !build->err;
+}
+
 bool ci_build_store_memory(const char *root, int64_t build_start_ms,
                            struct ci_store **out_store,
                            uint8_t source_stat_out[32],
@@ -233,10 +244,8 @@ bool ci_build_store_memory(const char *root, int64_t build_start_ms,
     ci_source_root_init(&build.source_root);
 
     bool tx_open = ci_store_begin(store);
-    bool ok = tx_open && ci_store_clear(store) && ci_group_emit_all(store);
-    struct build_file_env env = { .build = &build, .root = root };
-    if (ok && !ci_enumerate_sources(root, build_file_cb, &env)) ok = false;
-    if (build.err) ok = false;
+    bool ok = tx_open && ci_store_clear(store) && ci_group_emit_all(store) &&
+              build_files_with_shards(&build, root);
     if (ok) qsort(build.ids, build.nids, sizeof(build.ids[0]), idmap_cmp);
 
     uint8_t built_source_root[32], built_dep_root[32];
