@@ -812,7 +812,7 @@ the consumer left unaffected.
 | hstatic | a TU stores 6, not 5, in a header's static (against a tree that already has it) | its TU; seeds the setter and the reader | narrowed |
 | alias | `cx_sum`'s body, which an `alias` names too (against a tree with the alias) | the definer | `address-taken` |
 | hasinc | a header only a `__has_include` probes is created | all five (`include-resolution-change`) | narrowed, every TU broadened |
-| hasdel | the same header deleted again (planned against hasinc) | all five | narrowed, every TU broadened |
+| hasdel | the same header deleted again (planned against hasinc) | all five | `include-graph-truncated` (the include graph cannot list a deleted input's readers) |
 | cleanup | the body of a `cleanup` handler another function's local names (against a tree with both) | the definer; seeds the handler and the function that runs it | narrowed |
 | unity | `cx_sum`'s body, which another TU compiles by `#include "cx_c.c"` under `#define cx_sum cx_e_sum` (and `cx_hook` as `cx_e_hook`) | the definer, and the includer (`header-unattributed`) | narrowed; seeds `cx_sum`, `cx_e_sum` and `cx_use_e` |
 | unity_move | a comment line moves `cx_tail`'s declaration below `cx_get` in the included `cx_c.c` | the definer, and the includer (`position`); the plan reaches both | narrowed |

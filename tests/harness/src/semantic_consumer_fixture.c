@@ -305,7 +305,14 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                     .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_OPT_B,
                     .changed = {SCX_OPT},
                     .affected = {true, true, true, true, true},
-                    .reason = SCX_ALL_INC, .obligations = ""},
+                    .reason = SCX_ALL_INC,
+                    /* cx_opt.h no longer exists, and the include graph
+                     * refuses to call a deleted input's reader list complete
+                     * (2facc931f3, "Refuse narrow include impact for missing
+                     * inputs"): its old readers are unknown, so the plan
+                     * falls back to the file-seeded closure */
+                    .obligations = "include-graph-truncated",
+                    .incomplete = "include-graph-truncated"},
     /* F7: a cleanup handler runs, inlined, where no expression names it. */
     [SCX_P_CLEANUP] = {.name = "p_cleanup", .pre = true, .file = SCX_E,
                        .from = SCX_E_END, .to = SCX_CLEANUP_E("1")},
