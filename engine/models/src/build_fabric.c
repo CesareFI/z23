@@ -5,6 +5,7 @@
 
 #include "models/model_text.h"
 #include "platform/time_compat.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <limits.h>
@@ -583,29 +584,101 @@ bool db_build_receipt_find(struct node_db *ndb, const char *receipt_id,
         AR_BIND_TEXT(st, 1, receipt_id), build_receipt_read(out, st));
 }
 
+static void build_job_read_any(void *out, sqlite3_stmt *st)
+{
+    build_job_read(out, st);
+}
+
+static void build_action_read_any(void *out, sqlite3_stmt *st)
+{
+    build_action_read(out, st);
+}
+
+static void build_receipt_read_any(void *out, sqlite3_stmt *st)
+{
+    build_receipt_read(out, st);
+}
+
+/* A bounded list is usable for authority decisions only after SQLITE_DONE.
+ * An error after a partial prefix clears it instead of masquerading as EOF. */
+static bool build_list_args_valid(const struct node_db *ndb,
+                                  const char *label, const char *sql,
+                                  const void *out, size_t row_size, size_t max,
+                                  void (*read_row)(void *, sqlite3_stmt *))
+{
+    return ndb && ndb->open && label && sql && out && read_row &&
+           max > 0 && max <= INT_MAX && row_size <= SIZE_MAX / max;
+}
+
+static int build_list_checked(struct node_db *ndb, const char *label,
+                              const char *sql, const char *job_id, void *out,
+                              size_t row_size, size_t max,
+                              void (*read_row)(void *, sqlite3_stmt *))
+{
+    if (!build_list_args_valid(ndb, label, sql, out, row_size, max,
+                               read_row)) {
+        LOG_ERROR("model", "build_list_checked: bad args");
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &st, NULL);
+    if (rc == SQLITE_OK && !st) rc = SQLITE_ERROR;
+    if (rc == SQLITE_OK && job_id)
+        rc = sqlite3_bind_text(st, 1, job_id, -1, SQLITE_TRANSIENT);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, job_id ? 2 : 1, (sqlite3_int64)max);
+    int count = 0;
+    if (rc == SQLITE_OK)
+        while ((rc = AR_STEP_ROW_READONLY(st)) == SQLITE_ROW) {
+            void *row = (unsigned char *)out + (size_t)count * row_size;
+            memset(row, 0, row_size);
+            read_row(row, st);
+            count++;
+        }
+    int finalized = st ? sqlite3_finalize(st) : SQLITE_OK;
+    if (rc != SQLITE_DONE || finalized != SQLITE_OK) {
+        LOG_ERROR("model", "%s: incomplete query: %s", label,
+                  sqlite3_errmsg(ndb->db));
+        memset(out, 0, (size_t)count * row_size);
+        return -1;
+    }
+    return count;
+}
+
+int db_build_jobs_recent_checked(struct node_db *ndb,
+                                 struct db_build_job *out, size_t max)
+{
+    return build_list_checked(ndb, "db_build_jobs_recent_checked",
+        "SELECT " BUILD_JOB_COLS " FROM build_jobs "
+        "ORDER BY created_at DESC,job_id LIMIT ?", NULL,
+        out, sizeof(*out), max, build_job_read_any);
+}
+
 int db_build_jobs_recent(struct node_db *ndb, struct db_build_job *out,
                          size_t max)
 {
-    sqlite3_stmt *st = NULL;
-    if (!ndb || !ndb->open || !out || max == 0)
-        return 0;
-    AR_QUERY_LIST(ndb, st,
-        "SELECT " BUILD_JOB_COLS " FROM build_jobs "
-        "ORDER BY created_at DESC,job_id LIMIT ?", out, max,
-        AR_BIND_INT(st, 1, (int64_t)max), build_job_read(&out[count], st));
+    int count = db_build_jobs_recent_checked(ndb, out, max);
+    return count < 0 ? 0 : count;
+}
+
+int db_build_job_actions_checked(struct node_db *ndb, const char *job_id,
+                                 struct db_build_action *out, size_t max)
+{
+    if (!job_id) {
+        LOG_ERROR("model", "db_build_job_actions_checked: missing job id");
+        return -1;
+    }
+    return build_list_checked(ndb, "db_build_job_actions_checked",
+        "SELECT " BUILD_ACTION_COLS " FROM build_actions WHERE job_id=? "
+        "ORDER BY sequence,action_id LIMIT ?", job_id,
+        out, sizeof(*out), max, build_action_read_any);
 }
 
 int db_build_job_actions(struct node_db *ndb, const char *job_id,
                          struct db_build_action *out, size_t max)
 {
-    sqlite3_stmt *st = NULL;
-    if (!ndb || !ndb->open || !job_id || !out || max == 0)
-        return 0;
-    AR_QUERY_LIST(ndb, st,
-        "SELECT " BUILD_ACTION_COLS " FROM build_actions WHERE job_id=? "
-        "ORDER BY sequence,action_id LIMIT ?", out, max,
-        AR_BIND_TEXT(st, 1, job_id); AR_BIND_INT(st, 2, (int64_t)max),
-        build_action_read(&out[count], st));
+    int count = db_build_job_actions_checked(ndb, job_id, out, max);
+    return count < 0 ? 0 : count;
 }
 
 int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
@@ -620,17 +693,24 @@ int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
         AR_BIND_INT(st, 1, (int64_t)max), build_worker_read(&out[count], st));
 }
 
+int db_build_job_receipts_checked(struct node_db *ndb, const char *job_id,
+                                  struct db_build_receipt *out, size_t max)
+{
+    if (!job_id) {
+        LOG_ERROR("model", "db_build_job_receipts_checked: missing job id");
+        return -1;
+    }
+    return build_list_checked(ndb, "db_build_job_receipts_checked",
+        "SELECT " BUILD_RECEIPT_COLS " FROM build_receipts WHERE job_id=? "
+        "ORDER BY created_at,receipt_id LIMIT ?", job_id,
+        out, sizeof(*out), max, build_receipt_read_any);
+}
+
 int db_build_job_receipts(struct node_db *ndb, const char *job_id,
                           struct db_build_receipt *out, size_t max)
 {
-    sqlite3_stmt *st = NULL;
-    if (!ndb || !ndb->open || !job_id || !out || max == 0)
-        return 0;
-    AR_QUERY_LIST(ndb, st,
-        "SELECT " BUILD_RECEIPT_COLS " FROM build_receipts WHERE job_id=? "
-        "ORDER BY created_at,receipt_id LIMIT ?", out, max,
-        AR_BIND_TEXT(st, 1, job_id); AR_BIND_INT(st, 2, (int64_t)max),
-        build_receipt_read(&out[count], st));
+    int count = db_build_job_receipts_checked(ndb, job_id, out, max);
+    return count < 0 ? 0 : count;
 }
 
 static bool build_candidate_query_valid(

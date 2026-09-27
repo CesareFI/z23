@@ -137,10 +137,19 @@ int db_build_jobs_recent(struct node_db *ndb, struct db_build_job *out,
                          size_t max);
 int db_build_job_actions(struct node_db *ndb, const char *job_id,
                          struct db_build_action *out, size_t max);
+/* Error-aware variants for decisions requiring a complete scan. Return -1
+ * on any query failure and clear partial rows; call with max+1 to detect
+ * truncation. The legacy list APIs retain their zero-on-error behavior. */
+int db_build_jobs_recent_checked(struct node_db *ndb,
+                                 struct db_build_job *out, size_t max);
+int db_build_job_actions_checked(struct node_db *ndb, const char *job_id,
+                                 struct db_build_action *out, size_t max);
 int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
                           size_t max);
 int db_build_job_receipts(struct node_db *ndb, const char *job_id,
                           struct db_build_receipt *out, size_t max);
+int db_build_job_receipts_checked(struct node_db *ndb, const char *job_id,
+                                  struct db_build_receipt *out, size_t max);
 /* Returns a bounded count, or -1 on invalid input or any query failure.
  * Partial rows are cleared on failure. Request max+1 to detect overflow;
  * a successful LIMIT alone does not establish complete receipt coverage. */

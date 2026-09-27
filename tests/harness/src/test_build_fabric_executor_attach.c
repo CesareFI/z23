@@ -18,9 +18,12 @@
 #include "services/build_fabric_attach.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/build_fabric_worker_evidence.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/build_execution_observation.h"
 #include "vcs/vcs_object.h"
+#include "../../../engine/services/src/build_fabric_observation_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,7 +223,7 @@ static bool att_physical_run(struct node_db *ndb, const char *workspace,
                              const uint8_t secret[32],
                              const uint8_t pubkey[32],
                              struct db_build_receipt *out_receipt,
-                             int64_t *wall_us)
+                             int64_t *wall_us, bool admit)
 {
     struct db_build_action claimed;
     bool got = false;
@@ -237,9 +240,9 @@ static bool att_physical_run(struct node_db *ndb, const char *workspace,
         printf("worker detail: %s\n", executed.message);
         return false;
     }
-    return build_fabric_receipt_admit(ndb, workspace,
-                                      out_receipt->receipt_id,
-                                      (int64_t)platform_time_wall_unix()).ok;
+    return !admit || build_fabric_receipt_admit(
+        ndb, workspace, out_receipt->receipt_id,
+        (int64_t)platform_time_wall_unix()).ok;
 }
 
 static int att_build_work_entries(const char *workspace)
@@ -284,6 +287,229 @@ static bool att_read_artifact_bytes(const char *workspace,
                                out_len) == 0;
 }
 
+static bool att_observation_bytes_root(const char *workspace,
+                                        const char *root_hex,
+                                        uint8_t out[32])
+{
+    uint8_t root[32], *wire = NULL;
+    size_t wire_len = 0;
+    if (!zcl_hex_decode_lower(root_hex, root, 32) ||
+        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+        return false;
+    struct vcs_build_execution_observation_v1 observation;
+    bool ok = vcs_build_execution_observation_v1_parse(
+        wire, wire_len, &observation);
+    free(wire);
+    if (ok) memcpy(out, observation.output_bytes_root, 32);
+    return ok;
+}
+
+static int att_deny_table_reads(void *ctx, int operation,
+                                const char *table, const char *column,
+                                const char *database, const char *trigger)
+{
+    (void)column; (void)database; (void)trigger;
+    const char *denied = ctx ? ctx : "build_jobs";
+    return operation == SQLITE_READ && table &&
+           strcmp(table, denied) == 0 ? SQLITE_DENY : SQLITE_OK;
+}
+
+/* Model an approved worker reporting a different physical output for the
+ * same executor key before admission. The original physical receipt stays
+ * quarantined; the divergent signed receipt advances through normal admission. */
+static bool att_diverge_quarantined_output(struct node_db *ndb,
+                                         const char *workspace,
+                                         struct db_build_action *action,
+                                         struct db_build_receipt *receipt,
+                                         const uint8_t secret[32],
+                                         const uint8_t pubkey[32])
+{
+    uint8_t *bytes = NULL, observation_root[32], artifact_root[32];
+    size_t len = 0;
+    if (!att_read_artifact_bytes(workspace, receipt->output_sha3,
+                                 &bytes, &len) || len == 0)
+        return false;
+    bytes[len - 1] ^= 1u;
+    bool stored = build_fabric_worker_store_artifact(
+        workspace, action->action_id, bytes, len, artifact_root).ok;
+    uint8_t output_bytes_root[32];
+    sha3_256(bytes, len, output_bytes_root);
+    free(bytes);
+    if (!stored || !zcl_hex_decode_lower(receipt->observation_sha3,
+                                          observation_root, 32))
+        return false;
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_object_load_raw(workspace, observation_root, &wire,
+                            &wire_len) != 0)
+        return false;
+    struct vcs_build_execution_observation_v1 observation;
+    bool parsed = vcs_build_execution_observation_v1_parse(
+        wire, wire_len, &observation);
+    free(wire);
+    if (!parsed) return false;
+    memcpy(observation.artifact_root, artifact_root, 32);
+    memcpy(observation.output_bytes_root, output_bytes_root, 32);
+    vcs_build_execution_observed_write_set_root(
+        action->declared_outputs, output_bytes_root,
+        observation.observed_writes_root);
+    if (!build_fabric_worker_store_observation(
+             workspace, &observation, observation_root).ok)
+        return false;
+    zcl_hex_encode(artifact_root, 32, receipt->output_sha3);
+    zcl_hex_encode(observation_root, 32, receipt->observation_sha3);
+    (void)snprintf(receipt->trust_state, sizeof(receipt->trust_state),
+                   "REMOTE_OBSERVED");
+    if (!build_fabric_receipt_id(receipt, receipt->receipt_id).ok)
+        return false;
+    uint8_t id[32], signature[64];
+    if (!zcl_hex_decode_lower(receipt->receipt_id, id, 32)) return false;
+    ed25519_sign(signature, id, sizeof(id), secret, pubkey);
+    zcl_hex_encode(signature, sizeof(signature), receipt->signature);
+    return build_fabric_receipt_quarantine(ndb, receipt,
+             (int64_t)platform_time_wall_unix()).ok &&
+           build_fabric_receipt_admit(ndb, workspace, receipt->receipt_id,
+             (int64_t)platform_time_wall_unix()).ok;
+}
+
+static int test_bf_attach_conflicting_physical_outputs(void)
+{
+    int failures = 0;
+    TEST("build_fabric_attach: contradictory qualified outputs refuse reuse") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(att_open(&ndb, dir, sizeof(dir), path, sizeof(path), "conflict"));
+        ASSERT(vcs_object_store_init(dir));
+        uint8_t input_root[32];
+        sha3_256(att_unit, sizeof(att_unit) - 1u, input_root);
+        ASSERT(vcs_object_put_addressed(dir, input_root, att_unit,
+                                        sizeof(att_unit) - 1u));
+        struct vcs_toolchain_capsule_v1 capsule;
+        uint8_t capsule_root[32];
+        char capsule_hex[65];
+        ASSERT(vcs_toolchain_capsule_v1_capture(&capsule));
+        ASSERT(vcs_toolchain_capsule_v1_root(&capsule, capsule_root));
+        zcl_hex_encode(capsule_root, 32, capsule_hex);
+        uint8_t seed[32], pubkey[32], secret[32];
+        memset(seed, 37, sizeof(seed));
+        ed25519_keypair(pubkey, secret, seed);
+        ASSERT(att_approve_worker(&ndb, pubkey,
+                                  (int64_t)platform_time_wall_unix()));
+        struct db_build_job job_a, job_b, job_c, job_d, job_e;
+        struct db_build_action action_a, action_b, action_c, action_d, action_e;
+        ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_c, capsule_hex,
+                                input_root, "dev-x86-64-v3", &job_a,
+                                &action_a));
+        struct db_build_receipt receipt_a = {0};
+        att_worker_id_from_pubkey(pubkey, receipt_a.worker_id);
+        int64_t wall_us = 0;
+        ASSERT(att_physical_run(&ndb, dir, action_a.action_id, att_id_d,
+                                secret, pubkey, &receipt_a, &wall_us, true));
+        ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_b, capsule_hex,
+                                input_root, "dev-x86-64-v3", &job_b,
+                                &action_b));
+        struct db_build_receipt receipt_b = {0};
+        att_worker_id_from_pubkey(pubkey, receipt_b.worker_id);
+        ASSERT(att_physical_run(&ndb, dir, action_b.action_id, att_lease_b,
+                                secret, pubkey, &receipt_b, &wall_us, true));
+        uint8_t output_a[32], output_b[32];
+        ASSERT(att_observation_bytes_root(dir, receipt_a.observation_sha3,
+                                          output_a));
+        ASSERT(att_observation_bytes_root(dir, receipt_b.observation_sha3,
+                                          output_b));
+        ASSERT(memcmp(output_a, output_b, 32) == 0);
+        ASSERT(build_fabric_observation_verify(
+                   dir, &job_b, &action_b, &receipt_b).ok);
+        ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
+                                input_root, "dev-x86-64-v3", &job_c,
+                                &action_c));
+        struct db_build_receipt receipt_c;
+        struct build_fabric_attach_report report;
+        struct zcl_result attached = build_fabric_attach(
+            &ndb, dir, NULL, &job_c, &action_c, secret, pubkey, &receipt_c,
+            &report);
+        ASSERT_RESULT_OK(attached);
+        ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_HIT);
+        ASSERT_EQ(report.compiler_processes, 0);
+
+        ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_d, capsule_hex,
+                                input_root, "dev-x86-64-v3", &job_d,
+                                &action_d));
+        struct db_build_receipt receipt_d = {0};
+        att_worker_id_from_pubkey(pubkey, receipt_d.worker_id);
+        ASSERT(att_physical_run(&ndb, dir, action_d.action_id, att_id_b,
+                                secret, pubkey, &receipt_d, &wall_us, false));
+        ASSERT(db_build_action_find(&ndb, action_d.action_id, &action_d));
+        ASSERT(att_diverge_quarantined_output(&ndb, dir, &action_d, &receipt_d,
+                                              secret, pubkey));
+        ASSERT(db_build_action_find(&ndb, action_d.action_id, &action_d));
+        uint8_t output_d[32];
+        ASSERT(att_observation_bytes_root(dir, receipt_d.observation_sha3,
+                                          output_d));
+        ASSERT(memcmp(output_a, output_d, 32) != 0);
+        ASSERT(build_fabric_observation_verify(
+                   dir, &job_d, &action_d, &receipt_d).ok);
+        ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_b, capsule_hex,
+                                input_root, "dev-x86-64-v3", &job_e,
+                                &action_e));
+        struct db_build_receipt receipt_e;
+        char denied_receipts[] = "build_receipts";
+        ASSERT_EQ(sqlite3_set_authorizer(ndb.db, att_deny_table_reads,
+                                         denied_receipts), SQLITE_OK);
+        attached = build_fabric_attach(
+            &ndb, dir, NULL, &job_e, &action_e, secret, pubkey, &receipt_e,
+            &report);
+        ASSERT(!attached.ok);
+        ASSERT_STR_EQ(report.refusal, "attach-refused-history-incomplete");
+        ASSERT_EQ(sqlite3_set_authorizer(ndb.db, NULL, NULL), SQLITE_OK);
+        attached = build_fabric_attach(
+            &ndb, dir, NULL, &job_e, &action_e, secret, pubkey, &receipt_e,
+            &report);
+        ASSERT(!attached.ok);
+        ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_REFUSED);
+        ASSERT_STR_EQ(report.refusal, "attach-refused-observation-conflict");
+        ASSERT_EQ(report.compiler_processes, 0);
+        struct db_build_action durable_e;
+        ASSERT(db_build_action_find(&ndb, action_e.action_id, &durable_e));
+        ASSERT_STR_EQ(durable_e.state, "QUEUED");
+
+        /* A broken read is distinct from an empty history. */
+        struct db_build_job scan[2];
+        ASSERT_EQ(sqlite3_set_authorizer(ndb.db, att_deny_table_reads,
+                                         NULL), SQLITE_OK);
+        ASSERT_EQ(db_build_jobs_recent_checked(&ndb, scan, 2), -1);
+        ASSERT_EQ(sqlite3_set_authorizer(ndb.db, NULL, NULL), SQLITE_OK);
+
+        /* Saturation is an explicit refusal, even when a qualified donor
+         * appeared in the bounded prefix. */
+        for (unsigned i = 0; i < 252u; i++) {
+            char source_id[65];
+            (void)snprintf(source_id, sizeof(source_id), "%064x", 1000u + i);
+            struct db_build_job filler_job;
+            struct db_build_action filler_action;
+            ASSERT(att_plan_request(&ndb, dir, source_id, att_id_c,
+                                    capsule_hex, input_root, "dev-x86-64-v3",
+                                    &filler_job, &filler_action));
+        }
+        struct db_build_job job_overflow;
+        struct db_build_action action_overflow;
+        ASSERT(att_plan_request(&ndb, dir, att_id_b, att_id_d, capsule_hex,
+                                input_root, "dev-x86-64-v3", &job_overflow,
+                                &action_overflow));
+        struct db_build_receipt receipt_overflow;
+        attached = build_fabric_attach(
+            &ndb, dir, NULL, &job_overflow, &action_overflow, secret, pubkey,
+            &receipt_overflow, &report);
+        ASSERT(!attached.ok);
+        ASSERT_STR_EQ(report.refusal, "attach-refused-history-incomplete");
+        ASSERT_EQ(report.compiler_processes, 0);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_attach_avoids_second_compile(void)
 {
     int failures = 0;
@@ -320,7 +546,7 @@ static int test_bf_attach_avoids_second_compile(void)
         int64_t physical_wall_us = 0;
         ASSERT(att_physical_run(&ndb, dir, action_a.action_id, att_id_d,
                                 secret, pubkey, &receipt_a,
-                                &physical_wall_us));
+                                &physical_wall_us, true));
         struct db_build_action durable_a;
         ASSERT(db_build_action_find(&ndb, action_a.action_id, &durable_a));
         ASSERT_STR_EQ(durable_a.state, "ACCEPTED");
@@ -902,7 +1128,7 @@ static int test_bf_attach_reproduction_never_attaches(void)
         att_worker_id_from_pubkey(pubkey, receipt_a.worker_id);
         int64_t wall_a = 0;
         ASSERT(att_physical_run(&ndb, dir, action_a.action_id, att_id_d,
-                                secret, pubkey, &receipt_a, &wall_a));
+                                secret, pubkey, &receipt_a, &wall_a, true));
 
         /* The mandated independent run: same everything, distinct profile. */
         char repro_action_id[65], repro_job_id[65];
@@ -933,7 +1159,7 @@ static int test_bf_attach_reproduction_never_attaches(void)
         att_worker_id_from_pubkey(pubkey, receipt_c.worker_id);
         int64_t wall_c = 0;
         ASSERT(att_physical_run(&ndb, dir, action_c.action_id, att_lease_b,
-                                secret, pubkey, &receipt_c, &wall_c));
+                                secret, pubkey, &receipt_c, &wall_c, true));
         struct db_build_action durable_c;
         ASSERT(db_build_action_find(&ndb, action_c.action_id, &durable_c));
         ASSERT_STR_EQ(durable_c.state, "ACCEPTED");
@@ -957,6 +1183,31 @@ static int test_bf_attach_reproduction_never_attaches(void)
         printf("independent runs preserved: physical compiler runs=2 "
                "(primary_us=%lld reproduction_us=%lld) attaches=0\n",
                (long long)wall_a, (long long)wall_c);
+
+        /* A second reproduction has the same profile as the first, but it
+         * still requires its own physical compiler execution. */
+        struct db_build_job job_d;
+        struct db_build_action action_d;
+        ASSERT(att_plan_request(&ndb, dir, att_id_c, att_id_d, capsule_hex,
+                                input_root,
+                                VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1,
+                                &job_d, &action_d));
+        struct db_build_receipt receipt_d = {0};
+        struct build_fabric_attach_report second_repro;
+        struct zcl_result no_attach = build_fabric_attach(
+            &ndb, dir, NULL, &job_d, &action_d, secret, pubkey, &receipt_d,
+            &second_repro);
+        ASSERT(!no_attach.ok);
+        ASSERT_STR_EQ(second_repro.refusal,
+                      "attach-refused-independent-run-required");
+        ASSERT_EQ(second_repro.compiler_processes, 0);
+        att_worker_id_from_pubkey(pubkey, receipt_d.worker_id);
+        int64_t wall_d = 0;
+        ASSERT(att_physical_run(&ndb, dir, action_d.action_id, att_id_b,
+                                secret, pubkey, &receipt_d, &wall_d, true));
+        ASSERT(strcmp(receipt_d.observation_sha3,
+                      receipt_c.observation_sha3) != 0);
+        ASSERT(wall_d > 0);
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -975,6 +1226,7 @@ int test_build_fabric_attach(void)
     failures += test_bf_attach_input_cas_refusals();
     failures += test_bf_attach_unobserved_assembler_input_refused();
     failures += test_bf_attach_avoids_second_compile();
+    failures += test_bf_attach_conflicting_physical_outputs();
     failures += test_bf_attach_reproduction_never_attaches();
     printf("=== build_fabric_attach: %d failures ===\n", failures);
     return failures;

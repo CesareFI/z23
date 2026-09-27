@@ -598,18 +598,21 @@ static bool bfat_row_binding_exact(
 static bool bfat_donor_receipt_scan(
     struct node_db *ndb, const struct db_build_job *donor_job,
     const struct db_build_action *donor_action,
-    struct db_build_receipt *out_receipt)
+    struct db_build_receipt *out_receipt, bool *history_incomplete)
 {
+    *history_incomplete = false;
     struct db_build_receipt *rows = zcl_malloc(
         BFAT_RECEIPT_SCAN_CAP * sizeof(*rows), "build.attach.receipts");
     if (!rows) {
         LOG_ERROR("build_fabric", "cannot allocate donor receipt scan buffer");
+        *history_incomplete = true;
         return false;
     }
-    int count = db_build_job_receipts(ndb, donor_job->job_id, rows,
-                                      BFAT_RECEIPT_SCAN_CAP);
+    int count = db_build_job_receipts_checked(
+        ndb, donor_job->job_id, rows, BFAT_RECEIPT_SCAN_CAP);
     const struct db_build_receipt *accepted = NULL;
     bool complete = count >= 0 && count < BFAT_RECEIPT_SCAN_CAP;
+    if (!complete) *history_incomplete = true;
     for (int i = 0; complete && i < count; i++) {
         if (strcmp(rows[i].action_id, donor_action->action_id) != 0 ||
             strcmp(rows[i].trust_state, "LOCAL_ACCEPTED") != 0)
@@ -646,18 +649,22 @@ static bool bfat_donor_qualified(
     struct node_db *ndb, const char *workspace,
     const struct db_build_job *donor_job,
     const struct db_build_action *donor_action, int64_t now,
-    struct db_build_receipt *out_receipt)
+    struct db_build_receipt *out_receipt, bool *history_incomplete)
 {
     struct db_build_receipt accepted;
-    if (!bfat_donor_receipt_scan(ndb, donor_job, donor_action, &accepted))
+    if (!bfat_donor_receipt_scan(ndb, donor_job, donor_action, &accepted,
+                                 history_incomplete))
         return false; /* raw-return-ok:disqualified donor; the scan logs its
                          own alloc failure and the caller reports
                          attach-refused-donor-not-qualified */
     if (!bfat_donor_worker_live(ndb, accepted.worker_id, now) ||
-        !bfat_receipt_signature_valid(ndb, &accepted) ||
-        !build_fabric_observation_verify(workspace, donor_job, donor_action,
-                                         &accepted).ok)
+        !bfat_receipt_signature_valid(ndb, &accepted))
         return false;
+    if (!build_fabric_observation_verify(workspace, donor_job, donor_action,
+                                         &accepted).ok) {
+        *history_incomplete = true;
+        return false;
+    }
     *out_receipt = accepted;
     return true;
 }
@@ -1067,52 +1074,60 @@ static bool bfat_donor_key_matches(const struct bfat_attach_ctx *c,
     return memcmp(key, c->key, 32) == 0;
 }
 
-/* Donor scan: durable ACCEPTED compile actions whose executor key re-derives
- * to the requester's key. Returns true when the pipeline must stop: *refusal
- * NULL is a clean MISS (no qualified donor), non-NULL is the refusal token. */
-static bool bfat_donor_scan(struct bfat_attach_ctx *c, const char **refusal)
+struct bfat_scan_state {
+    bool found, cross_profile, unqualified, incomplete, contradictory;
+    uint8_t output_bytes_root[32];
+};
+
+static void bfat_scan_one_donor(struct bfat_attach_ctx *c,
+                                const struct db_build_job *job,
+                                const struct db_build_action *action,
+                                struct bfat_scan_state *scan)
 {
-    struct db_build_job *jobs = zcl_malloc(BFAT_SCAN_CAP * sizeof(*jobs),
-                                           "build.attach.jobs");
-    struct db_build_action *actions = zcl_malloc(
-        BFAT_SCAN_CAP * sizeof(*actions), "build.attach.actions");
-    if (!jobs || !actions) {
-        free(actions);
-        free(jobs);
-        *refusal = "attach-refused-scan-alloc-failed";
-        return true;
+    if (!bfat_donor_key_matches(c, job, action)) return;
+    if (strcmp(job->profile, c->job.profile) != 0) {
+        scan->cross_profile = true;
+        return;
     }
-    bool found = false, saw_cross_profile = false, saw_unqualified = false;
-    int job_count = db_build_jobs_recent(c->ndb, jobs, BFAT_SCAN_CAP);
-    for (int j = 0; !found && j < job_count; j++) {
-        int action_count = db_build_job_actions(c->ndb, jobs[j].job_id,
-                                                actions, BFAT_SCAN_CAP);
-        for (int a = 0; a < action_count; a++) {
-            if (!bfat_donor_key_matches(c, &jobs[j], &actions[a]))
-                continue;
-            if (strcmp(jobs[j].profile, c->job.profile) != 0) {
-                /* A distinct profile is a mandated independent verification
-                 * run; it must execute physically, never attach. */
-                saw_cross_profile = true;
-                continue;
-            }
-            if (!bfat_donor_qualified(c->ndb, c->workspace, &jobs[j],
-                                      &actions[a], c->now,
-                                      &c->donor_receipt)) {
-                saw_unqualified = true;
-                continue;
-            }
-            c->donor_action = actions[a];
-            found = true;
-        }
+    struct db_build_receipt receipt;
+    bool donor_incomplete = false;
+    if (!bfat_donor_qualified(c->ndb, c->workspace, job, action, c->now,
+                              &receipt, &donor_incomplete)) {
+        scan->incomplete = scan->incomplete || donor_incomplete;
+        scan->unqualified = true;
+        return;
     }
-    free(actions);
-    free(jobs);
-    if (found)
+    struct vcs_build_execution_observation_v1 observation;
+    if (!bfat_observation_load(c->workspace, receipt.observation_sha3,
+                               &observation).ok) {
+        scan->incomplete = true;
+        return;
+    }
+    if (scan->found) {
+        if (memcmp(scan->output_bytes_root,
+                   observation.output_bytes_root, 32) != 0)
+            scan->contradictory = true;
+    } else {
+        memcpy(scan->output_bytes_root, observation.output_bytes_root, 32);
+        c->donor_action = *action;
+        c->donor_receipt = receipt;
+        scan->found = true;
+    }
+}
+
+static bool bfat_scan_result(struct bfat_attach_ctx *c,
+                              const struct bfat_scan_state *scan,
+                              const char **refusal)
+{
+    if (scan->incomplete)
+        *refusal = "attach-refused-history-incomplete";
+    else if (scan->contradictory)
+        *refusal = "attach-refused-observation-conflict";
+    else if (scan->found)
         return false;
-    if (saw_unqualified)
+    else if (scan->unqualified)
         *refusal = "attach-refused-donor-not-qualified";
-    else if (saw_cross_profile)
+    else if (scan->cross_profile)
         *refusal = "attach-refused-independent-run-required";
     else {
         c->report->attach_wall_us =
@@ -1120,6 +1135,40 @@ static bool bfat_donor_scan(struct bfat_attach_ctx *c, const char **refusal)
         *refusal = NULL;
     }
     return true;
+}
+
+/* Donor scan: durable ACCEPTED compile actions whose executor key re-derives
+ * to the requester's key. Returns true when the pipeline must stop: *refusal
+ * NULL is a clean MISS (no qualified donor), non-NULL is the refusal token. */
+static bool bfat_donor_scan(struct bfat_attach_ctx *c, const char **refusal)
+{
+    struct db_build_job *jobs = zcl_malloc((BFAT_SCAN_CAP + 1u) * sizeof(*jobs),
+                                           "build.attach.jobs");
+    struct db_build_action *actions = zcl_malloc(
+        (BFAT_SCAN_CAP + 1u) * sizeof(*actions), "build.attach.actions");
+    if (!jobs || !actions) {
+        free(actions);
+        free(jobs);
+        *refusal = "attach-refused-scan-alloc-failed";
+        return true;
+    }
+    struct bfat_scan_state scan = {0};
+    int job_count = db_build_jobs_recent_checked(
+        c->ndb, jobs, BFAT_SCAN_CAP + 1u);
+    if (job_count < 0 || job_count > BFAT_SCAN_CAP) scan.incomplete = true;
+    for (int j = 0; !scan.incomplete && j < job_count; j++) {
+        int action_count = db_build_job_actions_checked(
+            c->ndb, jobs[j].job_id, actions, BFAT_SCAN_CAP + 1u);
+        if (action_count < 0 || action_count > BFAT_SCAN_CAP) {
+            scan.incomplete = true;
+            break;
+        }
+        for (int a = 0; !scan.incomplete && a < action_count; a++)
+            bfat_scan_one_donor(c, &jobs[j], &actions[a], &scan);
+    }
+    free(actions);
+    free(jobs);
+    return bfat_scan_result(c, &scan, refusal);
 }
 
 /* Fetch the donor output bytes WITHOUT compiling and prove them against the
