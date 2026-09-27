@@ -1438,6 +1438,20 @@ ZCL_TEST_GROUP(semantic_facts)
  * narrow; snapshot-proved probes. Self-skips, visibly, where the sensor has
  * not been built. */
 ZCL_TEST_GROUP(semantic_facts_live)
+/* The declaration-identity consumer (tools/dev/devloop_facts_consumer.c),
+ * without clang: on the checked-in five-TU manifests under
+ * tests/fixtures/semantic_consumer every header, macro, conditional,
+ * typedef, comment, signature, static-body, address, shadow and flag edit
+ * affects exactly the TUs its declaration identities reach, each with its
+ * reason; dropping the type, macro or position rule misses an affected TU;
+ * a reader without facts or without the depfile graph falls back; and
+ * dev.change.plan pages the universe. */
+ZCL_TEST_GROUP(semantic_consumer)
+/* The same consumer against the live sensor and cc: the edit table holds on
+ * live manifests, and every TU it calls unaffected compiles to identical
+ * object bytes (a changed object it did not predict is a missed
+ * dependency). Self-skips, visibly, where the sensor has not been built. */
+ZCL_TEST_GROUP(semantic_consumer_live)
 ZCL_SPEC_GROUP(wallet_dashboard)
 ZCL_SPEC_GROUP(wallet_send)
 ZCL_SPEC_GROUP(wallet_receive)

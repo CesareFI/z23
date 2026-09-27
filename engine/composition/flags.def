@@ -2062,6 +2062,8 @@ Z23_FLAG("ZCL_SELF_HEAL_SCAN_DEPTH", "env_runtime", "-", "-",
           "undocumented; first use core/modules/validation/src/process_block_self_heal_scan_state.c:26")
 Z23_FLAG("ZCL_SELF_HEAL_SCAN_ENABLE", "env_runtime", "-", "-",
           "undocumented; first use core/modules/validation/src/process_block_self_heal_scan_state.c:46")
+Z23_FLAG("ZCL_SEMANTIC_CONSUMER_FIXTURE_OUT", "env_test", "-", "-",
+          "directory the semantic_consumer_live group copies each live sensor manifest into as <variant>/<tu>.zsm (refreshes tests/fixtures/semantic_consumer); first use tests/harness/src/test_semantic_consumer_live.c:142")
 Z23_FLAG("ZCL_SEMANTIC_FACTS_FIXTURE_OUT", "env_test", "-", "-",
           "directory the semantic_facts_live group copies each live sensor manifest into (refreshes tests/fixtures/semantic_facts); first use tests/harness/src/test_semantic_facts_live.c:168")
 Z23_FLAG("ZCL_SEMANTIC_FIXTURE_OUT", "env_test", "-", "-",

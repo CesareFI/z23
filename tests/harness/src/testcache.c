@@ -439,6 +439,10 @@ static bool group_reads_external_inputs(const char *name)
         "replay_canary_verdict",
         "secrets_hygiene",
         "self_folded_anchor",
+        /* read tests/fixtures/semantic_consumer; the sibling execs the
+         * sensor and cc. */
+        "semantic_consumer",
+        "semantic_consumer_live",
         /* read the tests/fixtures/semantic_facts manifests; the sibling
          * execs the libclang sensor build/bin/z23-clang-manifest. */
         "semantic_facts",
