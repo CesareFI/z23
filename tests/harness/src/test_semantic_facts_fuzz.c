@@ -29,8 +29,10 @@
  * back over a pipe; reports print in case order. Self-skips,
  * visibly, where the sensor has not been built (`make clang-manifest`),
  * where no clang sits beside the libclang it links, or where the sensor is
- * not ELF. A reproducer marked known-RED names the fix it waits for; it
- * still fails the group.
+ * not ELF. A reproducer marked known-RED names the fix it waits for and the
+ * exact false-negative lines it reports until then: it holds only when it
+ * fails with exactly those lines. Any other outcome fails the group: an
+ * ERROR, another miss, or a PASS (the mark is stale and must go).
  */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
@@ -248,6 +250,7 @@ static bool gcc_missing(struct sfz_group *g, const char *label)
 struct sfz_item {
     struct sfz_case c;
     const char *known_red; /* a reproducer's known-RED mark */
+    const char *known_red_why; /* ...and the exact lines it must report */
     bool run;              /* false: skipped, or failed before it could run */
     bool ok;               /* passed, or its generator edit changed nothing */
     pid_t pid;
@@ -311,6 +314,41 @@ static void item_start(const struct sfz_env *env, struct sfz_item *it)
     it->fd = p[0];
 }
 
+/* True when `why` is exactly the lines of `want`, each reported with the
+ * two-space indent sfz_why() gives a false-negative line. */
+static bool why_is(const char *why, const char *want)
+{
+    while (*want != '\0') {
+        const char *eol = strchr(want, '\n');
+        size_t len = eol != NULL ? (size_t)(eol - want) + 1 : strlen(want);
+        if (strncmp(why, "  ", 2) != 0 || strncmp(why + 2, want, len) != 0)
+            return false;
+        why += 2 + len;
+        want += len;
+    }
+    return *why == '\0';
+}
+
+/* A known-RED reproducer holds only when it fails with exactly its
+ * recorded lines: an ERROR, a NOOP, another miss or a PASS (a stale mark)
+ * each fail the group. */
+static bool known_red_holds(const struct sfz_item *it)
+{
+    bool holds = it->o.status == SFZ_FAIL && it->known_red_why != NULL &&
+                 why_is(it->o.why, it->known_red_why);
+    if (holds)
+        printf("semantic_facts_fuzz: %s KNOWN-RED as recorded, expected until %s\n",
+               it->c.label, it->known_red);
+    else if (it->o.status == SFZ_PASS)
+        printf("semantic_facts_fuzz: %s now passes: its known-RED mark is stale, "
+               "remove it\n", it->c.label);
+    else
+        printf("semantic_facts_fuzz: %s KNOWN-RED MISMATCH: expected FAIL "
+               "reporting exactly:\n%s", it->c.label,
+               it->known_red_why != NULL ? it->known_red_why : "(nothing recorded)\n");
+    return holds;
+}
+
 static void item_finish(struct sfz_group *g, struct sfz_item *it)
 {
     int st = 0;
@@ -327,14 +365,15 @@ static void item_finish(struct sfz_group *g, struct sfz_item *it)
     }
     tally(&g->t, &it->o);
     report(&it->c, &it->o);
-    g->kept = g->kept || it->o.status == SFZ_FAIL || it->o.status == SFZ_ERROR;
-    it->ok = it->o.status == SFZ_PASS || it->o.status == SFZ_NOOP;
-    if (it->known_red != NULL && !it->ok)
-        printf("semantic_facts_fuzz: %s KNOWN-RED, expected until %s\n",
-               it->c.label, it->known_red);
+    if (it->known_red != NULL)
+        it->ok = known_red_holds(it);
+    else
+        it->ok = it->o.status == SFZ_PASS || it->o.status == SFZ_NOOP;
+    /* a case that failed as recorded leaves nothing to inspect */
     if (it->known_red != NULL && it->ok)
-        printf("semantic_facts_fuzz: %s now passes: remove its known-RED mark\n",
-               it->c.label);
+        (void)test_rm_rf_recursive(it->c.dir);
+    else
+        g->kept = g->kept || it->o.status == SFZ_FAIL || it->o.status == SFZ_ERROR;
 }
 
 /* Run every runnable item, at most SFZ_CASES_AT_ONCE at once, reporting
@@ -372,6 +411,7 @@ static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
     (void)snprintf(c->kind, sizeof(c->kind), "%s", r->kind);
     (void)snprintf(c->detail, sizeof(c->detail), "%s", r->detail);
     it->known_red = r->known_red;
+    it->known_red_why = r->known_red_why;
     it->ok = true;
     if (r->gcc_deps && gcc_missing(g, r->name))
         return;

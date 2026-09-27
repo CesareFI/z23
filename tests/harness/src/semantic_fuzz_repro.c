@@ -520,58 +520,62 @@ static const struct sfz_file k_pass_undefbody[] = {
 
 const struct sfz_repro k_sfz_repros[] = {
     {"F1_flag", "flag", "Makefile CFLAGS_EXTRA gains -DPROJ_MODE=1", false,
-     NULL, SFZ_FILES(k_f1_flag)},
+     NULL, SFZ_FILES(k_f1_flag), NULL},
     {"F2_counter_c", "counter_c",
      "t0_a gains a __COUNTER__ expansion; t0_b, below it and unchanged, now "
      "returns 1",
-     false, NULL, SFZ_FILES(k_f2_counter_c)},
+     false, NULL, SFZ_FILES(k_f2_counter_c), NULL},
     {"F2_counter_header", "header_inline",
      "h_inl gains one __COUNTER__ expansion; every later __COUNTER__ in each "
      "reader shifts by one",
-     false, NULL, SFZ_FILES(k_f2_counter_header)},
+     false, NULL, SFZ_FILES(k_f2_counter_header), NULL},
     {"F3_line_c", "comment_ws",
      "a blank line inside t0_a moves t0_b down one line; __LINE__ in t0_b "
      "changes",
-     false, NULL, SFZ_FILES(k_f3_line_c)},
+     false, NULL, SFZ_FILES(k_f3_line_c), NULL},
     {"F4_hasinc_create_gccdeps", "shadow",
      "new inc1/opt.h flips a __has_include in inc2/h.h; gcc depfiles omit "
      "the probe",
-     true, NULL, SFZ_FILES(k_f4_hasinc_create_gccdeps)},
+     true, NULL, SFZ_FILES(k_f4_hasinc_create_gccdeps), NULL},
     {"F4_hasinc_delete", "hasinc",
      "deleting inc1/opt.h flips a __has_include in inc2/h.h", false, NULL,
-     SFZ_FILES(k_f4_hasinc_delete)},
+     SFZ_FILES(k_f4_hasinc_delete), NULL},
     {"F5_header_static", "body_extern",
      "t0_set stores 6 not 5 into a header-defined static; t0_get folds it",
-     false, NULL, SFZ_FILES(k_f5_header_static)},
+     false, NULL, SFZ_FILES(k_f5_header_static), NULL},
     {"F6_alias", "body_extern", "body of h_api, which h_api_compat aliases",
-     false, NULL, SFZ_FILES(k_f6_alias)},
+     false, NULL, SFZ_FILES(k_f6_alias), NULL},
     {"F7_cleanup_handler", "body_static",
      "body of a cleanup() handler that t0_work inlines", false,
      "the consumer's cleanup-handler fix: t0_work runs and inlines its "
      "__attribute__((cleanup)) handler t0_release, whose body changed, and "
      "is not a seed",
-     SFZ_FILES(k_f7_cleanup_handler)},
+     SFZ_FILES(k_f7_cleanup_handler),
+     "src/t0.c t0_work NOT-COVERED\n"},
     {"F8_c_includes_c", "body_static",
      "test_b.c #includes b.c to reach its statics; b_k body changes", false,
      "the consumer's .c-includes-.c fix: test_b.c compiles b.c's statics "
      "into its own object, and a b.c edit does not seed the includer's "
      "functions that inline them (test_b_k)",
-     SFZ_FILES(k_f8_c_includes_c)},
+     SFZ_FILES(k_f8_c_includes_c),
+     "src/test_b.c test_b_k NOT-COVERED\n"},
     {"F8_c_includes_c_renamed", "body_static",
      "a.c #includes b.c (unity build); b_k body changes", false,
      "the consumer's .c-includes-.c fix: a.c compiles b.c's functions into "
      "its own object, and a b.c edit does not seed the includer's functions "
      "that inline them (a_b_api, a_use)",
-     SFZ_FILES(k_f8_c_includes_c_renamed)},
+     SFZ_FILES(k_f8_c_includes_c_renamed),
+     "src/a.c a_b_api NOT-COVERED\n"
+     "src/a.c a_use NOT-COVERED\n"},
     {"pass_hd", "macro_value", "H_A 1->3 flips H_D", false, NULL,
-     SFZ_FILES(k_pass_hd)},
+     SFZ_FILES(k_pass_hd), NULL},
     {"pass_hdrproto", "body_static",
      "body of a static declared in a header, defined in the main file", false,
-     NULL, SFZ_FILES(k_pass_hdrproto)},
+     NULL, SFZ_FILES(k_pass_hdrproto), NULL},
     {"pass_undef", "macro_value", "H_TMP 5->6, #undef after use", false, NULL,
-     SFZ_FILES(k_pass_undef)},
+     SFZ_FILES(k_pass_undef), NULL},
     {"pass_undefbody", "body_extern", "#undef inside t0_f changes #ifdef in t0_g",
-     false, NULL, SFZ_FILES(k_pass_undefbody)},
+     false, NULL, SFZ_FILES(k_pass_undefbody), NULL},
 };
 const size_t k_sfz_nrepros = sizeof(k_sfz_repros) / sizeof(k_sfz_repros[0]);
 

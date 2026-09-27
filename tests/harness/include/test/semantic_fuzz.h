@@ -57,6 +57,10 @@ struct sfz_repro {
     const char *known_red; /* non-NULL: expected to fail until this lands */
     const struct sfz_file *files;
     size_t nfiles;
+    /* With known_red: the exact false-negative lines the case must report,
+     * each ending in '\n', in report order. The case holds only when it
+     * FAILs with exactly these lines; a PASS means the mark is stale. */
+    const char *known_red_why;
 };
 
 extern const struct sfz_repro k_sfz_repros[];

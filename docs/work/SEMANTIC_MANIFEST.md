@@ -1265,8 +1265,11 @@ fails the group. The default run is a fixed list of 40 (seed, profile,
 kind) cases, and must yield narrowed verdicts that seed a changed
 function, so the group cannot pass on fallbacks alone.
 `ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]` runs a long range
-instead. A reproducer marked known-RED names the fix it waits for and
-still fails the group: at 64370952d5 those are F7 (a `cleanup()` handler
+instead. A reproducer marked known-RED names the fix it waits for and the
+exact false-negative lines it reports until then; it holds only when it
+fails with exactly those lines, and any other outcome (an ERROR, a
+different miss, or a PASS, which means the mark is stale) fails the group.
+At 64370952d5 the known-RED reproducers are F7 (a `cleanup()` handler
 inlined into a function that is not seeded) and both F8 shapes (a `.c`
 that `#include`s another `.c`: an edit to the included file does not seed
 the includer's functions). Cases run four at once, each in its own
