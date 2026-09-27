@@ -80,6 +80,9 @@ static void simulate(const uint8_t *wire, size_t length) {
     assert(reply_length == 76 && app.transaction.reviewed_length == length);
     assert(blue_review_app_next(&app, sha256));
     expect_screen(&app, "PUBLIC IN/OUT: 1/2");
+    assert(strcmp(app.lines[1], "OUTPUTS: 0.49999755 ZCL") == 0);
+    assert(strcmp(app.lines[3], "FEE UNKNOWN; SPROUT: 0") == 0);
+    assert(strcmp(app.lines[4], "SHIELDED HIDDEN; NO SIGNING") == 0);
     assert(blue_review_app_next(&app, sha256));
     expect_screen(&app, "OUTPUT 1/2: P2PKH");
     assert(blue_review_app_next(&app, sha256));
@@ -92,10 +95,88 @@ static void simulate(const uint8_t *wire, size_t length) {
     assert(!blue_review_app_next(&app, sha256));
 }
 
+static size_t script_fixture(uint8_t wire[96]) {
+    memset(wire, 0, 96);
+    memcpy(wire, (uint8_t[]){4, 0, 0, 0x80, 0x85, 0x20, 0x2f, 0x89}, 8);
+    size_t length = 8;
+    wire[length++] = 0;
+    wire[length++] = 2;
+    wire[length++] = 100;
+    length += 7;
+    wire[length++] = 23;
+    wire[length++] = 0xa9;
+    wire[length++] = 0x14;
+    length += 20;
+    wire[length++] = 0x87;
+    length += 8;
+    wire[length++] = 2;
+    wire[length++] = 0x6a;
+    wire[length++] = 0;
+    length += 4 + 4 + 8 + 1 + 1 + 1;
+    return length;
+}
+
+static void simulate_scripts(void) {
+    blue_review_app app = {0};
+    uint8_t wire[96], apdu[260];
+    size_t length = script_fixture(wire), reply_length;
+    blue_review_app_reset(&app);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x10, 0, 0, 2,
+                            (uint8_t)length, 0}, 7);
+    assert(command(&app, apdu, 7, &reply_length) == 0x9000);
+    apdu[1] = 0x11;
+    apdu[4] = (uint8_t)length;
+    memcpy(apdu + 5, wire, length);
+    assert(command(&app, apdu, length + 5, &reply_length) == 0x9000);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x12, 0, 0, 0}, 5);
+    assert(command(&app, apdu, 5, &reply_length) == 0x9000);
+    assert(blue_review_app_next(&app, sha256));
+    assert(blue_review_app_next(&app, sha256));
+    expect_screen(&app, "OUTPUT 1/2: P2SH");
+    assert(strcmp(app.lines[2], "ZCL MAINNET ADDRESS") == 0);
+    assert(blue_review_app_next(&app, sha256));
+    expect_screen(&app, "OUTPUT 2/2: OP_RETURN");
+    assert(strcmp(app.lines[4], "TOKEN STATUS UNVERIFIED") == 0);
+}
+
+static uint32_t random_word(uint32_t *state) {
+    *state = *state * 1664525u + 1013904223u;
+    return *state;
+}
+
+static void simulate_malformed_commands(void) {
+    blue_review_app app = {0};
+    uint32_t seed = 0x2345abcd;
+    static const uint8_t instructions[] = {1, 0x10, 0x11, 0x12,
+                                           0x13, 0x14, 0xff};
+    blue_review_app_reset(&app);
+    for (unsigned trial = 0; trial < 10000; ++trial) {
+        uint8_t apdu[260];
+        for (size_t i = 0; i < sizeof apdu; ++i)
+            apdu[i] = (uint8_t)(random_word(&seed) >> 24);
+        apdu[0] = trial % 7 ? 0xa5 : apdu[0];
+        apdu[1] = instructions[random_word(&seed) % sizeof instructions];
+        if (trial % 5) apdu[2] = apdu[3] = 0;
+        size_t length = random_word(&seed) % (sizeof apdu + 1);
+        if (trial % 3 == 0 && length >= 5) apdu[4] = (uint8_t)(length - 5);
+        size_t reply_length = 260;
+        uint16_t status = command(&app, apdu, length, &reply_length);
+        assert(status != 0 && reply_length <= 255);
+        assert(app.transaction.expected <= ZCL_BLUE_REVIEW_MAX_BYTES);
+        assert(app.transaction.received <= app.transaction.expected);
+        assert(app.transaction.reviewed_length <= ZCL_BLUE_REVIEW_MAX_BYTES);
+        if (trial % 11 == 0) blue_review_app_next(&app, sha256);
+        for (size_t i = 0; i < ZCL_BLUE_REVIEW_LINES; ++i)
+            assert(memchr(app.lines[i], 0, ZCL_BLUE_REVIEW_LINE_SIZE));
+    }
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     uint8_t wire[245];
     size_t length = read_fixture(argv[1], wire);
     simulate(wire, length);
+    simulate_scripts();
+    simulate_malformed_commands();
     return 0;
 }

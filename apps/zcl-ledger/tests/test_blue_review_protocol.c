@@ -165,7 +165,7 @@ static void test_published_transaction(const char *path) {
     char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
     assert(blue_review_screen_format(apdu, lines));
     assert(strcmp(lines[0], "PUBLIC IN/OUT: 1/2") == 0);
-    assert(strcmp(lines[1], "PUBLIC: 0.49999755 ZCL") == 0);
+    assert(strcmp(lines[1], "OUTPUTS: 0.49999755 ZCL") == 0);
 }
 
 int main(int argc, char **argv) {

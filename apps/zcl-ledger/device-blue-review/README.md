@@ -7,9 +7,10 @@ over USB and returns a structural summary and SHA-256 digest of the exact
 transaction bytes. It counts transparent inputs and
 outputs, Sapling spends and outputs, and Sprout JoinSplits. It also reports
 the public output total, value balance, lock time, and expiry height. The
-touchscreen starts with `CONNECT Z23`, `SEND A TRANSACTION`, and `TAP NEXT PAGE
-TO VIEW`. After a successful review, tap
-`NEXT PAGE` to see the public output total, Sapling and Sprout counts, and
+touchscreen starts with `CONNECT Z23`, `SEND A TRANSACTION`, and `THEN TAP
+NEXT PAGE`. After a successful review, tap
+`NEXT PAGE` to see the public output total, Sapling counts, the Sprout
+JoinSplit count, an explicit unverified-fee warning, and
 the first eight bytes of the transaction SHA-256 digest. Further taps show
 each transparent output's amount in ZCL and, for P2PKH or P2SH, its independently
 derived ZCL mainnet address. Other script pages show the script length and
@@ -47,12 +48,13 @@ sha256sum /tmp/zcl-review.bin
 Version 0.4.0's former image hash was
 `f442caa2e21e3b2f830f48f71ba23531ba6cfdf51bd4d888ee59bfd0e0e72dae`.
 It is no longer accepted by the installer after a live USB lockup.
-Review 0.4.1 is a stack candidate that has not been installed. Its
+Review 0.4.2 is an offline UX candidate that has not been installed. Its
 2,432-byte transaction limit reserves an additional 1 KiB of Blue SRAM
 for stack compared with 0.4.0. The build checks the known call paths
 against the 2 KiB stack reserve and keeps 512 bytes of headroom. The
 same C23 app controller runs in the host simulator, including the published
-transparent fixture and all three review pages. The device result remains
+transparent fixture and public P2SH and OP_RETURN output pages. The simulator
+also sends 10,000 deterministic malformed APDUs. The device result remains
 unverified; the candidate is not pinned for installation.
 After a new image hash is pinned, install only on the dedicated test Blue at
 its home screen using

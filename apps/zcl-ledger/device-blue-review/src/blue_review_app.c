@@ -8,9 +8,9 @@ void blue_review_app_reset(blue_review_app *app) {
     memset(app->reply, 0, sizeof app->reply);
     strcpy(app->lines[0], "CONNECT Z23");
     strcpy(app->lines[1], "SEND A TRANSACTION");
-    strcpy(app->lines[2], "TAP NEXT PAGE TO VIEW");
-    app->lines[3][0] = 0;
-    strcpy(app->lines[4], "READ ONLY; NO SIGNING");
+    strcpy(app->lines[2], "THEN TAP NEXT PAGE");
+    strcpy(app->lines[3], "READ ONLY");
+    strcpy(app->lines[4], "NO KEYS OR SIGNING");
     app->lines[5][0] = 0;
 }
 

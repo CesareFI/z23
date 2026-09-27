@@ -74,17 +74,17 @@ bool blue_review_screen_format(
     size_t used = 0;
     if (!format_pair(lines[0], "PUBLIC IN/OUT: ",
                      read_u32(reply), read_u32(reply + 4)) ||
-        !append_text(lines[1], &used, "PUBLIC: ") ||
+        !append_text(lines[1], &used, "OUTPUTS: ") ||
         !append_zcl(lines[1], &used, read_u64(reply + 20)) ||
         !format_pair(lines[2], "SHIELDED SPEND/OUT: ",
                      read_u32(reply + 8), read_u32(reply + 12)))
         return false;
     used = 0;
-    if (!append_text(lines[3], &used, "SPROUT JOINSPLITS: ") ||
+    if (!append_text(lines[3], &used, "FEE UNKNOWN; SPROUT: ") ||
         !append_number(lines[3], &used, read_u32(reply + 16)))
         return false;
     used = 0;
-    if (!append_text(lines[4], &used, "NO SIGNING; SHIELDED HIDDEN"))
+    if (!append_text(lines[4], &used, "SHIELDED HIDDEN; NO SIGNING"))
         return false;
     static const char hex[] = "0123456789abcdef";
     used = 0;

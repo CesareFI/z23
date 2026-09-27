@@ -74,6 +74,6 @@ transaction bytes and the resulting signature.
 
 Review 0.4.0 passed local tests but stopped answering USB and EXIT on the
 dedicated Blue. It was deleted after a restart and its installer hash was
-removed. Version 0.4.1 is an offline candidate; its host simulator and
+removed. Version 0.4.2 is an offline candidate; its host simulator and
 stack gate improve pre-device evidence, but do not establish BOLOS touch
 or USB responsiveness. It is not pinned for installation.
