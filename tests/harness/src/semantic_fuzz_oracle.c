@@ -37,12 +37,22 @@ static bool load_pair(const char *root, const char *file,
                                      SFZ_SOURCE_MAX, &bs, &tu->before_src_len) &&
               zcl_devloop_facts_read(root, NULL, file, "", SFZ_SOURCE_MAX, &as,
                                      &tu->after_src_len);
+    if (!ok) {
+        /* a partial pair is dropped whole: the caller passes the file
+         * without its evidence */
+        free(b);
+        free(a);
+        free(bs);
+        free(as);
+        memset(tu, 0, sizeof(*tu));
+        return false;
+    }
     tu->source = file;
     tu->before = b;
     tu->after = a;
     tu->before_src = bs;
     tu->after_src = as;
-    return ok;
+    return true;
 }
 
 static void unload_pairs(struct sfz_plan *p, size_t n)
@@ -69,8 +79,7 @@ static bool plan(struct sfz_run *r, struct sfz_plan *p)
     if (!zcl_devloop_plan_files(files, n, &p->plan))
         return false;
     for (size_t k = 0; all_c && k < n; k++)
-        if (!load_pair(r->tree, files[k], &p->tus[k]))
-            memset(&p->tus[k], 0, sizeof(p->tus[k]));
+        (void)load_pair(r->tree, files[k], &p->tus[k]);
     ok = zcl_devloop_facts_consume(r->tree, files, n, "facts",
                                    all_c ? p->tus : NULL, &p->plan, &p->v,
                                    &p->report);
