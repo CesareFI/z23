@@ -51,12 +51,16 @@ zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out)
     const char *root[] = {"Makefile"};
     zcl_devloop_watch_component_for_files(root, 1, component);
     HF_CHECK(mixed_ok && strcmp(component, "Makefile") == 0);
+    HF_CHECK(!zcl_devloop_watch_should_yield(false, false, false)
+             && zcl_devloop_watch_should_yield(true, false, false)
+             && zcl_devloop_watch_should_yield(false, true, false)
+             && zcl_devloop_watch_should_yield(false, false, true));
 #undef HF_CHECK
     snprintf(out->exercised_surface, sizeof(out->exercised_surface),
              ZCL_HOTFORK_EXERCISED_SURFACE);
     snprintf(out->detail, sizeof(out->detail), "checks=%u/%u;failed_mask=0x%x",
              out->checks_passed, out->checks_run, failed);
-    return out->checks_run == 4 && out->checks_passed == 4;
+    return out->checks_run == 5 && out->checks_passed == 5;
 }
 #else
 #error "unknown HOT_FORK story phase"

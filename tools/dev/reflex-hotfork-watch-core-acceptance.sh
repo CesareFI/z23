@@ -16,8 +16,8 @@ if [[ "$OWNER_KIND" == watch ]]; then
     STORY_INPUT="$ROOT/tools/dev/hotfork_stories/devloop_watch_classification_core_v1.inc"
 fi
 FORBIDDEN='git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite'
-MUTANT_OLD="path[n - 1] == 'c'"
-MUTANT_NEW="path[n - 1] != 'c'"
+MUTANT_OLD='return changed || commit_preempts || request_hint_changed;'
+MUTANT_NEW='return changed || commit_preempts || !request_hint_changed;'
 if [[ "$OWNER_KIND" == cycle ]]; then
     SOURCE="$ROOT/tools/dev/devloop_cycle.c"
     OUTPUT="${ZCL_REFLEX_CYCLE_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-cycle-core-acceptance.json}"

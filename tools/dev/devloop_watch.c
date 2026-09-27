@@ -1349,8 +1349,9 @@ static bool watch_request_hint_poll(struct watch_context *ctx)
 static bool watch_cycle_should_yield(const struct watch_context *ctx,
                                      bool changed)
 {
-    return changed || (ctx && (ctx->commit_preempts ||
-                               ctx->request_hint_changed));
+    return zcl_devloop_watch_should_yield(
+        changed, ctx && ctx->commit_preempts,
+        ctx && ctx->request_hint_changed);
 }
 
 static bool mkdirs(const char *path);

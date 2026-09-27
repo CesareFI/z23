@@ -64,7 +64,7 @@ HOTFORK_CAPSULE(
     "devloop-watch-classification-core.v1",
     1000,
     "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
-    "zcl_devloop_watch_c_source+zcl_devloop_watch_epoch_all_c+zcl_devloop_watch_component_for_files")
+    "zcl_devloop_watch_c_source+zcl_devloop_watch_epoch_all_c+zcl_devloop_watch_component_for_files+zcl_devloop_watch_should_yield")
 
 HOTFORK_CAPSULE(
     "dev.cycle-diagnostic-policy.v1",

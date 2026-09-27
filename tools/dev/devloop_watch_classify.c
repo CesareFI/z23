@@ -30,6 +30,12 @@ bool zcl_devloop_watch_epoch_all_c(const char *const *paths,
     return true;
 }
 
+bool zcl_devloop_watch_should_yield(bool changed, bool commit_preempts,
+                                    bool request_hint_changed)
+{
+    return changed || commit_preempts || request_hint_changed;
+}
+
 void zcl_devloop_watch_component_for_files(const char *const *files,
                                            size_t count, char out[128])
 {

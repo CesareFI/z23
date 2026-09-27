@@ -17,6 +17,11 @@ bool zcl_devloop_watch_c_source(const char *path);
 bool zcl_devloop_watch_epoch_all_c(const char *const *paths,
                                    size_t path_count);
 
+/* Yield the active cycle when a newer edit, exact commit, or request hint
+ * has arrived. The watcher observes these inputs; this core only decides. */
+bool zcl_devloop_watch_should_yield(bool changed, bool commit_preempts,
+                                    bool request_hint_changed);
+
 /* Writes the shared two-level component ("tools/dev") of `files` to `out`,
  * "mixed" when they differ, or the bare name of a root-level file. */
 void zcl_devloop_watch_component_for_files(const char *const *files,
