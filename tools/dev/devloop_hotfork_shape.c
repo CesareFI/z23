@@ -2196,11 +2196,11 @@ static bool shape_closure_text(struct shape_closure *c, const char *rel,
     bool ok = text != NULL ||
               shape_call_unknown(why, why_len, rel,
                                  "a capsule source cannot be read");
-    for (const char *p = text; ok && p && *p;) {
+    for (const char *p = text; ok && *p;) {
         size_t n = 0;
         while (shape_is_ident((unsigned char)p[n]))
             n++;
-        if (n > 0 && n < sizeof(name) && !(p[0] >= '0' && p[0] <= '9')) {
+        if (n > 0 && n < sizeof(name) && (unsigned char)(p[0] - '0') > 9) {
             memcpy(name, p, n);
             name[n] = 0;
             ok = shape_closure_seed(c, name, why, why_len);
