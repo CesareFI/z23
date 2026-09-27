@@ -428,6 +428,15 @@ static bool add_sym(struct elf *e, const struct sym *s, struct sfz_syms *out)
     return true;
 }
 
+/* A function, or a data object the source names: a compiler-private
+ * label (.L.str, a string literal) is no entity a plan can seed, and its
+ * content is judged through the relocations that address it. */
+static bool judged(const struct sym *s)
+{
+    return s->type == STT_FUNC_ ||
+           (s->type == STT_OBJECT_ && strncmp(s->name, ".L", 2) != 0);
+}
+
 bool sfz_elf_syms(const uint8_t *img, size_t n, struct sfz_syms *out,
                   char *err, size_t errlen)
 {
@@ -444,7 +453,7 @@ bool sfz_elf_syms(const uint8_t *img, size_t n, struct sfz_syms *out,
     for (uint64_t k = 1; ok && k < nsym; k++) {
         struct sym s;
         ok = sym_at(&e, k, &s) || refuse(&e, "unterminated symbol name");
-        if (ok && (s.type == STT_FUNC_ || s.type == STT_OBJECT_))
+        if (ok && judged(&s))
             ok = add_sym(&e, &s, out);
     }
     free(e.sh);

@@ -98,8 +98,10 @@ struct sfz_syms {
     size_t n;
 };
 
-/* Read every defined function and data object of the x86-64
- * little-endian ET_REL image `img`. Fails closed, naming the defect in
+/* Read every defined function and every data object the source names of
+ * the x86-64 little-endian ET_REL image `img` (a compiler-private .L label,
+ * such as a string literal, is judged only through the relocations that
+ * address it). Fails closed, naming the defect in
  * err, on any other shape, any out-of-range offset, symbol or string, or
  * an unterminated name. */
 bool sfz_elf_syms(const uint8_t *img, size_t n, struct sfz_syms *out,
