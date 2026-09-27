@@ -4894,6 +4894,48 @@ static int test_shell_compiled_epoch_scope(void)
     return failures;
 }
 
+static int test_shell_compiled_epoch_scope_header_invalidation(void)
+{
+    int failures = 0;
+    static const char one[] = "tools/dev/shell_owner_one.c";
+    static const char two[] = "tools/dev/shell_owner_two.c";
+    TEST("dev platform: a relevant header edit clears every proven source "
+        "before the next shell verdict") {
+        struct zcl_devloop_restart_source_set hdr_set = {0};
+        memset(&g_dp_lanes, 0, sizeof(g_dp_lanes));
+        g_dp_lanes.hotswap_result = ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
+        g_dp_lanes.service_result = 1;
+        g_dp_lanes.restart_result = ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+        /* Prove the first owner through a static-shell epoch. */
+        const char *only_one[] = { one };
+        ASSERT(dp_shell_epoch_scope(&hdr_set, one, true, only_one, 1));
+        ASSERT(hdr_set.proven[0]);
+        /* Next epoch: a public header the first owner's translation unit
+         * includes, with no hotswap-service owner mapping.
+         * zcl_hotswap_service_source_for_path returns NULL for it, so today
+         * devloop_plan.c ~104 silently skips it and the first owner stays
+         * marked proven even though bytes it compiles from have changed. */
+        static const char header[] = "tools/dev/devloop_shell_owner_shared.h";
+        const char *hdr_files[] = { header };
+        struct zcl_devloop_epoch_proof hdr_proof;
+        g_dp_lanes.hotswap_result = 0;
+        g_dp_lanes.service_result = 0;
+        (void)zcl_devloop_epoch_reflex(
+            "fixture-root", hdr_files, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY,
+            &hdr_set, &k_dp_fake_lanes, &hdr_proof);
+        /* A shell epoch for a second, unrelated owner must now cover the
+         * first owner again: the header could be included by its
+         * compilation unit, so it cannot stay proven against bytes this
+         * epoch never re-executed. */
+        g_dp_lanes.hotswap_result = ZCL_DEVLOOP_RESTART_EVENT_SHELL_COMPILED;
+        g_dp_lanes.service_result = 1;
+        const char *both[] = { one, two };
+        ASSERT(dp_shell_epoch_scope(&hdr_set, two, true, both, 2));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* A static-shell epoch through the real resident lane: after COMPILE_ONLY it
  * earns FOCUSED_GREEN from a candidate that linked the edited bytes, and a
  * newer save cancels the focused run with no process left behind. */
@@ -5007,6 +5049,109 @@ static bool dp_restart_red_names_group(
         !proof.immediate_proof_complete && !proof.proof_complete;
 }
 
+static bool dp_restart_proof_plan(const char *const *files, size_t count,
+                                  struct zcl_devloop_plan *plan)
+{
+    if (!zcl_devloop_plan_files(files, count, plan))
+        return false;
+    for (size_t d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++)
+        plan->dims[d].status = ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
+    return true;
+}
+
+/* A tooling edit whose mapped closure includes code_capsule carries the
+ * epoch-generated clientversion overlay through a complete resident proof. */
+static bool dp_restart_code_capsule_ok(
+    const char *root, struct zcl_devloop_process_result *process, char *why,
+    size_t why_len)
+{
+    const char *code_changed[] = {
+        "tools/command/native_code_command.c",
+        "tools/dev/restart_fixture.c",
+    };
+    struct zcl_devloop_plan code_plan = {0};
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    memset(process, 0, sizeof(*process));
+    return dp_restart_proof_plan(code_changed, 2, &code_plan) &&
+        zcl_devloop_restart_prove(root, code_changed, 2, &code_plan, &proof,
+                                  process, why, why_len) &&
+        proof.proof_complete && proof.immediate_proof_complete &&
+        !proof.integration_proof_deferred &&
+        strstr(proof.groups, "test_code_capsule") &&
+        proof.source_identity_overlay &&
+        strlen(proof.source_cas_sha3) == 64 &&
+        proof.compiler_processes == 3 && proof.linker_processes == 1 &&
+        proof.test_processes == 2;
+}
+
+/* restart_fixture.c's proof overlay from the code capsule proof is live and
+ * verified; a proof of native_code_command.c alone must link
+ * restart_fixture.o only through that verifying persistent overlay. */
+static bool dp_restart_overlay_live_ok(
+    const char *root, struct zcl_devloop_process_result *process, char *why,
+    size_t why_len)
+{
+    const char *native_only[] = { "tools/command/native_code_command.c" };
+    struct zcl_devloop_plan native_plan = {0};
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    memset(process, 0, sizeof(*process));
+    return dp_restart_proof_plan(native_only, 1, &native_plan) &&
+        zcl_devloop_restart_prove(root, native_only, 1, &native_plan, &proof,
+                                  process, why, why_len) &&
+        !proof.source_overlay_unresolved;
+}
+
+/* Replace restart_fixture.c's proof-overlay marker with one whose recorded
+ * hash no longer matches the source's bytes. The builder publishes markers
+ * read-only (0444), so it is replaced the way a later writer would: unlink,
+ * then create. */
+static bool dp_restart_overlay_mark_stale(const char *root)
+{
+    static const char marker[] =
+        "build/dev-loop/restart-test-objects/tools/dev/"
+        "restart_fixture.o.source";
+    char path[PATH_MAX];
+    return snprintf(path, sizeof(path), "%s/%s", root, marker) <
+            (int)sizeof(path) &&
+        unlink(path) == 0 &&
+        dp_mk_write(
+            root, marker,
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc "
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n");
+}
+
+/* The persistent-overlay fallback fails closed: the overlay object and its
+ * marker still exist (so this is not the ordinary never-overlaid case), but
+ * the marker no longer verifies. The link drops that overlay (restart-base.o
+ * already carries every base object), and the proof reports the drop and is
+ * never complete. */
+static bool dp_restart_overlay_stale_ok(
+    const char *root, struct zcl_devloop_process_result *process, char *why,
+    size_t why_len)
+{
+    const char *native_only[] = { "tools/command/native_code_command.c" };
+    struct zcl_devloop_plan native_plan = {0};
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    memset(process, 0, sizeof(*process));
+    if (!dp_restart_proof_plan(native_only, 1, &native_plan) ||
+        !dp_restart_overlay_mark_stale(root) ||
+        platform_environment_set("ZCL_DEVLOOP_TEST_EXPECT_OVERLAY_DROPPED",
+                                 "1", 1) != 0)
+        return false;
+    bool ok = zcl_devloop_restart_prove(root, native_only, 1, &native_plan,
+                                        &proof, process, why, why_len);
+    (void)dp_environment_unset("ZCL_DEVLOOP_TEST_EXPECT_OVERLAY_DROPPED");
+    if (ok && proof.source_overlay_unresolved && !proof.proof_complete)
+        return true;
+    fprintf(stderr, "stale overlay proof: ok=%d unresolved=%d complete=%d "
+            "exit=%d compile=%u link=%u output=%.*s\n",
+            ok, proof.source_overlay_unresolved, proof.proof_complete,
+            process->exit_code, proof.compiler_processes,
+            proof.linker_processes, (int)process->output_len,
+            process->output);
+    return false;
+}
+
 static bool run_resident_restart_fixture(void)
 {
     char root[PATH_MAX], cache_rel[PATH_MAX], compiler_rel[PATH_MAX];
@@ -5041,11 +5186,15 @@ static bool run_resident_restart_fixture(void)
         "  [ \"$allow\" -eq 1 ]\n"
         "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
         "    case \"$base\" in *test-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
-        "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    if [ \"${ZCL_DEVLOOP_TEST_EXPECT_OVERLAY_DROPPED:-0}\" = 1 ]; then\n"
+        "      if grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"; then echo 'stale overlay linked:' >&2; cat \"$rsp\" >&2; exit 1; fi\n"
+        "    else\n"
+        "      grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "      ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    fi\n"
         "    grep -q 'build/dev-loop/restart-test-objects/platform/modules/util/src/clientversion.o' \"$rsp\"\n"
-        "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/platform/modules/util/src/clientversion.o' \"$rsp\"\n"
-        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\n[ -z \"${ZCL_DEVLOOP_TEST_PROBE_HOOK:-}\" ] || \"$ZCL_DEVLOOP_TEST_PROBE_HOOK\"\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nfailed=$ZCL_DEVLOOP_TEST_FAIL_GROUPS\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=%%s self_skips=0\\\\n\" \"$ran\" \"$failed\"\\n[ \"$failed\" -eq 0 ]\\n' >\"$out\"\n"
+        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\ncase \"$changed\" in tools/dev/restart_fixture.c|tools/command/native_code_command.c) : ;; *) exit 9 ;; esac\\n[ -z \"${ZCL_DEVLOOP_TEST_PROBE_HOOK:-}\" ] || \"$ZCL_DEVLOOP_TEST_PROBE_HOOK\"\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nfailed=$ZCL_DEVLOOP_TEST_FAIL_GROUPS\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=%%s self_skips=0\\\\n\" \"$ran\" \"$failed\"\\n[ \"$failed\" -eq 0 ]\\n' >\"$out\"\n"
         "  else\n"
         "    case \"$base\" in *dev-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
         "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
@@ -5331,26 +5480,13 @@ static bool run_resident_restart_fixture(void)
      * the way through a complete resident proof. The second source keeps the
      * fixture runner's fixed bounded changed-source probe deterministic. */
     stage = "code capsule overlay proof";
-    const char *code_changed[] = {
-        "tools/command/native_code_command.c",
-        "tools/dev/restart_fixture.c",
-    };
-    struct zcl_devloop_plan code_plan = {0};
-    if (!zcl_devloop_plan_files(code_changed, 2, &code_plan))
+    if (!dp_restart_code_capsule_ok(root, &process, why, sizeof(why)))
         goto out;
-    for (size_t d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++)
-        code_plan.dims[d].status = ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
-    memset(&proof, 0, sizeof(proof));
-    memset(&process, 0, sizeof(process));
-    if (!zcl_devloop_restart_prove(root, code_changed, 2, &code_plan, &proof,
-                                   &process, why, sizeof(why)) ||
-        !proof.proof_complete || !proof.immediate_proof_complete ||
-        proof.integration_proof_deferred ||
-        !strstr(proof.groups, "test_code_capsule") ||
-        !proof.source_identity_overlay ||
-        strlen(proof.source_cas_sha3) != 64 ||
-        proof.compiler_processes != 3 || proof.linker_processes != 1 ||
-        proof.test_processes != 2)
+    stage = "stale persistent overlay resolves live";
+    if (!dp_restart_overlay_live_ok(root, &process, why, sizeof(why)))
+        goto out;
+    stage = "stale persistent overlay fails closed";
+    if (!dp_restart_overlay_stale_ok(root, &process, why, sizeof(why)))
         goto out;
 
     stage = "immediate proof";
@@ -8747,6 +8883,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_hotfork_shape_image_cache, 5),
     DP_CASE(test_resident_restart_builder, 4),
     DP_CASE(test_shell_compiled_epoch_scope, 5),
+    DP_CASE(test_shell_compiled_epoch_scope_header_invalidation, 5),
 #if defined(__APPLE__)
     DP_CASE(test_darwin_attested_descriptor_process, 4),
 #endif
@@ -8906,7 +9043,7 @@ static int test_dev_platform_platform_arm(void)
         owned += counts[i];
         nonempty &= counts[i] > 0;
     }
-    if (DP_CASE_COUNT != 62u + (unsigned)(
+    if (DP_CASE_COUNT != 63u + (unsigned)(
 #if defined(__APPLE__)
             1
 #else

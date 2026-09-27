@@ -104,8 +104,17 @@ bool zcl_devloop_restart_source_set_add(
         const char *source = zcl_hotswap_service_source_for_path(paths[i]);
         if (!source && has_suffix(paths[i], ".c"))
             source = paths[i];
-        if (!source)
+        if (!source) {
+            /* A relevant non-.c path with no known owner (a public header,
+             * a .def file, or a generated input) can be #included by any
+             * number of already-proven .c sources; there is no map telling
+             * us which, so every accumulated source goes back to unproven
+             * rather than staying marked proven against bytes this epoch
+             * never re-executed. */
+            for (size_t j = 0; j < set->count; j++)
+                set->proven[j] = false;
             continue;
+        }
         size_t source_len = strlen(source);
         if (source_len == 0 || source_len >= ZCL_DEVLOOP_PATH_MAX) {
             set->overflow = true;
@@ -183,9 +192,9 @@ static int epoch_restart(const char *root, const char *const *scope,
     return fast;
 }
 
-/* COMPILE_ONLY was the shell's first reply; nothing has executed its bytes.
- * Its focused verdict covers exactly the unproven sources, and the complete
- * proof inherits that same scope. */
+/* SHELL_COMPILED was the shell's first reply; nothing has executed its
+ * bytes. Its focused verdict covers exactly the unproven sources, and the
+ * complete proof inherits that same scope. */
 static int epoch_shell_compiled(const char *root,
                                 enum zcl_devloop_publish_mode mode,
                                 struct zcl_devloop_restart_source_set *set,

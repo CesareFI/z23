@@ -463,6 +463,13 @@ struct zcl_devloop_restart_proof_receipt {
     bool immediate_proof_complete;
     bool integration_proof_deferred;
     bool proof_complete;
+    /* True iff the link response resolved any per-TU object token to its
+     * base (pre-overlay) bytes even though a persistent overlay and marker
+     * physically existed for it from an earlier generation: the marker did
+     * not verify (wrong generation or a source-hash mismatch), so its proof
+     * from that generation cannot be trusted here. A token that never had
+     * an overlay at all is unaffected and never sets this. */
+    bool source_overlay_unresolved;
 };
 
 bool zcl_devloop_restart_build(

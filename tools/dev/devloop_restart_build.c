@@ -1496,14 +1496,26 @@ static bool rr_overlay_for_base_verify(const struct rr_plan *plan,
            rr_sha256_file(source_full, actual) && strcmp(actual, expected) == 0;
 }
 
+/* `*present_out` reports whether a persistent overlay object and its
+ * `.source` marker physically exist for `base_object` from some earlier
+ * generation, independent of whether that overlay verifies. Most link
+ * tokens never reach this true: they were never overlaid, and the caller
+ * must treat that ordinary case as silent. A token that DOES set it true
+ * but still returns false from this function once carried a proof that no
+ * longer verifies, and the caller must not treat that case as silent. */
 static bool rr_overlay_for_base(const struct rr_plan *plan, const char *root,
                                 const char *base_object,
                                 const char *overlay_prefix,
-                                char overlay_relative[PATH_MAX])
+                                char overlay_relative[PATH_MAX],
+                                bool *present_out)
 {
     char source[PATH_MAX], marker[PATH_MAX];
-    if (!rr_overlay_for_base_paths(plan, root, base_object, overlay_prefix,
-                                   overlay_relative, source, marker))
+    bool present = rr_overlay_for_base_paths(plan, root, base_object,
+                                             overlay_prefix, overlay_relative,
+                                             source, marker);
+    if (present_out)
+        *present_out = present;
+    if (!present)
         return false;
     return rr_overlay_for_base_verify(plan, root, source, marker);
 }
@@ -1541,7 +1553,12 @@ static bool rr_write_response_open(const struct rr_plan *plan,
 
 /* Resolve the response line for one linker input token: prefer a live
  * overlay for this build's plan, else a persistent overlay from a prior
- * generation, else the original object path. */
+ * generation, else the original object path. Fails closed: if a persistent
+ * overlay physically exists for `token` but does not verify, the original
+ * object path is still written (the link must proceed with something), but
+ * `*unresolved` is set so the caller cannot report this run as trustworthy.
+ * A token with no persistent overlay at all is the ordinary case and never
+ * sets it. */
 static void rr_write_response_resolve(const struct rr_plan *plan,
                                       const char *root,
                                       const struct rr_overlay *overlays,
@@ -1549,7 +1566,8 @@ static void rr_write_response_resolve(const struct rr_plan *plan,
                                       const char *overlay_prefix,
                                       const char *token, bool *seen,
                                       char persistent_overlay[PATH_MAX],
-                                      const char **write_path_out)
+                                      const char **write_path_out,
+                                      bool *unresolved)
 {
     for (size_t i = 0; i < overlay_count; i++) {
         if (strcmp(token, overlays[i].base_object) == 0) {
@@ -1564,18 +1582,24 @@ static void rr_write_response_resolve(const struct rr_plan *plan,
             return;
         }
     }
-    if (rr_overlay_for_base(plan, root, token, overlay_prefix,
-                            persistent_overlay))
+    bool present = false;
+    bool verified = rr_overlay_for_base(plan, root, token, overlay_prefix,
+                                        persistent_overlay, &present);
+    if (verified) {
         *write_path_out = persistent_overlay;
-    else
-        *write_path_out = token;
+        return;
+    }
+    if (present)
+        *unresolved = true;
+    *write_path_out = token;
 }
 
 static bool rr_write_response_scan(const struct rr_plan *plan,
                                    const char *root, FILE *in, FILE *dst,
                                    const struct rr_overlay *overlays,
                                    size_t overlay_count,
-                                   const char *overlay_prefix, bool *seen)
+                                   const char *overlay_prefix, bool *seen,
+                                   bool *unresolved)
 {
     char token[4096];
     bool ok = true;
@@ -1584,7 +1608,8 @@ static bool rr_write_response_scan(const struct rr_plan *plan,
         const char *write_path;
         rr_write_response_resolve(plan, root, overlays, overlay_count,
                                   overlay_prefix, token, seen,
-                                  persistent_overlay, &write_path);
+                                  persistent_overlay, &write_path,
+                                  unresolved);
         ok = fprintf(dst, "%s\n", write_path) > 0;
     }
     return ok && !ferror(in) && rr_flush_stream(dst);
@@ -1607,6 +1632,7 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
                               size_t overlay_count, const char *overlay_prefix,
                               bool allow_test_only_omission,
                               char out[PATH_MAX],
+                              bool *unresolved,
                               char *why, size_t why_len)
 {
     FILE *in, *dst;
@@ -1614,7 +1640,8 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
         return false;
     bool seen[RR_OVERLAY_MAX] = {0};
     bool ok = rr_write_response_scan(plan, root, in, dst, overlays,
-                                     overlay_count, overlay_prefix, seen);
+                                     overlay_count, overlay_prefix, seen,
+                                     unresolved);
     fclose(in); fclose(dst);
     ok = rr_write_response_check_seen(overlays, overlay_count, seen,
                                       allow_test_only_omission, ok);
@@ -2005,9 +2032,13 @@ static bool rr_restart_build_compile_and_link(struct rr_restart_build_ctx *ctx)
         &ctx->receipt->compile_body_us, ctx->why, ctx->why_len);
     ctx->receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
+    /* The runnable candidate build has no FOCUSED_GREEN verdict of its own
+     * to gate; a stale-overlay fallback here surfaces at the proof step
+     * below instead, where it is not silent. */
+    bool unresolved = false;
     if (ok && !rr_write_response(&ctx->plan, ctx->root, overlays,
                                  overlay_count, "build/dev-loop/restart-objects",
-                                 true, rsp, ctx->why, ctx->why_len))
+                                 true, rsp, &unresolved, ctx->why, ctx->why_len))
         ok = false;
     if (ok) {
         ok = rr_link_cached(&ctx->plan, ctx->root, rsp,
@@ -2560,11 +2591,16 @@ static bool rr_prove_compile_and_link(struct rr_prove_ctx *ctx)
         &ctx->receipt->compile_body_us, ctx->why, ctx->why_len);
     ctx->receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
+    bool unresolved = false;
     if (ok && !rr_write_response(&ctx->plan, ctx->root, overlays,
                                  overlay_count,
                                  "build/dev-loop/restart-test-objects", false,
-                                 rsp, ctx->why, ctx->why_len))
+                                 rsp, &unresolved, ctx->why, ctx->why_len))
         ok = false;
+    /* Fail closed: a proof whose link silently fell back to a stale base
+     * object for a source with an unverified persistent overlay must not
+     * be reported to the caller as trustworthy. */
+    ctx->receipt->source_overlay_unresolved = unresolved;
     if (ok) {
         ok = rr_link_cached(&ctx->plan, ctx->root, rsp,
                             "build/dev-loop/restart-test-candidates",
@@ -2853,7 +2889,8 @@ static void rr_prove_run_main_test(struct rr_prove_ctx *ctx,
     ctx->receipt->integration_proof_deferred =
         ctx->receipt->deferred_group_count > 0;
     ctx->receipt->proof_complete = ctx->receipt->immediate_proof_complete &&
-        !ctx->receipt->integration_proof_deferred;
+        !ctx->receipt->integration_proof_deferred &&
+        !ctx->receipt->source_overlay_unresolved;
     ctx->receipt->total_us = platform_time_monotonic_us() - ctx->started;
     *ran_out = ran;
     *summary_ok_out = summary_ok;
@@ -3223,11 +3260,13 @@ static void rr_emit_event_proof_receipt(
     (void)json_push_kv_int(receipt, "proof_total_us", proof->total_us);
 }
 
-/* Complete means every non-integration group the plan selects ran. */
+/* Complete means every non-integration group the plan selects ran, against
+ * a link that never fell back off an unverified persistent overlay. */
 static bool rr_proof_partial(
     const struct zcl_devloop_restart_proof_receipt *proof)
 {
     return proof->bounded_proof_deferred ||
+        proof->source_overlay_unresolved ||
         proof->group_count < proof->groups_immediate_selected;
 }
 
@@ -3631,7 +3670,9 @@ static int rr_event_finish(struct rr_event_ctx *ctx, bool ok)
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
     if (ok) {
         /* FOCUSED_GREEN, never a partial: the verdict ran every selected
-         * immediate group against these exact bytes. */
+         * immediate group against these exact bytes, and the link that
+         * fed them never silently fell back off an unresolved persistent
+         * overlay for a source this restart did not itself recompile. */
         *ctx->focused_complete = !rr_proof_partial(&ctx->proof);
         return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
     }
