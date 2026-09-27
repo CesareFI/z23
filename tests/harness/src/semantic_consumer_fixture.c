@@ -95,6 +95,15 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
                   "#define CX_OPT 1\n#else\n#define CX_OPT 0\n#endif\n#endif"
 #define SCX_OPT_B SCX_B_END "int cx_opt_b(void);\n" \
                   "int cx_opt_b(void) { return CX_OPT; }\n"
+#define SCX_E_END "int cx_top_e(void) { return 5; }\n"
+#define SCX_CLEANUP_E(n) SCX_E_END "static int cx_seen;\n" \
+                         "static void cx_rel(int *p) { cx_seen = *p + " n \
+                         "; }\nint cx_work(int x);\nint cx_work(int x)\n" \
+                         "{\n    __attribute__((cleanup(cx_rel))) int v = x;\n" \
+                         "    return v + 3;\n}\n"
+#define SCX_UNITY_E SCX_E_END "#define cx_sum cx_e_sum\n#include \"cx_c.c\"\n" \
+                    "#undef cx_sum\nint cx_use_e(int x);\n" \
+                    "int cx_use_e(int x) { return cx_e_sum(x) + 2; }\n"
 #define SCX_ALL_POS {"position-dependent", "position-dependent", \
                      "position-dependent", "position-dependent", \
                      "position-dependent"}
@@ -283,6 +292,28 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                     .changed = {SCX_OPT},
                     .affected = {true, true, true, true, true},
                     .reason = SCX_ALL_INC, .obligations = ""},
+    /* F7: a cleanup handler runs, inlined, where no expression names it. */
+    [SCX_P_CLEANUP] = {.name = "p_cleanup", .pre = true, .file = SCX_E,
+                       .from = SCX_E_END, .to = SCX_CLEANUP_E("1")},
+    [SCX_CLEANUP] = {.name = "cleanup", .before = SCX_P_CLEANUP,
+                     .file = SCX_E, .from = SCX_E_END,
+                     .to = SCX_CLEANUP_E("7"), .changed = {SCX_E},
+                     .affected = {false, false, false, false, true},
+                     .reason = {NULL, NULL, NULL, NULL, "source-changed"},
+                     .obligations = "", .seeds = {"cx_rel", "cx_work"}},
+    /* F8: another TU compiles a changed .c, under another name. */
+    [SCX_P_UNITY] = {.name = "p_unity", .pre = true, .file = SCX_E,
+                     .from = SCX_E_END, .to = SCX_UNITY_E},
+    [SCX_UNITY] = {.name = "unity", .before = SCX_P_UNITY, .file = SCX_C,
+                   .from = "(int)sizeof(s) + CX_SCALE; }",
+                   .to = "(int)sizeof(s) + CX_SCALE + 1; }",
+                   .file2 = SCX_E, .from2 = SCX_E_END, .to2 = SCX_UNITY_E,
+                   .changed = {SCX_C},
+                   .affected = {false, false, true, false, true},
+                   .reason = {NULL, NULL, "source-changed", NULL,
+                              "header-unattributed"},
+                   .obligations = "",
+                   .seeds = {"cx_sum", "cx_e_sum", "cx_use_e"}},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,
@@ -407,8 +438,14 @@ bool scx_write_depfiles(const char *root, enum scx_variant v)
     for (size_t k = 0; k < SCX_TU_COUNT; k++) {
         char rel[256], body[512];
         const char *base = strrchr(k_scx_tus[k], '/') + 1;
-        int n = snprintf(body, sizeof(body), "build/scx/%.*s.o: %s \\\n %s\n",
-                         (int)(strlen(base) - 2), base, k_scx_tus[k], hdr);
+        size_t len;
+        char *text = scx_text(v, k_scx_tus[k], &len);
+        /* a TU that includes cx_c.c reads it too */
+        bool unity = text != NULL && strstr(text, "#include \"cx_c.c\"") != NULL;
+        int n = snprintf(body, sizeof(body), "build/scx/%.*s.o: %s \\\n %s%s\n",
+                         (int)(strlen(base) - 2), base, k_scx_tus[k], hdr,
+                         unity ? " \\\n " SCX_C : "");
+        free(text);
         (void)snprintf(rel, sizeof(rel), "build/scx/%.*s.d",
                        (int)(strlen(base) - 2), base);
         if (n <= 0 || (size_t)n >= sizeof(body) ||

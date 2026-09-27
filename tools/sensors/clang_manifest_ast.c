@@ -520,6 +520,145 @@ static bool cm_facts_member(struct cm_state *st, CXCursor c)
     return cm_facts_access(st, c, field);
 }
 
+/* ---- attributes that name a function -------------------------------------------- */
+
+/* cleanup(f), malloc(f) and any other attribute whose argument names a
+ * function make the compile call or pair that function from the
+ * declaration's owner, though no expression names it. Each such argument is
+ * a call ref from the owner. An identifier argument that names nothing
+ * visible is an UNKNOWN, never an omission, unless the attribute is one
+ * whose arguments are known never to name a function. */
+static const char *const k_cm_nofn_attrs[] = {
+    "access",     "aligned",     "alloc_align", "alloc_size", "assume_aligned",
+    "availability", "constructor", "counted_by", "counted_by_or_null",
+    "deprecated", "destructor",  "format",      "format_arg", "mode",
+    "no_sanitize", "nonnull",    "optimize",    "section",    "sentinel",
+    "sized_by",   "sized_by_or_null", "target", "target_clones", "tls_model",
+    "unavailable", "vector_size", "visibility", "warning",    "error",
+};
+
+static bool cm_nofn_attr(const char *name)
+{
+    char bare[64];
+    size_t n = strlen(name);
+    if (n > 4 && strncmp(name, "__", 2) == 0 && strcmp(name + n - 2, "__") == 0 &&
+        n - 4 < sizeof(bare)) {
+        memcpy(bare, name + 2, n - 4);
+        bare[n - 4] = '\0';
+        name = bare;
+    }
+    for (size_t k = 0; k < sizeof(k_cm_nofn_attrs) / sizeof(*k_cm_nofn_attrs); k++)
+        if (strcmp(name, k_cm_nofn_attrs[k]) == 0)
+            return true;
+    return false;
+}
+
+struct cm_name_find {
+    const char *name;
+    CXCursor fn;
+    bool function, other;
+};
+
+/* A file-scope function of that name (its definition when there is one),
+ * or any other file-scope declaration of it. */
+static enum CXChildVisitResult cm_name_find_visit(CXCursor c, CXCursor parent,
+                                                  CXClientData data)
+{
+    struct cm_name_find *q = data;
+    enum CXCursorKind k = clang_getCursorKind(c);
+    char *name = cm_take_string(clang_getCursorSpelling(c));
+    bool same = name != NULL && strcmp(name, q->name) == 0;
+    (void)parent;
+    free(name);
+    if (same && k == CXCursor_FunctionDecl &&
+        (!q->function || clang_isCursorDefinition(c))) {
+        q->fn = c;
+        q->function = true;
+    } else if (same) {
+        q->other = true;
+    }
+    return q->function && clang_isCursorDefinition(q->fn) ? CXChildVisit_Break
+                                                         : CXChildVisit_Continue;
+}
+
+static bool cm_attr_ident(struct cm_state *st, const char *from,
+                          const char *attr, const char *ident)
+{
+    struct cm_name_find q = {.name = ident};
+    char *id;
+    bool ok;
+    clang_visitChildren(clang_getTranslationUnitCursor(st->tu),
+                        cm_name_find_visit, &q);
+    if (!q.function) {
+        char detail[256];
+        if (q.other || cm_nofn_attr(attr))
+            return true;
+        (void)snprintf(detail, sizeof(detail), "attribute %s(%s)", attr, ident);
+        return cm_unknown(&st->core, from, VCS_SEMANTIC_UNKNOWN_V1_UNRESOLVED,
+                          detail);
+    }
+    if ((id = cm_entity_id(st, q.fn)) == NULL)
+        return cm_fail(&st->core, "out of memory");
+    ok = cm_ref(&st->core, from, VCS_SEMANTIC_REF_V1_CALL, id) &&
+         (!cm_external(st, q.fn) ||
+          cm_unknown(&st->core, from, VCS_SEMANTIC_UNKNOWN_V1_EXTERNAL_CALL,
+                     ident));
+    free(id);
+    return ok;
+}
+
+/* The attribute's name (after any `gnu ::` scope) and every identifier
+ * among its arguments. */
+static bool cm_attr_args(struct cm_state *st, CXCursor a, const char *from)
+{
+    CXToken *toks = NULL;
+    unsigned n = 0, k = 0;
+    char *name = NULL;
+    bool ok = true;
+    clang_tokenize(st->tu, clang_getCursorExtent(a), &toks, &n);
+    for (; k < n; k++) {
+        char *s = cm_take_string(clang_getTokenSpelling(st->tu, toks[k]));
+        bool punct = clang_getTokenKind(toks[k]) == CXToken_Punctuation;
+        bool stop = s == NULL || (punct && strcmp(s, "::") != 0);
+        if (!punct && s != NULL) {
+            free(name);
+            name = s;
+        } else {
+            free(s);
+        }
+        if (stop)
+            break;
+    }
+    for (k++; ok && name != NULL && k < n; k++) {
+        char *s;
+        if (clang_getTokenKind(toks[k]) != CXToken_Identifier)
+            continue;
+        s = cm_take_string(clang_getTokenSpelling(st->tu, toks[k]));
+        ok = s != NULL ? cm_attr_ident(st, from, name, s)
+                       : cm_fail(&st->core, "out of memory");
+        free(s);
+    }
+    free(name);
+    clang_disposeTokens(st->tu, toks, n);
+    return ok;
+}
+
+struct cm_attr_decl {
+    struct cm_state *st;
+    const char *from;
+    bool ok;
+};
+
+static enum CXChildVisitResult cm_attr_decl_visit(CXCursor c, CXCursor parent,
+                                                  CXClientData data)
+{
+    struct cm_attr_decl *q = data;
+    (void)parent;
+    if (clang_getCursorKind(c) == CXCursor_UnexposedAttr)
+        q->ok = cm_attr_args(q->st, c, q->from);
+    return q->ok ? CXChildVisit_Continue : CXChildVisit_Break;
+}
+
 static bool cm_facts_cursor(struct cm_state *st, CXCursor c)
 {
     CXCursor ref;
@@ -539,6 +678,8 @@ static bool cm_facts_cursor(struct cm_state *st, CXCursor c)
     case CXCursor_AsmStmt:
         return cm_unknown(&st->core, st->site->id,
                           VCS_SEMANTIC_UNKNOWN_V1_INLINE_ASM, "");
+    case CXCursor_UnexposedAttr: /* cleanup(f) on a local, and the like */
+        return !st->core.facts || cm_attr_args(st, c, st->site->id);
     default:
         return true;
     }
@@ -749,6 +890,12 @@ static bool cm_aliases(struct cm_state *st, CXCursor d)
              cm_alias_ref(st, from, q.label);
     if (ok && from != NULL && q.unexposed)
         ok = cm_alias_tokens(st, d, from);
+    /* A definition's attributes are walked with its site. */
+    if (ok && from != NULL && q.unexposed && !clang_isCursorDefinition(d)) {
+        struct cm_attr_decl a = {.st = st, .from = from, .ok = true};
+        clang_visitChildren(d, cm_attr_decl_visit, &a);
+        ok = a.ok;
+    }
     free(from);
     free(q.label);
     return ok;
@@ -756,8 +903,8 @@ static bool cm_aliases(struct cm_state *st, CXCursor d)
 
 /* The facts a file-scope function or variable adds beyond its decl record:
  * its second entries (alias, weakref, ifunc, asm label) and, for a variable
- * definition, the sites its initializer names. A function definition's own
- * sites come from cm_function_def. */
+ * definition, the sites its initializer and attributes name. A function
+ * definition's own sites come from cm_function_def. */
 static bool cm_value_facts(struct cm_state *st, CXCursor c,
                            enum CXCursorKind k)
 {

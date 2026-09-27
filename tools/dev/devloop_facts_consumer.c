@@ -355,7 +355,7 @@ static bool fxc_c_path(struct fxc *c, const struct zcl_devloop_facts_tu *tus,
     free(s);
     fxc_c_decls(c, tus, v);
     if (c->seed_reason == NULL)
-        return true;
+        return fxc_c_members(c, given, plan, v);
     memcpy(plan, given, sizeof(*plan));
     v->narrowed = false;
     v->reason = c->seed_reason;

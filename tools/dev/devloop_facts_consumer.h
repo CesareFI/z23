@@ -85,6 +85,13 @@ void fxc_check_addresses(struct fxc *c,
 bool fxc_obligations(struct fxc *c, const struct zcl_devloop_plan *given,
                      struct zcl_devloop_plan *plan,
                      struct zcl_devloop_facts_verdict *v);
+/* The .c path once its rule chain narrowed: the members' seeds (functions
+ * another TU compiles from a changed .c it includes) join the walk, and each
+ * broadened member but a changed file's own TU adds its file-seeded plan,
+ * as on the header path. */
+bool fxc_c_members(struct fxc *c, const struct zcl_devloop_plan *given,
+                   struct zcl_devloop_plan *plan,
+                   struct zcl_devloop_facts_verdict *v);
 /* An incomplete universe: the file-seeded plan, and the whole catalog
  * when nothing bounds the change (c->universal). */
 bool fxc_fallback(struct fxc *c, const struct zcl_devloop_plan *given,

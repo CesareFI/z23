@@ -495,12 +495,44 @@ static size_t fxc_first_root(const struct fxi *x, const uint8_t *flags,
     return hit;
 }
 
+/* A function a changed .c defines, compiled here because this TU includes
+ * that .c (a unity build, a test reaching its statics): its name, perhaps
+ * renamed by a macro, is what this TU's callers call. */
+static bool fxc_in_changed_c(const struct fxc *c, const struct fxi *x,
+                             size_t e)
+{
+    for (size_t k = 0; k < c->nfiles; k++) {
+        size_t n = strlen(c->files[k]);
+        if (n > 2 && strcmp(c->files[k] + n - 2, ".c") == 0 &&
+            fxi_has_path(x, e, c->files[k]))
+            return true;
+    }
+    return false;
+}
+
 /* Seeds: every function the compile may re-emit. The functions the TU
  * defines that reach a semantic change, grown by fxi_codegen_closure under
  * the optimizer the identity names (unbounded: "inline-closure-unknown");
- * main-file functions among them seed the walk. Any other root that
- * reaches a change, or a header definition every reader emits among them,
- * seeds the whole file instead. */
+ * main-file functions among them, and those a changed .c defines, seed the
+ * walk. Any other root that reaches a change, or a definition from another
+ * file every reader emits among them, seeds the whole file as well. */
+/* The marked functions: seeds, or a broadened TU. */
+static bool fxc_seed_marked(struct fxc *c, const struct fxi *x,
+                            const uint8_t *mark,
+                            struct zcl_devloop_facts_tu_verdict *t)
+{
+    bool ok = true;
+    for (size_t e = 0; ok && e < fxi_count(x); e++) {
+        if (!mark[e] || !fxi_defined_function(x, e))
+            continue;
+        if (fxi_main_function(x, e) || fxc_in_changed_c(c, x, e))
+            ok = fxc_seed_add(c, x, e);
+        if (!fxi_main_function(x, e) && fxi_root(x, e))
+            t->broadened = true;
+    }
+    return ok;
+}
+
 static bool fxc_seeds(struct fxc *c, const struct fxi *x, const size_t *via,
                       struct zcl_devloop_facts_tu_verdict *t)
 {
@@ -519,15 +551,8 @@ static bool fxc_seeds(struct fxc *c, const struct fxi *x, const size_t *via,
     if (ok && model == FXI_CODEGEN_UNBOUNDED)
         fxc_refuse(c, "inline-closure-unknown",
                    "the compile identity names", token);
-    ok = ok && fxi_codegen_closure(x, model, mark);
-    for (size_t e = 0; ok && e < fxi_count(x); e++) {
-        if (!mark[e] || !fxi_defined_function(x, e))
-            continue;
-        if (fxi_main_function(x, e))
-            ok = fxc_seed_add(c, x, e);
-        else if (fxi_root(x, e))
-            t->broadened = true;
-    }
+    ok = ok && fxi_codegen_closure(x, model, mark) &&
+         fxc_seed_marked(c, x, mark, t);
     free(mark);
     return ok;
 }
@@ -609,17 +634,27 @@ static bool fxc_roots_differ(const struct fxc_pair *p,
     return false;
 }
 
-static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
-                     struct zcl_devloop_facts_tu_verdict *t)
+/* A TU broadened by a changed .c it includes (a unity build, a test that
+ * reaches the statics) still names the functions its compile may re-emit,
+ * under names only its own manifests know (a macro may rename them): they
+ * seed the walk. Seeds only; the TU keeps its reason. */
+static bool fxc_included_c_seeds(struct fxc *c, struct fxc_pair *p,
+                                 const char *path)
+{
+    struct zcl_devloop_facts_tu_verdict scratch = {0};
+    size_t n = strlen(path);
+    bool ok = true;
+    if (n > 2 && strcmp(path + n - 2, ".c") == 0)
+        (void)fxc_semantic(c, p, &scratch, &ok);
+    return ok;
+}
+
+/* The first changed file this TU read whose text broadens it; true when one
+ * did (*ok false only for memory). */
+static bool fxc_changed_files(struct fxc *c, struct fxc_pair *p,
+                              struct zcl_devloop_facts_tu_verdict *t, bool *ok)
 {
     char detail[192];
-    bool ok = true;
-    p->fa = zcl_calloc(fxi_count(p->xa) + 1, 1, "facts_tu.fa");
-    p->fb = zcl_calloc(fxi_count(p->xb) + 1, 1, "facts_tu.fb");
-    if (p->fa == NULL || p->fb == NULL)
-        return false;
-    fxc_mark_digests(p->xa, p->xb, p->fa);
-    fxc_mark_digests(p->xb, p->xa, p->fb);
     for (size_t k = 0; k < c->nfiles; k++) {
         const uint8_t *b = fxi_file_digest(p->xb, c->files[k]);
         const uint8_t *a = fxi_file_digest(p->xa, c->files[k]);
@@ -627,9 +662,27 @@ static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
         if (a == NULL || b == NULL || memcmp(a, b, 32) == 0)
             continue;
         why = fxc_changed_file(c, p, c->files[k], detail, sizeof(detail));
-        if (why != NULL)
-            return fxc_set(t, true, true, why, "%s", detail);
+        if (why == NULL)
+            continue;
+        fxc_set(t, true, true, why, "%s", detail);
+        *ok = fxc_included_c_seeds(c, p, c->files[k]);
+        return true;
     }
+    return false;
+}
+
+static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
+                     struct zcl_devloop_facts_tu_verdict *t)
+{
+    bool ok = true;
+    p->fa = zcl_calloc(fxi_count(p->xa) + 1, 1, "facts_tu.fa");
+    p->fb = zcl_calloc(fxi_count(p->xb) + 1, 1, "facts_tu.fb");
+    if (p->fa == NULL || p->fb == NULL)
+        return false;
+    fxc_mark_digests(p->xa, p->xb, p->fa);
+    fxc_mark_digests(p->xb, p->xa, p->fb);
+    if (fxc_changed_files(c, p, t, &ok))
+        return ok;
     if (!fxc_new_ids(c, p->xa, p->xb) || !fxc_new_ids(c, p->xb, p->xa))
         return false;
     if (fxc_semantic(c, p, t, &ok) || !ok)

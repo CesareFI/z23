@@ -53,6 +53,10 @@ enum scx_variant {
     SCX_P_HASINC,   /* cx.h tests __has_include("cx_opt.h"); cx_b.c reads it */
     SCX_HASINC,     /* include/cx_opt.h is created: the test flips */
     SCX_HASDEL,     /* ...and deleted again (planned against SCX_HASINC) */
+    SCX_P_CLEANUP,  /* cx_e.c: cx_work's local runs cleanup(cx_rel) */
+    SCX_CLEANUP,    /* cx_rel's body: cx_work inlines it, naming it nowhere */
+    SCX_P_UNITY,    /* cx_e.c includes cx_c.c, cx_sum renamed cx_e_sum */
+    SCX_UNITY,      /* cx_sum's body: cx_e.c compiles it as cx_e_sum */
     SCX_VARIANT_COUNT
 };
 

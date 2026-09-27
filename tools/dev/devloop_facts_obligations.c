@@ -156,18 +156,31 @@ static bool fxc_merge_group(struct fxc *c, struct zcl_devloop_plan *plan,
     return true;
 }
 
-/* The file-seeded closure of every broadened TU, added to the plan. */
+static size_t fxc_broadened_paths(const struct fxc *c, const char **paths,
+                                  bool c_path)
+{
+    const struct zcl_devloop_facts_report *r = c->report;
+    size_t n = 0;
+    for (size_t k = 0; k < r->ntus; k++)
+        if (r->tus[k].affected && r->tus[k].broadened &&
+            !(c_path && fxc_is_changed(c, r->tus[k].path)))
+            paths[n++] = r->tus[k].path;
+    return n;
+}
+
+/* The file-seeded closure of every broadened TU, added to the plan; on the
+ * .c path (c_path), not of a changed file's own TU, which its rule chain
+ * decided. */
 static bool fxc_broadened(struct fxc *c, const struct zcl_devloop_plan *given,
-                          struct zcl_devloop_plan *plan)
+                          struct zcl_devloop_plan *plan, bool c_path)
 {
     const struct zcl_devloop_facts_report *r = c->report;
     const char **paths = zcl_calloc(r->ntus + 1, sizeof(*paths), "facts.bpaths");
     struct zcl_devloop_plan *tmp = zcl_malloc(sizeof(*tmp), "facts.bplan");
     size_t n = 0;
     bool ok = paths != NULL && tmp != NULL;
-    for (size_t k = 0; ok && k < r->ntus; k++)
-        if (r->tus[k].affected && r->tus[k].broadened)
-            paths[n++] = r->tus[k].path;
+    if (ok)
+        n = fxc_broadened_paths(c, paths, c_path);
     if (ok && n > 0) {
         memcpy(tmp, given, sizeof(*tmp));
         ok = zcl_devloop_plan_files(paths, n, tmp) &&
@@ -239,7 +252,7 @@ bool fxc_obligations(struct fxc *c, const struct zcl_devloop_plan *given,
         memset(c->report->group_reason, 0, sizeof(c->report->group_reason));
         return fxc_plain(c, given, plan, v, why, "the narrowed walk");
     }
-    if (!fxc_broadened(c, given, plan)) {
+    if (!fxc_broadened(c, given, plan, false)) {
         memset(c->report->group_reason, 0, sizeof(c->report->group_reason));
         return fxc_plain(c, given, plan, v, "group-cap", "broadened TUs");
     }
@@ -259,5 +272,73 @@ bool fxc_plain_count(struct fxc *c, const struct zcl_devloop_plan *given)
         c->report->plain_universal = tmp->closure_universal;
     }
     free(tmp);
+    return ok;
+}
+
+/* ---- the .c path's members ------------------------------------------------------ */
+
+static bool fxc_seed_in(const struct zcl_devloop_facts_seed *s, size_t n,
+                        const char *id)
+{
+    for (size_t k = 0; k < n; k++)
+        if (strcmp(s[k].id, id) == 0)
+            return true;
+    return false;
+}
+
+/* The walk again, from the rule chain's seeds and the members' together. */
+static bool fxc_c_rewalk(struct fxc *c, const struct zcl_devloop_plan *given,
+                         struct zcl_devloop_plan *plan,
+                         struct zcl_devloop_facts_verdict *v,
+                         const struct zcl_devloop_facts_seed *all, size_t n)
+{
+    size_t nfold;
+    const char **fold = fxc_fold_list(c, &nfold);
+    bool ok;
+    if (fold == NULL)
+        return false;
+    memcpy(plan, given, sizeof(*plan));
+    ok = zcl_devloop_facts_narrow(c->root, c->facts_dir, fold, nfold, all, n,
+                                  plan, v);
+    free(fold);
+    if (!ok) {
+        const char *why = v->reason && v->reason[0] ? v->reason : "closure-error";
+        return fxc_plain(c, given, plan, v, why, "the narrowed walk");
+    }
+    v->seeds_len = 0;
+    for (size_t k = 0; k < n && k < ZCL_DEVLOOP_FACTS_MAX_SEEDS; k++) {
+        (void)snprintf(v->seeds[k], sizeof(v->seeds[k]), "%s", all[k].name);
+        (void)snprintf(v->seed_ids[k], sizeof(v->seed_ids[k]), "%s", all[k].id);
+        v->seeds_len++;
+    }
+    v->seeds_total = n;
+    return true;
+}
+
+bool fxc_c_members(struct fxc *c, const struct zcl_devloop_plan *given,
+                   struct zcl_devloop_plan *plan,
+                   struct zcl_devloop_facts_verdict *v)
+{
+    struct zcl_devloop_facts_seed *all =
+        zcl_calloc(v->seeds_len + c->nseeds + 1, sizeof(*all), "facts.cseeds");
+    size_t n = 0;
+    bool ok = all != NULL;
+    for (size_t k = 0; ok && k < v->seeds_len; k++) {
+        (void)snprintf(all[n].name, sizeof(all[n].name), "%s", v->seeds[k]);
+        (void)snprintf(all[n].id, sizeof(all[n].id), "%s", v->seed_ids[k]);
+        n++;
+    }
+    for (size_t k = 0; ok && k < c->nseeds; k++)
+        if (!fxc_seed_in(all, n, c->seeds[k].id))
+            all[n++] = c->seeds[k];
+    if (ok)
+        fxc_check_addresses(c, all, n);
+    if (ok && c->seed_reason != NULL)
+        ok = fxc_plain(c, given, plan, v, c->seed_reason, c->seed_detail);
+    else if (ok && n > v->seeds_len)
+        ok = fxc_c_rewalk(c, given, plan, v, all, n);
+    if (ok && v->narrowed && !fxc_broadened(c, given, plan, true))
+        ok = fxc_plain(c, given, plan, v, "group-cap", "broadened TUs");
+    free(all);
     return ok;
 }
