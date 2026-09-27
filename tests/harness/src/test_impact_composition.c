@@ -3945,15 +3945,18 @@ static int test_ic_changed_set_widens_structural_changes(void)
             ASSERT(set.structural_count == 1);
             ASSERT(set.structural_path &&
                    strcmp(set.structural_path, c->path) == 0);
-            /* The full closure: every catalog group, never a narrowed plan,
+            /* The full closure: the universal set (every catalog group, each
+             * umbrella carried by all of its shards), never a narrowed plan,
              * never an inventory-only or empty selection. */
             ASSERT(chose);
             ASSERT(universal);
-            ASSERT((size_t)selected == catalog);
             ASSERT(gated[0] == '\0');
-            for (size_t g = 0; g < catalog; g++)
-                ASSERT(ic_selector_has(selector,
-                                       zcl_test_group_catalog_at(g)));
+            ASSERT(ic_selector_is_universal(selector, selected, 0));
+            for (size_t g = 0; g < catalog; g++) {
+                const char *group = zcl_test_group_catalog_at(g);
+                if (!zcl_test_group_is_umbrella(group))
+                    ASSERT(ic_selector_has(selector, group));
+            }
             /* The structural mark is what widens: the same rows without it
              * plan the narrow selection, which is not the catalog. */
             struct zcl_dev_proof_changed_set narrow = set;
