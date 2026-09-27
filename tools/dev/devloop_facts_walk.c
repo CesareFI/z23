@@ -272,6 +272,39 @@ static bool fx_fold(struct zcl_devloop_plan *plan, struct fx_set *files)
     return true;
 }
 
+
+#if defined(ZCL_TESTING)
+/* The reached set of the last walk that folded, for the fixture's check. */
+static char *g_fx_test_reached;
+static size_t g_fx_test_reached_len, g_fx_test_reached_width;
+
+void zcl_devloop_test_reached_reset(void)
+{
+    free(g_fx_test_reached);
+    g_fx_test_reached = NULL;
+    g_fx_test_reached_len = g_fx_test_reached_width = 0;
+}
+
+bool zcl_devloop_test_reached_has(const char *path)
+{
+    for (size_t k = 0; k < g_fx_test_reached_len; k++)
+        if (strcmp(g_fx_test_reached + k * g_fx_test_reached_width, path) == 0)
+            return true;
+    return false;
+}
+
+static void fx_test_keep_reached(const struct fx_set *s)
+{
+    zcl_devloop_test_reached_reset();
+    g_fx_test_reached = zcl_malloc(s->len * s->width + 1, "facts.test_reached");
+    if (g_fx_test_reached == NULL)
+        return;
+    memcpy(g_fx_test_reached, s->items, s->len * s->width);
+    g_fx_test_reached_len = s->len;
+    g_fx_test_reached_width = s->width;
+}
+#endif
+
 static void fx_walk_free(struct fx_walk *w)
 {
     for (size_t k = 0; k < w->ncache; k++) {
@@ -330,6 +363,10 @@ bool zcl_devloop_facts_narrow(const char *root, const char *facts_dir,
                                         : "closure-query-error";
     v->reached_files = reached.len;
     ok = rc == FX_WALK_OK && fx_fold(plan, &reached);
+#if defined(ZCL_TESTING)
+    if (ok)
+        fx_test_keep_reached(&reached);
+#endif
     if (rc == FX_WALK_OK && !ok)
         v->reason = "group-cap";
     fx_walk_free(&w);

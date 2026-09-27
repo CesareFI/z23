@@ -109,6 +109,7 @@ bool scx_consume(const char *root, enum scx_variant v,
     for (size_t k = 0; k < scx_nchanged(e); k++)
         all_c = all_c && scx_is_c(e->changed[k]);
     memset(out, 0, sizeof(*out));
+    zcl_devloop_test_reached_reset(); /* no earlier walk answers for this one */
     ok = scx_write_tree(root, v) &&
          (ev->no_depfiles || scx_write_depfiles(root, v)) &&
          scx_write_facts(root, v, ev) &&
@@ -216,32 +217,46 @@ static size_t scx_compare_seeds(const struct scx_edit *e,
     return bad;
 }
 
+/* One changed file or affected TU the narrowed walk did not fold in. */
+static size_t scx_unreached(const char *path, size_t *unsafe, FILE *why,
+                            const struct scx_edit *e, size_t reached,
+                            size_t need)
+{
+    (*unsafe)++;
+    if (why != NULL)
+        fprintf(why, "  %s reached: %s missing (%zu file(s) reached, %zu "
+                "needed: a count check %s)\n", e->name, path, reached, need,
+                reached >= need ? "would pass" : "would fail too");
+    return 1;
+}
+
 /* A narrowed plan reaches every changed file and every affected TU (it
- * compiles them): fewer reached files than that leaves one out, unsafe. */
+ * compiles them): each must be in the walk's reached set, not merely as
+ * many files as there are of them. A missing one is unsafe. */
 static size_t scx_compare_reached(const struct scx_edit *e,
                                   const struct scx_result *r, size_t *unsafe,
                                   FILE *why)
 {
-    size_t need = 0;
+    const char *need[SCX_TU_COUNT + 2];
+    size_t n = 0, bad = 0;
     if (!r->verdict.narrowed)
         return 0;
     for (size_t i = 0; i < sizeof(e->changed) / sizeof(e->changed[0]); i++)
-        need += e->changed[i] != NULL;
+        if (e->changed[i] != NULL)
+            need[n++] = e->changed[i];
     for (size_t k = 0; k < SCX_TU_COUNT; k++) {
         const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
         bool listed = false;
-        for (size_t i = 0; i < sizeof(e->changed) / sizeof(e->changed[0]); i++)
-            listed = listed || (e->changed[i] != NULL &&
-                                strcmp(e->changed[i], k_scx_tus[k]) == 0);
-        need += t != NULL && t->affected && !listed;
+        for (size_t i = 0; i < n; i++)
+            listed = listed || strcmp(need[i], k_scx_tus[k]) == 0;
+        if (t != NULL && t->affected && !listed)
+            need[n++] = k_scx_tus[k];
     }
-    if (r->verdict.reached_files >= need)
-        return 0;
-    (*unsafe)++;
-    if (why != NULL)
-        fprintf(why, "  %s reached: %zu file(s), want at least %zu\n", e->name,
-                (size_t)r->verdict.reached_files, need);
-    return 1;
+    for (size_t i = 0; i < n; i++)
+        if (!zcl_devloop_test_reached_has(need[i]))
+            bad += scx_unreached(need[i], unsafe, why, e,
+                                 (size_t)r->verdict.reached_files, n);
+    return bad;
 }
 
 /* One line per disagreement with the edit table on `why` (when not NULL);
