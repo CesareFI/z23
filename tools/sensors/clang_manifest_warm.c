@@ -3,6 +3,7 @@
 #include "clang_manifest_core.h"
 
 #include "base/safe_alloc.h"
+#include "base/serialize_le.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -192,16 +193,22 @@ struct cm_lset {
     bool bad;
 };
 
+static bool cm_u32_at(const uint8_t *raw, size_t len, size_t *at, uint32_t *v)
+{
+    if (len - *at < 4)
+        return false;
+    *v = zcl_read_u32_le(raw + *at);
+    *at += 4;
+    return true;
+}
+
+/* Step over one length-prefixed text: u32 length, then its bytes. */
 static bool cm_text_end(const uint8_t *raw, size_t len, size_t *at)
 {
     uint32_t n;
-    if (len - *at < 4)
+    if (!cm_u32_at(raw, len, at, &n) || len - *at < n)
         return false;
-    n = (uint32_t)raw[*at] | (uint32_t)raw[*at + 1] << 8 |
-        (uint32_t)raw[*at + 2] << 16 | (uint32_t)raw[*at + 3] << 24;
-    if (len - *at - 4 < n)
-        return false;
-    *at += 4 + (size_t)n;
+    *at += (size_t)n;
     return true;
 }
 
@@ -362,16 +369,6 @@ static bool cm_shadow_bad(struct cm_shadow *s)
 {
     s->bad = true;
     return false;
-}
-
-static bool cm_u32_at(const uint8_t *raw, size_t len, size_t *at, uint32_t *v)
-{
-    if (len - *at < 4)
-        return false;
-    *v = (uint32_t)raw[*at] | (uint32_t)raw[*at + 1] << 8 |
-         (uint32_t)raw[*at + 2] << 16 | (uint32_t)raw[*at + 3] << 24;
-    *at += 4;
-    return true;
 }
 
 /* One IDENTITY dir list: u32 count || text*. keep: record its dirs. */

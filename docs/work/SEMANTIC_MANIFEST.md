@@ -520,7 +520,7 @@ resolved, including includes made inside system headers, which no LOOKUPS
 record covers. libclang revalidates the files it read, not the search slots
 it skipped. So a header copied into an earlier `-I` dir under a name a
 system header includes left a warm reparse stale, while a cold parse read
-the copy (reproduced with `bits/wordsize.h` under `<stdint.h>`, before the
+the copy (reproduced with glibc bits/wordsize.h under `<stdint.h>`, before the
 check existed). The candidates are: for every non-main file of the manifest,
 under every search dir (quote, then angled) that holds it, each earlier
 search dir that now holds the same relative name, or that no longer exists.

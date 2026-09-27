@@ -105,7 +105,7 @@ struct cm_outcome {
 static double cm_now_ms(void)
 {
     struct timespec ts;
-    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts); // platform-ok: standalone sensor timing, links no platform clock
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 
