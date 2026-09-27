@@ -571,6 +571,70 @@ static int test_va_pubkey_parse(void)
     return failures;
 }
 
+/* Every encoding of a point in the order-1/2/4/8 torsion subgroup, spelled
+ * independently of the subject (the same set test_ed25519_differential
+ * feeds the verifier). Each is tried with both sign bits; the last two are
+ * the non-canonical y = p and y = p + 1 spellings of the order-4 and
+ * identity points. A pinned key of small order would let one forged
+ * signature verify for many messages, so none may load. */
+static int test_va_pubkey_small_order(void)
+{
+    int failures = 0;
+    static const char *const small_order[] = {
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    };
+    uint8_t point[32], got[32], real[32];
+    char hex[65];
+    TEST("verify attest: a small-order public key (order 8, 4, 2 or 1, "
+         "canonical or not, either sign) is malformed") {
+        for (size_t i = 0; i < sizeof(small_order) / sizeof(small_order[0]);
+             i++) {
+            for (int sign = 0; sign < 2; sign++) {
+                test_hex_to_bytes(small_order[i], point, 32);
+                if (sign)
+                    point[31] ^= 0x80u;
+                zcl_hex_encode(point, 32, hex);
+                if (zcl_verify_attest_pubkey_parse((const uint8_t *)hex, 64,
+                                                   got))
+                    printf("[admitted %s] ", hex);
+                ASSERT(!zcl_verify_attest_pubkey_parse((const uint8_t *)hex,
+                                                       64, got));
+            }
+        }
+        /* An ordinary key still loads. */
+        va_pub(k_va_stranger_seed, real);
+        zcl_hex_encode(real, 32, hex);
+        ASSERT(zcl_verify_attest_pubkey_parse((const uint8_t *)hex, 64, got));
+        ASSERT(memcmp(got, real, 32) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* seal() with no output pointer is a caller error, named, never a write
+ * through NULL. Runs last: before the guard existed it crashed. */
+static int test_va_seal_null_out(void)
+{
+    int failures = 0;
+    size_t len = 99;
+    const char *why = NULL;
+    TEST("verify attest: seal refuses a NULL output by name") {
+        struct zcl_verify_attest_record r = va_record();
+        ASSERT(!zcl_verify_attest_seal(&r, k_va_verifier_seed, NULL, &len,
+                                       &why));
+        ASSERT(len == 0);
+        ASSERT_STR_EQ(why, ZCL_VERIFY_ATTEST_WHY_ARGUMENTS);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 4. trust root: loader on real files ────────────────────────────────── */
 
 #if !defined(_WIN32)
@@ -716,6 +780,8 @@ int test_verify_attest(void)
     failures += test_va_loader();
     failures += test_va_default_path();
 #endif
+    failures += test_va_pubkey_small_order();
+    failures += test_va_seal_null_out();
     va_restore();
     return failures;
 }
