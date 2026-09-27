@@ -7555,3 +7555,40 @@ reports are in `.cache/camera-lifecycle-20260926/`; the current release remains
 Next independent native audit: qualify uninitialized-memory paths under a
 separate MemorySanitizer build, preserving the ASan/UBSan/ThreadSanitizer lanes
 and all production validation, custody and TLS boundaries.
+
+## MemorySanitizer qualification and build recheck — 2026-09-28
+
+The previously running full MemorySanitizer lane completed: all 137 native
+groups passed in 123.83 seconds. The initial record/JNI/header-contract subset
+also passed (four groups, 0.49 seconds). Authored code and enabled in-tree
+providers were compiled with Clang 20.1.2 and origin tracking in a separate
+build directory. This observes the exercised host paths; it does not qualify
+Android hardware custody or prove absence of uninitialized reads elsewhere.
+
+Reproduce from the wallet directory without changing the ASan/UBSan profiles:
+
+```sh
+cmake -S native -B native/build/msan-wallet \
+  -DCMAKE_C_COMPILER=clang-20 -DCMAKE_BUILD_TYPE=Debug \
+  '-DCMAKE_C_FLAGS=-O1 -g -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer' \
+  '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=memory -fsanitize-memory-track-origins=2' \
+  -DZCL_SANITIZE=OFF -DZCL_TLS_REVIEW=OFF -DZCL_ORACLE=OFF
+cmake --build native/build/msan-wallet -j4
+ctest --test-dir native/build/msan-wallet --output-on-failure
+```
+
+A separate one-byte heap control confirms that this compiler/runtime detects
+an intentional uninitialized read, reports its allocation origin and exits 1.
+The identical control with explicit initialization exits 0. No sanitizer
+suppression, production change or TLS enablement was needed. Configuration,
+build/test logs and both controls are retained in `.cache/msan-wallet-20260926/`.
+
+After checking background jobs and all active Android worktrees, the current
+full Gradle build/test/lint/isolation/alignment command completed again in
+15 seconds (14 executed, 140 up-to-date tasks). Existing JVM results remain
+149 passing tests; no fresh JVM execution is claimed by this recheck. Other
+worktrees' unfinished parser, fuzzing and review-race changes remain untouched.
+The normal push of camera documentation commit `7906e3f04` was refused by the
+installed hook with `remote-ref-not-main`; the development remote was verified
+unchanged at `b4d5d6a8f3da81a0078e943a397a1077d9d91f50`. Publication remains a
+separate policy block; continue the permitted wallet UI/lifecycle audit.
