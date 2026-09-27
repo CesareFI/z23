@@ -3870,6 +3870,16 @@ static bool warm_start_disabled(void)
                      strcmp(value, "no") == 0);
 }
 
+/* The scan's typed cold reason, on the record as the same "cold: <reason>"
+ * the status line shows. Display only, like every other phases.txt note. */
+static void warm_cold_note(const char *phases, const char *reason)
+{
+    char cold[PROOF_WARM_REASON_MAX + 8];
+    if (phases && phases[0] && reason &&
+        snprintf(cold, sizeof(cold), "cold: %s", reason) < (int)sizeof(cold))
+        (void)zcl_dev_proof_phase_note(phases, "warm_start", cold);
+}
+
 /* Seed one generation's build tree from the donor and repair the
  * timestamp graph. Reports true only when the full repair completed; any
  * earlier failure rolls the seeds back and reports false (cold). An
@@ -3896,11 +3906,7 @@ static bool warm_start_generation(const struct proof_paths *paths,
     }
     if (!warm_donor_scan(parent, paths->root, generation, paths->phases,
                          authoritative, &donor, warm->cold_reason)) {
-        char cold[PROOF_WARM_REASON_MAX + 8];
-        if (paths->phases[0] &&
-            snprintf(cold, sizeof(cold), "cold: %s", warm->cold_reason) <
-                (int)sizeof(cold))
-            (void)zcl_dev_proof_phase_note(paths->phases, "warm_start", cold);
+        warm_cold_note(paths->phases, warm->cold_reason);
         return false;
     }
     if (snprintf(donor_build, sizeof(donor_build), "%s/build", donor.path) >=
