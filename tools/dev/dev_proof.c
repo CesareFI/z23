@@ -1469,7 +1469,7 @@ static char *dp_changed_set_fetch(const char *repo_root, const char *base,
         return NULL;
     }
     (void)unlink(scratch_path);
-    const char *argv[] = {"git", "diff", "--name-only", "--diff-filter=ACMRD",
+    const char *argv[] = {"git", "diff", "--name-status", "--no-renames",
                           output_arg, base, local, "--", NULL};
     if (!git_capture(repo_root, argv, ignored, sizeof(ignored))) {
         (void)unlink(scratch_path);
@@ -1496,9 +1496,22 @@ static size_t dp_changed_set_count(const char *bytes, size_t len)
     return count;
 }
 
-/* Point one reference per row into the buffer. An absolute path, a `..`
- * escape, a backslash, an over-long path, or more rows than the count
- * promised refuses the whole set with the row that did it. */
+static bool dp_changed_set_path_invalid(const char *path, size_t path_len)
+{
+    return path_len == 0 || path_len >= PROOF_CHANGED_PATH_MAX ||
+           path[0] == '/' || strstr(path, "..") || strchr(path, '\\') ||
+           strchr(path, '\t');
+}
+
+static bool dp_changed_set_structural_change(char status)
+{
+    /* __has_include may probe any filename, including .txt or a source.
+     * No old depfile can establish an edge for a formerly absent path. */
+    return status == 'A' || status == 'D' || status == 'T';
+}
+
+/* Point one path reference per status row into the buffer. Presence changes
+ * to headers can flip __has_include without leaving any old depfile edge. */
 static bool dp_changed_set_rows(char *bytes, size_t count, const char **refs,
                                 size_t *persist_len, char *why,
                                 size_t why_len)
@@ -1507,16 +1520,26 @@ static bool dp_changed_set_rows(char *bytes, size_t count, const char **refs,
     char *save = NULL;
     for (char *line = strtok_r(bytes, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
-        size_t path_len = strlen(line);
-        if (path_len == 0)
-            continue;
-        if (stored >= count || path_len >= PROOF_CHANGED_PATH_MAX ||
-            line[0] == '/' || strstr(line, "..") || strchr(line, '\\')) {
+        char status = line[0];
+        if (line[1] != '\t' || !strchr("ACMRDT", status)) {
+            proof_whyf(why, why_len,
+                       "changed_set_invalid_status row=%zu", stored + 1);
+            return false;
+        }
+        char *path = line + 2;
+        size_t path_len = strlen(path);
+        if (stored >= count || dp_changed_set_path_invalid(path, path_len)) {
             proof_whyf(why, why_len,
                        "changed_set_invalid_or_truncated row=%zu", stored + 1);
             return false;
         }
-        refs[stored++] = line;
+        if (dp_changed_set_structural_change(status)) {
+            proof_whyf(why, why_len,
+                       "changed_input_structure_requires_full_closure path=%s",
+                       path);
+            return false;
+        }
+        refs[stored++] = path;
         *persist_len += path_len + 1;
     }
     if (stored != count) {
@@ -2298,6 +2321,11 @@ static enum warm_seed_class warm_classify_rel(const char *rel, bool is_reg)
 {
     if (!rel || !rel[0] || !is_reg || warm_path_hidden(rel))
         return WARM_SEED_SKIP;
+    /* Fuzz objects belong to a different Make profile. A seeded fuzz depfile
+     * becomes stale when this generation retimes changed source and poisons
+     * the proof's include graph before the fuzz profile can rebuild it. */
+    if (strncmp(rel, "fuzz-obj/", 9) == 0)
+        return WARM_SEED_SKIP;
     if (warm_seed_is_wrapper(rel))
         return WARM_SEED_COPY;
     if (warm_has_suffix(rel, ".o") || warm_has_suffix(rel, ".d"))
@@ -2567,7 +2595,8 @@ static bool dp_seed_entry(const char *donor_dir, const char *gen_dir,
     if (S_ISDIR(donor_st.st_mode)) {
         /* Hidden directories (.leases, staging, admission) are live
          * machinery: do not recreate them, do not descend. */
-        if (warm_path_hidden(rel)) return true;
+        if (warm_path_hidden(rel) || strcmp(rel, "fuzz-obj") == 0)
+            return true;
         *descend = dp_seed_subdir_ready(gen_child);
         return true;
     }
@@ -4520,6 +4549,30 @@ static bool dp_generation_checkout(const struct proof_paths *paths,
     return true;
 }
 
+/* A retried exact pair reuses its private generation. Fuzz depfiles are not
+ * proof inputs, but an earlier test can leave them there; retiming a changed
+ * header then makes the include index refuse the unrelated stale depfile.
+ * Discard only this generated profile before closing the proof graph. */
+static bool dp_generation_discard_fuzz_outputs(const char *generation,
+                                               char *why, size_t why_len)
+{
+    struct stat st;
+    char top[PATH_MAX];
+    const char *top_argv[] = {"git", "rev-parse", "--show-toplevel", NULL};
+    if (lstat(generation, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        !git_capture(generation, top_argv, top, sizeof(top)) ||
+        strcmp(top, generation) != 0) {
+        proof_why(why, why_len, "proof_generation_fuzz_cleanup_unsafe_root");
+        return false;
+    }
+    const char *argv[] = {"git", "clean", "-q", "-f", "-d", "-x", "--",
+                          "build/fuzz-obj", NULL};
+    char output[ZCL_DEVLOOP_OUTPUT_MAX];
+    if (git_capture(generation, argv, output, sizeof(output))) return true;
+    proof_why(why, why_len, "proof_generation_fuzz_cleanup_failed");
+    return false;
+}
+
 /* The generation's own build tree. Distinct from the dependency copy
  * below: nothing is missing from the checkout here, the generation's own
  * build tree could not be created. Conflating the two sent a reader
@@ -5041,6 +5094,8 @@ static bool generation_prepare(const struct proof_paths *paths,
         proof_why(why, why_len, "proof_generation_not_exact");
         return false;
     }
+    if (!dp_generation_discard_fuzz_outputs(generation, why, why_len))
+        return false;
     dp_generation_stage_note(paths, "generation_exactness_us",
                              stage_started_us);
     /* The sealed bytes are exactly what the dimensions would prove. Refuse
@@ -6684,7 +6739,32 @@ struct dp_worker {
     bool bundle_built_prefork;
 };
 
-/* The impact plan, closed and rendered once. */
+/* A warm generation may carry depfiles for inputs just retimed to force a
+ * rebuild. On an include-graph refusal, build the existing full bundle once
+ * before asking again; the resulting current epochs describe these bytes. */
+static bool dp_worker_refresh_include_graph(struct dp_worker *w,
+                                            char *why, size_t why_len)
+{
+    char jobs[16];
+    if (!proof_make_jobs_arg(jobs)) {
+        proof_why(why, why_len, "proof_job_count_unavailable");
+        return false;
+    }
+    const char *argv[] = {"make", "--no-print-directory", jobs,
+                          "dev-proof-bundle-prefork", NULL};
+    struct zcl_dev_proof_budget budget =
+        proof_step_budget(w->paths, "bundle", PROOF_BUNDLE_DEFAULT_MS);
+    if (run_step(w->paths, w->generation, w->paths->bundle_log,
+                 argv, "bundle", &budget, NULL) != 0) {
+        proof_why(why, why_len, "proof_closure_refresh_build_failed");
+        return false;
+    }
+    w->bundle_built_prefork = true;
+    proof_phase_mark(w->phases, "closure_refresh_build");
+    return true;
+}
+
+/* The impact plan, closed and rendered once after any needed graph refresh. */
 static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
                            size_t file_count, char *why, size_t why_len)
 {
@@ -6693,11 +6773,25 @@ static bool dp_worker_plan(struct dp_worker *w, const char *const *files,
         return false;
     }
     const char *admission_reason = "";
-    if (!zcl_devloop_plan_add_closure(w->paths->root, files, file_count,
-                                      &w->plan) ||
-        !zcl_devloop_plan_proof_admissible(&w->plan, &admission_reason)) {
-        /* The failure record carries the refusal's evidence too, e.g.
-         * "closure-truncated: prereq_not_regular build/x.d -> gone.h". */
+    bool admitted = zcl_devloop_plan_add_closure(
+        w->paths->root, files, file_count, &w->plan) &&
+        zcl_devloop_plan_proof_admissible(&w->plan, &admission_reason);
+    if (!admitted && admission_reason &&
+        (strcmp(admission_reason, "closure-truncated") == 0 ||
+         strcmp(admission_reason, "no-include-graph") == 0)) {
+        if (!dp_worker_refresh_include_graph(w, why, why_len)) return false;
+        if (!zcl_devloop_plan_files(files, file_count, &w->plan)) {
+            proof_why(why, why_len, "impact_plan_invalid_after_refresh");
+            return false;
+        }
+        admission_reason = "";
+        admitted = zcl_devloop_plan_add_closure(
+            w->generation, files, file_count, &w->plan) &&
+            zcl_devloop_plan_proof_admissible(&w->plan, &admission_reason);
+    }
+    if (!admitted) {
+        /* Report the final plan, including any graph refresh, rather than
+         * replacing its exact refusal with a generic failure. */
         char refusal[256] = "";
         if (admission_reason && admission_reason[0])
             (void)zcl_devloop_plan_refusal_text(&w->plan, refusal,

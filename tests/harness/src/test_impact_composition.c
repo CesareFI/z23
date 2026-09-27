@@ -3656,19 +3656,42 @@ static void ic_isolate_state_root(void)
 
 static bool ic_changed_fixture_build(void)
 {
-    /* One repository, three commits: base, base+1000 files, +3097 more (4097
-     * total against base — one past the ceiling). */
+    /* Base has 4097 files; the next commits modify 1000 and then all 4097.
+     * This exercises a real changed set without admitting added paths. */
     int rc = system(
         "set -e; rm -rf " IC_FIX_CHANGED "; mkdir -p " IC_CHANGED_REPO "; "
         "cd " IC_CHANGED_REPO "; git init -q .; "
         "git config user.email fixture@example.invalid; "
         "git config user.name fixture; git config commit.gpgsign false; "
+        "i=0; while [ $i -lt 1000 ]; do echo x > f$i.c; i=$((i+1)); done; "
+        "while [ $i -lt 4097 ]; do echo x > f$i.c; i=$((i+1)); done; "
         "echo base > base.txt; git add -A; git commit -qm base; "
         "git rev-parse HEAD > ../base.sha; "
-        "i=0; while [ $i -lt 1000 ]; do echo x > f$i.c; i=$((i+1)); done; "
+        "i=0; while [ $i -lt 1000 ]; do echo y > f$i.c; i=$((i+1)); done; "
         "git add -A; git commit -qm batch; git rev-parse HEAD > ../one.sha; "
-        "while [ $i -lt 4097 ]; do echo x > f$i.c; i=$((i+1)); done; "
+        "i=0; while [ $i -lt 4097 ]; do echo z > f$i.c; i=$((i+1)); done; "
         "git add -A; git commit -qm over; git rev-parse HEAD > ../two.sha; "
+        "echo x > optional.h; git add -A; git commit -qm add_h; "
+        "git rev-parse HEAD > ../add_h.sha; "
+        "git rm -q optional.h; git commit -qm del_h; "
+        "git rev-parse HEAD > ../del_h.sha; "
+        "echo x > optional.def; git add -A; git commit -qm add_def; "
+        "git rev-parse HEAD > ../add_def.sha; "
+        "git rm -q optional.def; git commit -qm del_def; "
+        "git rev-parse HEAD > ../del_def.sha; "
+        "echo x > optional.inc; git add -A; git commit -qm add_inc; "
+        "git rev-parse HEAD > ../add_inc.sha; "
+        "git rm -q optional.inc; git commit -qm del_inc; "
+        "git rev-parse HEAD > ../del_inc.sha; "
+        "echo x > switch.txt; git add -A; git commit -qm add_txt; "
+        "git rev-parse HEAD > ../add_txt.sha; "
+        "git rm -q switch.txt; git commit -qm del_txt; "
+        "git rev-parse HEAD > ../del_txt.sha; "
+        "echo x > type.c; git add -A; git commit -qm regular_type; "
+        "git rev-parse HEAD > ../regular_type.sha; "
+        "rm type.c; ln -s target type.c; echo changed > f0.c; "
+        "git add -A; git commit -qm symlink_type; "
+        "git rev-parse HEAD > ../symlink_type.sha; "
         ">/dev/null 2>&1");
     return rc == 0;
 }
@@ -3767,6 +3790,54 @@ static int test_ic_changed_set_carries_a_landing_batch(void)
 
         zcl_dev_proof_changed_set_release(&set);
         ASSERT(set.bytes == NULL && set.files == NULL && set.count == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Presence changes can alter conditional includes without an old depfile
+ * edge; type changes can alter which source bytes the build reads. */
+static int test_ic_changed_set_refuses_structural_changes(void)
+{
+    int failures = 0;
+    static const struct {
+        const char *base;
+        const char *head;
+        const char *label;
+    } cases[] = {
+        {"two.sha", "add_h.sha", "add_h"},
+        {"add_h.sha", "del_h.sha", "del_h"},
+        {"del_h.sha", "add_def.sha", "add_def"},
+        {"add_def.sha", "del_def.sha", "del_def"},
+        {"del_def.sha", "add_inc.sha", "add_inc"},
+        {"add_inc.sha", "del_inc.sha", "del_inc"},
+        {"del_inc.sha", "add_txt.sha", "add_txt"},
+        {"add_txt.sha", "del_txt.sha", "del_txt"},
+        {"regular_type.sha", "symlink_type.sha", "mixed_type_change"},
+    };
+    TEST("proof changed set: structural changes refuse narrow proof") {
+        ASSERT(ic_changed_fixture_build());
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            char base[65], head[65], capture[640], record[640];
+            ASSERT(ic_read_sha(cases[i].base, base));
+            ASSERT(ic_read_sha(cases[i].head, head));
+            ASSERT(ic_changed_path("capture_presence.txt", capture,
+                                   sizeof(capture)));
+            ASSERT(ic_changed_path("changed_presence", record,
+                                   sizeof(record)));
+            struct zcl_dev_proof_changed_set set = {0};
+            char why[256] = {0};
+            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+            bool captured = zcl_dev_proof_changed_set_capture(
+                IC_CHANGED_REPO, base, head, capture, record, &set, why,
+                sizeof(why));
+            (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+            printf("invariant=structural_change case=%s captured=%d "
+                   "reason=%s\n", cases[i].label, captured ? 1 : 0, why);
+            ASSERT(!captured);
+            ASSERT(strstr(why, "changed_input_structure") != NULL);
+            ASSERT(set.count == 0 && set.files == NULL && set.bytes == NULL);
+        }
         PASS();
     } _test_next:;
     return failures;
@@ -5108,6 +5179,8 @@ static int test_pw_seed_links_replaces_and_copies(void)
                         "ARCHIVE"));
         ASSERT(ic_write(root, "donor/build/obj/.hidden/x.o", "HIDDEN"));
         ASSERT(ic_write(root, "donor/build/bin/z23-dev", "PRODUCT"));
+        ASSERT(ic_write(root, "donor/build/fuzz-obj/src/changed.d",
+                        "build/fuzz-obj/changed.o: src/changed.c\n"));
         /* A dependency room: its dependency files must arrive on their own
          * inodes, and its loadable module is not seeded at all. */
         ASSERT(ic_write(root, "donor/build/hotswap/zcl_rollback_fixture_a.d",
@@ -5125,6 +5198,10 @@ static int test_pw_seed_links_replaces_and_copies(void)
                strlen("DEP-A") + strlen("OBJECT-B-V1!") +
                strlen("WRAPPER-V1") + strlen("ROOM-DEP-A") +
                strlen("PRODUCT"));
+        char gen_fuzz[4096];
+        ASSERT(snprintf(gen_fuzz, sizeof(gen_fuzz),
+                        "%s/fuzz-obj/src/changed.d", gen) > 0);
+        ASSERT(access(gen_fuzz, F_OK) != 0);
         char gen_a_o[4096], donor_a_o[4096], gen_zcc[4096], donor_zcc[4096];
         ASSERT(snprintf(gen_a_o, sizeof(gen_a_o),
                         "%s/obj/epochs/E/mod/a.o", gen) > 0);
@@ -8152,6 +8229,7 @@ int test_impact_composition(void)
     failures += test_ic_ram_scratch_reservations_hold_under_concurrency();
 #endif
     failures += test_ic_changed_set_carries_a_landing_batch();
+    failures += test_ic_changed_set_refuses_structural_changes();
     failures += test_ic_changed_set_reads_a_private_generation_worktree();
     failures += test_ic_changed_set_refuses_above_its_ceiling();
     failures += test_ic_watch_overlay_keeps_its_own_ceiling();
