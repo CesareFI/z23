@@ -95,6 +95,20 @@ output capacity, line width, and line count. It wraps at spaces where
 possible, breaks long words when needed, and rejects unsupported bytes or
 content that cannot fit. Its output is only valid when it returns true.
 
+[`zcl_tx_stream.h`](include/zcl_tx_stream.h) provides a reusable C23 component
+for bounded transaction intake. It accepts arbitrary USB-sized chunks of an
+unsigned, all-transparent Sapling-v4 transaction, with up to 16 inputs and
+2 MiB of wire bytes. It accepts standard P2PKH/P2SH outputs and rejects
+shielded components, nonempty input scripts, noncanonical lengths, trailing
+bytes, and out-of-range public values. Its callbacks run before the
+transaction is complete; callers must discard staged facts on any error.
+It returns aggregate facts only after `finish` validates the declared total.
+The state is capped at 160 bytes by an ARM C23 compile-time assertion. The
+parser does not authenticate prevouts, calculate a ZIP-243 digest, prove
+chain state, derive change, or permit signing. The
+[streaming experiment](../../docs/experiments/2026-09-27-ledger-blue-tx-stream.md)
+records its measured tests and limits.
+
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch
 regions, contrast, and responsiveness require a dedicated-device check for

@@ -11,6 +11,12 @@ candidate's device-derived public key. The host does not derive device keys,
 sign transactions, or access recovery words.
 The [Blue development guide](DEVELOPMENT.md) records the open-source C23
 toolchain, image checks, and evidence gates for extending the device app.
+The reusable [`zcl_tx_stream` API](include/zcl_tx_stream.h) parses unsigned,
+all-transparent Sapling-v4 transaction bytes in bounded C23 state as chunks
+arrive. It emits provisional input and P2PKH/P2SH output facts, then returns
+aggregate facts only after the declared byte count and trailing fields pass.
+This offline component is not yet connected to a Blue payment app and does not
+authorize signing.
 
 ## Build and test
 

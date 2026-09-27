@@ -61,6 +61,10 @@ target_include_directories(zcl_tx_prevout PUBLIC include)
 target_link_libraries(zcl_tx_prevout PUBLIC zcl_tx_script_facts zcl_zip243)
 target_compile_options(zcl_tx_prevout PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(zcl_tx_stream STATIC src/zcl_tx_stream.c)
+target_include_directories(zcl_tx_stream PUBLIC include)
+target_compile_options(zcl_tx_stream PRIVATE -Wall -Wextra -Werror -pedantic)
+
 add_library(blue_review_protocol STATIC src/blue_review_protocol.c)
 target_include_directories(blue_review_protocol PUBLIC include)
 target_link_libraries(blue_review_protocol PUBLIC zcl_tx_review zcl_zip243)
@@ -148,7 +152,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -283,13 +287,22 @@ endif()
 add_test(NAME zcl-tx-prevout COMMAND test-zcl-tx-prevout
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-transparent-vector3.hex)
 
+add_executable(test-zcl-tx-stream tests/test_zcl_tx_stream.c)
+target_link_libraries(test-zcl-tx-stream PRIVATE zcl_tx_stream zcl_tx_review)
+target_compile_options(test-zcl-tx-stream PRIVATE -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-zcl-tx-stream PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-zcl-tx-stream PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME zcl-tx-stream COMMAND test-zcl-tx-stream)
+
 option(ZCL_LEDGER_FUZZ "Build the local Clang transaction parser fuzzer" OFF)
 if(ZCL_LEDGER_FUZZ)
     if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang" OR
        NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         message(FATAL_ERROR "ZCL_LEDGER_FUZZ requires Clang Debug")
     endif()
-    foreach(target zcl_tx_review zcl_tx_script_facts zcl_zip243
+    foreach(target zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_tx_stream
                    zcl_zip243_host_hash)
         target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
     endforeach()
@@ -299,6 +312,12 @@ if(ZCL_LEDGER_FUZZ)
     target_compile_options(fuzz-zcl-tx PRIVATE -Wall -Wextra -Werror -pedantic
         -fsanitize=fuzzer,address,undefined)
     target_link_options(fuzz-zcl-tx PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz-zcl-tx-stream tests/fuzz_zcl_tx_stream.c)
+    target_link_libraries(fuzz-zcl-tx-stream PRIVATE zcl_tx_stream
+        zcl_tx_script_facts zcl_tx_review)
+    target_compile_options(fuzz-zcl-tx-stream PRIVATE -Wall -Wextra -Werror
+        -pedantic -fsanitize=fuzzer,address,undefined)
+    target_link_options(fuzz-zcl-tx-stream PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 add_executable(test-zcl-zip243 tests/test_zcl_zip243.c)

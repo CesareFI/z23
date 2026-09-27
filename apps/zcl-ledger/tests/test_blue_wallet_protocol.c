@@ -24,6 +24,25 @@ static void check(blue_wallet_state *state, const uint8_t *apdu,
     }
 }
 
+static void check_mutations(blue_wallet_state *state) {
+    uint8_t malformed[5];
+    uint32_t random = 0x23c1a55u;
+    for (size_t i = 0; i < 10000; ++i) {
+        for (size_t j = 0; j < sizeof malformed; ++j) {
+            random = random * 1664525u + 1013904223u;
+            malformed[j] = (uint8_t)(random >> 24);
+        }
+        size_t n = i % 6;
+        if (n == 5 && malformed[0] == 0xa5 &&
+            malformed[1] <= 2 && malformed[2] == 0 &&
+            malformed[3] == 0 && malformed[4] == 0) continue;
+        check(state, malformed, n, n == 5 && malformed[4] == 0
+              ? (malformed[0] != 0xa5 ? 0x6e00
+                 : malformed[2] || malformed[3] ? 0x6b00 : 0x6d00)
+              : 0x6700, 0);
+    }
+}
+
 int main(void) {
     blue_wallet_state state = {0};
     const uint8_t identify[] = {0xa5, 1, 0, 0, 0};
@@ -68,20 +87,6 @@ int main(void) {
     assert(length == 0);
     assert(blue_wallet_handle(&state, read_key, 5, reply, 33, NULL) == 0x6f00);
 
-    uint32_t random = 0x23c1a55u;
-    for (size_t i = 0; i < 10000; ++i) {
-        for (size_t j = 0; j < sizeof malformed; ++j) {
-            random = random * 1664525u + 1013904223u;
-            malformed[j] = (uint8_t)(random >> 24);
-        }
-        size_t n = i % 6;
-        if (n == 5 && malformed[0] == 0xa5 &&
-            malformed[1] <= 2 && malformed[2] == 0 &&
-            malformed[3] == 0 && malformed[4] == 0) continue;
-        check(&state, malformed, n, n == 5 && malformed[4] == 0
-              ? (malformed[0] != 0xa5 ? 0x6e00
-                 : malformed[2] || malformed[3] ? 0x6b00 : 0x6d00)
-              : 0x6700, 0);
-    }
+    check_mutations(&state);
     return 0;
 }

@@ -86,6 +86,53 @@ static unsigned sum_frames(const stack_frames *frames,
     return sum;
 }
 
+static bool collect_frames(int argc, char **argv, int script_arg,
+                           bool wallet, stack_frames *frames,
+                           unsigned *reserve) {
+    if (!read_stack_reserve(argv[script_arg], reserve)) {
+        fputs("Cannot read Blue stack reserve.\n", stderr);
+        return false;
+    }
+    for (int i = script_arg + 1; i < argc; ++i)
+        if (!read_stack_usage(argv[i], frames)) {
+            fprintf(stderr, "Cannot read stack usage: %s\n", argv[i]);
+            return false;
+        }
+    for (unsigned i = 0; i < FRAME_COUNT; ++i) {
+        bool required = wallet ? i == 0 || i == 5 || i >= REVIEW_FRAME_COUNT
+                               : i < REVIEW_FRAME_COUNT;
+        if (required && !frames->present[i]) {
+            fprintf(stderr, "Missing stack frame: %s\n", frame_names[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void report_paths(const stack_frames *frames, bool wallet,
+                         unsigned reserve, unsigned paths[4]) {
+    static const unsigned apdu[] = {0, 1, 2, 3, 4};
+    static const unsigned ui[] = {0, 5, 6, 7, 8, 9, 4};
+    static const unsigned wallet_derive[] = {10, 13};
+    static const unsigned wallet_layout[] = {10, 12};
+    static const unsigned wallet_apdu[] = {0, 11};
+    static const unsigned wallet_event[] = {5};
+    if (wallet) {
+        paths[0] = sum_frames(frames, wallet_derive, 2);
+        paths[1] = sum_frames(frames, wallet_layout, 2);
+        paths[2] = sum_frames(frames, wallet_apdu, 2);
+        paths[3] = sum_frames(frames, wallet_event, 1);
+        printf("Blue stack reserve %u; wallet derive %u; layout %u; APDU %u; event %u; margin %u\n",
+               reserve, paths[0], paths[1], paths[2], paths[3], STACK_MARGIN);
+    } else {
+        paths[0] = sum_frames(frames, apdu, sizeof apdu / sizeof *apdu);
+        paths[1] = sum_frames(frames, ui, sizeof ui / sizeof *ui);
+        paths[2] = paths[3] = 0;
+        printf("Blue stack reserve %u; APDU path %u; screen path %u; margin %u\n",
+               reserve, paths[0], paths[1], STACK_MARGIN);
+    }
+}
+
 int main(int argc, char **argv) {
     bool wallet = argc > 1 && strcmp(argv[1], "--wallet") == 0;
     int script_arg = wallet ? 2 : 1;
@@ -94,46 +141,11 @@ int main(int argc, char **argv) {
                 argv[0]);
         return 2;
     }
-    unsigned reserve = 0;
+    unsigned reserve = 0, paths[4];
     stack_frames frames = {0};
-    if (!read_stack_reserve(argv[script_arg], &reserve)) {
-        fputs("Cannot read Blue stack reserve.\n", stderr);
+    if (!collect_frames(argc, argv, script_arg, wallet, &frames, &reserve))
         return 1;
-    }
-    for (int i = script_arg + 1; i < argc; ++i)
-        if (!read_stack_usage(argv[i], &frames)) {
-            fprintf(stderr, "Cannot read stack usage: %s\n", argv[i]);
-            return 1;
-        }
-    for (unsigned i = 0; i < FRAME_COUNT; ++i) {
-        bool required = wallet ? i == 0 || i == 5 || i >= REVIEW_FRAME_COUNT
-                               : i < REVIEW_FRAME_COUNT;
-        if (required && !frames.present[i]) {
-            fprintf(stderr, "Missing stack frame: %s\n", frame_names[i]);
-            return 1;
-        }
-    }
-    static const unsigned apdu[] = {0, 1, 2, 3, 4};
-    static const unsigned ui[] = {0, 5, 6, 7, 8, 9, 4};
-    static const unsigned wallet_derive[] = {10, 13};
-    static const unsigned wallet_layout[] = {10, 12};
-    static const unsigned wallet_apdu[] = {0, 11};
-    static const unsigned wallet_event[] = {5};
-    unsigned paths[4];
-    if (wallet) {
-        paths[0] = sum_frames(&frames, wallet_derive, 2);
-        paths[1] = sum_frames(&frames, wallet_layout, 2);
-        paths[2] = sum_frames(&frames, wallet_apdu, 2);
-        paths[3] = sum_frames(&frames, wallet_event, 1);
-        printf("Blue stack reserve %u; wallet derive %u; layout %u; APDU %u; event %u; margin %u\n",
-               reserve, paths[0], paths[1], paths[2], paths[3], STACK_MARGIN);
-    } else {
-        paths[0] = sum_frames(&frames, apdu, sizeof apdu / sizeof *apdu);
-        paths[1] = sum_frames(&frames, ui, sizeof ui / sizeof *ui);
-        paths[2] = paths[3] = 0;
-        printf("Blue stack reserve %u; APDU path %u; screen path %u; margin %u\n",
-               reserve, paths[0], paths[1], STACK_MARGIN);
-    }
+    report_paths(&frames, wallet, reserve, paths);
     bool fits = reserve >= STACK_MARGIN;
     for (size_t i = 0; i < sizeof paths / sizeof *paths; ++i)
         if (fits && paths[i] > reserve - STACK_MARGIN) fits = false;

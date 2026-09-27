@@ -540,30 +540,29 @@ static bool parse_ca_args(int argc, char **argv, install_args *args) {
     return !args->delete_app || args->profile != NULL;
 }
 
+static const app_profile *plain_delete_profile(const char *option) {
+    if (strcmp(option, "--delete") == 0) return profile_named("ZCL Probe");
+    if (strcmp(option, "--delete-fixture") == 0)
+        return profile_named("ZCL Fixture");
+    if (strcmp(option, "--delete-review") == 0)
+        return profile_named("ZCL Review");
+    if (strcmp(option, "--delete-sign-test") == 0)
+        return profile_named("ZCL Sign Test");
+    if (strcmp(option, "--delete-wallet") == 0)
+        return profile_named("ZCL Wallet");
+    return NULL;
+}
+
 static bool parse_plain_args(int argc, char **argv, install_args *args) {
-    if (argc == 3 && strcmp(argv[2], "--ca-reset") == 0)
+    if (argc != 3) return false;
+    if (strcmp(argv[2], "--ca-reset") == 0)
         args->reset = true;
-    else if (argc == 3 && strcmp(argv[2], "--channel-only") == 0)
+    else if (strcmp(argv[2], "--channel-only") == 0)
         args->channel_only = true;
-    else if (argc == 3 && strcmp(argv[2], "--delete") == 0) {
+    else if ((args->profile = plain_delete_profile(argv[2])) != NULL)
         args->delete_app = true;
-        args->profile = profile_named("ZCL Probe");
-    } else if (argc == 3 && strcmp(argv[2], "--delete-fixture") == 0) {
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Fixture");
-    } else if (argc == 3 && strcmp(argv[2], "--delete-review") == 0) {
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Review");
-    } else if (argc == 3 && strcmp(argv[2], "--delete-sign-test") == 0) {
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Sign Test");
-    } else if (argc == 3 && strcmp(argv[2], "--delete-wallet") == 0) {
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Wallet");
-    } else if (argc == 3)
-        args->image_path = argv[2];
-    else return false;
-    return !args->delete_app || args->profile != NULL;
+    else args->image_path = argv[2];
+    return true;
 }
 
 static int parse_args(int argc, char **argv, install_args *args) {
