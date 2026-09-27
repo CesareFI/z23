@@ -100,6 +100,11 @@ static bool scl_sensor(const struct scl_run *r, enum scx_variant v, size_t tu)
     argv[k++] = "--out";
     argv[k++] = out;
     argv[k++] = "--facts";
+    if (k_scx_edits[v].truncate != NULL &&
+        strcmp(k_scx_edits[v].truncate, k_scx_tus[tu]) == 0) {
+        argv[k++] = "--max-records"; /* the cap cuts a section */
+        argv[k++] = "4";
+    }
     argv[k++] = "--";
     if (k_scx_edits[v].extra_flag != NULL)
         argv[k++] = k_scx_edits[v].extra_flag;

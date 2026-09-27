@@ -67,6 +67,8 @@ enum scx_variant {
     SCX_UNITY_AB,   /* both bodies change: each included .c seeds */
     SCX_P_UNITY_ADDR, /* unity, and cx_d.c takes &cx_e_hook */
     SCX_UNITY_ADDR, /* cx_sum's body: the includer seeds cx_e_hook, address-taken */
+    SCX_UNITY_TRUNC, /* unity, the includer's after manifest cut by a record cap */
+    SCX_UNITY_NOBEFORE, /* unity, the includer's before manifest withheld */
     SCX_VARIANT_COUNT
 };
 
@@ -78,6 +80,9 @@ struct scx_edit {
     const char *add_path;     /* a file this variant adds, or NULL */
     const char *add_body;     /* its bytes; NULL: the base header (a shadow) */
     const char *extra_flag;   /* a flag put before k_scx_flags, or NULL */
+    const char *truncate;     /* a TU sensed with a one-record cap, or NULL */
+    const char *withhold;     /* a TU whose manifests the facts leave out */
+    bool withhold_before;     /* ...its before manifest only */
     /* What the consumer must say against `before` (the base unless named):
      * the changed files it is asked about, and per TU (k_scx_tus order)
      * whether it is affected and its reason (NULL: not in the universe, it

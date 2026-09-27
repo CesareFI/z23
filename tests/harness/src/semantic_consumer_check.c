@@ -47,17 +47,18 @@ static size_t scx_nchanged(const struct scx_edit *e)
 }
 
 /* The facts directory: every TU's before and after manifest the evidence
- * has, and the "before" variant's text of every changed file it has. */
+ * has (but those the variant withholds), and the "before" variant's text of every changed file it has. */
 static bool scx_write_facts(const char *root, enum scx_variant v,
                             const struct scx_evidence *ev)
 {
     const struct scx_edit *e = &k_scx_edits[v];
     bool ok = true;
     for (size_t k = 0; ok && k < SCX_TU_COUNT; k++) {
-        if (ev->before[k] != NULL)
+        bool held = e->withhold != NULL && strcmp(e->withhold, k_scx_tus[k]) == 0;
+        if (ev->before[k] != NULL && !held)
             ok = scx_put_bytes(root, k_scx_tus[k], ".before.zsm",
                                ev->before[k], ev->before_len[k]);
-        if (ok && ev->after[k] != NULL)
+        if (ok && ev->after[k] != NULL && !(held && !e->withhold_before))
             ok = scx_put_bytes(root, k_scx_tus[k], ".after.zsm",
                                ev->after[k], ev->after_len[k]);
     }

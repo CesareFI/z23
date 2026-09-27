@@ -685,6 +685,28 @@ static bool fxc_included_c_seeds(struct fxc *c, const struct fxc_pair *p)
     return ok;
 }
 
+/* A member broadened because its own evidence cannot be trusted (a cap cut
+ * it, its producer is unknown or differs, or its before side is missing)
+ * cannot name the functions a changed .c it includes compiles there: when
+ * it read one other than its main file, the universe is incomplete. True
+ * when the reason is such a one; the member then seeds nothing. */
+static bool fxc_untrusted_includer(struct fxc *c, const struct fxc_pair *p,
+                                   const struct zcl_devloop_facts_tu_verdict *t)
+{
+    static const char *const k_untrusted[] = {
+        "truncated", "producer-unknown", "producer-mismatch", "facts-missing"};
+    bool untrusted = false;
+    for (size_t k = 0; k < sizeof(k_untrusted) / sizeof(k_untrusted[0]); k++)
+        untrusted = untrusted || strcmp(t->reason, k_untrusted[k]) == 0;
+    for (size_t k = 0; untrusted && k < c->nfiles; k++) {
+        if (strcmp(c->files[k], fxi_main(p->xa)) != 0 &&
+            fxc_changed_c_read(p, c->files[k])) {
+            fxc_incomplete(c, t->reason, p->path);
+            break;
+        }
+    }
+    return untrusted;
+}
 
 /* The first changed file this TU read whose text broadens it names the
  * reason; true when one did. Its seeds, and those of every other changed .c
@@ -813,7 +835,7 @@ bool fxc_tu_eval(struct fxc *c, const char *path)
         fxc_set(t, true, true, "facts-missing", "no valid before manifest");
     else if (ok && !fxc_coarse(c, &p, t))
         ok = fxc_fine(c, &p, t);
-    if (ok && t->affected && t->broadened)
+    if (ok && t->affected && t->broadened && !fxc_untrusted_includer(c, &p, t))
         ok = fxc_included_c_seeds(c, &p);
     fxc_pair_free(&p);
     return ok;
