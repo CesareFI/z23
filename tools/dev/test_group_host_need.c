@@ -15,8 +15,12 @@
 #endif
 
 static const struct zcl_test_group_host_need g_host_needs[] = {
-#define ZCL_TEST_GROUP_NEED(full_id_, kind_, value_) {kind_, full_id_, value_},
+#define ZCL_TEST_GROUP_NEED(full_id_, kind_, value_) \
+    {kind_, full_id_, value_, NULL},
+#define ZCL_TEST_GROUP_BUILD_NEED(full_id_, value_, target_) \
+    {ZCL_HOST_NEED_BUILD, full_id_, value_, target_},
 #include "test_group_host_needs.def"
+#undef ZCL_TEST_GROUP_BUILD_NEED
 #undef ZCL_TEST_GROUP_NEED
 };
 
@@ -33,19 +37,31 @@ zcl_test_group_host_need_kind_name(enum zcl_test_group_host_need_kind kind)
         return "file";
     case ZCL_HOST_NEED_ENV:
         return "env";
+    case ZCL_HOST_NEED_BUILD:
+        return "build";
     default:
         return NULL;
     }
 }
 
-/* One row's own shape: a known non-NONE kind and a non-empty value naming a
- * registered group. A row that fails this is a table error, not a host fact. */
+/* A BUILD row names its Make target; no other kind carries one. */
+static bool host_need_target_valid(const struct zcl_test_group_host_need *row)
+{
+    bool has_target = row->target && row->target[0];
+    return (row->kind == ZCL_HOST_NEED_BUILD) == has_target &&
+           (has_target || !row->target);
+}
+
+/* One row's own shape: a known non-NONE kind, a non-empty value naming a
+ * registered group, and a target exactly when the kind is BUILD. A row that
+ * fails this is a table error, not a host fact. */
 static bool host_need_row_valid(size_t i)
 {
     const struct zcl_test_group_host_need *row = &g_host_needs[i];
     if (!row->group || !row->group[0] || !row->value || !row->value[0] ||
         row->kind == ZCL_HOST_NEED_NONE ||
-        !zcl_test_group_host_need_kind_name(row->kind)) {
+        !zcl_test_group_host_need_kind_name(row->kind) ||
+        !host_need_target_valid(row)) {
         fprintf(stderr,
                 "test_group_host_need: row %zu declares an unknown kind or an "
                 "empty field\n", i);
@@ -129,7 +145,8 @@ bool zcl_test_group_host_need_met(const char *root,
     switch (need->kind) {
     case ZCL_HOST_NEED_NONE:
         return true;
-    case ZCL_HOST_NEED_FILE: {
+    case ZCL_HOST_NEED_FILE:
+    case ZCL_HOST_NEED_BUILD: {
         if (!root || !root[0])
             return false;
         return host_need_file_present(root, need->value);
@@ -144,4 +161,14 @@ bool zcl_test_group_host_need_met(const char *root,
                 (int)need->kind, need->group ? need->group : "(null)");
         return false;
     }
+}
+
+bool zcl_test_group_host_need_selectable(
+    const char *root, const struct zcl_test_group_host_need *need)
+{
+    if (!need)
+        return false;
+    if (need->kind == ZCL_HOST_NEED_NONE || need->kind == ZCL_HOST_NEED_BUILD)
+        return true;
+    return zcl_test_group_host_need_met(root, need);
 }

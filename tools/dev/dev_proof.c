@@ -87,6 +87,7 @@ struct proof_paths {
     char changed[PATH_MAX];
     char bundle_log[PATH_MAX];
     char prefork_log[PATH_MAX];
+    char test_needs_log[PATH_MAX];
     char attempt[PATH_MAX];
     char attempt_token[192];
     char phases[PATH_MAX];
@@ -564,7 +565,10 @@ static bool dp_paths_log_files(struct proof_paths *out)
            snprintf(out->prefork_log, sizeof(out->prefork_log),
                     "%s/%s.prefork.log", out->logs,
                     out->key) < (int)sizeof(out->prefork_log) &&
-           snprintf(out->phases, sizeof(out->phases), "%s/%s.phases.txt",
+           snprintf(out->test_needs_log, sizeof(out->test_needs_log),
+                    "%s/%s.test-needs.log", out->logs,
+                    out->key) < (int)sizeof(out->test_needs_log) &&
+           snprintf(out->phases,sizeof(out->phases), "%s/%s.phases.txt",
                     out->state, out->key) < (int)sizeof(out->phases) &&
            snprintf(out->warmstart, sizeof(out->warmstart), "%s/%s.warmstart",
                     out->state, out->key) < (int)sizeof(out->warmstart);
@@ -1318,6 +1322,9 @@ static bool proof_attempt_paths_prepare(const struct proof_paths *pair,
         snprintf(attempt->prefork_log, sizeof(attempt->prefork_log),
                  "%s/logs/prefork.log", attempt->attempt) >=
             (int)sizeof(attempt->prefork_log) ||
+        snprintf(attempt->test_needs_log, sizeof(attempt->test_needs_log),
+                 "%s/logs/test-needs.log", attempt->attempt) >=
+            (int)sizeof(attempt->test_needs_log) ||
         snprintf(attempt->phases, sizeof(attempt->phases), "%s/phases.txt",
                  attempt->attempt) >= (int)sizeof(attempt->phases) ||
         !platform_private_directory_ensure(attempt->logs))
@@ -5643,6 +5650,67 @@ static bool proof_prefork_argv(const char *jobs, bool lint_full,
     return true;
 }
 
+/* Resolve one selected group's declared need and, for a BUILD need whose
+ * target the argv does not already name, append the target (and the path it
+ * builds, in the parallel `values`). Refuses an unregistered group and an
+ * argv with no room: a need dropped here would leave its group to skip. */
+static bool dp_test_need_add(const char *id, const char **argv,
+                             const char **values, size_t argv_cap, size_t *n)
+{
+    char full[ZCL_TEST_GROUP_FULL_MAX];
+    struct zcl_test_group_host_need need;
+    if (!zcl_test_group_resolve_exact(id, full) ||
+        !zcl_test_group_host_need(full, &need))
+        return false;
+    if (need.kind != ZCL_HOST_NEED_BUILD) return true;
+    for (size_t i = 3; i < *n; i++)
+        if (strcmp(argv[i], need.target) == 0) return true;
+    if (*n + 1 >= argv_cap) return false;
+    values[*n] = need.value;
+    argv[(*n)++] = need.target;
+    return true;
+}
+
+/* Fill the test-needs make argv: every Make target a selected group declares
+ * as a ZCL_HOST_NEED_BUILD need (tools/dev/test_group_host_needs.def), each
+ * once, in selection order. `groups` is the exact comma-separated selector.
+ * `values[i]` is the path argv[i] builds, relative to the generation.
+ * `*targets` is 0, with argv[0] NULL, when no selected group needs a build:
+ * an ordinary proof runs no step and pays nothing. */
+static bool dp_test_needs_scan(const char *groups, const char **argv,
+                               const char **values, size_t argv_cap,
+                               size_t *n)
+{
+    for (const char *scan = groups; *scan;) {
+        const char *end = strchr(scan, ',');
+        size_t len = end ? (size_t)(end - scan) : strlen(scan);
+        char id[256];
+        if (len == 0 || len >= sizeof(id)) return false;
+        memcpy(id, scan, len);
+        id[len] = '\0';
+        if (!dp_test_need_add(id, argv, values, argv_cap, n)) return false;
+        scan = end ? end + 1 : scan + len;
+    }
+    return true;
+}
+
+static bool proof_test_needs_argv(const char *jobs, const char *groups,
+                                  const char **argv, const char **values,
+                                  size_t argv_cap, size_t *targets)
+{
+    if (!jobs || !*jobs || !groups || !argv || !values || !targets ||
+        argv_cap < 4)
+        return false;
+    size_t n = 0;
+    argv[n++] = "make";
+    argv[n++] = "--no-print-directory";
+    argv[n++] = jobs;
+    if (!dp_test_needs_scan(groups, argv, values, argv_cap, &n)) return false;
+    *targets = n - 3;
+    argv[*targets ? n : 0] = NULL;
+    return true;
+}
+
 #if defined(ZCL_TESTING)
 /* Seam for the pre-fork argv, so a test can prove what the step builds --
  * and that no dimension is left a target the other one also builds --
@@ -5657,11 +5725,10 @@ bool zcl_dev_proof_test_needs_argv(const char *jobs, const char *groups,
                                    const char **argv, size_t argv_cap,
                                    size_t *targets)
 {
-    (void)jobs; (void)groups;
-    if (!argv || argv_cap == 0 || !targets) return false;
-    argv[0] = NULL;
-    *targets = 0;
-    return true;
+    const char *values[PROOF_TEST_NEEDS_ARGV_CAP];
+    if (argv_cap > PROOF_TEST_NEEDS_ARGV_CAP) argv_cap = PROOF_TEST_NEEDS_ARGV_CAP;
+    return proof_test_needs_argv(jobs, groups, argv, values, argv_cap,
+                                 targets);
 }
 #endif
 static bool inventory_output_only(const char *const *files, size_t count)
@@ -5752,6 +5819,8 @@ static bool dp_gated_note(char *gated, size_t gated_size, size_t *gated_pos,
  * which the suite accounting refuses -- so it is left out here and counted as
  * gated by the runner. Leaving it out is a SELECTION decision only: an exact
  * plan that names the group still runs it, and a SKIP there still refuses.
+ * A BUILD need is never a reason to leave a group out: the proof builds it
+ * (dp_worker_test_needs) or fails.
  * `included` is only meaningful when the call returns true; a false is a
  * refusal (unregistered group or malformed need row), never an exclusion. */
 static bool dp_selector_host_admits(const char *root, const char *full,
@@ -5761,8 +5830,7 @@ static bool dp_selector_host_admits(const char *root, const char *full,
     struct zcl_test_group_host_need need;
     *included = true;
     if (!zcl_test_group_host_need(full, &need)) return false;
-    if (need.kind == ZCL_HOST_NEED_NONE) return true;
-    if (zcl_test_group_host_need_met(root, &need)) return true;
+    if (zcl_test_group_host_need_selectable(root, &need)) return true;
     *included = false;
     return dp_gated_note(gated, gated_size, gated_pos, &need);
 }
@@ -7632,6 +7700,117 @@ static void dp_stage_timing_note(const struct proof_paths *paths,
         (void)zcl_dev_proof_phase_note(paths->phases, field, value);
 }
 
+/* Name the failed need where `z23 dev proof status` and phases.txt show it:
+ * test_need_unbuildable_<target>, never a skip the accounting would refuse
+ * later under a vaguer name. */
+static void dp_test_need_unbuildable(const struct dp_worker *w,
+                                     const char *target, char *why,
+                                     size_t why_len)
+{
+    (void)snprintf(why, why_len, "test_need_unbuildable_%s", target);
+    if (w->paths->phases[0])
+        (void)zcl_dev_proof_phase_note(w->paths->phases,
+                                       "test_need_unbuildable", target);
+}
+
+/* Is the built need present in the generation as a regular file? */
+static bool dp_test_need_present(const char *generation, const char *value)
+{
+    char path[PATH_MAX];
+    struct stat st;
+    return dp_path_written(snprintf(path, sizeof(path), "%s/%s", generation,
+                                    value)) &&
+           stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* Unlink a need's path in the generation; already absent counts as done. */
+static bool dp_test_need_clear(const char *generation, const char *value)
+{
+    char path[PATH_MAX];
+    if (!dp_path_written(snprintf(path, sizeof(path), "%s/%s", generation,
+                                  value)))
+        return false;
+    return unlink(path) == 0 || errno == ENOENT;
+}
+
+#define PROOF_TEST_NEEDS_DEFAULT_MS 600000
+
+/* Build, in the generation and from its own sources, every Make target a
+ * selected group declares as a BUILD need (test_group_host_needs.def), alone
+ * and before the fork like the prefork step. A tool never copied in from
+ * another tree is the only kind a receipt may bind. A build that fails, or
+ * that exits 0 without producing the path the group execs, fails the proof
+ * by name. When no selected group declares one, nothing runs. */
+static bool dp_worker_test_needs(struct dp_worker *w, char *why,
+                                 size_t why_len)
+{
+    const char *argv[PROOF_TEST_NEEDS_ARGV_CAP];
+    const char *values[PROOF_TEST_NEEDS_ARGV_CAP];
+    size_t targets = 0;
+    if (!proof_test_needs_argv(w->make_jobs, w->groups, argv, values,
+                               PROOF_TEST_NEEDS_ARGV_CAP, &targets)) {
+        proof_why(why, why_len, "proof_test_needs_argv_invalid");
+        return false;
+    }
+    if (targets == 0) return true;
+    /* A warm generation seeds build/bin by COPY from the submitting checkout
+     * (warm_classify_rel), and these rules name only their own sources as
+     * prerequisites, so a seeded tool could read as fresh. Remove it: what
+     * the receipt binds is linked here, from this tree, or nothing is. */
+    for (size_t i = 3; i < 3 + targets; i++) {
+        if (dp_test_need_clear(w->generation, values[i])) continue;
+        proof_why(why, why_len, "proof_test_need_clear_failed");
+        return false;
+    }
+    struct zcl_dev_proof_budget budget = proof_step_budget(
+        w->paths, "test-needs", PROOF_TEST_NEEDS_DEFAULT_MS);
+    int rc = run_step(w->paths, w->generation, w->paths->test_needs_log, argv,
+                      "test-needs", &budget, NULL);
+    for (size_t i = 3; i < 3 + targets; i++) {
+        if (rc == 0 && dp_test_need_present(w->generation, values[i]))
+            continue;
+        dp_test_need_unbuildable(w, argv[i], why, why_len);
+        return false;
+    }
+    return true;
+}
+
+/* Fold every built need into the helper digest the test receipt is bound
+ * to, under its own domain and target name, so the receipt says which
+ * sensor bytes the selected groups exec'd. A selection with no BUILD need
+ * leaves the digest exactly as test_helpers_hash() wrote it. */
+static bool dp_test_needs_bind(const struct dp_worker *w,
+                               uint8_t helper_root[32], char *why,
+                               size_t why_len)
+{
+    const char *argv[PROOF_TEST_NEEDS_ARGV_CAP];
+    const char *values[PROOF_TEST_NEEDS_ARGV_CAP];
+    size_t targets = 0;
+    if (!proof_test_needs_argv(w->make_jobs, w->groups, argv, values,
+                               PROOF_TEST_NEEDS_ARGV_CAP, &targets)) {
+        proof_why(why, why_len, "proof_test_needs_argv_invalid");
+        return false;
+    }
+    if (targets == 0) return true;
+    struct sha3_256_ctx sha;
+    hash_begin(&sha, "zcl.dev_proof_test_helpers_with_needs.v1");
+    sha3_256_write(&sha, helper_root, 32);
+    for (size_t i = 3; i < 3 + targets; i++) {
+        char path[PATH_MAX];
+        uint8_t root[32];
+        if (!dp_path_written(snprintf(path, sizeof(path), "%s/%s",
+                                      w->generation, values[i])) ||
+            !hash_file("zcl.dev_proof_test_need.v1", path, root)) {
+            proof_why(why, why_len, "proof_test_need_hash_failed");
+            return false;
+        }
+        sha3_256_write(&sha, (const uint8_t *)argv[i], strlen(argv[i]) + 1);
+        sha3_256_write(&sha, root, sizeof(root));
+    }
+    sha3_256_finalize(&sha, helper_root);
+    return true;
+}
+
 static bool dp_worker_prefork(struct dp_worker *w, bool test_selected,
                               char *why, size_t why_len)
 {
@@ -7655,9 +7834,13 @@ static bool dp_worker_prefork(struct dp_worker *w, bool test_selected,
         return false;
     dp_stage_timing_note(w->paths, "prefork_make_ms", stage_us);
     stage_us = platform_time_monotonic_us();
+    if (test_selected && !dp_worker_test_needs(w, why, why_len)) return false;
+    dp_stage_timing_note(w->paths, "prefork_test_needs_ms", stage_us);
+    stage_us = platform_time_monotonic_us();
     if (test_selected &&
-        !test_helpers_hash(w->generation, w->generation_binary, w->admitted,
-                           w->depfile_root, w->helper_root, why, why_len))
+        (!test_helpers_hash(w->generation, w->generation_binary, w->admitted,
+                            w->depfile_root, w->helper_root, why, why_len) ||
+         !dp_test_needs_bind(w, w->helper_root, why, why_len)))
         return false;
     dp_stage_timing_note(w->paths, "prefork_helper_hash_ms", stage_us);
     proof_phase_mark(w->phases, "prefork_inputs_and_build");

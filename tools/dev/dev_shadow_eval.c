@@ -110,8 +110,7 @@ static bool shadow_mark_reference(const char *root, struct shadow_marks *m)
         struct zcl_test_group_host_need need;
         if (!zcl_test_group_host_need(zcl_test_group_catalog_at(i), &need))
             return false;
-        m->reference[i] = need.kind == ZCL_HOST_NEED_NONE ||
-                          zcl_test_group_host_need_met(root, &need);
+        m->reference[i] = zcl_test_group_host_need_selectable(root, &need);
     }
     return true;
 }

@@ -19,12 +19,19 @@ enum zcl_test_group_host_need_kind {
     ZCL_HOST_NEED_FILE,
     /* `value` is an environment variable name. */
     ZCL_HOST_NEED_ENV,
+    /* `value` is a path relative to the tree the runner execs in, and
+     * `target` the Make target that builds it there from that tree's own
+     * sources. A proof whose selection carries the group builds `target` in
+     * its generation before the test dimension and fails, by name, when it
+     * cannot; the group is never left to self-skip. */
+    ZCL_HOST_NEED_BUILD,
 };
 
 struct zcl_test_group_host_need {
     enum zcl_test_group_host_need_kind kind;
     const char *group; /* canonical full catalog id, or NULL for NONE */
     const char *value; /* path or environment name, or NULL for NONE */
+    const char *target; /* BUILD only: the Make target; NULL otherwise */
 };
 
 /* Every declared row names a registered catalog group exactly once, with a
@@ -40,11 +47,18 @@ bool zcl_test_group_host_need(const char *group,
                               struct zcl_test_group_host_need *out);
 
 /* Is the need satisfied by the tree at `root` and this process's environment?
- * FILE resolves `<root>/<value>`, so it answers for the tree a runner will
- * exec in and never for the caller's own checkout. NONE is always met; an
- * unknown kind or a missing argument is refused as unmet. */
+ * FILE and BUILD resolve `<root>/<value>`, so they answer for the tree a
+ * runner will exec in and never for the caller's own checkout. NONE is always
+ * met; an unknown kind or a missing argument is refused as unmet. */
 bool zcl_test_group_host_need_met(const char *root,
                                   const struct zcl_test_group_host_need *need);
+
+/* May a selector carry the group in the tree at `root`? NONE and BUILD
+ * always -- a BUILD need is the proof's own to satisfy, and the proof fails
+ * when it cannot -- FILE and ENV only when met. The universal selector and
+ * its shadow reference ask this one question, so they cannot disagree. */
+bool zcl_test_group_host_need_selectable(
+    const char *root, const struct zcl_test_group_host_need *need);
 
 /* Stable lowercase token for a kind, for logs. NULL on an unknown kind. */
 const char *

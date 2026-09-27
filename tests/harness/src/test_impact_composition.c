@@ -965,11 +965,40 @@ static int test_ic_host_need_table_is_closed(void)
         ASSERT(zcl_test_group_host_need_met(IC_FIX_HOST_FULL, &need));
         ic_host_fixture_restore(saved, was_set);
 
+        /* The live sensor groups declare a BUILD need: the proof builds the
+         * target itself, so the need is met only where the tool exists but
+         * never gates the group out of a selection. */
+        static const char *const sensor_groups[] = {
+            "test_semantic_sensor", "test_semantic_facts_live",
+            "test_semantic_consumer_live",
+        };
+        for (size_t i = 0; i < 3; i++) {
+            memset(&need, 0, sizeof(need));
+            ASSERT(zcl_test_group_host_need(sensor_groups[i], &need));
+            ASSERT(need.kind == ZCL_HOST_NEED_BUILD);
+            ASSERT(strcmp(need.value, "build/bin/z23-clang-manifest") == 0);
+            ASSERT(need.target && strcmp(need.target, "clang-manifest") == 0);
+            ASSERT(strcmp(zcl_test_group_host_need_kind_name(need.kind),
+                          "build") == 0);
+            ASSERT(!zcl_test_group_host_need_met(IC_FIX_HOST_BARE, &need));
+            ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE,
+                                                       &need));
+        }
+        /* FILE is selectable exactly when met; a FILE need never names a
+         * build target. */
+        memset(&need, 0, sizeof(need));
+        ASSERT(zcl_test_group_host_need("test_onion_pair_watch_live", &need));
+        ASSERT(need.target == NULL);
+        ASSERT(!zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE, &need));
+        ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_FULL, &need));
+        ASSERT(!zcl_test_group_host_need_selectable(IC_FIX_HOST_FULL, NULL));
+
         /* An ordinary group declares nothing and is never gated. */
         memset(&need, 0, sizeof(need));
         ASSERT(zcl_test_group_host_need("test_impact_composition", &need));
         ASSERT(need.kind == ZCL_HOST_NEED_NONE);
         ASSERT(zcl_test_group_host_need_met(IC_FIX_HOST_BARE, &need));
+        ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE, &need));
 
         /* A group that is not in the catalog is a refusal, not an answer. */
         memset(&need, 0, sizeof(need));
@@ -981,7 +1010,7 @@ static int test_ic_host_need_table_is_closed(void)
         /* An unknown kind cannot pass as met. */
         struct zcl_test_group_host_need bogus = {
             (enum zcl_test_group_host_need_kind)99,
-            "test_onion_pair_watch_live", "build/bin/z23"
+            "test_onion_pair_watch_live", "build/bin/z23", NULL
         };
         ASSERT(!zcl_test_group_host_need_met(IC_FIX_HOST_FULL, &bogus));
         ASSERT(zcl_test_group_host_need_kind_name(bogus.kind) == NULL);
@@ -6029,6 +6058,12 @@ static int test_ic_proof_test_needs_build_the_sensor(void)
             argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
         ASSERT(targets == 0);
         ASSERT(argv[0] == NULL);
+        /* The inventory-only selector spells its one group prefixless. */
+        targets = 99;
+        ASSERT(zcl_dev_proof_test_needs_argv(jobs, "code_inventory", argv,
+                                             PROOF_TEST_NEEDS_ARGV_CAP,
+                                             &targets));
+        ASSERT(targets == 0);
 
         /* A group that is not registered is a refusal, never "no need". */
         ASSERT(!zcl_dev_proof_test_needs_argv(

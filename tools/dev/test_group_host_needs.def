@@ -26,6 +26,16 @@
  * The id is the canonical full catalog id (`test_`/`spec_` prefix included),
  * exactly as zcl_test_group_catalog_at() spells it. An unregistered group or
  * an unknown kind is a refusal, never a silently ignored row.
+ *
+ * ZCL_TEST_GROUP_BUILD_NEED(full_id, value, target) declares the other shape:
+ * an optional tool no default build reaches, which the proof builds itself.
+ * `value` is the path the group execs, relative to the tree, and `target`
+ * the Make target that builds it from that tree's own sources. A proof whose
+ * selection carries the group runs `make target` in its generation before
+ * the test dimension, binds the built bytes into the test receipt, and fails
+ * by name (test_need_unbuildable_<target>) when the build cannot produce
+ * `value`. The group is never gated out and never left to self-skip; a
+ * proof that selects no such group builds nothing extra.
  */
 
 /* tests/harness/src/test_onion_pair_watch_live.c reports
@@ -40,3 +50,15 @@ ZCL_TEST_GROUP_NEED("test_onion_pair_watch_live",
  * inside a proof can produce one; it is provisioned by an operator. */
 ZCL_TEST_GROUP_NEED("test_self_folded_anchor_heavy", ZCL_HOST_NEED_ENV,
                     "ZCL_SELF_FOLD_ANCHOR_FIXTURE")
+
+/* tests/harness/src/test_semantic_manifest.c (group semantic_sensor),
+ * test_semantic_facts_live.c and test_semantic_consumer_live.c exec the
+ * optional libclang sensor build/bin/z23-clang-manifest and self-skip where it
+ * is absent. It links libclang, so no default target builds it; a proof that
+ * selects any of the three builds `make clang-manifest` in its generation. */
+ZCL_TEST_GROUP_BUILD_NEED("test_semantic_sensor",
+                          "build/bin/z23-clang-manifest", "clang-manifest")
+ZCL_TEST_GROUP_BUILD_NEED("test_semantic_facts_live",
+                          "build/bin/z23-clang-manifest", "clang-manifest")
+ZCL_TEST_GROUP_BUILD_NEED("test_semantic_consumer_live",
+                          "build/bin/z23-clang-manifest", "clang-manifest")

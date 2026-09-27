@@ -963,6 +963,20 @@ input exists — a dev box with `build/bin/z23`, an operator who exported
 selects it, and a `SKIP` or `UNOBSERVED` from a selected group still refuses
 the proof.
 
+A `ZCL_TEST_GROUP_BUILD_NEED(group, path, target)` row declares the other
+shape: an optional tool no default target builds, which the proof builds
+itself. The live semantic-sensor groups (`test_semantic_sensor`,
+`test_semantic_facts_live`, `test_semantic_consumer_live`) exec
+`build/bin/z23-clang-manifest`, so a proof whose selection carries any of them
+runs `make clang-manifest` in its generation (after removing any copy a warm
+generation seeded), from the candidate's own
+sources, before the fork (step `test-needs`, log `test-needs.log`), and folds
+the built bytes into the test receipt's helper digest. A build that fails, or
+exits 0 without producing the path, fails the proof as
+`test_need_unbuildable_clang-manifest`; the group never self-skips. A BUILD
+need never gates a group out of a universal selection, and a proof that
+selects no such group runs no extra step.
+
 Windows installs the same receipt policy as native PE hooks in an
 immutable content-addressed generation. Admission launches no console window;
 its bounded Git children use the parent Git-for-Windows image and a
