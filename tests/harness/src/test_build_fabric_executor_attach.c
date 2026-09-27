@@ -136,6 +136,32 @@ static bool att_open(struct node_db *ndb, char *dir, size_t dir_cap,
     return node_db_open(ndb, path);
 }
 
+#if !defined(_WIN32)
+extern void build_fabric_attach_test_after_scan(void (*hook)(void *),
+                                                void *context);
+
+struct att_revoke_after_scan {
+    const char *db_path;
+    char worker_id[65];
+    bool called;
+    bool saved;
+};
+
+static void att_revoke_donor_after_scan(void *context)
+{
+    struct att_revoke_after_scan *race = context;
+    race->called = true;
+    struct node_db other = {0};
+    if (!node_db_open(&other, race->db_path)) return;
+    struct db_build_worker worker;
+    if (db_build_worker_find(&other, race->worker_id, &worker)) {
+        worker.revoked = 1;
+        race->saved = db_build_worker_save(&other, &worker);
+    }
+    node_db_close(&other);
+}
+#endif
+
 static void att_worker_id_from_pubkey(const uint8_t pubkey[32], char out[65])
 {
     static const char domain[] = "zcl.build_worker.v1";
@@ -805,6 +831,37 @@ static int test_bf_attach_avoids_second_compile(void)
 
         /* No staging area and no compiler process for B. */
         ASSERT_EQ(att_build_work_entries(dir), entries_before);
+
+#if !defined(_WIN32)
+        /* A separate connection revokes the donor after the full scan but
+         * before publication. The receiver must keep the requester queued. */
+        struct db_build_job race_job;
+        struct db_build_action race_action;
+        ASSERT(att_plan_request(&ndb, dir, att_id_d, att_id_c, capsule_hex,
+                                input_root, "dev-x86-64-v3", &race_job,
+                                &race_action));
+        struct att_revoke_after_scan race = { .db_path = path };
+        att_worker_id_from_pubkey(pubkey, race.worker_id);
+        build_fabric_attach_test_after_scan(att_revoke_donor_after_scan,
+                                            &race);
+        struct db_build_receipt race_receipt;
+        struct build_fabric_attach_report race_report;
+        struct zcl_result raced = build_fabric_attach(
+            &ndb, dir, NULL, &race_job, &race_action, secret, pubkey,
+            &race_receipt, &race_report);
+        build_fabric_attach_test_after_scan(NULL, NULL);
+        ASSERT(race.called && race.saved);
+        ASSERT(!raced.ok);
+        ASSERT_STR_EQ(race_report.refusal, "attach-refused-history-stale");
+        struct db_build_action race_durable;
+        ASSERT(db_build_action_find(&ndb, race_action.action_id,
+                                    &race_durable));
+        ASSERT_STR_EQ(race_durable.state, "QUEUED");
+        struct db_build_receipt race_rows[1];
+        ASSERT_EQ(db_build_job_receipts_checked(&ndb, race_job.job_id,
+                                                race_rows, 1), 0);
+        ASSERT(att_approve_worker(&ndb, pubkey, now));
+#endif
 
         /* A distinct, real submitted request with changed compiler input
          * cannot borrow A's physical result. */

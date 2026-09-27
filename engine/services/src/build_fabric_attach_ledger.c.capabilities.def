@@ -1,0 +1,3 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Source-owned capability declaration for bounded attachment ledger reads. */
+ZCL_MODULE_CAPABILITY("engine/services/src/build_fabric_attach_ledger.c", CAP_FS_WRITE, "")

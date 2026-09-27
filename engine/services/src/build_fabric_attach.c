@@ -24,6 +24,7 @@
 
 #include "build_fabric_observation_internal.h"
 #include "build_fabric_attach_identity_internal.h"
+#include "build_fabric_attach_ledger_internal.h"
 #include "build_fabric_worker_internal.h"
 
 #include "base/hex.h"
@@ -50,7 +51,6 @@
 #include <string.h>
 
 enum {
-    BFAT_SCAN_CAP = 256,
     BFAT_RECEIPT_SCAN_CAP = 257,
     BFAT_RECORD_CAP = 4096,
 };
@@ -818,6 +818,8 @@ struct bfat_attach_ctx {
     struct build_fabric_attach_report *report;
     int64_t started_us;
     int64_t now;
+    sqlite3_int64 db_version;
+    sqlite3_int64 db_changes;
     size_t input_len;
     struct db_build_job job;
     struct db_build_action action;
@@ -837,6 +839,10 @@ struct bfat_attach_ctx {
     char refusal[BUILD_FABRIC_ERROR_MAX + 1];
 };
 
+/* A result of a bounded scan is usable only while its source ledger is the
+ * same. data_version detects commits by another handle; total_changes covers
+ * writes through this handle. Recheck after BEGIN IMMEDIATE has excluded new
+ * writers, before changing the requester or signing its receipt. */
 static bool bfat_attach_args_ok(const struct bfat_attach_ctx *c)
 {
     return c->ndb && c->ndb->open && c->workspace && c->req_job &&
@@ -890,6 +896,8 @@ static const char *bfat_check_request_identity(struct bfat_attach_ctx *c)
     if (strcmp(c->action.state, "SNAPSHOTTED") != 0 &&
         strcmp(c->action.state, "QUEUED") != 0)
         return "attach-refused-action-state";
+    if (c->job.cancel_requested)
+        return "attach-refused-job-cancelled";
     return NULL;
 }
 
@@ -1171,6 +1179,16 @@ static bool bfat_donor_scan(struct bfat_attach_ctx *c, const char **refusal)
     return bfat_scan_result(c, &scan, refusal);
 }
 
+#ifdef ZCL_TESTING
+static void (*bfat_after_scan_hook)(void *);
+static void *bfat_after_scan_context;
+void build_fabric_attach_test_after_scan(void (*hook)(void *), void *context)
+{
+    bfat_after_scan_hook = hook;
+    bfat_after_scan_context = context;
+}
+#endif
+
 /* Fetch the donor output bytes WITHOUT compiling and prove them against the
  * donor's physical observation. */
 static const char *bfat_output_fetch(struct bfat_attach_ctx *c,
@@ -1311,38 +1329,6 @@ static const char *bfat_receipt_prepare(struct bfat_attach_ctx *c)
 /* Advance the job row when every sibling action settled; the job outcome is
  * CACHE_HIT only when every action settled by attach. A sibling scan error
  * leaves the job row untouched without failing the transaction. */
-static bool bfat_job_settle_save(struct node_db *ndb,
-                                 const struct db_build_job *job, int64_t now)
-{
-    struct db_build_action *siblings = zcl_malloc(
-        BFAT_SCAN_CAP * sizeof(*siblings), "build.attach.siblings");
-    if (!siblings)
-        return false;
-    int count = db_build_job_actions(ndb, job->job_id, siblings,
-                                     BFAT_SCAN_CAP);
-    bool all_done = count > 0;
-    bool all_cache_hit = count > 0;
-    for (int i = 0; i < count; i++) {
-        bool accepted = strcmp(siblings[i].state, "ACCEPTED") == 0 ||
-            strcmp(siblings[i].state, "CACHE_HIT") == 0;
-        all_done = all_done && accepted;
-        all_cache_hit = all_cache_hit &&
-            strcmp(siblings[i].state, "CACHE_HIT") == 0;
-    }
-    bool ok = true;
-    if (all_done) {
-        struct db_build_job done_job = *job;
-        const char *outcome = all_cache_hit ? "CACHE_HIT" : "ACCEPTED";
-        (void)snprintf(done_job.state, sizeof(done_job.state), "%s", outcome);
-        (void)snprintf(done_job.outcome, sizeof(done_job.outcome), "%s",
-                       outcome);
-        done_job.updated_at = now;
-        ok = db_build_job_save(ndb, &done_job);
-    }
-    free(siblings);
-    return ok;
-}
-
 static const char *bfat_receipt_reread_verify(struct bfat_attach_ctx *c)
 {
     struct db_build_receipt persisted;
@@ -1378,10 +1364,18 @@ static const char *bfat_persist_attach(struct bfat_attach_ctx *c)
     const char *refusal = bfat_receipt_prepare(c);
     if (refusal)
         return refusal;
-    if (!node_db_begin(c->ndb))
+    if (!node_db_begin_immediate(c->ndb))
         return "attach-persist-failed: transaction";
+    sqlite3_int64 current_version = 0;
+    if (!bfat_ledger_version(c->ndb, &current_version) ||
+        current_version != c->db_version ||
+        sqlite3_total_changes64(c->ndb->db) != c->db_changes) {
+        if (!node_db_rollback(c->ndb))
+            LOG_ERROR("build_fabric", "attach stale history rollback failed");
+        return "attach-refused-history-stale";
+    }
     bool ok = db_build_action_save(c->ndb, &next) &&
-        bfat_job_settle_save(c->ndb, &c->job, c->now) &&
+        bfat_ledger_settle_job(c->ndb, &c->job, c->now) &&
         db_build_receipt_save(c->ndb, &c->receipt) &&
         node_db_commit(c->ndb);
     if (!ok) {
@@ -1417,6 +1411,9 @@ struct zcl_result build_fabric_attach(
     out_report->disposition = BUILD_FABRIC_ATTACH_MISS;
     out_report->compiler_processes = 0;
     c.now = (int64_t)platform_time_wall_unix();
+    if (!bfat_ledger_version(ndb, &c.db_version))
+        return bfat_refuse(out_report, "attach-refused-history-incomplete");
+    c.db_changes = sqlite3_total_changes64(ndb->db);
 
     const char *refusal = bfat_check_request_identity(&c);
     if (!refusal && strcmp(c.job.profile,
@@ -1431,6 +1428,11 @@ struct zcl_result build_fabric_attach(
     if (bfat_key_record_checked(&c, &refusal) ||
         bfat_donor_scan(&c, &refusal))
         return bfat_attach_stop(&c, refusal);
+
+#ifdef ZCL_TESTING
+    if (bfat_after_scan_hook)
+        bfat_after_scan_hook(bfat_after_scan_context);
+#endif
 
     (void)snprintf(out_report->donor_action_id,
                    sizeof(out_report->donor_action_id), "%s",
