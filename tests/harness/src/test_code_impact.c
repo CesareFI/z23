@@ -858,13 +858,18 @@ static int test_code_impact_incremental_include(void)
     ci_narrow_touch_rel(dir, "core/modules/net/include/net/extra.h", -5);
     ok = ok && ci_narrow_dim(dir, "core/modules/net/include/net/real.h",
                              second, sizeof second, &count);
+    char added[64] = "";
+    long long added_count = -1;
+    ok = ok && ci_narrow_dim(dir, "core/modules/net/include/net/extra.h",
+                             added, sizeof added, &added_count);
     printf("invariant=unsafe_narrow_include_dimension case=incremental "
-           "include_dimension=%s then %s ok=%d\n",
-           first, second, ok ? 1 : 0);
-    TEST("code_impact: a later include change is not a complete narrow impact") {
+           "include_dimension=%s then %s added=%s/%lld ok=%d\n",
+           first, second, added, added_count, ok ? 1 : 0);
+    TEST("code_impact: a later include change is rebuilt into a complete narrow impact") {
         ASSERT(ok);
         ASSERT(strcmp(first, "complete") == 0);
-        ASSERT(strcmp(second, "complete") != 0);
+        ASSERT(strcmp(second, "complete") == 0);
+        ASSERT(strcmp(added, "complete") == 0 && added_count >= 1);
         PASS();
     } _test_next:;
     system("rm -rf " CI_NARROW_FIX);
@@ -904,7 +909,7 @@ static int test_code_impact_scope_refusals(void)
  * graph holds a superset of the true edges and stays trusted. What the added
  * file includes is reached the same way. Every depfile hazard still refuses a
  * complete answer with such an include present, and the incremental index
- * still refuses once a source edit adds an edge its stored graph lacks. */
+ * rebuilds once a source edit adds an edge its stored rows lack. */
 #define CI_COND_FIX "test-tmp/code_impact_conditional"
 #define CI_COND_UNIT "core/modules/net/src/narrow.c"
 #define CI_COND_INC "core/modules/net/src/narrow_win.inc"
@@ -1023,7 +1028,7 @@ static int test_code_impact_conditional_hazards(void)
 
 /* The incremental index reuses the stored include rows. A body-only edit
  * keeps the added edge and the complete answer; an edit that adds an include
- * the stored rows lack is refused until a cold rebuild records it. */
+ * the stored rows lack is rebuilt from a fresh scan, which records it. */
 static int test_code_impact_conditional_incremental(void)
 {
     int failures = 0;
@@ -1050,16 +1055,17 @@ static int test_code_impact_conditional_incremental(void)
     ok = ok && ci_impact_mk_write(dir, CI_COND_UNIT, src_more);
     ci_narrow_touch_rel(dir, CI_COND_UNIT, -5);
     ci_narrow_touch_rel(dir, "core/modules/net/include/net/extra.h", -5);
-    ok = ok && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, third,
+    ok = ok && ci_cond_query(dir, "core/modules/net/include/net/extra.h",
+                             CI_COND_UNIT, third,
                              sizeof third, &has_third);
     printf("invariant=conditional_include_incremental "
            "include_dimension=%s then %s then %s ok=%d\n",
            first, second, third, ok ? 1 : 0);
-    TEST("code_impact: an incremental index keeps a stored conditional edge and refuses one it never stored") {
+    TEST("code_impact: an incremental index keeps a stored conditional edge and rebuilds for one it never stored") {
         ASSERT(ok);
         ASSERT(strcmp(first, "complete") == 0 && has_first);
         ASSERT(strcmp(second, "complete") == 0 && has_second);
-        ASSERT(strcmp(third, "complete") != 0);
+        ASSERT(strcmp(third, "complete") == 0 && has_third);
         PASS();
     } _test_next:;
     system("rm -rf " CI_COND_FIX);

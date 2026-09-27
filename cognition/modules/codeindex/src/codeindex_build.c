@@ -641,9 +641,30 @@ static bool rebuild_deps_unchanged(struct ci_store *store,
            memcmp(scanned_dep_root, stored_dep_root, 32) == 0;
 }
 
+bool ci_deps_include_edge_root(uint8_t out[32]);
+
+/* A patch reuses the stored include rows, so it is taken only while they
+ * record the edge root the current sources produce. A generation with no edge
+ * root (written before edges were rooted) or a different one, such as after a
+ * source edit that adds an include, is rebuilt from a fresh scan instead. */
+static bool rebuild_include_edges_current(struct ci_store *store,
+                                          const char *root)
+{
+    uint8_t stored[32], exact[32], stat_root[32], edges[32];
+    size_t stored_len = 0;
+    bool found = false;
+    return ci_store_meta_get(store, "include_edge_root_sha3", stored,
+                             sizeof(stored), &stored_len, &found) &&
+           found && stored_len == sizeof(stored) &&
+           ci_deps_scan_roots(root, NULL, NULL, exact, stat_root) &&
+           ci_deps_include_edge_root(edges) &&
+           memcmp(stored, edges, sizeof(edges)) == 0;
+}
+
 /* The one question that decides whether this checkout's OWN previous
- * generation can be patched: same derived layout, same compiler inputs, and a
- * Merkle refresh that named the changed leaves instead of rescanning. */
+ * generation can be patched: same derived layout, same compiler inputs, the
+ * same include edges, and a Merkle refresh that named the changed leaves
+ * instead of rescanning. */
 static bool rebuild_can_patch_in_place(struct codeindex *ci,
                                        const struct ci_merkle_cost *cost,
                                        const uint8_t current_dep_stat[32])
@@ -651,7 +672,8 @@ static bool rebuild_can_patch_in_place(struct codeindex *ci,
     return ci->store && cost->snapshot_used && !cost->full_rescan &&
            !cost->inventory_changed &&
            rebuild_generation_current(ci->store) &&
-           rebuild_deps_unchanged(ci->store, ci->root, current_dep_stat);
+           rebuild_deps_unchanged(ci->store, ci->root, current_dep_stat) &&
+           rebuild_include_edges_current(ci->store, ci->root);
 }
 
 /* The staging inode must still be the private single-linked regular file this

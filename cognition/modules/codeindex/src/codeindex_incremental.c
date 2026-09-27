@@ -159,10 +159,12 @@ static bool incremental_source_root(struct ci_store *store, uint8_t out[32])
 bool ci_deps_include_edge_root(uint8_t out[32]);
 
 /* The include rows are reused, not rebuilt. They answer completely only
- * while the current scan produces exactly the edges they were built from;
- * a source edit that adds an include the rows lack, or rows with no recorded
- * edge root, refuses until a cold rebuild. The stored edge root is left as
- * is, so it keeps describing the rows. */
+ * while the current scan produces exactly the edges they were built from.
+ * The rebuild path patches only a generation whose edge root matches, and a
+ * seeded one is stamped after its rows are verified, so a mismatch here means
+ * the sources moved during this update: the answer refuses and the next
+ * update rebuilds. The stored edge root is left as is, so it keeps describing
+ * the rows. */
 static bool incremental_refresh_include_narrow(const char *root,
                                                struct ci_store *store)
 {

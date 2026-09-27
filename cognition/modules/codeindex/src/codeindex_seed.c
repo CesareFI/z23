@@ -484,6 +484,20 @@ static bool seed_includes_match(const char *root, struct ci_store *staged,
     return ok;
 }
 
+bool ci_deps_include_edge_root(uint8_t out[32]);
+
+/* The rows were just shown equal to a fresh parse of this checkout, so the
+ * edge root of that parse describes them. A donor written before edges were
+ * rooted, or with a different root, is stamped with it here; its reused rows
+ * then answer completely like rows this checkout built. */
+static bool seed_stamp_edge_root(struct ci_store *staged)
+{
+    uint8_t edges[32];
+    return ci_deps_include_edge_root(edges) &&
+           ci_store_meta_set(staged, "include_edge_root_sha3", edges,
+                             sizeof(edges));
+}
+
 static bool seed_refresh_staged(const char *root, int stagefd,
                                 const struct ci_merkle_leaf *current,
                                 int current_count,
@@ -502,6 +516,7 @@ static bool seed_refresh_staged(const char *root, int stagefd,
                                 dep_root);
     bool ok = changed >= 0 &&
               seed_includes_match(root, staged, dep_root) &&
+              seed_stamp_edge_root(staged) &&
               ci_build_store_incremental(root, staged, scratch, changed,
                                          dep_stat, merkle_root) &&
               seed_write_receipt(staged, kind, changed);
