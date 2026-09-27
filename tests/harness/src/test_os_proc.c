@@ -18,6 +18,7 @@
  *   - the Seccomp_filters status-text parser requires the trailing '\n'
  *     after the digits, so a status read truncated mid-number fails closed
  *     instead of returning a short-read digit prefix
+ *   - os_proc_self_maps_read() returns the whole mapping table or refuses
  */
 
 #include "test/test_core.h"
@@ -25,6 +26,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
@@ -272,6 +274,34 @@ static int os_proc_self_exe_open_path_checks(void)
     return failures;
 }
 
+/* self maps read: on Linux the whole mapping table comes back NUL-terminated
+ * with its exact length and names this process's own image; a cap smaller
+ * than the table refuses (NULL) instead of returning a truncated prefix a
+ * caller could mistake for the complete library set. Elsewhere the platform
+ * keeps no such table and the read reports no evidence. */
+static int os_proc_self_maps_read_checks(void)
+{
+    int failures = 0;
+    size_t len = 7;
+    char *maps = os_proc_self_maps_read(4u << 20, &len);
+#if defined(__linux__)
+    OSPROC_CHECK("self_maps_read returns the table", maps != NULL);
+    OSPROC_CHECK("self_maps_read length matches the NUL-terminated text",
+                 maps && len > 0 && strlen(maps) == len);
+    OSPROC_CHECK("self_maps_read lists at least one mapped file",
+                 maps && strchr(maps, '/') != NULL);
+    char *capped = os_proc_self_maps_read(8, NULL);
+    OSPROC_CHECK("self_maps_read refuses a table larger than its cap",
+                 capped == NULL);
+    free(capped);
+#else
+    OSPROC_CHECK("self_maps_read reports no evidence off Linux",
+                 maps == NULL && len == 0);
+#endif
+    free(maps);
+    return failures;
+}
+
 int test_os_proc(void);
 int test_os_proc(void)
 {
@@ -282,6 +312,7 @@ int test_os_proc(void)
     failures += os_proc_preserved_report_fd_checks();
     failures += os_proc_seccomp_filters_parse_checks();
     failures += os_proc_self_exe_open_path_checks();
+    failures += os_proc_self_maps_read_checks();
 
     OSPROC_CHECK("native Linux release classification",
                  os_proc_environment_classify_kernel_release(
