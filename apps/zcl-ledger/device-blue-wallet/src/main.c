@@ -221,6 +221,16 @@ void io_seproxyhal_display(const bagl_element_t *element) {
 unsigned char io_event(unsigned char channel) {
     (void)channel;
     switch (G_io_seproxyhal_spi_buffer[0]) {
+    case SEPROXYHAL_TAG_USB_EVENT:
+        if ((G_io_seproxyhal_spi_buffer[3] ==
+                 SEPROXYHAL_TAG_USB_EVENT_RESET ||
+             G_io_seproxyhal_spi_buffer[3] ==
+                 SEPROXYHAL_TAG_USB_EVENT_SUSPENDED) &&
+            wallet_payment_visible()) {
+            wallet_payment_abort();
+            UX_DISPLAY(receive_ui, NULL);
+        }
+        break;
     case SEPROXYHAL_TAG_FINGER_EVENT:
         UX_FINGER_EVENT(G_io_seproxyhal_spi_buffer);
         break;

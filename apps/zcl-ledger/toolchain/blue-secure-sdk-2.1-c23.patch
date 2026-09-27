@@ -233,7 +233,7 @@ index 37efbe5..ff41864 100644
  }
 -
 diff --git a/src/os_io_seproxyhal.c b/src/os_io_seproxyhal.c
-index c31d390..9b61de4 100644
+index c31d390..2e7064c 100644
 --- a/src/os_io_seproxyhal.c
 +++ b/src/os_io_seproxyhal.c
 @@ -96,8 +96,10 @@ void io_seproxyhal_handle_usb_event(void) {
@@ -258,7 +258,18 @@ index c31d390..9b61de4 100644
    // don't spoil the timeout :)
    if (timeout) {
      timeout++;
-@@ -577,7 +577,7 @@ void io_seproxyhal_display_bitmap(int x, int y, unsigned int w, unsigned int h,
+@@ -250,6 +250,10 @@ unsigned int io_seproxyhal_handle_event(void) {
+         return 0;
+       }
+       io_seproxyhal_handle_usb_event();
++      if (G_io_seproxyhal_spi_buffer[3] == SEPROXYHAL_TAG_USB_EVENT_RESET ||
++          G_io_seproxyhal_spi_buffer[3] == SEPROXYHAL_TAG_USB_EVENT_SUSPENDED) {
++        io_event(CHANNEL_SPI);
++      }
+       return 1;
+ 
+     case SEPROXYHAL_TAG_USB_EP_XFER_EVENT:
+@@ -577,7 +581,7 @@ void io_seproxyhal_display_bitmap(int x, int y, unsigned int w, unsigned int h,
  }
  
  #ifdef SEPROXYHAL_TAG_SCREEN_DISPLAY_RAW_STATUS
@@ -267,7 +278,7 @@ index c31d390..9b61de4 100644
    unsigned int len;
  
    struct display_raw_s {
-@@ -632,8 +632,8 @@ unsigned int io_seproxyhal_display_icon_header_and_colors(bagl_component_t* icon
+@@ -632,8 +636,8 @@ unsigned int io_seproxyhal_display_icon_header_and_colors(bagl_component_t* icon
    SWAP(raw.w.b[0], raw.w.b[1]);
    SWAP(raw.h.b[0], raw.h.b[1]);
  
@@ -278,7 +289,7 @@ index c31d390..9b61de4 100644
    len -= (1<<raw.bpp)*4;  
  
    // remaining length of bitmap bits to be displayed
-@@ -641,7 +641,7 @@ unsigned int io_seproxyhal_display_icon_header_and_colors(bagl_component_t* icon
+@@ -641,7 +645,7 @@ unsigned int io_seproxyhal_display_icon_header_and_colors(bagl_component_t* icon
  }
  #endif // SEPROXYHAL_TAG_SCREEN_DISPLAY_RAW_STATUS
  
@@ -287,7 +298,7 @@ index c31d390..9b61de4 100644
    bagl_component_t icon_component_mod;
    // ensure not being out of bounds in the icon component agianst the declared icon real size
    os_memmove(&icon_component_mod, icon_component, sizeof(bagl_component_t));
-@@ -655,7 +655,7 @@ void io_seproxyhal_display_icon(bagl_component_t* icon_component, bagl_icon_deta
+@@ -655,7 +659,7 @@ void io_seproxyhal_display_icon(bagl_component_t* icon_component, bagl_icon_deta
    unsigned int icon_off=0;
  
    len = io_seproxyhal_display_icon_header_and_colors(icon_component, icon_details, &icon_len);
@@ -296,7 +307,7 @@ index c31d390..9b61de4 100644
    // advance in the bitmap to be transmitted
    icon_len -= len;
    icon_off += len;
-@@ -672,7 +672,7 @@ void io_seproxyhal_display_icon(bagl_component_t* icon_component, bagl_icon_deta
+@@ -672,7 +676,7 @@ void io_seproxyhal_display_icon(bagl_component_t* icon_component, bagl_icon_deta
      G_io_seproxyhal_spi_buffer[1] = (len+1)>>8;
      G_io_seproxyhal_spi_buffer[2] = (len+1);
      io_seproxyhal_spi_send(G_io_seproxyhal_spi_buffer, 4);
@@ -305,7 +316,7 @@ index c31d390..9b61de4 100644
  
      icon_len -= len;
      icon_off += len;
-@@ -1104,13 +1104,11 @@ reply_apdu:
+@@ -1104,13 +1108,11 @@ reply_apdu:
        rx_len = io_seproxyhal_spi_recv(G_io_seproxyhal_spi_buffer, sizeof(G_io_seproxyhal_spi_buffer), 0);
  
        // can't process split TLV, continue

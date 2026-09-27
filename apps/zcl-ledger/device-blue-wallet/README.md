@@ -44,13 +44,13 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.0 image has 24,576 bytes of `.text`, 4,236
+512-byte margin. The linked 0.2.0 image has 24,832 bytes of `.text`, 4,236
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
 stack; 1,908 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 648 bytes, excluding BOLOS firmware
 frames. Two clean builds, using the original patched SDK and a fresh SDK
 checkout with the repository patch applied, produced the same image SHA-256:
-`d69f5f07cf2280aeb253f9ff91d494f78bd8b635d0f45d4c778b1d5137251bdb`.
+`97db7a9ab725b03fd55365a057a552488f88f106ab8cd957bbda0faad1875113`.
 The installer accepts only byte-pinned images. Its BOLOS metadata grants the
 fixed ZCL derivation path. Physical install, open, USB, touchscreen, EXIT,
 and recovery checks are still required for this exact image.
@@ -79,7 +79,8 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 INS `02` returns `6985` if derivation or address formatting fails. A review
 upload chunk must stop on the exact output boundary. Only the touchscreen
 CONTINUE callback acknowledges that output; USB cannot do so. Any malformed
-command invalidates the review. No command signs or approves a payment.
+command invalidates the review. USB reset or suspend also cancels an idle
+review and returns to the receive screen. No command signs or approves a payment.
 After hardware validation, run
 `zcl-ledger receive-address --json /dev/hidrawN` while the app is open and
 compare the returned address with all characters on the Blue screen.
