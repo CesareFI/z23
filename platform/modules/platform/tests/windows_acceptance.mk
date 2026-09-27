@@ -63,6 +63,7 @@ ZCL_WINDOWS_ACCEPTANCE_TESTS := \
 	rng \
 	safe_root_read \
 	sd_notify_unsupported \
+	semantic_manifest \
 	snapshot_candidate_output_refusal \
 	snapshot_export_refusal \
 	snapshot_install_activate_refusal \
@@ -548,6 +549,20 @@ ZCL_WINDOWS_ACCEPTANCE_safe_root_read_SOURCES := \
 ZCL_WINDOWS_ACCEPTANCE_sd_notify_unsupported_SOURCES := \
 	tests/harness/src/sd_notify_unsupported_acceptance.c \
 	platform/modules/util/src/sd_notify.c
+
+# The canonical semantic manifest reader (docs/work/SEMANTIC_MANIFEST.md):
+# golden vector, every checked-in fixture (embedded at compile time, see
+# tests/harness/src/semantic_manifest_windows_fixtures.h) folded into one
+# pinned SHA3 ledger digest, and the decoder's refusal set. No Windows API
+# is used, so this row is also the program tests/harness/src/
+# test_semantic_manifest.c smt_t_ledger recomputes the identical ledger
+# digest for, natively, from the live fixture files.
+ZCL_WINDOWS_ACCEPTANCE_semantic_manifest_SOURCES := \
+	tests/harness/src/semantic_manifest_windows_acceptance.c \
+	contexts/commons/modules/vcs/src/semantic_manifest.c \
+	contexts/commons/modules/vcs/src/semantic_manifest_build.c \
+	platform/modules/sha3/src/sha3.c \
+	platform/modules/base/src/safe_alloc.c
 ZCL_WINDOWS_ACCEPTANCE_snapshot_candidate_output_refusal_SOURCES := \
 	tests/harness/src/snapshot_candidate_output_refusal_acceptance.c \
 	engine/composition/src/consensus_state_snapshot_candidate_output.c

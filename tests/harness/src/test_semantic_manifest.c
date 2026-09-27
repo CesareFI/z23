@@ -33,11 +33,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "sha3/sha3.h"
+
 #define SMT_SENSOR "build/bin/z23-clang-manifest"
 #define SMT_FIXTURES "tests/fixtures/semantic_manifest"
+#define SMT_FACTS_FIXTURES "tests/fixtures/semantic_facts"
 #define SMT_BIT(s) (1u << VCS_SEMANTIC_SECTION_V1_##s)
 #define SMT_ALL 0x3feu
 
@@ -919,6 +923,114 @@ static int smt_t_fixture_seeds(void)
     return failures;
 }
 
+/* ── the Windows cross-link ledger, recomputed natively ──────────────────
+ * tests/harness/src/semantic_manifest_windows_acceptance.c is the strict-C23
+ * catalog program platform/modules/platform/tests/windows_acceptance.mk
+ * cross-links with mingw. It embeds a byte-exact compile-time copy of every
+ * fixture below and folds their (name, root, hint root) into one SHA3
+ * ledger digest, pinned as SMWA_LEDGER_DIGEST there. This test computes the
+ * identical ledger, over the identical files, read live from disk instead
+ * of embedded, and pins the identical digest here as SMT_LEDGER_DIGEST. The
+ * two readings agreeing is the evidence that the reader's output does not
+ * depend on the embedding or the platform: a change to either without the
+ * other is caught because the two pinned constants would then disagree. */
+#define SMT_LEDGER_DIGEST \
+    "b387ae5ba488df407102e2090f4d83aa773589cb78f6ea25a9d38cc9e0eca646"
+
+struct smt_ledger_row {
+    char name[96];
+    char line[228]; /* "name root hint\n" */
+};
+
+static int smt_ledger_row_cmp(const void *a, const void *b)
+{
+    const struct smt_ledger_row *ra = a;
+    const struct smt_ledger_row *rb = b;
+    return strcmp(ra->name, rb->name);
+}
+
+/* List every regular file directly under dir, sorted, as "<label>/<name>". */
+static int smt_ledger_list(const char *dir, const char *label,
+                           char names[][96], int max, int *count)
+{
+    DIR *d = opendir(dir);
+    struct dirent *ent;
+    int n = *count;
+    if (d == NULL)
+        return 0;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.' || n >= max)
+            continue;
+        (void)snprintf(names[n], 96, "%s/%s", label, ent->d_name);
+        n++;
+    }
+    (void)closedir(d);
+    *count = n;
+    return 1;
+}
+
+static int smt_t_ledger(void)
+{
+    int failures = 0;
+    char names[64][96];
+    int count = 0;
+    struct smt_ledger_row rows[64];
+    int n = 0;
+
+    TEST_CASE("semantic_manifest: Windows-catalog ledger digest matches, computed live off disk") {
+        ASSERT(smt_ledger_list(SMT_FIXTURES, "semantic_manifest", names, 64,
+                               &count));
+        ASSERT(smt_ledger_list(SMT_FACTS_FIXTURES, "semantic_facts", names, 64,
+                               &count));
+        for (int k = 0; k < count; k++) {
+            char path[PATH_MAX];
+            uint8_t *m = NULL;
+            size_t mn = 0;
+            uint8_t root[32], hint[32];
+            char root_hex[65], hint_hex[65];
+            (void)snprintf(path, sizeof(path), "tests/fixtures/%s", names[k]);
+            ASSERT(smt_read(path, &m, &mn));
+            ASSERT(vcs_semantic_manifest_v1_validate(m, mn, NULL, 0));
+            ASSERT(vcs_semantic_root_v1(m, mn, root, NULL, 0));
+            ASSERT(vcs_semantic_hint_root_v1(m, mn, hint, NULL, 0));
+            smt_hex(root, 32, root_hex);
+            smt_hex(hint, 32, hint_hex);
+            (void)snprintf(rows[n].name, sizeof(rows[n].name), "%s", names[k]);
+            (void)snprintf(rows[n].line, sizeof(rows[n].line), "%s %s %s\n",
+                           names[k], root_hex, hint_hex);
+            n++;
+            free(m);
+        }
+        ASSERT_EQ(n, 36);
+        qsort(rows, (size_t)n, sizeof(rows[0]), smt_ledger_row_cmp);
+
+        size_t joined_len = 0;
+        char *joined = malloc((size_t)n * sizeof(rows[0].line) + 1); // raw-alloc-ok:test-scratch
+        ASSERT(joined != NULL);
+        for (int k = 0; k < n; k++) {
+            size_t l = strlen(rows[k].line);
+            memcpy(joined + joined_len, rows[k].line, l);
+            joined_len += l;
+        }
+        static const char domain[] = "zcl.semantic_manifest_windows_ledger.v1";
+        size_t dlen = strlen(domain);
+        uint8_t *preimage = malloc(dlen + joined_len); // raw-alloc-ok:test-scratch
+        ASSERT(preimage != NULL);
+        memcpy(preimage, domain, dlen);
+        memcpy(preimage + dlen, joined, joined_len);
+        uint8_t digest[32];
+        char digest_hex[65];
+        zcl_sha3_256(preimage, dlen + joined_len, digest);
+        smt_hex(digest, 32, digest_hex);
+        free(preimage);
+        free(joined);
+        printf("semantic_manifest: ledger fixtures=%d digest=%s\n", n,
+               digest_hex);
+        ASSERT(strcmp(digest_hex, SMT_LEDGER_DIGEST) == 0);
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_manifest(void)
 {
     int failures = 0;
@@ -930,6 +1042,7 @@ int test_semantic_manifest(void)
     failures += smt_t_refusals();
     failures += smt_t_fixture_invariance();
     failures += smt_t_fixture_seeds();
+    failures += smt_t_ledger();
     return failures;
 }
 
