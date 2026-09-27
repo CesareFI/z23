@@ -939,11 +939,13 @@ unit_runs_from() {
     return 1
 }
 
-# Anything under $1 modified within the last $2 hours? find stops at the
-# first hit, so a busy tree costs one lookup, an idle one a single walk.
+# Anything under $1 written within the last $2 hours? Directories do not
+# count: removing a child bumps its parent's mtime, so a directory this very
+# sweep (or a hand cleanup) emptied would otherwise read as fresh work. find
+# stops at the first hit, so a busy tree costs one lookup, an idle one a walk.
 recent_under() {
     local hit
-    hit="$(find "$1" -mmin "-$(( $2 * 60 ))" -print -quit 2>/dev/null)" || true
+    hit="$(find "$1" ! -type d -mmin "-$(( $2 * 60 ))" -print -quit 2>/dev/null)" || true
     [ -n "$hit" ]
 }
 
@@ -959,8 +961,13 @@ wtbuild_keeps_child() {
 
 # Delete one reproducible tree (build output, test scratch) outright: no
 # quarantine. The protect predicate is asked again on the exact path first.
+# The bytes land in REAP_BYTES; REAP_QUIET=1 leaves the per-path screen line
+# to the caller's summary (the log still gets one line per path).
+REAP_BYTES=0
+REAP_QUIET=0
 reap_tree() {
     local cat="$1" action="$2" p="$3" note="$4" bytes
+    REAP_BYTES=0
     refuse_if_protected "$p" || return 1
     bytes="$(dir_bytes "$p")"
     if [ "$APPLY" = 1 ]; then
@@ -970,12 +977,27 @@ reap_tree() {
             say "$cat: could not remove $p (left in place)"
             return 1
         fi
-        say "$cat: removed $p ($(human "$bytes"))"
+        [ "$REAP_QUIET" = 1 ] || say "$cat: removed $p ($(human "$bytes"))"
     else
-        say "$cat: would remove $p ($(human "$bytes"))"
+        [ "$REAP_QUIET" = 1 ] || say "$cat: would remove $p ($(human "$bytes"))"
     fi
     log_line "$action" "$p" "$bytes" "$note"
     add_result "$cat" "$bytes" 1
+    REAP_BYTES="$bytes"
+}
+
+# Every child of scratch directory $3, one log line each, one screen line.
+reap_children() {
+    local cat="$1" action="$2" dir="$3" note="$4" child n=0 total=0
+    REAP_QUIET=1
+    while IFS= read -r child; do
+        if reap_tree "$cat" "$action" "$child" "$note"; then
+            n=$(( n + 1 )); total=$(( total + REAP_BYTES ))
+        fi
+    done < <(dir_children "$dir")
+    REAP_QUIET=0
+    [ "$n" -gt 0 ] || return 0
+    say "$cat: $([ "$APPLY" = 1 ] && echo removed || echo would remove) $n entr(y/ies) under $dir ($(human "$total"))"
 }
 
 # Children of $1, dotfiles included, one per line.
@@ -1019,9 +1041,7 @@ wtbuild_one() {
         fi
     fi
     if [ -d "$wt/test-tmp" ] && ! recent_under "$wt/test-tmp" "$idle_h"; then
-        while IFS= read -r child; do
-            reap_tree testtmp testtmp-remove "$child" "idle worktree>${idle_h}h" || true
-        done < <(dir_children "$wt/test-tmp")
+        reap_children testtmp testtmp-remove "$wt/test-tmp" "idle worktree>${idle_h}h"
     fi
 }
 
@@ -1075,10 +1095,8 @@ land_queue_busy() {
 }
 
 landtmp_reap_children() {
-    local tt="$1" child
-    while IFS= read -r child; do
-        reap_tree landtmp landtmp-remove "$child" "land queue idle" || true
-    done < <(dir_children "$tt")
+    local tt="$1"
+    reap_children landtmp landtmp-remove "$tt" "land queue idle"
 }
 
 sweep_landtmp() {
@@ -1086,6 +1104,7 @@ sweep_landtmp() {
     hdr "landing worktree test scratch (only while the land queue is idle)"
     local tt="$LAND_DIR/wt/test-tmp" why
     [ -d "$tt" ] || { say "landtmp: no $tt — skipped"; return 0; }
+    [ -n "$(dir_children "$tt")" ] || { say "landtmp: $tt is empty"; return 0; }
     if why="$(land_queue_busy)"; then
         say "landtmp: SKIP ($why): $tt"
         log_line "landtmp-skip" "$tt" 0 "$why"

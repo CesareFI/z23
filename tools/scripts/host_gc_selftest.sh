@@ -554,6 +554,10 @@ make_build_wt wt-recent
 make_build_wt wt-mid
 make_build_wt wt-unit
 touch -- "$WT_FX/wt-recent/build/obj/a.o"
+# A hand cleanup (or this sweep) removing entries bumps the build/ directory's
+# own mtime; that alone is not recent build activity.
+make_build_wt wt-emptied
+touch -- "$WT_FX/wt-emptied/build" "$WT_FX/wt-emptied/build/obj"
 touch_hours_ago "$WT_FX/wt-mid/build/obj/a.o" 5
 mkdir -p -- "$PROC_FX/4242424"
 ln -s "$WT_FX/wt-live/build" "$PROC_FX/4242424/cwd"
@@ -579,6 +583,8 @@ pass "wtbuild apply keeps every evidence-bearing build/ child"
 [ -f "$WT_FX/wt-idle/build/.session.lock" ] || fail "wtbuild apply removed hidden build state"
 [ -e "$WT_FX/wt-idle/test-tmp/case1" ] && fail "wtbuild apply left idle test scratch behind" \
     || pass "wtbuild apply removes idle test scratch"
+[ -e "$WT_FX/wt-emptied/build/obj" ] && fail "wtbuild read a freshly emptied build/ directory as recent work" \
+    || pass "wtbuild ignores directory mtimes when judging recent work"
 [ -f "$WT_FX/wt-live/build/obj/a.o" ] || fail "wtbuild apply removed output from a worktree in use"
 [ -f "$WT_FX/wt-recent/build/obj/a.o" ] || fail "wtbuild apply removed output built recently"
 [ -f "$WT_FX/wt-mid/build/obj/a.o" ] || fail "wtbuild apply ignored the 12h idle floor with disk to spare"
@@ -621,7 +627,11 @@ if command -v flock >/dev/null 2>&1; then
     [ -d "$LAND_FX/wt/test-tmp/run1" ] || fail "landtmp removed test scratch while step.lock was held"
 
     out="$(run_hostgc landtmp dry-run)"
-    assert_contains "$out" "$LAND_FX/wt/test-tmp/run1" "landtmp dry-run names the scratch it would remove"
+    log="$(cat -- "$STATE_FX/host_gc.log" 2>/dev/null || true)"
+    assert_contains "$out" "would remove 2 entr(y/ies) under $LAND_FX/wt/test-tmp" \
+        "landtmp dry-run summarizes the scratch it would remove"
+    assert_contains "$log" "$(printf 'landtmp-remove\t%s' "$LAND_FX/wt/test-tmp/run1")" \
+        "landtmp dry-run logs each entry it would remove"
     [ -d "$LAND_FX/wt/test-tmp/run1" ] || fail "landtmp dry-run removed test scratch"
     out="$(run_hostgc landtmp apply)"
     [ -e "$LAND_FX/wt/test-tmp/run1" ] && fail "landtmp apply left idle landing scratch behind" \
