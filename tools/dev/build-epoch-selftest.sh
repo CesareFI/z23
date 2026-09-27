@@ -524,6 +524,25 @@ COMPILER_EPOCH="$(epoch_key "$(sha_label other-compiler)" "$PROFILE" "$COMPILE_F
 BSYS_EPOCH="$(epoch_key "$COMPILER_ID" "$PROFILE" "$COMPILE_FLAGS" "$LINK_FLAGS" "$(sha_label other-build-system)")"
 [ "$BSYS_EPOCH" != "$EPOCH_MAIN" ] ||
     fail 'build-system fingerprint was omitted from key (a Makefile flags edit would leave stale objects)'
+# Two checkouts of one tree (a proof generation and its donor) spell their
+# own root into -ffile-prefix-map and the wrapper path. That spelling maps
+# out of every object, so each tree's own key tool must derive ONE epoch
+# for it; a path outside the keying tree still separates the namespace.
+for tree in tree-a tree-b; do
+    mkdir -p "$WORK/$tree/tools/dev"
+    cp -- "$KEY_TOOL" "$WORK/$tree/tools/dev/build-epoch-key.sh"
+done
+tree_key()
+{
+    "$WORK/$1/tools/dev/build-epoch-key.sh" key "$COMPILER_ID" "$PROFILE" \
+        "-O2 -ffile-prefix-map=$WORK/$2=/zclassic23" \
+        "cxx=$WORK/$2/build/bin/zcc c++" "$BSYS_REAL"
+}
+TREE_A_EPOCH="$(tree_key tree-a tree-a)"
+[ "$TREE_A_EPOCH" = "$(tree_key tree-b tree-b)" ] ||
+    fail 'the checkout root spelling split one tree into two epochs'
+[ "$TREE_A_EPOCH" != "$(tree_key tree-a tree-b)" ] ||
+    fail 'a path outside the keying checkout was dropped from the key'
 if epoch_key "$COMPILER_ID" fixture-v1 '@compiler-response' links "$BSYS_REAL" \
         >/dev/null 2>&1; then
     fail 'unhashed compiler response file was accepted'

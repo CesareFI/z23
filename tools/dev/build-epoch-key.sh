@@ -762,10 +762,25 @@ key)
     done
     is_sha256 "$BUILD_SYSTEM" || fail 'key requires a build-system fingerprint'
 
+    # The checkout's own absolute root reaches these strings only as a
+    # spelling of "this tree": -ffile-prefix-map=$(CURDIR)=... maps it OUT
+    # of every object, and CC/CXX name the in-tree wrapper under it, whose
+    # bytes compiler-id already fingerprints. Keying on the spelling gave
+    # every checkout and every proof generation of one tree its own epoch
+    # for byte-identical objects, so a warm-started generation's seeded
+    # objects sat under the donor's epoch name where its own make never
+    # looked. Canonicalize exactly this tree's root, the way the test-cache
+    # toolkey already does; any other absolute path stays in the key.
+    SCOPE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)" ||
+        fail 'could not resolve the checkout root'
+    [ "$SCOPE_ROOT" != / ] || fail 'checkout root resolved to /'
+    COMPILE_FLAGS="${COMPILE_FLAGS//"$SCOPE_ROOT"/<repo-root>}"
+    LINK_FLAGS="${LINK_FLAGS//"$SCOPE_ROOT"/<repo-root>}"
+
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-build-epoch.XXXXXX")" ||
         fail 'could not create build epoch workspace'
     {
-        printf 'zcl.build_compile_epoch.v2\0'
+        printf 'zcl.build_compile_epoch.v3\0'
         printf 'compiler_id_sha256\0%s\0' "$COMPILER_ID"
         printf 'profile\0%s\0' "$PROFILE"
         printf 'compile_flags\0%s\0' "$COMPILE_FLAGS"
