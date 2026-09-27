@@ -128,19 +128,21 @@ the entire first upload before accepting either replay's ZIP-243 subhash.
 The [replay memory experiment](../../docs/experiments/2026-09-27-ledger-blue-replay-zip243.md)
 measures 684 bytes of wrapper and SDK hash state on ARM, 116 bytes below the
 two-context method. The corrected Wallet guard admits this state as an
-isolated addition. A future integrated image must measure all remaining
-transport and UI state, plus stack, display, and physical behavior.
+isolated addition. Wallet 0.2.0 now links replay, transport, and output UI;
+its full image measurements are recorded in the
+[linked Wallet experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-link.md).
+Physical display and touch behavior remain unverified.
 [`blue_payment_review.h`](include/blue_payment_review.h) adds a C23,
 read-only review controller. It retains one standard transparent output,
 halts upload until that output is acknowledged, and limits a session to 16
 outputs. A chunk must end exactly when an output completes; a chunk with
 trailing bytes invalidates the session. Every output is provisional until
 the final replay commitment validates. Its acknowledgement function must be
-bound to a touchscreen callback in a future device image; a USB command must
-never call it. The
+bound to a touchscreen callback; a USB command must never call it. Wallet
+0.2.0 contains that binding. The
 [output review experiment](../../docs/experiments/2026-09-27-ledger-blue-output-review.md)
-records host tests and the isolated ARM state measurement. No Blue image
-links this controller yet, and it has no signing operation or verified fee.
+records host tests and the isolated ARM state measurement. The linked
+candidate has no signing operation or verified fee.
 The [exact-stop follow-up](../../docs/experiments/2026-09-27-ledger-blue-exact-output-stop.md)
 records the rejected trailing-byte case and unchanged ARM state size.
 [`blue_payment_screen.h`](include/blue_payment_screen.h) formats a pending
@@ -166,8 +168,8 @@ read-only Wallet command state machine. USB can start, feed, advance passes,
 finish, cancel, and query the review. Only a separate touchscreen function
 acknowledges a pending output. The
 [APDU experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-apdu.md)
-records malformed-command and memory tests. The handler is host-tested but
-not linked into a Blue image.
+records malformed-command and memory tests. The handler is host-tested and
+linked into the uninstalled Blue Wallet 0.2.0 candidate.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch
@@ -185,13 +187,13 @@ transaction review to payment authorization.
 
 The intended everyday app is one [ZCL Wallet](ROADMAP.md). The existing
 Probe, Fixture, Review, and Sign Test apps are narrow development tools.
-The 0.1.0 Wallet receive image uses 3,348 bytes of `.bss`, including a
+The 0.1.0 Wallet receive image used 3,348 bytes of `.bss`, including a
 2,048-byte stack reservation and four-byte canary, in the Blue's 6,144-byte
-app SRAM region. It leaves 2,796 bytes after `.bss`; its build refuses a
-future image with fewer than 512 bytes after `.bss`. A payment review cannot
-simply add Review's 2,304-byte transaction
-buffer to this app. It needs bounded streaming or verified reuse of storage,
-with explicit tests for every output and interrupted USB sessions.
+app SRAM region. It left 2,796 bytes after `.bss`. The linked 0.2.0 candidate
+uses 4,236 bytes of `.bss` and leaves 1,908 bytes after `.bss`, with the same
+512-byte guard. It uses bounded streaming instead of Review's 2,304-byte
+transaction buffer. Output and interrupted USB behavior still require
+physical and emulator checks.
 The Review app has no key permission; Sign Test can sign only its fixed
 self-test message. The host must establish ZCL consensus branch, input
 provenance, shielded output details, and token validity before asking a

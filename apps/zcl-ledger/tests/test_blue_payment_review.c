@@ -373,6 +373,12 @@ static void test_apdu_fail_closed(const fixture *item) {
         sizeof malformed, reply, sizeof reply, &reply_length,
         &session.blake, &session.sha, screen_hash) == 0x6700);
     assert(reply_length == 0 && !session.state.active);
+    apdu_begin(&session, item);
+    apdu_passes(&session, item);
+    blue_payment_apdu_abort(&session.state);
+    assert(command(&session, 0x21, item->bytes, 1,
+        reply, &reply_length) == 0x6985);
+    assert(!session.state.active && session.state.screen.title[0] == 0);
     EVP_MD_CTX_free(session.sha_context);
 }
 

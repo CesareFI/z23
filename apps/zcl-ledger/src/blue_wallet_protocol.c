@@ -3,6 +3,16 @@
 
 #include <string.h>
 
+bool blue_wallet_identity_matches(const uint8_t *reply, size_t length) {
+    static const uint8_t prefix[3] = {'Z', 'C', 'L'};
+    return reply && length == 7 &&
+        memcmp(reply, prefix, sizeof prefix) == 0 &&
+        ((reply[3] == 8 && reply[4] == 1) ||
+         (reply[3] == BLUE_WALLET_PROTOCOL_VERSION &&
+          reply[4] == BLUE_WALLET_CAPABILITIES)) &&
+        reply[5] == 0x90 && reply[6] == 0;
+}
+
 uint16_t blue_wallet_handle(const blue_wallet_state *state,
                             const uint8_t *apdu, size_t apdu_length,
                             uint8_t *reply, size_t reply_capacity,
@@ -15,7 +25,8 @@ uint16_t blue_wallet_handle(const blue_wallet_state *state,
     if (apdu[2] || apdu[3]) return 0x6b00;
     if (apdu[1] == 0x01) {
         static const uint8_t identity[] = {
-            'Z', 'C', 'L', BLUE_WALLET_PROTOCOL_VERSION, 1
+            'Z', 'C', 'L', BLUE_WALLET_PROTOCOL_VERSION,
+            BLUE_WALLET_CAPABILITIES
         };
         if (reply_capacity < sizeof identity) return 0x6700;
         memcpy(reply, identity, sizeof identity);

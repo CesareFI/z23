@@ -264,13 +264,6 @@ static int fixture_info(const char *path, bool json) {
     return 0;
 }
 
-static bool wallet_reply(const uint8_t *reply, size_t length,
-                         const uint8_t *expected, size_t expected_length) {
-    return length == expected_length + 2 &&
-           memcmp(reply, expected, expected_length) == 0 &&
-           reply[length - 2] == 0x90 && reply[length - 1] == 0;
-}
-
 static int receive_address(const char *path, bool json) {
     if (!hidraw_path(path))
         return error_result(json, "invalid_device_path", "Expected /dev/hidrawN.");
@@ -285,14 +278,11 @@ static int receive_address(const char *path, bool json) {
     }
     static const uint8_t identify[] = {0xa5, 1, 0, 0, 0};
     static const uint8_t get_key[] = {0xa5, 2, 0, 0, 0};
-    static const uint8_t identity[] = {
-        'Z', 'C', 'L', BLUE_WALLET_PROTOCOL_VERSION, 1
-    };
     uint8_t reply[LEDGER_HID_MAX_RESPONSE];
     size_t length = 0;
     bool identified = ledger_hid_exchange_timeout(
         fd, identify, sizeof identify, reply, sizeof reply, &length, 2000) == 0 &&
-        wallet_reply(reply, length, identity, sizeof identity);
+        blue_wallet_identity_matches(reply, length);
     if (!identified) {
         close(fd);
         return error_result(json, "wrong_app", "Open ZCL Wallet on the Blue first.");

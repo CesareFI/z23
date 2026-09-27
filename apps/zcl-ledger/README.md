@@ -15,8 +15,8 @@ The reusable [`zcl_tx_stream` API](include/zcl_tx_stream.h) parses unsigned,
 all-transparent Sapling-v4 transaction bytes in bounded C23 state as chunks
 arrive. It emits provisional input and P2PKH/P2SH output facts, then returns
 aggregate facts only after the declared byte count and trailing fields pass.
-This offline component is not yet connected to a Blue payment app and does not
-authorize signing.
+It is linked into the uninstalled Blue Wallet 0.2.0 read-only review
+candidate. It does not authorize signing.
 The related [`zcl_tx_stream_zip243` API](include/zcl_tx_stream_zip243.h)
 computes an input-specific ZIP-243 SIGHASH_ALL digest from accepted chunks
 using two independent BLAKE2b contexts. Its scriptCode, spent amount, and
@@ -25,14 +25,15 @@ use that digest to approve a payment.
 The [`zcl_tx_replay_zip243` API](include/zcl_tx_replay_zip243.h) is a smaller
 offline alternative: it checks three complete uploads of the same unsigned
 transaction against one device-computed SHA-256 commitment and reuses one
-BLAKE2b context for ZIP-243. It has not been linked into a Blue app.
+BLAKE2b context for ZIP-243. The three-pass replay variant is linked into
+the uninstalled Wallet 0.2.0 read-only review candidate.
 The [`blue_payment_review` API](include/blue_payment_review.h) adds a bounded,
 read-only output acknowledgement controller to that replay. It stops accepting
 bytes after each public output until the caller acknowledges it, and rejects
 chunks with even one byte beyond an output. A device app must call
 acknowledgement only from a real touchscreen action. The controller is
-host-tested but is not yet connected to a Blue screen, USB payment command,
-or signing key.
+host-tested and linked to a Blue screen and USB payment review in the
+uninstalled Wallet 0.2.0 candidate. It has no signing key operation.
 The [`blue_payment_screen` API](include/blue_payment_screen.h) formats the
 pending output into a full 35-character mainnet address and exact ZCL amount.
 The host-only renderer previews a 320 × 480 light or dark screen using the
@@ -44,8 +45,8 @@ ID is supplied by the caller and is not checked against ZCL consensus.
 The [`blue_payment_apdu` API](include/blue_payment_apdu.h) is a host-tested,
 read-only Wallet command candidate. It accepts begin, feed, next pass,
 finish, cancel, and status commands. USB has no output-acknowledgement
-command; only a future Blue touchscreen callback may advance a pending
-output. This protocol is not linked into the Wallet image yet.
+command; the Wallet 0.2.0 candidate wires the acknowledgement only to a
+Blue touchscreen callback. Physical behavior remains unverified.
 
 ## Build and test
 
@@ -108,9 +109,11 @@ Blue returned ZCL Review in this catalog even while its icon was not visible
 to the owner; the catalog alone does not establish that Review can open.
 
 The intended everyday interface is one [ZCL Wallet device app](ROADMAP.md)
-controlled by Z23. The [receive candidate](device-blue-wallet/README.md)
+controlled by Z23. The [Wallet 0.2.0 candidate](device-blue-wallet/README.md)
 derives a fixed transparent key on the Blue, displays its address, and exposes
-only its public key over USB. Its host command is
+only its public key over USB. It also links read-only transparent output
+review with a touchscreen CONTINUE action and no payment signing. Its host
+receive command is
 `zcl-ledger receive-address --json /dev/hidrawN`. The candidate is built and
 simulated offline but is not installed or hardware-verified. Probe, Fixture,
 Review, and Sign Test are development images with limited permissions and no

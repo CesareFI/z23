@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_render.h"
 #include "blue_bagl_canvas.h"
+#include "blue_wallet_layout.h"
 
 #include <stdint.h>
 
@@ -31,15 +32,18 @@ static bool draw_details(blue_bagl_canvas *canvas,
 bool blue_payment_render_png(const char *path,
     const blue_payment_screen *screen, bool dark) {
     if (!path || !screen) return false;
-    uint32_t background = dark ? 0x11161c : 0xf5f7f8;
-    uint32_t foreground = dark ? 0xf6f9f9 : 0x10212a;
-    uint32_t accent = dark ? 0x41ccb4 : 0x116f61;
+    uint32_t background = dark ? ZCL_WALLET_COLOR_BODY : 0xf5f7f8;
+    uint32_t foreground = dark ? ZCL_WALLET_COLOR_TEXT : 0x10212a;
+    uint32_t accent = dark ? ZCL_WALLET_COLOR_ACCENT : 0x116f61;
     blue_bagl_canvas *canvas = blue_bagl_canvas_create(background);
     if (!canvas) return false;
     bool fit = draw_details(canvas, screen, foreground, background);
-    blue_bagl_round_rectangle(canvas, 20, 386, 280, 58, accent);
-    if (fit) fit = blue_bagl_text(canvas, "CONTINUE REVIEW", 20, 404,
-        280, true, dark ? background : 0xffffff, accent, BLUE_BAGL_TEXT_14);
+    blue_bagl_round_rectangle(canvas, 20, 386, 135, 58, accent);
+    blue_bagl_round_rectangle(canvas, 165, 386, 135, 58, accent);
+    if (fit) fit = blue_bagl_text(canvas, "CONTINUE", 20, 404,
+        135, true, dark ? background : 0xffffff, accent, BLUE_BAGL_TEXT_14);
+    if (fit) fit = blue_bagl_text(canvas, "EXIT", 165, 404,
+        135, true, dark ? background : 0xffffff, accent, BLUE_BAGL_TEXT_14);
     if (fit) fit = blue_bagl_write_png(canvas, path);
     blue_bagl_canvas_destroy(canvas);
     return fit;

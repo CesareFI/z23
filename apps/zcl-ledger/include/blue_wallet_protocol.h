@@ -10,12 +10,16 @@
 #error "The Blue wallet protocol requires ISO C23"
 #endif
 
-enum { BLUE_WALLET_PUBLIC_KEY_SIZE = 33, BLUE_WALLET_PROTOCOL_VERSION = 8 };
+enum { BLUE_WALLET_PUBLIC_KEY_SIZE = 33, BLUE_WALLET_PROTOCOL_VERSION = 9,
+       BLUE_WALLET_CAPABILITIES = 3 };
 
 typedef struct {
     bool address_ready;
     uint8_t public_key[BLUE_WALLET_PUBLIC_KEY_SIZE];
 } blue_wallet_state;
+
+/* Accepts the pinned receive-only v8 and read-only review v9 identities. */
+bool blue_wallet_identity_matches(const uint8_t *reply, size_t length);
 
 uint16_t blue_wallet_handle(const blue_wallet_state *state,
                             const uint8_t *apdu, size_t apdu_length,

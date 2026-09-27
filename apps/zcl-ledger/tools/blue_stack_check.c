@@ -10,14 +10,24 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 14, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512 };
+enum { FRAME_COUNT = 33, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+       PATH_COUNT = 9 };
 
 static const char *const frame_names[FRAME_COUNT] = {
     "answer_command", "blue_review_app_command", "blue_review_handle",
     "zcl_zip243_shielded_digest", "zcl_tx_review_parse", "io_event",
     "show_latest", "blue_review_app_next", "blue_review_screen_output",
     "zcl_tx_outputs_visit", "main", "blue_wallet_handle",
-    "blue_wallet_receive_split", "zcl_base58_encode"
+    "blue_wallet_receive_split", "zcl_base58_encode",
+    "wallet_payment_command", "blue_payment_apdu_handle", "dispatch",
+    "blue_payment_review_feed", "zcl_tx_replay_zip243_feed_review",
+    "zcl_tx_stream_feed", "output_seen", "capture_output",
+    "blue_payment_screen_format", "output_address",
+    "blue_payment_review_finish", "zcl_tx_replay_zip243_finish",
+    "final_digest", "continue_review",
+    "blue_payment_apdu_touch_continue", "blue_payment_review_acknowledge",
+    "wallet_payment_display", "blue_payment_review_next_pass",
+    "zcl_tx_replay_zip243_next"
 };
 
 typedef struct {
@@ -110,24 +120,41 @@ static bool collect_frames(int argc, char **argv, int script_arg,
 }
 
 static void report_paths(const stack_frames *frames, bool wallet,
-                         unsigned reserve, unsigned paths[4]) {
+                         unsigned reserve, unsigned paths[PATH_COUNT]) {
     static const unsigned apdu[] = {0, 1, 2, 3, 4};
     static const unsigned ui[] = {0, 5, 6, 7, 8, 9, 4};
     static const unsigned wallet_derive[] = {10, 13};
     static const unsigned wallet_layout[] = {10, 12};
     static const unsigned wallet_apdu[] = {0, 11};
     static const unsigned wallet_event[] = {5};
+    static const unsigned wallet_upload[] = {0, 14, 15, 16, 17, 18,
+        19, 20, 21};
+    static const unsigned wallet_format[] = {0, 14, 15, 16, 22, 23, 13};
+    static const unsigned wallet_finish[] = {0, 14, 15, 16, 24, 25, 26};
+    static const unsigned wallet_next[] = {0, 14, 15, 16, 31, 32};
+    static const unsigned wallet_touch[] = {5, 27, 28, 29, 30};
+    memset(paths, 0, sizeof(unsigned) * PATH_COUNT);
     if (wallet) {
         paths[0] = sum_frames(frames, wallet_derive, 2);
         paths[1] = sum_frames(frames, wallet_layout, 2);
         paths[2] = sum_frames(frames, wallet_apdu, 2);
         paths[3] = sum_frames(frames, wallet_event, 1);
-        printf("Blue stack reserve %u; wallet derive %u; layout %u; APDU %u; event %u; margin %u\n",
-               reserve, paths[0], paths[1], paths[2], paths[3], STACK_MARGIN);
+        paths[4] = sum_frames(frames, wallet_upload,
+            sizeof wallet_upload / sizeof *wallet_upload);
+        paths[5] = sum_frames(frames, wallet_format,
+            sizeof wallet_format / sizeof *wallet_format);
+        paths[6] = sum_frames(frames, wallet_finish,
+            sizeof wallet_finish / sizeof *wallet_finish);
+        paths[7] = sum_frames(frames, wallet_next,
+            sizeof wallet_next / sizeof *wallet_next);
+        paths[8] = sum_frames(frames, wallet_touch,
+            sizeof wallet_touch / sizeof *wallet_touch);
+        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; margin %u\n",
+               reserve, paths[0], paths[1], paths[2], paths[3], paths[4],
+               paths[5], paths[6], paths[7], paths[8], STACK_MARGIN);
     } else {
         paths[0] = sum_frames(frames, apdu, sizeof apdu / sizeof *apdu);
         paths[1] = sum_frames(frames, ui, sizeof ui / sizeof *ui);
-        paths[2] = paths[3] = 0;
         printf("Blue stack reserve %u; APDU path %u; screen path %u; margin %u\n",
                reserve, paths[0], paths[1], STACK_MARGIN);
     }
@@ -141,7 +168,7 @@ int main(int argc, char **argv) {
                 argv[0]);
         return 2;
     }
-    unsigned reserve = 0, paths[4];
+    unsigned reserve = 0, paths[PATH_COUNT];
     stack_frames frames = {0};
     if (!collect_frames(argc, argv, script_arg, wallet, &frames, &reserve))
         return 1;

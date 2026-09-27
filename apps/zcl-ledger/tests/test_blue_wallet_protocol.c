@@ -19,7 +19,8 @@ static void check(blue_wallet_state *state, const uint8_t *apdu,
     if (length == BLUE_WALLET_PUBLIC_KEY_SIZE)
         assert(memcmp(reply, state->public_key, length) == 0);
     if (length == 5) {
-        const uint8_t identity[] = {'Z', 'C', 'L', BLUE_WALLET_PROTOCOL_VERSION, 1};
+        const uint8_t identity[] = {'Z', 'C', 'L',
+            BLUE_WALLET_PROTOCOL_VERSION, BLUE_WALLET_CAPABILITIES};
         assert(memcmp(reply, identity, sizeof identity) == 0);
     }
 }
@@ -44,6 +45,17 @@ static void check_mutations(blue_wallet_state *state) {
 }
 
 int main(void) {
+    uint8_t identity_v8[7] = {'Z', 'C', 'L', 8, 1, 0x90, 0};
+    uint8_t identity_v9[7] = {'Z', 'C', 'L',
+        BLUE_WALLET_PROTOCOL_VERSION, BLUE_WALLET_CAPABILITIES, 0x90, 0};
+    assert(blue_wallet_identity_matches(identity_v8, sizeof identity_v8));
+    assert(blue_wallet_identity_matches(identity_v9, sizeof identity_v9));
+    identity_v9[4] ^= 2;
+    assert(!blue_wallet_identity_matches(identity_v9, sizeof identity_v9));
+    identity_v9[4] ^= 2;
+    identity_v9[6] = 1;
+    assert(!blue_wallet_identity_matches(identity_v9, sizeof identity_v9));
+    assert(!blue_wallet_identity_matches(identity_v8, 6));
     blue_wallet_state state = {0};
     const uint8_t identify[] = {0xa5, 1, 0, 0, 0};
     const uint8_t read_key[] = {0xa5, 2, 0, 0, 0};

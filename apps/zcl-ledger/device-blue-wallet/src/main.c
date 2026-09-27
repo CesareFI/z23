@@ -4,6 +4,7 @@
 #include "blue_wallet_layout.h"
 #include "blue_wallet_protocol.h"
 #include "blue_wallet_receive.h"
+#include "wallet_payment_device.h"
 #include "zcl_base58.h"
 
 #include <stdbool.h>
@@ -42,6 +43,7 @@ static void wipe(void *memory, size_t length) {
 
 static const bagl_element_t *exit_app(const bagl_element_t *element) {
     (void)element;
+    wallet_payment_abort();
     wipe(&secret, sizeof secret);
     os_sched_exit(0);
     return NULL;
@@ -247,10 +249,21 @@ static void answer_command(void) {
                 received = io_exchange(CHANNEL_APDU, sent);
                 sent = 0;
                 size_t length = 0;
-                status = blue_wallet_handle(&wallet_state, G_io_apdu_buffer,
-                                            received, G_io_apdu_buffer,
-                                            sizeof G_io_apdu_buffer - 2,
-                                            &length);
+                if (received >= 2 && G_io_apdu_buffer[1] >= 0x20) {
+                    status = wallet_payment_command(G_io_apdu_buffer,
+                        received, G_io_apdu_buffer,
+                        sizeof G_io_apdu_buffer - 2, &length);
+                    wallet_payment_display();
+                } else {
+                    bool was_visible = wallet_payment_visible();
+                    if (was_visible) wallet_payment_abort();
+                    status = blue_wallet_handle(&wallet_state,
+                        G_io_apdu_buffer, received, G_io_apdu_buffer,
+                        sizeof G_io_apdu_buffer - 2, &length);
+                    if (was_visible) {
+                        UX_DISPLAY(receive_ui, NULL);
+                    }
+                }
                 sent = length;
             }
             CATCH_OTHER(error) {
@@ -258,6 +271,7 @@ static void answer_command(void) {
                          (error & 0xf000) == 0x9000
                              ? error : (0x6800 | (error & 0x07ff));
                 sent = 0;
+                wallet_payment_abort();
             }
             FINALLY { wipe(&secret, sizeof secret); }
         }
