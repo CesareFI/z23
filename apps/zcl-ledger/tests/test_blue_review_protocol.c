@@ -56,10 +56,11 @@ static void test_minimal_review(void) {
     memcpy(apdu, (uint8_t[]){0xa5, 0x12, 0, 0, 0}, 5);
     assert(call(&state, apdu, 5, &reply_length) == 0x9000);
     assert(reply_length == 76);
+    assert(state.reviewed_length == 29);
     for (size_t i = 0; i < 44; ++i) assert(apdu[i] == 0);
     char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
     assert(blue_review_screen_format(apdu, lines));
-    assert(strcmp(lines[0], "T INPUT/OUT: 0/0") == 0);
+    assert(strcmp(lines[0], "PUBLIC IN/OUT: 0/0") == 0);
     assert(strcmp(lines[5], "TX SHA256: 0ba4f12d34aa8160") == 0);
     static const uint8_t digest[32] = {
         0x0b, 0xa4, 0xf1, 0x2d, 0x34, 0xaa, 0x81, 0x60,
@@ -69,6 +70,9 @@ static void test_minimal_review(void) {
     };
     assert(memcmp(apdu + 44, digest, sizeof digest) == 0);
     assert(call(&state, apdu, 5, &reply_length) == 0x6e00);
+    memcpy(apdu, begin, sizeof begin);
+    assert(call(&state, apdu, sizeof begin, &reply_length) == 0x9000);
+    assert(state.reviewed_length == 0);
 }
 
 static void test_state_and_bounds(void) {
@@ -79,15 +83,16 @@ static void test_state_and_bounds(void) {
     assert(reply_length == 0);
     apdu[1] = 0x10;
     apdu[4] = 2;
-    apdu[5] = 0;
-    apdu[6] = 15;
+    apdu[5] = 0x80;
+    apdu[6] = 14;
     assert(call(&state, apdu, 7, &reply_length) == 0x9000);
-    assert(state.expected == 3840);
-    apdu[6] = 16;
+    assert(state.expected == 3712);
+    apdu[6] = 15;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
     apdu[5] = 1;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
     assert(state.expected == 0);
+    assert(state.reviewed_length == 0);
     apdu[5] = 29;
     apdu[6] = 0;
     assert(call(&state, apdu, 7, &reply_length) == 0x9000);

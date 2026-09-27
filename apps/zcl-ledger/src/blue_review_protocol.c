@@ -28,6 +28,7 @@ void blue_review_encode_summary(const zcl_tx_review *review,
 static uint16_t begin_review(blue_review_state *state, const uint8_t *data,
                              size_t length) {
     state->expected = state->received = 0;
+    state->reviewed_length = 0;
     if (length != 2) return 0x6700;
     uint16_t expected = (uint16_t)(data[0] | ((uint16_t)data[1] << 8));
     if (expected < 29 || expected > ZCL_BLUE_REVIEW_MAX_BYTES) return 0x6a80;
@@ -40,6 +41,7 @@ static uint16_t append_chunk(blue_review_state *state, const uint8_t *data,
     if (state->expected == 0) return 0x6985;
     if (length == 0 || length > (size_t)(state->expected - state->received)) {
         state->expected = state->received = 0;
+        state->reviewed_length = 0;
         return 0x6a80;
     }
     memcpy(state->wire + state->received, data, length);
@@ -65,6 +67,7 @@ static uint16_t finish_review(blue_review_state *state, size_t length,
     }
     blue_review_encode_summary(&review, reply);
     bool hashed = digest(state->wire, state->received, reply + 44);
+    state->reviewed_length = hashed ? state->received : 0;
     state->expected = state->received = 0;
     if (!hashed) return 0x6a80;
     *reply_length = 76;
@@ -84,6 +87,7 @@ static uint16_t identify(size_t length, uint8_t *reply, size_t capacity,
 static uint16_t clear_review(blue_review_state *state, size_t length) {
     if (length) return 0x6700;
     state->expected = state->received = 0;
+    state->reviewed_length = 0;
     return 0x9000;
 }
 

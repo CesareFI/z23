@@ -12,12 +12,13 @@
 #error "The Blue review protocol requires ISO C23"
 #endif
 
-enum { ZCL_BLUE_REVIEW_MAX_BYTES = 3840 };
+enum { ZCL_BLUE_REVIEW_MAX_BYTES = 3712 };
 
 typedef struct {
     uint8_t wire[ZCL_BLUE_REVIEW_MAX_BYTES];
     uint16_t expected;
     uint16_t received;
+    uint16_t reviewed_length;
 } blue_review_state;
 
 typedef bool (*blue_review_digest_fn)(const uint8_t *bytes, size_t length,

@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_review_screen.h"
+#include "zcl_tx_review.h"
+#include "zcl_tx_script_facts.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -40,6 +42,21 @@ static bool append_number(char line[ZCL_BLUE_REVIEW_LINE_SIZE],
     return true;
 }
 
+static bool append_zcl(char line[ZCL_BLUE_REVIEW_LINE_SIZE],
+                       size_t *used, uint64_t zat) {
+    if (!append_number(line, used, zat / 100000000) ||
+        !append_text(line, used, ".")) return false;
+    uint64_t fraction = zat % 100000000;
+    uint64_t place = 10000000;
+    for (unsigned i = 0; i < 8; ++i, place /= 10) {
+        if (*used + 1 >= ZCL_BLUE_REVIEW_LINE_SIZE) return false;
+        line[(*used)++] = (char)('0' + fraction / place);
+        fraction %= place;
+    }
+    line[*used] = 0;
+    return append_text(line, used, " ZCL");
+}
+
 static bool format_pair(char line[ZCL_BLUE_REVIEW_LINE_SIZE],
                         const char *label, uint32_t first, uint32_t second) {
     size_t used = 0;
@@ -55,15 +72,15 @@ bool blue_review_screen_format(
     if (!reply || !lines) return false;
     memset(lines, 0, ZCL_BLUE_REVIEW_LINES * ZCL_BLUE_REVIEW_LINE_SIZE);
     size_t used = 0;
-    if (!format_pair(lines[0], "T INPUT/OUT: ",
+    if (!format_pair(lines[0], "PUBLIC IN/OUT: ",
                      read_u32(reply), read_u32(reply + 4)) ||
-        !append_text(lines[1], &used, "PUB ZAT: ") ||
-        !append_number(lines[1], &used, read_u64(reply + 20)) ||
-        !format_pair(lines[2], "SAP S/O: ",
+        !append_text(lines[1], &used, "PUBLIC: ") ||
+        !append_zcl(lines[1], &used, read_u64(reply + 20)) ||
+        !format_pair(lines[2], "SHIELDED SPEND/OUT: ",
                      read_u32(reply + 8), read_u32(reply + 12)))
         return false;
     used = 0;
-    if (!append_text(lines[3], &used, "SPROUT JS: ") ||
+    if (!append_text(lines[3], &used, "SPROUT JOINSPLITS: ") ||
         !append_number(lines[3], &used, read_u32(reply + 16)))
         return false;
     used = 0;
@@ -78,4 +95,128 @@ bool blue_review_screen_format(
     }
     lines[5][used] = 0;
     return true;
+}
+
+typedef struct {
+    uint32_t index;
+    uint32_t count;
+    zcl_tx_output output;
+    bool found;
+} output_selection;
+
+static bool select_output(void *context, const zcl_tx_output *output) {
+    output_selection *selection = context;
+    ++selection->count;
+    if (output->index == selection->index) {
+        selection->output = *output;
+        selection->found = true;
+    }
+    return true;
+}
+
+static bool base58(const uint8_t *payload, size_t length, char address[40]) {
+    static const char alphabet[] =
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    uint8_t digits[40] = {0};
+    size_t used = 1;
+    for (size_t i = 0; i < length; ++i) {
+        unsigned carry = payload[i];
+        for (size_t j = 0; j < used; ++j) {
+            carry += (unsigned)digits[j] * 256u;
+            digits[j] = (uint8_t)(carry % 58u);
+            carry /= 58u;
+        }
+        while (carry) {
+            if (used == sizeof digits) return false;
+            digits[used++] = (uint8_t)(carry % 58u);
+            carry /= 58u;
+        }
+    }
+    size_t zeros = 0;
+    while (zeros < length && payload[zeros] == 0) ++zeros;
+    while (used && !digits[used - 1]) --used;
+    if (zeros + used >= 40) return false;
+    size_t offset = 0;
+    while (zeros--) address[offset++] = '1';
+    while (used) address[offset++] = alphabet[digits[--used]];
+    address[offset] = 0;
+    return true;
+}
+
+static bool output_address(const zcl_tx_output *output,
+                           blue_review_hash_fn hash, char address[40]) {
+    uint8_t payload[26] = {0x1c};
+    uint8_t first[32], second[32];
+    payload[1] = output->type == ZCL_TX_OUTPUT_P2PKH ? 0xb8 : 0xbd;
+    memcpy(payload + 2, output->script +
+        (output->type == ZCL_TX_OUTPUT_P2PKH ? 3 : 2), 20);
+    if (!hash(payload, 22, first) || !hash(first, 32, second)) return false;
+    memcpy(payload + 22, second, 4);
+    return base58(payload, sizeof payload, address);
+}
+
+static bool format_output_header(const output_selection *selection,
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    size_t used = 0;
+    return append_text(lines[0], &used, "OUTPUT ") &&
+        append_number(lines[0], &used, selection->index + 1u) &&
+        append_text(lines[0], &used, "/") &&
+        append_number(lines[0], &used, selection->count) &&
+        append_text(lines[0], &used, ": ") &&
+        append_text(lines[0], &used,
+            selection->output.type == ZCL_TX_OUTPUT_P2PKH ? "P2PKH" :
+            selection->output.type == ZCL_TX_OUTPUT_P2SH ? "P2SH" :
+            selection->output.type == ZCL_TX_OUTPUT_OP_RETURN ? "OP_RETURN" :
+            "OTHER");
+}
+
+static bool format_output_details(const zcl_tx_output *output,
+    blue_review_hash_fn hash,
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    size_t used = 0;
+    if (!append_text(lines[1], &used, "AMOUNT: ") ||
+        !append_zcl(lines[1], &used, output->value_zat)) return false;
+    if (output->type != ZCL_TX_OUTPUT_P2PKH &&
+        output->type != ZCL_TX_OUTPUT_P2SH) {
+        uint8_t digest[32];
+        static const char hex[] = "0123456789abcdef";
+        if (!hash(output->script, output->script_length, digest)) return false;
+        used = 0;
+        if (!append_text(lines[2], &used, "SCRIPT BYTES: ") ||
+            !append_number(lines[2], &used, output->script_length))
+            return false;
+        memcpy(lines[3], "SHA256: ", 8);
+        for (unsigned i = 0; i < 10; ++i) {
+            lines[3][8 + 2 * i] = hex[digest[i] >> 4];
+            lines[3][9 + 2 * i] = hex[digest[i] & 15];
+        }
+        lines[3][28] = 0;
+        return append_text(lines[4], &(size_t){0},
+            output->type == ZCL_TX_OUTPUT_OP_RETURN ?
+            "TOKEN STATUS UNVERIFIED" : "NO STANDARD ADDRESS");
+    }
+    char address[40];
+    if (!output_address(output, hash, address)) return false;
+    if (!append_text(lines[2], &(size_t){0}, "ZCL MAINNET ADDRESS"))
+        return false;
+    size_t address_length = strlen(address);
+    size_t first = address_length < 18 ? address_length : 18;
+    memcpy(lines[3], address, first);
+    lines[3][first] = 0;
+    memcpy(lines[4], address + first, address_length - first + 1);
+    return true;
+}
+
+bool blue_review_screen_output(
+    const uint8_t *wire, size_t length, uint32_t index,
+    blue_review_hash_fn hash,
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    if (!wire || !hash || !lines) return false;
+    output_selection selection = {.index = index};
+    if (zcl_tx_outputs_visit(wire, length, select_output, &selection) < 0 ||
+        !selection.found) return false;
+    memset(lines, 0, ZCL_BLUE_REVIEW_LINES * ZCL_BLUE_REVIEW_LINE_SIZE);
+    return format_output_header(&selection, lines) &&
+        format_output_details(&selection.output, hash, lines) &&
+        append_text(lines[5], &(size_t){0}, "READ ONLY; NO SIGNING");
 }

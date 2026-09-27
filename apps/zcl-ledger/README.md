@@ -9,6 +9,8 @@ the Blue's secure channel. It does not need Ledger Live, Python, Rust, or a
 network connection at runtime. The host can encode a transparent address from
 a public key supplied separately or by the public fixture app. It does not
 derive device keys or addresses, sign transactions, or access recovery words.
+The [Blue development guide](DEVELOPMENT.md) records the open-source C23
+toolchain, image checks, and evidence gates for extending the device app.
 
 ## Build and test
 
@@ -107,13 +109,18 @@ input when given its spent output's scriptCode and amount. Its result matched
 ZIP 243's published transparent test vector. Z23 does not yet validate the
 provenance of those spent-output facts or expose a transparent payment signing
 command, so this digest alone is not payment authorization.
-The optional `--blue` mode sends at most 3,840 transaction bytes to the
+The optional `--blue` mode sends at most 3,712 transaction bytes to the
 [ZCL Review app](device-blue-review/README.md), verifies its review-only
 identity, and requires its structural summary and transaction SHA-256 digest
 to match the host's values. This checks the exact bytes received by the Blue.
 `blue_parsed` is true only after that comparison succeeds. A synthetic
 one-spend, one-output fixture passed this comparison on a dedicated Blue.
-The app has no signing command or transaction approval screen. Without `--blue`, the CLI sends
+The app's NEXT PAGE button cycles through the structural summary and every
+public output. A standard P2PKH or P2SH output page independently derives
+the ZCL mainnet address from that output's script and shows its amount in
+ZCL with eight decimal places. Other scripts show their byte length and a SHA-256 prefix; OP_RETURN
+pages explicitly say token status is unverified. The app still cannot show
+shielded recipients or authorize payments. Without `--blue`, the CLI sends
 nothing over USB and `blue_parsed` is false.
 
 The [ZCL Fixture](device-blue-fixture/README.md) tests an exact public-key
