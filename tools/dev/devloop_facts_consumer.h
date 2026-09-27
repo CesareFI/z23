@@ -86,9 +86,11 @@ bool fxc_obligations(struct fxc *c, const struct zcl_devloop_plan *given,
                      struct zcl_devloop_plan *plan,
                      struct zcl_devloop_facts_verdict *v);
 /* The .c path once its rule chain narrowed: the members' seeds (functions
- * another TU compiles from a changed .c it includes) join the walk, and each
- * broadened member but a changed file's own TU adds its file-seeded plan,
- * as on the header path. */
+ * another TU compiles from a changed .c it includes) join the walk, which
+ * runs again over every changed file and affected TU whenever a member adds
+ * a seed or a TU other than a changed file is affected; each broadened
+ * member but a changed file's own TU adds its file-seeded plan, as on the
+ * header path. */
 bool fxc_c_members(struct fxc *c, const struct zcl_devloop_plan *given,
                    struct zcl_devloop_plan *plan,
                    struct zcl_devloop_facts_verdict *v);

@@ -634,20 +634,40 @@ static bool fxc_roots_differ(const struct fxc_pair *p,
     return false;
 }
 
+/* One side of a TU broadened by a changed .c it includes: every function
+ * that .c defines here, and every function that reaches one, seeds the walk
+ * (grown by the code-generation closure), whatever the dirty flags say. */
+static bool fxc_included_c_side(struct fxc *c, const struct fxi *x,
+                                const char *path)
+{
+    struct zcl_devloop_facts_tu_verdict scratch = {0};
+    size_t n = fxi_count(x);
+    uint8_t *flags = zcl_calloc(n + 1, 1, "facts_tu.incflags");
+    size_t *via = zcl_calloc(n + 1, sizeof(*via), "facts_tu.incvia");
+    bool ok = flags != NULL && via != NULL;
+    for (size_t e = 0; ok && e < n; e++)
+        if (fxi_defined_function(x, e) && fxi_has_path(x, e, path))
+            flags[e] = FXI_DIRTY_DIGEST;
+    ok = ok && fxi_taint(x, flags, via) && fxc_seeds(c, x, via, &scratch);
+    free(flags);
+    free(via);
+    return ok;
+}
+
 /* A TU broadened by a changed .c it includes (a unity build, a test that
- * reaches the statics) still names the functions its compile may re-emit,
- * under names only its own manifests know (a macro may rename them): they
- * seed the walk. Seeds only; the TU keeps its reason. */
+ * reaches the statics) compiles that file's functions under names only its
+ * own manifests know (a macro may rename them): they, on either side, seed
+ * the walk. Seeds only; the TU keeps its reason. */
 static bool fxc_included_c_seeds(struct fxc *c, struct fxc_pair *p,
                                  const char *path)
 {
-    struct zcl_devloop_facts_tu_verdict scratch = {0};
     size_t n = strlen(path);
-    bool ok = true;
-    if (n > 2 && strcmp(path + n - 2, ".c") == 0)
-        (void)fxc_semantic(c, p, &scratch, &ok);
-    return ok;
+    if (n <= 2 || strcmp(path + n - 2, ".c") != 0)
+        return true;
+    return fxc_included_c_side(c, p->xa, path) &&
+           fxc_included_c_side(c, p->xb, path);
 }
+
 
 /* The first changed file this TU read whose text broadens it; true when one
  * did (*ok false only for memory). */

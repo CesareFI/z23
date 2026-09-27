@@ -101,9 +101,19 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
                          "; }\nint cx_work(int x);\nint cx_work(int x)\n" \
                          "{\n    __attribute__((cleanup(cx_rel))) int v = x;\n" \
                          "    return v + 3;\n}\n"
-#define SCX_UNITY_E SCX_E_END "#define cx_sum cx_e_sum\n#include \"cx_c.c\"\n" \
-                    "#undef cx_sum\nint cx_use_e(int x);\n" \
+#define SCX_UNITY_E SCX_E_END "#define cx_sum cx_e_sum\n" \
+                    "#define cx_hook cx_e_hook\n#include \"cx_c.c\"\n" \
+                    "#undef cx_sum\n#undef cx_hook\nint cx_use_e(int x);\n" \
                     "int cx_use_e(int x) { return cx_e_sum(x) + 2; }\n"
+#define SCX_HOOK_C "CX_SCALE; }\nint cx_hook(int v) { return v - 1; }\n"
+#define SCX_SUM2_C "int cx_sum2(void);\nint cx_sum2(void) { return __LINE__; }\n"
+#define SCX_UNITY2_E SCX_E_END "#define cx_sum cx_e_sum\n" \
+                     "#define cx_sum2 cx_e_sum2\n#define cx_hook cx_e_hook\n" \
+                     "#include \"cx_c.c\"\n" \
+                     "#undef cx_sum\n#undef cx_sum2\n#undef cx_hook\n"
+#define SCX_TAIL_C(gap) "extern int cx_tail;\nint cx_get(void);\n" \
+                        "int cx_get(void) { return cx_tail; }\n" gap \
+                        "int cx_tail = 1;\n"
 #define SCX_ALL_POS {"position-dependent", "position-dependent", \
                      "position-dependent", "position-dependent", \
                      "position-dependent"}
@@ -314,6 +324,36 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                               "header-unattributed"},
                    .obligations = "",
                    .seeds = {"cx_sum", "cx_e_sum", "cx_use_e"}},
+    /* Review: an includer whose only reach is a moved declaration. */
+    [SCX_P_UNITY_MOVE] = {.name = "p_unity_move", .pre = true, .file = SCX_C,
+                          .from = SCX_HOOK_C, .to = SCX_HOOK_C SCX_TAIL_C(""),
+                          .file2 = SCX_E, .from2 = SCX_E_END,
+                          .to2 = SCX_UNITY_E},
+    [SCX_UNITY_MOVE] = {.name = "unity_move", .before = SCX_P_UNITY_MOVE,
+                        .file = SCX_C, .from = SCX_HOOK_C,
+                        .to = SCX_HOOK_C SCX_TAIL_C("/* moved */\n"),
+                        .file2 = SCX_E, .from2 = SCX_E_END,
+                        .to2 = SCX_UNITY_E, .changed = {SCX_C},
+                        .affected = {false, false, true, false, true},
+                        .reason = {NULL, NULL, "source-changed", NULL,
+                                   "position"},
+                        .obligations = ""},
+    /* Review: a broadened includer seeds every function of the changed .c
+     * it compiles, not only those the first chunk names. */
+    [SCX_P_UNITY2] = {.name = "p_unity2", .pre = true, .file = SCX_C,
+                      .from = SCX_HOOK_C, .to = SCX_HOOK_C SCX_SUM2_C,
+                      .file2 = SCX_E, .from2 = SCX_E_END, .to2 = SCX_UNITY2_E},
+    [SCX_UNITY2] = {.name = "unity2", .before = SCX_P_UNITY2, .file = SCX_C,
+                    .from = SCX_HOOK_C,
+                    .to = "CX_SCALE + 1; }\nint cx_hook(int v) { return v - 1; }"
+                          "\n/* moves cx_sum2 */\n" SCX_SUM2_C,
+                    .file2 = SCX_E, .from2 = SCX_E_END, .to2 = SCX_UNITY2_E,
+                    .changed = {SCX_C},
+                    .affected = {false, false, true, false, true},
+                    .reason = {NULL, NULL, "source-changed", NULL,
+                               "header-unattributed"},
+                    .obligations = "",
+                    .seeds = {"cx_sum2", "cx_e_sum2", "cx_e_sum"}},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,

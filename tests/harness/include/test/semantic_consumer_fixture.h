@@ -57,6 +57,10 @@ enum scx_variant {
     SCX_CLEANUP,    /* cx_rel's body: cx_work inlines it, naming it nowhere */
     SCX_P_UNITY,    /* cx_e.c includes cx_c.c, cx_sum renamed cx_e_sum */
     SCX_UNITY,      /* cx_sum's body: cx_e.c compiles it as cx_e_sum */
+    SCX_P_UNITY_MOVE, /* unity, and cx_c.c defines cx_get reading cx_tail below it */
+    SCX_UNITY_MOVE, /* a comment line moves cx_tail's declaration in cx_e.c's -g1 */
+    SCX_P_UNITY2,   /* ...and cx_c.c defines cx_sum2 (__LINE__), cx_e_sum2 there */
+    SCX_UNITY2,     /* cx_sum's body, and a line that moves cx_sum2 */
     SCX_VARIANT_COUNT
 };
 

@@ -216,6 +216,34 @@ static size_t scx_compare_seeds(const struct scx_edit *e,
     return bad;
 }
 
+/* A narrowed plan reaches every changed file and every affected TU (it
+ * compiles them): fewer reached files than that leaves one out, unsafe. */
+static size_t scx_compare_reached(const struct scx_edit *e,
+                                  const struct scx_result *r, size_t *unsafe,
+                                  FILE *why)
+{
+    size_t need = 0;
+    if (!r->verdict.narrowed)
+        return 0;
+    for (size_t i = 0; i < sizeof(e->changed) / sizeof(e->changed[0]); i++)
+        need += e->changed[i] != NULL;
+    for (size_t k = 0; k < SCX_TU_COUNT; k++) {
+        const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
+        bool listed = false;
+        for (size_t i = 0; i < sizeof(e->changed) / sizeof(e->changed[0]); i++)
+            listed = listed || (e->changed[i] != NULL &&
+                                strcmp(e->changed[i], k_scx_tus[k]) == 0);
+        need += t != NULL && t->affected && !listed;
+    }
+    if (r->verdict.reached_files >= need)
+        return 0;
+    (*unsafe)++;
+    if (why != NULL)
+        fprintf(why, "  %s reached: %zu file(s), want at least %zu\n", e->name,
+                (size_t)r->verdict.reached_files, need);
+    return 1;
+}
+
 /* One line per disagreement with the edit table on `why` (when not NULL);
  * *unsafe counts TUs the table says are affected that the consumer calls
  * unaffected or leaves out, and seeds it must start from that it lacks.
@@ -230,7 +258,8 @@ size_t scx_compare(enum scx_variant v, const struct scx_result *r,
         bad += scx_compare_tu(e, k, r, unsafe, why);
     return bad + scx_compare_whole(e, r, why) +
            scx_compare_seeds(e, r, unsafe, why) +
-           scx_compare_universal(e, r, unsafe, why);
+           scx_compare_universal(e, r, unsafe, why) +
+           scx_compare_reached(e, r, unsafe, why);
 }
 
 void scx_result_free(struct scx_result *r)

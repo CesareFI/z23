@@ -286,7 +286,19 @@ static bool fxc_seed_in(const struct zcl_devloop_facts_seed *s, size_t n,
     return false;
 }
 
-/* The walk again, from the rule chain's seeds and the members' together. */
+/* An affected TU that is not a changed file: the rule chain's walk, which
+ * started from the changed files, never reached it. */
+static bool fxc_foreign_affected(const struct fxc *c)
+{
+    const struct zcl_devloop_facts_report *r = c->report;
+    for (size_t k = 0; k < r->ntus; k++)
+        if (r->tus[k].affected && !fxc_is_changed(c, r->tus[k].path))
+            return true;
+    return false;
+}
+
+/* The walk again, from the rule chain's seeds and the members' together,
+ * folding every changed file and affected TU. */
 static bool fxc_c_rewalk(struct fxc *c, const struct zcl_devloop_plan *given,
                          struct zcl_devloop_plan *plan,
                          struct zcl_devloop_facts_verdict *v,
@@ -335,7 +347,7 @@ bool fxc_c_members(struct fxc *c, const struct zcl_devloop_plan *given,
         fxc_check_addresses(c, all, n);
     if (ok && c->seed_reason != NULL)
         ok = fxc_plain(c, given, plan, v, c->seed_reason, c->seed_detail);
-    else if (ok && n > v->seeds_len)
+    else if (ok && (n > v->seeds_len || fxc_foreign_affected(c)))
         ok = fxc_c_rewalk(c, given, plan, v, all, n);
     if (ok && v->narrowed && !fxc_broadened(c, given, plan, true))
         ok = fxc_plain(c, given, plan, v, "group-cap", "broadened TUs");
