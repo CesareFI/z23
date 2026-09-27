@@ -7949,8 +7949,9 @@ static int test_ic_include_capacity_runs_everything(void)
  * fixture checkout and pool. The seam is declared here, not in dev_proof.h. */
 bool zcl_dev_proof_test_warm_start(const char *root, const char *parent,
                                    const char *generation, const char *local,
-                                   const char *phases, char donor[33],
-                                   char reason[24], uint64_t *files_linked);
+                                   const char *phases, bool authoritative,
+                                   char donor[33], char reason[32],
+                                   uint64_t *files_linked);
 
 /* Objects live under a compile epoch the repository's own key tool derives
  * from flags that spell the checkout root, exactly like the real Makefile's
@@ -8100,13 +8101,16 @@ static bool ic_warm_obj(const char *generation, const char *epoch,
 }
 
 /* The next proof's warm start into `gen`. The fixture opts in to the git
- * queries the survey and the retime run, as the pool fixtures above do. */
-static bool ic_warm_start(const struct ic_warm_tree *t, char donor[33],
-                          char reason[24], uint64_t *files)
+ * queries the survey and the retime run, as the pool fixtures above do.
+ * `authoritative` is what every real proof runs; the fixture donor was
+ * built by this uid, so only a non-authoritative start may seed from it. */
+static bool ic_warm_start(const struct ic_warm_tree *t, bool authoritative,
+                          char donor[33], char reason[32], uint64_t *files)
 {
     if (setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0) return false;
     bool ok = zcl_dev_proof_test_warm_start(t->repo, t->pool, t->gen, t->c2,
-                                            t->phases, donor, reason, files);
+                                            t->phases, authoritative, donor,
+                                            reason, files);
     (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
     return ok;
 }
@@ -8118,14 +8122,16 @@ static int test_pw_next_proof_seeds_from_the_finished_generation(void)
          "generation, finds the seeds under its own epoch, and rebuilds "
          "only what changed") {
         struct ic_warm_tree t;
-        char donor[33] = {0}, reason[24] = {0};
+        char donor[33] = {0}, reason[32] = {0};
         char donor_epoch[65] = {0}, gen_epoch[65] = {0};
         char donor_a[8192], donor_b[8192], gen_a[8192], gen_b[8192];
         uint64_t files = 0;
         struct stat donor_a_st, donor_b_st, gen_a_st, gen_b_st;
         ASSERT(ic_warm_setup(&t, "next", NULL));
         ASSERT(ic_warm_epoch(t.donor, donor_epoch));
-        ASSERT(ic_warm_start(&t, donor, reason, &files));
+        /* Non-authoritative: the seeding a qualified verifier account would
+         * turn back on, kept proven while authoritative proofs refuse it. */
+        ASSERT(ic_warm_start(&t, false, donor, reason, &files));
         ASSERT(strcmp(donor, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0);
         ASSERT(reason[0] == 0);
         ASSERT(files == 4); /* a.o, a.d, b.o, b.d */
@@ -8170,7 +8176,7 @@ static int test_pw_identity_mismatch_stays_cold_with_its_reason(void)
         for (size_t i = 0; i < 2; i++) {
             struct ic_warm_tree t;
             struct zcl_dev_proof_build_identity_v1 other;
-            char donor[33] = {0}, reason[24] = {0}, rejected[128];
+            char donor[33] = {0}, reason[32] = {0}, rejected[128];
             char gen_obj[8192];
             uint64_t files = 0;
             struct stat st;
@@ -8181,7 +8187,7 @@ static int test_pw_identity_mismatch_stays_cold_with_its_reason(void)
             ASSERT(zcl_dev_proof_warm_marker_write(
                 t.donor, t.repo, t.c1, t.c1, platform_time_wall_unix(),
                 &other));
-            ASSERT(!ic_warm_start(&t, donor, reason, &files));
+            ASSERT(!ic_warm_start(&t, true, donor, reason, &files));
             ASSERT(strcmp(reason, "donor_identity_differs") == 0);
             ASSERT(donor[0] == 0 && files == 0);
             ASSERT(snprintf(rejected, sizeof(rejected),
@@ -8204,7 +8210,7 @@ static int test_pw_live_donor_is_never_seeded_from(void)
     TEST("proof warm start: a donor whose proof still holds its lease is "
          "not used") {
         struct ic_warm_tree t;
-        char donor[33] = {0}, reason[24] = {0}, lease_rel[256], lease[64];
+        char donor[33] = {0}, reason[32] = {0}, lease_rel[256], lease[64];
         char rejected[128], gen_obj[8192];
         uint64_t files = 0;
         struct stat st;
@@ -8215,7 +8221,7 @@ static int test_pw_live_donor_is_never_seeded_from(void)
         ASSERT(snprintf(lease, sizeof(lease), "fixture-token %lld 1\n",
                         (long long)getpid()) < (int)sizeof(lease));
         ASSERT(ic_proof_private_write(t.repo, lease_rel, lease));
-        ASSERT(!ic_warm_start(&t, donor, reason, &files));
+        ASSERT(!ic_warm_start(&t, true, donor, reason, &files));
         ASSERT(strcmp(reason, "donor_live") == 0);
         ASSERT(donor[0] == 0 && files == 0);
         ASSERT(snprintf(rejected, sizeof(rejected),
@@ -8264,7 +8270,7 @@ static int test_pw_authoritative_proof_refuses_same_uid_donor(void)
             {.tv_sec = (time_t)platform_time_wall_unix() + 86400},
         };
         ASSERT(utimensat(AT_FDCWD, donor_b, future, 0) == 0);
-        ASSERT(!ic_warm_start(&t, donor, reason, &files));
+        ASSERT(!ic_warm_start(&t, true, donor, reason, &files));
         ASSERT(strcmp(reason, "donor_untrusted_same_uid") == 0);
         ASSERT(donor[0] == 0 && files == 0);
         ASSERT(snprintf(rejected, sizeof(rejected),
