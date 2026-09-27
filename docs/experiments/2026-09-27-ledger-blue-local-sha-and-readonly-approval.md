@@ -118,6 +118,12 @@ was rejected by the patch-hash gate under both `make -n` and
 canonical patched SDK. This closes the makefile-include ordering gap; it
 does not attest to the SDK's runtime behavior.
 
+The reviewer now uses the same uncertainty wording for a failed pre-USB
+tip query as for a failed post-USB query. The wallet CLI fixture passed with
+Clang 22.1.6 Debug/ASan/UBSan and GCC 16.1.1 Release, including the
+changed-tip case. The standalone no-OpenSSL reviewer passed the same fixture
+with the updated GCC harness; the complexity gate remained green.
+
 ## Limit
 
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel

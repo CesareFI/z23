@@ -203,7 +203,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!blue_chain_tip_still_current(argv[3], &tip)) {
-        fputs("The local node tip changed during input checks; review stopped.\n",
+        fputs("Cannot confirm the local node tip remained unchanged during input checks; review stopped.\n",
               stderr);
         free_previous(previous_bytes, previous_count);
         free(plan);

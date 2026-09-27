@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
             assert(setenv("BLUE_TIP_REORG_MARKER", marker_path, 1) == 0);
             assert(run(argv[2], argv[3], NULL, spend_path,
                        previous_path, error, sizeof error) == 1);
-            assert(strstr(error, "tip changed") != NULL);
+            assert(strstr(error, "Cannot confirm the local node tip") != NULL);
             assert(unsetenv("BLUE_TIP_REORG_MARKER") == 0);
             assert(unlink(marker_path) == 0);
         }
