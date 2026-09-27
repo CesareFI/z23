@@ -25,10 +25,10 @@ static int run(const char *program, const char *output,
             execl(program, program, output, (char *)NULL);
         else if (previous)
             execl(program, program, "--test", "/dev/hidraw999",
-                  "76b809bb", spend, previous, (char *)NULL);
+                  "476969", spend, previous, (char *)NULL);
         else
             execl(program, program, "--test", "/dev/hidraw999",
-                  "76b809bb", spend, (char *)NULL);
+                  "476969", spend, (char *)NULL);
         _exit(127);
     }
     close(pipefd[1]);

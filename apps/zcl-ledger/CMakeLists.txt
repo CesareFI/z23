@@ -144,6 +144,8 @@ target_link_libraries(blue_payment_live PUBLIC blue_payment_simulate
 target_compile_options(blue_payment_live PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_executable(zcl-blue-wallet-review src/blue_wallet_review_cli.c)
+target_sources(zcl-blue-wallet-review PRIVATE src/blue_mainnet_branch.c)
+target_include_directories(zcl-blue-wallet-review PRIVATE include)
 target_link_libraries(zcl-blue-wallet-review PRIVATE blue_payment_live
     ledger_hid zcl_tx_prevout)
 target_compile_options(zcl-blue-wallet-review PRIVATE
@@ -393,6 +395,19 @@ endif()
 add_test(NAME blue-wallet-review-cli COMMAND test-blue-wallet-review-cli
     $<TARGET_FILE:test-blue-payment-review>
     $<TARGET_FILE:zcl-blue-wallet-review>)
+
+add_executable(test-blue-mainnet-branch tests/test_blue_mainnet_branch.c
+    src/blue_mainnet_branch.c)
+target_include_directories(test-blue-mainnet-branch PRIVATE include)
+target_compile_options(test-blue-mainnet-branch PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-mainnet-branch PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-mainnet-branch PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-mainnet-branch COMMAND test-blue-mainnet-branch)
 
 add_executable(test-blue-payment-screen tests/test_blue_payment_screen.c)
 target_link_libraries(test-blue-payment-screen PRIVATE blue_payment_render

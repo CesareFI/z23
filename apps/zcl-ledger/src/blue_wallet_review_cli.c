@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
 #include "blue_payment_live.h"
+#include "blue_mainnet_branch.h"
 #include "ledger_hid.h"
 #include "zcl_tx_prevout.h"
 #include "zcl_zip243_host.h"
@@ -9,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/hidraw.h>
+#include <limits.h>
 #include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,21 +32,16 @@ static void free_previous(uint8_t *bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS],
     for (size_t i = 0; i < count; ++i) free(bytes[i]);
 }
 
-static bool parse_branch(const char *text, uint32_t *branch) {
-    if (!text || strlen(text) != 8) return false;
+static bool parse_height(const char *text, uint32_t *height) {
+    if (!text || !*text || !height) return false;
     uint32_t value = 0;
-    for (unsigned i = 0; i < 8; ++i) {
-        char digit = text[i];
-        unsigned nibble;
-        if (digit >= '0' && digit <= '9') nibble = (unsigned)(digit - '0');
-        else if (digit >= 'a' && digit <= 'f')
-            nibble = (unsigned)(digit - 'a' + 10);
-        else if (digit >= 'A' && digit <= 'F')
-            nibble = (unsigned)(digit - 'A' + 10);
-        else return false;
-        value = (value << 4) | nibble;
+    for (const char *digit = text; *digit; ++digit) {
+        if (*digit < '0' || *digit > '9') return false;
+        unsigned next = (unsigned)(*digit - '0');
+        if (value > (uint32_t)((INT_MAX - next) / 10)) return false;
+        value = value * 10 + next;
     }
-    *branch = value;
+    *height = value;
     return true;
 }
 
@@ -141,16 +138,21 @@ static bool wait_for_touch(void *context, uint32_t index,
 int main(int argc, char **argv) {
     if (argc < 6 || argc > 5 + ZCL_TX_PREFLIGHT_MAX_INPUTS ||
         strcmp(argv[1], "--test") != 0) {
-        fprintf(stderr, "Usage: %s --test /dev/hidrawN BRANCH_ID_HEX UNSIGNED_TX.bin PREVIOUS_TX.bin...\n",
+        fprintf(stderr, "Usage: %s --test /dev/hidrawN MAINNET_NEXT_HEIGHT UNSIGNED_TX.bin PREVIOUS_TX.bin...\n",
             argv[0]);
         return 2;
     }
-    uint32_t branch_id;
+    uint32_t branch_id, height;
     uint8_t *wire = NULL;
     size_t length = 0;
-    if (!parse_branch(argv[3], &branch_id) ||
-        !read_wire(argv[4], &wire, &length)) {
-        fputs("Expected an eight-digit branch ID and a regular unsigned transaction file.\n",
+    if (!parse_height(argv[3], &height) ||
+        !blue_mainnet_branch_for_height(height, &branch_id)) {
+        fputs("Expected a mainnet next height at or after Sapling activation.\n",
+              stderr);
+        return 1;
+    }
+    if (!read_wire(argv[4], &wire, &length)) {
+        fputs("Expected a regular unsigned transaction file.\n",
               stderr);
         return 1;
     }
@@ -196,8 +198,10 @@ int main(int argc, char **argv) {
         free(wire);
         return 1;
     }
-    printf("Read-only test review: %u hash-bound input(s), %u output(s), "
-           "fee %llu zatoshi. Chain inclusion and UTXO status are unverified.\n",
+    printf("Read-only mainnet test review at supplied next height %u "
+           "(branch %08x): %u hash-bound input(s), %u output(s), "
+           "fee %llu zatoshi. Chain height, inclusion, and UTXO status are unverified.\n",
+           height, branch_id,
            facts.transparent_inputs, facts.transparent_outputs,
            (unsigned long long)facts.fee_zat);
     puts("The app cannot sign a payment.");
