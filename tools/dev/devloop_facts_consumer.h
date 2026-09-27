@@ -44,7 +44,6 @@ struct fxc {
     size_t nseeds, capseeds;
     const char *seed_reason;    /* a seed the walk cannot bound, or NULL */
     struct fxc_strs checked;    /* declaring headers whose readers were checked */
-    bool strict;                /* no include graph refuses a seed (header path) */
     bool universal;             /* nothing bounds the change: every group is in scope */
     char seed_detail[192];
     struct codeindex *ci;       /* NULL when the index cannot open */

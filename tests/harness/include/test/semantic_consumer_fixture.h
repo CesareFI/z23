@@ -39,6 +39,7 @@ enum scx_variant {
     SCX_LOCAL,      /* CX_PAD sizes cx_small, named only in cx_sum's body */
     SCX_BUILD,      /* a makefile no compile records reading changes */
     SCX_TOOL,       /* ...and every compile gains a flag: every TU drifts */
+    SCX_BODY,       /* cx_sum's body, declared in the header, in cx_c.c alone */
     SCX_VARIANT_COUNT
 };
 

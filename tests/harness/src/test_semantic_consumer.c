@@ -31,7 +31,8 @@
  *               LTO, IPA clone or merge flags and profile feedback do not.
  *   fallback    a reader without facts is affected ("facts-missing"); with
  *               no depfile graph the universe is incomplete and the
- *               obligations are exactly the file-seeded plan.
+ *               obligations are exactly the file-seeded plan; a .c-only
+ *               change whose seed a header declares falls back too.
  *   identities  every TU with facts carries source, fact, interface and
  *               implementation roots; action and artifact are null with a
  *               reason when their evidence is absent.
@@ -204,6 +205,30 @@ static int sct_t_nograph(const struct sct_fixtures *f, struct scx_result *res)
     return failures;
 }
 
+/* The .c path: a seed its header declares has readers only the include
+ * graph names. Without the graph, and with the reader that takes nothing
+ * here (cx_d.c) out of the facts, the plan must not narrow. */
+static int sct_t_c_nograph(const struct sct_fixtures *f, struct scx_result *res)
+{
+    int failures = 0;
+    struct scx_evidence ev = sct_evidence(f, SCX_BODY);
+    size_t unsafe = 0;
+    const char *why;
+    ev.no_depfiles = true;
+    ev.before[3] = ev.after[3] = NULL;
+    TEST_CASE("semantic_consumer: a .c-only change whose seed a header declares falls back without the include graph") {
+        ASSERT(sct_run(f, SCX_BODY, &ev, &unsafe, NULL, res) != SIZE_MAX);
+        ASSERT(!res->verdict.narrowed);
+        why = res->verdict.reason != NULL ? res->verdict.reason : "";
+        printf("[fallback: %s] ", why);
+        ASSERT(strcmp(why, "indirect-unknown") == 0 ||
+               strncmp(why, "include-graph-", 14) == 0 ||
+               strcmp(why, "no-code-index") == 0);
+    } TEST_END
+    scx_result_free(res);
+    return failures;
+}
+
 static int sct_t_identities(const struct sct_fixtures *f,
                             struct scx_result *res)
 {
@@ -365,6 +390,7 @@ int test_semantic_consumer(void)
         failures += sct_t_mutants(f, res);
         failures += sct_t_missing(f, res);
         failures += sct_t_nograph(f, res);
+        failures += sct_t_c_nograph(f, res);
         failures += sct_t_identities(f, res);
         failures += sct_t_command(f, res);
         failures += sct_t_codegen_model();

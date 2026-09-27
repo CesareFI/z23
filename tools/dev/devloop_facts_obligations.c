@@ -35,7 +35,7 @@ static void fxc_check_header(struct fxc *c, const char *id, const char *header)
     }
     readers = zcl_calloc(FXC_READERS_MAX, 256, "facts_obligations.readers");
     n = readers != NULL ? fxc_readers(c, header, readers, FXC_READERS_MAX) : -1;
-    if (n < 0 && c->strict)
+    if (n < 0) /* no graph: a reader may take its address unseen */
         fxc_refuse(c, "indirect-unknown", id, header);
     for (int k = 0; k < n; k++) {
         size_t len = strlen(readers[k]);

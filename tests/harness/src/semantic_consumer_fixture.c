@@ -198,6 +198,13 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                              "identity-drift"},
                   .obligations = "identity-drift",
                   .incomplete = "identity-drift", .universal = true},
+    [SCX_BODY] = {.name = "body", .file = SCX_C,
+                  .from = "(int)sizeof(s) + CX_SCALE; }",
+                  .to = "(int)sizeof(s) + CX_SCALE + 1; }",
+                  .changed = {SCX_C},
+                  .affected = {false, false, true, false, false},
+                  .reason = {NULL, NULL, "source-changed", NULL, NULL},
+                  .obligations = "", .seeds = {"cx_sum"}},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,

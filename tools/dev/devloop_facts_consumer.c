@@ -337,7 +337,7 @@ static bool fxc_c_path(struct fxc *c, const struct zcl_devloop_facts_tu *tus,
                        struct zcl_devloop_facts_verdict *v)
 {
     struct zcl_devloop_facts_seed *s;
-    if (c->universal) /* a TU outside the changed files drifted */
+    if (!c->report->complete) /* the universe is not known: as the header path */
         return fxc_fallback(c, given, plan, v);
     if (!zcl_devloop_facts_add_closure_in(c->root, c->files, c->nfiles, tus,
                                           c->nfiles, c->facts_dir, plan, v))
@@ -393,8 +393,7 @@ bool zcl_devloop_facts_consume(const char *root, const char *const *files,
                                struct zcl_devloop_facts_report *report)
 {
     struct fxc c = {.root = root && root[0] ? root : ".", .facts_dir = facts_dir,
-                    .files = files, .nfiles = n, .report = report,
-                    .strict = tus == NULL};
+                    .files = files, .nfiles = n, .report = report};
     struct zcl_devloop_plan *given = NULL;
     bool ok;
     if (report != NULL)
