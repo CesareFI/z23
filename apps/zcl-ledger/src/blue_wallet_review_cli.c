@@ -8,11 +8,11 @@
 #include "zcl_tx_prevout.h"
 #include "zcl_zip243_host.h"
 #include "crypto/blake2b.h"
+#include "zsha256/zsha256.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/hidraw.h>
-#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,7 +25,8 @@ typedef struct { int fd; } live_device;
 
 static bool sha256_bytes(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
-    return SHA256(bytes, length, digest) != NULL;
+    zsha256(bytes, length, digest);
+    return true;
 }
 
 static void free_previous(uint8_t *bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS],

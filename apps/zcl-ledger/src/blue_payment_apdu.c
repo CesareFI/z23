@@ -44,27 +44,44 @@ static bool bound_paths_valid(const blue_payment_apdu *state) {
     return paths == state->input_paths;
 }
 
-bool blue_payment_apdu_touch_approve(blue_payment_apdu *state) {
+static bool ready_for_final_touch(const blue_payment_apdu *state) {
     if (!state || !state->review.verified || !state->fee_ready ||
         state->active || state->previous_active || state->approved ||
+        state->review_confirmed ||
         state->next_sign_index || !state->input_count ||
         state->bound_inputs != state->input_count ||
         state->own_output_zat > state->output_zat ||
         state->input_zat < state->output_zat ||
         state->fee_zat != state->input_zat - state->output_zat ||
         !bound_paths_valid(state)) return false;
+    return true;
+}
+
+bool blue_payment_apdu_touch_confirm(blue_payment_apdu *state) {
+    if (!ready_for_final_touch(state)) return false;
+    state->review_confirmed = true;
+    return true;
+}
+
+bool blue_payment_apdu_touch_approve(blue_payment_apdu *state) {
+    if (!ready_for_final_touch(state)) return false;
     state->approved = true;
     return true;
 }
 
+static bool ready_to_take_digest(const blue_payment_apdu *state,
+    uint32_t index) {
+    return state && state->approved && !state->review_confirmed &&
+        state->review.verified && state->fee_ready &&
+        !state->active && !state->previous_active &&
+        state->bound_inputs == state->input_count &&
+        index == state->next_sign_index && index < state->input_count;
+}
+
 bool blue_payment_apdu_take_digest(blue_payment_apdu *state,
     uint32_t index, uint8_t digest[32], uint8_t *path) {
-    if (!state || !digest || !path || !state->approved ||
-        !state->review.verified ||
-        !state->fee_ready || state->active || state->previous_active ||
-        state->bound_inputs != state->input_count ||
-        index != state->next_sign_index ||
-        index >= state->input_count) return false;
+    if (!digest || !path || !ready_to_take_digest(state, index))
+        return false;
     uint8_t *record = state->input_record[index];
     if (record[32] != BLUE_PAYMENT_INPUT_EXTERNAL &&
         record[32] != BLUE_PAYMENT_INPUT_INTERNAL) return false;

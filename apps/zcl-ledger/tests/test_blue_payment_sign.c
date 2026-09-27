@@ -164,6 +164,24 @@ static void test_fail_closed(signer_fixture *signer,
     expect_failed_reply(&state, reply, length);
 }
 
+static void test_readonly_confirmation(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    blue_payment_apdu state;
+    uint8_t digest[32];
+    uint8_t frame[BLUE_PAYMENT_SIGN_REPLY_MAX] = {0xa5, 0x29, 0, 0, 1, 0};
+    initialize_review(&state, digest);
+    assert(blue_payment_apdu_touch_confirm(&state));
+    assert(state.review_confirmed && !state.approved);
+    assert(!blue_payment_apdu_touch_approve(&state));
+    unsigned calls = signer->calls;
+    size_t length = 99;
+    assert(blue_payment_sign_command(&state, frame, 6, owned,
+        sign_digest, signer, hash_public_key, frame, sizeof frame,
+        &length) == 0x6985);
+    assert(signer->calls == calls);
+    expect_failed_reply(&state, frame, length);
+}
+
 static void test_sign_command(signer_fixture *signer,
     const blue_payment_owned_hashes *owned) {
     blue_payment_apdu state;
@@ -298,6 +316,7 @@ int main(void) {
     assert(hash_public_key(signer.public_key, owned.external));
     test_signed_reply(&signer, &owned);
     test_fail_closed(&signer, &owned);
+    test_readonly_confirmation(&signer, &owned);
     test_sign_command(&signer, &owned);
     test_sign_command_rejections(&signer, &owned);
     test_wrong_indices(&signer, &owned);

@@ -153,12 +153,16 @@ static void test_confirm_review(void) {
     tap("TOTALS");
     assert(shown == totals_ui && find_text("CONFIRM"));
     tap("CONFIRM");
-    assert(shown == confirmed_ui && payment.approved);
+    assert(shown == confirmed_ui && payment.review_confirmed);
+    assert(!payment.approved);
+    assert(!blue_payment_apdu_touch_approve(&payment));
+    uint8_t digest[32] = {0}, path = 0;
+    assert(!blue_payment_apdu_take_digest(&payment, 0, digest, &path));
     assert(find_text("REVIEW CONFIRMED") && find_text("NO SIGNING"));
     if (confirmed_snapshot)
         assert(blue_bagl_write_png(last_canvas, confirmed_snapshot));
     tap("EXIT");
-    assert(exits == 3 && !payment.approved);
+    assert(exits == 3 && !payment.review_confirmed && !payment.approved);
 }
 
 static void test_confirm_requires_totals(void) {

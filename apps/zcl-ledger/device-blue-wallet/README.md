@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.14 derives
+Version 0.2.15 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -72,6 +72,10 @@ The callback has no reachable APDU, is removed from the linked image, and
 has not signed on this Blue. A host SDK shim tests both fixed paths, locked
 PIN rejection, malformed SDK results, zeroed replies, and private-state
 erasure.
+Version 0.2.15 separates read-only REVIEW CONFIRMED from signing approval.
+The Blue's CONFIRM button cannot arm the digest latch or authorize the
+unrouted signing command. A separate signing approval flow would be required
+before any payment signer could be enabled.
 Do not receive funds or sign payments with it.
 
 ## Build
@@ -103,6 +107,11 @@ stack; 672 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 752 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced `.text`
 SHA-256 `067744e45fbad645850dd7a8cf8cdfb1f1b4b8ede585d4c57c61fa5f962788b7`.
+Version 0.2.15 produced 33,792 bytes of `.text`, 5,472 bytes of `.bss`,
+zero `.data`, and identical `.text` SHA-256
+`7cefe528eeee5407edd40306951bb604f467ef526619828f246a2fe519ebf3e6`
+in two independently patched SDK trees. Its largest named C stack path
+remains 752 bytes, excluding BOLOS frames.
 The stack gate also checks four currently unreachable signing paths through
 the strict command parser. Their largest named C path is 728 bytes; the gate
 rejected a deliberate 1,600-byte signer-frame substitution. A separate

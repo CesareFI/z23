@@ -61,7 +61,8 @@ The portable [signing command candidate](include/blue_payment_sign.h)
 accepts exactly one input index after physical review approval, binds the
 signing public key to a device-derived account hash, and returns canonical
 low-S DER. Host tests verify a real secp256k1 signature and reject malformed
-APDUs. Wallet 0.2.14 does not route this command or sign payments.
+APDUs. Wallet 0.2.15 does not route this command or sign payments. Its
+read-only CONFIRM action cannot set the signing approval flag.
 
 ## Build and test
 
@@ -73,6 +74,19 @@ build/zcl-ledger/test-blue-payment-screen /tmp/zcl-payment-light.png /tmp/zcl-pa
 build/zcl-ledger/test-blue-payment-review /tmp/zcl-unsigned-fixture.bin
 build/zcl-ledger/zcl-blue-payment-sim 76b809bb /tmp/zcl-unsigned-fixture.bin /tmp/zcl-payment
 ```
+
+To build the read-only wallet reviewer without OpenSSL or PNG installed:
+
+```sh
+cmake -S apps/zcl-ledger -B build/zcl-ledger-review \
+  -DZCL_LEDGER_REVIEW_ONLY=ON -DCMAKE_C_COMPILER=clang
+cmake --build build/zcl-ledger-review
+```
+
+This mode uses Z23's self-contained C23 SHA-256 and BLAKE2b implementations.
+It builds `zcl-blue-wallet-review` only. The complete Ledger toolset still
+requires OpenSSL 3 for secure-channel key exchange, custom-CA signing,
+public-key validation, and signing-test verification.
 
 `zcl-blue-wallet-review --test /dev/hidrawN /absolute/path/zcl-rpc UNSIGNED_TX.bin
 PREVIOUS_TX.bin...` is a read-only physical review driver for an installed

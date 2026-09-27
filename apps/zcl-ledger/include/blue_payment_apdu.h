@@ -14,7 +14,7 @@ typedef struct {
     uint32_t sequences[ZCL_TX_STREAM_MAX_INPUTS];
     uint64_t input_zat, output_zat, own_output_zat, fee_zat;
     uint32_t input_count, bound_inputs;
-    bool active, previous_active, fee_ready, approved;
+    bool active, previous_active, fee_ready, review_confirmed, approved;
     uint8_t input_paths, next_sign_index;
 } blue_payment_apdu;
 
@@ -41,8 +41,12 @@ uint16_t blue_payment_apdu_handle(blue_payment_apdu *state,
  * It counts an output as owned only on an exact Blue-derived P2PKH match. */
 bool blue_payment_apdu_touch_continue(blue_payment_apdu *state,
     const blue_payment_owned_hashes *owned);
+/* Read-only touchscreen confirmation permanently excludes signing for this
+ * review session. No APDU may turn it into payment approval. */
+bool blue_payment_apdu_touch_confirm(blue_payment_apdu *state);
 /* Only the device's final touchscreen callback may arm a verified review.
- * APDU dispatch must never call this function. */
+ * APDU dispatch must never call this function. The read-only Wallet image
+ * does not call it. */
 bool blue_payment_apdu_touch_approve(blue_payment_apdu *state);
 /* Consumes one approved digest in input order. Signing failure must abort. */
 bool blue_payment_apdu_take_digest(blue_payment_apdu *state,

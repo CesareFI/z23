@@ -6,12 +6,24 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+option(ZCL_LEDGER_REVIEW_ONLY
+    "Build the read-only Blue wallet reviewer without OpenSSL or PNG" OFF)
+if(ZCL_LEDGER_REVIEW_ONLY)
+    include(cmake/ReviewOnly.cmake)
+    return()
+endif()
+
 add_library(ledger_hid STATIC src/ledger_hid.c src/ledger_probe.c)
 target_include_directories(ledger_hid PUBLIC include)
 target_compile_options(ledger_hid PRIVATE -Wall -Wextra -Werror -pedantic)
 
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 find_package(PNG REQUIRED)
+add_library(zcl_sha256 STATIC
+    ../../contexts/commons/packages/zsha256/src/zsha256.c)
+target_include_directories(zcl_sha256 PUBLIC
+    ../../contexts/commons/packages/zsha256/include)
+target_compile_options(zcl_sha256 PRIVATE -Wall -Wextra -Werror -pedantic)
 add_library(zcl_base58 STATIC src/zcl_base58.c)
 target_include_directories(zcl_base58 PUBLIC include)
 target_compile_options(zcl_base58 PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -135,13 +147,13 @@ target_compile_options(blue_payment_render PRIVATE -Wall -Wextra -Werror -pedant
 add_library(blue_payment_simulate STATIC src/blue_payment_simulate.c)
 target_include_directories(blue_payment_simulate PUBLIC include)
 target_link_libraries(blue_payment_simulate PUBLIC blue_payment_screen
-    zcl_zip243_host_hash OpenSSL::Crypto)
+    zcl_zip243_host_hash zcl_sha256)
 target_compile_options(blue_payment_simulate PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(blue_payment_live STATIC src/blue_payment_live.c)
 target_include_directories(blue_payment_live PUBLIC include)
 target_link_libraries(blue_payment_live PUBLIC blue_payment_simulate
-    zcl_tx_stream OpenSSL::Crypto)
+    zcl_tx_stream zcl_sha256)
 target_compile_options(blue_payment_live PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(blue_chain_tip STATIC src/blue_chain_tip.c
@@ -153,13 +165,13 @@ target_compile_options(blue_chain_tip PRIVATE -Wall -Wextra -Werror -pedantic)
 add_library(blue_utxo STATIC src/blue_utxo.c)
 target_include_directories(blue_utxo PUBLIC include)
 target_link_libraries(blue_utxo PUBLIC blue_chain_tip zcl_tx_prevout
-    zcl_tx_script_facts OpenSSL::Crypto)
+    zcl_tx_script_facts zcl_sha256)
 target_compile_options(blue_utxo PRIVATE -Wall -Wextra -Werror -pedantic)
 add_executable(zcl-blue-wallet-review src/blue_wallet_review_cli.c
     src/blue_mainnet_branch.c)
 target_include_directories(zcl-blue-wallet-review PRIVATE include)
 target_link_libraries(zcl-blue-wallet-review PRIVATE blue_payment_live blue_utxo
-    ledger_hid)
+    ledger_hid zcl_sha256)
 target_compile_options(zcl-blue-wallet-review PRIVATE
     -Wall -Wextra -Werror -pedantic)
 

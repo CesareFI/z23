@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_live.h"
 #include "zcl_tx_previous_stream.h"
+#include "zsha256/zsha256.h"
 
-#include <openssl/sha.h>
 #include <string.h>
 
 typedef struct {
@@ -42,8 +42,9 @@ bool blue_payment_live_prepare(const uint8_t *wire, size_t length,
         !zcl_tx_stream_feed(&parser, wire, length, NULL,
             capture_end, &capture) ||
         !zcl_tx_stream_finish(&parser, &facts) ||
-        capture.seen != checked.count || facts.outputs != checked.count ||
-        !SHA256(wire, length, checked.wire_hash)) return false;
+        capture.seen != checked.count || facts.outputs != checked.count)
+        return false;
+    zsha256(wire, length, checked.wire_hash);
     checked.inputs = facts.inputs;
     *plan = checked;
     return true;
@@ -127,8 +128,8 @@ bool blue_payment_live_run(const uint8_t *wire, size_t length,
         !plan->count || plan->count > BLUE_PAYMENT_REVIEW_MAX_OUTPUTS ||
         length != plan->wire_length) return false;
     uint8_t actual_hash[32];
-    if (!SHA256(wire, length, actual_hash) ||
-        memcmp(actual_hash, plan->wire_hash, sizeof actual_hash) ||
+    zsha256(wire, length, actual_hash);
+    if (memcmp(actual_hash, plan->wire_hash, sizeof actual_hash) ||
         !send_command(exchange, context, 0x01, NULL, 0,
                       identity, sizeof identity)) return false;
     uint8_t begin[12];

@@ -271,7 +271,7 @@ static void display_totals(void) {
 }
 
 void wallet_payment_display(void) {
-    uint8_t view = payment.approved ? 8 :
+    uint8_t view = payment.review_confirmed ? 8 :
         payment.review.pending ? 2 :
         payment.fee_ready ? (totals_view ? 7 : 6) :
         payment.review.verified ? 3 :
@@ -309,7 +309,7 @@ static const bagl_element_t *show_fee(const bagl_element_t *element) {
 
 static const bagl_element_t *confirm_review(const bagl_element_t *element) {
     (void)element;
-    if (!totals_view || !blue_payment_apdu_touch_approve(&payment)) {
+    if (!totals_view || !blue_payment_apdu_touch_confirm(&payment)) {
         wallet_payment_abort();
         UX_DISPLAY(ended_ui, NULL);
         return NULL;

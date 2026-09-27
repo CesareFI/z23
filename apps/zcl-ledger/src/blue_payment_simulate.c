@@ -1,28 +1,30 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_simulate.h"
 #include "zcl_zip243_host.h"
+#include "zsha256/zsha256.h"
 
 #include "crypto/blake2b.h"
-#include <openssl/evp.h>
-#include <openssl/sha.h>
 #include <string.h>
 
 static bool sha_init(void *context) {
-    return EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1;
+    zsha256_init(context);
+    return true;
 }
 
 static bool sha_update(void *context, const uint8_t *bytes, size_t length) {
-    return EVP_DigestUpdate(context, bytes, length) == 1;
+    zsha256_update(context, bytes, length);
+    return true;
 }
 
 static bool sha_final(void *context, uint8_t digest[32]) {
-    unsigned length = 0;
-    return EVP_DigestFinal_ex(context, digest, &length) == 1 && length == 32;
+    zsha256_final(context, digest);
+    return true;
 }
 
 static bool screen_hash(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
-    return SHA256(bytes, length, digest) != NULL;
+    zsha256(bytes, length, digest);
+    return true;
 }
 
 static bool feed_complete(blue_payment_review *review,
@@ -60,11 +62,10 @@ bool blue_payment_simulate(const uint8_t *wire, size_t length,
     if (!screens || !screen_count) return false;
     memset(screens, 0, sizeof *screens * BLUE_PAYMENT_REVIEW_MAX_OUTPUTS);
     if (!wire || !length || length > ZCL_TX_STREAM_MAX_BYTES) return false;
-    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
-    if (!sha_context) return false;
+    zsha256_ctx sha_context;
     struct blake2b_ctx blake_context;
     zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
-    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_init,
+    zcl_tx_replay_sha256 sha = {.context = &sha_context, .init = sha_init,
         .update = sha_update, .final = sha_final};
     blue_payment_review review;
     bool valid = blue_payment_review_begin(&review, (uint32_t)length, 0,
@@ -81,6 +82,6 @@ bool blue_payment_simulate(const uint8_t *wire, size_t length,
     else memset(screens, 0,
         sizeof *screens * BLUE_PAYMENT_REVIEW_MAX_OUTPUTS);
     blue_payment_review_abort(&review);
-    EVP_MD_CTX_free(sha_context);
+    memset(&sha_context, 0, sizeof sha_context);
     return valid;
 }

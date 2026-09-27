@@ -4,8 +4,8 @@
 #include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
 #include "json/json.h"
+#include "zsha256/zsha256.h"
 
-#include <openssl/sha.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,19 +91,6 @@ static bool metadata_matches(const struct json_value *result,
         next_height - (uint32_t)height->val.i >= 100;
 }
 
-static bool script_sha256_hex(const uint8_t *script, size_t length,
-                              char hex_digest[65]) {
-    uint8_t digest[32];
-    static const char hex[] = "0123456789abcdef";
-    if (!SHA256(script, length, digest)) return false;
-    for (size_t i = 0; i < sizeof digest; ++i) {
-        hex_digest[2 * i] = hex[digest[i] >> 4];
-        hex_digest[2 * i + 1] = hex[digest[i] & 15];
-    }
-    hex_digest[64] = 0;
-    return true;
-}
-
 static bool valid_query(const char *reply, size_t length,
                         const char *txid_hex, const uint8_t *script,
                         uint32_t next_height) {
@@ -118,7 +105,7 @@ bool blue_utxo_parse(const char *reply, size_t length, const char *txid_hex,
     if (!valid_query(reply, length, txid_hex, script, next_height))
         return false;
     char script_hash[65];
-    if (!script_sha256_hex(script, script_length, script_hash)) return false;
+    zsha256_hex(script, script_length, script_hash);
     struct json_value root = {0};
     bool valid = json_read(&root, reply, length);
     const struct json_value *result = valid ? field(&root, "result") : NULL;
