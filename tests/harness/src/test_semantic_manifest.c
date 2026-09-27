@@ -1587,6 +1587,61 @@ static int smt_t_darwin_anonymous(void)
         (void)test_rm_rf_recursive(second);
     return failures;
 }
+
+static int smt_t_darwin_injected_image(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, source[PATH_MAX], dylib[2][PATH_MAX];
+    char out[2][PATH_MAX];
+    uint8_t *manifest[2] = {NULL, NULL};
+    size_t length[2] = {0, 0};
+    struct vcs_semantic_facts_info_v1 facts[2];
+    uint8_t section[2][32];
+    TEST_CASE("semantic_sensor: unrelated injected Mach-O bytes bind the producer") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_inject") != NULL);
+        ASSERT(smt_write(dir, "types.c", "int twice(int x) { return x * 2; }\n"));
+        for (int k = 0; k < 2; k++) {
+            char rel[32];
+            const char *cc[6];
+            (void)snprintf(rel, sizeof(rel), "%c/inject.c", 'a' + k);
+            ASSERT(smt_write(dir, rel, k == 0 ?
+                             "int injected_marker(void) { return 1; }\n" :
+                             "int injected_marker(void) { return 2; }\n"));
+            (void)snprintf(source, sizeof(source), "%s/%s", dir, rel);
+            (void)snprintf(dylib[k], sizeof(dylib[k]),
+                           "%s/%c/libunrelated.dylib", dir, 'a' + k);
+            (void)snprintf(out[k], sizeof(out[k]), "%s/%c.bin", dir,
+                           'a' + k);
+            cc[0] = "/usr/bin/clang";
+            cc[1] = "-dynamiclib";
+            cc[2] = "-o";
+            cc[3] = dylib[k];
+            cc[4] = source;
+            cc[5] = NULL;
+            ASSERT(smt_spawn(cc));
+            ASSERT(setenv("DYLD_INSERT_LIBRARIES", dylib[k], 1) == 0);
+            bool emitted = smt_darwin_emit(dir, "types.c", out[k]);
+            (void)unsetenv("DYLD_INSERT_LIBRARIES");
+            ASSERT(emitted);
+            ASSERT(smt_read(out[k], &manifest[k], &length[k]));
+            ASSERT(vcs_semantic_facts_v1_info(manifest[k], length[k],
+                                               &facts[k]));
+            ASSERT(facts[k].present && facts[k].complete);
+        }
+        ASSERT(memcmp(facts[0].producer, facts[1].producer, 32) != 0);
+        ASSERT(vcs_semantic_section_root_v1(manifest[0], length[0],
+                    VCS_SEMANTIC_SECTION_V1_FUNCTIONS, section[0]));
+        ASSERT(vcs_semantic_section_root_v1(manifest[1], length[1],
+                    VCS_SEMANTIC_SECTION_V1_FUNCTIONS, section[1]));
+        ASSERT(memcmp(section[0], section[1], 32) == 0);
+    } TEST_END
+    (void)unsetenv("DYLD_INSERT_LIBRARIES");
+    free(manifest[0]);
+    free(manifest[1]);
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
 #endif
 
 int test_semantic_sensor(void)
@@ -1609,6 +1664,7 @@ int test_semantic_sensor(void)
     failures += smt_t_darwin_language_modes();
     failures += smt_t_darwin_mode_identity();
     failures += smt_t_darwin_anonymous();
+    failures += smt_t_darwin_injected_image();
 #endif
     if (r.out[0] != '\0')
         (void)test_rm_rf_recursive(r.out);

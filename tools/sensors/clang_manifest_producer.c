@@ -37,7 +37,8 @@
  *   - the main program when it is not the producer (the clang driver) and
  *     every loaded image whose file name starts with "libclang" or "libLLVM"
  *     (the front end): its GNU build id on Linux.
- * Darwin has no GNU build ids here. It binds each selected dyld image to its
+ * Darwin has no GNU build ids here. It binds the producer, front end, and
+ * every loaded image outside the protected dyld shared cache to its
  * backing vnode, complete file digest, and stable read-only mapped bytes.
  * If a file was replaced or changed after load, the digest is unavailable.
  * Images are hashed sorted by file name, each as
@@ -51,7 +52,11 @@
  * zero, which every consumer treats as an unknown producer. Darwin's fact
  * emitter refuses in that case. */
 #define CM_PRODUCER_DOMAIN "zcl.semantic_producer.v1"
+#if defined(__APPLE__)
+#define CM_PRODUCER_MAX 128
+#else
 #define CM_PRODUCER_MAX 32
+#endif
 #define CM_BUILD_ID_MAX 64
 
 struct cm_image {
@@ -98,7 +103,18 @@ static int cm_image_cmp(const void *a, const void *b)
 {
     const struct cm_image *x = a, *y = b;
     int c = strcmp(x->name, y->name);
-    return c != 0 ? c : (x->tag > y->tag) - (x->tag < y->tag);
+    if (c != 0)
+        return c;
+    c = (x->tag > y->tag) - (x->tag < y->tag);
+#if defined(__APPLE__)
+    /* Different images may share a basename; keep their digest order stable. */
+    if (c == 0)
+        c = memcmp(x->id, y->id,
+                   x->id_len < y->id_len ? x->id_len : y->id_len);
+    if (c == 0)
+        c = (x->id_len > y->id_len) - (x->id_len < y->id_len);
+#endif
+    return c;
 }
 
 static void cm_hash_images(struct cm_images *im, uint8_t out[32])
@@ -419,7 +435,7 @@ static void cm_walk_images(struct cm_images *im)
             im->failed = true;
             return;
         }
-        if (!self && i != 0 &&
+        if (!self && i != 0 && _dyld_shared_cache_contains_path(path) &&
             strncmp(cm_base_name(path), "libclang", 8) != 0 &&
             strncmp(cm_base_name(path), "libLLVM", 7) != 0)
             continue;
