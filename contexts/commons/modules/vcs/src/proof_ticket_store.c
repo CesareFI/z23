@@ -30,6 +30,39 @@ bool vcs_proof_ticket_store_put(struct vcs_package_store *store,
     return true;
 }
 
+bool vcs_proof_checkpoint_store_load(
+    struct vcs_package_store *store,
+    const uint8_t blob_root[VCS_PROOF_ROOT_BYTES],
+    const uint8_t issuer_pubkey[VCS_PROOF_PUBKEY_BYTES],
+    uint8_t wire[VCS_PROOF_CHECKPOINT_WIRE_BYTES],
+    uint8_t checkpoint_root[VCS_PROOF_ROOT_BYTES])
+{
+    if (!store || !blob_root || !issuer_pubkey || !wire || !checkpoint_root)
+        LOG_RETURN(false, PTS_LOG, "checkpoint load: null argument");
+    uint8_t loaded[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+    size_t len = 0;
+    enum vcs_blob_result got =
+        vcs_blob_get_from(store, blob_root, loaded, sizeof(loaded), &len);
+    if (got != VCS_BLOB_OK)
+        LOG_RETURN(false, PTS_LOG, "checkpoint load: %s",
+                   vcs_blob_result_string(got));
+    struct vcs_proof_checkpoint_v1 decoded;
+    uint8_t derived_blob[VCS_PROOF_ROOT_BYTES];
+    uint8_t derived_checkpoint[VCS_PROOF_ROOT_BYTES];
+    if (len != sizeof(loaded) ||
+        !vcs_blob_root(loaded, len, derived_blob) ||
+        memcmp(derived_blob, blob_root, sizeof(derived_blob)) != 0 ||
+        !vcs_proof_checkpoint_decode(loaded, len, &decoded) ||
+        !vcs_proof_checkpoint_signature_valid(&decoded) ||
+        memcmp(decoded.issuer_pubkey, issuer_pubkey,
+               VCS_PROOF_PUBKEY_BYTES) != 0 ||
+        !vcs_proof_checkpoint_root(loaded, len, derived_checkpoint))
+        LOG_RETURN(false, PTS_LOG, "checkpoint load: invalid signed head");
+    memcpy(wire, loaded, sizeof(loaded));
+    memcpy(checkpoint_root, derived_checkpoint, sizeof(derived_checkpoint));
+    return true;
+}
+
 bool vcs_component_proof_key_load(struct vcs_package_store *store,
                                   const uint8_t preimage_root[32],
                                   struct vcs_component_proof_key_v1 *out)

@@ -78,7 +78,7 @@ struct db_build_action {
 struct db_build_worker {
     char worker_id[BUILD_FABRIC_ID_HEX + 1];
     char signer_pubkey[BUILD_FABRIC_ID_HEX + 1];
-    /* Local issuer's latest durable exact signed proof checkpoint head.
+    /* Local issuer's latest signed checkpoint's content.v2 blob root.
      * Empty until the first complete ticket/checkpoint publication. */
     char proof_checkpoint_head_sha3[BUILD_FABRIC_ID_HEX + 1];
     char capabilities[BUILD_FABRIC_CAPS_MAX + 1];
@@ -125,10 +125,11 @@ bool db_build_action_save(struct node_db *ndb,
                           const struct db_build_action *row);
 bool db_build_worker_save(struct node_db *ndb,
                           const struct db_build_worker *row);
-/* Conditional head-pointer update. Caller verifies/pins the complete signed
- * ticket and checkpoint CAS before publishing this pointer. A stale head or
- * changed signer refuses without changing the row. The SQL update is atomic
- * across handles; callers can wrap it in a transaction with adjacent writes. */
+/* Conditional content.v2 checkpoint-blob pointer update. Caller prepares the
+ * exact signed ticket and checkpoint wire, handles their crash-safe CAS
+ * publication, and never treats a missing anchored blob as empty history.
+ * A stale head or changed signer refuses. The SQL update is atomic across
+ * handles; callers can wrap it in a transaction with adjacent writes. */
 bool db_build_worker_proof_head_cas(struct node_db *ndb,
     const char *worker_id, const char *expected_signer,
     const char *expected_head, const char *next_head);

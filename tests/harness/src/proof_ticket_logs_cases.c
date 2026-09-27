@@ -180,6 +180,50 @@ static int ptl_case_issuer_restore(void)
     return failures;
 }
 
+static int ptl_case_checkpoint_blob_head(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: checkpoint blob head resolves after restart") {
+        ASSERT(ptl_fresh());
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), NULL, NULL));
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 17, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "headblob");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        uint8_t blob_root[32], expected[32];
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), blob_root));
+        ASSERT(vcs_proof_checkpoint_root(cp, sizeof(cp), expected));
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        uint8_t wire[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(vcs_proof_checkpoint_store_load(store, blob_root,
+                    g_l.pub[PTF_A], wire, root));
+        ASSERT_EQ(memcmp(wire, cp, sizeof(cp)), 0);
+        ASSERT_EQ(memcmp(root, expected, sizeof(root)), 0);
+        uint8_t missing[32];
+        memcpy(missing, blob_root, sizeof(missing));
+        missing[0] ^= 1u;
+        ASSERT(!vcs_proof_checkpoint_store_load(store, missing,
+                    g_l.pub[PTF_A], wire, root));
+        ASSERT(!vcs_proof_checkpoint_store_load(store, blob_root,
+                    g_l.pub[PTF_B], wire, root));
+        uint8_t invalid[VCS_PROOF_CHECKPOINT_WIRE_BYTES], bad_root[32];
+        memcpy(invalid, cp, sizeof(invalid));
+        invalid[sizeof(invalid) - 1u] ^= 1u;
+        ASSERT(vcs_proof_ticket_store_put(store, invalid, sizeof(invalid),
+                                          bad_root));
+        ASSERT(!vcs_proof_checkpoint_store_load(store, bad_root,
+                    g_l.pub[PTF_A], wire, root));
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 static int ptl_case_same_count(void)
 {
     int failures = 0;
@@ -1768,6 +1812,7 @@ int ptf_log_cases(void)
 {
     int failures = 0;
     failures += ptl_case_issuer_restore();
+    failures += ptl_case_checkpoint_blob_head();
     failures += ptl_case_same_count();
     failures += ptl_case_same_size_ancestry();
     failures += ptl_case_late_same_size_fork();

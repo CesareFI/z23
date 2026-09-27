@@ -255,6 +255,15 @@ struct vcs_package_store;
 bool vcs_proof_ticket_store_put(struct vcs_package_store *store,
                                 const uint8_t *wire, size_t len,
                                 uint8_t blob_root[VCS_PROOF_ROOT_BYTES]);
+/* Resolve a durable content.v2 checkpoint blob head directly. Verify its
+ * exact blob root, signed wire and issuer, then return the protocol checkpoint
+ * root expected by issuer-log restore. Outputs change only on success. */
+bool vcs_proof_checkpoint_store_load(
+    struct vcs_package_store *store,
+    const uint8_t blob_root[VCS_PROOF_ROOT_BYTES],
+    const uint8_t issuer_pubkey[VCS_PROOF_PUBKEY_BYTES],
+    uint8_t wire[VCS_PROOF_CHECKPOINT_WIRE_BYTES],
+    uint8_t checkpoint_root[VCS_PROOF_ROOT_BYTES]);
 /* Load one preimage by its CAS root and verify it re-encodes to that root. */
 bool vcs_component_proof_key_load(struct vcs_package_store *store,
                                   const uint8_t preimage_root[32],
