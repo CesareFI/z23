@@ -41,6 +41,8 @@ install its reviewed, pinned image with a signature:
 ```sh
 build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-channel-only \
   "$HOME/.local/share/z23/blue-ca.pem"
+build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-list \
+  "$HOME/.local/share/z23/blue-ca.pem"
 build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-delete-fixture \
   "$HOME/.local/share/z23/blue-ca.pem"
 build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-install \
@@ -54,6 +56,11 @@ and the app parameters. This matches Ledger's Blue-era loader for target
 the commit command. The binary SHA-256 allowlist still applies before USB
 access. The connected Blue accepted signed ZCL Sign Test and ZCL Review
 installs through this path.
+The read-only `--ca-list` command uses the same authenticated channel and
+lists installed app names without installing, deleting, or signing. On the
+dedicated BOLOS 2.1.1 Blue it reported ZCL Sign Test, ZCL Review, and ZCL
+Probe. The catalog does not report app versions, and an entry does not prove
+that its app opens correctly.
 
 To remove the custom CA, first delete apps installed through it, enter
 Recovery mode, then use `zcl-blue-install /dev/hidrawN --ca-reset`.

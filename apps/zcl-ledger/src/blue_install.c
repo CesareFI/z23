@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
+#include "blue_app_catalog.h"
 #include "blue_ca.h"
 #include "blue_secure.h"
 #include "blue_install_params.h"
@@ -412,13 +413,39 @@ static int enroll_ca(installer *device, EVP_PKEY *ca_key) {
     return no_reply(device, 0, 0, command, sizeof command);
 }
 
+static int list_apps(installer *device) {
+    blue_app_entry entries[64];
+    size_t count = 0;
+    for (size_t page = 0; page < 32; ++page) {
+        uint8_t command = page ? 0x0f : 0x0e;
+        uint8_t reply[LEDGER_HID_MAX_RESPONSE];
+        size_t length = 0, page_count = 0;
+        if (exchange(device, 0, 0, &command, 1, reply, sizeof reply,
+                     &length) < 0 ||
+            blue_app_catalog_parse(reply, length, entries + count,
+                                   64 - count, &page_count) < 0)
+            return -1;
+        if (!page_count) {
+            for (size_t i = 0; i < count; ++i)
+                printf("%s\n", entries[i].name);
+            printf("%zu application(s) listed by Ledger Blue.\n", count);
+            return 0;
+        }
+        count += page_count;
+    }
+    return -1;
+}
+
 static int run_installer(installer *device, bool delete_app, bool channel_only,
                          const app_profile *profile,
                          const uint8_t *code, size_t code_length,
-                         EVP_PKEY *ca_key, bool enroll, bool reset) {
+                         EVP_PKEY *ca_key, bool enroll, bool reset,
+                         bool list) {
     int result = establish_channel(device, enroll || reset ? NULL : ca_key);
     if (result == 0) result = verify_secure_version(device);
-    if (result == 0 && enroll)
+    if (result == 0 && list)
+        result = list_apps(device);
+    else if (result == 0 && enroll)
         result = enroll_ca(device, ca_key);
     else if (result == 0 && reset) {
         const uint8_t command = 0x13;
@@ -438,11 +465,13 @@ static int run_installer(installer *device, bool delete_app, bool channel_only,
 }
 
 static void report_result(int result, bool delete_app, bool channel_only,
-                          bool enroll, bool reset, const app_profile *profile) {
+                          bool enroll, bool reset, bool list,
+                          const app_profile *profile) {
     if (result == 0 && enroll) puts("Blue accepted the Z23 custom CA enrollment command.");
     else if (result == 0 && reset) puts("Blue accepted the custom CA reset command.");
     else if (result == 0 && delete_app)
         printf("%s delete command accepted by Ledger Blue.\n", profile->name);
+    else if (result == 0 && list) return;
     else if (result == 0 && channel_only) puts("Ledger Blue secure channel established.");
     else if (result == 0)
         printf("%s install command accepted by Ledger Blue.\n", profile->name);
@@ -453,17 +482,28 @@ typedef struct {
     const char *image_path;
     const char *ca_path;
     const app_profile *profile;
-    bool channel_only, delete_app, enroll, reset;
+    bool channel_only, delete_app, enroll, reset, list;
 } install_args;
 
-static bool parse_ca_args(int argc, char **argv, install_args *args) {
-    if (argc == 4 && strcmp(argv[2], "--ca-enroll") == 0) {
+static bool parse_ca_read_args(int argc, char **argv,
+                               install_args *args) {
+    if (argc != 4) return false;
+    if (strcmp(argv[2], "--ca-enroll") == 0) {
         args->ca_path = argv[3];
         args->enroll = true;
-    } else if (argc == 4 && strcmp(argv[2], "--ca-channel-only") == 0) {
+    } else if (strcmp(argv[2], "--ca-channel-only") == 0) {
         args->ca_path = argv[3];
         args->channel_only = true;
-    } else if (argc == 4 && strcmp(argv[2], "--ca-delete-fixture") == 0) {
+    } else if (strcmp(argv[2], "--ca-list") == 0) {
+        args->ca_path = argv[3];
+        args->list = true;
+    } else return false;
+    return true;
+}
+
+static bool parse_ca_args(int argc, char **argv, install_args *args) {
+    if (parse_ca_read_args(argc, argv, args)) return true;
+    if (argc == 4 && strcmp(argv[2], "--ca-delete-fixture") == 0) {
         args->ca_path = argv[3];
         args->delete_app = true;
         args->profile = profile_named("ZCL Fixture");
@@ -517,11 +557,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-sign-test|--ca-reset\n"
                         "       %s /dev/hidrawN --ca-enroll PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-channel-only PRIVATE_KEY_FILE\n"
+                        "       %s /dev/hidrawN --ca-list PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-fixture PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-review PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-sign-test PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-install PRIVATE_KEY_FILE app.bin\n",
-                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     uint8_t *code = NULL;
@@ -546,9 +587,9 @@ int main(int argc, char **argv) {
     installer device = {.fd = fd};
     int result = run_installer(&device, args.delete_app, args.channel_only,
                                args.profile, code, code_length, ca_key,
-                               args.enroll, args.reset);
+                               args.enroll, args.reset, args.list);
     report_result(result, args.delete_app, args.channel_only,
-                  args.enroll, args.reset, args.profile);
+                  args.enroll, args.reset, args.list, args.profile);
     OPENSSL_cleanse(&device.channel, sizeof device.channel);
     close(fd);
     EVP_PKEY_free(ca_key);

@@ -55,6 +55,14 @@ install commands.
 The optional [user controlled Blue CA](BLUE_CA.md) can sign reviewed apps
 with a locally held key. It changes the device's trust configuration and is
 documented separately from the unsigned diagnostic apps.
+Its `zcl-blue-install /dev/hidrawN --ca-list CA_KEY_FILE` command reads the
+Blue's installed app names through the authenticated channel. The dedicated
+Blue returned ZCL Review in this catalog even while its icon was not visible
+to the owner; the catalog alone does not establish that Review can open.
+
+The intended everyday interface is one [ZCL Wallet device app](ROADMAP.md)
+controlled by Z23. Probe, Fixture, Review, and Sign Test are development
+images with limited permissions and no payment signing.
 
 ## Sapling transaction structure review
 
