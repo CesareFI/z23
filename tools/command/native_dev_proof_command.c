@@ -101,6 +101,8 @@ static void proof_emit_status(struct zcl_command_reply *reply,
         (void)json_push_kv_str(&reply->data, "log_dir", status->log_dir);
     if (status->detail[0])
         (void)json_push_kv_str(&reply->data, "detail", status->detail);
+    if (status->evidence[0])
+        (void)json_push_kv_str(&reply->data, "evidence", status->evidence);
     if (status->worker_id > 1)
         (void)json_push_kv_int(&reply->data, "worker_id", status->worker_id);
     if (status->started_unix > 0)

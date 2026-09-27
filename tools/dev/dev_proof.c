@@ -1008,6 +1008,24 @@ static bool proof_failure_bytes(const char *path,
     return true;
 }
 
+/* The settled record: its first line is the failure token every reader
+ * classifies by, and any lines after it are the evidence digest. A first
+ * line too long for `detail` is refused, as it always was. */
+static bool dp_failure_record_read(const char *path,
+                                   struct zcl_dev_proof_status *out)
+{
+    char record[DP_FAILURE_RECORD_MAX + 1];
+    if (!proof_read_text(path, record, sizeof(record))) return false;
+    size_t first = strcspn(record, "\n");
+    const char *rest = record[first] ? record + first + 1 : "";
+    record[first] = '\0';
+    if (first > 0 && record[first - 1] == '\r') record[first - 1] = '\0';
+    if (strlen(record) >= sizeof(out->detail)) return false;
+    (void)snprintf(out->detail, sizeof(out->detail), "%s", record);
+    (void)snprintf(out->evidence, sizeof(out->evidence), "%s", rest);
+    return true;
+}
+
 /* Any existing archive, including unreadable/unsafe evidence, disallows a
  * legacy mtime guess. A crash may leave newer attempt logs or an archive
  * without ever updating the pair marker. Only matching bytes bind them. */
@@ -1180,7 +1198,7 @@ static bool proof_status_read_platform(const char *repo_root,
                        "proof_request_invalid");
         return true;
     }
-    if (proof_read_text(paths.failure, out->detail, sizeof(out->detail))) {
+    if (dp_failure_record_read(paths.failure, out)) {
         out->state = ZCL_DEV_PROOF_STATE_FAILED;
         (void)proof_failure_attempt_logs(&paths, out->log_dir,
                                          sizeof(out->log_dir), NULL);
@@ -8104,8 +8122,371 @@ static bool proof_worker(const struct proof_paths *paths,
     return ok;
 }
 
+/* ── Failure evidence ─────────────────────────────────────────────────────
+ *
+ * A failed attempt used to settle as a bare `child_proof_failed_exit_N`,
+ * and the one line saying what failed sat in a multi-megabyte log. This
+ * lifts a bounded digest from the attempt's own persisted files: the
+ * failing step from phases.txt, then up to DP_EVIDENCE_LINES distinct
+ * `FAIL at file:line (expr)`, `... FAIL`, `FAIL check-*` lines or the first
+ * compiler error from that step's log, with absolute checkout and
+ * generation prefixes removed, and a `logs:` pointer at the attempt. It is
+ * observation only: nothing here reads back into a verdict or a retry. */
+#define DP_EVIDENCE_MAX 1024
+#define DP_EVIDENCE_LINES 5
+#define DP_EVIDENCE_LINE_MAX 200
+#define DP_EVIDENCE_UNIT_MAX 96
+#define DP_EVIDENCE_STEPS 64
+#define DP_EVIDENCE_FOLLOW 2
+
+struct dp_evidence {
+    const char *step;
+    bool test_step;
+    bool lint_step;
+    const char *strip[2];
+    char unit[DP_EVIDENCE_UNIT_MAX];
+    char lines[DP_EVIDENCE_LINES][DP_EVIDENCE_LINE_MAX];
+    size_t count;
+    char fallback_unit[DP_EVIDENCE_UNIT_MAX];
+    char fallback[DP_EVIDENCE_LINE_MAX];
+    bool error_kept;
+    bool in_fail_group;
+    bool in_failed_list;
+    int follow;
+};
+
+struct dp_evidence_step {
+    char name[48];
+    bool failed;
+};
+
+/* One `step=NAME ... cause=C exit=N` row of phases.txt. */
+static bool dp_evidence_step_parse(const char *line,
+                                   struct dp_evidence_step *step)
+{
+    if (strncmp(line, "step=", 5) != 0) return false;
+    size_t n = strcspn(line + 5, " \n");
+    if (n == 0 || n >= sizeof(step->name)) return false;
+    memcpy(step->name, line + 5, n);
+    step->name[n] = '\0';
+    const char *cause = strstr(line, " cause=");
+    const char *exit_field = strstr(line, " exit=");
+    step->failed =
+        (cause && strncmp(cause + 7, "none", 4) != 0) ||
+        (exit_field && strtol(exit_field + 6, NULL, 10) != 0);
+    return true;
+}
+
+/* The first step that failed and was never followed by a success of the
+ * same name (a recovered bundle retry is not the failure). The advisory
+ * test preflight never fails a proof, so it is never the answer. */
+static bool dp_evidence_step_pick(const struct dp_evidence_step *steps,
+                                  size_t count, char *out, size_t out_len)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (!steps[i].failed || strcmp(steps[i].name, "test_preflight") == 0)
+            continue;
+        bool recovered = false;
+        for (size_t j = i + 1; j < count && !recovered; j++)
+            recovered = !steps[j].failed &&
+                        strcmp(steps[j].name, steps[i].name) == 0;
+        if (recovered) continue;
+        (void)snprintf(out, out_len, "%s", steps[i].name);
+        return true;
+    }
+    return false;
+}
+
+/* The failing step and the generation root, both from phases.txt. */
+static bool dp_evidence_phases(const char *phases, char *step, size_t step_len,
+                               char generation[PATH_MAX])
+{
+    FILE *f = phases && phases[0] ? fopen(phases, "r") : NULL;
+    if (!f) return false;
+    struct dp_evidence_step steps[DP_EVIDENCE_STEPS];
+    size_t count = 0;
+    char line[1024];
+    static const char root_key[] = "generation_root=";
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, root_key, sizeof(root_key) - 1) == 0) {
+            (void)snprintf(generation, PATH_MAX, "%s",
+                           line + sizeof(root_key) - 1);
+            generation[strcspn(generation, "\r\n")] = '\0';
+        } else if (count < DP_EVIDENCE_STEPS &&
+                   dp_evidence_step_parse(line, &steps[count])) {
+            count++;
+        }
+    }
+    fclose(f);
+    return dp_evidence_step_pick(steps, count, step, step_len);
+}
+
+/* A proof dimension logs as `<key>.<name>.log`; every other step as
+ * `<name>.log`, and a bundle that was re-run left its answer in `.retry`. */
+static bool dp_evidence_log_path(const struct proof_paths *paths,
+                                 const char *step, char out[PATH_MAX])
+{
+    bool dimension = false;
+    for (size_t i = 0; i < ZCL_DEV_PROOF_DIMENSIONS && !dimension; i++)
+        dimension = strcmp(step, zcl_dev_proof_dimension_name(
+                                     (enum zcl_dev_proof_dimension_id)i)) == 0;
+    int n = dimension
+        ? snprintf(out, PATH_MAX, "%s/%s.%s.log", paths->logs, paths->key, step)
+        : snprintf(out, PATH_MAX, "%s/%s.log", paths->logs, step);
+    if (n <= 0 || n >= PATH_MAX) return false;
+    char retry[PATH_MAX];
+    if (strcmp(step, "bundle") == 0 &&
+        snprintf(retry, sizeof(retry), "%s.retry", out) < (int)sizeof(retry) &&
+        access(retry, R_OK) == 0)
+        (void)snprintf(out, PATH_MAX, "%s", retry);
+    return true;
+}
+
+/* Remove every `<prefix>/` occurrence, so a path reads repo-relative. */
+static void dp_evidence_strip(char *text, const char *prefix)
+{
+    size_t plen = prefix ? strlen(prefix) : 0;
+    if (plen < 2) return;
+    for (char *hit = strstr(text, prefix); hit; hit = strstr(hit, prefix)) {
+        size_t cut = plen + (hit[plen] == '/' ? 1 : 0);
+        memmove(hit, hit + cut, strlen(hit + cut) + 1);
+    }
+}
+
+/* Never end on a partial UTF-8 sequence after truncation. */
+static void dp_evidence_utf8_trim(char *text)
+{
+    size_t n = strlen(text), back = 0;
+    while (back < n && back < 4 &&
+           ((unsigned char)text[n - 1 - back] & 0xC0) == 0x80)
+        back++;
+    if (back >= n) return;
+    unsigned char lead = (unsigned char)text[n - 1 - back];
+    size_t want = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    if (lead >= 0xC0 && want != back + 1) text[n - 1 - back] = '\0';
+}
+
+/* Clean one candidate: no control bytes, no absolute prefixes, runs of
+ * blanks collapsed, bounded. */
+static void dp_evidence_clean(const struct dp_evidence *e, const char *in,
+                              char out[DP_EVIDENCE_LINE_MAX])
+{
+    char work[1024];
+    size_t w = 0;
+    bool blank = true;
+    for (const unsigned char *p = (const unsigned char *)in;
+         *p && w + 1 < sizeof(work); p++) {
+        bool space = *p < 0x20 || *p == 0x7f || *p == ' ';
+        if (space && blank) continue;
+        work[w++] = space ? ' ' : (char)*p;
+        blank = space;
+    }
+    while (w > 0 && work[w - 1] == ' ') w--;
+    work[w] = '\0';
+    for (size_t i = 0; i < 2; i++) dp_evidence_strip(work, e->strip[i]);
+    (void)snprintf(out, DP_EVIDENCE_LINE_MAX, "%s", work);
+    dp_evidence_utf8_trim(out);
+}
+
+static void dp_evidence_keep(struct dp_evidence *e, const char *text)
+{
+    char clean[DP_EVIDENCE_LINE_MAX];
+    if (e->count >= DP_EVIDENCE_LINES) return;
+    dp_evidence_clean(e, text, clean);
+    if (!clean[0]) return;
+    for (size_t i = 0; i < e->count; i++)
+        if (strcmp(e->lines[i], clean) == 0) return;
+    (void)snprintf(e->lines[e->count++], DP_EVIDENCE_LINE_MAX, "%s", clean);
+}
+
+/* The test runner's per-group banner and its closing failed-group list:
+ * only a failing group's own output is evidence, never a passing group's
+ * log that merely prints the word FAIL. */
+static bool dp_evidence_test_frame(struct dp_evidence *e, const char *line)
+{
+    static const char banner[] = "==================== ";
+    if (strncmp(line, banner, sizeof(banner) - 1) == 0) {
+        const char *name = line + sizeof(banner) - 1;
+        size_t n = strcspn(name, " ");
+        e->in_fail_group = strstr(name, " (FAIL") ||
+                           strstr(name, " (SIGNALED") ||
+                           strstr(name, " (WEDGED");
+        if (e->in_fail_group && !e->unit[0] && n < sizeof(e->unit))
+            (void)snprintf(e->unit, sizeof(e->unit), "%.*s", (int)n, name);
+        return true;
+    }
+    if (strncmp(line, "Failed groups:", 14) == 0) {
+        e->in_failed_list = true;
+        e->in_fail_group = false;
+        return true;
+    }
+    if (e->in_failed_list && strncmp(line, "  - ", 4) == 0) {
+        const char *name = line + 4;
+        size_t n = strcspn(name, ":");
+        if (!e->fallback_unit[0] && name[n] == ':' &&
+            n < sizeof(e->fallback_unit)) {
+            (void)snprintf(e->fallback_unit, sizeof(e->fallback_unit),
+                           "%.*s", (int)n, name);
+            const char *rest = name + n + 1;
+            (void)snprintf(e->fallback, sizeof(e->fallback), "%.*s",
+                           (int)strcspn(rest, "\r\n"), rest);
+            char *log = strstr(e->fallback, " log=");
+            if (log) *log = '\0';
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool dp_evidence_ends_fail(const char *text)
+{
+    size_t n = strcspn(text, "\r\n");
+    return n >= 5 && memcmp(text + n - 5, " FAIL", 5) == 0;
+}
+
+static bool dp_evidence_compiler_error(const char *text)
+{
+    return strstr(text, ": error:") || strstr(text, "fatal error:") ||
+           strncmp(text, "error:", 6) == 0 ||
+           strstr(text, "undefined reference to");
+}
+
+/* A lint gate's summary row, `FAIL check-x ...`, names the unit. */
+static bool dp_evidence_lint_row(struct dp_evidence *e, const char *text)
+{
+    if (!e->lint_step || strncmp(text, "FAIL check-", 11) != 0) return false;
+    size_t n = strcspn(text + 5, " \t\r\n");
+    if (!e->unit[0] && n < sizeof(e->unit))
+        (void)snprintf(e->unit, sizeof(e->unit), "%.*s", (int)n, text + 5);
+    return true;
+}
+
+/* A gate's own verdict line, `check_x: FAIL ...`, and the few indented
+ * lines that name its violations. */
+static bool dp_evidence_lint_verdict(struct dp_evidence *e, const char *text)
+{
+    const char *colon = strstr(text, ": FAIL");
+    if (!e->lint_step || strncmp(text, "check_", 6) != 0 || !colon ||
+        (size_t)(colon - text) != strcspn(text, " :"))
+        return false;
+    e->follow = DP_EVIDENCE_FOLLOW;
+    return true;
+}
+
+/* After a gate's verdict line, keep its next few indented lines. True
+ * when this line was consumed that way. */
+static bool dp_evidence_follow(struct dp_evidence *e, const char *line,
+                               const char *text)
+{
+    if (e->follow <= 0) return false;
+    bool indented = text != line && *text && *text != '\n';
+    e->follow = indented ? e->follow - 1 : 0;
+    if (indented) dp_evidence_keep(e, text);
+    return indented;
+}
+
+static void dp_evidence_line(struct dp_evidence *e, const char *line)
+{
+    if (e->test_step && dp_evidence_test_frame(e, line)) return;
+    const char *text = line + strspn(line, " \t");
+    if (dp_evidence_follow(e, line, text)) return;
+    if (e->test_step && !e->in_fail_group) return;
+    const char *fail_at = strstr(text, "FAIL at ");
+    if (fail_at) {
+        dp_evidence_keep(e, fail_at);
+    } else if (dp_evidence_lint_row(e, text) ||
+               dp_evidence_lint_verdict(e, text) ||
+               dp_evidence_ends_fail(text)) {
+        dp_evidence_keep(e, text);
+    } else if (dp_evidence_compiler_error(text)) {
+        if (!e->error_kept) dp_evidence_keep(e, text);
+        e->error_kept = true;
+    } else if (!e->fallback[0] && strncmp(text, "make: *** ", 10) == 0) {
+        (void)snprintf(e->fallback, sizeof(e->fallback), "%.*s",
+                       (int)strcspn(text, "\r\n"), text);
+    }
+}
+
+static void dp_evidence_scan(struct dp_evidence *e, const char *log)
+{
+    FILE *f = fopen(log, "r");
+    if (!f) return;
+    char line[4096];
+    while (e->count < DP_EVIDENCE_LINES && fgets(line, sizeof(line), f))
+        dp_evidence_line(e, line);
+    fclose(f);
+}
+
+/* Append one line to the digest when the whole line still fits. */
+static bool dp_evidence_append(char *out, size_t out_len, size_t *used,
+                               const char *line)
+{
+    int n = snprintf(out + *used, out_len - *used, "%s%s",
+                     *used ? "\n" : "", line);
+    if (n < 0 || (size_t)n >= out_len - *used) {
+        out[*used] = '\0';
+        return false;
+    }
+    *used += (size_t)n;
+    return true;
+}
+
+/* `<step>[ <unit>]: <first line>`, the rest one per line, then `logs:`. */
+static void dp_evidence_render(const struct dp_evidence *e,
+                               const struct proof_paths *paths, char *out,
+                               size_t out_len)
+{
+    char head[DP_EVIDENCE_LINE_MAX + DP_EVIDENCE_UNIT_MAX + 64];
+    char fallback[DP_EVIDENCE_LINE_MAX];
+    const char *unit = e->unit[0] ? e->unit : e->fallback_unit;
+    const char *first = e->count ? e->lines[0] : NULL;
+    if (!first && e->fallback[0]) {
+        dp_evidence_clean(e, e->fallback, fallback);
+        first = fallback;
+    }
+    (void)snprintf(head, sizeof(head), "%s%s%s: %s", e->step,
+                   unit[0] ? " " : "", unit,
+                   first && first[0] ? first : "no FAIL line in its log");
+    size_t used = 0;
+    out[0] = '\0';
+    (void)dp_evidence_append(out, out_len, &used, head);
+    for (size_t i = 1; i < e->count; i++)
+        (void)dp_evidence_append(out, out_len, &used, e->lines[i]);
+    size_t root_len = strlen(paths->root);
+    const char *logs = paths->logs;
+    if (strncmp(logs, paths->root, root_len) == 0 && logs[root_len] == '/')
+        logs += root_len + 1;
+    char pointer[PATH_MAX + 8];
+    (void)snprintf(pointer, sizeof(pointer), "logs: %s", logs);
+    (void)dp_evidence_append(out, out_len, &used, pointer);
+}
+
+/* The bounded digest for a failed attempt, or false when no step failed
+ * (a refusal before any child ran has nothing to lift). */
+static bool dp_failure_evidence(const struct proof_paths *paths, char *out,
+                                size_t out_len)
+{
+    char step[48], generation[PATH_MAX] = {0}, log[PATH_MAX];
+    if (!paths || !out || out_len == 0) return false;
+    out[0] = '\0';
+    if (!dp_evidence_phases(paths->phases, step, sizeof(step), generation) ||
+        !dp_evidence_log_path(paths, step, log))
+        return false;
+    struct dp_evidence e = {0};
+    e.step = step;
+    e.test_step = strcmp(step, "test") == 0;
+    e.lint_step = strcmp(step, "lint") == 0;
+    e.strip[0] = generation;
+    e.strip[1] = paths->root;
+    dp_evidence_scan(&e, log);
+    dp_evidence_render(&e, paths, out, out_len);
+    return out[0] != '\0';
+}
+
 /* Settle a failed attempt: the pair's `.failed` record and the attempt's
- * own `logs/failure.txt` archive carry the same bytes. */
+ * own `logs/failure.txt` archive carry the same bytes. The first line is
+ * the failure token, byte for byte what it always was; the evidence digest
+ * follows it when the failing step left one. */
 static void dp_failure_settle(const struct proof_paths *paths, const char *why)
 {
     const char *message = why && why[0]
@@ -8120,6 +8501,11 @@ static void dp_failure_settle(const struct proof_paths *paths, const char *why)
         snprintf(interrupted, sizeof(interrupted), "%s%s",
                  ZCL_DEV_PROOF_INTERRUPTED_PREFIX, message) > 0)
         message = interrupted;
+    char record[DP_FAILURE_RECORD_MAX], evidence[DP_EVIDENCE_MAX];
+    int n = dp_failure_evidence(paths, evidence, sizeof(evidence))
+        ? snprintf(record, sizeof(record), "%s\n%s", message, evidence)
+        : -1;
+    if (n > 0 && (size_t)n < sizeof(record)) message = record;
     char failure_log[PATH_MAX];
     if (snprintf(failure_log, sizeof(failure_log), "%s/failure.txt",
                  paths->logs) < (int)sizeof(failure_log))

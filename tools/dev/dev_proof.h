@@ -77,6 +77,10 @@ struct zcl_dev_proof_status {
     char receipt_path[4096];
     char log_dir[4096];
     char detail[256];
+    /* A settled failure's evidence digest: the failing step, its first
+     * FAIL or compiler-error lines with repo-relative paths, and a
+     * `logs:` pointer at the attempt. Empty when the record has none. */
+    char evidence[1280];
     int64_t started_unix;
     int64_t eta_ms;
     int64_t worker_id;
