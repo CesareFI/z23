@@ -23,6 +23,14 @@ typedef enum {
     BLUE_PAYMENT_P2SH_ADDRESS
 } blue_payment_account_relation;
 
+enum {
+    BLUE_PAYMENT_INPUT_EXTERNAL = 1,
+    BLUE_PAYMENT_INPUT_INTERNAL = 2
+};
+
+/* Labels the fixed derivation path or both paths used by verified inputs. */
+const char *blue_payment_input_paths_label(uint8_t paths);
+
 /* Exact P2PKH matches to device-derived external 0/0 and internal 1/0
  * addresses are distinguished. Neither match proves that an output is
  * change. P2SH cannot be classified as owned from its script hash. */

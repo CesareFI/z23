@@ -132,15 +132,19 @@ static uint16_t previous_finish(blue_payment_apdu *state, uint8_t length,
     const uint8_t *txid = state->outpoints[state->bound_inputs];
     uint8_t digest[32];
     if (!zcl_tx_previous_stream_finish(&state->previous, txid, &output) ||
-        !owned ||
-        (memcmp(output.script + 3, owned->external, 20) != 0 &&
-         memcmp(output.script + 3, owned->internal, 20) != 0) ||
+        !owned) return 0x6a80;
+    uint8_t path = memcmp(output.script + 3, owned->external, 20) == 0
+        ? BLUE_PAYMENT_INPUT_EXTERNAL :
+        memcmp(output.script + 3, owned->internal, 20) == 0
+        ? BLUE_PAYMENT_INPUT_INTERNAL : 0;
+    if (!path ||
         output.value_zat > 2100000000000000ULL - state->input_zat ||
         !zcl_tx_replay_zip243_bound_digest(&state->review.replay,
             txid, state->sequences[state->bound_inputs], output.script,
             output.value_zat, digest))
         return 0x6a80;
     state->input_zat += output.value_zat;
+    state->input_paths |= path;
     ++state->bound_inputs;
     state->previous_active = false;
     if (state->bound_inputs == state->input_count) {

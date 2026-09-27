@@ -6,6 +6,16 @@
 
 enum { ZCL_MAX_MONEY_ZAT = 2100000000000000ULL };
 
+const char *blue_payment_input_paths_label(uint8_t paths) {
+    switch (paths) {
+    case BLUE_PAYMENT_INPUT_EXTERNAL: return "INPUT EXT 0/0";
+    case BLUE_PAYMENT_INPUT_INTERNAL: return "INPUT INT 1/0";
+    case BLUE_PAYMENT_INPUT_EXTERNAL | BLUE_PAYMENT_INPUT_INTERNAL:
+        return "INPUT 0/0 + 1/0";
+    default: return NULL;
+    }
+}
+
 blue_payment_account_relation blue_payment_account_classify(
     const blue_payment_output *output,
     const uint8_t account_hash160[20],

@@ -32,6 +32,15 @@ static void check_address(const blue_payment_screen *screen,
 }
 
 int main(int argc, char **argv) {
+    assert(strcmp(blue_payment_input_paths_label(
+        BLUE_PAYMENT_INPUT_EXTERNAL), "INPUT EXT 0/0") == 0);
+    assert(strcmp(blue_payment_input_paths_label(
+        BLUE_PAYMENT_INPUT_INTERNAL), "INPUT INT 1/0") == 0);
+    assert(strcmp(blue_payment_input_paths_label(
+        BLUE_PAYMENT_INPUT_EXTERNAL | BLUE_PAYMENT_INPUT_INTERNAL),
+        "INPUT 0/0 + 1/0") == 0);
+    assert(blue_payment_input_paths_label(0) == NULL);
+    assert(blue_payment_input_paths_label(4) == NULL);
     blue_payment_output output = {.index = 0,
         .amount_zat = 100000001, .type = ZCL_TX_STREAM_P2PKH};
     memset(output.hash160, 0x11, 20);
@@ -63,7 +72,7 @@ int main(int argc, char **argv) {
     assert(blue_payment_screen_mark_account(&screen, &output,
         account_hash160, internal_hash160, true));
     assert(strcmp(screen.kind, "THIS ACCOUNT") == 0);
-    if (argc == 3) assert(blue_payment_render_png(argv[1], &screen, false));
+    if (argc >= 3) assert(blue_payment_render_png(argv[1], &screen, false));
     account_hash160[0] ^= 1;
     assert(blue_payment_screen_mark_account(&screen, &output,
         account_hash160, internal_hash160, true));
@@ -76,7 +85,7 @@ int main(int argc, char **argv) {
         account_hash160, internal_hash160, true));
     assert(strcmp(screen.kind, "OWN INTERNAL 1/0") == 0);
     check_address(&screen, expected);
-    if (argc == 4) assert(blue_payment_render_png(argv[3], &screen, true));
+    if (argc >= 4) assert(blue_payment_render_png(argv[3], &screen, true));
     assert(!blue_payment_screen_mark_account(&screen, &output,
         account_hash160, NULL, true));
     assert(screen.kind[0] == 0);
@@ -103,7 +112,16 @@ int main(int argc, char **argv) {
     assert(blue_payment_screen_mark_account(&screen, &output,
         account_hash160, internal_hash160, true));
     assert(strcmp(screen.kind, "P2SH ADDRESS") == 0);
-    if (argc == 3) assert(blue_payment_render_png(argv[2], &screen, true));
+    if (argc >= 3) assert(blue_payment_render_png(argv[2], &screen, true));
+
+    assert(!blue_payment_render_fee_png(NULL, 100000000,
+        BLUE_PAYMENT_INPUT_EXTERNAL, true));
+    assert(!blue_payment_render_fee_png("/tmp/invalid-fee.png", 100000000,
+        0, true));
+    assert(!blue_payment_render_fee_png("/tmp/invalid-fee.png",
+        2100000000000001ULL, BLUE_PAYMENT_INPUT_EXTERNAL, true));
+    if (argc >= 5) assert(blue_payment_render_fee_png(argv[4], 100000000,
+        BLUE_PAYMENT_INPUT_EXTERNAL | BLUE_PAYMENT_INPUT_INTERNAL, true));
 
     assert(!blue_payment_screen_mark_account(&screen, NULL,
         account_hash160, internal_hash160, true));

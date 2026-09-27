@@ -13,6 +13,7 @@ static cx_sha256_t payment_sha;
 static bool visible;
 static uint8_t displayed_view;
 static char fee_text[32];
+static char input_path_text[20];
 static uint8_t account_hash160[20];
 static uint8_t internal_hash160[20];
 static bool account_ready;
@@ -56,6 +57,7 @@ void wallet_payment_abort(void) {
     memset(&payment_blake, 0, sizeof payment_blake);
     memset(&payment_sha, 0, sizeof payment_sha);
     memset(fee_text, 0, sizeof fee_text);
+    memset(input_path_text, 0, sizeof input_path_text);
     visible = false;
     displayed_view = 0;
 }
@@ -169,9 +171,11 @@ static const bagl_element_t fee_ui[] = {
     BACKGROUND,
     LABEL(70, "CALCULATED FEE", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     LABEL(145, fee_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
-    LABEL(220, "CHAIN UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
-    LABEL(265, "BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
-    LABEL(310, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(195, "m/44'/147'/0'", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(232, input_path_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(283, "CHAIN UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(315, "BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(347, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_14px),
     BUTTON(165, "EXIT", exit_review)
 };
 
@@ -205,11 +209,14 @@ void wallet_payment_display(void) {
         }
         UX_DISPLAY(output_ui, NULL);
     } else if (view == 6) {
-        if (!blue_payment_fee_text(payment.fee_zat, fee_text)) {
+        const char *paths = blue_payment_input_paths_label(payment.input_paths);
+        if (!paths || strlen(paths) >= sizeof input_path_text ||
+            !blue_payment_fee_text(payment.fee_zat, fee_text)) {
             wallet_payment_abort();
             UX_DISPLAY(ended_ui, NULL);
             return;
         }
+        strcpy(input_path_text, paths);
         UX_DISPLAY(fee_ui, NULL);
     } else if (view == 3) {
         UX_DISPLAY(complete_ui, NULL);

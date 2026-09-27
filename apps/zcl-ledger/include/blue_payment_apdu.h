@@ -14,6 +14,7 @@ typedef struct {
     uint64_t input_zat, output_zat, fee_zat;
     uint32_t input_count, bound_inputs;
     bool active, previous_active, fee_ready;
+    uint8_t input_paths;
 } blue_payment_apdu;
 
 typedef struct {

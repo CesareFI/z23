@@ -8,4 +8,8 @@
 bool blue_payment_render_png(const char *path,
     const blue_payment_screen *screen, bool dark);
 
+/* Mirrors the fixed-path and fee summary screen without device keys. */
+bool blue_payment_render_fee_png(const char *path, uint64_t fee_zat,
+    uint8_t input_paths, bool dark);
+
 #endif

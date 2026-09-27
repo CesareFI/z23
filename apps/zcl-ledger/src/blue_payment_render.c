@@ -48,3 +48,43 @@ bool blue_payment_render_png(const char *path,
     blue_bagl_canvas_destroy(canvas);
     return fit;
 }
+
+static bool draw_fee_details(blue_bagl_canvas *canvas,
+    const char *fee_text, const char *paths, uint32_t foreground,
+    uint32_t background) {
+    return draw(canvas, "CALCULATED FEE", 70, BLUE_BAGL_TEXT_22,
+                foreground, background) &&
+        draw(canvas, fee_text, 145, BLUE_BAGL_TEXT_22,
+             foreground, background) &&
+        draw(canvas, "m/44'/147'/0'", 195, BLUE_BAGL_TEXT_22,
+             foreground, background) &&
+        draw(canvas, paths, 232, BLUE_BAGL_TEXT_22,
+             foreground, background) &&
+        draw(canvas, "CHAIN UNCHECKED", 283, BLUE_BAGL_TEXT_14,
+             foreground, background) &&
+        draw(canvas, "BRANCH UNCHECKED", 315, BLUE_BAGL_TEXT_14,
+             foreground, background) &&
+        draw(canvas, "NO SIGNING", 347, BLUE_BAGL_TEXT_14,
+             foreground, background);
+}
+
+bool blue_payment_render_fee_png(const char *path, uint64_t fee_zat,
+    uint8_t input_paths, bool dark) {
+    char fee_text[32];
+    const char *paths = blue_payment_input_paths_label(input_paths);
+    if (!path || !paths || !blue_payment_fee_text(fee_zat, fee_text))
+        return false;
+    uint32_t background = dark ? ZCL_WALLET_COLOR_BODY : 0xf5f7f8;
+    uint32_t foreground = dark ? ZCL_WALLET_COLOR_TEXT : 0x10212a;
+    uint32_t accent = dark ? ZCL_WALLET_COLOR_ACCENT : 0x116f61;
+    blue_bagl_canvas *canvas = blue_bagl_canvas_create(background);
+    if (!canvas) return false;
+    bool fit = draw_fee_details(canvas, fee_text, paths,
+                                foreground, background);
+    blue_bagl_round_rectangle(canvas, 165, 386, 135, 58, accent);
+    if (fit) fit = blue_bagl_text(canvas, "EXIT", 165, 404, 135, true,
+        dark ? background : 0xffffff, accent, BLUE_BAGL_TEXT_14);
+    if (fit) fit = blue_bagl_write_png(canvas, path);
+    blue_bagl_canvas_destroy(canvas);
+    return fit;
+}

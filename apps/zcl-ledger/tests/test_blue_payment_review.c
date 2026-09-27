@@ -18,7 +18,7 @@
 
 typedef struct {
     uint8_t bytes[256];
-    size_t length, output_end[2], second_amount;
+    size_t length, output_end[2], second_amount, previous_hash;
 } fixture;
 
 static void append_u32(fixture *item, uint32_t value) {
@@ -85,6 +85,7 @@ static fixture make_previous(void) {
     const uint8_t prefix[] = {0x76, 0xa9, 0x14};
     memcpy(item.bytes + item.length, prefix, sizeof prefix);
     item.length += sizeof prefix;
+    item.previous_hash = item.length;
     memset(item.bytes + item.length, 0x33, 20);
     item.length += 20;
     item.bytes[item.length++] = 0x88;
@@ -579,7 +580,8 @@ static void test_live_bound(void) {
         live_exchange, live_continue, &live));
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.bound_inputs == 1 &&
-        live.apdu.state.fee_zat == 100000000);
+        live.apdu.state.fee_zat == 100000000 &&
+        live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_EXTERNAL);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};
@@ -589,7 +591,8 @@ static void test_live_bound(void) {
     assert(blue_payment_live_run_bound(spend.bytes, spend.length,
         &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
-    assert(live.apdu.state.fee_ready);
+    assert(live.apdu.state.fee_ready &&
+        live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_INTERNAL);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};
@@ -599,7 +602,8 @@ static void test_live_bound(void) {
     assert(!blue_payment_live_run_bound(spend.bytes, spend.length,
         &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
         live_exchange, live_continue, &live));
-    assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified);
+    assert(!live.apdu.state.fee_ready && !live.apdu.state.review.verified &&
+        live.apdu.state.input_paths == 0);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){.no_owned_hashes = true};
@@ -651,6 +655,7 @@ static void test_live_two_inputs(void) {
     fixture spend = make_fixture();
     fixture first = make_previous();
     fixture second = make_previous();
+    memset(second.bytes + second.previous_hash, 0x44, 20);
     second.bytes[second.length - 1] = 1;
     assert(spend.length + 41 <= sizeof spend.bytes);
     memmove(spend.bytes + 91, spend.bytes + 50, spend.length - 50);
@@ -686,7 +691,9 @@ static void test_live_two_inputs(void) {
     assert(live.apdu.state.fee_ready &&
         live.apdu.state.bound_inputs == 2 &&
         live.apdu.state.input_zat == 800000000 &&
-        live.apdu.state.fee_zat == 500000000);
+        live.apdu.state.fee_zat == 500000000 &&
+        live.apdu.state.input_paths ==
+            (BLUE_PAYMENT_INPUT_EXTERNAL | BLUE_PAYMENT_INPUT_INTERNAL));
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};
