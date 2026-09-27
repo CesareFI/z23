@@ -935,7 +935,7 @@ static int smt_t_fixture_seeds(void)
  * depend on the embedding or the platform: a change to either without the
  * other is caught because the two pinned constants would then disagree. */
 #define SMT_LEDGER_DIGEST \
-    "b387ae5ba488df407102e2090f4d83aa773589cb78f6ea25a9d38cc9e0eca646"
+    "bfd21f84f209181c76b3430ed780b8d2b1a6dc367de0e9f5efdaa8391e12e593"
 
 struct smt_ledger_row {
     char name[96];
