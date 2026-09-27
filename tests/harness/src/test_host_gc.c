@@ -114,7 +114,7 @@ static bool hgt_make_repo(const char *repo)
     (void)snprintf(seed, sizeof(seed), "%s/seed.txt", repo);
     (void)snprintf(ignore, sizeof(ignore), "%s/.gitignore", repo);
     if (!hgt_write(seed, "fixture\n") ||
-        !hgt_write(ignore, "out/\nvendor/\n"))
+        !hgt_write(ignore, "out/\nvendor/\nbuild/\n"))
         return false;
     return hgt_git(repo, add) && hgt_git(repo, commit);
 }
@@ -163,6 +163,27 @@ static pid_t hgt_occupy(const char *dir)
         pause();
 }
 
+/* A generation shaped like a finished dev proof: a build-complete marker
+ * naming a build identity and the time the build finished. `ident` stands
+ * in for all four identity digests at once; only equality matters. */
+static bool hgt_add_donor(const char *repo, const char *pool, const char *name,
+                          const char *ident, int completed, char *out,
+                          size_t cap)
+{
+    char build[HGT_PATH + 16], marker[HGT_PATH + 64], body[1024];
+    if (!hgt_add_gen(repo, pool, name, out, cap))
+        return false;
+    (void)snprintf(build, sizeof(build), "%s/build", out);
+    (void)snprintf(marker, sizeof(marker), "%s/.proof-build-complete", build);
+    (void)snprintf(body, sizeof(body),
+                   "zcl.proof_build_complete.v1\nroot=%s\nlocal=%s\n"
+                   "base=base\ncompleted=%d\ncompiler=%s\nflags=%s\n"
+                   "environment=%s\nbuild_graph=%s\n",
+                   repo, name, completed, ident, ident, ident, ident);
+    return mkdir(build, 0700) == 0 && hgt_write(marker, body) &&
+           hgt_backdate(out, 48);
+}
+
 static const struct host_gc_class *hgt_class(const struct host_gc_report *r,
                                              const char *name)
 {
@@ -201,6 +222,8 @@ int test_host_gc(void)
     char left_pool[HGT_PATH] = "", left_gen[HGT_PATH] = "";
     char left_out[HGT_PATH] = "";
     char stuck_pool[HGT_PATH] = "", stuck_gen[HGT_PATH] = "";
+    char donor_pool[HGT_PATH] = "", d_a_old[HGT_PATH] = "";
+    char d_a_new[HGT_PATH] = "", d_b[HGT_PATH] = "", d_c[HGT_PATH] = "";
     pid_t occupant = -1;
 
     TEST("host gc: the fixture repository and its three generations build") {
@@ -397,6 +420,41 @@ int test_host_gc(void)
         ASSERT(reason != NULL);
         ASSERT_EQ(strncmp(reason, "remove_failed:", 14), 0);
         ASSERT(hgt_exists(stuck_gen));
+        PASS();
+    }
+
+    TEST("host gc: the newest complete generation per identity is kept as the warm donor") {
+        struct host_gc_request req;
+        struct host_gc_report report;
+        const struct host_gc_class *cls;
+        /* Four finished generations, all past the age floor, all idle and
+         * clean. The next proof seeds its build from the newest one of its
+         * own identity, so that one survives per identity — but at most
+         * two across the pool, newest first. The superseded generation of
+         * identity aa and the oldest identity cc are reaped as before. */
+        (void)snprintf(donor_pool, sizeof(donor_pool), "%s/pool-donor", tmp);
+        ASSERT(mkdir(donor_pool, 0700) == 0);
+        ASSERT(hgt_add_donor(repo, donor_pool, "d-a-old", "aa", 100, d_a_old,
+                             sizeof(d_a_old)));
+        ASSERT(hgt_add_donor(repo, donor_pool, "d-a-new", "aa", 400, d_a_new,
+                             sizeof(d_a_new)));
+        ASSERT(hgt_add_donor(repo, donor_pool, "d-b", "bb", 300, d_b,
+                             sizeof(d_b)));
+        ASSERT(hgt_add_donor(repo, donor_pool, "d-c", "cc", 200, d_c,
+                             sizeof(d_c)));
+        hgt_seed_request(&req, donor_pool);
+        req.apply = true;
+        ASSERT(host_gc_run(&req, &report));
+        cls = hgt_class(&report, "z23p");
+        ASSERT(cls != NULL);
+        ASSERT_EQ(cls->registered, 4);
+        ASSERT_EQ(cls->reapable, 2);
+        ASSERT_EQ(cls->in_use, 2);
+        ASSERT_EQ(cls->need_review, 0);
+        ASSERT(hgt_exists(d_a_new));
+        ASSERT(hgt_exists(d_b));
+        ASSERT(!hgt_exists(d_a_old));
+        ASSERT(!hgt_exists(d_c));
         PASS();
     }
 

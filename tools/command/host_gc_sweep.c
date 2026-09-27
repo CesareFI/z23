@@ -45,6 +45,7 @@ struct hg_cand {
     bool detached;
     bool locked;
     bool occupied;
+    bool donor;       /* kept: newest complete generation of its identity */
 };
 
 struct hg_scan {
@@ -223,6 +224,7 @@ static void hg_push_cand(struct hg_scan *scan, size_t cls, const char *path,
     c->detached = detached;
     c->locked = locked || hg_locked_on_disk(path);
     c->occupied = false;
+    c->donor = false;
     scan->n++;
 }
 
@@ -338,6 +340,172 @@ static void hg_mark_occupied(const struct host_gc_request *req,
     (void)closedir(d);
 }
 
+/* ------------------------------------------------------------ warm donors */
+
+/* A generation whose build finished carries the marker tools/dev/dev_proof.c
+ * writes (build/.proof-build-complete, zcl.proof_build_complete.v1): the
+ * checkout root, when the build completed, and the four build-identity
+ * digests. The newest such generation of an identity is the WARM DONOR the
+ * next proof of that identity seeds its objects from instead of building
+ * cold, so reaping it by age alone made the next landing pay a whole cold
+ * build. The newest idle, unlocked, complete generation of each identity is
+ * therefore kept — at most HG_DONOR_MAX per pool, newest first — and counted
+ * as in_use: it is reserved for a use the /proc pass cannot see. Every
+ * other generation is classified exactly as before. */
+enum {
+    HG_DONOR_MAX = 2,
+    HG_IDENTITY_FIELDS = 5,
+    HG_DONOR_KEY_CAP = HG_IDENTITY_FIELDS * HOST_GC_PATH_CAP
+};
+
+static const char hg_marker_rel[] = "build/.proof-build-complete";
+static const char hg_marker_schema[] = "zcl.proof_build_complete.v1";
+static const char *const hg_identity_field[HG_IDENTITY_FIELDS] = {
+    "root=", "compiler=", "flags=", "environment=", "build_graph="
+};
+
+struct hg_marker {
+    char key[HG_DONOR_KEY_CAP];
+    int64_t completed;
+};
+
+static int hg_identity_index(const char *line)
+{
+    for (int i = 0; i < HG_IDENTITY_FIELDS; i++)
+        if (strncmp(line, hg_identity_field[i],
+                    strlen(hg_identity_field[i])) == 0)
+            return i;
+    return -1;
+}
+
+/* One `key=value` marker line: an identity field lands in its slot of the
+ * key, `completed=` in m->completed; anything else is ignored. */
+static void hg_marker_line(struct hg_marker *m, char *slots, unsigned *seen,
+                           const char *line)
+{
+    int i = hg_identity_index(line);
+    if (i >= 0) {
+        if (hg_copy(slots + (size_t)i * HOST_GC_PATH_CAP, HOST_GC_PATH_CAP,
+                    line + strlen(hg_identity_field[i])))
+            *seen |= 1u << i;
+        return;
+    }
+    if (strncmp(line, "completed=", 10) == 0)
+        m->completed = strtoll(line + 10, NULL, 10);
+}
+
+/* The identity key: the five slots joined by newlines, so two generations
+ * share a key exactly when every field matches. */
+static bool hg_marker_key(struct hg_marker *m, const char *slots)
+{
+    size_t used = 0;
+    for (int i = 0; i < HG_IDENTITY_FIELDS; i++) {
+        const char *v = slots + (size_t)i * HOST_GC_PATH_CAP;
+        int n = snprintf(m->key + used, sizeof(m->key) - used, "%s\n", v);
+        if (n < 0 || (size_t)n >= sizeof(m->key) - used)
+            return false;
+        used += (size_t)n;
+    }
+    return true;
+}
+
+/* Read one generation's marker. False (and completed = 0) when there is
+ * none, it is another schema, or any field is missing. */
+static bool hg_marker_read(const char *wt, struct hg_marker *m)
+{
+    char path[HOST_GC_PATH_CAP], line[HOST_GC_PATH_CAP];
+    char slots[HG_IDENTITY_FIELDS * HOST_GC_PATH_CAP] = { 0 };
+    unsigned seen = 0;
+    bool ok;
+    FILE *f;
+    m->completed = 0;
+    if (!hg_join(path, sizeof(path), wt, hg_marker_rel))
+        return false;
+    f = fopen(path, "r");
+    if (!f)
+        return false;
+    ok = fgets(line, (int)sizeof(line), f) != NULL;
+    if (ok) {
+        hg_strip(line);
+        ok = strcmp(line, hg_marker_schema) == 0;
+    }
+    while (ok && fgets(line, (int)sizeof(line), f)) {
+        hg_strip(line);
+        hg_marker_line(m, slots, &seen, line);
+    }
+    (void)fclose(f);
+    ok = ok && seen == (1u << HG_IDENTITY_FIELDS) - 1 && m->completed > 0 &&
+         hg_marker_key(m, slots);
+    if (!ok)
+        m->completed = 0;
+    return ok;
+}
+
+/* May candidate i still become a donor of class `cls`: complete, not yet a
+ * donor, and of an identity no donor chosen so far already covers? */
+static bool hg_donor_eligible(const struct hg_scan *scan,
+                              const struct hg_marker *marks, size_t cls,
+                              size_t i, const size_t *chosen, size_t nchosen)
+{
+    if (scan->cands[i].cls != cls || marks[i].completed <= 0 ||
+        scan->cands[i].donor)
+        return false;
+    for (size_t k = 0; k < nchosen; k++)
+        if (strcmp(marks[chosen[k]].key, marks[i].key) == 0)
+            return false;
+    return true;
+}
+
+/* Each round takes the newest eligible generation of the pool; an identity
+ * already covered is no longer eligible, so every pick is the newest of its
+ * own identity and the picks come newest first. */
+static void hg_pick_donors(struct hg_scan *scan, const struct hg_marker *marks,
+                           size_t cls)
+{
+    size_t chosen[HG_DONOR_MAX];
+    size_t nchosen = 0;
+    while (nchosen < HG_DONOR_MAX) {
+        size_t best = SIZE_MAX;
+        for (size_t i = 0; i < scan->n; i++)
+            if (hg_donor_eligible(scan, marks, cls, i, chosen, nchosen) &&
+                (best == SIZE_MAX || marks[i].completed > marks[best].completed))
+                best = i;
+        if (best == SIZE_MAX)
+            return;
+        scan->cands[best].donor = true;
+        chosen[nchosen++] = best;
+    }
+}
+
+/* Without memory for the comparison, every complete generation is kept:
+ * the fail-safe direction for a keep rule is to keep. */
+static void hg_mark_all_complete(struct hg_scan *scan)
+{
+    struct hg_marker one;
+    for (size_t i = 0; i < scan->n; i++)
+        if (!scan->cands[i].occupied && hg_marker_read(scan->cands[i].path, &one))
+            scan->cands[i].donor = true;
+}
+
+static void hg_mark_donors(struct hg_scan *scan, size_t nclasses)
+{
+    struct hg_marker *marks;
+    if (scan->n == 0)
+        return;
+    marks = zcl_calloc(scan->n, sizeof(*marks), "host_gc donor markers");
+    if (!marks) {
+        hg_mark_all_complete(scan);
+        return;
+    }
+    for (size_t i = 0; i < scan->n; i++)
+        if (scan->cands[i].occupied || scan->cands[i].locked ||
+            !hg_marker_read(scan->cands[i].path, &marks[i]))
+            marks[i].completed = 0;
+    for (size_t cls = 0; cls < nclasses; cls++)
+        hg_pick_donors(scan, marks, cls);
+    free(marks);
+}
+
 /* ------------------------------------------------------- classification */
 
 static bool hg_worktree_clean(const char *wt)
@@ -352,14 +520,16 @@ static bool hg_worktree_clean(const char *wt)
 enum hg_verdict {
     HG_KEEP_LOCKED,
     HG_KEEP_IN_USE,
+    HG_KEEP_DONOR,
     HG_KEEP_TOO_YOUNG,
     HG_KEEP_NEEDS_REVIEW,
     HG_REAPABLE
 };
 
-/* The keep rules, in the order host_gc_sweep.h documents. Lock and
- * occupancy come first because both outrank the age floor as an
- * explanation and all four verdicts below REAPABLE are keeps. */
+/* The keep rules, in the order host_gc_sweep.h documents, plus the warm
+ * donor keep (see hg_mark_donors). Lock and occupancy come first because
+ * both outrank the age floor as an explanation; every verdict below
+ * REAPABLE is a keep, and a donor is counted as in_use. */
 static enum hg_verdict hg_classify(const struct host_gc_request *req,
                                    const struct hg_cand *c, int64_t now)
 {
@@ -369,6 +539,8 @@ static enum hg_verdict hg_classify(const struct host_gc_request *req,
         return HG_KEEP_LOCKED;
     if (c->occupied)
         return HG_KEEP_IN_USE;
+    if (c->donor)
+        return HG_KEEP_DONOR;
     if (hg_age_secs(c->path, now) < floor_s)
         return HG_KEEP_TOO_YOUNG;
     if (!c->detached)
@@ -382,7 +554,8 @@ static void hg_count(struct host_gc_class *cls, enum hg_verdict v)
 {
     switch (v) {
     case HG_KEEP_LOCKED: cls->locked++; break;
-    case HG_KEEP_IN_USE: cls->in_use++; break;
+    case HG_KEEP_IN_USE:
+    case HG_KEEP_DONOR: cls->in_use++; break;
     case HG_KEEP_TOO_YOUNG: cls->too_young++; break;
     case HG_KEEP_NEEDS_REVIEW: cls->need_review++; break;
     case HG_REAPABLE: cls->reapable++; break;
@@ -583,6 +756,7 @@ bool host_gc_run(const struct host_gc_request *req,
             hg_parse_worktrees(&scan, i, cls->path, buf, &cls->registered);
     }
     hg_mark_occupied(req, &scan);
+    hg_mark_donors(&scan, report->nclasses);
     hg_settle(req, report, &scan, now);
     report->truncated = scan.truncated;
     free(scan.cands);
