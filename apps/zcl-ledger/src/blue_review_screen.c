@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_review_screen.h"
+#include "zcl_base58.h"
 #include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
 
@@ -114,35 +115,6 @@ static bool select_output(void *context, const zcl_tx_output *output) {
     return true;
 }
 
-static bool base58(const uint8_t *payload, size_t length, char address[40]) {
-    static const char alphabet[] =
-        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    uint8_t digits[40] = {0};
-    size_t used = 1;
-    for (size_t i = 0; i < length; ++i) {
-        unsigned carry = payload[i];
-        for (size_t j = 0; j < used; ++j) {
-            carry += (unsigned)digits[j] * 256u;
-            digits[j] = (uint8_t)(carry % 58u);
-            carry /= 58u;
-        }
-        while (carry) {
-            if (used == sizeof digits) return false;
-            digits[used++] = (uint8_t)(carry % 58u);
-            carry /= 58u;
-        }
-    }
-    size_t zeros = 0;
-    while (zeros < length && payload[zeros] == 0) ++zeros;
-    while (used && !digits[used - 1]) --used;
-    if (zeros + used >= 40) return false;
-    size_t offset = 0;
-    while (zeros--) address[offset++] = '1';
-    while (used) address[offset++] = alphabet[digits[--used]];
-    address[offset] = 0;
-    return true;
-}
-
 static bool output_address(const zcl_tx_output *output,
                            blue_review_hash_fn hash, char address[40]) {
     uint8_t payload[26] = {0x1c};
@@ -152,7 +124,7 @@ static bool output_address(const zcl_tx_output *output,
         (output->type == ZCL_TX_OUTPUT_P2PKH ? 3 : 2), 20);
     if (!hash(payload, 22, first) || !hash(first, 32, second)) return false;
     memcpy(payload + 22, second, 4);
-    return base58(payload, sizeof payload, address);
+    return zcl_base58_encode(payload, sizeof payload, address, 40) == 0;
 }
 
 static bool format_output_header(const output_selection *selection,

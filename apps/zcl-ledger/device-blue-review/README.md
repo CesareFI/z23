@@ -51,14 +51,17 @@ sha256sum /tmp/zcl-review.bin
 Version 0.4.0's former image hash was
 `f442caa2e21e3b2f830f48f71ba23531ba6cfdf51bd4d888ee59bfd0e0e72dae`.
 It is no longer accepted by the installer after a live USB lockup.
-Review 0.4.3 is an offline UX candidate that has not been installed. Its
+Review 0.4.4 is an offline UX candidate that has not been installed. It uses
+the common C23 Base58 encoder for output addresses. Its
 2,304-byte transaction limit reserves 2 KiB of Blue SRAM for the stack
 and 144 bytes of linker SRAM headroom. The build checks the known call paths
 against the 2 KiB stack reserve and keeps 512 bytes of headroom. The
 same C23 app controller runs in the host simulator, including the published
 transparent fixture and public P2SH and OP_RETURN output pages. The simulator
 also sends 10,000 deterministic malformed APDUs. The device result remains
-unverified; the candidate is not pinned for installation.
+unverified; the candidate is not pinned for installation. The 0.4.4 `.text`
+SHA-256 is `c7685268f58f5913196f1b9a1547484a9fe8be7f14355325d9e6745f1a3e39eb`;
+this records the offline build and does not authorize installation.
 After a new image hash is pinned, install only on the dedicated test Blue at
 its home screen using
 `zcl-blue-install /dev/hidrawN --ca-install CA_KEY_FILE /tmp/zcl-review.bin`.

@@ -68,7 +68,7 @@ target_compile_options(blue_review_protocol PRIVATE -Wall -Wextra -Werror -pedan
 
 add_library(blue_review_screen STATIC src/blue_review_screen.c)
 target_include_directories(blue_review_screen PUBLIC include)
-target_link_libraries(blue_review_screen PUBLIC zcl_tx_script_facts)
+target_link_libraries(blue_review_screen PUBLIC zcl_tx_script_facts zcl_base58)
 target_compile_options(blue_review_screen PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(blue_review_app STATIC device-blue-review/src/blue_review_app.c
