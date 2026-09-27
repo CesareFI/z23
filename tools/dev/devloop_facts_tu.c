@@ -641,10 +641,15 @@ static bool fxc_included_c_side(struct fxc *c, const struct fxi *x,
                                 const char *path)
 {
     struct zcl_devloop_facts_tu_verdict scratch = {0};
-    size_t n = fxi_count(x);
+    size_t n = x != NULL ? fxi_count(x) : 0;
     uint8_t *flags = zcl_calloc(n + 1, 1, "facts_tu.incflags");
     size_t *via = zcl_calloc(n + 1, sizeof(*via), "facts_tu.incvia");
     bool ok = flags != NULL && via != NULL;
+    if (x == NULL || strcmp(fxi_main(x), path) == 0) {
+        free(flags); /* no side, or the TU's own file: its rule chain seeds */
+        free(via);
+        return ok;
+    }
     for (size_t e = 0; ok && e < n; e++)
         if (fxi_defined_function(x, e) && fxi_has_path(x, e, path))
             flags[e] = FXI_DIRTY_DIGEST;
@@ -654,25 +659,38 @@ static bool fxc_included_c_side(struct fxc *c, const struct fxi *x,
     return ok;
 }
 
-/* A TU broadened by a changed .c it includes (a unity build, a test that
- * reaches the statics) compiles that file's functions under names only its
- * own manifests know (a macro may rename them): they, on either side, seed
- * the walk. Seeds only; the TU keeps its reason. */
-static bool fxc_included_c_seeds(struct fxc *c, struct fxc_pair *p,
-                                 const char *path)
+/* A changed .c this TU read on either side, whose bytes differ there. */
+static bool fxc_changed_c_read(const struct fxc_pair *p, const char *path)
 {
     size_t n = strlen(path);
-    if (n <= 2 || strcmp(path + n - 2, ".c") != 0)
-        return true;
-    return fxc_included_c_side(c, p->xa, path) &&
-           fxc_included_c_side(c, p->xb, path);
+    const uint8_t *a = fxi_file_digest(p->xa, path);
+    const uint8_t *b = p->xb != NULL ? fxi_file_digest(p->xb, path) : NULL;
+    if (n <= 2 || strcmp(path + n - 2, ".c") != 0 || (a == NULL && b == NULL))
+        return false;
+    return a == NULL || b == NULL || memcmp(a, b, 32) != 0;
+}
+
+/* A broadened TU that includes changed .c files (a unity build, a test that
+ * reaches the statics) compiles their functions under names only its own
+ * manifests know (a macro may rename them): for every such file, on either
+ * side, they seed the walk, whichever rule broadened the TU. Seeds only;
+ * the TU keeps its reason. */
+static bool fxc_included_c_seeds(struct fxc *c, const struct fxc_pair *p)
+{
+    bool ok = true;
+    for (size_t k = 0; ok && k < c->nfiles; k++)
+        if (fxc_changed_c_read(p, c->files[k]))
+            ok = fxc_included_c_side(c, p->xa, c->files[k]) &&
+                 fxc_included_c_side(c, p->xb, c->files[k]);
+    return ok;
 }
 
 
-/* The first changed file this TU read whose text broadens it; true when one
- * did (*ok false only for memory). */
+/* The first changed file this TU read whose text broadens it names the
+ * reason; true when one did. Its seeds, and those of every other changed .c
+ * the TU includes, come from fxc_included_c_seeds. */
 static bool fxc_changed_files(struct fxc *c, struct fxc_pair *p,
-                              struct zcl_devloop_facts_tu_verdict *t, bool *ok)
+                              struct zcl_devloop_facts_tu_verdict *t)
 {
     char detail[192];
     for (size_t k = 0; k < c->nfiles; k++) {
@@ -685,7 +703,6 @@ static bool fxc_changed_files(struct fxc *c, struct fxc_pair *p,
         if (why == NULL)
             continue;
         fxc_set(t, true, true, why, "%s", detail);
-        *ok = fxc_included_c_seeds(c, p, c->files[k]);
         return true;
     }
     return false;
@@ -701,8 +718,8 @@ static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
         return false;
     fxc_mark_digests(p->xa, p->xb, p->fa);
     fxc_mark_digests(p->xb, p->xa, p->fb);
-    if (fxc_changed_files(c, p, t, &ok))
-        return ok;
+    if (fxc_changed_files(c, p, t))
+        return true;
     if (!fxc_new_ids(c, p->xa, p->xb) || !fxc_new_ids(c, p->xb, p->xa))
         return false;
     if (fxc_semantic(c, p, t, &ok) || !ok)
@@ -796,6 +813,8 @@ bool fxc_tu_eval(struct fxc *c, const char *path)
         fxc_set(t, true, true, "facts-missing", "no valid before manifest");
     else if (ok && !fxc_coarse(c, &p, t))
         ok = fxc_fine(c, &p, t);
+    if (ok && t->affected && t->broadened)
+        ok = fxc_included_c_seeds(c, &p);
     fxc_pair_free(&p);
     return ok;
 }

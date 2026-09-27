@@ -114,6 +114,17 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
 #define SCX_TAIL_C(gap) "extern int cx_tail;\nint cx_get(void);\n" \
                         "int cx_get(void) { return cx_tail; }\n" gap \
                         "int cx_tail = 1;\n"
+#define SCX_D_END "int cx_size_d(void) { return (int)sizeof(cx_big_t); }\n"
+#define SCX_CALL_D(fn) SCX_D_END "int " fn "(int v);\nint cx_call_d(void);\n" \
+                       "int cx_call_d(void) { return " fn "(4); }\n"
+#define SCX_CTR_UNITY_E SCX_UNITY_E "int cx_ctr_e(void);\n" \
+                        "int cx_ctr_e(void) { return __COUNTER__; }\n"
+#define SCX_UNITY_AB_E SCX_E_END "#define cx_sum cx_e_sum\n" \
+                       "#define cx_hook cx_e_hook\n#include \"cx_c.c\"\n" \
+                       "#undef cx_sum\n#undef cx_hook\n" \
+                       "#define cx_fill cx_e_fill\n#define cx_top_a cx_e_top_a\n" \
+                       "#include \"cx_a.c\"\n#undef cx_fill\n#undef cx_top_a\n"
+#define SCX_TOP_A "int cx_top_a(void) { return cx_twice(cx_sum(1)); }"
 #define SCX_ALL_POS {"position-dependent", "position-dependent", \
                      "position-dependent", "position-dependent", \
                      "position-dependent"}
@@ -365,6 +376,37 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                                "header-unattributed"},
                     .obligations = "",
                     .seeds = {"cx_sum2", "cx_e_sum2", "cx_e_sum"}},
+    /* Re-review A: an includer broadened by a whole-TU rule still seeds. */
+    [SCX_P_CTR_UNITY] = {.name = "p_ctr_unity", .pre = true, .file = SCX_E,
+                         .from = SCX_E_END, .to = SCX_CTR_UNITY_E,
+                         .file2 = SCX_D, .from2 = SCX_D_END,
+                         .to2 = SCX_CALL_D("cx_e_sum")},
+    [SCX_CTR_UNITY] = {.name = "ctr_unity", .before = SCX_P_CTR_UNITY,
+                       .file = SCX_C, .from = "(int)sizeof(s) + CX_SCALE; }",
+                       .to = "(int)sizeof(s) + CX_SCALE + 1; }",
+                       .file2 = SCX_E, .from2 = SCX_E_END,
+                       .to2 = SCX_CTR_UNITY_E, .file3 = SCX_D,
+                       .from3 = SCX_D_END, .to3 = SCX_CALL_D("cx_e_sum"),
+                       .changed = {SCX_C},
+                       .affected = {false, false, true, false, true},
+                       .reason = {NULL, NULL, "source-changed", NULL,
+                                  "position-dependent"},
+                       .obligations = "", .seeds = {"cx_sum", "cx_e_sum"}},
+    /* Re-review B: every changed .c an includer reads seeds it. */
+    [SCX_P_UNITY_AB] = {.name = "p_unity_ab", .pre = true, .file = SCX_E,
+                        .from = SCX_E_END, .to = SCX_UNITY_AB_E},
+    [SCX_UNITY_AB] = {.name = "unity_ab", .before = SCX_P_UNITY_AB,
+                      .file = SCX_C, .from = "(int)sizeof(s) + CX_SCALE; }",
+                      .to = "(int)sizeof(s) + CX_SCALE + 1; }",
+                      .file2 = SCX_A, .from2 = SCX_TOP_A,
+                      .to2 = "int cx_top_a(void) { return cx_twice(cx_sum(2)); }",
+                      .file3 = SCX_E, .from3 = SCX_E_END,
+                      .to3 = SCX_UNITY_AB_E, .changed = {SCX_C, SCX_A},
+                      .affected = {true, false, true, false, true},
+                      .reason = {"source-changed", NULL, "source-changed", NULL,
+                                 "header-unattributed"},
+                      .obligations = "",
+                      .seeds = {"cx_e_sum", "cx_e_top_a"}},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,
@@ -415,6 +457,8 @@ char *scx_text(enum scx_variant v, const char *path, size_t *len)
         return scx_replace(body, e->from, e->to, len);
     if (e->file2 != NULL && strcmp(e->file2, path) == 0)
         return scx_replace(body, e->from2, e->to2, len);
+    if (e->file3 != NULL && strcmp(e->file3, path) == 0)
+        return scx_replace(body, e->from3, e->to3, len);
     *len = strlen(body);
     return zcl_strdup(body, "scx.text");
 }
@@ -491,11 +535,13 @@ bool scx_write_depfiles(const char *root, enum scx_variant v)
         const char *base = strrchr(k_scx_tus[k], '/') + 1;
         size_t len;
         char *text = scx_text(v, k_scx_tus[k], &len);
-        /* a TU that includes cx_c.c reads it too */
+        /* a TU that includes cx_c.c or cx_a.c reads it too */
         bool unity = text != NULL && strstr(text, "#include \"cx_c.c\"") != NULL;
-        int n = snprintf(body, sizeof(body), "build/scx/%.*s.o: %s \\\n %s%s\n",
+        bool unity_a = text != NULL && strstr(text, "#include \"cx_a.c\"") != NULL;
+        int n = snprintf(body, sizeof(body), "build/scx/%.*s.o: %s \\\n %s%s%s\n",
                          (int)(strlen(base) - 2), base, k_scx_tus[k], hdr,
-                         unity ? " \\\n " SCX_C : "");
+                         unity ? " \\\n " SCX_C : "",
+                         unity_a ? " \\\n " SCX_A : "");
         free(text);
         (void)snprintf(rel, sizeof(rel), "build/scx/%.*s.d",
                        (int)(strlen(base) - 2), base);

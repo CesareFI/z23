@@ -61,6 +61,10 @@ enum scx_variant {
     SCX_UNITY_MOVE, /* a comment line moves cx_tail's declaration in cx_e.c's -g1 */
     SCX_P_UNITY2,   /* ...and cx_c.c defines cx_sum2 (__LINE__), cx_e_sum2 there */
     SCX_UNITY2,     /* cx_sum's body, and a line that moves cx_sum2 */
+    SCX_P_CTR_UNITY, /* unity, cx_e.c expands __COUNTER__, cx_d.c calls cx_e_sum */
+    SCX_CTR_UNITY,  /* cx_sum's body: the includer is broadened before any seed */
+    SCX_P_UNITY_AB, /* cx_e.c includes cx_c.c and cx_a.c, renaming both */
+    SCX_UNITY_AB,   /* both bodies change: each included .c seeds */
     SCX_VARIANT_COUNT
 };
 
@@ -68,6 +72,7 @@ struct scx_edit {
     const char *name;         /* fixture directory: <name>/<tu>.zsm */
     const char *file, *from, *to;   /* one exact replacement, or NULL */
     const char *file2, *from2, *to2; /* a second one, or NULL */
+    const char *file3, *from3, *to3; /* a third one, or NULL */
     const char *add_path;     /* a file this variant adds, or NULL */
     const char *add_body;     /* its bytes; NULL: the base header (a shadow) */
     const char *extra_flag;   /* a flag put before k_scx_flags, or NULL */
