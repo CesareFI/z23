@@ -638,12 +638,13 @@ check_root() {
     # that added a source and then failed leaves its object behind; a later
     # tree has no such source, so that object is not part of the tree being
     # proven. Grade only objects whose translation unit (epoch-relative path,
-    # .o -> .c) exists here, and name every other one as foreign. The floors
-    # below count the graded objects only.
+    # .o -> .c) exists here, and name every other one as foreign. A unit
+    # under build/ is generated and recreated by the build, so it is always
+    # graded. The floors below count the graded objects only.
     local obj_rel
     while IFS= read -r -d '' obj; do
         obj_rel="${obj#"$epoch"/}"
-        if [ -f "$root/${obj_rel%.o}.c" ]; then
+        if [ -f "$root/${obj_rel%.o}.c" ] || [ "${obj_rel#build/}" != "$obj_rel" ]; then
             printf '%s\0' "$obj"
         else
             printf '%s\n' "$obj_rel" >&3

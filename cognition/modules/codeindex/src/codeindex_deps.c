@@ -53,6 +53,13 @@
  * stale, and reading them is how this scan came to see 0 of 3,111 live
  * depfiles. `history/` generations are excluded for the same reason.
  *
+ * The live epoch is shared by every tree built into it, so it can hold the
+ * depfile of a translation unit this tree does not have (a failed candidate
+ * added it). A depfile whose primary unit is a source outside build/ that is
+ * absent is foreign: it is hashed but adds no edge and no refusal, and the
+ * scan logs how many it skipped. A present unit's missing or unreadable
+ * input, and an absent generated unit under build/, still refuse.
+ *
  * If build/ is absent (a fresh tree), no edges are produced. An epoch-managed
  * root with no resolvable current epoch contributes nothing and says so.
  * Other I/O failures fail closed. */
@@ -762,6 +769,73 @@ static void note_depfile_rule_gaps(
     }
 }
 
+/* A shared build epoch holds the objects of every tree built into it. A
+ * candidate that added a translation unit and then failed leaves that unit's
+ * depfile behind, and a later tree does not have the unit. Such a depfile is
+ * foreign: it describes no unit of this tree, so it adds no edge and cannot
+ * make this tree's include answer incomplete. Only an ABSENT primary unit
+ * (ENOENT/ENOTDIR) outside build/ makes a depfile foreign. A generated unit
+ * under build/ (a HOT_FORK .resident wrapper, a generated source) is
+ * recreated by the build, so its absence still refuses. A present unit keeps
+ * every check above, including a listed header that is missing. */
+static size_t g_foreign_depfiles;
+static char g_foreign_first[CI_PATH_MAX];
+
+/* The primary unit a depfile names: the first in-tree .c/.cc/.c23
+ * prerequisite of its first rule, repo-relative. */
+static bool depfile_primary_unit(const char *root, const char *text,
+                                 size_t len, char out[CI_PATH_MAX])
+{
+    char token[CI_PATH_MAX];
+    size_t i = 0;
+    while (i < len && text[i] != ':')
+        i++;
+    for (i++; i < len && text[i] != '\n';) {
+        if (text[i] == '\\' && i + 1 < len && text[i + 1] == '\n') {
+            i += 2;
+            continue;
+        }
+        if (!dep_take_token(text, len, &i, token, sizeof token))
+            continue;
+        if ((has_ext(token, ".c") || has_ext(token, ".cc") ||
+             has_ext(token, ".c23")) && to_relpath(root, token, out))
+            return true;
+    }
+    return false;
+}
+
+static bool depfile_unit_foreign(const char *root, const char *text,
+                                 size_t len)
+{
+    char unit[CI_PATH_MAX];
+    char path[CI_PATH_MAX];
+    struct stat st;
+    if (!depfile_primary_unit(root, text, len, unit) ||
+        strncmp(unit, "build/", 6) == 0)
+        return false;
+    int n = snprintf(path, sizeof path, "%s/%s", root, unit);
+    if (n <= 0 || (size_t)n >= sizeof path)
+        return false;
+    errno = 0;
+    return stat(path, &st) != 0 && (errno == ENOENT || errno == ENOTDIR);
+}
+
+static void note_foreign_depfile(const char *relpath)
+{
+    if (g_foreign_depfiles++ == 0)
+        (void)snprintf(g_foreign_first, sizeof g_foreign_first, "%s",
+                       relpath);
+}
+
+static void report_foreign_depfiles(void)
+{
+    if (g_foreign_depfiles > 0)
+        LOG_INFO("codeindex",
+                 "skipped %zu foreign depfile(s) whose translation unit is "
+                 "absent from this tree (first: %s)",
+                 g_foreign_depfiles, g_foreign_first);
+}
+
 static void note_depfile_narrow_safety(
     const char *root, const char *text, size_t len,
     const struct platform_positioned_file_snapshot *dep, ci_dep_cb cb,
@@ -769,6 +843,22 @@ static void note_depfile_narrow_safety(
 {
     note_depfile_incomplete(text, len);
     note_depfile_rule_gaps(root, text, len, dep, cb, user);
+}
+
+/* A foreign depfile is hashed by the caller but adds no edge or refusal. */
+static void scan_depfile_text(
+    const char *root, const char *relpath, char *buf, size_t len,
+    const struct platform_positioned_file_snapshot *dep, ci_dep_cb cb,
+    void *user)
+{
+    g_scan_depfile = relpath;
+    if (depfile_unit_foreign(root, buf, len)) {
+        note_foreign_depfile(relpath);
+    } else {
+        note_depfile_narrow_safety(root, buf, len, dep, cb, user);
+        parse_depfile(root, buf, len, cb, user);
+    }
+    g_scan_depfile = "";
 }
 
 static bool scan_one_depfile(const char *root, const char *relpath,
@@ -824,10 +914,7 @@ static bool scan_one_depfile(const char *root, const char *relpath,
     sha3_256_write(sha, (const unsigned char *)buf, len);
     ci_test_note_exact_bytes((uint64_t)len);
     if (stat_sha) dep_stat_root_add(stat_sha, relpath, &after);
-    g_scan_depfile = relpath;
-    note_depfile_narrow_safety(root, buf, len, &after, cb, user);
-    parse_depfile(root, buf, len, cb, user);
-    g_scan_depfile = "";
+    scan_depfile_text(root, relpath, buf, len, &after, cb, user);
     free(buf);
     return true;
 }
@@ -837,6 +924,8 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
 {
     g_include_narrow_unsafe = 0;
     g_include_narrow_cause[0] = '\0';
+    g_foreign_depfiles = 0;
+    g_foreign_first[0] = '\0';
     dep_edge_root_begin();
     if (!root || !exact_out)
         LOG_FAIL("codeindex", "null arg to deps_scan");
@@ -875,6 +964,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
     dep_paths_free(&paths);
     if (!ok)
         LOG_FAIL("codeindex", "scan depfiles failed");
+    report_foreign_depfiles();
     sha3_256_finalize(&sha, exact_out);
     dep_edge_root_end();
     if (stat_out) sha3_256_finalize(&stat_sha, stat_out);
