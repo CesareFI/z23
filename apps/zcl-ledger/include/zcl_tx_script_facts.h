@@ -36,6 +36,22 @@ typedef struct {
 typedef bool (*zcl_tx_output_visitor)(void *context,
                                       const zcl_tx_output *output);
 
+typedef struct {
+    uint32_t index;
+    const uint8_t *previous_txid;
+    uint32_t previous_output_index;
+    const uint8_t *script;
+    size_t script_length;
+    uint32_t sequence;
+} zcl_tx_input;
+
+typedef bool (*zcl_tx_input_visitor)(void *context,
+                                     const zcl_tx_input *input);
+
+/* Visits every transparent input after validating the complete v4 wire. */
+int zcl_tx_inputs_visit(const uint8_t *wire, size_t length,
+                        zcl_tx_input_visitor visitor, void *context);
+
 /* Visits every transparent output after validating the complete wire. */
 int zcl_tx_outputs_visit(const uint8_t *wire, size_t length,
                           zcl_tx_output_visitor visitor, void *context);

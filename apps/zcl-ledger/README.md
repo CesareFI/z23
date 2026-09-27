@@ -126,9 +126,14 @@ consensus validity. With `--blue`, it also compares the Blue's independent
 digest. Both digest values are review data, not signatures or approval.
 The C23 ZIP-243 library also computes SIGHASH_ALL for a selected transparent
 input when given its spent output's scriptCode and amount. Its result matched
-ZIP 243's published transparent test vector. Z23 does not yet validate the
-provenance of those spent-output facts or expose a transparent payment signing
-command, so this digest alone is not payment authorization.
+ZIP 243's published transparent test vector. The separate C23 host preflight
+binds supplied v4 previous transactions to P2PKH inputs by SHA-256d txid,
+derives their amounts and scripts, checks every output type, and calculates
+the fee. Its input-specific digest uses those hash-bound bytes. It does not
+prove that a prevout is unspent, mature, included in the accepted chain, or
+owned by the selected Ledger path. The Blue has not verified these facts and
+no transparent payment signing command exists, so this digest grants no
+payment authority.
 The optional `--blue` mode sends at most 2,304 transaction bytes to the
 [ZCL Review app](device-blue-review/README.md), verifies its review-only
 identity, and requires its structural summary and transaction SHA-256 digest

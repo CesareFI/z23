@@ -117,6 +117,34 @@ future payment app to approve a transaction. A device approval must bind
 the displayed recipient, amount, fee, account, and network to the exact
 transaction bytes and the resulting signature.
 
+## Transparent input provenance gate
+
+[`zcl_tx_prevout.h`](include/zcl_tx_prevout.h) is a C23 host preflight for
+unsigned, all-transparent v4 transactions with up to 16 P2PKH inputs and
+standard P2PKH/P2SH outputs. The caller supplies each complete previous v4
+transaction in input order. Preflight parses those transactions, computes
+each SHA-256d txid, compares the exact outpoint bytes, selects the indexed
+P2PKH output, rejects duplicate outpoints, and calculates input total,
+output total, and fee. Its hash-bound ZIP-243 digest takes script and amount
+from that selected output. The tests compare the double hash of ZIP 243's
+published vector 3 with its published txid, check a synthetic fee and input
+digest, and reject mismatches and truncated encodings.
+
+A previous transaction matching an outpoint does not prove the output is
+unspent, mature, on the accepted ZCL chain, or controlled by the selected
+Ledger account. The caller-provided branch ID also needs consensus-height
+validation. The Review app cannot verify previous transactions and cannot
+sign. This preflight must not set `signing_ready` or supply approval text to
+a signer. The next device design must stream authenticated prevout evidence,
+derive change scripts from its own key path, independently display every
+output and fee, and bind final approval to its own digest computation.
+
+For parser fuzzing with the published transparent fixture as the initial
+corpus, build `fuzz-zcl-tx` with Clang Debug and `ZCL_LEDGER_FUZZ=ON`, then
+run it locally with a fixed seed. The fuzzer checks that complete-transaction
+parsing, input/output visitors, script classification, and ZIP-243 hashing
+agree on accepted v4 bytes. It does not fuzz BOLOS or prove consensus parity.
+
 Review 0.4.0 passed local tests but stopped answering USB and EXIT on the
 dedicated Blue. It was deleted after a restart and its installer hash was
 removed. Version 0.4.3 adds font-size and palette controls to the offline

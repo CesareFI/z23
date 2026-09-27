@@ -46,14 +46,30 @@ static bool read_u64(cursor *input, uint64_t *value) {
     return true;
 }
 
-static bool skip_inputs(cursor *input) {
+static uint32_t read_u32_bytes(const uint8_t *bytes) {
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static bool read_inputs(cursor *input, zcl_tx_input_visitor visitor,
+                        void *context) {
     uint64_t count;
-    const uint8_t *bytes;
-    size_t length;
     if (!compact_size(input, &count) || count > 65536) return false;
-    for (uint64_t i = 0; i < count; ++i)
-        if (!take(input, 36, &bytes) || !script(input, &bytes, &length) ||
-            !take(input, 4, &bytes)) return false;
+    for (uint64_t i = 0; i < count; ++i) {
+        const uint8_t *outpoint, *script_bytes, *sequence;
+        size_t script_length;
+        if (!take(input, 36, &outpoint) ||
+            !script(input, &script_bytes, &script_length) ||
+            !take(input, 4, &sequence)) return false;
+        zcl_tx_input parsed = {
+            .index = (uint32_t)i,
+            .previous_txid = outpoint,
+            .previous_output_index = read_u32_bytes(outpoint + 32),
+            .script = script_bytes, .script_length = script_length,
+            .sequence = read_u32_bytes(sequence)
+        };
+        if (visitor && !visitor(context, &parsed)) return false;
+    }
     return true;
 }
 
@@ -109,8 +125,18 @@ int zcl_tx_outputs_visit(const uint8_t *wire, size_t length,
                                          &(zcl_tx_review){0}) < 0)
         return -1;
     cursor input = {.wire = wire, .length = length, .offset = 8};
-    return skip_inputs(&input) && read_outputs(&input, visitor, context) ?
+    return read_inputs(&input, NULL, NULL) &&
+           read_outputs(&input, visitor, context) ?
         0 : -1;
+}
+
+int zcl_tx_inputs_visit(const uint8_t *wire, size_t length,
+                        zcl_tx_input_visitor visitor, void *context) {
+    if (!visitor || zcl_tx_review_parse(wire, length,
+                                         &(zcl_tx_review){0}) < 0)
+        return -1;
+    cursor input = {.wire = wire, .length = length, .offset = 8};
+    return read_inputs(&input, visitor, context) ? 0 : -1;
 }
 
 static bool collect_fact(void *context, const zcl_tx_output *output) {
