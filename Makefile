@@ -4489,7 +4489,7 @@ dev-proof-bundle: $(TEST_PARALLEL_FAST_CANDIDATE) dev-bin $(DEV_RESTART_PLAN) zc
 # graph schedules independent tools together under the dev+test-fast profiles.
 dev-proof-bundle-prefork: dev-proof-bundle proof-lint-prebuild \
 	zcl-nodectl zclassic23-acme fbsh engine-unit tools/file_size_policy \
-	fleet-board-bridge git-hook build/bin/z23-lint
+	fleet-board-bridge git-hook install-hooks build/bin/z23-lint
 
 # Closed historical-failure corpus required by build_release_confirmation.v2.
 # This focused physical gate is uncached and exact; release qualification also
