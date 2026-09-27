@@ -37,17 +37,22 @@ int main(int argc, char **argv) {
     memset(output.hash160, 0x11, 20);
     blue_payment_screen screen;
     char expected[ZCL_ADDRESS_SIZE];
-    uint8_t account_hash160[20];
+    uint8_t account_hash160[20], internal_hash160[20];
+    memset(internal_hash160, 0x33, sizeof internal_hash160);
     memcpy(account_hash160, output.hash160, sizeof account_hash160);
-    assert(blue_payment_account_classify(&output, account_hash160, true) ==
+    assert(blue_payment_account_classify(&output, account_hash160,
+        internal_hash160, true) ==
            BLUE_PAYMENT_THIS_ACCOUNT);
     account_hash160[19] ^= 1;
-    assert(blue_payment_account_classify(&output, account_hash160, true) ==
+    assert(blue_payment_account_classify(&output, account_hash160,
+        internal_hash160, true) ==
            BLUE_PAYMENT_OTHER_P2PKH);
     account_hash160[19] ^= 1;
-    assert(blue_payment_account_classify(&output, account_hash160, false) ==
+    assert(blue_payment_account_classify(&output, account_hash160,
+        internal_hash160, false) ==
            BLUE_PAYMENT_ACCOUNT_UNKNOWN);
-    assert(blue_payment_account_classify(NULL, account_hash160, true) ==
+    assert(blue_payment_account_classify(NULL, account_hash160,
+        internal_hash160, true) ==
            BLUE_PAYMENT_ACCOUNT_UNKNOWN);
     assert(zcl_address_from_hash160(output.hash160, false, expected) == 0);
     assert(blue_payment_screen_format(&output, 2, digest, &screen));
@@ -56,24 +61,37 @@ int main(int argc, char **argv) {
     assert(strcmp(screen.kind, "P2PKH") == 0);
     check_address(&screen, expected);
     assert(blue_payment_screen_mark_account(&screen, &output,
-        account_hash160, true));
+        account_hash160, internal_hash160, true));
     assert(strcmp(screen.kind, "THIS ACCOUNT") == 0);
     if (argc == 3) assert(blue_payment_render_png(argv[1], &screen, false));
     account_hash160[0] ^= 1;
     assert(blue_payment_screen_mark_account(&screen, &output,
-        account_hash160, true));
+        account_hash160, internal_hash160, true));
     assert(strcmp(screen.kind, "OTHER ADDRESS") == 0);
     account_hash160[0] ^= 1;
+    memcpy(output.hash160, internal_hash160, sizeof output.hash160);
+    assert(zcl_address_from_hash160(output.hash160, false, expected) == 0);
+    assert(blue_payment_screen_format(&output, 2, digest, &screen));
+    assert(blue_payment_screen_mark_account(&screen, &output,
+        account_hash160, internal_hash160, true));
+    assert(strcmp(screen.kind, "OWN INTERNAL 1/0") == 0);
+    check_address(&screen, expected);
+    if (argc == 4) assert(blue_payment_render_png(argv[3], &screen, true));
+    assert(!blue_payment_screen_mark_account(&screen, &output,
+        account_hash160, NULL, true));
+    assert(screen.kind[0] == 0);
 
     output.index = 1;
     output.amount_zat = 2100000000000000ULL;
     output.type = ZCL_TX_STREAM_P2SH;
     memset(output.hash160, 0x22, 20);
     memcpy(account_hash160, output.hash160, sizeof account_hash160);
-    assert(blue_payment_account_classify(&output, account_hash160, true) ==
+    assert(blue_payment_account_classify(&output, account_hash160,
+        internal_hash160, true) ==
            BLUE_PAYMENT_P2SH_ADDRESS);
     output.type = (zcl_tx_stream_output_type)99;
-    assert(blue_payment_account_classify(&output, account_hash160, true) ==
+    assert(blue_payment_account_classify(&output, account_hash160,
+        internal_hash160, true) ==
            BLUE_PAYMENT_ACCOUNT_UNKNOWN);
     output.type = ZCL_TX_STREAM_P2SH;
     assert(zcl_address_from_hash160(output.hash160, true, expected) == 0);
@@ -83,12 +101,12 @@ int main(int argc, char **argv) {
     assert(strcmp(screen.kind, "P2SH") == 0);
     check_address(&screen, expected);
     assert(blue_payment_screen_mark_account(&screen, &output,
-        account_hash160, true));
+        account_hash160, internal_hash160, true));
     assert(strcmp(screen.kind, "P2SH ADDRESS") == 0);
     if (argc == 3) assert(blue_payment_render_png(argv[2], &screen, true));
 
     assert(!blue_payment_screen_mark_account(&screen, NULL,
-        account_hash160, true));
+        account_hash160, internal_hash160, true));
     assert(screen.kind[0] == 0);
 
     assert(!blue_payment_screen_format(&output, 0, digest, &screen));

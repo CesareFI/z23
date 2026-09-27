@@ -16,7 +16,7 @@ static bool draw_details(blue_bagl_canvas *canvas,
     uint32_t background) {
     if (!draw(canvas, screen->title, 25, BLUE_BAGL_TEXT_22,
               foreground, background) ||
-        !draw(canvas, screen->kind, 68, BLUE_BAGL_TEXT_14,
+        !draw(canvas, screen->kind, 68, BLUE_BAGL_TEXT_22,
               foreground, background) ||
         !draw(canvas, screen->amount, 115, BLUE_BAGL_TEXT_22,
               foreground, background) ||

@@ -164,11 +164,11 @@ static const bagl_element_t error_ui[] = {
 #undef TEXT
 #undef ACCENT
 
-static bool derive_public_key(void) {
-    static const unsigned int path[] = {
-        0x8000002c, 0x80000093, 0x80000000, 0, 0
+static bool derive_public_key(unsigned int chain, uint8_t compressed[33]) {
+    const unsigned int path[] = {
+        0x8000002c, 0x80000093, 0x80000000, chain, 0
     };
-    if (!os_global_pin_is_validated()) return false;
+    if (!compressed || chain > 1 || !os_global_pin_is_validated()) return false;
     os_perso_derive_node_bip32(CX_CURVE_256K1, path, 5,
                                 secret.raw, secret.chain);
     cx_ecfp_init_private_key(CX_CURVE_256K1, secret.raw, 32, &secret.key);
@@ -179,20 +179,24 @@ static bool derive_public_key(void) {
     wipe(&secret, sizeof secret);
     if (generated != 0 || public_key.W_len != 65 || public_key.W[0] != 4)
         return false;
-    wallet_state.public_key[0] = (uint8_t)(2u | (public_key.W[64] & 1u));
-    memcpy(wallet_state.public_key + 1, public_key.W + 1, 32);
+    compressed[0] = (uint8_t)(2u | (public_key.W[64] & 1u));
+    memcpy(compressed + 1, public_key.W + 1, 32);
     wipe(&public_key, sizeof public_key);
     return true;
 }
 
+static bool public_hash160(const uint8_t compressed[33], uint8_t hash160[20]) {
+    uint8_t digest[32];
+    cx_ripemd160_t ripemd;
+    return cx_hash_sha256(compressed, 33, digest) == 32 &&
+        cx_ripemd160_init(&ripemd) == CX_RIPEMD160 &&
+        cx_hash(&ripemd.header, CX_LAST, digest, sizeof digest,
+                hash160) == 20;
+}
+
 static bool format_receive_address(void) {
     uint8_t digest[32], checksum[32], payload[26];
-    cx_ripemd160_t ripemd;
-    if (cx_hash_sha256(wallet_state.public_key,
-                       sizeof wallet_state.public_key, digest) != 32 ||
-        cx_ripemd160_init(&ripemd) != CX_RIPEMD160 ||
-        cx_hash(&ripemd.header, CX_LAST, digest, sizeof digest,
-                payload + 2) != 20) return false;
+    if (!public_hash160(wallet_state.public_key, payload + 2)) return false;
     payload[0] = 0x1c;
     payload[1] = 0xb8;
     if (cx_hash_sha256(payload, 22, digest) != 32 ||
@@ -201,7 +205,13 @@ static bool format_receive_address(void) {
     if (zcl_base58_encode(payload, sizeof payload, receive_address,
                            sizeof receive_address) < 0 ||
         !blue_wallet_receive_split(receive_address, address_lines)) return false;
-    wallet_payment_set_account_hash(payload + 2);
+    uint8_t internal_public[33], internal_hash160[20];
+    bool valid = derive_public_key(1, internal_public) &&
+        public_hash160(internal_public, internal_hash160);
+    wipe(internal_public, sizeof internal_public);
+    if (!valid) return false;
+    wallet_payment_set_account_hashes(payload + 2, internal_hash160);
+    wipe(internal_hash160, sizeof internal_hash160);
     return true;
 }
 
@@ -316,7 +326,8 @@ __attribute__((section(".boot"))) int main(void) {
             io_seproxyhal_init();
             USB_power(0);
             USB_power(1);
-            wallet_state.address_ready = derive_public_key() &&
+            wallet_state.address_ready =
+                derive_public_key(0, wallet_state.public_key) &&
                                          format_receive_address();
             if (!wallet_state.address_ready) {
                 wipe(wallet_state.public_key, sizeof wallet_state.public_key);

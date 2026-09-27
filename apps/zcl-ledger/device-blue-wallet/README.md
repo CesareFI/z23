@@ -2,13 +2,17 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.6 derives
+Version 0.2.7 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
 validates that point on secp256k1, and independently computes the address.
 The owner must compare all 35 characters with the Blue display before using
-the address. EXIT returns to the home screen.
+the address. The app also derives the public hash for
+`m/44'/147'/0'/1/0` and identifies an exact output match as `OWN INTERNAL
+1/0`. The output label uses a larger 22-pixel font. It does not call that
+output change because input ownership is not proven. EXIT returns to the
+home screen.
 
 The same app now has read-only transaction review commands. It accepts an
 unsigned, all-transparent v4 transaction in three complete passes, pauses
@@ -22,7 +26,7 @@ outputs. For each bound input it also returns a device-computed ZIP-243
 SIGHASH_ALL digest using that previous output's exact script and amount, the
 reviewed spending wire, and the supplied branch ID. Z23 compares each digest
 with its independent host calculation. The Blue does not verify that the
-branch ID is active, nor chain inclusion, UTXO status, maturity, or
+branch ID is active, nor chain inclusion, UTXO status, maturity, or input
 ownership. There is no USB output acknowledgement, payment signature,
 private-key export, path selection, Sapling spend, multisig, or token command.
 The fee page therefore says `CHAIN UNCHECKED`, `BRANCH UNCHECKED`, and
@@ -40,7 +44,7 @@ Version 0.2.4 labels an exact P2PKH hash match to the
 Blue-derived fixed account as “THIS ACCOUNT,” other P2PKH outputs as “OTHER
 ADDRESS,” and P2SH outputs as “P2SH ADDRESS.” It does not infer ownership of
 P2SH or call an output change without verified inputs and account context.
-Version 0.2.6 remains uninstalled. Do not receive funds or sign payments with it.
+Version 0.2.7 remains uninstalled. Do not receive funds or sign payments with it.
 
 ## Build
 
@@ -65,12 +69,12 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.6 image has 30,464 bytes of `.text`, 5,180
+512-byte margin. The linked 0.2.7 image has 30,720 bytes of `.text`, 5,204
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
-stack; 964 bytes remain after that section in the 6,144-byte app SRAM
+stack; 940 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 680 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced `.text`
-SHA-256 `fdecd676292997d1733e992d6baad0ceda8b9949513404188d21d54f1e8bb68d`.
+SHA-256 `1eb30e77666749dedfe371c9cc1756d8658ef36b161bfae135ab7e2638130d2b`.
 The [digest experiment](../../../docs/experiments/2026-09-27-ledger-blue-device-digests.md)
 records the tests and limits.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,

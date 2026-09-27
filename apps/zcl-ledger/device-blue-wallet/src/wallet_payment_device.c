@@ -14,11 +14,14 @@ static bool visible;
 static uint8_t displayed_view;
 static char fee_text[32];
 static uint8_t account_hash160[20];
+static uint8_t internal_hash160[20];
 static bool account_ready;
 
-void wallet_payment_set_account_hash(const uint8_t hash160[20]) {
-    if (!hash160) return;
-    memcpy(account_hash160, hash160, sizeof account_hash160);
+void wallet_payment_set_account_hashes(const uint8_t external_hash160[20],
+                                       const uint8_t internal_hash[20]) {
+    if (!external_hash160 || !internal_hash) return;
+    memcpy(account_hash160, external_hash160, sizeof account_hash160);
+    memcpy(internal_hash160, internal_hash, sizeof internal_hash160);
     account_ready = true;
 }
 
@@ -129,7 +132,7 @@ static unsigned int ended_ui_button(unsigned int mask, unsigned int count) {
 static const bagl_element_t output_ui[] = {
     BACKGROUND,
     LABEL(25, payment.screen.title, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
-    LABEL(68, payment.screen.kind, BAGL_FONT_OPEN_SANS_LIGHT_14px),
+    LABEL(68, payment.screen.kind, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     LABEL(115, payment.screen.amount, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     LABEL(172, "ZCL MAINNET ADDRESS", BAGL_FONT_OPEN_SANS_LIGHT_14px),
     LABEL(208, payment.screen.address_lines[0],
@@ -191,7 +194,8 @@ void wallet_payment_display(void) {
     displayed_view = view;
     if (view == 2) {
         if (!blue_payment_screen_mark_account(&payment.screen,
-                &payment.review.output, account_hash160, account_ready)) {
+                &payment.review.output, account_hash160,
+                internal_hash160, account_ready)) {
             wallet_payment_abort();
             UX_DISPLAY(ended_ui, NULL);
             return;
