@@ -1273,6 +1273,55 @@ static int smt_t_sensor_home_guard(void)
     return failures;
 }
 
+/* Driver spellings that select a non-C language (or another driver) without
+ * -x. Each must refuse with the language reason and leave no manifest, on
+ * every host: the AST walk would otherwise describe a C++ or Objective-C
+ * parse as C, since a plain declaration reports CXLanguage_C either way. */
+static bool smt_language_refuses(const char *dir, const char *const *flags)
+{
+    char out[PATH_MAX], message[4096];
+    const char *argv[16] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                            "alias.c", "--out", out, "--"};
+    bool timed_out = false;
+    struct stat sb;
+    size_t n = 9;
+    (void)snprintf(out, sizeof(out), "%s/alias.bin", dir);
+    for (size_t k = 0; flags[k] != NULL && n < 15; k++)
+        argv[n++] = flags[k];
+    argv[n] = NULL;
+    int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                               60000, &timed_out);
+    bool refused = !timed_out && rc != 0 &&
+                   strstr(message, "unsupported translation-unit language") != NULL;
+    bool absent = stat(out, &sb) != 0 && errno == ENOENT;
+    if (!refused || !absent)
+        printf("  language alias %s: rc=%d absent=%d: %s\n", flags[0], rc,
+               (int)absent, message);
+    (void)unlink(out);
+    return refused && absent;
+}
+
+static int smt_t_sensor_language_aliases(void)
+{
+    int failures = 0;
+    char dir[1024] = {0};
+    static const char *const cases[][3] = {
+        {"--language", "c++", NULL}, {"--language=c++", NULL, NULL},
+        {"-ObjC", NULL, NULL},       {"-ObjC++", NULL, NULL},
+        {"--driver-mode=g++", NULL, NULL}, {"--std=c11", NULL, NULL},
+        {"--std", "c11", NULL},
+    };
+    TEST_CASE("semantic_sensor: refuses driver spellings of a non-C language") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_alias") != NULL);
+        ASSERT(smt_write(dir, "alias.c", "int alias_value(int x) { return x; }\n"));
+        for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++)
+            ASSERT(smt_language_refuses(dir, cases[k]));
+    } TEST_END
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
 #if defined(__APPLE__)
 /* Exercise the Apple libclang type-spelling adapter with facts enabled, so
  * these assertions also require a verified, nonzero producer identity. */
@@ -1657,6 +1706,7 @@ int test_semantic_sensor(void)
     failures += smt_t_sensor_invariance(&r);
     failures += smt_t_sensor_seeds(&r);
     failures += smt_t_sensor_home_guard();
+    failures += smt_t_sensor_language_aliases();
 #if defined(__APPLE__)
     failures += smt_t_darwin_types();
     failures += smt_t_darwin_refusals();

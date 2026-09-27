@@ -59,12 +59,25 @@ struct cm_args {
     size_t nidentity;
 };
 
+/* A plain declaration reports CXLanguage_C under C++ and Objective-C too, so
+ * the argv check is the language guard. Driver aliases of -x and -std, the
+ * Objective-C switches and a driver mode (clang++ parses .c as C++) are
+ * refused with the escapes rather than modeled. */
 static bool cm_indirect_mode_arg(const char *a)
 {
-    return a[0] == '@' || strcmp(a, "-Xclang") == 0 ||
-           strcmp(a, "-Xpreprocessor") == 0 || strcmp(a, "-cc1") == 0 ||
-           strcmp(a, "--config") == 0 || strncmp(a, "--config=", 9) == 0 ||
-           strcmp(a, "-config") == 0 || strncmp(a, "-config=", 8) == 0;
+    static const char *const exact[] = {"-Xclang", "-Xpreprocessor", "-cc1",
+                                        "--config", "-config", "-ObjC",
+                                        "-ObjC++"};
+    static const char *const prefix[] = {"@", "--config=", "-config=",
+                                         "--language", "--std",
+                                         "--driver-mode"};
+    for (size_t k = 0; k < sizeof(exact) / sizeof(exact[0]); k++)
+        if (strcmp(a, exact[k]) == 0)
+            return true;
+    for (size_t k = 0; k < sizeof(prefix) / sizeof(prefix[0]); k++)
+        if (strncmp(a, prefix[k], strlen(prefix[k])) == 0)
+            return true;
+    return false;
 }
 
 static bool cm_scan_language_flags(struct cm_core *c,
