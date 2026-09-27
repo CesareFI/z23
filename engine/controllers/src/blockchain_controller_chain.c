@@ -42,6 +42,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "validation/chainstate.h"
+#include "validation/main_logic.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 
@@ -117,6 +118,8 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     int header_height = best_hdr ? best_hdr->nHeight : 0;
     json_push_kv_int(result, "headers", header_height);
     json_push_kv_int(result, "best_header_height", header_height);
+    json_push_kv_bool(result, "initialblockdownload",
+                      is_initial_block_download(ctx->main_state));
 
     if (tip && tip->phashBlock) {
         char hex[65];

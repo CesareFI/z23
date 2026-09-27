@@ -78,7 +78,8 @@ build/zcl-ledger/zcl-blue-payment-sim 76b809bb /tmp/zcl-unsigned-fixture.bin /tm
 PREVIOUS_TX.bin...` is a read-only physical review driver for an installed
 compatible Wallet. Supply the path to Z23's local C23 `zcl-rpc` executable
 and one complete previous transaction per input, in input order. It requires
-a mainnet tip caught up to its local headers from `getblockchaininfo`, derives
+`getblockchaininfo` to report mainnet, equal block and header heights, and
+`initialblockdownload:false`, then derives
 the intended next height and branch, and preflights every outpoint against
 those bytes. It also queries `gettxdetail` for each input and requires an
 unspent output with the same amount and script length, a confirmed height,

@@ -13,7 +13,7 @@
 
 static const char good[] =
     "{\"result\":{\"chain\":\"main\",\"blocks\":707001,"
-    "\"headers\":707001,\"bestblockhash\":"
+    "\"headers\":707001,\"initialblockdownload\":false,\"bestblockhash\":"
     "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
     "\"error\":null,\"id\":1}";
 static const char txid[] =
@@ -97,8 +97,14 @@ int main(int argc, char **argv) {
                                 "\"blocks\":707001,\"blocks\":707001,"));
     assert(!accepts_replacement("\"headers\":707001,",
                                 "\"headers\":707002,"));
-    assert(!accepts_replacement("\"headers\":707001,",
-                                "\"headers\":707001,\"initialblockdownload\":true,"));
+    assert(!accepts_replacement("\"initialblockdownload\":false,", ""));
+    assert(!accepts_replacement("\"initialblockdownload\":false",
+                                "\"initialblockdownload\":true"));
+    assert(!accepts_replacement("\"initialblockdownload\":false",
+                                "\"initialblockdownload\":null"));
+    assert(!accepts_replacement("\"initialblockdownload\":false,",
+                                "\"initialblockdownload\":false,"
+                                "\"initialblockdownload\":false,"));
     assert(!accepts_replacement("\"error\":null", "\"error\":{}"));
     assert(!accepts_replacement("abcdef", "abcdeg"));
     assert(!accepts_replacement("\"chain\":\"main\",", ""));

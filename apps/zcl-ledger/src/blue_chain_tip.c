@@ -51,7 +51,7 @@ static bool mainnet_identity(const struct json_value *result) {
     return chain && chain->type == JSON_STR &&
         strcmp(chain->val.s, "main") == 0 && hash &&
         hash->type == JSON_STR && hex_hash(hash->val.s) &&
-        (!ibd || (ibd->type == JSON_BOOL && !ibd->val.b));
+        ibd && ibd->type == JSON_BOOL && !ibd->val.b;
 }
 
 static bool synced_next_height(const struct json_value *result,
