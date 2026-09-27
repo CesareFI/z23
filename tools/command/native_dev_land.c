@@ -43,7 +43,8 @@
  *   wt/             the private landing worktree, created once and reused.
  *   logs/           one log per attempt; a failure row names its log.
  *                   logs/precheck.log: one line per queued row the
- *                   queued-row conflict precheck replayed, and its verdict.
+ *                   queued-row conflict precheck replayed, and its verdict
+ *                   or why it has none; bounded per row per observed main.
  * Every outcome also posts a note to the mail leaf (which appends it to
  * <platform_state_root>/mail/outbox.jsonl with the mail seq space) when
  * that directory exists, so an agent learns the result by pulling its mail
@@ -57,8 +58,11 @@
  * conflict | rebased | queued (a moving-main successor); cancel
  * {seq, state:"cancelled"}.
  * A step that leaves a row in flight also reports queued_prechecked (queued
- * rows replayed onto the main it observed) and queued_conflicts (rows it
- * ended as conflict "detected while queued"); see the precheck section.
+ * rows replayed onto the main it observed), queued_conflicts (rows it
+ * ended as conflict "detected while queued"), queued_uncertain (rows it
+ * replayed without a certain answer, left queued and unmarked) and
+ * queued_unchecked (rows due a check that the per-beat row cap or deadline
+ * left for a later beat); see the precheck section.
  *
  * STEER. status fills one steer object for the row step would pick
  * (the in-flight row, else the oldest queued row, else explicit none):
@@ -677,6 +681,11 @@ struct dl_row {
      * replay it again until main moves. A cache, never authority: empty or
      * malformed only means "not checked yet". */
     char prechecked[80];
+    /* Uncertain precheck answers against `uncertain_main`; at
+     * DL_PRECHECK_TRIES the check leaves the row alone until main moves.
+     * Also a cache: empty or malformed reads as "no answers yet". */
+    char uncertain_main[80];
+    long long uncertain_tries;
 };
 
 static bool dl_row_json_ok(const char *line, long long *priority,
@@ -799,6 +808,14 @@ static void dl_prechecked_parse(const char *line, struct dl_row *r)
                      sizeof(r->prechecked)) ||
         !dl_sha_ok(r->prechecked))
         r->prechecked[0] = '\0';
+    if (!dl_line_str(line, "precheck_uncertain_main", r->uncertain_main,
+                     sizeof(r->uncertain_main)) ||
+        !dl_sha_ok(r->uncertain_main) ||
+        !dl_line_int(line, "precheck_uncertain", &r->uncertain_tries) ||
+        r->uncertain_tries < 0) {
+        r->uncertain_main[0] = '\0';
+        r->uncertain_tries = 0;
+    }
 }
 
 static bool dl_parse_row(const char *line, struct dl_row *r)
@@ -946,7 +963,9 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                  "\"remote_tip\":\"%s\",\"remote_source\":\"%s\","
                  "\"remote_signer\":\"%s\",\"remote_signature\":\"%s\","
                  "\"dimension\":\"%s\",\"log_path\":\"%s\","
-                 "\"prechecked_main\":\"%s\",\"detail\":\"%s\"}\n",
+                 "\"prechecked_main\":\"%s\","
+                 "\"precheck_uncertain_main\":\"%s\","
+                 "\"precheck_uncertain\":%lld,\"detail\":\"%s\"}\n",
                  r->seq, r->priority_seq, e_ts, e_tip, e_wt, e_note, e_state, e_phase,
                  r->attempt, r->started, e_base, e_local, e_tree, e_intent,
                  e_pushed, p.target, p.proof, p.bundle, p.signer, p.signature,
@@ -954,7 +973,8 @@ static bool dl_encode_row(const struct dl_row *r, char *out, size_t cap,
                  p.remote_signature,
                  /* Unescaped on purpose: dl_prechecked_parse() and the
                   * precheck admit only a 40-hex commit id or "". */
-                 e_dim, e_log, r->prechecked, e_detail);
+                 e_dim, e_log, r->prechecked, r->uncertain_main,
+                 r->uncertain_tries, e_detail);
     if (w <= 0 || (size_t)w >= cap)
         return false;
     if (len_out)
@@ -6615,10 +6635,21 @@ static void dl_test_die_after_proof(void)
  * the main observed now; the in-flight row may still change main before
  * the queued row's turn, exactly as for any rebase that ran now.
  *
- * BOUNDS. At most DL_PRECHECK_ROWS rows are replayed per beat, and a row
- * is replayed at most once per observed main once it has a settled
- * verdict: every beat is a fresh process, so the main a row was last
- * checked against is kept in the row (`prechecked_main`). Nothing is
+ * BOUNDS. Rows are taken in the order dl_step_pick_row() will start them
+ * (priority, then seq), at most DL_PRECHECK_ROWS per beat, and the whole
+ * check stops at a DL_PRECHECK_BUDGET_MS wall-clock deadline that every
+ * git spawn inside it is also held to: a row not reached is left exactly
+ * as it is, and a replay the deadline cut short is uncertain (one of the
+ * row's tries below, so no replay too slow for any beat holds every
+ * beat). A row is replayed at most once per observed main once it has a
+ * settled verdict, and at most DL_PRECHECK_TRIES times per observed main
+ * while it stays uncertain, after which one log line says it is left to
+ * its real rebase until main moves: every beat is a fresh process, so
+ * both are kept in the row (`prechecked_main`, `precheck_uncertain_main`
+ * and `precheck_uncertain`), and precheck.log grows by a bounded number
+ * of lines per row per main. MERGE ATTRIBUTES come from the commit each
+ * replay merges onto, as they do for the rebase pick (see
+ * dl_precheck_merge()), never from the landing checkout. Nothing is
  * fetched, nothing is pushed, and the landing worktree's index and
  * checkout — which a running proof may be reading — are never touched:
  * merge-tree and commit-tree only add objects, and a multi-commit replay
@@ -6628,13 +6659,32 @@ static void dl_test_die_after_proof(void)
 
 #define DL_PRECHECK_ROWS 4
 #define DL_PRECHECK_COMMITS 64
-#define DL_PRECHECK_GIT_MS (2 * 60 * 1000)
+/* One beat's whole precheck, every git spawn inside it included, ends by
+ * this wall-clock budget, so step.lock is never held for minutes on the
+ * check's account. */
+#define DL_PRECHECK_BUDGET_MS 20000
+/* Uncertain answers a row may give against one observed main before the
+ * check leaves it alone until main moves. */
+#define DL_PRECHECK_TRIES 3
 
 enum dl_precheck {
     DL_PRECHECK_UNCERTAIN = 0, /* unmarked; the next beat asks again */
     DL_PRECHECK_CLEAN,
     DL_PRECHECK_DEFERRED,      /* settled, not a conflict: real rebase */
     DL_PRECHECK_CONFLICT,
+};
+
+/* One beat's check: where it runs, the main it replays onto, the deadline
+ * every spawn is held to, the shared git capture and the current row's
+ * verdict reason. */
+struct dl_pc {
+    const struct dl_dirs *d;
+    const char *main;
+    int64_t deadline;
+    bool expired;
+    char *buf;
+    size_t cap;
+    char why[DL_REGEN_PATHS_CAP + 128];
 };
 
 static const char *dl_precheck_word(enum dl_precheck v)
@@ -6662,6 +6712,20 @@ static bool dl_precheck_tool_fail(void)
 #endif
 }
 
+/* The beat's budget. A test or dev build may only shorten it, down to
+ * zero, to reach the deadline path without waiting it out. */
+static int64_t dl_precheck_budget_ms(void)
+{
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+    const char *s = getenv("ZCL_LAND_TEST_PRECHECK_BUDGET_MS");
+    char *end = NULL;
+    long long v = s && s[0] ? strtoll(s, &end, 10) : -1;
+    if (end && *end == '\0' && v >= 0 && v < DL_PRECHECK_BUDGET_MS)
+        return v;
+#endif
+    return DL_PRECHECK_BUDGET_MS;
+}
+
 static void dl_precheck_log(const struct dl_dirs *d, const char *line)
 {
     char path[4096 + 32];
@@ -6685,17 +6749,55 @@ static void dl_precheck_note(const struct dl_dirs *d, const struct dl_row *row,
     dl_precheck_log(d, line);
 }
 
-static enum dl_precheck dl_precheck_uncertain(char *why, size_t why_cap,
+static enum dl_precheck dl_precheck_uncertain(struct dl_pc *pc,
                                               const char *reason)
 {
-    (void)snprintf(why, why_cap, "%s", reason);
+    (void)snprintf(pc->why, sizeof(pc->why), "%s", reason);
     return DL_PRECHECK_UNCERTAIN;
+}
+
+static bool dl_pc_expired(struct dl_pc *pc)
+{
+    if (!pc->expired && platform_time_monotonic_ms() >= pc->deadline)
+        pc->expired = true;
+    return pc->expired;
+}
+
+/* dl_git() held to the beat's deadline. A spawn that runs into it may have
+ * been killed mid-output, so its answer is never read: -1, as for a launch
+ * that failed. */
+static int dl_pc_git(struct dl_pc *pc, const char *const *args, char *out,
+                     size_t cap)
+{
+    if (out && cap)
+        out[0] = '\0';
+    if (dl_pc_expired(pc))
+        return -1;
+    int64_t left = pc->deadline - platform_time_monotonic_ms();
+    int rc = dl_git(pc->d->wt, args, out, cap, left > 0 ? (int)left : 1);
+    return dl_pc_expired(pc) ? -1 : rc;
+}
+
+/* dl_rev_parse() held to the beat's deadline. */
+static bool dl_pc_rev(struct dl_pc *pc, const char *what, char out[80])
+{
+    char spec[160], got[96];
+    const char *args[] = { "rev-parse", "--verify", "--quiet", spec, NULL };
+    if (snprintf(spec, sizeof(spec), "%s^{commit}", what) >=
+            (int)sizeof(spec) ||
+        dl_pc_git(pc, args, got, sizeof(got)) != 0)
+        return false;
+    dl_trim(got);
+    if (!dl_sha_ok(got))
+        return false;
+    (void)snprintf(out, 80, "%s", got);
+    return true;
 }
 
 /* A commit object for `tree` on `parent`, written to the object store and
  * referenced by nothing. Unsigned on purpose: it is never published, only
  * named as the next replay's upstream side. */
-static bool dl_precheck_commit(const struct dl_dirs *d, const char *tree,
+static bool dl_precheck_commit(struct dl_pc *pc, const char *tree,
                                const char *parent, char out[80])
 {
     const char *args[] = { "--no-replace-objects", "-c", "user.name=dev.land",
@@ -6703,7 +6805,7 @@ static bool dl_precheck_commit(const struct dl_dirs *d, const char *tree,
                            "commit-tree", "--no-gpg-sign", tree, "-p", parent,
                            "-m", "dev.land queued-row precheck (never published)",
                            NULL };
-    if (dl_git(d->wt, args, out, 80, DL_PRECHECK_GIT_MS) != 0)
+    if (dl_pc_git(pc, args, out, 80) != 0)
         return false;
     dl_trim(out);
     return dl_sha_ok(out);
@@ -6711,20 +6813,20 @@ static bool dl_precheck_commit(const struct dl_dirs *d, const char *tree,
 
 /* merge-base(main, tip) and whether merges lie past it: the two facts
  * dl_linearize_for_rebase() shapes the replay from. */
-static bool dl_precheck_base(const struct dl_dirs *d, const char *observed_main,
-                             const char *tip, char mb[80], bool *merges)
+static bool dl_precheck_base(struct dl_pc *pc, const char *tip, char mb[80],
+                             bool *merges)
 {
     char range[176], found[80];
-    const char *mb_args[] = { "--no-replace-objects", "merge-base",
-                              observed_main, tip, NULL };
+    const char *mb_args[] = { "--no-replace-objects", "merge-base", pc->main,
+                              tip, NULL };
     const char *merges_args[] = { "rev-list", "--merges", "--max-count=1",
                                   range, NULL };
-    if (dl_git(d->wt, mb_args, mb, 80, DL_PRECHECK_GIT_MS) != 0)
+    if (dl_pc_git(pc, mb_args, mb, 80) != 0)
         return false;
     dl_trim(mb);
     (void)snprintf(range, sizeof(range), "%s..%s", mb, tip);
-    if (!dl_sha_ok(mb) || dl_git(d->wt, merges_args, found, sizeof(found),
-                                 DL_PRECHECK_GIT_MS) != 0)
+    if (!dl_sha_ok(mb) ||
+        dl_pc_git(pc, merges_args, found, sizeof(found)) != 0)
         return false;
     dl_trim(found);
     *merges = found[0] != '\0';
@@ -6735,34 +6837,31 @@ static bool dl_precheck_base(const struct dl_dirs *d, const char *observed_main,
  * dl_tip_checkout() shapes it. CLEAN with `*replay` false when dl_rebase()
  * would replay nothing (main already an ancestor of the tip), CLEAN with
  * `*replay` true and `head` set when there is a replay to run, UNCERTAIN
- * with `why` otherwise. */
-static enum dl_precheck dl_precheck_head(const struct dl_dirs *d,
+ * with the reason otherwise. */
+static enum dl_precheck dl_precheck_head(struct dl_pc *pc,
                                          const struct dl_row *row,
-                                         const char *observed_main,
-                                         char head[80], bool *replay,
-                                         char *why, size_t why_cap)
+                                         char head[80], bool *replay)
 {
     char tip[80], mb[80], tree[96];
     bool merges = false;
     const char *anc_args[] = { "--no-replace-objects", "merge-base",
-                               "--is-ancestor", observed_main, tip, NULL };
-    if (!dl_rev_parse(d->wt, row->tip, tip))
-        return dl_precheck_uncertain(why, why_cap,
-                                     "tip not in the landing object store");
-    int rc = dl_git(d->wt, anc_args, NULL, 0, DL_PRECHECK_GIT_MS);
+                               "--is-ancestor", pc->main, tip, NULL };
+    if (!dl_pc_rev(pc, row->tip, tip))
+        return dl_precheck_uncertain(pc, "tip not in the landing object "
+                                         "store");
+    int rc = dl_pc_git(pc, anc_args, NULL, 0);
     if (rc == 0)
         return DL_PRECHECK_CLEAN;
     if (rc != 1)
-        return dl_precheck_uncertain(why, why_cap,
-                                     "cannot establish tip ancestry");
-    if (!dl_precheck_base(d, observed_main, tip, mb, &merges))
-        return dl_precheck_uncertain(why, why_cap,
-                                     "no merge base or merge list with main");
+        return dl_precheck_uncertain(pc, "cannot establish tip ancestry");
+    if (!dl_precheck_base(pc, tip, mb, &merges))
+        return dl_precheck_uncertain(pc, "no merge base or merge list with "
+                                         "main");
     (void)snprintf(head, 80, "%s", tip);
     (void)snprintf(tree, sizeof(tree), "%s^{tree}", tip);
-    if (merges && !dl_precheck_commit(d, tree, mb, head))
-        return dl_precheck_uncertain(why, why_cap,
-                                     "cannot cut the linear candidate commit");
+    if (merges && !dl_precheck_commit(pc, tree, mb, head))
+        return dl_precheck_uncertain(pc, "cannot cut the linear candidate "
+                                         "commit");
     *replay = true;
     return DL_PRECHECK_CLEAN;
 }
@@ -6771,19 +6870,18 @@ static enum dl_precheck dl_precheck_head(const struct dl_dirs *d,
  * non-merge, and not patch-equivalent to anything main already carries.
  * Returns their count, or -1 when git fails or the capture may be
  * truncated. */
-static int dl_precheck_list(const struct dl_dirs *d, const char *observed_main,
-                            const char *head, char *list, size_t cap)
+static int dl_precheck_list(struct dl_pc *pc, const char *head)
 {
     char range[176];
     int n = 0;
     const char *args[] = { "--no-replace-objects", "rev-list",
                            "--cherry-pick", "--right-only", "--no-merges",
                            "--topo-order", "--reverse", range, NULL };
-    (void)snprintf(range, sizeof(range), "%s...%s", observed_main, head);
-    if (dl_git(d->wt, args, list, cap, DL_PRECHECK_GIT_MS) != 0 ||
-        strlen(list) + 1 >= cap)
+    (void)snprintf(range, sizeof(range), "%s...%s", pc->main, head);
+    if (dl_pc_git(pc, args, pc->buf, pc->cap) != 0 ||
+        strlen(pc->buf) + 1 >= pc->cap)
         return -1;
-    for (const char *p = list; *p; p++) {
+    for (const char *p = pc->buf; *p; p++) {
         if (*p == '\n' && n < INT_MAX)
             n++;
     }
@@ -6792,30 +6890,38 @@ static int dl_precheck_list(const struct dl_dirs *d, const char *observed_main,
 
 /* One rebase pick as an in-core merge: `theirs` onto `ours` with `base`
  * (its parent) as the merge base. CLEAN fills `tree`; CONFLICT points
- * `paths` at git's newline-separated conflicted-path list inside `buf`.
- * Exit 1 is also how merge-tree reports a refused argument, so a conflict
- * needs a tree id first and at least one path after it. */
-static enum dl_precheck dl_precheck_merge(const struct dl_dirs *d,
-                                          const char *base, const char *ours,
-                                          const char *theirs, char *buf,
-                                          size_t cap, char tree[80],
+ * `paths` at git's newline-separated conflicted-path list inside the
+ * capture. Exit 1 is also how merge-tree reports a refused argument, so a
+ * conflict needs a tree id first and at least one path after it.
+ *
+ * Merge attributes (a `merge=union` driver, say) come from `ours`, never
+ * from the landing checkout: a rebase pick runs with the checkout at the
+ * commit it picks onto, so that is the .gitattributes it merges under,
+ * while this checkout holds whatever row is in flight. `ours` is always a
+ * commit already in the store (the observed main or a replay this check
+ * wrote), which matters: git 2.43 reads an --attr-source it cannot find
+ * as no attributes at all rather than refusing. */
+static enum dl_precheck dl_precheck_merge(struct dl_pc *pc, const char *base,
+                                          const char *ours,
+                                          const char *theirs, char tree[80],
                                           char **paths)
 {
-    char mb[96];
-    const char *args[] = { "--no-replace-objects", "merge-tree",
+    char mb[96], attr[96];
+    const char *args[] = { "--no-replace-objects", attr, "merge-tree",
                            "--write-tree", "--name-only", "--no-messages", mb,
                            ours, theirs, NULL };
     (void)snprintf(mb, sizeof(mb), "--merge-base=%s", base);
+    (void)snprintf(attr, sizeof(attr), "--attr-source=%s", ours);
     if (dl_precheck_tool_fail())
-        args[2] = "--precheck-test-tool-failure";
-    int rc = dl_git(d->wt, args, buf, cap, DL_PRECHECK_GIT_MS);
-    char *nl = strchr(buf, '\n');
-    if ((rc != 0 && rc != 1) || strlen(buf) + 1 >= cap || !nl)
+        args[3] = "--precheck-test-tool-failure";
+    int rc = dl_pc_git(pc, args, pc->buf, pc->cap);
+    char *nl = strchr(pc->buf, '\n');
+    if ((rc != 0 && rc != 1) || strlen(pc->buf) + 1 >= pc->cap || !nl)
         return DL_PRECHECK_UNCERTAIN;
     *nl = '\0';
-    if (!dl_sha_ok(buf))
+    if (!dl_sha_ok(pc->buf))
         return DL_PRECHECK_UNCERTAIN;
-    (void)snprintf(tree, 80, "%s", buf);
+    (void)snprintf(tree, 80, "%s", pc->buf);
     *paths = nl + 1;
     dl_trim(*paths);
     if (rc == 0)
@@ -6830,17 +6936,17 @@ static enum dl_precheck dl_precheck_merge(const struct dl_dirs *d,
  * complete here (dl_precheck_merge() refuses a capture that may be
  * truncated), and a list too long for dl_regen_only() to hold cannot be
  * the three artifacts alone: git names each path once. */
-static enum dl_precheck dl_precheck_classify(const char *paths, char *why,
-                                             size_t why_cap)
+static enum dl_precheck dl_precheck_classify(struct dl_pc *pc,
+                                             const char *paths)
 {
     bool seen[DL_REGEN_N] = { false };
     if (dl_regen_only(paths, seen)) {
-        (void)snprintf(why, why_cap, "%s",
+        (void)snprintf(pc->why, sizeof(pc->why), "%s",
                        "conflicts only on regenerated artifacts");
         return DL_PRECHECK_DEFERRED;
     }
-    (void)snprintf(why, why_cap, "%s", paths);
-    for (char *p = why; *p; p++) {
+    (void)snprintf(pc->why, sizeof(pc->why), "%s", paths);
+    for (char *p = pc->why; *p; p++) {
         if (*p == '\n')
             *p = ' ';
     }
@@ -6850,75 +6956,66 @@ static enum dl_precheck dl_precheck_classify(const char *paths, char *why,
 /* The upstream side for the replay after `at`, when there is one. dl_git()
  * clears its output before it runs, so the next side is built in its own
  * buffer rather than over the parent it names. */
-static bool dl_precheck_advance(const struct dl_dirs *d, const char *tree,
+static bool dl_precheck_advance(struct dl_pc *pc, const char *tree,
                                 char ours[80])
 {
     char next[80];
-    if (!dl_precheck_commit(d, tree, ours, next))
+    if (!dl_precheck_commit(pc, tree, ours, next))
         return false;
     (void)snprintf(ours, 80, "%s", next);
     return true;
 }
 
 /* Replay each listed commit in order; see the SEMANTICS note above. */
-static enum dl_precheck dl_precheck_replay(const struct dl_dirs *d,
-                                           const char *observed_main,
-                                           char *list, int count, char *buf,
-                                           size_t cap, char *why,
-                                           size_t why_cap)
+static enum dl_precheck dl_precheck_replay(struct dl_pc *pc, char *list,
+                                           int count)
 {
     char ours[80], parent[80], tree[80], spec[96];
     char *save = NULL, *paths = NULL;
     int at = 0;
-    (void)snprintf(ours, sizeof(ours), "%s", observed_main);
+    (void)snprintf(ours, sizeof(ours), "%s", pc->main);
     for (char *c = strtok_r(list, "\n", &save); c;
          c = strtok_r(NULL, "\n", &save), at++) {
         (void)snprintf(spec, sizeof(spec), "%s^", c);
-        if (!dl_sha_ok(c) || !dl_rev_parse(d->wt, spec, parent))
-            return dl_precheck_uncertain(why, why_cap,
-                                         "a replayed commit's parent is missing");
-        enum dl_precheck v = dl_precheck_merge(d, parent, ours, c, buf, cap,
-                                               tree, &paths);
+        if (!dl_sha_ok(c) || !dl_pc_rev(pc, spec, parent))
+            return dl_precheck_uncertain(pc, "a replayed commit's parent is "
+                                             "missing");
+        enum dl_precheck v = dl_precheck_merge(pc, parent, ours, c, tree,
+                                               &paths);
         if (v == DL_PRECHECK_CONFLICT)
-            return dl_precheck_classify(paths, why, why_cap);
+            return dl_precheck_classify(pc, paths);
         if (v != DL_PRECHECK_CLEAN)
-            return dl_precheck_uncertain(why, why_cap,
-                                         "merge-tree failed, timed out or "
-                                         "gave no complete verdict");
-        if (at + 1 < count && !dl_precheck_advance(d, tree, ours))
-            return dl_precheck_uncertain(why, why_cap,
-                                         "cannot record an intermediate replay");
+            return dl_precheck_uncertain(pc, "merge-tree failed, timed out "
+                                             "or gave no complete verdict");
+        if (at + 1 < count && !dl_precheck_advance(pc, tree, ours))
+            return dl_precheck_uncertain(pc, "cannot record an intermediate "
+                                             "replay");
     }
     return DL_PRECHECK_CLEAN;
 }
 
-static enum dl_precheck dl_precheck_row(const struct dl_dirs *d,
-                                        const struct dl_row *row,
-                                        const char *observed_main, char *buf,
-                                        size_t cap, char *why, size_t why_cap)
+static enum dl_precheck dl_precheck_row(struct dl_pc *pc,
+                                        const struct dl_row *row)
 {
     char head[80];
     bool replay = false;
-    enum dl_precheck shape = dl_precheck_head(d, row, observed_main, head,
-                                              &replay, why, why_cap);
+    enum dl_precheck shape = dl_precheck_head(pc, row, head, &replay);
     if (shape != DL_PRECHECK_CLEAN || !replay)
         return shape;
-    int count = dl_precheck_list(d, observed_main, head, buf, cap);
+    int count = dl_precheck_list(pc, head);
     if (count < 0)
-        return dl_precheck_uncertain(why, why_cap,
-                                     "the replay list is unavailable");
+        return dl_precheck_uncertain(pc, "the replay list is unavailable");
     if (count > DL_PRECHECK_COMMITS) {
-        (void)snprintf(why, why_cap, "%d commits to replay, over the bound",
-                       count);
+        (void)snprintf(pc->why, sizeof(pc->why),
+                       "%d commits to replay, over the bound", count);
         return DL_PRECHECK_DEFERRED;
     }
     if (count == 0)
         return DL_PRECHECK_CLEAN;
-    /* The list moves out of `buf`, which each merge below reuses. */
+    /* The list moves out of the capture, which each merge below reuses. */
     char list[(DL_PRECHECK_COMMITS + 1) * 41];
-    (void)snprintf(list, sizeof(list), "%s", buf);
-    return dl_precheck_replay(d, observed_main, list, count, buf, cap, why,
-                              why_cap);
+    (void)snprintf(list, sizeof(list), "%s", pc->buf);
+    return dl_precheck_replay(pc, list, count);
 }
 
 /* End a queued row the way dl_step_start() ends a rebase conflict: the
@@ -6939,12 +7036,50 @@ static bool dl_precheck_end(const struct dl_dirs *d, struct dl_row *row,
     return dl_commit_row(d, row, true);
 }
 
-/* Record, under the row lock, that the rows in `checked` have a settled
- * verdict for `observed_main`. A row cancelled, started or rewritten since
- * it was read is left exactly as it now is. No mail: nothing about the
- * request moved. */
+/* A row this beat replayed, and whether its verdict settled. */
+struct dl_precheck_seen {
+    long long seq;
+    char tip[80];
+    bool settled;
+};
+
+/* Fold one verdict into the row as it now stands: a settled verdict marks
+ * the row checked for this main; an uncertain one counts against this main
+ * only, and the attempt that reaches DL_PRECHECK_TRIES is logged once, as
+ * the last word on this row until main moves. */
+static void dl_precheck_record(const struct dl_dirs *d, struct dl_row *row,
+                               const struct dl_precheck_seen *s,
+                               const char *observed_main)
+{
+    char why[160];
+    if (s->settled) {
+        (void)snprintf(row->prechecked, sizeof(row->prechecked), "%s",
+                       observed_main);
+        row->uncertain_main[0] = '\0';
+        row->uncertain_tries = 0;
+        return;
+    }
+    if (strcmp(row->uncertain_main, observed_main) != 0) {
+        (void)snprintf(row->uncertain_main, sizeof(row->uncertain_main), "%s",
+                       observed_main);
+        row->uncertain_tries = 0;
+    }
+    if (row->uncertain_tries >= DL_PRECHECK_TRIES)
+        return;
+    if (++row->uncertain_tries < DL_PRECHECK_TRIES)
+        return;
+    (void)snprintf(why, sizeof(why),
+                   "uncertain %d times on this main; not rechecked until "
+                   "main moves, the real rebase decides",
+                   DL_PRECHECK_TRIES);
+    dl_precheck_note(d, row, observed_main, "left", why);
+}
+
+/* Record, under the row lock, what this beat learned about the rows in
+ * `seen`. A row cancelled, started or rewritten since it was read is left
+ * exactly as it now is. No mail: nothing about the request moved. */
 static bool dl_precheck_mark(const struct dl_dirs *d, const char *observed_main,
-                             const struct dl_row *checked, size_t n)
+                             const struct dl_precheck_seen *seen, size_t n)
 {
     struct dl_row *rows = NULL;
     size_t nrows = 0;
@@ -6964,12 +7099,11 @@ static bool dl_precheck_mark(const struct dl_dirs *d, const char *observed_main,
     }
     for (size_t i = 0; i < nrows; i++) {
         for (size_t k = 0; k < n; k++) {
-            if (rows[i].seq != checked[k].seq ||
-                strcmp(rows[i].tip, checked[k].tip) != 0 ||
+            if (rows[i].seq != seen[k].seq ||
+                strcmp(rows[i].tip, seen[k].tip) != 0 ||
                 strcmp(rows[i].state, "queued") != 0)
                 continue;
-            (void)snprintf(rows[i].prechecked, sizeof(rows[i].prechecked),
-                           "%s", observed_main);
+            dl_precheck_record(d, &rows[i], &seen[k], observed_main);
             changed = true;
         }
     }
@@ -6981,42 +7115,103 @@ static bool dl_precheck_mark(const struct dl_dirs *d, const char *observed_main,
 }
 
 struct dl_precheck_tally {
-    struct dl_row settled[DL_PRECHECK_ROWS];
-    size_t nsettled;
+    struct dl_precheck_seen seen[DL_PRECHECK_ROWS];
+    size_t nseen;
+    size_t replayed;
     size_t conflicts;
     size_t uncertain;
+    size_t unchecked;
 };
 
+/* Queued, not yet settled for this main, and not already left alone on
+ * it after DL_PRECHECK_TRIES uncertain answers. */
 static bool dl_precheck_due(const struct dl_row *row, const char *observed_main)
 {
-    return strcmp(row->state, "queued") == 0 &&
-           strcmp(row->prechecked, observed_main) != 0;
+    if (strcmp(row->state, "queued") != 0 ||
+        strcmp(row->prechecked, observed_main) == 0)
+        return false;
+    return strcmp(row->uncertain_main, observed_main) != 0 ||
+           row->uncertain_tries < DL_PRECHECK_TRIES;
 }
 
-static void dl_precheck_one(const struct dl_dirs *d, struct dl_row *row,
-                            const char *observed_main, char *buf, size_t cap,
+/* The due row that lands first after `after` (NULL: the first of all), in
+ * the order dl_step_pick_row() picks queued rows. */
+static struct dl_row *dl_precheck_next(struct dl_row *rows, size_t n,
+                                       const char *observed_main,
+                                       const struct dl_row *after)
+{
+    struct dl_row *best = NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (!dl_precheck_due(&rows[i], observed_main) ||
+            (after && !dl_queued_precedes(after, &rows[i])))
+            continue;
+        if (dl_queued_precedes(&rows[i], best))
+            best = &rows[i];
+    }
+    return best;
+}
+
+static void dl_precheck_see(struct dl_precheck_tally *t,
+                            const struct dl_row *row, bool settled)
+{
+    struct dl_precheck_seen *s = &t->seen[t->nseen++];
+    s->seq = row->seq;
+    (void)snprintf(s->tip, sizeof(s->tip), "%s", row->tip);
+    s->settled = settled;
+}
+
+static void dl_precheck_one(struct dl_pc *pc, struct dl_row *row,
                             struct dl_precheck_tally *t)
 {
-    char why[DL_REGEN_PATHS_CAP + 128];
-    why[0] = '\0';
-    enum dl_precheck v = dl_precheck_row(d, row, observed_main, buf, cap, why,
-                                         sizeof(why));
-    dl_precheck_note(d, row, observed_main, dl_precheck_word(v), why);
+    pc->why[0] = '\0';
+    enum dl_precheck v = dl_precheck_row(pc, row);
+    if (v == DL_PRECHECK_UNCERTAIN && pc->expired)
+        (void)dl_precheck_uncertain(pc, "the beat's precheck deadline "
+                                        "passed mid-replay");
+    dl_precheck_note(pc->d, row, pc->main, dl_precheck_word(v), pc->why);
     if (v == DL_PRECHECK_UNCERTAIN) {
         t->uncertain++;
+        dl_precheck_see(t, row, false);
         return;
     }
     if (v != DL_PRECHECK_CONFLICT) {
-        t->settled[t->nsettled++] = *row;
+        dl_precheck_see(t, row, true);
         return;
     }
-    if (dl_precheck_end(d, row, observed_main, why)) {
+    if (dl_precheck_end(pc->d, row, pc->main, pc->why)) {
         t->conflicts++;
         return;
     }
     /* Not durably ended: stay unmarked so the next beat retries. */
-    dl_precheck_note(d, row, observed_main, "conflict not recorded",
+    dl_precheck_note(pc->d, row, pc->main, "conflict not recorded",
                      "queue or outcome write failed; retrying next beat");
+}
+
+/* Replay due rows in landing order until the per-beat row cap or the
+ * deadline; rows not reached stay exactly as they are. */
+static void dl_precheck_walk(struct dl_pc *pc, struct dl_row *rows,
+                             size_t nrows, struct dl_precheck_tally *t)
+{
+    const struct dl_row *after = NULL;
+    size_t due = 0;
+    char line[256];
+    for (size_t i = 0; i < nrows; i++)
+        due += dl_precheck_due(&rows[i], pc->main);
+    while (t->replayed < DL_PRECHECK_ROWS) {
+        struct dl_row *row = dl_precheck_next(rows, nrows, pc->main, after);
+        if (!row || dl_pc_expired(pc))
+            break;
+        t->replayed++;
+        dl_precheck_one(pc, row, t);
+        after = row;
+    }
+    t->unchecked = due - t->replayed;
+    if (!pc->expired || t->unchecked == 0)
+        return;
+    (void)snprintf(line, sizeof(line),
+                   "precheck stopped at the beat deadline: %zu due row(s) "
+                   "left for the next beat\n", t->unchecked);
+    dl_precheck_log(pc->d, line);
 }
 
 static bool dl_precheck_inflight(const struct dl_row *rows, size_t n)
@@ -7027,15 +7222,40 @@ static bool dl_precheck_inflight(const struct dl_row *rows, size_t n)
     return false;
 }
 
-static void dl_precheck_reply(struct zcl_command_reply *reply, size_t replayed,
+static void dl_precheck_reply(struct zcl_command_reply *reply,
                               const struct dl_precheck_tally *t)
 {
     (void)json_push_kv_int(&reply->data, "queued_prechecked",
-                           (long long)replayed);
+                           (long long)t->replayed);
     (void)json_push_kv_int(&reply->data, "queued_conflicts",
                            (long long)t->conflicts);
     (void)json_push_kv_int(&reply->data, "queued_uncertain",
                            (long long)t->uncertain);
+    (void)json_push_kv_int(&reply->data, "queued_unchecked",
+                           (long long)t->unchecked);
+}
+
+/* The queue, when there is anything to check: a fresh observation of
+ * main, a landing object store, and a row in flight. */
+static bool dl_precheck_load(const struct dl_dirs *d, const char *observed_main,
+                             struct dl_row **rows, size_t *nrows)
+{
+    char qpath[4096 + 32];
+    /* No fresh observation (the beat already replied why) or no landing
+     * object store: there is nothing to replay onto. */
+    if (!dl_sha_ok(observed_main) || !dl_wt_ready(d->wt))
+        return false;
+    if (snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d->land) >=
+            (int)sizeof(qpath) ||
+        !dl_load_rows(qpath, rows, nrows, NULL, 0)) {
+        dl_precheck_log(d, "precheck skipped: cannot read queue.jsonl\n");
+        return false;
+    }
+    if (dl_precheck_inflight(*rows, *nrows))
+        return true;
+    free(*rows);
+    *rows = NULL;
+    return false;
 }
 
 /* The beat's last act: replay the queued rows due a check onto the main
@@ -7046,44 +7266,39 @@ static void dl_precheck_reply(struct zcl_command_reply *reply, size_t replayed,
                                                 struct zcl_command_reply *reply)
 {
     struct dl_row *rows = NULL;
-    size_t nrows = 0, replayed = 0;
-    struct dl_precheck_tally t = { .nsettled = 0 };
-    char qpath[4096 + 32];
-    /* No fresh observation (the beat already replied why) or no landing
-     * object store: there is nothing to replay onto. */
-    if (!dl_sha_ok(observed_main) || !dl_wt_ready(d->wt))
+    size_t nrows = 0;
+    struct dl_precheck_tally t = { .nseen = 0 };
+    if (!dl_precheck_load(d, observed_main, &rows, &nrows))
         return;
-    if (snprintf(qpath, sizeof(qpath), "%s/queue.jsonl", d->land) >=
-            (int)sizeof(qpath) ||
-        !dl_load_rows(qpath, &rows, &nrows, NULL, 0)) {
-        dl_precheck_log(d, "precheck skipped: cannot read queue.jsonl\n");
-        return;
-    }
-    if (!dl_precheck_inflight(rows, nrows)) {
-        free(rows);
-        return;
-    }
+    struct dl_pc *pc = (struct dl_pc *)zcl_malloc(sizeof(*pc),
+                                                  "dev.land.precheck");
     char *buf = (char *)zcl_malloc(DL_GIT_CAP, "dev.land.precheck");
-    if (!buf) {
+    if (!pc || !buf) {
         dl_precheck_log(d, "precheck skipped: out of memory for the "
                            "git capture\n");
+        free(pc);
+        free(buf);
         free(rows);
         return;
     }
-    for (size_t i = 0; i < nrows && replayed < DL_PRECHECK_ROWS; i++) {
-        if (!dl_precheck_due(&rows[i], observed_main))
-            continue;
-        replayed++;
-        dl_precheck_one(d, &rows[i], observed_main, buf, DL_GIT_CAP, &t);
-    }
+    *pc = (struct dl_pc){ .d = d, .main = observed_main, .buf = buf,
+                          .cap = DL_GIT_CAP,
+                          .deadline = platform_time_monotonic_ms() +
+                                      dl_precheck_budget_ms() };
+    dl_precheck_walk(pc, rows, nrows, &t);
     free(buf);
-    if (!dl_precheck_mark(d, observed_main, t.settled, t.nsettled)) {
-        for (size_t k = 0; k < t.nsettled; k++)
-            dl_precheck_note(d, &t.settled[k], observed_main,
-                             "check not recorded",
-                             "queue rewrite failed; rechecking next beat");
+    free(pc);
+    if (!dl_precheck_mark(d, observed_main, t.seen, t.nseen)) {
+        for (size_t k = 0; k < t.nseen; k++) {
+            char line[320];
+            (void)snprintf(line, sizeof(line),
+                           "seq=%lld tip=%s main=%s result not recorded: "
+                           "queue rewrite failed; rechecking next beat\n",
+                           t.seen[k].seq, t.seen[k].tip, observed_main);
+            dl_precheck_log(d, line);
+        }
     }
-    dl_precheck_reply(reply, replayed, &t);
+    dl_precheck_reply(reply, &t);
     free(rows);
 }
 
