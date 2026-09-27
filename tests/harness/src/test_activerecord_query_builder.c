@@ -169,6 +169,24 @@ static int qb_join_bound_cases(void)
         PASS();
     }
 
+    TEST("qb join: an ON-clause column from an unnamed table fails closed, "
+         "not silently") {
+        /* qb_join() defers column validation to ON-clause emission
+         * (qb_close_projection -> qb_emit_join -> qb_ident_as). This pins
+         * that the deferred check still reaches the caller: the statement
+         * fails closed with a named diagnostic, not a plain false nobody
+         * can trace back to which identifier was bad. */
+        struct qb q;
+        qb_select(&q, QB_T_peers);
+        qb_join(&q, QB_T_peer_chain_observations, QB_C_peers_id,
+                QB_C_zswap_ads_token_id);
+        qb_select_column(&q, QB_C_peers_id);
+        ASSERT(!qb_ok(&q));
+        ASSERT_STR_EQ(qb_sql(&q), "");
+        ASSERT(strstr(qb_error(&q), "does not belong") != NULL);
+        PASS();
+    }
+
 _test_next:;
     return failures;
 }

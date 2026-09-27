@@ -137,14 +137,15 @@ static bool qb_names_table(const struct qb *q, enum qb_table t)
     return false;
 }
 
-/* Emit one column identifier, optionally against the self-join alias.
- * Refuses an id outside the generated range and an id belonging to a table
+/* Refuses an id outside the generated range and an id belonging to a table
  * this statement does not name — the two ways a caller could otherwise
- * steer the text. */
-static bool qb_ident_as(struct qb *q, enum qb_column c, bool aliased)
+ * steer the text. No emission: callers that only need to know whether an
+ * id is usable (e.g. a join endpoint, checked as soon as it is given
+ * rather than deferred to ON-clause emission) call this directly. */
+static bool qb_column_valid(struct qb *q, enum qb_column c)
 {
     if (q->failed)
-        return false;
+        return false;  // raw-return-ok:qb_fail already latched the reason
     if ((int)c < 0 || (int)c >= QB_COLUMN_COUNT) {
         qb_fail(q, "column id %d is not in the closed schema set", (int)c);
         return false;
@@ -155,6 +156,15 @@ static bool qb_ident_as(struct qb *q, enum qb_column c, bool aliased)
                 k_table[owner], k_col[c].name, k_table[q->table]);
         return false;
     }
+    return true;
+}
+
+/* Emit one column identifier, optionally against the self-join alias. */
+static bool qb_ident_as(struct qb *q, enum qb_column c, bool aliased)
+{
+    if (!qb_column_valid(q, c))
+        return false;  // raw-return-ok:qb_fail already latched the reason
+    enum qb_table owner = k_col[c].table;
     if (q->njoins > 0) {
         qb_puts(q, k_table[owner]);
         if (aliased)
@@ -388,14 +398,24 @@ static bool qb_join_admit(struct qb *q, enum qb_table t, const char *what)
     return true;
 }
 
-/* Append one already-admitted join. Both endpoints are validated when the
- * ON clause is emitted in qb_close_projection(), after the join makes
- * qualification legal. */
+/* Append one already-admitted join and validate both of its endpoints
+ * immediately — not deferred to ON-clause emission in
+ * qb_close_projection(). By the time this runs, `t` is already in
+ * q->joins (pushed below) or is q->table, so qb_names_table() sees the
+ * complete picture; there is no ordering reason left to wait. Emission
+ * still checks again (qb_emit_join -> qb_ident_as) as defense in depth,
+ * but qb_ok()/qb_error(), which never call qb_settle() because they take
+ * a const pointer, must already see the failure right after this call
+ * returns — otherwise a bad join endpoint is invisible to any caller who
+ * checks qb_ok() before qb_sql(). */
 static void qb_join_push(struct qb *q, enum qb_table t, enum qb_column left,
                          enum qb_column right, bool self)
 {
     q->joins[q->njoins++] = (struct qb_join){ .table = t, .left = left,
                                               .right = right, .self = self };
+    if (!qb_column_valid(q, left))
+        return;  // raw-return-ok:qb_fail already latched the reason
+    (void)qb_column_valid(q, right);  // raw-return-ok:qb_fail already latched the reason
 }
 
 void qb_join(struct qb *q, enum qb_table t2,
@@ -457,10 +477,10 @@ static bool qb_emit_join(struct qb *q, const struct qb_join *j)
     }
     qb_puts(q, " ON ");
     if (!qb_ident_as(q, j->left, false))
-        return false;
+        return false;  // raw-return-ok:qb_fail already latched the reason
     qb_puts(q, "=");
     if (!qb_ident_as(q, j->right, j->self))
-        return false;
+        return false;  // raw-return-ok:qb_fail already latched the reason
     return !q->failed;
 }
 
