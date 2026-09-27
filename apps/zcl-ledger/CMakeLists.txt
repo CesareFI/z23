@@ -402,6 +402,12 @@ if(ZCL_LEDGER_FUZZ)
     target_compile_options(fuzz-zcl-tx PRIVATE -Wall -Wextra -Werror -pedantic
         -fsanitize=fuzzer,address,undefined)
     target_link_options(fuzz-zcl-tx PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(fuzz-zcl-previous-output tests/fuzz_zcl_previous_output.c)
+    target_link_libraries(fuzz-zcl-previous-output PRIVATE zcl_tx_review)
+    target_compile_options(fuzz-zcl-previous-output PRIVATE -Wall -Wextra
+        -Werror -pedantic -fsanitize=fuzzer,address,undefined)
+    target_link_options(fuzz-zcl-previous-output PRIVATE
+        -fsanitize=fuzzer,address,undefined)
     add_executable(fuzz-zcl-tx-stream tests/fuzz_zcl_tx_stream.c)
     target_link_libraries(fuzz-zcl-tx-stream PRIVATE zcl_tx_stream
         zcl_tx_stream_zip243 zcl_tx_replay_zip243 zcl_tx_script_facts

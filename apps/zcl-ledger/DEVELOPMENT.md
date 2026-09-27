@@ -240,6 +240,12 @@ corpus, build `fuzz-zcl-tx` with Clang Debug and `ZCL_LEDGER_FUZZ=ON`, then
 run it locally with a fixed seed. The fuzzer checks that complete-transaction
 parsing, input/output visitors, script classification, and ZIP-243 hashing
 agree on accepted v4 bytes. It does not fuzz BOLOS or prove consensus parity.
+The same build includes `fuzz-zcl-previous-output` for v1-v4 previous-output
+selection. Its first input byte selects the output index; remaining bytes are
+the complete previous transaction. It checks failure atomicity and bounds of
+every accepted script and value. Seed all four versions with valid wires so
+mutations reach each parser tail. This checks memory safety and API invariants,
+not signatures, proofs, chain inclusion, or consensus acceptance.
 
 Review 0.4.0 passed local tests but stopped answering USB and EXIT on the
 dedicated Blue. It was deleted after a restart and its installer hash was
