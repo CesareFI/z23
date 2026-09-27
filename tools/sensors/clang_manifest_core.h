@@ -110,6 +110,8 @@ struct cm_core {
      * as the same producer. NULL: unknown, and the digest stays zero. */
     const char *type_grammar;
 #if defined(__APPLE__)
+    /* Type grammar plus the admitted C language/standard mode. */
+    char producer_grammar[96];
     /* Bound to dyld before parsing; facts use these bytes only if the
      * post-extraction producer check agrees before the manifest is written. */
     uint8_t producer_before[32];

@@ -1382,6 +1382,180 @@ static int smt_t_darwin_refusals(void)
     return failures;
 }
 
+static int smt_t_darwin_unsupported(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, out[PATH_MAX];
+    TEST_CASE("semantic_sensor: Darwin refuses unsupported C++ AST without an artifact") {
+        const char *argv[] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                              "template.c", "--out", out, "--facts", "--",
+                              "-x", "c++", "-std=c++17", NULL};
+        char message[4096];
+        bool timed_out = false;
+        struct stat sb;
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_unsupported") != NULL);
+        (void)snprintf(out, sizeof(out), "%s/unsupported.bin", dir);
+        ASSERT(smt_write(dir, "template.c",
+                         "template <typename T> T twice(T x) { return x + x; }\n"
+                         "int answer() { return twice(21); }\n"));
+        int rc = zcl_spawn_capture_merged_observed(argv, message,
+                                                    sizeof(message), 60000,
+                                                    &timed_out);
+        ASSERT(!timed_out && rc != 0);
+        ASSERT(strstr(message, "unsupported translation-unit language") != NULL);
+        ASSERT(stat(out, &sb) != 0 && errno == ENOENT);
+    } TEST_END
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
+static bool smt_darwin_mode_case(const char *dir, const char *source,
+                                 const char *body, const char *const flags[4],
+                                 bool accepted)
+{
+    char out[PATH_MAX], message[4096];
+    const char *argv[16] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                            source, "--out", out, "--facts", "--"};
+    bool timed_out = false, ok;
+    struct stat sb;
+    int rc;
+    size_t n = 10;
+    (void)snprintf(out, sizeof(out), "%s/%s.bin", dir, source);
+    if (!smt_write(dir, source, body))
+        return false;
+    for (size_t k = 0; k < 4 && flags[k] != NULL; k++)
+        argv[n++] = flags[k];
+    argv[n] = NULL;
+    rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                            60000, &timed_out);
+    ok = !timed_out && (accepted ? rc == 0 :
+                        rc != 0 && strstr(message,
+                            "unsupported translation-unit language") != NULL);
+    ok = ok && (accepted ? stat(out, &sb) == 0 :
+                stat(out, &sb) != 0 && errno == ENOENT);
+    if (!ok)
+        printf("FAIL language mode %s: rc=%d message=%s\n", source, rc,
+               message);
+    return ok;
+}
+
+static int smt_t_darwin_language_modes(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, rsp[PATH_MAX];
+    static const struct {
+        const char *source;
+        const char *flags[4];
+        bool accepted;
+    } cases[] = {
+        {"implicit.c", {NULL}, true},
+        {"explicit.c", {"-x", "c"}, true},
+        {"header.h", {"-x", "c"}, true},
+        {"header_implicit.h", {NULL}, false},
+        {"suffix.cpp", {NULL}, false},
+        {"suffix_forced.cpp", {"-x", "c"}, true},
+        {"macro_cpp.c", {"-x", "c++"}, false},
+        {"macro_objc.c", {"-x", "objective-c"}, false},
+        {"inline_cpp.c", {"-xc++"}, false},
+        {"unknown.c", {"-x", "unknown-language"}, false},
+        {"reordered_c.c", {"-x", "c++", "-x", "c"}, true},
+        {"reordered_cpp.c", {"-x", "c", "-x", "c++"}, false},
+        {"duplicate_c.c", {"-x", "c", "-x", "c"}, true},
+        {"reset_c.c", {"-x", "c", "-x", "none"}, true},
+    };
+    TEST_CASE("semantic_sensor: Darwin admits only proven C invocation modes") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_language") != NULL);
+        for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++)
+            ASSERT(smt_darwin_mode_case(dir, cases[k].source,
+                                        cases[k].accepted ?
+                                        "#define MEANING 42\n"
+                                        "int twice(int x) { return x + x; }\n" :
+                                        "#define MEANING 42\n",
+                                        cases[k].flags,
+                                        cases[k].accepted));
+        ASSERT(smt_darwin_mode_case(dir, "joined_c.c",
+                                    "int f(void) { return 1; }\n",
+                                    (const char *const[4]){"-xc"}, true));
+        ASSERT(smt_darwin_mode_case(dir, "header_macro.h",
+                                    "#define MEANING 42\n",
+                                    (const char *const[4]){"-x", "c"}, true));
+        ASSERT(smt_darwin_mode_case(dir, "empty.cpp", "",
+                                    (const char *const[4]){NULL}, false));
+        ASSERT(smt_write(dir, "mode.rsp", "-x c++\n"));
+        (void)snprintf(rsp, sizeof(rsp), "@%s/mode.rsp", dir);
+        ASSERT(smt_darwin_mode_case(dir, "response.c", "#define X 1\n",
+                                    (const char *const[4]){rsp}, false));
+        ASSERT(smt_darwin_mode_case(dir, "xclang.c", "#define X 1\n",
+                                    (const char *const[4]){
+                                        "-Xclang", "-x", "-Xclang", "c++"},
+                                    false));
+        ASSERT(setenv("CCC_OVERRIDE_OPTIONS", "+-x c++", 1) == 0);
+        bool refused = smt_darwin_mode_case(dir, "environment.c",
+                                             "#define X 1\n",
+                                             (const char *const[4]){NULL},
+                                             false);
+        (void)unsetenv("CCC_OVERRIDE_OPTIONS");
+        ASSERT(refused);
+        ASSERT(setenv("CLANG_CONFIG_FILE", "mode.rsp", 1) == 0);
+        refused = smt_darwin_mode_case(dir, "driver_config.c",
+                                        "#define X 1\n",
+                                        (const char *const[4]){NULL}, false);
+        (void)unsetenv("CLANG_CONFIG_FILE");
+        ASSERT(refused);
+    } TEST_END
+    (void)unsetenv("CCC_OVERRIDE_OPTIONS");
+    (void)unsetenv("CLANG_CONFIG_FILE");
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
+static int smt_t_darwin_mode_identity(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, out[5][PATH_MAX];
+    uint8_t *m[5] = {NULL, NULL, NULL, NULL, NULL}, section[5][32];
+    size_t n[5] = {0, 0, 0, 0, 0};
+    struct vcs_semantic_facts_info_v1 facts[5];
+    const char *standards[5][2] = {
+        {"-std=c11", NULL}, {"-std=c23", NULL},
+        {"-std=c11", "-std=c23"}, {"-ansi", NULL},
+        {"-std=c89", NULL},
+    };
+    TEST_CASE("semantic_sensor: admitted C dialect changes producer identity") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_modes") != NULL);
+        ASSERT(smt_write(dir, "mode.c",
+                         "#define SCALE 2\n"
+                         "typedef int item_t;\n"
+                         "item_t twice(item_t x) { return x * SCALE; }\n"));
+        for (size_t k = 0; k < 5; k++) {
+            const char *argv[] = {SMT_SENSOR, "emit", "--root", dir,
+                                  "--source", "mode.c", "--out", out[k],
+                                  "--facts", "--", standards[k][0],
+                                  standards[k][1], NULL};
+            (void)snprintf(out[k], sizeof(out[k]), "%s/mode_%zu.bin", dir, k);
+            ASSERT(smt_spawn(argv));
+            ASSERT(smt_read(out[k], &m[k], &n[k]));
+            ASSERT(vcs_semantic_facts_v1_info(m[k], n[k], &facts[k]));
+            ASSERT(facts[k].present && facts[k].complete);
+            ASSERT(vcs_semantic_section_root_v1(m[k], n[k],
+                        VCS_SEMANTIC_SECTION_V1_FUNCTIONS, section[k]));
+        }
+        ASSERT(memcmp(facts[0].producer, facts[1].producer, 32) != 0);
+        ASSERT(memcmp(facts[1].producer, facts[2].producer, 32) == 0);
+        ASSERT(memcmp(facts[3].producer, facts[4].producer, 32) == 0);
+        ASSERT(memcmp(facts[1].producer, facts[3].producer, 32) != 0);
+        for (size_t k = 1; k < 5; k++)
+            ASSERT(memcmp(section[0], section[k], 32) == 0);
+    } TEST_END
+    for (size_t k = 0; k < 5; k++)
+        free(m[k]);
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
 static int smt_t_darwin_anonymous(void)
 {
     int failures = 0;
@@ -1431,6 +1605,9 @@ int test_semantic_sensor(void)
 #if defined(__APPLE__)
     failures += smt_t_darwin_types();
     failures += smt_t_darwin_refusals();
+    failures += smt_t_darwin_unsupported();
+    failures += smt_t_darwin_language_modes();
+    failures += smt_t_darwin_mode_identity();
     failures += smt_t_darwin_anonymous();
 #endif
     if (r.out[0] != '\0')

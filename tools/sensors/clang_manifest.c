@@ -59,6 +59,68 @@ struct cm_args {
     size_t nidentity;
 };
 
+static bool cm_indirect_mode_arg(const char *a)
+{
+    return a[0] == '@' || strcmp(a, "-Xclang") == 0 ||
+           strcmp(a, "-Xpreprocessor") == 0 || strcmp(a, "-cc1") == 0 ||
+           strcmp(a, "--config") == 0 || strncmp(a, "--config=", 9) == 0 ||
+           strcmp(a, "-config") == 0 || strncmp(a, "-config=", 8) == 0;
+}
+
+static bool cm_scan_language_flags(struct cm_core *c,
+                                   const char *const *argv, size_t argc,
+                                   const char **mode, const char **standard)
+{
+    for (size_t k = 0; k < argc; k++) {
+        const char *a = argv[k];
+        if (cm_indirect_mode_arg(a))
+            return cm_fail(c, "unsupported translation-unit language: indirect compiler options");
+        if (strcmp(a, "-ansi") == 0)
+            *standard = "c89";
+        else if (strncmp(a, "-std=", 5) == 0)
+            *standard = a + 5;
+        else if (strcmp(a, "-std") == 0)
+            return cm_fail(c, "unsupported translation-unit language: -std has no joined value");
+        if (strcmp(argv[k], "-x") == 0) {
+            if (++k == argc)
+                return cm_fail(c, "unsupported translation-unit language: -x has no value");
+            *mode = argv[k];
+        } else if (strncmp(argv[k], "-x", 2) == 0 && argv[k][2] != '\0') {
+            *mode = argv[k] + 2;
+        }
+    }
+    return true;
+}
+
+/* The AST walk describes C. Infer the mode from the exact argv that libclang
+ * will receive. A response file, driver config, or cc1 escape could change
+ * that argv unseen, so none can produce a manifest. The last -x selects the
+ * mode of the separately supplied source; -x none restores its suffix. */
+static bool cm_c_language_mode(struct cm_core *c, const char *source,
+                               const char *const *argv, size_t argc)
+{
+    const char *mode = NULL, *standard = "default";
+    const char *suffix = strrchr(source, '.');
+    if (getenv("CCC_OVERRIDE_OPTIONS") != NULL ||
+        getenv("CLANG_CONFIG_FILE") != NULL)
+        return cm_fail(c, "unsupported translation-unit language: indirect compiler options");
+    if (!cm_scan_language_flags(c, argv, argc, &mode, &standard))
+        return false;
+    if (mode != NULL && strcmp(mode, "c") != 0 && strcmp(mode, "none") != 0)
+        return cm_fail(c, "unsupported translation-unit language: -x %s", mode);
+    if ((mode == NULL || strcmp(mode, "none") == 0) &&
+        (suffix == NULL || strcmp(suffix, ".c") != 0))
+        return cm_fail(c, "unsupported translation-unit language: %s", source);
+#if defined(__APPLE__)
+    int n = snprintf(c->producer_grammar, sizeof(c->producer_grammar),
+                     "%s|c|std=%s", CM_TYPE_GRAMMAR, standard);
+    if (n < 0 || n > 64 || (size_t)n >= sizeof(c->producer_grammar))
+        return cm_fail(c, "unsupported translation-unit language: standard mode too long");
+    c->type_grammar = c->producer_grammar;
+#endif
+    return true;
+}
+
 static bool cm_filter_args(struct cm_state *st, char **argv, int argc,
                            const char *source, struct cm_args *out)
 {
@@ -81,6 +143,8 @@ static bool cm_filter_args(struct cm_state *st, char **argv, int argc,
         if (!cm_norm_arg(c, argv[k], &out->identity[out->nidentity++]))
             return false;
     }
+    if (!cm_c_language_mode(c, source, out->parse, out->nparse))
+        return false;
     for (size_t k = 0; k < CM_SUFFIX_N; k++)
         out->parse[out->nparse++] = k_cm_suffix[k];
     return true;
@@ -328,6 +392,8 @@ static bool cm_emit_parse(struct cm_state *st, const struct cm_opts *o,
                           const char *capture, char **report)
 {
     st->core.type_grammar = CM_TYPE_GRAMMAR;
+    if (!cm_filter_args(st, o->argv, o->argc, o->source, args))
+        return false;
 #if defined(__APPLE__)
     uint8_t producer_after[32];
     if (o->facts &&
@@ -336,8 +402,7 @@ static bool cm_emit_parse(struct cm_state *st, const struct cm_opts *o,
         return cm_fail(&st->core, "darwin producer image identity unavailable");
     st->core.producer_before_valid = o->facts;
 #endif
-    if (!cm_filter_args(st, o->argv, o->argc, o->source, args) ||
-        !cm_parse(st, o->source, args, capture, report) ||
+    if (!cm_parse(st, o->source, args, capture, report) ||
         !cm_extract(st, o, main_path, args, *report))
         return false;
 #if defined(__APPLE__)

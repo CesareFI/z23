@@ -1057,6 +1057,13 @@ static enum CXChildVisitResult cm_top_visit(CXCursor c, CXCursor parent,
     (void)parent;
     if (!cm_is_repo(f))
         return CXChildVisit_Continue;
+    /* This walk models C declarations. A different language can have
+     * top-level declarations we do not emit, such as C++ templates. */
+    enum CXLanguageKind language = clang_getCursorLanguage(c);
+    if (language != CXLanguage_Invalid && language != CXLanguage_C) {
+        (void)cm_fail(&st->core, "unsupported translation-unit language");
+        return CXChildVisit_Break;
+    }
     if (!cm_dispatch(st, c, f, offset))
         return CXChildVisit_Break;
     return CXChildVisit_Continue;
