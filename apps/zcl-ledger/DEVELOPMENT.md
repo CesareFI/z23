@@ -111,6 +111,12 @@ transaction review to payment authorization.
 
 The intended everyday app is one [ZCL Wallet](ROADMAP.md). The existing
 Probe, Fixture, Review, and Sign Test apps are narrow development tools.
+The 0.1.0 Wallet receive image uses 3,348 bytes of `.bss` plus a 2,048-byte
+stack reserve in the Blue's 6,144-byte app SRAM region, leaving 748 bytes.
+Its build refuses a future image with fewer than 512 bytes outside the
+stack. A payment review cannot simply add Review's 2,304-byte transaction
+buffer to this app. It needs bounded streaming or verified reuse of storage,
+with explicit tests for every output and interrupted USB sessions.
 The Review app has no key permission; Sign Test can sign only its fixed
 self-test message. The host must establish ZCL consensus branch, input
 provenance, shielded output details, and token validity before asking a
