@@ -832,6 +832,47 @@ static int test_code_impact_unsafe_narrow(void)
     return failures;
 }
 
+/* HOT_FORK caches depfiles for deleted .resident unity wrappers. They are
+ * not the ordinary compiler graph and must not poison a live unit's impact. */
+static int test_code_impact_hotfork_cache_scope(void)
+{
+    int failures = 0;
+    const char *dir = CI_NARROW_FIX "/hotfork_cache";
+    static const char src[] =
+        "#include \"net/real.h\"\nint ci_narrow(void){return 1;}\n";
+    static const char dep[] =
+        "build/obj/narrow.o: core/modules/net/src/narrow.c "
+        "core/modules/net/include/net/real.h\n";
+    static const char stale[] =
+        "build/hotswap-fast/x.o: build/hotswap-fast/.resident-gone.c "
+        "core/modules/net/include/net/real.h\n";
+    system("rm -rf " CI_NARROW_FIX);
+    bool ready = ci_narrow_base(dir, src, dep) &&
+        ci_impact_mk_write(dir, "build/hotswap-fast/x.hotfork.d", stale) &&
+        ci_impact_mk_write(dir, "build/hotswap-fast/y.c.d", stale);
+    char dim[64] = "";
+    long long count = -1;
+    bool ok = ready && ci_narrow_dim(dir,
+        "core/modules/net/include/net/real.h", dim, sizeof dim, &count);
+    char sibling[64] = "";
+    long long sibling_count = -1;
+    bool sibling_ok = ok && ci_impact_mk_write(
+        dir, "build/hotswap-fast-sibling/live.d", stale) &&
+        ci_narrow_dim(dir, "core/modules/net/include/net/real.h",
+                      sibling, sizeof sibling, &sibling_count);
+    printf("invariant=hotfork_cache_scope include_dimension=%s "
+           "dependent_count=%lld sibling=%s/%lld ok=%d\n", dim, count,
+           sibling, sibling_count, sibling_ok ? 1 : 0);
+    TEST("code_impact: stale HOT_FORK cache does not poison a live depfile") {
+        ASSERT(sibling_ok);
+        ASSERT(strcmp(dim, "complete") == 0 && count == 1);
+        ASSERT(strcmp(sibling, "complete") != 0);
+        PASS();
+    } _test_next:;
+    system("rm -rf " CI_NARROW_FIX);
+    return failures;
+}
+
 static int test_code_impact_incremental_include(void)
 {
     int failures = 0;
@@ -1176,6 +1217,7 @@ int test_code_impact(void)
     int failures = 0;
     failures += test_code_impact_rule_predicate();
     failures += test_code_impact_unsafe_narrow();
+    failures += test_code_impact_hotfork_cache_scope();
     failures += test_code_impact_incremental_include();
     failures += test_code_impact_scope_refusals();
     failures += test_code_impact_hub();

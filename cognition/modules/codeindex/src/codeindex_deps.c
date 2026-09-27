@@ -375,6 +375,16 @@ static enum epoch_state epoch_current_dir(const char *root, const char *reldir,
     return EPOCH_CURRENT;
 }
 
+static bool dep_child_ignored(const char *reldir, const char *name)
+{
+    /* This directory is the hot-swap/HOT_FORK action cache, whose owner
+     * verifies its own depfiles. Its temporary .resident-* compile inputs
+     * are deleted after use and are not ordinary object-epoch authority. */
+    return name[0] == '.' || strcmp(name, "history") == 0 ||
+           (strcmp(reldir, "build") == 0 &&
+            strcmp(name, "hotswap-fast") == 0);
+}
+
 static bool collect_dep_paths(const char *root, const char *reldir,
                               struct dep_paths *paths)
 {
@@ -403,7 +413,7 @@ static bool collect_dep_paths(const char *root, const char *reldir,
     bool ok = true;
     for (size_t i = 0; ok && i < directories.count; i++) {
         const char *name = directories.entries[i].name;
-        if (name[0] == '.' || strcmp(name, "history") == 0) continue;
+        if (dep_child_ignored(reldir, name)) continue;
         char child[CI_PATH_MAX];
         int cn = snprintf(child, sizeof(child), "%s/%s", reldir, name);
         if (cn <= 0 || (size_t)cn >= sizeof(child)) {
