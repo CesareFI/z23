@@ -26,7 +26,7 @@ make -C apps/zcl-ledger/device-blue-review \
   CLANGPATH=/path/to/clang/bin/
 ```
 
-The build checks for an empty `.data` section. Extract the 23,296-byte code
+The build checks for an empty `.data` section. Extract the 23,552-byte code
 image and check its SHA-256 before installing:
 
 ```sh
@@ -36,7 +36,7 @@ sha256sum /tmp/zcl-review.bin
 ```
 
 The pinned image hash is
-`ae5755690d8317fda9fa4c827a8c5cdc60497b0cd92a196fe4e28e69b62f9eaf`.
+`da4f6671eaa41b3a1c94ec5f37936fc78f4845ec96ac8d84c0f94aa37b862d08`.
 The measured `.bss`, including the reserved stack, is 6,068 bytes. An
 earlier version accepted 4,096 transaction bytes; this version reserves
 192 bytes for independent screen strings, avoiding overlap with the
@@ -60,7 +60,7 @@ summary and exact-byte digest. The owner confirmed the signed app opened
 without BOLOS's non-genuine warning and exited normally. Version 0.2.0
 received a successful install response after the previous Review icon was
 deleted, but its icon is absent from the owner's home screen. Installation,
-touchscreen operation, and live ZIP-243 behavior remain unverified. Version 0.3.0
+touchscreen operation, and live ZIP-243 behavior remain unverified. Version 0.3.1
 passed offline tests and builds but has not been installed. Running
 the host command without `--blue` only parses a local file.
 

@@ -102,6 +102,11 @@ BLAKE2b-256. The caller must determine the ZCL consensus branch for the
 transaction's height; the command does not validate the branch ID or
 consensus validity. With `--blue`, it also compares the Blue's independent
 digest. Both digest values are review data, not signatures or approval.
+The C23 ZIP-243 library also computes SIGHASH_ALL for a selected transparent
+input when given its spent output's scriptCode and amount. Its result matched
+ZIP 243's published transparent test vector. Z23 does not yet validate the
+provenance of those spent-output facts or expose a transparent payment signing
+command, so this digest alone is not payment authorization.
 The optional `--blue` mode sends at most 3,840 transaction bytes to the
 [ZCL Review app](device-blue-review/README.md), verifies its review-only
 identity, and requires its structural summary and transaction SHA-256 digest

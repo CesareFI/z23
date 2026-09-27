@@ -26,4 +26,15 @@ int zcl_zip243_shielded_digest(const uint8_t *wire, size_t length,
                                 const zcl_zip243_hasher *hasher,
                                 uint8_t digest[32]);
 
+/* Computes SIGHASH_ALL for one transparent input. script_code and amount
+ * must come from the spent output; this function does not verify their
+ * provenance or sign the digest. */
+int zcl_zip243_transparent_digest(const uint8_t *wire, size_t length,
+                                   uint32_t input_index,
+                                   const uint8_t *script_code,
+                                   size_t script_code_length,
+                                   uint64_t amount_zat, uint32_t branch_id,
+                                   const zcl_zip243_hasher *hasher,
+                                   uint8_t digest[32]);
+
 #endif

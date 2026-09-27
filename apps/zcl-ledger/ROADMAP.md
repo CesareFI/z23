@@ -20,7 +20,7 @@ digest with host-supplied display text is insufficient for payment approval.
 | --- | --- | --- |
 | USB and app management | Authenticated CA install and app catalog on BOLOS 2.1.1 | Repeatable install, open, exit, and recovery checks for the final app |
 | Transparent addresses | Public-key fixture and fixed-message seed-derived signing test | Device-confirmed receive address for a selected ZCL path |
-| Transparent payments | Host displays P2PKH/P2SH output facts; device Review parses transaction structure | Streaming transaction review, trusted prevout amounts, complete output display, fee calculation, and input-specific signatures |
+| Transparent payments | Host displays P2PKH/P2SH output facts and computes ZIP-243 input digests against a published vector; device Review parses transaction structure | Streaming transaction review, trusted prevout amounts, complete output display, fee calculation, and input-specific signatures |
 | Sapling payments | Host and Review compute ZIP-243 digests; no Sapling keys or signing in Review | ZCL branch selection, key derivation, note and output binding, exact on-device review, spend authorization, and end-to-end test transactions |
 | Transparent multisig | Host recognizes P2SH scripts but cannot infer a threshold | Redeem-script and cosigner validation, device confirmation, and independently verified signatures |
 | ZSLP | Host detects an output-zero marker | Token parser, input lineage and supply validation, token-aware display, and test transactions |

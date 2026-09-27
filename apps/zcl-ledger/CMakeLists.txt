@@ -191,7 +191,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_link_options(test-zcl-zip243 PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME zcl-zip243 COMMAND test-zcl-zip243
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-vector1.hex)
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-vector1.hex
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-transparent-vector3.hex)
 
 add_executable(test-blue-review-protocol tests/test_blue_review_protocol.c)
 target_link_libraries(test-blue-review-protocol PRIVATE blue_review_protocol blue_review_screen zcl_zip243_host_hash OpenSSL::Crypto)
