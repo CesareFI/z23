@@ -138,8 +138,9 @@ static struct hs_action_plan g_plan;
  * because the capsule links without --no-undefined and is dlopen'ed
  * RTLD_LAZY: a rule the story exercises that lives in a TU outside the set
  * resolves from the RESIDENT binary, so a mutation in that TU cannot change
- * the story's answer and the capsule reports STORY_GREEN for a mutation it
- * claims to catch. Every TU in the set is #included into the capsule, and an
+ * the story's answer. hs_hotfork_closure_admit() therefore refuses the story
+ * whenever the code index's call closure reaches a TU edited since the
+ * resident was built. Every TU in the set is #included into the capsule, and an
  * edit to any of them selects this capsule. The TU-list helpers and bounds
  * (ZCL_HOTFORK_UNITY_*) live in hotfork_unity.h beside the unity renderer.
  * `adapter_id` names the story adapter file the renderer derives. */
@@ -3815,6 +3816,27 @@ static int hs_hotfork_owner_story_event(
                     : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }
 
+/* The built (or cache-reused) candidate's story calls into the running image
+ * for every function its TU set does not compile. Those callees are derived
+ * from the code index's call closure, never from the declared sibling list,
+ * and a closure TU edited since the image was built refuses the story; the
+ * refusal is a shape refusal, so the save falls back to the restart path. */
+static bool hs_hotfork_closure_admit(const char *repo_root,
+                                     const struct hs_hotfork_def *def,
+                                     char *why, size_t why_len)
+{
+    char root[PATH_MAX];
+    if (!platform_directory_canonical_real(repo_root, root, sizeof(root))) {
+        hs_why(why, why_len,
+               ZCL_HOTFORK_SHAPE_REASON "CALL_CLOSURE_UNKNOWN -: the source "
+               "root does not resolve; fallback=restart");
+        return false;
+    }
+    return zcl_hotfork_shape_closure_admit(root, def->source_tu,
+                                           def->sibling_tus, def->adapter_id,
+                                           why, why_len);
+}
+
 int zcl_devloop_hotfork_batch_event(
     const char *repo_root, const char *const *paths, size_t path_count,
     enum zcl_devloop_publish_mode publish_mode)
@@ -3833,7 +3855,8 @@ int zcl_devloop_hotfork_batch_event(
     struct zcl_devloop_process_result process = {0};
     char why[512] = {0};
     if (!hs_hotfork_build(repo_root, def, &build, &process,
-                          why, sizeof(why))) {
+                          why, sizeof(why)) ||
+        !hs_hotfork_closure_admit(repo_root, def, why, sizeof(why))) {
         if (process.cancelled || zcl_devloop_process_cancel_requested())
             return ZCL_DEVLOOP_RESTART_EVENT_CANCELLED;
         /* A shape refusal is not a compile failure: the candidate compiled,

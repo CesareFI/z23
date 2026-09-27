@@ -13,10 +13,14 @@
  * repo-relative .c paths, "" when the owner stands alone. The builder
  * #includes the owner and then each sibling in declaration order, and an
  * edit to ANY TU in the set selects this capsule. A rule the story claims to
- * exercise that lives in a TU OUTSIDE the set is not observed at all: the
- * capsule links without --no-undefined and is dlopen'ed RTLD_LAZY, so the
- * call resolves from the RESIDENT binary and a mutation in that TU reports
- * STORY_GREEN. When a rule moves to a sibling file, add the file here. */
+ * exercise that lives in a TU OUTSIDE the set is not compiled into the
+ * capsule: it links without --no-undefined and is dlopen'ed RTLD_LAZY, so
+ * the call resolves from the RESIDENT binary. Those resident callees are
+ * derived from the code index's call closure, not from this list, and a
+ * closure TU edited since the resident was built refuses the story
+ * (HOT_FORK_SHAPE_CALL_CLOSURE_STALE, fallback=restart) instead of letting
+ * it answer from stale bytes. An edit there never selects this capsule, so
+ * when a rule moves to a sibling file, add the file here. */
 
 HOTFORK_CAPSULE(
     "vcs.source-package-checkout.v1",

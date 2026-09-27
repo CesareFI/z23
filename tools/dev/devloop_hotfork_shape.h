@@ -65,6 +65,22 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
                              const char *candidate_object, const char *depfile,
                              char *why, size_t why_len);
 
+/* The resident call closure of one capsule, judged after its candidate is
+ * built or reused and before its story runs. The story calls into the
+ * running image for every function its TU set does not compile, and a body
+ * edit there keeps the ABI the shape checks read. Every identifier of the
+ * TU set's and story adapter's current bytes that the code index places
+ * in-tree seeds codeindex_forward_closure(); each closure TU the resident
+ * epoch holds an object for must still be the running image's input (the
+ * object no newer than the image, no input its depfile names newer than the
+ * object). True only then. No index, no placed seed, a truncated closure or
+ * a stale TU refuses with a HOT_FORK_SHAPE_CALL_CLOSURE_* or
+ * HOT_FORK_SHAPE_NO_BASELINE reason, never a green story. */
+bool zcl_hotfork_shape_closure_admit(const char *root, const char *source_tu,
+                                     const char *sibling_tus,
+                                     const char *adapter_id, char *why,
+                                     size_t why_len);
+
 /* True when `why` is a HOT_FORK shape refusal (a restart fallback), not a
  * compile failure. */
 bool zcl_hotfork_shape_refused(const char *why);

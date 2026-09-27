@@ -8,6 +8,7 @@
 #include "test/test_timing_budget.h"
 #include "test_group_catalog.h"
 
+#include "codeindex/codeindex.h"
 #include "command/native_command.h"
 #include "command/native_dev_loop_command.h"
 #include "dev_activation.h"
@@ -6699,6 +6700,17 @@ static void dp_hf_copy(char *out, size_t cap, const char *value)
     (void)snprintf(out, cap, "%s", value ? value : "");
 }
 
+/* HOT_FORK derives the story's resident callees from the code index's call
+ * closure and refuses without one, so every fixture root is indexed once
+ * over the bytes it starts from. */
+static bool dp_hf_index(const char *root)
+{
+    struct codeindex *ci = codeindex_open(root);
+    if (ci)
+        codeindex_close(ci);
+    return ci != NULL;
+}
+
 /* One save of the owner through the HOT_FORK path; `seen` gets the event
  * code plus the published verdict's phase, cache key and story detail. */
 static bool dp_hf_drive(struct dp_hf_seen *seen)
@@ -7363,6 +7375,7 @@ static int test_hotfork_shape_refusals(void)
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
         ASSERT(dp_hf_fixture_init(cwd, owner, story));
+        ASSERT(dp_hf_index(k_dp_hf_root));
         ASSERT(dp_hs_resident(1));
         ASSERT(dp_hf_env(cwd, true));
         bool edits = dp_hs_edit_matrix(owner);
@@ -7497,6 +7510,7 @@ static int test_hotfork_story_file_green_and_red(void)
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
         ASSERT(dp_hf_fixture_init(cwd, owner, story));
+        ASSERT(dp_hf_index(k_dp_hf_root));
         ASSERT(dp_hs_resident(1));
         ASSERT(dp_hf_env(cwd, true));
         bool owner_ok = dp_hf_owner_cycle(owner, mutated, &green);
@@ -7707,6 +7721,23 @@ static bool dp_hc_drive(struct dp_hf_seen *seen)
     return true;
 }
 
+/* Without a code index the story's resident callees cannot be bounded: the
+ * candidate builds, and the save is refused rather than answered. */
+static bool dp_hc_unindexed(void)
+{
+    static const char reason[] =
+        ZCL_HOTFORK_SHAPE_REASON "CALL_CLOSURE_UNKNOWN";
+    struct dp_hf_seen seen;
+    bool refused = dp_hc_drive(&seen) && seen.event == 0 &&
+                   strcmp(seen.phase, "STORY_GREEN") != 0 &&
+                   strncmp(seen.capsule, reason, sizeof(reason) - 1) == 0;
+    if (!refused)
+        fprintf(stderr, "hotfork closure unindexed: event=%d phase=%s "
+                "capsule=%s (want %s)\n", seen.event, seen.phase,
+                seen.capsule, reason);
+    return refused;
+}
+
 /* The unchanged tree answers STORY_GREEN; after a body-only edit to the
  * model TU the story reaches, the save is a named shape refusal that falls
  * back to the restart path and never reaches the story. */
@@ -7743,7 +7774,7 @@ static bool dp_hc_cycle(const char *model)
 static int test_hotfork_resident_model_closure(void)
 {
     int failures = 0;
-    TEST("dev platform: HOT_FORK refuses, never STORY_GREEN, when a model TU the story reaches through the resident was edited") {
+    TEST("dev platform: HOT_FORK refuses, never STORY_GREEN, when a model TU the story reaches through the resident was edited or the call closure is unknown") {
 #if defined(__linux__)
         static char model[32768];
         char cwd[PATH_MAX];
@@ -7757,7 +7788,8 @@ static int test_hotfork_resident_model_closure(void)
         ASSERT(dp_hc_fixture_init(cwd));
         ASSERT(dp_hc_resident());
         ASSERT(dp_hc_env(cwd, true));
-        bool ok = dp_hc_cycle(model);
+        bool ok = dp_hc_unindexed() && dp_hf_index(k_dp_hc_root) &&
+                  dp_hc_cycle(model);
         ASSERT(dp_hc_env(cwd, false));
         test_rm_rf_recursive(k_dp_hc_root);
         test_rm_rf_recursive(k_dp_hc_cache);

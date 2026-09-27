@@ -93,6 +93,7 @@ static bool shape_refuse(char *why, size_t why_len, const char *reason,
 #if defined(__linux__)
 
 #include "base/hex.h"
+#include "codeindex/codeindex.h"
 #include "platform/os_proc.h"
 #include "util/safe_alloc.h"
 #include "sha3/sha3.h"
@@ -2110,6 +2111,243 @@ static bool shape_compare(struct shape_run *run, char *why, size_t why_len)
     return shape_report(&diff, why, why_len);
 }
 
+/* ── the resident call closure ───────────────────────────────────────── */
+
+/* The capsule compiles its TU set; every other function its story reaches
+ * binds RTLD_LAZY to the running image's copy. The checks above bind the TU
+ * set's own objects and headers to the image, but a body edit to a TU
+ * OUTSIDE the set keeps every ABI fact they read, and the story would answer
+ * from bytes the tree no longer holds. So the set's resident callees are
+ * derived, never declared: every identifier in the current bytes of the TU
+ * set and the story adapter that the code index places in-tree seeds a
+ * forward call-and-include closure (codeindex_forward_closure). Each closure
+ * TU the image was built from (it has an object in the resident epoch) must
+ * still be the image's input: its object no newer than the image and every
+ * input its depfile names no newer than that object, by mtime and by ctime.
+ * No index, no placed seed or a truncated closure refuses: an unbounded
+ * closure cannot vouch for the resident. A TU with no epoch object was not
+ * linked into the image, so the image holds no copy of it to go stale. */
+
+struct shape_closure {
+    const struct zcl_hotfork_shape *shape;
+    struct codeindex *ci;
+    char (*rows)[256];
+    struct shape_names seeds; /* identifiers already looked up */
+    struct shape_names tus;   /* closure translation units */
+    size_t placed;            /* seeds the index placed in-tree */
+};
+
+static bool shape_is_capsule_tu(const struct zcl_hotfork_shape *shape,
+                                const char *rel)
+{
+    size_t count = shape_tu_count(shape);
+    for (size_t i = 0; i < count; i++) {
+        char tu[ZCL_HOTFORK_UNITY_TU_MAX];
+        if (shape_tu_at(shape, i, tu, sizeof(tu)) && strcmp(tu, rel) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool shape_call_unknown(char *why, size_t why_len, const char *subject,
+                               const char *detail)
+{
+    return shape_refuse(why, why_len, "CALL_CLOSURE_UNKNOWN", subject, detail);
+}
+
+static bool shape_closure_seed(struct shape_closure *c, const char *name,
+                               char *why, size_t why_len)
+{
+    struct ci_symbol sym;
+    bool found = false, truncated = false, root_found = false;
+    if (shape_names_has(&c->seeds, name, strlen(name)))
+        return true;
+    if (!shape_names_add(&c->seeds, name) ||
+        !codeindex_symbol(c->ci, name, &sym, &found))
+        return shape_call_unknown(why, why_len, name,
+                                  "the code index cannot answer for a "
+                                  "symbol the capsule names");
+    if (!found || !sym.def_path[0])
+        return true; /* the toolchain's or a library's, not the tree's */
+    int n = codeindex_forward_closure(c->ci, name, c->rows,
+                                      CI_IMPACT_CLOSURE_MAX_FILES, &truncated,
+                                      &root_found);
+    if (n < 0 || truncated || !root_found)
+        return shape_refuse(why, why_len, "CALL_CLOSURE_TRUNCATED", name,
+                            "the forward call closure the story reaches "
+                            "through this symbol is incomplete");
+    c->placed++;
+    for (int i = 0; i < n; i++)
+        if (codeindex_path_is_translation_unit(c->rows[i]) &&
+            !shape_names_add(&c->tus, c->rows[i]))
+            return shape_call_unknown(why, why_len, c->rows[i],
+                                      "out of memory recording the closure");
+    return true;
+}
+
+/* Seeds the closure from every identifier token of `rel`'s current bytes. */
+static bool shape_closure_text(struct shape_closure *c, const char *rel,
+                               char *why, size_t why_len)
+{
+    char path[PATH_MAX], name[128];
+    char *text = snprintf(path, sizeof(path), "%s/%s", c->shape->root, rel) <
+                         (int)sizeof(path)
+                     ? shape_slurp(path, SHAPE_TEXT_MAX, NULL) : NULL;
+    bool ok = text != NULL ||
+              shape_call_unknown(why, why_len, rel,
+                                 "a capsule source cannot be read");
+    for (const char *p = text; ok && p && *p;) {
+        size_t n = 0;
+        while (shape_is_ident((unsigned char)p[n]))
+            n++;
+        if (n > 0 && n < sizeof(name) && !(p[0] >= '0' && p[0] <= '9')) {
+            memcpy(name, p, n);
+            name[n] = 0;
+            ok = shape_closure_seed(c, name, why, why_len);
+        }
+        p += n ? n : 1;
+    }
+    free(text);
+    return ok;
+}
+
+static bool shape_closure_seed_all(struct shape_closure *c, char *why,
+                                   size_t why_len)
+{
+    char story[ZCL_HOTFORK_UNITY_TU_MAX], tu[ZCL_HOTFORK_UNITY_TU_MAX];
+    bool ok = zcl_hotfork_story_path(c->shape->adapter_id, story,
+                                     sizeof(story)) &&
+              shape_closure_text(c, story, why, why_len);
+    size_t count = shape_tu_count(c->shape);
+    for (size_t i = 0; ok && i < count; i++)
+        ok = shape_tu_at(c->shape, i, tu, sizeof(tu)) &&
+             shape_closure_text(c, tu, why, why_len);
+    if (!ok)
+        return why && why[0]
+                   ? false
+                   : shape_call_unknown(why, why_len, c->shape->source_tu,
+                                        "the capsule's sources do not "
+                                        "resolve");
+    return c->placed > 0 ||
+           shape_call_unknown(why, why_len, c->shape->source_tu,
+                              "the code index places no symbol the capsule "
+                              "or its story names");
+}
+
+static bool shape_call_stale(char *why, size_t why_len, const char *subject,
+                             const char *detail)
+{
+    return shape_refuse(why, why_len, "CALL_CLOSURE_STALE", subject, detail);
+}
+
+/* One input of a closure TU's resident object `built`. */
+static bool shape_closure_dep(const struct zcl_hotfork_shape *shape,
+                              const char *dep, const struct stat *built,
+                              char *why, size_t why_len)
+{
+    char rel[PATH_MAX], path[PATH_MAX];
+    struct stat st;
+    if (!shape_normal(shape->root, dep, rel, sizeof(rel)))
+        return true; /* the toolchain's, bound by the compiler identity */
+    if (snprintf(path, sizeof(path), "%s/%s", shape->root, rel) >=
+            (int)sizeof(path) ||
+        !shape_regular(path, &st))
+        return shape_call_stale(why, why_len, rel,
+                                "an input of a TU the story reaches through "
+                                "the running image is gone; restart the "
+                                "resident");
+    return (!shape_newer(&st, built) &&
+            !shape_ts_after(&st.st_ctim, &built->st_ctim)) ||
+           shape_call_stale(why, why_len, rel,
+                            "changed after the running image's copy of a TU "
+                            "the story reaches was built, so the story would "
+                            "run the stale copy; restart the resident");
+}
+
+static bool shape_closure_tu(const struct zcl_hotfork_shape *shape,
+                             const char *tu, const struct stat *resident,
+                             char *why, size_t why_len)
+{
+    char obj[PATH_MAX], dep[PATH_MAX];
+    struct stat built;
+    size_t count = 0;
+    if (shape_is_capsule_tu(shape, tu) ||
+        !shape_epoch_path(shape, tu, ".o", obj, sizeof(obj)) ||
+        !shape_regular(obj, &built))
+        return true;
+    if (shape_newer(&built, resident))
+        return shape_call_stale(why, why_len, tu,
+                                "a TU the story reaches through the running "
+                                "image was rebuilt after the image linked; "
+                                "restart the resident");
+    char **deps = zcl_calloc(SHAPE_DEPS_MAX, sizeof(*deps),
+                             "HOT_FORK closure depfile");
+    char *text = deps && shape_epoch_path(shape, tu, ".d", dep, sizeof(dep))
+                     ? shape_slurp(dep, 1 << 20, NULL) : NULL;
+    bool ok = shape_depfile_split(text, deps, &count, SHAPE_DEPS_MAX) ||
+              shape_call_unknown(why, why_len, tu,
+                                 "the resident depfile of a TU the story "
+                                 "reaches cannot be read");
+    for (size_t i = 0; ok && i < count; i++)
+        ok = shape_closure_dep(shape, deps[i], &built, why, why_len);
+    free(deps);
+    free(text);
+    return ok;
+}
+
+static bool shape_closure_check(const struct zcl_hotfork_shape *shape,
+                                char *why, size_t why_len)
+{
+    struct stat resident;
+    struct shape_closure c = { .shape = shape };
+    if (why && why_len)
+        why[0] = 0;
+    if (!shape_resident_stat(&resident))
+        return shape_refuse(why, why_len, "RESIDENT_UNREADABLE",
+                            "running image",
+                            "the running image cannot be identified");
+    c.ci = codeindex_open_existing(shape->root);
+    c.rows = zcl_malloc(sizeof(*c.rows) * CI_IMPACT_CLOSURE_MAX_FILES,
+                        "HOT_FORK call closure");
+    bool ok = (c.ci && c.rows) ||
+              shape_call_unknown(why, why_len, shape->source_tu,
+                                 "no code index answers for the source root, "
+                                 "so the story's resident callees cannot be "
+                                 "bounded");
+    ok = ok && shape_closure_seed_all(&c, why, why_len);
+    for (size_t off = 0; ok && off < c.tus.len;
+         off += strlen(c.tus.arena + off) + 1)
+        ok = shape_closure_tu(shape, c.tus.arena + off, &resident, why,
+                              why_len);
+    if (c.ci)
+        codeindex_close(c.ci);
+    free(c.rows);
+    shape_names_free(&c.seeds);
+    shape_names_free(&c.tus);
+    return ok;
+}
+
+static bool shape_closure_admit_linux(const char *root, const char *source_tu,
+                                      const char *sibling_tus,
+                                      const char *adapter_id, char *why,
+                                      size_t why_len)
+{
+    struct zcl_hotfork_shape shape;
+    memset(&shape, 0, sizeof(shape));
+    shape.root = root;
+    shape.source_tu = source_tu;
+    shape.sibling_tus = sibling_tus;
+    shape.adapter_id = adapter_id;
+    if (!root || !source_tu || !sibling_tus || !adapter_id)
+        return shape_call_unknown(why, why_len, "-", "no capsule named");
+    if (!shape_read_epoch(&shape) || !shape_adapter_tus(&shape)) {
+        if (why && why_len)
+            (void)snprintf(why, why_len, "%s", shape.unbound);
+        return false;
+    }
+    return shape_closure_check(&shape, why, why_len);
+}
+
 static void shape_run_free(struct shape_run *run)
 {
     for (size_t i = 0; i < run->object_count; i++)
@@ -2225,6 +2463,23 @@ bool zcl_hotfork_shape_admit(bool prior, const struct zcl_hotfork_shape *shape,
     if (!prior)
         return false;
     return shape_refuse(why, why_len, "UNSUPPORTED", "-",
+                        "ELF shape facts are read on Linux only");
+#endif
+}
+
+bool zcl_hotfork_shape_closure_admit(const char *root, const char *source_tu,
+                                     const char *sibling_tus,
+                                     const char *adapter_id, char *why,
+                                     size_t why_len)
+{
+#if defined(__linux__)
+    return shape_closure_admit_linux(root, source_tu, sibling_tus, adapter_id,
+                                     why, why_len);
+#else
+    (void)root;
+    (void)sibling_tus;
+    (void)adapter_id;
+    return shape_refuse(why, why_len, "UNSUPPORTED", source_tu,
                         "ELF shape facts are read on Linux only");
 #endif
 }
