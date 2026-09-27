@@ -718,7 +718,12 @@ macro. When a member ends broadened, whichever rule broadened it, every
 changed `.c` it read on either side seeds it: every function that `.c`
 defines there, and every includer function that reaches one, joins the walk
 on both sides, whatever the dirty flags marked. The seeding covers every
-changed `.c` whose digests differ, not only the first one a rule met. The walk runs again
+changed `.c` whose digests differ, not only the first one a rule met. A member
+broadened because its own evidence cannot be trusted (`truncated`,
+`producer-unknown`, `producer-mismatch`, `facts-missing`) seeds nothing
+instead, and when it read a changed `.c` other than its main file the
+universe is incomplete. So is it when the depfile graph says a TU reads a
+changed `.c` that no manifest pair here records reading. The walk runs again
 over every changed file and affected TU whenever a member adds a seed or a
 TU other than a changed file is affected (a moved declaration alone changes
 the includer's `-g1` bytes), and each broadened member other than a changed
@@ -822,13 +827,19 @@ the consumer left unaffected.
 | ctr_unity | `cx_sum`'s body, included by a TU that also expands `__COUNTER__` | the definer, and the includer (`position-dependent`, broadened before any text rule) | narrowed; seeds `cx_sum` and `cx_e_sum` |
 | unity_ab | the bodies of `cx_sum` and `cx_top_a`, both `.c` files included by one TU under renames | `cx_a.c`, `cx_c.c`, and the includer (`header-unattributed`) | narrowed; seeds `cx_e_sum` and `cx_e_top_a`: every changed `.c`, not the first |
 | unity_addr | `cx_sum`'s body, while `cx_d.c` takes the address of `cx_e_hook`, which only the includer defines from `cx_c.c` | the definer, and the includer (`header-unattributed`) | falls back `address-taken` |
+| unity_trunc | as `unity`, with the includer's after manifest cut by a record cap | the definer, and the includer (`truncated`) | falls back, universe incomplete `truncated` |
+| unity_nobefore | as `unity`, with the includer's before manifest withheld | the definer, and the includer (`facts-missing`) | falls back, universe incomplete `facts-missing` |
+| unity_nofacts | the static `cx_twice` in `cx_a.c`, which an includer with no manifest compiles | `cx_a.c`, and the includer (`facts-missing`, from the depfile graph) | falls back, universe incomplete `facts-missing` |
+| unity_add | `cx_sum`'s body, and `cx_e.c` gains its `#include "cx_c.c"` (both requested) | the definer, and the includer (`include-resolution-change`) | falls back `include-resolution-changed` |
 
 The seven from `counter` to `unity` are minimized reproducers of dependencies
 a differential comparison against cold clang objects found missed;
 `unity_move` and `unity2` come from the review of the `unity` fix, and
 `ctr_unity`, `unity_ab` and `unity_addr` from its re-review: without the
 includer seeding the first two miss `cx_e_sum` and `cx_e_top_a`, and
-`unity_addr` narrows with no obligation. A narrowed plan must reach every
+`unity_addr` narrows with no obligation. `unity_trunc`, `unity_nobefore`
+and `unity_nofacts` come from the final review: each narrowed before the
+incompleteness rule above. A narrowed plan must reach every
 changed file and every affected TU, checked as a set through a test hook on
 the files the fold reached. A count check would not do: with a fold that
 drops the affected TUs, `unity2` reaches 3 files where 2 are needed and
