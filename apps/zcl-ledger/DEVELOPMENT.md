@@ -131,7 +131,9 @@ two-context method. The corrected Wallet guard admits this state as an
 isolated addition. Wallet 0.2.1 now links replay, transport, and output UI;
 its full image measurements are recorded in the
 [linked Wallet experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-link.md).
-Physical display and touch behavior remain unverified.
+Wallet 0.2.1 receive display and EXIT worked on the Blue, but a later
+read-only payment review stopped USB replies and made EXIT unresponsive.
+Version 0.2.1 was deleted; 0.2.2 remains uninstalled.
 [`blue_payment_review.h`](include/blue_payment_review.h) adds a C23,
 read-only review controller. It retains one standard transparent output,
 halts upload until that output is acknowledged, and limits a session to 16
@@ -169,10 +171,12 @@ finish, cancel, and query the review. Only a separate touchscreen function
 acknowledges a pending output. The
 [APDU experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-apdu.md)
 records malformed-command and memory tests. The handler is host-tested and
-linked into the installed Blue Wallet 0.2.1 candidate. Its app catalog entry
+linked into the withdrawn Blue Wallet 0.2.1 candidate. Its app catalog entry
 is verified; the owner saw a steady receive screen and working EXIT, then
 matched all 35 address characters with the host's read-only result. Review
-USB behavior remains unverified.
+USB behavior failed on a synthetic physical test. The
+[failure experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-failure.md)
+records the observed fault and the offline-only 0.2.2 response.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

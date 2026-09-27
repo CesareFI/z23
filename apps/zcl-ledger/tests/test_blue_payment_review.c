@@ -3,6 +3,7 @@
 #include "blue_payment_apdu.h"
 #include "blue_payment_screen.h"
 #include "blue_payment_simulate.h"
+#include "blue_payment_live.h"
 #include "zcl_zip243_host.h"
 #include "zcl_zip243.h"
 
@@ -413,6 +414,83 @@ static void test_apdu_mutations(void) {
     EVP_MD_CTX_free(session.sha_context);
 }
 
+typedef struct {
+    apdu_fixture apdu;
+    unsigned exchanges, continued;
+    bool refuse_touch, wrong_identity;
+} live_fixture;
+
+static bool live_exchange(void *context, const uint8_t *apdu,
+    size_t apdu_length, uint8_t *reply, size_t capacity,
+    size_t *reply_length) {
+    live_fixture *live = context;
+    ++live->exchanges;
+    if (capacity < 7 || apdu_length < 5) return false;
+    if (apdu[1] == 0x01) {
+        const uint8_t identity[7] = {'Z', 'C', 'L',
+            live->wrong_identity ? 8 : 9, 3, 0x90, 0};
+        memcpy(reply, identity, sizeof identity);
+        *reply_length = sizeof identity;
+        return true;
+    }
+    size_t payload = 0;
+    uint16_t status = blue_payment_apdu_handle(&live->apdu.state,
+        apdu, apdu_length, reply, capacity - 2, &payload,
+        &live->apdu.blake, &live->apdu.sha, screen_hash);
+    reply[payload] = (uint8_t)(status >> 8);
+    reply[payload + 1] = (uint8_t)status;
+    *reply_length = payload + 2;
+    return true;
+}
+
+static bool live_continue(void *context, uint32_t index,
+    const blue_payment_screen *screen) {
+    live_fixture *live = context;
+    assert(index == live->continued);
+    assert(live->apdu.state.review.pending);
+    assert(strcmp(screen->title, live->apdu.state.screen.title) == 0);
+    assert(strcmp(screen->amount, live->apdu.state.screen.amount) == 0);
+    assert(strcmp(screen->address, live->apdu.state.screen.address) == 0);
+    if (live->refuse_touch) return false;
+    ++live->continued;
+    return blue_payment_apdu_touch_continue(&live->apdu.state);
+}
+
+static void test_live_driver(const fixture *item) {
+    blue_payment_live_plan plan;
+    assert(blue_payment_live_prepare(item->bytes, item->length,
+        0x76b809bb, &plan));
+    assert(plan.count == 2 && plan.wire_length == item->length);
+    assert(plan.output_end[0] == item->output_end[0]);
+    assert(plan.output_end[1] == item->output_end[1]);
+    live_fixture live = {0};
+    apdu_init(&live.apdu);
+    assert(blue_payment_live_run(item->bytes, item->length, &plan,
+        live_exchange, live_continue, &live));
+    assert(live.continued == 2 && live.apdu.state.review.verified);
+    assert(!live.apdu.state.active);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    uint8_t changed[sizeof item->bytes];
+    memcpy(changed, item->bytes, item->length);
+    changed[item->second_amount] ^= 1;
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run(changed, item->length, &plan,
+        live_exchange, live_continue, &live));
+    assert(live.exchanges == 0);
+    live.wrong_identity = true;
+    assert(!blue_payment_live_run(item->bytes, item->length, &plan,
+        live_exchange, live_continue, &live));
+    assert(live.exchanges == 1 && !live.apdu.state.active);
+    live.wrong_identity = false;
+    live.refuse_touch = true;
+    assert(!blue_payment_live_run(item->bytes, item->length, &plan,
+        live_exchange, live_continue, &live));
+    assert(!live.apdu.state.active && !live.apdu.state.review.pending);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+}
+
 int main(int argc, char **argv) {
     fixture item = make_fixture();
     test_success(&item);
@@ -421,6 +499,7 @@ int main(int argc, char **argv) {
     test_apdu(&item);
     test_apdu_fail_closed(&item);
     test_apdu_mutations();
+    test_live_driver(&item);
     if (argc == 2) {
         FILE *file = fopen(argv[1], "wb");
         assert(file);

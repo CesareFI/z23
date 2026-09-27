@@ -252,27 +252,34 @@ unsigned char io_event(unsigned char channel) {
 
 static void answer_command(void) {
     volatile unsigned int received = 0, sent = 0;
+    volatile bool redraw_receive = false;
     for (;;) {
         volatile uint16_t status = 0x6f00;
         BEGIN_TRY {
             TRY {
-                received = io_exchange(CHANNEL_APDU, sent);
-                sent = 0;
+                if (sent) {
+                    (void)io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, sent);
+                    sent = 0;
+                    if (redraw_receive) {
+                        UX_DISPLAY(receive_ui, NULL);
+                        redraw_receive = false;
+                    } else if (wallet_payment_visible()) {
+                        wallet_payment_display();
+                    }
+                }
+                received = io_exchange(CHANNEL_APDU, 0);
                 size_t length = 0;
                 if (received >= 2 && G_io_apdu_buffer[1] >= 0x20) {
                     status = wallet_payment_command(G_io_apdu_buffer,
                         received, G_io_apdu_buffer,
                         sizeof G_io_apdu_buffer - 2, &length);
-                    wallet_payment_display();
                 } else {
                     bool was_visible = wallet_payment_visible();
                     if (was_visible) wallet_payment_abort();
                     status = blue_wallet_handle(&wallet_state,
                         G_io_apdu_buffer, received, G_io_apdu_buffer,
                         sizeof G_io_apdu_buffer - 2, &length);
-                    if (was_visible) {
-                        UX_DISPLAY(receive_ui, NULL);
-                    }
+                    if (was_visible) redraw_receive = true;
                 }
                 sent = length;
             }
@@ -282,6 +289,7 @@ static void answer_command(void) {
                              ? error : (0x6800 | (error & 0x07ff));
                 sent = 0;
                 wallet_payment_abort();
+                redraw_receive = true;
             }
             FINALLY { wipe(&secret, sizeof secret); }
         }
