@@ -1,10 +1,12 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_review.h"
+#include "blue_payment_screen.h"
 #include "zcl_zip243_host.h"
 #include "zcl_zip243.h"
 
 #include "crypto/blake2b.h"
 #include <openssl/evp.h>
+#include <openssl/sha.h>
 
 #undef NDEBUG
 #include <assert.h>
@@ -77,6 +79,11 @@ static bool sha_final(void *context, uint8_t digest[32]) {
     return EVP_DigestFinal_ex(context, digest, &length) == 1 && length == 32;
 }
 
+static bool screen_hash(const uint8_t *bytes, size_t length,
+    uint8_t digest[32]) {
+    return SHA256(bytes, length, digest) != NULL;
+}
+
 static void begin(blue_payment_review *review, const fixture *item,
     struct blake2b_ctx *blake_context, EVP_MD_CTX *sha_context) {
     zcl_zip243_hasher blake = zcl_zip243_host_hasher(blake_context);
@@ -112,6 +119,11 @@ static void test_success(const fixture *item) {
     assert(output && output->index == 0 && output->amount_zat == 100000000);
     assert(output->type == ZCL_TX_STREAM_P2PKH);
     for (size_t i = 0; i < 20; ++i) assert(output->hash160[i] == 0x11);
+    blue_payment_screen screen;
+    assert(blue_payment_screen_format(output, review.total_outputs,
+        screen_hash, &screen));
+    assert(strcmp(screen.title, "OUTPUT 1/2") == 0);
+    assert(strcmp(screen.amount, "1.00000000 ZCL") == 0);
     assert(blue_payment_review_acknowledge(&review));
     assert(blue_payment_review_feed(&review,
         item->bytes + item->output_end[0],
@@ -120,6 +132,10 @@ static void test_success(const fixture *item) {
     assert(output && output->index == 1 && output->amount_zat == 200000000);
     assert(output->type == ZCL_TX_STREAM_P2SH);
     for (size_t i = 0; i < 20; ++i) assert(output->hash160[i] == 0x22);
+    assert(blue_payment_screen_format(output, review.total_outputs,
+        screen_hash, &screen));
+    assert(strcmp(screen.title, "OUTPUT 2/2") == 0);
+    assert(strcmp(screen.amount, "2.00000000 ZCL") == 0);
     assert(blue_payment_review_acknowledge(&review));
     assert(blue_payment_review_feed(&review,
         item->bytes + item->output_end[1],

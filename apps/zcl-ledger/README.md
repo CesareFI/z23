@@ -32,6 +32,10 @@ bytes after each public output until the caller acknowledges it, and rejects
 chunks that cross two outputs. A device app must call acknowledgement only
 from a real touchscreen action. The controller is host-tested but is not yet
 connected to a Blue screen, USB payment command, or signing key.
+The [`blue_payment_screen` API](include/blue_payment_screen.h) formats the
+pending output into a full 35-character mainnet address and exact ZCL amount.
+The host-only renderer previews a 320 × 480 light or dark screen using the
+Blue SDK font bitmap. It has not been installed on the Blue.
 
 ## Build and test
 
@@ -39,6 +43,7 @@ connected to a Blue screen, USB payment command, or signing key.
 cmake -S apps/zcl-ledger -B build/zcl-ledger -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=clang
 cmake --build build/zcl-ledger
 ctest --test-dir build/zcl-ledger --output-on-failure
+build/zcl-ledger/test-blue-payment-screen /tmp/zcl-payment-light.png /tmp/zcl-payment-dark.png
 ```
 
 Find accessible Ledger HID interfaces without Ledger Live:

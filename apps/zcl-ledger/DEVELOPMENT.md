@@ -139,6 +139,15 @@ callback in a future device image; a USB command must never call it. The
 [output review experiment](../../docs/experiments/2026-09-27-ledger-blue-output-review.md)
 records host tests and the isolated ARM state measurement. No Blue image
 links this controller yet, and it has no signing operation or verified fee.
+[`blue_payment_screen.h`](include/blue_payment_screen.h) formats a pending
+controller output with the complete 35-character P2PKH or P2SH address,
+amount to eight decimals, position, and output type. On a hash failure it
+clears the formatted screen. The C23 host renderer previews light and dark
+320 × 480 screens with the Blue SDK's 22-pixel address font and a separate
+"DRAFT; NO SIGNING" label. The
+[screen experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-screen.md)
+records the host and ARM measurements. This is an offline preview; its
+touchscreen action is not wired to a device or signing command.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

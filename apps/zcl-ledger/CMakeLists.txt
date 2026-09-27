@@ -80,6 +80,11 @@ target_include_directories(blue_payment_review PUBLIC include)
 target_link_libraries(blue_payment_review PUBLIC zcl_tx_replay_zip243)
 target_compile_options(blue_payment_review PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(blue_payment_screen STATIC src/blue_payment_screen.c)
+target_include_directories(blue_payment_screen PUBLIC include)
+target_link_libraries(blue_payment_screen PUBLIC blue_payment_review zcl_base58)
+target_compile_options(blue_payment_screen PRIVATE -Wall -Wextra -Werror -pedantic)
+
 add_library(blue_review_protocol STATIC src/blue_review_protocol.c)
 target_include_directories(blue_review_protocol PUBLIC include)
 target_link_libraries(blue_review_protocol PUBLIC zcl_tx_review zcl_zip243)
@@ -109,6 +114,11 @@ add_library(blue_bagl_canvas STATIC src/blue_bagl_canvas.c)
 target_include_directories(blue_bagl_canvas PUBLIC include)
 target_link_libraries(blue_bagl_canvas PUBLIC PNG::PNG)
 target_compile_options(blue_bagl_canvas PRIVATE -Wall -Wextra -Werror -pedantic)
+
+add_library(blue_payment_render STATIC src/blue_payment_render.c)
+target_include_directories(blue_payment_render PUBLIC include)
+target_link_libraries(blue_payment_render PUBLIC blue_payment_screen blue_bagl_canvas)
+target_compile_options(blue_payment_render PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(blue_wallet_receive STATIC src/blue_wallet_receive.c)
 target_include_directories(blue_wallet_receive PUBLIC include)
@@ -167,7 +177,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_render blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -313,13 +323,23 @@ add_test(NAME zcl-tx-stream COMMAND test-zcl-tx-stream)
 
 add_executable(test-blue-payment-review tests/test_blue_payment_review.c)
 target_link_libraries(test-blue-payment-review PRIVATE blue_payment_review
-    zcl_zip243 zcl_zip243_host_hash OpenSSL::Crypto)
+    blue_payment_screen zcl_zip243 zcl_zip243_host_hash OpenSSL::Crypto)
 target_compile_options(test-blue-payment-review PRIVATE -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test-blue-payment-review PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(test-blue-payment-review PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME blue-payment-review COMMAND test-blue-payment-review)
+
+add_executable(test-blue-payment-screen tests/test_blue_payment_screen.c)
+target_link_libraries(test-blue-payment-screen PRIVATE blue_payment_render
+    zcl_address OpenSSL::Crypto)
+target_compile_options(test-blue-payment-screen PRIVATE -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-payment-screen PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-payment-screen PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-payment-screen COMMAND test-blue-payment-screen)
 
 option(ZCL_LEDGER_FUZZ "Build the local Clang transaction parser fuzzer" OFF)
 if(ZCL_LEDGER_FUZZ)
