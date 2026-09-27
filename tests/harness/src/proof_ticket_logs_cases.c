@@ -879,10 +879,23 @@ static int ptl_case_rebuild_conflict(void)
         struct vcs_proof_admission_report report;
         ASSERT(vcs_proof_admission_run(&admission, &change, &obligation, 1u,
                                        &admitted, &report));
-        ASSERT_EQ(admitted.status, VCS_PROOF_ADMIT_FRESH);
+        ASSERT_EQ(admitted.status, VCS_PROOF_ADMIT_REFUSED);
         ASSERT_STR_EQ(admitted.reason, VCS_PROOF_OBSERVATION_CONFLICT);
         ASSERT_STR_EQ(report.fallback_reason, VCS_PROOF_FALLBACK_CONFLICT);
-        ASSERT_EQ(report.proofs_fresh, (uint32_t)1);
+        ASSERT_EQ(report.proofs_fresh, (uint32_t)0);
+        ASSERT_EQ(report.proofs_refused, (uint32_t)1);
+        ASSERT_EQ(report.proof_invalidated, (uint32_t)1);
+        struct vcs_proof_reuse_policy inconsistent = g_l.policy;
+        inconsistent.policy_root[0] ^= 1u;
+        admission.policy = &inconsistent;
+        ASSERT(vcs_proof_admission_run(&admission, &change, &obligation, 1u,
+                                       &admitted, &report));
+        ASSERT_EQ(admitted.status, VCS_PROOF_ADMIT_REFUSED);
+        ASSERT_STR_EQ(admitted.reason, VCS_PROOF_REUSE_WHY_POLICY_ROOT);
+        ASSERT_STR_EQ(report.fallback_reason, VCS_PROOF_FALLBACK_POLICY);
+        ASSERT_EQ(report.proofs_fresh, (uint32_t)0);
+        ASSERT_EQ(report.proofs_refused, (uint32_t)1);
+        ASSERT_EQ(report.proof_invalidated, (uint32_t)1);
         vcs_proof_receiver_free(recovered);
         vcs_package_store_close(store);
         test_rm_rf(dir);

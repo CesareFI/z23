@@ -44,7 +44,9 @@ static void pad_decide(const struct vcs_proof_admission_context *ctx,
     const struct vcs_proof_reuse_decision *d = &res->decision;
     bool reused = d->outcome == VCS_PROOF_REUSE_HIT_PASS ||
                   d->outcome == VCS_PROOF_REUSE_HIT_FAIL;
-    res->status = reused ? VCS_PROOF_ADMIT_REUSED : VCS_PROOF_ADMIT_FRESH;
+    res->status = d->outcome == VCS_PROOF_REUSE_REFUSE
+        ? VCS_PROOF_ADMIT_REFUSED
+        : reused ? VCS_PROOF_ADMIT_REUSED : VCS_PROOF_ADMIT_FRESH;
     res->reason = d->reason;
     if (d->outcome == VCS_PROOF_REUSE_REFUSE) {
         if (d->reason &&
@@ -61,14 +63,16 @@ static void pad_count(const struct vcs_proof_obligation *o,
                       struct vcs_proof_admission_report *rep)
 {
     bool fresh = res->status == VCS_PROOF_ADMIT_FRESH;
+    bool invalidated = res->status != VCS_PROOF_ADMIT_REUSED;
     if (o->action_class == VCS_PROOF_ACTION_BUILD) {
         rep->build_total++;
-        rep->build_invalidated += fresh ? 1u : 0u;
+        rep->build_invalidated += invalidated ? 1u : 0u;
     } else {
         rep->proof_total++;
-        rep->proof_invalidated += fresh ? 1u : 0u;
+        rep->proof_invalidated += invalidated ? 1u : 0u;
     }
     if (fresh) rep->proofs_fresh++;
+    else if (res->status == VCS_PROOF_ADMIT_REFUSED) rep->proofs_refused++;
     else rep->proofs_reused++;
     if (fresh && o->integration_edge) rep->integration_edges_rerun++;
     if (res->decision.false_hit_refused) rep->false_hit_refusals++;
@@ -77,9 +81,9 @@ static void pad_count(const struct vcs_proof_obligation *o,
 static const char *pad_fallback(const struct vcs_proof_change *change,
                                 const struct pad_flags *flags)
 {
-    if (!change->scope_known) return VCS_PROOF_FALLBACK_UNKNOWN_SCOPE;
     if (flags->conflict) return VCS_PROOF_FALLBACK_CONFLICT;
     if (flags->policy) return VCS_PROOF_FALLBACK_POLICY;
+    if (!change->scope_known) return VCS_PROOF_FALLBACK_UNKNOWN_SCOPE;
     if (memcmp(change->contract_root_before, change->contract_root_after,
                VCS_PROOF_ROOT_BYTES) != 0)
         return VCS_PROOF_FALLBACK_DEPENDENCY;
@@ -117,11 +121,11 @@ bool vcs_proof_admission_run(const struct vcs_proof_admission_context *ctx,
     for (size_t i = 0; i < count; i++) {
         struct vcs_proof_admission_result *res = &results[i];
         memset(res, 0, sizeof(*res));
-        if (!change->scope_known && obligations[i].in_reach) {
+        pad_decide(ctx, &obligations[i], res, &flags);
+        if (!change->scope_known && obligations[i].in_reach &&
+            res->status != VCS_PROOF_ADMIT_REFUSED) {
             res->status = VCS_PROOF_ADMIT_FRESH;
             res->reason = VCS_PROOF_ADMIT_WHY_UNKNOWN_SCOPE;
-        } else {
-            pad_decide(ctx, &obligations[i], res, &flags);
         }
         pad_count(&obligations[i], res, report);
     }
@@ -142,12 +146,14 @@ bool vcs_proof_admission_report_line(
                      "component=%s contract_root_before=%s "
                      "contract_root_after=%s build_actions_invalidated=%u/%u "
                      "proof_obligations_invalidated=%u/%u proofs_reused=%u "
-                     "proofs_fresh=%u integration_edges_rerun=%u "
+                     "proofs_fresh=%u proofs_refused=%u "
+                     "integration_edges_rerun=%u "
                      "fallback_reason=%s",
                      change->component_id, before, after,
                      report->build_invalidated, report->build_total,
                      report->proof_invalidated, report->proof_total,
                      report->proofs_reused, report->proofs_fresh,
+                     report->proofs_refused,
                      report->integration_edges_rerun,
                      report->fallback_reason ? report->fallback_reason :
                                                VCS_PROOF_FALLBACK_POLICY);

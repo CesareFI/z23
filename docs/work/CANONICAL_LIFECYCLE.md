@@ -237,14 +237,16 @@ Four identities are kept separate. None stands in for another:
       `false_hit_refused`;
     - a missing artifact is MISS `artifact_unavailable`.
 - `vcs_proof_admission_run` decides a caller-supplied list of obligations for
-  one change. It reports which obligations it reused and which ran fresh,
+  one change. It reports reused, fresh and explicitly refused obligations,
   with reasons. It prints one line with `component`,
   `contract_root_before/after`, `build_actions_invalidated`,
   `proof_obligations_invalidated`, `proofs_reused`, `proofs_fresh`,
-  `integration_edges_rerun` and `fallback_reason`. The fallback reason is
-  one of `unknown-scope`, `conflict`, `policy`, `dependency-change` or
-  `none`, in that order of precedence. When the scope is unknown, every
-  obligation in reach runs fresh.
+  `proofs_refused`, `integration_edges_rerun` and `fallback_reason`. The
+  fallback reason is one of `conflict`, `policy`, `unknown-scope`, `dependency-change` or
+  `none`, in that order of precedence. Unknown scope forces in-reach
+  obligations fresh only after checking for contradictory or refused history;
+  a refusal remains non-runnable. Invalidated counts include both fresh and
+  refused obligations.
 
 The registered `proof_ticket_reuse` group covers the refusals above. It
 changes one byte in each of the nineteen key fields and also swaps two flags.

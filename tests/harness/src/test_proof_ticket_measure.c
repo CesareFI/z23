@@ -767,9 +767,18 @@ static int pta_case_conflict(struct pta *p)
         ASSERT(ptf_emit(&p->f, PTF_C, &p->keys[PTA_BUNIT], fail, NULL, NULL));
         ASSERT(ptf_sync(&p->f, PTF_C, 0, &rep));
         ASSERT(pta_admit(p, "conflict"));
-        ASSERT(pta_fresh(p, PTA_BUNIT));
+        ASSERT_EQ(p->res[PTA_BUNIT].status, VCS_PROOF_ADMIT_REFUSED);
         ASSERT_STR_EQ(p->res[PTA_BUNIT].reason, VCS_PROOF_OBSERVATION_CONFLICT);
         ASSERT_STR_EQ(p->rep.fallback_reason, VCS_PROOF_FALLBACK_CONFLICT);
+        ASSERT_EQ(p->rep.proofs_refused, 1u);
+        ASSERT_EQ(p->rep.proof_invalidated, 1u);
+        p->change.scope_known = false;
+        ASSERT(pta_admit(p, "conflict-unknown-scope"));
+        ASSERT_EQ(p->res[PTA_BUNIT].status, VCS_PROOF_ADMIT_REFUSED);
+        ASSERT_STR_EQ(p->res[PTA_BUNIT].reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        ASSERT_STR_EQ(p->rep.fallback_reason, VCS_PROOF_FALLBACK_CONFLICT);
+        ASSERT_EQ(p->rep.proofs_refused, 1u);
+        p->change.scope_known = true;
     } TEST_END
     return failures;
 }
@@ -787,9 +796,10 @@ static int pta_case_refused_policy(struct pta *p)
                                       &p->obs[PTA_BUNIT], 1u,
                                       &result, &report));
         ASSERT_EQ(result.decision.outcome, VCS_PROOF_REUSE_REFUSE);
-        ASSERT_EQ(result.status, VCS_PROOF_ADMIT_FRESH);
+        ASSERT_EQ(result.status, VCS_PROOF_ADMIT_REFUSED);
         ASSERT_STR_EQ(result.reason, VCS_PROOF_REUSE_WHY_ARGUMENTS);
         ASSERT_STR_EQ(report.fallback_reason, VCS_PROOF_FALLBACK_POLICY);
+        ASSERT_EQ(report.proofs_refused, 1u);
     } TEST_END
     return failures;
 }

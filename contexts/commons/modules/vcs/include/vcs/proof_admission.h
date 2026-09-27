@@ -47,6 +47,7 @@ struct vcs_proof_obligation {
 enum vcs_proof_admission_status {
     VCS_PROOF_ADMIT_REUSED = 0,
     VCS_PROOF_ADMIT_FRESH,
+    VCS_PROOF_ADMIT_REFUSED,
 };
 
 #define VCS_PROOF_ADMIT_WHY_UNKNOWN_SCOPE "unknown_scope"
@@ -58,19 +59,20 @@ struct vcs_proof_admission_result {
 };
 
 /* fallback_reason values, in precedence order. */
-#define VCS_PROOF_FALLBACK_UNKNOWN_SCOPE "unknown-scope"
 #define VCS_PROOF_FALLBACK_CONFLICT "conflict"
 #define VCS_PROOF_FALLBACK_POLICY "policy"
+#define VCS_PROOF_FALLBACK_UNKNOWN_SCOPE "unknown-scope"
 #define VCS_PROOF_FALLBACK_DEPENDENCY "dependency-change"
 #define VCS_PROOF_FALLBACK_NONE "none"
 
 struct vcs_proof_admission_report {
     uint32_t build_total;
-    uint32_t build_invalidated;
+    uint32_t build_invalidated;      /* fresh or refused; unusable */
     uint32_t proof_total;
-    uint32_t proof_invalidated;
+    uint32_t proof_invalidated;      /* fresh or refused; unusable */
     uint32_t proofs_reused;          /* all obligations reused */
     uint32_t proofs_fresh;           /* all obligations run fresh */
+    uint32_t proofs_refused;         /* named refusal; not runnable */
     uint32_t integration_edges_rerun;
     uint32_t false_hit_refusals;     /* artifact bytes did not match */
     const char *fallback_reason;
@@ -84,8 +86,8 @@ struct vcs_proof_admission_context {
 };
 
 /* Decide every obligation. `results` must hold `count`. Returns false only
- * for caller errors (logged); a refused or conflicting obligation is a
- * FRESH result with its reason and a fallback in the report. */
+ * for caller errors (logged). A refused or conflicting obligation is
+ * REFUSED, not runnable; its reason and fallback remain in the report. */
 bool vcs_proof_admission_run(const struct vcs_proof_admission_context *ctx,
                              const struct vcs_proof_change *change,
                              const struct vcs_proof_obligation *obligations,
@@ -97,8 +99,8 @@ bool vcs_proof_admission_run(const struct vcs_proof_admission_context *ctx,
  *   component=<id> contract_root_before=<hex> contract_root_after=<hex>
  *   build_actions_invalidated=<n>/<total>
  *   proof_obligations_invalidated=<n>/<total> proofs_reused=<n>
- *   proofs_fresh=<n> integration_edges_rerun=<n>
- *   fallback_reason=<none|unknown-scope|policy|conflict|dependency-change>
+ *   proofs_fresh=<n> proofs_refused=<n> integration_edges_rerun=<n>
+ *   fallback_reason=<conflict|policy|unknown-scope|dependency-change|none>
  * Returns false when `cap` is too small (nothing partial is claimed). */
 bool vcs_proof_admission_report_line(
     const struct vcs_proof_change *change,
