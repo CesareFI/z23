@@ -92,6 +92,8 @@ device; neither display is payment approval.
 
 ```sh
 build/zcl-ledger/zcl-tx-review --json transaction.bin
+# Run the C23 app controller and all output pages without USB:
+build/zcl-ledger/zcl-tx-review --json --simulate-app transaction.bin
 # Compute the shielded signature digest with an explicit branch ID:
 build/zcl-ledger/zcl-tx-review --json --branch-id 0x76b809bb transaction.bin
 # After a separately reviewed ZCL Review app is installed and open:
@@ -102,6 +104,16 @@ The JSON fields `shielded_details_verified` and `signing_ready` are always
 `false`. Sapling output recipients and amounts are encrypted in the wire
 transaction; this structural parser does not decrypt them or verify proofs,
 signatures, ownership, fee, or consensus validity. It has no key access.
+`--simulate-app` sends the transaction through the exact C23 controller
+compiled into the Review app, compares its summary and optional ZIP-243
+digest, and traverses every output page within the app's 2,432-byte limit.
+It opens no USB device. JSON sets
+`app_simulated:true` only after this check, while `blue_parsed` stays false.
+The two modes are mutually exclusive. Input and review failures in `--json`
+mode return an `{"ok":false,"error":"..."}` object and a nonzero exit status; error
+codes distinguish invalid arguments, file access, parsing, digest, app
+simulation, and hardware review failures. An app simulation does not prove
+BOLOS USB, touch, EXIT, or payment authorization.
 The optional `--branch-id 0xXXXXXXXX` mode computes a ZIP-243 shielded
 SIGHASH_ALL digest from the full transaction with streaming personalized
 BLAKE2b-256. The caller must determine the ZCL consensus branch for the

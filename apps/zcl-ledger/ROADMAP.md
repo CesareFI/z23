@@ -16,6 +16,19 @@ it can verify, displays the recipient, amount, network, fee, and signing
 account, and signs only after the owner approves those exact facts. An opaque
 digest with host-supplied display text is insufficient for payment approval.
 
+## Agent-facing control
+
+Z23's current safe automation sequence is device discovery, exact app identity,
+offline transaction parsing, offline app-controller simulation, and an optional
+read-only Blue comparison after the owner opens the Review app. JSON keeps
+`app_simulated` and `blue_parsed` separate. Neither status grants payment
+authority; `signing_ready` remains false. A timeout or mismatched reply ends
+that attempt and requires a fresh device-state check before another command.
+The agent must not infer permission to install, delete, enroll a certificate,
+or sign from a successful simulation or structural review. Future payment
+signing requires a purpose-built approval screen and the owner's confirmation
+on the Blue for the exact transaction facts.
+
 | Capability | Proven today | Required before payment use |
 | --- | --- | --- |
 | USB and app management | Authenticated CA install and app catalog on BOLOS 2.1.1 | Repeatable install, open, exit, and recovery checks for the final app |

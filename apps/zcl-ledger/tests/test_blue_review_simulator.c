@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_review_app.h"
+#include "blue_review_simulate.h"
 #include "zcl_zip243_host.h"
 
 #undef NDEBUG
@@ -176,6 +177,19 @@ int main(int argc, char **argv) {
     uint8_t wire[245];
     size_t length = read_fixture(argv[1], wire);
     simulate(wire, length);
+    zcl_tx_review review;
+    assert(zcl_tx_review_parse(wire, length, &review) == 0);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    uint8_t digest[32];
+    assert(zcl_zip243_shielded_digest(wire, length, 0x76b809bb,
+                                      &hasher, digest) == 0);
+    assert(blue_review_simulate(wire, length, &review, true,
+                                0x76b809bb, digest));
+    assert(blue_review_simulate(wire, length, &review, false, 0, NULL));
+    digest[0] ^= 1;
+    assert(!blue_review_simulate(wire, length, &review, true,
+                                 0x76b809bb, digest));
     simulate_scripts();
     simulate_malformed_commands();
     return 0;

@@ -27,6 +27,8 @@ cmake --build build/zcl-ledger-debug
 ctest --test-dir build/zcl-ledger-debug --output-on-failure
 build/zcl-ledger-debug/test-blue-review-simulator \
   apps/zcl-ledger/tests/fixtures/zip243-transparent-vector3.hex
+build/zcl-ledger-debug/zcl-tx-review --json --simulate-app \
+  transaction.bin
 
 make -C apps/zcl-ledger/device-blue-review \
   BOLOS_SDK=/path/to/patched/blue-secure-sdk \
@@ -56,6 +58,8 @@ uses the same app controller source as the Blue image and prints each page
 for the published 245-byte ZIP-243 transparent fixture. It exercises the
 USB command sequence and page transitions through host hash callbacks.
 It does not emulate BOLOS, the Blue USB transport, BAGL rendering, or touch.
+The host CLI exposes the same controller exercise through `--simulate-app`;
+its JSON keeps simulated and physical Blue evidence in separate fields.
 An ARM build measures code,
 initialized data, and SRAM use. Neither proves a Blue screen renders or
 responds to touch. Test a new image on the dedicated Blue only after those

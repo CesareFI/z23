@@ -66,8 +66,13 @@ target_include_directories(blue_review_app PUBLIC include)
 target_link_libraries(blue_review_app PUBLIC blue_review_protocol blue_review_screen)
 target_compile_options(blue_review_app PRIVATE -Wall -Wextra -Werror -pedantic)
 
+add_library(blue_review_simulate STATIC src/blue_review_simulate.c)
+target_include_directories(blue_review_simulate PUBLIC include)
+target_link_libraries(blue_review_simulate PUBLIC blue_review_app zcl_zip243_host_hash OpenSSL::Crypto)
+target_compile_options(blue_review_simulate PRIVATE -Wall -Wextra -Werror -pedantic)
+
 add_executable(zcl-tx-review src/tx_review_cli.c)
-target_link_libraries(zcl-tx-review PRIVATE zcl_address zcl_tx_review zcl_tx_script_facts zcl_zip243_host_hash blue_review_protocol ledger_hid OpenSSL::Crypto)
+target_link_libraries(zcl-tx-review PRIVATE zcl_address zcl_tx_review zcl_tx_script_facts zcl_zip243_host_hash blue_review_protocol blue_review_simulate ledger_hid OpenSSL::Crypto)
 target_compile_options(zcl-tx-review PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_executable(zcl-ledger src/main.c)
@@ -101,7 +106,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash blue_review_protocol blue_review_screen blue_review_app zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash blue_review_protocol blue_review_screen blue_review_app blue_review_simulate zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -220,11 +225,21 @@ endif()
 add_test(NAME blue-review-screen COMMAND test-blue-review-screen)
 
 add_executable(test-blue-review-simulator tests/test_blue_review_simulator.c)
-target_link_libraries(test-blue-review-simulator PRIVATE blue_review_app zcl_zip243_host_hash OpenSSL::Crypto)
+target_link_libraries(test-blue-review-simulator PRIVATE blue_review_simulate OpenSSL::Crypto)
 target_compile_options(test-blue-review-simulator PRIVATE -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test-blue-review-simulator PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(test-blue-review-simulator PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME blue-review-simulator COMMAND test-blue-review-simulator
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-transparent-vector3.hex)
+
+add_executable(test-zcl-tx-review-cli tests/test_zcl_tx_review_cli.c)
+target_compile_options(test-zcl-tx-review-cli PRIVATE -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-zcl-tx-review-cli PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-zcl-tx-review-cli PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME zcl-tx-review-cli COMMAND test-zcl-tx-review-cli
+    $<TARGET_FILE:zcl-tx-review>
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/zip243-transparent-vector3.hex)

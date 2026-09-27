@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #define _POSIX_C_SOURCE 200809L
 #include "blue_review_protocol.h"
+#include "blue_review_simulate.h"
 #include "ledger_hid.h"
 #include "zcl_address.h"
 #include "zcl_tx_review.h"
@@ -159,13 +160,18 @@ static bool parse_branch(const char *text, uint32_t *branch) {
 }
 
 static bool parse_args(int argc, char **argv, bool *json,
-                       const char **device, bool *has_branch,
+                       const char **device, bool *simulate_app,
+                       bool *has_branch,
                        uint32_t *branch, const char **file) {
     int index = 1;
     *json = index < argc && strcmp(argv[index], "--json") == 0;
     if (*json) ++index;
     *device = NULL;
+    *simulate_app = index < argc &&
+        strcmp(argv[index], "--simulate-app") == 0;
+    if (*simulate_app) ++index;
     if (index < argc && strcmp(argv[index], "--blue") == 0) {
+        if (*simulate_app) return false;
         if (++index >= argc) return false;
         *device = argv[index++];
     }
@@ -265,6 +271,7 @@ typedef struct {
     const uint8_t *zip_digest;
     bool has_branch;
     bool blue_parsed;
+    bool app_simulated;
     uint32_t branch_id;
 } review_report;
 
@@ -292,7 +299,7 @@ static bool print_json(const review_report *report) {
            "\"expiry_height\":%" PRIu32 ","
            "\"shielded_details_verified\":false,"
            "\"signing_ready\":false,"
-           "\"blue_parsed\":%s",
+           "\"blue_parsed\":%s,\"app_simulated\":%s",
            review->transparent_inputs, review->transparent_outputs,
            review->sapling_spends, review->sapling_outputs,
            review->sprout_joinsplits, scripts->p2pkh_outputs,
@@ -301,13 +308,16 @@ static bool print_json(const review_report *report) {
            scripts->zslp_marker ? "true" : "false",
            review->transparent_output_zat, public_amount,
            review->value_balance_zat, review->lock_time,
-           review->expiry_height, report->blue_parsed ? "true" : "false");
+           review->expiry_height, report->blue_parsed ? "true" : "false",
+           report->app_simulated ? "true" : "false");
     if (report->has_branch) {
         printf(",\"zip243_branch_id\":\"0x%08" PRIx32
                "\",\"zip243_shielded_digest\":\"", report->branch_id);
         print_hex(report->zip_digest, 32);
         printf("\",\"blue_zip243_matched\":%s",
                report->blue_parsed ? "true" : "false");
+        printf(",\"simulated_zip243_matched\":%s",
+               report->app_simulated ? "true" : "false");
     }
     fputs(",\"transaction_sha256\":\"", stdout);
     print_hex(report->transaction_hash, SHA256_DIGEST_LENGTH);
@@ -349,6 +359,8 @@ static bool print_text(const review_report *report) {
     puts("Structural review only. Shielded recipients, amounts, fee, proofs, and signatures are unverified.");
     if (report->blue_parsed)
         puts("The Blue returned the same structural summary; no key operation occurred.");
+    if (report->app_simulated)
+        puts("C23 app simulation matched; no Ledger device was opened.");
     if (report->has_branch) {
         printf("ZIP-243 shielded digest for branch 0x%08" PRIx32 ": ",
                report->branch_id);
@@ -356,6 +368,8 @@ static bool print_text(const review_report *report) {
         putchar('\n');
         if (report->blue_parsed)
             puts("Blue and host ZIP-243 digests matched; no signing was requested.");
+        if (report->app_simulated)
+            puts("Simulated app and host ZIP-243 digests matched; no signing was requested.");
     }
     fputs("Transaction SHA-256: ", stdout);
     print_hex(report->transaction_hash, SHA256_DIGEST_LENGTH);
@@ -363,52 +377,87 @@ static bool print_text(const review_report *report) {
     return true;
 }
 
-int main(int argc, char **argv) {
-    bool json;
-    const char *device, *file;
+static int report_failure(bool json, const char *code,
+                          const char *message, int exit_status) {
+    if (json) printf("{\"ok\":false,\"error\":\"%s\"}\n", code);
+    else fputs(message, stderr);
+    return exit_status;
+}
+
+typedef struct {
+    const uint8_t *wire;
+    size_t length;
+    zcl_tx_review review;
+    zcl_tx_script_facts scripts;
+    uint8_t transaction_hash[SHA256_DIGEST_LENGTH];
+    uint8_t zip_digest[32];
+    const char *device;
+    uint32_t branch_id;
     bool has_branch;
+    bool simulate_app;
+} review_work;
+
+static const char *check_review(review_work *work) {
+    if (zcl_tx_review_parse(work->wire, work->length, &work->review) < 0)
+        return "invalid_transaction";
+    if (!SHA256(work->wire, work->length, work->transaction_hash))
+        return "transaction_hash_failed";
+    if (zcl_tx_script_facts_parse(work->wire, work->length,
+                                   &work->scripts) < 0)
+        return "script_review_failed";
+    if (work->has_branch && zip243_digest(work->wire, work->length,
+            work->branch_id, work->zip_digest) < 0)
+        return "zip243_failed";
+    if (work->device && blue_review(work->device, work->wire, work->length,
+            &work->review, work->has_branch, work->branch_id,
+            work->zip_digest) < 0)
+        return "blue_review_failed";
+    if (work->simulate_app &&
+        !blue_review_simulate(work->wire, work->length, &work->review,
+                              work->has_branch, work->branch_id,
+                              work->zip_digest))
+        return "app_simulation_failed";
+    return NULL;
+}
+
+int main(int argc, char **argv) {
+    bool json = argc > 1 && strcmp(argv[1], "--json") == 0;
+    const char *device, *file;
+    bool has_branch, simulate_app;
     uint32_t branch_id = 0;
-    if (!parse_args(argc, argv, &json, &device, &has_branch,
+    if (!parse_args(argc, argv, &json, &device, &simulate_app, &has_branch,
                     &branch_id, &file)) {
-        fprintf(stderr, "Usage: %s [--json] [--blue /dev/hidrawN] [--branch-id 0xXXXXXXXX] TRANSACTION.bin\n",
-                argv[0]);
+        if (json) return report_failure(true, "invalid_arguments", "", 2);
+        fprintf(stderr, "Usage: %s [--json] [--simulate-app | --blue /dev/hidrawN] [--branch-id 0xXXXXXXXX] TRANSACTION.bin\n", argv[0]);
         return 2;
     }
     uint8_t *wire = NULL;
     size_t length = 0;
     if (read_file(file, &wire, &length) < 0) {
-        fputs("Cannot read a regular transaction file of 29 bytes to 2 MiB.\n", stderr);
-        return 1;
+        return report_failure(json, "file_read_failed",
+            "Cannot read a regular transaction file of 29 bytes to 2 MiB.\n", 1);
     }
-    zcl_tx_review review;
-    zcl_tx_script_facts scripts;
-    uint8_t transaction_hash[SHA256_DIGEST_LENGTH];
-    uint8_t zip_digest[32] = {0};
-    int result = zcl_tx_review_parse(wire, length, &review);
-    if (result == 0 && !SHA256(wire, length, transaction_hash)) result = -1;
-    if (result == 0)
-        result = zcl_tx_script_facts_parse(wire, length, &scripts);
-    if (result == 0 && has_branch)
-        result = zip243_digest(wire, length, branch_id, zip_digest);
-    if (result == 0 && device)
-        result = blue_review(device, wire, length, &review,
-                             has_branch, branch_id, zip_digest);
-    if (result < 0) {
+    review_work work = {.wire = wire, .length = length, .device = device,
+                        .branch_id = branch_id, .has_branch = has_branch,
+                        .simulate_app = simulate_app};
+    const char *error = check_review(&work);
+    if (error) {
         free(wire);
-        fputs("Transaction review failed; no signing was requested.\n", stderr);
-        return 1;
+        return report_failure(json, error,
+            "Transaction review failed; no signing was requested.\n", 1);
     }
     review_report report = {
-        .review = &review, .scripts = &scripts, .wire = wire,
-        .length = length, .transaction_hash = transaction_hash,
-        .zip_digest = zip_digest, .has_branch = has_branch,
-        .blue_parsed = device != NULL, .branch_id = branch_id
+        .review = &work.review, .scripts = &work.scripts, .wire = wire,
+        .length = length, .transaction_hash = work.transaction_hash,
+        .zip_digest = work.zip_digest, .has_branch = has_branch,
+        .blue_parsed = device != NULL, .app_simulated = simulate_app,
+        .branch_id = branch_id
     };
     bool printed = json ? print_json(&report) : print_text(&report);
     if (!printed) {
         free(wire);
-        fputs("Transaction output review failed.\n", stderr);
-        return 1;
+        return report_failure(json, "output_review_failed",
+                              "Transaction output review failed.\n", 1);
     }
     free(wire);
     return 0;
