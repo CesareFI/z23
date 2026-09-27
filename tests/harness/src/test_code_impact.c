@@ -1065,6 +1065,51 @@ static int test_code_impact_conditional_incremental(void)
     return failures;
 }
 
+/* The compiler spells a prerequisite the way the source named it, so a
+ * registry included as "../../engine/..." appears in the depfile with its
+ * ".." segments. The edge names the file by its checkout path, and a
+ * conditional include that climbs out of its directory is followed the same
+ * way; a query by the checkout path lists the includer. */
+#define CI_DOT_REG "engine/composition/dot_reg.def"
+#define CI_DOT_WIN "core/modules/net/include/net/dot_win.h"
+
+static int test_code_impact_dotdot_include_edge(void)
+{
+    int failures = 0;
+    const char *dir = CI_COND_FIX "/dotdot";
+    static const char *const src =
+        "/* narrow */\n#include \"net/real.h\"\n"
+        "#include \"../../../../" CI_DOT_REG "\"\n#ifdef _WIN32\n"
+        "#include \"../include/net/dot_win.h\"\n#endif\n"
+        "int ci_narrow(void){return 1;}\n";
+    static const char *const dep =
+        "build/obj/narrow.o: " CI_COND_UNIT " " CI_COND_REAL " "
+        "core/modules/net/src/../../../../" CI_DOT_REG "\n";
+    system("rm -rf " CI_COND_FIX);
+    bool ready = ci_impact_mk_write(dir, CI_DOT_REG, "DOT_ROW(1)\n") &&
+                 ci_impact_mk_write(dir, CI_DOT_WIN, "int ci_dot_win;\n") &&
+                 ci_narrow_base(dir, src, dep);
+    char reg_dim[64] = "", win_dim[64] = "";
+    bool reg_has = false, win_has = false;
+    bool ok = ready &&
+              ci_cond_query(dir, CI_DOT_REG, CI_COND_UNIT, reg_dim,
+                            sizeof reg_dim, &reg_has) &&
+              ci_cond_query(dir, CI_DOT_WIN, CI_COND_UNIT, win_dim,
+                            sizeof win_dim, &win_has);
+    printf("invariant=dotdot_include_edge reg=%s/%d win=%s/%d ok=%d\n",
+           reg_dim, reg_has ? 1 : 0, win_dim, win_has ? 1 : 0, ok ? 1 : 0);
+    TEST("code_impact: a dot-dot include names its file by the checkout path") {
+        ASSERT(ok);
+        ASSERT(strcmp(reg_dim, "complete") == 0);
+        ASSERT(reg_has);
+        ASSERT(strcmp(win_dim, "complete") == 0);
+        ASSERT(win_has);
+        PASS();
+    } _test_next:;
+    system("rm -rf " CI_COND_FIX);
+    return failures;
+}
+
 int test_code_impact(void)
 {
     int failures = 0;
@@ -1085,5 +1130,6 @@ int test_code_impact(void)
     failures += test_code_impact_conditional_include_edge();
     failures += test_code_impact_conditional_hazards();
     failures += test_code_impact_conditional_incremental();
+    failures += test_code_impact_dotdot_include_edge();
     return failures;
 }
