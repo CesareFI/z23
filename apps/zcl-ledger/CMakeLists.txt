@@ -94,6 +94,7 @@ add_library(blue_payment_apdu STATIC src/blue_payment_apdu.c)
 target_include_directories(blue_payment_apdu PUBLIC include)
 target_link_libraries(blue_payment_apdu PUBLIC blue_payment_screen
     zcl_tx_previous_stream)
+target_sources(blue_payment_apdu PRIVATE src/blue_mainnet_branch.c)
 target_compile_options(blue_payment_apdu PRIVATE -Wall -Wextra -Werror -pedantic)
 
 add_library(blue_review_protocol STATIC src/blue_review_protocol.c)

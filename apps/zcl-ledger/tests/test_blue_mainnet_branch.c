@@ -30,5 +30,10 @@ int main(void) {
         if (cases[i].valid) assert(branch == cases[i].branch);
     }
     assert(!blue_mainnet_branch_for_height(476969, NULL));
+    assert(blue_mainnet_branch_is_known(0x76b809bb));
+    assert(blue_mainnet_branch_is_known(0x821a451c));
+    assert(blue_mainnet_branch_is_known(0x930b540d));
+    assert(!blue_mainnet_branch_is_known(0));
+    assert(!blue_mainnet_branch_is_known(0xffffffff));
     return 0;
 }

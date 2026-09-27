@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_apdu.h"
+#include "blue_mainnet_branch.h"
 
 #include <string.h>
 
@@ -43,6 +44,7 @@ static uint16_t begin(blue_payment_apdu *state, const uint8_t *body,
     uint8_t length, const zcl_zip243_hasher *blake,
     const zcl_tx_replay_sha256 *sha) {
     if (length != 12) return 0x6700;
+    if (!blue_mainnet_branch_is_known(read_u32(body + 8))) return 0x6a80;
     blue_payment_apdu_abort(state);
     if (!blue_payment_review_begin(&state->review, read_u32(body),
             read_u32(body + 4), read_u32(body + 8), blake, sha) ||

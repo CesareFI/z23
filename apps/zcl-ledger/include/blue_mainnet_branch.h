@@ -6,5 +6,6 @@
 #include <stdint.h>
 
 bool blue_mainnet_branch_for_height(uint32_t height, uint32_t *branch);
+bool blue_mainnet_branch_is_known(uint32_t branch);
 
 #endif

@@ -389,10 +389,17 @@ static void test_apdu(const fixture *item) {
 static void test_apdu_fail_closed(const fixture *item) {
     apdu_fixture session;
     apdu_init(&session);
-    apdu_begin(&session, item);
-    apdu_passes(&session, item);
+    uint8_t wrong_branch[12] = {0};
+    uint32_t wire_length = (uint32_t)item->length;
+    for (unsigned i = 0; i < 4; ++i)
+        wrong_branch[i] = (uint8_t)(wire_length >> (i * 8));
     uint8_t reply[8];
     size_t reply_length;
+    assert(command(&session, 0x20, wrong_branch, sizeof wrong_branch,
+        reply, &reply_length) == 0x6a80);
+    assert(reply_length == 0 && !session.state.active);
+    apdu_begin(&session, item);
+    apdu_passes(&session, item);
     assert(command(&session, 0x21, item->bytes,
         item->output_end[0], reply, &reply_length) == 0x9000);
     assert(command(&session, 0x29, NULL, 0,
