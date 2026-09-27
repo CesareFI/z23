@@ -118,6 +118,11 @@ int main(int argc, char **argv) {
             assert(run(argv[2], argv[3], NULL, spend_path, fixture, error,
                        sizeof error) == 1);
             assert(strstr(error, "outpoints do not match") != NULL);
+            assert(setenv("BLUE_UTXO_TEST_SPENT", "1", 1) == 0);
+            assert(run(argv[2], argv[3], NULL, spend_path,
+                       previous_path, error, sizeof error) == 1);
+            assert(strstr(error, "not confirmed, unspent") != NULL);
+            assert(unsetenv("BLUE_UTXO_TEST_SPENT") == 0);
         }
         assert(run(argv[2], argv[3], NULL, spend_path, previous_path, error,
                    sizeof error) == 1);

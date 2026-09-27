@@ -107,8 +107,11 @@ static bool finish_child(pid_t child, bool complete) {
         WEXITSTATUS(status) == 0;
 }
 
-bool blue_chain_tip_query(const char *rpc_binary, uint32_t *next_height) {
-    if (!rpc_binary || rpc_binary[0] != '/' || !next_height) return false;
+bool blue_rpc_capture(const char *rpc_binary, const char *method,
+                      const char *argument, char *reply, size_t capacity,
+                      size_t *length) {
+    if (!rpc_binary || rpc_binary[0] != '/' || !method || !reply ||
+        !capacity || !length) return false;
     int pipefd[2];
     if (pipe(pipefd) != 0) return false;
     pid_t child = fork();
@@ -122,14 +125,23 @@ bool blue_chain_tip_query(const char *rpc_binary, uint32_t *next_height) {
             setenv("ZCL_RPC_MAX_TIME_SECS", "5", 1) != 0)
             _exit(127);
         close(pipefd[1]);
-        execl(rpc_binary, rpc_binary, "getblockchaininfo", (char *)NULL);
+        if (argument)
+            execl(rpc_binary, rpc_binary, method, argument, (char *)NULL);
+        else
+            execl(rpc_binary, rpc_binary, method, (char *)NULL);
         _exit(127);
     }
     close(pipefd[1]);
-    char reply[65536];
-    size_t used = 0;
-    bool complete = read_reply(pipefd[0], reply, sizeof reply, &used);
+    bool complete = read_reply(pipefd[0], reply, capacity, length);
     close(pipefd[0]);
-    return finish_child(child, complete) &&
-        blue_chain_tip_parse(reply, used, next_height);
+    return finish_child(child, complete);
+}
+
+bool blue_chain_tip_query(const char *rpc_binary, uint32_t *next_height) {
+    if (!next_height) return false;
+    char reply[65536];
+    size_t length = 0;
+    return blue_rpc_capture(rpc_binary, "getblockchaininfo", NULL,
+                            reply, sizeof reply, &length) &&
+        blue_chain_tip_parse(reply, length, next_height);
 }

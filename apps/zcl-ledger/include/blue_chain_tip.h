@@ -8,6 +8,9 @@
 
 bool blue_chain_tip_parse(const char *reply, size_t length,
                           uint32_t *next_height);
+bool blue_rpc_capture(const char *rpc_binary, const char *method,
+                      const char *argument, char *reply, size_t capacity,
+                      size_t *length);
 bool blue_chain_tip_query(const char *rpc_binary, uint32_t *next_height);
 
 #endif

@@ -3,6 +3,7 @@
 #include "blue_payment_live.h"
 #include "blue_mainnet_branch.h"
 #include "blue_chain_tip.h"
+#include "blue_utxo.h"
 #include "ledger_hid.h"
 #include "zcl_tx_prevout.h"
 #include "zcl_zip243_host.h"
@@ -58,6 +59,17 @@ static bool read_wire(const char *path, uint8_t **wire, size_t *length) {
     if (!valid) { free(bytes); return false; }
     *wire = bytes;
     *length = expected;
+    return true;
+}
+
+static bool load_previous(char *const paths[], size_t count,
+    uint8_t *bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS],
+    zcl_tx_previous_transaction previous[ZCL_TX_PREFLIGHT_MAX_INPUTS]) {
+    for (size_t i = 0; i < count; ++i) {
+        if (!read_wire(paths[i], &bytes[i], &previous[i].length))
+            return false;
+        previous[i].wire = bytes[i];
+    }
     return true;
 }
 
@@ -153,15 +165,8 @@ int main(int argc, char **argv) {
     size_t previous_count = (size_t)argc - 5;
     uint8_t *previous_bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS] = {0};
     zcl_tx_previous_transaction previous[ZCL_TX_PREFLIGHT_MAX_INPUTS] = {0};
-    bool loaded = true;
-    for (size_t i = 0; i < previous_count; ++i) {
-        if (!read_wire(argv[i + 5], &previous_bytes[i],
-                &previous[i].length)) {
-            loaded = false;
-            break;
-        }
-        previous[i].wire = previous_bytes[i];
-    }
+    bool loaded = load_previous(argv + 5, previous_count,
+                                previous_bytes, previous);
     zcl_tx_transparent_facts facts;
     uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
     struct blake2b_ctx blake_context;
@@ -170,6 +175,15 @@ int main(int argc, char **argv) {
             previous, previous_count, branch_id, sha256_bytes, &hasher,
             &facts, digests, ZCL_TX_PREFLIGHT_MAX_INPUTS) < 0) {
         fputs("Input outpoints do not match previous transactions or digest calculation failed.\n",
+              stderr);
+        free_previous(previous_bytes, previous_count);
+        free(plan);
+        free(wire);
+        return 1;
+    }
+    if (!blue_utxo_check_inputs(argv[3], wire, length, previous,
+                                previous_count, height)) {
+        fputs("A supplied input is not confirmed, unspent, mature, and amount-matched in the local node.\n",
               stderr);
         free_previous(previous_bytes, previous_count);
         free(plan);
@@ -187,7 +201,7 @@ int main(int argc, char **argv) {
     }
     printf("Read-only mainnet test review at node next height %u "
            "(branch %08x): %u hash-bound input(s), %u output(s), "
-           "fee %llu zatoshi. Input inclusion and UTXO status are unverified.\n",
+           "fee %llu zatoshi. Local UTXO status checked; independent peer sync and account ownership remain unverified.\n",
            height, branch_id,
            facts.transparent_inputs, facts.transparent_outputs,
            (unsigned long long)facts.fee_zat);

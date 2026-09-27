@@ -143,17 +143,22 @@ target_link_libraries(blue_payment_live PUBLIC blue_payment_simulate
     zcl_tx_stream OpenSSL::Crypto)
 target_compile_options(blue_payment_live PRIVATE -Wall -Wextra -Werror -pedantic)
 
-add_executable(zcl-blue-wallet-review src/blue_wallet_review_cli.c)
-target_sources(zcl-blue-wallet-review PRIVATE src/blue_mainnet_branch.c)
-target_include_directories(zcl-blue-wallet-review PRIVATE include)
 add_library(blue_chain_tip STATIC src/blue_chain_tip.c
     ../../platform/modules/json/src/json.c
     ../../platform/modules/base/src/safe_alloc.c)
 target_include_directories(blue_chain_tip PUBLIC include
     ../../platform/modules/json/include ../../platform/modules/base/include)
 target_compile_options(blue_chain_tip PRIVATE -Wall -Wextra -Werror -pedantic)
-target_link_libraries(zcl-blue-wallet-review PRIVATE blue_payment_live blue_chain_tip
-    ledger_hid zcl_tx_prevout)
+add_library(blue_utxo STATIC src/blue_utxo.c)
+target_include_directories(blue_utxo PUBLIC include)
+target_link_libraries(blue_utxo PUBLIC blue_chain_tip zcl_tx_prevout
+    zcl_tx_script_facts)
+target_compile_options(blue_utxo PRIVATE -Wall -Wextra -Werror -pedantic)
+add_executable(zcl-blue-wallet-review src/blue_wallet_review_cli.c
+    src/blue_mainnet_branch.c)
+target_include_directories(zcl-blue-wallet-review PRIVATE include)
+target_link_libraries(zcl-blue-wallet-review PRIVATE blue_payment_live blue_utxo
+    ledger_hid)
 target_compile_options(zcl-blue-wallet-review PRIVATE
     -Wall -Wextra -Werror -pedantic)
 
@@ -219,7 +224,7 @@ target_link_libraries(zcl-blue-install PRIVATE ledger_hid blue_secure blue_ca bl
 target_compile_options(zcl-blue-install PRIVATE -Wall -Wextra -Werror -pedantic)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_apdu blue_payment_render blue_payment_simulate blue_payment_live blue_chain_tip zcl-blue-payment-sim zcl-blue-wallet-review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
+    foreach(target ledger_hid zcl_base58 zcl_address zcl_sign_test zcl-blue-sign-test zcl_tx_review zcl_tx_previous_stream zcl_tx_script_facts zcl_zip243 zcl_zip243_host_hash zcl_tx_prevout zcl_tx_stream zcl_tx_stream_zip243 zcl_tx_replay_zip243 blue_payment_review blue_payment_screen blue_payment_apdu blue_payment_render blue_payment_simulate blue_payment_live blue_chain_tip blue_utxo zcl-blue-payment-sim zcl-blue-wallet-review blue_review_protocol blue_review_screen blue_review_app blue_review_simulate blue_bagl_canvas blue_wallet_receive blue_wallet_protocol blue_wallet_render zcl-blue-wallet-preview blue_review_render zcl-blue-screen-sim zcl-tx-review zcl-ledger blue_secure blue_app_catalog blue_install_params blue_ca zcl-blue-ca zcl-blue-install)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PUBLIC -fsanitize=address,undefined)
     endforeach()
@@ -417,7 +422,7 @@ endif()
 add_test(NAME blue-mainnet-branch COMMAND test-blue-mainnet-branch)
 
 add_executable(test-blue-chain-tip tests/test_blue_chain_tip.c)
-target_link_libraries(test-blue-chain-tip PRIVATE blue_chain_tip)
+target_link_libraries(test-blue-chain-tip PRIVATE blue_utxo)
 target_compile_options(test-blue-chain-tip PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
