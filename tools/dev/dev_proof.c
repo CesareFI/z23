@@ -5652,6 +5652,17 @@ bool zcl_dev_proof_test_prefork_argv(const char *jobs, bool lint_full,
 {
     return proof_prefork_argv(jobs, lint_full, argv, argv_cap);
 }
+
+bool zcl_dev_proof_test_needs_argv(const char *jobs, const char *groups,
+                                   const char **argv, size_t argv_cap,
+                                   size_t *targets)
+{
+    (void)jobs; (void)groups;
+    if (!argv || argv_cap == 0 || !targets) return false;
+    argv[0] = NULL;
+    *targets = 0;
+    return true;
+}
 #endif
 static bool inventory_output_only(const char *const *files, size_t count)
 {

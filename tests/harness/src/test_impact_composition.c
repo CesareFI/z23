@@ -5983,6 +5983,71 @@ static bool ic_argv_has(const char *const *argv, const char *want)
     return false;
 }
 
+/* land seq187 touched tools/sensors/clang_manifest*.c, so its exact plan
+ * selected the three live sensor groups; the generation never built
+ * build/bin/z23-clang-manifest, all three self-skipped, and the suite
+ * accounting refused the proof -- correctly, and forever. A selection that
+ * carries a group whose declared need is a BUILD makes the proof build that
+ * target in its own generation before the test step; a selection without one
+ * builds nothing extra. */
+static int test_ic_proof_test_needs_build_the_sensor(void)
+{
+    int failures = 0;
+    TEST("proof test needs: a selected sensor group builds clang-manifest "
+         "in the generation; an ordinary selection builds nothing extra") {
+        const char *argv[PROOF_TEST_NEEDS_ARGV_CAP];
+        size_t targets = 99;
+        char jobs[] = "-j4";
+
+        ASSERT(zcl_dev_proof_test_needs_argv(
+            jobs, "test_impact_composition,test_semantic_sensor", argv,
+            PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == 1);
+        ASSERT(argv[0] && strcmp(argv[0], "make") == 0);
+        ASSERT(argv[1] && strcmp(argv[1], "--no-print-directory") == 0);
+        ASSERT(argv[2] && strcmp(argv[2], jobs) == 0);
+        ASSERT(argv[3] && strcmp(argv[3], "clang-manifest") == 0);
+        ASSERT(argv[4] == NULL);
+
+        /* All three live sensor groups need the one target, named once. */
+        targets = 99;
+        ASSERT(zcl_dev_proof_test_needs_argv(
+            jobs,
+            "test_semantic_facts_live,test_semantic_sensor,"
+            "test_semantic_consumer_live",
+            argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == 1);
+        ASSERT(ic_argv_has(argv, "clang-manifest"));
+        ASSERT(argv[4] == NULL);
+
+        /* No selected group needs a build: no step, no extra cost. The
+         * clang-free sibling groups read checked-in manifests only. */
+        targets = 99;
+        ASSERT(zcl_dev_proof_test_needs_argv(
+            jobs, "test_impact_composition,test_semantic_manifest,"
+                  "test_semantic_facts,test_semantic_consumer",
+            argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == 0);
+        ASSERT(argv[0] == NULL);
+
+        /* A group that is not registered is a refusal, never "no need". */
+        ASSERT(!zcl_dev_proof_test_needs_argv(
+            jobs, "test_semantic_sensor,test_no_such_group_at_all", argv,
+            PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        /* Refused, never truncated, when the caller has no room. */
+        ASSERT(!zcl_dev_proof_test_needs_argv(jobs, "test_semantic_sensor",
+                                              argv, 4, &targets));
+        ASSERT(!zcl_dev_proof_test_needs_argv(NULL, "test_semantic_sensor",
+                                              argv, PROOF_TEST_NEEDS_ARGV_CAP,
+                                              &targets));
+        ASSERT(!zcl_dev_proof_test_needs_argv(jobs, NULL, argv,
+                                              PROOF_TEST_NEEDS_ARGV_CAP,
+                                              &targets));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_proof_prefork_builds_the_shared_targets(void)
 {
     int failures = 0;
@@ -8561,6 +8626,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_compiles_against_a_private_store();
 #endif
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
+    failures += test_ic_proof_test_needs_build_the_sensor();
     failures += test_ic_proof_prefork_builds_the_shared_targets();
     failures += test_ic_generation_docs_tools_builds_the_checker_binaries();
     failures += test_ic_generation_hooks_configure_points_at_its_own_copy();

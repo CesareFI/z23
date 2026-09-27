@@ -54,6 +54,9 @@
 /* make, --no-print-directory, -jN, the 8 helper targets, proof-lint-prebuild
  * and the NULL terminator: 13 slots, exactly. */
 #define PROOF_PREFORK_ARGV_CAP 13u
+/* make, --no-print-directory, -jN, up to eight distinct test-need targets
+ * and the NULL terminator. */
+#define PROOF_TEST_NEEDS_ARGV_CAP 12u
 
 /* Room for the `host_gated=` line of the test-selection note: every group the
  * universal selector left out because this tree cannot meet its declared host
@@ -495,6 +498,16 @@ bool zcl_dev_proof_test_lint_targets_are_full(const char *targets);
  * `argv_cap` is too small. */
 bool zcl_dev_proof_test_prefork_argv(const char *jobs, bool lint_full,
                                      const char **argv, size_t argv_cap);
+/* Seam for the test-needs build step: the exact make argv the proof runs in
+ * its generation, before the fork, for the Make targets that the selected
+ * groups (`groups`, the comma-separated exact selector) declare as
+ * ZCL_HOST_NEED_BUILD needs, each named once. `*targets` gets how many
+ * targets the argv names; 0 means no selected group needs a build, and the
+ * proof runs no step. Returns false -- a refusal -- for an unregistered group,
+ * a malformed need row, or an argv that does not fit `argv_cap`. */
+bool zcl_dev_proof_test_needs_argv(const char *jobs, const char *groups,
+                                   const char **argv, size_t argv_cap,
+                                   size_t *targets);
 /* Seam for the docs-tools build step: the exact make argv generation_prepare()
  * runs inside the sealed generation before the docs-fresh verification, so a
  * test can prove the freshness gate's checker binaries are provisioned
