@@ -168,25 +168,37 @@ static void fxh_blanks(struct fxh_lex *x, bool lines)
     }
 }
 
+/* An identifier or pp-number from i: identifier bytes, and for a number
+ * also '.' and digit separators. */
+static size_t fxh_word_len(const struct fxh_lex *x, bool ident)
+{
+    size_t k = x->i;
+    while (k < x->n && (fxh_ident_byte((unsigned char)x->s[k]) ||
+                        (!ident && (x->s[k] == '.' || x->s[k] == '\''))))
+        k++;
+    return k - x->i;
+}
+
+/* A string or character literal from i, to its close quote or line end. */
+static size_t fxh_literal_len(const struct fxh_lex *x, char quote)
+{
+    size_t k = x->i + 1;
+    for (; k < x->n && x->s[k] != quote && x->s[k] != '\n'; k++)
+        if (x->s[k] == '\\' && k + 1 < x->n)
+            k++;
+    return (k < x->n && x->s[k] == quote ? k + 1 : k) - x->i;
+}
+
 /* The length of the token at i (identifier, pp-number, literal, or one
  * punctuator byte); *ident says whether it is an identifier. */
 static size_t fxh_token(const struct fxh_lex *x, bool *ident)
 {
-    size_t k = x->i;
-    unsigned char c = (unsigned char)x->s[k];
+    unsigned char c = (unsigned char)x->s[x->i];
     *ident = fxh_ident_start(c);
-    if (*ident || (c >= '0' && c <= '9')) {
-        while (k < x->n && (fxh_ident_byte((unsigned char)x->s[k]) ||
-                            (!*ident && (x->s[k] == '.' || x->s[k] == '\''))))
-            k++;
-        return k - x->i;
-    }
-    if (c == '"' || c == '\'') {
-        for (k++; k < x->n && x->s[k] != (char)c && x->s[k] != '\n'; k++)
-            if (x->s[k] == '\\' && k + 1 < x->n)
-                k++;
-        return (k < x->n && x->s[k] == (char)c ? k + 1 : k) - x->i;
-    }
+    if (*ident || (c >= '0' && c <= '9'))
+        return fxh_word_len(x, *ident);
+    if (c == '"' || c == '\'')
+        return fxh_literal_len(x, (char)c);
     return 1;
 }
 
@@ -311,8 +323,9 @@ static bool fxh_ident(struct fxh_lex *x, const char *s, size_t n)
            (x->last_ident != NULL || x->paren != 0 || x->brace != 0);
 }
 
-/* Bracket depth and the declaration's end, for one punctuator. */
-static bool fxh_punct(struct fxh_lex *x, char c)
+/* A declaration's name is the identifier before its first top-level '(';
+ * a function body is a top-level '{' right after a ')'. */
+static void fxh_punct_head(struct fxh_lex *x, char c)
 {
     bool top = x->paren == 0 && x->brace == 0;
     if (c == '(' && top && !x->have_decl && x->last_ident != NULL) {
@@ -323,13 +336,20 @@ static bool fxh_punct(struct fxh_lex *x, char c)
         x->function = true;
         x->head_names = x->names.n;
     }
+}
+
+/* Bracket depth and the declaration's end, for one punctuator. */
+static bool fxh_punct(struct fxh_lex *x, char c)
+{
+    fxh_punct_head(x, c);
     x->paren += (c == '(' || c == '[') - (c == ')' || c == ']');
     x->brace += (c == '{') - (c == '}');
     x->paren = x->paren < 0 ? 0 : x->paren;
     x->brace = x->brace < 0 ? 0 : x->brace;
     x->last = c;
-    if ((c == '}' && x->function && x->brace == 0) ||
-        (c == ';' && x->paren == 0 && x->brace == 0))
+    if (c == '}' && x->function && x->brace == 0)
+        return fxh_end(x);
+    if (c == ';' && x->paren == 0 && x->brace == 0)
         return fxh_end(x);
     return true;
 }

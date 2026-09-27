@@ -278,7 +278,6 @@ enum zcl_devloop_consumer_mutant {
     ZCL_DEVLOOP_MUTANT_NONE = 0,
     ZCL_DEVLOOP_MUTANT_NO_TYPE_CLOSURE,  /* typedef/tag edges dropped */
     ZCL_DEVLOOP_MUTANT_NO_MACRO_CLOSURE, /* macro-body edges dropped */
-    ZCL_DEVLOOP_MUTANT_NO_SAME_NAME,     /* the same-name pass skipped */
     ZCL_DEVLOOP_MUTANT_NO_POSITION,      /* header text positions ignored */
 };
 extern enum zcl_devloop_consumer_mutant zcl_devloop_test_consumer_mutant;

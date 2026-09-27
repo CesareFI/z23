@@ -178,20 +178,18 @@ static const char *fxc_unrequested(const struct fxc *c, const struct fxc_pair *p
     return NULL;
 }
 
-/* Everything that broadens the whole TU; true when one did. */
-static bool fxc_coarse(struct fxc *c, const struct fxc_pair *p,
-                       struct zcl_devloop_facts_tu_verdict *t)
+/* The evidence itself: complete, one named producer, one compile identity
+ * and one include resolution on both sides. True when it broadened. */
+static bool fxc_coarse_evidence(struct fxc *c, const struct fxc_pair *p,
+                                struct zcl_devloop_facts_tu_verdict *t)
 {
-    const char *why = NULL, *main = fxi_main(p->xa), *reason, *stale;
-    char detail[192];
-    struct zcl_devloop_facts_tu tu = {.source = p->path, .after = p->a,
-                                      .after_len = p->alen};
+    const char *why;
     if (!fxi_complete(p->xa) || !fxi_complete(p->xb))
         return fxc_set(t, true, true, "truncated", "a producer cap cut a section");
     if ((why = fxc_producer_check(c, p)) != NULL)
         return fxc_set(t, true, true, why, "FACTS producer digests");
     if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY) ||
-        strcmp(main, fxi_main(p->xb)) != 0)
+        strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
         return fxc_set(t, true, true, "identity-drift",
                        "compiler, target, flags or environment changed");
     if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||
@@ -199,6 +197,19 @@ static bool fxc_coarse(struct fxc *c, const struct fxc_pair *p,
         !fxc_same_file_set(p))
         return fxc_set(t, true, true, "include-resolution-change",
                        "an include resolved differently or the file set changed");
+    return false;
+}
+
+/* Everything that broadens the whole TU; true when one did. */
+static bool fxc_coarse(struct fxc *c, const struct fxc_pair *p,
+                       struct zcl_devloop_facts_tu_verdict *t)
+{
+    const char *main = fxi_main(p->xa), *reason, *stale;
+    char detail[192];
+    struct zcl_devloop_facts_tu tu = {.source = p->path, .after = p->a,
+                                      .after_len = p->alen};
+    if (fxc_coarse_evidence(c, p, t))
+        return true;
     if (memcmp(fxi_file_digest(p->xa, main), fxi_file_digest(p->xb, main), 32))
         return fxc_set(t, true, true, "source-changed", "%s", main);
     if ((fxi_revision(p->xa) < 2 || fxi_revision(p->xb) < 2) &&
@@ -313,7 +324,8 @@ static void fxc_mark_positions(const struct fxc_hdr *h, const struct fxi *x,
         uint32_t lo, hi;
         if (fxi_span(x, e, h->path, &lo, &hi) &&
             fxh_span_dirty(&h->diff, lo, hi, after)) {
-            flags[e] |= FXI_DIRTY_POSITION;
+            /* Its code, not only its debug lines: __LINE__ in it moves. */
+            flags[e] |= FXI_DIRTY_POSITION | FXI_DIRTY_SPAN;
             continue;
         }
         if ((id[0] == 'f' || id[0] == 'v') && id[1] == ':' &&
@@ -423,14 +435,16 @@ static const char *fxc_dirty_reason(const struct fxi *x, size_t root,
         return fxi_is_site(x, root, VCS_SEMANTIC_FACTS_COND_SITE)
                    ? "macro-conditional"
                    : "interface";
-    return (flags[dirty] & FXI_DIRTY_CHUNK) ? "header-text" : "position";
+    if (flags[dirty] & FXI_DIRTY_CHUNK)
+        return "header-text";
+    return (flags[dirty] & FXI_DIRTY_SPAN) ? "code-moved" : "position";
 }
 
 /* Semantic reach on either side; true when the TU is affected by it. */
 static bool fxc_semantic(struct fxc *c, struct fxc_pair *p,
                          struct zcl_devloop_facts_tu_verdict *t, bool *ok)
 {
-    const uint8_t sem = FXI_DIRTY_DIGEST | FXI_DIRTY_CHUNK;
+    const uint8_t sem = FXI_DIRTY_DIGEST | FXI_DIRTY_CHUNK | FXI_DIRTY_SPAN;
     struct fxi *side[2] = {p->xa, p->xb};
     uint8_t *flags[2] = {p->fa, p->fb};
     bool affected = false;
@@ -573,10 +587,6 @@ static bool fxc_collides(const struct fxc *c, const struct fxi *x,
 
 bool fxc_name_collisions(struct fxc *c)
 {
-#if defined(ZCL_TESTING)
-    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_SAME_NAME)
-        return true;
-#endif
     for (size_t k = 0; c->new_names.n > 0 && k < c->report->ntus; k++) {
         struct zcl_devloop_facts_tu_verdict *t = &c->report->tus[k];
         struct fxc_pair p = {0};

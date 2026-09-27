@@ -332,6 +332,16 @@ static void fxc_reasons(struct fxc *c, const struct zcl_devloop_plan *plan,
             r->group_reason[k] = v->narrowed ? "facts-closure" : "plain";
 }
 
+static bool fxc_args_ok(const char *const *files, size_t n,
+                        const char *facts_dir,
+                        const struct zcl_devloop_plan *plan,
+                        const struct zcl_devloop_facts_verdict *verdict,
+                        const struct zcl_devloop_facts_report *report)
+{
+    return plan != NULL && verdict != NULL && report != NULL &&
+           facts_dir != NULL && (n == 0 || files != NULL);
+}
+
 bool zcl_devloop_facts_consume(const char *root, const char *const *files,
                                size_t n, const char *facts_dir,
                                const struct zcl_devloop_facts_tu *tus,
@@ -342,13 +352,11 @@ bool zcl_devloop_facts_consume(const char *root, const char *const *files,
     struct fxc c = {.root = root && root[0] ? root : ".", .facts_dir = facts_dir,
                     .files = files, .nfiles = n, .report = report,
                     .strict = tus == NULL};
-    struct zcl_devloop_plan *given = zcl_malloc(sizeof(*given), "facts.given");
+    struct zcl_devloop_plan *given = NULL;
     bool ok;
-    if (!plan || !verdict || !report || !facts_dir || (n > 0 && !files) ||
-        given == NULL) {
-        free(given);
+    if (!fxc_args_ok(files, n, facts_dir, plan, verdict, report) ||
+        (given = zcl_malloc(sizeof(*given), "facts.given")) == NULL)
         return false;
-    }
     memset(report, 0, sizeof(*report));
     memset(verdict, 0, sizeof(*verdict));
     report->reason = verdict->reason = "";

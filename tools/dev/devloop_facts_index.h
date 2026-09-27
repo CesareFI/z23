@@ -29,6 +29,7 @@ enum fxi_dirty {
     FXI_DIRTY_DIGEST = 1,   /* its records differ between the two sides */
     FXI_DIRTY_CHUNK = 2,    /* a changed header text chunk names it */
     FXI_DIRTY_POSITION = 4, /* a declaration the debug info records moved */
+    FXI_DIRTY_SPAN = 8,     /* a header function's code moved: __LINE__ may too */
 };
 
 struct fxi_roots {
