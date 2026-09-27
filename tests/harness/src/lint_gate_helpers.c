@@ -362,6 +362,21 @@ pid_t fork_with_retry(void)
     return -1;
 }
 
+/* Keep real phase changes visible to the group runner while the epoch
+ * selftest's ordinary output stays in the per-gate diagnostic file. */
+static void epoch_selftest_progress_channel(const char *script_rel)
+{
+    if (strcmp(script_rel, "tools/dev/build-epoch-selftest.sh") != 0)
+        return;
+    int progress_fd = dup(STDOUT_FILENO);
+    if (progress_fd < 0)
+        return;
+    char fd_text[24];
+    (void)snprintf(fd_text, sizeof(fd_text), "%d", progress_fd);
+    if (setenv("EPOCH_SELFTEST_PROGRESS_FD", fd_text, 1) != 0)
+        close(progress_fd);
+}
+
 /* Generalized gate-script runner: fork/exec the script at repo-relative
  * path `script_rel`, optionally with ZCL_LINT_MODE set to `mode` (NULL to
  * leave unset) and optionally with one argv word `arg` (NULL for none).
@@ -403,6 +418,7 @@ int run_gate_script_arg(const char *script_rel, const char *mode,
         return -1;
     }
     if (pid == 0) {
+        epoch_selftest_progress_channel(script_rel);
         int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
         if (fd >= 0) {
             (void)dup2(fd, STDOUT_FILENO);

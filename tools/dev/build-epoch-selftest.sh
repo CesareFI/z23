@@ -130,6 +130,10 @@ printf 'startup\n' > "$PHASE_FILE"
 phase()
 {
     printf '%s\n' "$1" > "$PHASE_FILE" 2>/dev/null || true
+    if [ -n "${EPOCH_SELFTEST_PROGRESS_FD:-}" ]; then
+        printf 'build-epoch-selftest: phase=%s\n' "$1" \
+            >&"$EPOCH_SELFTEST_PROGRESS_FD" || true
+    fi
 }
 load_average()
 {
