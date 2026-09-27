@@ -1125,8 +1125,7 @@ static bool ars_driver_capture(const struct ars_ask *q, struct ars_driver *d,
     d->ask_env = q->env;
     bool ok = snprintf(d->flags, sizeof(d->flags), "%s", q->flags) <
                   (int)sizeof(d->flags) &&
-              ars_driver_ask_with(d, d->flags, search, capture,
-                                  sizeof(capture)) &&
+              ars_driver_ask(d, search, capture, sizeof(capture)) &&
               ars_system_parse(capture, d, miss) &&
               ars_programs_capture(d, miss) &&
               ars_sysroot_capture(d, miss) &&
