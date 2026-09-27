@@ -14,6 +14,10 @@
  * rather than passing in-process and failing from a shell.
  */
 
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
+
 #include "test/test_core.h"
 
 #include "command/native_command.h"
