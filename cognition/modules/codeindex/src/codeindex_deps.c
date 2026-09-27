@@ -638,8 +638,17 @@ static void text_scan_file(struct text_includes *t, const char *from)
         note_include_narrow_unsafe("scan_unreadable", from);
         return;
     }
-    char line[1024];
+    /* Most source lines fit the stack buffer; a larger bound also covers the
+     * existing generated registries without turning normal scans into a
+     * closure refusal. Lines beyond it still fail closed below. */
+    char line[8192];
     while (fgets(line, sizeof line, file) != NULL) {
+        /* A directive can straddle two fgets chunks. Do not certify a
+         * complete include closure when this bounded text scan cannot see
+         * one whole source line. A short final line needs no newline. */
+        size_t used = strlen(line);
+        if (used > 0 && line[used - 1] != '\n' && !feof(file))
+            note_include_narrow_unsafe("text_line_truncated", from);
         char *quoted = strstr(line, "#include \"");
         char *end;
         if (!quoted)

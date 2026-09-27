@@ -1210,6 +1210,53 @@ static int test_code_impact_conditional_hazards(void)
     return failures;
 }
 
+/* A fixed-size text scan must not certify a complete include closure when a
+ * quoted include sits beyond its first input buffer. */
+static int ci_long_include_line_case(size_t padding, bool over_bound)
+{
+    const char *dir = CI_COND_FIX "/long-line";
+    char src[8500];
+    static const char prefix[] = "#if 0\n";
+    memcpy(src, prefix, sizeof(prefix) - 1);
+    /* Put the directive across the old 1023-byte or new 8191-byte bound. */
+    memset(src + sizeof(prefix) - 1, ' ', padding);
+    size_t offset = sizeof(prefix) - 1 + padding;
+    int wrote = snprintf(src + offset, sizeof(src) - offset,
+                         "#include \"narrow_win.inc\"\n#endif\n"
+                         "#include \"net/real.h\"\n");
+    system("rm -rf " CI_COND_FIX);
+    bool ready = wrote > 0 && (size_t)wrote < sizeof(src) - offset &&
+                 ci_cond_fixture(dir, ci_cond_dep) &&
+                 ci_impact_mk_write(dir, CI_COND_UNIT, src) &&
+                 ci_impact_mk_write(dir, "build/obj/narrow.d", ci_cond_dep);
+    if (ready) ci_narrow_touch_rel(dir, CI_COND_UNIT, -5);
+    char dim[64] = "";
+    bool has = false;
+    const char *query = over_bound ? CI_COND_REAL : CI_COND_INC;
+    bool ok = ready && ci_cond_query(dir, query, CI_COND_UNIT, dim,
+                                     sizeof dim, &has);
+    printf("invariant=long_include_line padding=%zu include_dimension=%s "
+           "dependent=%d ok=%d\n", padding, dim, has ? 1 : 0, ok ? 1 : 0);
+    int failures = 0;
+    TEST("code_impact: long source lines cannot silently lose include edges") {
+        ASSERT(ok);
+        if (over_bound)
+            ASSERT(strcmp(dim, "closure-truncated") == 0);
+        else
+            ASSERT(strcmp(dim, "complete") == 0 && has);
+        PASS();
+    } _test_next:;
+    system("rm -rf " CI_COND_FIX);
+    return failures;
+}
+
+static int test_code_impact_long_include_line(void)
+{
+    int failures = ci_long_include_line_case(1018, false);
+    failures += ci_long_include_line_case(8186, true);
+    return failures;
+}
+
 /* The incremental index reuses the stored include rows. A body-only edit
  * keeps the added edge and the complete answer; an edit that adds an include
  * the stored rows lack is rebuilt from a fresh scan, which records it. */
@@ -1377,6 +1424,7 @@ int test_code_impact(void)
     failures += test_code_guide();
     failures += test_code_impact_conditional_include_edge();
     failures += test_code_impact_conditional_hazards();
+    failures += test_code_impact_long_include_line();
     failures += test_code_impact_conditional_incremental();
     failures += test_code_impact_dotdot_include_edge();
     failures += test_code_impact_rootless_index_rebuilds();
