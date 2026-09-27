@@ -393,9 +393,24 @@ static int selftest(const char *self)
     }
     char *const tree_argv[] = {
         (char *)self, "--selftest-tree", pid_path, NULL};
-    if (run_bounded(1000u, pass_argv) != 0) return 1;
-    if (run_bounded(1000u, fail_argv) != 23) return 1;
-    if (run_bounded(250u, tree_argv) != RUN_TIMEOUT) {
+    int status = run_bounded(1000u, pass_argv);
+    if (status != 0) {
+        fprintf(stderr, "z23_bounded_run: selftest pass returned %d (want 0)\n", status);
+        (void)unlink(pid_path);
+        return 1;
+    }
+    status = run_bounded(1000u, fail_argv);
+    if (status != 23) {
+        fprintf(stderr, "z23_bounded_run: selftest fail returned %d (want 23)\n", status);
+        (void)unlink(pid_path);
+        return 1;
+    }
+    /* A loaded proof host may schedule the child after the old 250 ms bound.
+     * Still require the timeout and descendant reap, but give startup time. */
+    status = run_bounded(2000u, tree_argv);
+    if (status != RUN_TIMEOUT) {
+        fprintf(stderr, "z23_bounded_run: selftest tree returned %d (want %d)\n",
+                status, RUN_TIMEOUT);
         (void)unlink(pid_path);
         return 1;
     }
@@ -404,9 +419,15 @@ static int selftest(const char *self)
     bool read_pid = pid_file && fscanf(pid_file, "%ld", &descendant) == 1;
     if (pid_file) (void)fclose(pid_file);
     (void)unlink(pid_path);
-    if (!read_pid || descendant <= 1 || descendant > INT_MAX ||
-        kill((pid_t)descendant, 0) == 0 || errno != ESRCH)
+    if (!read_pid || descendant <= 1 || descendant > INT_MAX) {
+        fprintf(stderr, "z23_bounded_run: selftest tree did not record a child pid\n");
         return 1;
+    }
+    if (kill((pid_t)descendant, 0) == 0 || errno != ESRCH) {
+        fprintf(stderr, "z23_bounded_run: selftest tree left child %ld alive\n",
+                descendant);
+        return 1;
+    }
     puts("z23_bounded_run: selftest PASS");
     return 0;
 }
