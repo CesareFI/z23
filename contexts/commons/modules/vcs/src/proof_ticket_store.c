@@ -73,8 +73,31 @@ struct pts_counts {
     size_t skipped;
 };
 
+struct pts_roots {
+    uint8_t (*items)[32];
+    size_t count;
+    size_t cap;
+};
+
+static bool pts_root_add(struct pts_roots *roots, const uint8_t root[32])
+{
+    if (roots->count == roots->cap) {
+        size_t cap = roots->cap ? roots->cap * 2u : 32u;
+        if (cap < roots->cap || cap > SIZE_MAX / sizeof(*roots->items))
+            LOG_RETURN(false, PTS_LOG, "rebuild: proof root capacity overflow");
+        uint8_t (*grown)[32] = zcl_realloc(
+            roots->items, cap * sizeof(*roots->items), "proof_roots");
+        if (!grown)
+            LOG_RETURN(false, PTS_LOG, "rebuild: proof root allocation failed");
+        roots->items = grown;
+        roots->cap = cap;
+    }
+    memcpy(roots->items[roots->count++], root, 32);
+    return true;
+}
+
 static bool pts_take_cp(struct pts_cps *cps, const uint8_t *blob, size_t len,
-                        struct pts_counts *n)
+                        struct pts_counts *n, bool *retained)
 {
     struct vcs_proof_checkpoint_v1 decoded;
     if (!vcs_proof_checkpoint_decode(blob, len, &decoded) ||
@@ -98,24 +121,28 @@ static bool pts_take_cp(struct pts_cps *cps, const uint8_t *blob, size_t len,
     memcpy(item->wire, blob, len);
     if (!vcs_proof_checkpoint_root(blob, len, item->root))
         LOG_RETURN(false, PTS_LOG, "rebuild: checkpoint root failed");
+    *retained = true;
     return true;
 }
 
 static bool pts_take(struct vcs_proof_receiver *r, struct pts_cps *cps,
-                     const uint8_t *blob, size_t len, struct pts_counts *n)
+                     const uint8_t *blob, size_t len, struct pts_counts *n,
+                     bool *retained)
 {
+    *retained = false;
     bool added = false;
     if (len == VCS_PROOF_TICKET_WIRE_BYTES &&
         memcmp(blob, "Z23PTK1\0", 8) == 0 &&
         vcs_proof_ticket_decode(blob, len, &(struct vcs_proof_ticket_v1){0})) {
         if (!vcs_proof_receiver_add_ticket(r, blob, len, &added))
             return false;
+        *retained = true;
         if (added) n->tickets++;
         return true;
     }
     if (len == VCS_PROOF_CHECKPOINT_WIRE_BYTES &&
         memcmp(blob, "Z23PCK1\0", 8) == 0)
-        return pts_take_cp(cps, blob, len, n);
+        return pts_take_cp(cps, blob, len, n, retained);
     n->skipped++;
     return true;
 }
@@ -309,9 +336,32 @@ static bool pts_replay(struct vcs_proof_receiver *r, struct pts_cps *cps,
     return ok;
 }
 
+static bool pts_scan_one(struct vcs_proof_receiver *r,
+                         struct vcs_package_store *store,
+                         struct pts_cps *cps, struct pts_counts *n,
+                         struct pts_roots *roots, const uint8_t root[32])
+{
+    uint8_t blob[PTS_BLOB_MAX + 1u];
+    size_t len = 0;
+    enum vcs_blob_result got = vcs_blob_get_from(
+        store, root, blob, sizeof(blob), &len);
+    if (got == VCS_BLOB_OK) {
+        bool retained = false;
+        if (!pts_take(r, cps, blob, len, n, &retained)) return false;
+        return !retained || pts_root_add(roots, root);
+    }
+    if (got == VCS_BLOB_ERR_SHAPE || got == VCS_BLOB_ERR_CAPACITY) {
+        n->skipped++;
+        return true;
+    }
+    LOG_RETURN(false, PTS_LOG, "rebuild: listed CAS blob cannot be read: %s",
+               vcs_blob_result_string(got));
+}
+
 static bool pts_scan(struct vcs_proof_receiver *r,
                      struct vcs_package_store *store, struct pts_cps *cps,
-                     struct pts_counts *n, uint64_t *generation)
+                     struct pts_counts *n, struct pts_roots *roots,
+                     uint64_t *generation)
 {
     struct vcs_package_store_summary *rows =
         zcl_calloc(VCS_PACKAGE_STORE_PAGE_MAX, sizeof(*rows),
@@ -335,22 +385,8 @@ static bool pts_scan(struct vcs_proof_receiver *r,
             break;
         }
         *generation = page.generation;
-        for (size_t i = 0; ok && i < page.count; i++) {
-            uint8_t blob[PTS_BLOB_MAX + 1u];
-            size_t len = 0;
-            enum vcs_blob_result got = vcs_blob_get_from(
-                store, rows[i].root, blob, sizeof(blob), &len);
-            if (got == VCS_BLOB_OK)
-                ok = pts_take(r, cps, blob, len, n);
-            else if (got == VCS_BLOB_ERR_SHAPE ||
-                     got == VCS_BLOB_ERR_CAPACITY)
-                n->skipped++;
-            else {
-                LOG_ERROR(PTS_LOG, "rebuild: listed CAS blob cannot be read: %s",
-                          vcs_blob_result_string(got));
-                ok = false;
-            }
-        }
+        for (size_t i = 0; ok && i < page.count; i++)
+            ok = pts_scan_one(r, store, cps, n, roots, rows[i].root);
         if (page.has_more && page.count == 0) ok = false;
         memcpy(cursor, page.next_root, sizeof(cursor));
         resume = true;
@@ -359,6 +395,32 @@ static bool pts_scan(struct vcs_proof_receiver *r,
     free(rows);
     return ok;
 }
+
+static bool pts_recheck(struct vcs_package_store *store,
+                        const struct pts_roots *roots)
+{
+    for (size_t i = 0; i < roots->count; i++) {
+        uint8_t wire[PTS_BLOB_MAX + 1u];
+        size_t len = 0;
+        enum vcs_blob_result got = vcs_blob_get_from(
+            store, roots->items[i], wire, sizeof(wire), &len);
+        if (got != VCS_BLOB_OK)
+            LOG_RETURN(false, PTS_LOG,
+                       "rebuild: retained proof blob changed before publish: %s",
+                       vcs_blob_result_string(got));
+    }
+    return true;
+}
+
+#ifdef ZCL_TESTING
+static void (*pts_before_recheck_hook)(void *);
+static void *pts_before_recheck_context;
+void vcs_proof_receiver_test_before_recheck(void (*hook)(void *), void *context)
+{
+    pts_before_recheck_hook = hook;
+    pts_before_recheck_context = context;
+}
+#endif
 
 struct pts_publish_context {
     struct vcs_proof_receiver *live;
@@ -371,6 +433,22 @@ static void pts_publish(void *context)
     struct vcs_proof_receiver old = *p->live;
     *p->live = *p->staged;
     *p->staged = old;
+}
+
+static bool pts_publish_rechecked(struct vcs_proof_receiver *live,
+                                  struct vcs_proof_receiver *staging,
+                                  struct vcs_package_store *store,
+                                  const struct pts_roots *roots,
+                                  uint64_t generation)
+{
+#ifdef ZCL_TESTING
+    if (pts_before_recheck_hook)
+        pts_before_recheck_hook(pts_before_recheck_context);
+#endif
+    if (!pts_recheck(store, roots)) return false;
+    struct pts_publish_context p = {live, staging};
+    return vcs_package_store_publish_if_generation(
+        store, generation, pts_publish, &p) == VCS_PACKAGE_STORE_PAGE_OK;
 }
 
 static bool pts_empty_issuer(const struct pr_issuer *was)
@@ -538,20 +616,18 @@ bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
         LOG_RETURN(false, PTS_LOG, "rebuild: cannot allocate staging receiver");
     struct pts_cps cps = {0};
     struct pts_counts n = {0};
+    struct pts_roots roots = {0};
     uint64_t generation = 0;
-    bool ok = pts_scan(staging, store, &cps, &n, &generation) &&
+    bool ok = pts_scan(staging, store, &cps, &n, &roots, &generation) &&
               pts_replay(staging, &cps, &n) &&
               pts_restore_anchored_fork(r, staging) &&
               pts_preserves_prior(r, staging);
     free(cps.items);
-    if (ok) {
-        struct pts_publish_context p = {r, staging};
-        ok = vcs_package_store_publish_if_generation(
-            store, generation, pts_publish, &p) == VCS_PACKAGE_STORE_PAGE_OK;
-    }
+    if (ok) ok = pts_publish_rechecked(r, staging, store, &roots, generation);
     if (!ok)
         n = (struct pts_counts){0};
     vcs_proof_receiver_free(staging);
+    free(roots.items);
     if (tickets) *tickets = n.tickets;
     if (checkpoints) *checkpoints = n.checkpoints;
     if (skipped) *skipped = n.skipped;
