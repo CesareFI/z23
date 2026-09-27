@@ -62,9 +62,32 @@ bool zcl_test_group_plan_selects(const char *plan_id, const char *full_id);
  * refuses instead of silently running a narrower set. */
 typedef bool (*zcl_test_group_visit_fn)(const char *full_id, void *ctx);
 
+/* Umbrella groups (tools/dev/test_group_umbrellas.def). An umbrella is a
+ * registered group whose sub-suites are split across registered shard
+ * groups. Named exactly it runs whole; inside an expanded set that already
+ * carries every one of its shards it is subsumed, and only the shards run. */
+typedef bool (*zcl_test_group_selected_fn)(const char *full_id, void *ctx);
+
+bool zcl_test_group_is_umbrella(const char *full_id);
+/* True when `full_id` is a registered shard of the registered `umbrella`. */
+bool zcl_test_group_is_umbrella_shard(const char *umbrella,
+                                      const char *full_id);
+/* Registered shards of `umbrella`; 0 when it is not an umbrella. */
+size_t zcl_test_group_umbrella_shard_count(const char *umbrella);
+/* True only when `full_id` is an umbrella with at least one registered shard
+ * and `selected` answers true for every one of them: the set already runs
+ * the umbrella's whole body, so the umbrella itself need not run. */
+bool zcl_test_group_umbrella_subsumed(const char *full_id,
+                                      zcl_test_group_selected_fn selected,
+                                      void *ctx);
+/* Every umbrella is registered, unique, not its own shard, has two or more
+ * registered shards, and no shard is itself an umbrella. */
+bool zcl_test_group_umbrellas_valid(void);
+
 /* Expand ONE plan token to the execution set it stands for, in canonical
  * registry order: the exact primary first, then every catalog group the
- * token's DECLARED proof family selects. Declared families only — a bare
+ * token's DECLARED proof family selects. An umbrella primary whose shards the
+ * family carries is subsumed and not visited: the shards are its body. Declared families only — a bare
  * substring would let a short token such as "net" drag in every group whose
  * name merely contains it, a selection nobody wrote down. A token with no
  * exact primary refuses exactly as zcl_test_group_resolve_exact() refuses,
@@ -78,7 +101,8 @@ bool zcl_test_group_family_expand(const char *plan_id,
                                   zcl_test_group_visit_fn visit, void *ctx);
 
 /* Expand plan IDs to a deterministic, deduplicated exact execution set in
- * canonical registry order. Returns the total selected count. When total is
+ * canonical registry order, leaving out any umbrella the set subsumes.
+ * Returns the total selected count. When total is
  * greater than cap, the first cap rows are retained and *truncated is true. A
  * missing/ambiguous primary fails closed and returns SIZE_MAX. */
 size_t zcl_test_group_expand_plan(

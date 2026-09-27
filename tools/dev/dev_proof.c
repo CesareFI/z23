@@ -5841,23 +5841,44 @@ static bool dp_selector_host_admits(const char *root, const char *full,
     return dp_gated_note(gated, gated_size, gated_pos, &need);
 }
 
+/* Whether the universal closure carries a group on this host, asked of an
+ * umbrella's shards without recording anything in the gated note. */
+struct dp_host_tree {
+    const char *root;
+};
+
+static bool dp_selector_host_runs(const char *full, void *ctx)
+{
+    const struct dp_host_tree *tree = ctx;
+    struct zcl_test_group_host_need need;
+    if (!zcl_test_group_host_need(full, &need)) return false;
+    return need.kind == ZCL_HOST_NEED_NONE ||
+           zcl_test_group_host_need_met(tree->root, &need);
+}
+
 /* A capacity-bounded plan reaches more groups than it can enumerate. The
  * plan already turned that into the universal closure, so the proof runs
  * the whole catalog: a large run is the honest price of a change whose
- * blast radius does not fit in a list. The one subtraction is a group whose
- * declared host need this tree cannot meet; every such group is named in
- * `gated`. `root` is the tree the test runner will exec in, so the question
- * asked is about that tree and not about the submitting checkout. */
+ * blast radius does not fit in a list. The subtractions are a group whose
+ * declared host need this tree cannot meet, every such group named in
+ * `gated`, and an umbrella whose shards all run: they are its body, so it is
+ * not run a second time, serially. `root` is the tree the test runner will
+ * exec in, so the question asked is about that tree and not about the
+ * submitting checkout. */
 static bool dp_selector_universal(const char *root, char *out, size_t out_size,
                                   size_t *pos, uint32_t *count, char *gated,
                                   size_t gated_size)
 {
     size_t gated_pos = 0;
+    struct dp_host_tree tree = {root};
     if (!gated || gated_size == 0) return false;
     gated[0] = '\0';
     for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
         const char *full = zcl_test_group_catalog_at(i);
         bool included = false;
+        if (zcl_test_group_umbrella_subsumed(full, dp_selector_host_runs,
+                                             &tree))
+            continue;
         if (!dp_selector_host_admits(root, full, gated, gated_size, &gated_pos,
                                      &included))
             return false;

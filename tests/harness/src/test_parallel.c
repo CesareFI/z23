@@ -1120,6 +1120,43 @@ static bool group_is_params_heavy(const char *name)
            strcmp(name, "sapling_prover_rng_determinism") == 0;
 }
 
+/* Whether a group is still headed for dispatch after the selector pass. */
+static bool group_still_selected(const char *full_id, void *ctx)
+{
+    const struct group_result *results = ctx;
+    for (size_t i = 0; i < g_num_groups; i++)
+        if (strcmp(g_groups[i].name, full_id) == 0)
+            return !results[i].skipped;
+    return false;
+}
+
+/* An umbrella (tools/dev/test_group_umbrellas.def) runs whole when named with
+ * --exact: every consumer of the historic id keeps every sub-suite. Any other
+ * selection that also carries all of its shards -- the default full run, an
+ * --only substring -- runs the shards instead, concurrently, and leaves the
+ * umbrella out exactly as --only leaves out a non-matching group. */
+static size_t fold_umbrellas_into_shards(struct group_result *results,
+                                         bool only_exact)
+{
+    size_t folded = 0;
+    if (only_exact)
+        return 0;
+    for (size_t i = 0; i < g_num_groups; i++) {
+        if (results[i].skipped ||
+            !zcl_test_group_umbrella_subsumed(g_groups[i].name,
+                                              group_still_selected, results))
+            continue;
+        results[i].status = 0;
+        results[i].skipped = 1;
+        folded++;
+        printf("test_parallel: %s runs as its %zu shards "
+               "(--exact=%s runs it whole)\n", g_groups[i].name,
+               zcl_test_group_umbrella_shard_count(g_groups[i].name),
+               g_groups[i].name);
+    }
+    return folded;
+}
+
 /* Fail before dispatch if an exact set names even one absent group. Without
  * this preflight, "valid,stale" would run the valid member and still report a
  * green suite — the multi-group version of the substring false-green. */
@@ -2334,6 +2371,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+    pre_skipped += fold_umbrellas_into_shards(results, only_exact);
 
     /* Params-heavy opt-in gate: exclude the Groth16-proving groups from a
      * default full run. They still run when ZCL_PARAMS_TESTS is set, or when

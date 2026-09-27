@@ -711,6 +711,130 @@ static int test_declared_family_expansion(void)
     return failures;
 }
 
+static bool umbrella_all_but_first_shard(const char *full_id, void *ctx)
+{
+    const char *umbrella = ctx;
+    char first[ZCL_TEST_GROUP_FULL_MAX];
+    snprintf(first, sizeof(first), "%s_shard_01", umbrella);
+    return strcmp(full_id, first) != 0;
+}
+
+static bool umbrella_every_shard(const char *full_id, void *ctx)
+{
+    (void)full_id;
+    (void)ctx;
+    return true;
+}
+
+/* One umbrella's selection contract, asked through every expansion the
+ * proof, the plan builder and the runner use. */
+static int umbrella_contract(const char *umbrella, const char *token)
+{
+    int failures = 0;
+    TEST("test group selector: an umbrella runs whole only when named "
+         "exactly, and as its shards everywhere else") {
+        char shard_prefix[ZCL_TEST_GROUP_FULL_MAX];
+        size_t shards = zcl_test_group_umbrella_shard_count(umbrella);
+        snprintf(shard_prefix, sizeof(shard_prefix), "%s_shard_", umbrella);
+        ASSERT(zcl_test_group_is_umbrella(umbrella));
+        ASSERT(shards >= 2);
+        ASSERT(zcl_test_group_umbrella_subsumed(
+            umbrella, umbrella_every_shard, NULL));
+        /* One shard missing from the set and the umbrella must run whole,
+         * or that shard's sub-suites go unrun. */
+        ASSERT(!zcl_test_group_umbrella_subsumed(
+            umbrella, umbrella_all_but_first_shard, (void *)umbrella));
+
+        /* The declared family: every shard, never the umbrella. */
+        struct family_expansion fam = {0};
+        ASSERT(zcl_test_group_family_expand(token, family_expansion_collect,
+                                            &fam));
+        ASSERT(!fam.overflowed);
+        ASSERT(!family_expansion_has(&fam, umbrella));
+        ASSERT(fam.len == shards);
+        for (size_t i = 0; i < fam.len; i++) {
+            ASSERT(strncmp(fam.ids[i], shard_prefix, strlen(shard_prefix)) ==
+                   0);
+            ASSERT(zcl_test_group_is_umbrella_shard(umbrella, fam.ids[i]));
+        }
+
+        /* The exact id is the historic group, whole. */
+        struct family_expansion whole = {0};
+        ASSERT(zcl_test_group_family_expand(umbrella,
+                                            family_expansion_collect,
+                                            &whole));
+        ASSERT(whole.len == 1);
+        ASSERT(strcmp(whole.ids[0], umbrella) == 0);
+
+        /* The plan expansion folds the same way. */
+        static char out[FAMILY_EXPAND_MAX][ZCL_TEST_GROUP_FULL_MAX];
+        bool truncated = true;
+        const char *legacy[] = {token};
+        size_t n = zcl_test_group_expand_plan(legacy, 1, out,
+                                              FAMILY_EXPAND_MAX, &truncated);
+        ASSERT(!truncated);
+        ASSERT(n == shards);
+        for (size_t i = 0; i < n; i++)
+            ASSERT(zcl_test_group_is_umbrella_shard(umbrella, out[i]));
+        const char *exact[] = {umbrella};
+        n = zcl_test_group_expand_plan(exact, 1, out, FAMILY_EXPAND_MAX,
+                                       &truncated);
+        ASSERT(!truncated);
+        ASSERT(n == 1);
+        ASSERT(strcmp(out[0], umbrella) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_umbrella_groups(void)
+{
+    int failures = 0;
+    TEST("test group selector: umbrella declarations are well formed") {
+        ASSERT(zcl_test_group_umbrellas_valid());
+        /* An ordinary group, and a sharded group whose base is not an
+         * umbrella, are never subsumed. */
+        ASSERT(!zcl_test_group_is_umbrella("test_api"));
+        ASSERT(!zcl_test_group_is_umbrella("test_fleet_gateway"));
+        ASSERT(!zcl_test_group_umbrella_subsumed(
+            "test_fleet_gateway", umbrella_every_shard, NULL));
+        ASSERT(zcl_test_group_umbrella_shard_count("test_api") == 0);
+        PASS();
+    } _test_next:;
+    failures += umbrella_contract("test_zcode_swarm_net", "zcode_swarm_net");
+    failures += umbrella_contract("test_zcode_package_dev",
+                                  "zcode_package_dev");
+    return failures;
+}
+
+static int test_umbrella_runner_fold(void)
+{
+    int failures = 0;
+    TEST("test group selector: the runner folds an umbrella into its shards "
+         "for --only and keeps it whole for --exact") {
+        /* A cache probe stops before any fork, so nothing here runs a
+         * sub-suite; the fold decision is printed before it. */
+        static char out[256 * 1024];
+        char exe[PATH_MAX];
+        char command[PATH_MAX + 160];
+        ASSERT(os_proc_exe_path(exe, sizeof(exe)));
+        int n = snprintf(command, sizeof(command),
+                         "\"%s\" --jobs=1 --only=zcode_swarm_net --cache "
+                         "--cache-probe-only 2>&1", exe);
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        ASSERT(capture_command(command, out, sizeof(out)) == 0);
+        ASSERT(strstr(out, "test_zcode_swarm_net runs as its") != NULL);
+        n = snprintf(command, sizeof(command),
+                     "\"%s\" --jobs=1 --exact=test_zcode_swarm_net --cache "
+                     "--cache-probe-only 2>&1", exe);
+        ASSERT(n > 0 && (size_t)n < sizeof(command));
+        ASSERT(capture_command(command, out, sizeof(out)) == 0);
+        ASSERT(strstr(out, "runs as its") == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_native_catalog_resolution(void)
 {
     int failures = 0;
@@ -1314,6 +1438,8 @@ int test_test_group_selector(void)
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();
     failures += test_declared_family_expansion();
+    failures += test_umbrella_groups();
+    failures += test_umbrella_runner_fold();
     failures += test_native_catalog_resolution();
     failures += test_process_sensitive_groups_are_catalog_exclusive();
     failures += test_runner_exact_selection();

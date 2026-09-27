@@ -36,6 +36,18 @@ static const struct proof_family g_proof_families[] = {
 #undef ZCL_TEST_PROOF_FAMILY
 };
 
+struct group_umbrella {
+    const char *full_id;
+    const char *shard_glob;
+};
+
+static const struct group_umbrella g_umbrellas[] = {
+#define ZCL_TEST_GROUP_UMBRELLA(full_id_, glob_) {full_id_, glob_},
+#include "test_group_umbrellas.def"
+#undef ZCL_TEST_GROUP_UMBRELLA
+    {NULL, NULL},
+};
+
 static const char *const g_integration_only[] = {
 #define ZCL_TEST_INTEGRATION_ONLY(full_id_) full_id_,
 #include "test_integration_only.def"
@@ -242,6 +254,77 @@ static bool declared_family_selects(const char *plan_id, const char *full_id)
     return false;
 }
 
+static const struct group_umbrella *umbrella_row(const char *full_id)
+{
+    if (!full_id)
+        return NULL;
+    for (size_t i = 0; g_umbrellas[i].full_id != NULL; i++)
+        if (strcmp(g_umbrellas[i].full_id, full_id) == 0)
+            return &g_umbrellas[i];
+    return NULL;
+}
+
+bool zcl_test_group_is_umbrella(const char *full_id)
+{
+    return umbrella_row(full_id) != NULL &&
+           zcl_test_group_catalog_contains(full_id);
+}
+
+bool zcl_test_group_is_umbrella_shard(const char *umbrella,
+                                      const char *full_id)
+{
+    const struct group_umbrella *row = umbrella_row(umbrella);
+    return row && full_id && strcmp(full_id, umbrella) != 0 &&
+           zcl_test_group_catalog_contains(umbrella) &&
+           zcl_test_group_catalog_contains(full_id) &&
+           platform_glob_match(row->shard_glob, full_id, false);
+}
+
+size_t zcl_test_group_umbrella_shard_count(const char *umbrella)
+{
+    size_t n = 0;
+    if (!zcl_test_group_is_umbrella(umbrella))
+        return 0;
+    for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
+        if (zcl_test_group_is_umbrella_shard(umbrella, g_test_groups[i]))
+            n++;
+    return n;
+}
+
+bool zcl_test_group_umbrella_subsumed(const char *full_id,
+                                      zcl_test_group_selected_fn selected,
+                                      void *ctx)
+{
+    size_t shards = 0;
+    if (!selected || !zcl_test_group_is_umbrella(full_id))
+        return false;
+    for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
+        if (!zcl_test_group_is_umbrella_shard(full_id, g_test_groups[i]))
+            continue;
+        if (!selected(g_test_groups[i], ctx))
+            return false;
+        shards++;
+    }
+    return shards > 0;
+}
+
+bool zcl_test_group_umbrellas_valid(void)
+{
+    for (size_t i = 0; g_umbrellas[i].full_id != NULL; i++) {
+        const char *id = g_umbrellas[i].full_id;
+        if (!zcl_test_group_catalog_contains(id) ||
+            umbrella_row(id) != &g_umbrellas[i] ||
+            platform_glob_match(g_umbrellas[i].shard_glob, id, false) ||
+            zcl_test_group_umbrella_shard_count(id) < 2)
+            return false;
+        for (size_t k = 0; k < zcl_test_group_catalog_count(); k++)
+            if (zcl_test_group_is_umbrella_shard(id, g_test_groups[k]) &&
+                umbrella_row(g_test_groups[k]) != NULL)
+                return false;
+    }
+    return true;
+}
+
 bool zcl_test_group_plan_selects(const char *plan_id, const char *full_id)
 {
     char primary[ZCL_TEST_GROUP_FULL_MAX];
@@ -255,13 +338,28 @@ bool zcl_test_group_plan_selects(const char *plan_id, const char *full_id)
            declared_family_selects(plan_id, full_id);
 }
 
+struct family_token {
+    const char *plan_id;
+};
+
+static bool family_member(const char *full_id, void *ctx)
+{
+    const struct family_token *token = ctx;
+    return declared_family_selects(token->plan_id, full_id);
+}
+
 bool zcl_test_group_family_expand(const char *plan_id,
                                   zcl_test_group_visit_fn visit, void *ctx)
 {
     char primary[ZCL_TEST_GROUP_FULL_MAX];
+    struct family_token token = {plan_id};
     if (!zcl_test_group_resolve_exact(plan_id, primary))
         return false;
-    if (visit && !visit(primary, ctx))
+    /* An umbrella whose shards the family carries is their union: visiting
+     * it too would run every sub-suite twice, once serially. */
+    bool subsumed = zcl_test_group_umbrella_subsumed(primary, family_member,
+                                                     &token);
+    if (!subsumed && visit && !visit(primary, ctx))
         return false;
     for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
         const char *full = g_test_groups[i];
@@ -296,11 +394,31 @@ bool zcl_test_group_integration_policy_valid(void)
     return true;
 }
 
+struct plan_set {
+    const char *const *plan_ids;
+    size_t plan_count;
+    bool immediate_only;
+};
+
+/* Whether the plan's execution set carries `full_id`, before umbrellas are
+ * folded into their shards. */
+static bool plan_set_carries(const char *full_id, void *ctx)
+{
+    const struct plan_set *set = ctx;
+    if (set->immediate_only && zcl_test_group_is_integration_only(full_id))
+        return false;
+    for (size_t p = 0; p < set->plan_count; p++)
+        if (zcl_test_group_plan_selects(set->plan_ids[p], full_id))
+            return true;
+    return false;
+}
+
 static size_t expand_plan(
     const char *const *plan_ids, size_t plan_count,
     char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated,
     bool immediate_only)
 {
+    struct plan_set set = {plan_ids, plan_count, immediate_only};
     if (truncated)
         *truncated = false;
     if ((!plan_ids && plan_count > 0) || (!out && cap > 0) || !truncated ||
@@ -313,17 +431,9 @@ static size_t expand_plan(
     }
     size_t total = 0;
     for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
-        bool selected = false;
-        for (size_t p = 0; p < plan_count; p++) {
-            if (zcl_test_group_plan_selects(plan_ids[p], g_test_groups[i])) {
-                selected = true;
-                break;
-            }
-        }
-        if (!selected)
-            continue;
-        if (immediate_only &&
-            zcl_test_group_is_integration_only(g_test_groups[i]))
+        if (!plan_set_carries(g_test_groups[i], &set) ||
+            zcl_test_group_umbrella_subsumed(g_test_groups[i],
+                                             plan_set_carries, &set))
             continue;
         if (total < cap)
             snprintf(out[total], ZCL_TEST_GROUP_FULL_MAX, "%s", g_test_groups[i]);

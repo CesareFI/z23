@@ -7049,58 +7049,224 @@ static int zwn_t_work_pull_receipts(void)
 }
 #endif
 
-/* TEMP TIMING INSTRUMENTATION — remove once the wall-time hotspot in this
- * group is identified (see AGENTS lane/slowtests). */
-#include <time.h>
-static double zwn_now_secs(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-}
-#define ZWN_TIMED(call) do { \
-    double _t0 = zwn_now_secs(); \
-    failures += (call); \
-    fprintf(stderr, "ZWN_TIMING %-40s %.3fs\n", #call, zwn_now_secs() - _t0); \
-} while (0)
 
-int test_zcode_swarm_net(void)
+/* ── Umbrella and shards ─────────────────────────────────────────────────
+ *
+ * test_zcode_swarm_net is an umbrella (tools/dev/test_group_umbrellas.def).
+ * One table names every sub-suite and the shard that owns it; row order is
+ * the order the umbrella has always run them in. Named exactly, the umbrella
+ * runs every row itself, so each consumer of the historic id (make
+ * test-full, t-fast-exact, the ZCODE_REPRODUCTION acceptance set, --exact
+ * callers) keeps every sub-suite. In a full run, an --only substring, a proof
+ * or a plan expansion it is subsumed and its shards run instead, each its own
+ * catalog group and its own process: its fixtures live under the per-pid
+ * test-tmp roots, its topologies are in-process loopback links, and its
+ * sovereign receipt is its own, so no shard shares state with another.
+ *
+ * Owners are balanced by measured wall ([zcode-swarm-net-case] ms=, printed
+ * per row by every run). Every run -- umbrella or shard -- first proves the
+ * partition: the rows are exactly the sub-suite list written down below,
+ * each owned by one shard, every shard owns a row, and the catalog registers
+ * exactly those shards under the umbrella. */
+#include "test_group_catalog.h"
+#include <time.h>
+
+static int zwn_t_fixture_abort_reacquire(const struct chain_params *params)
 {
     int failures = 0;
-    memset(&g_zwn_sovereign_receipt, 0,
-           sizeof(g_zwn_sovereign_receipt));
-    chain_params_select(CHAIN_MAIN);
-    const struct chain_params *params = chain_params_get();
-
     TEST("parameterized multi-node fixture releases an aborted topology "
          "and can reacquire it") {
         ASSERT(zwn_fixture_abort_reacquire(params));
         PASS();
     } _test_next:;
+    return failures;
+}
 
-    ZWN_TIMED(zwn_test_golden(ZWN_GOLDEN_PLAIN, params));
-    ZWN_TIMED(zwn_test_golden(ZWN_GOLDEN_RESTART, params));
-    ZWN_TIMED(zwn_test_golden(ZWN_GOLDEN_DISCONNECT, params));
-    ZWN_TIMED(zwn_t_package_lifecycle(params));
-    ZWN_TIMED(zwn_t_sovereign_source_build(params));
-    ZWN_TIMED(zwn_t_malicious(params));
-    ZWN_TIMED(zwn_t_corrupt_provider_repair(params));
-    ZWN_TIMED(zwn_t_corrupt_local_repair(params));
-    ZWN_TIMED(zwn_t_unrequested(params));
-    ZWN_TIMED(zwn_t_quota_exhaustion(params));
-    ZWN_TIMED(zwn_t_deterministic_replay(params));
-    ZWN_TIMED(zwn_t_useful_c23_redundant(params));
-    ZWN_TIMED(zwn_t_ordinary_c23_redundant(params));
-    ZWN_TIMED(zwn_t_attestation_flight(params));
-    ZWN_TIMED(zwn_t_task_flight(params));
-    ZWN_TIMED(zwn_t_shared_focus_flight(params));
-    ZWN_TIMED(zwn_t_task_hostile_pointer(params));
-    ZWN_TIMED(zwn_t_attestation_hostile_pointer(params));
-    ZWN_TIMED(zwn_t_attestation_corrupt_wire(params));
+static int zwn_t_golden_plain(const struct chain_params *params)
+{
+    return zwn_test_golden(ZWN_GOLDEN_PLAIN, params);
+}
+
+static int zwn_t_golden_restart(const struct chain_params *params)
+{
+    return zwn_test_golden(ZWN_GOLDEN_RESTART, params);
+}
+
+static int zwn_t_golden_disconnect(const struct chain_params *params)
+{
+    return zwn_test_golden(ZWN_GOLDEN_DISCONNECT, params);
+}
+
 #if !defined(_WIN32)
-    ZWN_TIMED(zwn_t_work_pull_receipts());
+static int zwn_t_work_pull(const struct chain_params *params)
+{
+    (void)params;
+    return zwn_t_work_pull_receipts();
+}
 #endif
+
+struct zwn_case {
+    const char *name;
+    int (*run)(const struct chain_params *params);
+    unsigned shard;
+};
+#define ZWN_CASE(fn, owner) {#fn, fn, owner}
+static const struct zwn_case g_zwn_cases[] = {
+    ZWN_CASE(zwn_t_fixture_abort_reacquire, 4),
+    ZWN_CASE(zwn_t_golden_plain, 1),
+    ZWN_CASE(zwn_t_golden_restart, 3),
+    ZWN_CASE(zwn_t_golden_disconnect, 2),
+    ZWN_CASE(zwn_t_package_lifecycle, 0),
+    ZWN_CASE(zwn_t_sovereign_source_build, 4),
+    ZWN_CASE(zwn_t_malicious, 4),
+    ZWN_CASE(zwn_t_corrupt_provider_repair, 3),
+    ZWN_CASE(zwn_t_corrupt_local_repair, 3),
+    ZWN_CASE(zwn_t_unrequested, 1),
+    ZWN_CASE(zwn_t_quota_exhaustion, 4),
+    ZWN_CASE(zwn_t_deterministic_replay, 2),
+    ZWN_CASE(zwn_t_useful_c23_redundant, 3),
+    ZWN_CASE(zwn_t_ordinary_c23_redundant, 1),
+    ZWN_CASE(zwn_t_attestation_flight, 4),
+    ZWN_CASE(zwn_t_task_flight, 4),
+    ZWN_CASE(zwn_t_shared_focus_flight, 3),
+    ZWN_CASE(zwn_t_task_hostile_pointer, 3),
+    ZWN_CASE(zwn_t_attestation_hostile_pointer, 4),
+    ZWN_CASE(zwn_t_attestation_corrupt_wire, 4),
+#if !defined(_WIN32)
+    ZWN_CASE(zwn_t_work_pull, 2),
+#endif
+};
+#undef ZWN_CASE
+#define ZWN_CASE_COUNT (sizeof(g_zwn_cases) / sizeof(g_zwn_cases[0]))
+#define ZWN_SHARD_COUNT 5u
+/* The row filter that selects every row: the umbrella's exact run. */
+#define ZWN_ALL_SHARDS ZWN_SHARD_COUNT
+#define ZWN_UMBRELLA "test_zcode_swarm_net"
+
+/* The sub-suites the unsharded group ran, written down independently of the
+ * table: a row dropped from the table, or a sub-suite added to it without an
+ * owner, fails the partition instead of silently going unrun. */
+static const char *const g_zwn_original[] = {
+    "zwn_t_fixture_abort_reacquire", "zwn_t_golden_plain",
+    "zwn_t_golden_restart", "zwn_t_golden_disconnect",
+    "zwn_t_package_lifecycle", "zwn_t_sovereign_source_build",
+    "zwn_t_malicious", "zwn_t_corrupt_provider_repair",
+    "zwn_t_corrupt_local_repair", "zwn_t_unrequested",
+    "zwn_t_quota_exhaustion", "zwn_t_deterministic_replay",
+    "zwn_t_useful_c23_redundant", "zwn_t_ordinary_c23_redundant",
+    "zwn_t_attestation_flight", "zwn_t_task_flight",
+    "zwn_t_shared_focus_flight", "zwn_t_task_hostile_pointer",
+    "zwn_t_attestation_hostile_pointer", "zwn_t_attestation_corrupt_wire",
+#if !defined(_WIN32)
+    "zwn_t_work_pull",
+#endif
+};
+#define ZWN_ORIGINAL_COUNT (sizeof(g_zwn_original) / sizeof(g_zwn_original[0]))
+
+static long long zwn_elapsed_ms(const struct timespec *from)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return -1;
+    return (long long)(now.tv_sec - from->tv_sec) * 1000 +
+           (now.tv_nsec - from->tv_nsec) / 1000000;
+}
+
+/* How many rows name `name`. */
+static size_t zwn_owners_of(const char *name)
+{
+    size_t owners = 0;
+    for (size_t i = 0; i < ZWN_CASE_COUNT; i++)
+        if (strcmp(name, g_zwn_cases[i].name) == 0)
+            owners++;
+    return owners;
+}
+
+/* Every row names a real shard, every shard owns a row, and every original
+ * sub-suite is owned exactly once by a table exactly that long. */
+static bool zwn_partition_valid(void)
+{
+    unsigned counts[ZWN_SHARD_COUNT] = {0};
+    bool ok = ZWN_CASE_COUNT == ZWN_ORIGINAL_COUNT;
+    for (size_t i = 0; i < ZWN_CASE_COUNT; i++) {
+        if (g_zwn_cases[i].shard >= ZWN_SHARD_COUNT)
+            ok = false;
+        else
+            counts[g_zwn_cases[i].shard]++;
+    }
+    for (unsigned s = 0; s < ZWN_SHARD_COUNT; s++)
+        if (counts[s] == 0)
+            ok = false;
+    for (size_t k = 0; k < ZWN_ORIGINAL_COUNT; k++)
+        if (zwn_owners_of(g_zwn_original[k]) != 1)
+            ok = false;
+    return ok;
+}
+
+/* The catalog declares this group an umbrella whose registered shards are
+ * exactly test_zcode_swarm_net_shard_01..NN, and a proof token naming the
+ * group reaches all of them. */
+static bool zwn_umbrella_registered(void)
+{
+    if (!zcl_test_group_is_umbrella(ZWN_UMBRELLA) ||
+        zcl_test_group_umbrella_shard_count(ZWN_UMBRELLA) != ZWN_SHARD_COUNT)
+        return false;
+    for (unsigned s = 1; s <= ZWN_SHARD_COUNT; s++) {
+        char id[ZCL_TEST_GROUP_FULL_MAX];
+        (void)snprintf(id, sizeof(id), ZWN_UMBRELLA "_shard_%02u", s);
+        if (!zcl_test_group_is_umbrella_shard(ZWN_UMBRELLA, id))
+            return false;
+    }
+    return true;
+}
+
+static int zwn_partition_check(void)
+{
+    int failures = 0;
+    TEST("shard partition: every sub-suite is owned by exactly one "
+         "registered shard of the umbrella") {
+        ASSERT(zwn_partition_valid());
+        ASSERT(zwn_umbrella_registered());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The rows `shard` owns, in table order; ZWN_ALL_SHARDS runs every row. */
+static int zwn_run_rows(unsigned shard)
+{
+    int failures = 0;
+    size_t ran = 0;
+    memset(&g_zwn_sovereign_receipt, 0, sizeof(g_zwn_sovereign_receipt));
+    chain_params_select(CHAIN_MAIN);
+    const struct chain_params *params = chain_params_get();
+    for (size_t i = 0; i < ZWN_CASE_COUNT; i++) {
+        struct timespec started;
+        if (shard != ZWN_ALL_SHARDS && g_zwn_cases[i].shard != shard)
+            continue;
+        (void)clock_gettime(CLOCK_MONOTONIC, &started);
+        int added = g_zwn_cases[i].run(params);
+        failures += added;
+        ran++;
+        printf("[zcode-swarm-net-case] shard=%u name=%s ms=%lld "
+               "failures=%d\n", g_zwn_cases[i].shard + 1u,
+               g_zwn_cases[i].name, zwn_elapsed_ms(&started), added);
+    }
     if (failures == 0 && g_zwn_sovereign_receipt.ready)
         zwn_print_sovereign_receipt();
+    printf("zcode_swarm_net: ran %zu of %zu sub-suites (%s), %d failed\n",
+           ran, ZWN_CASE_COUNT,
+           shard == ZWN_ALL_SHARDS ? "umbrella" : "one shard", failures);
     return failures;
+}
+
+static int zwn_run_shard(unsigned shard)
+{
+    int failures = zwn_partition_check();
+    return failures + zwn_run_rows(shard);
+}
+
+int test_zcode_swarm_net(void)
+{
+    return zwn_run_shard(ZWN_ALL_SHARDS);
 }

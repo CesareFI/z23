@@ -5997,43 +5997,291 @@ static int zpd_test_candidate_cannot_edit_acceptance_tests(void)
     return failures;
 }
 
+/* ── Umbrella and shards ─────────────────────────────────────────────────
+ *
+ * test_zcode_package_dev is an umbrella (tools/dev/test_group_umbrellas.def).
+ * One table names every sub-suite and the shard that owns it; row order is
+ * the order the umbrella runs them in. Named exactly, the umbrella runs every
+ * row itself, so each consumer of the historic id (make test-full,
+ * t-fast-exact, the macOS package_execution evidence, the focus worker's
+ * --exact re-exec, which still enters here and takes the fork-role branch)
+ * keeps every sub-suite. In a full run, an --only substring, a proof or a
+ * plan expansion it is subsumed and its shards run instead, each its own
+ * catalog group and its own process with its own signing context, its
+ * fixtures under per-pid test-tmp and /tmp roots.
+ *
+ * Owners are balanced by measured wall ([zcode-package-dev-case] ms=, printed
+ * per row by every run). Every run -- umbrella or shard -- first proves the
+ * partition: the rows are exactly the sub-suite list written down below,
+ * each owned by one shard, every shard owns a row, and the catalog registers
+ * exactly those shards under the umbrella. */
+#include "test_group_catalog.h"
+#include <time.h>
+
+struct zpd_keys {
+    secp256k1_context *ctx;
+    uint8_t secret[32];
+    uint8_t pubkey[33];
+};
+
+static int zpd_row_base(const struct zpd_keys *k)
+{
+    return zpd_test_base(k->ctx, k->secret, k->pubkey);
+}
+static int zpd_row_control_stores(const struct zpd_keys *k)
+{
+    return zpd_test_control_stores(k->pubkey);
+}
+static int zpd_row_default_chain_id(const struct zpd_keys *k)
+{
+    return zpd_test_default_chain_id(k->pubkey);
+}
+static int zpd_row_exact_file_selection(const struct zpd_keys *k)
+{
+    return zpd_test_exact_file_selection(k->pubkey);
+}
+static int zpd_row_fail_closed(const struct zpd_keys *k)
+{
+    return zpd_test_fail_closed(k->pubkey);
+}
+static int zpd_row_prepare_programs(const struct zpd_keys *k)
+{
+    return zpd_test_prepare_programs(k->pubkey);
+}
+static int zpd_row_project_inspect(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_project_inspect();
+}
+static int zpd_row_project_init(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_project_init();
+}
+static int zpd_row_reuse_plan(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_reuse_plan();
+}
+static int zpd_row_work_start_license_filter(const struct zpd_keys *k)
+{
+    return zpd_test_work_start_license_filter(k->ctx, k->secret, k->pubkey);
+}
+static int zpd_row_work_start_license_lifecycle(const struct zpd_keys *k)
+{
+    return zpd_test_work_start_license_lifecycle(k->ctx, k->secret,
+                                                 k->pubkey);
+}
+static int zpd_row_work_start_package_bounds(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_work_start_package_bounds();
+}
+static int zpd_row_work_toolchain(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_work_toolchain();
+}
+static int zpd_row_commons_join_front_doors(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_commons_join_front_doors();
+}
+static int zpd_row_admitted_single_interpretation(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_admitted_single_interpretation();
+}
+static int zpd_row_candidate_cannot_edit_acceptance_tests(
+    const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_candidate_cannot_edit_acceptance_tests();
+}
+/* The qualified package verifier runs on every supported host. Darwin uses
+ * Seatbelt and rlimits; full isolation remains required. */
+static int zpd_row_work_start(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_work_start();
+}
+static int zpd_row_standard_profile(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_standard_profile();
+}
+static int zpd_row_twelve_task_benchmark(const struct zpd_keys *k)
+{
+    (void)k;
+    return zpd_test_twelve_task_benchmark();
+}
+
+struct zpd_case {
+    const char *name;
+    int (*run)(const struct zpd_keys *k);
+    unsigned shard;
+};
+#define ZPD_CASE(fn, owner) {#fn, fn, owner}
+static const struct zpd_case g_zpd_cases[] = {
+    ZPD_CASE(zpd_row_base, 1),
+    ZPD_CASE(zpd_row_control_stores, 1),
+    ZPD_CASE(zpd_row_default_chain_id, 1),
+    ZPD_CASE(zpd_row_exact_file_selection, 1),
+    ZPD_CASE(zpd_row_fail_closed, 1),
+    ZPD_CASE(zpd_row_prepare_programs, 1),
+    ZPD_CASE(zpd_row_project_inspect, 1),
+    ZPD_CASE(zpd_row_project_init, 2),
+    ZPD_CASE(zpd_row_reuse_plan, 2),
+    ZPD_CASE(zpd_row_work_start_license_filter, 2),
+    ZPD_CASE(zpd_row_work_start_license_lifecycle, 2),
+    ZPD_CASE(zpd_row_work_start_package_bounds, 2),
+    ZPD_CASE(zpd_row_work_toolchain, 2),
+    ZPD_CASE(zpd_row_commons_join_front_doors, 2),
+    ZPD_CASE(zpd_row_admitted_single_interpretation, 2),
+    ZPD_CASE(zpd_row_candidate_cannot_edit_acceptance_tests, 2),
+    ZPD_CASE(zpd_row_work_start, 1),
+    ZPD_CASE(zpd_row_standard_profile, 1),
+    ZPD_CASE(zpd_row_twelve_task_benchmark, 0),
+};
+#undef ZPD_CASE
+#define ZPD_CASE_COUNT (sizeof(g_zpd_cases) / sizeof(g_zpd_cases[0]))
+#define ZPD_SHARD_COUNT 3u
+/* The row filter that selects every row: the umbrella's exact run. */
+#define ZPD_ALL_SHARDS ZPD_SHARD_COUNT
+#define ZPD_UMBRELLA "test_zcode_package_dev"
+
+/* The sub-suites the unsharded group ran, written down independently of the
+ * table: a row dropped from the table, or a sub-suite added to it without an
+ * owner, fails the partition instead of silently going unrun. */
+static const char *const g_zpd_original[] = {
+    "zpd_row_base", "zpd_row_control_stores", "zpd_row_default_chain_id",
+    "zpd_row_exact_file_selection", "zpd_row_fail_closed",
+    "zpd_row_prepare_programs", "zpd_row_project_inspect",
+    "zpd_row_project_init", "zpd_row_reuse_plan",
+    "zpd_row_work_start_license_filter",
+    "zpd_row_work_start_license_lifecycle",
+    "zpd_row_work_start_package_bounds", "zpd_row_work_toolchain",
+    "zpd_row_commons_join_front_doors",
+    "zpd_row_admitted_single_interpretation",
+    "zpd_row_candidate_cannot_edit_acceptance_tests", "zpd_row_work_start",
+    "zpd_row_standard_profile", "zpd_row_twelve_task_benchmark",
+};
+#define ZPD_ORIGINAL_COUNT (sizeof(g_zpd_original) / sizeof(g_zpd_original[0]))
+
+static long long zpd_elapsed_ms(const struct timespec *from)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return -1;
+    return (long long)(now.tv_sec - from->tv_sec) * 1000 +
+           (now.tv_nsec - from->tv_nsec) / 1000000;
+}
+
+/* How many rows name `name`. */
+static size_t zpd_owners_of(const char *name)
+{
+    size_t owners = 0;
+    for (size_t i = 0; i < ZPD_CASE_COUNT; i++)
+        if (strcmp(name, g_zpd_cases[i].name) == 0)
+            owners++;
+    return owners;
+}
+
+/* Every row names a real shard, every shard owns a row, and every original
+ * sub-suite is owned exactly once by a table exactly that long. */
+static bool zpd_partition_valid(void)
+{
+    unsigned counts[ZPD_SHARD_COUNT] = {0};
+    bool ok = ZPD_CASE_COUNT == ZPD_ORIGINAL_COUNT;
+    for (size_t i = 0; i < ZPD_CASE_COUNT; i++) {
+        if (g_zpd_cases[i].shard >= ZPD_SHARD_COUNT)
+            ok = false;
+        else
+            counts[g_zpd_cases[i].shard]++;
+    }
+    for (unsigned s = 0; s < ZPD_SHARD_COUNT; s++)
+        if (counts[s] == 0)
+            ok = false;
+    for (size_t k = 0; k < ZPD_ORIGINAL_COUNT; k++)
+        if (zpd_owners_of(g_zpd_original[k]) != 1)
+            ok = false;
+    return ok;
+}
+
+/* The catalog declares this group an umbrella whose registered shards are
+ * exactly test_zcode_package_dev_shard_01..NN. */
+static bool zpd_umbrella_registered(void)
+{
+    if (!zcl_test_group_is_umbrella(ZPD_UMBRELLA) ||
+        zcl_test_group_umbrella_shard_count(ZPD_UMBRELLA) != ZPD_SHARD_COUNT)
+        return false;
+    for (unsigned s = 1; s <= ZPD_SHARD_COUNT; s++) {
+        char id[ZCL_TEST_GROUP_FULL_MAX];
+        (void)snprintf(id, sizeof(id), ZPD_UMBRELLA "_shard_%02u", s);
+        if (!zcl_test_group_is_umbrella_shard(ZPD_UMBRELLA, id))
+            return false;
+    }
+    return true;
+}
+
+static int zpd_partition_check(void)
+{
+    int failures = 0;
+    TEST("shard partition: every sub-suite is owned by exactly one "
+         "registered shard of the umbrella") {
+        ASSERT(zpd_partition_valid());
+        ASSERT(zpd_umbrella_registered());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The rows `shard` owns, in table order; ZPD_ALL_SHARDS runs every row. */
+static int zpd_run_rows(const struct zpd_keys *keys, unsigned shard)
+{
+    int failures = 0;
+    size_t ran = 0;
+    for (size_t i = 0; i < ZPD_CASE_COUNT; i++) {
+        struct timespec started;
+        if (shard != ZPD_ALL_SHARDS && g_zpd_cases[i].shard != shard)
+            continue;
+        (void)clock_gettime(CLOCK_MONOTONIC, &started);
+        int added = g_zpd_cases[i].run(keys);
+        failures += added;
+        ran++;
+        printf("[zcode-package-dev-case] shard=%u name=%s ms=%lld "
+               "failures=%d\n", g_zpd_cases[i].shard + 1u,
+               g_zpd_cases[i].name, zpd_elapsed_ms(&started), added);
+    }
+    printf("zcode_package_dev: ran %zu of %zu sub-suites (%s), %d failed\n",
+           ran, ZPD_CASE_COUNT,
+           shard == ZPD_ALL_SHARDS ? "umbrella" : "one shard", failures);
+    return failures;
+}
+
+/* One run: the partition, a private signing context, the owned rows. */
+static int zpd_run_shard(unsigned shard)
+{
+    struct zpd_keys keys = {0};
+    int failures = zpd_partition_check();
+    keys.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN |
+                                        SECP256K1_CONTEXT_VERIFY);
+    keys.secret[31] = 1;
+    if (!keys.ctx || !zpd_pubkey(keys.ctx, keys.secret, keys.pubkey)) {
+        if (keys.ctx) secp256k1_context_destroy(keys.ctx);
+        return failures + 1;
+    }
+    failures += zpd_run_rows(&keys, shard);
+    secp256k1_context_destroy(keys.ctx);
+    return failures;
+}
+
 int test_zcode_package_dev(void)
 {
     const char *fork_role = getenv("ZCL_TEST_FORK_ROLE");
     if (fork_role && fork_role[0])
         return zpd_focus_worker_role(fork_role);
-    secp256k1_context *ctx = secp256k1_context_create(
-        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    uint8_t secret[32] = {0}; secret[31] = 1;
-    uint8_t pubkey[33] = {0};
-    if (!ctx || !zpd_pubkey(ctx, secret, pubkey)) {
-        if (ctx) secp256k1_context_destroy(ctx);
-        return 1;
-    }
-    int failures = zpd_test_base(ctx, secret, pubkey) +
-                   zpd_test_control_stores(pubkey) +
-                   zpd_test_default_chain_id(pubkey) +
-                   zpd_test_exact_file_selection(pubkey) +
-                   zpd_test_fail_closed(pubkey) +
-                   zpd_test_prepare_programs(pubkey) +
-                   zpd_test_project_inspect() +
-                   zpd_test_project_init() +
-                   zpd_test_reuse_plan() +
-                   zpd_test_work_start_license_filter(ctx, secret, pubkey) +
-                   zpd_test_work_start_license_lifecycle(ctx, secret,
-                                                         pubkey) +
-                   zpd_test_work_start_package_bounds() +
-                   zpd_test_work_toolchain() +
-                   zpd_test_commons_join_front_doors() +
-                   zpd_test_admitted_single_interpretation() +
-                   zpd_test_candidate_cannot_edit_acceptance_tests();
-    /* Exercise the qualified package verifier on every supported host.
-     * Darwin uses Seatbelt and rlimits; full isolation remains required. */
-    failures += zpd_test_work_start() +
-                zpd_test_standard_profile() +
-                zpd_test_twelve_task_benchmark();
-    secp256k1_context_destroy(ctx);
-    return failures;
+    return zpd_run_shard(ZPD_ALL_SHARDS);
 }
 
 /* Local-only accepted source and no-clobber publication regression. */
