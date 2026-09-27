@@ -30,7 +30,7 @@ typedef struct {
     uint64_t fee_zat;
 } zcl_tx_transparent_facts;
 
-/* Binds every input to a supplied v4 previous transaction by SHA-256d txid,
+/* Binds every input to a supplied v1-v4 previous transaction by SHA-256d txid,
  * selects its P2PKH output, and derives the total and fee. This establishes
  * byte identity, not UTXO existence, chain inclusion, maturity, or ownership.
  * Only unsigned, all-transparent v4 P2PKH-input transactions with standard
@@ -40,7 +40,7 @@ int zcl_tx_transparent_preflight(const uint8_t *wire, size_t length,
     zcl_tx_sha256_fn sha256, zcl_tx_transparent_facts *facts);
 
 /* Computes ZIP-243 SIGHASH_ALL with script and amount taken from a hash-bound
- * v4 P2PKH prevout. The caller must still verify chain state and branch ID;
+ * v1-v4 P2PKH prevout. The caller must still verify chain state and branch ID;
  * this function grants no signing authority. */
 int zcl_tx_hash_bound_digest(const uint8_t *wire, size_t length,
     uint32_t input_index, zcl_tx_previous_transaction previous,

@@ -9,12 +9,6 @@ enum { ZCL_MAX_MONEY_ZAT = 2100000000000000ULL };
 
 typedef struct {
     uint32_t index;
-    zcl_tx_output output;
-    bool found;
-} output_selection;
-
-typedef struct {
-    uint32_t index;
     zcl_tx_input input;
     bool found;
 } input_selection;
@@ -27,15 +21,6 @@ typedef struct {
     uint64_t input_zat;
 } input_check;
 
-static bool select_output(void *context, const zcl_tx_output *output) {
-    output_selection *selection = context;
-    if (output->index == selection->index) {
-        selection->output = *output;
-        selection->found = true;
-    }
-    return true;
-}
-
 static bool select_input(void *context, const zcl_tx_input *input) {
     input_selection *selection = context;
     if (input->index == selection->index) {
@@ -47,21 +32,19 @@ static bool select_input(void *context, const zcl_tx_input *input) {
 
 static bool bind_prevout(const zcl_tx_input *input,
                          zcl_tx_previous_transaction previous,
-                         zcl_tx_sha256_fn sha256, zcl_tx_output *output) {
+                         zcl_tx_sha256_fn sha256,
+                         zcl_tx_previous_output *output) {
     if (!previous.wire || !sha256) return false;
     uint8_t first[32], txid[32];
-    if (zcl_tx_review_parse(previous.wire, previous.length,
-                            &(zcl_tx_review){0}) < 0 ||
-        !sha256(previous.wire, previous.length, first) ||
+    if (!sha256(previous.wire, previous.length, first) ||
         !sha256(first, sizeof first, txid) ||
         memcmp(input->previous_txid, txid, sizeof txid)) return false;
-    output_selection selection = {.index = input->previous_output_index};
-    if (zcl_tx_outputs_visit(previous.wire, previous.length,
-                             select_output, &selection) < 0 ||
-        !selection.found || selection.output.type != ZCL_TX_OUTPUT_P2PKH)
-        return false;
-    *output = selection.output;
-    return true;
+    if (zcl_tx_previous_output_select(previous.wire, previous.length,
+            input->previous_output_index, output) < 0) return false;
+    const uint8_t *script = output->script;
+    return output->script_length == 25 && script[0] == 0x76 &&
+        script[1] == 0xa9 && script[2] == 0x14 &&
+        script[23] == 0x88 && script[24] == 0xac;
 }
 
 static bool check_input(void *context, const zcl_tx_input *input) {
@@ -69,7 +52,7 @@ static bool check_input(void *context, const zcl_tx_input *input) {
     if (input->index >= check->count || input->script_length) return false;
     for (uint32_t i = 0; i < input->index; ++i)
         if (!memcmp(check->used[i], input->previous_txid, 36)) return false;
-    zcl_tx_output output;
+    zcl_tx_previous_output output;
     if (!bind_prevout(input, check->previous[input->index],
                       check->sha256, &output) ||
         output.value_zat > ZCL_MAX_MONEY_ZAT - check->input_zat) return false;
@@ -127,7 +110,7 @@ int zcl_tx_hash_bound_digest(const uint8_t *wire, size_t length,
         zcl_tx_outputs_visit(wire, length, standard_output, NULL) < 0)
         return -1;
     input_selection selection = {.index = input_index};
-    zcl_tx_output output;
+    zcl_tx_previous_output output;
     if (zcl_tx_inputs_visit(wire, length, select_input, &selection) < 0 ||
         !selection.found || selection.input.script_length ||
         !bind_prevout(&selection.input, previous, sha256, &output)) return -1;

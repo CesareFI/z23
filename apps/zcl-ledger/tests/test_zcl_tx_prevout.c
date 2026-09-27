@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_tx_prevout.h"
+#include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
 #include "zcl_zip243_host.h"
 #include "crypto/blake2b.h"
@@ -15,7 +16,7 @@
     abort(); \
 } } while (0)
 
-typedef struct { uint8_t bytes[256]; size_t length; } transaction;
+typedef struct { uint8_t bytes[4096]; size_t length; } transaction;
 
 static void put_u32(transaction *tx, uint32_t value) {
     for (unsigned i = 0; i < 4; ++i)
@@ -76,6 +77,51 @@ static transaction previous_transaction(void) {
     return tx;
 }
 
+static void put_zeros(transaction *tx, size_t count) {
+    CHECK(tx->length + count <= sizeof tx->bytes);
+    memset(tx->bytes + tx->length, 0, count);
+    tx->length += count;
+}
+
+static transaction previous_version(unsigned version, bool joinsplit,
+                                    bool sapling) {
+    transaction tx = {0};
+    put_u32(&tx, version >= 3 ? 0x80000000u | version : version);
+    if (version >= 3)
+        put_u32(&tx, version == 3 ? 0x03c48270u : 0x892f2085u);
+    tx.bytes[tx.length++] = 1;
+    uint8_t coinbase[36] = {0};
+    memset(coinbase + 32, 0xff, 4);
+    put_bytes(&tx, coinbase, sizeof coinbase);
+    tx.bytes[tx.length++] = 2;
+    tx.bytes[tx.length++] = 1;
+    tx.bytes[tx.length++] = 1;
+    put_u32(&tx, UINT32_MAX);
+    tx.bytes[tx.length++] = 2;
+    put_output(&tx, 50000000, 0, 0x11);
+    put_u64(&tx, 0);
+    tx.bytes[tx.length++] = 1;
+    tx.bytes[tx.length++] = 0x6a;
+    put_u32(&tx, 0);
+    if (version >= 3) put_u32(&tx, 0);
+    if (version == 4) {
+        put_u64(&tx, 0);
+        tx.bytes[tx.length++] = sapling ? 1 : 0;
+        if (sapling) put_zeros(&tx, 384);
+        tx.bytes[tx.length++] = sapling ? 1 : 0;
+        if (sapling) put_zeros(&tx, 948);
+    }
+    if (version >= 2) {
+        tx.bytes[tx.length++] = joinsplit ? 1 : 0;
+        if (joinsplit) {
+            put_zeros(&tx, version == 4 ? 1634 : 1738);
+            put_zeros(&tx, 96);
+        }
+    }
+    if (sapling) put_zeros(&tx, 64);
+    return tx;
+}
+
 static bool sha256_bytes(const uint8_t *bytes, size_t length,
                          uint8_t digest[32]) {
     return SHA256(bytes, length, digest) != NULL;
@@ -119,6 +165,119 @@ static transaction spending_transaction(const uint8_t txid[32],
     put_output(&tx, 19000000, 1, 0x33);
     put_tail(&tx);
     return tx;
+}
+
+static void test_previous_versions(void) {
+    for (unsigned version = 1; version <= 4; ++version) {
+        for (unsigned shape = 0; shape < 3; ++shape) {
+            bool joinsplit = shape == 1 && version >= 2;
+            bool sapling = shape == 2 && version == 4;
+            if (shape == 1 && version == 1) continue;
+            if (shape == 2 && version != 4) continue;
+            transaction prev = previous_version(version, joinsplit, sapling);
+            zcl_tx_previous_output selected = {0};
+            CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+                0, &selected) == 0);
+            CHECK(selected.value_zat == 50000000 &&
+                  selected.script_length == 25 &&
+                  selected.script[0] == 0x76 && selected.script[24] == 0xac);
+            zcl_tx_previous_output other = {0};
+            CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+                1, &other) == 0);
+            CHECK(other.value_zat == 0 && other.script_length == 1 &&
+                  other.script[0] == 0x6a);
+            uint8_t first[32], txid[32];
+            CHECK(sha256_bytes(prev.bytes, prev.length, first));
+            CHECK(sha256_bytes(first, sizeof first, txid));
+            transaction spend = spending_transaction(txid, 1);
+            zcl_tx_previous_transaction source = {prev.bytes, prev.length};
+            zcl_tx_transparent_facts facts = {0};
+            CHECK(zcl_tx_transparent_preflight(spend.bytes, spend.length,
+                &source, 1, sha256_bytes, &facts) == 0);
+            CHECK(facts.input_zat == 50000000 && facts.fee_zat == 1000000);
+            struct blake2b_ctx context;
+            zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+            uint8_t direct[32], bound[32];
+            CHECK(zcl_zip243_transparent_digest(spend.bytes, spend.length,
+                0, selected.script, selected.script_length,
+                selected.value_zat, 0x76b809bb, &hasher, direct) == 0);
+            CHECK(zcl_tx_hash_bound_digest(spend.bytes, spend.length, 0,
+                source, 0x76b809bb, sha256_bytes, &hasher, bound) == 0);
+            CHECK(memcmp(direct, bound, sizeof direct) == 0);
+            spend.bytes[8 + 1 + 32] = 1;
+            CHECK(zcl_tx_transparent_preflight(spend.bytes, spend.length,
+                &source, 1, sha256_bytes, &facts) < 0);
+            spend.bytes[8 + 1 + 32] = 0;
+            zcl_tx_previous_output untouched = {.value_zat = UINT64_MAX};
+            CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length - 1,
+                0, &untouched) < 0);
+            CHECK(untouched.value_zat == UINT64_MAX);
+            prev.bytes[prev.length++] = 0;
+            CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+                0, &untouched) < 0);
+            CHECK(untouched.value_zat == UINT64_MAX);
+        }
+    }
+}
+
+static void test_previous_malformed(void) {
+    transaction prev = previous_version(3, false, false);
+    zcl_tx_previous_output output = {.value_zat = UINT64_MAX};
+    prev.bytes[4] ^= 1;
+    CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+        0, &output) < 0);
+    prev.bytes[4] ^= 1;
+    prev.bytes[8] = 0xfd;
+    CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+        0, &output) < 0);
+    prev.bytes[8] = 1;
+    CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+        0, &output) == 0);
+    size_t amount = (size_t)(output.script - prev.bytes) - 9;
+    uint8_t saved[8];
+    memcpy(saved, prev.bytes + amount, sizeof saved);
+    memset(prev.bytes + amount, 0xff, sizeof saved);
+    CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+        0, &output) < 0);
+    memcpy(prev.bytes + amount, saved, sizeof saved);
+    prev.bytes[amount + 8] = 0xfd;
+    CHECK(zcl_tx_previous_output_select(prev.bytes, prev.length,
+        0, &output) < 0);
+    CHECK(output.value_zat == 50000000);
+    transaction v2 = previous_version(2, false, false);
+    v2.bytes[v2.length - 1] = 1;
+    CHECK(zcl_tx_previous_output_select(v2.bytes, v2.length,
+        0, &output) < 0);
+}
+
+static void test_previous_mutations(void) {
+    uint32_t random = 0x2309c1afu;
+    for (unsigned version = 1; version <= 4; ++version) {
+        transaction original = previous_version(version, version >= 2,
+                                                version == 4);
+        for (unsigned run = 0; run < 10000; ++run) {
+            transaction changed = original;
+            random = random * 1664525u + 1013904223u;
+            size_t flipped = random % changed.length;
+            random = random * 1664525u + 1013904223u;
+            changed.bytes[flipped] ^= (uint8_t)(1u << (random % 8));
+            random = random * 1664525u + 1013904223u;
+            size_t length = run % 5 == 0 ? random % changed.length :
+                changed.length;
+            zcl_tx_previous_output output = {.value_zat = UINT64_MAX};
+            int status = zcl_tx_previous_output_select(changed.bytes,
+                length, 0, &output);
+            if (status < 0) {
+                CHECK(output.value_zat == UINT64_MAX);
+            } else {
+                uintptr_t first = (uintptr_t)changed.bytes;
+                uintptr_t script = (uintptr_t)output.script;
+                CHECK(script >= first && script <= first + length);
+                CHECK(output.script_length <= length - (script - first));
+                CHECK(output.value_zat <= 2100000000000000ULL);
+            }
+        }
+    }
 }
 
 static bool capture_input(void *context, const zcl_tx_input *input) {
@@ -166,6 +325,9 @@ static void test_published_txid(const char *path) {
 int main(int argc, char **argv) {
     CHECK(argc == 2);
     test_published_txid(argv[1]);
+    test_previous_versions();
+    test_previous_malformed();
+    test_previous_mutations();
     transaction prev = previous_transaction();
     uint8_t first[32], txid[32];
     CHECK(sha256_bytes(prev.bytes, prev.length, first));

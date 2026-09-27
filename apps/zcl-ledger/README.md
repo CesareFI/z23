@@ -194,7 +194,7 @@ digest. Both digest values are review data, not signatures or approval.
 The C23 ZIP-243 library also computes SIGHASH_ALL for a selected transparent
 input when given its spent output's scriptCode and amount. Its result matched
 ZIP 243's published transparent test vector. The separate C23 host preflight
-binds supplied v4 previous transactions to P2PKH inputs by SHA-256d txid,
+binds supplied v1-v4 previous transactions to P2PKH inputs by SHA-256d txid,
 derives their amounts and scripts, checks every output type, and calculates
 the fee. Its combined API returns the fee and every input's hash-bound
 ZIP-243 digest only after all prevouts and digests succeed; failure leaves

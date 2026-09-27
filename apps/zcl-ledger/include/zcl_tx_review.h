@@ -23,6 +23,19 @@ typedef struct {
     int64_t value_balance_zat;
 } zcl_tx_review;
 
+typedef struct {
+    const uint8_t *script;
+    size_t script_length;
+    uint64_t value_zat;
+} zcl_tx_previous_output;
+
+/* Selects one transparent output after parsing an exact v1, v2, Overwinter
+ * v3, or Sapling v4 wire. The result borrows a script pointer from wire.
+ * This structural check does not verify signatures, proofs, chain inclusion,
+ * UTXO status, maturity, or account ownership. Failure leaves output intact. */
+int zcl_tx_previous_output_select(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_tx_previous_output *output);
+
 /* Parses the complete ZCL Sapling-v4 wire format. Proofs and signatures are
  * treated as opaque bytes. The result does not establish ownership, fee,
  * shielded recipient, shielded amount, or consensus validity. */

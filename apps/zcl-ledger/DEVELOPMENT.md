@@ -215,14 +215,16 @@ transaction bytes and the resulting signature.
 
 [`zcl_tx_prevout.h`](include/zcl_tx_prevout.h) is a C23 host preflight for
 unsigned, all-transparent v4 transactions with up to 16 P2PKH inputs and
-standard P2PKH/P2SH outputs. The caller supplies each complete previous v4
+standard P2PKH/P2SH outputs. The caller supplies each complete previous v1-v4
 transaction in input order. Preflight parses those transactions, computes
 each SHA-256d txid, compares the exact outpoint bytes, selects the indexed
 P2PKH output, rejects duplicate outpoints, and calculates input total,
 output total, and fee. Its hash-bound ZIP-243 digest takes script and amount
 from that selected output. The tests compare the double hash of ZIP 243's
 published vector 3 with its published txid, check a synthetic fee and input
-digest, and reject mismatches and truncated encodings.
+digest, and reject mismatches and truncated encodings. Separate fixtures
+exercise v1, v2, Overwinter v3, and Sapling v4 previous wires, including
+JoinSplit and Sapling tails; the spending wire remains restricted to v4.
 
 A previous transaction matching an outpoint does not prove the output is
 unspent, mature, on the accepted ZCL chain, or controlled by the selected

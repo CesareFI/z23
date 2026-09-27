@@ -129,3 +129,96 @@ int zcl_tx_review_parse(const uint8_t *wire, size_t length,
     *review = parsed;
     return 0;
 }
+
+static bool previous_script(cursor *input, const uint8_t **script,
+    size_t *length) {
+    uint64_t count;
+    if (!compact_size(input, &count) || count > 10000 ||
+        !take(input, (size_t)count, script)) return false;
+    *length = (size_t)count;
+    return true;
+}
+
+static bool previous_inputs(cursor *input) {
+    uint64_t count;
+    const uint8_t *bytes;
+    size_t script_length;
+    if (!compact_size(input, &count) || count > 65536 ||
+        count > (input->length - input->offset) / 41) return false;
+    for (uint64_t i = 0; i < count; ++i)
+        if (!take(input, 36, &bytes) ||
+            !previous_script(input, &bytes, &script_length) ||
+            !take(input, 4, &bytes)) return false;
+    return true;
+}
+
+static bool previous_outputs(cursor *input, uint32_t selected,
+    zcl_tx_previous_output *output) {
+    uint64_t count, total = 0;
+    if (!compact_size(input, &count) || count > 65536 ||
+        selected >= count || count > (input->length - input->offset) / 9)
+        return false;
+    for (uint64_t i = 0; i < count; ++i) {
+        uint64_t value;
+        const uint8_t *script;
+        size_t script_length;
+        if (!read_u64(input, &value) || value > ZCL_MAX_MONEY_ZAT ||
+            value > ZCL_MAX_MONEY_ZAT - total ||
+            !previous_script(input, &script, &script_length)) return false;
+        total += value;
+        if (i == selected) *output = (zcl_tx_previous_output){
+            .script = script, .script_length = script_length,
+            .value_zat = value};
+    }
+    return true;
+}
+
+static bool previous_sapling(cursor *input, uint32_t *spends,
+    uint32_t *outputs) {
+    uint64_t balance;
+    return read_u64(input, &balance) &&
+        !(balance > ZCL_MAX_MONEY_ZAT &&
+          balance < UINT64_MAX - ZCL_MAX_MONEY_ZAT + 1) &&
+        skip_fixed_vector(input, spends, 4096, 384) &&
+        skip_fixed_vector(input, outputs, 4096, 948);
+}
+
+static bool previous_tail(cursor *input, uint32_t version) {
+    uint32_t ignored, spends = 0, outputs = 0, joinsplits = 0;
+    const uint8_t *bytes;
+    if (!read_u32(input, &ignored)) return false;
+    if (version >= 3 && !read_u32(input, &ignored)) return false;
+    if (version == 4 && !previous_sapling(input, &spends, &outputs))
+        return false;
+    if (version >= 2 &&
+        !skip_fixed_vector(input, &joinsplits, 4096,
+                           version == 4 ? 1634 : 1738)) return false;
+    if (joinsplits && !take(input, 96, &bytes)) return false;
+    if (version == 4 && (spends || outputs) &&
+        !take(input, 64, &bytes)) return false;
+    return input->offset == input->length;
+}
+
+static bool previous_version(cursor *input, uint32_t *version) {
+    uint32_t header, group;
+    if (!read_u32(input, &header)) return false;
+    *version = header == 1 || header == 2 ? header :
+        header == 0x80000003 ? 3 : header == 0x80000004 ? 4 : 0;
+    return *version && (*version < 3 ||
+        (read_u32(input, &group) &&
+         group == (*version == 3 ? 0x03c48270u : 0x892f2085u)));
+}
+
+int zcl_tx_previous_output_select(const uint8_t *wire, size_t length,
+    uint32_t output_index, zcl_tx_previous_output *output) {
+    if (!wire || !output || length > ZCL_TX_REVIEW_MAX_BYTES) return -1;
+    cursor input = {.wire = wire, .length = length};
+    zcl_tx_previous_output selected = {0};
+    uint32_t version;
+    if (!previous_version(&input, &version) ||
+        !previous_inputs(&input) ||
+        !previous_outputs(&input, output_index, &selected) ||
+        !previous_tail(&input, version)) return -1;
+    *output = selected;
+    return 0;
+}
