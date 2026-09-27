@@ -46,6 +46,9 @@ stack path of 752 bytes against a 2,048-byte reserve and 512-byte margin.
 The SDK copies were compared byte-for-byte before the final builds. An
 initial mismatch exposed a stale USB-reset hunk in one patched SDK tree;
 after both trees matched the repository's C23 SDK patch, the images matched.
+The Makefile now rejects a stale SDK diff before compilation. A copied SDK
+with the USB-reset hunk removed failed even under `make -n` with the expected
+patch-mismatch error; the canonical patched SDK passed the same build gate.
 CPU: AMD Ryzen 7 PRO 8840U with Radeon 780M Graphics. Test date:
 2026-09-27.
 

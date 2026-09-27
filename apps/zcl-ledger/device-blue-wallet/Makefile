@@ -11,6 +11,21 @@ ifneq ($(TARGET_ID),0x31000004)
 $(error The SDK must target Ledger Blue firmware 2.1.x)
 endif
 
+ifneq ($(filter clean,$(MAKECMDGOALS)),clean)
+SDK_REVISION := $(shell git -C "$(BOLOS_SDK)" rev-parse HEAD 2>/dev/null)
+ifneq ($(SDK_REVISION),3c710b4c62ad847599a2deb0932a50dd1ae4bdff)
+$(error The Blue SDK revision differs from the reviewed source)
+endif
+SDK_PATCH_SHA256 := $(word 1,$(shell git -C "$(BOLOS_SDK)" diff --binary | sha256sum))
+ifneq ($(SDK_PATCH_SHA256),4919fd81ba7a3a80880065aaf7898c2edd603b2586f6086a88570c73996019f6)
+$(error The Blue SDK patch differs from the reviewed C23 patch)
+endif
+SDK_UNTRACKED := $(shell git -C "$(BOLOS_SDK)" ls-files --others)
+ifneq ($(strip $(SDK_UNTRACKED)),)
+$(error The Blue SDK contains untracked files)
+endif
+endif
+
 APPNAME = "ZCL Wallet"
 APPVERSION = 0.2.15
 APP_FLAGS = 0x00
