@@ -394,6 +394,22 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-payment-review COMMAND test-blue-payment-review)
 
+add_executable(test-blue-wallet-device-ui tests/test_blue_wallet_device_ui.c)
+target_include_directories(test-blue-wallet-device-ui PRIVATE
+    tests/blue_wallet_sdk_stub include device-blue-wallet/src)
+target_link_libraries(test-blue-wallet-device-ui PRIVATE
+    blue_payment_apdu blue_payment_screen blue_payment_review zcl_zip243
+    zcl_tx_prevout zcl_base58 blue_bagl_canvas)
+target_compile_options(test-blue-wallet-device-ui PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-device-ui PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-device-ui PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-device-ui COMMAND test-blue-wallet-device-ui)
+
 add_executable(test-blue-wallet-review-cli tests/test_blue_wallet_review_cli.c)
 target_link_libraries(test-blue-wallet-review-cli PRIVATE OpenSSL::Crypto)
 target_compile_options(test-blue-wallet-review-cli PRIVATE
