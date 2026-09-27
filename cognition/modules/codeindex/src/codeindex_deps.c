@@ -27,9 +27,14 @@
  * inside an inactive conditional (a Windows-only .inc on Linux) names an
  * in-tree file that configuration never read, so the depfile omits it. That
  * file still shapes the unit elsewhere, so it is added as an edge from the
- * translation unit and scanned the same way for what it includes. The graph
- * is then a superset of the true edges: it can select more work, never less,
- * and it stays trusted. A text scan that cannot finish still refuses.
+ * translation unit and scanned the same way for what it includes. Such an
+ * edge only adds work, and a text scan that cannot finish still refuses.
+ * Only quoted includes the scan resolves are added: one found at the checkout
+ * root, beside the including file or the unit, or under that file's module
+ * include/ directory. A quoted include that resolves at none of those places,
+ * or an angle-bracket include, adds no edge and does not refuse, so an
+ * inactive include reached only through another -I directory is not in the
+ * graph.
  *
  * Depfiles are written into a per-build compile epoch,
  * `<object-root>/epochs/<64-hex>/`. Every build mints a new epoch and the

@@ -66,7 +66,7 @@ cognition/modules/codeindex/src/codeindex_capability.c:codeindex_capabilities:45
 cognition/modules/codeindex/src/codeindex_deps.c:codeindex_depfile_graph:19
 cognition/modules/codeindex/src/codeindex_deps.c:collect_dep_paths:21
 cognition/modules/codeindex/src/codeindex_deps.c:epoch_current_dir:27
-cognition/modules/codeindex/src/codeindex_deps.c:scan_one_depfile:22
+cognition/modules/codeindex/src/codeindex_deps.c:scan_one_depfile:21
 cognition/modules/codeindex/src/codeindex_emitter.c:codeindex_emitter_sites:17
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_call_context:17
 cognition/modules/codeindex/src/codeindex_emitter.c:emit_collect_literals:30
