@@ -7,22 +7,26 @@
 #include <string.h>
 
 static bool sha_init(void *context) {
+    if (!context) return false;
     zsha256_init(context);
     return true;
 }
 
 static bool sha_update(void *context, const uint8_t *bytes, size_t length) {
+    if (!context || (!bytes && length)) return false;
     zsha256_update(context, bytes, length);
     return true;
 }
 
 static bool sha_final(void *context, uint8_t digest[32]) {
+    if (!context || !digest) return false;
     zsha256_final(context, digest);
     return true;
 }
 
 static bool screen_hash(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
+    if ((!bytes && length) || !digest) return false;
     zsha256(bytes, length, digest);
     return true;
 }

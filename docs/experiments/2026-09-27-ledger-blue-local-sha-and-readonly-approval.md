@@ -22,6 +22,10 @@ that exact executable, including the mismatched-script and changed-tip
 rejections. The `zsha256` package's vectors, HMAC, incremental, comparison,
 and fuzz groups passed under Clang 22.1.6 with AddressSanitizer and
 UndefinedBehaviorSanitizer and under GCC 16.1.1 Release.
+The replay SHA callbacks reject invalid pointers explicitly before calling
+the `void` SHA API. After that guard, both compilers passed the three focused
+payment-review, wallet-CLI, and chain-tip tests. The standalone reviewer
+again passed the wallet CLI fixture with only `libc.so.6` linked.
 
 Wallet 0.2.15 has separate read-only confirmation and signing-approval
 flags. The Blue touchscreen's CONFIRM callback sets only the read-only flag.

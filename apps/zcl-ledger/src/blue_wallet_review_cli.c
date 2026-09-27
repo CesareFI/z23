@@ -25,6 +25,7 @@ typedef struct { int fd; } live_device;
 
 static bool sha256_bytes(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
+    if ((!bytes && length) || !digest) return false;
     zsha256(bytes, length, digest);
     return true;
 }
