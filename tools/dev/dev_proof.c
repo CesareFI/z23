@@ -6193,6 +6193,42 @@ bool zcl_dev_proof_test_prepare_environment(void)
 {
     return proof_prepare_environment();
 }
+
+/* The zcc store a compile started from this process would use: ZCC_DIR,
+ * else $XDG_CACHE_HOME/zcc, else $HOME/.cache/zcc, the order tools/zcc.c
+ * cache_open() reads them in. */
+static bool proof_zcc_effective_store(char *out, size_t out_len)
+{
+    const char *dir = getenv("ZCC_DIR");
+    const char *xdg = getenv("XDG_CACHE_HOME");
+    const char *home = getenv("HOME");
+    int n;
+    if (dir && dir[0])
+        n = snprintf(out, out_len, "%s", dir);
+    else if (xdg && xdg[0])
+        n = snprintf(out, out_len, "%s/zcc", xdg);
+    else if (home && home[0])
+        n = snprintf(out, out_len, "%s/.cache/zcc", home);
+    else
+        return false;
+    return n > 0 && (size_t)n < out_len;
+}
+
+bool zcl_dev_proof_test_compile_store(const char *state, const char *key,
+                                      char *store, size_t store_len)
+{
+    (void)state;
+    (void)key;
+    return proof_zcc_effective_store(store, store_len);
+}
+
+bool zcl_dev_proof_test_compile_store_close(const char *state,
+                                            const char *key)
+{
+    (void)state;
+    (void)key;
+    return true;
+}
 #endif
 
 /* The proof spawns make through the one repository-wide derivation; see

@@ -5658,6 +5658,117 @@ static int test_ic_proof_environment_refuses_inherited_shortcuts(void)
     } _test_next:;
     return failures;
 }
+
+/* A store the proof may compile against: a fresh, empty, owner-only
+ * directory directly under the proof's own state directory. */
+static bool ic_private_empty_store(const char *store, const char *state)
+{
+    size_t n = strlen(state);
+    if (strncmp(store, state, n) != 0 || store[n] != '/' ||
+        strchr(store + n + 1, '/') != NULL)
+        return false;
+    struct stat st;
+    if (lstat(store, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 077) != 0)
+        return false;
+    DIR *dir = opendir(store);
+    if (!dir) return false;
+    bool empty = true;
+    for (struct dirent *e = readdir(dir); e; e = readdir(dir))
+        if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0)
+            empty = false;
+    (void)closedir(dir);
+    return empty;
+}
+
+/* One proof's compile store, opened, checked and closed. Returns 0, or the
+ * step that failed so the parent can name it. */
+static int ic_compile_store_round(const char *state, const char *key,
+                                  const char *shared, int step)
+{
+    char store[4096];
+    if (!zcl_dev_proof_test_prepare_environment() ||
+        !zcl_dev_proof_test_compile_store(state, key, store, sizeof(store)))
+        return step + 1;
+    if (strcmp(store, shared) == 0) return step + 2;
+    if (!ic_private_empty_store(store, state)) return step + 3;
+    const char *ccache = getenv("CCACHE_DISABLE");
+    if (!ccache || strcmp(ccache, "1") != 0) return step + 4;
+    /* A retry of the same pair (a crashed worker's leftovers, or anything
+     * this uid wrote there since) must start from nothing again. */
+    if (!ic_write(store, "obj/ab/abcd.bin", "PLANTED") ||
+        !zcl_dev_proof_test_compile_store(state, key, store, sizeof(store)) ||
+        !ic_private_empty_store(store, state))
+        return step + 5;
+    if (!zcl_dev_proof_test_compile_store_close(state, key) ||
+        access(store, F_OK) == 0 || getenv("ZCC_DIR") != NULL)
+        return step + 6;
+    return 0;
+}
+
+static int ic_proof_compile_store_child(const char *root)
+{
+    char home[4096], state[4096], shared[4096], home_store[4096];
+    if (snprintf(home, sizeof(home), "%s/home", root) <= 0 ||
+        snprintf(state, sizeof(state), "%s/state", root) <= 0 ||
+        snprintf(shared, sizeof(shared), "%s/shared-zcc", root) <= 0 ||
+        snprintf(home_store, sizeof(home_store), "%s/.cache/zcc", home) <= 0 ||
+        mkdir(state, 0700) != 0)
+        return 1;
+    /* Both shared stores already hold an object some earlier process of
+     * this uid wrote; zcc would copy either out on a key match unread. */
+    if (!ic_write(root, "home/.cache/zcc/obj/ab/abcd.bin", "PLANTED") ||
+        !ic_write(root, "shared-zcc/obj/ab/abcd.bin", "PLANTED") ||
+        setenv("HOME", home, 1) != 0 || unsetenv("XDG_CACHE_HOME") != 0 ||
+        unsetenv("ZCC_DIR") != 0 || unsetenv("CCACHE_DISABLE") != 0)
+        return 2;
+    int rc = ic_compile_store_round(state, "default", home_store, 10);
+    if (rc != 0) return rc;
+    if (setenv("ZCC_DIR", shared, 1) != 0) return 3;
+    rc = ic_compile_store_round(state, "inherited", shared, 20);
+    if (rc != 0) return rc;
+    /* The shared stores are someone else's to manage: left exactly as found. */
+    char probe[4096];
+    if (snprintf(probe, sizeof(probe), "%s/obj/ab/abcd.bin", shared) <= 0 ||
+        access(probe, F_OK) != 0 ||
+        snprintf(probe, sizeof(probe), "%s/obj/ab/abcd.bin", home_store) <= 0 ||
+        access(probe, F_OK) != 0)
+        return 4;
+    return 0;
+}
+
+static int test_ic_proof_compiles_against_a_private_store(void)
+{
+    int failures = 0;
+    TEST("proof environment: compiles never read or write this uid's shared zcc store") {
+        /* The shared zcc store is keyed with the build root prefix-mapped
+         * away, so every worktree of this uid reads and writes one set of
+         * entries, and a hit is copied out unread. A candidate's Makefile
+         * or tests ran as this uid in an earlier proof and could have left
+         * an object its key's source never compiles to. */
+        char root[4096];
+        test_make_tmpdir(root, sizeof(root), "proof_env", "zcc_store");
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0) {
+            int rc = ic_proof_compile_store_child(root);
+            if (rc != 0)
+                fprintf(stderr, "compile store check failed at step %d\n", rc);
+            _exit(rc == 0 ? 0 : 1);
+        }
+        int status = 0;
+        pid_t waited;
+        do {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        ASSERT(waited == child);
+        ASSERT(WIFEXITED(status));
+        ASSERT(WEXITSTATUS(status) == 0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
 #endif
 
 static int test_ic_landing_proof_lint_argv(void)
@@ -8369,6 +8480,7 @@ int test_impact_composition(void)
     failures += test_ic_landing_proof_lint_argv();
 #if !defined(_WIN32)
     failures += test_ic_proof_environment_refuses_inherited_shortcuts();
+    failures += test_ic_proof_compiles_against_a_private_store();
 #endif
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
     failures += test_ic_proof_prefork_builds_the_shared_targets();

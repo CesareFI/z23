@@ -414,6 +414,14 @@ bool zcl_dev_proof_test_lint_argv(const char *root, const char *jobs,
                                   const char **targets_out);
 /* Same environment normalization performed before any proof child runs. */
 bool zcl_dev_proof_test_prepare_environment(void);
+/* Seam for compile-cache isolation: runs the worker's compile-store step for
+ * the proof state directory `state` and pair `key`, then writes to `store`
+ * the zcc store a compile started from this process would now use. */
+bool zcl_dev_proof_test_compile_store(const char *state, const char *key,
+                                      char *store, size_t store_len);
+/* Removes what zcl_dev_proof_test_compile_store() opened. */
+bool zcl_dev_proof_test_compile_store_close(const char *state,
+                                            const char *key);
 /* Seam for the shared admitted-executable set: the one table both the lint
  * and the test dimension materialize into a generation. Writes at most
  * `cap` source/target pairs, relative to the submitting checkout and the
