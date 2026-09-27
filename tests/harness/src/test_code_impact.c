@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sqlite3.h>
 #include <sys/stat.h>
 #include <utime.h>
 
@@ -1110,6 +1111,60 @@ static int test_code_impact_dotdot_include_edge(void)
     return failures;
 }
 
+/* An index written before include edges carried an edge root has none. Its
+ * rows cannot be shown to hold the current edges, so the next update
+ * rebuilds them instead of reusing them: the answer is complete and lists the
+ * conditional includer, never a refusal that only a manual rebuild clears. */
+static bool ci_cond_drop_edge_root(const char *dir)
+{
+    char path[512];
+    sqlite3 *db = NULL;
+    int n = snprintf(path, sizeof path, "%s/.codeindex/index.kv.spare", dir);
+    if (n <= 0 || (size_t)n >= sizeof path)
+        return false;
+    (void)remove(path);
+    path[n - 6] = '\0';
+    bool ok = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) ==
+                  SQLITE_OK &&
+              sqlite3_exec(db, /* raw-sql-ok:test-fixture */
+                           "DELETE FROM meta WHERE k='include_edge_root_sha3'",
+                           NULL, NULL, NULL) == SQLITE_OK &&
+              sqlite3_changes(db) == 1;
+    if (db)
+        sqlite3_close(db);
+    return ok;
+}
+
+static int test_code_impact_rootless_index_rebuilds(void)
+{
+    int failures = 0;
+    const char *dir = CI_COND_FIX "/rootless";
+    static const char *const src_body =
+        "/* narrow */\n#include \"net/real.h\"\n#ifdef _WIN32\n"
+        "#include \"narrow_win.inc\"\n#endif\nint ci_narrow(void){return 2;}\n";
+    system("rm -rf " CI_COND_FIX);
+    bool ready = ci_cond_fixture(dir, ci_cond_dep);
+    char first[64] = "", second[64] = "";
+    bool has_first = false, has_second = false;
+    bool ok = ready && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, first,
+                                     sizeof first, &has_first);
+    bool dropped = ok && ci_cond_drop_edge_root(dir);
+    ok = dropped && ci_impact_mk_write(dir, CI_COND_UNIT, src_body);
+    ci_narrow_touch_rel(dir, CI_COND_UNIT, -5);
+    ok = ok && ci_cond_query(dir, CI_COND_INC, CI_COND_UNIT, second,
+                             sizeof second, &has_second);
+    printf("invariant=rootless_index_rebuilds include_dimension=%s then %s "
+           "dropped=%d ok=%d\n", first, second, dropped ? 1 : 0, ok ? 1 : 0);
+    TEST("code_impact: an index without an include edge root is rebuilt, not refused") {
+        ASSERT(ok);
+        ASSERT(strcmp(first, "complete") == 0 && has_first);
+        ASSERT(strcmp(second, "complete") == 0 && has_second);
+        PASS();
+    } _test_next:;
+    system("rm -rf " CI_COND_FIX);
+    return failures;
+}
+
 int test_code_impact(void)
 {
     int failures = 0;
@@ -1131,5 +1186,6 @@ int test_code_impact(void)
     failures += test_code_impact_conditional_hazards();
     failures += test_code_impact_conditional_incremental();
     failures += test_code_impact_dotdot_include_edge();
+    failures += test_code_impact_rootless_index_rebuilds();
     return failures;
 }
