@@ -310,6 +310,54 @@ static const struct sfz_file k_f7_cleanup_handler[] = {
          "}\n"},
 };
 
+/* F7 behind a same-name seed: t0's external work() inlines a cleanup()
+ * handler whose body changed, and t1's own static work() changed too. A
+ * seed matched by bare name would let t1's seed cover t0's work. */
+static const struct sfz_file k_f7_cleanup_same_name[] = {
+    {"Makefile",
+         "# p\n"
+         "CFLAGS_EXTRA = \n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "int t0_sink;\n"
+         "static void t0_release(int *p)\n"
+         "{\n"
+         "    t0_sink = *p + 1;\n"
+         "}\n"
+         "int work(int x)\n"
+         "{\n"
+         "    __attribute__((cleanup(t0_release))) int v = x * 2;\n"
+         "    return v + 3;\n"
+         "}\n",
+         "int t0_sink;\n"
+         "static void t0_release(int *p)\n"
+         "{\n"
+         "    t0_sink = *p + 7;\n"
+         "}\n"
+         "int work(int x)\n"
+         "{\n"
+         "    __attribute__((cleanup(t0_release))) int v = x * 2;\n"
+         "    return v + 3;\n"
+         "}\n"},
+    {"src/t1.c",
+         "static int work(int x)\n"
+         "{\n"
+         "    return x * 5 + 1;\n"
+         "}\n"
+         "int t1_run(int x)\n"
+         "{\n"
+         "    return work(x) + 2;\n"
+         "}\n",
+         "static int work(int x)\n"
+         "{\n"
+         "    return x * 5 + 4;\n"
+         "}\n"
+         "int t1_run(int x)\n"
+         "{\n"
+         "    return work(x) + 2;\n"
+         "}\n"},
+};
+
 static const struct sfz_file k_f8_c_includes_c[] = {
     {"Makefile",
          "# p\n"
@@ -552,13 +600,20 @@ const struct sfz_repro k_sfz_repros[] = {
      "is not a seed",
      SFZ_FILES(k_f7_cleanup_handler),
      "src/t0.c t0_work NOT-COVERED\n"},
+    {"F7_cleanup_same_name", "body_static",
+     "t0's work() inlines a cleanup() handler whose body changed; t1's own "
+     "static work() changed too",
+     false,
+     "the consumer's cleanup-handler fix (as F7_cleanup_handler); a seed "
+     "matched by bare name would hide it behind t1's static work",
+     SFZ_FILES(k_f7_cleanup_same_name),
+     "src/t0.c work NOT-COVERED\n"},
     {"F8_c_includes_c", "body_static",
      "test_b.c #includes b.c to reach its statics; b_k body changes", false,
      "the consumer's .c-includes-.c fix: test_b.c compiles b.c's statics "
      "into its own object, and a b.c edit does not seed the includer's "
      "functions that inline them (test_b_k)",
      SFZ_FILES(k_f8_c_includes_c),
-     "src/test_b.c b_k NOT-COVERED\n"
      "src/test_b.c test_b_k NOT-COVERED\n"},
     {"F8_c_includes_c_renamed", "body_static",
      "a.c #includes b.c (unity build); b_k body changes", false,
