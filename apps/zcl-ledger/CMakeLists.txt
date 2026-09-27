@@ -394,6 +394,49 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-payment-review COMMAND test-blue-payment-review)
 
+add_library(blue_ecdsa_der STATIC src/blue_ecdsa_der.c)
+target_include_directories(blue_ecdsa_der PUBLIC include)
+target_compile_options(blue_ecdsa_der PRIVATE -Wall -Wextra -Werror -pedantic)
+
+add_library(blue_payment_sign STATIC src/blue_payment_sign.c)
+target_include_directories(blue_payment_sign PUBLIC include)
+target_link_libraries(blue_payment_sign PUBLIC
+    blue_payment_apdu blue_ecdsa_der)
+target_compile_options(blue_payment_sign PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    foreach(target blue_ecdsa_der blue_payment_sign)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+    endforeach()
+endif()
+
+add_executable(test-blue-ecdsa-der tests/test_blue_ecdsa_der.c)
+target_link_libraries(test-blue-ecdsa-der PRIVATE
+    blue_ecdsa_der OpenSSL::Crypto)
+target_compile_options(test-blue-ecdsa-der PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-ecdsa-der PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-ecdsa-der PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-ecdsa-der COMMAND test-blue-ecdsa-der)
+
+add_executable(test-blue-payment-sign tests/test_blue_payment_sign.c)
+target_link_libraries(test-blue-payment-sign PRIVATE
+    blue_payment_sign OpenSSL::Crypto)
+target_compile_options(test-blue-payment-sign PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-payment-sign PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-payment-sign PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-payment-sign COMMAND test-blue-payment-sign)
+
 add_executable(test-blue-wallet-device-ui tests/test_blue_wallet_device_ui.c)
 target_include_directories(test-blue-wallet-device-ui PRIVATE
     tests/blue_wallet_sdk_stub include device-blue-wallet/src)

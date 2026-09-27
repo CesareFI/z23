@@ -32,6 +32,9 @@ active at the current height, nor chain inclusion, UTXO status, or maturity.
 The fixed-path hash match does not establish a complete wallet ownership policy.
 There is no USB output acknowledgement, payment signature,
 private-key export, path selection, Sapling spend, multisig, or token command.
+The portable C23 [signing-boundary experiment](../../../docs/experiments/2026-09-27-ledger-blue-signing-boundary.md)
+compiles against the Blue SDK and passes host signature tests, but the
+read-only app does not call it or expose a signing APDU.
 The fee page shows the Blue-derived account prefix `m/44'/147'/0'`, the
 verified input path or both paths, `CHAIN UNCHECKED`, `BRANCH UNCHECKED`,
 and `NO SIGNING`. Its TOTALS button shows device-derived output value to
