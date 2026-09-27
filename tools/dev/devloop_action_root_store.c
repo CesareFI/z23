@@ -1837,13 +1837,13 @@ static bool ars_hook_capture_pair(struct ars_hook *h,
     if (capsule_ok)
         h->capsule = capture->capsule;
     free(capture);
+    if (!driver_ok)
+        return false;
     if (!capsule_ok) {
         ars_miss_set(m, "toolchain_unavailable",
                      "toolchain capsule unavailable", NULL);
         return false;
     }
-    if (!driver_ok)
-        return false;
     return true;
 }
 
