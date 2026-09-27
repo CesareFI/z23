@@ -2,7 +2,7 @@
 
 # ZCL Review for Ledger Blue
 
-This C23 app accepts up to 2,432 bytes of a raw ZCL Sapling-v4 transaction
+This C23 app accepts up to 2,304 bytes of a raw ZCL Sapling-v4 transaction
 over USB and returns a structural summary and SHA-256 digest of the exact
 transaction bytes. It counts transparent inputs and
 outputs, Sapling spends and outputs, and Sprout JoinSplits. It also reports
@@ -16,7 +16,10 @@ each transparent output's amount in ZCL and, for P2PKH or P2SH, its independentl
 derived ZCL mainnet address. Other script pages show the script length and
 the first ten bytes of its SHA-256 digest. OP_RETURN pages say `TOKEN STATUS
 UNVERIFIED`; a token marker alone is not token validation. After the final
-output, NEXT PAGE returns to the summary. The `EXIT` callback requests
+output, NEXT PAGE returns to the summary. LARGER TEXT presents one detail
+at a time in the Blue SDK's 22-pixel alphabet font; STANDARD TEXT returns
+to the six-line screen. DARK and LIGHT select the display palette. The
+`EXIT` callback requests
 the Blue home screen. The app has no key derivation, approval, or signing
 command. Given an explicit consensus branch ID, it also computes the ZIP-243
 shielded SIGHASH_ALL digest. Its screen does not display recipients,
@@ -48,9 +51,9 @@ sha256sum /tmp/zcl-review.bin
 Version 0.4.0's former image hash was
 `f442caa2e21e3b2f830f48f71ba23531ba6cfdf51bd4d888ee59bfd0e0e72dae`.
 It is no longer accepted by the installer after a live USB lockup.
-Review 0.4.2 is an offline UX candidate that has not been installed. Its
-2,432-byte transaction limit reserves an additional 1 KiB of Blue SRAM
-for stack compared with 0.4.0. The build checks the known call paths
+Review 0.4.3 is an offline UX candidate that has not been installed. Its
+2,304-byte transaction limit reserves 2 KiB of Blue SRAM for the stack
+and 144 bytes of linker SRAM headroom. The build checks the known call paths
 against the 2 KiB stack reserve and keeps 512 bytes of headroom. The
 same C23 app controller runs in the host simulator, including the published
 transparent fixture and public P2SH and OP_RETURN output pages. The simulator

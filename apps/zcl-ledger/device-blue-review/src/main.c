@@ -2,6 +2,7 @@
 #include "os.h"
 #include "os_io_seproxyhal.h"
 #include "blue_review_app.h"
+#include "blue_review_accessible.h"
 #include "blue_review_layout.h"
 #include <string.h>
 
@@ -13,6 +14,8 @@ unsigned char G_io_seproxyhal_spi_buffer[IO_SEPROXYHAL_BUFFER_SIZE_B];
 ux_state_t ux;
 static blue_review_app review_app;
 static cx_blake2b_t zip_context;
+static bagl_element_t large_element;
+static char large_text[40];
 
 static bool transaction_digest(const uint8_t *wire, size_t length,
                                uint8_t digest[32]) {
@@ -42,9 +45,38 @@ static const bagl_element_t *exit_app(const bagl_element_t *element) {
 }
 
 static const bagl_element_t *show_latest(const bagl_element_t *element);
+static const bagl_element_t *toggle_text(const bagl_element_t *element);
+static const bagl_element_t *toggle_dark(const bagl_element_t *element);
+static const bagl_element_t *normal_preprocess(const bagl_element_t *element);
+static const bagl_element_t *large_preprocess(const bagl_element_t *element);
+
+#define THEME_BUTTON(mode, label) { \
+    .component = { \
+        .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE, \
+        .userid = 0x30 + (mode), \
+        .x = ZCL_BLUE_THEME_X, .y = ZCL_BLUE_THEME_Y, \
+        .width = ZCL_BLUE_THEME_WIDTH, \
+        .height = ZCL_BLUE_THEME_HEIGHT, \
+        .radius = 6, .fill = BAGL_FILL, \
+        .fgcolor = ZCL_BLUE_COLOR_BUTTON, \
+        .bgcolor = ZCL_BLUE_COLOR_HEADER, \
+        .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px | \
+                   BAGL_FONT_ALIGNMENT_CENTER | \
+                   BAGL_FONT_ALIGNMENT_MIDDLE \
+    }, \
+    .text = label, .overfgcolor = 0x37ae99, \
+    .overbgcolor = ZCL_BLUE_COLOR_HEADER, .tap = toggle_dark \
+}
 
 static unsigned int review_ui_button(unsigned int button_mask,
                                      unsigned int button_mask_counter) {
+    (void)button_mask;
+    (void)button_mask_counter;
+    return 0;
+}
+
+static unsigned int review_ui_large_button(unsigned int button_mask,
+                                           unsigned int button_mask_counter) {
     (void)button_mask;
     (void)button_mask_counter;
     return 0;
@@ -82,6 +114,7 @@ static const bagl_element_t review_ui[] = {
         },
         .text = "ZCL Review"
     },
+    THEME_BUTTON(0, "DARK"), THEME_BUTTON(1, "LIGHT"),
     {
         .component = {
             .type = BAGL_LABEL, .x = ZCL_BLUE_LINE_X,
@@ -163,6 +196,21 @@ static const bagl_element_t review_ui[] = {
     {
         .component = {
             .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
+            .x = 20, .y = ZCL_BLUE_TEXT_TOGGLE_Y,
+            .width = 280, .height = ZCL_BLUE_TEXT_TOGGLE_HEIGHT,
+            .radius = 6, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_BUTTON,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER |
+                       BAGL_FONT_ALIGNMENT_MIDDLE
+        },
+        .text = "LARGER TEXT", .overfgcolor = 0x37ae99,
+        .overbgcolor = ZCL_BLUE_COLOR_BODY, .tap = toggle_text
+    },
+    {
+        .component = {
+            .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
             .x = ZCL_BLUE_NEXT_X, .y = ZCL_BLUE_BUTTON_Y,
             .width = ZCL_BLUE_BUTTON_WIDTH,
             .height = ZCL_BLUE_BUTTON_HEIGHT,
@@ -173,7 +221,8 @@ static const bagl_element_t review_ui[] = {
                        BAGL_FONT_ALIGNMENT_CENTER |
                        BAGL_FONT_ALIGNMENT_MIDDLE
         },
-        .text = "NEXT PAGE", .tap = show_latest
+        .text = "NEXT PAGE", .overfgcolor = 0x37ae99,
+        .overbgcolor = ZCL_BLUE_COLOR_BODY, .tap = show_latest
     },
     {
         .component = {
@@ -195,10 +244,197 @@ static const bagl_element_t review_ui[] = {
     }
 };
 
+#define LARGE_DETAIL(index) { \
+    .component = { \
+        .type = BAGL_LABEL, .userid = 0x10 + (index), \
+        .x = 20, .y = ZCL_BLUE_LARGE_DETAIL_Y, \
+        .width = 280, .height = 200, \
+        .fgcolor = ZCL_BLUE_COLOR_TEXT, \
+        .bgcolor = ZCL_BLUE_COLOR_BODY, \
+        .font_id = BAGL_FONT_OPEN_SANS_LIGHT_16_22PX \
+    }, \
+    .text = review_app.lines[index] \
+}
+
+#define LARGE_INDEX(index, label) { \
+    .component = { \
+        .type = BAGL_LABEL, .userid = 0x20 + (index), \
+        .x = 20, .y = ZCL_BLUE_LARGE_TITLE_Y, \
+        .width = 280, .height = 35, \
+        .fgcolor = ZCL_BLUE_COLOR_TEXT, \
+        .bgcolor = ZCL_BLUE_COLOR_BODY, \
+        .font_id = BAGL_FONT_OPEN_SANS_LIGHT_16_22PX | \
+                   BAGL_FONT_ALIGNMENT_CENTER \
+    }, \
+    .text = label \
+}
+
+static const bagl_element_t review_ui_large[] = {
+    {
+        .component = {
+            .type = BAGL_RECTANGLE, .x = 0, .y = 0,
+            .width = ZCL_BLUE_SCREEN_WIDTH,
+            .height = ZCL_BLUE_SCREEN_HEIGHT, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_BODY,
+            .bgcolor = ZCL_BLUE_COLOR_BODY
+        }
+    },
+    {
+        .component = {
+            .type = BAGL_RECTANGLE, .x = 0, .y = 0,
+            .width = ZCL_BLUE_SCREEN_WIDTH,
+            .height = ZCL_BLUE_HEADER_HEIGHT, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_HEADER,
+            .bgcolor = ZCL_BLUE_COLOR_HEADER
+        }
+    },
+    {
+        .component = {
+            .type = BAGL_LABEL, .x = ZCL_BLUE_HEADER_TEXT_X, .y = 0,
+            .width = ZCL_BLUE_HEADER_TEXT_WIDTH,
+            .height = ZCL_BLUE_HEADER_HEIGHT, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_WHITE,
+            .bgcolor = ZCL_BLUE_COLOR_HEADER,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_MIDDLE
+        },
+        .text = "ZCL Review"
+    },
+    THEME_BUTTON(0, "DARK"), THEME_BUTTON(1, "LIGHT"),
+    LARGE_INDEX(0, "DETAIL 1/6"), LARGE_INDEX(1, "DETAIL 2/6"),
+    LARGE_INDEX(2, "DETAIL 3/6"), LARGE_INDEX(3, "DETAIL 4/6"),
+    LARGE_INDEX(4, "DETAIL 5/6"), LARGE_INDEX(5, "DETAIL 6/6"),
+    LARGE_DETAIL(0), LARGE_DETAIL(1), LARGE_DETAIL(2),
+    LARGE_DETAIL(3), LARGE_DETAIL(4), LARGE_DETAIL(5),
+    {
+        .component = {
+            .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
+            .x = 20, .y = ZCL_BLUE_TEXT_TOGGLE_Y,
+            .width = 280, .height = ZCL_BLUE_TEXT_TOGGLE_HEIGHT,
+            .radius = 6, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_BUTTON,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER |
+                       BAGL_FONT_ALIGNMENT_MIDDLE
+        },
+        .text = "STANDARD TEXT", .overfgcolor = 0x37ae99,
+        .overbgcolor = ZCL_BLUE_COLOR_BODY, .tap = toggle_text
+    },
+    {
+        .component = {
+            .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
+            .x = ZCL_BLUE_NEXT_X, .y = ZCL_BLUE_BUTTON_Y,
+            .width = ZCL_BLUE_BUTTON_WIDTH,
+            .height = ZCL_BLUE_BUTTON_HEIGHT,
+            .radius = 6, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_BUTTON,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER |
+                       BAGL_FONT_ALIGNMENT_MIDDLE
+        },
+        .text = "NEXT DETAIL", .overfgcolor = 0x37ae99,
+        .overbgcolor = ZCL_BLUE_COLOR_BODY, .tap = show_latest
+    },
+    {
+        .component = {
+            .type = BAGL_BUTTON | BAGL_FLAG_TOUCHABLE,
+            .x = ZCL_BLUE_EXIT_X, .y = ZCL_BLUE_BUTTON_Y,
+            .width = ZCL_BLUE_BUTTON_WIDTH,
+            .height = ZCL_BLUE_BUTTON_HEIGHT,
+            .radius = 6, .fill = BAGL_FILL,
+            .fgcolor = ZCL_BLUE_COLOR_BUTTON,
+            .bgcolor = ZCL_BLUE_COLOR_BODY,
+            .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
+                       BAGL_FONT_ALIGNMENT_CENTER |
+                       BAGL_FONT_ALIGNMENT_MIDDLE
+        },
+        .text = "EXIT", .overfgcolor = 0x37ae99,
+        .overbgcolor = ZCL_BLUE_COLOR_BODY, .tap = exit_app
+    }
+};
+
+#undef LARGE_DETAIL
+#undef LARGE_INDEX
+#undef THEME_BUTTON
+
+static bool element_visible(const bagl_element_t *element, bool large) {
+    unsigned id = element->component.userid;
+    if (id >= 0x30 && id <= 0x31 && id - 0x30 != review_app.dark)
+        return false;
+    if (large && id >= 0x10 && id < 0x10 + ZCL_BLUE_REVIEW_LINES &&
+        (id - 0x10 != review_app.detail ||
+         !review_app.lines[review_app.detail][0])) return false;
+    if (large && id >= 0x20 && id < 0x20 + ZCL_BLUE_REVIEW_LINES &&
+        id - 0x20 != review_app.detail) return false;
+    return true;
+}
+
+static void recolor_element(const bagl_element_t *element) {
+    unsigned fg = element->component.fgcolor;
+    unsigned bg = element->component.bgcolor;
+    if (fg == ZCL_BLUE_COLOR_BODY)
+        large_element.component.fgcolor = ZCL_BLUE_COLOR_DARK_BODY;
+    else if (fg == ZCL_BLUE_COLOR_BUTTON)
+        large_element.component.fgcolor = ZCL_BLUE_COLOR_DARK_BUTTON;
+    else if (fg == ZCL_BLUE_COLOR_TEXT && bg == ZCL_BLUE_COLOR_BODY)
+        large_element.component.fgcolor = ZCL_BLUE_COLOR_DARK_TEXT;
+    if (bg == ZCL_BLUE_COLOR_BODY)
+        large_element.component.bgcolor = ZCL_BLUE_COLOR_DARK_BODY;
+    if (element->overbgcolor == ZCL_BLUE_COLOR_BODY)
+        large_element.overbgcolor = ZCL_BLUE_COLOR_DARK_BODY;
+}
+
+static const bagl_element_t *prepare_element(const bagl_element_t *element,
+                                             bool large) {
+    if (!element_visible(element, large)) return NULL;
+    unsigned id = element->component.userid;
+    bool wrapped = large && id >= 0x10 &&
+        id < 0x10 + ZCL_BLUE_REVIEW_LINES &&
+        blue_review_accessible_wrap(review_app.lines[review_app.detail],
+                                    large_text);
+    if (!review_app.dark && !wrapped) return element;
+    large_element = *element;
+    if (wrapped) large_element.text = large_text;
+    if (review_app.dark) recolor_element(element);
+    return &large_element;
+}
+
+static const bagl_element_t *normal_preprocess(const bagl_element_t *element) {
+    return prepare_element(element, false);
+}
+
+static const bagl_element_t *large_preprocess(const bagl_element_t *element) {
+    return prepare_element(element, true);
+}
+
+static void display_review(void) {
+    if (review_app.large_text) {
+        UX_DISPLAY(review_ui_large, large_preprocess);
+    } else {
+        UX_DISPLAY(review_ui, normal_preprocess);
+    }
+}
+
+static const bagl_element_t *toggle_text(const bagl_element_t *element) {
+    (void)element;
+    blue_review_app_toggle_text(&review_app);
+    display_review();
+    return NULL;
+}
+
+static const bagl_element_t *toggle_dark(const bagl_element_t *element) {
+    (void)element;
+    blue_review_app_toggle_dark(&review_app);
+    display_review();
+    return NULL;
+}
+
 static const bagl_element_t *show_latest(const bagl_element_t *element) {
     (void)element;
-    blue_review_app_next(&review_app, transaction_digest);
-    UX_DISPLAY(review_ui, NULL);
+    blue_review_app_advance(&review_app, transaction_digest);
+    display_review();
     return NULL;
 }
 
@@ -284,7 +520,7 @@ __attribute__((section(".boot"))) int main(void) {
             USB_power(0);
             USB_power(1);
             blue_review_app_reset(&review_app);
-            UX_DISPLAY(review_ui, NULL);
+            display_review();
             answer_command();
         }
         CATCH_OTHER(error) {

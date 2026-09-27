@@ -62,7 +62,8 @@ target_include_directories(blue_review_screen PUBLIC include)
 target_link_libraries(blue_review_screen PUBLIC zcl_tx_script_facts)
 target_compile_options(blue_review_screen PRIVATE -Wall -Wextra -Werror -pedantic)
 
-add_library(blue_review_app STATIC device-blue-review/src/blue_review_app.c)
+add_library(blue_review_app STATIC device-blue-review/src/blue_review_app.c
+    src/blue_review_accessible.c)
 target_include_directories(blue_review_app PUBLIC include)
 target_link_libraries(blue_review_app PUBLIC blue_review_protocol blue_review_screen)
 target_compile_options(blue_review_app PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -235,7 +236,7 @@ endif()
 add_test(NAME blue-review-screen COMMAND test-blue-review-screen)
 
 add_executable(test-blue-review-simulator tests/test_blue_review_simulator.c)
-target_link_libraries(test-blue-review-simulator PRIVATE blue_review_simulate OpenSSL::Crypto)
+target_link_libraries(test-blue-review-simulator PRIVATE blue_review_simulate blue_review_render OpenSSL::Crypto)
 target_compile_options(test-blue-review-simulator PRIVATE -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test-blue-review-simulator PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)

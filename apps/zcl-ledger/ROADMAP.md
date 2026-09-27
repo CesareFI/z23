@@ -32,9 +32,11 @@ on the Blue for the exact transaction facts.
 | Capability | Proven today | Required before payment use |
 | --- | --- | --- |
 | USB and app management | Authenticated CA install and app catalog on BOLOS 2.1.1 | Repeatable install, open, exit, and recovery checks for the final app |
+| Screen accessibility | C23 offline screenshots, word-wrapped 22-pixel text, and light/dark controls in the uninstalled Review 0.4.3 candidate | Physical font, color, tap, page, EXIT, and USB checks before inclusion in a signing app |
 | Transparent addresses | Public-key fixture and fixed-message seed-derived signing test | Device-confirmed receive address for a selected ZCL path |
 | Transparent payments | Host displays P2PKH/P2SH output facts and computes ZIP-243 input digests against a published vector; device Review parses transaction structure and has locally tested public-output pages | Physical output-page test, streaming transaction review, trusted prevout amounts, fee calculation, and input-specific signatures |
 | Sapling payments | Host and Review compute ZIP-243 digests; no Sapling keys or signing in Review | ZCL branch selection, key derivation, note and output binding, exact on-device review, spend authorization, and end-to-end test transactions |
+| Sapling memos | Z23 wallet stores 512-byte decrypted note memos; Review sees only encrypted transaction bytes | Classify absent, UTF-8, and opaque memo forms; show text or an explicit binary warning; bind any displayed outgoing memo to a device-verifiable transaction commitment before signing |
 | Transparent multisig | Host recognizes P2SH scripts but cannot infer a threshold | Redeem-script and cosigner validation, device confirmation, and independently verified signatures |
 | ZSLP | Host detects an output-zero marker | Token parser, input lineage and supply validation, token-aware display, and test transactions |
 | Shielded multisig | No threshold signing | Verify ZCL compatibility and implement a multiple-party Sapling signing protocol with nonce safety and test vectors |
@@ -49,6 +51,18 @@ streaming and measured stack use. Device tests start on the dedicated test
 Blue and use test transactions before any real ZCL.
 
 Sapling shielded multisig is a separate research gate. [ZIP 312](https://zips.z.cash/zip-0312)
-specifies a FROST variant for Zcash Sapling spend authorization; its
-compatibility with ZCL's deployed consensus and Ledger Blue resources has not
-been established. No threshold or Sapling payment signer is ready today.
+specifies a FROST variant designed to verify as ordinary RedJubjub Sapling
+spend authorization signatures. Its coordinator generates the proof and can
+learn private transaction details. Compatibility with ZCL's deployed
+consensus, BOLOS Jubjub support, nonce storage, and the Ledger Blue's RAM and
+timing remains unestablished. First create reproducible ZIP 312 vectors and
+verify their signatures against ZCL consensus in C23, then measure a bounded
+two-round participant prototype
+on the Blue. No threshold or Sapling payment signer is ready today.
+
+[ZIP 302](https://zips.z.cash/zip-0302) distinguishes padded UTF-8 text,
+the no-memo marker, reserved encodings, and opaque binary memos within the
+512-byte encrypted Sapling memo field. A receiving wallet can classify a
+memo only after note decryption. An outgoing signing screen must bind the
+displayed memo or explicit opaque-data digest to the transaction before the
+device releases a signature; host-supplied display text alone is insufficient.

@@ -64,10 +64,10 @@ USB command sequence and page transitions through host hash callbacks.
 The C23 renderer writes one 320 × 480 PNG for the waiting screen, each
 transaction page, and the wraparound page. `--large-text` previews each
 nonempty detail on a separate screen in the SDK's 22-pixel full-alphabet
-font; `--dark` previews a high-contrast dark palette. These two switches
-are host previews and are not selectable on the Blue yet. The renderer
-shares layout constants with
-the ARM app and decodes an Apache-2.0 Ledger Open Sans BAGL font table. The
+font; `--dark` previews a high-contrast dark palette. The uninstalled
+Review 0.4.3 ARM candidate exposes the matching controls. The renderer
+shares layout constants with the ARM app and decodes an Apache-2.0 Ledger
+Open Sans BAGL font table. The
 table is the closest available open-source match; its identity with the
 font inside the dedicated Blue's BOLOS 2.1.1 is unverified. Rounded button
 edges and the antialias palette are approximations. These PNGs test layout
@@ -93,14 +93,15 @@ transaction bytes and the resulting signature.
 
 Review 0.4.0 passed local tests but stopped answering USB and EXIT on the
 dedicated Blue. It was deleted after a restart and its installer hash was
-removed. Version 0.4.2 is an offline candidate; its host simulator and
-stack gate improve pre-device evidence, but do not establish BOLOS touch
-or USB responsiveness. It is not pinned for installation.
+removed. Version 0.4.3 adds font-size and palette controls to the offline
+candidate. Host tests check navigation, wrapping, and screenshots; they do
+not establish BOLOS touch or USB responsiveness. It is not pinned for
+installation.
 
 The ST31G480 silicon supports up to 28 MHz, 12 KiB user RAM, and 480 KiB
 secure user flash. Those are silicon limits, not measured app throughput or
 free install capacity. The patched Blue linker grants this app 6 KiB SRAM
-and a 400 KiB code address range. Review 0.4.2 uses 6,024 SRAM bytes
-(including a 2,048-byte stack reserve) and 29,696 code bytes, leaving 120
-bytes in the SRAM region. Its APDU review limit is 2,432 bytes. No on-device
+and a 400 KiB code address range. Review 0.4.3 uses 6,000 SRAM bytes
+(including a 2,048-byte stack reserve) and 32,256 code bytes, leaving 144
+bytes in the SRAM region. Its APDU review limit is 2,304 bytes. No on-device
 latency measurement has been made.

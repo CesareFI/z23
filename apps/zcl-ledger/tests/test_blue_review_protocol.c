@@ -110,11 +110,11 @@ static void test_state_and_bounds(void) {
     assert(reply_length == 0);
     apdu[1] = 0x10;
     apdu[4] = 2;
-    apdu[5] = 0x80;
-    apdu[6] = 9;
+    apdu[5] = (uint8_t)ZCL_BLUE_REVIEW_MAX_BYTES;
+    apdu[6] = (uint8_t)(ZCL_BLUE_REVIEW_MAX_BYTES >> 8);
     assert(call(&state, apdu, 7, &reply_length) == 0x9000);
-    assert(state.expected == 2432);
-    apdu[6] = 10;
+    assert(state.expected == ZCL_BLUE_REVIEW_MAX_BYTES);
+    apdu[5]++;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);
     apdu[5] = 1;
     assert(call(&state, apdu, 7, &reply_length) == 0x6a80);

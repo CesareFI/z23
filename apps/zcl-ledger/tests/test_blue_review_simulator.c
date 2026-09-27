@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_review_app.h"
+#include "blue_review_accessible.h"
+#include "blue_review_render.h"
 #include "blue_review_simulate.h"
 #include "zcl_zip243_host.h"
 
@@ -8,6 +10,7 @@
 #include <openssl/sha.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static bool sha256(const uint8_t *bytes, size_t length, uint8_t out[32]) {
     return SHA256(bytes, length, out) != NULL;
@@ -55,6 +58,14 @@ static void simulate(const uint8_t *wire, size_t length) {
     size_t reply_length = 0;
     blue_review_app_reset(&app);
     expect_screen(&app, "CONNECT Z23");
+    blue_review_app_toggle_text(&app);
+    for (unsigned detail = 1; detail < 5; ++detail) {
+        assert(blue_review_app_advance(&app, sha256));
+        assert(app.detail == detail);
+    }
+    assert(blue_review_app_advance(&app, sha256));
+    assert(app.detail == 0);
+    blue_review_app_toggle_text(&app);
     assert(!blue_review_app_next(&app, sha256));
     assert(command(&app, apdu, 5, &reply_length) == 0x9000);
     assert(reply_length == 5 && memcmp(apdu, "ZCL\x06\x40", 5) == 0);
@@ -84,8 +95,22 @@ static void simulate(const uint8_t *wire, size_t length) {
     assert(strcmp(app.lines[1], "OUTPUTS: 0.49999755 ZCL") == 0);
     assert(strcmp(app.lines[3], "FEE UNKNOWN; SPROUT: 0") == 0);
     assert(strcmp(app.lines[4], "SHIELDED HIDDEN; NO SIGNING") == 0);
-    assert(blue_review_app_next(&app, sha256));
+    blue_review_app_toggle_text(&app);
+    assert(app.large_text && app.detail == 0);
+    blue_review_app_toggle_dark(&app);
+    assert(app.dark);
+    for (unsigned detail = 1; detail < ZCL_BLUE_REVIEW_LINES; ++detail) {
+        assert(blue_review_app_advance(&app, sha256));
+        assert(app.detail == detail);
+        assert(strcmp(app.lines[0], "PUBLIC IN/OUT: 1/2") == 0);
+    }
+    assert(blue_review_app_advance(&app, sha256));
+    assert(app.detail == 0);
     expect_screen(&app, "OUTPUT 1/2: P2PKH");
+    blue_review_app_toggle_text(&app);
+    assert(!app.large_text && app.detail == 0);
+    blue_review_app_toggle_dark(&app);
+    assert(!app.dark);
     assert(blue_review_app_next(&app, sha256));
     expect_screen(&app, "OUTPUT 2/2: P2PKH");
     assert(blue_review_app_next(&app, sha256));
@@ -94,6 +119,30 @@ static void simulate(const uint8_t *wire, size_t length) {
     assert(command(&app, apdu, 5, &reply_length) == 0x9000);
     expect_screen(&app, "CONNECT Z23");
     assert(!blue_review_app_next(&app, sha256));
+}
+
+static void test_accessible_wrap(void) {
+    char wrapped[40];
+    assert(blue_review_accessible_wrap(
+        "SHIELDED HIDDEN; NO SIGNING", wrapped));
+    assert(strcmp(wrapped, "SHIELDED HIDDEN; NO\nSIGNING") == 0);
+    assert(blue_review_accessible_wrap(
+        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", wrapped));
+    char restored[32];
+    size_t used = 0;
+    for (const char *p = wrapped; *p; ++p)
+        if (*p != '\n') restored[used++] = *p;
+    restored[used] = 0;
+    assert(strcmp(restored, "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX") == 0);
+    assert(!blue_review_accessible_wrap("\x01", wrapped));
+    blue_review_app app = {0};
+    blue_review_app_reset(&app);
+    strcpy(app.lines[0], "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW");
+    char path[96];
+    assert(snprintf(path, sizeof path, "/tmp/zcl-accessible-%ld.png",
+                    (long)getpid()) > 0);
+    assert(blue_review_render_preview_png(path, &app, true, 0));
+    assert(unlink(path) == 0);
 }
 
 static size_t script_fixture(uint8_t wire[96]) {
@@ -192,5 +241,6 @@ int main(int argc, char **argv) {
                                  0x76b809bb, digest));
     simulate_scripts();
     simulate_malformed_commands();
+    test_accessible_wrap();
     return 0;
 }

@@ -5,6 +5,7 @@
 
 void blue_review_app_reset(blue_review_app *app) {
     app->page = 0;
+    app->detail = 0;
     memset(app->reply, 0, sizeof app->reply);
     strcpy(app->lines[0], "CONNECT Z23");
     strcpy(app->lines[1], "SEND A TRANSACTION");
@@ -36,6 +37,7 @@ uint16_t blue_review_app_command(blue_review_app *app,
     }
     memcpy(app->reply, reply, sizeof app->reply);
     app->page = 0;
+    app->detail = 0;
     return status;
 }
 
@@ -60,5 +62,33 @@ bool blue_review_app_next(blue_review_app *app, blue_review_hash_fn hash) {
         return false;
     }
     app->page = next >= count ? 0 : next + 1;
+    app->detail = 0;
     return true;
+}
+
+bool blue_review_app_advance(blue_review_app *app, blue_review_hash_fn hash) {
+    if (!app) return false;
+    if (app->large_text) {
+        for (unsigned next = (unsigned)app->detail + 1;
+             next < ZCL_BLUE_REVIEW_LINES; ++next)
+            if (app->lines[next][0]) {
+                app->detail = (uint8_t)next;
+                return true;
+            }
+        if (!app->transaction.reviewed_length) {
+            app->detail = 0;
+            return true;
+        }
+    }
+    return blue_review_app_next(app, hash);
+}
+
+void blue_review_app_toggle_text(blue_review_app *app) {
+    if (!app) return;
+    app->large_text = !app->large_text;
+    app->detail = 0;
+}
+
+void blue_review_app_toggle_dark(blue_review_app *app) {
+    if (app) app->dark = !app->dark;
 }
