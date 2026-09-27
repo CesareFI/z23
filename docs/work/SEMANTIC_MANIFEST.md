@@ -14,8 +14,9 @@ only. It never links a compiler to do so.
 | Reader, builder, roots, diff, dump | `contexts/commons/modules/vcs/src/semantic_manifest.c`, `semantic_manifest_build.c`, `semantic_manifest_dump.c` | SHA3 only |
 | The producer (the "sensor") | `tools/sensors/clang_manifest.c`, `clang_manifest_ast.c` and the compiler-API-free core `clang_manifest_core.c`, `_paths.c`, `_lookup.c`, `_records.c`, `_facts.c`, `_producer.c` | libclang C API; built by `make clang-manifest` |
 | Tests | `tests/harness/src/test_semantic_manifest.c`, `tests/fixtures/semantic_manifest/*.bin` | groups `semantic_manifest` (no libclang) and `semantic_sensor` |
-| Facts-narrowed closure | `tools/dev/devloop_facts.c`, `devloop_facts_text.c`, `devloop_facts_bind.c`, `devloop_facts_json.c` | SHA3, the code index |
-| Facts tests | `tests/harness/src/test_semantic_facts.c`, `test_semantic_facts_live.c`, `tests/fixtures/semantic_facts/*.zsm` | groups `semantic_facts` (no clang) and `semantic_facts_live` |
+| Facts extension and snapshot namespace | `contexts/commons/modules/vcs/src/semantic_manifest_facts.c`, `semantic_namespace.c`, `vcs_path_policy.c` | SHA3, a ZVCS tree object |
+| Fuzz harness | `tools/fuzz/fuzz_semantic_manifest.c`, `tests/harness/fuzz_seeds/semantic_manifest/` | libFuzzer; a `FUZZ_TARGETS` entry |
+| Windows acceptance | `tests/harness/src/semantic_manifest_windows_acceptance.c`, `semantic_manifest_windows_fixtures.h`, `tests/fixtures/semantic_facts/*.zsm` | row `semantic_manifest` in `platform/modules/platform/tests/windows_acceptance.mk` |
 
 The sensor is an external tool. The link gate lists it as outside the base
 toolchain (`tools/lint/check_standalone_tools_link.sh`), and it never enters
@@ -153,8 +154,8 @@ stronger equivalence check.
   still differs in general (sugar, spacing, clang versions). The grammar in
   use is a fixed token (`CM_TYPE_GRAMMAR`) that enters the producer digest as
   its own entry (tag `G`, see "Producer digest"). Two manifests written
-  under different grammars therefore never name the same producer, and a
-  consumer never narrows across them (`producer-changed`).
+  under different grammars therefore never name the same producer, so a
+  reader can tell them apart.
 
 ## Golden vector
 
@@ -219,6 +220,10 @@ never serves either one.
   order, an absolute path, `..`, a host path in argv, an off-allowlist env
   name, record order, a main-file mismatch, and a trailing byte. It then
   replays every seed below over the checked-in fixture manifests.
+  It also leaves seven sections empty and requires `finish()` to succeed
+  with zero records in each, reads facts revision 2 back, renders the dump's
+  composites exactly, and recomputes the Windows acceptance ledger digest from the
+  fixture files on disk (see "Windows acceptance").
 - `semantic_sensor` runs the sensor live, and prints a visible SKIP when the
   sensor binary has not been built. It proves:
   - the fixture tree gives byte-identical manifests before and after
@@ -371,7 +376,7 @@ The builder writes FACTS and TRUNCATED itself; a producer never adds to them.
   unresolved.
 - **Bounded.** The default caps are 65,536 records and 16 MiB per section.
   A section cut by a cap leaves a TRUNCATED record and `complete = 0`; such a
-  manifest is valid but not authoritative, and every consumer falls back.
+  manifest is valid but not authoritative.
 - **Producer digest.** FACTS names the code that wrote the facts:
   SHA3-256 over `zcl.semantic_producer.v1` and, sorted by file name, the
   producer image's own bytes (the sensor executable, read through
@@ -383,14 +388,14 @@ The builder writes FACTS and TRUNCATED itself; a producer never adds to them.
   (`tools/sensors/clang_manifest_producer.c`). Build ids are the linker's
   content hash, so no front end library is re-read per run. An image
   without a build id, a platform without `dl_iterate_phdr`, or no type
-  grammar leaves the digest zero: the manifest is valid, and no consumer
-  narrows with it.
+  grammar leaves the digest zero: the manifest is valid, but it names no
+  producer.
 - **Darwin.** On Mach-O the digest hashes the bytes of each image actually
   selected (the sensor and the libclang it loaded): the file and its
   read-only mapped segments, bound to the backing vnode and revalidated
   before and after the parse, so a replaced file cannot be hashed in place
   of the mapped one; the facts emitter refuses rather than write a zero
-  digest (see "Darwin" under the consumer below). An `LC_UUID` alone is not
+  digest (see "Darwin producer identity" below). An `LC_UUID` alone is not
   accepted as an image identity: a link can pin or choose it (this
   repository's own Mach-O fixture builds pin one), so it does not bind the
   bytes.
@@ -417,8 +422,8 @@ compile argv (`$(DEV_COMPILE_CFLAGS)`), writing `build/clang-facts/<src>.zsm`.
 against. The target is opt-in: nothing else depends on it, and the sensor
 never enters z23, z23-dev, the test harness link or core. A manifest is
 rewritten when its source, a header of the component or the sensor changes.
-The planner binds every after manifest to the tree it plans against (rule 9
-below), so a dependency the target misses can only cause a fallback.
+Nothing on main reads these manifests to plan yet (see "Not on main yet: the
+consumer").
 
 Known limits:
 
@@ -431,8 +436,8 @@ Known limits:
 label, gives a body a second entry the facts would otherwise not name. The
 sensor records each as an ADDRESS ref to the target: the file-scope
 definition of that spelling, or both `f:` and `v:` of the name when none is
-visible. An asm label also takes its own definition's address. The
-consumer's `address-taken` rule then refuses to narrow a changed target.
+visible. An asm label also takes its own definition's address.
+A reader therefore sees a changed target as address-taken.
 
 An in-compile clang plugin that wrote the same bytes (except the producer
 digest) from inside the running compile was measured on a candidate branch
@@ -442,513 +447,77 @@ extraction overhead (about 10 percent of compile CPU, objects byte-identical)
 is the bar a future in-compile producer must meet; the sensor's second parse
 is what the tree pays today.
 
-### Facts-narrowed change closure
+### Facts revision 2
 
-`dev.change.plan` takes an optional `"facts"` directory. For each changed
-file it reads `<facts>/<file>.before.zsm`, `<file>.after.zsm` and
-`<file>.before` (the before source); the after source is the working tree.
-`tools/dev/devloop_facts.c` then decides, in this order, and the first failed
-rule names the fallback to the unchanged file-seeded closure:
-
-0. no changed file is a source compiled into the producer: the sensor's own
-   sources and every repo file they include (`producer-source-changed`);
-1. every changed file is a `.c` with a manifest pair (`not-c-source`,
-   `no-manifest`);
-2. each manifest is valid, carries facts, is complete and names its
-   producer, and both name the same producer (`invalid-manifest`,
-   `no-facts`, `manifest-truncated`, `producer-unknown`,
-   `producer-changed`);
-3. each manifest's main file is the changed file and its FILES digest is the
-   SHA3 of the source bytes given (`source-mismatch`);
-4. only files, functions, spans, refs, unknowns and facts differ
-   (`identity-changed`, `include-resolution-changed`, `macro-changed`,
-   `declaration-changed`, `layout-changed`, `enum-changed`,
-   `symbols-changed`, `namespace-probes-changed`). This whole-section rule
-   is the `.c` path's only: a change set with a header in it is planned by
-   the declaration-identity consumer below, which taints DECLS, LAYOUTS,
-   ENUMS and MACROS records per canonical id instead of refusing on any
-   section difference;
-5. no function was added or removed (`function-added`, `function-removed`);
-6. the main file's text outside its function definitions is unchanged after
-   collapsing comment and whitespace runs, with literals, splices and
-   pp-numbers kept verbatim (`file-scope-changed`); and so is each
-   definition's head, the text before its body where storage class,
-   `__attribute__`, C23 `[[attributes]]`, return type and declarator live,
-   with every whitespace run one space unless the head holds a `#`
-   (`function-head-changed`): a constructor, weak or visibility attribute
-   changes what the program does without touching the body's tokens;
-7. every seed resolves to its FUNCTIONS record (`seed-unresolved`); no
-   changed function has an UNKNOWN other than an external call, and none has
-   its address taken in either manifest (`unknown-effect`, `address-taken`);
-8. refs, unknowns and included files outside the changed functions are
-   identical (`facts-changed-outside-seeds`);
-9. the after manifest is the parse of the tree the plan runs against
-   (`tools/dev/devloop_facts_bind.c`): every other file it read, repo or
-   system, still has its SHA3; every include slot it saw absent is still
-   absent and every ignored search dir still does not exist, so no header
-   created since shadows one it used (`after-stale`); and it has no lookup
-   without a negative claim, such as `include_next` or a computed include,
-   which could not be re-checked (`lookup-unbound`);
-10. the compile identity names an optimizer whose re-emitted code the facts
-    can bound (`inline-closure-unknown` otherwise; see "Code generation"
-    below), and no function the closure reaches is defined in a header,
-    where every reader emits it;
-11. every main-file function that expands `__LINE__`, directly or through
-    a macro body, and whose lines moved or whose line bytes changed joins
-    the seeds; file-scope code that expands `__LINE__`, and any use of
-    `__COUNTER__`, is `position-dependent`.
-
-When every rule holds, the seeds are the functions whose FUNCTIONS record
-changed, the moved `__LINE__` users, and every main-file function the
-code-generation closure adds to them on either side. The reverse-caller walk is the planner's own: `codeindex_callers` by
-name, `CI_CLOSURE_DEFAULT_DEPTH` levels, the same proof-owner terminals and
-the same group folding, over the index `codeindex_open` keeps current with
-the tree. A caller batch that fills or the symbol cap is `closure-bounded`,
-which also falls back. A comment-only edit has no seeds and reaches only the
-changed file.
-
-**A narrowed plan is feedback only.** Its SEMANTIC dimension is INCOMPLETE
-with reason `facts-narrowed`, so `zcl_devloop_plan_proof_admissible` refuses
-it. Token or AST similarity never authorizes proof reuse. The plan's
-`"facts"` object names the verdict, the reason, the seeds and the number of
-files reached.
-
-Positions are bound: by rule 11 on the `.c` path, and by the header path's
-position and code-moved rules below. The address of an external function
-taken in a TU with no manifest here is caught only through the include
-graph: every reader of the header that declares a seed must have a
-manifest, and when the graph cannot list the readers (truncated or
-unavailable) the plan falls back (`indirect-unknown`, or the universe's
-`include-graph-*` reason). A TU without a manifest that takes the address
-through its own `extern` declaration, without including the declaring
-header, is outside that check; the file-seeded closure has the same blind
-spot.
-
-### Code generation
-
-The facts name what the source says, not what the compiler emits. A changed
-function can change the bytes of others: a caller that inlines it, an
-internal callee that takes its constants, any function that reads a static
-variable whose read-only or addressability summary changed. Rule 10 bounds
-this by the optimizer the IDENTITY record names
-(`tools/dev/devloop_facts_codegen.c`):
-
-| model | when the identity holds | what joins the seeds |
-|---|---|---|
-| unbounded | `-O2`, `-O3`, `-O4`, `-Os`, `-Oz`, `-Ofast`, `-flto`, `-fwhole-program`, an `-fipa-*` clone, merge or propagation flag, `-finline-small-functions`, `-finline-functions`, or profile feedback, anywhere in the record | nothing: `inline-closure-unknown` |
-| callers | no `-O`, or `-O0` | the transitive callers of a changed function (only `always_inline` bodies move) |
-| component | `-O1`, `-O`, `-Og` | every function that names a member by call, address or variable reference, and every internal function or internal variable a member names (a header's static too: its reader may fold the value it stores), to a fixed point |
-
-The component model covers inlining and callee summaries flowing up, and
-constant propagation, dead-argument elimination and coldness flowing down
-into internal callees, as gcc and clang do at `-O1`. It is an assumption
-about the compiler, not a fact the manifest records: the facts do not name
-the code generator's version, so a compiler whose `-O1` does more
-interprocedural work must be added to the unbounded list. The dev build is
-`-Og` without `-ffunction-sections`.
-
-### Declaration-identity consumer
-
-A change set that holds a header (or any file that is not a `.c`) is planned
-by `tools/dev/devloop_facts_consumer.c` and its parts (`_tu.c`,
-`_obligations.c`, `_walk.c`, `_hdr.c`, and the index in
-`devloop_facts_index.c`, `_graph.c`, `_codegen.c`). It reads every
-`<tu>.after.zsm` under the facts directory (the candidates) with its
-`.before.zsm`, and decides each TU from its own pair.
-
-**The index.** One manifest becomes a graph of canonical ids. Every record
-of an entity is attached to its id: MACROS to `m:<path>:<name>` and the
-name group `m:<name>`, LAYOUTS to `s:`/`u:<path>:<name>`, ENUMS to the
-enumerator and its enum, DECLS and FUNCTIONS to `f:`/`v:<name>` or the
-path-qualified id, REFS and UNKNOWNS to their site, including the revision-2
-pseudo-sites `@scope:<path>` (a macro expanded outside any function) and
-`@cond:<path>` (an identifier a conditional directive tests). Edges are
-every REFS record, a tag named in a record's canonical type text, a typedef
-to its tag, a macro to the name group of every identifier in its body, and
-a bare tag id `s:N` (how REFS and SYMBOLS name a tag the sensor gives
-external linkage) to the path-qualified `s:<path>:N` its DECLS and LAYOUTS
-rows use. Each entity has two digests: one over its records outside the
-main file (a header's view of it), one over all of them.
-
-**The universe.** A candidate that read a changed file (in either
-manifest) is a member, and so is one whose LOOKUPS hit a changed path or
-whose PROBES claim a changed path absent: a `__has_include` of a header
-created or deleted reads no file on the side where it is absent, and gcc's
-depfiles omit such a probe altogether. The members are cross-checked against the depfile
-graph (`codeindex_reverse_includes`): a TU the graph says reads a changed
-file but no manifest pair describes is affected (`facts-missing`, or
-`include-resolution-change` when it has an after manifest). A graph that
-is truncated or unavailable leaves the universe incomplete. A candidate
-that read no changed file is checked too: a changed IDENTITY, include
-resolution, file set or unrequested file read, or a missing before side,
-affects it whole and makes the universe incomplete. A changed file that is
-neither C text (`.c`, `.h`) nor prose (`.md`, `docs/`) and that no
-manifest read, such as a makefile or a flag file, affects every candidate
-(`build-input-changed`). An unreadable candidate manifest leaves the
-universe incomplete (`facts-invalid`).
-
-**Each member**, in order; the first rule that fires is its reason:
-
-| reason | affected | broadened | what fired |
-|---|---|---|---|
-| `truncated`, `producer-unknown`, `producer-mismatch` | yes | yes | the evidence cannot be trusted |
-| `identity-drift` | yes | yes | compiler, target, flags or environment changed |
-| `include-resolution-change` | yes | yes | LOOKUPS, PROBES or the file set changed |
-| `source-changed` | yes | yes | the TU's own main file changed |
-| `position-dependent` | yes | yes | the TU expands `__COUNTER__` on either side: its values count every expansion before them in the TU, so any edit above one may renumber it |
-| `macro-unattributed` | yes | yes | a revision-1 manifest cannot attribute a macro change |
-| `unrequested-change` | yes | yes | a file it read changed that the request does not name |
-| `after-stale` and the rule-9 reasons | yes | yes | the after manifest is not the parse of this tree |
-| `macro-conditional`, `header-unattributed`, `position-unknown` | yes | yes | a conditional or other directive of a changed header changed, a changed text names no id the header declares, or the header's positions could not be read |
-| `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU |
-| `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
-| `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
-| `name-collision` | yes | yes | an id shares its name with a new or removed external id |
-| `unaffected` | no | no | no changed id reaches its code |
-
-An id is dirty when its digest differs between the two sides, when a
-changed header text chunk names it, or when its whole-record digest differs
-(a main-file entity whose records a header change re-expanded).
-
-**Obligations.** A broadened TU contributes its whole file-seeded plan
-(`tu-broadened`). For the others, the seeds are the main-file functions a
-dirty id reaches, grown by the code-generation closure; a non-main
-function in that closure (a header definition every reader emits)
-broadens the TU instead, and an unbounded optimizer refuses
-(`inline-closure-unknown`). The caller walk keeps a caller only when its
-manifest names the callee's canonical id. A seed whose address some
-manifest takes (`address-taken`), a header-declared seed with a reader
-that has no manifest or with readers the graph cannot list
-(`indirect-unknown`), a walk that fills its bounds (`closure-bounded`), or
-an incomplete universe restores the file-seeded plan; when the
-incompleteness is a build input, an outsider's drift or an unreadable
-candidate, the plan also carries `closure_universal`, the whole catalog.
-The `.c` path applies the same incomplete-universe fallback.
-
-**The reply.** `dev.change.plan` with `"facts"` adds a `facts` object:
-the verdict (`narrowed`, `reason`, `detail`, `seeds`, `seeds_total`,
-`reached_files`), `consumer` (`zcl.semantic_consumer.v1`), `obligations`
-(`reason`, `plain`, `plain_universal`, `facts`, and each group with its
-reason, up to a byte bound), `universe` (`applied`, `complete`, `reason`,
-`detail`, `total`, `affected`, `offset`, `listed`, `next_offset`) and
-`tus`, one page of entries from `facts_offset` (at least one per page),
-each with its path, the four identities (`source`, `fact`, `interface`,
-`implementation`; `action` and `artifact` null with a reason when their
-evidence is absent), `affected`, `broadened`, `reason` and `detail`.
-
-**Schema delta.** Facts revision 2 (`zcl.semantic_facts.v2`) adds the
-`@scope` and `@cond` pseudo-sites and names an anonymous member's nearest
-named record; readers accept both names and report the revision.
+Facts revision 2 (`zcl.semantic_facts.v2`) adds the `@scope` and `@cond`
+pseudo-sites, which record file-scope and conditional macro uses, and names
+an anonymous member's nearest named record. Readers accept both extension
+names and report the revision (`vcs_semantic_facts_v1_info`).
 `vcs_semantic_manifest_v1_each` hands a reader every record with its exact
-encoded bytes, so the index digests records without re-encoding them. No
+encoded bytes, so a reader can digest records without re-encoding them. No
 v1 byte changes.
 
-**Darwin.** The Mac lane's commits 12892e0ca1 and cf39ed1765 give the
-sensor a producer digest on Mach-O: each selected dyld image's file and its
-read-only mapped segments, bound to the backing vnode and revalidated
-before and after the parse; the facts emitter reuses that pre-parse digest
-and refuses rather than write a zero one. On Linux the records are
-byte-identical. The `__APPLE__` branches are verified on the Mac only.
+### Darwin producer identity
 
-### Falsification
+The Mac lane's commits 12892e0ca1 and cf39ed1765 give the sensor a producer
+digest on Mach-O: each selected dyld image's file and its read-only mapped
+segments, bound to the backing vnode and revalidated before and after the
+parse; the facts emitter reuses that pre-parse digest and refuses rather
+than write a zero one. The link probe that builds the sensor without
+`clang_getTypePrettyPrinted` (26d38abd92) is the Mac lane's too. On Linux
+the records are byte-identical. The `__APPLE__` branches are verified on the
+Mac only.
 
-`semantic_facts` plans each edit below from a fixture pair the sensor wrote
-(`tests/fixtures/semantic_facts/*.zsm`, refreshed by
-`ZCL_SEMANTIC_FACTS_FIXTURE_OUT`), over a tree holding that edit.
-`semantic_facts_live` writes the same pairs with the sensor at test time and
-requires the same verdicts. Every fallback must be exactly the file-seeded
-plan: the same groups, dimensions and rendered JSON. Only comment and
-whitespace edits inside the main file may narrow, and they must leave every
-fact unchanged.
+### Fuzzing the reader
 
-| case | edit | facts evidence | verdict |
-|---|---|---|---|
-| (a) | `struct fx_pair` gains a field in the public header | LAYOUTS changes | `layout-changed`; the header among the changed files, first or last, is `not-c-source` |
-| (a) | a header field's type changes, the layout does not | LAYOUTS changes | `layout-changed` |
-| (b) | body of `FX_SCALE`, which `fx_helper` expands | MACROS changes; `fx_helper` refs `m:<header>:FX_SCALE` | `macro-changed` |
-| (c) | `typedef int fx_num` becomes `long`; the header gains a prototype | DECLS changes | `declaration-changed` |
-| (d) | a new `fx.h` beside the source shadows the `-I` one | LOOKUPS changes | `include-resolution-changed`; a stale after manifest (the shadow created after the parse) is `after-stale` |
-| (d) | `"fx.h"` becomes `<fx.h>` | LOOKUPS changes | `include-resolution-changed` |
-| (d) | a search dir is prepended to argv | IDENTITY changes | `identity-changed` |
-| (e) | producer digest forged, zeroed or different before and after; a sensor one byte different | FACTS | `producer-changed`, `producer-unknown` |
-| (e) | a sensor source or a file it includes is among the changed files | none needed | `producer-source-changed` |
-| (g) | `__attribute__((constructor))`, `((weak))` or `((visibility("hidden")))` on a definition | FILES only; the head text changes | `function-head-changed` |
-| (g) | `[[gnu::cold]]` before a definition | the attribute lies before the definition's span | `file-scope-changed` |
-| (h) | a seed resolves to no FUNCTIONS record (test fault) | none | `seed-unresolved` |
-| (f) | comment in a function, whitespace reflow of a function and its head | FILES and SPANS only | narrowed, seeding only `fx_where`, which expands `__LINE__` below the edit (rule 11) |
-| (f) | comment in the public header | FILES only | `facts-changed-outside-seeds`: an included file's digest changed outside the changed functions, so it falls back although no fact changed (conservative) |
-| (i) | `fx_other`'s body gains `0 * __COUNTER__` | FUNCTIONS; the body expands `__COUNTER__` | `position-dependent` (rule 11) |
+`tools/fuzz/fuzz_semantic_manifest.c` (a `FUZZ_TARGETS` entry, built with
+libFuzzer under ASan and UBSan) drives every reader entry point:
+validate, both roots, `vcs_semantic_section_v1_each`,
+`vcs_semantic_manifest_v1_each`, `vcs_semantic_absent_v1_each`,
+`vcs_semantic_facts_v1_info` and the dump. It rebuilds each accepted input
+from its decoded records and requires byte-identical output and an equal
+root, because the canonical form admits exactly one encoding. The dump must
+be deterministic and free of NUL bytes, and the facts info must agree with
+the sections present. Seeds are under
+`tests/harness/fuzz_seeds/semantic_manifest/`; they include facts
+revision 1 manifests, which the reader still accepts.
 
-The mutants below were run against `tools/dev/devloop_facts.c` on the
-candidate branch, before the head, seed and producer-source rules were
-added; each was rejected by the tests:
+The first seed found undefined behavior: the builder sorted every section,
+including an empty one whose record array was still NULL. `finish()` now
+skips the sort for an empty list, and a `semantic_manifest` case leaves
+seven sections empty and requires each to read back as zero records.
 
-| mutant | result |
-|---|---|
-| rule 9 always passes | stale-shadow case narrows; test fails |
-| producer compare removed | a different producer narrows; test fails |
-| zero-producer check removed | an unnamed producer narrows; test fails |
-| section rule removed | the five section-changed cases still fall back, via rule 8; reason assertions fail |
-| section rule and rule 8 removed | all six header-side cases (a to d and the header comment) narrow; test fails |
-| `.c` check applied to the first changed file only | a header listed after a `.c` still falls back, as `no-manifest`; reason assertion fails |
+### Windows acceptance
 
-The section rule and rule 8 are each enough on their own to stop a narrowing
-after a header-side edit.
+`semantic_manifest` is a row in
+`platform/modules/platform/tests/windows_acceptance.mk`. Its program,
+`tests/harness/src/semantic_manifest_windows_acceptance.c`, is strict C23
+and calls no Windows API. It builds the golden vector and pins its length,
+root and hint root. It strict-decodes every fixture under
+`tests/fixtures/semantic_manifest/` and `tests/fixtures/semantic_facts/`,
+which `tests/harness/src/semantic_manifest_windows_fixtures.h` embeds at
+compile time, and folds each fixture's name, root and hint root into one
+SHA3 ledger digest. It also checks the decoder's refusals. The
+`semantic_manifest` group case `smt_t_ledger` computes the same ledger from
+the fixture files on disk and pins the same digest. The header is
+generated with `od -An -v -tu1 -w16` per fixture, in `LC_ALL=C ls` order;
+regenerate it and both pinned digests whenever a fixture file changes.
+`make windows-portability-acceptance` cross-links the program. Running the
+`.exe` on Windows is not observed on the Linux host.
 
-### Falsification of the consumer
+## Not on main yet: the consumer
 
-`semantic_consumer` runs the consumer over a five-TU fixture tree around one
-header (`tests/harness/src/semantic_consumer_fixture.c`), from manifests the
-sensor wrote (`tests/fixtures/semantic_consumer/<variant>/`, refreshed by
-`ZCL_SEMANTIC_CONSUMER_FIXTURE_OUT` through `semantic_consumer_live`). Each
-variant names the affected TUs, each TU's reason, the obligations verdict,
-the universe's completeness, whether the whole catalog is in scope, and the
-seeds the compile may re-emit. `semantic_consumer_live` compiles every
-variant (`-std=c23 -Og -g1`) and fails on any TU whose object changed that
-the consumer left unaffected.
+The branch that produced this format also carries a consumer: an optional
+`"facts"` input to `dev.change.plan` that narrows the feedback closure from
+the before and after manifests of each changed file
+(the facts planner, not in this tree), with its falsification set, a
+declaration-identity consumer for header changes, differential fuzzing of
+that consumer, and measured narrowing on real commits. None of it is on
+main. On main, nothing reads these manifests to plan, so `make clang-facts`
+and the facts extension change no plan. The consumer's design and evidence
+will be documented here when it lands.
 
-| variant | edit | affected TUs | obligations |
-|---|---|---|---|
-| layout | `struct cx_big` gains a field | its two users (one through `cx_big_t`) | narrowed |
-| macro | `CX_CAP` 64 to 65 sizes `cx_big` | the same two | narrowed |
-| cond | `CX_MODE`, tested in one TU's `#if` | that TU (`macro-conditional`) | narrowed |
-| nested | `CX_BASE`, used only in `CX_SCALE`'s body | the TU expanding `CX_SCALE` | narrowed |
-| typedef | `cx_count` becomes `long` | the TU naming it | narrowed |
-| tail | a comment after every declaration | none | narrowed |
-| top | a comment before every declaration | the four TUs whose debug positions move (`position`) | narrowed |
-| signature | `cx_sum`'s parameter type, header and definer | the definer and its callers | narrowed |
-| static | a static's body; another TU has a same-name static | its TU; seeds the static and its caller | narrowed |
-| address | a body whose address another TU takes | its TU | `address-taken` |
-| shadowed | a byte-identical header beside the TUs | all five (`include-resolution-change`) | `include-graph-truncated` |
-| drift | a flag every TU compiles with, and a tail comment | all five (`identity-drift`) | narrowed, every TU broadened |
-| local | `CX_PAD` sizes a struct named only inside `cx_sum` | the definer; seeds `cx_sum` | narrowed |
-| makefile | a makefile no compile records reading | all five (`build-input-changed`) | `build-input-changed`, whole catalog |
-| tool | the makefile, and every compile gains a flag | all five (`identity-drift`) | `identity-drift`, whole catalog |
-| body | `cx_sum`'s body, declared in the header, alone | the definer; seeds `cx_sum` | narrowed |
-| counter | a header function gains a `__COUNTER__` (against a tree where one TU already expands it) | all five (`position-dependent`) | narrowed, every TU broadened |
-| hstatic | a TU stores 6, not 5, in a header's static (against a tree that already has it) | its TU; seeds the setter and the reader | narrowed |
-| alias | `cx_sum`'s body, which an `alias` names too (against a tree with the alias) | the definer | `address-taken` |
-| hasinc | a header only a `__has_include` probes is created | all five (`include-resolution-change`) | narrowed, every TU broadened |
-| hasdel | the same header deleted again (planned against hasinc) | all five | narrowed, every TU broadened |
-
-The last five are the minimized reproducers of the differential-fuzzing
-families below. Each is planned against its own before tree, a `p_`
-variant the fixture produces but does not judge.
-
-A `.c`-only change whose seed a header declares falls back when the depfile
-graph is absent and a reader's facts are withheld (the review finding
-behind b4f2b17ddd; the test failed before that change).
-
-Each mutant drops one rule and must leave a table-affected TU unaffected,
-a required seed out or the whole catalog out of scope; the counts are over
-every variant:
-
-| mutant | rule dropped | table-affected TUs or seeds missed |
-|---|---|---|
-| `NO_TYPE_CLOSURE` | typedef and tag edges | 2 |
-| `NO_MACRO_CLOSURE` | macro-body edges | 1 |
-| `NO_POSITION` | header positions, and moved `__LINE__` users on the `.c` path | 4 |
-| `NO_TAG_ALIAS` | `s:N` no longer reaches `s:<path>:N` | 2 |
-| `NO_CODEGEN_CLOSURE` | seeds are the changed functions only | 2 |
-| `NO_OUTSIDER` | TUs that read no changed file never drift; build inputs and probed paths ignored | 22 |
-
-The `__COUNTER__` member rule has no mutant switch; with it disabled by
-hand, the counter variant misses all five TUs and the test fails.
-
-`semantic_facts` holds the `.c` path's rule 11: `fx_where` expands
-`__LINE__` through `FX_WHERE`, and the comment and whitespace edits above it
-must seed it.
-
-**A behavior mutant on real code.** An independent run on the canonical
-test runner (tree frozen at a0220f0735) flipped `memcmp(...) == 0` to
-`!= 0` in the static `has_suffix` of
-`engine/modules/hotswap/src/hotswap_loader.c`. It turned
-`test_hotswap_loader`, `test_hotswap_rollback` (`test_hotswap_rollback.c:365`)
-and `test_os_sandbox_hotswap_interaction` red. The narrowed plan the
-consumer gave for an edit of that static before the code-generation closure
-(dc5ad717fa; 22 groups down to 5, path groups only) left out the last two:
-a real false negative. With the closure (rule 10 and the consumer's seeds),
-every function the compile may re-emit with the static joins the seeds,
-among them `hotswap_dump_state_json`, whose address a manifest takes, and
-the plan falls back (`address-taken`, 22 groups of 22), which selects all
-three. The rule this motivates: a seed is every function whose code the
-compile may change, not the function whose source changed, and any such
-function whose address is taken refuses the narrowing. The fixture's
-`static` and `address` variants and the `NO_CODEGEN_CLOSURE` mutant hold it.
-
-The same run saw gcc `-O1` fold a benign `has_suffix` edit to an identical
-object. Which TUs rebuild is decided by object bytes, not by source: a
-source-level seed can leave its object unchanged, and the witness below
-counts a TU as changed only when its object bytes differ.
-
-### Differential fuzzing of the consumer (2026-09-27)
-
-A scratch generator (not shipped) writes random multi-TU C23 trees, applies
-one edit of a chosen kind, compiles every TU before and after (clang 20,
-`-std=c23 -O1 -ffunction-sections`), senses both sides and asks
-`dev.change.plan` with `"facts"`. A case fails when a TU whose object bytes
-changed is left unaffected (missed), or when a changed TU is outside the
-universe (not covered). A run of 7,600
-cases on a0220f0735 failed 250 of them in six families; each now has a rule
-and a registered variant:
-
-| family | what was missed | rule now | registered as |
-|---|---|---|---|
-| F1 | a flag in a makefile no compile records reading | `build-input-changed`, whole catalog; a flag in the records is `identity-drift` | `makefile`, `tool` |
-| F2 | `__COUNTER__` in a header or a `.c` body renumbers every later expansion | header path: a member expanding it on either side is `position-dependent` and broadened; `.c` path: rule 11 falls back `position-dependent` | consumer `counter`, facts `counter` |
-| F3 | an edit above a `__LINE__` user moved its value | rule 11 seeds every moved `__LINE__` user; file-scope uses fall back | facts `comment`, `space` (seed `fx_where`) |
-| F4 | a `__has_include`d header created or deleted; gcc depfiles omit the probe | a candidate whose LOOKUPS hit or whose PROBES claim absent a changed path is a member (`include-resolution-change`) | `hasinc`, `hasdel` |
-| F5 | a header's static, stored by one function and folded by another | the code-generation closure takes every internal variable, a header's too | `hstatic` |
-| F6 | an `alias`/`ifunc` entry to a changed body | the sensor records second entries as ADDRESS refs; the consumer refuses (`address-taken`) | `alias` |
-
-The rerun after the fixes, every family's generator on (`GEN_NO=` empty),
-was 2,700 cases: 2,000 with clang-written depfiles and 700 with
-`DEPCC=gcc`. 2,668 passed and 32 were no-ops (the edit left an identical
-tree); 0 missed a changed TU and 0 left one outside the universe.
-1,913 plans narrowed. The fallbacks were `position-dependent` 386,
-`identity-drift` 167 (the flag kind, universe incomplete), `address-taken`
-116, `file-scope-changed` 68, `unknown-effect` 9 and `macro-changed` 9. Plan
-time was 0.26 s median, 4.1 s at most.
-
-Over-prediction (affected TUs whose object did not change, over all
-predicted) by edit kind: `body_static` 0.00, `body_extern` 0.02, `counter_c`
-0.30, `macro_new` 0.39, `multi` 0.40, `layout` 0.43, `typedef` 0.46,
-`macro_value` 0.49, `header_inline` 0.55, `enum_value` 0.61, `shadow` 0.62,
-`hasinc` 0.63, `macro_cond` 0.67, `flag` and `header_const` 0.72,
-`comment_ws` 0.81, `signature` 0.89. The largest single cost is the F2 rule:
-the generator's trees often expand `__COUNTER__` in a shared header, and
-every such TU is then broadened whatever the edit (6,204 of the per-TU
-reasons). The component model of `-O1` is an assumption the fuzzer tests
-only for clang 20 objects; gcc `-O1` rests on the hotswap witness below.
-
-### Measured: the consumer on engine/modules/hotswap (2026-09-27)
-
-A scratch witness (not shipped) extracted the 66 TUs of
-`engine/modules/hotswap` and their headers with `git archive`, compiled each
-with the real dev flags (gcc, `-Og`, no `-ffunction-sections`) and sensed
-it, applied one edit per seed, compiled and sensed again, and ran
-`dev.change.plan` with `"facts"` through every `facts_offset` page. It
-compares three things per seed: (1) compile: every TU whose object bytes
-changed must be predicted affected (MISSED); (2) new bytes: every function
-whose machine code changed, after relocation addends and NOP alignment
-padding are set aside, must be a seed, sit in a TU the header path
-broadened, or the plan must have fallen back (NOT_COVERED); (3) external
-behavior is not measured here. The conservative set is every TU whose
-depfile names a changed file, or every TU when a changed file is a build
-input. Branch head c478e77558 for the header seeds and b4f2b17ddd for the
-`.c` seeds; host load average 14 to 27 on 32 cores; each seed recompiled
-cold.
-
-| seed | edit | conservative / facts TUs | objects changed | MISSED | new-byte functions (not covered) | obligations plain / facts | verdict |
-|---|---|---|---|---|---|---|---|
-| a_static_body | a static's body in `hotswap_loader.c` | 1 / 1 | 1 | 0 | 3 (0) | 22 / 22 | `address-taken` |
-| b_extern_body | an external body in `hotswap_service.c` | 1 / 1 | 1 | 0 | 1 (0) | 49 / 49 | `unknown-effect` |
-| c_typedef | a typedef parameter gains `restrict` | 1 / 1 | 0 | 0 | 0 | 14 / 14 | `address-taken` |
-| d_macro_used | `ZCL_HOTSWAP_SERVICE_MAX` 16 to 17 | 50 / 1 | 1 | 0 | 10 (0) | 63 / 49 | narrowed |
-| d_macro_if | a no-op term in a header `#if` | 9 / 9 | 0 | 0 | 0 | 34 / 75 | narrowed |
-| e_shadow | a copy of a header on a search dir ahead of it | 1 / 1 | 0 | 0 | 0 | 14 / 14 | `include-graph-truncated` |
-| f_signature | a return type, header and definer | 50 / 28 | 13 | 0 | 29 (0) | 63 / 63 | `address-taken` |
-| g_address_taken | a static's address taken in a new file-scope constant | 1 / 1 | 1 | 0 | 2 (0) | 22 / 22 | `declaration-changed` |
-| h_layout | a struct gains a field | 50 / 28 | 24 | 0 | 0 | 63 / 63 | `address-taken` |
-| i_same_name | a static's body, another TU has a same-name static | 1 / 1 | 1 | 0 | 5 (0) | 22 / 22 | `address-taken` |
-| j_flag_drift | a header comment and a `-D` every compile gains | 1 / 66 | 0 | 0 | 0 | 14 / whole catalog | `identity-drift` |
-| k_macro_64_65 | `ZCL_HOTSWAP_GEN_MAX_REPLACED` 64 to 65 | 9 / 1 | 1 | 0 | 7 (0) | 34 / 34 | `address-taken` |
-| l_new_header | a new header nothing includes | 0 / 0 | 0 | 0 | 0 | 5 / 5 | narrowed |
-| m_shadow_src | a changed copy of `hotswap.h` beside the sources | 4 / 4 | 3 | 0 | 7 (0) | 14 / 14 | `include-graph-truncated` |
-| n_indirect_callee | a string in a function called through a pointer | 1 / 1 | 1 | 0 | 0 | 22 / 22 | `address-taken` |
-| o_tool_drift | the Makefile, and every compile gains `-fstack-protector-all` | 66 / 66 | 65 | 0 | 1,022 (0) | 1 / whole catalog | `identity-drift` |
-| p_line_shift | a comment line above a logging function (712e05de35) | 1 / 1 | 1 | 0 | 1 (0) | 14 / 14 | `address-taken` (rule 11 seeds the moved logger, whose address is taken) |
-
-Every seed passes: no missed dependency and no uncovered new-byte function.
-Under the rules before rule 11 (inferred from them, not rerun),
-p_line_shift would have narrowed with no seed, leaving its moved logger
-an uncovered new-byte function.
-
-Compile executions avoided against the conservative set: 49 (d_macro_used),
-22 (f_signature), 22 (h_layout), 8 (k_macro_64_65); 101 over the 16 seeds,
-while j_flag_drift predicts 65 more than the depfile set (the flag reaches
-every TU; the depfile set is unsound there, and so is the plain plan for a
-Makefile edit, which selects one group). Test-group executions avoided
-against the plain plan: 14 (d_macro_used); d_macro_if runs 41 more, and the
-two drift seeds run the whole catalog.
-
-d_macro_if: the plain plan for a header is the header's own path groups and
-its reverse-include closure; it does not include the obligations of the
-functions in the TUs that read it. A macro tested in `#if` can change any
-code in a reader, so the consumer broadens the nine readers and adds each
-one's file-seeded plan. On the repository's own index the plain plan of the
-header selects 40 groups, of its nine readers 123, of both 123: the plain
-header plan is a strict subset of what a code change in those readers
-needs, so it is unsound for a header edit that changes their code, and the
-facts plan (the header's plan plus the readers') is not wider than that
-conservative union. Here the edit was a no-op and no object changed, so the
-41 groups are the cost of not evaluating the `#if`.
-
-Most body edits now fall back (`address-taken`): the hotswap module
-registers its handlers by address, and the code-generation closure reaches
-them. The precise reductions are at the compile level (d, f, h, k) and in
-d_macro_used's obligations.
-
-### Measured narrowing (candidate branch, 2026-09-25 and 2026-09-26)
-
-These numbers were taken with manifests from the in-compile plugin described
-above, which were byte-identical to the sensor's except for the producer
-digest, so the verdicts and plan sizes carry over to the sensor. They were
-taken before the head, seed, producer-source, code-generation and position
-rules existed; those rules can only turn a narrowing into a fallback or add
-seeds. The compile-overhead figures from that run measured the plugin, not
-the sensor, and are not repeated here: the sensor's cost is its second
-parse, given above.
-
-**engine/modules/hotswap.** `z23-dev dev change plan` ran on the same edit
-without and with `"facts"`; `code impact` gives the file-seeded count. The
-copy's code index had no include graph (`no-include-graph`).
-
-| edit | files given | plain: groups selected / execution groups | facts verdict | facts: reached files / groups selected / execution groups | `code impact` files |
-|---|---|---|---|---|---|
-| comment | `hotswap_loader.c` | 25 / 54 | narrowed, no seeds | 1 / 5 / 18 | 119 |
-| body | `hotswap_loader.c` | 25 / 54 | narrowed, seed `hotswap_generation_count` | 3 / 5 / 18 | 119 |
-| layout | `hotswap.h` | 5 / 18 | `not-c-source` | fallback, 5 / 18 | 1 |
-| layout | the 4 including TUs | 82 / 168 | `layout-changed` | fallback, 82 / 168 | n/a |
-| macro | `hotswap.h` | 5 / 18 | `not-c-source` | fallback, 5 / 18 | 1 |
-| macro | the 4 including TUs | 82 / 168 | `macro-changed` | fallback, 82 / 168 | n/a |
-| flag | all 12 TUs | 140 / 265 | `identity-changed` | fallback, 140 / 265 | 5 to 120 per TU |
-
-"Groups selected" counts path groups plus closure groups. Function-body and
-comment edits narrow the feedback plan from 25 to 5 selected groups and from
-54 to 18 execution groups; every other edit falls back to the plain plan.
-The base manifests of the 12 TUs held 894 symbols, 1,794 references, 361
-UNKNOWN records (293 external calls, 60 atomics, 8 indirect calls), 344
-namespace probes and no truncation.
-
-**Real commits.** Each commit's parent was extracted with `git archive`, and
-the commit's changed production `.c` files got a manifest before and after.
-Set A is 12 recent commits picked before any result was seen; set B is 7
-commits picked by a diff filter for hunks with no top-level declaration line,
-which favours body edits.
-
-| set | commits | narrowed | fallbacks |
-|---|---|---|---|
-| A | 12 | 2 | `declaration-changed` 7, `include-resolution-changed` 1, `file-scope-changed` 1, `not-c-source` 1 |
-| B | 7 | 5 | `declaration-changed` 1, `file-scope-changed` 1 |
-
-Most fallbacks are real declaration changes in the edited file, such as a
-new static helper or a changed static signature. These are not position
-artifacts: DECLS carry no positions, and the whitespace fixture edit
-narrows. Across the 7 narrowed commits, 198 selected groups became 59 and 483
-execution groups became 192; across all 19, 1,485 execution groups became
-1,194. Each seed was the function the diff edits, and no narrowing was false
-on the falsification set. Every narrowed commit also changed a test harness
-`.c`, a script, the Makefile or a doc, so planned as a whole commit each falls
-back (`not-c-source`, or `no-manifest` for a harness TU without manifests):
-the saving applies to the edit loop, where one production `.c` is planned at
-a time. A narrowed plan took 0.12 to 0.17 s against 0.09 to 0.11 s plain;
-manifests ran from 59,253 to 841,893 bytes per TU.
-
-**A narrowed plan is not proof.** Proof still runs the full closure, so the
-saving is feedback work only.
-
-### A future native C23 compiler
+## A future native C23 compiler
 
 A native front end emits the same contract by linking the same core and
 calling its `cm_*` entry points in the same order: files, identity, lookups,
