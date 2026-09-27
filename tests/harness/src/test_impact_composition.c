@@ -5706,35 +5706,42 @@ static int ic_compile_store_round(const char *state, const char *key,
     return 0;
 }
 
+/* Both shared stores already hold an object some earlier process of this
+ * uid wrote; zcc would copy either out on a key match unread. */
+static bool ic_compile_store_fixture(const char *root, const char *home,
+                                     const char *state)
+{
+    return mkdir(state, 0700) == 0 &&
+           ic_write(root, "home/.cache/zcc/obj/ab/abcd.bin", "PLANTED") &&
+           ic_write(root, "shared-zcc/obj/ab/abcd.bin", "PLANTED") &&
+           setenv("HOME", home, 1) == 0 && unsetenv("XDG_CACHE_HOME") == 0 &&
+           unsetenv("ZCC_DIR") == 0 && unsetenv("CCACHE_DISABLE") == 0;
+}
+
+/* The shared stores are someone else's to manage: left exactly as found. */
+static bool ic_shared_store_untouched(const char *store)
+{
+    char probe[4096];
+    return snprintf(probe, sizeof(probe), "%s/obj/ab/abcd.bin", store) > 0 &&
+           access(probe, F_OK) == 0;
+}
+
 static int ic_proof_compile_store_child(const char *root)
 {
     char home[4096], state[4096], shared[4096], home_store[4096];
     if (snprintf(home, sizeof(home), "%s/home", root) <= 0 ||
         snprintf(state, sizeof(state), "%s/state", root) <= 0 ||
         snprintf(shared, sizeof(shared), "%s/shared-zcc", root) <= 0 ||
-        snprintf(home_store, sizeof(home_store), "%s/.cache/zcc", home) <= 0 ||
-        mkdir(state, 0700) != 0)
+        snprintf(home_store, sizeof(home_store), "%s/.cache/zcc", home) <= 0)
         return 1;
-    /* Both shared stores already hold an object some earlier process of
-     * this uid wrote; zcc would copy either out on a key match unread. */
-    if (!ic_write(root, "home/.cache/zcc/obj/ab/abcd.bin", "PLANTED") ||
-        !ic_write(root, "shared-zcc/obj/ab/abcd.bin", "PLANTED") ||
-        setenv("HOME", home, 1) != 0 || unsetenv("XDG_CACHE_HOME") != 0 ||
-        unsetenv("ZCC_DIR") != 0 || unsetenv("CCACHE_DISABLE") != 0)
-        return 2;
+    if (!ic_compile_store_fixture(root, home, state)) return 2;
     int rc = ic_compile_store_round(state, "default", home_store, 10);
     if (rc != 0) return rc;
     if (setenv("ZCC_DIR", shared, 1) != 0) return 3;
     rc = ic_compile_store_round(state, "inherited", shared, 20);
     if (rc != 0) return rc;
-    /* The shared stores are someone else's to manage: left exactly as found. */
-    char probe[4096];
-    if (snprintf(probe, sizeof(probe), "%s/obj/ab/abcd.bin", shared) <= 0 ||
-        access(probe, F_OK) != 0 ||
-        snprintf(probe, sizeof(probe), "%s/obj/ab/abcd.bin", home_store) <= 0 ||
-        access(probe, F_OK) != 0)
-        return 4;
-    return 0;
+    return ic_shared_store_untouched(shared) &&
+           ic_shared_store_untouched(home_store) ? 0 : 4;
 }
 
 static int test_ic_proof_compiles_against_a_private_store(void)

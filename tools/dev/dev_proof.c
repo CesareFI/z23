@@ -2155,9 +2155,9 @@ static bool depfile_tree_copy(const char *source, const char *target,
  * A generation is a detached worktree plus its build tree, one per
  * (checkout, local commit) pair. A fresh generation compiles every
  * translation unit because git stamps every source with the checkout time,
- * even when the commit changed one line. The shared zcc cache cannot cover
- * the gap: its key folds the working directory, which is unique per
- * generation. So a new generation hard-links the previous complete
+ * even when the commit changed one line. zcc cannot fill that gap: a proof
+ * compiles through a store of its own that starts empty (see
+ * proof_zcc_private_open), so a new generation hard-links the last complete
  * generation's immutable compiler outputs and repairs make's timestamp
  * graph around the exact changed set. Make then recompiles exactly the
  * changed translation units and relinks; everything else is reused byte
@@ -5487,6 +5487,90 @@ static bool proof_prepare_environment(void)
     return setenv("ZCL_LINT_CACHE", "0", 1) == 0;
 }
 
+/* The compile cache a proof builds through. zcc's shared store
+ * (~/.cache/zcc, or wherever ZCC_DIR points) is keyed with the build root
+ * prefix-mapped away (tools/zcc.c recorded_cwd), so every worktree of this
+ * uid reads and writes one set of entries, and zcc's serve() copies a hit's
+ * object out without reading it. Any process of this uid can overwrite an
+ * entry, including a candidate's own Makefile or tests during an earlier
+ * proof. So an authoritative proof compiles against a store of its own,
+ * <state>/zcc.<pair>: created empty before the first make, emptied again if
+ * a killed worker left one behind, and removed when the worker ends.
+ * Compiles inside one proof still share it (the original-plan build feeds
+ * the generation's), and nothing crosses proofs. ccache, the Makefile's
+ * fallback wrapper when zcc cannot bootstrap, keeps the same kind of shared
+ * store and is switched off.
+ *
+ * The seam for getting cross-proof reuse back is a zcc store owned by a
+ * separate verifier uid, which the proof reads through that verifier and
+ * cannot write: the compile-cache twin of dp_warm_verifier_qualified().
+ * Until such an account exists, every proof compiles against an empty
+ * store. */
+#define PROOF_ZCC_REMOVE_DEPTH_MAX 32
+
+static bool proof_zcc_store_path(const char *state, const char *key,
+                                 char out[PATH_MAX])
+{
+    return state && state[0] && key && key[0] && !strchr(key, '/') &&
+           snprintf(out, PATH_MAX, "%s/zcc.%s", state, key) < PATH_MAX;
+}
+
+/* Remove `name` under `parent_fd` and everything below it, in process and
+ * without following a link: a symlink is unlinked as itself. zcc's layout
+ * is a few levels deep, so the depth cap only bounds a hostile tree, and
+ * anything left behind fails the final rmdir and so fails closed. */
+static bool proof_zcc_remove_at(int parent_fd, const char *name, int depth)
+{
+    if (unlinkat(parent_fd, name, 0) == 0 || errno == ENOENT) return true;
+    if ((errno != EISDIR && errno != EPERM) ||
+        depth > PROOF_ZCC_REMOVE_DEPTH_MAX)
+        return false;
+    int fd = openat(parent_fd, name,
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return false;
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        (void)close(fd);
+        return false;
+    }
+    bool ok = true;
+    for (struct dirent *e = readdir(dir); ok && e; e = readdir(dir)) {
+        if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0)
+            ok = proof_zcc_remove_at(dirfd(dir), e->d_name, depth + 1);
+    }
+    (void)closedir(dir);
+    return ok && unlinkat(parent_fd, name, AT_REMOVEDIR) == 0;
+}
+
+static bool proof_zcc_store_remove(const char *state, const char *store)
+{
+    int fd = open(state, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return false;
+    bool ok = proof_zcc_remove_at(fd, store + strlen(state) + 1, 0);
+    (void)close(fd);
+    return ok;
+}
+
+static bool proof_zcc_private_open(const char *state, const char *key)
+{
+    char store[PATH_MAX];
+    return proof_zcc_store_path(state, key, store) &&
+           proof_zcc_store_remove(state, store) &&
+           platform_private_directory_create(store) &&
+           setenv("ZCC_DIR", store, 1) == 0 &&
+           setenv("CCACHE_DISABLE", "1", 1) == 0;
+}
+
+/* Runs on every worker exit, pass or fail. The resident daemon keeps its
+ * environment across cycles, so ZCC_DIR goes too. */
+static bool proof_zcc_private_close(const char *state, const char *key)
+{
+    char store[PATH_MAX];
+    bool removed = proof_zcc_store_path(state, key, store) &&
+                   proof_zcc_store_remove(state, store);
+    return unsetenv("ZCC_DIR") == 0 && removed;
+}
+
 /* Fill the pre-fork make argv: everything EITHER dimension can build, built
  * once, before either starts.
  *
@@ -6217,17 +6301,14 @@ static bool proof_zcc_effective_store(char *out, size_t out_len)
 bool zcl_dev_proof_test_compile_store(const char *state, const char *key,
                                       char *store, size_t store_len)
 {
-    (void)state;
-    (void)key;
-    return proof_zcc_effective_store(store, store_len);
+    return proof_zcc_private_open(state, key) &&
+           proof_zcc_effective_store(store, store_len);
 }
 
 bool zcl_dev_proof_test_compile_store_close(const char *state,
                                             const char *key)
 {
-    (void)state;
-    (void)key;
-    return true;
+    return proof_zcc_private_close(state, key);
 }
 #endif
 
@@ -7962,6 +8043,10 @@ static bool proof_worker(const struct proof_paths *paths,
         proof_why(why, why_len, "proof_execution_environment_unavailable");
         return false;
     }
+    if (!proof_zcc_private_open(paths->state, paths->key)) {
+        proof_why(why, why_len, "proof_private_compile_cache_unavailable");
+        return false;
+    }
     int64_t started_us = platform_time_monotonic_us();
     struct proof_phase_clock phases;
     proof_phase_begin(&phases, paths);
@@ -8029,6 +8114,7 @@ static bool proof_worker_run(const struct proof_paths *paths,
     bool ok = sigaction(SIGCHLD, &child_action, NULL) == 0 &&
               proof_worker(paths, local, base, &ram_lease,
                            queue_lock_wait_ms, why, why_len);
+    (void)proof_zcc_private_close(paths->state, paths->key);
     if (cpu_timed) proof_cpu_note(paths, &self_before, &children_before);
     if (!ok && (!why || !why[0]))
         proof_why(why, why_len, "proof_child_reaping_unavailable");
