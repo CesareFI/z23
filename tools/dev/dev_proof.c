@@ -98,16 +98,14 @@ struct proof_paths {
  * to the proof worker so the receipt sidecar can say what the build reused.
  * Cold is always correct; every field here is advisory. `cold_reason` is a
  * short typed string (never prose), set only on the cold path, so the one
- * status line a developer reads never has to guess why. The longest,
- * "donor_verifier_unqualified", fits with room. */
-#define PROOF_WARM_REASON_MAX 32
+ * status line a developer reads never has to guess why. */
 struct proof_warmstart {
     char donor[33];
     char donor_local[65];
     uint64_t files_linked;
     uint64_t bytes_linked;
     bool armed;
-    char cold_reason[PROOF_WARM_REASON_MAX];
+    char cold_reason[32];
 };
 
 static void proof_why(char *why, size_t why_len, const char *message)
@@ -813,15 +811,14 @@ static bool proof_read_text(const char *path, char *out, size_t out_size)
 /* One sidecar line, assigned to whichever of the three fields it names.
  * An unrecognised key is ignored, as it always was. */
 static void dp_warm_sidecar_field(const char *line, char *warm_flag,
-                                  char donor[33],
-                                  char reason[PROOF_WARM_REASON_MAX])
+                                  char donor[33], char reason[32])
 {
     if (strncmp(line, "warm=", 5) == 0)
         *warm_flag = line[5];
     else if (strncmp(line, "donor=", 6) == 0)
         (void)snprintf(donor, 33, "%s", line + 6);
     else if (strncmp(line, "reason=", 7) == 0)
-        (void)snprintf(reason, PROOF_WARM_REASON_MAX, "%s", line + 7);
+        (void)snprintf(reason, 32, "%s", line + 7);
 }
 
 static bool warm_status_line(const char *warmstart_path, char *out,
@@ -836,7 +833,7 @@ static bool warm_status_line(const char *warmstart_path, char *out,
     if (!line || strcmp(line, "zcl.dev_proof_warmstart.v1") != 0)
         return false;
     char warm_flag = 0;
-    char donor[33] = {0}, reason[PROOF_WARM_REASON_MAX] = {0};
+    char donor[33] = {0}, reason[32] = {0};
     while ((line = strtok_r(NULL, "\n", &save)))
         dp_warm_sidecar_field(line, &warm_flag, donor, reason);
     if (warm_flag == '1' && donor[0] && strcmp(donor, "-") != 0)
@@ -3822,17 +3819,15 @@ static bool dp_donor_collect(DIR *dir, const char *parent, const char *root,
 static bool warm_donor_scan(const char *parent, const char *root,
                             const char *in_use, const char *phases,
                             bool authoritative, struct warm_donor *donor,
-                            char reason[PROOF_WARM_REASON_MAX])
+                            char reason[32])
 {
-    (void)snprintf(reason, PROOF_WARM_REASON_MAX, "%s",
-                   "no_eligible_donor");
+    (void)snprintf(reason, 32, "%s", "no_eligible_donor");
     /* No verifiable identity for THIS proof means no safe comparison for
      * any candidate: fail closed to cold rather than adopt objects this
      * scan cannot prove match. */
     struct zcl_dev_proof_build_identity_v1 current;
     if (!zcl_dev_proof_build_identity_v1_capture(root, &current, NULL, 0)) {
-        (void)snprintf(reason, PROOF_WARM_REASON_MAX, "%s",
-                       "identity_unavailable");
+        (void)snprintf(reason, 32, "%s", "identity_unavailable");
         return false;
     }
     DIR *dir = opendir(parent);
@@ -3854,8 +3849,7 @@ static bool warm_donor_scan(const char *parent, const char *root,
     if (found)
         reason[0] = 0;
     else if (furthest != DP_DONOR_ELIGIBLE)
-        (void)snprintf(reason, PROOF_WARM_REASON_MAX, "%s",
-                       dp_donor_verdict_name(furthest));
+        (void)snprintf(reason, 32, "%s", dp_donor_verdict_name(furthest));
     return found;
 }
 
@@ -3874,7 +3868,7 @@ static bool warm_start_disabled(void)
  * the status line shows. Display only, like every other phases.txt note. */
 static void warm_cold_note(const char *phases, const char *reason)
 {
-    char cold[PROOF_WARM_REASON_MAX + 8];
+    char cold[sizeof("cold: ") + 32];
     if (phases && phases[0] && reason &&
         snprintf(cold, sizeof(cold), "cold: %s", reason) < (int)sizeof(cold))
         (void)zcl_dev_proof_phase_note(phases, "warm_start", cold);
