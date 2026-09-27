@@ -7682,3 +7682,35 @@ uncached release tasks in 47 seconds. No runtime heap or latency improvement is
 claimed. Evidence is in `.cache/wallet-layout-20260928/`; owned emulators exited
 successfully and other sessions' worktrees/devices remain untouched. The eight
 preceding commits remain local under the development-ref hook refusal.
+
+## Current debug runtime on API35 with 16 KiB pages — 2026-09-28
+
+A new owned emulator uses the installed Google APIs 16 KiB x86_64 image,
+revision 5, fingerprint
+`google/sdk_gphone16k_x86_64/emu64xa16k:15/AE3A.240806.043/12960925:userdebug/dev-keys`.
+The running kernel reports PAGESIZE=16384 before and after qualification. With
+CheckJNI enabled, the unchanged current debug/test APKs pass 112 selected
+layout, lifecycle, key-vector, record/GCM, storage/recovery/admission, read-only
+sync/history and unauthenticated-Keystore refusal tests in 60.255 seconds,
+without skips. Balance, history and full-source review process-kill/relaunch
+fixtures also pass: verified public state retires with the old process and the
+replacement starts empty. Only disposable fixture state and public vectors are
+used; successful hardware-authenticated custody remains unqualified.
+
+The first attempt stopped during test 21. Android exit-info records LOW_MEMORY
+for the instrumented app, and lowmemorykiller confirms a minimum-watermark
+kill of its foreground PID to free 177980 KiB RSS. The image also recorded a
+separate Google system-component native crash. These logs are retained. After
+memory pressure eased, the exact suite passed on the same device/configuration:
+no RAM increase, package disabling, page-size compatibility property change or
+assertion adjustment was made. This does not establish reliable operation under
+that startup memory contention, and instrumentation RSS is not a production
+wallet memory benchmark. The old ANR history was not used to classify this exit.
+
+Reports, image identity, APK hashes, initial low-memory/exit evidence and the
+successful retry are in `.cache/wallet-api35-16k-20260928/`. Release/source bytes
+remain those of `11877db26`; the previous build, sanitizer, fuzz, complexity and
+exact release-reproduction evidence still applies. The six original dirty
+files in `/root/z23-android` again match their preserved hashes. Continue with
+the existing external UI fixture to qualify the current minified release on
+this owned device, retaining its fresh-profile and no-existing-wallet guards.
