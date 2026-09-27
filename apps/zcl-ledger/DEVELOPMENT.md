@@ -75,6 +75,28 @@ and clipping, not physical pixel equality. It does not emulate BOLOS, the
 Blue USB transport, or touch.
 The host CLI exposes the same controller exercise through `--simulate-app`;
 its JSON keeps simulated and physical Blue evidence in separate fields.
+
+## Reusable Blue screen preview
+
+[`blue_bagl_canvas.h`](include/blue_bagl_canvas.h) provides a C23 host
+canvas for the Blue's 320 × 480 screen. It draws clipped rectangles,
+rounded rectangles, and ASCII text with the two reviewed BAGL font tables;
+it writes RGB PNGs through libpng. The nominal 14-pixel font table has a
+16-pixel bitmap height; the larger table has a 22-pixel bitmap height.
+`blue_bagl_text` rejects unsupported bytes, overlong labels, and text boxes
+outside the screen instead of silently truncating them. Future app preview
+renderers can link `blue_bagl_canvas` and keep their app-specific layout in a
+separate source file. Review now uses this API; its 68 fixture PNGs across
+regular, large-text, dark, and large-text dark modes are byte-identical to
+the previous renderer.
+
+The canvas is host-only and does not access the Blue framebuffer. Its PNGs
+show intended layout using SDK font data; physical font pixels, touch
+regions, contrast, and responsiveness require a dedicated-device check for
+the exact ARM image hash. Future memo displays must classify UTF-8 and
+opaque bytes before using this ASCII-only canvas. A payment app must show
+and bind every material transaction field before any key operation.
+
 An ARM build measures code,
 initialized data, and SRAM use. Neither proves a Blue screen renders or
 responds to touch. Test a new image on the dedicated Blue only after those
