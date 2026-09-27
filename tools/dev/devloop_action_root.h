@@ -341,4 +341,10 @@ bool zcl_action_root_parse_driver_programs(const char *cc_dash_hash_output,
                                            size_t prefixes_cap,
                                            size_t *prefixes_n);
 
+/* One Clang cc1 command in `-###` output must name exactly one absolute
+ * -isysroot. A missing, duplicated or malformed spelling is unavailable,
+ * never inferred from the host's default SDK. */
+bool zcl_action_root_parse_cc1_sysroot(const char *cc_dash_hash_output,
+                                      char sysroot[PATH_MAX]);
+
 #endif /* ZCL_DEVLOOP_ACTION_ROOT_H */

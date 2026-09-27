@@ -980,6 +980,8 @@ static int fx_fake_driver_text(const struct fx *x, const char *line,
         script, cap,
         "#!/bin/sh\nR='%s'\n"
         "case \" $* \" in\n"
+        "*\" -print-prog-name=ld \"*) echo ld; exit 0;;\n"
+        "*\" -print-sysroot \"*) echo; exit 0;;\n"
         "*\" -print-file-name=libc.so \"*) echo \"$R/lib/libc.so\"; exit 0;;\n"
         "*\" -### \"*)\n%s"
         "  a=\"$R/tools/as\"; [ -x \"$R/prefix/as\" ] && a=\"$R/prefix/as\"\n"
@@ -1129,6 +1131,48 @@ static bool fx_key_miss(struct fx *x, const char *cc, const char *code)
                missed ? miss : "a key");
     return ok;
 }
+
+static void test_key_sysroot_override(struct fx *x)
+{
+    static const char *const flags[] = {
+        "-isysroot /tmp", "--sysroot=/tmp", "-sysroot /tmp",
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+        char key[65] = {0}, miss[40] = {0};
+        ok = !zcl_devloop_action_root_key(
+                 x->root, "src/unit.c", "cc", flags[i], "-shared", NULL,
+                 x->depfile, NULL, NULL, key, miss) &&
+             strcmp(miss, "driver_sysroot_override_unbound") == 0 &&
+             !key[0] && ok;
+    }
+    char key[65] = {0}, miss[40] = {0};
+    ok = !zcl_devloop_action_root_key(
+             x->root, "src/unit.c", "cc", "-std=c23",
+             "-shared -Wl,-syslibroot,/tmp", NULL, x->depfile,
+             NULL, NULL, key, miss) &&
+         strcmp(miss, "driver_sysroot_override_unbound") == 0 &&
+         !key[0] && ok;
+    AR_CHECK("driver facts: an explicit compile or link sysroot refuses "
+             "before an action root can reuse default SDK facts", ok);
+}
+
+#if defined(__APPLE__)
+static void test_key_sysroot_capsule_mismatch(struct fx *x)
+{
+    char cc[PATH_MAX], script[4 * PATH_MAX + 1024];
+    const char *line =
+        "  echo ' \"cc\" \"-cc1\" \"-isysroot\" \"/tmp\"'\n";
+    int n = fx_fake_driver_text(x, line, "", script, sizeof(script));
+    bool ok = n > 0 && n < (int)sizeof(script) &&
+              fx_fake_driver(x, cc) &&
+              fx_write(x->root, "tools/tcc.sh", script) &&
+              fx_key_miss(x, cc, "driver_sysroot_capsule_mismatch") &&
+              fx_fake_driver(x, cc);
+    AR_CHECK("driver facts: a cc1 SDK outside the capsule refuses a key",
+             ok);
+}
+#endif
 
 /* A same-name program appearing in the driver's own prefix, then one the
  * driver would run that is gone. */
@@ -1452,9 +1496,12 @@ static void test_key_cost(struct fx *x)
     for (size_t i = 0; i < FX_COST_N; i++) {
         char key[65] = {0}, miss[40] = {0};
         int64_t w = platform_time_monotonic_us(), c = fx_cpu_us();
-        ok = zcl_devloop_action_root_key(x->root, "src/unit.c", "cc", cflags,
-                                         "-shared", NULL, x->depfile, NULL, NULL,
-                                         key, miss) && ok;
+        bool derived = zcl_devloop_action_root_key(
+            x->root, "src/unit.c", "cc", cflags, "-shared", NULL,
+            x->depfile, NULL, NULL, key, miss);
+        if (!derived)
+            printf("    key cost: iteration %zu missed %s\n", i, miss);
+        ok = derived && ok;
         wall[i] = platform_time_monotonic_us() - w;
         cpu[i] = fx_cpu_us() - c;
     }
@@ -1882,6 +1929,10 @@ static void test_derivation(void)
         test_derive_causes(x, &base);
         test_hotswap_hook(x);
         test_key_driver_facts(x);
+        test_key_sysroot_override(x);
+#if defined(__APPLE__)
+        test_key_sysroot_capsule_mismatch(x);
+#endif
         test_key_env_influential(x);
         test_key_path_relative(x);
         test_key_cache_opaque(x);
@@ -2020,6 +2071,41 @@ static void test_builtin_dir_parse(void)
              "parses", ok);
 }
 
+static void test_cc1_sysroot_parse(void)
+{
+    const char *valid =
+        "Apple clang version 17\n"
+        " \"/tool/clang\" \"-cc1\" \"-triple\" \"arm64-apple-macos\" "
+        "\"-isysroot\" \"/SDK/MacOSX.sdk\" \"-x\" \"c\"\n";
+    const char *missing =
+        " \"/tool/clang\" \"-cc1\" \"-x\" \"c\"\n";
+    const char *duplicate =
+        " \"/tool/clang\" \"-cc1\" \"-isysroot\" \"/SDK/A\" "
+        "\"-isysroot\" \"/SDK/B\"\n";
+    const char *relative =
+        " \"/tool/clang\" \"-cc1\" \"-isysroot\" \"SDK/A\"\n";
+    const char *two_commands =
+        " \"/tool/clang\" \"-cc1\" \"-isysroot\" \"/SDK/A\"\n"
+        " \"/tool/clang\" \"-cc1\" \"-isysroot\" \"/SDK/B\"\n";
+    const char *unquoted_bad =
+        " /tool/clang -cc1 -isysroot /SDK/A\\broken\n";
+    const char *other_command =
+        " /tool/ld -isysroot /unused -isysroot /other\n"
+        " /tool/clang -cc1 -isysroot /SDK/A\n";
+    char sysroot[PATH_MAX];
+    bool ok = zcl_action_root_parse_cc1_sysroot(valid, sysroot) &&
+              strcmp(sysroot, "/SDK/MacOSX.sdk") == 0 &&
+              !zcl_action_root_parse_cc1_sysroot(missing, sysroot) &&
+              !zcl_action_root_parse_cc1_sysroot(duplicate, sysroot) &&
+              !zcl_action_root_parse_cc1_sysroot(relative, sysroot) &&
+              !zcl_action_root_parse_cc1_sysroot(two_commands, sysroot) &&
+              !zcl_action_root_parse_cc1_sysroot(unquoted_bad, sysroot) &&
+              zcl_action_root_parse_cc1_sysroot(other_command, sysroot) &&
+              strcmp(sysroot, "/SDK/A") == 0;
+    AR_CHECK("driver facts: only one absolute cc1 -isysroot may supply a "
+             "driver that cannot answer -print-sysroot", ok);
+}
+
 int test_action_root(void)
 {
     printf("action_root: zcl.action_preimage.v2 codec and derivation\n");
@@ -2028,6 +2114,7 @@ int test_action_root(void)
     test_derivation();
     test_derive_snapshot_not_commit();
     test_builtin_dir_parse();
+    test_cc1_sysroot_parse();
     test_canon_driver_word();
     return g_failures + codec_failures;
 }

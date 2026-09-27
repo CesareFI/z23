@@ -314,6 +314,7 @@ struct ars_driver {
     size_t absent_n;
     char implicit[ARS_IMPLICIT_N][PATH_MAX]; /* "" when not found */
     char sysroot[PATH_MAX];
+    char cc1_sysroot[PATH_MAX]; /* exact -### fallback when -print-sysroot is absent */
     char ld_word[PATH_MAX]; /* `-print-prog-name=ld` exactly as answered */
     char ld[PATH_MAX];      /* ld_word resolved as the driver would run it */
     char collect2[PATH_MAX];
@@ -553,6 +554,117 @@ bool zcl_action_root_parse_driver_programs(const char *out,
     return ok;
 }
 
+static bool ars_cc1_space(char ch)
+{
+    return ch == ' ' || ch == '\t' || ch == '\r';
+}
+
+static bool ars_cc1_text(const char *line, const char *end)
+{
+    for (const char *p = line; end - p >= 4; p++)
+        if (memcmp(p, "-cc1", 4) == 0)
+            return true;
+    return false;
+}
+
+static bool ars_cc1_copy_word(const char *start, size_t n,
+                             char word[PATH_MAX])
+{
+    if (!n || n >= PATH_MAX || memchr(start, '\\', n))
+        return false;
+    memcpy(word, start, n);
+    word[n] = '\0';
+    return true;
+}
+
+/* 0 means end of line, 1 a canonical word, -1 a malformed word. */
+static int ars_cc1_next_word(const char **cursor, const char *end,
+                            char word[PATH_MAX])
+{
+    const char *p = *cursor;
+    while (p < end && ars_cc1_space(*p))
+        p++;
+    if (p == end)
+        return 0;
+    bool quoted = *p == '"';
+    p += quoted;
+    const char *start = p;
+    if (quoted) {
+        while (p < end && *p != '"' && *p != '\r')
+            p++;
+        if (p == end || *p != '"')
+            return -1;
+    } else {
+        while (p < end && !ars_cc1_space(*p))
+            p++;
+    }
+    size_t n = (size_t)(p - start);
+    if (!ars_cc1_copy_word(start, n, word))
+        return -1;
+    p += quoted;
+    if (p < end && !ars_cc1_space(*p))
+        return -1;
+    *cursor = p;
+    return 1;
+}
+
+static bool ars_cc1_line_sysroot(const char *line, const char *end,
+                                char path[PATH_MAX], bool *cc1)
+{
+    const char *p = line;
+    bool pending = false, found = false;
+    *cc1 = false;
+    path[0] = '\0';
+    char word[PATH_MAX];
+    int step;
+    while ((step = ars_cc1_next_word(&p, end, word)) > 0) {
+        if (pending) {
+            if (found || word[0] != '/')
+                return false;
+            (void)snprintf(path, PATH_MAX, "%s", word);
+            pending = false;
+            found = true;
+        } else if (strcmp(word, "-isysroot") == 0) {
+            if (found)
+                return false;
+            pending = true;
+        } else if (strcmp(word, "-cc1") == 0) {
+            *cc1 = true;
+        }
+    }
+    return step == 0 && !pending && (!*cc1 || found);
+}
+
+/* Parse only driver command lines. Every cc1 must name exactly one SDK. */
+bool zcl_action_root_parse_cc1_sysroot(const char *out,
+                                      char sysroot[PATH_MAX])
+{
+    if (!out || !sysroot)
+        return false;
+    sysroot[0] = '\0';
+    size_t cc1_count = 0;
+    for (const char *line = out; line && *line;) {
+        const char *end = strchr(line, '\n');
+        if (!end)
+            end = line + strlen(line);
+        if (line[0] == ' ' && ars_cc1_text(line, end)) {
+            bool cc1;
+            char path[PATH_MAX];
+            if (!ars_cc1_line_sysroot(line, end, path, &cc1))
+                return false;
+            if (!cc1)
+                return false;
+            if (cc1) {
+                if (++cc1_count != 1)
+                    return false;
+                (void)snprintf(sysroot, PATH_MAX, "%s", path);
+            }
+        }
+        line = *end ? end + 1 : NULL;
+    }
+    return cc1_count == 1;
+}
+
 /* gcc's temporary: cc + 6 alphanumerics, then the suffix. */
 static bool ars_gcc_temp_stem(const char *base, size_t stem)
 {
@@ -733,6 +845,31 @@ static bool ars_driver_line(const struct ars_driver *d, const char *arg,
     return snprintf(out, PATH_MAX, "%.*s", (int)n, capture) < PATH_MAX;
 }
 
+/* Ask under the compile's actual flags. Apple Clang has no -print-sysroot;
+ * its already-bound -### cc1 line supplies the effective SDK instead. */
+static bool ars_sysroot_capture(struct ars_driver *d, char miss[40])
+{
+    if (d->cc1_sysroot[0]) {
+        (void)snprintf(d->sysroot, sizeof(d->sysroot), "%s",
+                       d->cc1_sysroot);
+        return true;
+    }
+    const char *args[] = { "-print-sysroot", NULL };
+    char capture[PATH_MAX];
+    if (ars_driver_ask_with(d, d->flags, args, capture, sizeof(capture))) {
+        size_t n = strcspn(capture, "\r\n");
+        while (n > 0 && capture[n - 1] == ' ')
+            n--;
+        if ((n == 0 || capture[0] == '/') &&
+            snprintf(d->sysroot, sizeof(d->sysroot), "%.*s", (int)n,
+                     capture) < (int)sizeof(d->sysroot))
+            return true;
+    }
+    if (miss)
+        (void)snprintf(miss, 40, "driver_sysroot_unavailable");
+    return false;
+}
+
 /* `cc -print-file-name=X` echoes X back when it finds nothing. */
 static bool ars_implicit_capture(struct ars_driver *d)
 {
@@ -879,6 +1016,7 @@ static bool ars_lines_capture(const struct ars_driver *d, const char *out,
  * program words and prefixes. */
 struct ars_programs {
     uint8_t lines_sha3[32];
+    char cc1_sysroot[PATH_MAX];
     char backend[ARS_BACKEND_MAX][PATH_MAX];
     size_t backend_n;
     char prefixes[ARS_PREFIX_MAX][PATH_MAX];
@@ -900,6 +1038,14 @@ static bool ars_programs_ask(const struct ars_driver *d,
               zcl_action_root_parse_driver_programs(
                   capture, p->backend, ARS_BACKEND_MAX, &p->backend_n,
                   p->prefixes, ARS_PREFIX_MAX, &p->prefix_n);
+    if (ok && !zcl_action_root_parse_cc1_sysroot(capture, p->cc1_sysroot)) {
+        p->cc1_sysroot[0] = '\0';
+        if (strstr(capture, "-cc1") != NULL) {
+            if (miss)
+                (void)snprintf(miss, 40, "driver_sysroot_unavailable");
+            ok = false;
+        }
+    }
     free(capture);
     return ok;
 }
@@ -913,6 +1059,8 @@ static bool ars_programs_capture(struct ars_driver *d, char miss[40])
     bool ok = p && ars_programs_ask(d, p, miss);
     if (ok) {
         memcpy(d->lines_sha3, p->lines_sha3, sizeof(d->lines_sha3));
+        (void)snprintf(d->cc1_sysroot, sizeof(d->cc1_sysroot), "%s",
+                       p->cc1_sysroot);
         memcpy(d->backend, p->backend, sizeof(d->backend));
         memcpy(d->prefixes, p->prefixes, sizeof(d->prefixes));
         d->backend_n = p->backend_n;
@@ -977,11 +1125,12 @@ static bool ars_driver_capture(const struct ars_ask *q, struct ars_driver *d,
     d->ask_env = q->env;
     bool ok = snprintf(d->flags, sizeof(d->flags), "%s", q->flags) <
                   (int)sizeof(d->flags) &&
-              ars_driver_ask(d, search, capture, sizeof(capture)) &&
+              ars_driver_ask_with(d, d->flags, search, capture,
+                                  sizeof(capture)) &&
               ars_system_parse(capture, d, miss) &&
-              ars_driver_line(d, "-print-sysroot", d->sysroot) &&
-              ars_linker_capture(d) && ars_implicit_capture(d) &&
-              ars_programs_capture(d, miss);
+              ars_programs_capture(d, miss) &&
+              ars_sysroot_capture(d, miss) &&
+              ars_linker_capture(d) && ars_implicit_capture(d);
     d->ask_env = NULL;
     if (ok)
         ars_shadow_state(d, d->shadow);
@@ -1091,6 +1240,27 @@ static bool ars_targets(const char *cflags, const char *ldflags,
         }
     }
     return true;
+}
+
+/* The compile query can see an explicit SDK, but the implicit link-library
+ * query and toolchain capsule do not yet bind an independently steered link
+ * sysroot. Refuse these flags rather than cache against the default SDK. */
+static bool ars_sysroot_override(const char *flags)
+{
+    if (!flags)
+        return false;
+    char text[ARS_FLAGS_MAX];
+    if (snprintf(text, sizeof(text), "%s", flags) >= (int)sizeof(text))
+        return true;
+    const char *w[ARS_ARG_MAX];
+    size_t n = zcl_argv_split(text, w, ARS_ARG_MAX);
+    for (size_t i = 0; i < n; i++)
+        if (strncmp(w[i], "-isysroot", 9) == 0 ||
+            strncmp(w[i], "--sysroot", 9) == 0 ||
+            strncmp(w[i], "-sysroot", 8) == 0 ||
+            strstr(w[i], "-syslibroot") != NULL)
+            return true;
+    return false;
 }
 
 #if !defined(_WIN32)
@@ -1533,6 +1703,12 @@ static const char *ars_driver_miss_why(const char *code)
         { "driver_cache_opaque",
           "the driver command runs a compile cache or remote compiler the "
           "root cannot see through" },
+        { "driver_sysroot_unavailable",
+          "the compiler did not report one effective sysroot for this "
+          "compile invocation" },
+        { "driver_sysroot_override_unbound",
+          "an explicit sysroot can steer the compile or implicit linker "
+          "inputs outside the bound toolchain capsule" },
     };
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++)
         if (strcmp(code, k[i].code) == 0)
@@ -1549,6 +1725,13 @@ static bool ars_hook_driver(struct ars_hook *h, const struct ars_compile *k,
 {
     char targets[ARS_TARGETS_MAX];
     char driver_miss[40] = {0};
+    if (ars_sysroot_override(k->cflags) ||
+        ars_sysroot_override(k->ldflags)) {
+        ars_miss_set(m, "driver_sysroot_override_unbound",
+                     ars_driver_miss_why("driver_sysroot_override_unbound"),
+                     k->cc);
+        return false;
+    }
     if (!ars_targets(k->cflags, k->unity ? NULL : k->ldflags, targets) ||
         !ars_driver_facts(&(const struct ars_ask){ k->cc, targets, k->cflags,
                                                    k->root, h->envp },
@@ -1579,6 +1762,39 @@ static bool ars_hook_driver(struct ars_hook *h, const struct ars_compile *k,
 #endif
 }
 
+#if defined(__APPLE__)
+/* The capsule hashes SDK startup objects and stubs selected by xcrun. A
+ * Clang driver using another SDK cannot borrow that capsule's digest. */
+static bool ars_sdk_matches_capsule(const struct ars_hook *h)
+{
+    if (!h->driver.cc1_sysroot[0])
+        return true;
+    struct vcs_toolchain_capsule_v1 current;
+    struct platform_toolchain_descriptor desc;
+    uint8_t current_root[32], captured_root[32];
+    if ((!vcs_toolchain_capsule_v1_cached(&current, &desc) &&
+         (!vcs_toolchain_capsule_v1_capture(&current) ||
+          !vcs_toolchain_capsule_v1_cached(&current, &desc))) ||
+        !vcs_toolchain_capsule_v1_root(&current, current_root) ||
+        !vcs_toolchain_capsule_v1_root(&h->capsule, captured_root) ||
+        memcmp(current_root, captured_root, 32) != 0)
+        return false;
+    static const char suffix[] = "/usr/lib/crt1.o";
+    const char *file = desc.sysroot_files[0];
+    size_t n = strlen(file), tail = sizeof(suffix) - 1;
+    if (n <= tail || strcmp(file + n - tail, suffix) != 0)
+        return false;
+    char sdk[PATH_MAX], capsule_sdk[PATH_MAX], driver_sdk[PATH_MAX];
+    if (n - tail >= sizeof(sdk))
+        return false;
+    memcpy(sdk, file, n - tail);
+    sdk[n - tail] = '\0';
+    return realpath(sdk, capsule_sdk) &&
+           realpath(h->driver.cc1_sysroot, driver_sdk) &&
+           strcmp(capsule_sdk, driver_sdk) == 0;
+}
+#endif
+
 static bool ars_hook_inputs(struct ars_hook *h, const struct ars_compile *k,
                             struct ars_miss *m)
 {
@@ -1601,6 +1817,14 @@ static bool ars_hook_inputs(struct ars_hook *h, const struct ars_compile *k,
     if (!ars_hook_env(h, k, m) ||
         !ars_hook_driver(h, k, implicit, backend, m))
         return false;
+#if defined(__APPLE__)
+    if (!ars_sdk_matches_capsule(h)) {
+        ars_miss_set(m, "driver_sysroot_capsule_mismatch",
+                     "the compiler selected an SDK outside the bound "
+                     "toolchain capsule", h->driver.cc1_sysroot);
+        return false;
+    }
+#endif
     /* The capsule is the host toolchain; the plan's own driver command (a
      * wrapper, a cache, another compiler) is bound by its program bytes,
      * the programs it runs for a compile by theirs, and the libraries its
