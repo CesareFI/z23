@@ -401,26 +401,40 @@ static void bg_validation_row_backoff(struct bg_validation_service *svc,
         wait_ms *= 2;
     if (wait_ms > BG_VALIDATION_ROW_BACKOFF_MAX_MS)
         wait_ms = BG_VALIDATION_ROW_BACKOFF_MAX_MS;
-    if (attempt >= BG_VALIDATION_ROW_LOUD_AFTER)
-        LOG_WARN("bg_validation",
-                 "[bg-valid] h=%d delta row unresolved (attempt %u): %s — "
-                 "never booking while unresolved; backing off %llus before "
-                 "re-checking",
-                 h, attempt + 1, reason,
-                 (unsigned long long)(wait_ms / 1000));
-    else
-        LOG_INFO("bg_validation",
-                 "[bg-valid] h=%d delta row unresolved (attempt %u): %s — "
-                 "never booking while unresolved; backing off %llus before "
-                 "re-checking",
-                 h, attempt + 1, reason,
-                 (unsigned long long)(wait_ms / 1000));
-    bg_validation_supervisor_heartbeat(svc);
-    if (!atomic_load(&svc->stop_requested)) {
+    /* Throttled like bg_validation_fold_backoff's own wait log: every
+     * attempt already means a real, growing wait in production (seconds
+     * apart at first, minutes apart once capped), but a driven-hard test
+     * fixture with a no-delay sleep stub can run thousands of attempts a
+     * second, so log only the first few and then every 10th. */
+    if (attempt < 3 || attempt % 10 == 0) {
+        if (attempt >= BG_VALIDATION_ROW_LOUD_AFTER)
+            LOG_WARN("bg_validation",
+                     "[bg-valid] h=%d delta row unresolved (attempt %u): %s — "
+                     "never booking while unresolved; backing off %llus before "
+                     "re-checking",
+                     h, attempt + 1, reason,
+                     (unsigned long long)(wait_ms / 1000));
+        else
+            LOG_INFO("bg_validation",
+                     "[bg-valid] h=%d delta row unresolved (attempt %u): %s — "
+                     "never booking while unresolved; backing off %llus before "
+                     "re-checking",
+                     h, attempt + 1, reason,
+                     (unsigned long long)(wait_ms / 1000));
+    }
+    /* Sleep in 1s slices, checking stop_requested and heartbeating between
+     * each — the same shape as bg_validation_fold_backoff and the re-verify
+     * loop's idle wait. wait_ms can run up to BG_VALIDATION_ROW_BACKOFF_MAX_MS
+     * (5 minutes); one uninterruptible platform_sleep_ms(wait_ms) here made
+     * bg_validation_stop's undeadlined pthread_join block that long, long
+     * enough for systemd's shutdown timeout to SIGKILL the node. */
+    for (uint64_t slept = 0; slept < wait_ms && !atomic_load(&svc->stop_requested);
+         slept += 1000) {
+        bg_validation_supervisor_heartbeat(svc);
 #ifdef ZCL_TESTING
-        g_row_backoff_sleep_fn((int)wait_ms);
+        g_row_backoff_sleep_fn(1000);
 #else
-        platform_sleep_ms((int)wait_ms);
+        platform_sleep_ms(1000);
 #endif
     }
 }

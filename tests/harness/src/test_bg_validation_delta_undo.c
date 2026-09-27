@@ -965,17 +965,108 @@ static int du_case_walk_row_never_resolves(struct du_fixture *fx)
         ASSERT_EQ(atomic_load(&svc.progress.verified_height), 0);
         ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 0);
         ASSERT_EQ(bg_validation_get_undo_skip_stats().blocks, (uint64_t)0);
-        /* It did retry (more than one attempt), and the retries were
-         * genuinely backed off rather than the probe spinning: the last
-         * captured wait grew past the first attempt's 1s starting point. */
+        /* It did retry (more than one probe attempt), and the backoff
+         * between attempts genuinely grows: each attempt now sleeps in 1s
+         * slices (so shutdown stays responsive — see
+         * du_case_walk_stop_during_backoff below), so the number of slice
+         * calls grows faster than the number of probe attempts once the
+         * backoff exceeds its first 1s attempt. */
+        int probes = atomic_load(&g_wk_h1_probes);
         int sleeps = atomic_load(&g_wk_stuck_sleep_calls);
         ASSERT(sleeps >= 2);
-        ASSERT(atomic_load(&g_wk_stuck_last_wait_ms) > 1000);
+        ASSERT(probes >= 2);
+        ASSERT(sleeps > probes);
         PASS();
     } _test_next:;
     if (started)
         bg_validation_stop(&svc);
     g_wk_svc = NULL;
+    bg_validation_test_set_validate_stub(NULL);
+    bg_validation_test_set_body_repair_stubs(NULL, NULL);
+    bg_validation_test_set_row_backoff_stubs(NULL, NULL);
+    return failures;
+}
+
+/* Fast-forwards the first few backoff calls (near-instant, no real sleep) so
+ * the walk quickly reaches a multi-second attempt, then sleeps for REAL —
+ * exactly what the walk's own production code path does once it is not
+ * given a test sleep stub, except this lets the test control exactly which
+ * call is the first "real" one regardless of whether that production code
+ * slices a long backoff into 1s pieces or (the bug) sleeps it in one shot:
+ * sliced, this is called many times with ms=1000 each; unsliced, it is
+ * called once with the whole (multi-second) wait. Either way, once past
+ * the fast-forwarded calls, this genuinely blocks for `ms`, so a
+ * concurrently-requested stop is a real test of how long the walk's sleep
+ * takes to notice stop_requested. */
+static _Atomic int g_wk_stop_test_calls;
+static void wk_stop_test_sleep(int ms)
+{
+    if (atomic_fetch_add(&g_wk_stop_test_calls, 1) < 3)
+        return;
+    platform_sleep_ms(ms);
+}
+
+/* RED/GREEN for the shutdown-hang fix: bg_validation_row_backoff used to do
+ * one uninterruptible platform_sleep_ms(wait_ms) of up to
+ * BG_VALIDATION_ROW_BACKOFF_MAX_MS (5 minutes) after checking
+ * stop_requested exactly once, so bg_validation_stop's pthread_join (no
+ * deadline) could block that long — long enough for an operator or
+ * systemd's shutdown timeout to SIGKILL the node mid-shutdown. Proves stop
+ * returns quickly even while the walk is genuinely asleep inside a
+ * multi-second backoff wait. */
+static int du_case_walk_stop_during_backoff(struct du_fixture *fx)
+{
+    int failures = 0;
+    struct bg_validation_service svc;
+    memset(&svc, 0, sizeof(svc));
+    bool started = false;
+    TEST("delta_undo: stop returns quickly even mid-backoff") {
+        ASSERT(fx->opened);
+        ASSERT(du_exec(progress_store_db(),
+            "UPDATE utxo_apply_delta SET branch_hash=zeroblob(32) "
+            "WHERE height=1"));
+        struct block_undo u;
+        ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_OTHER_BRANCH);
+        g_wk_fx = fx;
+        atomic_store(&g_wk_h1_probes, 0);
+        atomic_store(&g_wk_stop_test_calls, 0);
+        g_wk_progress = -1;
+        g_wk_version = 0;
+        g_wk_skips = -1;
+        svc.ms = &fx->ms;
+        svc.datadir = fx->dir;
+        svc.params = fx->cp;
+        svc.num_workers = 1;
+        svc.progress_store = (struct bg_validation_store_port) {
+            .self = &svc,
+            .load_progress = wk_load_progress,
+            .save_progress = wk_save_progress,
+            .load_skips = wk_load_skips,
+            .save_skips = wk_save_skips,
+            .load_coverage_version = wk_load_version,
+            .save_coverage_version = wk_save_version,
+        };
+        bg_validation_reset_undo_skip_stats();
+        bg_validation_test_set_body_repair_stubs(wk_read_body, NULL);
+        bg_validation_test_set_validate_stub(wk_validate);
+        bg_validation_test_set_row_backoff_stubs(wk_row_probe_stuck,
+                                                 wk_stop_test_sleep);
+        started = bg_validation_start(&svc);
+        ASSERT(started);
+        /* Wait past the fast-forwarded calls, into a real sleep, then give
+         * it a moment to be genuinely mid-sleep before requesting stop. */
+        for (int i = 0; i < 200 && atomic_load(&g_wk_stop_test_calls) < 4; i++)
+            platform_sleep_ms(20);
+        platform_sleep_ms(300);
+        int64_t t0 = platform_time_monotonic_ms();
+        bg_validation_stop(&svc);
+        started = false;
+        int64_t elapsed_ms = platform_time_monotonic_ms() - t0;
+        ASSERT(elapsed_ms < 5000);
+        PASS();
+    } _test_next:;
+    if (started)
+        bg_validation_stop(&svc);
     bg_validation_test_set_validate_stub(NULL);
     bg_validation_test_set_body_repair_stubs(NULL, NULL);
     bg_validation_test_set_row_backoff_stubs(NULL, NULL);
@@ -1111,6 +1202,7 @@ static int test_delta_undo_forward_record(const struct chain_params *cp)
     failures += du_case_unfolded_store(&fx);
     failures += du_case_walk_waits_out_branch_switch(&fx);
     failures += du_case_walk_row_never_resolves(&fx);
+    failures += du_case_walk_stop_during_backoff(&fx);
     failures += du_case_walk_reorg_race(&fx);
     if (fx.opened)
         du_close(&fx.ms);
