@@ -558,6 +558,12 @@ touch -- "$WT_FX/wt-recent/build/obj/a.o"
 # own mtime; that alone is not recent build activity.
 make_build_wt wt-emptied
 touch -- "$WT_FX/wt-emptied/build" "$WT_FX/wt-emptied/build/obj"
+# A proof generation (a direct child of a .z23p pool) belongs to z23p, but a
+# worktree nested under a generation's test-tmp (a proof running this very
+# selftest) is an ordinary worktree and must still be swept.
+POOL_GEN="$HOME_FX/lanes/.z23p/gen1"
+WT_FX="$HOME_FX/lanes/.z23p" make_build_wt gen1
+WT_FX="$POOL_GEN/test-tmp" make_build_wt wt-nest
 touch_hours_ago "$WT_FX/wt-mid/build/obj/a.o" 5
 mkdir -p -- "$PROC_FX/4242424"
 ln -s "$WT_FX/wt-live/build" "$PROC_FX/4242424/cwd"
@@ -567,6 +573,7 @@ out="$(run_hostgc wtbuild dry-run)"
 assert_contains "$out" "KEEP (live process inside): $WT_FX/wt-live" "wtbuild keeps a worktree a live process sits in"
 assert_contains "$out" "KEEP (built within" "wtbuild keeps a worktree built recently"
 assert_contains "$out" "$WT_FX/wt-idle/build/obj" "wtbuild dry-run names an idle build output"
+assert_contains "$out" "$POOL_GEN/test-tmp/wt-nest/build/obj" "wtbuild names a worktree nested inside a proof generation"
 [ -d "$WT_FX/wt-idle/build/obj" ] && pass "wtbuild dry-run removes nothing" \
     || fail "wtbuild dry-run removed build output"
 
@@ -594,6 +601,9 @@ pass "wtbuild apply keeps every evidence-bearing build/ child"
 assert_contains "$log" "$(printf 'wtbuild-remove\t%s' "$WT_FX/wt-idle/build/obj")" \
     "wtbuild apply logs each removal with its path"
 [ -d "$REPO_FX" ] || fail "wtbuild touched the main checkout"
+[ -f "$POOL_GEN/build/obj/a.o" ] || fail "wtbuild reached into a proof generation that z23p owns"
+[ -e "$POOL_GEN/test-tmp/wt-nest/build/obj" ] && fail "wtbuild skipped a worktree nested inside a proof generation" \
+    || pass "wtbuild sweeps a nested worktree and leaves the proof generation to z23p"
 
 # Below the low-disk floor the idle window drops to two hours.
 out="$(HGT_DF_AVAIL_KB=1048576 run_hostgc wtbuild apply)"

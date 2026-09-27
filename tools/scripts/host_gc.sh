@@ -851,8 +851,17 @@ z23p_sweep_other_pools() {
         is_protected "$pool" && continue
         z23p_sweep_pool "$pool"
     done < <(worktree_paths "$GC_REPO" | while IFS= read -r wt; do
-                 case "$wt" in */.z23p/*) dirname -- "$wt" ;; esac
+                 z23p_generation_pool "$wt"
              done | sort -u)
+}
+
+# A proof generation is a direct child of a pool: <parent>/.z23p/<tag> or
+# $Z23P_RAM/<tag>. Prints that pool. A worktree nested deeper (a test fixture
+# under a generation's test-tmp) is not a generation and prints nothing.
+z23p_generation_pool() {
+    local parent
+    parent="$(dirname -- "$1")"
+    case "$parent" in */.z23p|"$Z23P_RAM") printf '%s\n' "$parent" ;; esac
 }
 
 # ========================================================= CATEGORY wtbuild
@@ -1016,7 +1025,8 @@ z23_lane_worktrees() {
     while IFS= read -r wt; do
         [ -n "$wt" ] || continue
         [ "$wt" = "$GC_REPO" ] && continue
-        case "$wt" in */.z23p/*|"$GC_TMP"/*|"$Z23P_RAM"/*) continue ;; esac
+        [ -n "$(z23p_generation_pool "$wt")" ] && continue
+        case "$wt" in "$GC_TMP"/*) continue ;; esac
         [ -d "$wt" ] || continue
         printf '%s\n' "$wt"
     done < <(worktree_paths "$GC_REPO")
