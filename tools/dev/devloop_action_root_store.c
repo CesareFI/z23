@@ -1794,17 +1794,64 @@ static bool ars_sdk_matches_capsule(const struct ars_hook *h)
 }
 #endif
 
+struct ars_capsule_capture {
+    struct vcs_toolchain_capsule_v1 capsule;
+    bool ok;
+};
+
+static void *ars_capsule_capture_run(void *opaque)
+{
+    struct ars_capsule_capture *capture = opaque;
+    capture->ok = vcs_toolchain_capsule_v1_capture(&capture->capsule);
+    return NULL;
+}
+
+/* Capture independent host and action facts together. The joined worker's
+ * bytes and the driver's exact child-environment answers are both required. */
+static bool ars_hook_capture_pair(struct ars_hook *h,
+    const struct ars_compile *k, struct ars_miss *m, uint8_t capsule_root[32],
+    uint8_t implicit[32], uint8_t backend[32])
+{
+    struct ars_capsule_capture *capture = zcl_calloc(1, sizeof(*capture),
+                                                    "toolchain capture");
+    if (!capture) {
+        ars_miss_set(m, "out_of_memory", "toolchain capture allocation failed",
+                     NULL);
+        return false;
+    }
+    pthread_t worker;
+    // raw-pthread-ok:joined before the key uses either capture result
+    bool started = pthread_create(&worker, NULL,
+                                  ars_capsule_capture_run, capture) == 0;
+    bool driver_ok = ars_hook_driver(h, k, implicit, backend, m);
+    if (started && pthread_join(worker, NULL) != 0) {
+        /* The worker might still own capture; do not free or read it. */
+        ars_miss_set(m, "toolchain_unavailable",
+                     "toolchain capture join failed", NULL);
+        return false;
+    }
+    if (!started)
+        (void)ars_capsule_capture_run(capture);
+    bool capsule_ok = capture->ok &&
+        vcs_toolchain_capsule_v1_root(&capture->capsule, capsule_root);
+    if (capsule_ok)
+        h->capsule = capture->capsule;
+    free(capture);
+    if (!capsule_ok) {
+        ars_miss_set(m, "toolchain_unavailable",
+                     "toolchain capsule unavailable", NULL);
+        return false;
+    }
+    if (!driver_ok)
+        return false;
+    return true;
+}
+
 static bool ars_hook_inputs(struct ars_hook *h, const struct ars_compile *k,
                             struct ars_miss *m)
 {
     struct zcl_action_root_request *r = &h->req;
     uint8_t capsule_root[32], implicit[32], backend[32];
-    if (!vcs_toolchain_capsule_v1_capture(&h->capsule) ||
-        !vcs_toolchain_capsule_v1_root(&h->capsule, capsule_root)) {
-        ars_miss_set(m, "toolchain_unavailable",
-                     "toolchain capsule unavailable", NULL);
-        return false;
-    }
     if (ars_response_file(k->cc) || ars_response_file(k->cflags) ||
         ars_response_file(k->ldflags) || !ars_options_first(k->cflags) ||
         !ars_options_first(k->ldflags)) {
@@ -1814,7 +1861,7 @@ static bool ars_hook_inputs(struct ars_hook *h, const struct ars_compile *k,
         return false;
     }
     if (!ars_hook_env(h, k, m) ||
-        !ars_hook_driver(h, k, implicit, backend, m))
+        !ars_hook_capture_pair(h, k, m, capsule_root, implicit, backend))
         return false;
 #if defined(__APPLE__)
     if (!ars_sdk_matches_capsule(h)) {

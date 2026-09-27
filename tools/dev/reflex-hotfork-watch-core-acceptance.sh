@@ -131,6 +131,26 @@ find_impact()
     done
     return 1
 }
+
+find_compile()
+{
+    local cursor="$1" terminal="$2" edit="$3" raw next phase observed i
+    for ((i=0; i<16 && cursor<terminal; i++)); do
+        raw="$($BIN dev loop wait --input="{\"after_epoch\":$cursor,\"timeout_ms\":100}")" || return 1
+        next="$(jq -r '.data.epoch//0' <<<"$raw")"
+        [[ "$next" =~ ^[0-9]+$ && "$next" -gt "$cursor" &&
+           "$next" -le "$terminal" ]] || return 1
+        phase="$(jq -r '.data.phase//""' <<<"$raw")"
+        observed="$(jq -r '.data.edit_epoch//""' <<<"$raw")"
+        if [[ "$phase" == COMPILE_GREEN || "$phase" == COMPILE_RED ]] &&
+           [[ "$observed" == "$edit" ]]; then
+            printf '%s\n' "$raw"
+            return 0
+        fi
+        cursor="$next"
+    done
+    return 1
+}
 [[ -x "$BIN" ]] || fail "missing dev binary: $BIN"
 [[ -f "$SOURCE" && ! -L "$SOURCE" ]] || fail "owner source is not a regular file: $SOURCE"
 command -v jq >/dev/null || fail 'jq is required'
@@ -167,26 +187,55 @@ watcher_session="$(jq -er '.data.watcher_session' <<<"$begin")" || fail 'watcher
 after="$(jq -er '.data.epoch' <<<"$begin")" || fail 'event cursor missing'
 nonce="$(date +%s%N)"
 
+record_attempt_failure()
+{
+    local reason="$1"
+    mkdir -p "$(dirname "$OUTPUT")"
+    (set -C; jq -n --arg expected "$expected" --arg reason "$reason" \
+      --argjson latency_bound "$latency_bound" \
+      --arg result_text "$result" --arg compile_text "$compile_raw" '
+      ($result_text|try fromjson catch null) as $result |
+      ($compile_text|try fromjson catch null) as $compile |
+      {schema:"zcl.reflex_watch_attempt_failure.v1",expected:$expected,
+       failure_reason:$reason,latency_bound_us:$latency_bound,
+       latency_miss:($latency_bound>0 and
+         (($result.data.feedback_us//0)>=$latency_bound)),
+       result:$result,result_raw:$result_text,
+       compile_event:$compile,compile_raw:$compile_text,
+       independent_proof:false}' \
+      >"$OUTPUT.miss.$nonce.json") || fail 'could not preserve failed attempt'
+    fail "$reason"
+}
+
 drive_candidate()
 {
     local candidate="$1" expected="$2" latency_bound="${3:-1000000}"
-    local wait_for_edit=true event='' next loops
+    local wait_for_edit=true event='' next loops edit
     chmod --reference="$SOURCE" "$candidate"
     start_cursor="$after"
     mv -f -- "$candidate" "$SOURCE"
     result=''
+    compile_raw='null'
     for ((loops = 0; loops < 16; loops++)); do
-        result="$($BIN dev drive --input="{\"after_epoch\":$after,\"wait_for_edit\":$wait_for_edit,\"timeout_ms\":5000}")"
-        event="$(jq -r '.data.event//""' <<<"$result")"
-        next="$(jq -r '.data.epoch//0' <<<"$result")"
+        if ! result="$($BIN dev drive --input="{\"after_epoch\":$after,\"wait_for_edit\":$wait_for_edit,\"timeout_ms\":5000}")"; then
+            record_attempt_failure 'dev drive refused or failed'
+        fi
+        event="$(jq -r '.data.event//""' <<<"$result")" ||
+            record_attempt_failure 'dev drive returned malformed event'
+        next="$(jq -r '.data.epoch//0' <<<"$result")" ||
+            record_attempt_failure 'dev drive returned malformed cursor'
         [[ "$next" =~ ^[0-9]+$ && "$next" -gt "$after" ]] ||
-            fail "event cursor did not advance: $(jq -c . <<<"$result")"
+            record_attempt_failure 'event cursor did not advance'
         after="$next"
         [[ "$event" == "$expected" || "$event" == STORY_RED ||
            "$event" == COMPILE_RED ]] && break
         wait_for_edit=false
     done
-    jq -e --arg expected "$expected" --arg story "$STORY" \
+    edit="$(jq -r '.data.edit_epoch//""' <<<"$result")" ||
+        record_attempt_failure 'dev drive returned malformed edit epoch'
+    compile_raw="$(find_compile "$start_cursor" "$after" \
+      "$edit")" || record_attempt_failure 'matching compile event missing'
+    if ! jq -e --arg expected "$expected" --arg story "$STORY" \
       --argjson latency_bound "$latency_bound" \
       --arg forbidden "$FORBIDDEN" '
       .ok==true and .data.event==$expected and
@@ -201,8 +250,9 @@ drive_candidate()
       .data.loaded_mapping_root==.data.candidate_module_root and
       (.data.story_root|test("^[0-9a-f]{64}$")) and
       (.data.story_fixture_root|test("^[0-9a-f]{64}$")) and
-      (.data.observation_root|test("^[0-9a-f]{64}$"))' <<<"$result" >/dev/null ||
-        fail "candidate did not return bound $expected: $(jq -c . <<<"$result")"
+      (.data.observation_root|test("^[0-9a-f]{64}$"))' <<<"$result" >/dev/null; then
+        record_attempt_failure "candidate did not return bound $expected"
+    fi
 }
 
 green="$(mktemp "$ROOT/tools/dev/.reflex-watch-core-green.XXXXXX")"
@@ -210,6 +260,7 @@ cp -p -- "$backup" "$green"
 printf '\n/* ZCL_REFLEX_WATCH_CORE_ACCEPTANCE:%s */\n' "$nonce" >>"$green"
 drive_candidate "$green" STORY_GREEN
 green_result="$result"
+green_compile="$compile_raw"
 green_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
 green_leaf="$(source_leaf_sha3 "${SOURCE#$ROOT/}" "$SOURCE")"
 green_size="$(wc -c <"$SOURCE")"
@@ -237,6 +288,7 @@ cp -p -- "$backup" "$unrelated_proof"
 printf '\n/* ZCL_REFLEX_WATCH_CORE_ACCEPTANCE:%s */\n' "$nonce" >>"$unrelated_proof"
 drive_candidate "$unrelated_proof" STORY_GREEN
 unrelated_result="$result"
+unrelated_compile="$compile_raw"
 unrelated_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
 
 mutant="$(mktemp "$ROOT/tools/dev/.reflex-watch-core-red.XXXXXX")"
@@ -247,6 +299,7 @@ MUTANT_OLD="$MUTANT_OLD" MUTANT_NEW="$MUTANT_NEW" perl -0pi -e '
 ' "$mutant"
 drive_candidate "$mutant" STORY_RED
 red_result="$result"
+red_compile="$compile_raw"
 jq -e '.data.next_command=="fix the failed check in story_detail, then save the C23 edit"' \
     <<<"$red_result" >/dev/null || fail 'RED did not name the source edit as next action'
 red_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
@@ -260,6 +313,7 @@ cp -p -- "$backup" "$revert"
 printf '\n/* ZCL_REFLEX_WATCH_CORE_ACCEPTANCE:%s */\n' "$nonce" >>"$revert"
 drive_candidate "$revert" STORY_GREEN
 revert_result="$result"
+revert_compile="$compile_raw"
 revert_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
 revert_leaf="$(source_leaf_sha3 "${SOURCE#$ROOT/}" "$SOURCE")"
 revert_size="$(wc -c <"$SOURCE")"
@@ -359,6 +413,7 @@ jq -e --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
 
 malformed_result='null'
 malformed_raw='null'
+malformed_compile='null'
 malformed_story_sha256=''
 if [[ -n "$STORY_INPUT" ]]; then
     "$BIN" dev loop stop --input="{\"watcher_id\":$watcher_id,\"watcher_session\":\"$watcher_session\"}" >/dev/null ||
@@ -376,6 +431,7 @@ if [[ -n "$STORY_INPUT" ]]; then
     printf '\n/* ZCL_REFLEX_WATCH_CORE_MALFORMED:%s */\n' "$nonce" >>"$malformed"
     drive_candidate "$malformed" STORY_RED 0
     malformed_result="$result"
+    malformed_compile="$compile_raw"
     malformed_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
     jq -e '
       .data.event=="STORY_RED" and
@@ -403,6 +459,10 @@ jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
   --argjson unrelated "$unrelated_result" --argjson unrelated_raw "$unrelated_raw" \
   --argjson revert "$revert_result" --argjson revert_raw "$revert_raw" \
   --argjson malformed "$malformed_result" --argjson malformed_raw "$malformed_raw" \
+  --argjson green_compile "$green_compile" --argjson red_compile "$red_compile" \
+  --argjson unrelated_compile "$unrelated_compile" \
+  --argjson revert_compile "$revert_compile" \
+  --argjson malformed_compile "$malformed_compile" \
   --arg malformed_story_sha256 "$malformed_story_sha256" '
   {schema:"zcl.reflex_owner_acceptance.v1",owner:$owner,
    edited_path:$edited,
@@ -421,7 +481,7 @@ jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
        module:$red_raw.data.candidate_module_root,
        loaded:$red_raw.data.loaded_mapping_root,
        observation:$red_raw.data.observation_root}},
-   resources:{scope:"five watch-story results; unrelated service edit excluded",
+   resources:{scope:"green, RED, unrelated, revert, and optional malformed results",
      green_wall_us:$green_raw.data.elapsed_us,
      born_red_wall_us:$red_raw.data.elapsed_us,
      revert_wall_us:$revert_raw.data.elapsed_us,
@@ -432,6 +492,16 @@ jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
      story_forks:([$green_raw,$red_raw,$unrelated_raw,$revert_raw,$malformed_raw] |
        map(if .data.resident.forked then 1 else 0 end)|add), cpu_us:null,
      cpu_note:"per-story CPU is not present in the sealed event"},
+   build_stages:{green:$green_compile.data.build_stages,
+     born_red:$red_compile.data.build_stages,
+     unrelated:$unrelated_compile.data.build_stages,
+     revert:$revert_compile.data.build_stages,
+     malformed:$malformed_compile.data.build_stages},
+   key_cost_us:{green:$green_compile.data.build_receipt.artifact_cache_key_us,
+     born_red:$red_compile.data.build_receipt.artifact_cache_key_us,
+     unrelated:$unrelated_compile.data.build_receipt.artifact_cache_key_us,
+     revert:$revert_compile.data.build_receipt.artifact_cache_key_us,
+     malformed:$malformed_compile.data.build_receipt.artifact_cache_key_us},
    green:{event:$green.data.event,feedback_us:$green.data.feedback_us,
      candidate_object_root:$green.data.candidate_object_root,
      candidate_module_root:$green.data.candidate_module_root,
