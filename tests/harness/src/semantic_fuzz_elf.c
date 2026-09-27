@@ -28,6 +28,7 @@
 #define SHT_NOBITS_ 8u
 #define STT_SECTION_ 3u
 #define STT_FUNC_ 2u
+#define STB_LOCAL_ 0u
 #define SHN_LORESERVE_ 0xff00u
 #define DT_RPATH_ 15u
 #define DT_RUNPATH_ 29u
@@ -135,10 +136,10 @@ static bool open_elf(struct elf *e, const uint8_t *img, size_t n, bool rel,
     return read_header(e, rel) && read_sections(e);
 }
 
-/* Symbol k of the symbol table: its name, type, section and value. */
+/* Symbol k of the symbol table: its name, binding, type, section and value. */
 struct sym {
     const char *name;
-    uint32_t type, shndx;
+    uint32_t type, bind, shndx;
     uint64_t value, size;
 };
 
@@ -150,6 +151,7 @@ static bool sym_at(const struct elf *e, uint64_t k, struct sym *out)
         return false;
     s = e->b + st->offset + k * SYM_SIZE;
     out->type = s[4] & 0xfu;
+    out->bind = s[4] >> 4;
     out->shndx = zcl_read_u16_le(s + 6);
     out->value = zcl_read_u64_le(s + 8);
     out->size = zcl_read_u64_le(s + 16);
@@ -210,6 +212,7 @@ static bool add_func(struct elf *e, const struct sym *s, struct sfz_funcs *out)
     f = &out->v[out->n];
     memset(f, 0, sizeof(*f));
     memcpy(f->name, s->name, strlen(s->name) + 1);
+    f->local = s->bind == STB_LOCAL_;
     f->shndx = s->shndx;
     f->value = s->value;
     f->size = s->size;

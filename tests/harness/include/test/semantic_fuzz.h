@@ -77,6 +77,7 @@ bool sfz_write_repro(const struct sfz_repro *r, const char *dir);
  * that patch them, digested twice, with and without the addends. */
 struct sfz_func {
     char name[SFZ_NAME_MAX];
+    bool local;          /* STB_LOCAL: a static, or a compiler-made clone */
     uint32_t shndx;
     uint64_t value, size;
     uint8_t full[32];    /* bytes, relocation offset, type, target, addend */

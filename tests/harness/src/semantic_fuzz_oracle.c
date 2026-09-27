@@ -98,12 +98,48 @@ tu_of(const struct sfz_plan *p, const char *path)
     return NULL;
 }
 
-/* A seed by its bare name: "t0_s1.constprop.0" is t0_s1's code. */
-static bool is_seed(const struct sfz_plan *p, const char *name, bool bare)
+static bool is_c_path(const char *path, size_t len)
 {
-    size_t len = bare ? strcspn(name, ".") : strlen(name);
+    return len > 2 && path[len - 2] == '.' && path[len - 1] == 'c';
+}
+
+/* True when canonical id `id` names the first `len` bytes of `name` in TU
+ * `tu`: "f:<name>" an external function, "f:<path>:<name>" a local one
+ * that tu itself defines (path is tu) or that a header defines static
+ * (path is no .c file). `any` accepts either binding: a local clone
+ * ("t0_e1.constprop.0") runs its external function's code. A seed without
+ * a canonical id names nothing. */
+static bool id_names(const char *id, const char *name, size_t len, bool local,
+                     bool any, const char *tu)
+{
+    const char *colon, *bare;
+    size_t plen;
+    if (strncmp(id, "f:", 2) != 0)
+        return false;
+    id += 2;
+    colon = strrchr(id, ':');
+    bare = colon != NULL ? colon + 1 : id;
+    if (strlen(bare) != len || strncmp(bare, name, len) != 0)
+        return false;
+    if (colon == NULL)
+        return !local || any;
+    if (!local && !any)
+        return false;
+    plen = (size_t)(colon - id);
+    return (strlen(tu) == plen && strncmp(id, tu, plen) == 0) ||
+           !is_c_path(id, plen);
+}
+
+/* A seed of TU tu's function f by canonical id, so a same-name static of
+ * another file is no seed. With `bare` a suffix after the first '.' is set
+ * aside: "t0_s1.constprop.0" is t0_s1's code. */
+static bool is_seed(const struct sfz_plan *p, const char *tu,
+                    const struct sfz_func *f, bool bare)
+{
+    size_t len = bare ? strcspn(f->name, ".") : strlen(f->name);
+    bool clone = f->name[len] != '\0';
     for (size_t k = 0; k < p->v.seeds_len; k++)
-        if (strlen(p->v.seeds[k]) == len && strncmp(p->v.seeds[k], name, len) == 0)
+        if (id_names(p->v.seed_ids[k], f->name, len, f->local, clone, tu))
             return true;
     return false;
 }
@@ -137,7 +173,7 @@ static void judge_aliases(struct sfz_run *r, const struct sfz_plan *p,
     for (size_t q = 0; f != NULL && q < j->after.n; q++) {
         const struct sfz_func *o = &j->after.v[q];
         if (o == f || o->shndx != f->shndx || o->value != f->value ||
-            strcmp(o->name, f->name) == 0 || is_seed(p, o->name, false))
+            strcmp(o->name, f->name) == 0 || is_seed(p, j->tu, o, false))
             continue;
         r->out->notcov++;
         sfz_why(r->out, "  %s %s alias-of-%s ALIAS-NOT-COVERED\n", j->tu,
@@ -146,9 +182,11 @@ static void judge_aliases(struct sfz_run *r, const struct sfz_plan *p,
 }
 
 static void judge_func(struct sfz_run *r, const struct sfz_plan *p,
-                       const struct tu_judge *j, const char *name, size_t k)
+                       const struct tu_judge *j, const struct sfz_func *f,
+                       size_t k)
 {
     struct sfz_outcome *o = r->out;
+    const char *name = f->name;
     o->cfun++;
     if (!p->v.narrowed) {
         o->covered_other++; /* covered-fallback: the file-seeded plan */
@@ -163,7 +201,7 @@ static void judge_func(struct sfz_run *r, const struct sfz_plan *p,
         o->covered_other++; /* covered-tu-broadened: its whole file */
         return;
     }
-    if (is_seed(p, name, true))
+    if (is_seed(p, j->tu, f, true))
         o->covered_seed++;
     else if (reloc_only(j, name, k)) {
         o->reloc++;
@@ -195,7 +233,7 @@ static void judge_side(struct sfz_run *r, const struct sfz_plan *p,
         if (before && sfz_func_find(&j->after, side->v[i].name, k) != NULL)
             continue;
         if (func_changed(j, side->v[i].name, k))
-            judge_func(r, p, j, side->v[i].name, k);
+            judge_func(r, p, j, &side->v[i], k);
     }
 }
 

@@ -1258,7 +1258,11 @@ on both sides. The change set is planned in process exactly as
    (read from the ELF symbol, section and RELA tables; a change only in a
    relocation addend does not count) is a seed of the narrowed plan, or is
    covered by a fallback, or by a broadened TU after a header change; and
-   every other symbol at a seed's address (an alias) is a seed too.
+   every other symbol at a seed's address (an alias) is a seed too. A
+   seed covers a function by canonical id, not by bare name: `f:<name>`
+   an external symbol, `f:<path>:<name>` a local one whose path is the TU
+   itself or a header (a header static), so a same-name static in another
+   file is not covered by it.
 
 A false negative prints the seed, profile, mutation, TU and function and
 fails the group. The default run is a fixed list of 40 (seed, profile,

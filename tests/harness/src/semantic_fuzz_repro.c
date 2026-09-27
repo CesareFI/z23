@@ -558,6 +558,7 @@ const struct sfz_repro k_sfz_repros[] = {
      "into its own object, and a b.c edit does not seed the includer's "
      "functions that inline them (test_b_k)",
      SFZ_FILES(k_f8_c_includes_c),
+     "src/test_b.c b_k NOT-COVERED\n"
      "src/test_b.c test_b_k NOT-COVERED\n"},
     {"F8_c_includes_c_renamed", "body_static",
      "a.c #includes b.c (unity build); b_k body changes", false,
