@@ -716,7 +716,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `dev change plan` | ready | read / read / operator · instant/tiny | `files` | `zcl.dev_plan.v1` | `z23 dev change plan --input='{"files":["contexts/commons/apps/social/app.def"]}'` | Classify files and select the smallest proof |
+| `dev change plan` | ready | read / read / operator · instant/tiny | `files`, `facts`, `facts_offset` | `zcl.dev_plan.v1` | `z23 dev change plan --input='{"files":["contexts/commons/apps/social/app.def"]}'` | Classify files and select the smallest proof |
 | `dev change apply` (aliases: `dev.change.cycle`) | compat 🔧 → `z23-dev dev change cycle` | mutate / dev-mutation / **owner**, job · foreground/high | `files` | `zcl.dev_cycle.v1` | `z23 dev change apply --input='{"files":["contexts/commons/apps/social/app.def"]}'` | Contained publication entrypoint: returns RUNTIME_PUBLICATION_CONTAINED — *change application requires the dev-only process/activation executor* |
 
 #### `dev.loop` — Persistent save-to-verdict loop
