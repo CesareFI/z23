@@ -323,11 +323,131 @@ static int pts_cp_compare(const void *a, const void *b)
     return memcmp(x->wire, y->wire, sizeof(x->wire));
 }
 
+enum {
+    PTS_FORK_STATES_MAX = 256,
+    PTS_FORK_WORK_MAX = 1000000,
+    PTS_FORK_MATCHED_BYTES_MAX = 64 * 1024 * 1024,
+};
+
+/* Rebuild may retain an issuer's signed forks, but an equivocating receiver
+ * does not verify a later checkpoint's delta. Prove that every retained
+ * checkpoint names at least one complete ticket branch before publication. */
+static bool pts_match_checkpoint(
+    const struct vcs_proof_receiver *r, const struct pts_cp *cp,
+    const struct mmr *seed, struct mmr *matched,
+    struct mmr *states, struct mmr *next, uint64_t *work)
+{
+    const struct vcs_proof_checkpoint_v1 *c = &cp->decoded;
+    if (seed->num_leaves > c->leaf_count ||
+        c->leaf_count - seed->num_leaves > r->count)
+        LOG_RETURN(false, PTS_LOG, "rebuild: checkpoint ticket gap");
+    states[0] = *seed;
+    size_t count = 1;
+    for (uint64_t seq = seed->num_leaves; seq < c->leaf_count; seq++) {
+        size_t next_count = 0;
+        for (size_t s = 0; s < count; s++) {
+            for (size_t one = pr_entry_seq_first(r, c->issuer_pubkey, seq);
+                 one; one = r->entries[one - 1u].next_seq) {
+                if (++*work > PTS_FORK_WORK_MAX)
+                    LOG_RETURN(false, PTS_LOG,
+                               "rebuild: checkpoint branch work exhausted");
+                const struct pr_entry *entry = &r->entries[one - 1u];
+                if (!pts_valid_ticket(entry)) continue;
+                if (next_count == PTS_FORK_STATES_MAX)
+                    LOG_RETURN(false, PTS_LOG,
+                               "rebuild: checkpoint branch states exhausted");
+                next[next_count] = states[s];
+                if (mmr_append(&next[next_count], entry->observation_root) < 0)
+                    LOG_RETURN(false, PTS_LOG,
+                               "rebuild: checkpoint branch append failed");
+                next_count++;
+            }
+        }
+        if (!next_count)
+            LOG_RETURN(false, PTS_LOG, "rebuild: checkpoint ticket absent");
+        memcpy(states, next, next_count * sizeof(*states));
+        count = next_count;
+    }
+    for (size_t i = 0; i < count; i++) {
+        uint8_t root[32], peaks[32];
+        mmr_root(&states[i], root);
+        if (memcmp(root, c->mmr_root, sizeof(root)) == 0 &&
+            vcs_proof_checkpoint_peaks_root(&states[i], peaks) &&
+            memcmp(peaks, c->peaks_root, sizeof(peaks)) == 0) {
+            *matched = states[i];
+            return true;
+        }
+    }
+    LOG_RETURN(false, PTS_LOG,
+               "rebuild: signed checkpoint has no complete ticket branch");
+}
+
+static bool pts_verify_path(const struct vcs_proof_receiver *r,
+                            const struct pts_cps *cps, size_t *stack,
+                            size_t used, struct mmr *matched,
+                            struct mmr *states, struct mmr *next,
+                            uint8_t *done, uint64_t *work)
+{
+    while (used) {
+        size_t one = stack[--used];
+        size_t parent = cps->items[one].parent;
+        struct mmr empty;
+        mmr_init(&empty);
+        const struct mmr *seed = parent == SIZE_MAX ? &empty : &matched[parent];
+        if (!pts_match_checkpoint(r, &cps->items[one], seed,
+                                  &matched[one], states, next, work))
+            return false;
+        done[one] = 1;
+    }
+    return true;
+}
+
+/* Parent indices still refer to the root-sorted checkpoint array here. An
+ * explicit path stack proves each parent before its child without recursion;
+ * the later replay sort is free to move checkpoint records afterward. */
+static bool pts_verify_checkpoints(const struct vcs_proof_receiver *r,
+                                   const struct pts_cps *cps)
+{
+    if (!cps->count) return true;
+    if (cps->count > PTS_FORK_MATCHED_BYTES_MAX / sizeof(struct mmr))
+        LOG_RETURN(false, PTS_LOG,
+                   "rebuild: checkpoint verification memory bound");
+    struct mmr *matched = zcl_calloc(cps->count, sizeof(*matched),
+                                      "proof_cp_matched");
+    struct mmr *states = zcl_calloc(PTS_FORK_STATES_MAX, sizeof(*states),
+                                     "proof_cp_states");
+    struct mmr *next = zcl_calloc(PTS_FORK_STATES_MAX, sizeof(*next),
+                                   "proof_cp_next");
+    size_t *stack = zcl_calloc(cps->count, sizeof(*stack),
+                                "proof_cp_verify_stack");
+    uint8_t *done = zcl_calloc(cps->count, 1u, "proof_cp_verified");
+    bool ok = matched && states && next && stack && done;
+    if (!ok) LOG_ERROR(PTS_LOG, "rebuild: checkpoint verifier allocation");
+    uint64_t work = 0;
+    for (size_t i = 0; ok && i < cps->count; i++) {
+        size_t cur = i, used = 0;
+        while (cur != SIZE_MAX && !done[cur]) {
+            stack[used++] = cur;
+            cur = cps->items[cur].parent;
+        }
+        if (used)
+            ok = pts_verify_path(r, cps, stack, used, matched,
+                                 states, next, done, &work);
+    }
+    free(done);
+    free(stack);
+    free(next);
+    free(states);
+    free(matched);
+    return ok;
+}
+
 /* Leaf count and signed ancestry together determine replay order. */
 static bool pts_replay(struct vcs_proof_receiver *r, struct pts_cps *cps,
                        struct pts_counts *n)
 {
-    if (!pts_index_ancestry(cps)) return false;
+    if (!pts_index_ancestry(cps) || !pts_verify_checkpoints(r, cps))
+        return false;
     if (cps->count > 1u)
         qsort(cps->items, cps->count, sizeof(*cps->items), pts_cp_compare);
     bool ok = true;

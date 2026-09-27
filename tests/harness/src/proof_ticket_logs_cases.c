@@ -1606,6 +1606,45 @@ static int ptl_case_rebuild_boundary(void)
     return failures;
 }
 
+static int ptl_case_missing_third_fork_checkpoint(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: absent third signed branch refuses rebuild") {
+        ASSERT(ptl_fresh());
+        uint8_t original[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t absent[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), original, NULL));
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        ASSERT(ptl_append(fork, ptf_fail(), forked));
+        vcs_proof_issuer_log_free(fork);
+        struct vcs_proof_issuer_log *third = ptl_fork();
+        ASSERT(third != NULL);
+        struct ptf_spec third_spec = ptf_pass();
+        third_spec.created = 1790000001u;
+        ASSERT(ptl_append(third, third_spec, absent));
+        ASSERT(vcs_proof_issuer_log_checkpoint(third, 12, cp));
+        vcs_proof_issuer_log_free(third);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "missingfork");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, original, sizeof(original), root));
+        ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        size_t tickets = 0, cps = 0, skipped = 0;
+        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                                           &skipped));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 int ptf_log_cases(void)
 {
     int failures = 0;
@@ -1629,6 +1668,7 @@ int ptf_log_cases(void)
     failures += ptl_case_rebuild_conflict();
     failures += ptl_case_seq_reorder();
     failures += ptl_case_signed_seq_fork();
+    failures += ptl_case_missing_third_fork_checkpoint();
     failures += ptl_case_live_signed_seq_fork();
     failures += ptl_case_rebuild_after_live_seq_fork();
     failures += ptl_case_rebuild_fork_checkpoint_alloc();
