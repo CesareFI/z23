@@ -13,7 +13,8 @@ only. It never links a compiler to do so.
 |---|---|---|
 | Reader, builder, roots, diff, dump | `contexts/commons/modules/vcs/src/semantic_manifest.c`, `semantic_manifest_build.c`, `semantic_manifest_dump.c` | SHA3 only |
 | The producer (the "sensor") | `tools/sensors/clang_manifest.c`, `clang_manifest_ast.c` and the compiler-API-free core `clang_manifest_core.c`, `_paths.c`, `_lookup.c`, `_records.c`, `_facts.c`, `_producer.c` | libclang C API; built by `make clang-manifest` |
-| Tests | `tests/harness/src/test_semantic_manifest.c`, `tests/fixtures/semantic_manifest/*.bin` | groups `semantic_manifest` (no libclang) and `semantic_sensor` |
+| The warm session (`z23-clang-manifest session`) | `tools/sensors/clang_manifest_session.c` and the compiler-API-free checks `clang_manifest_warm.c` | libclang C API; the same binary |
+| Tests | `tests/harness/src/test_semantic_manifest.c`, `semantic_sensor_session.c`, `tests/fixtures/semantic_manifest/*.bin` | groups `semantic_manifest` (no libclang) and `semantic_sensor` |
 | Facts extension and snapshot namespace | `contexts/commons/modules/vcs/src/semantic_manifest_facts.c`, `semantic_namespace.c`, `vcs_path_policy.c` | SHA3, a ZVCS tree object |
 | Fuzz harness | `tools/fuzz/fuzz_semantic_manifest.c`, `tests/harness/fuzz_seeds/semantic_manifest/` | libFuzzer; a `FUZZ_TARGETS` entry |
 | Windows acceptance | `tests/harness/src/semantic_manifest_windows_acceptance.c`, `semantic_manifest_windows_fixtures.h`, `tests/fixtures/semantic_facts/*.zsm` | row `semantic_manifest` in `platform/modules/platform/tests/windows_acceptance.mk` |
@@ -236,6 +237,9 @@ never serves either one.
   - each seed changes the exact root, changes the hint root (except
     `comment_only`), changes exactly the listed sections, and names the one
     changed function where there is one.
+  - the warm session writes the bytes a cold process writes after every
+    edit of "Warm session", reports the TU reuse the contract requires, and
+    with the fault flag never writes a warm manifest the oracle rejected.
 
 Setting `ZCL_SEMANTIC_FIXTURE_OUT=tests/fixtures/semantic_manifest` refreshes
 the fixture manifests and prints the golden vector.
@@ -465,6 +469,207 @@ extraction overhead (about 10 percent of compile CPU, objects byte-identical)
 is the bar a future in-compile producer must meet; the sensor's second parse
 is what the tree pays today.
 
+### Warm session
+
+`build/bin/z23-clang-manifest session [--verify-cold] [--no-warm]
+[--max-tus N]` serves a batch of emits from one process. Each stdin line is
+one request: the arguments `emit` takes, separated by TAB (a leading `emit`
+field is optional). A relative `--root` is resolved against the directory
+the session started in. Each request writes its manifest to its `--out`,
+exactly as `emit` would, and prints one JSON line on stdout:
+
+```
+{"seq","ok","source","out","root","bytes","tu","written","verify","reason",
+ "sections","warm_ms","warm_parse_ms","cold_ms","bind_ms"}
+```
+
+A refused request prints `{"seq","ok":false,"source","why"}`. An empty line
+or EOF ends the session with one summary line (`requests`, `refused`,
+`warm_written`, `cold_written`, `verified_equal`, `mismatches`, `evicted`,
+`created`, `reparsed`, `recreated`). The exit status is 3 if any request was
+refused, else 0. There is no daemon, socket or service: the warm state lives
+only as long as the process. The source is
+`tools/sensors/clang_manifest_session.c`; the compiler-API-free checks are
+in `tools/sensors/clang_manifest_warm.c`.
+
+**What stays warm.** Only the `CXTranslationUnit` and its preamble. The
+session parses with `DetailedPreprocessingRecord | PrecompiledPreamble |
+CreatePreambleOnFirstParse`, keeps preambles in memory where libclang has
+`StorePreamblesInMemory` (not Apple's), and reparses with the main file
+handed in as an unsaved buffer. The buffer holds the exact bytes this emit
+read and hashed. Every extraction starts from a fresh `cm_state`: no cursor,
+source location or file handle survives an emit. The table holds up to
+`--max-tus` TUs (default 64, at most 256) and disposes the least recently
+used one when it is full.
+
+**When a TU is recreated** (disposed and parsed again), with the `reason`
+the reply carries:
+
+| Reason | Trigger |
+|---|---|
+| `first-parse`, `no-live-tu` | no TU yet, or the last one was dropped |
+| `argv-changed` | the request's argv, and so flags, C mode, target, sysroot or resource dir, differs |
+| `producer-changed`, `producer-unnamed` | the producer digest (sensor bytes, libclang build ids, type grammar), recomputed on every emit, moved or cannot be named |
+| `file-changed <path>` | a non-main file the accepted manifest read no longer has its SHA3; this also catches an edit that keeps size and mtime, which libclang's own preamble check misses |
+| `lookup-unbound <name>` | the accepted manifest has a lookup with no negative claim (`include_next`, computed, absolute), which cannot be re-checked |
+| `include-shadow-appeared <dir>/<name>`, `include-shadow-vanished ...` | the shadow candidates changed (below) |
+| `warm-unusable: <why>` | a reparse failed a post-check: `main file bytes differ`, `preamble-file-differs <path>`, `identity-moved`, `lookup-moved <name>`; the reparse is discarded and retried once as a fresh parse |
+
+**Shadow candidates.** A reused preamble keeps how every include inside it
+resolved, including includes made inside system headers, which no LOOKUPS
+record covers. libclang revalidates the files it read, not the search slots
+it skipped. So a header copied into an earlier `-I` dir under a name a
+system header includes left a warm reparse stale, while a cold parse read
+the copy (reproduced with `bits/wordsize.h` under `<stdint.h>`, before the
+check existed). The candidates are: for every non-main file of the manifest,
+under every search dir (quote, then angled) that holds it, each earlier
+search dir that now holds the same relative name, or that no longer exists.
+The list is taken right after the parse that builds a preamble, before that
+parse's cold check, and every later reparse needs the same list. A header
+that appears between the parse and the listing therefore makes the cold
+check fail instead of hiding in the baseline. Each dir is read with
+`readdir` once per check, and deeper names are checked with `stat`.
+
+**Verified and qualified.** A warm manifest is written only when it is
+*verified* or *qualified*:
+
+- *Verified*: a cold parse in the same process (`cm_cold_front`, the same
+  code path `emit` runs) produced the byte-identical manifest. The first
+  emit after a TU is created or recreated is always verified this way, and
+  it writes the cold bytes. `--verify-cold` verifies every emit.
+- *Qualified*: a reparse of a TU that has been verified since it was
+  created, whose pre-checks passed (producer, argv, file SHA3s, shadow
+  candidates, no unbound lookup) and whose manifest passed the post-checks.
+  The post-checks are: the main file's FILES digest equals the SHA3 of the
+  unsaved buffer; every non-main file both manifests read has the same
+  digest; IDENTITY is equal; and every LOOKUPS record whose key (includer,
+  spelled, form, kind) the accepted manifest also has is byte-identical. The
+  warm extraction probes each slot below a hit with a fresh `stat`, so a
+  header newly beside the includer, a slot that went away, or a moved hit
+  changes that record.
+
+On a mismatch the cold bytes are written, never the warm ones. The reply
+reports `"verify":"mismatch"` and the changed sections, stderr says so, and
+warm reuse stays off for that TU for the rest of the session (`"tu":"none"`,
+`"reason":"warm-disabled"`). `--no-warm` makes every emit cold.
+
+**Fault flag.** `ZCL_CLANG_MANIFEST_INJECT_WARM_MISMATCH=1` flips the last
+byte of every warm manifest before it is used. It is registered in
+`engine/composition/flags.def`, and the `semantic_sensor` group uses it to
+prove that the oracle catches a bad warm manifest and never writes it.
+
+**libclang behaviour the session works around.** With a preamble,
+`clang_getInclusions` omits files included after the preamble (for example
+`hotswap_loader.c`'s late `#include <dlfcn.h>`). It also reports such a file
+at depth 0, the main file's depth. The sensor therefore names the main file
+by identity (`clang_getFile` of the source), and closes the file table with
+`clang_findIncludesInFile` over every file read. Every front-end instance
+prints its own `-v` search list block, so the sensor parses the last one.
+
+**Measured** at commit `29d490b7fc` on the development host (28 CPUs under
+the `devbuild` slot; 1-minute loadavg 11.5 at the start of the three runs and
+6.8 at the end). The TUs were the 12 TUs of `engine/modules/hotswap` with the
+dev compile argv (`DEV_COMPILE_CFLAGS`, 147 `-I` dirs), `--facts`. Each run
+did the same three rounds over all 12 TUs:
+
+- r1: the tree as committed;
+- r2: after a body edit to each `.c` (`(void)0;` before its last closing
+  brace);
+- r3: after a header edit on top of it (a `#define` in
+  `hotswap/hotswap.h`, which 4 of the 12 include).
+
+Cold is one `emit` process per TU. The session is one process for all 36
+requests. The three runs agreed within 3 percent, except run 2's cold rounds,
+which ran up to 50 percent slower under a load spike; run 3 is shown.
+
+| Round (12 TUs) | cold: 12 processes, wall / CPU | session wall (per request) | session in-process: parse / emit / cold check / pre-checks, sums |
+|---|---|---|---|
+| r1 first parse | 725 ms / 580 ms | 1,215 ms (101 ms) | 502 / 689 / 453 / 0 ms |
+| r2 body edit | 707 ms / 580 ms | 399 ms (33 ms) | 128 / 316 / 0 / 45 ms |
+| r3 header edit | 738 ms / 590 ms | 763 ms (64 ms) | 4 recreated: 224 / 322 / 218 / 5 ms; 8 reparsed: 66 / 149 / 0 / 23 ms |
+
+Cold and session wall times are driver wall times per round (bash, one
+request at a time). The cold CPU column is user plus system time from
+`/usr/bin/time`.
+
+| Whole run | processes | wall | user + sys CPU | max RSS |
+|---|---|---|---|---|
+| cold, 36 emits | 36 | 2.2 s (sum of rounds) | 1.75 s | 90 MB each |
+| session, default | 1 | 2.4 s | 2.3 s | 137 MB |
+| session, `--verify-cold` | 1 | 3.1 s | 3.0 s | 140 MB |
+| session, `--max-tus 8` (12 TUs cycling) | 1 | 3.7 s | 3.5 s | 127 MB |
+
+**Reading.**
+
+- A qualified reparse after a body edit costs 33 ms per request end to end
+  against 60 ms per cold process, 1.8 times faster. About 23 ms of the
+  saving is the process itself: start-up, loading libclang, and writing the
+  file (a cold emit takes about 38 ms inside the process). About 11 ms is
+  the parse: it falls from about 22 ms in a cold emit (derived: the cold
+  emit less the extraction) to about 10.7 ms.
+  Extraction and the post-checks (about 15.6 ms) do not change. The
+  pre-checks cost about 3.7 ms per TU, most of it reading the search dirs
+  for the shadow candidates.
+- A new or recreated TU costs about 101 ms per request: a warm emit whose
+  parse builds the preamble (about 57 ms, 42 ms of it parsing) plus the
+  mandatory cold check (about 38 ms). That is about 41 ms more than a cold
+  process, so a TU pays back after its second qualified reparse. A header
+  edit recreates exactly the TUs that read the header; that round roughly
+  matches cold.
+- `--verify-cold` is an oracle mode: every emit pays a warm and a cold
+  parse, slower than cold alone.
+- A table smaller than the working set evicts every TU before its next
+  request (`evicted` 28 of 36 here), so every request pays the first-parse
+  price, about 1.65 times cold per round. The default of 64 TUs is sized for
+  a module-sized batch; a hotswap TU costs about 4 MB resident with its
+  preamble in memory.
+
+**Cold oracle.**
+
+- Cold bytes are unchanged by this work. Against a sensor built at the base
+  commit (`a0220f0735`), 15 TUs (the 12 hotswap TUs, `disk_space.c`,
+  `devloop_watch.c`, `native_dev_command.c`) gave byte-identical plain
+  manifests. Their facts manifests differed only in the FACTS producer
+  digest, which names the sensor binary.
+- `--verify-cold` over those 15 TUs, twice each, gave 30 of 30 equal.
+- Every warm manifest written in the three measured runs (qualified,
+  verified, and the thrashing table) was compared with a separate cold
+  process's manifest of the same round: 180 of 180 per run were
+  byte-identical, with 0 mismatches reported.
+- The `semantic_sensor` group proves it live on a fixture tree through these
+  edits: a body edit, a main-file macro edit, a header macro edit, a header
+  edit that keeps size and mtime, a header layout edit, a header shadowing
+  in an earlier `-I` dir, a header shadowing beside the includer, a header
+  shadowing one a system header includes, a flag change, and a body edit
+  after it. Each one checks the reported TU reuse, and each written manifest
+  is compared byte for byte with a cold process. The group then runs the
+  qualified mode and the fault flag.
+- Mutants were checked against the group:
+  - dropping the file pre-check is caught (`preamble-file-differs`);
+  - dropping the lookup post-check turns the beside-the-includer shadow into
+    an oracle mismatch;
+  - dropping the shadow candidates fails both the verified case (TU
+    reparsed, not recreated) and the qualified case.
+
+**Known limits** (`--verify-cold` covers each):
+
+- Includes that a system header makes by a name no manifest file carries
+  are not listed, for example a `__has_include` in a system header that
+  found nothing. A quoted include from a system header's own directory is
+  not listed either. Both need a write into a system directory or an
+  unrelated new name in a search dir.
+- A header edited between the pre-check and the reparse, with its size and
+  mtime restored, is not seen. The front end would reuse the preamble, and
+  the FILES post-check hashes what the front end read.
+- A file read through `#embed` inside the preamble is not in FILES, so it
+  is not bound.
+- The environment is fixed for the life of the process. The IDENTITY env
+  allowlist is read from it, and the cold oracle runs under the same
+  environment.
+- USRs are not used: every identity is still the core's canonical id, so
+  the bytes cannot change.
+- The Darwin paths (`producer_before`, no `StorePreamblesInMemory`) compile
+  in the code but were neither built nor measured on a Mac for this change.
 ### Facts revision 2
 
 Facts revision 2 (`zcl.semantic_facts.v2`) adds the `@scope` and `@cond`
