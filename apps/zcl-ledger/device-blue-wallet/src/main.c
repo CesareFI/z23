@@ -201,6 +201,7 @@ static bool format_receive_address(void) {
     if (zcl_base58_encode(payload, sizeof payload, receive_address,
                            sizeof receive_address) < 0 ||
         !blue_wallet_receive_split(receive_address, address_lines)) return false;
+    wallet_payment_set_account_hash(payload + 2);
     return true;
 }
 

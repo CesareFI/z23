@@ -2,7 +2,7 @@
 
 # ZCL Wallet receive and read-only review candidate for Ledger Blue
 
-Version 0.2.3 derives
+Version 0.2.4 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -26,9 +26,12 @@ The 0.2.0 and 0.2.1 review images are excluded from the installer. Version
 0.2.2 deferred screen redraw until after the APDU reply. Version 0.2.3 also
 keeps the transmit and redraw outside the request exception handler, so a
 post-reply display exception cannot schedule a second response. A receive
-exception before a complete APDU now unwinds to the outer app handler. It is an
-uninstalled candidate, not a proven repair. Do not receive funds or sign
-payments with it.
+exception before a complete APDU now unwinds to the outer app handler.
+Version 0.2.4 labels an exact P2PKH hash match to the
+Blue-derived fixed account as “THIS ACCOUNT,” other P2PKH outputs as “OTHER
+ADDRESS,” and P2SH outputs as “P2SH ADDRESS.” It does not infer ownership of
+P2SH or call an output change without verified inputs and account context.
+Version 0.2.4 remains uninstalled. Do not receive funds or sign payments with it.
 
 ## Build
 
@@ -53,12 +56,12 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. The linked 0.2.3 image has 25,088 bytes of `.text`, 4,236
+512-byte margin. The linked 0.2.4 image has 25,600 bytes of `.text`, 4,276
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
-stack; 1,908 bytes remain after that section in the 6,144-byte app SRAM
-region. The largest named C path sums to 648 bytes, excluding BOLOS firmware
+stack; 1,868 bytes remain after that section in the 6,144-byte app SRAM
+region. The largest named C path sums to 656 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced image SHA-256
-`22aa27cd8043ea05b5d6b976ed757484a2de66659c71c25809887bbd2938f2fa`.
+`fb138d05d3c5c9a3b0850f02d00572779dafc8f2aab292d44bc54634c98a8abb`.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.
 

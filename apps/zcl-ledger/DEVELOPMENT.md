@@ -133,7 +133,7 @@ its full image measurements are recorded in the
 [linked Wallet experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-link.md).
 Wallet 0.2.1 receive display and EXIT worked on the Blue, but a later
 read-only payment review stopped USB replies and made EXIT unresponsive.
-Version 0.2.1 was deleted; 0.2.3 remains uninstalled.
+Version 0.2.1 was deleted; 0.2.4 remains uninstalled.
 [`blue_payment_review.h`](include/blue_payment_review.h) adds a C23,
 read-only review controller. It retains one standard transparent output,
 halts upload until that output is acknowledged, and limits a session to 16
@@ -178,7 +178,8 @@ USB behavior failed on a synthetic physical test. The
 [failure experiment](../../docs/experiments/2026-09-27-ledger-blue-wallet-review-failure.md)
 records the observed fault and the offline-only 0.2.2 response. Version 0.2.3
 also prevents a post-reply display exception or an incomplete receive from
-creating an APDU response without a request.
+creating an APDU response without a request. Version 0.2.4 adds a label
+derived from the device's fixed P2PKH hash for an exact self-address match.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch
@@ -198,8 +199,8 @@ The intended everyday app is one [ZCL Wallet](ROADMAP.md). The existing
 Probe, Fixture, Review, and Sign Test apps are narrow development tools.
 The 0.1.0 Wallet receive image used 3,348 bytes of `.bss`, including a
 2,048-byte stack reservation and four-byte canary, in the Blue's 6,144-byte
-app SRAM region. It left 2,796 bytes after `.bss`. The linked 0.2.1 candidate
-uses 4,236 bytes of `.bss` and leaves 1,908 bytes after `.bss`, with the same
+app SRAM region. It left 2,796 bytes after `.bss`. The uninstalled 0.2.4 candidate
+uses 4,276 bytes of `.bss` and leaves 1,868 bytes after `.bss`, with the same
 512-byte guard. It uses bounded streaming instead of Review's 2,304-byte
 transaction buffer. Output and interrupted USB behavior still require
 physical and emulator checks.

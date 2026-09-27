@@ -12,6 +12,14 @@ static cx_blake2b_t payment_blake;
 static cx_sha256_t payment_sha;
 static bool visible;
 static uint8_t displayed_view;
+static uint8_t account_hash160[20];
+static bool account_ready;
+
+void wallet_payment_set_account_hash(const uint8_t hash160[20]) {
+    if (!hash160) return;
+    memcpy(account_hash160, hash160, sizeof account_hash160);
+    account_ready = true;
+}
 
 static bool hash_sha256(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
@@ -53,6 +61,10 @@ bool wallet_payment_visible(void) {
 
 uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length) {
+    if (!account_ready) {
+        if (reply_length) *reply_length = 0;
+        return 0x6985;
+    }
     zcl_zip243_hasher blake = {.context = &payment_blake,
         .init = blake_init, .update = hash_update, .final = hash_final};
     zcl_tx_replay_sha256 sha = {.context = &payment_sha,
@@ -160,6 +172,12 @@ void wallet_payment_display(void) {
     if (view == displayed_view) return;
     displayed_view = view;
     if (view == 2) {
+        if (!blue_payment_screen_mark_account(&payment.screen,
+                &payment.review.output, account_hash160, account_ready)) {
+            wallet_payment_abort();
+            UX_DISPLAY(ended_ui, NULL);
+            return;
+        }
         UX_DISPLAY(output_ui, NULL);
     } else if (view == 3) {
         UX_DISPLAY(complete_ui, NULL);

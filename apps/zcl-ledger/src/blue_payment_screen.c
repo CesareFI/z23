@@ -6,6 +6,41 @@
 
 enum { ZCL_MAX_MONEY_ZAT = 2100000000000000ULL };
 
+blue_payment_account_relation blue_payment_account_classify(
+    const blue_payment_output *output,
+    const uint8_t account_hash160[20], bool account_ready) {
+    if (!output) return BLUE_PAYMENT_ACCOUNT_UNKNOWN;
+    if (output->type == ZCL_TX_STREAM_P2SH)
+        return BLUE_PAYMENT_P2SH_ADDRESS;
+    if (output->type != ZCL_TX_STREAM_P2PKH ||
+        !account_ready || !account_hash160)
+        return BLUE_PAYMENT_ACCOUNT_UNKNOWN;
+    return memcmp(output->hash160, account_hash160, 20) == 0
+        ? BLUE_PAYMENT_THIS_ACCOUNT : BLUE_PAYMENT_OTHER_P2PKH;
+}
+
+bool blue_payment_screen_mark_account(blue_payment_screen *screen,
+    const blue_payment_output *output,
+    const uint8_t account_hash160[20], bool account_ready) {
+    if (!screen) return false;
+    blue_payment_account_relation relation = blue_payment_account_classify(
+        output, account_hash160, account_ready);
+    if (relation == BLUE_PAYMENT_ACCOUNT_UNKNOWN) {
+        screen->kind[0] = 0;
+        return false;
+    }
+    const char *label = relation == BLUE_PAYMENT_THIS_ACCOUNT
+        ? "THIS ACCOUNT" : relation == BLUE_PAYMENT_OTHER_P2PKH
+        ? "OTHER ADDRESS" : "P2SH ADDRESS";
+    size_t label_length = strlen(label);
+    if (label_length >= sizeof screen->kind) {
+        screen->kind[0] = 0;
+        return false;
+    }
+    memcpy(screen->kind, label, label_length + 1);
+    return true;
+}
+
 static bool append_number(char *text, size_t capacity, size_t *used,
     uint64_t value) {
     char digits[20];

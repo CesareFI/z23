@@ -6,6 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Called only after device-side key derivation and receive-address formatting. */
+void wallet_payment_set_account_hash(const uint8_t hash160[20]);
+
 uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length);
 void wallet_payment_display(void);
