@@ -13,14 +13,15 @@
  * a proof, a build, or another host.
  *
  * INPUT (zcl.land_input.v1)
- *   action    string, required: submit | status | step | drive | cancel. Also the
- *             first positional, so `z23-dev dev land submit ...` works.
+ *   action    string, required: submit | attach | status | step | drive |
+ *             cancel; also the first positional (`z23-dev dev land submit`).
  *   tip       submit only, required: a commit-ish resolved in the submitting
  *             checkout; the row stores the full 40-hex commit id.
  *   worktree  submit only, optional: the checkout that holds the tip.
  *             Default: the checkout root above the current directory.
  *   note      submit only, optional free text carried into the outcome row.
- *   seq       cancel only, required: the request sequence number.
+ *   seq       cancel: required. attach: optional; omitted, it targets the ONE
+ *             live PASS row lacking intent, else ATTACH_TARGET_NONE|AMBIGUOUS.
  *   json      status only, optional bool: drop the human screen.
  *
  * STATE. <platform_state_root>/land (0700):
@@ -70,9 +71,9 @@
  * held lock is not an incident; a second step returns STEP_BUSY and
  * does not push. status does not create step.lock and does not hold it.
  *
- * step ALSO fails closed with code STEP_BUSY (ZCL_COMMAND_STATUS_BLOCKED,
- * retryable) when another step is already driving this queue: no row is
- * read, no file is touched, and the caller retries rather than waiting.
+ * attach replies {seq, tip, state:"attached", target:explicit|resolved}.
+ * A beat blocked on PUBLICATION_INTENT_REQUIRED names seq, tip and base in
+ * error.evidence and `z23-dev dev land attach --seq=N` in next_action.
  *
  * step ALSO carries persist:"failed" (plus persist_reason) alongside the
  * `state` it names when the row's own commit to queue.jsonl/outcomes.jsonl
@@ -88,9 +89,8 @@
  *
  * PROCESS RULE. `git`, `make` (lint-fast, install-hooks), and the existing
  * Linux `devbuild` admission wrapper for watcher creation run through
- * util/spawn.h's
- * zcl_spawn_capture(); popen(), system(), and a shell command string are
- * forbidden and gated. The exact proof is requested through the existing
+ * util/spawn.h's zcl_spawn_capture(); popen(), system() and shell command
+ * strings are forbidden and gated. The exact proof is requested through the
  * dev.proof machinery (tools/dev/dev_proof.c), never re-implemented. The
  * final push carries no --no-verify: it goes through the installed
  * pre-push hook like any other push to main, and that hook's exact-receipt
@@ -6252,6 +6252,14 @@ static void dl_step_successor(const struct dl_dirs *d, struct dl_row *row,
         dl_step_reply(reply, row, "rebased");
 }
 
+static void dl_push_intent_blocked(const struct dl_row *row, bool required,
+                                   struct zcl_command_reply *reply);
+
+/* Signed intent gates every production push; only the isolated test
+ * fixture may publish unsigned. A refusal names its exact row and pair plus
+ * the one command that clears it (dl_push_intent_blocked, near attach),
+ * because a driver that cannot tell which row to attach otherwise loops on
+ * `attach --seq=` with nothing to target. */
 static bool dl_push_intent_ready(const struct dl_dirs *d,
                                  const struct dl_row *row,
                                  struct zcl_command_reply *reply)
@@ -6260,19 +6268,11 @@ static bool dl_push_intent_ready(const struct dl_dirs *d,
     bool fixture_unsigned = allow_unsigned && strcmp(allow_unsigned, "1") == 0 &&
                             dl_stub() != NULL;
     if (!fixture_unsigned && !row->publication_signature[0]) {
-        (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_BLOCKED,
-                               "PUBLICATION_INTENT_REQUIRED", "push_intent",
-                               true, false,
-                               "canonical signed publication intent is required before push",
-                               d->land);
+        dl_push_intent_blocked(row, true, reply);
         return false;
     }
     if (row->publication_signature[0] && !dl_publication_verify(d, row)) {
-        dl_fail(reply, "PUBLICATION_INTENT_INVALID", "push_intent",
-                "signed Git landing intent or attached bundle changed",
-                d->land);
+        dl_push_intent_blocked(row, false, reply);
         return false;
     }
     return true;
@@ -6855,11 +6855,176 @@ static void dl_drive(const struct zcl_command_request *req,
 
 /* ── dispatcher ────────────────────────────────────────────────────────── */
 
+/* A publication beat blocked on the operator's signed intent. A failed
+ * envelope carries no data on the wire, so the exact row, pair and next
+ * command also ride in error.evidence and error.next_action; next[] repeats
+ * the command in its reason because a leaf may not name itself there. A
+ * stored intent that stopped verifying cannot be re-attached (attach
+ * refuses it), so that case points at status and names the cancel. */
+static void dl_push_intent_blocked(const struct dl_row *row, bool required,
+                                   struct zcl_command_reply *reply)
+{
+    char evidence[256], command[96], reason[160];
+    (void)snprintf(evidence, sizeof(evidence),
+                   "seq=%lld tip=%.40s base=%.40s head=%.40s",
+                   row->seq, row->tip, row->base, row->local);
+    if (required) {
+        (void)snprintf(command, sizeof(command),
+                       "z23-dev dev land attach --seq=%lld", row->seq);
+        (void)snprintf(reason, sizeof(reason),
+                       "sign the proven pair, then step: %s", command);
+    } else {
+        (void)snprintf(command, sizeof(command), "z23-dev dev land status");
+        (void)snprintf(reason, sizeof(reason),
+                       "stored intent for seq=%lld no longer verifies; if it "
+                       "persists: z23-dev dev land cancel --seq=%lld",
+                       row->seq, row->seq);
+    }
+    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+    (void)json_push_kv_int(&reply->data, "seq", row->seq);
+    (void)json_push_kv_str(&reply->data, "tip", row->tip);
+    (void)json_push_kv_str(&reply->data, "base", row->base);
+    (void)json_push_kv_str(&reply->data, "head_commit", row->local);
+    (void)json_push_kv_str(&reply->data, "next_command", command);
+    if (required) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED,
+                               "PUBLICATION_INTENT_REQUIRED", "push_intent",
+                               true, false,
+                               "canonical signed publication intent is required before push",
+                               evidence);
+    } else {
+        dl_fail(reply, "PUBLICATION_INTENT_INVALID", "push_intent",
+                "signed Git landing intent or attached bundle changed",
+                evidence);
+    }
+    (void)snprintf(reply->error.next_action, sizeof(reply->error.next_action),
+                   "%s", command);
+    (void)zcl_command_reply_add_next(reply, "discover.describe",
+                                     "{\"path\":\"dev.land\"}", reason);
+}
+
+/* attach's one target shape: a live row at a resumable phase holding an
+ * exact pair, a PASS proof for that pair, and no signed intent yet. */
+static bool dl_attach_candidate(const struct dl_dirs *d,
+                                const struct dl_row *row)
+{
+    char proof[65];
+    return strcmp(row->state, "inflight") == 0 &&
+           dl_resume_phase_ready(row->phase) &&
+           dl_sha_ok(row->base) && dl_sha_ok(row->local) &&
+           !row->publication_signature[0] &&
+           dl_publication_proof_digest(d, row, proof);
+}
+
+static void dl_attach_append(char *out, size_t cap, const char *sep,
+                             const char *text)
+{
+    size_t used = strlen(out);
+    if (used + 1 < cap)
+        (void)snprintf(out + used, cap - used, "%s%s", used ? sep : "", text);
+}
+
+/* attach without seq never guesses: exactly one candidate is the target;
+ * none or several refuse by name, listing the candidates and live rows. */
+static bool dl_attach_resolve(const struct dl_dirs *d,
+                              const struct dl_row *rows, size_t count,
+                              long long *seq, struct zcl_command_reply *reply)
+{
+    struct json_value list, item;
+    char named[160] = "", live[160] = "", one[96], evidence[256];
+    size_t found = 0;
+    json_init(&list);
+    json_set_array(&list);
+    for (size_t i = 0; i < count; i++) {
+        (void)snprintf(one, sizeof(one), "seq=%lld:%s/%s", rows[i].seq,
+                       rows[i].state, rows[i].phase);
+        dl_attach_append(live, sizeof(live), " ", one);
+        if (!dl_attach_candidate(d, &rows[i]))
+            continue;
+        (void)snprintf(one, sizeof(one), "%lld", rows[i].seq);
+        dl_attach_append(named, sizeof(named), ",", one);
+        json_init(&item);
+        if (json_read(&item, one, strlen(one)))
+            (void)json_push_back(&list, &item);
+        json_free(&item);
+        *seq = rows[i].seq;
+        found++;
+    }
+    if (found == 1) {
+        json_free(&list);
+        return true;
+    }
+    (void)snprintf(evidence, sizeof(evidence), "candidates=%s live=%s",
+                   found ? named : "none", live[0] ? live : "none");
+    if (found == 0)
+        dl_fail(reply, "ATTACH_TARGET_NONE", "attach",
+                "no live row holds a PASS exact proof without a signed intent",
+                evidence);
+    else
+        dl_fail(reply, "ATTACH_TARGET_AMBIGUOUS", "attach",
+                "several proven rows lack a signed intent; name one with --seq",
+                evidence);
+    (void)json_push_kv(&reply->data, "candidates", &list);
+    json_free(&list);
+    if (found == 0)
+        (void)snprintf(reply->error.next_action,
+                       sizeof(reply->error.next_action), "%s",
+                       "z23-dev dev land status");
+    else
+        (void)snprintf(reply->error.next_action,
+                       sizeof(reply->error.next_action),
+                       "z23-dev dev land attach --seq=<one of %s>", named);
+    return false;
+}
+
+/* An explicit seq is validated, never widened: a row that is not a live
+ * exact pair refuses with its own state. */
+static bool dl_attach_pick(const struct dl_row *rows, size_t count,
+                           long long seq, struct dl_row *row,
+                           struct zcl_command_reply *reply)
+{
+    const struct dl_row *hit = NULL;
+    char evidence[160];
+    for (size_t i = 0; i < count && !hit; i++)
+        if (rows[i].seq == seq) hit = &rows[i];
+    if (hit && strcmp(hit->state, "inflight") == 0 &&
+        dl_resume_phase_ready(hit->phase) &&
+        dl_sha_ok(hit->base) && dl_sha_ok(hit->local)) {
+        *row = *hit;
+        return true;
+    }
+    if (hit)
+        (void)snprintf(evidence, sizeof(evidence), "seq=%lld state=%s phase=%s",
+                       seq, hit->state, hit->phase);
+    else
+        (void)snprintf(evidence, sizeof(evidence),
+                       "seq=%lld not in the live queue", seq);
+    dl_fail(reply, "PUBLICATION_PAIR_UNAVAILABLE", "attach",
+            "attach requires one live exact proven pair", evidence);
+    (void)json_push_kv_int(&reply->data, "seq", seq);
+    if (hit) {
+        (void)json_push_kv_str(&reply->data, "state", hit->state);
+        (void)json_push_kv_str(&reply->data, "phase", hit->phase);
+    }
+    (void)snprintf(reply->error.next_action, sizeof(reply->error.next_action),
+                   "%s", "z23-dev dev land status");
+    return false;
+}
+
 static void dl_attach_seal(const struct dl_dirs *d, struct dl_row *row,
                             const char *qpath,
                             struct zcl_command_reply *reply)
 {
     char observed[80], output[512], message[1024];
+    if (row->publication_signature[0]) {
+        if (!dl_publication_verify(d, row))
+            dl_fail(reply, "PUBLICATION_INTENT_INVALID", "attach",
+                    "stored signed intent or attachment is invalid", qpath);
+        else
+            dl_step_reply(reply, row, "attached");
+        return;
+    }
     if (!dl_publication_proof_digest(d, row, row->publication_proof)) {
         dl_fail(reply, "PUBLICATION_PROOF_REQUIRED", "attach",
                 "exact signed proof receipt is not PASS", row->proof_intent);
@@ -6904,10 +7069,13 @@ static void dl_attach(const struct zcl_command_request *req,
     long long seq = 0;
     char qpath[4096 + 32];
     int slot;
-    bool found = false;
-    if (!dl_seq_in(req, &seq)) {
+    /* A present seq is the operator's explicit target and wins; an absent
+     * one resolves under the step lock to the single proven row. */
+    bool explicit_seq = req && req->input && json_get(req->input, "seq");
+    if (explicit_seq && !dl_seq_in(req, &seq)) {
         dl_fail(reply, "BAD_INPUT", "attach",
-                "attach needs the exact live request sequence", "input.seq");
+                "seq must be a live request sequence (1 or more); omit it to "
+                "attach the one proven row", "input.seq");
         return;
     }
     if (!dl_dirs_make(&d) ||
@@ -6924,24 +7092,14 @@ static void dl_attach(const struct zcl_command_request *req,
                 "cannot read the existing landing queue", qpath);
         goto done;
     }
-    for (size_t i = 0; i < count; i++)
-        if (rows[i].seq == seq) { row = rows[i]; found = true; break; }
-    if (!found || strcmp(row.state, "inflight") != 0 ||
-        !dl_resume_phase_ready(row.phase) ||
-        !dl_sha_ok(row.base) || !dl_sha_ok(row.local)) {
-        dl_fail(reply, "PUBLICATION_PAIR_UNAVAILABLE", "attach",
-                "attach requires one live exact proven pair", "dev land status");
+    if (!explicit_seq && !dl_attach_resolve(&d, rows, count, &seq, reply))
         goto done;
-    }
-    if (row.publication_signature[0]) {
-        if (!dl_publication_verify(&d, &row))
-            dl_fail(reply, "PUBLICATION_INTENT_INVALID", "attach",
-                    "stored signed intent or attachment is invalid", qpath);
-        else
-            dl_step_reply(reply, &row, "attached");
+    if (!dl_attach_pick(rows, count, seq, &row, reply))
         goto done;
-    }
     dl_attach_seal(&d, &row, qpath, reply);
+    if (reply->status == ZCL_COMMAND_STATUS_PASSED)
+        (void)json_push_kv_str(&reply->data, "target",
+                               explicit_seq ? "explicit" : "resolved");
 done:
     free(rows);
     dl_unlock(slot);
