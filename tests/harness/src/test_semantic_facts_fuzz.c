@@ -24,7 +24,7 @@
  *               symbol at its address.
  *
  * A false negative prints the case (seed, profile, mutation), the TU and
- * the function, and fails. The default run is a fixed list of 40 seeds;
+ * the function, and fails. The default run is a fixed list of 44 seeds;
  * ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]] runs a long range
  * instead (PROFILE all, no-ctr-line or gcc-deps; KIND forces one mutation
  * kind). The default seeds must yield narrowed plans that seed a changed
@@ -85,11 +85,12 @@ struct sfz_seed {
     const char *kind; /* the mutation kind, NULL: drawn from the seed */
 };
 
-/* The default run: 40 (seed, profile, kind) cases covering every mutation
+/* The default run: 44 (seed, profile, kind) cases covering every mutation
  * kind, most in the no-ctr-line profile where plans narrow, some whose
  * plans must fall back (flag, counter_c), and gcc depfiles for the probed
  * paths gcc omits. Chosen from a 4,900-case run at this rule set; each
- * passed there and most narrowed with seeds. */
+ * passed there and most narrowed with seeds. The four data-kind cases come
+ * from 150-case runs of each kind with the symbol oracle. */
 static const struct sfz_seed k_default_seeds[] = {
     {20007, PROF_ALL, "hasinc"},
     {20015, PROF_ALL, "shadow"},
@@ -131,6 +132,11 @@ static const struct sfz_seed k_default_seeds[] = {
     {23062, PROF_NO_CTR_LINE, "multi"},
     {23073, PROF_NO_CTR_LINE, "body_static"},
     {23149, PROF_NO_CTR_LINE, "macro_cond"},
+    /* the data kinds: data_table falls back (file-scope-changed) */
+    {31000, PROF_NO_CTR_LINE, "data_string"},
+    {32000, PROF_NO_CTR_LINE, "data_table"},
+    {33000, PROF_NO_CTR_LINE, "data_hconst"},
+    {34000, PROF_NO_CTR_LINE, "data_index"},
 };
 
 struct sfz_tally {

@@ -1277,7 +1277,7 @@ on both sides. The change set is planned in process exactly as
    file is not covered by it.
 
 A false negative prints the seed, profile, mutation, TU and function and
-fails the group. The default run is a fixed list of 40 (seed, profile,
+fails the group. The default run is a fixed list of 44 (seed, profile,
 kind) cases, and must yield narrowed verdicts that seed a changed
 function, so the group cannot pass on fallbacks alone.
 `ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]` runs a long range
