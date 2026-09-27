@@ -72,6 +72,7 @@ void zcl_devloop_watch_session_test_hooks_set(
 }
 #endif
 
+#if defined(__linux__)
 /* kill(pid, 0); a test can make it report another user's process. */
 static int session_signal0(int64_t pid)
 {
@@ -83,6 +84,7 @@ static int session_signal0(int64_t pid)
 #endif
     return kill((pid_t)pid, 0);
 }
+#endif
 
 /* Remove the record for `pid` only while it is still the very file that
  * was judged (`seen`): a launcher that renamed a fresh record over it in
@@ -102,12 +104,12 @@ static void session_forget(const char *root, int64_t pid,
     (void)unlink(path);
 }
 
+#if defined(__linux__)
 /* EPERM is another user's process: never one of ours. A zombie is dead. */
 static bool leader_running(int64_t pid)
 {
     if (session_signal0(pid) != 0)
         return false;
-#if defined(__linux__)
     char path[64], body[512];
     int n = snprintf(path, sizeof(path), "/proc/%lld/stat", (long long)pid);
     int fd = n > 0 && n < (int)sizeof(path)
@@ -121,10 +123,8 @@ static bool leader_running(int64_t pid)
     body[got] = 0;
     const char *paren = strrchr(body, ')');
     return paren && paren[1] == ' ' && paren[2] != 'Z';
-#else
-    return true;
-#endif
 }
+#endif
 
 static bool session_running(int64_t pid)
 {
