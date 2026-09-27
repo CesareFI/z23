@@ -93,6 +93,16 @@ path of 752 bytes against the 2,048-byte reserve and 512-byte margin.
 Observed 2026-09-27T07:02:25-04:00 (2026-09-27T11:02:25Z) on an AMD
 Ryzen 7 PRO 8840U with Radeon 780M Graphics.
 
+The simulator now exposes its raw 320×480 RGB buffer to C23 tests. The
+wallet UI test pins SHA-256 of the fee, totals, and completion pixels to
+`017b0ce094d47ea140e141d25ec9a7fbff9268b5d067ac0b3dc7513eeac617b0`,
+`c41dcdb1fcb60de63a9fef60ebeff08ce88e47f9e1da3cdceacbc0a863861e84`,
+and `67b249ef1989c05d6251fb54e9d895d56c2f600723a525e02f9a4b27565ba9bf`.
+The canvas test compared raw RGB byte-for-byte with decoded PNG pixels. Both
+tests passed 2/2 with Clang 22.1.6 Debug/ASan/UBSan and GCC 16.1.1 Release;
+the complexity gate passed 60,771 functions in 4,430 files. These hashes
+pin the host simulator output, not the Blue's physical display.
+
 ## Limit
 
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel

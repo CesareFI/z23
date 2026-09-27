@@ -468,7 +468,7 @@ target_include_directories(test-blue-wallet-device-ui PRIVATE
     tests/blue_wallet_sdk_stub include device-blue-wallet/src)
 target_link_libraries(test-blue-wallet-device-ui PRIVATE
     blue_payment_apdu blue_payment_screen blue_payment_review zcl_zip243
-    zcl_tx_prevout zcl_base58 blue_bagl_canvas)
+    zcl_tx_prevout zcl_base58 blue_bagl_canvas zcl_sha256)
 target_compile_options(test-blue-wallet-device-ui PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

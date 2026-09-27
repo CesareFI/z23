@@ -1,10 +1,12 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "os.h"
 #include "blue_bagl_canvas.h"
+#include "zsha256/zsha256.h"
 
 #undef NDEBUG
 #include <assert.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 static const bagl_element_t *shown;
@@ -12,6 +14,18 @@ static size_t shown_count;
 static unsigned displays, exits;
 static blue_bagl_canvas *last_canvas;
 static const char *fee_snapshot, *totals_snapshot, *confirmed_snapshot;
+
+static void expect_pixels(const char *expected) {
+    size_t length = 0;
+    const uint8_t *rgb = blue_bagl_canvas_rgb(last_canvas, &length);
+    assert(rgb && length == 320u * 480u * 3u);
+    uint8_t digest[32];
+    char hex[65];
+    zsha256(rgb, length, digest);
+    for (size_t i = 0; i < sizeof digest; ++i)
+        assert(snprintf(hex + 2 * i, 3, "%02x", digest[i]) == 2);
+    assert(strcmp(hex, expected) == 0);
+}
 
 void blue_wallet_test_display(const bagl_element_t *elements, size_t count,
     unsigned int (*button)(unsigned int, unsigned int)) {
@@ -104,6 +118,7 @@ static void test_fee_totals_exit(void) {
     assert(find_text("INPUT EXT 0/0"));
     assert(find_text("CHAIN UNCHECKED"));
     assert(find_text("NO SIGNING"));
+    expect_pixels("017b0ce094d47ea140e141d25ec9a7fbff9268b5d067ac0b3dc7513eeac617b0");
     if (fee_snapshot) assert(blue_bagl_write_png(last_canvas, fee_snapshot));
     tap("TOTALS");
     assert(shown == totals_ui);
@@ -111,6 +126,7 @@ static void test_fee_totals_exit(void) {
     assert(find_text("4.00000000 ZCL"));
     assert(find_text("1.00000000 ZCL"));
     assert(find_text("1.23456789 ZCL"));
+    expect_pixels("c41dcdb1fcb60de63a9fef60ebeff08ce88e47f9e1da3cdceacbc0a863861e84");
     if (totals_snapshot)
         assert(blue_bagl_write_png(last_canvas, totals_snapshot));
     tap("BACK");
@@ -159,6 +175,7 @@ static void test_confirm_review(void) {
     uint8_t digest[32] = {0}, path = 0;
     assert(!blue_payment_apdu_take_digest(&payment, 0, digest, &path));
     assert(find_text("REVIEW COMPLETE") && find_text("NO SIGNING"));
+    expect_pixels("67b249ef1989c05d6251fb54e9d895d56c2f600723a525e02f9a4b27565ba9bf");
     if (confirmed_snapshot)
         assert(blue_bagl_write_png(last_canvas, confirmed_snapshot));
     tap("EXIT");

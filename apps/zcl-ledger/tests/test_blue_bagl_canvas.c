@@ -68,7 +68,11 @@ int main(void) {
     CHECK(fd >= 0);
     CHECK(close(fd) == 0);
     CHECK(blue_bagl_write_png(image, path));
-    blue_bagl_canvas_destroy(image);
+    size_t raw_length = 0;
+    const uint8_t *raw = blue_bagl_canvas_rgb(image, &raw_length);
+    CHECK(raw && raw_length == BLUE_BAGL_WIDTH * BLUE_BAGL_HEIGHT * 3u);
+    CHECK(!blue_bagl_canvas_rgb(NULL, &raw_length));
+    CHECK(!blue_bagl_canvas_rgb(image, NULL));
 
     png_image png = {0};
     png.version = PNG_IMAGE_VERSION;
@@ -78,6 +82,7 @@ int main(void) {
     uint8_t *pixels = malloc(PNG_IMAGE_SIZE(png));
     CHECK(pixels);
     CHECK(png_image_finish_read(&png, NULL, pixels, 0, NULL));
+    CHECK(memcmp(raw, pixels, raw_length) == 0);
     expect_rgb(pixels, 0, 0, 0xaabbcc);
     expect_rgb(pixels, 2, 2, 0x112233);
     expect_rgb(pixels, 4, 4, 0x112233);
@@ -85,6 +90,7 @@ int main(void) {
     expect_rgb(pixels, 319, 479, 0xabcdef);
     expect_rgb(pixels, 100, 100, 0x112233);
     free(pixels);
+    blue_bagl_canvas_destroy(image);
     png_image_free(&png);
     CHECK(unlink(path) == 0);
     return 0;

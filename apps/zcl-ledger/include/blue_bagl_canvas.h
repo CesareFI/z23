@@ -26,5 +26,7 @@ bool blue_bagl_wrap_ascii(const char *source, size_t source_length,
                           unsigned max_width, unsigned max_lines,
                           blue_bagl_font font);
 bool blue_bagl_write_png(const blue_bagl_canvas *canvas, const char *path);
+const uint8_t *blue_bagl_canvas_rgb(const blue_bagl_canvas *canvas,
+                                    size_t *length);
 
 #endif

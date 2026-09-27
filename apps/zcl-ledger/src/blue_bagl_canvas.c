@@ -61,6 +61,13 @@ blue_bagl_canvas *blue_bagl_canvas_create(uint32_t background) {
 
 void blue_bagl_canvas_destroy(blue_bagl_canvas *image) { free(image); }
 
+const uint8_t *blue_bagl_canvas_rgb(const blue_bagl_canvas *image,
+                                    size_t *length) {
+    if (!image || !length) return NULL;
+    *length = sizeof image->rgb;
+    return image->rgb;
+}
+
 void blue_bagl_rectangle(blue_bagl_canvas *image, int x, int y,
                          int width, int height, uint32_t color) {
     if (!image || width <= 0 || height <= 0) return;
