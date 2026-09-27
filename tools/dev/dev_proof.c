@@ -3414,12 +3414,81 @@ struct warm_donor {
     char base[65];
 };
 
+/* Why one pool entry could not donate, in the order the survey tests it.
+ * A later stage means the entry got further, so the furthest verdict any
+ * entry reached is the most useful single cold reason: "donor_live" says a
+ * matching donor existed and was busy, "donor_no_marker" says nothing in
+ * the pool ever finished a build. Each name fits the sidecar's reason
+ * field, and every rejected entry is named with its verdict in phases.txt,
+ * so a cold proof is diagnosable from the attempt alone. */
+enum dp_donor_verdict {
+    DP_DONOR_NOT_CANDIDATE = 0, /* foreign tag, or the caller's own */
+    DP_DONOR_NO_MARKER,
+    DP_DONOR_ROOT_DIFFERS,
+    DP_DONOR_IDENTITY_DIFFERS,
+    DP_DONOR_NO_BUILD_TREE,
+    DP_DONOR_HEAD_MOVED,
+    DP_DONOR_LIVE,
+    DP_DONOR_ELIGIBLE,
+};
+
+static const char *dp_donor_verdict_name(enum dp_donor_verdict verdict)
+{
+    switch (verdict) {
+    case DP_DONOR_NO_MARKER: return "donor_no_marker";
+    case DP_DONOR_ROOT_DIFFERS: return "donor_root_differs";
+    case DP_DONOR_IDENTITY_DIFFERS: return "donor_identity_differs";
+    case DP_DONOR_NO_BUILD_TREE: return "donor_no_build_tree";
+    case DP_DONOR_HEAD_MOVED: return "donor_head_moved";
+    case DP_DONOR_LIVE: return "donor_live";
+    case DP_DONOR_ELIGIBLE: return "donor_eligible";
+    case DP_DONOR_NOT_CANDIDATE: break;
+    }
+    return "no_eligible_donor";
+}
+
+/* The marker, read and matched against this proof's root and build
+ * identity. Anything short of a full match is typed, never guessed. */
+static enum dp_donor_verdict dp_donor_marker_verdict(
+    const char *candidate_path, const char *root,
+    const struct zcl_dev_proof_build_identity_v1 *current,
+    char marker_local[65], char marker_base[65], int64_t *completed)
+{
+    char marker_root[PATH_MAX];
+    struct zcl_dev_proof_build_identity_v1 candidate_identity;
+    if (!warm_marker_read(candidate_path, marker_root, marker_local,
+                          marker_base, completed, &candidate_identity))
+        return DP_DONOR_NO_MARKER;
+    if (strcmp(marker_root, root) != 0) return DP_DONOR_ROOT_DIFFERS;
+    if (!proof_build_identity_equal(current, &candidate_identity))
+        return DP_DONOR_IDENTITY_DIFFERS;
+    return DP_DONOR_ELIGIBLE;
+}
+
+/* A landing proof reuses the checkout's admitted z23-dev, so its
+ * generation runs the prefork bundle but never `make build-only`: it
+ * carries build/bin and the dev/test/lint object rooms and has no
+ * build/obj at all. Either subtree is a build tree worth donating; the
+ * marker already proved the build completed, and whatever a donor simply
+ * does not have seeds nothing. */
+static bool dp_donor_build_tree(const char *candidate_path, int64_t *touched)
+{
+    char obj[PATH_MAX], bin[PATH_MAX];
+    return snprintf(obj, sizeof(obj), "%s/build/obj", candidate_path) <
+               (int)sizeof(obj) &&
+           snprintf(bin, sizeof(bin), "%s/build/bin", candidate_path) <
+               (int)sizeof(bin) &&
+           (warm_generation_touched(obj, NULL) ||
+            warm_generation_touched(bin, NULL)) &&
+           warm_generation_touched(candidate_path, touched);
+}
+
 /* Survey one generation directory against this proof's build identity, and
- * fill the pick policy's fields for it. Returns false for a directory that
- * is not a candidate at all -- a foreign tag, the caller's own generation,
- * a missing or mismatched marker, or an object tree that cannot be
- * timestamped. */
-static bool dp_donor_survey(
+ * fill the pick policy's fields for it. Returns the entry's verdict:
+ * NOT_CANDIDATE for a foreign tag or the caller's own generation (neither
+ * is reported), a typed refusal for anything the pool holds that cannot
+ * donate, and HEAD_MOVED / LIVE / ELIGIBLE with `slot` filled. */
+static enum dp_donor_verdict dp_donor_survey(
     const char *parent, const char *root, const char *in_use,
     const char *name,
     const struct zcl_dev_proof_build_identity_v1 *current,
@@ -3430,36 +3499,19 @@ static bool dp_donor_survey(
         snprintf(candidate_path, sizeof(candidate_path), "%s/%s",
                  parent, name) >= (int)sizeof(candidate_path) ||
         strcmp(candidate_path, in_use) == 0)
-        return false;
-    char marker_root[PATH_MAX], marker_local[65], marker_base[65];
-    int64_t completed = 0;
-    struct zcl_dev_proof_build_identity_v1 candidate_identity;
-    if (!warm_marker_read(candidate_path, marker_root, marker_local,
-                          marker_base, &completed, &candidate_identity) ||
-        strcmp(marker_root, root) != 0 ||
-        !proof_build_identity_equal(current, &candidate_identity))
-        return false;
+        return DP_DONOR_NOT_CANDIDATE;
+    char marker_local[65], marker_base[65];
+    int64_t completed = 0, touched = 0;
+    enum dp_donor_verdict verdict = dp_donor_marker_verdict(
+        candidate_path, root, current, marker_local, marker_base, &completed);
+    if (verdict != DP_DONOR_ELIGIBLE) return verdict;
+    if (!dp_donor_build_tree(candidate_path, &touched))
+        return DP_DONOR_NO_BUILD_TREE;
     char head[65];
     const char *head_argv[] = {"git", "-C", candidate_path, "rev-parse",
                               "--verify", "HEAD", NULL};
     bool head_ok = git_capture(root, head_argv, head, sizeof(head)) &&
                    strcmp(head, marker_local) == 0;
-    /* A landing proof reuses the checkout's admitted z23-dev, so its
-     * generation runs the prefork bundle but never `make build-only`:
-     * it carries build/bin and the dev/test/lint object rooms and has no
-     * build/obj at all. Either subtree is a build tree worth donating;
-     * the marker above already proved the build completed, and whatever
-     * a donor simply does not have seeds nothing. */
-    char obj[PATH_MAX], bin[PATH_MAX];
-    int64_t touched = 0;
-    if (snprintf(obj, sizeof(obj), "%s/build/obj", candidate_path) >=
-            (int)sizeof(obj) ||
-        snprintf(bin, sizeof(bin), "%s/build/bin", candidate_path) >=
-            (int)sizeof(bin) ||
-        !(warm_generation_touched(obj, NULL) ||
-          warm_generation_touched(bin, NULL)) ||
-        !warm_generation_touched(candidate_path, &touched))
-        return false;
     memset(slot, 0, sizeof(*slot));
     (void)snprintf(slot->tag, sizeof(slot->tag), "%s", name);
     (void)snprintf(slot->path, sizeof(slot->path), "%s", candidate_path);
@@ -3472,7 +3524,8 @@ static bool dp_donor_survey(
      * objects for another commit, the second is still writing. */
     slot->live = !head_ok ||
                  warm_donor_live(root, marker_local, marker_base);
-    return true;
+    if (!head_ok) return DP_DONOR_HEAD_MOVED;
+    return slot->live ? DP_DONOR_LIVE : DP_DONOR_ELIGIBLE;
 }
 
 /* Room for one more surveyed candidate. */
@@ -3513,44 +3566,80 @@ static bool dp_donor_confirm(
                     marker_base) < (int)sizeof(donor->base);
 }
 
-/* Newest verifiable idle generation for this root, skipping the caller's
- * own. Fills nothing and reports false when there is no donor: cold is
- * the ordinary path, not an error. */
-static bool warm_donor_scan(const char *parent, const char *root,
-                            const char *in_use, struct warm_donor *donor)
+/* One rejected pool entry, on the record: which generation and the first
+ * predicate it failed. Display only, like every other phases.txt note. */
+static void dp_donor_rejection_note(const char *phases, const char *name,
+                                    enum dp_donor_verdict verdict)
 {
+    if (!phases || !phases[0]) return;
+    char note[96];
+    (void)snprintf(note, sizeof(note), "%s %s", name,
+                   dp_donor_verdict_name(verdict));
+    (void)zcl_dev_proof_phase_note(phases, "warm_donor_rejected", note);
+}
+
+/* The whole pool, surveyed. Every candidate that reached the pick is kept;
+ * `furthest` is the furthest verdict any entry reached, which becomes the
+ * cold reason when nothing is picked. */
+static bool dp_donor_collect(DIR *dir, const char *parent, const char *root,
+                             const char *in_use, const char *phases,
+                             const struct zcl_dev_proof_build_identity_v1 *current,
+                             struct zcl_dev_proof_warm_candidate **candidates,
+                             size_t *count, enum dp_donor_verdict *furthest)
+{
+    size_t capacity = 0;
+    for (struct dirent *entry = readdir(dir); entry;
+         entry = readdir(dir)) {
+        struct zcl_dev_proof_warm_candidate surveyed;
+        enum dp_donor_verdict verdict = dp_donor_survey(
+            parent, root, in_use, entry->d_name, current, &surveyed);
+        if (verdict == DP_DONOR_NOT_CANDIDATE) continue;
+        if (verdict > *furthest) *furthest = verdict;
+        if (verdict != DP_DONOR_ELIGIBLE)
+            dp_donor_rejection_note(phases, entry->d_name, verdict);
+        if (verdict < DP_DONOR_HEAD_MOVED) continue;
+        if (!dp_donor_reserve(candidates, *count, &capacity)) return false;
+        (*candidates)[(*count)++] = surveyed;
+    }
+    return true;
+}
+
+/* Newest verifiable idle generation for this root, skipping the caller's
+ * own. Fills nothing and reports false when there is no donor -- cold is
+ * the ordinary path, not an error -- with `reason` naming why. */
+static bool warm_donor_scan(const char *parent, const char *root,
+                            const char *in_use, const char *phases,
+                            struct warm_donor *donor, char reason[24])
+{
+    (void)snprintf(reason, 24, "%s", "no_eligible_donor");
     /* No verifiable identity for THIS proof means no safe comparison for
      * any candidate: fail closed to cold rather than adopt objects this
      * scan cannot prove match. */
     struct zcl_dev_proof_build_identity_v1 current;
-    if (!zcl_dev_proof_build_identity_v1_capture(root, &current, NULL, 0))
+    if (!zcl_dev_proof_build_identity_v1_capture(root, &current, NULL, 0)) {
+        (void)snprintf(reason, 24, "%s", "identity_unavailable");
         return false;
+    }
     DIR *dir = opendir(parent);
     if (!dir || !parent || !root || !in_use || !donor) {
         if (dir) (void)closedir(dir);
         return false;
     }
     struct zcl_dev_proof_warm_candidate *candidates = NULL;
-    size_t count = 0, capacity = 0;
-    for (struct dirent *entry = readdir(dir); entry;
-         entry = readdir(dir)) {
-        struct zcl_dev_proof_warm_candidate surveyed;
-        if (!dp_donor_survey(parent, root, in_use, entry->d_name, &current,
-                             &surveyed))
-            continue;
-        if (!dp_donor_reserve(&candidates, count, &capacity)) {
-            free(candidates);
-            candidates = NULL;
-            count = capacity = 0;
-            break;
-        }
-        candidates[count++] = surveyed;
-    }
+    size_t count = 0;
+    enum dp_donor_verdict furthest = DP_DONOR_NOT_CANDIDATE;
+    bool collected = dp_donor_collect(dir, parent, root, in_use, phases,
+                                      &current, &candidates, &count,
+                                      &furthest);
     (void)closedir(dir);
-    int best = warm_pick_donor(candidates, count);
-    bool found = candidates && best >= 0;
-    if (found) found = dp_donor_confirm(&candidates[best], &current, donor);
+    int best = collected ? warm_pick_donor(candidates, count) : -1;
+    bool found = candidates && best >= 0 &&
+                 dp_donor_confirm(&candidates[best], &current, donor);
     free(candidates);
+    if (found)
+        reason[0] = 0;
+    else if (furthest != DP_DONOR_ELIGIBLE)
+        (void)snprintf(reason, 24, "%s", dp_donor_verdict_name(furthest));
     return found;
 }
 
@@ -3577,11 +3666,9 @@ static bool warm_start_generation(const struct proof_paths *paths,
     if (!paths || !parent || !generation || !local || !warm) return false;
     memset(&donor, 0, sizeof(donor));
     memset(warm, 0, sizeof(*warm));
-    if (!warm_donor_scan(parent, paths->root, generation, &donor)) {
-        (void)snprintf(warm->cold_reason, sizeof(warm->cold_reason), "%s",
-                       "no_eligible_donor");
+    if (!warm_donor_scan(parent, paths->root, generation, paths->phases,
+                         &donor, warm->cold_reason))
         return false;
-    }
     char donor_build[PATH_MAX], gen_build[PATH_MAX];
     if (snprintf(donor_build, sizeof(donor_build), "%s/build", donor.path) >=
             (int)sizeof(donor_build) ||
@@ -4203,6 +4290,36 @@ bool zcl_dev_proof_warm_seed_and_retime(const char *donor_build,
         warm_seed_rollback(gen_build, &accum);
     }
     warm_seed_accum_free(&accum);
+    return ok;
+}
+
+/* The whole production warm start -- survey, pick, seed, retime -- against
+ * a fixture checkout and pool, exactly as generation_prepare() calls it.
+ * Declared by the harness itself rather than in dev_proof.h. `donor` gets
+ * the picked tag and `reason` the typed cold reason; `phases` (may be NULL)
+ * receives one warm_donor_rejected row per pool entry that could not
+ * donate. */
+bool zcl_dev_proof_test_warm_start(const char *root, const char *parent,
+                                   const char *generation, const char *local,
+                                   const char *phases, char donor[33],
+                                   char reason[24], uint64_t *files_linked);
+bool zcl_dev_proof_test_warm_start(const char *root, const char *parent,
+                                   const char *generation, const char *local,
+                                   const char *phases, char donor[33],
+                                   char reason[24], uint64_t *files_linked)
+{
+    struct proof_paths paths;
+    struct proof_warmstart warm;
+    memset(&paths, 0, sizeof(paths));
+    memset(&warm, 0, sizeof(warm));
+    if (!root || !donor || !reason || !files_linked) return false;
+    (void)snprintf(paths.root, sizeof(paths.root), "%s", root);
+    if (phases)
+        (void)snprintf(paths.phases, sizeof(paths.phases), "%s", phases);
+    bool ok = warm_start_generation(&paths, parent, generation, local, &warm);
+    (void)snprintf(donor, 33, "%s", warm.donor);
+    (void)snprintf(reason, 24, "%s", warm.cold_reason);
+    *files_linked = warm.files_linked;
     return ok;
 }
 #endif /* ZCL_DEV_BUILD || ZCL_TESTING */

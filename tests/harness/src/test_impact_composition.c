@@ -7599,6 +7599,295 @@ static int test_ic_include_capacity_runs_everything(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+/* ── proof warm start, end to end ────────────────────────────────────────
+ * The production warm start (survey, pick, seed, retime) driven against a
+ * fixture checkout and pool. The seam is declared here, not in dev_proof.h. */
+bool zcl_dev_proof_test_warm_start(const char *root, const char *parent,
+                                   const char *generation, const char *local,
+                                   const char *phases, char donor[33],
+                                   char reason[24], uint64_t *files_linked);
+
+/* Objects live under a compile epoch the repository's own key tool derives
+ * from flags that spell the checkout root, exactly like the real Makefile's
+ * epochs. a.c includes h.h and b.c includes nothing; an object is its
+ * source followed by the headers it includes, so its bytes say which
+ * header it saw. Every output is staged and renamed, like the real epoch
+ * publishers, so a rebuild never writes through a seeded inode. */
+static const char ic_warm_makefile[] =
+    "Z := 0000000000000000000000000000000000000000000000000000000000000000\n"
+    "EPOCH := $(shell tools/dev/build-epoch-key.sh key $(Z) fixture-v1 "
+    "'-O2 -ffile-prefix-map=$(CURDIR)=/zclassic23' no-link $(Z))\n"
+    "$(if $(EPOCH),,$(error no compile epoch))\n"
+    "OBJ := build/obj/epochs/$(EPOCH)\n"
+    "all: $(OBJ)/a.o $(OBJ)/b.o\n"
+    "$(OBJ)/%.o: %.c\n"
+    "\t@mkdir -p $(OBJ)\n"
+    "\t@inc=$$(sed -n 's/^#include \"\\(.*\\)\"$$/\\1/p' $<); "
+    "cat $< $$inc > $@.tmp && mv -f $@.tmp $@ && "
+    "printf '%s: %s %s\\n' $@ $< \"$$inc\" > $(@:.o=.d).tmp && "
+    "mv -f $(@:.o=.d).tmp $(@:.o=.d)\n"
+    "-include $(wildcard $(OBJ)/*.d)\n";
+
+struct ic_warm_tree {
+    char root[4096], repo[4096], pool[4096], phases[4096];
+    char donor[4096], gen[4096];
+    char c1[65], c2[65];
+    struct zcl_dev_proof_build_identity_v1 identity;
+};
+
+static bool ic_warm_run(const char *cmd, int len, size_t cap)
+{
+    return len > 0 && (size_t)len < cap && system(cmd) == 0;
+}
+
+/* First line of a command's output, trailing newline removed. */
+static bool ic_warm_line(const char *cmd, char *out, size_t out_len)
+{
+    FILE *p = popen(cmd, "r");
+    if (!p) return false;
+    bool ok = fgets(out, (int)out_len, p) != NULL;
+    int rc = pclose(p);
+    size_t len = ok ? strlen(out) : 0;
+    while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r'))
+        out[--len] = 0;
+    return ok && rc == 0 && len > 0;
+}
+
+/* `make` in a fixture tree, isolated from the harness's own make. */
+static bool ic_warm_make(const struct ic_warm_tree *t, const char *dir)
+{
+    char cmd[8192];
+    int len = snprintf(cmd, sizeof(cmd),
+                       "cd '%s' && env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL "
+                       "-u MAKEOVERRIDES TMPDIR='%s' make -s", dir, t->root);
+    return ic_warm_run(cmd, len, sizeof(cmd));
+}
+
+static bool ic_warm_worktree(const struct ic_warm_tree *t, const char *path,
+                             const char *commit)
+{
+    char cmd[8192];
+    int len = snprintf(cmd, sizeof(cmd),
+                       "git -C '%s' worktree add --detach -q '%s' %s",
+                       t->repo, path, commit);
+    return ic_warm_run(cmd, len, sizeof(cmd));
+}
+
+/* The one epoch directory a generation's object tree holds; a second one
+ * beside it (the seeds under a name this tree's make never addresses)
+ * refuses. */
+static bool ic_warm_epoch(const char *generation, char out[65])
+{
+    char cmd[8192];
+    return snprintf(cmd, sizeof(cmd),
+                    "set -- $(ls '%s/build/obj/epochs') && "
+                    "[ $# -eq 1 ] && printf '%%s\\n' \"$1\"",
+                    generation) < (int)sizeof(cmd) &&
+           ic_warm_line(cmd, out, 65) && strlen(out) == 64;
+}
+
+static bool ic_warm_setup_repo(struct ic_warm_tree *t)
+{
+    char cmd[8192];
+    int len = snprintf(cmd, sizeof(cmd),
+                       "mkdir -p '%s/tools/dev' '%s' && "
+                       "cp tools/dev/build-epoch-key.sh '%s/tools/dev/' && "
+                       "cd '%s' && git init -q && git add -A && "
+                       "git -c user.name=t -c user.email=t@t.invalid "
+                       "commit -q -m c1 && printf 'header v2\\n' > h.h && "
+                       "git -c user.name=t -c user.email=t@t.invalid "
+                       "commit -qam c2", t->repo, t->pool, t->repo, t->repo);
+    return ic_write(t->repo, "Makefile", ic_warm_makefile) &&
+           ic_write(t->repo, "a.c", "#include \"h.h\"\nint a;\n") &&
+           ic_write(t->repo, "b.c", "int b;\n") &&
+           ic_write(t->repo, "h.h", "header v1\n") &&
+           ic_write(t->repo, ".gitignore", "build/\n") &&
+           ic_warm_run(cmd, len, sizeof(cmd)) &&
+           snprintf(cmd, sizeof(cmd), "git -C '%s' rev-parse HEAD~1",
+                    t->repo) < (int)sizeof(cmd) &&
+           ic_warm_line(cmd, t->c1, sizeof(t->c1)) &&
+           snprintf(cmd, sizeof(cmd), "git -C '%s' rev-parse HEAD",
+                    t->repo) < (int)sizeof(cmd) &&
+           ic_warm_line(cmd, t->c2, sizeof(t->c2));
+}
+
+/* A checkout at c2 whose previous proof (c1) finished in `donor`: built,
+ * and sealed with a marker naming `marker_identity`. The next proof's own
+ * generation `gen` is checked out at c2 and empty. */
+static bool ic_warm_setup(struct ic_warm_tree *t, const char *tag,
+                          const struct zcl_dev_proof_build_identity_v1
+                              *marker_identity)
+{
+    char why[256] = {0};
+    memset(t, 0, sizeof(*t));
+    test_make_tmpdir(t->root, sizeof(t->root), "proof_warm_e2e", tag);
+    if (snprintf(t->repo, sizeof(t->repo), "%s/checkout", t->root) >=
+            (int)sizeof(t->repo) ||
+        snprintf(t->pool, sizeof(t->pool), "%s/.z23p", t->root) >=
+            (int)sizeof(t->pool) ||
+        snprintf(t->phases, sizeof(t->phases), "%s/phases.txt", t->root) >=
+            (int)sizeof(t->phases) ||
+        snprintf(t->donor, sizeof(t->donor), "%s/%s", t->pool,
+                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") >= (int)sizeof(t->donor) ||
+        snprintf(t->gen, sizeof(t->gen), "%s/%s", t->pool,
+                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") >= (int)sizeof(t->gen) ||
+        !ic_warm_setup_repo(t) ||
+        !ic_write_build_plan(t->repo,
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "-O2", NULL) ||
+        !zcl_dev_proof_build_identity_v1_capture(t->repo, &t->identity, why,
+                                                 sizeof(why)) ||
+        !ic_warm_worktree(t, t->donor, t->c1) ||
+        !ic_warm_make(t, t->donor) ||
+        !ic_warm_worktree(t, t->gen, t->c2))
+        return false;
+    return zcl_dev_proof_warm_marker_write(
+        t->donor, t->repo, t->c1, t->c1, platform_time_wall_unix(),
+        marker_identity ? marker_identity : &t->identity);
+}
+
+static bool ic_warm_obj(const char *generation, const char *epoch,
+                        const char *name, char *out, size_t out_len)
+{
+    return snprintf(out, out_len, "%s/build/obj/epochs/%s/%s", generation,
+                    epoch, name) < (int)out_len;
+}
+
+/* The next proof's warm start into `gen`. The fixture opts in to the git
+ * queries the survey and the retime run, as the pool fixtures above do. */
+static bool ic_warm_start(const struct ic_warm_tree *t, char donor[33],
+                          char reason[24], uint64_t *files)
+{
+    if (setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0) return false;
+    bool ok = zcl_dev_proof_test_warm_start(t->repo, t->pool, t->gen, t->c2,
+                                            t->phases, donor, reason, files);
+    (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    return ok;
+}
+
+static int test_pw_next_proof_seeds_from_the_finished_generation(void)
+{
+    int failures = 0;
+    TEST("proof warm start: the next proof seeds from the last finished "
+         "generation, finds the seeds under its own epoch, and rebuilds "
+         "only what changed") {
+        struct ic_warm_tree t;
+        char donor[33] = {0}, reason[24] = {0};
+        char donor_epoch[65] = {0}, gen_epoch[65] = {0};
+        char donor_a[8192], donor_b[8192], gen_a[8192], gen_b[8192];
+        uint64_t files = 0;
+        struct stat donor_a_st, donor_b_st, gen_a_st, gen_b_st;
+        ASSERT(ic_warm_setup(&t, "next", NULL));
+        ASSERT(ic_warm_epoch(t.donor, donor_epoch));
+        ASSERT(ic_warm_start(&t, donor, reason, &files));
+        ASSERT(strcmp(donor, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0);
+        ASSERT(reason[0] == 0);
+        ASSERT(files == 4); /* a.o, a.d, b.o, b.d */
+        ASSERT(ic_warm_make(&t, t.gen));
+        /* One tree, two checkout paths, one epoch: the generation's own
+         * make addresses the directory it was seeded into. */
+        ASSERT(ic_warm_epoch(t.gen, gen_epoch));
+        ASSERT(strcmp(gen_epoch, donor_epoch) == 0);
+        ASSERT(ic_warm_obj(t.donor, donor_epoch, "a.o", donor_a,
+                           sizeof(donor_a)));
+        ASSERT(ic_warm_obj(t.donor, donor_epoch, "b.o", donor_b,
+                           sizeof(donor_b)));
+        ASSERT(ic_warm_obj(t.gen, gen_epoch, "a.o", gen_a, sizeof(gen_a)));
+        ASSERT(ic_warm_obj(t.gen, gen_epoch, "b.o", gen_b, sizeof(gen_b)));
+        ASSERT(stat(donor_a, &donor_a_st) == 0);
+        ASSERT(stat(donor_b, &donor_b_st) == 0);
+        ASSERT(stat(gen_a, &gen_a_st) == 0);
+        ASSERT(stat(gen_b, &gen_b_st) == 0);
+        /* b.c and everything it reads are unchanged: its object is the
+         * donor's, byte for byte and inode for inode. */
+        ASSERT(gen_b_st.st_ino == donor_b_st.st_ino);
+        /* h.h changed between the two commits, so the seeded depfile makes
+         * a.o stale: it was rebuilt against the new header, into a new
+         * inode, and the donor's copy kept the old header's bytes. */
+        ASSERT(gen_a_st.st_ino != donor_a_st.st_ino);
+        ASSERT(ic_file_has(gen_a, "header v2"));
+        ASSERT(!ic_file_has(gen_a, "header v1"));
+        ASSERT(ic_file_has(donor_a, "header v1"));
+        ASSERT(!ic_file_has(donor_a, "header v2"));
+        ASSERT(test_rm_rf_recursive(t.root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pw_identity_mismatch_stays_cold_with_its_reason(void)
+{
+    int failures = 0;
+    TEST("proof warm start: a donor built under other flags or another "
+         "compiler stays cold, and says so") {
+        static const char *const which[] = {"flags", "compiler"};
+        for (size_t i = 0; i < 2; i++) {
+            struct ic_warm_tree t;
+            struct zcl_dev_proof_build_identity_v1 other;
+            char donor[33] = {0}, reason[24] = {0}, rejected[128];
+            char gen_obj[8192];
+            uint64_t files = 0;
+            struct stat st;
+            ASSERT(ic_warm_setup(&t, which[i], NULL));
+            other = t.identity;
+            if (i == 0) other.flags[0] ^= 1;
+            else other.compiler[0] ^= 1;
+            ASSERT(zcl_dev_proof_warm_marker_write(
+                t.donor, t.repo, t.c1, t.c1, platform_time_wall_unix(),
+                &other));
+            ASSERT(!ic_warm_start(&t, donor, reason, &files));
+            ASSERT(strcmp(reason, "donor_identity_differs") == 0);
+            ASSERT(donor[0] == 0 && files == 0);
+            ASSERT(snprintf(rejected, sizeof(rejected),
+                            "warm_donor_rejected=%s donor_identity_differs",
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") > 0);
+            ASSERT(ic_file_has(t.phases, rejected));
+            ASSERT(snprintf(gen_obj, sizeof(gen_obj), "%s/build/obj",
+                            t.gen) > 0);
+            ASSERT(stat(gen_obj, &st) != 0 && errno == ENOENT);
+            ASSERT(test_rm_rf_recursive(t.root) == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pw_live_donor_is_never_seeded_from(void)
+{
+    int failures = 0;
+    TEST("proof warm start: a donor whose proof still holds its lease is "
+         "not used") {
+        struct ic_warm_tree t;
+        char donor[33] = {0}, reason[24] = {0}, lease_rel[256], lease[64];
+        char rejected[128], gen_obj[8192];
+        uint64_t files = 0;
+        struct stat st;
+        ASSERT(ic_warm_setup(&t, "live", NULL));
+        ASSERT(snprintf(lease_rel, sizeof(lease_rel),
+                        ".cache/zcl-dev-proof/leases/%s-%s.lease", t.c1,
+                        t.c1) < (int)sizeof(lease_rel));
+        ASSERT(snprintf(lease, sizeof(lease), "fixture-token %lld 1\n",
+                        (long long)getpid()) < (int)sizeof(lease));
+        ASSERT(ic_write(t.repo, lease_rel, lease));
+        ASSERT(!ic_warm_start(&t, donor, reason, &files));
+        ASSERT(strcmp(reason, "donor_live") == 0);
+        ASSERT(donor[0] == 0 && files == 0);
+        ASSERT(snprintf(rejected, sizeof(rejected),
+                        "warm_donor_rejected=%s donor_live",
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") > 0);
+        ASSERT(ic_file_has(t.phases, rejected));
+        ASSERT(snprintf(gen_obj, sizeof(gen_obj), "%s/build/obj", t.gen) >
+               0);
+        ASSERT(stat(gen_obj, &st) != 0 && errno == ENOENT);
+        ASSERT(test_rm_rf_recursive(t.root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+#endif
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -7719,5 +8008,10 @@ int test_impact_composition(void)
     failures += test_ic_harness_name_reference_secondary_candidate();
     failures += test_ic_name_reference_single_word_stem_is_bounded();
     failures += test_ic_harness_no_owner_stays_unmatched();
+#if !defined(_WIN32)
+    failures += test_pw_next_proof_seeds_from_the_finished_generation();
+    failures += test_pw_identity_mismatch_stays_cold_with_its_reason();
+    failures += test_pw_live_donor_is_never_seeded_from();
+#endif
     return failures;
 }
