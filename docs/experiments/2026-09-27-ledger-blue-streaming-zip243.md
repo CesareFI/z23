@@ -20,8 +20,9 @@ BLAKE2b contexts for prevouts and sequences, then reuses one for outputs and
 the final input-specific digest. It serializes each accepted P2PKH/P2SH
 output from the parsed amount, script type, and hash160. The parser rejects
 noncanonical or unsupported wire bytes and requires the complete declared
-length before `finish` returns a digest. On failure, `finish` zeros the
-caller-visible facts and digest.
+length before `finish` returns a digest. With a non-null state and valid
+output pointers, a failed `finish` leaves the caller-visible facts and
+digest zeroed.
 
 The published ZIP-243 transparent vector contains a 107-byte signed input
 script. The streaming parser intentionally rejects that wire format. The C23
