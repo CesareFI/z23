@@ -148,6 +148,15 @@ clears the formatted screen. The C23 host renderer previews light and dark
 [screen experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-screen.md)
 records the host and ARM measurements. This is an offline preview; its
 touchscreen action is not wired to a device or signing command.
+The [`blue_payment_simulate.h`](include/blue_payment_simulate.h) host harness
+feeds complete transaction bytes through the same three-pass controller,
+simulates a touch at each pending output, and returns screens only after the
+final replay commitment passes. `zcl-blue-payment-sim` renders those screens
+as PNGs from a binary unsigned v4 transaction. Its consensus branch ID is
+caller supplied and not authenticated. The
+[transaction-driven simulator experiment](../../docs/experiments/2026-09-27-ledger-blue-payment-simulator.md)
+records the reproducible fixture and failure checks. This harness does not
+emulate BOLOS USB or hardware touch timing.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

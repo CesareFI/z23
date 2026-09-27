@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_review.h"
 #include "blue_payment_screen.h"
+#include "blue_payment_simulate.h"
 #include "zcl_zip243_host.h"
 #include "zcl_zip243.h"
 
@@ -10,6 +11,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -211,9 +213,38 @@ static void test_failures(const fixture *item) {
     EVP_MD_CTX_free(sha_context);
 }
 
-int main(void) {
+static void test_simulation(const fixture *item) {
+    blue_payment_screen screens[BLUE_PAYMENT_REVIEW_MAX_OUTPUTS];
+    uint32_t count = 0;
+    assert(blue_payment_simulate(item->bytes, item->length, 0x76b809bb,
+        screens, &count));
+    assert(count == 2);
+    assert(strcmp(screens[0].title, "OUTPUT 1/2") == 0);
+    assert(strcmp(screens[0].amount, "1.00000000 ZCL") == 0);
+    assert(strcmp(screens[1].title, "OUTPUT 2/2") == 0);
+    assert(strcmp(screens[1].amount, "2.00000000 ZCL") == 0);
+    uint8_t changed[sizeof item->bytes];
+    memcpy(changed, item->bytes, item->length);
+    changed[item->output_end[1] - 1] = 0x86;
+    assert(!blue_payment_simulate(changed, item->length, 0x76b809bb,
+        screens, &count));
+    assert(count == 0 && screens[0].title[0] == 0);
+    assert(!blue_payment_simulate(item->bytes, item->length - 1,
+        0x76b809bb,
+        screens, &count));
+    assert(count == 0 && screens[0].title[0] == 0);
+}
+
+int main(int argc, char **argv) {
     fixture item = make_fixture();
     test_success(&item);
     test_failures(&item);
+    test_simulation(&item);
+    if (argc == 2) {
+        FILE *file = fopen(argv[1], "wb");
+        assert(file);
+        assert(fwrite(item.bytes, 1, item.length, file) == item.length);
+        assert(fclose(file) == 0);
+    }
     return 0;
 }

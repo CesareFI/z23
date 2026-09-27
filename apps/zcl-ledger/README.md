@@ -36,6 +36,10 @@ The [`blue_payment_screen` API](include/blue_payment_screen.h) formats the
 pending output into a full 35-character mainnet address and exact ZCL amount.
 The host-only renderer previews a 320 × 480 light or dark screen using the
 Blue SDK font bitmap. It has not been installed on the Blue.
+`zcl-blue-payment-sim` runs an unsigned, all-transparent v4 transaction
+through the three replay passes, simulates one acknowledgement per output,
+and writes each output PNG only after the full replay validates. The branch
+ID is supplied by the caller and is not checked against ZCL consensus.
 
 ## Build and test
 
@@ -44,6 +48,8 @@ cmake -S apps/zcl-ledger -B build/zcl-ledger -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_
 cmake --build build/zcl-ledger
 ctest --test-dir build/zcl-ledger --output-on-failure
 build/zcl-ledger/test-blue-payment-screen /tmp/zcl-payment-light.png /tmp/zcl-payment-dark.png
+build/zcl-ledger/test-blue-payment-review /tmp/zcl-unsigned-fixture.bin
+build/zcl-ledger/zcl-blue-payment-sim 76b809bb /tmp/zcl-unsigned-fixture.bin /tmp/zcl-payment
 ```
 
 Find accessible Ledger HID interfaces without Ledger Live:
