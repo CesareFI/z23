@@ -935,6 +935,58 @@ static int test_code_impact_hotfork_cache_scope(void)
     return failures;
 }
 
+/* An inactive quoted include is not listed by the compiler depfile. If its
+ * input disappears, the new graph cannot prove that no unit read it. */
+static int test_code_impact_deleted_unlisted_input_ext(const char *extension)
+{
+    int failures = 0;
+    static const char dep[] =
+        "build/obj/narrow.o: core/modules/net/src/narrow.c "
+        "core/modules/net/include/net/real.h\n";
+    char dir[256], header[128], src[256], full[512];
+    int a = snprintf(dir, sizeof dir, CI_NARROW_FIX "/deleted_%s", extension);
+    int b = snprintf(header, sizeof header,
+                     "core/modules/net/include/net/optional.%s", extension);
+    int c = snprintf(src, sizeof src,
+                     "#include \"net/real.h\"\n#if 0\n"
+                     "#include \"net/optional.%s\"\n#endif\n"
+                     "int ci_narrow(void){return 1;}\n", extension);
+    bool ready = a > 0 && (size_t)a < sizeof dir &&
+                 b > 0 && (size_t)b < sizeof header &&
+                 c > 0 && (size_t)c < sizeof src &&
+                 ci_impact_mk_write(dir, header, "int ci_optional(void);\n") &&
+                 ci_narrow_base(dir, src, dep);
+    char before[64] = "", after[64] = "";
+    long long before_count = -1, after_count = -1;
+    bool ok = ready && ci_narrow_dim(dir, header, before, sizeof before,
+                                     &before_count);
+    int n = snprintf(full, sizeof full, "%s/%s", dir, header);
+    ok = ok && n > 0 && (size_t)n < sizeof full && remove(full) == 0 &&
+         ci_narrow_dim(dir, header, after, sizeof after, &after_count);
+    printf("invariant=deleted_unlisted_header ext=%s before=%s/%lld "
+           "after=%s/%lld ok=%d\n", extension, before,
+           before_count, after, after_count, ok ? 1 : 0);
+    TEST("code_impact: deleted unlisted input cannot claim complete zero readers") {
+        ASSERT(ok);
+        ASSERT(strcmp(before, "complete") == 0 && before_count == 1);
+        ASSERT(strcmp(after, "complete") != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_code_impact_deleted_unlisted_input(void)
+{
+    int failures = 0;
+    system("rm -rf " CI_NARROW_FIX);
+    failures += test_code_impact_deleted_unlisted_input_ext("h");
+    failures += test_code_impact_deleted_unlisted_input_ext("def");
+    failures += test_code_impact_deleted_unlisted_input_ext("inc");
+    failures += test_code_impact_deleted_unlisted_input_ext("txt");
+    system("rm -rf " CI_NARROW_FIX);
+    return failures;
+}
+
 static int test_code_impact_incremental_include(void)
 {
     int failures = 0;
@@ -1281,6 +1333,7 @@ int test_code_impact(void)
     failures += test_code_impact_unsafe_narrow();
     failures += test_code_impact_unsafe_cause();
     failures += test_code_impact_hotfork_cache_scope();
+    failures += test_code_impact_deleted_unlisted_input();
     failures += test_code_impact_incremental_include();
     failures += test_code_impact_scope_refusals();
     failures += test_code_impact_hub();

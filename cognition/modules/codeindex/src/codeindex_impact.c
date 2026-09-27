@@ -769,6 +769,24 @@ bool codeindex_include_unsafe_cause(struct codeindex *ci, char *out,
     return true;
 }
 
+/* A deleted include input can disappear from an inactive quoted include and
+ * from a fresh depfile graph at the same time. Its old readers are unknown. */
+static bool include_input_missing(const struct codeindex *ci, const char *path)
+{
+    char full[CI_PATH_MAX];
+    int n = snprintf(full, sizeof full, "%s/%s", ci->root, path);
+    if (n < 0 || (size_t)n >= sizeof full)
+        return true;
+    struct stat st;
+    return lstat(full, &st) != 0 || !S_ISREG(st.st_mode);
+}
+
+static bool include_query_narrow_refused(const struct codeindex *ci,
+                                         const char *path)
+{
+    return include_narrow_refused(ci) || include_input_missing(ci, path);
+}
+
 int codeindex_reverse_includes(struct codeindex *ci, const char *path,
                                char (*out)[256], int cap,
                                enum codeindex_include_dim *dim)
@@ -779,7 +797,7 @@ int codeindex_reverse_includes(struct codeindex *ci, const char *path,
         LOG_ERR("codeindex", "bad args to codeindex_reverse_includes");
 
     int64_t edges = ci_store_include_edge_count(ci->store);
-    bool narrow_refused = include_narrow_refused(ci);
+    bool narrow_refused = include_query_narrow_refused(ci, path);
     if (edges < 0)
         LOG_ERR("codeindex", "include edge count failed");
     if (edges == 0) {
