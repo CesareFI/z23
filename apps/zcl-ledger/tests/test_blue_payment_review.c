@@ -486,8 +486,11 @@ static void test_apdu_mutations(void) {
 
 typedef struct {
     apdu_fixture apdu;
-    unsigned exchanges, continued;
-    bool refuse_touch, wrong_identity, fail_previous_chunk, no_owned_hashes;
+    unsigned exchanges, continued, reset_after_reply;
+    uint8_t interrupted_apdu[260];
+    size_t interrupted_length;
+    bool refuse_touch, wrong_identity, fail_previous_chunk, no_owned_hashes,
+        connection_lost, reset_on_touch;
 } live_fixture;
 
 static bool live_exchange(void *context, const uint8_t *apdu,
@@ -495,6 +498,7 @@ static bool live_exchange(void *context, const uint8_t *apdu,
     size_t *reply_length) {
     live_fixture *live = context;
     ++live->exchanges;
+    if (live->connection_lost) return false;
     if (capacity < 7 || apdu_length < 5) return false;
     if (live->fail_previous_chunk && apdu[1] == 0x27) return false;
     if (apdu[1] == 0x01) {
@@ -502,7 +506,7 @@ static bool live_exchange(void *context, const uint8_t *apdu,
             live->wrong_identity ? 8 : 11, 15, 0x90, 0};
         memcpy(reply, identity, sizeof identity);
         *reply_length = sizeof identity;
-        return true;
+        goto exchanged;
     }
     size_t payload = 0;
     uint16_t status = blue_payment_apdu_handle(&live->apdu.state,
@@ -512,6 +516,15 @@ static bool live_exchange(void *context, const uint8_t *apdu,
     reply[payload] = (uint8_t)(status >> 8);
     reply[payload + 1] = (uint8_t)status;
     *reply_length = payload + 2;
+exchanged:
+    if (live->exchanges == live->reset_after_reply) {
+        assert(apdu_length <= sizeof live->interrupted_apdu);
+        memcpy(live->interrupted_apdu, apdu, apdu_length);
+        live->interrupted_length = apdu_length;
+        blue_payment_apdu_abort(&live->apdu.state);
+        live->connection_lost = true;
+        return false;
+    }
     return true;
 }
 
@@ -523,9 +536,62 @@ static bool live_continue(void *context, uint32_t index,
     assert(strcmp(screen->title, live->apdu.state.screen.title) == 0);
     assert(strcmp(screen->amount, live->apdu.state.screen.amount) == 0);
     assert(strcmp(screen->address, live->apdu.state.screen.address) == 0);
+    if (live->reset_on_touch) {
+        blue_payment_apdu_abort(&live->apdu.state);
+        live->connection_lost = true;
+        return false;
+    }
     if (live->refuse_touch) return false;
     ++live->continued;
     return blue_payment_apdu_touch_continue(&live->apdu.state, &live->apdu.owned);
+}
+
+static void test_live_usb_interruptions(const fixture *spend,
+    const blue_payment_live_plan *plan,
+    const zcl_tx_previous_transaction *source,
+    const uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32],
+    unsigned completed_exchanges) {
+    blue_payment_apdu cleared = {0};
+    blue_payment_apdu_abort(&cleared);
+    for (unsigned cut = 1; cut <= completed_exchanges; ++cut) {
+        live_fixture live = {.reset_after_reply = cut};
+        apdu_init(&live.apdu);
+        assert(!blue_payment_live_run_bound(spend->bytes, spend->length,
+            plan, source, 1, 100000000, digests,
+            live_exchange, live_continue, &live));
+        assert(live.connection_lost && live.exchanges >= cut);
+        assert(memcmp(&live.apdu.state, &cleared, sizeof cleared) == 0);
+        if (live.interrupted_apdu[1] >= 0x21 &&
+            live.interrupted_apdu[1] <= 0x28 &&
+            live.interrupted_apdu[1] != 0x24 &&
+            live.interrupted_apdu[1] != 0x25) {
+            uint8_t reply[40] = {0};
+            size_t reply_length = 99;
+            assert(blue_payment_apdu_handle(&live.apdu.state,
+                live.interrupted_apdu, live.interrupted_length,
+                reply, sizeof reply, &reply_length, &live.apdu.blake,
+                &live.apdu.sha, screen_hash, &live.apdu.owned) != 0x9000);
+            assert(reply_length == 0);
+            assert(memcmp(&live.apdu.state, &cleared, sizeof cleared) == 0);
+        }
+        EVP_MD_CTX_free(live.apdu.sha_context);
+    }
+    live_fixture live = {.reset_on_touch = true};
+    apdu_init(&live.apdu);
+    assert(!blue_payment_live_run_bound(spend->bytes, spend->length,
+        plan, source, 1, 100000000, digests,
+        live_exchange, live_continue, &live));
+    assert(live.connection_lost && live.continued == 0);
+    assert(memcmp(&live.apdu.state, &cleared, sizeof cleared) == 0);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){0};
+    apdu_init(&live.apdu);
+    assert(blue_payment_live_run_bound(spend->bytes, spend->length,
+        plan, source, 1, 100000000, digests,
+        live_exchange, live_continue, &live));
+    assert(live.apdu.state.fee_ready && live.apdu.state.bound_inputs == 1);
+    EVP_MD_CTX_free(live.apdu.sha_context);
 }
 
 static void test_live_driver(const fixture *item) {
@@ -593,6 +659,8 @@ static void test_live_bound(void) {
         live.apdu.state.output_zat - live.apdu.state.own_output_zat ==
             200000000 &&
         live.apdu.state.input_paths == BLUE_PAYMENT_INPUT_EXTERNAL);
+    test_live_usb_interruptions(&spend, &plan, &source,
+        (const uint8_t (*)[32])digests, live.exchanges);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     live = (live_fixture){0};
