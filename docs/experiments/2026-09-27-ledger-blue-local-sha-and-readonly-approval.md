@@ -110,6 +110,14 @@ reported both disable variables unused because this mode never searches for
 those packages. Its executable passed the wallet CLI fixture and `readelf -d`
 listed only `libc.so.6` as a runtime dependency.
 
+The Blue Makefile now verifies the SDK revision and exact diff before loading
+the SDK's make definitions for build or clean. A copied SDK with an added
+`$(error SDK_INCLUDED_BEFORE_GATE)` at the start of `Makefile.defines`
+was rejected by the patch-hash gate under both `make -n` and
+`make -n clean`; the sentinel was never parsed. Both dry runs accepted the
+canonical patched SDK. This closes the makefile-include ordering gap; it
+does not attest to the SDK's runtime behavior.
+
 ## Limit
 
 The complete Ledger host toolset still requires OpenSSL 3 for secure-channel

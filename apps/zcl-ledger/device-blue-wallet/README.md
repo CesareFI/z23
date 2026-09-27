@@ -105,8 +105,9 @@ sha256sum /tmp/zcl-wallet.bin
 The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
-512-byte margin. Before compilation, it also checks the pinned SDK revision,
-exact reviewed patch diff, and absence of untracked SDK files. The linked
+512-byte margin. Before loading SDK make definitions, even for `clean`, it
+checks the pinned SDK revision, exact reviewed patch diff, and absence of
+untracked SDK files. The linked
 0.2.14 image has 33,792 bytes of `.text`, 5,472
 bytes of `.bss`, and zero `.data`. Its `.bss` includes the linker-reserved
 stack; 672 bytes remain after that section in the 6,144-byte app SRAM
