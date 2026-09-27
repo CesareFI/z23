@@ -11,7 +11,7 @@
 #undef NDEBUG
 #include <assert.h>
 
-static int run(const char *program, const char *output,
+static int run(const char *program, const char *rpc_binary, const char *output,
     const char *spend, const char *previous, char *error, size_t capacity) {
     int pipefd[2];
     assert(pipe(pipefd) == 0);
@@ -25,10 +25,10 @@ static int run(const char *program, const char *output,
             execl(program, program, output, (char *)NULL);
         else if (previous)
             execl(program, program, "--test", "/dev/hidraw999",
-                  "476969", spend, previous, (char *)NULL);
+                  rpc_binary, spend, previous, (char *)NULL);
         else
             execl(program, program, "--test", "/dev/hidraw999",
-                  "476969", spend, (char *)NULL);
+                  rpc_binary, spend, (char *)NULL);
         _exit(127);
     }
     close(pipefd[1]);
@@ -86,7 +86,7 @@ static size_t previous_version(const uint8_t *fixture, size_t length,
 }
 
 int main(int argc, char **argv) {
-    assert(argc == 3);
+    assert(argc == 4);
     char directory[] = "/tmp/zcl-wallet-review-cli-XXXXXX";
     assert(mkdtemp(directory));
     char fixture[256], spend_path[256], previous_path[256], error[512];
@@ -94,7 +94,8 @@ int main(int argc, char **argv) {
     assert(snprintf(spend_path, sizeof spend_path, "%s/spend.bin", directory) > 0);
     assert(snprintf(previous_path, sizeof previous_path,
                     "%s/previous.bin", directory) > 0);
-    assert(run(argv[1], fixture, NULL, NULL, error, sizeof error) == 0);
+    assert(run(argv[1], argv[3], fixture, NULL, NULL, error,
+               sizeof error) == 0);
     uint8_t base[256], previous[256], spend[256], first[32], txid[32];
     size_t length = read_file(fixture, base);
     for (unsigned version = 1; version <= 4; ++version) {
@@ -111,14 +112,14 @@ int main(int argc, char **argv) {
         write_file(spend_path, spend, length);
         write_file(previous_path, previous, previous_length);
         if (version == 4) {
-            assert(run(argv[2], NULL, spend_path, NULL, error,
+            assert(run(argv[2], argv[3], NULL, spend_path, NULL, error,
                        sizeof error) == 2);
             assert(strstr(error, "PREVIOUS_TX.bin") != NULL);
-            assert(run(argv[2], NULL, spend_path, fixture, error,
+            assert(run(argv[2], argv[3], NULL, spend_path, fixture, error,
                        sizeof error) == 1);
             assert(strstr(error, "outpoints do not match") != NULL);
         }
-        assert(run(argv[2], NULL, spend_path, previous_path, error,
+        assert(run(argv[2], argv[3], NULL, spend_path, previous_path, error,
                    sizeof error) == 1);
         assert(strstr(error, "not an accessible Ledger Blue") != NULL);
     }

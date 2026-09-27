@@ -64,16 +64,18 @@ build/zcl-ledger/test-blue-payment-review /tmp/zcl-unsigned-fixture.bin
 build/zcl-ledger/zcl-blue-payment-sim 76b809bb /tmp/zcl-unsigned-fixture.bin /tmp/zcl-payment
 ```
 
-`zcl-blue-wallet-review --test /dev/hidrawN MAINNET_NEXT_HEIGHT UNSIGNED_TX.bin
+`zcl-blue-wallet-review --test /dev/hidrawN /absolute/path/zcl-rpc UNSIGNED_TX.bin
 PREVIOUS_TX.bin...` is a read-only physical review driver for an installed
-compatible Wallet. Supply the intended mainnet inclusion height and one
-complete previous transaction per input, in
-input order. It preflights every outpoint against those bytes, then sends the
+compatible Wallet. Supply the path to Z23's local C23 `zcl-rpc` executable
+and one complete previous transaction per input, in input order. It requires
+a synchronized mainnet tip from `getblockchaininfo`, derives the intended
+next height and branch, and preflights every outpoint against those bytes.
+It then sends the
 same bytes to the Blue for independent SHA-256d, P2PKH amount, fee, and
 input-specific ZIP-243 digest checks. The host derives the branch ID from
 Z23's mainnet activation heights and rejects heights before Sapling. The
-supplied height is not checked against a node, so the branch remains
-unverified against live chain state. It stops each third-pass upload exactly
+local node response does not independently prove peer synchronization or
+UTXO state. It stops each third-pass upload exactly
 at the next output. The previous
 transaction bytes do not establish chain inclusion or unspent status. It
 cannot sign. Version 0.2.6 must pass separate device checks before this
