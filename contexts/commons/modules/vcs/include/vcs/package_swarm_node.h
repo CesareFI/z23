@@ -340,9 +340,12 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
 /* Provider-directed form used by semantic discovery. The root is permanently
  * marked restricted in its resumable record; only these current authenticated
  * transport peer handles may receive manifest/chunk WANTs. At least one
- * nonzero authenticated handle is required; an empty/zero-only set is
- * refused without creating resumable state. Re-invocation replaces the
- * transient handles after reconnect/restart. */
+ * nonzero authenticated handle is required to fetch; an empty/zero-only set
+ * never creates resumable state or sends a WANT. It returns ALREADY_COMPLETE
+ * only when this node's store holds the exact root complete and a full
+ * possession proof (root-bound manifest, every chunk re-hashed) passes;
+ * otherwise it is refused NO_PROVIDER. Re-invocation replaces the transient
+ * handles after reconnect/restart. */
 enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now, const uint64_t *provider_peers,
