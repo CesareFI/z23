@@ -20,7 +20,7 @@ WORK="$(cd "${TMPDIR:-./test-tmp}" && pwd -P)/host_gc_selftest.$$"
 mkdir -p -- "$WORK"
 FAIL=0
 
-cleanup() { rm -rf -- "$WORK"; }
+cleanup() { chmod -R u+w -- "$WORK" 2>/dev/null || true; rm -rf -- "$WORK"; }
 trap cleanup EXIT
 trap 'exit 2' HUP INT TERM
 
@@ -50,6 +50,53 @@ Z23_STUB_CALLS="$WORK/z23-stub-calls.log"
 mkdir -p -- "$TMP_FX" "$PROC_FX" "$STATE_FX" "$UNITS_FX" "$LANES_FX" \
     "$TRAINS_FX" "$SCRATCH_FX" "$ZCCDIR_FX" "$Z23P_FX" "$RAM_FX"
 
+# FREE SPACE IS INJECTED, NEVER READ LIVE. host_gc.sh measures free space
+# with `df -P` on its home; this stub answers for the fixture instead, so a
+# verdict here never depends on how full the box running the selftest is.
+# HGT_DF_AVAIL_KB (1 KiB blocks free) defaults to roughly 1 TB on a 2 TB
+# filesystem: comfortably above every floor. A test that needs low disk
+# sets it for one call.
+DF_STUB_DIR="$WORK/df-stub"
+mkdir -p -- "$DF_STUB_DIR"
+cat > "$DF_STUB_DIR/df" <<'STUBEOF'
+#!/usr/bin/env bash
+avail="${HGT_DF_AVAIL_KB:-1000000000}"
+total=2000000000
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'fixture %s %s %s 50%% /\n' "$total" "$(( total - avail ))" "$avail"
+STUBEOF
+chmod +x "$DF_STUB_DIR/df"
+
+# systemctl, stubbed so no category ever reads this box's real user units.
+# One unit, whose ExecStart is whatever $UNITS_EXEC_FILE names (empty = no
+# unit points anywhere).
+SYSTEMCTL_STUB="$WORK/systemctl-stub"
+UNITS_EXEC_FILE="$WORK/unit-exec.txt"
+: > "$UNITS_EXEC_FILE"
+cat > "$SYSTEMCTL_STUB" <<STUBEOF
+#!/usr/bin/env bash
+case "\$*" in
+    *list-unit-files*) printf 'fx-svc.service enabled enabled\n' ;;
+    *ExecStart*) p="\$(cat -- "$UNITS_EXEC_FILE")"
+        [ -n "\$p" ] && printf '{ path=%s ; argv[]=%s ; }\n' "\$p" "\$p" ;;
+esac
+exit 0
+STUBEOF
+chmod +x "$SYSTEMCTL_STUB"
+
+# The dev binary the low-disk warning posts through. It sits next to the
+# z23 stub (host_gc.sh looks beside its z23 binary before PATH), so a
+# selftest run can never reach a real z23-dev and post real mail.
+DEV_STUB="$WORK/z23-dev"
+DEV_STUB_CALLS="$WORK/z23-dev-calls.log"
+cat > "$DEV_STUB" <<STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$DEV_STUB_CALLS"
+printf '{"schema":"zcl.result.v1","ok":true,"status":"passed"}\n'
+STUBEOF
+chmod +x "$DEV_STUB"
+: > "$DEV_STUB_CALLS"
+
 cat > "$Z23_STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -72,7 +119,9 @@ echo base > "$REPO_FX/base.txt"
 # *.pid/*.lock are gitignored so a z23p creator marker (an untracked file a
 # real dev-proof generation drops next to its content) never makes
 # worktree_clean() see a provably-dead generation as dirty.
-printf '*.pid\n*.lock\n' > "$REPO_FX/.gitignore"
+# build/ and test-tmp/ are ignored exactly as in the real repository, so a
+# fixture worktree carrying build output and test scratch is still clean.
+printf '*.pid\n*.lock\nbuild/\ntest-tmp/\n' > "$REPO_FX/.gitignore"
 git -C "$REPO_FX" add base.txt .gitignore
 git -C "$REPO_FX" commit -q -m base
 
@@ -99,8 +148,10 @@ run_hostgc() {
         ZCL_HOST_GC_SCRATCH_MIN_AGE_D=0 \
         ZCL_HOST_GC_Z23P_MIN_AGE_H=0 \
         ZCL_HOST_GC_TMPLITTER_MIN_AGE_D=0 \
+        ZCL_HOST_GC_SYSTEMCTL_BIN="${ZCL_HOST_GC_SYSTEMCTL_BIN:-$SYSTEMCTL_STUB}" \
+        PATH="$DF_STUB_DIR:$PATH" \
         "$@" \
-        "$HOSTGC" --only "$cat" "--$mode"
+        "$HOSTGC" --only "$cat" "--$mode" ${HGT_EXTRA_ARGS:-}
 }
 
 assert_contains() {
@@ -425,6 +476,240 @@ done
 [ -d "$SCRATCH_FX/pinned-lane" ] || fail "scratch apply removed a .gc_keep-pinned dir"
 [ -d "$SCRATCH_FX/still-here" ] || fail "scratch apply removed a dir with a live worktree"
 
+# ---------------------------------------------------------- z23p (donors)
+# The newest complete generation per build identity is the next proof's
+# warm donor and is kept; every other generation is reaped as before. The
+# keep is bounded: across the whole pool at most two donors survive.
+make_donor() {
+    local name="$1" ident="$2" completed="$3" dir="$Z23P_FX/$1"
+    git -C "$REPO_FX" worktree add -q --detach "$dir" main >/dev/null
+    mkdir -p -- "$dir/build/obj"
+    printf 'object\n' > "$dir/build/obj/a.o"
+    printf 'zcl.proof_build_complete.v1\nroot=%s\nlocal=%s\nbase=%s\ncompleted=%s\ncompiler=%s\nflags=%s\nenvironment=%s\nbuild_graph=%s\n' \
+        "$REPO_FX" "$name" base "$completed" "$ident" "$ident" "$ident" "$ident" \
+        > "$dir/build/.proof-build-complete"
+    find "$dir" -exec touch -t 200001010000 {} + 2>/dev/null || true
+}
+make_donor gen-donor-a-old aaaa 100
+make_donor gen-donor-a-new aaaa 400
+make_donor gen-donor-b bbbb 300
+make_donor gen-donor-c cccc 200
+
+out="$(run_hostgc z23p dry-run)"
+assert_contains "$out" "KEEP (newest warm donor" "z23p dry-run names the kept warm donor"
+out="$(run_hostgc z23p apply)"
+[ -d "$Z23P_FX/gen-donor-a-new" ] && pass "z23p keeps the newest donor of an identity" \
+    || fail "z23p reaped the newest complete generation of its build identity"
+[ -d "$Z23P_FX/gen-donor-b" ] && pass "z23p keeps the newest donor of a second identity" \
+    || fail "z23p reaped the newest complete generation of a second identity"
+[ -d "$Z23P_FX/gen-donor-a-old" ] && fail "z23p kept a superseded donor of the same identity" \
+    || pass "z23p reaps a superseded generation of the same identity"
+[ -d "$Z23P_FX/gen-donor-c" ] && fail "z23p kept a third donor past the two-donor bound" \
+    || pass "z23p bounds the donor keep to two generations"
+
+# A pool other than the default one (a lane's own proof pool, or the
+# landing worktree's) is discovered from git's worktree list and swept by
+# the same classifier.
+OTHER_POOL="$HOME_FX/.z23/lanes/.z23p"
+mkdir -p -- "$OTHER_POOL"
+git -C "$REPO_FX" worktree add -q --detach "$OTHER_POOL/gen-lane-dead" main >/dev/null
+touch_old "$OTHER_POOL/gen-lane-dead"
+out="$(run_hostgc z23p dry-run)"
+assert_contains "$out" "$OTHER_POOL" "z23p discovers a proof pool outside the default location"
+out="$(run_hostgc z23p apply)"
+[ -e "$OTHER_POOL/gen-lane-dead" ] && fail "z23p left a dead generation in a discovered pool" \
+    || pass "z23p reaps a dead generation in a discovered pool"
+
+# ------------------------------------------------------------------ wtbuild
+# build/ output inside idle registered worktrees: the 230 GB that filled
+# this host while every other category reported nothing to do.
+touch_tree_old() { find "$1" -exec touch -t 200001010000 {} + 2>/dev/null || true; }
+# touch_hours_ago PATH H — an mtime H hours in the past, GNU or BSD date.
+touch_hours_ago() {
+    local when
+    when=$(( $(date +%s) - $2 * 3600 ))
+    touch -t "$(date -d "@$when" +%Y%m%d%H%M 2>/dev/null || date -r "$when" +%Y%m%d%H%M)" -- "$1"
+}
+WT_FX="$HOME_FX/work"
+mkdir -p -- "$WT_FX"
+make_build_wt() {
+    local dir="$WT_FX/$1"
+    git -C "$REPO_FX" worktree add -q --detach "$dir" main >/dev/null
+    mkdir -p -- "$dir/build/obj" "$dir/build/bin" "$dir/build/scratch" \
+        "$dir/build/handoff" "$dir/build/devverify" "$dir/build/clang-facts" \
+        "$dir/build/lane-stopwatch" "$dir/build/proof-receipts" \
+        "$dir/build/acceptance-run" "$dir/build/evidence" "$dir/test-tmp/case1"
+    printf 'object\n' > "$dir/build/obj/a.o"
+    printf 'binary\n' > "$dir/build/bin/tool"
+    printf 'lock\n' > "$dir/build/.session.lock"
+    for sub in scratch handoff devverify clang-facts lane-stopwatch proof-receipts acceptance-run evidence; do
+        printf 'kept\n' > "$dir/build/$sub/f"
+    done
+    printf 'scratch\n' > "$dir/test-tmp/case1/f"
+    touch_tree_old "$dir"
+}
+make_build_wt wt-idle
+make_build_wt wt-live
+make_build_wt wt-recent
+make_build_wt wt-mid
+make_build_wt wt-unit
+touch -- "$WT_FX/wt-recent/build/obj/a.o"
+touch_hours_ago "$WT_FX/wt-mid/build/obj/a.o" 5
+mkdir -p -- "$PROC_FX/4242424"
+ln -s "$WT_FX/wt-live/build" "$PROC_FX/4242424/cwd"
+printf '%s\n' "$WT_FX/wt-unit/build/bin/tool" > "$UNITS_EXEC_FILE"
+
+out="$(run_hostgc wtbuild dry-run)"
+assert_contains "$out" "KEEP (live process inside): $WT_FX/wt-live" "wtbuild keeps a worktree a live process sits in"
+assert_contains "$out" "KEEP (built within" "wtbuild keeps a worktree built recently"
+assert_contains "$out" "$WT_FX/wt-idle/build/obj" "wtbuild dry-run names an idle build output"
+[ -d "$WT_FX/wt-idle/build/obj" ] && pass "wtbuild dry-run removes nothing" \
+    || fail "wtbuild dry-run removed build output"
+
+out="$(run_hostgc wtbuild apply)"
+log="$(cat -- "$STATE_FX/host_gc.log" 2>/dev/null || true)"
+[ -e "$WT_FX/wt-idle/build/obj" ] && fail "wtbuild apply left idle build output behind" \
+    || pass "wtbuild apply removes idle build output"
+[ -e "$WT_FX/wt-idle/build/bin" ] && fail "wtbuild apply left an idle build/bin no unit runs from" \
+    || pass "wtbuild apply removes a build/bin no unit runs from"
+for sub in scratch handoff devverify clang-facts lane-stopwatch proof-receipts acceptance-run evidence; do
+    [ -f "$WT_FX/wt-idle/build/$sub/f" ] || fail "wtbuild apply removed evidence-bearing build/$sub"
+done
+pass "wtbuild apply keeps every evidence-bearing build/ child"
+[ -f "$WT_FX/wt-idle/build/.session.lock" ] || fail "wtbuild apply removed hidden build state"
+[ -e "$WT_FX/wt-idle/test-tmp/case1" ] && fail "wtbuild apply left idle test scratch behind" \
+    || pass "wtbuild apply removes idle test scratch"
+[ -f "$WT_FX/wt-live/build/obj/a.o" ] || fail "wtbuild apply removed output from a worktree in use"
+[ -f "$WT_FX/wt-recent/build/obj/a.o" ] || fail "wtbuild apply removed output built recently"
+[ -f "$WT_FX/wt-mid/build/obj/a.o" ] || fail "wtbuild apply ignored the 12h idle floor with disk to spare"
+[ -f "$WT_FX/wt-unit/build/bin/tool" ] || fail "wtbuild apply removed a build/bin a systemd unit runs from"
+[ -e "$WT_FX/wt-unit/build/obj" ] && fail "wtbuild apply kept the rest of a unit-bearing build/" \
+    || pass "wtbuild apply keeps only the unit's build/bin"
+assert_contains "$log" "$(printf 'wtbuild-remove\t%s' "$WT_FX/wt-idle/build/obj")" \
+    "wtbuild apply logs each removal with its path"
+[ -d "$REPO_FX" ] || fail "wtbuild touched the main checkout"
+
+# Below the low-disk floor the idle window drops to two hours.
+out="$(HGT_DF_AVAIL_KB=1048576 run_hostgc wtbuild apply)"
+[ -e "$WT_FX/wt-mid/build/obj" ] && fail "wtbuild under low disk kept output idle for 5h" \
+    || pass "wtbuild under low disk reclaims output idle for more than 2h"
+[ -f "$WT_FX/wt-recent/build/obj/a.o" ] || fail "wtbuild under low disk removed output built just now"
+# The live occupant of wt-live stays for the landed section below.
+
+# --------------------------------------------------------------- landtmp
+# The landing worktree's test scratch: reclaimed only when the land queue
+# is provably idle.
+LAND_FX="$HOME_FX/.local/state/z23/dev/land"
+mkdir -p -- "$LAND_FX/wt/test-tmp/run1" "$LAND_FX/wt/test-tmp/ro/inner"
+printf 'x\n' > "$LAND_FX/wt/test-tmp/run1/f"
+printf 'x\n' > "$LAND_FX/wt/test-tmp/ro/inner/f"
+chmod -R a-w "$LAND_FX/wt/test-tmp/ro"
+: > "$LAND_FX/step.lock"
+printf '{"seq":1,"state":"proving"}\n' > "$LAND_FX/queue.jsonl"
+
+out="$(run_hostgc landtmp apply)"
+assert_contains "$out" "SKIP (land queue has" "landtmp skips while the land queue holds a row"
+[ -d "$LAND_FX/wt/test-tmp/run1" ] || fail "landtmp removed test scratch with a landing in flight"
+
+: > "$LAND_FX/queue.jsonl"
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LAND_FX/step.lock"
+    flock -x 9
+    out="$(run_hostgc landtmp apply)"
+    exec 9>&-
+    assert_contains "$out" "SKIP (step.lock is held" "landtmp skips while a land step holds step.lock"
+    [ -d "$LAND_FX/wt/test-tmp/run1" ] || fail "landtmp removed test scratch while step.lock was held"
+
+    out="$(run_hostgc landtmp dry-run)"
+    assert_contains "$out" "$LAND_FX/wt/test-tmp/run1" "landtmp dry-run names the scratch it would remove"
+    [ -d "$LAND_FX/wt/test-tmp/run1" ] || fail "landtmp dry-run removed test scratch"
+    out="$(run_hostgc landtmp apply)"
+    [ -e "$LAND_FX/wt/test-tmp/run1" ] && fail "landtmp apply left idle landing scratch behind" \
+        || pass "landtmp apply removes idle landing scratch"
+    [ -e "$LAND_FX/wt/test-tmp/ro" ] && fail "landtmp apply left a read-only scratch dir behind" \
+        || pass "landtmp apply removes read-only scratch (chmod first)"
+    [ -d "$LAND_FX/wt/test-tmp" ] || fail "landtmp apply removed test-tmp itself"
+else
+    out="$(run_hostgc landtmp apply)"
+    assert_contains "$out" "SKIP (no flock" "landtmp without flock cannot prove step.lock free and skips"
+    chmod -R u+w "$LAND_FX/wt/test-tmp"
+fi
+
+# ------------------------------------------------------------------ landed
+# Clean, fully landed, idle worktrees: opt-in only, and recorded before
+# removal so each one can be recreated at its exact commit.
+make_landed_wt() {
+    local name="$1" land="$2" dir="$WT_FX/$1"
+    git -C "$REPO_FX" worktree add -q -b "lane/$name" "$dir" main >/dev/null
+    echo "$name" > "$dir/$name.txt"
+    git -C "$dir" add "$name.txt"
+    git -C "$dir" commit -q -m "lane $name"
+    if [ "$land" = 1 ]; then
+        git -C "$REPO_FX" cherry-pick "$(git -C "$dir" rev-parse HEAD)" >/dev/null
+    fi
+    touch_tree_old "$dir"
+}
+make_landed_wt lane-landed 1
+make_landed_wt lane-unlanded 0
+make_landed_wt lane-dirty 1
+echo wip > "$WT_FX/lane-dirty/wip.txt"
+touch_tree_old "$WT_FX/lane-dirty"
+landed_sha="$(git -C "$WT_FX/lane-landed" rev-parse HEAD)"
+
+out="$(run_hostgc landed apply)"
+assert_contains "$out" "opt-in" "landed without --reap-landed-worktrees says it is opt-in"
+[ -d "$WT_FX/lane-landed" ] || fail "landed removed a worktree without the opt-in flag"
+
+out="$(HGT_EXTRA_ARGS=--reap-landed-worktrees run_hostgc landed dry-run)"
+assert_contains "$out" "$WT_FX/lane-landed" "landed dry-run names the fully landed worktree"
+assert_contains "$out" "KEEP (unlanded commits" "landed dry-run keeps a worktree with unlanded commits"
+assert_contains "$out" "KEEP (dirty" "landed dry-run keeps a dirty worktree"
+[ -d "$WT_FX/lane-landed" ] || fail "landed dry-run removed a worktree"
+
+out="$(HGT_EXTRA_ARGS=--reap-landed-worktrees run_hostgc landed apply)"
+[ -e "$WT_FX/lane-landed" ] && fail "landed apply left a fully landed idle worktree" \
+    || pass "landed apply removes a fully landed idle worktree"
+[ -d "$WT_FX/lane-unlanded" ] || fail "landed apply removed a worktree with unlanded commits"
+[ -f "$WT_FX/lane-dirty/wip.txt" ] || fail "landed apply removed a dirty worktree"
+[ -d "$WT_FX/wt-live" ] || fail "landed apply removed a worktree a live process sits in"
+[ -d "$WT_FX/wt-recent" ] || fail "landed apply removed a worktree touched within a day"
+[ -d "$Z23P_FX/gen-alive" ] || fail "landed apply reached into a proof pool"
+rm -f -- "$PROC_FX/4242424/cwd"
+record="$(cat -- "$STATE_FX/landed_worktrees.tsv" 2>/dev/null || true)"
+assert_contains "$record" "$(printf '%s\t%s' "$WT_FX/lane-landed" "$landed_sha")" \
+    "landed apply records path and commit before removing"
+[ -d "$UNITS_FX/unlanded-unit" ] || fail "landed reached into the units directory"
+
+# ---------------------------------------------------------------- lowdisk
+# Below the low-disk floor after a sweep: one line of agent mail naming the
+# largest consumers, rate limited to one per six hours, never an absolute
+# path in the body.
+: > "$DEV_STUB_CALLS"
+out="$(HGT_DF_AVAIL_KB=1048576 run_hostgc lowdisk dry-run)"
+assert_contains "$out" "would post" "lowdisk dry-run says it would post and does not"
+[ -s "$DEV_STUB_CALLS" ] && fail "lowdisk dry-run posted mail" || pass "lowdisk dry-run posts nothing"
+
+out="$(run_hostgc lowdisk apply)"
+[ -s "$DEV_STUB_CALLS" ] && fail "lowdisk posted mail with disk to spare" \
+    || pass "lowdisk is silent above the floor"
+
+out="$(HGT_DF_AVAIL_KB=1048576 run_hostgc lowdisk apply)"
+calls="$(cat -- "$DEV_STUB_CALLS")"
+assert_contains "$calls" "dev agent mail --action=post --to=oauth --kind=problem --ref=host-gc" \
+    "lowdisk posts one problem row to the dev agent mail leaf"
+body="$(printf '%s\n' "$calls" | sed -n 's/.*--body=//p' | head -1)"
+assert_contains "$body" "top:" "lowdisk names the largest consumers"
+case "$body" in
+    */[A-Za-z]*) fail "lowdisk body carries a path the mail filter refuses: $body" ;;
+    *) pass "lowdisk body carries no absolute path" ;;
+esac
+[ "${#body}" -le 4096 ] || fail "lowdisk body is over 4 KiB"
+out="$(HGT_DF_AVAIL_KB=1048576 run_hostgc lowdisk apply)"
+assert_contains "$out" "rate limited" "lowdisk says why it stayed quiet"
+n="$(wc -l < "$DEV_STUB_CALLS" | tr -d '[:space:]')"
+[ "$n" = 1 ] && pass "lowdisk posts at most once per six hours" \
+    || fail "lowdisk posted $n times inside its rate-limit window"
+
 # ----------------------------------------------------------------- pressure
 out="$(ZCL_HOST_GC_PRESSURE_MIN_FREE_PCT=101 ZCL_HOST_GC_PRESSURE_CRITICAL_FREE_PCT=101 \
     run_hostgc worktree dry-run)"
@@ -439,6 +724,12 @@ out="$(env ZCL_HOST_GC_HOME="$HOME_FX" ZCL_HOST_GC_REPO="$REPO_FX" \
 out="$(env ZCL_HOST_GC_HOME="$HOME_FX" ZCL_HOST_GC_REPO="$REPO_FX" \
     "$HOSTGC" --check-protected "$TMP_FX/orphan-fixture")"
 [ "$out" = "UNPROTECTED" ] || fail "an ordinary fixture path reads as protected: $out"
+for p in "$HOME_FX/github/qedc/build" "$HOME_FX/github/qedc-lanes/x" "$HOME_FX/work/.qedc/data" \
+    "/tmp/claude-1000/session" "$HOME_FX/.zclassic-c23/blocks"; do
+    out="$(env ZCL_HOST_GC_HOME="$HOME_FX" ZCL_HOST_GC_REPO="$REPO_FX" \
+        "$HOSTGC" --check-protected "$p")"
+    [ "$out" = "PROTECTED" ] || fail "$p is not protected: $out"
+done
 
 if [ "$FAIL" = 1 ]; then
     echo "host_gc_selftest: FAILED" >&2

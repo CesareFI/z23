@@ -168,15 +168,15 @@ nothing is removed, moved, or killed.
   --status       print one screen of host hygiene facts and exit
   --only CAT     run a single category. CAT is one of:
                  ccache zcc z23p tmp tmplitter journal binbak testtmp orphan
-                 deadexec worktree units scratch
+                 deadexec worktree units scratch wtbuild landtmp landed lowdisk
+  --wt-build-idle-h=N      hours an idle worktree's build/ output is kept (12)
+  --reap-landed-worktrees  also remove clean, fully landed, idle worktrees
 
-Thresholds: below the low-disk floor the sweep relaxes its age floors; below
-the cache-freeze floor the caches are additionally capped at their current
-size so they cannot reclaim the space the sweep just freed.
-
-Low-disk trigger: when free space on the filesystem holding $HOME is below
-the low-disk threshold, a dry run says so loudly and an --apply run sweeps
-regardless of the per-category age floors it would otherwise respect.
+Thresholds: below the low-disk floor the sweep relaxes its age floors (idle
+worktree build/ output: 2h) and, after the sweep, posts one agent-mail
+warning naming the largest consumers (at most once per 6h); below the
+cache-freeze floor the caches are also capped at their current size so they
+cannot reclaim the space the sweep just freed.
 
 Log:        ~/.local/state/server-cleanup/host_gc.log
 Quarantine: ~/.local/state/server-cleanup/quarantine/<date>/ (swept after 14 days)
@@ -188,20 +188,20 @@ while [ $# -gt 0 ]; do
         --apply) APPLY=1 ;;
         --dry-run|--plan) APPLY=0 ;;
         --status) STATUS=1 ;;
-        --only)
-            shift || { echo "host-gc: --only needs a category" >&2; exit 2; }
-            ONLY="$1"
-            ;;
+        --only) shift || { echo "host-gc: --only needs a category" >&2; exit 2; }
+            ONLY="$1" ;;
+        # Knobs that postdate the ZCL_HOST_GC_* seams above: the hours a
+        # worktree's build/ must sit idle, and the landed-worktree opt-in.
+        --wt-build-idle-h=*) WT_BUILD_IDLE_H="${1#*=}" ;;
+        --reap-landed-worktrees) REAP_LANDED=1 ;;
         # Ask the protect predicate about one path and exit. This exists so
         # the gate can test is_protected() DIRECTLY rather than grepping the
         # source for the tree names: a grep for "wallet_backups" matches the
         # header comment above and keeps passing after the real entry has
         # been deleted from the case statement, which is exactly the kind of
         # gate that reports clean while the guarantee is gone.
-        --check-protected)
-            shift || { echo "host-gc: --check-protected needs a path" >&2; exit 2; }
-            CHECK_PROTECTED="$1"
-            ;;
+        --check-protected) shift || { echo "host-gc: --check-protected needs a path" >&2; exit 2; }
+            CHECK_PROTECTED="$1" ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'host-gc: unknown arg %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -226,7 +226,7 @@ is_protected() {
         "$GC_REPO"|"$GC_REPO"/*) return 0 ;;
         "$GC_HOME"/.local/state/zclassic23-quality|"$GC_HOME"/.local/state/zclassic23-quality/*) return 0 ;;
         "$STATE"|"$STATE"/*) return 0 ;;
-        /tmp/zcl-pristine-*) return 0 ;;
+        /tmp/zcl-pristine-*|/tmp/claude-*|"$GC_TMP"/claude-*|*/github/qedc*|*/.qedc|*/.qedc/*|*/qedc-lanes|*/qedc-lanes/*) return 0 ;;
         /|"$GC_HOME") return 0 ;;
         *) return 1 ;;
     esac
@@ -329,7 +329,7 @@ add_result() {
 # feature either.
 cat_totals() {
     printf '%s' "$CAT_RESULTS" | awk '
-        BEGIN { n = split("ccache zcc z23p tmp tmplitter journal binbak testtmp orphan deadexec worktree units scratch quarantine", o, " ") }
+        BEGIN { n = split("ccache zcc z23p tmp tmplitter journal binbak testtmp orphan deadexec worktree units scratch wtbuild landtmp landed quarantine", o, " ") }
         { b[$1] += $2; c[$1] += $3 }
         END { for (i = 1; i <= n; i++) printf "%s %d %d\n", o[i], c[o[i]] + 0, b[o[i]] + 0 }'
 }
@@ -675,7 +675,7 @@ z23p_sweep_pool() {
             && [ "$(age_secs "$wt")" -lt "$min_age" ] && [ "$LOW_DISK" = 0 ]; then
             young=$(( young + 1 )); continue
         fi
-        if worktree_locked "$wt"; then kept=$(( kept + 1 )); continue; fi
+        if worktree_locked "$wt" || z23p_keep_donor "$pool" "$wt"; then kept=$(( kept + 1 )); continue; fi
         if cwd_occupied "$wt"; then busy=$(( busy + 1 )); continue; fi
         if ! worktree_detached "$wt"; then
             dirty=$(( dirty + 1 ))
@@ -768,7 +768,548 @@ sweep_z23p() {
     build_cwd_set
     z23p_sweep_pool "${ZCL_HOST_GC_Z23P:-$GC_HOME/github/.z23p}"
     z23p_sweep_ram
+    z23p_sweep_other_pools
     return 0
+}
+
+# ------------------------------------------------------- z23p warm donors
+# The newest COMPLETE generation of each build identity is the next proof's
+# warm donor: tools/dev/dev_proof.c seeds a new generation's objects from it
+# instead of building cold. Reaping it by age made the next landing pay the
+# whole cold build. So a generation carrying build/.proof-build-complete is
+# kept when it is the newest such generation of its identity (the marker's
+# root, compiler, flags, environment and build_graph lines) that no process
+# is sitting in, and the keep is bounded: across one pool at most
+# Z23P_DONOR_MAX generations survive this way, newest first. Every other
+# generation is classified exactly as before.
+Z23P_DONOR_MAX=2
+Z23P_DONOR_POOL=""
+Z23P_DONOR_SET=""
+
+# One line "completed<TAB>identity" for a generation's marker, or nothing
+# when the marker is absent, of another schema, or missing a field.
+z23p_marker_line() {
+    local m="$1/build/.proof-build-complete"
+    [ -f "$m" ] || return 1
+    awk -F= '
+        NR == 1 { if ($0 != "zcl.proof_build_complete.v1") exit 1; next }
+        { v[$1] = substr($0, length($1) + 2) }
+        END {
+            if (NR < 1 || v["completed"] !~ /^[0-9]+$/) exit 1
+            if (v["root"] == "" || v["compiler"] == "" || v["flags"] == "" ||
+                v["environment"] == "" || v["build_graph"] == "") exit 1
+            printf "%s\t%s|%s|%s|%s|%s\n", v["completed"], v["root"],
+                v["compiler"], v["flags"], v["environment"], v["build_graph"]
+        }' "$m" 2>/dev/null
+}
+
+# The donor set of one pool: newest idle complete generation per identity,
+# then the Z23P_DONOR_MAX newest of those. Computed once per pool.
+z23p_donor_set() {
+    local pool="$1" wt line
+    [ "$Z23P_DONOR_POOL" = "$pool" ] && return 0
+    Z23P_DONOR_POOL="$pool"
+    ensure_cwd_set
+    Z23P_DONOR_SET="$(
+        while IFS= read -r wt; do
+            case "$wt" in "$pool"/*) ;; *) continue ;; esac
+            [ -d "$wt" ] || continue
+            cwd_occupied "$wt" && continue
+            line="$(z23p_marker_line "$wt")" || continue
+            if [ -n "$line" ]; then printf '%s\t%s\n' "$line" "$wt"; fi
+        done < <(worktree_paths "$GC_REPO") \
+            | sort -t "$(printf '\t')" -k1,1nr \
+            | awk -F '\t' -v max="$Z23P_DONOR_MAX" \
+                '!seen[$2]++ { if (n++ < max) print $3 }'
+    )"
+}
+
+# Keep verdict for z23p_sweep_pool: returns 0 (and says why) for a donor.
+z23p_keep_donor() {
+    local pool="$1" wt="$2" line
+    z23p_donor_set "$pool"
+    while IFS= read -r line; do
+        if [ -n "$line" ] && [ "$line" = "$wt" ]; then
+            say "z23p: KEEP (newest warm donor for its build identity): $wt"
+            return 0
+        fi
+    done <<< "$Z23P_DONOR_SET"
+    return 1
+}
+
+# Every proof pool git knows about beyond the two swept above. dev_proof.c
+# puts a pool beside EVERY checkout it proves from (<checkout parent>/.z23p),
+# so lanes, the landing worktree, and scratch checkouts each grow their own;
+# only the one under ~/github was ever swept. They are found from git's own
+# worktree list, not guessed, and run the same classifier.
+z23p_sweep_other_pools() {
+    local main_pool="${ZCL_HOST_GC_Z23P:-$GC_HOME/github/.z23p}" pool
+    while IFS= read -r pool; do
+        [ -n "$pool" ] || continue
+        [ "$pool" = "$main_pool" ] && continue
+        [ "$pool" = "$Z23P_RAM" ] && continue
+        is_protected "$pool" && continue
+        z23p_sweep_pool "$pool"
+    done < <(worktree_paths "$GC_REPO" | while IFS= read -r wt; do
+                 case "$wt" in */.z23p/*) dirname -- "$wt" ;; esac
+             done | sort -u)
+}
+
+# ========================================================= CATEGORY wtbuild
+# build/ output inside idle registered worktrees. On 2026-09-27 this host
+# reached 97% full with ~230 GB of obj/bin/toolchain trees spread over ~140
+# lane worktrees nobody had built in for days, while every category above
+# reported ~0 B reclaimable — none of them ever looked inside a lane's
+# build/. Build output is reproducible (each lane rebuilds on demand), so it
+# is DELETED, not quarantined, one log line per build/ child with its bytes.
+#
+# A worktree is left entirely alone when a live process has its cwd, an
+# open file, or its executable inside it, or when anything under its build/
+# changed within the idle window (WT_BUILD_IDLE_H, default 12h; 2h below the
+# low-disk floor). Inside an idle worktree these build/ children survive:
+#   evidence   scratch, handoff, devverify, clang-facts, and any name with
+#              stopwatch, acceptance, evidence or receipt in it
+#   hidden     .locks, markers and leases: tiny, and live build machinery
+#   bin        when a systemd user unit's ExecStart points into it (and
+#              whenever the unit list cannot be read at all: fail closed)
+# The idle worktree's own test-tmp/ is emptied under the same rule.
+WT_BUILD_LOWDISK_IDLE_H=2
+EXE_SET=""
+EXE_SET_BUILT=0
+UNIT_EXEC_SET=""
+UNIT_EXEC_STATE=""
+
+# Executables of live processes: a binary running out of a build/bin keeps
+# that worktree, even when its cwd is elsewhere.
+ensure_exe_set() {
+    [ "$EXE_SET_BUILT" = 1 ] && return 0
+    local d t
+    for d in "$PROC_ROOT"/[0-9]*; do
+        t="$(readlink -- "$d/exe" 2>/dev/null)" || continue
+        EXE_SET="$EXE_SET
+$t"
+    done
+    EXE_SET_BUILT=1
+}
+
+# Is a live process sitting in, holding open, or executing from $1?
+wt_in_use() {
+    local dir="$1" line
+    ensure_cwd_set
+    cwd_occupied "$dir" && return 0
+    ensure_exe_set
+    while IFS= read -r line; do
+        case "$line" in "$dir"/*) return 0 ;; esac
+    done <<< "$EXE_SET"
+    return 1
+}
+
+# ExecStart paths of every user unit, read once. UNIT_EXEC_STATE is
+# "unknown" when systemctl is unavailable: then no build/bin is removable.
+ensure_unit_exec_set() {
+    [ -n "$UNIT_EXEC_STATE" ] && return 0
+    local unit path units
+    if ! command -v "$SYSTEMCTL_BIN" >/dev/null 2>&1; then
+        UNIT_EXEC_STATE=unknown
+        return 0
+    fi
+    units="$( { "$SYSTEMCTL_BIN" --user list-unit-files --type=service \
+                    --no-legend --no-pager 2>/dev/null
+                "$SYSTEMCTL_BIN" --user list-units --type=service --all \
+                    --plain --no-legend --no-pager 2>/dev/null
+              } | awk '{print $1}' | sort -u)" || true
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        case "$unit" in *@.service) continue ;; esac
+        path="$("$SYSTEMCTL_BIN" --user show -p ExecStart --value "$unit" 2>/dev/null \
+                | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1)" || true
+        if [ -n "$path" ]; then UNIT_EXEC_SET="$UNIT_EXEC_SET
+$path"; fi
+    done <<< "$units"
+    UNIT_EXEC_STATE=known
+}
+
+unit_runs_from() {
+    local dir="$1" line
+    ensure_unit_exec_set
+    [ "$UNIT_EXEC_STATE" = known ] || return 0
+    while IFS= read -r line; do
+        case "$line" in "$dir"/*) return 0 ;; esac
+    done <<< "$UNIT_EXEC_SET"
+    return 1
+}
+
+# Anything under $1 modified within the last $2 hours? find stops at the
+# first hit, so a busy tree costs one lookup, an idle one a single walk.
+recent_under() {
+    local hit
+    hit="$(find "$1" -mmin "-$(( $2 * 60 ))" -print -quit 2>/dev/null)" || true
+    [ -n "$hit" ]
+}
+
+wtbuild_keeps_child() {
+    case "$(basename -- "$1")" in
+        .*) return 0 ;;
+        scratch|handoff|devverify|clang-facts) return 0 ;;
+        *stopwatch*|*acceptance*|*evidence*|*receipt*) return 0 ;;
+        bin) unit_runs_from "$1" && return 0 ;;
+    esac
+    return 1
+}
+
+# Delete one reproducible tree (build output, test scratch) outright: no
+# quarantine. The protect predicate is asked again on the exact path first.
+reap_tree() {
+    local cat="$1" action="$2" p="$3" note="$4" bytes
+    refuse_if_protected "$p" || return 1
+    bytes="$(dir_bytes "$p")"
+    if [ "$APPLY" = 1 ]; then
+        chmod -R u+w -- "$p" 2>/dev/null || true
+        if ! rm -rf -- "$p" 2>/dev/null || [ -e "$p" ]; then
+            log_line "$action-failed" "$p" 0 "rm refused"
+            say "$cat: could not remove $p (left in place)"
+            return 1
+        fi
+        say "$cat: removed $p ($(human "$bytes"))"
+    else
+        say "$cat: would remove $p ($(human "$bytes"))"
+    fi
+    log_line "$action" "$p" "$bytes" "$note"
+    add_result "$cat" "$bytes" 1
+}
+
+# Children of $1, dotfiles included, one per line.
+dir_children() {
+    local c
+    for c in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$c" ] || [ -L "$c" ] || continue
+        printf '%s\n' "$c"
+    done
+}
+
+# Registered worktrees of GC_REPO other than the main checkout, the proof
+# pools (z23p owns those) and the /tmp registrations (tmp owns those).
+z23_lane_worktrees() {
+    local wt
+    while IFS= read -r wt; do
+        [ -n "$wt" ] || continue
+        [ "$wt" = "$GC_REPO" ] && continue
+        case "$wt" in */.z23p/*|"$GC_TMP"/*|"$Z23P_RAM"/*) continue ;; esac
+        [ -d "$wt" ] || continue
+        printf '%s\n' "$wt"
+    done < <(worktree_paths "$GC_REPO")
+}
+
+wtbuild_one() {
+    local wt="$1" idle_h="$2" child
+    [ -d "$wt/build" ] || [ -d "$wt/test-tmp" ] || return 0
+    if is_protected "$wt"; then return 0; fi
+    if wt_in_use "$wt"; then
+        say "wtbuild: KEEP (live process inside): $wt"
+        return 0
+    fi
+    if [ -d "$wt/build" ]; then
+        if recent_under "$wt/build" "$idle_h"; then
+            say "wtbuild: KEEP (built within ${idle_h}h): $wt"
+        else
+            while IFS= read -r child; do
+                wtbuild_keeps_child "$child" && continue
+                reap_tree wtbuild wtbuild-remove "$child" "idle>${idle_h}h" || true
+            done < <(dir_children "$wt/build")
+        fi
+    fi
+    if [ -d "$wt/test-tmp" ] && ! recent_under "$wt/test-tmp" "$idle_h"; then
+        while IFS= read -r child; do
+            reap_tree testtmp testtmp-remove "$child" "idle worktree>${idle_h}h" || true
+        done < <(dir_children "$wt/test-tmp")
+    fi
+}
+
+sweep_wtbuild() {
+    want wtbuild || return 0
+    local idle_h="$WT_BUILD_IDLE_H" wt n=0
+    if [ "$LOW_DISK" = 1 ] && [ "$idle_h" -gt "$WT_BUILD_LOWDISK_IDLE_H" ]; then
+        idle_h="$WT_BUILD_LOWDISK_IDLE_H"
+    fi
+    hdr "worktree build output (build/ idle more than ${idle_h}h)"
+    while IFS= read -r wt; do
+        n=$(( n + 1 ))
+        wtbuild_one "$wt" "$idle_h"
+    done < <(z23_lane_worktrees)
+    say "wtbuild: $n registered worktree(s) examined"
+}
+
+# ========================================================= CATEGORY landtmp
+# The landing worktree's test scratch (52 GB on 2026-09-27). The lander
+# reuses one private worktree forever and every proof leaves its test-tmp
+# behind. It is emptied ONLY when the land queue is provably idle: no row
+# in queue.jsonl, step.lock free, and no live process inside the worktree.
+# On --apply the step lock is TAKEN (non-blocking) for the removal itself,
+# so a land step that starts meanwhile gets its ordinary retryable
+# STEP_BUSY instead of racing a delete. Anything unprovable skips, by name.
+LAND_DIR="$GC_HOME/.local/state/z23/dev/land"
+
+# Prints why the queue is busy and returns 0; returns 1 when idle.
+land_queue_busy() {
+    local q="$LAND_DIR/queue.jsonl"
+    if [ -s "$q" ]; then
+        printf 'land queue has %s row(s) queued or in flight' "$(grep -c . "$q")"
+        return 0
+    fi
+    if [ -e "$LAND_DIR/step.lock" ]; then
+        if ! command -v flock >/dev/null 2>&1; then
+            printf 'no flock binary to prove step.lock is free'
+            return 0
+        fi
+        if ! flock -n -x "$LAND_DIR/step.lock" true 2>/dev/null; then
+            printf 'step.lock is held by a land step or proof'
+            return 0
+        fi
+    fi
+    ensure_cwd_set
+    if cwd_occupied "$LAND_DIR/wt"; then
+        printf 'a live process is inside the landing worktree'
+        return 0
+    fi
+    return 1
+}
+
+landtmp_reap_children() {
+    local tt="$1" child
+    while IFS= read -r child; do
+        reap_tree landtmp landtmp-remove "$child" "land queue idle" || true
+    done < <(dir_children "$tt")
+}
+
+sweep_landtmp() {
+    want landtmp || return 0
+    hdr "landing worktree test scratch (only while the land queue is idle)"
+    local tt="$LAND_DIR/wt/test-tmp" why
+    [ -d "$tt" ] || { say "landtmp: no $tt — skipped"; return 0; }
+    if why="$(land_queue_busy)"; then
+        say "landtmp: SKIP ($why): $tt"
+        log_line "landtmp-skip" "$tt" 0 "$why"
+        return 0
+    fi
+    if [ "$APPLY" = 1 ] && [ -e "$LAND_DIR/step.lock" ]; then
+        # fd 8 carries the lock for exactly the removal below.
+        exec 8>>"$LAND_DIR/step.lock"
+        if ! flock -n -x 8; then
+            exec 8>&-
+            say "landtmp: SKIP (step.lock was taken before the removal began): $tt"
+            log_line "landtmp-skip" "$tt" 0 "step.lock raced"
+            return 0
+        fi
+        landtmp_reap_children "$tt"
+        exec 8>&-
+        return 0
+    fi
+    landtmp_reap_children "$tt"
+}
+
+# ========================================================== CATEGORY landed
+# Whole registered worktrees that are clean, carry no commit main lacks
+# (git cherry: patch equivalence, so cherry-picked lanes count as landed),
+# and have been idle more than LANDED_IDLE_H. OPT-IN: without
+# --reap-landed-worktrees this only reports the candidates, because
+# docs/HOST_GC.md sanctions whole-worktree removal only for the units,
+# lanes and trains directories. Before each removal the worktree's path,
+# commit and branch are appended to $STATE/landed_worktrees.tsv, so any one
+# of them is `git worktree add <path> <commit>` away from coming back.
+# `git worktree remove` refuses a tree with a submodule checkout, so the
+# fallback is a guarded rm -rf plus `git worktree prune`.
+LANDED_IDLE_H=24
+
+landed_base_ref() {
+    local r
+    for r in origin/main main; do
+        if git -C "$GC_REPO" rev-parse -q --verify "$r^{commit}" >/dev/null 2>&1; then
+            printf '%s' "$r"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Clean with submodules included. The vendored tor checkout's untracked
+# .provenance stamp is written by the build and is not work: a status whose
+# only line is the submodule, whose own only change is that stamp, and whose
+# recorded commit is unchanged, is clean.
+landed_clean() {
+    local wt="$1" out sub
+    out="$(git -C "$wt" status --porcelain --ignore-submodules=none 2>/dev/null)" || return 1
+    [ -z "$out" ] && return 0
+    [ "$out" = " M vendor/tor" ] || [ "$out" = " m vendor/tor" ] || return 1
+    sub="$(git -C "$wt/vendor/tor" status --porcelain --ignore-submodules=none 2>/dev/null)" || return 1
+    [ "$sub" = "?? .provenance" ] || return 1
+    git -C "$wt" diff --quiet --ignore-submodules=dirty -- vendor/tor 2>/dev/null
+}
+
+landed_unlanded_commits() {
+    local out
+    out="$(git -C "$1" cherry "$2" HEAD 2>/dev/null)" || return 0
+    case "$out" in *$'\n+'*|+*) return 0 ;; esac
+    return 1
+}
+
+worktree_gc_protected_name() {
+    local names
+    [ -f "$WORKTREE_GC" ] || return 1
+    names="$(sed -n 's/^PROTECTED_NAMES="\(.*\)"$/\1/p' "$WORKTREE_GC" 2>/dev/null)"
+    case " $names " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# Returns 0 for a removal candidate; otherwise says why it is kept.
+landed_candidate() {
+    local wt="$1" base="$2"
+    is_protected "$wt" && return 1
+    case "$wt" in
+        "$UNITS_DIR"/*|"$LANES_DIR"/*|"$TRAINS_DIR"/*|"$LAND_DIR"/*) return 1 ;;
+    esac
+    if worktree_gc_protected_name "$(basename -- "$wt")"; then
+        say "landed: KEEP (hard-protected lane name): $wt"; return 1
+    fi
+    if worktree_locked "$wt"; then say "landed: KEEP (locked): $wt"; return 1; fi
+    if wt_in_use "$wt"; then say "landed: KEEP (live process inside): $wt"; return 1; fi
+    if ! landed_clean "$wt"; then say "landed: KEEP (dirty — uncommitted work): $wt"; return 1; fi
+    if unit_has_review_ref "$wt"; then say "landed: KEEP (review ref exists): $wt"; return 1; fi
+    if landed_unlanded_commits "$wt" "$base"; then
+        say "landed: KEEP (unlanded commits — git cherry shows +): $wt"; return 1
+    fi
+    if recent_under "$wt" "$LANDED_IDLE_H"; then
+        say "landed: KEEP (touched within ${LANDED_IDLE_H}h): $wt"; return 1
+    fi
+    return 0
+}
+
+landed_remove() {
+    local wt="$1" bytes="$2" sha branch
+    refuse_if_protected "$wt" || return 0
+    sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || { say "landed: no HEAD for $wt (left in place)"; return 0; }
+    branch="$(git -C "$wt" symbolic-ref -q --short HEAD 2>/dev/null || echo detached)"
+    ensure_state
+    printf '%s\t%s\t%s\t%s\n' "$wt" "$sha" "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >> "$STATE/landed_worktrees.tsv" || { say "landed: could not record $wt (left in place)"; return 0; }
+    chmod -R u+w -- "$wt" 2>/dev/null || true
+    if ! git -C "$GC_REPO" worktree remove --force -- "$wt" 2>/dev/null; then
+        refuse_if_protected "$wt" || return 0
+        rm -rf -- "$wt" 2>/dev/null || true
+        git -C "$GC_REPO" worktree prune >/dev/null 2>&1 || true
+    fi
+    if [ -e "$wt" ]; then
+        log_line "landed-remove-failed" "$wt" 0 "head=$sha"
+        say "landed: could not remove $wt (left in place)"
+        return 0
+    fi
+    log_line "landed-remove" "$wt" "$bytes" "head=$sha branch=$branch"
+    add_result landed "$bytes" 1
+    say "landed: removed $wt ($(human "$bytes")) — recorded at $sha"
+}
+
+sweep_landed() {
+    want landed || return 0
+    hdr "fully landed idle worktrees (clean, no unique commits, idle > ${LANDED_IDLE_H}h)"
+    local base wt bytes n=0 total=0
+    base="$(landed_base_ref)" || { say "landed: no main ref in $GC_REPO — skipped"; return 0; }
+    while IFS= read -r wt; do
+        landed_candidate "$wt" "$base" || continue
+        bytes="$(dir_bytes "$wt")"
+        n=$(( n + 1 )); total=$(( total + bytes ))
+        if [ "$REAP_LANDED" = 1 ] && [ "$APPLY" = 1 ]; then
+            landed_remove "$wt" "$bytes"
+        else
+            say "landed: candidate $wt ($(human "$bytes")) vs $base"
+            log_line "landed-candidate" "$wt" "$bytes" "vs $base"
+            if [ "$REAP_LANDED" = 1 ]; then add_result landed "$bytes" 1; fi
+        fi
+    done < <(z23_lane_worktrees)
+    if [ "$REAP_LANDED" != 1 ]; then
+        say "landed: opt-in (rerun with --reap-landed-worktrees to remove) — $n candidate(s), $(human "$total") left in place"
+    fi
+}
+
+# ========================================================= CATEGORY lowdisk
+# Early warning. When free space is still below LOW_DISK_GB AFTER the sweep,
+# nothing reproducible was left to reclaim and a human or an agent has to
+# act. One row goes to the dev agent mail leaf naming the five largest
+# consumers, at most once per LOWDISK_MAIL_EVERY_H. The body crosses hosts,
+# so it carries no absolute path: consumers are named relative to home
+# with '>' for '/', which the mail leaf's body filter accepts.
+LOWDISK_MAIL_EVERY_H=6
+LOWDISK_DU_BUDGET_S=60
+LOWDISK_TOTAL_BUDGET_S=300
+
+# The dev binary: beside the z23 binary, then PATH, then ~/.local/bin (a
+# systemd user unit's PATH does not include it).
+dev_mail_bin() {
+    local c
+    for c in "$(dirname -- "$Z23_BIN")/z23-dev" "$(command -v z23-dev 2>/dev/null || true)" \
+        "$GC_HOME/.local/bin/z23-dev"; do
+        if [ -n "$c" ] && [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
+    done
+    return 1
+}
+
+# "bytes<TAB>path" for the children of one top-level directory, bounded.
+bounded_du_children() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$LOWDISK_DU_BUDGET_S" du -x -b -d 1 -- "$1" 2>/dev/null || true
+    else
+        du -x -b -d 1 -- "$1" 2>/dev/null || true
+    fi | awk -F '\t' -v top="$1" '$2 != top'
+}
+
+# The five largest second-level directories under home, as mail-safe text.
+# The live datadirs are never walked; neither is anything past the budget.
+top_consumers() {
+    local d deadline rel b p
+    deadline=$(( $(now_epoch) + LOWDISK_TOTAL_BUDGET_S ))
+    for d in "$GC_HOME"/* "$GC_HOME"/.[!.]*; do
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        case "$d" in "$GC_HOME"/.zclassic*) continue ;; esac
+        [ "$(now_epoch)" -lt "$deadline" ] || break
+        bounded_du_children "$d"
+    done | sort -rn | head -5 | while IFS=$'\t' read -r b p; do
+        rel="${p#"$GC_HOME"/}"
+        printf '%s %s; ' "$(printf '%s' "$rel" | tr '/' '>')" "$(human "$b")"
+    done
+}
+
+warn_low_disk() {
+    want lowdisk || return 0
+    local free="$1" stamp="$STATE/lowdisk_mail.stamp" age body bin
+    [ -n "$free" ] || return 0
+    [ "$free" -lt $(( LOW_DISK_GB * 1024 * 1024 * 1024 )) ] || return 0
+    hdr "low-disk warning"
+    if [ -e "$stamp" ]; then
+        age="$(age_secs "$stamp")"
+        if [ "$age" -lt $(( LOWDISK_MAIL_EVERY_H * 3600 )) ]; then
+            say "lowdisk: rate limited — last warning $(( age / 60 ))m ago (one per ${LOWDISK_MAIL_EVERY_H}h)"
+            return 0
+        fi
+    fi
+    body="host-gc: $(human "$free") free after the sweep, below the ${LOW_DISK_GB}G floor. top: $(top_consumers)"
+    body="$(printf '%s' "$body" | head -c 4000)"
+    if ! bin="$(dev_mail_bin)"; then
+        say "lowdisk: no z23-dev to post with — $body"
+        log_line "lowdisk-mail-failed" "$GC_HOME" "$free" "no z23-dev"
+        return 0
+    fi
+    if [ "$APPLY" != 1 ]; then
+        say "lowdisk: would post: $body"
+        return 0
+    fi
+    if "$bin" dev agent mail --action=post --to=oauth --kind=problem --ref=host-gc \
+        "--body=$body" >/dev/null 2>&1; then
+        ensure_state
+        : > "$stamp"
+        say "lowdisk: posted: $body"
+        log_line "lowdisk-mail" "$GC_HOME" "$free" "posted"
+    else
+        say "lowdisk: mail post failed ($bin) — $body"
+        log_line "lowdisk-mail-failed" "$GC_HOME" "$free" "post refused"
+    fi
 }
 
 # =============================================================== CATEGORY tmp
@@ -1457,6 +1998,15 @@ report_pressure() {
     fi
 }
 
+# ------------------------------------------------------------------ options
+# The knobs parsed at the top, defaulted and checked here, after every
+# function they steer is defined.
+WT_BUILD_IDLE_H="${WT_BUILD_IDLE_H:-12}"
+REAP_LANDED="${REAP_LANDED:-0}"
+case "$WT_BUILD_IDLE_H" in
+    ''|*[!0-9]*) echo "host-gc: --wt-build-idle-h needs a whole number of hours" >&2; exit 2 ;;
+esac
+
 # ------------------------------------------------------------------- driver
 LOW_DISK=0
 CACHE_FREEZE=0
@@ -1510,6 +2060,9 @@ sweep_worktree
 sweep_units
 sweep_trains_landed
 sweep_scratch
+sweep_wtbuild
+sweep_landtmp
+sweep_landed
 sweep_quarantine_expiry
 sweep_zcc
 
@@ -1528,4 +2081,5 @@ if [ "$APPLY" = 0 ]; then
     say "host-gc: this was a DRY RUN — rerun with --apply to reclaim it"
 fi
 log_line "sweep-complete" "$GC_HOME" "$TOTAL" "free_before=$FREE_AT_START free_after=$FREE_AT_END"
+warn_low_disk "${FREE_AT_END:-}"
 exit 0
