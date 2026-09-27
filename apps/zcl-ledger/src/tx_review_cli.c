@@ -81,10 +81,7 @@ static int send_transaction(int fd, const uint8_t *wire, size_t length) {
     return 0;
 }
 
-static int blue_review(const char *device, const uint8_t *wire, size_t length,
-                       const zcl_tx_review *review, bool has_branch,
-                       uint32_t branch_id, const uint8_t zip_digest[32]) {
-    if (length > ZCL_BLUE_REVIEW_MAX_BYTES) return -1;
+static int open_blue_device(const char *device) {
     int fd = open(device, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
     struct hidraw_devinfo info;
     if (fd < 0) return -1;
@@ -93,18 +90,19 @@ static int blue_review(const char *device, const uint8_t *wire, size_t length,
         close(fd);
         return -1;
     }
+    return fd;
+}
+
+static int blue_review_exchange(int fd, const uint8_t *wire, size_t length,
+                                bool has_branch, uint32_t branch_id,
+                                const uint8_t zip_digest[32],
+                                const uint8_t *summary, size_t summary_length) {
     static const uint8_t probe[] = {0xa5, 1, 0, 0, 0};
     static const uint8_t identity[] = {'Z', 'C', 'L', 6, 0x40};
     uint8_t final[] = {0xa5, 0x12, 0, 0, 0};
     uint8_t zip_command[9] = {0xa5, 0x14, 0, 0, 4};
     for (unsigned i = 0; i < 4; ++i)
         zip_command[5 + i] = (uint8_t)(branch_id >> (8 * i));
-    uint8_t summary[76];
-    blue_review_encode_summary(review, summary);
-    if (!SHA256(wire, length, summary + 44)) {
-        close(fd);
-        return -1;
-    }
     int result = 0;
     if (send_expected(fd, probe, sizeof probe,
                       identity, sizeof identity) < 0) {
@@ -119,10 +117,27 @@ static int blue_review(const char *device, const uint8_t *wire, size_t length,
         result = -1;
     }
     if (result == 0 && send_expected(fd, final, sizeof final,
-                                     summary, sizeof summary) < 0) {
+                                     summary, summary_length) < 0) {
         fputs("Blue review summary failed.\n", stderr);
         result = -1;
     }
+    return result;
+}
+
+static int blue_review(const char *device, const uint8_t *wire, size_t length,
+                       const zcl_tx_review *review, bool has_branch,
+                       uint32_t branch_id, const uint8_t zip_digest[32]) {
+    if (length > ZCL_BLUE_REVIEW_MAX_BYTES) return -1;
+    int fd = open_blue_device(device);
+    if (fd < 0) return -1;
+    uint8_t summary[76];
+    blue_review_encode_summary(review, summary);
+    if (!SHA256(wire, length, summary + 44)) {
+        close(fd);
+        return -1;
+    }
+    int result = blue_review_exchange(fd, wire, length, has_branch, branch_id,
+                                      zip_digest, summary, sizeof summary);
     close(fd);
     return result;
 }
