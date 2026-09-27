@@ -7511,6 +7511,263 @@ static int test_hotfork_story_file_green_and_red(void)
     return failures;
 }
 
+/* A HOT_FORK story that reaches RESIDENT model code. The shop-want capsule
+ * compiles only shop_native_want.c; its story builds and verifies a signed
+ * want through shop_want_seal/shop_want_verify, which live in the model TU
+ * contexts/market/models/src/shop_want.c outside the capsule's TU set and
+ * bind RTLD_LAZY to the resident's copy (here the test binary plays the
+ * resident). A body edit to that model TU keeps every ABI fact the shape
+ * guard reads, so the story would answer STORY_GREEN from bytes the tree no
+ * longer holds. The save must be refused by name instead. */
+static const char k_dp_hc_root[] = "test-tmp/dev_hotfork_closure";
+static const char k_dp_hc_cache[] = "test-tmp/dev_hotfork_closure_cache";
+static const char k_dp_hc_owner[] =
+    "contexts/market/controllers/src/shop_native_want.c";
+static const char k_dp_hc_model[] = "contexts/market/models/src/shop_want.c";
+static const char k_dp_hc_story[] =
+    "tools/dev/hotfork_stories/shop_want_command_input_core_v1.inc";
+#define DP_HC_EPOCH \
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+#define DP_HC_COMPILER \
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define DP_HC_CFLAGS \
+    "-DZCL_DEV_BUILD -std=c23 -Wall -Wextra -Werror -pedantic " \
+    "-D_POSIX_C_SOURCE=200809L -Icontexts/market/controllers/include " \
+    "-Icontexts/market/models/include -Icontexts/market/services/include " \
+    "-Icore/chainparams/include -Icore/modules/crypto/include " \
+    "-Iengine/controllers/include -Iengine/models/include " \
+    "-Iengine/modules/event/include -Iengine/modules/hotswap/include " \
+    "-Iengine/modules/kernel/include -Iplatform/modules/base/include " \
+    "-Iplatform/modules/json/include -Iplatform/modules/platform/include " \
+    "-Iplatform/modules/support/include -Iplatform/modules/util/include " \
+    "-Iplatform/modules/sha3/include -Itools -Ivendor/include"
+#define DP_HC_VERIFY_OK \
+    "        return SHOP_WANT_ERR_SIGNATURE;\n    return SHOP_WANT_OK;\n}\n"
+#define DP_HC_VERIFY_BROKEN \
+    "        return SHOP_WANT_ERR_SIGNATURE;\n" \
+    "    return SHOP_WANT_ERR_SIGNATURE;\n}\n"
+
+/* Copies `rel` from the checkout into the fixture root, dated before every
+ * resident object the fixture builds from it. */
+static bool dp_hc_settled(const char *cwd, const char *rel)
+{
+    char from[PATH_MAX], to[PATH_MAX], dir[PATH_MAX];
+    if (snprintf(from, sizeof(from), "%s/%s", cwd, rel) >= (int)sizeof(from) ||
+        snprintf(to, sizeof(to), "%s/%s", k_dp_hc_root, rel) >=
+            (int)sizeof(to))
+        return false;
+    memcpy(dir, to, sizeof(dir));
+    char *slash = strrchr(dir, '/');
+    if (!slash)
+        return false;
+    *slash = '\0';
+    return dp_hf_mkdirs(dir) && dp_hf_settled_copy(from, to);
+}
+
+/* Every in-tree header the owner, the model and the story adapter read, as
+ * the compiler itself names them (-MM), copied settled. */
+static bool dp_hc_copy_headers(const char *cwd)
+{
+    static char cmd[8192], deps[131072];
+    char list[PATH_MAX];
+    if (snprintf(list, sizeof(list), "%s/%s/build/fixture-deps.mk", cwd,
+                 k_dp_hc_root) >= (int)sizeof(list) ||
+        !dp_mk_write(k_dp_hc_root, "build/fixture-deps.mk", "") ||
+        snprintf(cmd, sizeof(cmd),
+                 "cd '%s' && cc " DP_HC_CFLAGS " -MM %s %s > '%s' && "
+                 "cc " DP_HC_CFLAGS " -DZCL_HOTFORK_STORY_PHASE=1 -x c "
+                 "-MM %s >> '%s'", cwd, k_dp_hc_owner, k_dp_hc_model, list,
+                 k_dp_hc_story, list) >= (int)sizeof(cmd) ||
+        !dp_hs_run(cmd) || !dp_hf_slurp(list, deps, sizeof(deps)))
+        return false;
+    bool ok = true;
+    for (char *t = strtok(deps, " \t\r\n\\"); ok && t;
+         t = strtok(NULL, " \t\r\n\\")) {
+        size_t n = strlen(t);
+        if (n < 3 || t[n - 1] == ':' || t[0] == '/' ||
+            strcmp(t + n - 2, ".h") != 0)
+            continue;
+        ok = dp_hc_settled(cwd, t);
+    }
+    return ok;
+}
+
+static bool dp_hc_fixture_init(const char *cwd)
+{
+    static const char *const defs[] = {
+        "engine/composition/hotswap_swappable.def",
+        "engine/composition/hotswap_islands.def",
+        "engine/composition/hotswap_services.def",
+        "engine/composition/hotswap_shadow_owners.def",
+        "engine/composition/hotfork_capsules.def",
+    };
+    char owner[PATH_MAX], story[PATH_MAX];
+    bool ok = dp_mk_write(k_dp_hc_root, "Makefile", "# fixture\n");
+    for (size_t i = 0; ok && i < sizeof(defs) / sizeof(defs[0]); i++)
+        ok = dp_mk_write(k_dp_hc_root, defs[i], "/* fixture */\n");
+    ok = ok && dp_hc_copy_headers(cwd) && dp_hc_settled(cwd, k_dp_hc_model) &&
+         dp_hc_settled(cwd, k_dp_hc_owner) &&
+         dp_hc_settled(cwd, k_dp_hc_story) &&
+         snprintf(owner, sizeof(owner), "%s/%s", k_dp_hc_root,
+                  k_dp_hc_owner) < (int)sizeof(owner) &&
+         snprintf(story, sizeof(story), "%s/%s", k_dp_hc_root,
+                  k_dp_hc_story) < (int)sizeof(story) &&
+         utimensat(AT_FDCWD, owner, NULL, 0) == 0 &&
+         utimensat(AT_FDCWD, story, NULL, 0) == 0;
+    /* The action plan is written last so it is never older than its inputs. */
+    return ok && dp_mk_write(k_dp_hc_root, "build/hotswap-fast/flags.env",
+                             "CC=cc\nCXX=g++\nCOMPILER_ID=" DP_HC_COMPILER
+                             "\nDEV_CFLAGS=" DP_HC_CFLAGS "\n"
+                             "HOTSWAP_MODULE_LDFLAGS=-shared -nostartfiles "
+                             "-Wl,-Bsymbolic\n");
+}
+
+/* The resident's build objects for the owner and the model, compiled from
+ * the fixture's bytes into the epoch the dev build names and dated after
+ * every input. */
+static bool dp_hc_resident_tu(const char *tu, long seq)
+{
+    static char cmd[8192];
+    char obj[PATH_MAX], dep[PATH_MAX];
+    size_t n = strlen(tu);
+    if (snprintf(obj, sizeof(obj), "build/dev-obj/epochs/" DP_HC_EPOCH
+                 "/%.*s.o", (int)(n - 2), tu) >= (int)sizeof(obj) ||
+        snprintf(dep, sizeof(dep), "build/dev-obj/epochs/" DP_HC_EPOCH
+                 "/%.*s.d", (int)(n - 2), tu) >= (int)sizeof(dep) ||
+        !dp_mk_write(k_dp_hc_root, dep, "") ||
+        snprintf(cmd, sizeof(cmd),
+                 "cd '%s' && cc " DP_HC_CFLAGS " -MMD -MF %s -MT %s -c %s "
+                 "-o %s.publish && mv -f %s.publish %s", k_dp_hc_root, dep,
+                 obj, tu, obj, obj, obj) >= (int)sizeof(cmd))
+        return false;
+    return dp_hs_run(cmd) && dp_settle(k_dp_hc_root, obj, seq);
+}
+
+static bool dp_hc_resident(void)
+{
+    return dp_mk_write(k_dp_hc_root, "build/dev-obj/.current-epoch",
+                       DP_HC_EPOCH "\n") &&
+           dp_mk_write(k_dp_hc_root,
+                       "build/dev-obj/epochs/" DP_HC_EPOCH "/.build-session",
+                       "schema=zcl.build_epoch_session.v1\ncomplete=1\n"
+                       "compiler_id=" DP_HC_COMPILER "\n"
+                       "epoch=" DP_HC_EPOCH "\nprofile=dev-v2\n"
+                       "flags_sha256=" DP_HC_COMPILER "\n") &&
+           dp_hc_resident_tu(k_dp_hc_model, 1) &&
+           dp_hc_resident_tu(k_dp_hc_owner, 2);
+}
+
+static bool dp_hc_env(const char *cwd, bool set)
+{
+    static char saved_home[PATH_MAX];
+    if (!set)
+        return dp_environment_unset("ZCL_DEV_ARTIFACT_CACHE") == 0 &&
+               dp_environment_unset("ZCL_DEVLOOP_TEST_PROCESS") == 0 &&
+               (saved_home[0]
+                    ? platform_environment_set("HOME", saved_home, 1) == 0
+                    : dp_environment_unset("HOME") == 0);
+    const char *home = getenv("HOME");
+    char cache[PATH_MAX], state_home[PATH_MAX], why[160] = {0};
+    dp_hf_copy(saved_home, sizeof(saved_home), home);
+    return snprintf(cache, sizeof(cache), "%s/%s", cwd, k_dp_hc_cache) <
+               (int)sizeof(cache) &&
+           snprintf(state_home, sizeof(state_home), "%s/%s/home", cwd,
+                    k_dp_hc_cache) < (int)sizeof(state_home) &&
+           platform_environment_set("ZCL_DEV_ARTIFACT_CACHE", cache, 1) == 0 &&
+           platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0 &&
+           platform_environment_set("HOME", state_home, 1) == 0 &&
+           zcl_devloop_cycle_stream_reset(k_dp_hc_root, 0, why, sizeof(why));
+}
+
+/* One save of the shop-want owner through the HOT_FORK path. */
+static bool dp_hc_drive(struct dp_hf_seen *seen)
+{
+    static char verdict[16384];
+    static unsigned save_seq;
+    const char *paths[] = { k_dp_hc_owner };
+    char epoch[65];
+    memset(seen, 0, sizeof(*seen));
+    snprintf(epoch, sizeof(epoch), "%064x", 0x4c00u + ++save_seq);
+    if (!zcl_devloop_event_edit_epoch_set(epoch))
+        return false;
+    seen->event = zcl_devloop_hotfork_batch_event(
+        k_dp_hc_root, paths, 1, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+    (void)zcl_devloop_event_edit_epoch_set("");
+    size_t n = read_native_cycle(k_dp_hc_root, verdict, sizeof(verdict));
+    struct json_value doc = {0};
+    if (n == 0 || !json_read(&doc, verdict, n))
+        return false;
+    dp_hf_copy(seen->phase, sizeof(seen->phase),
+               json_get_str(json_get(&doc, "phase")));
+    dp_hf_copy(seen->detail, sizeof(seen->detail),
+               json_get_str(json_get(&doc, "story_detail")));
+    dp_hf_copy(seen->capsule, sizeof(seen->capsule),
+               json_get_str(json_get(&doc, "failure_capsule")));
+    json_free(&doc);
+    return true;
+}
+
+/* The unchanged tree answers STORY_GREEN; after a body-only edit to the
+ * model TU the story reaches, the save is a named shape refusal that falls
+ * back to the restart path and never reaches the story. */
+static bool dp_hc_cycle(const char *model)
+{
+    static char broken[32768];
+    struct dp_hf_seen seen;
+    bool green = dp_hc_drive(&seen) &&
+                 strcmp(seen.phase, "STORY_GREEN") == 0 &&
+                 strstr(seen.detail, "checks=3/3") != NULL;
+    if (!green) {
+        fprintf(stderr, "hotfork closure baseline: event=%d phase=%s "
+                "detail=%s capsule=%s\n", seen.event, seen.phase,
+                seen.detail, seen.capsule);
+        return false;
+    }
+    bool refused = dp_hs_edit(model, DP_HC_VERIFY_OK, DP_HC_VERIFY_BROKEN,
+                              false, broken, sizeof(broken)) &&
+                   dp_mk_write(k_dp_hc_root, k_dp_hc_model, broken) &&
+                   dp_hc_drive(&seen) && seen.event == 0 &&
+                   strcmp(seen.phase, "STORY_GREEN") != 0 &&
+                   strncmp(seen.capsule, ZCL_HOTFORK_SHAPE_REASON,
+                           sizeof(ZCL_HOTFORK_SHAPE_REASON) - 1) == 0 &&
+                   strstr(seen.capsule, k_dp_hc_model) != NULL &&
+                   strstr(seen.capsule, "fallback=restart") != NULL;
+    if (!refused)
+        fprintf(stderr, "hotfork closure model edit: event=%d phase=%s "
+                "detail=%s capsule=%s (want a shape refusal naming %s)\n",
+                seen.event, seen.phase, seen.detail, seen.capsule,
+                k_dp_hc_model);
+    return refused;
+}
+
+static int test_hotfork_resident_model_closure(void)
+{
+    int failures = 0;
+    TEST("dev platform: HOT_FORK refuses, never STORY_GREEN, when a model TU the story reaches through the resident was edited") {
+#if defined(__linux__)
+        static char model[32768];
+        char cwd[PATH_MAX];
+        ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
+        ASSERT(!getenv("ZCL_DEV_ARTIFACT_CACHE") &&
+               !getenv("ZCL_DEVLOOP_TEST_PROCESS"));
+        ASSERT(dp_hf_slurp(k_dp_hc_model, model, sizeof(model)));
+        ASSERT(strstr(model, DP_HC_VERIFY_OK) != NULL);
+        test_rm_rf_recursive(k_dp_hc_root);
+        test_rm_rf_recursive(k_dp_hc_cache);
+        ASSERT(dp_hc_fixture_init(cwd));
+        ASSERT(dp_hc_resident());
+        ASSERT(dp_hc_env(cwd, true));
+        bool ok = dp_hc_cycle(model);
+        ASSERT(dp_hc_env(cwd, false));
+        test_rm_rf_recursive(k_dp_hc_root);
+        test_rm_rf_recursive(k_dp_hc_cache);
+        ASSERT(ok);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_template_generator_concurrency(void)
 {
     int failures = 0;
@@ -8908,6 +9165,7 @@ static const struct dp_shard_case g_dp_cases[] = {
     DP_CASE(test_hotfork_story_file_green_and_red, 5),
     DP_CASE(test_hotfork_shape_refusals, 5),
     DP_CASE(test_hotfork_shape_image_cache, 5),
+    DP_CASE(test_hotfork_resident_model_closure, 5),
     DP_CASE(test_resident_restart_builder, 4),
     DP_CASE(test_shell_compiled_epoch_scope, 5),
     DP_CASE(test_shell_compiled_epoch_scope_header_invalidation, 5),
