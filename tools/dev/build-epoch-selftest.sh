@@ -689,7 +689,7 @@ start_session()
         "$root" "$WORK/candidates" 5 "$source_id" 1 "$mutation" \
         "$COMPILER_ID" "$EPOCH_MAIN" "$PROFILE" "$COMPILE_FLAGS" \
         "$LINK_FLAGS" "$CC_COMMAND" "$CXX_COMMAND" "$$" "$VERIFY" \
-        >/dev/null
+        >/dev/null || fail 'session acquire failed before candidate publication'
     [ -d "$WORK/candidates/epochs/$EPOCH_MAIN" ] ||
         fail 'session published a dangling candidate epoch pointer'
     [ "$(cat "$WORK/candidates/.current-epoch")" = "$EPOCH_MAIN" ] ||
