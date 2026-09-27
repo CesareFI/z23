@@ -3095,6 +3095,339 @@ _test_next:;
     return failures;
 }
 
+/* ── attach target: the blocked beat names its row; attach never targets
+ * nothing ─────────────────────────────────────────────────────────────── */
+
+/* Submit rig.tip and take the first beat under a running proof, then make
+ * the proof PASS with unsigned publication forbidden: the row is a live
+ * exact proven pair that still needs the operator's signed intent. */
+static bool dlx_attach_proven_pair(struct dlx_rig *rig, const char *tag,
+                                   char base[64])
+{
+    struct dlx_call c;
+    char rig_tag[128];
+    (void)snprintf(rig_tag, sizeof(rig_tag), "%s_rig", tag);
+    if (!dlx_rig_make(rig, rig_tag) || !dlx_origin_main(rig, base))
+        return false;
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    dlx_submit(&c, rig, rig->tip);
+    bool ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    dlx_begin(&c, "step");
+    ok = ok && dlx_run(&c) && dlx_ok(&c) &&
+         strcmp(dlx_str(&c, "state"), "started") == 0;
+    dlx_end(&c);
+    unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+    setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+    return ok;
+}
+
+static bool dlx_queue_bytes(char *out, size_t cap, size_t *len)
+{
+    char land[1200], path[1400];
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+    if (!dlx_slurp(path, out, cap - 1, len))
+        return false;
+    out[*len] = '\0';
+    return true;
+}
+
+/* Serialize the captured refusal through the real registry envelope and
+ * return the wire error object's next_action and evidence plus the reason
+ * of the first next[] entry: a failed envelope omits data, so these are
+ * what a shell caller actually sees. */
+static bool dlx_blocked_wire(const struct dlx_call *call, char *action,
+                             char *evidence, char *reason, size_t cap)
+{
+    if (!call->request.spec) return false;
+    struct zcl_command_spec spec = *call->request.spec;
+    spec.handler = dlx_captured_handler;
+    char wire[8192];
+    enum zcl_command_exit code;
+    g_dlx_captured_reply = &call->reply;
+    size_t len = zcl_command_registry_execute_json(zcl_command_catalog(),
+        &spec, NULL, &call->input, false, DLX_PATH, NULL, 0, 0, NULL,
+        wire, sizeof(wire), &code);
+    g_dlx_captured_reply = NULL;
+    struct json_value doc;
+    json_init(&doc);
+    bool ok = len > 0 && json_read(&doc, wire, len);
+    const struct json_value *error = json_get(&doc, "error");
+    const struct json_value *next = json_get(&doc, "next");
+    const char *a = json_get_str(json_get(error, "next_action"));
+    const char *e = json_get_str(json_get(error, "evidence"));
+    const char *r = next && next->type == JSON_ARR && next->num_children > 0
+        ? json_get_str(json_get(&next->children[0], "reason")) : NULL;
+    ok = ok && a && e && r;
+    if (ok) {
+        (void)snprintf(action, cap, "%s", a);
+        (void)snprintf(evidence, cap, "%s", e);
+        (void)snprintf(reason, cap, "%s", r);
+    }
+    json_free(&doc);
+    return ok;
+}
+
+/* The witness: after PASS, drive stops at PUBLICATION_INTENT_REQUIRED. The
+ * reply must name the row, its exact pair, and the exact attach command, in
+ * data and on the wire, so the operator cannot run `attach --seq=`. */
+static int test_dev_land_blocked_names_attach_target(void)
+{
+    int failures = 0;
+    TEST("land: a proven pair blocked on intent names seq, pair and attach --seq") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], action[256], evidence[256], reason[256];
+        dlx_isolate("blocked_attach_target");
+        ASSERT(dlx_attach_proven_pair(&rig, "blocked_attach_target", base));
+        dlx_begin(&c, "drive");
+        ASSERT(dlx_run(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_INTENT_REQUIRED");
+        ASSERT(!c.reply.error.mutated);
+        ASSERT(dlx_int(&c, "seq") == 1);
+        ASSERT_STR_EQ(dlx_str(&c, "tip"), rig.tip);
+        ASSERT_STR_EQ(dlx_str(&c, "base"), base);
+        ASSERT(strlen(dlx_str(&c, "head_commit")) == 40);
+        ASSERT_STR_EQ(dlx_str(&c, "next_command"),
+                      "z23-dev dev land attach --seq=1");
+        ASSERT_STR_EQ(c.reply.error.next_action,
+                      "z23-dev dev land attach --seq=1");
+        ASSERT(strstr(dlx_err_evidence(&c), "seq=1 ") != NULL);
+        ASSERT(strstr(dlx_err_evidence(&c), base) != NULL);
+        ASSERT(dlx_blocked_wire(&c, action, evidence, reason,
+                                sizeof(action)));
+        ASSERT_STR_EQ(action, "z23-dev dev land attach --seq=1");
+        ASSERT(strstr(evidence, "seq=1 ") != NULL);
+        ASSERT(strstr(evidence, rig.tip) != NULL);
+        ASSERT(strstr(reason, "z23-dev dev land attach --seq=1") != NULL);
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_INTENT_REQUIRED");
+        ASSERT_STR_EQ(c.reply.error.next_action,
+                      "z23-dev dev land attach --seq=1");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, base);
+        /* The named command, run as named, attaches and the pair lands. */
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "attached");
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_resolves_single_row(void)
+{
+    int failures = 0;
+    TEST("land: attach without seq seals the one proven row lacking intent") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64];
+        dlx_isolate("attach_resolves_single");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_resolves_single", base));
+        dlx_begin(&c, "attach");
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "attached");
+        ASSERT(dlx_int(&c, "seq") == 1);
+        ASSERT_STR_EQ(dlx_str(&c, "tip"), rig.tip);
+        ASSERT_STR_EQ(dlx_str(&c, "target"), "resolved");
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "landed");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, rig.tip);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_target_none(void)
+{
+    int failures = 0;
+    TEST("land: attach without seq and no proven row refuses and mutates nothing") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char before[8192], after[8192];
+        size_t before_len = 0, after_len = 0;
+        dlx_isolate("attach_target_none");
+        ASSERT(dlx_rig_make(&rig, "attach_target_none_rig"));
+        /* Empty queue. */
+        dlx_begin(&c, "attach");
+        ASSERT(dlx_run(&c));
+        ASSERT(!dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "ATTACH_TARGET_NONE");
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        /* A live row whose exact proof is still running is not a target. */
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "started");
+        dlx_end(&c);
+        unsetenv("ZCL_LAND_ALLOW_UNSIGNED");
+        ASSERT(dlx_queue_bytes(before, sizeof(before), &before_len));
+        dlx_begin(&c, "attach");
+        ASSERT(dlx_run(&c));
+        ASSERT(!dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "ATTACH_TARGET_NONE");
+        ASSERT(!c.reply.error.mutated);
+        ASSERT(strstr(dlx_err_evidence(&c), "seq=1") != NULL);
+        const struct json_value *cands = dlx_arr(&c, "candidates");
+        ASSERT(cands && cands->num_children == 0);
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(after, sizeof(after), &after_len));
+        ASSERT(before_len == after_len &&
+               memcmp(before, after, before_len) == 0);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_explicit_unattachable(void)
+{
+    int failures = 0;
+    TEST("land: attach with a seq that is not a proven pair names its state") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char before[8192], after[8192];
+        size_t before_len = 0, after_len = 0;
+        dlx_isolate("attach_explicit_unattachable");
+        ASSERT(dlx_rig_make(&rig, "attach_explicit_unattachable_rig"));
+        setenv("ZCL_LAND_PROOF_STUB", "pass", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(before, sizeof(before), &before_len));
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c));
+        ASSERT(!dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_PAIR_UNAVAILABLE");
+        ASSERT(strstr(dlx_err_evidence(&c), "seq=1 state=queued") != NULL);
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
+        ASSERT(!c.reply.error.mutated);
+        dlx_end(&c);
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 9);
+        ASSERT(dlx_run(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUBLICATION_PAIR_UNAVAILABLE");
+        ASSERT(strstr(dlx_err_evidence(&c), "seq=9 not in the live queue")
+               != NULL);
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(after, sizeof(after), &after_len));
+        ASSERT(before_len == after_len &&
+               memcmp(before, after, before_len) == 0);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+/* Model two live proven rows (a damaged or hand-edited queue): duplicate
+ * the proven row under the next sequence number. */
+static bool dlx_duplicate_proven_row(void)
+{
+    char land[1200], path[1400], wire[8192], twin[4096];
+    size_t len = 0;
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+    if (!dlx_slurp(path, wire, sizeof(wire) - 1, &len)) return false;
+    wire[len] = '\0';
+    char *eol = strchr(wire, '\n');
+    if (!eol || eol[1] != '\0' || (size_t)(eol - wire) >= sizeof(twin))
+        return false;
+    memcpy(twin, wire, (size_t)(eol - wire));
+    twin[eol - wire] = '\0';
+    char *seq = strstr(twin, "\"seq\":1");
+    if (!seq || (seq[7] >= '0' && seq[7] <= '9')) return false;
+    seq[6] = '2';
+    size_t used = strlen(wire);
+    int n = snprintf(wire + used, sizeof(wire) - used, "%s\n", twin);
+    return n > 0 && (size_t)n < sizeof(wire) - used && dlx_write(path, wire);
+}
+
+static int test_dev_land_attach_target_ambiguous(void)
+{
+    int failures = 0;
+    TEST("land: attach without seq refuses two proven rows and lists both") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], before[8192], after[8192];
+        size_t before_len = 0, after_len = 0;
+        dlx_isolate("attach_target_ambiguous");
+        ASSERT(dlx_attach_proven_pair(&rig, "attach_target_ambiguous", base));
+        ASSERT(dlx_duplicate_proven_row());
+        ASSERT(dlx_queue_bytes(before, sizeof(before), &before_len));
+        dlx_begin(&c, "attach");
+        ASSERT(dlx_run(&c));
+        ASSERT(!dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "ATTACH_TARGET_AMBIGUOUS");
+        ASSERT(!c.reply.error.mutated);
+        ASSERT(strstr(dlx_err_evidence(&c), "candidates=1,2") != NULL);
+        const struct json_value *cands = dlx_arr(&c, "candidates");
+        ASSERT(cands && cands->num_children == 2);
+        ASSERT(json_get_int(&cands->children[0]) == 1);
+        ASSERT(json_get_int(&cands->children[1]) == 2);
+        dlx_end(&c);
+        ASSERT(dlx_queue_bytes(after, sizeof(after), &after_len));
+        ASSERT(before_len == after_len &&
+               memcmp(before, after, before_len) == 0);
+        /* An explicit seq still wins over the ambiguity. */
+        dlx_begin(&c, "attach");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "attached");
+        ASSERT_STR_EQ(dlx_str(&c, "target"), "explicit");
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+    return failures;
+}
+
+static int test_dev_land_attach_target_cases(void)
+{
+    int failures = 0;
+    failures += test_dev_land_blocked_names_attach_target();
+    failures += test_dev_land_attach_resolves_single_row();
+    failures += test_dev_land_attach_target_none();
+    failures += test_dev_land_attach_explicit_unattachable();
+    failures += test_dev_land_attach_target_ambiguous();
+    return failures;
+}
+
 /* Model a damaged local projection, while the proof stub deliberately admits
  * the pair. The real client must still enforce ancestry before dispatch. */
 static bool dlx_replace_prepared_candidate(const char *ancestor)
@@ -6187,6 +6520,7 @@ int test_dev_land(void)
     failures += test_dev_land_prepush_persist_refusal();
     failures += test_dev_land_prepush_sync_refusal();
     failures += test_dev_land_missing_publication_intent();
+    failures += test_dev_land_attach_target_cases();
     failures += test_dev_land_postpush_result_unconfirmed();
     failures += test_dev_land_expected_base_race();
     failures += test_dev_land_recovery_ignores_replace_refs();
