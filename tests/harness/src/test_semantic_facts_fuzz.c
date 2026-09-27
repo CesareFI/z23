@@ -32,7 +32,9 @@
  * not ELF. A reproducer marked known-RED names the fix it waits for and the
  * exact false-negative lines it reports until then: it holds only when it
  * fails with exactly those lines. Any other outcome fails the group: an
- * ERROR, another miss, or a PASS (the mark is stale and must go).
+ * ERROR, another miss, or a PASS (the mark is stale and must go). A fixed
+ * reproducer or default seed whose edit changes no file (NOOP) fails too;
+ * only a ZCL_SEMANTIC_FUZZ_SEEDS range run may draw one.
  */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
@@ -132,6 +134,7 @@ struct sfz_group {
     char scratch[PATH_MAX];
     struct sfz_tally t;
     bool kept; /* a failing case directory was left for inspection */
+    bool noop_ok; /* a range run: an edit that changed nothing is no failure */
 };
 
 /* ---- discovery -------------------------------------------------------------- */
@@ -252,7 +255,8 @@ struct sfz_item {
     const char *known_red; /* a reproducer's known-RED mark */
     const char *known_red_why; /* ...and the exact lines it must report */
     bool run;              /* false: skipped, or failed before it could run */
-    bool ok;               /* passed, or its generator edit changed nothing */
+    bool ok;               /* passed, or held as recorded (NOOP only in a
+                              range run) */
     pid_t pid;
     int fd;
     struct sfz_outcome o;
@@ -349,6 +353,26 @@ static bool known_red_holds(const struct sfz_item *it)
     return holds;
 }
 
+/* Whether the finished item holds: a PASS, a known-RED reproducer failing
+ * exactly as recorded, or a NOOP in a range run. */
+static void judge_item(struct sfz_group *g, struct sfz_item *it)
+{
+    if (it->known_red != NULL)
+        it->ok = known_red_holds(it);
+    else
+        it->ok = it->o.status == SFZ_PASS ||
+                 (it->o.status == SFZ_NOOP && g->noop_ok);
+    if (it->o.status == SFZ_NOOP && !it->ok)
+        printf("semantic_facts_fuzz: %s NOOP fails: a fixed reproducer or default "
+               "seed must change a file; only a range run may draw a no-op\n",
+               it->c.label);
+    /* a case that failed as recorded leaves nothing to inspect */
+    if (it->known_red != NULL && it->ok)
+        (void)test_rm_rf_recursive(it->c.dir);
+    else
+        g->kept = g->kept || it->o.status == SFZ_FAIL || it->o.status == SFZ_ERROR;
+}
+
 static void item_finish(struct sfz_group *g, struct sfz_item *it)
 {
     int st = 0;
@@ -365,15 +389,7 @@ static void item_finish(struct sfz_group *g, struct sfz_item *it)
     }
     tally(&g->t, &it->o);
     report(&it->c, &it->o);
-    if (it->known_red != NULL)
-        it->ok = known_red_holds(it);
-    else
-        it->ok = it->o.status == SFZ_PASS || it->o.status == SFZ_NOOP;
-    /* a case that failed as recorded leaves nothing to inspect */
-    if (it->known_red != NULL && it->ok)
-        (void)test_rm_rf_recursive(it->c.dir);
-    else
-        g->kept = g->kept || it->o.status == SFZ_FAIL || it->o.status == SFZ_ERROR;
+    judge_item(g, it);
 }
 
 /* Run every runnable item, at most SFZ_CASES_AT_ONCE at once, reporting
@@ -509,6 +525,7 @@ static int sfz_t_seeds(struct sfz_group *g)
         /* FIRST:COUNT[:all|no-ctr-line|gcc-deps[:KIND]] */
         ASSERT(!bad_env);
         n = custom ? r.count : n;
+        g->noop_ok = custom;
         v = zcl_calloc(n, sizeof(*v), "sfz.seeds");
         ASSERT(v != NULL);
         for (size_t k = 0; k < n; k++)
