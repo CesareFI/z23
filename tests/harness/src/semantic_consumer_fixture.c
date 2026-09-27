@@ -76,6 +76,31 @@ const char *const k_scx_flags[] = {"-std=c23", "-g1", "-O1",
                                    "-I" SCX_DIR "/include"};
 const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
 
+#define SCX_HOOK_END "int cx_hook(int v);\n#endif"
+#define SCX_B_END "cx_count_of(2)); }\n"
+#define SCX_C_END " return s.n + (int)sizeof(s) + CX_SCALE; }\n" \
+                  "int cx_hook(int v) { return v - 1; }\n"
+#define SCX_TICK "static inline int cx_tick(int v) { return v + 1"
+#define SCX_CTR_B SCX_B_END "int cx_ctr_b(void);\n" \
+                  "int cx_ctr_b(void) { return __COUNTER__; }\n"
+#define SCX_STATE_B(n) SCX_B_END "void cx_set_b(void);\n" \
+                       "void cx_set_b(void) { cx_state = " n "; }\n" \
+                       "int cx_get_b(void);\n" \
+                       "int cx_get_b(void) { return cx_state; }\n"
+#define SCX_ALIAS_C(tail) " return s.n + (int)sizeof(s) + CX_SCALE" tail "; }\n" \
+                          "int cx_hook(int v) { return v - 1; }\n" \
+                          "int cx_sum_alias(int v) " \
+                          "__attribute__((alias(\"cx_sum\")));\n"
+#define SCX_OPT_H "int cx_hook(int v);\n#if __has_include(\"cx_opt.h\")\n" \
+                  "#define CX_OPT 1\n#else\n#define CX_OPT 0\n#endif\n#endif"
+#define SCX_OPT_B SCX_B_END "int cx_opt_b(void);\n" \
+                  "int cx_opt_b(void) { return CX_OPT; }\n"
+#define SCX_ALL_POS {"position-dependent", "position-dependent", \
+                     "position-dependent", "position-dependent", \
+                     "position-dependent"}
+#define SCX_ALL_INC {"include-resolution-change", "include-resolution-change", \
+                     "include-resolution-change", "include-resolution-change", \
+                     "include-resolution-change"}
 #define SCX_NONE {false, false, false, false, false}
 #define SCX_UNAFFECTED {"unaffected", "unaffected", "unaffected", \
                         "unaffected", "unaffected"}
@@ -205,6 +230,59 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                   .affected = {false, false, true, false, false},
                   .reason = {NULL, NULL, "source-changed", NULL, NULL},
                   .obligations = "", .seeds = {"cx_sum"}},
+    /* F2: __COUNTER__ numbers expansions across the TU. */
+    [SCX_P_COUNTER] = {.name = "p_counter", .pre = true,
+                       .file = SCX_HEADER, .from = SCX_HOOK_END,
+                       .to = "int cx_hook(int v);\n" SCX_TICK "; }\n#endif",
+                       .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_CTR_B},
+    [SCX_COUNTER] = {.name = "counter", .before = SCX_P_COUNTER,
+                     .file = SCX_HEADER, .from = SCX_HOOK_END,
+                     .to = "int cx_hook(int v);\n" SCX_TICK
+                           " + 0 * __COUNTER__; }\n#endif",
+                     .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_CTR_B,
+                     .changed = {SCX_HEADER},
+                     .affected = {true, true, true, true, true},
+                     .reason = SCX_ALL_POS, .obligations = ""},
+    /* F5: a static the header defines is internal to its includer. */
+    [SCX_P_HSTATIC] = {.name = "p_hstatic", .pre = true,
+                       .file = SCX_HEADER, .from = SCX_HOOK_END,
+                       .to = "int cx_hook(int v);\nstatic int cx_state;\n#endif",
+                       .file2 = SCX_B, .from2 = SCX_B_END,
+                       .to2 = SCX_STATE_B("5")},
+    [SCX_HSTATIC] = {.name = "hstatic", .before = SCX_P_HSTATIC,
+                     .file = SCX_HEADER, .from = SCX_HOOK_END,
+                     .to = "int cx_hook(int v);\nstatic int cx_state;\n#endif",
+                     .file2 = SCX_B, .from2 = SCX_B_END,
+                     .to2 = SCX_STATE_B("6"), .changed = {SCX_B},
+                     .affected = {false, true, false, false, false},
+                     .reason = {NULL, "source-changed", NULL, NULL, NULL},
+                     .obligations = "", .seeds = {"cx_set_b", "cx_get_b"}},
+    /* F6: an alias is a second entry no expression names. */
+    [SCX_P_ALIAS] = {.name = "p_alias", .pre = true, .file = SCX_C,
+                     .from = SCX_C_END, .to = SCX_ALIAS_C("")},
+    [SCX_ALIAS] = {.name = "alias", .before = SCX_P_ALIAS, .file = SCX_C,
+                   .from = SCX_C_END, .to = SCX_ALIAS_C(" + 1"),
+                   .changed = {SCX_C},
+                   .affected = {false, false, true, false, false},
+                   .reason = {NULL, NULL, "source-changed", NULL, NULL},
+                   .obligations = "address-taken"},
+    /* F4: a header only a __has_include names, created then deleted. */
+    [SCX_P_HASINC] = {.name = "p_hasinc", .pre = true, .file = SCX_HEADER,
+                      .from = SCX_HOOK_END, .to = SCX_OPT_H, .file2 = SCX_B,
+                      .from2 = SCX_B_END, .to2 = SCX_OPT_B},
+    [SCX_HASINC] = {.name = "hasinc", .before = SCX_P_HASINC,
+                    .file = SCX_HEADER, .from = SCX_HOOK_END, .to = SCX_OPT_H,
+                    .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_OPT_B,
+                    .add_path = SCX_OPT, .add_body = "/* cx_opt */\n",
+                    .changed = {SCX_OPT},
+                    .affected = {true, true, true, true, true},
+                    .reason = SCX_ALL_INC, .obligations = ""},
+    [SCX_HASDEL] = {.name = "hasdel", .before = SCX_HASINC,
+                    .file = SCX_HEADER, .from = SCX_HOOK_END, .to = SCX_OPT_H,
+                    .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_OPT_B,
+                    .changed = {SCX_OPT},
+                    .affected = {true, true, true, true, true},
+                    .reason = SCX_ALL_INC, .obligations = ""},
 };
 
 static char *scx_replace(const char *body, const char *from, const char *to,
@@ -242,6 +320,11 @@ char *scx_text(enum scx_variant v, const char *path, size_t *len)
 {
     const struct scx_edit *e = &k_scx_edits[v];
     const char *body = scx_base_body(path);
+    if (e->add_path != NULL && e->add_body != NULL &&
+        strcmp(path, e->add_path) == 0) {
+        *len = strlen(e->add_body);
+        return zcl_strdup(e->add_body, "scx.text");
+    }
     if (body == NULL ||
         (strcmp(path, SCX_SHADOW) == 0 &&
          (e->add_path == NULL || strcmp(e->add_path, path) != 0)))
@@ -296,21 +379,31 @@ static bool scx_write_one(const char *root, enum scx_variant v,
 
 bool scx_write_tree(const char *root, enum scx_variant v)
 {
+    static const char *const extras[] = {SCX_SHADOW, SCX_OPT};
     const char *add = k_scx_edits[v].add_path;
     char full[4096];
     for (size_t k = 0; k < SCX_FILE_COUNT; k++)
         if (!scx_write_one(root, v, k_scx_paths[k]))
             return false;
-    if (add != NULL)
-        return scx_write_one(root, v, add);
-    /* A variant without the shadow must not inherit one. */
-    (void)snprintf(full, sizeof(full), "%s/%s", root, SCX_SHADOW);
-    return unlink(full) == 0 || access(full, F_OK) != 0;
+    /* A variant inherits no file another one added. */
+    for (size_t k = 0; k < sizeof(extras) / sizeof(extras[0]); k++) {
+        if (add != NULL && strcmp(add, extras[k]) == 0) {
+            if (!scx_write_one(root, v, add))
+                return false;
+            continue;
+        }
+        (void)snprintf(full, sizeof(full), "%s/%s", root, extras[k]);
+        if (unlink(full) != 0 && access(full, F_OK) == 0)
+            return false;
+    }
+    return true;
 }
 
 bool scx_write_depfiles(const char *root, enum scx_variant v)
 {
-    const char *hdr = k_scx_edits[v].add_path ? SCX_SHADOW : SCX_HEADER;
+    const char *add = k_scx_edits[v].add_path;
+    const char *hdr =
+        add != NULL && strcmp(add, SCX_SHADOW) == 0 ? SCX_SHADOW : SCX_HEADER;
     for (size_t k = 0; k < SCX_TU_COUNT; k++) {
         char rel[256], body[512];
         const char *base = strrchr(k_scx_tus[k], '/') + 1;

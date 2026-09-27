@@ -41,6 +41,7 @@ enum sft_variant {
     SFT_TYPEDEF,   /* a header typedef changes its type */
     SFT_SPACE,     /* whitespace only, inside and around one function */
     SFT_HDRCOMMENT, /* a comment line in the header, no semantic change */
+    SFT_COUNTER,   /* a body expands __COUNTER__, which counts across the TU */
     SFT_TRUNCATED, /* base again, under a two-record producer cap */
     SFT_VARIANT_COUNT
 };

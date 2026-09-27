@@ -18,6 +18,8 @@
 #define SCX_SHADOW SCX_DIR "/src/cx.h"
 /* A build input: no compile records reading it. */
 #define SCX_MAKEFILE SCX_DIR "/cx.mk"
+/* A header only a __has_include names. */
+#define SCX_OPT SCX_DIR "/include/cx_opt.h"
 #define SCX_FIXTURES "tests/fixtures/semantic_consumer"
 #define SCX_FILE_COUNT 6
 #define SCX_TU_COUNT 5
@@ -40,6 +42,17 @@ enum scx_variant {
     SCX_BUILD,      /* a makefile no compile records reading changes */
     SCX_TOOL,       /* ...and every compile gains a flag: every TU drifts */
     SCX_BODY,       /* cx_sum's body, declared in the header, in cx_c.c alone */
+    /* Regressions from differential fuzzing, each against its own "before"
+     * (a P_ variant, produced but not judged). */
+    SCX_P_COUNTER,  /* cx.h gains cx_tick; cx_b.c expands __COUNTER__ */
+    SCX_COUNTER,    /* cx_tick gains a __COUNTER__: cx_b.c's count moves */
+    SCX_P_HSTATIC,  /* cx.h defines static cx_state; cx_b.c sets and reads it */
+    SCX_HSTATIC,    /* cx_b.c stores 6, not 5: the reader may fold it */
+    SCX_P_ALIAS,    /* cx_c.c aliases cx_sum_alias to cx_sum */
+    SCX_ALIAS,      /* cx_sum's body: a second entry runs it */
+    SCX_P_HASINC,   /* cx.h tests __has_include("cx_opt.h"); cx_b.c reads it */
+    SCX_HASINC,     /* include/cx_opt.h is created: the test flips */
+    SCX_HASDEL,     /* ...and deleted again (planned against SCX_HASINC) */
     SCX_VARIANT_COUNT
 };
 
@@ -48,11 +61,12 @@ struct scx_edit {
     const char *file, *from, *to;   /* one exact replacement, or NULL */
     const char *file2, *from2, *to2; /* a second one, or NULL */
     const char *add_path;     /* a file this variant adds, or NULL */
+    const char *add_body;     /* its bytes; NULL: the base header (a shadow) */
     const char *extra_flag;   /* a flag put before k_scx_flags, or NULL */
-    /* What the consumer must say with the base as "before": the changed
-     * files it is asked about, and per TU (k_scx_tus order) whether it is
-     * affected and its reason (NULL: not in the universe, it reads no
-     * changed file). */
+    /* What the consumer must say against `before` (the base unless named):
+     * the changed files it is asked about, and per TU (k_scx_tus order)
+     * whether it is affected and its reason (NULL: not in the universe, it
+     * reads no changed file). */
     const char *changed[2];
     bool affected[SCX_TU_COUNT];
     const char *reason[SCX_TU_COUNT];
@@ -62,6 +76,10 @@ struct scx_edit {
     /* Functions the verdict's seeds must include: the compile may re-emit
      * each, so the walk has to start from it. */
     const char *seeds[3];
+    /* The variant this one is planned against instead of the base, and
+     * whether it is only a "before" for another (never judged). */
+    enum scx_variant before;
+    bool pre;
 };
 
 extern const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT];

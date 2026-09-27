@@ -115,6 +115,11 @@ const struct sft_edit k_sft_edits[SFT_VARIANT_COUNT] = {
     [SFT_HDRCOMMENT] = {"hdrcomment", SFT_HEADER, "#define FX_SCALE 2",
                         "/* doubling */\n#define FX_SCALE 2",
                         "facts-changed-outside-seeds", NULL, 0},
+    /* Differential fuzzing (F2): __COUNTER__ numbers every expansion in
+     * the TU, so no body that reaches it can be narrowed to. */
+    [SFT_COUNTER] = {"counter", SFT_CORE, "return v + t; }",
+                     "return v + t + 0 * __COUNTER__; }",
+                     "position-dependent", NULL, 0},
     [SFT_TRUNCATED] = {"truncated", NULL, NULL, NULL, "manifest-truncated",
                        NULL, 2},
 };

@@ -47,7 +47,7 @@ static size_t scx_nchanged(const struct scx_edit *e)
 }
 
 /* The facts directory: every TU's before and after manifest the evidence
- * has, and the base text of every changed file the base has. */
+ * has, and the "before" variant's text of every changed file it has. */
 static bool scx_write_facts(const char *root, enum scx_variant v,
                             const struct scx_evidence *ev)
 {
@@ -63,7 +63,7 @@ static bool scx_write_facts(const char *root, enum scx_variant v,
     }
     for (size_t k = 0; ok && k < scx_nchanged(e); k++) {
         size_t n = 0;
-        char *text = scx_text(SCX_BASE, e->changed[k], &n);
+        char *text = scx_text(e->before, e->changed[k], &n);
         if (text != NULL)
             ok = scx_put_bytes(root, e->changed[k], ".before",
                                (const uint8_t *)text, n);
@@ -84,7 +84,7 @@ static bool scx_tus(enum scx_variant v, const struct scx_evidence *ev,
                 t = i;
         if (t == SCX_TU_COUNT || ev->before[t] == NULL || ev->after[t] == NULL)
             return false;
-        texts[2 * k] = scx_text(SCX_BASE, e->changed[k], &bn);
+        texts[2 * k] = scx_text(e->before, e->changed[k], &bn);
         texts[2 * k + 1] = scx_text(v, e->changed[k], &an);
         tus[k] = (struct zcl_devloop_facts_tu){
             .source = e->changed[k], .before = ev->before[t],

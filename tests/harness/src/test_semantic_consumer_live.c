@@ -182,7 +182,7 @@ static bool scl_same_object(const struct scl_run *r, enum scx_variant v,
     uint8_t *x = NULL, *y = NULL;
     size_t xn = 0, yn = 0;
     bool same;
-    scl_file(a, sizeof(a), r, SCX_BASE, tu, "o");
+    scl_file(a, sizeof(a), r, k_scx_edits[v].before, tu, "o");
     scl_file(b, sizeof(b), r, v, tu, "o");
     same = sft_read(a, &x, &xn) && sft_read(b, &y, &yn) && xn == yn &&
            memcmp(x, y, xn) == 0;
@@ -220,8 +220,8 @@ static int scl_check(struct scl_run *r, enum scx_variant v)
     struct scx_result *res = zcl_calloc(1, sizeof(*res), "scl.result");
     size_t unsafe = 0;
     for (size_t tu = 0; tu < SCX_TU_COUNT; tu++) {
-        ev.before[tu] = r->m[SCX_BASE][tu];
-        ev.before_len[tu] = r->n[SCX_BASE][tu];
+        ev.before[tu] = r->m[k_scx_edits[v].before][tu];
+        ev.before_len[tu] = r->n[k_scx_edits[v].before][tu];
         ev.after[tu] = r->m[v][tu];
         ev.after_len[tu] = r->n[v][tu];
     }
@@ -260,7 +260,8 @@ int test_semantic_consumer_live(void)
             ASSERT(scl_produce(r, (enum scx_variant)v));
     } TEST_END
     for (int v = 1; failures == 0 && v < SCX_VARIANT_COUNT; v++)
-        failures += scl_check(r, (enum scx_variant)v);
+        if (!k_scx_edits[v].pre)
+            failures += scl_check(r, (enum scx_variant)v);
     if (r != NULL)
         printf("semantic_consumer_live: %zu TU(s) predicted affected with an "
                "unchanged object (conservative margin)\n", r->over);

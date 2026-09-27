@@ -91,8 +91,8 @@ static struct scx_evidence sct_evidence(const struct sct_fixtures *f,
 {
     struct scx_evidence ev = {0};
     for (size_t tu = 0; tu < SCX_TU_COUNT; tu++) {
-        ev.before[tu] = f->m[SCX_BASE][tu];
-        ev.before_len[tu] = f->n[SCX_BASE][tu];
+        ev.before[tu] = f->m[k_scx_edits[v].before][tu];
+        ev.before_len[tu] = f->n[k_scx_edits[v].before][tu];
         ev.after[tu] = f->m[v][tu];
         ev.after_len[tu] = f->n[v][tu];
     }
@@ -121,6 +121,8 @@ static int sct_t_table(const struct sct_fixtures *f, struct scx_result *res)
     int failures = 0;
     TEST_CASE("semantic_consumer: every edit affects exactly the TUs its declaration identities reach") {
         for (int v = 1; v < SCX_VARIANT_COUNT; v++) {
+            if (k_scx_edits[v].pre)
+                continue;
             size_t unsafe = 0;
             size_t bad = sct_run(f, (enum scx_variant)v, NULL, &unsafe, stdout,
                                  res);
@@ -139,6 +141,8 @@ static size_t sct_mutant_unsafe(const struct sct_fixtures *f,
     size_t total = 0;
     zcl_devloop_test_consumer_mutant = m;
     for (int v = 1; v < SCX_VARIANT_COUNT; v++) {
+        if (k_scx_edits[v].pre)
+            continue;
         size_t unsafe = 0;
         (void)sct_run(f, (enum scx_variant)v, NULL, &unsafe, NULL, res);
         scx_result_free(res);
