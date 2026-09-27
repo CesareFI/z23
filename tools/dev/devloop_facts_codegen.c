@@ -86,13 +86,14 @@ static bool fxg_internal(const struct fxi_ent *t)
     return t->id[1] == ':' && strchr(t->id + 2, ':') != NULL;
 }
 
-/* A function the TU defines, or a static variable the main file defines:
+/* A function the TU defines, or a static variable it defines (in the main
+ * file or a header: a header static is internal to every includer):
  * the code units whose bytes, or whose facts other code folds, can move. */
 static bool fxg_node(const struct fxi *x, uint32_t e)
 {
     const struct fxi_ent *t = &x->ents[e];
     return t->defined_fn ||
-           (t->id[0] == 'v' && fxg_internal(t) && t->main_owned);
+           (t->id[0] == 'v' && fxg_internal(t));
 }
 
 static bool fxg_step(enum fxi_codegen model, uint8_t kind)

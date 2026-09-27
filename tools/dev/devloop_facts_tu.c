@@ -64,14 +64,71 @@ static bool fxc_load_pair(struct fxc *c, const char *path, struct fxc_pair *p)
     return p->xa != NULL;
 }
 
-/* Some side of the pair read a changed file. */
+/* A lookup of one manifest that names a changed path: its hit, or a slot
+ * it saw absent. */
+struct fxc_probe {
+    const struct fxc *c;
+    bool hit;
+};
+
+static bool fxc_probe_names(const struct fxc *c, const char *dir, size_t dn,
+                            const char *name, size_t nn)
+{
+    for (size_t k = 0; k < c->nfiles; k++) {
+        const char *f = c->files[k];
+        size_t n = strlen(f);
+        if (name == NULL ? n == dn && memcmp(f, dir, dn) == 0
+                         : n == dn + 1 + nn && memcmp(f, dir, dn) == 0 &&
+                               f[dn] == '/' && memcmp(f + dn + 1, name, nn) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool fxc_absent_cb(void *ctx, const char *dir, size_t dn,
+                          const char *name, size_t nn)
+{
+    struct fxc_probe *q = ctx;
+    q->hit = q->hit || (dir != NULL && fxc_probe_names(q->c, dir, dn, name, nn));
+    return !q->hit;
+}
+
+static bool fxc_hit_cb(void *ctx, const struct vcs_semantic_fields_v1 *f)
+{
+    struct fxc_probe *q = ctx;
+    q->hit = q->hit || (f->ntext >= 3 && f->text_len[2] > 0 &&
+                        fxc_probe_names(q->c, f->text[2], f->text_len[2],
+                                        NULL, 0));
+    return !q->hit;
+}
+
+/* The TU's include resolution depends on a changed path it need not read:
+ * a __has_include or include lookup hit it, or saw its slot empty. A file
+ * created or deleted there changes the TU with no FILES record to say so. */
+static bool fxc_probes(const struct fxc *c, const uint8_t *m, size_t n)
+{
+    struct fxc_probe q = {.c = c};
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_OUTSIDER)
+        return false;
+#endif
+    if (m == NULL)
+        return false;
+    (void)vcs_semantic_section_v1_each(m, n, VCS_SEMANTIC_SECTION_V1_LOOKUPS,
+                                       fxc_hit_cb, &q);
+    if (!q.hit)
+        (void)vcs_semantic_absent_v1_each(m, n, fxc_absent_cb, &q);
+    return q.hit;
+}
+
+/* Some side of the pair read a changed file or looked it up. */
 static bool fxc_member(const struct fxc *c, const struct fxc_pair *p)
 {
     for (size_t k = 0; k < c->nfiles; k++)
         if (fxi_file_digest(p->xa, c->files[k]) != NULL ||
             (p->xb != NULL && fxi_file_digest(p->xb, c->files[k]) != NULL))
             return true;
-    return false;
+    return fxc_probes(c, p->a, p->alen) || fxc_probes(c, p->b, p->blen);
 }
 
 /* Every id a REFS ADDRESS record names, over every manifest here: a seed
@@ -200,6 +257,24 @@ static bool fxc_coarse_evidence(struct fxc *c, const struct fxc_pair *p,
     return false;
 }
 
+/* __COUNTER__ numbers its expansions across the whole TU: a changed file
+ * it read may add or drop one ahead of every other. True also when memory
+ * runs out, so the TU is never narrowed on a guess. */
+static bool fxc_counts(const struct fxi *x)
+{
+    size_t *via;
+    bool hit;
+    if (x == NULL)
+        return false;
+    via = zcl_calloc(fxi_count(x) + 1, sizeof(*via), "facts_tu.counter");
+    hit = via == NULL || !fxi_expands_builtin(x, "__COUNTER__", via);
+    for (size_t e = 0; !hit && e < fxi_count(x); e++)
+        hit = via[e] != SIZE_MAX &&
+              (fxi_defined_function(x, e) || fxi_is_site(x, e, "@"));
+    free(via);
+    return hit;
+}
+
 /* Everything that broadens the whole TU; true when one did. */
 static bool fxc_coarse(struct fxc *c, const struct fxc_pair *p,
                        struct zcl_devloop_facts_tu_verdict *t)
@@ -212,6 +287,9 @@ static bool fxc_coarse(struct fxc *c, const struct fxc_pair *p,
         return true;
     if (memcmp(fxi_file_digest(p->xa, main), fxi_file_digest(p->xb, main), 32))
         return fxc_set(t, true, true, "source-changed", "%s", main);
+    if (fxc_counts(p->xa) || fxc_counts(p->xb))
+        return fxc_set(t, true, true, "position-dependent",
+                       "it expands __COUNTER__, which counts across the TU");
     if ((fxi_revision(p->xa) < 2 || fxi_revision(p->xb) < 2) &&
         !fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_MACROS))
         return fxc_set(t, true, true, "macro-unattributed",
