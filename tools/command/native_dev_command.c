@@ -1732,12 +1732,30 @@ void zcl_native_handle_dev_change_plan(
                                "normalize", false, false, why, "files");
         return;
     }
-    char body[16384];
+    char body[32768];
+    /* Optional "facts": a confined directory of before/after semantic
+     * manifests (make clang-facts). It narrows the closure for feedback and
+     * never makes the plan proof-admissible. An absent key is no facts;
+     * a present key that is not a confined relative path string refuses
+     * (json_get_str reads a non-string as ""). */
+    const struct json_value *facts_v = json_get(request->input, "facts");
+    const char *facts = facts_v ? json_get_str(facts_v) : NULL;
+    if (facts && (!facts[0] || facts[0] == '/' || strstr(facts, ".."))) {
+        free(file_ptrs);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "INVALID_FACTS_DIR",
+                               "normalize", false, false,
+                               "facts must be a confined relative directory",
+                               "facts");
+        return;
+    }
     /* Path-glob floor + symbol-closure additions (F3). The closure is
      * best-effort: an unavailable/failed index degrades to the path floor, so
      * the reply is always a valid plan. repo_root is the process cwd. */
-    size_t n = zcl_devloop_plan_json_closure(".", file_ptrs, count, body,
-                                             sizeof(body));
+    size_t n = facts ? zcl_devloop_plan_json_facts(".", file_ptrs, count,
+                                                   facts, body, sizeof(body))
+                     : zcl_devloop_plan_json_closure(".", file_ptrs, count,
+                                                     body, sizeof(body));
     free(file_ptrs);
     if (n == 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,

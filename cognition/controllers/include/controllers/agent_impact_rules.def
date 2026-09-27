@@ -572,7 +572,7 @@ AGENT_IMPACT_RULE("tests/harness/src/test.c|tests/harness/src/test_helpers.c|tes
 /* Landing acceptance owns real publisher-crash and lost-ack fixtures. Its
  * test-only changes still require an explicit exact-group proof floor. */
 AGENT_IMPACT_RULE("tests/harness/src/test_dev_land.c", "dev_land make_lint_gates")
-AGENT_IMPACT_RULE("tools/dev/devloop_plan.c|tools/dev/devloop.h|tools/dev/devloop_cli.c|tools/dev/devloop_process.c|tools/dev/dev_source_identity.c|tools/dev/native-dev-failure-selftest.sh|tools/command/native_dev_command.c|tools/command/native_dev_loop_command.h|tools/command/native_dev_activation_command.c|engine/composition/commands/dev.def|tests/harness/src/test_impact_composition.c", "impact_composition dev_platform native_api_contract command_registry_catalog test_group_selector make_lint_gates")
+AGENT_IMPACT_RULE("tools/dev/devloop_plan.c|tools/dev/devloop.h|tools/dev/devloop_cli.c|tools/dev/devloop_process.c|tools/dev/dev_source_identity.c|tools/dev/native-dev-failure-selftest.sh|tools/command/native_dev_command.c|tools/command/native_dev_loop_command.h|tools/command/native_dev_activation_command.c|engine/composition/commands/dev.def|tests/harness/src/test_impact_composition.c", "impact_composition dev_platform native_api_contract command_registry_catalog test_group_selector semantic_facts make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/dev_proof.c|tools/dev/dev_proof.h|tools/dev/dev_proof_budget.c|tools/dev/dev_proof_budget.h|platform/modules/platform/src/ram_scratch.c|platform/modules/platform/include/platform/ram_scratch.h|tools/dev/dev_proof_receipt.c|tools/dev/dev_proof_receipt.h|tools/dev/z23_git_hook.c|tools/command/native_dev_loop_command.h|tools/command/native_dev_proof_command.c|tools/command/native_dev_proof_command.h|tools/command/native_dev_verify_change_command.c", "impact_composition dev_proof_signer dev_platform native_api_contract command_registry_catalog make_lint_gates")
 /* Who signed a push-proof receipt, and whose signature this box admits: the
  * per-box key, the signers.allow trust list, and the record trailer that
@@ -912,15 +912,15 @@ AGENT_IMPACT_RULE("tests/harness/src/testcache_reason.c", "impact_composition")
 AGENT_IMPACT_RULE("contexts/commons/modules/vcs/include/vcs/vcs_devloop.h|contexts/commons/modules/vcs/src/vcs_devloop.c|contexts/commons/modules/vcs/src/vcs_devloop_publication.c|contexts/commons/modules/vcs/src/vcs_devloop_priv.h|tests/harness/src/test_vcs_devloop.c", "vcs_devloop vcs_core dev_platform make_lint_gates")
 AGENT_IMPACT_RULE("contexts/commons/modules/vcs/src/vcs.c|contexts/commons/modules/vcs/include/vcs/vcs.h|contexts/commons/modules/vcs/src/vcs_commit.c|tests/harness/src/test_vcs_core.c", "vcs_core vcs_devloop command_registry_catalog make_lint_gates")
 /* The semantic manifest (reader, builder, facts extension, snapshot
- * namespace) and its one producer, the optional libclang sensor under
- * tools/sensors/. vcs_path_policy.c holds the snapshot exclusion policy the
- * walker and the namespace share. */
-AGENT_IMPACT_RULE("contexts/commons/modules/vcs/include/vcs/semantic_*.h|contexts/commons/modules/vcs/src/semantic_*.c|contexts/commons/modules/vcs/src/semantic_manifest_priv.h|tools/sensors/*|tests/harness/src/test_semantic_manifest.c|tests/fixtures/semantic_manifest/*|tests/fixtures/semantic_facts/*", "semantic_manifest semantic_sensor make_lint_gates")
+ * namespace), its one producer (the optional libclang sensor under
+ * tools/sensors/) and the facts-narrowed change closure. vcs_path_policy.c
+ * holds the snapshot exclusion policy the walker and the namespace share. */
+AGENT_IMPACT_RULE("contexts/commons/modules/vcs/include/vcs/semantic_*.h|contexts/commons/modules/vcs/src/semantic_*.c|contexts/commons/modules/vcs/src/semantic_manifest_priv.h|tools/sensors/*|tools/dev/devloop_facts*|tests/harness/src/test_semantic_*.c|tests/harness/src/semantic_facts_fixture.c|tests/harness/include/test/semantic_facts_fixture.h|tests/fixtures/semantic_manifest/*|tests/fixtures/semantic_facts/*", "semantic_manifest semantic_sensor semantic_facts semantic_facts_live make_lint_gates")
 /* The reader's fuzz harness and seeds, and its Windows acceptance program:
  * that program is a cross-link only, and the semantic_manifest group case
  * smt_t_ledger is its native twin (the same ledger digest, read off disk). */
 AGENT_IMPACT_RULE("tools/fuzz/fuzz_semantic_manifest.c|tests/harness/fuzz_seeds/semantic_manifest/*|tests/harness/src/semantic_manifest_windows_acceptance.c|tests/harness/src/semantic_manifest_windows_fixtures.h", "semantic_manifest make_lint_gates")
-AGENT_IMPACT_RULE("contexts/commons/modules/vcs/src/vcs_path_policy.c", "vcs_core semantic_manifest semantic_sensor make_lint_gates")
+AGENT_IMPACT_RULE("contexts/commons/modules/vcs/src/vcs_path_policy.c", "vcs_core semantic_manifest semantic_sensor semantic_facts semantic_facts_live make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/dev_activation*.c|tools/dev/dev_activation*.h|tests/harness/src/test_dev_activation.c", "dev_activation dev_platform make_lint_gates")
 AGENT_IMPACT_RULE("engine/services/src/consensus_reject_index.c|engine/services/include/services/consensus_reject_index.h|tests/harness/src/test_consensus_reject_index.c", "consensus_reject_index make_lint_gates")
 AGENT_IMPACT_RULE("engine/services/src/rolling_anchor_service.c|engine/services/src/rolling_anchor_compute.c|engine/services/src/rolling_anchor_internal.h|engine/services/include/services/rolling_anchor_service.h|tests/harness/src/test_rolling_anchor_service.c", "rolling_anchor_service make_lint_gates")

@@ -269,6 +269,9 @@ int zcl_devloop_test_closure_file_cap(int indexed, size_t changed_count);
  * whole catalog. 0 (the default) means the production cap. Values outside
  * (0, ZCL_DEVLOOP_MAX_PLAN_GROUPS) are ignored. */
 extern size_t zcl_devloop_test_plan_group_cap;
+/* Test-only fault: the facts walk resolves no seed to its canonical id, so
+ * the "seed-unresolved" fallback is reachable from the fixture. */
+extern bool zcl_devloop_test_facts_unresolved;
 /* Watcher stop fixture: a stop requested before the proof fork starts no
  * worker, and a SIGTERM sent the instant fork() returns must reach the
  * worker's cancel state instead of being erased by the child's reset. */
@@ -703,6 +706,66 @@ size_t zcl_devloop_plan_json_render(const struct zcl_devloop_plan *plan,
                                     const char *const *files,
                                     size_t file_count, char *out,
                                     size_t out_sz);
+
+/* ── facts-narrowed closure (devloop_facts.c) ──────────────────────────────
+ * The same SEMANTIC walk as zcl_devloop_plan_add_closure(), seeded by the
+ * functions whose compiled tokens changed instead of by every symbol of the
+ * changed file. Evidence: a before/after semantic manifest with the facts
+ * extension (tools/sensors, `make clang-facts`) for every changed .c, and the
+ * before source bytes. Any change the manifests cannot attribute to one
+ * function body (headers, macros, declarations, layouts, identity, lookups,
+ * file-scope text, a function added or removed, a truncated manifest, two
+ * producers, an after manifest the tree no longer matches) or any
+ * seed with an unresolved effect or an address taken falls back to the
+ * file-seeded closure and names why. So does a pair whose FACTS producer
+ * digests are zero or differ ("producer-unknown", "producer-changed"), a
+ * definition whose head (attributes, storage class, signature) changed
+ * ("function-head-changed"), a seed that resolves to no FUNCTIONS record
+ * ("seed-unresolved") and any change to the producer's own sources
+ * ("producer-source-changed"). A narrowed plan is feedback only: its
+ * SEMANTIC dimension is INCOMPLETE ("facts-narrowed"), so
+ * zcl_devloop_plan_proof_admissible() refuses it. Token or AST similarity
+ * never authorizes proof reuse. */
+struct zcl_devloop_facts_tu {
+    const char *source; /* repo-relative changed .c */
+    const uint8_t *before, *after; /* semantic manifests */
+    size_t before_len, after_len;
+    const uint8_t *before_src, *after_src; /* the source bytes they bind */
+    size_t before_src_len, after_src_len;
+};
+
+#define ZCL_DEVLOOP_FACTS_MAX_SEEDS 64
+#define ZCL_DEVLOOP_FACTS_NAME_MAX 128
+struct zcl_devloop_facts_verdict {
+    bool narrowed;
+    const char *reason; /* "" when narrowed, else the fallback label */
+    char detail[192];
+    char seeds[ZCL_DEVLOOP_FACTS_MAX_SEEDS][ZCL_DEVLOOP_FACTS_NAME_MAX];
+    size_t seeds_len;
+    size_t reached_files;
+};
+
+/* Fills `plan` (already produced by zcl_devloop_plan_files for `files`) and
+ * `verdict`. Returns false only for invalid arguments or an index error. */
+bool zcl_devloop_plan_add_closure_facts(
+    const char *repo_root, const char *const *files, size_t file_count,
+    const struct zcl_devloop_facts_tu *tus, size_t tu_count,
+    struct zcl_devloop_plan *plan, struct zcl_devloop_facts_verdict *verdict);
+
+/* The dev.change.plan document for `files`, narrowed by the evidence in
+ * `facts_dir` (relative to repo_root): <facts_dir>/<file>.before.zsm,
+ * <file>.after.zsm and <file>.before per changed file; the after source is
+ * the working tree. Adds a "facts" object naming the verdict. Returns bytes
+ * written, or 0 on overflow/bad args. */
+size_t zcl_devloop_plan_json_facts(const char *repo_root,
+                                   const char *const *files, size_t file_count,
+                                   const char *facts_dir, char *out,
+                                   size_t out_sz);
+
+/* Planner internals the facts walk shares (devloop_plan.c). */
+bool zcl_devloop_plan_fold_file(struct zcl_devloop_plan *plan,
+                                const char *reached, enum zcl_devloop_dim dim);
+bool zcl_devloop_plan_proof_owner(const char *path);
 
 /* True iff the persistent watcher should react to a change at `path`
  * (repo-relative): a .c/.h/.def/.md/.mk/.service source or the Makefile,

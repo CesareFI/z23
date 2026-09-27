@@ -7331,12 +7331,14 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 # sensor above to build/clang-facts/<src>.zsm. The sensor is the only producer:
 # it parses each TU a second time with the real dev compile argv
 # ($(DEV_COMPILE_CFLAGS)), at 1.2-1.6x the cost of `clang -fsyntax-only`, and
-# never compiles an object. Nothing on main reads these manifests yet: no
-# planner consumes them, so they change no plan. Opt-in only: nothing else
-# depends on this target, so no default build, test link or proof ever reaches
-# it. A manifest is rewritten when its source, any header of the component or
-# the sensor changes. CLANG_FACTS_TREE=<hex> names the ZVCS tree the namespace
-# probes are proved against.
+# never compiles an object. The manifests feed the impact planner's optional
+# "facts" input (tools/dev/devloop_facts.c). Opt-in only: nothing else depends
+# on this target, so no default build, test link or proof ever reaches it. A
+# manifest is rewritten when its source, any header of the component or the
+# sensor changes; the planner still binds every after manifest to the tree it
+# plans against (devloop_facts_bind.c) and refuses a stale one, so a missed
+# dependency cannot narrow a plan. CLANG_FACTS_TREE=<hex> names the ZVCS tree
+# the namespace probes are proved against.
 .PHONY: clang-facts
 CLANG_FACTS_COMPONENT ?= engine/modules/hotswap
 CLANG_FACTS_SRCS = $(sort $(wildcard $(CLANG_FACTS_COMPONENT)/src/*.c))

@@ -939,6 +939,17 @@ static bool plan_reached_proof_owner(const char *path, void *user)
     return agent_impact_apply_shared_rules(path, NULL);
 }
 
+bool zcl_devloop_plan_fold_file(struct zcl_devloop_plan *plan,
+                                const char *reached, enum zcl_devloop_dim dim)
+{
+    return plan_fold_reached_file(plan, reached, dim);
+}
+
+bool zcl_devloop_plan_proof_owner(const char *path)
+{
+    return plan_reached_proof_owner(path, NULL);
+}
+
 static bool plan_add_closure(const char *repo_root,
                              const char *const *files, size_t file_count,
                              struct zcl_devloop_plan *plan, bool snapshot)
