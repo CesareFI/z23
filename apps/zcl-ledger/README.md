@@ -26,6 +26,12 @@ The [`zcl_tx_replay_zip243` API](include/zcl_tx_replay_zip243.h) is a smaller
 offline alternative: it checks three complete uploads of the same unsigned
 transaction against one device-computed SHA-256 commitment and reuses one
 BLAKE2b context for ZIP-243. It has not been linked into a Blue app.
+The [`blue_payment_review` API](include/blue_payment_review.h) adds a bounded,
+read-only output acknowledgement controller to that replay. It stops accepting
+bytes after each public output until the caller acknowledges it, and rejects
+chunks that cross two outputs. A device app must call acknowledgement only
+from a real touchscreen action. The controller is host-tested but is not yet
+connected to a Blue screen, USB payment command, or signing key.
 
 ## Build and test
 

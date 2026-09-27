@@ -26,6 +26,10 @@ typedef struct {
     bool selected_found;
 } zcl_tx_replay_zip243;
 
+typedef bool (*zcl_tx_replay_output_fn)(void *context, uint32_t index,
+    uint64_t amount_zat, zcl_tx_stream_output_type type,
+    const uint8_t hash160[20]);
+
 /* Upload the identical unsigned transaction three times. Each complete pass
  * is parsed and SHA-256 checked against the first pass before its ZIP-243
  * subhash is accepted. No partial or mismatched pass returns a digest.
@@ -35,6 +39,11 @@ bool zcl_tx_replay_zip243_begin(zcl_tx_replay_zip243 *state,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha);
 bool zcl_tx_replay_zip243_feed(zcl_tx_replay_zip243 *state,
     const uint8_t *bytes, size_t length);
+/* The observer sees provisional output facts only during pass three. It must
+ * not treat them as authenticated until the final pass succeeds. */
+bool zcl_tx_replay_zip243_feed_review(zcl_tx_replay_zip243 *state,
+    const uint8_t *bytes, size_t length,
+    zcl_tx_replay_output_fn observer, void *observer_context);
 bool zcl_tx_replay_zip243_next(zcl_tx_replay_zip243 *state);
 bool zcl_tx_replay_zip243_finish(zcl_tx_replay_zip243 *state,
     const uint8_t *script_code, size_t script_code_length,

@@ -28,6 +28,12 @@ static bool start_pass(zcl_tx_replay_zip243 *state) {
         state->sha.init(state->sha.context);
 }
 
+typedef struct {
+    zcl_tx_replay_zip243 *state;
+    zcl_tx_replay_output_fn observer;
+    void *observer_context;
+} callback_context;
+
 bool zcl_tx_replay_zip243_begin(zcl_tx_replay_zip243 *state,
     uint32_t expected_length, uint32_t selected_index, uint32_t branch_id,
     const zcl_zip243_hasher *blake, const zcl_tx_replay_sha256 *sha) {
@@ -48,7 +54,7 @@ bool zcl_tx_replay_zip243_begin(zcl_tx_replay_zip243 *state,
 
 static bool input_seen(void *context, uint32_t index,
     const uint8_t outpoint[36], uint32_t sequence) {
-    zcl_tx_replay_zip243 *state = context;
+    zcl_tx_replay_zip243 *state = ((callback_context *)context)->state;
     if (state->pass == 1)
         return state->blake.update(state->blake.context, outpoint, 36);
     uint8_t bytes[4];
@@ -65,8 +71,8 @@ static bool input_seen(void *context, uint32_t index,
 
 static bool output_seen(void *context, uint32_t index, uint64_t amount,
     zcl_tx_stream_output_type type, const uint8_t hash160[20]) {
-    zcl_tx_replay_zip243 *state = context;
-    (void)index;
+    callback_context *callback = context;
+    zcl_tx_replay_zip243 *state = callback->state;
     if (state->pass != 3) return true;
     uint8_t bytes[9], script[25];
     put_u64(bytes, amount);
@@ -86,15 +92,25 @@ static bool output_seen(void *context, uint32_t index, uint64_t amount,
         script[22] = 0x87;
     }
     return state->blake.update(state->blake.context, bytes, sizeof bytes) &&
-           state->blake.update(state->blake.context, script, length);
+           state->blake.update(state->blake.context, script, length) &&
+           (!callback->observer || callback->observer(callback->observer_context,
+               index, amount, type, hash160));
 }
 
 bool zcl_tx_replay_zip243_feed(zcl_tx_replay_zip243 *state,
     const uint8_t *bytes, size_t length) {
+    return zcl_tx_replay_zip243_feed_review(state, bytes, length, NULL, NULL);
+}
+
+bool zcl_tx_replay_zip243_feed_review(zcl_tx_replay_zip243 *state,
+    const uint8_t *bytes, size_t length,
+    zcl_tx_replay_output_fn observer, void *observer_context) {
     if (!state) return false;
+    callback_context callback = {.state = state, .observer = observer,
+                                 .observer_context = observer_context};
     if (state->pass < 1 || state->pass > 3 ||
         !zcl_tx_stream_feed(&state->wire, bytes, length,
-                            input_seen, output_seen, state) ||
+                            input_seen, output_seen, &callback) ||
         !state->sha.update(state->sha.context, bytes, length))
         return fail(state);
     return true;
