@@ -634,7 +634,7 @@ Z23_FLAG("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY", "env_test", "-", "-",
 Z23_FLAG("ZCL_DEVLOOP_TEST_PROCESS", "env_test", "-", "-",
           "first use tests/harness/src/test_dev_platform.c:3448; documented at docs/work/HOTSWAP.md:311: ZCL_DEVLOOP_TEST_PROCESS=1 fixture opt-in; release builds retain the literal")
 Z23_FLAG("ZCL_DEVLOOP_TEST_WATCH_STALL", "env_runtime", "-", "-",
-          "dev-build seam for the watcher session selftest: with ZCL_DEVLOOP_TEST_PROCESS=1, the watcher dev begin forks stalls before taking its lock and writes its pid and a member pid to this file; first use tools/command/native_dev_command.c:3141")
+          "dev-build seam for the watcher session selftest: with ZCL_DEVLOOP_TEST_PROCESS=1, the watcher dev begin forks stalls before taking its lock and writes its pid and a member pid to this file; first use tools/command/native_dev_command.c:3152")
 Z23_FLAG("ZCL_DEV_NATIVE_ACTIVATION", "env_test", "-", "-",
           "undocumented; first use tests/harness/src/test_dev_platform.c:1567")
 Z23_FLAG("ZCL_DEV_PID_COMMAND", "env_build", "-", "-",
@@ -1869,37 +1869,37 @@ Z23_FLAG("ZCL_REFLEX_BENCH_OUTPUT", "env_build", "-", "-",
 Z23_FLAG("ZCL_REFLEX_BENCH_RUNS", "env_build", "31", "-",
           "undocumented; first use tools/dev/reflex-reactor-bench.sh:10")
 Z23_FLAG("ZCL_REFLEX_COMMAND_INPUT_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:49")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:53")
 Z23_FLAG("ZCL_REFLEX_CORPUS_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:25")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:29")
 Z23_FLAG("ZCL_REFLEX_COVERAGE_ONLY", "env_build", "-", "-",
           "undocumented; first use tools/dev/reflex-coverage-audit.sh:11")
 Z23_FLAG("ZCL_REFLEX_COVERAGE_OUTPUT", "env_build", "-", "-",
           "undocumented; first use tools/dev/reflex-coverage-audit.sh:10")
 Z23_FLAG("ZCL_REFLEX_CURVE25519_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:61")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:65")
 Z23_FLAG("ZCL_REFLEX_CYCLE_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:19")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:23")
 Z23_FLAG("ZCL_REFLEX_HISTORY", "env_build", "-", "-",
           "undocumented; first use tools/dev/reflex-coverage-audit.sh:9")
 Z23_FLAG("ZCL_REFLEX_NATIVE_DEV_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:55")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:59")
 Z23_FLAG("ZCL_REFLEX_OWNER_KIND", "env_build", "watch", "-",
           "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:9")
 Z23_FLAG("ZCL_REFLEX_PACKAGE_POLICY_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:67")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:71")
 Z23_FLAG("ZCL_REFLEX_PLAN_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:31")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:35")
 Z23_FLAG("ZCL_REFLEX_SHADOW_SELECT_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:76")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:80")
 Z23_FLAG("ZCL_REFLEX_SHADOW_SELECT_SIBLING_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:85")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:89")
 Z23_FLAG("ZCL_REFLEX_SHOP_REPUTATION_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
           "undocumented; first use tools/dev/reflex-hotfork-shop-reputation-acceptance.sh:11")
 Z23_FLAG("ZCL_REFLEX_SHOP_STATUS_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
           "undocumented; first use tools/dev/reflex-hotfork-shop-status-acceptance.sh:11")
 Z23_FLAG("ZCL_REFLEX_SHOP_WANT_CORE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
-          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:37")
+          "undocumented; first use tools/dev/reflex-hotfork-watch-core-acceptance.sh:41")
 Z23_FLAG("ZCL_REFLEX_SHOP_WANT_VIEW_ACCEPTANCE_OUTPUT", "env_build", "-", "-",
           "undocumented; first use tools/dev/reflex-hotfork-shop-want-view-acceptance.sh:11")
 Z23_FLAG("ZCL_REFLEX_SOURCE_BUNDLE_ACCEPTANCE_OUTPUT", "env_build", "-", "-",

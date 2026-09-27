@@ -217,6 +217,10 @@ static const char *hs_hotswap_guidance_next_command(
         return "keep editing; the resident authority owns the next module epoch";
     if (hs_hotswap_guidance_needs_rebuild(why))
         return "make -j\"$(getconf _NPROCESSORS_ONLN)\" dev-bin";
+    if (phase && strcmp(phase, "hotfork_owner_story") == 0 &&
+        why && strcmp(why,
+            "HOT_FORK candidate story rejected its frozen fixture") == 0)
+        return "fix the failed check in story_detail, then save the C23 edit";
     if (phase && strcmp(phase, "compile") == 0)
         return "z23-dev dev diagnose latest";
     if (hs_hotswap_guidance_needs_generation(why))
@@ -2964,7 +2968,45 @@ static void hs_hotfork_process_failure(
         out[0] = '\0';
 }
 
+static bool hs_hotfork_runner_clean(
+    const struct zcl_reflex_runner_outcome *run,
+    const struct zcl_devloop_hotswap_build_receipt *build)
+{
+    return run->available && run->report_complete && run->seals_verified &&
+        !run->cancelled && !run->timed_out && run->child_exit_code == 0 &&
+        run->child_signal == 0 && run->address_space_fresh &&
+        run->env_inherited_count == 0 && run->inherited_fd_count == 0 &&
+        strcmp(run->runner_sha256, build->artifact_sha256) == 0;
+}
+
+static bool hs_hotfork_child_exact(
+    const struct zcl_reflex_runner_outcome *run,
+    const struct zcl_devloop_hotswap_build_receipt *build)
+{
+    const struct zcl_reflex_child_report *r = &run->report;
+    return r->hash_verified && r->descriptor_valid && r->sandboxed &&
+        r->wx_installed && r->candidate_executed && r->env_count == 0 &&
+        r->inherited_fd_count == 0 &&
+        strcmp(r->runtime_module_sha256, build->artifact_sha256) == 0;
+}
+
+static bool hs_hotfork_fixture_failed(
+    const struct hs_hotfork_def *def,
+    const struct zcl_reflex_runner_outcome *run,
+    const struct zcl_devloop_hotswap_build_receipt *build)
+{
+    const struct zcl_reflex_child_report *r = &run->report;
+    return hs_hotfork_runner_clean(run, build) &&
+        hs_hotfork_child_exact(run, build) && !r->story_ok &&
+        r->observation.magic == ZCL_HOTFORK_OBSERVATION_MAGIC &&
+        r->observation.checks_run > 0 &&
+        r->observation.checks_passed < r->observation.checks_run &&
+        strcmp(r->observation.exercised_surface,
+               def->exercised_surface) == 0;
+}
+
 static const char *hs_hotfork_candidate_failure(
+    const struct hs_hotfork_def *def,
     const struct zcl_reflex_runner_outcome *run,
     const struct zcl_devloop_hotswap_build_receipt *build)
 {
@@ -2978,7 +3020,9 @@ static const char *hs_hotfork_candidate_failure(
     if (!run->address_space_fresh || run->env_inherited_count ||
         run->inherited_fd_count)
         return "HOT_FORK runner isolation not proven";
-    return "HOT_FORK candidate story rejected its frozen fixture";
+    if (hs_hotfork_fixture_failed(def, run, build))
+        return "HOT_FORK candidate story rejected its frozen fixture";
+    return "HOT_FORK child did not prove an isolated failed fixture check";
 }
 
 static void hs_hotfork_receipt_body(
@@ -3047,7 +3091,7 @@ static bool hs_hotfork_receipt(
         hs_hotfork_process_failure(def, run, message, sizeof(message));
         if (!message[0])
             (void)snprintf(message, sizeof(message), "%s",
-                           hs_hotfork_candidate_failure(run, build));
+                           hs_hotfork_candidate_failure(def, run, build));
         hs_why(why, why_len, message);
         (void)json_push_kv_str(response, "error", message);
     }

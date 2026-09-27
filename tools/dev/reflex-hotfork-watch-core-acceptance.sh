@@ -11,6 +11,10 @@ SOURCE="$ROOT/tools/dev/devloop_watch_classify.c"
 UNRELATED="$ROOT/contexts/market/services/src/market_moderation_service.c"
 OUTPUT="${ZCL_REFLEX_WATCH_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-watch-core-acceptance.json}"
 STORY='devloop-watch-classification-core.v1'
+STORY_INPUT=''
+if [[ "$OWNER_KIND" == watch ]]; then
+    STORY_INPUT="$ROOT/tools/dev/hotfork_stories/devloop_watch_classification_core_v1.inc"
+fi
 FORBIDDEN='git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite'
 MUTANT_OLD="path[n - 1] == 'c'"
 MUTANT_NEW="path[n - 1] != 'c'"
@@ -133,6 +137,11 @@ command -v jq >/dev/null || fail 'jq is required'
 
 backup="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-watch-core.XXXXXX")"
 unrelated_backup="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-watch-core-unrelated.XXXXXX")"
+story_backup=''
+if [[ -n "$STORY_INPUT" ]]; then
+    story_backup="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-watch-core-story.XXXXXX")"
+    cp -p -- "$STORY_INPUT" "$story_backup"
+fi
 watcher_id=0
 watcher_session=""
 cleanup()
@@ -142,7 +151,11 @@ cleanup()
     fi
     cp -p -- "$backup" "$SOURCE"
     cp -p -- "$unrelated_backup" "$UNRELATED"
+    if [[ -n "$story_backup" ]]; then
+        cp -p -- "$story_backup" "$STORY_INPUT"
+    fi
     rm -f -- "$backup" "$unrelated_backup"
+    if [[ -n "$story_backup" ]]; then rm -f -- "$story_backup"; fi
 }
 trap cleanup EXIT INT TERM
 cp -p -- "$SOURCE" "$backup"
@@ -156,7 +169,8 @@ nonce="$(date +%s%N)"
 
 drive_candidate()
 {
-    local candidate="$1" expected="$2" wait_for_edit=true event='' next loops
+    local candidate="$1" expected="$2" latency_bound="${3:-1000000}"
+    local wait_for_edit=true event='' next loops
     chmod --reference="$SOURCE" "$candidate"
     start_cursor="$after"
     mv -f -- "$candidate" "$SOURCE"
@@ -173,6 +187,7 @@ drive_candidate()
         wait_for_edit=false
     done
     jq -e --arg expected "$expected" --arg story "$STORY" \
+      --argjson latency_bound "$latency_bound" \
       --arg forbidden "$FORBIDDEN" '
       .ok==true and .data.event==$expected and
       .data.feedback_class=="HOT_FORK" and
@@ -180,7 +195,7 @@ drive_candidate()
       .data.story_timeout_ms==1000 and
       .data.forbidden_effect_mask==$forbidden and
       .data.candidate_bytes_executed==true and .data.runtime_published==false and
-      .data.feedback_us<1000000 and
+      ($latency_bound==0 or .data.feedback_us<$latency_bound) and
       (.data.candidate_object_root|test("^[0-9a-f]{64}$")) and
       (.data.candidate_module_root|test("^[0-9a-f]{64}$")) and
       .data.loaded_mapping_root==.data.candidate_module_root and
@@ -232,6 +247,8 @@ MUTANT_OLD="$MUTANT_OLD" MUTANT_NEW="$MUTANT_NEW" perl -0pi -e '
 ' "$mutant"
 drive_candidate "$mutant" STORY_RED
 red_result="$result"
+jq -e '.data.next_command=="fix the failed check in story_detail, then save the C23 edit"' \
+    <<<"$red_result" >/dev/null || fail 'RED did not name the source edit as next action'
 red_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
 red_leaf="$(source_leaf_sha3 "${SOURCE#$ROOT/}" "$SOURCE")"
 red_size="$(wc -c <"$SOURCE")"
@@ -340,13 +357,53 @@ jq -e --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
 ' <<<"$green_raw" >/dev/null ||
     fail 'green/red/revert did not bind compiled bytes, mapped bytes, and expected behavior'
 
+malformed_result='null'
+malformed_raw='null'
+malformed_story_sha256=''
+if [[ -n "$STORY_INPUT" ]]; then
+    "$BIN" dev loop stop --input="{\"watcher_id\":$watcher_id,\"watcher_session\":\"$watcher_session\"}" >/dev/null ||
+        fail 'could not stop watcher before malformed story fixture'
+    watcher_id=0
+    watcher_session=''
+    perl -0pi -e 's/(out->magic = ZCL_HOTFORK_OBSERVATION_MAGIC;)/$1\n    if (out->magic == ZCL_HOTFORK_OBSERVATION_MAGIC) return false;/ or die "story mutation missing\n"' "$STORY_INPUT"
+    malformed_story_sha256="$(sha256sum "$STORY_INPUT" | awk '{print $1}')"
+    begin="$($BIN dev begin)"
+    watcher_id="$(jq -er '.data.watcher_id' <<<"$begin")" || fail 'malformed watcher id missing'
+    watcher_session="$(jq -er '.data.watcher_session' <<<"$begin")" || fail 'malformed watcher session missing'
+    after="$(jq -er '.data.epoch' <<<"$begin")" || fail 'malformed event cursor missing'
+    malformed="$(mktemp "$ROOT/tools/dev/.reflex-watch-core-malformed.XXXXXX")"
+    cp -p -- "$backup" "$malformed"
+    printf '\n/* ZCL_REFLEX_WATCH_CORE_MALFORMED:%s */\n' "$nonce" >>"$malformed"
+    drive_candidate "$malformed" STORY_RED 0
+    malformed_result="$result"
+    malformed_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"timeout_ms\":100}")"
+    jq -e '
+      .data.event=="STORY_RED" and
+      .data.next_command=="z23-dev dev diagnose latest" and
+      .data.why_not_live=="HOT_FORK child did not prove an isolated failed fixture check" and
+      .data.candidate_bytes_executed==true and .data.story_detail==""
+    ' <<<"$malformed_result" >/dev/null ||
+        fail 'malformed candidate was given source-edit advice'
+    jq -e '.data.resident.story_checks_run==0 and
+      .data.resident.candidate_bytes_executed==true' \
+      <<<"$malformed_raw" >/dev/null ||
+        fail 'malformed candidate result was not preserved as a RED receipt'
+    "$BIN" dev loop stop --input="{\"watcher_id\":$watcher_id,\"watcher_session\":\"$watcher_session\"}" >/dev/null ||
+        fail 'could not stop malformed watcher before restoring story'
+    watcher_id=0
+    watcher_session=''
+    cp -p -- "$story_backup" "$STORY_INPUT"
+fi
+
 mkdir -p "$(dirname "$OUTPUT")"
 jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
   --argjson green "$green_result" --argjson red "$red_result" \
   --argjson green_raw "$green_raw" --argjson red_raw "$red_raw" \
   --argjson green_impact "$green_impact" --argjson red_impact "$red_impact" \
   --argjson unrelated "$unrelated_result" --argjson unrelated_raw "$unrelated_raw" \
-  --argjson revert "$revert_result" --argjson revert_raw "$revert_raw" '
+  --argjson revert "$revert_result" --argjson revert_raw "$revert_raw" \
+  --argjson malformed "$malformed_result" --argjson malformed_raw "$malformed_raw" \
+  --arg malformed_story_sha256 "$malformed_story_sha256" '
   {schema:"zcl.reflex_owner_acceptance.v1",owner:$owner,
    edited_path:$edited,
    claims:{compiled_new_bytes:true,executed_exact_new_bytes:true,
@@ -364,14 +421,15 @@ jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
        module:$red_raw.data.candidate_module_root,
        loaded:$red_raw.data.loaded_mapping_root,
        observation:$red_raw.data.observation_root}},
-   resources:{green_wall_us:$green_raw.data.elapsed_us,
+   resources:{scope:"five watch-story results; unrelated service edit excluded",
+     green_wall_us:$green_raw.data.elapsed_us,
      born_red_wall_us:$red_raw.data.elapsed_us,
      revert_wall_us:$revert_raw.data.elapsed_us,
-     compiler_launches:([$green_raw,$red_raw,$revert_raw] |
+     compiler_launches:([$green_raw,$red_raw,$unrelated_raw,$revert_raw,$malformed_raw] |
        map(.data.build_receipt.compiler_processes//0)|add),
-     linker_launches:([$green_raw,$red_raw,$revert_raw] |
+     linker_launches:([$green_raw,$red_raw,$unrelated_raw,$revert_raw,$malformed_raw] |
        map(.data.build_receipt.linker_processes//0)|add),
-     story_forks:([$green_raw,$red_raw,$revert_raw] |
+     story_forks:([$green_raw,$red_raw,$unrelated_raw,$revert_raw,$malformed_raw] |
        map(if .data.resident.forked then 1 else 0 end)|add), cpu_us:null,
      cpu_note:"per-story CPU is not present in the sealed event"},
    green:{event:$green.data.event,feedback_us:$green.data.feedback_us,
@@ -394,9 +452,21 @@ jq -n --arg owner "$CAPSULE_OWNER" --arg edited "$EDITED_PATH" \
      linker_processes:$revert_raw.data.build_receipt.linker_processes,
      same_object:($green.data.candidate_object_root==$revert.data.candidate_object_root),
      same_module:($green.data.candidate_module_root==$revert.data.candidate_module_root)},
+   malformed_candidate:(if $malformed==null then null else
+     {event:$malformed.data.event,feedback_us:$malformed.data.feedback_us,
+      story_source_sha256:$malformed_story_sha256,
+      object:$malformed.data.candidate_object_root,
+      module:$malformed.data.candidate_module_root,
+      loaded:$malformed.data.loaded_mapping_root,
+      observation:$malformed.data.observation_root,
+      checks_run:$malformed_raw.data.resident.story_checks_run,
+      next_command:$malformed.data.next_command,
+      why_not_live:$malformed.data.why_not_live} end),
    runtime_published:false}' >"$OUTPUT"
 
-"$BIN" dev loop stop --input="{\"watcher_id\":$watcher_id,\"watcher_session\":\"$watcher_session\"}" >/dev/null
+if [[ "$watcher_id" -gt 0 ]]; then
+    "$BIN" dev loop stop --input="{\"watcher_id\":$watcher_id,\"watcher_session\":\"$watcher_session\"}" >/dev/null
+fi
 watcher_id=0
 watcher_session=""
 cp -p -- "$backup" "$SOURCE"

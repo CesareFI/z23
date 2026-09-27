@@ -1964,7 +1964,33 @@ static void dev_drive_finish_timed(
 static bool dev_status_focused_ready(const char *status)
 {
     return strcmp(status, "feedback_ready") == 0 ||
-        strcmp(status, "focused_partial") == 0;
+           strcmp(status, "focused_partial") == 0;
+}
+
+static void dev_drive_next_command(
+    const struct json_value *cycle, const char *status, int64_t epoch,
+    bool reactor_pending, bool proof_pending, bool passed,
+    char *next, size_t next_size)
+{
+    if (reactor_pending || proof_pending) {
+        (void)snprintf(next, next_size,
+                       "z23-dev dev drive --input='{\"after_epoch\":%lld}'",
+                       (long long)epoch);
+        return;
+    }
+    const char *stage = json_get_str(json_get(cycle, "stage_detail"));
+    const char *failure = json_get_str(json_get(cycle, "failure_capsule"));
+    if (status && strcmp(status, "story_red") == 0 && stage && failure &&
+        strcmp(stage, "hotfork_owner_story") == 0 &&
+        strcmp(failure,
+               "HOT_FORK candidate story rejected its frozen fixture") == 0) {
+        zcl_devloop_hotswap_guidance(status, stage, failure,
+                                    NULL, 0, next, next_size);
+        return;
+    }
+    (void)snprintf(next, next_size, "%s",
+                   passed ? "z23-dev dev ff"
+                          : "z23-dev dev diagnose latest");
 }
 
 void zcl_native_handle_dev_drive(
@@ -2033,16 +2059,8 @@ void zcl_native_handle_dev_drive(
             proof_complete ? "publication_job_missing" :
             passed ? "complete_reusable_proof_required" : "proof_failed");
         char next[192];
-        if (reactor_pending || proof_pending)
-            (void)snprintf(
-                next, sizeof(next),
-                "z23-dev dev drive --input='{\"after_epoch\":%lld}'",
-                (long long)epoch);
-        else
-            (void)snprintf(
-                next, sizeof(next), "%s",
-                passed ? "z23-dev dev ff"
-                       : "z23-dev dev diagnose latest");
+        dev_drive_next_command(&cycle, status, epoch, reactor_pending,
+                               proof_pending, passed, next, sizeof(next));
         (void)json_push_kv_str(&compact, "next_command", next);
     }
     dev_drive_finish_timed(&compact, &cycle, reply, drive_started_us,
