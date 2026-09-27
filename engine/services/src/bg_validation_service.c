@@ -327,26 +327,20 @@ static bool bg_validation_wait_until_applied(
     return false;
 }
 
-/* Why a block that verified with undo-missing skips must be retried rather
- * than booked, or NULL when the skips are real. A rewind can pull the fold's
- * cursor back under a cached value, and after the active chain switches
- * branches the fold still holds the abandoned block's delta row at `h`
- * until it rewinds: neither is a missing undo, both resolve once the
- * reducer catches up. A store error is also retried: the answer is unknown,
- * not negative. */
-static const char *bg_validation_skip_retry_reason(
-    int h, const struct block_index *pindex, int64_t block_skips,
-    uint64_t *applied_next)
+/* Why this height's delta row cannot be trusted yet, or NULL when it is
+ * either resolved (FOUND/ABSENT) or the store has no fold at all. A rewind
+ * can pull the fold's cursor back under a cached value, and after the
+ * active chain switches branches the fold still holds the abandoned
+ * block's delta row at `h` until it rewinds: neither is a missing undo,
+ * both resolve once the reducer catches up. A store error is also
+ * retried: the answer is unknown, not negative.
+ *
+ * Deliberately CHEAP — one SQLite point read, no block body, no crypto —
+ * so it can run every attempt of the bounded backoff below without ever
+ * paying for a full block re-validation while the fold is still racing. */
+static const char *bg_validation_row_unresolved_reason(
+    int h, const struct block_index *pindex)
 {
-    if (block_skips <= 0)
-        return NULL;
-    *applied_next = bg_validation_applied_next();
-    if (*applied_next == 0)
-        return "utxo_apply cursor unreadable";
-    if (*applied_next == UINT64_MAX)
-        return NULL;  /* this store has no fold: nothing will ever appear */
-    if ((uint64_t)h >= *applied_next)
-        return "height no longer applied";
     if (!pindex || !pindex->phashBlock)
         return NULL;
     progress_store_tx_lock();
@@ -360,6 +354,56 @@ static const char *bg_validation_skip_retry_reason(
     if (row == UTXO_DELTA_UNDO_ERROR)
         return "delta row unreadable";
     return NULL;
+}
+
+/* Bounded attempts before giving up on the row ever resolving and falling
+ * back to booking whatever the (one) full validation finds — the row may
+ * be stuck on another branch behind a reducer that will never revisit it
+ * (e.g. it lost the race and rewound past this height for good). Past this
+ * many attempts the walk must advance, not spin. */
+#define BG_VALIDATION_ROW_RETRY_LIMIT 20u
+/* Growing backoff cap: doubling per attempt, capped at 5 minutes, so a
+ * genuinely slow fold gets patience without the walk polling a stuck row
+ * once a second forever. */
+#define BG_VALIDATION_ROW_BACKOFF_MAX_MS (5u * 60u * 1000u)
+
+#ifdef ZCL_TESTING
+static bg_validation_test_row_probe_fn g_row_probe_fn =
+    bg_validation_row_unresolved_reason;
+static bg_validation_test_sleep_fn g_row_backoff_sleep_fn = platform_sleep_ms;
+
+void bg_validation_test_set_row_backoff_stubs(
+    bg_validation_test_row_probe_fn probe_fn,
+    bg_validation_test_sleep_fn sleep_fn)
+{
+    g_row_probe_fn = probe_fn ? probe_fn : bg_validation_row_unresolved_reason;
+    g_row_backoff_sleep_fn = sleep_fn ? sleep_fn : platform_sleep_ms;
+}
+#endif
+
+static void bg_validation_row_backoff(struct bg_validation_service *svc,
+                                      int h, const char *reason,
+                                      unsigned attempt)
+{
+    uint64_t wait_ms = 1000;
+    for (unsigned i = 0; i < attempt && wait_ms < BG_VALIDATION_ROW_BACKOFF_MAX_MS;
+         i++)
+        wait_ms *= 2;
+    if (wait_ms > BG_VALIDATION_ROW_BACKOFF_MAX_MS)
+        wait_ms = BG_VALIDATION_ROW_BACKOFF_MAX_MS;
+    LOG_INFO("bg_validation",
+             "[bg-valid] h=%d delta row unresolved (attempt %u/%u): %s — "
+             "backing off %llus before re-checking",
+             h, attempt + 1, BG_VALIDATION_ROW_RETRY_LIMIT, reason,
+             (unsigned long long)(wait_ms / 1000));
+    bg_validation_supervisor_heartbeat(svc);
+    if (!atomic_load(&svc->stop_requested)) {
+#ifdef ZCL_TESTING
+        g_row_backoff_sleep_fn((int)wait_ms);
+#else
+        platform_sleep_ms((int)wait_ms);
+#endif
+    }
 }
 
 /* ── Where a walk campaign starts ─────────────────────────────
@@ -498,6 +542,41 @@ static void bg_validation_sampled_reverify_loop(
     atomic_store(&svc->progress.reverify_active, false);
 }
 
+/* Cheap pre-check + bounded, growing backoff for height `h`'s delta row,
+ * pulled out of bg_validation_thread to keep that loop under the
+ * complexity cap. Returns true when the walk should retry `h` (the
+ * backoff sleep already ran and *row_retries was advanced); false when it
+ * should proceed to the one full validation below, either because the row
+ * resolved (*row_retries reset to 0) or because the bound was exhausted
+ * (also reset to 0, with the fallback logged here so the walk's own loop
+ * does not need an extra branch for it). */
+static bool bg_validation_row_wait_or_fallback(
+    struct bg_validation_service *svc, int h,
+    const struct block_index *pindex, unsigned *row_retries)
+{
+    const char *row_reason =
+#ifdef ZCL_TESTING
+        g_row_probe_fn(h, pindex);
+#else
+        bg_validation_row_unresolved_reason(h, pindex);
+#endif
+    if (!row_reason) {
+        *row_retries = 0;
+        return false;
+    }
+    if (*row_retries < BG_VALIDATION_ROW_RETRY_LIMIT) {
+        bg_validation_row_backoff(svc, h, row_reason, *row_retries);
+        (*row_retries)++;
+        return true;
+    }
+    LOG_WARN("bg_validation",
+             "[bg-valid] h=%d row still unresolved after %u attempts (%s); "
+             "validating once and counting the skip",
+             h, *row_retries, row_reason);
+    *row_retries = 0;
+    return false;
+}
+
 /* ── Main validation thread ──────────────────────────────────── */
 
 static void *bg_validation_thread(void *arg)
@@ -547,7 +626,7 @@ static void *bg_validation_thread(void *arg)
     int64_t total_proofs = 0;
     int64_t total_skips = ws.skips;
     uint64_t applied_next = 0;
-    unsigned retry_waits = 0;
+    unsigned row_retries = 0;
     atomic_store(&svc->progress.script_verif_skipped_no_undo, total_skips);
 
     for (int h = start_height; h <= chain_height; h++) {
@@ -575,6 +654,21 @@ static void *bg_validation_thread(void *arg)
         }
         if (!bg_validation_wait_until_applied(svc, h, &applied_next))
             break;
+
+        /* Cheap pre-check (one SQLite point read, no block body, no
+         * crypto): while the fold still holds this height's delta row on
+         * another branch, or the row reads as a store error, back off with
+         * growing delay instead of paying for a full block re-validation
+         * every second. Bounded — past BG_VALIDATION_ROW_RETRY_LIMIT
+         * attempts the row is presumed never going to resolve (e.g. the
+         * reducer rewound past this height for good) and the walk falls
+         * back to the old behaviour: run the one validation below and book
+         * whatever it finds, so the walk advances instead of spinning. */
+        if (bg_validation_row_wait_or_fallback(svc, h, pindex, &row_retries)) {
+            h--;
+            continue;
+        }
+
         struct block blk;
         block_init(&blk);
         if (!bg_validation_read_body_resilient(
@@ -603,14 +697,6 @@ static void *bg_validation_thread(void *arg)
         }
 
         block_free(&blk);
-        const char *retry = bg_validation_skip_retry_reason(
-            h, pindex, block_skips, &applied_next);
-        if (retry) {
-            bg_validation_fold_backoff(svc, h, retry, &retry_waits);
-            h--;
-            continue;
-        }
-        retry_waits = 0;
         total_sigs += block_sigs;
         total_proofs += block_proofs;
         total_skips += block_skips;

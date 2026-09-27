@@ -232,6 +232,17 @@ bool bg_validation_read_body_resilient(
     struct bg_validation_service *svc, int height, const char *datadir,
     enum bg_validation_state ready_state, struct block *block,
     struct block_index **index_out);
+/* Cheap (no body, no crypto) per-height row-branch probe run before every
+ * full validation, and the sleep it backs off with. A test drives the
+ * simulated reducer catch-up from the probe (not from a validate call), so
+ * the count it asserts on is really "how many times did the walk poll the
+ * row", not "how many full block validations ran while waiting" — which
+ * this gate exists specifically to bound to one. */
+typedef const char *(*bg_validation_test_row_probe_fn)(
+    int height, const struct block_index *index);
+void bg_validation_test_set_row_backoff_stubs(
+    bg_validation_test_row_probe_fn probe_fn,
+    bg_validation_test_sleep_fn sleep_fn);
 #endif
 
 /* Reset validation progress and restart from block 0. */

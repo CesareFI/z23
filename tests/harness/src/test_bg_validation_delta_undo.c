@@ -20,6 +20,7 @@
 #include "test/test_core.h"
 #include "test/block_fixtures.h"
 
+#include "base/serialize_le.h"
 #include "bloom/merkle.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -508,6 +509,157 @@ static int du_case_input_mismatch(struct du_fixture *fx)
     return failures;
 }
 
+/* Hand-encode one spent entry in the delta row's own wire format (see the
+ * file banner) with a caller-chosen value/coinbase byte and no script, so a
+ * test can plant fields the real encoder would never produce. */
+static uint8_t *du_encode_spent_entry(const struct uint256 *txid,
+                                      uint32_t vout, int64_t value,
+                                      uint8_t coinbase, size_t *out_len)
+{
+    size_t total = 32 + 4 + 8 + 4 + 1 + 4;
+    uint8_t *buf = zcl_malloc(total, "du_spent_entry");
+    if (!buf) { *out_len = 0; return NULL; }
+    uint8_t *p = buf;
+    memcpy(p, txid->data, 32); p += 32;
+    zcl_write_u32_le(p, vout); p += 4;
+    zcl_write_i64_le(p, value); p += 8;
+    zcl_write_u32_le(p, 0); p += 4;   /* height field: unchecked, 0 is fine */
+    *p++ = coinbase;
+    zcl_write_u32_le(p, 0);          /* script_len = 0 */
+    *out_len = total;
+    return buf;
+}
+
+static bool du_persist_raw_delta(sqlite3 *db, int height,
+                                 const struct uint256 *branch_hash,
+                                 const uint8_t *spent, size_t spent_len)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta "
+            "(height, branch_hash, spent_blob, added_blob) VALUES (?,?,?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    sqlite3_bind_blob(st, 2, branch_hash->data, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 3, spent, (int)spent_len, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 4, "", 0, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-fixture-seeding
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* F4: a decoded value outside [0, MAX_MONEY] or a coinbase byte other than
+ * 0/1 is a corrupt local row, not a fact about the chain — it must fail
+ * closed as MISMATCH (the fold re-derives it), never surface as a false
+ * "chain VALIDATION FAILURE". Uses a throwaway height outside the fixture
+ * chain's own rows. */
+static int du_case_decode_out_of_range(struct du_fixture *fx)
+{
+    int failures = 0;
+    TEST("delta_undo: an out-of-range value or coinbase byte is refused") {
+        ASSERT(fx->opened);
+        const int h = DU_BLOCKS + 900;
+        struct uint256 branch_hash;
+        memset(branch_hash.data, 0x77, sizeof(branch_hash.data));
+        struct uint256 prev_txid;
+        memset(prev_txid.data, 0x11, sizeof(prev_txid.data));
+
+        struct block blk;
+        block_init(&blk);
+        blk.vtx = zcl_calloc(2, sizeof(*blk.vtx), "du_bounds_vtx");
+        ASSERT(blk.vtx);
+        blk.num_vtx = 2;
+        ASSERT(du_tx(&blk.vtx[0], 1, 1000));
+        outpoint_set_null(&blk.vtx[0].vin[0].prevout);
+        ASSERT(du_tx(&blk.vtx[1], 1, 1000));
+        blk.vtx[1].vin[0].prevout.hash = prev_txid;
+        blk.vtx[1].vin[0].prevout.n = 0;
+        ASSERT(transaction_is_coinbase(&blk.vtx[0]));
+
+        size_t len = 0;
+        uint8_t *bad_value = du_encode_spent_entry(
+            &prev_txid, 0, INT64_MAX, 0, &len);
+        ASSERT(bad_value);
+        ASSERT(du_persist_raw_delta(progress_store_db(), h, &branch_hash,
+                                    bad_value, len));
+        free(bad_value);
+        struct block_undo u1;
+        enum utxo_apply_delta_undo_status st1 =
+            utxo_apply_delta_block_undo_load(progress_store_db(), h,
+                                             &branch_hash, &blk, &u1);
+        ASSERT_EQ(st1, UTXO_DELTA_UNDO_MISMATCH);
+
+        uint8_t *bad_coinbase = du_encode_spent_entry(
+            &prev_txid, 0, 1000, 2, &len);
+        ASSERT(bad_coinbase);
+        ASSERT(du_persist_raw_delta(progress_store_db(), h, &branch_hash,
+                                    bad_coinbase, len));
+        free(bad_coinbase);
+        struct block_undo u2;
+        enum utxo_apply_delta_undo_status st2 =
+            utxo_apply_delta_block_undo_load(progress_store_db(), h,
+                                             &branch_hash, &blk, &u2);
+        ASSERT_EQ(st2, UTXO_DELTA_UNDO_MISMATCH);
+
+        uint8_t *good = du_encode_spent_entry(&prev_txid, 0, 1000, 1, &len);
+        ASSERT(good);
+        ASSERT(du_persist_raw_delta(progress_store_db(), h, &branch_hash,
+                                    good, len));
+        free(good);
+        struct block_undo u3;
+        enum utxo_apply_delta_undo_status st3 =
+            utxo_apply_delta_block_undo_load(progress_store_db(), h,
+                                             &branch_hash, &blk, &u3);
+        ASSERT_EQ(st3, UTXO_DELTA_UNDO_FOUND);
+        ASSERT_EQ(u3.num_txundo, 1);
+        ASSERT(u3.vtxundo[0].vprevout[0].coinbase);
+
+        block_undo_free(&u3);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* F4: a stored spent_blob of length zero (SQLite may hand back a NULL
+ * pointer for it) must not become `NULL + 0` pointer arithmetic. A
+ * coinbase-only block needs zero spent entries, so this is the real shape
+ * that produces a zero-length blob in production, not a contrived one. */
+static int du_case_decode_empty_blob(struct du_fixture *fx)
+{
+    int failures = 0;
+    TEST("delta_undo: a zero-length spent blob decodes with no undo, no crash") {
+        ASSERT(fx->opened);
+        const int h = DU_BLOCKS + 901;
+        struct uint256 branch_hash;
+        memset(branch_hash.data, 0x88, sizeof(branch_hash.data));
+
+        struct block blk;
+        block_init(&blk);
+        blk.vtx = zcl_calloc(1, sizeof(*blk.vtx), "du_empty_vtx");
+        ASSERT(blk.vtx);
+        blk.num_vtx = 1;
+        ASSERT(du_tx(&blk.vtx[0], 1, 1000));
+        outpoint_set_null(&blk.vtx[0].vin[0].prevout);
+        ASSERT(transaction_is_coinbase(&blk.vtx[0]));
+
+        ASSERT(du_persist_raw_delta(progress_store_db(), h, &branch_hash,
+                                    (const uint8_t *)"", 0));
+        struct block_undo u;
+        enum utxo_apply_delta_undo_status st =
+            utxo_apply_delta_block_undo_load(progress_store_db(), h,
+                                             &branch_hash, &blk, &u);
+        ASSERT_EQ(st, UTXO_DELTA_UNDO_FOUND);
+        ASSERT_EQ(u.num_txundo, 0);
+
+        block_undo_free(&u);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int du_case_unfolded_store(struct du_fixture *fx)
 {
     int failures = 0;
@@ -541,7 +693,7 @@ static int du_case_unfolded_store(struct du_fixture *fx)
  * one, given a parentless copy of the index (the contextual header rules
  * are not what this group exercises). */
 static struct du_fixture *g_wk_fx;
-static _Atomic int g_wk_h1_attempts;
+static _Atomic int g_wk_h1_probes;
 static int g_wk_progress = -1;
 static int64_t g_wk_version = 0;
 static int64_t g_wk_skips = -1;
@@ -592,15 +744,34 @@ static bool wk_validate(const struct block *block, struct block_index *index,
                         int64_t *sigs_out, int64_t *proofs_out,
                         int64_t *skips_out)
 {
-    if (index->nHeight == 1 && atomic_fetch_add(&g_wk_h1_attempts, 1) == 1 &&
-        !wk_reapply_h1())
-        return false;
     struct block_index parentless = *index;
     parentless.pprev = NULL;
     return bg_validation_validate_block_proofs(
         block, &parentless, datadir, params, num_workers, max_script_batch,
         sigs_out, proofs_out, skips_out);
 }
+
+/* The bounded row-probe hook: the walk polls this — cheaply, no block body,
+ * no crypto — before it will pay for a full validation. First probe at h=1
+ * reports the stale other-branch row (matching the real row this fixture
+ * seeded). Second probe simulates the reducer's rewind + re-apply landing
+ * mid-wait and reports resolved, so wk_validate above runs exactly ONCE for
+ * h=1 with the correct undo already in place — proving the walk no longer
+ * pays for a full block re-validation on every wait tick (that repeated
+ * full-validate-while-waiting was the bug; see bg_validation_service.c). */
+static const char *wk_row_probe(int h, const struct block_index *pindex)
+{
+    (void)pindex;
+    if (h != 1)
+        return NULL;
+    if (atomic_fetch_add(&g_wk_h1_probes, 1) == 0)
+        return "fold still holds another branch's block";
+    if (!wk_reapply_h1())
+        return "fold still holds another branch's block";
+    return NULL;
+}
+
+static void wk_no_sleep(int ms) { (void)ms; }
 
 static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
 {
@@ -613,7 +784,7 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
         struct block_undo u;
         ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_OTHER_BRANCH);
         g_wk_fx = fx;
-        atomic_store(&g_wk_h1_attempts, 0);
+        atomic_store(&g_wk_h1_probes, 0);
         g_wk_progress = -1;
         g_wk_version = 0;
         g_wk_skips = -1;
@@ -632,6 +803,7 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
         };
         bg_validation_test_set_body_repair_stubs(wk_read_body, NULL);
         bg_validation_test_set_validate_stub(wk_validate);
+        bg_validation_test_set_row_backoff_stubs(wk_row_probe, wk_no_sleep);
         started = bg_validation_start(&svc);
         ASSERT(started);
         for (int i = 0; i < 200 &&
@@ -640,8 +812,11 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
             platform_sleep_ms(100);
         ASSERT_EQ(atomic_load(&svc.progress.state), BG_VALIDATION_COMPLETE);
         ASSERT_EQ(atomic_load(&svc.progress.verified_height), DU_BLOCKS - 1);
-        /* First attempt saw the other branch; the retry saw the re-apply. */
-        ASSERT(atomic_load(&g_wk_h1_attempts) >= 2);
+        /* First probe saw the other branch; the second saw the re-apply —
+         * and the FULL block validation for h=1 never ran until the row
+         * was already resolved (see wk_validate: no retry hook left in
+         * it), proving the walk stopped paying crypto cost while waiting. */
+        ASSERT(atomic_load(&g_wk_h1_probes) >= 2);
         ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo), 0);
         ASSERT_EQ(g_wk_skips, 0);
         ASSERT_EQ(atomic_load(&svc.progress.sigs_verified),
@@ -652,6 +827,98 @@ static int du_case_walk_waits_out_branch_switch(struct du_fixture *fx)
         bg_validation_stop(&svc);
     bg_validation_test_set_validate_stub(NULL);
     bg_validation_test_set_body_repair_stubs(NULL, NULL);
+    bg_validation_test_set_row_backoff_stubs(NULL, NULL);
+    return failures;
+}
+
+/* A row that reports "other branch" on EVERY probe — the reducer lost the
+ * race for good and will never revisit this height. Proves the walk gives
+ * up waiting after a bounded number of attempts and advances (books the
+ * skip) rather than spinning on the cheap probe forever, and that the ONE
+ * full validation this actually runs counts h=1's skip exactly once. */
+static const char *wk_row_probe_stuck(int h, const struct block_index *pindex)
+{
+    (void)pindex;
+    if (h == 1)
+        atomic_fetch_add(&g_wk_h1_probes, 1);
+    return h == 1 ? "fold still holds another branch's block" : NULL;
+}
+
+static int du_case_walk_row_never_resolves(struct du_fixture *fx)
+{
+    int failures = 0;
+    struct bg_validation_service svc;
+    memset(&svc, 0, sizeof(svc));
+    bool started = false;
+    TEST("delta_undo: a row stuck on another branch advances, not spins") {
+        ASSERT(fx->opened);
+        /* Re-seed h=1 on the wrong branch: the prior case fixed it via its
+         * own reapply. */
+        ASSERT(du_exec(progress_store_db(),
+            "UPDATE utxo_apply_delta SET branch_hash=zeroblob(32) "
+            "WHERE height=1"));
+        struct block_undo u;
+        ASSERT_EQ(du_load(&fx->c, 1, &u), UTXO_DELTA_UNDO_OTHER_BRANCH);
+        g_wk_fx = fx;
+        atomic_store(&g_wk_h1_probes, 0);
+        g_wk_progress = -1;
+        g_wk_version = 0;
+        g_wk_skips = -1;
+        svc.ms = &fx->ms;
+        svc.datadir = fx->dir;
+        svc.params = fx->cp;
+        svc.num_workers = 1;
+        svc.progress_store = (struct bg_validation_store_port) {
+            .self = &svc,
+            .load_progress = wk_load_progress,
+            .save_progress = wk_save_progress,
+            .load_skips = wk_load_skips,
+            .save_skips = wk_save_skips,
+            .load_coverage_version = wk_load_version,
+            .save_coverage_version = wk_save_version,
+        };
+        bg_validation_reset_undo_skip_stats();
+        bg_validation_test_set_body_repair_stubs(wk_read_body, NULL);
+        bg_validation_test_set_validate_stub(wk_validate);
+        bg_validation_test_set_row_backoff_stubs(wk_row_probe_stuck,
+                                                 wk_no_sleep);
+        started = bg_validation_start(&svc);
+        ASSERT(started);
+        for (int i = 0; i < 200 &&
+             atomic_load(&svc.progress.state) != BG_VALIDATION_COMPLETE &&
+             atomic_load(&svc.progress.state) != BG_VALIDATION_FAILED; i++)
+            platform_sleep_ms(100);
+        /* The walk must advance (COMPLETE), never spin forever on h=1. */
+        ASSERT_EQ(atomic_load(&svc.progress.state), BG_VALIDATION_COMPLETE);
+        ASSERT_EQ(atomic_load(&svc.progress.verified_height), DU_BLOCKS - 1);
+        /* Stop the service NOW: h=1's row is deliberately left stuck
+         * forever, and the always-on sampled reverify loop that starts
+         * right after COMPLETE is otherwise free to re-sample h=1 — a
+         * real, separate event this case is not testing. */
+        bg_validation_stop(&svc);
+        started = false;
+        /* Bounded: more than one probe attempt (it did wait), but a small,
+         * fixed number — never unbounded. */
+        int probes = atomic_load(&g_wk_h1_probes);
+        ASSERT(probes > 1);
+        ASSERT(probes < 100);
+        /* F2/F3: the walk fell back to booking the skip instead of
+         * spinning, and the per-service tally is EXACTLY h=1's 2
+         * transparent inputs — not 4, 6, ... — proving the one full
+         * validation that ran counted this height's skip exactly once,
+         * not once per backoff attempt (the accumulator this checks,
+         * svc.progress.script_verif_skipped_no_undo, is owned solely by
+         * this walk's own loop, unlike the global undo-skip stats which
+         * the always-on reverify loop above also feeds). */
+        ASSERT_EQ(atomic_load(&svc.progress.script_verif_skipped_no_undo),
+                  2);
+        PASS();
+    } _test_next:;
+    if (started)
+        bg_validation_stop(&svc);
+    bg_validation_test_set_validate_stub(NULL);
+    bg_validation_test_set_body_repair_stubs(NULL, NULL);
+    bg_validation_test_set_row_backoff_stubs(NULL, NULL);
     return failures;
 }
 
@@ -666,8 +933,11 @@ static int test_delta_undo_forward_record(const struct chain_params *cp)
     failures += du_case_delta_script(&fx);
     failures += du_case_other_branch(&fx);
     failures += du_case_input_mismatch(&fx);
+    failures += du_case_decode_out_of_range(&fx);
+    failures += du_case_decode_empty_blob(&fx);
     failures += du_case_unfolded_store(&fx);
     failures += du_case_walk_waits_out_branch_switch(&fx);
+    failures += du_case_walk_row_never_resolves(&fx);
     if (fx.opened)
         du_close(&fx.ms);
     if (fx.built)

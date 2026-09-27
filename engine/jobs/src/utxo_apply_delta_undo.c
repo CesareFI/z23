@@ -26,6 +26,11 @@
 
 #define UNDO_TAG "utxo_apply_undo"
 
+/* Matches the encoder's own bound (utxo_apply_delta.c MAX_MONEY_ZAT). core/
+ * is sealed and not includable here, so this engine module carries its own
+ * copy of the same consensus constant, as utxo_apply_delta.c already does. */
+#define MAX_MONEY_ZAT 2100000000000000LL
+
 const char *utxo_apply_delta_undo_status_name(
     enum utxo_apply_delta_undo_status status)
 {
@@ -72,6 +77,28 @@ static bool take_i64(struct spent_cursor *c, int64_t *out)
     return true;
 }
 
+/* A decoded value outside consensus range, or a coinbase byte that is
+ * neither the encoder's 0 nor 1, is a corrupt local row, not a fact about
+ * the chain — fail closed to MISMATCH (the caller reports it, the fold
+ * re-derives it), never let it read as a valid-but-wrong undo entry. */
+static bool spent_value_and_coinbase_ok(int64_t value, uint8_t coinbase)
+{
+    return value >= 0 && value <= MAX_MONEY_ZAT &&
+           (coinbase == 0 || coinbase == 1);
+}
+
+/* Does this entry name `prevout` and fit within the cursor's remaining
+ * bytes? Split out of take_spent_for to stay under the complexity cap. */
+static bool spent_entry_shape_ok(const struct spent_cursor *c,
+                                 const struct outpoint *prevout,
+                                 const uint8_t txid[32], uint32_t vout,
+                                 uint32_t script_len)
+{
+    return memcmp(txid, prevout->hash.data, 32) == 0 &&
+           vout == prevout->n && script_len <= MAX_SCRIPT_SIZE &&
+           (size_t)(c->end - c->p) >= script_len;
+}
+
 /* Parse the next spent entry and require it to name `prevout`. */
 static bool take_spent_for(struct spent_cursor *c,
                            const struct outpoint *prevout,
@@ -85,9 +112,8 @@ static bool take_spent_for(struct spent_cursor *c,
         !take_i64(c, &value) || !take_u32(c, &height) ||
         !take_bytes(c, &coinbase, 1) || !take_u32(c, &script_len))
         return false; // raw-return-ok:truncation-reported-by-caller-as-mismatch
-    if (memcmp(txid, prevout->hash.data, sizeof(txid)) != 0 ||
-        vout != prevout->n || script_len > MAX_SCRIPT_SIZE ||
-        (size_t)(c->end - c->p) < script_len)
+    if (!spent_entry_shape_ok(c, prevout, txid, vout, script_len) ||
+        !spent_value_and_coinbase_ok(value, coinbase))
         return false; // raw-return-ok:shape-reported-by-caller-as-mismatch
     tx_in_undo_init(dst);
     dst->txout.value = value;
@@ -106,7 +132,14 @@ static enum utxo_apply_delta_undo_status build_undo(
     int height, const struct block *blk, const uint8_t *spent, size_t len,
     struct block_undo *out)
 {
-    struct spent_cursor c = { .p = spent, .end = spent + len };
+    /* spent may be NULL when the row's blob is empty (a block with no
+     * transparent inputs to undo). Never form `NULL + len`: even `+0` on a
+     * null base is undefined pointer arithmetic. Collapse to a null,
+     * zero-width cursor instead — take_bytes/take_spent_for already treat
+     * p == end as "nothing left", so an empty block still resolves FOUND. */
+    struct spent_cursor c = spent
+        ? (struct spent_cursor){ .p = spent, .end = spent + len }
+        : (struct spent_cursor){ .p = NULL, .end = NULL };
     size_t first = (blk->num_vtx > 0 &&
                     transaction_is_coinbase(&blk->vtx[0])) ? 1 : 0;
     size_t ntx = blk->num_vtx - first;
