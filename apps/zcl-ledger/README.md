@@ -182,7 +182,9 @@ input when given its spent output's scriptCode and amount. Its result matched
 ZIP 243's published transparent test vector. The separate C23 host preflight
 binds supplied v4 previous transactions to P2PKH inputs by SHA-256d txid,
 derives their amounts and scripts, checks every output type, and calculates
-the fee. Its input-specific digest uses those hash-bound bytes. It does not
+the fee. Its combined API returns the fee and every input's hash-bound
+ZIP-243 digest only after all prevouts and digests succeed; failure leaves
+both outputs unchanged. It does not
 prove that a prevout is unspent, mature, included in the accepted chain, or
 owned by the selected Ledger path. The Blue has not verified these facts and
 no transparent payment signing command exists, so this digest grants no

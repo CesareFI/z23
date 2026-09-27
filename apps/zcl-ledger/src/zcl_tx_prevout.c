@@ -135,3 +135,25 @@ int zcl_tx_hash_bound_digest(const uint8_t *wire, size_t length,
         output.script, output.script_length, output.value_zat,
         branch_id, hasher, digest);
 }
+
+int zcl_tx_transparent_bound_digests(const uint8_t *wire, size_t length,
+    const zcl_tx_previous_transaction *previous, size_t previous_count,
+    uint32_t branch_id, zcl_tx_sha256_fn sha256,
+    const zcl_zip243_hasher *hasher, zcl_tx_transparent_facts *facts,
+    uint8_t (*digests)[32], size_t digest_capacity) {
+    if (!facts || !digests || !hasher || !previous ||
+        !previous_count || previous_count > ZCL_TX_PREFLIGHT_MAX_INPUTS ||
+        digest_capacity < previous_count) return -1;
+    zcl_tx_transparent_facts checked;
+    uint8_t checked_digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    if (zcl_tx_transparent_preflight(wire, length, previous,
+            previous_count, sha256, &checked) < 0) return -1;
+    for (size_t i = 0; i < previous_count; ++i) {
+        if (zcl_tx_hash_bound_digest(wire, length, (uint32_t)i,
+                previous[i], branch_id, sha256, hasher,
+                checked_digests[i]) < 0) return -1;
+    }
+    *facts = checked;
+    memcpy(digests, checked_digests, previous_count * sizeof *digests);
+    return 0;
+}

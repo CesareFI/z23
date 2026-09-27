@@ -168,6 +168,23 @@ int main(int argc, char **argv) {
     CHECK(zcl_tx_hash_bound_digest(spend.bytes, spend.length, 0, source,
         0x76b809bb, sha256_bytes, &hasher, bound) == 0);
     CHECK(memcmp(direct, bound, 32) == 0);
+    zcl_tx_transparent_facts bound_facts = {.fee_zat = UINT64_MAX};
+    uint8_t all_digests[2][32];
+    memset(all_digests, 0x5a, sizeof all_digests);
+    CHECK(zcl_tx_transparent_bound_digests(spend.bytes, spend.length,
+        &source, 1, 0x76b809bb, sha256_bytes, &hasher,
+        &bound_facts, all_digests, 2) == 0);
+    CHECK(bound_facts.fee_zat == 1000000);
+    CHECK(memcmp(all_digests[0], direct, 32) == 0);
+    for (size_t i = 0; i < 32; ++i) CHECK(all_digests[1][i] == 0x5a);
+    bound_facts.fee_zat = UINT64_MAX;
+    memset(all_digests, 0x5a, sizeof all_digests);
+    CHECK(zcl_tx_transparent_bound_digests(spend.bytes, spend.length,
+        &source, 1, 0x76b809bb, sha256_bytes, &hasher,
+        &bound_facts, all_digests, 0) < 0);
+    CHECK(bound_facts.fee_zat == UINT64_MAX);
+    for (size_t i = 0; i < sizeof all_digests; ++i)
+        CHECK(((uint8_t *)all_digests)[i] == 0x5a);
 
     prev.bytes[10] ^= 1;
     CHECK(zcl_tx_transparent_preflight(spend.bytes, spend.length,
@@ -175,6 +192,12 @@ int main(int argc, char **argv) {
     CHECK(facts.fee_zat == 1000000);
     CHECK(zcl_tx_hash_bound_digest(spend.bytes, spend.length, 0, source,
         0x76b809bb, sha256_bytes, &hasher, bound) < 0);
+    CHECK(zcl_tx_transparent_bound_digests(spend.bytes, spend.length,
+        &source, 1, 0x76b809bb, sha256_bytes, &hasher,
+        &bound_facts, all_digests, 2) < 0);
+    CHECK(bound_facts.fee_zat == UINT64_MAX);
+    for (size_t i = 0; i < sizeof all_digests; ++i)
+        CHECK(((uint8_t *)all_digests)[i] == 0x5a);
     prev.bytes[10] ^= 1;
     source.length--;
     CHECK(zcl_tx_transparent_preflight(spend.bytes, spend.length,
@@ -232,5 +255,10 @@ int main(int argc, char **argv) {
     CHECK(facts.output_zat == 49000000 && facts.fee_zat == 51000000);
     CHECK(zcl_tx_hash_bound_digest(duplicate.bytes, duplicate.length, 1,
         two[1], 0x76b809bb, sha256_bytes, &hasher, bound) == 0);
+    CHECK(zcl_tx_transparent_bound_digests(duplicate.bytes, duplicate.length,
+        two, 2, 0x76b809bb, sha256_bytes, &hasher,
+        &bound_facts, all_digests, 2) == 0);
+    CHECK(bound_facts.fee_zat == 51000000);
+    CHECK(memcmp(all_digests[1], bound, 32) == 0);
     return 0;
 }

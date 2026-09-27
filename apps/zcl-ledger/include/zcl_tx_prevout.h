@@ -47,4 +47,14 @@ int zcl_tx_hash_bound_digest(const uint8_t *wire, size_t length,
     uint32_t branch_id, zcl_tx_sha256_fn sha256,
     const zcl_zip243_hasher *hasher, uint8_t digest[32]);
 
+/* Atomically binds every input to its supplied previous transaction, derives
+ * the fee, and computes one ZIP-243 SIGHASH_ALL digest per input. On failure,
+ * facts and digests remain unchanged. The caller must independently establish
+ * UTXO status, ownership, and the active consensus branch before signing. */
+int zcl_tx_transparent_bound_digests(const uint8_t *wire, size_t length,
+    const zcl_tx_previous_transaction *previous, size_t previous_count,
+    uint32_t branch_id, zcl_tx_sha256_fn sha256,
+    const zcl_zip243_hasher *hasher, zcl_tx_transparent_facts *facts,
+    uint8_t (*digests)[32], size_t digest_capacity);
+
 #endif
