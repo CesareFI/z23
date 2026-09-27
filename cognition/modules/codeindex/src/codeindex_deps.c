@@ -3,9 +3,9 @@
  * codeindex_deps — turn the compiler's own dependency files (the depfiles
  * under build/, extension .d) into include edges. Each depfile records
  * "<obj>: <src.c> <prereq> ..."; we emit a (source, prerequisite) pair for
- * EVERY in-tree prerequisite the compiler listed, which is the exact include
- * graph the build already computed — no re-parsing of #include lines, no
- * guessing search paths.
+ * EVERY in-tree prerequisite the compiler listed, which is the include graph
+ * the build already computed for its configuration. Only the quoted includes
+ * a depfile omits are read from source text (below).
  *
  * The prerequisite list is taken verbatim, never filtered by file extension.
  * The compiler records every byte it read, and plenty of those are not .h:
@@ -19,9 +19,17 @@
  * the header was deleted or renamed after the compile, a generated input has
  * not been generated yet, or the live epoch describes an older layout. The
  * unit still read that path, so its change must still impact the unit;
- * dropping the edge would narrow every plan past it. Such a path, a depfile
- * that is incomplete or older than its translation unit, or a quoted include
- * the depfile does not list makes the include answer not complete.
+ * dropping the edge would narrow every plan past it. Such a path, or a
+ * depfile that is incomplete or older than its translation unit, makes the
+ * include answer not complete.
+ *
+ * A depfile describes one configuration of the compile. A quoted include
+ * inside an inactive conditional (a Windows-only .inc on Linux) names an
+ * in-tree file that configuration never read, so the depfile omits it. That
+ * file still shapes the unit elsewhere, so it is added as an edge from the
+ * translation unit and scanned the same way for what it includes. The graph
+ * is then a superset of the true edges: it can select more work, never less,
+ * and it stays trusted. A text scan that cannot finish still refuses.
  *
  * Depfiles are written into a per-build compile epoch,
  * `<object-root>/epochs/<64-hex>/`. Every build mints a new epoch and the
@@ -121,6 +129,46 @@ static void note_include_narrow_unsafe(void)
     g_include_narrow_unsafe = 1;
 }
 
+/* Digest of every include edge the latest deps scan produced, in scan order,
+ * whether or not a caller consumed them. The index stores it with the rows it
+ * built; an incremental refresh that reuses those rows compares it to decide
+ * whether they still hold every current edge. */
+static struct sha3_256_ctx g_edge_sha;
+static uint8_t g_edge_root[32];
+static bool g_edge_root_valid;
+
+bool ci_deps_include_edge_root(uint8_t out[32]);
+bool ci_deps_include_edge_root(uint8_t out[32])
+{
+    if (!out || !g_edge_root_valid)
+        return false;
+    memcpy(out, g_edge_root, sizeof g_edge_root);
+    return true;
+}
+
+static void dep_edge_root_begin(void)
+{
+    static const char domain[] = "zcl.codeindex.include_edge_root.v1";
+    g_edge_root_valid = false;
+    sha3_256_init(&g_edge_sha);
+    sha3_256_write(&g_edge_sha, (const unsigned char *)domain, sizeof(domain));
+}
+
+static void dep_edge_root_end(void)
+{
+    sha3_256_finalize(&g_edge_sha, g_edge_root);
+    g_edge_root_valid = true;
+}
+
+static void dep_emit_edge(const char *src, const char *dep, ci_dep_cb cb,
+                          void *user)
+{
+    sha3_256_write(&g_edge_sha, (const unsigned char *)src, strlen(src) + 1);
+    sha3_256_write(&g_edge_sha, (const unsigned char *)dep, strlen(dep) + 1);
+    if (cb)
+        cb(src, dep, user);
+}
+
 /* Every in-tree prerequisite is kept. One this checkout no longer holds stays
  * an edge and refuses a complete include answer. */
 static bool dep_prerequisite_kept(const char *root, const char *rel)
@@ -168,7 +216,7 @@ static void parse_depfile(const char *root, char *text, size_t len,
              * filter (see the file header: *.def registries are prerequisites
              * too, and an allowlist dropped them). */
             if (have_src && dep_prerequisite_kept(root, rel))
-                cb(src_rel, rel, user);
+                dep_emit_edge(src_rel, rel, cb, user);
         }
     }
 }
@@ -416,57 +464,122 @@ static bool dep_join(char *out, size_t cap, const char *dir, const char *rel)
     return n > 0 && (size_t)n < cap;
 }
 
-static void note_unlisted_regular(const char *root, const char *dep_text,
-                                  const char *rel)
+/* Lexically fold "." and ".." segments so an added edge names the path the
+ * index and the depfiles use. False when the path climbs out of the checkout. */
+static bool dep_fold_dots(char path[CI_PATH_MAX])
 {
-    if (rel[0] != '\0' && rel_is_regular_file(root, rel) &&
-        !dep_text_lists(dep_text, rel))
-        note_include_narrow_unsafe();
+    char folded[CI_PATH_MAX];
+    size_t used = 0;
+    const char *seg = path;
+    while (*seg) {
+        const char *slash = strchr(seg, '/');
+        size_t len = slash ? (size_t)(slash - seg) : strlen(seg);
+        if (len == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (used == 0)
+                return false;
+            while (used > 0 && folded[used - 1] != '/')
+                used--;
+            if (used > 0)
+                used--;
+        } else if (len > 0 && !(len == 1 && seg[0] == '.')) {
+            if (used > 0)
+                folded[used++] = '/';
+            memcpy(folded + used, seg, len);
+            used += len;
+        }
+        seg += len;
+        if (*seg == '/')
+            seg++;
+    }
+    folded[used] = '\0';
+    memcpy(path, folded, used + 1);
+    return used > 0;
 }
 
-/* A quoted include is part of the closure when it names a regular file at
- * the checkout root, beside the translation unit, or under that module's
- * include/ directory. A depfile that does not list that file is not complete. */
-static void note_quoted_resolved(const char *root, const char *src,
-                                 const char *dep_text, const char *quoted)
+/* Text-found include edges of one translation unit. `added` holds every file
+ * already added as an edge; it is also the worklist of files still to scan,
+ * so a cycle or a shared include is scanned once. */
+#define CI_TEXT_INCLUDE_FILES 256
+
+struct text_includes {
+    const char *root;
+    const char *unit;
+    const char *dep_text;
+    ci_dep_cb cb;
+    void *user;
+    struct dep_paths added;
+};
+
+static bool dep_paths_has(const struct dep_paths *paths, const char *path)
 {
-    char rel[CI_PATH_MAX];
-    char dir[CI_PATH_MAX];
-    const char *slash = strrchr(src, '/');
-    size_t dlen;
-    note_unlisted_regular(root, dep_text, quoted);
-    if (!slash)
+    for (size_t i = 0; i < paths->count; i++)
+        if (strcmp(paths->items[i], path) == 0)
+            return true;
+    return false;
+}
+
+/* A candidate that is a regular file the depfile does not list becomes an
+ * include edge of the unit. A listed one was read by the compile, and what it
+ * read is listed too. Every existing candidate is kept, so an include that
+ * could resolve more than one way keeps each way. */
+static void text_include_candidate(struct text_includes *t,
+                                   char rel[CI_PATH_MAX])
+{
+    if (!dep_fold_dots(rel) || !rel_is_regular_file(t->root, rel) ||
+        dep_text_lists(t->dep_text, rel) || strcmp(rel, t->unit) == 0 ||
+        dep_paths_has(&t->added, rel))
         return;
-    dlen = (size_t)(slash - src);
+    if (t->added.count >= CI_TEXT_INCLUDE_FILES ||
+        !dep_paths_push(&t->added, rel)) {
+        note_include_narrow_unsafe();
+        return;
+    }
+    dep_emit_edge(t->unit, rel, t->cb, t->user);
+}
+
+/* A quoted include resolves beside the file that names it, or, for a file
+ * under a module's src/ tree, under that module's include/ directory. */
+static void text_include_near(struct text_includes *t, const char *file,
+                              const char *quoted)
+{
+    char dir[CI_PATH_MAX];
+    char rel[CI_PATH_MAX];
+    const char *slash = strrchr(file, '/');
+    size_t dlen = slash ? (size_t)(slash - file) : 0;
     if (dlen == 0 || dlen >= sizeof dir)
         return;
-    memcpy(dir, src, dlen);
+    memcpy(dir, file, dlen);
     dir[dlen] = '\0';
     if (dep_join(rel, sizeof rel, dir, quoted))
-        note_unlisted_regular(root, dep_text, rel);
-    {
-        char *src_at = strstr(dir, "/src");
-        char include_dir[CI_PATH_MAX];
-        if (src_at && (src_at[4] == '\0' || src_at[4] == '/')) {
-            int n = snprintf(include_dir, sizeof include_dir, "%.*s/include",
-                             (int)(src_at - dir), dir);
-            if (n > 0 && (size_t)n < sizeof include_dir &&
-                dep_join(rel, sizeof rel, include_dir, quoted))
-                note_unlisted_regular(root, dep_text, rel);
-        }
-    }
+        text_include_candidate(t, rel);
+    char *src_at = strstr(dir, "/src");
+    if (!src_at || (src_at[4] != '\0' && src_at[4] != '/'))
+        return;
+    *src_at = '\0';
+    int n = snprintf(rel, sizeof rel, "%s/include/%s", dir, quoted);
+    if (n > 0 && (size_t)n < sizeof rel)
+        text_include_candidate(t, rel);
 }
 
-static void note_changed_includes(const char *root, const char *src,
-                                  const char *dep_text)
+/* Candidates: the checkout root, the including file's places, and the
+ * translation unit's places. */
+static void text_include_resolve(struct text_includes *t, const char *from,
+                                 const char *quoted)
+{
+    char rel[CI_PATH_MAX];
+    int n = snprintf(rel, sizeof rel, "%s", quoted);
+    if (n > 0 && (size_t)n < sizeof rel)
+        text_include_candidate(t, rel);
+    text_include_near(t, from, quoted);
+    if (strcmp(from, t->unit) != 0)
+        text_include_near(t, t->unit, quoted);
+}
+
+static void text_scan_file(struct text_includes *t, const char *from)
 {
     char path[CI_PATH_MAX];
-    int n = snprintf(path, sizeof path, "%s/%s", root, src);
-    if (n <= 0 || (size_t)n >= sizeof path) {
-        note_include_narrow_unsafe();
-        return;
-    }
-    FILE *file = fopen(path, "r");
+    int n = snprintf(path, sizeof path, "%s/%s", t->root, from);
+    FILE *file = n > 0 && (size_t)n < sizeof path ? fopen(path, "r") : NULL;
     if (!file) {
         note_include_narrow_unsafe();
         return;
@@ -483,9 +596,33 @@ static void note_changed_includes(const char *root, const char *src,
             continue;
         *end = '\0';
         if (!dep_outside_tree(quoted))
-            note_quoted_resolved(root, src, dep_text, quoted);
+            text_include_resolve(t, from, quoted);
     }
     fclose(file);
+}
+
+/* Scan the unit's quoted includes, then each file that scan added. */
+static void note_text_includes(const char *root, const char *unit,
+                               const char *dep_text, ci_dep_cb cb, void *user)
+{
+    struct text_includes t = {
+        .root = root, .unit = unit, .dep_text = dep_text,
+        .cb = cb, .user = user,
+    };
+    text_scan_file(&t, unit);
+    for (size_t i = 0; i < t.added.count; i++)
+        text_scan_file(&t, t.added.items[i]);
+    dep_paths_free(&t.added);
+}
+
+/* Edges name the unit by the repo-relative path parse_depfile gives it. */
+static void note_unit_text_includes(const char *root, const char *token,
+                                    const char *dep_text, ci_dep_cb cb,
+                                    void *user)
+{
+    char unit[CI_PATH_MAX];
+    if (to_relpath(root, token, unit))
+        note_text_includes(root, unit, dep_text, cb, user);
 }
 
 static void note_source_newer_than_depfile(
@@ -538,7 +675,8 @@ static bool dep_take_token(const char *text, size_t len, size_t *io,
 
 static void note_depfile_rule_gaps(
     const char *root, const char *text, size_t len,
-    const struct platform_positioned_file_snapshot *dep)
+    const struct platform_positioned_file_snapshot *dep, ci_dep_cb cb,
+    void *user)
 {
     bool after_colon = false;
     bool saw_source = false;
@@ -568,7 +706,7 @@ static void note_depfile_rule_gaps(
         if (!saw_source && (has_ext(token, ".c") || has_ext(token, ".cc") ||
                             has_ext(token, ".c23"))) {
             saw_source = true;
-            note_changed_includes(root, token, text);
+            note_unit_text_includes(root, token, text, cb, user);
         }
         if (!rel_is_regular_file(root, token))
             note_include_narrow_unsafe();
@@ -579,10 +717,11 @@ static void note_depfile_rule_gaps(
 
 static void note_depfile_narrow_safety(
     const char *root, const char *text, size_t len,
-    const struct platform_positioned_file_snapshot *dep)
+    const struct platform_positioned_file_snapshot *dep, ci_dep_cb cb,
+    void *user)
 {
     note_depfile_incomplete(text, len);
-    note_depfile_rule_gaps(root, text, len, dep);
+    note_depfile_rule_gaps(root, text, len, dep, cb, user);
 }
 
 static bool scan_one_depfile(const char *root, const char *relpath,
@@ -638,8 +777,8 @@ static bool scan_one_depfile(const char *root, const char *relpath,
     sha3_256_write(sha, (const unsigned char *)buf, len);
     ci_test_note_exact_bytes((uint64_t)len);
     if (stat_sha) dep_stat_root_add(stat_sha, relpath, &after);
-    note_depfile_narrow_safety(root, buf, len, &after);
-    if (cb) parse_depfile(root, buf, len, cb, user);
+    note_depfile_narrow_safety(root, buf, len, &after, cb, user);
+    parse_depfile(root, buf, len, cb, user);
     free(buf);
     return true;
 }
@@ -648,6 +787,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
                             uint8_t exact_out[32], uint8_t stat_out[32])
 {
     g_include_narrow_unsafe = 0;
+    dep_edge_root_begin();
     if (!root || !exact_out)
         LOG_FAIL("codeindex", "null arg to deps_scan");
     char build[CI_PATH_MAX];
@@ -667,6 +807,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
     if (stat_out) dep_stat_root_init(&stat_sha, present);
     if (!present) {
         sha3_256_finalize(&sha, exact_out);
+        dep_edge_root_end();
         if (stat_out) sha3_256_finalize(&stat_sha, stat_out);
         return true;
     }
@@ -685,6 +826,7 @@ static bool deps_scan_exact(const char *root, ci_dep_cb cb, void *user,
     if (!ok)
         LOG_FAIL("codeindex", "scan depfiles failed");
     sha3_256_finalize(&sha, exact_out);
+    dep_edge_root_end();
     if (stat_out) sha3_256_finalize(&stat_sha, stat_out);
     return true;
 }

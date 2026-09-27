@@ -156,15 +156,31 @@ static bool incremental_source_root(struct ci_store *store, uint8_t out[32])
     return ok;
 }
 
+bool ci_deps_include_edge_root(uint8_t out[32]);
+
+/* The include rows are reused, not rebuilt. They answer completely only
+ * while the current scan produces exactly the edges they were built from;
+ * a source edit that adds an include the rows lack, or rows with no recorded
+ * edge root, refuses until a cold rebuild. The stored edge root is left as
+ * is, so it keeps describing the rows. */
 static bool incremental_refresh_include_narrow(const char *root,
                                                struct ci_store *store)
 {
     uint8_t exact[32];
     uint8_t stat_root[32];
-    const char *bit;
-    if (!ci_deps_scan_roots(root, NULL, NULL, exact, stat_root))
+    uint8_t edges[32];
+    uint8_t stored[32];
+    size_t stored_len = 0;
+    bool found = false;
+    if (!ci_deps_scan_roots(root, NULL, NULL, exact, stat_root) ||
+        !ci_deps_include_edge_root(edges) ||
+        !ci_store_meta_get(store, "include_edge_root_sha3", stored,
+                           sizeof stored, &stored_len, &found))
         return false;
-    bit = ci_deps_include_narrow_unsafe() ? "1" : "0";
+    bool rows_current = found && stored_len == sizeof stored &&
+                        memcmp(stored, edges, sizeof edges) == 0;
+    const char *bit =
+        (!rows_current || ci_deps_include_narrow_unsafe()) ? "1" : "0";
     return ci_store_meta_set(store, "include_narrow_unsafe", bit, 1);
 }
 

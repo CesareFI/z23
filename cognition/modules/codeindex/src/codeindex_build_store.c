@@ -173,10 +173,18 @@ static bool build_roots_match(const char *root,
     return true;
 }
 
+/* The edge root travels with the rows it describes, so an incremental
+ * refresh can tell whether those rows still hold every current edge. */
+bool ci_deps_include_edge_root(uint8_t out[32]);
+
 static bool store_include_narrow_meta(struct ci_store *store)
 {
+    uint8_t edges[32];
     const char *bit = ci_deps_include_narrow_unsafe() ? "1" : "0";
-    return ci_store_meta_set(store, "include_narrow_unsafe", bit, 1);
+    return ci_deps_include_edge_root(edges) &&
+           ci_store_meta_set(store, "include_edge_root_sha3", edges,
+                             sizeof edges) &&
+           ci_store_meta_set(store, "include_narrow_unsafe", bit, 1);
 }
 
 static bool write_cold_receipt_and_counts(struct ci_store *store,
