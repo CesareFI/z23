@@ -194,7 +194,31 @@ struct sfz_job {
     bool killed;         /* it outran SFZ_JOB_BUDGET_S */
 };
 
-static pid_t job_start(struct sfz_job *j, const char *cwd)
+/* The whole environment of a compile, sensor or gcc run, and nothing
+ * else: an inherited CPATH or C_INCLUDE_PATH would change what clang and
+ * the sensor read (the sensor records both in its facts), and any other
+ * variable could steer a tool unseen. PATH lets gcc find its helpers,
+ * LC_ALL=C keeps diagnostics stable, HOME is what the sensor normalizes
+ * paths under, and TMPDIR keeps any temporary file inside the case. */
+static void envp_init(struct sfz_run *r)
+{
+    const char *path = getenv("PATH"), *home = getenv("HOME");
+    size_t n = 0;
+    if (path == NULL || (size_t)snprintf(r->env_path, sizeof(r->env_path),
+                                         "PATH=%s", path) >= sizeof(r->env_path))
+        (void)snprintf(r->env_path, sizeof(r->env_path), "PATH=/usr/bin:/bin");
+    r->envp[n++] = r->env_path;
+    r->envp[n++] = "LC_ALL=C";
+    if (home != NULL && (size_t)snprintf(r->env_home, sizeof(r->env_home),
+                                         "HOME=%s", home) < sizeof(r->env_home))
+        r->envp[n++] = r->env_home;
+    (void)snprintf(r->env_tmp, sizeof(r->env_tmp), "TMPDIR=%s", r->log);
+    r->envp[n++] = r->env_tmp;
+    r->envp[n] = NULL;
+}
+
+static pid_t job_start(struct sfz_job *j, const char *cwd,
+                       const char *const *envp)
 {
     pid_t parent = getpid();
     pid_t pid = fork();
@@ -216,7 +240,7 @@ static pid_t job_start(struct sfz_job *j, const char *cwd)
     }
     if (chdir(cwd) != 0)
         _exit(126);
-    execv(j->argv[0], (char *const *)j->argv);
+    execve(j->argv[0], (char *const *)j->argv, (char *const *)envp);
     _exit(127);
 }
 
@@ -260,7 +284,7 @@ static size_t run_jobs(struct sfz_run *r, struct sfz_job *jobs, size_t n)
     for (size_t k = 0; k < n; k++) {
         if (k >= par)
             job_wait(&jobs[k - par]);
-        jobs[k].pid = job_start(&jobs[k], r->tree);
+        jobs[k].pid = job_start(&jobs[k], r->tree, r->envp);
         if (jobs[k].pid < 0)
             fprintf(stderr, "sfz: fork failed for %s\n", jobs[k].argv[0]);
     }
@@ -483,6 +507,7 @@ static bool layout(struct sfz_run *r, const struct sfz_paths *before)
     (void)snprintf(r->ob, sizeof(r->ob), "%s/ob", r->c->dir);
     (void)snprintf(r->oa, sizeof(r->oa), "%s/oa", r->c->dir);
     (void)snprintf(r->log, sizeof(r->log), "%s/log", r->c->dir);
+    envp_init(r);
     (void)snprintf(deps, sizeof(deps), "%s/build/deps", r->tree);
     for (size_t k = 0; ok && k < before->n; k++)
         ok = copy_file(bdir, before->v[k], r->tree, "");

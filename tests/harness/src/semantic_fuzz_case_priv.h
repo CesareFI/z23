@@ -32,6 +32,9 @@ struct sfz_run {
     struct sfz_paths tus;     /* src/ .c files on either side */
     bool header_changed;      /* a changed file is not a .c */
     size_t killed;            /* compile or sensor runs killed at their deadline */
+    /* the whole environment of every compile, sensor and gcc run */
+    char env_path[4096], env_home[PATH_MAX + 8], env_tmp[PATH_MAX + 8];
+    const char *envp[5];
 };
 
 /* Append one line to out->why (bounded; the first lines win). */

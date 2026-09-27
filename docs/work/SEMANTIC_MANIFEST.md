@@ -1276,7 +1276,10 @@ that `#include`s another `.c`: an edit to the included file does not seed
 the includer's functions). Cases run four at once, each in its own
 process with two compiles or sensor runs at once. A compile or sensor
 run still going after 120 s, or a case process that has not reported
-after 240 s, is killed with SIGKILL and the case is an ERROR. The default
+after 240 s, is killed with SIGKILL and the case is an ERROR. Every
+compile, sensor and gcc run gets only `PATH`, `LC_ALL=C`, `HOME` and a
+`TMPDIR` inside the case, so an inherited `CPATH` or `C_INCLUDE_PATH`
+cannot change what they read. The default
 run of 55
 cases takes about 17 s and yields 46 narrowed verdicts and 26 seeded
 changed functions.
