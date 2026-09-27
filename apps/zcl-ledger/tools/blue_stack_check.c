@@ -10,8 +10,8 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 47, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
-       PATH_COUNT = 17 };
+enum { FRAME_COUNT = 52, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+       PATH_COUNT = 21 };
 
 static const char *const frame_names[FRAME_COUNT] = {
     "answer_command", "blue_review_app_command", "blue_review_handle",
@@ -33,7 +33,9 @@ static const char *const frame_names[FRAME_COUNT] = {
     "zcl_tx_replay_zip243_bound_digest", "show_totals", "show_fee",
     "blue_payment_amount_text", "blue_payment_account_classify",
     "blue_payment_screen_mark_account", "confirm_review",
-    "blue_payment_apdu_touch_approve"
+    "blue_payment_apdu_touch_approve", "blue_payment_sign_next",
+    "blue_wallet_sign_digest", "blue_payment_apdu_take_digest",
+    "blue_ecdsa_der_low_s", "public_hash160"
 };
 
 typedef struct {
@@ -102,11 +104,27 @@ static unsigned sum_frames(const stack_frames *frames,
     return sum;
 }
 
+static void report_signing_candidate(const stack_frames *frames,
+                                     unsigned paths[PATH_COUNT]) {
+    static const unsigned prefix[] = {0, 14, 47};
+    const unsigned base = sum_frames(frames, prefix, 3);
+    paths[17] = base + frames->bytes[48];
+    paths[18] = base + frames->bytes[49];
+    paths[19] = base + frames->bytes[50];
+    paths[20] = base + frames->bytes[51];
+    printf("Unreachable signing candidates: derive %u; digest %u; DER %u; public hash %u; BOLOS frames excluded\n",
+           paths[17], paths[18], paths[19], paths[20]);
+}
+
 static bool collect_frames(int argc, char **argv, int script_arg,
                            bool wallet, stack_frames *frames,
                            unsigned *reserve) {
     if (!read_stack_reserve(argv[script_arg], reserve)) {
         fputs("Cannot read Blue stack reserve.\n", stderr);
+        return false;
+    }
+    if (*reserve > UINT_MAX / FRAME_COUNT) {
+        fputs("Blue stack reserve exceeds path-sum limit.\n", stderr);
         return false;
     }
     for (int i = script_arg + 1; i < argc; ++i)
@@ -117,6 +135,11 @@ static bool collect_frames(int argc, char **argv, int script_arg,
     for (unsigned i = 0; i < FRAME_COUNT; ++i) {
         bool required = wallet ? i == 0 || i == 5 || i >= REVIEW_FRAME_COUNT
                                : i < REVIEW_FRAME_COUNT;
+        if (frames->present[i] && frames->bytes[i] > *reserve) {
+            fprintf(stderr, "Frame exceeds Blue stack reserve: %s\n",
+                    frame_names[i]);
+            return false;
+        }
         if (required && !frames->present[i]) {
             fprintf(stderr, "Missing stack frame: %s\n", frame_names[i]);
             return false;
@@ -208,6 +231,7 @@ int main(int argc, char **argv) {
     if (!collect_frames(argc, argv, script_arg, wallet, &frames, &reserve))
         return 1;
     report_paths(&frames, wallet, reserve, paths);
+    if (wallet) report_signing_candidate(&frames, paths);
     bool fits = reserve >= STACK_MARGIN;
     for (size_t i = 0; i < sizeof paths / sizeof *paths; ++i)
         if (fits && paths[i] > reserve - STACK_MARGIN) fits = false;

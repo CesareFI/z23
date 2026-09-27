@@ -103,8 +103,17 @@ stack; 672 bytes remain after that section in the 6,144-byte app SRAM
 region. The largest named C path sums to 752 bytes, excluding BOLOS firmware
 frames. Two independent builds using patched SDK trees produced `.text`
 SHA-256 `067744e45fbad645850dd7a8cf8cdfb1f1b4b8ede585d4c57c61fa5f962788b7`.
+The stack gate also checks four currently unreachable signing paths. Their
+largest named C path is 680 bytes; the gate rejected a deliberate 1,600-byte
+signer-frame substitution. A separate forced-link experiment included the
+signing boundary and SDK callback without adding an APDU. It used 37,120
+bytes of `.text` and 5,472 bytes of `.bss`, with identical `.text` across
+two independent SDK builds. These figures do not measure BOLOS firmware
+frames or physical signing behavior.
 The [signing callback experiment](../../../docs/experiments/2026-09-27-ledger-blue-signing-callback.md)
 records the tests and limits.
+The [signing footprint experiment](../../../docs/experiments/2026-09-27-ledger-blue-signing-footprint.md)
+records the forced-link and stack-gate results.
 The installer does not accept this image yet. Device-side USB, screen, EXIT,
 and recovery checks are pending.
 
