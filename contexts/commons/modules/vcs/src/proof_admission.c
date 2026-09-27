@@ -46,9 +46,13 @@ static void pad_decide(const struct vcs_proof_admission_context *ctx,
                   d->outcome == VCS_PROOF_REUSE_HIT_FAIL;
     res->status = reused ? VCS_PROOF_ADMIT_REUSED : VCS_PROOF_ADMIT_FRESH;
     res->reason = d->reason;
-    if (d->outcome == VCS_PROOF_REUSE_REFUSE &&
-        d->reason && strcmp(d->reason, VCS_PROOF_OBSERVATION_CONFLICT) == 0)
-        flags->conflict = true;
+    if (d->outcome == VCS_PROOF_REUSE_REFUSE) {
+        if (d->reason &&
+            strcmp(d->reason, VCS_PROOF_OBSERVATION_CONFLICT) == 0)
+            flags->conflict = true;
+        else
+            flags->policy = true;
+    }
     if (pad_is_policy(d->reason)) flags->policy = true;
 }
 

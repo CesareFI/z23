@@ -774,6 +774,26 @@ static int pta_case_conflict(struct pta *p)
     return failures;
 }
 
+static int pta_case_refused_policy(struct pta *p)
+{
+    int failures = 0;
+    TEST_CASE("proof_admission: refused reuse never reports no fallback") {
+        ASSERT(pta_build(p, true, p->header_version));
+        struct vcs_proof_admission_context ctx = ptf_context(&p->f);
+        ctx.policy = NULL;
+        struct vcs_proof_admission_result result;
+        struct vcs_proof_admission_report report;
+        ASSERT(vcs_proof_admission_run(&ctx, &p->change,
+                                      &p->obs[PTA_BUNIT], 1u,
+                                      &result, &report));
+        ASSERT_EQ(result.decision.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_EQ(result.status, VCS_PROOF_ADMIT_FRESH);
+        ASSERT_STR_EQ(result.reason, VCS_PROOF_REUSE_WHY_ARGUMENTS);
+        ASSERT_STR_EQ(report.fallback_reason, VCS_PROOF_FALLBACK_POLICY);
+    } TEST_END
+    return failures;
+}
+
 static int pta_cases(void)
 {
     int failures = 0;
@@ -794,6 +814,7 @@ static int pta_cases(void)
         failures += pta_case_header_edit(p);
         failures += pta_case_unknown_scope(p);
         failures += pta_case_conflict(p);
+        failures += pta_case_refused_policy(p);
     }
     ptf_free(&p->f);
     free(p);
