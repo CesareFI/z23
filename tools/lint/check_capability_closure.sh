@@ -1561,8 +1561,39 @@ EOF
     expect_reject "Q: raw syscall in an uncompiled source still refuses" \
                   "raw syscall" "$d" || rc=1
 
+    # R. A failed candidate that added a source leaves its object in the
+    # shared epoch. Its source is absent from this tree, so the object is
+    # foreign: not graded, and named with a count — never an undeclared reach
+    # charged to a file this tree does not have. Case A is the other half: the
+    # same object WITH its source present still refuses.
+    d="$FIXTURE_ROOT/r"; mkdir -p "$d"
+    make_epoch "$d"
+    fixture_symbols "$d"
+    fixture_module_rows "$d"
+    cat > "$FIXTURE_ROOT/.foreign_verify_attest.c" <<'EOF'
+extern int connect(int, int, int);
+int foreign_use(void) { return connect(1, 2, 3); }
+EOF
+    mkdir -p "$d/build/dev-obj/epochs/fx0/tools/dev"
+    cc -std=c23 -c "$FIXTURE_ROOT/.foreign_verify_attest.c" \
+        -o "$d/build/dev-obj/epochs/fx0/tools/dev/verify_attest.o" 2>/dev/null \
+      || cc -c "$FIXTURE_ROOT/.foreign_verify_attest.c" \
+        -o "$d/build/dev-obj/epochs/fx0/tools/dev/verify_attest.o"
+    out="$(check_root "$d" 2>&1)"; rrc=$?
+    if [ "$rrc" -ne 0 ]; then
+        echo "SELFTEST FAIL: R: an object whose source is absent from the tree must not be graded, got rc=$rrc"
+        echo "$out" | sed 's/^/    /'
+        rc=1
+    elif str_lacks "$out" "foreign-objects=1"; then
+        echo "SELFTEST FAIL: R: passed but never counted the foreign object"
+        echo "$out" | sed 's/^/    /'
+        rc=1
+    else
+        echo "  selftest ok: R: an object whose source is absent is foreign, counted, and not graded"
+    fi
+
     if [ "$rc" -eq 0 ]; then
-        echo "== selftest: PASS (20/20) =="
+        echo "== selftest: PASS (21/21) =="
     else
         echo "== selftest: FAIL =="
     fi

@@ -835,8 +835,15 @@ static int test_code_impact_unsafe_narrow(void)
 /* A narrow-unsafe include graph names WHICH rule made it unsafe and on WHICH
  * file, so a closure-truncated refusal is diagnosed from evidence. The first
  * cause in the sorted scan is kept; a clean graph names none. */
-static int ci_unsafe_cause_one(const char *name, const char *dep,
-                               const char *touch, const char *want)
+/* A failed candidate that added a translation unit can leave its object and
+ * depfile behind in a shared build epoch. `foreign` is such a depfile, written
+ * beside the live one: its unit is absent from this tree, so it is not part
+ * of this tree's include graph and must name no cause of its own. */
+#define CI_FOREIGN_DEP "build/obj/a/tools/dev/verify_attest.d"
+
+static int ci_unsafe_cause_run(const char *name, const char *dep,
+                               const char *touch, const char *foreign,
+                               const char *want)
 {
     static const char *const src =
         "/* narrow */\n#include \"net/real.h\"\nint ci_narrow(void){return 1;}\n";
@@ -845,6 +852,8 @@ static int ci_unsafe_cause_one(const char *name, const char *dep,
     snprintf(dir, sizeof dir, CI_NARROW_FIX "/cause_%s", name);
     system("rm -rf " CI_NARROW_FIX);
     bool ready = ci_narrow_base(dir, src, dep);
+    if (ready && foreign)
+        ready = ci_impact_mk_write(dir, CI_FOREIGN_DEP, foreign);
     if (ready && touch)
         ci_narrow_touch_rel(dir, touch, 5);
     char cause[CODEINDEX_INCLUDE_UNSAFE_CAUSE_MAX] = "unset";
@@ -863,6 +872,12 @@ static int ci_unsafe_cause_one(const char *name, const char *dep,
         PASS();
     } _test_next:;
     return failures;
+}
+
+static int ci_unsafe_cause_one(const char *name, const char *dep,
+                               const char *touch, const char *want)
+{
+    return ci_unsafe_cause_run(name, dep, touch, NULL, want);
 }
 
 static int test_code_impact_unsafe_cause(void)
@@ -890,6 +905,20 @@ static int test_code_impact_unsafe_cause(void)
         "stale", dep_clean, "core/modules/net/src/narrow.c",
         "prereq_newer_than_depfile build/obj/narrow.d -> "
         "core/modules/net/src/narrow.c");
+    /* The foreign unit and a header it listed are both absent. Neither is
+     * this tree's evidence, so the clean graph stays clean ... */
+    static const char *const dep_foreign =
+        "build/obj/a/tools/dev/verify_attest.o: tools/dev/verify_attest.c "
+        "core/modules/net/include/net/real.h tools/dev/verify_attest.h\n"
+        "tools/dev/verify_attest.h:\n";
+    failures += ci_unsafe_cause_run("foreign", dep_clean, NULL, dep_foreign,
+                                    "");
+    /* ... and a live unit's missing header still refuses, even when the
+     * foreign depfile sorts first. */
+    failures += ci_unsafe_cause_run(
+        "foreign-missing", dep_missing, NULL, dep_foreign,
+        "prereq_not_regular build/obj/narrow.d -> "
+        "core/modules/net/include/net/missing.h");
     system("rm -rf " CI_NARROW_FIX);
     return failures;
 }
