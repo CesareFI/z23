@@ -745,7 +745,8 @@ out="$(env ZCL_HOST_GC_HOME="$HOME_FX" ZCL_HOST_GC_REPO="$REPO_FX" \
     "$HOSTGC" --check-protected "$TMP_FX/orphan-fixture")"
 [ "$out" = "UNPROTECTED" ] || fail "an ordinary fixture path reads as protected: $out"
 for p in "$HOME_FX/github/qedc/build" "$HOME_FX/github/qedc-lanes/x" "$HOME_FX/work/.qedc/data" \
-    "/tmp/claude-1000/session" "$HOME_FX/.zclassic-c23/blocks"; do
+    "/tmp/claude-1000/session" "/private/tmp/claude-1000/session" \
+    "$HOME_FX/.zclassic-c23/blocks"; do
     out="$(env ZCL_HOST_GC_HOME="$HOME_FX" ZCL_HOST_GC_REPO="$REPO_FX" \
         "$HOSTGC" --check-protected "$p")"
     [ "$out" = "PROTECTED" ] || fail "$p is not protected: $out"

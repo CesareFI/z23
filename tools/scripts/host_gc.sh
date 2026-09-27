@@ -226,7 +226,7 @@ is_protected() {
         "$GC_REPO"|"$GC_REPO"/*) return 0 ;;
         "$GC_HOME"/.local/state/zclassic23-quality|"$GC_HOME"/.local/state/zclassic23-quality/*) return 0 ;;
         "$STATE"|"$STATE"/*) return 0 ;;
-        /tmp/zcl-pristine-*|/tmp/claude-*|"$GC_TMP"/claude-*|*/github/qedc*|*/.qedc|*/.qedc/*|*/qedc-lanes|*/qedc-lanes/*) return 0 ;;
+        /tmp/zcl-pristine-*|/tmp/claude-*|/private/tmp/zcl-pristine-*|/private/tmp/claude-*|"$GC_TMP"/claude-*|*/github/qedc*|*/.qedc|*/.qedc/*|*/qedc-lanes|*/qedc-lanes/*) return 0 ;;
         /|"$GC_HOME") return 0 ;;
         *) return 1 ;;
     esac
@@ -812,7 +812,7 @@ z23p_donor_set() {
     ensure_cwd_set
     Z23P_DONOR_SET="$(
         while IFS= read -r wt; do
-            case "$wt" in "$pool"/*) ;; *) continue ;; esac
+            [[ "$wt" == "$pool/"* ]] || continue
             [ -d "$wt" ] || continue
             cwd_occupied "$wt" && continue
             line="$(z23p_marker_line "$wt")" || continue
