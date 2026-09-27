@@ -12,7 +12,7 @@
  *   z23-clang-manifest emit --root DIR --source FILE --out FILE
  *                           [--facts] [--tree HEX] [--max-records N]
  *                           [--max-section-bytes N] -- ARGV...
- *   z23-clang-manifest session [--verify-cold] [--max-tus N]
+ *   z23-clang-manifest session [--verify-cold] [--no-warm] [--max-tus N]
  *   z23-clang-manifest root FILE
  *   z23-clang-manifest dump FILE
  *   z23-clang-manifest diff OLD NEW
@@ -642,7 +642,8 @@ static int cm_usage(void)
             "usage: z23-clang-manifest emit --root DIR --source FILE --out FILE\n"
             "           [--facts] [--tree HEX] [--max-records N]\n"
             "           [--max-section-bytes N] -- ARGV...\n"
-            "       z23-clang-manifest session [--verify-cold] [--max-tus N]\n"
+            "       z23-clang-manifest session [--verify-cold] [--no-warm]\n"
+            "           [--max-tus N]\n"
             "           (one TAB-separated emit request per stdin line)\n"
             "       z23-clang-manifest root FILE\n"
             "       z23-clang-manifest dump FILE\n"

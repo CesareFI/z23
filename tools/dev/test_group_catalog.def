@@ -1416,8 +1416,12 @@ ZCL_TEST_GROUP(beta6_bootstrap)
 ZCL_TEST_GROUP(semantic_manifest)
 /* The optional libclang sensor (build/bin/z23-clang-manifest) run live:
  * identical roots before/after git commit and at two absolute roots, and
- * every adversarial seed changes exactly its sections. Self-skips, visibly,
- * where the sensor is not built. */
+ * every adversarial seed changes exactly its sections. The warm session
+ * (`z23-clang-manifest session`) must write bytes equal to a cold emit after
+ * body, macro, header, shadowing and flag edits, recreate its TU where the
+ * contract says, and never write warm bytes the oracle rejected
+ * (tests/harness/src/semantic_sensor_session.c). Self-skips, visibly, where
+ * the sensor is not built. */
 ZCL_TEST_GROUP(semantic_sensor)
 /* Semantic facts extension (zcl.semantic_facts.v1) and the facts-narrowed
  * change closure (tools/dev/devloop_facts*.c), without clang: symbols,
