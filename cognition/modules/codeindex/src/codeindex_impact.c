@@ -787,6 +787,20 @@ static bool include_query_narrow_refused(const struct codeindex *ci,
     return include_narrow_refused(ci) || include_input_missing(ci, path);
 }
 
+bool codeindex_include_query_unsafe_cause(struct codeindex *ci,
+                                          const char *path, char *out,
+                                          size_t cap)
+{
+    if (codeindex_include_unsafe_cause(ci, out, cap))
+        return true;
+    if (!ci || !path || !path[0] || !include_input_missing(ci, path))
+        return false;
+    if (out && cap)
+        (void)snprintf(out, cap, "query_input_regular_file_unverified %s",
+                       path);
+    return true;
+}
+
 int codeindex_reverse_includes(struct codeindex *ci, const char *path,
                                char (*out)[256], int cap,
                                enum codeindex_include_dim *dim)

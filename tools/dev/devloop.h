@@ -114,8 +114,8 @@ struct zcl_devloop_dim_state {
      * with two different words. */
     const char *reason;
     /* The evidence behind `reason`, "" when there is none: for an INCLUDE
-     * refusal, the first depfile rule and path that made the include graph
-     * unsafe (codeindex_include_unsafe_cause). Observability only. */
+     * refusal, a graph rule or the queried input that could not be verified
+     * (codeindex_include_query_unsafe_cause). Observability only. */
     char cause[ZCL_DEVLOOP_CAUSE_MAX];
 };
 

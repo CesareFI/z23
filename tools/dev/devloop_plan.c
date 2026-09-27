@@ -756,17 +756,17 @@ static int plan_include_capacity_only(struct codeindex *ci, const char *path,
     return wide_dim == CODEINDEX_INCLUDE_DIM_COMPLETE && n > plan_cap;
 }
 
-/* The evidence behind an INCLUDE refusal. An untrusted graph names the first
- * depfile rule that made it unsafe and the file it fired on; the index holds
- * one such cause, so the first recorded one stands. A graph that is trusted
- * but still truncated at the index maximum names that instead. */
+/* The evidence behind an INCLUDE refusal. An untrusted graph names its first
+ * depfile rule; a missing queried input names that input. Only an otherwise
+ * trusted, present query truncated at the index maximum names capacity. */
 static void plan_include_note_cause(struct zcl_devloop_plan *plan,
                                     struct codeindex *ci, const char *path)
 {
     struct zcl_devloop_dim_state *st = &plan->dims[ZCL_DEVLOOP_DIM_INCLUDE];
     if (st->cause[0])
         return;
-    if (!codeindex_include_unsafe_cause(ci, st->cause, sizeof st->cause))
+    if (!codeindex_include_query_unsafe_cause(ci, path, st->cause,
+                                              sizeof st->cause))
         (void)snprintf(st->cause, sizeof st->cause,
                        "dependents_exceed_index_cap %s", path);
 }

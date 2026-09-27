@@ -620,4 +620,12 @@ const char *codeindex_include_dim_label(enum codeindex_include_dim dim);
 bool codeindex_include_unsafe_cause(struct codeindex *ci, char *out,
                                     size_t cap);
 
+/* The cause for this queried input. A graph-wide cause takes precedence;
+ * otherwise an input that cannot be verified as a regular file names that
+ * query-specific refusal. Returns false when neither source supplies a
+ * narrow-unsafe cause; graph availability is reported separately. */
+bool codeindex_include_query_unsafe_cause(struct codeindex *ci,
+                                          const char *path, char *out,
+                                          size_t cap);
+
 #endif /* ZCL_CODEINDEX_H */

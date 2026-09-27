@@ -703,6 +703,8 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
         system("rm -rf " IC_FIX_NODEPS);
         ASSERT(ic_write_call_pair(IC_FIX_NODEPS));
         const char *header_files[] = { "core/modules/net/include/net/net.h" };
+        ASSERT(ic_write(IC_FIX_NODEPS, header_files[0],
+                        "/* present input, no depfiles */\n"));
         struct zcl_devloop_plan bare;
         ASSERT(zcl_devloop_plan_files(header_files, 1, &bare));
         ASSERT(zcl_devloop_plan_add_closure(IC_FIX_NODEPS, header_files, 1,
@@ -7675,6 +7677,9 @@ extern size_t zcl_devloop_test_closure_file_ceiling;
 
 #define IC_FIX_INCCAP IC_FIX_ROOT "/include_capacity"
 #define IC_INCCAP_DEF "engine/composition/zcode_package_registry.def"
+#define IC_MISSING_QUERY "core/modules/net/include/net/net.h"
+#define IC_MISSING_QUERY_CAUSE \
+    "query_input_regular_file_unverified " IC_MISSING_QUERY
 #define IC_GONE_CAUSE \
     "prereq_not_regular build/obj/download.d -> " \
     "core/modules/net/include/net/ic_gone.h"
@@ -7741,6 +7746,29 @@ static int test_ic_include_capacity_runs_everything(void)
         ASSERT(!plan.closure_universal);
         ASSERT(ic_planned(&plan, "download"));
         ASSERT(zcl_devloop_plan_proof_admissible(&plan, &why));
+
+        /* An absent changed input was never a prerequisite in this trusted
+         * graph. It must refuse with the query's actual cause, not capacity. */
+        {
+            const char *missing[] = { IC_MISSING_QUERY };
+            char refusal[256];
+            static char body[16384];
+            ASSERT(zcl_devloop_plan_files(missing, 1, &plan));
+            ASSERT(zcl_devloop_plan_add_closure(IC_FIX_INCCAP, missing, 1,
+                                                &plan));
+            ASSERT(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].status ==
+                   ZCL_DEVLOOP_DIM_INCOMPLETE);
+            ASSERT_STR_EQ(plan.dims[ZCL_DEVLOOP_DIM_INCLUDE].cause,
+                          IC_MISSING_QUERY_CAUSE);
+            ASSERT(zcl_devloop_plan_refusal_text(&plan, refusal,
+                                                 sizeof refusal) > 0);
+            ASSERT_STR_EQ(refusal,
+                          "closure-truncated: " IC_MISSING_QUERY_CAUSE);
+            ASSERT(zcl_devloop_plan_json_render(&plan, missing, 1, body,
+                                                sizeof body) > 0);
+            ASSERT(strstr(body, "\"cause\":\"" IC_MISSING_QUERY_CAUSE
+                                "\"") != NULL);
+        }
 
         /* (a) two dependents, room for one: capacity. The dimension answers
          * with the universal closure and the plan is admissible proof. */
@@ -8096,7 +8124,7 @@ static int test_pw_live_donor_is_never_seeded_from(void)
                         t.c1) < (int)sizeof(lease_rel));
         ASSERT(snprintf(lease, sizeof(lease), "fixture-token %lld 1\n",
                         (long long)getpid()) < (int)sizeof(lease));
-        ASSERT(ic_write(t.repo, lease_rel, lease));
+        ASSERT(ic_proof_private_write(t.repo, lease_rel, lease));
         ASSERT(!ic_warm_start(&t, donor, reason, &files));
         ASSERT(strcmp(reason, "donor_live") == 0);
         ASSERT(donor[0] == 0 && files == 0);
