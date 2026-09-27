@@ -65,3 +65,8 @@ derive change and account information on device, display all outputs and fee,
 and bind the resulting exact digest to explicit approval before releasing a
 signature. The next ARM experiment must measure a smaller state arrangement
 against the actual Wallet image and its stack gate.
+
+A [same-day replay experiment](2026-09-27-ledger-blue-replay-zip243.md)
+measured a one-BLAKE2b-context alternative with SHA-256 binding across three
+complete uploads. It reduces the live ARM state to 684 bytes; the direct
+Wallet `.bss` integration gate remains unmet.

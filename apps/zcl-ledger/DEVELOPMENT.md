@@ -120,6 +120,14 @@ authenticated by this component. The
 records ARM memory costs. The two SDK hash contexts plus wrapper state exceed
 the receive app's currently measured free SRAM before payment UI state, so
 the code remains offline and is not linked into either Blue image.
+[`zcl_tx_replay_zip243.h`](include/zcl_tx_replay_zip243.h) trades two extra
+complete uploads for one BLAKE2b context. It checks a SHA-256 commitment to
+the entire first upload before accepting either replay's ZIP-243 subhash.
+The [replay memory experiment](../../docs/experiments/2026-09-27-ledger-blue-replay-zip243.md)
+measures 684 bytes of wrapper and SDK hash state on ARM, 116 bytes below the
+two-context method. This still exceeds the existing Wallet build's allowance
+for new `.bss`; a future integrated image must prove safe storage reuse or a
+separate app layout, plus transport, stack, display, and physical behavior.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch

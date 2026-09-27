@@ -47,7 +47,10 @@ payment signing on synthetic fixtures; test-network transactions; Sapling
 spends and receives; token-aware and multisig flows. Every signing path must
 reject a transaction type it cannot fully review. The Blue has 6 KiB of app
 SRAM, including its reserved stack, so larger transactions require bounded
-streaming and measured stack use. Device tests start on the dedicated test
+streaming and measured stack use. The offline three-pass ZIP-243 prototype
+uses one BLAKE2b context and a SHA-256 commitment across identical uploads;
+its 684 bytes of ARM state still require an integrated app memory design.
+Device tests start on the dedicated test
 Blue and use test transactions before any real ZCL.
 
 Sapling shielded multisig is a separate research gate. [ZIP 312](https://zips.z.cash/zip-0312)

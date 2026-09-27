@@ -22,6 +22,10 @@ computes an input-specific ZIP-243 SIGHASH_ALL digest from accepted chunks
 using two independent BLAKE2b contexts. Its scriptCode, spent amount, and
 consensus branch still require independent verification before a device may
 use that digest to approve a payment.
+The [`zcl_tx_replay_zip243` API](include/zcl_tx_replay_zip243.h) is a smaller
+offline alternative: it checks three complete uploads of the same unsigned
+transaction against one device-computed SHA-256 commitment and reuses one
+BLAKE2b context for ZIP-243. It has not been linked into a Blue app.
 
 ## Build and test
 

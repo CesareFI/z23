@@ -3,8 +3,11 @@
 #include "zcl_tx_review.h"
 #include "zcl_tx_script_facts.h"
 #include "zcl_tx_stream_zip243.h"
+#include "zcl_tx_replay_zip243.h"
 #include "zcl_zip243_host.h"
 #include "crypto/blake2b.h"
+
+#include <openssl/evp.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +58,46 @@ static void compare_types(const zcl_tx_review *full,
         full->sprout_joinsplits || full->value_balance_zat) abort();
 }
 
+static bool sha_start(void *context) {
+    return EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1;
+}
+
+static bool sha_update(void *context, const uint8_t *bytes, size_t length) {
+    return EVP_DigestUpdate(context, bytes, length) == 1;
+}
+
+static bool sha_finish(void *context, uint8_t digest[32]) {
+    unsigned length = 0;
+    return EVP_DigestFinal_ex(context, digest, &length) == 1 && length == 32;
+}
+
+static void compare_replay(const uint8_t *data, size_t size,
+    const uint8_t script[25], const uint8_t expected[32]) {
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
+    if (!sha_context) abort();
+    zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_start,
+        .update = sha_update, .final = sha_finish};
+    zcl_tx_replay_zip243 state;
+    if (!zcl_tx_replay_zip243_begin(&state, (uint32_t)size, 0,
+                                    0x76b809bb, &blake, &sha)) abort();
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        for (size_t offset = 0; offset < size;) {
+            size_t chunk = 1 + data[offset] % 64;
+            if (chunk > size - offset) chunk = size - offset;
+            if (!zcl_tx_replay_zip243_feed(&state, data + offset, chunk)) abort();
+            offset += chunk;
+        }
+        if (pass < 2 && !zcl_tx_replay_zip243_next(&state)) abort();
+    }
+    zcl_tx_stream_facts facts;
+    uint8_t digest[32];
+    if (!zcl_tx_replay_zip243_finish(&state, script, 25,
+          50000000, &facts, digest) || memcmp(digest, expected, 32)) abort();
+    EVP_MD_CTX_free(sha_context);
+}
+
 static void compare_review(const uint8_t *data, size_t size,
     const observations *seen, const zcl_tx_stream_facts *facts) {
     zcl_tx_review full;
@@ -102,6 +145,7 @@ static void compare_digest(const uint8_t *data, size_t size,
         hashed_facts.outputs != facts->outputs ||
         hashed_facts.output_zat != facts->output_zat ||
         memcmp(actual, expected, sizeof actual)) abort();
+    compare_replay(data, size, script, expected);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {

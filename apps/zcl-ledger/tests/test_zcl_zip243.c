@@ -1,8 +1,11 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_zip243.h"
 #include "zcl_tx_stream_zip243.h"
+#include "zcl_tx_replay_zip243.h"
 #include "crypto/blake2b.h"
 #include "zcl_zip243_host.h"
+
+#include <openssl/evp.h>
 
 #undef NDEBUG
 #include <assert.h>
@@ -30,6 +33,99 @@ static size_t read_vector(const char *path, uint8_t wire[8192]) {
     }
     assert(fclose(file) == 0);
     return length / 2;
+}
+
+static bool sha_start(void *context) {
+    return EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1;
+}
+
+static bool sha_update(void *context, const uint8_t *bytes, size_t length) {
+    return EVP_DigestUpdate(context, bytes, length) == 1;
+}
+
+static bool sha_finish(void *context, uint8_t digest[32]) {
+    unsigned length = 0;
+    return EVP_DigestFinal_ex(context, digest, &length) == 1 && length == 32;
+}
+
+static void replay_chunks(const uint8_t *wire, size_t length, size_t chunk,
+    const uint8_t script_code[25], const uint8_t expected[32]) {
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
+    assert(sha_context);
+    zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_start,
+        .update = sha_update, .final = sha_finish};
+    zcl_tx_replay_zip243 state;
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &blake, &sha));
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        for (size_t offset = 0; offset < length;) {
+            size_t count = length - offset < chunk ? length - offset : chunk;
+            assert(zcl_tx_replay_zip243_feed(&state, wire + offset, count));
+            offset += count;
+        }
+        if (pass < 2) assert(zcl_tx_replay_zip243_next(&state));
+    }
+    zcl_tx_stream_facts facts;
+    uint8_t digest[32];
+    assert(zcl_tx_replay_zip243_finish(&state, script_code, 25,
+        50000000, &facts, digest));
+    assert(!memcmp(digest, expected, 32));
+    assert(facts.inputs == 1 && facts.outputs == 2);
+    assert(!zcl_tx_replay_zip243_finish(&state, script_code, 25,
+        50000000, &facts, digest));
+    EVP_MD_CTX_free(sha_context);
+}
+
+static void replay_rejects_changes(const uint8_t *wire, size_t length) {
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
+    assert(sha_context);
+    zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_start,
+        .update = sha_update, .final = sha_finish};
+    zcl_tx_replay_zip243 state;
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &blake, &sha));
+    assert(zcl_tx_replay_zip243_feed(&state, wire, length));
+    assert(zcl_tx_replay_zip243_next(&state));
+    uint8_t changed[8192];
+    memcpy(changed, wire, length);
+    changed[20] ^= 1;
+    assert(zcl_tx_replay_zip243_feed(&state, changed, length));
+    assert(!zcl_tx_replay_zip243_next(&state));
+    assert(!zcl_tx_replay_zip243_feed(&state, wire, length));
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 0,
+        0x76b809bb, &blake, &sha));
+    assert(zcl_tx_replay_zip243_feed(&state, wire, length - 1));
+    assert(!zcl_tx_replay_zip243_next(&state));
+    EVP_MD_CTX_free(sha_context);
+}
+
+static void replay_rejects_missing_input(const uint8_t *wire, size_t length,
+    const uint8_t script_code[25]) {
+    struct blake2b_ctx blake_context;
+    EVP_MD_CTX *sha_context = EVP_MD_CTX_new();
+    assert(sha_context);
+    zcl_zip243_hasher blake = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_replay_sha256 sha = {.context = sha_context, .init = sha_start,
+        .update = sha_update, .final = sha_finish};
+    zcl_tx_replay_zip243 state;
+    assert(zcl_tx_replay_zip243_begin(&state, (uint32_t)length, 1,
+        0x76b809bb, &blake, &sha));
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        assert(zcl_tx_replay_zip243_feed(&state, wire, length));
+        if (pass < 2) assert(zcl_tx_replay_zip243_next(&state));
+    }
+    zcl_tx_stream_facts facts = {.inputs = 99};
+    uint8_t digest[32];
+    memset(digest, 0xff, sizeof digest);
+    assert(!zcl_tx_replay_zip243_finish(&state, script_code, 25,
+        50000000, &facts, digest));
+    assert(facts.inputs == 0);
+    for (size_t i = 0; i < sizeof digest; ++i) assert(digest[i] == 0);
+    EVP_MD_CTX_free(sha_context);
 }
 
 static void test_streaming(const uint8_t *wire, size_t length,
@@ -67,7 +163,10 @@ static void test_streaming(const uint8_t *wire, size_t length,
         assert(facts.output_zat == 49999755);
         assert(!zcl_tx_stream_zip243_finish(&state, script_code, 25,
             50000000, &facts, digest));
+        replay_chunks(unsigned_wire, length, chunk, script_code, expected);
     }
+    replay_rejects_changes(unsigned_wire, length);
+    replay_rejects_missing_input(unsigned_wire, length, script_code);
     struct blake2b_ctx first_context, second_context;
     zcl_zip243_hasher first = zcl_zip243_host_hasher(&first_context);
     zcl_zip243_hasher second = zcl_zip243_host_hasher(&second_context);
