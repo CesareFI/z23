@@ -447,6 +447,8 @@ static bool group_reads_external_inputs(const char *name)
          * execs the libclang sensor build/bin/z23-clang-manifest. */
         "semantic_facts",
         "semantic_facts_live",
+        /* compiles and senses generated projects with the sensor's clang */
+        "semantic_facts_fuzz",
         /* reads tests/fixtures/semantic_manifest/<name>.bin; the sibling execs
          * build/bin/z23-clang-manifest (an optional libclang tool whose
          * link the test closure never reaches). */

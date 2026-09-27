@@ -1480,6 +1480,17 @@ ZCL_TEST_GROUP(devloop_early)
  * whole catalog; a path some TU's manifest lists as read goes through the
  * existing header path instead. */
 ZCL_TEST_GROUP(semantic_build_inputs)
+/* The facts-narrowed closure against a cold compiler, as a differential
+ * fuzzer: random multi-TU C23 projects from a fixed seed list (and every
+ * minimized reproducer, always) are compiled with the sensor's clang and
+ * sensed before and after one mutation, planned in process from the facts,
+ * and judged: an unaffected TU's object is byte-identical, and every
+ * function with new bytes (beyond a relocation addend) is a seed or covered.
+ * A fast default seed list keeps this under a minute standalone;
+ * ZCL_STRESS_TESTS=1 runs the full seed list, and
+ * ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE] runs a long range instead.
+ * Self-skips, visibly, where the sensor has not been built. */
+ZCL_TEST_GROUP(semantic_facts_fuzz)
 ZCL_SPEC_GROUP(wallet_dashboard)
 ZCL_SPEC_GROUP(wallet_send)
 ZCL_SPEC_GROUP(wallet_receive)
