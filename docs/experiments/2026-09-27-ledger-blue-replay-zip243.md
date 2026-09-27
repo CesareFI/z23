@@ -44,9 +44,11 @@ zero `.data`, and zero `.bss`; its largest reported function frame was 176
 bytes. ARM type-size symbols measured the replay wrapper at 320 bytes, the
 Blue SDK BLAKE2b context at 256 bytes, and its SHA-256 context at 108 bytes.
 The 684-byte combined live state saves 116 bytes against the earlier
-two-BLAKE2b-context prototype. The existing Wallet app leaves 748 bytes
-outside its reserved stack but permits only 236 additional `.bss` bytes under
-its 512-byte headroom guard. Direct addition still fails that guard.
+two-BLAKE2b-context prototype. The original Wallet calculation subtracted
+the 2,048-byte stack reserve a second time. The corrected Wallet image leaves
+2,796 bytes after `.bss`, and its 512-byte headroom guard permits 2,284 bytes
+of additional `.bss`. The isolated replay state fits within that budget;
+transport and payment UI state remain unmeasured.
 
 ## Boundary
 

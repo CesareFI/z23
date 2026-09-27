@@ -118,16 +118,18 @@ scriptCode, spent amount, and branch ID are caller supplied; they are not
 authenticated by this component. The
 [streaming digest experiment](../../docs/experiments/2026-09-27-ledger-blue-streaming-zip243.md)
 records ARM memory costs. The two SDK hash contexts plus wrapper state exceed
-the receive app's currently measured free SRAM before payment UI state, so
-the code remains offline and is not linked into either Blue image.
+the earlier conservative accounting for receive app growth. The linker
+includes its stack reservation in `.bss`, so the corrected SRAM guard admits
+this state as an isolated addition. The code remains offline and is not linked
+into either Blue image; payment UI and protocol state need a linked measurement.
 [`zcl_tx_replay_zip243.h`](include/zcl_tx_replay_zip243.h) trades two extra
 complete uploads for one BLAKE2b context. It checks a SHA-256 commitment to
 the entire first upload before accepting either replay's ZIP-243 subhash.
 The [replay memory experiment](../../docs/experiments/2026-09-27-ledger-blue-replay-zip243.md)
 measures 684 bytes of wrapper and SDK hash state on ARM, 116 bytes below the
-two-context method. This still exceeds the existing Wallet build's allowance
-for new `.bss`; a future integrated image must prove safe storage reuse or a
-separate app layout, plus transport, stack, display, and physical behavior.
+two-context method. The corrected Wallet guard admits this state as an
+isolated addition. A future integrated image must measure all remaining
+transport and UI state, plus stack, display, and physical behavior.
 
 The canvas is host-only and does not access the Blue framebuffer. Its PNGs
 show intended layout using SDK font data; physical font pixels, touch
@@ -145,10 +147,11 @@ transaction review to payment authorization.
 
 The intended everyday app is one [ZCL Wallet](ROADMAP.md). The existing
 Probe, Fixture, Review, and Sign Test apps are narrow development tools.
-The 0.1.0 Wallet receive image uses 3,348 bytes of `.bss` plus a 2,048-byte
-stack reserve in the Blue's 6,144-byte app SRAM region, leaving 748 bytes.
-Its build refuses a future image with fewer than 512 bytes outside the
-stack. A payment review cannot simply add Review's 2,304-byte transaction
+The 0.1.0 Wallet receive image uses 3,348 bytes of `.bss`, including a
+2,048-byte stack reservation and four-byte canary, in the Blue's 6,144-byte
+app SRAM region. It leaves 2,796 bytes after `.bss`; its build refuses a
+future image with fewer than 512 bytes after `.bss`. A payment review cannot
+simply add Review's 2,304-byte transaction
 buffer to this app. It needs bounded streaming or verified reuse of storage,
 with explicit tests for every output and interrupted USB sessions.
 The Review app has no key permission; Sign Test can sign only its fixed

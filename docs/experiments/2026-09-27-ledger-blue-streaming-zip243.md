@@ -46,11 +46,11 @@ The largest reported wrapper function frame was 144 bytes. ARM type-size
 symbols measured the parser state at 136 bytes, the digest wrapper including
 that parser at 288 bytes, and each Blue SDK `cx_blake2b_t` at 256 bytes.
 Two independent SDK contexts plus the wrapper therefore require 800 bytes
-of live state before any payment UI, prevout, or transport state. The current
-Wallet receive image leaves 748 bytes outside its 2,048-byte stack, and its
-build guard allows only 236 more `.bss` bytes. Directly adding this wrapper
-and two contexts cannot pass that guard. A storage-lifetime redesign or
-verified multi-pass hashing scheme is needed before integration.
+of live state before any payment UI, prevout, or transport state. The original
+Wallet headroom estimate double-subtracted the reserved stack. The corrected
+2,796-byte space after `.bss` admits this state as an isolated addition under
+the 512-byte headroom guard. A linked image must still measure the complete
+payment UI, transport, and stack paths before device integration.
 
 Clang 22.1.6 and GCC 16.1.1 ran on AMD Ryzen 7 PRO 8840U. No Blue image
 changed or was installed during this experiment.
@@ -68,5 +68,6 @@ against the actual Wallet image and its stack gate.
 
 A [same-day replay experiment](2026-09-27-ledger-blue-replay-zip243.md)
 measured a one-BLAKE2b-context alternative with SHA-256 binding across three
-complete uploads. It reduces the live ARM state to 684 bytes; the direct
-Wallet `.bss` integration gate remains unmet.
+complete uploads. It reduces the live ARM state to 684 bytes. Corrected linker
+accounting admits this isolated state; the full Wallet integration remains
+unmeasured.

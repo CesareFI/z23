@@ -33,10 +33,10 @@ sha256sum /tmp/zcl-wallet.bin
 ```
 
 The build rejects initialized `.data`, keeps at least 512 bytes of Blue app
-SRAM outside the 2,048-byte stack, and checks named derivation, address,
+SRAM after `.bss` (which includes the 2,048-byte stack reservation), and checks named derivation, address,
 APDU, and screen-event stack paths with a separate 512-byte stack margin.
-The linked 0.1.0 image uses 3,348 bytes of `.bss` and leaves 748 bytes of
-the 6,144-byte app SRAM region outside the stack. The stack gate cannot
+The linked 0.1.0 image uses 3,348 bytes of `.bss` and leaves 2,796 bytes
+after `.bss` in the 6,144-byte app SRAM region. The stack gate cannot
 measure BOLOS firmware frames. The C23
 installer accepts only the
 exact 14,848-byte image with SHA-256
