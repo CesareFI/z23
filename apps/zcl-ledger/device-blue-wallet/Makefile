@@ -10,9 +10,13 @@ ifneq ($(SDK_REVISION),3c710b4c62ad847599a2deb0932a50dd1ae4bdff)
 $(error The Blue SDK revision differs from the reviewed source)
 endif
 
-SDK_PATCH_SHA256 := $(word 1,$(shell git -C "$(BOLOS_SDK)" diff --binary | sha256sum))
+SDK_PATCH_SHA256 := $(word 1,$(shell git -C "$(BOLOS_SDK)" diff --no-ext-diff --binary | sha256sum))
 ifneq ($(SDK_PATCH_SHA256),4919fd81ba7a3a80880065aaf7898c2edd603b2586f6086a88570c73996019f6)
 $(error The Blue SDK patch differs from the reviewed C23 patch)
+endif
+SDK_STAGED := $(shell git -C "$(BOLOS_SDK)" diff --cached --name-only)
+ifneq ($(strip $(SDK_STAGED)),)
+$(error The Blue SDK contains staged changes)
 endif
 SDK_UNTRACKED := $(shell git -C "$(BOLOS_SDK)" ls-files --others)
 ifneq ($(strip $(SDK_UNTRACKED)),)

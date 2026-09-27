@@ -118,6 +118,14 @@ was rejected by the patch-hash gate under both `make -n` and
 canonical patched SDK. This closes the makefile-include ordering gap; it
 does not attest to the SDK's runtime behavior.
 
+A separate SDK copy with a staged-only change to `Makefile.rules` retained
+the expected unstaged patch hash but was rejected by the new staged-change
+gate under `make -n`. The canonical patched SDK passed the same dry run.
+The patch check uses `git diff --no-ext-diff --binary`; the canonical diff
+kept SHA-256 `4919fd81ba7a3a80880065aaf7898c2edd603b2586f6086a88570c73996019f6`.
+A copied SDK with `diff.external=/bin/false` in its local Git config still
+passed the dry run, showing that external diff commands are ignored.
+
 The reviewer now uses the same uncertainty wording for a failed pre-USB
 tip query as for a failed post-USB query. The wallet CLI fixture passed with
 Clang 22.1.6 Debug/ASan/UBSan and GCC 16.1.1 Release, including the
