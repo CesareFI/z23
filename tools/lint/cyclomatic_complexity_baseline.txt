@@ -3925,7 +3925,7 @@ tools/dev/devloop_hotswap_build.c:hs_story_receipt_valid:42
 tools/dev/devloop_hotswap_build.c:zcl_devloop_hotswap_batch_event:42
 tools/dev/devloop_hotswap_build.c:zcl_devloop_hotswap_build:75
 tools/dev/devloop_plan.c:plan_add_closure:48
-tools/dev/devloop_plan.c:plan_json_body:73
+tools/dev/devloop_plan.c:plan_json_body:66
 tools/dev/devloop_plan.c:zcl_devloop_path_is_relevant:19
 tools/dev/devloop_plan.c:zcl_devloop_plan_files:38
 tools/dev/devloop_plan.c:zcl_devloop_plan_proof_admissible:17
