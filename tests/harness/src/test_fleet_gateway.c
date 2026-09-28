@@ -879,6 +879,10 @@ static int gw_t_calls(void)
         ASSERT(b != NULL);
         ASSERT(gw_body_has(b, "\"isError\":false"));
         ASSERT(gw_body_has(b, "agents"));
+        /* The board read stays inside the rig: the shard's private datadir
+         * has no RPC cookie, so no node outside this test answers it. */
+        ASSERT(gw_body_has(b, "fleet.board\\\",\\\"reason\\\":\\\""
+                              "node_unavailable"));
         free(b);
         sn = snprintf(args, sizeof(args),
                       "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/"
@@ -3660,33 +3664,69 @@ static const char *const g_gw_original[] = {
 };
 #define GW_ORIGINAL_COUNT (sizeof(g_gw_original) / sizeof(g_gw_original[0]))
 
-/* The ambient XDG root, saved before a shard points it at its own store and
- * put back afterwards. */
-struct gw_xdg {
+/* The ambient XDG root and node datadir, saved before a shard points them
+ * at its own store and put back afterwards. */
+struct gw_ambient {
     bool had;
     char saved[4096];
 };
 
+struct gw_xdg {
+    struct gw_ambient state;
+    struct gw_ambient datadir;
+};
+
+static bool gw_ambient_save(struct gw_ambient *a, const char *name)
+{
+    const char *v = getenv(name);
+    a->had = v != NULL;
+    a->saved[0] = '\0';
+    return !v || snprintf(a->saved, sizeof(a->saved), "%s", v) <
+                     (int)sizeof(a->saved);
+}
+
+static void gw_ambient_restore(const struct gw_ambient *a, const char *name)
+{
+    if (a->had)
+        setenv(name, a->saved, 1);
+    else
+        unsetenv(name);
+}
+
 static bool gw_xdg_save(struct gw_xdg *x)
 {
-    const char *v = getenv("XDG_STATE_HOME");
-    x->had = v != NULL;
-    x->saved[0] = '\0';
-    return !v || snprintf(x->saved, sizeof(x->saved), "%s", v) <
-                     (int)sizeof(x->saved);
+    bool state_ok = gw_ambient_save(&x->state, "XDG_STATE_HOME");
+    bool datadir_ok = gw_ambient_save(&x->datadir, "ZCL_DATADIR");
+    return state_ok && datadir_ok;
 }
 
 static void gw_xdg_restore(const struct gw_xdg *x)
 {
-    if (x->had)
-        setenv("XDG_STATE_HOME", x->saved, 1);
-    else
-        unsetenv("XDG_STATE_HOME");
+    gw_ambient_restore(&x->state, "XDG_STATE_HOME");
+    gw_ambient_restore(&x->datadir, "ZCL_DATADIR");
+}
+
+/* A node datadir private to this shard, empty and cookie-less, named as
+ * the operator target through ZCL_DATADIR. Without it every node the rig
+ * forks -- the direct grant mint and each gateway tools/call -- resolves
+ * the host's default service datadir and its RPC cookie, so a brief's
+ * board read went to whatever node that is: on a host with a live node,
+ * that node answered this test; where it accepted but did not answer, each
+ * brief waited out the full RPC deadline. Here the read is refused at the
+ * cookie, before any socket, and the brief names fleet.board as missing. */
+static bool gw_shard_datadir(const char *base)
+{
+    char datadir[512];
+    int sn = snprintf(datadir, sizeof(datadir), "%s/datadir", base);
+    return sn > 0 && (size_t)sn < sizeof(datadir) &&
+           mkdir(datadir, 0700) == 0 &&
+           setenv("ZCL_DATADIR", datadir, 1) == 0;
 }
 
 /* A fresh state root private to this shard and this process, made the
  * ambient XDG root: the direct node runs (grant mint) and the in-process
- * leaves must land in the same isolated store the gateway child serves. */
+ * leaves must land in the same isolated store the gateway child serves.
+ * The same tmpdir carries the shard's private node datadir. */
 static bool gw_shard_state(unsigned shard, char *state, size_t cap)
 {
     char tag[32];
@@ -3694,7 +3734,7 @@ static bool gw_shard_state(unsigned shard, char *state, size_t cap)
         (int)sizeof(tag))
         return false;
     test_make_tmpdir(state, cap, "fleet_gateway", tag);
-    if (strlen(state) + 8 >= cap)
+    if (strlen(state) + 8 >= cap || !gw_shard_datadir(state))
         return false;
     strcat(state, "/state");
     return mkdir(state, 0700) == 0 &&
