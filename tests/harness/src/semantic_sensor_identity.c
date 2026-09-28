@@ -100,8 +100,9 @@ static bool ssi_line(const char *text, const char *needle, const char *also,
 static size_t ssi_split(char *s, char **tok, size_t cap)
 {
     size_t n = 0;
-    for (char *t = strtok(s, " \t"); t != NULL && n < cap;
-         t = strtok(NULL, " \t"))
+    char *save = NULL;
+    for (char *t = strtok_r(s, " \t", &save); t != NULL && n < cap;
+         t = strtok_r(NULL, " \t", &save))
         tok[n++] = t;
     return n;
 }
@@ -472,8 +473,7 @@ static void ssi_free(uint8_t *m[SCX_TU_COUNT])
 static int ssi_t_widen(void)
 {
     int failures = 0;
-    char out[1024] = {0}, root[PATH_MAX], want[160], cc_a[PATH_MAX],
-        cc_b[PATH_MAX];
+    char out[1024] = {0}, root[1100], want[160], cc_a[1200], cc_b[1200];
     uint8_t *base[SCX_TU_COUNT] = {0}, *same[SCX_TU_COUNT] = {0},
             *other[SCX_TU_COUNT] = {0};
     size_t bn[SCX_TU_COUNT] = {0}, sn[SCX_TU_COUNT] = {0},
