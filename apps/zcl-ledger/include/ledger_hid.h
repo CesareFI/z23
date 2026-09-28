@@ -15,6 +15,7 @@ enum { LEDGER_HID_REPORT_SIZE = 64, LEDGER_HID_MAX_RESPONSE = 4096 };
 int ledger_hid_exchange(int fd, const uint8_t *apdu, size_t apdu_len,
                         uint8_t *response, size_t response_cap,
                         size_t *response_len);
+/* One monotonic deadline applies to all packet readiness waits. */
 int ledger_hid_exchange_timeout(int fd, const uint8_t *apdu, size_t apdu_len,
                                 uint8_t *response, size_t response_cap,
                                 size_t *response_len, int timeout_ms);

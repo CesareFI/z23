@@ -37,6 +37,10 @@ size_t blue_install_params(const char *name, const char *version,
 
 bool blue_install_image_allowed(const char *name, const char *version) {
     if (!name || !version) return false;
-    return strcmp(name, "ZCL Wallet") != 0 ||
-           strcmp(version, "0.3.4") != 0;
+    return (strcmp(name, "ZCL Probe") == 0 &&
+            strcmp(version, "0.1.0") == 0) ||
+           (strcmp(name, "ZCL Fixture") == 0 &&
+            strcmp(version, "0.1.0") == 0) ||
+           (strcmp(name, "ZCL Sign Test") == 0 &&
+            strcmp(version, "0.1.0") == 0);
 }

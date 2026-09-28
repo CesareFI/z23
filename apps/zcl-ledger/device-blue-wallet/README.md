@@ -20,7 +20,9 @@ wallet seed; recovery software would need the same documented mapping.
 Version 0.3.6 runs the real app startup and EXIT controller in a C23 host
 SDK shell. The shell checks the receive address, derivation failure screens,
 secret-workspace wiping, USB reset and suspend, approval timeout, and EXIT
-event. It scripts valid and malformed APDUs through the app main loop and
+event. The EXIT test now routes a synthetic finger-release coordinate through
+the shown touchable element bounds and checks that a touch outside the button
+does nothing. It scripts valid and malformed APDUs through the app main loop and
 injects receive, send, and post-reply display exceptions. It enforces one
 reply per request and injects USB reset and suspend during a scripted visible
 payment reply. The payment route uses a stub; this shell does not exercise

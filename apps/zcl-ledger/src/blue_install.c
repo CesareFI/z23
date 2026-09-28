@@ -441,7 +441,7 @@ static bool load_image_regular(const char *path, uint8_t **data,
 }
 
 static int read_binary(const char *path, uint8_t **data, size_t *length,
-                       const app_profile **profile) {
+                       const app_profile **profile, bool installing) {
     uint8_t *bytes = NULL;
     size_t count = 0;
     if (!load_image_regular(path, &bytes, &count)) return -1;
@@ -451,7 +451,8 @@ static int read_binary(const char *path, uint8_t **data, size_t *length,
     if (SHA256(bytes, count, hash)) {
         for (size_t i = 0; i < sizeof profiles / sizeof profiles[0]; ++i) {
             if (CRYPTO_memcmp(hash, profiles[i].hash, sizeof hash) == 0) {
-                if (!blue_install_image_allowed(profiles[i].name,
+                if (installing &&
+                    !blue_install_image_allowed(profiles[i].name,
                                                 profiles[i].version)) {
                     blocked = true;
                     break;
@@ -463,7 +464,7 @@ static int read_binary(const char *path, uint8_t **data, size_t *length,
         }
     }
     if (result < 0)
-        fputs(blocked ? "App image is blocked after a physical device freeze.\n" :
+        fputs(blocked ? "App image is not approved for installation.\n" :
               "App image SHA-256 does not match a reviewed build.\n", stderr);
     if (result < 0) free(bytes);
     else { *data = bytes; *length = count; }
@@ -698,7 +699,8 @@ int main(int argc, char **argv) {
     uint8_t *code = NULL;
     size_t code_length = 0;
     if (args.image_path &&
-        read_binary(args.image_path, &code, &code_length, &args.profile) < 0) {
+        read_binary(args.image_path, &code, &code_length, &args.profile,
+                    !args.verify) < 0) {
         fputs("Expected a regular ZCL app binary, 64-byte-aligned and matched to a reviewed image.\n",
               stderr);
         return 1;

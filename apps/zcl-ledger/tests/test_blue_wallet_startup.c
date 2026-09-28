@@ -226,9 +226,44 @@ static const bagl_element_t *find_text(const char *text) {
 
 void blue_wallet_test_finger(const unsigned char *buffer) {
     assert(buffer[0] == SEPROXYHAL_TAG_FINGER_EVENT);
+    if (buffer[3] != SEPROXYHAL_TAG_FINGER_EVENT_RELEASE) return;
+    unsigned x = ((unsigned)buffer[4] << 8) | buffer[5];
+    unsigned y = ((unsigned)buffer[6] << 8) | buffer[7];
+    for (size_t i = 0; i < shown_count; ++i) {
+        const bagl_element_t *element = &shown[i];
+        if (!(element->component.type & BAGL_FLAG_TOUCHABLE) ||
+            !element->tap) continue;
+        if (x >= (unsigned)element->component.x &&
+            x < (unsigned)(element->component.x + element->component.width) &&
+            y >= (unsigned)element->component.y &&
+            y < (unsigned)(element->component.y + element->component.height)) {
+            (void)element->tap(element);
+            return;
+        }
+    }
+}
+
+static void finger_release(unsigned x, unsigned y) {
+    G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_FINGER_EVENT;
+    G_io_seproxyhal_spi_buffer[3] = SEPROXYHAL_TAG_FINGER_EVENT_RELEASE;
+    G_io_seproxyhal_spi_buffer[4] = (uint8_t)(x >> 8);
+    G_io_seproxyhal_spi_buffer[5] = (uint8_t)x;
+    G_io_seproxyhal_spi_buffer[6] = (uint8_t)(y >> 8);
+    G_io_seproxyhal_spi_buffer[7] = (uint8_t)y;
+    (void)io_event(CHANNEL_SPI);
+}
+
+static void check_exit_touch(void) {
     const bagl_element_t *exit_button = find_text("EXIT");
     assert(exit_button && exit_button->tap);
-    (void)exit_button->tap(exit_button);
+    unsigned before = exits;
+    finger_release(0, 0);
+    assert(exits == before);
+    finger_release((unsigned)exit_button->component.x +
+                       (unsigned)exit_button->component.width / 2,
+                   (unsigned)exit_button->component.y +
+                       (unsigned)exit_button->component.height / 2);
+    assert(exits == before + 1);
 }
 
 static void reset_start(void) {
@@ -414,8 +449,7 @@ static void check_error_startup(unsigned expected_derivations) {
         assert(((const uint8_t *)address_lines)[i] == 0);
     for (size_t i = 0; i < sizeof boot_material; ++i)
         assert(((const uint8_t *)&boot_material)[i] == 0);
-    G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_FINGER_EVENT;
-    (void)io_event(CHANNEL_SPI);
+    check_exit_touch();
 }
 
 int main(void) {
@@ -446,8 +480,7 @@ int main(void) {
     (void)io_event(CHANNEL_SPI);
     assert(!timeout_pending && aborts == before + 1);
     assert(shown == receive_ui);
-    G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_FINGER_EVENT;
-    (void)io_event(CHANNEL_SPI);
+    check_exit_touch();
     assert(exits == 1 && aborts == 4 && signer_wipes == 3);
 
     reject_second_path = true;

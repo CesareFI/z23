@@ -215,7 +215,8 @@ The HID exchange clears its response buffer and sets the returned length to
 zero after a timeout, malformed sequence, or partial reply. A caller must
 close and recheck the device after such a failure. Local socket-backed tests
 exercise these cases; they do not substitute for a physical USB disconnect
-test.
+test. The timeout uses one monotonic deadline across all packet waits, so a
+slow multipart reply cannot restart the timeout for each report.
 
 After the [ZCL Probe device app](device-blue/README.md) is installed and open,
 `zcl-ledger probe --json /dev/hidrawN` checks its exact version 1 capability
@@ -231,7 +232,9 @@ The separate `zcl-blue-install` executable uses OpenSSL 3's open-source C
 crypto implementation for the Blue's secp256k1 and AES secure channel. It
 checks the Blue's USB product ID, verifies the session's device certificate,
 checks an encrypted target-ID response, and accepts only pinned image
-profiles, including the unverified receive candidate. Before opening USB,
+profiles that have passed a physical open and EXIT check: Probe 0.1.0,
+Fixture 0.1.0, and Sign Test 0.1.0. Wallet, Review, and Shielded Review images
+remain blocked from installation. Before opening USB,
 it accepts only a bounded regular image file, refuses a symlink or named
 pipe, and compares the image's SHA-256 with reviewed build pins.
 `--channel-only`
@@ -250,6 +253,7 @@ computed installation hash; it is not the SHA-256 of the code file alone.
 The read-only `--ca-verify CA_KEY_FILE app.bin` command requires a reviewed
 binary and exactly one same-name catalog entry with the expected application
 hash. It checks the image before opening USB and does not install or run it.
+It can verify a pinned image even when installation of that image is blocked.
 This command has host tests but has not yet been tried against the Blue.
 The dedicated
 Blue returned ZCL Review in this catalog even while its icon was not visible
@@ -272,7 +276,7 @@ reported zero apps. Version 0.2.17 is built and simulated offline but is not
 installed or hardware-verified. Probe, Fixture, Review, and Sign Test remain
 development images, not payment signers.
 
-The Wallet 0.3.6 offline candidate includes a separate final touchscreen
+The Wallet 0.3.7 offline candidate includes a separate final touchscreen
 `SIGN ZCL` approval and ordered transparent P2PKH signing. A synthetic
 fixture command prepares a previous transaction and unsigned v4 spend from
 a compressed public key without needing a chain UTXO:
@@ -282,7 +286,7 @@ zcl-blue-wallet-fixture --prepare 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce
 ```
 
 The exact 0.3.4 image froze the Blue on opening and was deleted. The C23
-installer now blocks it. Version 0.3.6 passes the stricter RAM gate and
+installer blocks Wallet images. Version 0.3.6 passes the stricter RAM gate and
 host tests but has not passed BOLOS startup on the device. Its image must pass
 physical open, exit, and USB checks before this fixture is used on the Blue.
 With a qualified image installed and its identity verified,

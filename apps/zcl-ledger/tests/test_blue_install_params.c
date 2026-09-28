@@ -35,7 +35,12 @@ int main(void) {
     assert(blue_install_params("ZCL", "0.1", true, output) == 0);
     assert(blue_install_params(NULL, "0.1.0", true, output) == 0);
     assert(!blue_install_image_allowed("ZCL Wallet", "0.3.4"));
-    assert(blue_install_image_allowed("ZCL Wallet", "0.3.3"));
+    assert(!blue_install_image_allowed("ZCL Wallet", "0.3.7"));
+    assert(!blue_install_image_allowed("ZCL Review", "0.2.0"));
+    assert(!blue_install_image_allowed("ZCL Review", "0.3.1"));
+    assert(!blue_install_image_allowed("ZCL Shielded Review", "0.5.2"));
+    assert(blue_install_image_allowed("ZCL Probe", "0.1.0"));
+    assert(blue_install_image_allowed("ZCL Fixture", "0.1.0"));
     assert(blue_install_image_allowed("ZCL Sign Test", "0.1.0"));
     assert(!blue_install_image_allowed(NULL, "0.3.4"));
     return 0;
