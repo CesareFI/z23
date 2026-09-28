@@ -1147,13 +1147,17 @@ static void fxc_note_reads(struct fxc *c, const struct fxc_pair *p)
             c->hdrs[k].read = true;
 }
 
-/* A lookup with no negative claim on either side may now resolve to a
+/* Unless another rule already affects the TU as more than a compile: a
+ * lookup with no negative claim on either side may now resolve to a
  * changed path: the TU is affected whole whatever its facts say, as the
  * after-bind's "lookup-unbound" says of the after side alone. */
 static void fxc_unbound_verdict(const struct fxc *c, const struct fxc_pair *p,
                                 struct zcl_devloop_facts_tu_verdict *t)
 {
-    const char *path = fxc_unbound(c, p->a, p->alen);
+    const char *path;
+    if (t->affected && !t->compile_only)
+        return;
+    path = fxc_unbound(c, p->a, p->alen);
     if (path == NULL)
         path = fxc_unbound(c, p->b, p->blen);
     if (path != NULL)
@@ -1192,7 +1196,7 @@ bool fxc_tu_eval(struct fxc *c, const char *path)
         fxc_set(t, true, true, "facts-missing", "no valid before manifest");
     else if (ok && !fxc_coarse(c, &p, t))
         ok = fxc_fine(c, &p, t);
-    if (ok && (!t->affected || t->compile_only))
+    if (ok)
         fxc_unbound_verdict(c, &p, t);
     if (ok && t->affected && t->broadened && !fxc_untrusted_includer(c, &p, t))
         ok = fxc_included_c_seeds(c, &p);
