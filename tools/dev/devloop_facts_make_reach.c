@@ -1409,9 +1409,12 @@ static bool fxm_goal_follow(struct fxm *m, const struct fxm_line *l)
     char *eq;
     if (fxm_said(m, l) == NULL)
         return false;
-    if (l->ctx == FXM_RECIPE)
-        return fxm_goal_recipe(m, m->line.p, 0) |
-               (m->rules[l->rule].gen && fxm_gen_recipe(m, l));
+    if (l->ctx == FXM_RECIPE) {
+        bool grew = fxm_goal_recipe(m, m->line.p, 0);
+        if (m->rules[l->rule].gen)
+            grew |= fxm_gen_recipe(m, l);
+        return grew;
+    }
     /* A recipe line a define holds, and a variable whose value holds make,
      * are recipe text: their own commands that run make take its goals. */
     if (l->ctx == FXM_DEF && l->body && l->raw[0] == '\t')

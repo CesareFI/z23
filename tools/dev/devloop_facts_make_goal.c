@@ -425,6 +425,27 @@ static bool fxm_gen_trap(const struct fxm_gen_cmd *c)
            (strncmp(a, "rm ", 3) == 0 && strcspn(a, ";|&<>`(") == strlen(a));
 }
 
+/* The command word w[0..n) is s. */
+static bool fxm_gen_is(const char *w, size_t n, const char *s)
+{
+    return strlen(s) == n && strncmp(w, s, n) == 0;
+}
+
+/* The command name[0..n) with its words c is one a generated makefile's
+ * recipe may run: only printf and echo write to a file; mv and trap as
+ * fxm_gen_moves and fxm_gen_trap say. */
+static bool fxm_gen_allowed(const char *name, size_t n,
+                            const struct fxm_gen_cmd *c)
+{
+    if (!fxm_gen_plain(name, n) && !fxm_gen_script(name, n))
+        return false;
+    if (c->file && !fxm_gen_is(name, n, "printf") && !fxm_gen_is(name, n, "echo"))
+        return false;
+    if (fxm_gen_is(name, n, "mv"))
+        return fxm_gen_moves(c);
+    return !fxm_gen_is(name, n, "trap") || fxm_gen_trap(c);
+}
+
 /* One command of a generated makefile's recipe line (NUL-ended s). */
 static bool fxm_gen_command(struct fxm *m, char *s)
 {
@@ -432,19 +453,16 @@ static bool fxm_gen_command(struct fxm *m, char *s)
     bool bare_ok = true, grew = false, printf_;
     size_t n;
     char *name = fxm_gen_name(s, &n, &bare_ok);
-    if (name == NULL || (n == 0 && !bare_ok) ||
-        (n > 0 && !fxm_gen_plain(name, n) && !fxm_gen_script(name, n))) {
+    if (name != NULL && n == 0) {
+        m->unknown |= !bare_ok;
+        return false;
+    }
+    if (name == NULL || !fxm_gen_words(name + n, &c) ||
+        !fxm_gen_allowed(name, n, &c)) {
         m->unknown = true;
         return false;
     }
-    printf_ = n == 6 && strncmp(name, "printf", 6) == 0;
-    if (n == 0 || !fxm_gen_words(name + n, &c) ||
-        (c.file && !printf_ && !(n == 4 && strncmp(name, "echo", 4) == 0)) ||
-        (n == 2 && strncmp(name, "mv", 2) == 0 && !fxm_gen_moves(&c)) ||
-        (n == 4 && strncmp(name, "trap", 4) == 0 && !fxm_gen_trap(&c))) {
-        m->unknown |= n > 0;
-        return false;
-    }
+    printf_ = fxm_gen_is(name, n, "printf");
     for (size_t k = 0; c.file && k < c.n; k++)
         grew |= fxm_gen_printed(m, c.w[k], printf_ && k == 0);
     return grew;
