@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_fr_ct.h"
+#include "blue_fr_sqrt.h"
 
 #undef NDEBUG
 #include <assert.h>
@@ -59,6 +60,17 @@ static void check_codec(const uint8_t bytes[32], bool valid) {
     assert(memcmp(restored, bytes, sizeof restored) == 0);
 }
 
+static void check_sqrt(const struct fr *value) {
+    struct fr expected, actual, squared, alias = *value;
+    assert(fr_sqrt(&expected, value));
+    assert(blue_fr_sqrt_public(&actual, value));
+    blue_fr_mul_ct(&squared, &actual, &actual);
+    assert(memcmp(&squared, value, sizeof squared) == 0);
+    assert(blue_fr_sqrt_public(&alias, &alias));
+    blue_fr_mul_ct(&squared, &alias, &alias);
+    assert(memcmp(&squared, value, sizeof squared) == 0);
+}
+
 int main(void) {
     struct fr zero, one, minus_one;
     fr_zero(&zero);
@@ -84,6 +96,16 @@ int main(void) {
     assert(!blue_fr_from_bytes_canonical(&cleared, NULL));
     assert(memcmp(&cleared, &zero, sizeof zero) == 0);
     assert(!blue_fr_from_bytes_canonical(NULL, boundary));
+    check_sqrt(&zero);
+    check_sqrt(&one);
+    const uint8_t five_bytes[32] = {5};
+    struct fr five, nonsquare = one;
+    assert(fr_from_bytes(&five, five_bytes));
+    assert(!fr_sqrt(&cleared, &five));
+    assert(!blue_fr_sqrt_public(&nonsquare, &five));
+    assert(memcmp(&nonsquare, &zero, sizeof zero) == 0);
+    assert(!blue_fr_sqrt_public(&nonsquare, NULL));
+    assert(!blue_fr_sqrt_public(NULL, &five));
     const struct fr *edges[] = {&zero, &one, &minus_one};
     for (size_t i = 0; i < 3; ++i)
         for (size_t j = 0; j < 3; ++j) check_pair(edges[i], edges[j]);
@@ -95,6 +117,11 @@ int main(void) {
         check_codec(encoded, true);
         check_pair(&a, &b);
         check_pair(&a, &a);
+        if (sample < 16) {
+            struct fr square;
+            fr_mul(&square, &a, &a);
+            check_sqrt(&square);
+        }
     }
     return 0;
 }

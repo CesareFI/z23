@@ -16,6 +16,7 @@
 #include "blue_sapling_generators.h"
 #include "blue_mod256.h"
 #include "blue_fr_ct.h"
+#include "blue_fr_sqrt.h"
 #include "blue_fs_ct.h"
 #include "sapling/jubjub.h"
 #include "base/log_level.h"
@@ -452,6 +453,20 @@ static bool check_fr_codec(void) {
     return !blue_fr_from_bytes_canonical(&field, invalid);
 }
 
+static bool check_fr_sqrt(void) {
+    const uint8_t four_bytes[32] = {4}, five_bytes[32] = {5};
+    struct fr four, five, root, squared;
+    if (!blue_fr_from_bytes_canonical(&four, four_bytes) ||
+        !blue_fr_from_bytes_canonical(&five, five_bytes) ||
+        !blue_fr_sqrt_public(&root, &four)) return false;
+    blue_fr_mul_ct(&squared, &root, &root);
+    if (!same_field(&squared, &four)) return false;
+    if (blue_fr_sqrt_public(&root, &five)) return false;
+    for (unsigned i = 0; i < 4; ++i)
+        if (root.d[i]) return false;
+    return true;
+}
+
 static union {
     blue_zip32_workspace fvk;
     blue_zip32_seed_workspace node;
@@ -655,6 +670,7 @@ static const struct {
     {"KEY", check_key_vector},
     {"FIELD", check_fs_boundary},
     {"FRCODEC", check_fr_codec},
+    {"FRSQRT", check_fr_sqrt},
     {"REDUCE", check_reduction},
     {"OUTOPEN", check_outgoing_open},
     {"NOTEOPEN", check_note_open},

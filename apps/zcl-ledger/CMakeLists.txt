@@ -624,7 +624,8 @@ endif()
 add_test(NAME blue-jubjub-lowmem COMMAND test-blue-jubjub-lowmem)
 
 add_executable(test-blue-fr-ct
-    src/blue_fr_ct.c src/blue_mod256.c tests/test_blue_fr_ct.c
+    src/blue_fr_ct.c src/blue_fr_sqrt.c src/blue_mod256.c
+    tests/test_blue_fr_ct.c
     ../../core/modules/sapling/src/fr.c
     ../../core/modules/sapling/src/fr_avx512.c
     ../../core/modules/crypto/src/simd_dispatch.c)
@@ -788,6 +789,7 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_generators.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_mod256.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_ct.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_sqrt.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fs_ct.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_arithmetic.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_lowmem.c"
@@ -797,7 +799,8 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
         set(BLUE_SAPLING_ARM_DEPENDS
             ${BLUE_SAPLING_ARM_SOURCES}
             tests/blue_m3_qemu.ld tests/blue_consensus_spend_fixture.h
-            include/blue_mod256.h include/blue_fr_ct.h include/blue_fs_ct.h
+            include/blue_mod256.h include/blue_fr_ct.h
+            include/blue_fr_sqrt.h include/blue_fs_ct.h
             include/blue_jubjub_arithmetic.h include/blue_jubjub_lowmem.h
             include/blue_jubjub_encode.h
             include/blue_redjubjub_challenge.h
