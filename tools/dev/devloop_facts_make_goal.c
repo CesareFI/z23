@@ -424,6 +424,26 @@ static bool fxm_gen_shelled(const struct fxm_gen_cmd *c)
     return false;
 }
 
+/* The character the printf format at *f writes (a \n or \t decoded,
+ * %% one '%'), *f left on the last character it reads; *conv for a %s.
+ * -1 for any other conversion. */
+static int fxm_gen_fchar(const char **f, bool *conv)
+{
+    const char *p = *f;
+    *conv = false;
+    if (p[0] == '\\' && (p[1] == 'n' || p[1] == 't')) {
+        *f = p + 1;
+        return p[1] == 'n' ? '\n' : '\t';
+    }
+    if (p[0] != '%')
+        return (unsigned char)p[0];
+    if (p[1] != '%' && p[1] != 's')
+        return -1;
+    *f = p + 1;
+    *conv = p[1] == 's';
+    return '%';
+}
+
 /* One pass of a printf format f over its arguments from *arg: \n and \t
  * written, %% one '%', %s the next argument (none left: nothing); any
  * other escape stays a backslash. False for any other conversion (%c, %b,
@@ -432,20 +452,14 @@ static bool fxm_gen_format(const char *f, const struct fxm_gen_cmd *c,
                            size_t *arg, char *b, size_t *k)
 {
     for (; *f != '\0'; f++) {
-        char ch = *f;
-        bool conv = false;
-        if (ch == '"' || ch == '\'')
+        bool conv;
+        int ch;
+        if (*f == '"' || *f == '\'')
             continue;
-        if (ch == '\\' && (f[1] == 'n' || f[1] == 't'))
-            ch = *++f == 'n' ? '\n' : '\t';
-        else if (ch == '%' && f[1] == '%')
-            ch = *++f;
-        else if (ch == '%' && f[1] == 's')
-            conv = *++f == 's';
-        else if (ch == '%')
+        if ((ch = fxm_gen_fchar(&f, &conv)) < 0)
             return false;
         if (conv ? *arg < c->n && !fxm_gen_put_word(b, k, FXM_GEN_MAX, c->w[(*arg)++])
-                 : !fxm_gen_put(b, k, FXM_GEN_MAX, ch))
+                 : !fxm_gen_put(b, k, FXM_GEN_MAX, (char)ch))
             return false;
     }
     return true;

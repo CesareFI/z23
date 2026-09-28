@@ -987,12 +987,7 @@ static bool fxm_names_target(const char *t, const char *path)
     return false;
 }
 
-/* An optional include that does not exist yet but a rule can make: make
- * runs that rule first and reads what its recipe wrote. The rule is
- * reached, and its recipe lines say what the makefile holds
- * (fxm_gen_recipe). A rule a define holds is made by an $(eval) no line
- * spells: UNKNOWN. A target-specific value makes nothing. A rule's
- * targets (a define's too) are expanded a many-word value as its words. */
+/* A target word that makes any file: match-anything (%) or .DEFAULT. */
 static bool fxm_makes_anything(const char *t)
 {
     while (*t != '\0') {
@@ -1008,12 +1003,25 @@ static bool fxm_makes_anything(const char *t)
     return false;
 }
 
+/* A match-anything rule (%:) or .DEFAULT makes any file: every missing
+ * optional include is made by a recipe no rule names it in. */
+static bool fxm_anything_made(const struct fxm *m)
+{
+    for (size_t r = 0; m->missing.n > 0 && r < m->nrules; r++)
+        if (fxm_makes_anything(m->rules[r].targets))
+            return true;
+    return false;
+}
+
+/* An optional include that does not exist yet but a rule can make: make
+ * runs that rule first and reads what its recipe wrote. The rule is
+ * reached, and its recipe lines say what the makefile holds
+ * (fxm_gen_recipe). A rule a define holds is made by an $(eval) no line
+ * spells: UNKNOWN. A target-specific value makes nothing. A rule's
+ * targets (a define's too) are expanded a many-word value as its words. */
 static void fxm_missing_made(struct fxm *m)
 {
-    /* A match-anything rule (%:) or .DEFAULT makes any file: every
-     * missing optional include is made from a recipe no rule names it in. */
-    for (size_t r = 0; m->missing.n > 0 && r < m->nrules; r++)
-        m->unknown |= fxm_makes_anything(m->rules[r].targets);
+    m->unknown |= fxm_anything_made(m);
     for (size_t k = 0; !m->unknown && m->missing.n > 0 && k < m->nlines; k++) {
         const struct fxm_line *l = &m->lines[k];
         size_t n = l->from > 0 ? l->from - 1 : 0;
