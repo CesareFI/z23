@@ -35,12 +35,13 @@
 
 static char **steal_argv(struct sr_strv *s)
 {
-    if (!sr_strv_pushn(s, "", 0))
-        return NULL;
-    free(s->v[s->n - 1]);
-    s->v[s->n - 1] = NULL;
-    char **v = s->v;
-    memset(s, 0, sizeof(*s));
+    char **v = NULL;
+    if (sr_strv_pushn(s, "", 0)) {
+        free(s->v[s->n - 1]);
+        s->v[s->n - 1] = NULL;
+        v = s->v;
+        memset(s, 0, sizeof(*s));
+    }
     return v;
 }
 
