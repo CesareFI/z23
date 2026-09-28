@@ -2045,6 +2045,27 @@ static pid_t dlx_wait_child(pid_t child, int *status)
     return waited;
 }
 
+/* A publisher killed mid-push by the remote's post-receive hook leaves its
+ * Git descendants running: the orphaned `git push` still reads the remote's
+ * report and then updates the landing worktree's refs/remotes/origin/main.
+ * A recovery step that starts before they exit races that ref update — its
+ * own fetch cannot lock the ref, and the lander correctly answers
+ * REMOTE_OBSERVATION_UNAVAILABLE (retryable) — so the case would be judging
+ * scheduling, not recovery. The publisher child calls setsid() first, so
+ * every process it started stays in its session; after reaping it, wait
+ * until that session has no member left: exactly when its work has ended.
+ * The group watchdog bounds a descendant that never exits. */
+static pid_t dlx_wait_publisher(pid_t publisher, int *status)
+{
+    pid_t waited = dlx_wait_child(publisher, status);
+    while (waited == publisher &&
+           zcl_devloop_process_session_members(publisher, 0) > 0) {
+        struct timespec pause = { 0, 10 * 1000 * 1000L };
+        (void)nanosleep(&pause, NULL); /* real-clock: other processes' exit */
+    }
+    return waited;
+}
+
 static bool dlx_resume_after_death(void)
 {
     struct dlx_call c;
@@ -2322,7 +2343,10 @@ static int test_dev_land_publisher_death(void)
             char script[256];
             /* post-receive runs only after the remote ref transaction.
              * Kill this publisher, not the test runner or Git descendants.
-             * The hook exits immediately: no FIFO or sleeping orphan. */
+             * The hook exits immediately: no FIFO or sleeping orphan. Its
+             * own session lets dlx_wait_publisher see its Git descendants
+             * out. */
+            (void)setsid();
             (void)alarm(30);
             (void)snprintf(script, sizeof(script),
                 "#!/bin/sh\nkill -KILL %ld\n", (long)getpid());
@@ -2332,7 +2356,7 @@ static int test_dev_land_publisher_death(void)
             (void)dlx_run(&c);
             _exit(3);
         }
-        pid_t waited = dlx_wait_child(publisher, &status);
+        pid_t waited = dlx_wait_publisher(publisher, &status);
         ASSERT_EQ(waited, publisher);
         ASSERT(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
         ASSERT(dlx_origin_main(&rig, after));
@@ -5769,6 +5793,7 @@ static int test_dev_land_signed_publisher_death(void)
         if (child == 0) {
             struct dlx_call cc;
             char script[256];
+            (void)setsid(); /* see dlx_wait_publisher */
             (void)alarm(30);
             (void)snprintf(script, sizeof(script),
                            "#!/bin/sh\nkill -KILL %ld\n", (long)getpid());
@@ -5778,7 +5803,7 @@ static int test_dev_land_signed_publisher_death(void)
             (void)dlx_run(&cc);
             _exit(90);
         }
-        ASSERT(dlx_wait_child(child, &child_status) == child);
+        ASSERT(dlx_wait_publisher(child, &child_status) == child);
         ASSERT(WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGKILL);
         ASSERT(dlx_origin_main(&rig, remote));
         ASSERT_STR_EQ(remote, rig.tip);
