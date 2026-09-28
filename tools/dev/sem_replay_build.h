@@ -27,8 +27,10 @@ struct sr_snap {
 /* The live epoch directory named by build/test-obj/.current-epoch. */
 bool sr_epoch_dir(const char *repo, char out[SR_PATH]);
 
-/* Snapshot every object under the live epoch. An object whose inode,
- * mtime and size equal prev's in the same epoch reuses prev's hash. */
+/* Snapshot every object under the live epoch whose source exists in the
+ * checked-out tree (a reused epoch keeps objects of TUs other commits had).
+ * An object whose inode, mtime and size equal prev's in the same epoch
+ * reuses prev's hash. */
 bool sr_snap_take(const char *repo, const struct sr_snap *prev,
                   struct sr_snap *out);
 const struct sr_obj *sr_snap_find(const struct sr_snap *s, const char *tu);

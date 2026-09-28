@@ -98,10 +98,34 @@ struct walk {
     const char *repo;
     const struct sr_snap *prev;
     bool same_epoch;
+    size_t foreign; /* objects whose source this tree lacks, left out */
     struct sr_snap *out;
 };
 
 static bool walk_dir(struct walk *w, const char *rel);
+
+/* The TU of an epoch object, "<dir>/<name>.c" for "<dir>/<name>.o"; *tu is
+ * NULL when that source is absent from the checked-out tree (an epoch
+ * reused across commits keeps the objects of TUs another commit had, and
+ * no rule of this tree builds them). False only when out of memory. */
+static bool object_tu(const struct walk *w, const char *child, char **tu)
+{
+    char src[SR_PATH];
+    size_t cl = strlen(child);
+    *tu = malloc(cl + 1);
+    if (*tu == NULL) {
+        fprintf(stderr, "sem-replay: out of memory naming %s\n", child);
+        return false;
+    }
+    memcpy(*tu, child, cl + 1);
+    (*tu)[cl - 1] = 'c';
+    snprintf(src, sizeof(src), "%s/%s", w->repo, *tu);
+    if (!sr_exists(src)) {
+        free(*tu);
+        *tu = NULL;
+    }
+    return true;
+}
 
 static bool walk_entry(struct walk *w, const char *rel, const char *name)
 {
@@ -118,14 +142,12 @@ static bool walk_entry(struct walk *w, const char *rel, const char *name)
         rel[0] == '\0')
         return true; /* the epoch root holds link products, not TUs */
     struct sr_obj o = {0};
-    size_t cl = strlen(child);
-    o.tu = malloc(cl + 1);
-    if (o.tu == NULL) {
-        fprintf(stderr, "sem-replay: out of memory naming %s\n", child);
+    if (!object_tu(w, child, &o.tu))
         return false;
+    if (o.tu == NULL) {
+        w->foreign++;
+        return true;
     }
-    memcpy(o.tu, child, cl + 1);
-    o.tu[cl - 1] = 'c';
     if (!obj_hash(abs, &st, w->prev, w->same_epoch, &o) || !snap_push(w->out, &o)) {
         free(o.tu);
         return false;
@@ -166,6 +188,9 @@ bool sr_snap_take(const char *repo, const struct sr_snap *prev,
     };
     if (!walk_dir(&w, ""))
         return false;
+    if (w.foreign > 0)
+        fprintf(stderr, "sem-replay: %zu objects in %s have no source in this tree; left out\n",
+                w.foreign, out->epoch);
     if (out->n == 0) {
         fprintf(stderr, "sem-replay: %s holds no objects; the build did not run\n",
                 out->epoch);
