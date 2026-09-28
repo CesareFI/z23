@@ -92,17 +92,11 @@ struct zcl_result build_fabric_executor_key_compose(
     uint8_t out_key[32]);
 
 /* Idempotently store the self-describing executor-key record in the workspace
- * CAS at object id == key. Called by the confined worker right after the
- * physical observation lands. */
+ * CAS at object id == key. When store is available, place the same canonical
+ * proof-key preimage in content.v2 before publishing the record. */
 struct zcl_result build_fabric_executor_key_publish(
-    const char *workspace, const struct db_build_job *job,
-    const struct db_build_action *action, const uint8_t input_bytes_root[32],
-    const struct build_fabric_executor_identity *checked_identity);
-
-/* Best-effort publish for the confined worker: logs a failure and returns
- * void so the caller adds no branch to its pinned complexity budget. */
-void build_fabric_executor_key_publish_logged(
-    const char *workspace, const struct db_build_job *job,
+    const char *workspace, struct vcs_package_store *store,
+    const struct db_build_job *job,
     const struct db_build_action *action, const uint8_t input_bytes_root[32],
     const struct build_fabric_executor_identity *checked_identity);
 

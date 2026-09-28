@@ -49,13 +49,18 @@ static bool bfw_attach_identity_finish(
 }
 
 void bfw_attach_publish_checked(
-    bool stable, const char *workspace, const struct db_build_job *job,
+    bool stable, const char *workspace, struct vcs_package_store *store,
+    const struct db_build_job *job,
     const struct db_build_action *action, const uint8_t input_root[32],
     const struct build_fabric_executor_identity *identity)
 {
-    if (stable)
-        build_fabric_executor_key_publish_logged(
-            workspace, job, action, input_root, identity);
+    if (!stable) return;
+    struct zcl_result published = build_fabric_executor_key_publish(
+        workspace, store, job, action, input_root, identity);
+    if (!published.ok)
+        LOG_ERROR("build_fabric",
+                  "executor key record not published for %s: %s",
+                  action ? action->action_id : "?", published.message);
 }
 
 int bfw_attach_spawn(

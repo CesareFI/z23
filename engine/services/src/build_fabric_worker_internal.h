@@ -21,8 +21,10 @@ struct zcl_result bfw_worker_path(const char *workspace, char *out,
                                   size_t cap);
 
 struct build_fabric_executor_identity;
+struct vcs_package_store;
 void bfw_attach_publish_checked(
-    bool stable, const char *workspace, const struct db_build_job *job,
+    bool stable, const char *workspace, struct vcs_package_store *store,
+    const struct db_build_job *job,
     const struct db_build_action *action, const uint8_t input_root[32],
     const struct build_fabric_executor_identity *identity);
 int bfw_attach_spawn(

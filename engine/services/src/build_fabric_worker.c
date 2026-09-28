@@ -29,6 +29,7 @@
 #include "util/spawn.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_dev.h"
@@ -694,7 +695,8 @@ struct zcl_result build_fabric_worker_execute(
          * Best-effort: the observation, output, and receipt above stand on
          * their own; a publish failure logs and degrades to a future MISS. */
         bfw_attach_publish_checked(
-            attach_identity_stable, workspace, &job, &action,
+            attach_identity_stable, workspace, vcs_package_store_global(),
+            &job, &action,
             observed_input_bytes_root, &checked_identity);
     }
     int64_t output_cas_us =

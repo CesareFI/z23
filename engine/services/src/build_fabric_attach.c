@@ -34,6 +34,7 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/build_execution_observation.h"
+#include "vcs/proof_reuse.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_dev.h"
@@ -393,7 +394,8 @@ static bool bfat_publish_args_valid(
 }
 
 struct zcl_result build_fabric_executor_key_publish(
-    const char *workspace, const struct db_build_job *job,
+    const char *workspace, struct vcs_package_store *store,
+    const struct db_build_job *job,
     const struct db_build_action *action, const uint8_t input_bytes_root[32],
     const struct build_fabric_executor_identity *checked_identity)
 {
@@ -437,6 +439,13 @@ struct zcl_result build_fabric_executor_key_publish(
                                   fields.component_preimage_root,
                                   proof_wire, sizeof(proof_wire)))
         return ZCL_ERR(-1, "executor-component-preimage-store-failed");
+    if (store) {
+        uint8_t stored_root[32];
+        if (!vcs_proof_ticket_store_put(store, proof_wire,
+                                        sizeof(proof_wire), stored_root) ||
+            memcmp(stored_root, fields.component_preimage_root, 32) != 0)
+            return ZCL_ERR(-1, "executor-component-preimage-content-failed");
+    }
     uint8_t wire[BFAT_RECORD_CAP], key[32];
     size_t wire_len = 0;
     if (!bfat_record_serialize(&fields, wire, sizeof(wire), &wire_len))
@@ -445,20 +454,6 @@ struct zcl_result build_fabric_executor_key_publish(
     if (!vcs_object_put_addressed(workspace, key, wire, wire_len))
         return ZCL_ERR(-1, "executor-key-record-cas-store-failed");
     return ZCL_OK;
-}
-
-/* The key record indexes eligible attaches; failure only loses future reuse. */
-void build_fabric_executor_key_publish_logged(
-    const char *workspace, const struct db_build_job *job,
-    const struct db_build_action *action, const uint8_t input_bytes_root[32],
-    const struct build_fabric_executor_identity *checked_identity)
-{
-    struct zcl_result published = build_fabric_executor_key_publish(
-        workspace, job, action, input_bytes_root, checked_identity);
-    if (!published.ok)
-        LOG_ERROR("build_fabric",
-                  "executor key record not published for %s: %s",
-                  action ? action->action_id : "?", published.message);
 }
 
 const char *build_fabric_attach_disposition_string(

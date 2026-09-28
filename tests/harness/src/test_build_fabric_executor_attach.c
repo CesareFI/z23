@@ -19,6 +19,8 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/build_execution_observation.h"
+#include "vcs/package_store.h"
+#include "vcs/proof_reuse.h"
 #include "vcs/vcs_object.h"
 #include "../../../engine/services/src/build_fabric_observation_internal.h"
 
@@ -779,6 +781,35 @@ static int test_bf_attach_avoids_second_compile(void)
                                               &decoded));
         ASSERT_EQ(vcs_component_proof_key_diff(&proof_a, &decoded), 0);
         free(preimage_wire);
+        struct build_fabric_executor_identity checked_identity = {0};
+        memcpy(checked_identity.driver, driver, 32);
+        memcpy(checked_identity.backend, backend, 32);
+        memcpy(checked_identity.assembler, assembler, 32);
+        memcpy(checked_identity.runtime, runtime, 32);
+        memcpy(checked_identity.verifier, verifier, 32);
+        struct vcs_package_store *proof_store =
+            vcs_package_store_open(dir, UINT64_C(4) * 1024 * 1024);
+        ASSERT(proof_store != NULL);
+        struct vcs_component_proof_key_v1 restored;
+        /* The worker's workspace object is not a receiver-visible blob. */
+        ASSERT(!vcs_component_proof_key_load(proof_store, preimage_root,
+                                             &restored));
+        ASSERT_RESULT_OK(build_fabric_executor_key_publish(
+            dir, proof_store, &job_a, &durable_a, input_bytes_root,
+            &checked_identity));
+        vcs_package_store_close(proof_store);
+        proof_store = vcs_package_store_open(
+            dir, UINT64_C(4) * 1024 * 1024);
+        ASSERT(proof_store != NULL);
+        ASSERT(vcs_component_proof_key_load(proof_store, preimage_root,
+                                            &restored));
+        ASSERT_EQ(vcs_component_proof_key_diff(&proof_a, &restored), 0);
+        uint8_t missing_preimage[32];
+        memcpy(missing_preimage, preimage_root, sizeof(missing_preimage));
+        missing_preimage[0] ^= 1u;
+        ASSERT(!vcs_component_proof_key_load(proof_store, missing_preimage,
+                                             &restored));
+        vcs_package_store_close(proof_store);
         uint8_t changed_input[32];
         memcpy(changed_input, input_bytes_root, 32);
         changed_input[0] ^= 1u;
