@@ -347,9 +347,7 @@ static bool fxi_on_function(struct fxi_load *L,
     x->ents[e].main_fn |= main == 1;
     x->ents[e].defined_fn = true;
     /* A header definition with external linkage is emitted by every TU
-     * that reads it; one with internal linkage is each reader's own copy,
-     * which the consumer seeds under this id (fxc_own_copy) rather than
-     * broadening the TU. */
+     * that reads it; an internal one is its own copy (fxc_own_copy). */
     x->ents[e].root |= main == 0 && (f->num[0] == 3 || f->num[0] == 4);
     return true;
 }
