@@ -24,10 +24,10 @@
  * "<tool> dep OBJ SRC -- CC FLAGS" (a small compiled wrapper that writes the
  * depfile and publishes the object by rename, as the real epoch compiler
  * does). The sensor and the planner are small compiled stand-ins: the sensor
- * copies the source into its --out manifest (the replay only hashes
- * manifests), and the planner prints a canned dev.change.plan reply read
- * from files beside it, with the facts reply chosen when --input names
- * "facts".
+ * writes the --cc and --toolchain-id it was given, then the source, into its
+ * --out manifest (the replay only hashes manifests), and the planner
+ * prints a canned dev.change.plan reply read from files beside it, with the
+ * facts reply chosen when --input names "facts".
  *
  *   step C1 with a facts reply that lists no TU: make rebuilt src/a.c and its
  *   code changed, so the step must exit SR_STEP_FALSE_NEGATIVE (3) and write
@@ -70,6 +70,8 @@ int test_sem_replay(void);
 #include <unistd.h>
 
 #define SRT_EPOCH "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+/* The fixture build's toolchain identity, as make's BUILD_COMPILER_ID. */
+#define SRT_TOOLCHAIN "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 #define SRT_TIMEOUT_MS 600000
 #define SRT_EXIT_FALSE_NEGATIVE 3 /* SR_STEP_FALSE_NEGATIVE, sem_replay_step.h */
 
@@ -123,13 +125,15 @@ static const char k_epoch_object[] =
     "    return rename(tmp, argv[2]) == 0 ? 0 : 1;\n"
     "}\n";
 
-/* "emit --root R --source TU --out F --facts -- FLAGS": F gets TU's bytes. */
+/* "emit --root R --source TU --out F --facts [--toolchain-id X] [--cc Y]
+ * -- FLAGS": F gets "cc=Y toolchain=X" (a dash for one not given) on its
+ * first line, then TU's bytes. */
 static const char k_sensor[] =
     "#include <stdio.h>\n"
     "#include <string.h>\n"
     "int main(int argc, char **argv)\n"
     "{\n"
-    "    const char *src = NULL, *out = NULL;\n"
+    "    const char *src = NULL, *out = NULL, *cc = \"-\", *tc = \"-\";\n"
     "    char buf[4096];\n"
     "    size_t n;\n"
     "    if (argc < 2 || strcmp(argv[1], \"emit\") != 0)\n"
@@ -139,6 +143,10 @@ static const char k_sensor[] =
     "            src = argv[++i];\n"
     "        else if (strcmp(argv[i], \"--out\") == 0)\n"
     "            out = argv[++i];\n"
+    "        else if (strcmp(argv[i], \"--cc\") == 0)\n"
+    "            cc = argv[++i];\n"
+    "        else if (strcmp(argv[i], \"--toolchain-id\") == 0)\n"
+    "            tc = argv[++i];\n"
     "        else if (strcmp(argv[i], \"--root\") == 0)\n"
     "            i++;\n"
     "    }\n"
@@ -146,6 +154,7 @@ static const char k_sensor[] =
     "    FILE *o = in && out ? fopen(out, \"wb\") : NULL;\n"
     "    if (o == NULL)\n"
     "        return 1;\n"
+    "    fprintf(o, \"cc=%s toolchain=%s\\n\", cc, tc);\n"
     "    while ((n = fread(buf, 1, sizeof buf, in)) > 0)\n"
     "        fwrite(buf, 1, n, o);\n"
     "    fclose(in);\n"
@@ -281,6 +290,7 @@ static const char k_makefile_body[] =
     "FX_CC := cc\n"
     "FX_CFLAGS := -O1\n"
     "FX_EPOCH := " SRT_EPOCH "\n"
+    "BUILD_COMPILER_ID := " SRT_TOOLCHAIN "\n"
     "FX_OBJ := build/test-obj/epochs/$(FX_EPOCH)\n"
     "FX_MARK := build/test-obj/.current-epoch\n"
     "TEST_PARALLEL_FAST_CANDIDATE := build/fixture-test\n"
@@ -658,6 +668,19 @@ int test_sem_replay(void)
         PASS();
     }
 
+    TEST("both sides' manifests name the object compiler and the toolchain identity, "
+        "as make clang-facts senses them") {
+        const char *sides[] = {"before", "after"};
+        for (size_t s = 0; s < 2; s++) {
+            snprintf(path, sizeof path, "%s/build/sem-replay/facts/src/a.c.%s.zsm", fx.repo,
+                     sides[s]);
+            if (!srt_file_has(path, "cc=cc toolchain=" SRT_TOOLCHAIN "\n"))
+                printf("(%s manifest lacks --cc cc --toolchain-id) ", sides[s]);
+            ASSERT(srt_file_has(path, "cc=cc toolchain=" SRT_TOOLCHAIN "\n"));
+        }
+        PASS();
+    }
+
     TEST("the narrowing step's compile counts are exact: make 2, changed 1, plain 2, facts 1") {
         ASSERT(srt_col_is(state_b, dir_b, "kind", "header"));
         ASSERT(srt_col_is(state_b, dir_b, "files", "1"));
@@ -715,6 +738,15 @@ int test_sem_replay(void)
                                  "object bytes did not change): 0.\n") != NULL);
         ASSERT(strstr(g_srt_out, "False-wide vs plain (a TU the plain plan compiled whose "
                                  "object bytes did not change): 1.\n") != NULL);
+        PASS();
+    }
+
+    TEST("the report puts catalog groups and plan tokens in separate columns, each "
+        "plain / facts") {
+        const char *argv[] = {fx.tool, "report", "--state", state_b, NULL};
+        ASSERT_EQ(srt_run(argv), 0);
+        ASSERT(strstr(g_srt_out, "| groups plain / facts | tokens plain / facts |") != NULL);
+        ASSERT(strstr(g_srt_out, "| 0/0/0 | 2 / 1 | 2 / 1 | narrowed |") != NULL);
         PASS();
     }
 

@@ -1607,7 +1607,11 @@ in a dedicated worktree:
 1. Check out the parent, run make's test-fast object build with the compile
    cache off so every recipe compiles, snapshot every object of the live
    epoch (`build/test-obj/.current-epoch`), and run the sensor on each TU
-   whose depfile names a changed file.
+   whose depfile names a changed file, as `make clang-facts` runs it: `--cc`
+   names the object's compiler (its argv's compiler word, past a compile
+   cache) and `--toolchain-id` make's `BUILD_COMPILER_ID`. Without them
+   IDENTITY says "object-cc unknown" and the planner broadens every reader
+   (identity-drift), a plan no real facts directory produces.
 2. Check out the commit and make again; this is the measured incremental
    build. A TU is in make's set when its object's inode or mtime moved, and
    in the changed set when its object's bytes changed. Sense the same bound
@@ -1637,10 +1641,15 @@ against make, test-group executions it avoided against the plain plan, the
 false-narrow total, which must be 0, and the false-wide totals for facts and
 for plain), the per-commit table, totals by change kind and by facts
 compile-set mode, the fallback reasons ranked by the compile CPU and the
-test groups precision could drop, and the sensor's CPU against each set's
-compile CPU. `repro` rebuilds every object and checks the bytes are
-reproducible. `catalog` compiles every TU cold with make's argv to price
-TUs make never rebuilt.
+catalog test groups the facts plan runs beyond the plain plan, and the
+sensor's CPU against each set's compile CPU. Test groups come in two units:
+catalog groups (the execution set a plan runs) and plan tokens (its path and
+closure group entries; the facts plan's tokens are its obligations). One
+token can expand to several catalog groups, so the facts plan's catalog
+groups are exactly its obligations expanded, never a wider set; compare
+each unit only with itself. `repro` rebuilds every object and checks the
+bytes are reproducible. `catalog` compiles every TU cold with make's argv
+to price TUs make never rebuilt.
 
 The replay is bounded by the history it is given. A commit that touches no
 compiled input measures nothing. The false-narrow check is only as strong as

@@ -102,25 +102,59 @@ static bool snap_tus(const struct sr_snap *s, struct sr_strv *out)
 
 /* ── make ─────────────────────────────────────────────────────────────── */
 
-static bool fast_target(const struct sr_cfg *cfg, const char *log, char out[SR_PATH])
+/* The value make gives expr at the checked-out tree (one line, maybe
+ * empty); false when make fails. */
+static bool make_value(const struct sr_cfg *cfg, const char *log, const char *expr,
+                       char out[SR_PATH])
 {
-    char *argv[] = {"make", "-s", "--no-print-directory", "--eval",
-                    "zsr-print: ; @echo ZSR_TARGET=$(TEST_PARALLEL_FAST_CANDIDATE)",
-                    "zsr-print", NULL};
+    char rule[256];
+    snprintf(rule, sizeof(rule), "zsr-print: ; @echo ZSR_VALUE=%s", expr);
+    char *argv[] = {"make", "-s", "--no-print-directory", "--eval", rule, "zsr-print", NULL};
     char *text = NULL;
     size_t len = 0;
     int rc = sr_capture(argv, cfg->repo, log, &text, &len);
-    const char *hit = text ? strstr(text, "ZSR_TARGET=") : NULL;
+    const char *hit = text ? strstr(text, "ZSR_VALUE=") : NULL;
     bool ok = rc == 0 && hit != NULL;
+    out[0] = '\0';
     if (ok) {
-        snprintf(out, SR_PATH, "%s", hit + strlen("ZSR_TARGET="));
+        snprintf(out, SR_PATH, "%s", hit + strlen("ZSR_VALUE="));
         out[strcspn(out, "\r\n")] = '\0';
-        ok = out[0] != '\0';
     }
-    if (!ok)
-        fprintf(stderr, "sem-replay: cannot name the test-fast binary (make %d)\n", rc);
+    if (rc != 0)
+        fprintf(stderr, "sem-replay: make exited %d printing %s\n", rc, expr);
     free(text);
     return ok;
+}
+
+static bool fast_target(const struct sr_cfg *cfg, const char *log, char out[SR_PATH])
+{
+    bool ok = make_value(cfg, log, "$(TEST_PARALLEL_FAST_CANDIDATE)", out) && out[0] != '\0';
+    if (!ok)
+        fprintf(stderr, "sem-replay: cannot name the test-fast binary\n");
+    return ok;
+}
+
+/* The build's toolchain identity (make's BUILD_COMPILER_ID), which `make
+ * clang-facts` hands the sensor as --toolchain-id: 64 lowercase hex digits,
+ * not all zero. Without it the sensor writes "object-cc unknown" into
+ * IDENTITY and the planner broadens every TU that reads a changed file
+ * (identity-drift), so the replay would measure a plan no real facts
+ * directory produces. out is "" when make names none; the manifests then
+ * say unknown, which only widens. */
+static void toolchain_id(const struct sr_cfg *cfg, const char *log, char out[65])
+{
+    char v[SR_PATH];
+    bool ok = make_value(cfg, log, "$(BUILD_COMPILER_ID)", v) && strlen(v) == 64;
+    bool nonzero = false;
+    for (size_t i = 0; ok && i < 64; i++) {
+        ok = (v[i] >= '0' && v[i] <= '9') || (v[i] >= 'a' && v[i] <= 'f');
+        nonzero = nonzero || v[i] != '0';
+    }
+    ok = ok && nonzero;
+    snprintf(out, 65, "%s", ok ? v : "");
+    if (!ok)
+        fprintf(stderr, "sem-replay: make names no toolchain identity; the manifests "
+                        "say object-cc unknown\n");
 }
 
 bool sr_make_objects(const struct sr_cfg *cfg, const char *log,
@@ -150,19 +184,50 @@ bool sr_make_objects(const struct sr_cfg *cfg, const char *log,
 
 /* ── sensing and timed compiles ───────────────────────────────────────── */
 
-static char **sensor_argv(const struct sr_cfg *cfg, const char *tu,
-                          const char *side, const struct sr_strv *flags)
+/* The compiler word of an object's argv (the words before its first flag),
+ * past a compile-cache wrapper, as the Makefile's ZCL_OBJECT_CC names it;
+ * NULL when there is none. */
+static const char *object_cc(const struct sr_strv *flags)
+{
+    for (size_t i = 0; i < first_flag(flags); i++) {
+        const char *b = basename_of(flags->v[i]);
+        if (strcmp(b, "zcc") != 0 && strcmp(b, "ccache") != 0 && strcmp(b, "sccache") != 0)
+            return flags->v[i];
+    }
+    return NULL;
+}
+
+/* --toolchain-id (when make named one) and --cc (when the argv has a
+ * compiler word), as `make clang-facts` passes them. */
+static bool push_identity(struct sr_strv *a, const struct sr_strv *flags,
+                          const char *toolchain)
+{
+    const char *cc = object_cc(flags);
+    bool ok = true;
+    if (toolchain != NULL && toolchain[0] != '\0')
+        ok = sr_strv_push(a, "--toolchain-id") && sr_strv_push(a, toolchain);
+    if (ok && cc != NULL)
+        ok = sr_strv_push(a, "--cc") && sr_strv_push(a, cc);
+    return ok;
+}
+
+/* The sensor as `make clang-facts` runs it: --cc names the object's
+ * compiler and --toolchain-id the build's toolchain, so IDENTITY records
+ * the compiler that built the object. */
+static char **sensor_argv(const struct sr_cfg *cfg, const char *tu, const char *side,
+                          const struct sr_strv *flags, const char *toolchain)
 {
     char out[SR_PATH];
     snprintf(out, sizeof(out), "%s/%s/%s.%s.zsm", cfg->repo, SR_FACTS_REL, tu, side);
     if (!sr_mkparent(out))
         return NULL;
+    const char *head[] = {cfg->sensor, "emit", "--root", ".", "--source", tu,
+                          "--out", out, "--facts"};
     struct sr_strv a = {0};
-    bool ok = sr_strv_push(&a, cfg->sensor) && sr_strv_push(&a, "emit") &&
-              sr_strv_push(&a, "--root") && sr_strv_push(&a, ".") &&
-              sr_strv_push(&a, "--source") && sr_strv_push(&a, tu) &&
-              sr_strv_push(&a, "--out") && sr_strv_push(&a, out) &&
-              sr_strv_push(&a, "--facts") && sr_strv_push(&a, "--");
+    bool ok = true;
+    for (size_t i = 0; ok && i < sizeof(head) / sizeof(head[0]); i++)
+        ok = sr_strv_push(&a, head[i]);
+    ok = ok && push_identity(&a, flags, toolchain) && sr_strv_push(&a, "--");
     for (size_t i = first_flag(flags); ok && i < flags->n; i++)
         ok = sr_strv_push(&a, flags->v[i]);
     char **v = ok ? steal_argv(&a) : NULL;
@@ -236,7 +301,8 @@ static void batch_free(struct batch *b)
 
 static bool add_sensing(const struct sr_cfg *cfg, struct batch *b,
                         const struct sr_strv *tus, const struct sr_argv_map *m,
-                        const char *side, const char *log)
+                        const char *side, const char *toolchain,
+                        const char *log)
 {
     for (size_t i = 0; i < tus->n; i++) {
         const struct sr_strv *flags = sr_argv_find(m, tus->v[i]);
@@ -244,7 +310,7 @@ static bool add_sensing(const struct sr_cfg *cfg, struct batch *b,
             fprintf(stderr, "sem-replay: no compile argv for %s (%s)\n", tus->v[i], side);
             continue; /* the planner sees no manifest and falls back */
         }
-        if (!batch_add(b, tus->v[i], sensor_argv(cfg, tus->v[i], side, flags),
+        if (!batch_add(b, tus->v[i], sensor_argv(cfg, tus->v[i], side, flags, toolchain),
                        side, NULL, log))
             return false;
     }
@@ -287,6 +353,8 @@ struct commit_run {
      * as the source-identity stamp), and the false negatives split by it:
      * fn_flags changed through their argv, fn_source through their source. */
     struct sr_argv_map argv_p, argv_c;
+    /* The toolchain identity make names at P and at C ("" when none). */
+    char toolchain_p[65], toolchain_c[65];
     struct sr_strv drift, fn_flags, fn_source;
     /* "path\tTU" for each changed path a compile reads (both sides); the
      * changed objects outside drift by kind; fn_source split by kind (an
@@ -479,7 +547,8 @@ static bool sense_side(const struct sr_cfg *cfg, struct commit_run *r,
                        const char *side)
 {
     struct batch b = {0};
-    bool ok = add_sensing(cfg, &b, tus, m, side, r->log) && sense_batch(cfg, r, &b);
+    const char *toolchain = strcmp(side, "before") == 0 ? r->toolchain_p : r->toolchain_c;
+    bool ok = add_sensing(cfg, &b, tus, m, side, toolchain, r->log) && sense_batch(cfg, r, &b);
     batch_free(&b);
     return ok;
 }
@@ -538,6 +607,8 @@ static bool build_before(const struct sr_cfg *cfg, struct commit_run *r)
     bool have_prev = sr_snap_load(&prev, last_snap) && sr_read_file(last_commit, &lc, &lcn);
     bool ok = sr_git_checkout(cfg->repo, r->parent, r->log);
     r->build_failed |= ok && !sr_make_objects(cfg, r->log, NULL, NULL) ? 2 : 0;
+    if (ok)
+        toolchain_id(cfg, r->log, r->toolchain_p);
     ok = ok && sr_snap_take(cfg->repo, have_prev ? &prev : NULL, &r->snap_p);
     if (ok && have_prev && strncmp(lc, r->parent, strlen(r->parent)) == 0)
         repro_compare(&prev, &r->snap_p, &r->repro_rebuilt, &r->repro_mismatch, stderr);
@@ -614,7 +685,8 @@ static bool after_batch(const struct sr_cfg *cfg, struct commit_run *r,
     struct batch b = {0};
     char tmp[SR_PATH];
     snprintf(tmp, sizeof(tmp), "%s/tmp-obj", cfg->state);
-    bool ok = sr_mkdirs(tmp) && add_sensing(cfg, &b, &r->plain, &r->argv_c, "after", r->log) &&
+    bool ok = sr_mkdirs(tmp) &&
+              add_sensing(cfg, &b, &r->plain, &r->argv_c, "after", r->toolchain_c, r->log) &&
               add_compiles(&b, timed, &r->argv_c, tmp, r->log) && sense_batch(cfg, r, &b);
     if (ok)
         record_compiles(cfg, r, &b);
@@ -672,6 +744,8 @@ static bool build_after(const struct sr_cfg *cfg, struct commit_run *r)
     struct sr_strv bounds = {0};
     bool ok = sr_git_checkout(cfg->repo, cfg->commit, r->log);
     r->build_failed |= ok && !sr_make_objects(cfg, r->log, NULL, &r->build_c) ? 1 : 0;
+    if (ok)
+        toolchain_id(cfg, r->log, r->toolchain_c);
     ok = ok && sr_snap_take(cfg->repo, &r->snap_p, &r->snap_c) &&
          snap_tus(&r->snap_c, &r->tus_c) &&
          sr_deps_hits(cfg->repo, &r->snap_c, &r->ch.files, &r->bound_c, &missing) &&

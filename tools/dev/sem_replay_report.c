@@ -276,20 +276,25 @@ static void print_commits(const struct table *t)
            "differ). Misses are changed objects the facts compile set left out: code, "
            "debug-only, and argv (the identity-stamped TU, whose compile argv changes every "
            "commit).\n\n");
+    printf("Groups are catalog test groups, the execution set each plan runs "
+           "(execution_groups_total). Tokens are the plan's own group entries (path and "
+           "closure groups; the facts plan's are its obligations): one token may expand to "
+           "several catalog groups, so tokens and groups are different units and only "
+           "compare within a column.\n\n");
     printf("| # | commit | kind | files c/h/other | make | changed (code/debug) | plain | "
-           "facts (mode) | misses code/debug/argv | groups plain / facts / obligations | verdict | "
-           "sensor CPU s | compile CPU make / plain / facts / changed s |\n");
-    printf("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+           "facts (mode) | misses code/debug/argv | groups plain / facts | tokens plain / facts | "
+           "verdict | sensor CPU s | compile CPU make / plain / facts / changed s |\n");
+    printf("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < t->n; i++) {
         const struct row *r = &t->rows[i];
         printf("| %s | %s | %s%s | %s/%s/%s | %s | %s (%s/%s) | %s | %s (%s) | %s/%s/%s | "
-               "%s / %s / %s | %s | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
+               "%s / %s | %s / %s | %s | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
                col(t, r, "idx"), col(t, r, "commit"), col(t, r, "kind"), failed_note(t, r), col(t, r, "c"),
                col(t, r, "h"), col(t, r, "other"), col(t, r, "make"), col(t, r, "changed"),
                col(t, r, "code_changed"), col(t, r, "debug_changed"), col(t, r, "plain"),
                col(t, r, "facts"), col(t, r, "facts_mode"), col(t, r, "fn_code"),
                col(t, r, "fn_debug"), col(t, r, "fn_flags"), col(t, r, "groups_plain"),
-               col(t, r, "groups_facts"), col(t, r, "obl_facts"),
+               col(t, r, "groups_facts"), col(t, r, "obl_plain"), col(t, r, "obl_facts"),
                is_one(t, r, "narrowed") ? "narrowed" : col(t, r, "reason"),
                num(t, r, "sense_cpu"), r->p[P_MAKE], r->p[P_PLAIN], r->p[P_FACTS],
                r->p[P_CHANGED]);
@@ -301,7 +306,7 @@ struct agg {
     char name[128];
     size_t commits, narrowed, precise;
     double make, changed, code, debug, plain, facts, fn_code, fn_debug, fn_flags;
-    double gplain, gfacts, obl, sense, fw_facts, fw_plain;
+    double gplain, gfacts, oplain, obl, sense, fw_facts, fw_plain;
     double p[P_N];
 };
 
@@ -309,11 +314,11 @@ static void agg_add(struct agg *a, const struct table *t, const struct row *r)
 {
     static const char *const cols[] = {"make", "changed", "code_changed", "debug_changed",
                                        "plain", "facts", "fn_code", "fn_debug", "fn_flags",
-                                       "groups_plain", "groups_facts", "obl_facts",
-                                       "sense_cpu", "fw_facts", "fw_plain"};
+                                       "groups_plain", "groups_facts", "obl_plain",
+                                       "obl_facts", "sense_cpu", "fw_facts", "fw_plain"};
     double *dst[] = {&a->make, &a->changed, &a->code, &a->debug, &a->plain, &a->facts,
                      &a->fn_code, &a->fn_debug, &a->fn_flags, &a->gplain, &a->gfacts,
-                     &a->obl, &a->sense, &a->fw_facts, &a->fw_plain};
+                     &a->oplain, &a->obl, &a->sense, &a->fw_facts, &a->fw_plain};
     a->commits++;
     a->narrowed += is_one(t, r, "narrowed");
     a->precise += strcmp(col(t, r, "facts_mode"), "precise") == 0;
@@ -338,10 +343,10 @@ static struct agg *agg_find(struct agg *v, size_t *n, size_t cap, const char *na
 static void print_agg_row(const struct agg *a)
 {
     printf("| %s | %zu | %zu / %zu | %.0f | %.0f (%.0f/%.0f) | %.0f | %.0f | %.0f/%.0f/%.0f | "
-           "%.0f / %.0f / %.0f | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
+           "%.0f / %.0f | %.0f / %.0f | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
            a->name, a->commits, a->narrowed, a->precise, a->make, a->changed, a->code, a->debug,
-           a->plain, a->facts, a->fn_code, a->fn_debug, a->fn_flags, a->gplain, a->gfacts, a->obl,
-           a->sense, a->p[P_MAKE], a->p[P_PLAIN], a->p[P_FACTS], a->p[P_CHANGED]);
+           a->plain, a->facts, a->fn_code, a->fn_debug, a->fn_flags, a->gplain, a->gfacts,
+           a->oplain, a->obl, a->sense, a->p[P_MAKE], a->p[P_PLAIN], a->p[P_FACTS], a->p[P_CHANGED]);
 }
 
 /* The headline: what the facts plan avoided running, in total, against the
@@ -381,9 +386,9 @@ static void print_groups(const struct table *t, const char *key, const char *tit
     }
     printf("## %s\n\n", title);
     printf("| %s | commits | narrowed / precise | make | changed (code/debug) | plain | facts | "
-           "misses code/debug/argv | groups plain / facts / obligations | sensor CPU s | "
+           "misses code/debug/argv | groups plain / facts | tokens plain / facts | sensor CPU s | "
            "compile CPU make / plain / facts / changed s |\n", key);
-    printf("|---|---|---|---|---|---|---|---|---|---|---|\n");
+    printf("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < n; i++)
         print_agg_row(&v[i]);
     print_agg_row(&total);
@@ -391,8 +396,8 @@ static void print_groups(const struct table *t, const char *key, const char *tit
 }
 
 /* What a precise plan could still remove: compile CPU (the facts set's
- * minus the changed objects') and test groups (the facts plan's minus the
- * obligations its verdict named). */
+ * minus the changed objects'), and the catalog test groups the facts plan
+ * runs beyond the plain plan's (both execution sets, one unit). */
 static double waste_cpu(const struct agg *a)
 {
     return a->p[P_FACTS] - a->p[P_CHANGED];
@@ -400,7 +405,7 @@ static double waste_cpu(const struct agg *a)
 
 static double waste_groups(const struct agg *a)
 {
-    return a->gfacts - a->obl;
+    return a->gfacts - a->gplain;
 }
 
 static int cmp_waste_cpu(const void *a, const void *b)
@@ -421,12 +426,12 @@ static void print_fallback_rows(struct agg *v, size_t n, int (*cmp)(const void *
     qsort(v, n, sizeof(v[0]), cmp);
     printf("### %s\n\n", title);
     printf("| rank | reason | commits | facts TUs | changed TUs | compile CPU s precision could "
-           "drop | groups facts / plain / obligations | groups precision could drop |\n");
-    printf("|---|---|---|---|---|---|---|---|\n");
+           "drop | groups facts / plain | tokens facts / plain | groups facts runs beyond plain |\n");
+    printf("|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < n; i++)
-        printf("| %zu | %s | %zu | %.0f | %.0f | %.1f | %.0f / %.0f / %.0f | %.0f |\n", i + 1,
-               v[i].name, v[i].commits, v[i].facts, v[i].changed, waste_cpu(&v[i]), v[i].gfacts,
-               v[i].gplain, v[i].obl, waste_groups(&v[i]));
+        printf("| %zu | %s | %zu | %.0f | %.0f | %.1f | %.0f / %.0f | %.0f / %.0f | %.0f |\n",
+               i + 1, v[i].name, v[i].commits, v[i].facts, v[i].changed, waste_cpu(&v[i]),
+               v[i].gfacts, v[i].gplain, v[i].obl, v[i].oplain, waste_groups(&v[i]));
     printf("\n");
 }
 
@@ -454,12 +459,12 @@ static void print_c_variant(const struct table *t)
     size_t precise = 0;
     printf("## Compiled-inputs variant (.c, .h and any changed path a depfile names)\n\n");
     printf("| # | commit | separate plan | files | facts (mode) | changed | misses code/debug/argv "
-           "| groups plain / facts / obligations | verdict | compile CPU facts s |\n");
-    printf("|---|---|---|---|---|---|---|---|---|---|\n");
+           "| groups plain / facts | tokens facts | verdict | compile CPU facts s |\n");
+    printf("|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < t->n; i++) {
         const struct row *r = &t->rows[i];
         double fn_argv = num(t, r, "c_fn") - num(t, r, "c_fn_source");
-        printf("| %s | %s | %s | %s | %s (%s) | %s | %s/%s/%.0f | %s / %s / %s | %s | %.1f |\n",
+        printf("| %s | %s | %s | %s | %s (%s) | %s | %s/%s/%.0f | %s / %s | %s | %s | %.1f |\n",
                col(t, r, "idx"), col(t, r, "commit"), col(t, r, "c_run"), col(t, r, "c_files"),
                col(t, r, "c_facts"), col(t, r, "c_mode"), col(t, r, "changed"),
                col(t, r, "c_fn_code"), col(t, r, "c_fn_debug"), fn_argv,
@@ -475,7 +480,7 @@ static void print_c_variant(const struct table *t)
         obl += num(t, r, "c_obl_facts");
         cpu += r->p[P_CFACTS];
     }
-    printf("| **total** | | %zu precise | | %.0f | | %.0f/%.0f/%.0f | %.0f / %.0f / %.0f | | %.1f |\n\n",
+    printf("| **total** | | %zu precise | | %.0f | | %.0f/%.0f/%.0f | %.0f / %.0f | %.0f | | %.1f |\n\n",
            precise, facts, fnc, fnd, fna, gp, gf, obl, cpu);
 }
 
