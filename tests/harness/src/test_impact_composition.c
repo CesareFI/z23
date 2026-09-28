@@ -6377,6 +6377,53 @@ static int test_ic_candidate_zcc_stale_behavior_red(void)
     } _test_next:;
     return failures;
 }
+
+static bool ic_epoch_dep_stale_behavior_child(const char *root)
+{
+    if (setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0) return false;
+    const char *argv[] = {
+        "bash", "tools/dev/fixtures/proof/stale_epoch_dep.sh", root, NULL
+    };
+    struct zcl_devloop_process_result run = {0};
+    if (!zcl_devloop_process_run(".", argv, 60000, &run) ||
+        run.exit_code != 0 || run.output_truncated) {
+        fprintf(stderr, "epoch dep witness execution failed: %s\n",
+                run.output);
+        return false;
+    }
+    fprintf(stderr, "%s", run.output);
+    return strstr(run.output,
+                  "RED donor dep substitution: epoch=") != NULL &&
+           strstr(run.output, " stale=7 fresh=9") != NULL &&
+           strstr(run.output,
+                  "donor_compile=1 stale_compile=0 "
+                  "current_preprocess=1 fresh_compile=1 "
+                  "links=2 executions=2") != NULL;
+}
+
+static int test_ic_epoch_dep_stale_behavior_red(void)
+{
+    int failures = 0;
+    TEST("proof compile: donor -MT dep substitution hides changed header from current epoch") {
+        char root[4096];
+        test_make_tmpdir(root, sizeof(root), "proof_env", "epoch_dep_red");
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0)
+            _exit(ic_epoch_dep_stale_behavior_child(root) ? 0 : 1);
+        int status = 0;
+        pid_t waited;
+        do {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        ASSERT(waited == child);
+        ASSERT(WIFEXITED(status));
+        ASSERT(WEXITSTATUS(status) == 0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
 #endif
 
 static int test_ic_landing_proof_lint_argv(void)
@@ -9455,6 +9502,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_environment_refuses_inherited_shortcuts();
     failures += test_ic_proof_compiles_against_a_private_store();
     failures += test_ic_candidate_zcc_stale_behavior_red();
+    failures += test_ic_epoch_dep_stale_behavior_red();
 #endif
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
     failures += test_ic_proof_test_needs_build_the_sensor();
