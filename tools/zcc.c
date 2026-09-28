@@ -485,6 +485,16 @@ static bool is_regular(const char *p)
     return stat(p, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+/* Only these positional inputs are inert linker data. An unrecognized file
+ * may be a compiler source selected by its suffix; hashing its raw bytes
+ * without preprocessing would miss headers. */
+static bool is_link_input(const char *p)
+{
+    return has_suffix(p, ".o") || has_suffix(p, ".a") ||
+           has_suffix(p, ".so") || has_suffix(p, ".dylib") ||
+           has_suffix(p, ".obj") || has_suffix(p, ".lib");
+}
+
 /* Grow-on-demand list of owned input paths harvested from response files. */
 static bool plan_push_rsp(struct plan *pl, const char *path, size_t len)
 {
@@ -514,6 +524,23 @@ static bool plan_push_rsp(struct plan *pl, const char *path, size_t len)
     pl->rsp = np;
     pl->rsp[pl->rsp_n++] = copy;
     return true;
+}
+
+static bool plan_push_rsp_link(struct plan *pl, const unsigned char *bytes,
+                               size_t len)
+{
+    char token[PATH_MAX];
+    if (len == 0 || len >= sizeof token || memchr(bytes, '\0', len)) {
+        pl->bypass = "response file input type not modeled";
+        return false;
+    }
+    memcpy(token, bytes, len);
+    token[len] = '\0';
+    if (!is_link_input(token)) {
+        pl->bypass = "response file input type not modeled";
+        return false;
+    }
+    return plan_push_rsp(pl, (const char *)bytes, len);
 }
 
 /* A response file (`@path`) is how one link names thousands of objects
@@ -558,12 +585,38 @@ static bool plan_absorb_response_file(struct plan *pl, const char *path)
         size_t start = i;
         while (i < b.len && !isspace((unsigned char)b.p[i]))
             i++;
-        if (!plan_push_rsp(pl, (const char *)b.p + start, i - start)) {
+        if (!plan_push_rsp_link(pl, b.p + start, i - start)) {
             buf_free(&b);
             return false;
         }
     }
     buf_free(&b);
+    return true;
+}
+
+static bool plan_parse_input(struct plan *pl, const char *a, int i)
+{
+    if (a[0] == '@' && a[1])
+        return plan_absorb_response_file(pl, a + 1);
+    if (strcmp(a, "-x") == 0 ||
+        (strncmp(a, "-x", 2) == 0 && a[2]) ||
+        strcmp(a, "-include") == 0 || strcmp(a, "-imacros") == 0) {
+        pl->bypass = "explicit language or hidden include not modeled";
+        return false;
+    }
+    if (a[0] == '-')
+        return true;
+    if (has_suffix(a, ".c")) {
+        pl->src[pl->src_n++] = i;
+        return true;
+    }
+    if (is_regular(a)) {
+        if (!is_link_input(a)) {
+            pl->bypass = "input file type not modeled";
+            return false;
+        }
+        pl->blob[pl->blob_n++] = i;
+    }
     return true;
 }
 
@@ -628,16 +681,8 @@ static void plan_build(struct plan *pl, int argc, char **argv)
             pl->libdir[pl->libdir_n++] = argv[++i];
         } else if (strncmp(a, "-L", 2) == 0 && a[2]) {
             pl->libdir[pl->libdir_n++] = argv[i] + 2;
-        } else if (a[0] == '@' && a[1]) {
-            if (!plan_absorb_response_file(pl, a + 1))
-                return;
-        } else if (a[0] == '-') {
-            continue;
-        } else if (has_suffix(a, ".c")) {
-            pl->src[pl->src_n++] = i;
-        } else if (is_regular(a)) {
-            pl->blob[pl->blob_n++] = i;
-        }
+        } else if (!plan_parse_input(pl, a, i))
+            return;
     }
 
     if (!pl->out_path || strcmp(pl->out_path, "-") == 0) {
@@ -963,6 +1008,14 @@ static bool probe_key(const struct plan *pl, char out[HEXLEN + 1u])
     sha3_256_finalize(&h, d);
     hex_of(d, out);
     return true;
+}
+
+static bool probe_for_plan(const struct plan *pl, bool strict,
+                           char out[HEXLEN + 1u])
+{
+    /* A source compile can change when an earlier include-search candidate
+     * appears, without changing the stat of any previously opened file. */
+    return !strict && pl->src_n == 0 && probe_key(pl, out);
 }
 
 /* ── dependency set ──────────────────────────────────────────────────── */
@@ -3310,7 +3363,9 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
     char pkey[HEXLEN + 1u], ckey[HEXLEN + 1u];
     struct deps deps = { 0 };
     bool have_deps = false;
-    bool have_pkey = !strict && probe_key(&pl, pkey);
+    /* Source compiles recompute the content key. Parsed link-only inputs may
+     * still use the probe shortcut. */
+    bool have_pkey = probe_for_plan(&pl, strict, pkey);
     bool have_ckey = false;
 
     if (have_pkey && manifest_verify(&c, pkey, ckey))

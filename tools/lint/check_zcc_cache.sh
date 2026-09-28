@@ -133,6 +133,89 @@ v2="$(ZCC_VERIFIED=1 build verified_second)" || exit 1
 [ "$(last_disposition)" = MISS ] || fail "verified rebuild reused a same-account object"
 [ "$v1" = "$v2" ] || fail "verified rebuild changed identical output bytes"
 
+# An absent optional header is an input too. A manifest of files the first
+# preprocess opened cannot name a file that did not exist at the time; adding
+# it must invalidate the probe shortcut and change executable behavior.
+cat > "$WORK/optional.c" <<'SRC'
+#if __has_include("optional.h")
+#include "optional.h"
+#else
+#define OPTIONAL_VALUE 1
+#endif
+#include <stdio.h>
+int main(void) { printf("%d\n", OPTIONAL_VALUE); return 0; }
+SRC
+"$ZCC" cc -std=c23 -O1 -I"$WORK" "$WORK/optional.c" \
+    -o "$WORK/optional" 2>"$WORK/optional.first.err" ||
+    fail "optional-header baseline compile failed"
+[ "$("$WORK/optional")" = 1 ] || fail "optional-header baseline behavior was wrong"
+cat > "$WORK/optional.h" <<'HDR'
+#define OPTIONAL_VALUE 2
+HDR
+"$ZCC" cc -std=c23 -O1 -I"$WORK" "$WORK/optional.c" \
+    -o "$WORK/optional" 2>"$WORK/optional.second.err" ||
+    fail "optional-header changed compile failed"
+[ "$(last_disposition)" = MISS ] ||
+    fail "new __has_include header was served from a stale probe manifest"
+[ "$("$WORK/optional")" = 2 ] ||
+    fail "new __has_include header did not change executed behavior"
+
+# An ordinary include can also switch resolution when a file appears in an
+# earlier search directory. This needs no __has_include token in source.
+mkdir -p "$WORK/search-first" "$WORK/search-second"
+cat > "$WORK/search-second/choice.h" <<'HDR'
+#define CHOICE_VALUE 1
+HDR
+cat > "$WORK/search.c" <<'SRC'
+#include <choice.h>
+#include <stdio.h>
+int main(void) { printf("%d\n", CHOICE_VALUE); return 0; }
+SRC
+"$ZCC" cc -std=c23 -O1 -I"$WORK/search-first" \
+    -I"$WORK/search-second" "$WORK/search.c" -o "$WORK/search" \
+    2>"$WORK/search.first.err" || fail "include-search baseline compile failed"
+[ "$("$WORK/search")" = 1 ] || fail "include-search baseline behavior was wrong"
+cat > "$WORK/search-first/choice.h" <<'HDR'
+#define CHOICE_VALUE 2
+HDR
+"$ZCC" cc -std=c23 -O1 -I"$WORK/search-first" \
+    -I"$WORK/search-second" "$WORK/search.c" -o "$WORK/search" \
+    2>"$WORK/search.second.err" || fail "include-search changed compile failed"
+[ "$(last_disposition)" = MISS ] ||
+    fail "new earlier header was served from a stale probe manifest"
+[ "$("$WORK/search")" = 2 ] ||
+    fail "new earlier header did not change executed behavior"
+
+# -x can make a non-.c file a C source. It must bypass both levels: the
+# ordinary content key treats that suffix as a raw blob and would miss its
+# include closure as well.
+cat > "$WORK/explicit.txt" <<'SRC'
+#if __has_include("explicit.h")
+#include "explicit.h"
+#else
+#define EXPLICIT_VALUE 1
+#endif
+#include <stdio.h>
+int main(void) { printf("%d\n", EXPLICIT_VALUE); return 0; }
+SRC
+"$ZCC" cc -std=c23 -x c -I"$WORK" "$WORK/explicit.txt" \
+    -o "$WORK/explicit" 2>"$WORK/explicit.first.err" ||
+    fail "explicit-language baseline compile failed"
+[ "$(last_disposition)" = BYPASS ] ||
+    fail "explicit language mode entered an incomplete content cache"
+[ "$("$WORK/explicit")" = 1 ] ||
+    fail "explicit-language baseline behavior was wrong"
+cat > "$WORK/explicit.h" <<'HDR'
+#define EXPLICIT_VALUE 2
+HDR
+"$ZCC" cc -std=c23 -x c -I"$WORK" "$WORK/explicit.txt" \
+    -o "$WORK/explicit" 2>"$WORK/explicit.second.err" ||
+    fail "explicit-language changed compile failed"
+[ "$(last_disposition)" = BYPASS ] ||
+    fail "explicit language mode reused an incomplete content key"
+[ "$("$WORK/explicit")" = 2 ] ||
+    fail "explicit-language edit did not change executed behavior"
+
 
 # 6. THE SECOND REGRESSION: the node compiles every object into a FRESH
 #    mktemp staging directory and publishes atomically, so `-o` and `-MF`
@@ -202,6 +285,14 @@ SRC
     fail "a link whose objects changed was served from cache"
 [ "$("$WORK/rspprog")" = 2 ] ||
     fail "the relinked program still runs the object bytes it was built from before"
+
+# A NUL in a response-file token must not let the wrapper classify only its
+# prefix while the compiler sees different bytes.
+printf '%s\0%s\n' "$WORK/rsplib.o" "$WORK/rspmain.o" > "$WORK/nul.rsp"
+"$ZCC" cc -std=c23 -O1 "@$WORK/nul.rsp" -o "$WORK/nulprog" \
+    >"$WORK/nul.stdout" 2>"$WORK/nul.stderr" || :
+[ "$(last_disposition)" = BYPASS ] ||
+    fail "NUL response-file token entered the cache"
 
 # 8. THE FOURTH REGRESSION: the epoch object publisher passes -MT with the
 #    final object path, which contains the compile-epoch hash. A Makefile
