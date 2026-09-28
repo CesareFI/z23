@@ -5559,6 +5559,94 @@ static void dp_generation_stage_note(const struct proof_paths *paths,
         (void)zcl_dev_proof_phase_note(paths->phases, stage, value);
 }
 
+/* After its own proof, a generation that passed has nothing left to give.
+ * Its exact pair is never proven again (a passed pair's receipt is reused,
+ * not re-proven), and it could seed a later proof only through
+ * dp_donor_trust_verdict(), which refuses every generation this uid built
+ * for as long as no separate verifier is qualified. Left in the pool it
+ * counts as recently touched for the reaper's idle hour, holding the room
+ * the next proof's RAM reservation asks for, so that proof prepares on
+ * disk instead. So a passed generation is retired here, while this worker
+ * still holds the pair's lease, through the reaper's own detached-and-
+ * clean check and delete. Everything else stays exactly as the reaper
+ * would leave it: a failed generation for its exact retry, a generation
+ * that could donate, and one git will not call detached and clean.
+ * Hygiene only: the verdict is already published and nothing here reads
+ * back into it. `trust` is dp_donor_trust_verdict() in every proof; only
+ * the test seam below passes anything else. */
+static const char *dp_generation_retire_with(
+    const struct proof_paths *paths, const char *generation, bool passed,
+    enum dp_donor_verdict (*trust)(const char *))
+{
+    if (!paths || !paths->root[0] || !generation || !generation[0] || !trust)
+        return "kept_invalid";
+    int64_t started_us = platform_time_monotonic_us();
+    const char *outcome = "kept_failed";
+    if (!passed) {
+        /* Kept for the exact retry that reuses it; no git call at all. */
+    } else if (trust(generation) == DP_DONOR_ELIGIBLE) {
+        outcome = "kept_donor";
+    } else {
+        outcome = "kept_not_clean";
+        if (warm_reapable(generation)) {
+            /* Read-only fixture directories a proof test left behind
+             * would stop git's recursive delete partway through, exactly
+             * as in dp_reap_remove(). --force is safe only because
+             * detached and clean were just proven: what it overrides is
+             * git's refusal to delete untracked build scratch. */
+            dp_generation_unlock(generation);
+            const char *argv[] = {"git", "worktree", "remove", "--force",
+                                  generation, NULL};
+            char output[1024];
+            outcome = git_capture_within(paths->root, argv,
+                                         PROOF_WARM_REMOVE_TIMEOUT_MS,
+                                         output, sizeof(output))
+                          ? "removed"
+                          : "remove_failed";
+        }
+    }
+    if (paths->phases[0]) {
+        (void)zcl_dev_proof_phase_note(paths->phases, "generation_retired",
+                                       outcome);
+        dp_generation_stage_note(paths, "generation_retire_us", started_us);
+    }
+    return outcome;
+}
+
+static void dp_generation_retire(const struct proof_paths *paths,
+                                 const char *generation, bool passed)
+{
+    (void)dp_generation_retire_with(paths, generation, passed,
+                                    dp_donor_trust_verdict);
+}
+
+#if defined(ZCL_TESTING)
+static enum dp_donor_verdict dp_test_donor_eligible(const char *path)
+{
+    (void)path;
+    return DP_DONOR_ELIGIBLE;
+}
+
+bool zcl_dev_proof_test_generation_retire(const char *repo_root,
+                                          const char *generation,
+                                          bool passed, bool donor_eligible,
+                                          char *outcome, size_t outcome_len)
+{
+    struct proof_paths paths;
+    memset(&paths, 0, sizeof(paths));
+    if (repo_root &&
+        snprintf(paths.root, sizeof(paths.root), "%s", repo_root) >=
+            (int)sizeof(paths.root))
+        return false;
+    const char *result = dp_generation_retire_with(
+        &paths, generation, passed,
+        donor_eligible ? dp_test_donor_eligible : dp_donor_trust_verdict);
+    if (outcome && outcome_len)
+        (void)snprintf(outcome, outcome_len, "%s", result);
+    return strcmp(result, "removed") == 0;
+}
+#endif
+
 static bool generation_prepare(const struct proof_paths *paths,
                                const char *local,
                                struct platform_ram_scratch_lease *ram_lease,
@@ -9058,6 +9146,9 @@ static bool proof_worker(const struct proof_paths *paths,
     bool ok = proof_worker_body(paths, local, base, generation, started_us,
                                 &phases, &warm, &changed, why, why_len);
     zcl_dev_proof_changed_set_release(&changed);
+    /* Only a published PASS retires the generation; every refusal keeps
+     * it for the exact retry (dp_generation_retire_with()). */
+    dp_generation_retire(paths, generation, ok);
     return ok;
 }
 

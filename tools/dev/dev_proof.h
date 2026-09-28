@@ -491,6 +491,16 @@ bool zcl_dev_proof_test_generation_dependencies(const char *root,
  * full proof cycle. */
 bool zcl_dev_proof_test_generation_docs_fresh(const char *generation,
                                               char *why, size_t why_len);
+/* Seam for the retirement proof_worker() runs on `generation` (a worktree
+ * of `repo_root`) once its proof settles: `passed` is the proof's verdict,
+ * and `donor_eligible` stands in an eligible donor verdict for the real
+ * same-uid refusal. Writes the outcome name (removed, kept_failed,
+ * kept_donor, kept_not_clean, remove_failed, kept_invalid) and returns
+ * true only when the generation was removed. */
+bool zcl_dev_proof_test_generation_retire(const char *repo_root,
+                                          const char *generation,
+                                          bool passed, bool donor_eligible,
+                                          char *outcome, size_t outcome_len);
 /* Canonical submitting-checkout preparation, without a proof lease or receipt. */
 bool zcl_dev_proof_test_original_plan_prepare(const char *root,
                                               const char *local,

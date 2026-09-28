@@ -4548,6 +4548,137 @@ static int test_pw_generation_pool_sweep(void)
     return failures;
 }
 
+#if !defined(_WIN32)
+/* One detached worktree of `repo` at `<root>/.z23p/<tag>`, or, with a
+ * branch name, one checked out on that branch instead. */
+static bool ic_retire_generation(const char *root, const char *repo,
+                                 const char *tag, const char *branch,
+                                 char *out, size_t out_len)
+{
+    char cmd[12288];
+    if (snprintf(out, out_len, "%s/.z23p/%s", root, tag) >= (int)out_len)
+        return false;
+    int n = branch
+        ? snprintf(cmd, sizeof(cmd),
+                   "git -C '%s' worktree add -q -b '%s' '%s' HEAD", repo,
+                   branch, out)
+        : snprintf(cmd, sizeof(cmd),
+                   "git -C '%s' worktree add --detach -q '%s' HEAD", repo,
+                   out);
+    return n > 0 && (size_t)n < sizeof(cmd) && system(cmd) == 0;
+}
+#endif
+
+static int test_pw_generation_retire_passed(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: only a PASS retires its generation, and "
+         "only a detached, tracked-clean one that cannot donate") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], repo[4096], cmd[8192], outcome[64];
+        char passed[4096], failed[4096], donor[4096], branch[4096];
+        char dirty[4096], locked[4096], probe_path[4608];
+        test_make_tmpdir(root, sizeof(root), "proof_pool_retire", "retire");
+        ASSERT(snprintf(repo, sizeof(repo), "%s/checkout", root) > 0);
+        ASSERT(snprintf(cmd, sizeof(cmd),
+                        "mkdir -p '%s' && cd '%s' && git init -q && "
+                        "echo tracked > tracked && git add tracked && "
+                        "git -c user.name=t -c user.email=t@t.invalid "
+                        "commit -q -m init", repo, repo) > 0);
+        ASSERT(system(cmd) == 0);
+        ASSERT(ic_retire_generation(root, repo,
+                                    "11111111111111111111111111111111",
+                                    NULL, passed, sizeof(passed)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "22222222222222222222222222222222",
+                                    NULL, failed, sizeof(failed)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "33333333333333333333333333333333",
+                                    NULL, donor, sizeof(donor)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "44444444444444444444444444444444",
+                                    "parked", branch, sizeof(branch)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "55555555555555555555555555555555",
+                                    NULL, dirty, sizeof(dirty)));
+        ASSERT(ic_retire_generation(root, repo,
+                                    "66666666666666666666666666666666",
+                                    NULL, locked, sizeof(locked)));
+        /* Untracked build output is what every generation holds and never
+         * keeps one; an edit to a tracked file always does. */
+        ASSERT(ic_write(passed, "build/obj/probe.o", "object\n"));
+        ASSERT(ic_write(failed, "build/obj/probe.o", "object\n"));
+        ASSERT(ic_write(dirty, "tracked", "edited\n"));
+        /* A read-only directory a proof test fixture left behind must not
+         * stop the delete partway and leak a half-deleted generation. */
+        ASSERT(ic_write(locked, "build/fixture/ro/inner", "x\n"));
+        ASSERT(snprintf(probe_path, sizeof(probe_path), "%s/build/fixture/ro",
+                        locked) > 0);
+        ASSERT(chmod(probe_path, 0555) == 0);
+        struct stat probe;
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        /* A PASS by this uid: the generation can never donate, so it goes
+         * now instead of holding the pool for the reaper's idle hour. */
+        bool removed = zcl_dev_proof_test_generation_retire(
+            repo, passed, true, false, outcome, sizeof(outcome));
+        ASSERT(removed);
+        ASSERT_STR_EQ(outcome, "removed");
+        ASSERT(stat(passed, &probe) != 0 && errno == ENOENT);
+
+        /* The same clean, detached shape after a FAILED proof stays for
+         * its exact retry, and git is never asked. */
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, failed, false, false, outcome, sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_failed");
+        ASSERT(stat(failed, &probe) == 0);
+
+        /* A generation that could donate is left to the pool exactly as
+         * before, even after a PASS. */
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, donor, true, true, outcome, sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_donor");
+        ASSERT(stat(donor, &probe) == 0);
+
+        /* Not detached (someone parked a branch there) or a tracked edit:
+         * git does not call it disposable, so it stays. */
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, branch, true, false, outcome, sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_not_clean");
+        ASSERT(stat(branch, &probe) == 0);
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, dirty, true, false, outcome, sizeof(outcome));
+        ASSERT(!removed);
+        ASSERT_STR_EQ(outcome, "kept_not_clean");
+        ASSERT(stat(dirty, &probe) == 0);
+
+        removed = zcl_dev_proof_test_generation_retire(
+            repo, locked, true, false, outcome, sizeof(outcome));
+        ASSERT(removed);
+        ASSERT_STR_EQ(outcome, "removed");
+        ASSERT(stat(locked, &probe) != 0 && errno == ENOENT);
+
+        /* Refusal contract: no root or no generation touches nothing. */
+        ASSERT(!zcl_dev_proof_test_generation_retire(
+            NULL, failed, true, false, outcome, sizeof(outcome)));
+        ASSERT_STR_EQ(outcome, "kept_invalid");
+        ASSERT(!zcl_dev_proof_test_generation_retire(
+            repo, "", true, false, outcome, sizeof(outcome)));
+        ASSERT_STR_EQ(outcome, "kept_invalid");
+        ASSERT(stat(failed, &probe) == 0);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 /* ── generation-pool hygiene fixtures ─────────────────────────────────── */
 #if !defined(_WIN32)
@@ -9137,6 +9268,7 @@ int test_impact_composition(void)
     failures += test_pw_pick_newest_complete_idle();
     failures += test_pw_marker_round_trip_and_refusals();
     failures += test_pw_generation_pool_sweep();
+    failures += test_pw_generation_retire_passed();
     failures += test_pw_abandoned_generation_reaped_by_age();
     failures += test_pw_pressure_evicts_oldest_until_satisfied();
     failures += test_pw_orphan_shapes_reaped();
