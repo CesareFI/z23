@@ -11,6 +11,7 @@
 
 #define _GNU_SOURCE
 #include "devloop.h"
+#include "devloop_early.h"
 #include "test_group_catalog.h"
 
 #include "base/checked.h"
@@ -3018,6 +3019,21 @@ bool zcl_devloop_restart_prove_immediate(
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
                             receipt, process, why, why_len, true, true, NULL);
+}
+
+bool zcl_devloop_restart_prove_early(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    const struct zcl_devloop_plan *proof_plan,
+    const struct zcl_devloop_early_plan *early_plan,
+    struct zcl_devloop_restart_proof_receipt *receipt,
+    struct zcl_devloop_early_receipt *early,
+    struct zcl_devloop_process_result *process, char *why, size_t why_len)
+{
+    (void)early_plan;
+    memset(early, 0, sizeof(*early));
+    zcl_devloop_early_skip(early, "not_wired", "");
+    return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
+                            receipt, process, why, why_len, false, true, NULL);
 }
 
 static void rr_output_preview(const struct zcl_devloop_process_result *process,

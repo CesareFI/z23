@@ -1464,6 +1464,13 @@ ZCL_TEST_GROUP(semantic_consumer)
  * object bytes (a changed object it did not predict is a missed
  * dependency). Self-skips, visibly, where the sensor has not been built. */
 ZCL_TEST_GROUP(semantic_consumer_live)
+/* The early feedback stage of the resident restart proof
+ * (tools/dev/devloop_early.c): on a candidate a real cc compiles and links,
+ * the facts-narrowed groups run first, uncached, as feedback that is never
+ * admissible; the full plan then selects and runs byte-identical groups; a
+ * red early stage leaves the full plan unchanged; and missing, outside,
+ * absent or empty facts skip the stage and name why. */
+ZCL_TEST_GROUP(devloop_early)
 ZCL_SPEC_GROUP(wallet_dashboard)
 ZCL_SPEC_GROUP(wallet_send)
 ZCL_SPEC_GROUP(wallet_receive)
