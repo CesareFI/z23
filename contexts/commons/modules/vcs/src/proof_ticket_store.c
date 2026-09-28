@@ -217,7 +217,9 @@ static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t max_catalog_rows, size_t *tickets,
                                 size_t *checkpoints, size_t *skipped,
-                                uint64_t *generation_out);
+                                uint64_t *generation_out,
+                                const struct vcs_proof_receiver_anchor *anchors,
+                                size_t anchor_count);
 
 static void pts_restore_free(struct pts_restore *s)
 {
@@ -237,7 +239,7 @@ static bool pts_restore_begin(struct pts_restore *s, const uint8_t seed[32],
     if (!s->fresh) return false;
     vcs_proof_issuer_log_pubkey(s->fresh, s->pubkey);
     return pts_rebuild_bounded(s->receiver, s->store, max_catalog_rows,
-                               NULL, NULL, NULL, &s->generation);
+                               NULL, NULL, NULL, &s->generation, NULL, 0);
 }
 
 static bool pts_restore_empty(struct pts_restore *s)
@@ -953,11 +955,51 @@ static void pts_report_counts(const struct pts_counts *n, size_t *tickets,
     if (skipped) *skipped = n->skipped;
 }
 
+static bool pts_anchor_head_verified(
+    const struct vcs_proof_receiver *staging,
+    struct vcs_package_store *store,
+    const struct vcs_proof_receiver_anchor *anchor)
+{
+    uint8_t wire[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+    uint8_t root[VCS_PROOF_ROOT_BYTES];
+    if (!vcs_proof_checkpoint_store_load(
+            store, anchor->checkpoint_blob_root, anchor->issuer_pubkey,
+            wire, root))
+        LOG_RETURN(false, PTS_LOG, "rebuild: anchored head missing from CAS");
+    const struct pr_issuer *issuer =
+        pr_issuer_find(staging, anchor->issuer_pubkey);
+    if (!issuer || issuer->equivocating || issuer->verified_count == 0 ||
+        memcmp(issuer->last_root, root, sizeof(root)) != 0)
+        LOG_RETURN(false, PTS_LOG,
+                   "rebuild: anchored head is absent, stale or forked");
+    for (size_t i = 0; i < issuer->cp_count; i++) {
+        const struct pr_checkpoint *cp = &issuer->cps[i];
+        if (cp->verified && memcmp(cp->root, root, sizeof(root)) == 0 &&
+            memcmp(cp->wire, wire, sizeof(wire)) == 0 &&
+            cp->leaf_count == issuer->mmr.num_leaves)
+            return true;
+    }
+    LOG_RETURN(false, PTS_LOG, "rebuild: anchored head lost verification");
+}
+
+static bool pts_verify_anchor_heads(
+    const struct vcs_proof_receiver *staging,
+    struct vcs_package_store *store,
+    const struct vcs_proof_receiver_anchor *anchors, size_t anchor_count)
+{
+    for (size_t i = 0; i < anchor_count; i++)
+        if (!pts_anchor_head_verified(staging, store, &anchors[i]))
+            return false;
+    return true;
+}
+
 static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t max_catalog_rows, size_t *tickets,
                                 size_t *checkpoints, size_t *skipped,
-                                uint64_t *generation_out)
+                                uint64_t *generation_out,
+                                const struct vcs_proof_receiver_anchor *anchors,
+                                size_t anchor_count)
 {
     struct pts_counts n = {0};
     pts_report_counts(&n, tickets, checkpoints, skipped);
@@ -974,7 +1016,8 @@ static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                        max_catalog_rows) &&
               pts_replay(staging, &cps, &n) &&
               pts_restore_anchored_fork(r, staging) &&
-              pts_preserves_prior(r, staging);
+              pts_preserves_prior(r, staging) &&
+              pts_verify_anchor_heads(staging, store, anchors, anchor_count);
     free(cps.items);
     if (ok) ok = pts_publish_rechecked(r, staging, store, &chunks, generation);
     if (ok && generation_out) *generation_out = generation;
@@ -992,5 +1035,24 @@ bool vcs_proof_receiver_rebuild_bounded(
     size_t *skipped)
 {
     return pts_rebuild_bounded(r, store, max_catalog_rows, tickets,
-                               checkpoints, skipped, NULL);
+                               checkpoints, skipped, NULL, NULL, 0);
+}
+
+bool vcs_proof_receiver_rebuild_anchored_bounded(
+    struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    const struct vcs_proof_receiver_anchor *anchors, size_t anchor_count,
+    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
+    size_t *skipped, uint64_t *generation_out)
+{
+    if (!anchors || anchor_count == 0 || anchor_count > max_catalog_rows) {
+        if (tickets) *tickets = 0;
+        if (checkpoints) *checkpoints = 0;
+        if (skipped) *skipped = 0;
+        if (generation_out) *generation_out = 0;
+        LOG_RETURN(false, PTS_LOG,
+                   "rebuild: anchored head set is empty or over budget");
+    }
+    return pts_rebuild_bounded(r, store, max_catalog_rows, tickets,
+                               checkpoints, skipped, generation_out, anchors,
+                               anchor_count);
 }

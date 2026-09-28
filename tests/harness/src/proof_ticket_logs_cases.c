@@ -1852,6 +1852,150 @@ static int ptl_case_deleted_catalog_manifest(void)
     return failures;
 }
 
+static int ptl_case_fresh_anchored_head(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: fresh receiver refuses a lost durable head") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t ticket_root[32], cp_root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "freshhead");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket),
+                                          ticket_root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), cp_root));
+        struct vcs_proof_receiver_anchor anchor = {0};
+        memcpy(anchor.issuer_pubkey, g_l.pub[PTF_A], 32);
+        memcpy(anchor.checkpoint_blob_root, cp_root, 32);
+        struct vcs_proof_receiver *fresh = vcs_proof_receiver_new();
+        ASSERT(fresh != NULL);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        uint64_t generation = 0;
+        ASSERT(vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, &anchor, 1, 2, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(tickets, (size_t)1);
+        ASSERT_EQ(cps, (size_t)1);
+        ASSERT(generation != 0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(fresh), (size_t)1);
+        generation = UINT64_C(99);
+        ASSERT(!vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, NULL, 0, 2, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(generation, (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(fresh), (size_t)1);
+        generation = UINT64_C(99);
+        ASSERT(!vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, &anchor, 1, 0, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(generation, (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(fresh), (size_t)1);
+        vcs_package_store_close(store);
+
+        char hex[65], path[640];
+        zcl_hex_encode(ticket_root, sizeof(ticket_root), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/manifests/%s",
+                        dir, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+        zcl_hex_encode(cp_root, sizeof(cp_root), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/manifests/%s",
+                        dir, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        generation = UINT64_C(99);
+        ASSERT(!vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, &anchor, 1, 2, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(generation, (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(fresh), (size_t)1);
+        vcs_proof_receiver_free(fresh);
+
+        fresh = vcs_proof_receiver_new();
+        ASSERT(fresh != NULL);
+        generation = UINT64_C(99);
+        /* The old, unanchored API sees an empty catalog after restart. */
+        ASSERT(ptl_rebuild(fresh, store, 2, &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT(!vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, &anchor, 1, 2, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(generation, (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(fresh), (size_t)0);
+        vcs_proof_receiver_free(fresh);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_stale_anchored_head(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: a verified ancestor is not the durable head") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket_a[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t ticket_b[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t root[32], cp_a_root[32], cp_b_root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(),
+                        ticket_a, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp_a));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(),
+                        ticket_b, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 12, cp_b));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "stalehead");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket_a,
+                                          sizeof(ticket_a), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp_a,
+                                          sizeof(cp_a), cp_a_root));
+        ASSERT(vcs_proof_ticket_store_put(store, ticket_b,
+                                          sizeof(ticket_b), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp_b,
+                                          sizeof(cp_b), cp_b_root));
+        struct vcs_proof_receiver_anchor anchor = {0};
+        memcpy(anchor.issuer_pubkey, g_l.pub[PTF_A], 32);
+        memcpy(anchor.checkpoint_blob_root, cp_a_root, 32);
+        struct vcs_proof_receiver *fresh = vcs_proof_receiver_new();
+        ASSERT(fresh != NULL);
+        size_t tickets = 0, cps = 0, skipped = 0;
+        uint64_t generation = UINT64_C(99);
+        ASSERT(!vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, &anchor, 1, 4, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(generation, (uint64_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(fresh), (size_t)0);
+        memcpy(anchor.checkpoint_blob_root, cp_b_root, 32);
+        ASSERT(vcs_proof_receiver_rebuild_anchored_bounded(
+            fresh, store, &anchor, 1, 4, &tickets, &cps, &skipped,
+            &generation));
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        ASSERT(generation != 0);
+        vcs_proof_receiver_free(fresh);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 static int ptl_case_rebuild_boundary(void)
 {
     int failures = 0;
@@ -2110,6 +2254,8 @@ int ptf_log_cases(void)
     failures += ptl_case_rebuild_preserves_checkpoint_head();
     failures += ptl_case_rebuild_corrupt_index();
     failures += ptl_case_deleted_catalog_manifest();
+    failures += ptl_case_fresh_anchored_head();
+    failures += ptl_case_stale_anchored_head();
     failures += ptl_case_changed_cas_during_rebuild();
     failures += ptl_case_changed_cas_after_recheck();
     if (getenv("Z23_PROOF_STORE_BOUNDARY_RED"))

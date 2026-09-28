@@ -290,4 +290,24 @@ bool vcs_proof_receiver_rebuild_bounded(
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
     size_t *skipped);
 
+/* The caller supplies each issuer's durable content.v2 checkpoint blob head.
+ * A receiver verifies every supplied head as its issuer's latest signed
+ * checkpoint before publishing replay. A missing,
+ * stale or forked head refuses and leaves the caller's receiver intact. The
+ * caller must supply at least one head, obtain roots from durable local
+ * authority, and recheck that authority before using the rebuilt projection.
+ * An incomplete head enumeration must be refused by the caller. On success,
+ * generation_out is the catalog generation at publication; the caller must
+ * fence both that generation and the durable head authority before reuse. */
+struct vcs_proof_receiver_anchor {
+    uint8_t issuer_pubkey[VCS_PROOF_PUBKEY_BYTES];
+    uint8_t checkpoint_blob_root[VCS_PROOF_ROOT_BYTES];
+};
+
+bool vcs_proof_receiver_rebuild_anchored_bounded(
+    struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    const struct vcs_proof_receiver_anchor *anchors, size_t anchor_count,
+    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
+    size_t *skipped, uint64_t *generation_out);
+
 #endif /* ZCL_VCS_PROOF_REUSE_H */
