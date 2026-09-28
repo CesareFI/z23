@@ -501,13 +501,17 @@ struct sbi_run {
     struct zcl_devloop_facts_report rep;
 };
 
-static bool sbi_consume(const char *tag, const char *makefile,
-                        const char *const *changed, size_t nchanged,
-                        struct sbi_run *r)
+/* sbi_consume with one more file in the root (an included makefile), when
+ * `extra` is not NULL: `extra` is its path and `body` its text. */
+static bool sbi_consume_with(const char *tag, const char *makefile,
+                             const char *extra, const char *body,
+                             const char *const *changed, size_t nchanged,
+                             struct sbi_run *r)
 {
     char root[4096];
     bool ok = test_mkdtemp(root, sizeof(root), tag) != NULL &&
-              sbi_write_tu(root, NULL) && sbi_write(root, "Makefile", makefile);
+              sbi_write_tu(root, NULL) && sbi_write(root, "Makefile", makefile) &&
+              (extra == NULL || sbi_write(root, extra, body));
     for (size_t k = 0; ok && k < nchanged; k++)
         ok = sbi_write(root, changed[k], "#!/bin/sh\n");
     ok = ok && zcl_devloop_plan_files(changed, nchanged, &r->plain);
@@ -515,6 +519,13 @@ static bool sbi_consume(const char *tag, const char *makefile,
         memcpy(&r->plan, &r->plain, sizeof(r->plan));
     return ok && zcl_devloop_facts_consume(root, changed, nchanged, "facts",
                                            NULL, &r->plan, &r->v, &r->rep);
+}
+
+static bool sbi_consume(const char *tag, const char *makefile,
+                        const char *const *changed, size_t nchanged,
+                        struct sbi_run *r)
+{
+    return sbi_consume_with(tag, makefile, NULL, NULL, changed, nchanged, r);
 }
 
 /* Every path group the plain plan selected is still selected. */
@@ -831,6 +842,181 @@ static int sbit_t_echo_into_shell(void)
     return failures;
 }
 
+/* ---- makefiles GNU make reads wider than their literal text ---------------------- */
+
+/* One makefile where GNU make runs the recipe that reads tools/x.sh, but the
+ * text never spells that goal as a literal word an object rule reaches.
+ * `extra` (if not NULL) is an included makefile written with `body`. */
+struct sbi_case {
+    const char *id, *makefile, *extra, *body;
+};
+
+/* Every case widens a changed tools/x.sh; the first that does not is
+ * named. */
+static bool sbi_cases_widen(const struct sbi_case *cases, size_t n)
+{
+    static const char *const changed[] = {"tools/x.sh"};
+    for (size_t k = 0; k < n; k++) {
+        struct sbi_run r = {0};
+        char tag[64];
+        bool ok;
+        (void)snprintf(tag, sizeof(tag), "sbi_case_%s", cases[k].id);
+        ok = sbi_consume_with(tag, cases[k].makefile, cases[k].extra,
+                              cases[k].body, changed, 1, &r) &&
+             sbi_widened(&r);
+        zcl_devloop_facts_report_free(&r.rep);
+        if (!ok) {
+            printf("[case %s narrowed] ", cases[k].id);
+            return false;
+        }
+    }
+    return true;
+}
+
+#define SBI_GEN_RULE ".PHONY: gen\ngen:\n\tsh tools/x.sh > gen.h\n"
+#define SBI_GEN_A_RULE ".PHONY: gen-a\ngen-a:\n\tsh tools/x.sh > gen.h\n"
+#define SBI_OBJ_RULE "build/a.o: " SBI_TU "\n\t$(CC) -c $< -o $@\n"
+#define SBI_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+
+/* The default goal is the first rule that is neither a pattern rule nor a
+ * special target: a leading %.o rule does not take it. */
+static int sbit_t_default_goal_skips_patterns(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"20", "%.o: %.c\n\t$(CC) -c $< -o $@\n"
+               ".PHONY: all\nall:\n\tsh tools/x.sh > gen.h\n" SBI_OBJ_RULE,
+         NULL, NULL},
+        {"20b", "build/%.o: src/%.c\n\t$(CC) -c $< -o $@\n"
+                ".PHONY: all\nall: headers build/a.o\n"
+                ".PHONY: headers\nheaders:\n\tsh tools/x.sh > gen.h\n",
+         NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a pattern rule first in the makefile "
+             "leaves the default goal to the next rule") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* A prerequisite a transforming call computes can name any .PHONY goal. */
+static int sbit_t_computed_prerequisite(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"28", "build/a.o: " SBI_TU " $(patsubst x%,%,xgen)\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_RULE,
+         NULL, NULL},
+        {"30", "build/a.o: " SBI_TU " $(addprefix g,en)\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_RULE,
+         NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a prerequisite spelled through "
+             "$(patsubst) or $(addprefix) reaches the goal it computes") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* An automatic variable in a make command names a goal only make knows
+ * when it runs, and a shell escape in a goal word is undone by the shell:
+ * either can be any .PHONY goal. */
+static int sbit_t_computed_goal_word(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"60", "build/%.o: src/%.c\n\t$(MAKE) gen-$*\n\t$(CC) -c $< -o $@\n"
+               SBI_GEN_A_RULE, NULL, NULL},
+        {"61", "build/a.o: " SBI_TU "\n\t$(MAKE) $(@:build/%.o=gen-%)\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_A_RULE, NULL, NULL},
+        {"62", "build/a.o: " SBI_TU "\n\t$(MAKE) gen-$(basename $(@F))\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_A_RULE, NULL, NULL},
+        {"67", "build/a.o: " SBI_TU "\n\t$(MAKE) gen\\-a\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_A_RULE, NULL, NULL},
+        {"41", "build/a.o: " SBI_TU "\n\tprintf \"make gen\\n\" | sh\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_RULE, NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a make goal spelled with an automatic "
+             "variable or a shell escape reaches any .PHONY goal") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* An echo inside a { } or ( ) group is piped when the group is. */
+static int sbit_t_grouped_echo_pipe(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"70", "build/a.o: " SBI_TU "\n\t{ echo gen; } | xargs $(MAKE)\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_RULE, NULL, NULL},
+        {"71", "build/a.o: " SBI_TU "\n"
+               "\t( echo gen; echo other ) | xargs $(MAKE)\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_RULE, NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: an echo in a group piped into make "
+             "reaches the goal it prints") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* A sub-make runs its goals whether or not its own rule is reached, and
+ * $(MAKE_COMMAND) is make. */
+static int sbit_t_submake_goals(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"95", SBI_OBJ_RULE ".PHONY: strict gen\nstrict:\n"
+               "\t$(MAKE) gen build/a.o\ngen:\n\tsh tools/x.sh > gen.h\n",
+         NULL, NULL},
+        {"97", "build/a.o: " SBI_TU "\n\t$(MAKE_COMMAND) gen\n"
+               "\t$(CC) -c $< -o $@\n" SBI_GEN_RULE, NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a sub-make that also builds an object "
+             "reaches its other goals, and $(MAKE_COMMAND) runs make") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* Text the scanner cannot read to its end widens everything: an unclosed
+ * reference, an unclosed conditional. */
+static int sbit_t_unreadable_text(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"80", SBI_OBJ_RULE ".PHONY: lint\nlint:\n\tsh tools/x.sh $(FOO\n",
+         NULL, NULL},
+        {"81", SBI_OBJ_RULE "ifeq (1,1)\n.PHONY: lint\nlint:\n"
+               "\tsh tools/x.sh\n", NULL, NULL},
+        {"82", "X := $(shell cat tools/x.sh\n" SBI_OBJ_RULE, NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: an unclosed reference or conditional "
+             "widens everything") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* An optional include of a computed word can read any makefile, and one
+ * of a variable reads the files it lists. */
+static int sbit_t_optional_include(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"90b", "all: build/a.o\n-include $(wildcard mk/*.mk)\n" SBI_GEN_RULE,
+         "mk/objs.mk", "build/a.o: " SBI_TU " | gen\n\t$(CC) -c $< -o $@\n"},
+        {"91", "MK := mk/extra.mk mk/other.mk\n-include $(MK)\n" SBI_OBJ_RULE
+               SBI_GEN_RULE, "mk/extra.mk", "build/a.o: | gen\n"},
+    };
+    TEST_CASE("semantic_build_inputs: an optional include of a computed or "
+             "variable word reads what it names") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
@@ -842,5 +1028,9 @@ int test_semantic_build_inputs(void)
           sbit_t_wildcard_sources() | sbit_t_phony_prerequisite() |
           sbit_t_phony_via_variable() | sbit_t_phony_submake() |
           sbit_t_conditional_recipe() | sbit_t_default_goal() |
-          sbit_t_rooted_prerequisite() | sbit_t_echo_into_shell();
+          sbit_t_rooted_prerequisite() | sbit_t_echo_into_shell() |
+          sbit_t_default_goal_skips_patterns() |
+          sbit_t_computed_prerequisite() | sbit_t_computed_goal_word() |
+          sbit_t_grouped_echo_pipe() | sbit_t_submake_goals() |
+          sbit_t_unreadable_text() | sbit_t_optional_include();
 }
