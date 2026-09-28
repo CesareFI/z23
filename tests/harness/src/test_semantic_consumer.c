@@ -196,6 +196,80 @@ static int sct_t_missing(const struct sct_fixtures *f, struct scx_result *res)
     return failures;
 }
 
+/* A copy of manifest m whose FACTS record names facts revision 2: the same
+ * bytes a producer before revision 3 would write, which records no
+ * static_assert. NULL when the name is not there once. */
+static uint8_t *sct_revision2(const uint8_t *m, size_t n)
+{
+    static const char v3[] = VCS_SEMANTIC_FACTS_V3_NAME;
+    const size_t len = sizeof(v3) - 1;
+    uint8_t *out = zcl_malloc(n + 1, "sct.rev2");
+    size_t hits = 0;
+    if (out == NULL)
+        return NULL;
+    memcpy(out, m, n);
+    static_assert(sizeof(VCS_SEMANTIC_FACTS_V2_NAME) == sizeof(v3),
+                  "the revision names differ only in their digit");
+    for (size_t k = 0; k + len <= n; k++) {
+        if (memcmp(out + k, v3, len) != 0)
+            continue;
+        memcpy(out + k, VCS_SEMANTIC_FACTS_V2_NAME, len);
+        hits++;
+    }
+    if (hits != 1) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+/* gline0 leaves cx_e.c unaffected: nothing it reaches changed and -g0
+ * records no position. Read from revision-2 manifests, which record no
+ * static_assert, nothing says that no assertion of the changed header
+ * reads what changed: it compiles, with no test obligation; the TUs another
+ * rule already decides keep their verdicts. Either side alone at revision 2
+ * is enough. */
+static int sct_t_old_revision(const struct sct_fixtures *f,
+                              struct scx_result *res)
+{
+    int failures = 0;
+    uint8_t *old[2][SCX_TU_COUNT] = {0};
+    const struct zcl_devloop_facts_tu_verdict *t;
+    TEST_CASE("semantic_consumer: a manifest before facts revision 3 compiles a reader no rule reaches") {
+        struct scx_evidence ev = sct_evidence(f, SCX_GLINE0);
+        size_t unsafe = 0;
+        ASSERT(sct_run(f, SCX_GLINE0, &ev, &unsafe, NULL, res) == 0);
+        t = scx_tu_of(res, SCX_E);
+        ASSERT(t != NULL && !t->affected);
+        ASSERT(strcmp(t->reason, "unaffected") == 0);
+        scx_result_free(res);
+        for (int side = 0; side < 2; side++) {
+            ev = sct_evidence(f, SCX_GLINE0);
+            for (size_t tu = 0; tu < SCX_TU_COUNT; tu++) {
+                const uint8_t *m = side == 0 ? ev.before[tu] : ev.after[tu];
+                size_t n = side == 0 ? ev.before_len[tu] : ev.after_len[tu];
+                old[side][tu] = sct_revision2(m, n);
+                ASSERT(old[side][tu] != NULL);
+                if (side == 0)
+                    ev.before[tu] = old[side][tu];
+                else
+                    ev.after[tu] = old[side][tu];
+            }
+            ASSERT(sct_run(f, SCX_GLINE0, &ev, &unsafe, NULL, res) != SIZE_MAX);
+            t = scx_tu_of(res, SCX_E);
+            ASSERT(t != NULL && t->affected && t->compile_only && !t->broadened);
+            ASSERT(strcmp(t->reason, "static-assert-unattributed") == 0);
+            t = scx_tu_of(res, SCX_A);
+            ASSERT(t != NULL && strcmp(t->reason, "position") == 0);
+            scx_result_free(res);
+        }
+    } TEST_END
+    for (int side = 0; side < 2; side++)
+        for (size_t tu = 0; tu < SCX_TU_COUNT; tu++)
+            free(old[side][tu]);
+    return failures;
+}
+
 static int sct_t_nograph(const struct sct_fixtures *f, struct scx_result *res)
 {
     int failures = 0;
@@ -619,6 +693,7 @@ int test_semantic_consumer(void)
         failures += sct_t_table(f, res);
         failures += sct_t_mutants(f, res);
         failures += sct_t_missing(f, res);
+        failures += sct_t_old_revision(f, res);
         failures += sct_t_nograph(f, res);
         failures += sct_t_c_nograph(f, res);
         failures += sct_t_identities(f, res);
