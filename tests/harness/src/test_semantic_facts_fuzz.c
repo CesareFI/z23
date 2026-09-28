@@ -28,9 +28,9 @@
  * known-RED and pass guards alike) runs every time regardless of mode:
  * they are the regressions this group exists to catch. On top of those,
  * three seed modes, printed in the summary line as `mode=...`:
- *   default   a fixed list of 6 seeds (~60s standalone with the fixed
- *             reproducers on an unloaded host) covering every mutation
- *             kind and every profile;
+ *   default   a fixed list of 6 seeds (~45s standalone with the fixed
+ *             reproducers on an unloaded devbuild lane) covering every
+ *             mutation kind and every profile;
  *   full      ZCL_STRESS_TESTS=1 (this repo's existing opt-in-to-the-slow-
  *             path convention): the full fixed list of 51 seeds;
  *   custom    ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]
@@ -80,8 +80,12 @@
 
 #define SFZ_SENSOR "build/bin/z23-clang-manifest"
 /* Cases run SFZ_CASES_AT_ONCE at once, each compiling and sensing
- * SFZ_JOBS files at once: eight processes in all. */
-#define SFZ_CASES_AT_ONCE 4
+ * SFZ_JOBS files at once: SFZ_CASES_AT_ONCE * SFZ_JOBS processes in all.
+ * A devbuild lane reserves dozens of CPUs; 4 badly underused one, so this
+ * is raised toward that, capped well under a lane's full width so a case's
+ * own SFZ_JOBS burst and other lint/test workers sharing the box still
+ * have room. */
+#define SFZ_CASES_AT_ONCE 8
 #define SFZ_JOBS 2
 /* A case of at most eight TUs compiles and senses each twice, SFZ_JOBS
  * runs at once, every run bounded by its own deadline; a case whose
@@ -174,7 +178,8 @@ static const struct sfz_seed k_default_seeds_full[] = {
  * list is deliberately small, and every one of the 6 is known (from a
  * run of the full list) to produce a seeded verdict, so the invariant
  * below holds with margin. Standalone (with the fixed reproducers) this
- * is about a minute; ZCL_STRESS_TESTS=1 runs the full list instead. */
+ * is about 45s at SFZ_CASES_AT_ONCE; ZCL_STRESS_TESTS=1 runs the full
+ * list instead. */
 static const struct sfz_seed k_default_seeds_fast[] = {
     {20055, PROF_ALL, "header_inline"},
     {22414, PROF_GCC_DEPS, "typedef"},

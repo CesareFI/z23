@@ -1305,11 +1305,12 @@ set is planned in process exactly as
    file is not covered by it.
 
 fails the group. Every fixed reproducer always runs. On top of those, the
-default run adds a fixed list of 6 (seed, profile, kind) cases (about a
-minute standalone with the fixed reproducers), and must yield narrowed
+default run adds a fixed list of 6 (seed, profile, kind) cases (about 45s
+standalone with the fixed reproducers at SFZ_CASES_AT_ONCE), and must yield narrowed
 verdicts that seed a changed function, so the group cannot pass on
 fallbacks alone; `ZCL_STRESS_TESTS=1` runs the full 51-case list instead,
 held to the same invariant.
+`ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]` runs a
 long range instead of either, and wins over `ZCL_STRESS_TESTS`; only such
 a range run may draw an edit that changes no file (NOOP), which fails a
 fixed reproducer or a default seed. `KIND` `any` draws the kind. `CC`
