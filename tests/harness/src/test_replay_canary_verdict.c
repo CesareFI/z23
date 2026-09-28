@@ -573,10 +573,10 @@ static long seed_stale_pass(const char *vd, const char *from)
  *   1. A STALE PASS from a previous successful run is pre-seeded in the
  *      verdict dir. The harness MUST remove it at run start (reset_verdict)
  *      so it can never leak as this run's proof.
- *   2. The harness is then killed MID-RUN — after reset_verdict cleared the
- *      stale sentinel, but BEFORE it could write a fresh one (it blocks on a
- *      never-fed FIFO inside its own self-test path via
- *      ZCL_CANARY_SELFTEST_BLOCK_FIFO). The post-kill read must therefore
+ *   2. The harness is then killed after reset_verdict cleared the stale
+ *      sentinel, but before it could write a fresh one. Its self-test path
+ *      blocks on a never-fed FIFO via ZCL_CANARY_SELFTEST_BLOCK_FIFO.
+ *      The post-kill read must therefore
  *      find NO sentinel at all → absence-of-fresh-PASS resolves FAIL.
  *
  * This proves the staleness contract is REAL (the stale PASS is gone) and
@@ -619,14 +619,15 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
 
         char sentinel[PATH_MAX];
         snprintf(sentinel, sizeof(sentinel), "%s/replay_canary_anchor.json", vd);
+        char stamp[PATH_MAX];
+        snprintf(stamp, sizeof(stamp), "%s/.run_started_anchor", vd);
+        unlink(stamp);
 
         pid_t parent_pid = getpid();
         pid_t pid = fork();
         if (pid == 0) {
-            /* child in its own group: exec the REAL harness. Its self-test
-             * path runs reset_verdict (clearing the stale sentinel) and then
-             * blocks on the never-fed FIFO BEFORE evaluating/writing — so the
-             * kill lands inside a genuine run, mid-harness. */
+            /* Child in its own group: the real harness clears the stale
+             * sentinel before its self-test can block on the FIFO. */
 #if defined(__linux__)
             /* A cancelled proof can kill the test worker before its explicit
              * kill below. Do not leave the blocked harness orphaned with the
@@ -639,6 +640,10 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
              * a parent-death signal. Normal self-test kills within seconds. */
             alarm(15);
             setsid();
+            /* Exercise the run-start handshake under delayed scheduling. */
+            struct timespec delayed_start = { .tv_sec = 0,
+                .tv_nsec = 750 * 1000 * 1000 };
+            nanosleep(&delayed_start, NULL);
             char cmd[PATH_MAX * 5];
             snprintf(cmd, sizeof(cmd),
                 "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
@@ -650,19 +655,20 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
             _exit(127);
         }
 
-        /* Give the harness time to exec, run reset_verdict, and reach the
-         * blocking FIFO read. */
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 600 * 1000 * 1000 };
-        nanosleep(&ts, NULL);
-
-        /* MID-RUN: the stale PASS must already be GONE (reset_verdict ran).
-         * The run-start stamp confirms the harness actually got that far. */
+        /* Wait for reset_verdict's stamp, not a scheduling estimate. A
+         * missing stamp still fails the test after a bounded interval. */
+        struct stat st_stamp;
+        bool stamp_present = false;
+        struct timespec poll = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+        for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+            if (stat(stamp, &st_stamp) == 0) {
+                stamp_present = true;
+                break;
+            }
+            nanosleep(&poll, NULL);
+        }
         struct stat st_mid;
         bool exists_mid = (stat(sentinel, &st_mid) == 0);
-        char stamp[PATH_MAX];
-        snprintf(stamp, sizeof(stamp), "%s/.run_started_anchor", vd);
-        struct stat st_stamp;
-        bool stamp_present = (stat(stamp, &st_stamp) == 0);
 
         kill(-pid, SIGKILL);
         kill(pid, SIGKILL);
@@ -672,14 +678,14 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
         struct stat st_after;
         bool exists_after = (stat(sentinel, &st_after) == 0);
 
-        if (exists_mid) {
-            printf("FAIL: stale sentinel %s survived reset_verdict mid-run "
-                   "— staleness contract is vaporware\n", sentinel);
-            failures++; goto _kill_cleanup;
-        }
         if (!stamp_present) {
             printf("FAIL: run-start stamp %s absent — harness never reached "
                    "reset_verdict, the kill proves nothing\n", stamp);
+            failures++; goto _kill_cleanup;
+        }
+        if (exists_mid) {
+            printf("FAIL: stale sentinel %s survived reset_verdict mid-run "
+                   "— staleness contract is vaporware\n", sentinel);
             failures++; goto _kill_cleanup;
         }
         if (exists_after) {
