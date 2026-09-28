@@ -14,10 +14,9 @@
 #
 # Topology (three disjoint isolated regtest nodes, loopback only):
 #
-#   Node A (publisher): booted on a BYTE-EXACT cp -a of the quarantine
-#       store pair member ~/.zclassic-c23-commons-arena-a (an ordinary
-#       datadir whose zcode/ store holds the four published arena
-#       packages, all installed). `z23 join` writes its hosting flags;
+#   Node A (publisher): booted on a BYTE-EXACT cp -a of a scratch store
+#       rebuilt from the pinned historical package sources (or an explicit
+#       ARENA_SOURCE_STORE override). `z23 join` writes its hosting flags;
 #       dead-sink -connect means A dials nobody real and only serves.
 #   Node B (fresh node): empty mktemp datadir. Its four download records
 #       are seeded ONE-SHOT while B is down (the fetch leaf persists a
@@ -93,27 +92,11 @@
 #
 # NAMED GAPS (asserted/documented, not worked around silently — a named
 # gap is a deliverable, same convention as science_acceptance.sh):
-#   G-A1  ANNOUNCE BOOTSTRAP QUOTA. A NEW_USER receiver flood-refuses the
-#         5th+ announce within a one-hour window
-#         (VCS_POLICY_FREE_ANNOUNCE_PER_HOUR=4,
-#         VCS_SWARM_ANNOUNCE_WINDOW_TICKS=3600), and the sender's per-peer
-#         dedupe never re-announces within the session — so a store
-#         serving MORE than four complete packages cannot introduce the
-#         excess roots to a fresh peer (4 offences << the 100-offence
-#         disconnect threshold: the link survives, the extra roots are
-#         simply never learned, and "zero advertisers is not a failure"
-#         so the download honestly waits). Observed empirically on this
-#         host 2026-08-16: the quarantine store carries 8 tracked
-#         packages (4 arena + 4 stale); B completed exactly the two arena
-#         packages whose announces fit the quota and stalled on the two
-#         whose announces were refused. This script therefore prunes A's
-#         SCRATCH COPY to exactly the four arena manifests before boot —
-#         store recovery re-derives tracking from manifests/ and GCs the
-#         unreferenced CAS chunks at open, so the prune is clean and the
-#         live tree is untouched. A multi-package seeder serving a fresh
-#         node needs a tier-earned quota or a per-root provider route
-#         (S7 DHT territory); that is a real product gap this proof names
-#         rather than papers over.
+#   G-A1  FIXTURE SCOPE. The historical publisher store also contains four
+#         transport-carrier manifests. A's scratch copy is pruned to the four
+#         named arena roots so the test has an exact announce set. The current
+#         free announce quota is 64/hour; this test makes no claim about
+#         crossing it. The source store and original Git objects are untouched.
 #   G-A2  RELEASE-ENVELOPE IMPORT IS DHT-GATED. The raw zpkgswm swarm
 #         delivers the exact package CONTENT (manifest + CAS chunks,
 #         re-derived against the root — B needs no identity for that, as
@@ -156,10 +139,14 @@ NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 ARENA_BIN="${ZCL_ARENA_BIN:-$REPO_ROOT/build/bin/arena_runner}"
 JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
+PACKAGE_SIGN_BIN="${ZCL_PACKAGE_SIGN_BIN:-$REPO_ROOT/build/bin/zclassic23-package-sign}"
 
 # ── CONFIG ────────────────────────────────────────────────────────────
-# Exact published arena package roots (quarantine store pair member a).
-ARENA_SOURCE_STORE="${ARENA_SOURCE_STORE:-$HOME/.zclassic-c23-commons-arena-a}"
+# An explicit source store can replay a previously published fixture. By
+# default this proof reconstructs that store from the pinned historical C23
+# sources inside its own scratch directory.
+ARENA_SOURCE_STORE="${ARENA_SOURCE_STORE:-}"
+ARENA_SOURCE_COMMIT=8fb7b18b15a13e43dcc70c86e7b79f8c850ad897
 ZPRNG_ROOT=91e9406a1016bcc224bb5e229377b1841e21c8ede1e0a00bc0d45d1989c41563
 ZDOGFIGHT_ROOT=3ea608b29cdee1df15d560a930455faa264b3ac9ded8b557efc28e3e720ef40a
 ZDOGDRONE_ROOT=10568ebc2876a6e3ecded390b012b0b8983613f3717949db1c9144ede2d78cf8
@@ -187,14 +174,14 @@ REF_REPLAY_ROOT=05ed352dbb2213aad289cdf403d424d18d9ae075db57252a52c4e745a25e8396
 REF_FINAL_STATE_ROOT=e4b37a9b94547cead91a7d4ae2a63b0385b29a99bb603bd0ac3519cebd270ebd
 REF_STATE_ROOT_CHAIN=657cbc598e8cfff4e3a67e0b11de17a6b576be686ae924149614eca3e156f87b
 
-# Ports. P2P uses the same explicit test-safe pair as science_acceptance
+# Ports. P2P uses explicit test-safe reachable ports
 # (controlled reconnects pass the production reachable-port policy;
 # arbitrary 39xxx P2P ports are valid only for the first
 # operator-directed connect). RPC/FS/HTTPS ride the 39xxx isolation
 # range. Every port is checked against the live refuse-set AND the
 # LISTEN table before any bind.
 A_PORT=20022; A_RPC=39211; A_FS=39212; A_HTTPS=39213
-B_PORT=18033; B_RPC=39221; B_FS=39222; B_HTTPS=39223
+B_PORT=20024; B_RPC=39221; B_FS=39222; B_HTTPS=39223
 C_PORT=20023; C_RPC=39231; C_FS=39232; C_HTTPS=39233
 DEAD_SINK=39999
 RPC_WARMUP="${RPC_WARMUP:-90}"     # per-node RPC warmup budget (s)
@@ -405,8 +392,15 @@ command -v cmp     >/dev/null 2>&1 || aa_die "cmp not found"
 [ -x "$NODE_BIN" ]  || aa_die "$NODE_BIN not built — run make first"
 [ -x "$RPC_BIN" ]   || aa_die "$RPC_BIN not built — run make zcl-rpc"
 [ -x "$ARENA_BIN" ] || aa_die "$ARENA_BIN not built — run make tools/arena-runner"
-[ -d "$ARENA_SOURCE_STORE/zcode" ] \
-    || aa_die "quarantine store $ARENA_SOURCE_STORE missing (need the published arena packages)"
+if [ -n "$ARENA_SOURCE_STORE" ]; then
+    [ -d "$ARENA_SOURCE_STORE/zcode" ] ||
+        aa_die "explicit quarantine store $ARENA_SOURCE_STORE is missing"
+else
+    [ -x "$PACKAGE_SIGN_BIN" ] ||
+        aa_die "$PACKAGE_SIGN_BIN not built — run make zclassic23-package-sign"
+    git -C "$REPO_ROOT" cat-file -e "$ARENA_SOURCE_COMMIT^{commit}" ||
+        aa_die "historical Arena source commit $ARENA_SOURCE_COMMIT is unavailable"
+fi
 
 for p in "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" \
          "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" \
@@ -443,6 +437,86 @@ root_of() { # $1=short package name → its published root
     esac
 }
 
+aa_bootstrap_source_store() {
+    local source="$AA_WORK/historical-source" store="$AA_WORK/source-store"
+    local key="$AA_WORK/arena-author.key" pub name root day sequence
+    local prep digest signature seal release manifest recipe input plan commit
+    mkdir -p "$source" "$store"
+    git -C "$REPO_ROOT" archive "$ARENA_SOURCE_COMMIT" \
+        packages/zprng packages/zdogfight packages/zdogdrone packages/zdogace |
+        tar -x -C "$source" --strip-components=1 ||
+        aa_die "historical Arena packages could not be materialized"
+    for name in $PKG_ORDER; do
+        [ -f "$source/$name/zcode-package.json" ] ||
+            aa_die "historical source for $name is incomplete"
+    done
+    aa_join "$store"
+    pub="$("$PACKAGE_SIGN_BIN" --generate "$key")" ||
+        aa_die "offline Arena author key generation failed"
+    [ "$(find "$key" -type f -perm 600 -print)" = "$key" ] &&
+    [ "${#pub}" -eq 66 ] ||
+        aa_die "offline Arena author key is invalid"
+
+    sequence=0
+    for name in $PKG_ORDER; do
+        sequence=$((sequence + 1))
+        day=$((1 + (sequence - 1) * 7))
+        root="$(root_of "$name")"
+        prep="$("$NODE_BIN" -regtest zcode package dev prepare \
+            --input="{\"dir\":\"$source/$name\",\"publisher_pubkey\":\"$pub\",\"publisher_sequence\":$sequence,\"chain_id\":\"zclassic-regtest\"}" \
+            2>/dev/null | tail -1 || true)"
+        [ "$(aa_jget "$prep" ok 2>/dev/null || true)" = true ] ||
+            aa_die "$name prepare refused: $prep"
+        digest="$(aa_jget "$prep" data.release_signing_digest)" ||
+            aa_die "$name prepare omitted signing digest"
+        exec 7<"$key"
+        signature="$("$PACKAGE_SIGN_BIN" --sign-digest "$digest" --key-fd 7)" ||
+            aa_die "$name offline signature failed"
+        exec 7<&-
+        [ "${#signature}" -eq 128 ] || aa_die "$name signature is invalid"
+        seal="$("$NODE_BIN" zcode package dev seal \
+            --input="{\"release_body_hex\":\"$(aa_jget "$prep" data.release_body_hex)\",\"signature_hex\":\"$signature\"}" \
+            2>/dev/null | tail -1 || true)"
+        [ "$(aa_jget "$seal" ok 2>/dev/null || true)" = true ] ||
+            aa_die "$name seal refused: $seal"
+        release="$(aa_jget "$seal" data.release_hex)"
+        manifest="$(aa_jget "$prep" data.manifest_hex)"
+        recipe="$(aa_jget "$prep" data.recipe_hex)"
+        input="\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$source/$name\",\"day\":$day"
+        plan="$("$NODE_BIN" -datadir="$store" -regtest zcode create \
+            --input="{\"mode\":\"plan\",$input}" 2>/dev/null | tail -1 || true)"
+        [ "$(aa_jget "$plan" ok 2>/dev/null || true)" = true ] ||
+            aa_die "$name create plan refused: $plan"
+        commit="$("$NODE_BIN" -datadir="$store" -regtest zcode create \
+            --input="{\"mode\":\"commit\",$input}" 2>/dev/null | tail -1 || true)"
+        [ "$(aa_jget "$commit" ok 2>/dev/null || true)" = true ] ||
+            aa_die "$name create commit refused: $commit"
+        [ "$(aa_jget "$commit" data.package_root 2>/dev/null || true)" = "$root" ] ||
+            aa_die "$name historical content root drifted from $root"
+
+        plan="$(printf '%s' "{\"name_or_root\":\"$root\"}" |
+            aa_leaf "$store" zcode.package.add.plan)"
+        [ "$(aa_jget "$plan" ok 2>/dev/null || true)" = true ] ||
+            aa_die "$name add plan refused: $plan"
+        commit="$(printf '%s' "{\"plan_id\":\"$(aa_jget "$plan" data.plan_id)\"}" |
+            aa_leaf "$store" zcode.package.add.commit)"
+        [ "$(aa_jget "$commit" ok 2>/dev/null || true)" = true ] &&
+        [ "$(aa_jget "$commit" data.installed 2>/dev/null || true)" = true ] &&
+        [ "$(aa_jget "$commit" data.active_root 2>/dev/null || true)" = "$root" ] ||
+            aa_die "$name source-store install refused: $commit"
+        [ -f "$store/zcode/installed/$root/build-report" ] &&
+        [ -f "$store/zcode/installed/$root/lib/lib$name.a" ] ||
+            aa_die "$name source-store install lacks its report or archive"
+        echo "arena-acceptance:     rebuilt historical $name at ${root:0:16}… in isolated source store"
+    done
+    ARENA_SOURCE_STORE="$store"
+}
+
+if [ -z "$ARENA_SOURCE_STORE" ]; then
+    aa_step 0 "rebuild four historical Arena packages in isolated source store"
+    aa_bootstrap_source_store
+fi
+
 echo "arena-acceptance: A{dd=$AA_DD_A p2p=$A_PORT rpc=$A_RPC} B{dd=$AA_DD_B p2p=$B_PORT rpc=$B_RPC}"
 echo "arena-acceptance: C{dd=$AA_DD_C p2p=$C_PORT rpc=$C_RPC} work=$AA_WORK"
 
@@ -461,10 +535,8 @@ aa_step 1 "copy quarantine store byte-exact; boot A (hosting, dead sink)"
 cp -a "$ARENA_SOURCE_STORE/." "$AA_DD_A/" \
     || aa_die "cp -a of the quarantine store failed"
 aa_join "$AA_DD_A"
-# G-A1: prune A's scratch copy to exactly the four arena manifests, so A's
-# announce set fits the receiver's NEW_USER bootstrap quota (4/hour).
-# Recovery re-derives tracking from manifests/ and GCs unreferenced CAS
-# chunks at open; the live quarantine store is never touched.
+# G-A1: prune A's scratch copy to the exact four named arena manifests.
+# Store recovery re-derives tracking at open; the source store is untouched.
 PRUNED=0
 for f in "$AA_DD_A/zcode/manifests/"*; do
     [ -e "$f" ] || continue
@@ -473,7 +545,7 @@ for f in "$AA_DD_A/zcode/manifests/"*; do
         *) rm -f "$f"; PRUNED=$((PRUNED + 1)) ;;
     esac
 done
-echo "arena-acceptance:     G-A1 prune: dropped $PRUNED non-arena manifests from A's scratch copy (announce set == the 4 arena roots)"
+echo "arena-acceptance:     G-A1 fixture scope: dropped $PRUNED non-arena manifests from A's scratch copy"
 # Sanity: the copy carries the four packages, all installed.
 for name in $PKG_ORDER; do
     root="$(root_of "$name")"
@@ -496,8 +568,8 @@ done
 a_tracked="$(aa_dump "$AA_DD_A" "$A_RPC" zcode_store | "$JSONQ" get state.tracked_packages 2>/dev/null || true)"
 a_tracked="${a_tracked:--1}"
 [ "$a_tracked" = "4" ] \
-    || aa_die "A announces $a_tracked packages, not exactly 4 — G-A1 prune incomplete (would overflow B's NEW_USER announce quota)"
-echo "arena-acceptance:     A live store: exactly 4 packages tracked+complete (serving; announce set fits B's bootstrap quota)"
+    || aa_die "A tracks $a_tracked packages, not exactly the four Arena roots — G-A1 fixture scope failed"
+echo "arena-acceptance:     A live store: exactly 4 named packages tracked+complete"
 
 # ── [2] B: seed fetch records one-shot, boot hosting, swarm pull ─────
 aa_step 2 "B: seed 4 download records one-shot, boot hosting, swarm fetch from A"

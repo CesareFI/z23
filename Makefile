@@ -4636,7 +4636,7 @@ commons-journey-acceptance: commons-demo
 # clean consumers through `z23 join`, never passes packagehost/buildworker on
 # daemon argv, and proves onward exact-byte service after the publisher stops
 # with height/mempool/DHT all remaining empty or disabled.
-commons-no-coin-onboarding-acceptance: zclassic23 zcl-rpc tools/arena-runner
+commons-no-coin-onboarding-acceptance: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-runner
 	@bash tools/dev/arena_acceptance.sh
 
 # The SAME journey with nodes B and C on their own physical hosts. The
