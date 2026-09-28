@@ -2951,6 +2951,96 @@ static int test_ic_proof_steps_run_concurrently(void)
     return failures;
 }
 
+static bool ic_log_holds(const char *path, const char *needle)
+{
+    char body[4096] = {0};
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    size_t got = fread(body, 1, sizeof(body) - 1, f);
+    fclose(f);
+    body[got] = '\0';
+    return strstr(body, needle) != NULL;
+}
+
+/* Run the proof's lint/test launch over two shell children and report the
+ * lint exit, the test exit, and why lint was released. */
+static bool ic_lint_hold_run(const char *state, const char *lint_script,
+                             const char *test_script, int64_t hold_max_ms,
+                             int rcs[2], char hold[64])
+{
+    const char *lint_argv[] = {"/bin/sh", "-c", lint_script, NULL};
+    const char *test_argv[] = {"/bin/sh", "-c", test_script, NULL};
+    return zcl_dev_proof_dimensions_run_for_test(state, lint_argv, test_argv,
+                                                 hold_max_ms, rcs, hold, 64);
+}
+
+/* The runner's run-alone pass exists so wall-clock contracts see an idle
+ * box; a proof's lint must not open its burst inside it. The fake runner
+ * marks its exclusive window with a file and then prints the runner's own
+ * done line. The fake lint waits until it can tell which side of that window
+ * it started on, and says so. The fake runner exits 0 only if lint started
+ * before it finished, so holding lint for the whole test run fails too. */
+static int test_ic_proof_lint_waits_for_exclusive_pass(void)
+{
+    int failures = 0;
+    TEST("proof launch: lint starts after the runner's run-alone pass, never during it") {
+        char state[4096], excl[4200], done[4200], ran[4200], log[4200];
+        ic_budget_fixture("lint_hold", state);
+        snprintf(excl, sizeof(excl), "%s/exclusive-active", state);
+        snprintf(done, sizeof(done), "%s/exclusive-done", state);
+        snprintf(ran, sizeof(ran), "%s/lint-ran", state);
+        snprintf(log, sizeof(log), "%s/seam.lint.log", state);
+        (void)remove(excl);
+        (void)remove(done);
+        (void)remove(ran);
+        char test_script[16384], lint_script[16384];
+        snprintf(test_script, sizeof(test_script),
+                 "touch '%s'; sleep 0.4; rm -f '%s'; touch '%s'; "
+                 "echo '%s groups=1'; i=0; "
+                 "while [ ! -e '%s' ] && [ $i -lt 200 ]; do sleep 0.05; "
+                 "i=$((i+1)); done; [ -e '%s' ]",
+                 excl, excl, done, ZCL_TEST_EXCLUSIVE_PASS_DONE, ran, ran);
+        snprintf(lint_script, sizeof(lint_script),
+                 "i=0; while [ ! -e '%s' ] && [ ! -e '%s' ] && "
+                 "[ $i -lt 500 ]; do sleep 0.02; i=$((i+1)); done; "
+                 "if [ -e '%s' ]; then echo lint=overlapped; "
+                 "else echo lint=clear; fi; touch '%s'",
+                 excl, done, excl, ran);
+        int rcs[2] = {-1, -1};
+        char hold[64] = {0};
+        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 30000, rcs,
+                                hold));
+        ASSERT(!ic_log_holds(log, "lint=overlapped"));
+        ASSERT(ic_log_holds(log, "lint=clear"));
+        ASSERT_EQ(rcs[0], 0);
+        ASSERT_EQ(rcs[1], 0);
+        ASSERT(strcmp(hold, "exclusive_pass_done") == 0);
+
+        /* A runner that never prints the line still releases lint when it
+         * exits, and lint still runs to its own verdict. */
+        (void)remove(ran);
+        ASSERT(ic_lint_hold_run(state, "echo lint-ran", "echo no-line", 30000,
+                                rcs, hold));
+        ASSERT(ic_log_holds(log, "lint-ran"));
+        ASSERT_EQ(rcs[0], 0);
+        ASSERT_EQ(rcs[1], 0);
+        ASSERT(strcmp(hold, "test_finished") == 0);
+
+        /* A silent runner that keeps running releases lint at the cap. */
+        snprintf(test_script, sizeof(test_script),
+                 "i=0; while [ ! -e '%s' ] && [ $i -lt 200 ]; do sleep 0.05; "
+                 "i=$((i+1)); done; [ -e '%s' ]", ran, ran);
+        snprintf(lint_script, sizeof(lint_script), "touch '%s'", ran);
+        ASSERT(ic_lint_hold_run(state, lint_script, test_script, 200, rcs,
+                                hold));
+        ASSERT_EQ(rcs[0], 0);
+        ASSERT_EQ(rcs[1], 0);
+        ASSERT(strcmp(hold, "cap") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* A proof step runs candidate code. A descriptor the worker holds (a lock,
  * a signer, a socket) must not reach it: the pathname sandbox cannot revoke
  * an fd that is already open. Plant one without O_CLOEXEC at a fixed number
@@ -9052,6 +9142,7 @@ int test_impact_composition(void)
     failures += test_ic_proof_budget_cancellation();
     failures += test_ic_proof_base_probe_cancels_superseded_worker();
     failures += test_ic_proof_steps_run_concurrently();
+    failures += test_ic_proof_lint_waits_for_exclusive_pass();
     failures += test_ic_proof_step_inherits_no_extra_fd();
 #endif
     failures += test_ic_proof_generation_prefers_ram_when_it_fits();

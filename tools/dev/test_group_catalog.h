@@ -31,6 +31,12 @@ bool zcl_test_group_catalog_contains(const char *full_id);
  * separate runner policy. */
 bool zcl_test_group_requires_exclusive_run(const char *full_id);
 
+/* The line the runner prints, whole and at once, when its run-alone pass has
+ * ended and before its worker pool starts. It is printed on every run, even
+ * one that selects no exclusive group. The proof worker waits for it before
+ * it starts lint, so lint never competes with a run-alone group. */
+#define ZCL_TEST_EXCLUSIVE_PASS_DONE "test_parallel: exclusive pass done"
+
 /* Return the one bounded opt-in contract associated with an exact group.
  * NONE is the normal case.  The catalog validates that every declared row is
  * registered and unique before a runner may activate these contracts. */

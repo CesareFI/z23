@@ -2561,6 +2561,7 @@ int main(int argc, char **argv)
     pid_t parent_pid = getpid();
     /* pre_skipped (‑‑only / params) plus cache HITS are already accounted done. */
     size_t reaped = pre_skipped + cached_count;
+    size_t exclusive_ran = 0;
 
     for (size_t i = 0; i < g_num_groups; i++) {
         if (results[i].skipped || results[i].cached)
@@ -2573,7 +2574,11 @@ int main(int argc, char **argv)
         run_group_exclusive(i, parent_pid, results, timeout_secs, verbose,
                             activate_proof_contracts);
         reaped++;
+        exclusive_ran++;
     }
+    /* stdout is unbuffered, so this line reaches a proof's log whole the
+     * moment the last run-alone group has been reaped. */
+    printf("%s groups=%zu\n", ZCL_TEST_EXCLUSIVE_PASS_DONE, exclusive_ran);
 
     /* A shard invokes its own compiler/lint subprocesses, so eight shards per
      * checkout oversubscribe a 16-core host as soon as a second worktree runs

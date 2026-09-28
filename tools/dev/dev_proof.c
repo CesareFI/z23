@@ -6606,6 +6606,12 @@ static bool dimension_start(const struct proof_paths *paths,
         proof_why(why, why_len, "child_log_path_invalid");
         return false;
     }
+    /* The child truncates its log once it runs; a log left by an earlier
+     * attempt must not be read as this child's output in the meantime. */
+    if (unlink(run->log) != 0 && errno != ENOENT) {
+        proof_why(why, why_len, "child_log_stale_unremovable");
+        return false;
+    }
     if (!zcl_dev_proof_step_start(&run->step, root, run->log, argv, budget)) {
         proof_whyf(why, why_len, "child_proof_%s_could_not_start", run->name);
         return false;
@@ -8296,10 +8302,169 @@ size_t zcl_dev_proof_test_dimension_argv(const char *binary, const char *only,
 #define DP_TEST_REUSE_UNQUALIFIED \
     "test-reuse: unqualified(no_verifier_account)"
 
-/* Lint proves the source; the test dimension proves the built
- * runner. Neither feeds the other, so both children are launched
- * before either is waited on and the proof pays for the longer of the
- * two rather than their sum. */
+/* The longest lint is held back for the test runner's run-alone pass. That
+ * pass is about a minute for the whole exclusive set on a quiet box; the cap
+ * only bounds a runner that never prints its line, so lint cannot be held
+ * for the whole test run. */
+#define DP_LINT_HOLD_MAX_MS 180000
+
+/* Where the scan of a growing test log stands between polls. */
+struct dp_log_scan {
+    long offset;
+    bool mid_line;
+};
+
+/* True once the log holds a line starting with `prefix`. Only whole lines
+ * are consumed; a tail still being written is read again on the next poll. */
+static bool dp_log_line_seen(const char *path, const char *prefix,
+                             struct dp_log_scan *scan)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    bool seen = false;
+    char line[256];
+    bool placed = fseek(f, scan->offset, SEEK_SET) == 0;
+    while (placed && !seen && fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        bool whole = n > 0 && line[n - 1] == '\n';
+        if (!whole && n + 1 < sizeof(line)) break;
+        seen = !scan->mid_line && strncmp(line, prefix, strlen(prefix)) == 0;
+        scan->offset += (long)n;
+        scan->mid_line = !whole;
+    }
+    fclose(f);
+    return seen;
+}
+
+/* Why lint started when it did, and how long it was held. */
+struct dp_lint_hold {
+    const char *reason;
+    int64_t held_ms;
+};
+
+/* Keep the test child's own watch running while lint is held, until the
+ * runner says its run-alone pass is over, the runner has finished, or the
+ * cap is reached. */
+static struct dp_lint_hold dp_lint_hold_wait(struct proof_dimension_run *test,
+                                             int64_t hold_max_ms)
+{
+    struct dp_log_scan scan = {0};
+    int64_t began = platform_time_monotonic_ms();
+    struct dp_lint_hold hold = {.reason = "cap"};
+    for (;;) {
+        if (dp_log_line_seen(test->log, ZCL_TEST_EXCLUSIVE_PASS_DONE, &scan)) {
+            hold.reason = "exclusive_pass_done";
+            break;
+        }
+        if (zcl_dev_proof_step_poll(&test->step)) {
+            hold.reason = "test_finished";
+            break;
+        }
+        if (platform_time_monotonic_ms() - began >= hold_max_ms) break;
+        platform_sleep_ms(20);
+    }
+    hold.held_ms = platform_time_monotonic_ms() - began;
+    return hold;
+}
+
+/* Everything one proof needs to start its lint and test children. */
+struct dp_dimension_plan {
+    const struct proof_paths *paths;
+    const char *root;
+    const char *const *lint_argv;
+    struct zcl_dev_proof_dimension *lint;
+    const struct zcl_dev_proof_budget *lint_budget;
+    const char *const *test_argv;
+    struct zcl_dev_proof_dimension *test;
+    const struct zcl_dev_proof_budget *test_budget;
+    int64_t hold_max_ms;
+};
+
+/* Lint proves the source; the test dimension proves the built runner.
+ * Neither feeds the other, so they overlap and the proof pays for about the
+ * longer of the two. The runner starts first. Its run-alone pass exists so
+ * that wall-clock contracts see an idle box, and lint's opening burst would
+ * otherwise land right on it, so lint starts only once the runner reports
+ * that pass over. runs[] keeps lint first, preserving the fail-closed order.
+ * On failure every child that did start has been waited on and finished. */
+static bool dp_dimensions_launch(const struct dp_dimension_plan *p,
+                                 struct proof_dimension_run runs[2],
+                                 size_t *run_count, struct dp_lint_hold *hold,
+                                 char *why, size_t why_len)
+{
+    bool with_test = p->test->selected != 0;
+    struct proof_dimension_run *test = &runs[p->lint->selected ? 1 : 0];
+    *run_count = 0;
+    *hold = (struct dp_lint_hold){.reason = "no_test"};
+    if (with_test &&
+        !dimension_start(p->paths, p->root, test, ZCL_DEV_PROOF_TEST,
+                         p->test_argv, p->test, true, p->test_budget, why,
+                         why_len))
+        return false;
+    if (!p->lint->selected) {
+        *run_count = with_test ? 1 : 0;
+        return true;
+    }
+    if (with_test) *hold = dp_lint_hold_wait(test, p->hold_max_ms);
+    if (!dimension_start(p->paths, p->root, &runs[0], ZCL_DEV_PROOF_LINT,
+                         p->lint_argv, p->lint, false, p->lint_budget, why,
+                         why_len)) {
+        if (with_test) {
+            dimension_runs_wait(test, 1);
+            (void)dimension_finish(p->paths, test, NULL, 0);
+        }
+        return false;
+    }
+    *run_count = with_test ? 2 : 1;
+    return true;
+}
+
+static void dp_lint_hold_note(const char *phases, const struct dp_lint_hold *h)
+{
+    char note[96];
+    if (phases && phases[0] &&
+        snprintf(note, sizeof(note), "%s ms=%lld", h->reason,
+                 (long long)h->held_ms) < (int)sizeof(note))
+        (void)zcl_dev_proof_phase_note(phases, "lint_hold", note);
+}
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_dimensions_run_for_test(const char *logs_dir,
+                                           const char *const lint_argv[],
+                                           const char *const test_argv[],
+                                           int64_t hold_max_ms, int rcs[2],
+                                           char *hold, size_t hold_size)
+{
+    if (!logs_dir || !lint_argv || !test_argv || !rcs || !hold) return false;
+    struct proof_paths *paths =
+        zcl_calloc(1, sizeof(*paths), "dev_proof_dimension_seam_paths");
+    if (!paths) return false;
+    (void)snprintf(paths->logs, sizeof(paths->logs), "%s", logs_dir);
+    (void)snprintf(paths->key, sizeof(paths->key), "seam");
+    struct zcl_dev_proof_dimension lint = {.selected = 1}, test = {.selected = 1};
+    struct zcl_dev_proof_budget budget = {
+        .budget_ms = 60000, .ceiling_ms = 60000, .no_progress_ms = 60000};
+    struct dp_dimension_plan plan = {
+        .paths = paths, .root = ".", .lint_argv = lint_argv, .lint = &lint,
+        .lint_budget = &budget, .test_argv = test_argv, .test = &test,
+        .test_budget = &budget, .hold_max_ms = hold_max_ms};
+    struct proof_dimension_run runs[2];
+    size_t count = 0;
+    struct dp_lint_hold held;
+    char why[160] = {0};
+    bool ok = dp_dimensions_launch(&plan, runs, &count, &held, why,
+                                   sizeof(why)) && count == 2;
+    if (ok) {
+        dimension_runs_wait(runs, count);
+        rcs[0] = runs[0].step.report.rc;
+        rcs[1] = runs[1].step.report.rc;
+        (void)snprintf(hold, hold_size, "%s", held.reason);
+    }
+    free(paths);
+    return ok;
+}
+#endif
+
 static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
                                      struct zcl_dev_proof_dimension *lint,
                                      struct zcl_dev_proof_dimension *test,
@@ -8319,22 +8484,16 @@ static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
     }
     struct zcl_dev_proof_budget test_budget =
         zcl_dev_proof_test_budget(w->paths->state, w->groups, test->selected);
-    if (lint->selected &&
-        !dimension_start(&w->execution, w->execution.root, &runs[run_count],
-                         ZCL_DEV_PROOF_LINT, w->lint_argv, lint, false,
-                         &w->lint_budget, why, why_len))
+    struct dp_dimension_plan plan = {
+        .paths = &w->execution, .root = w->execution.root,
+        .lint_argv = w->lint_argv, .lint = lint,
+        .lint_budget = &w->lint_budget, .test_argv = test_argv,
+        .test = test, .test_budget = &test_budget,
+        .hold_max_ms = DP_LINT_HOLD_MAX_MS};
+    struct dp_lint_hold hold;
+    if (!dp_dimensions_launch(&plan, runs, &run_count, &hold, why, why_len))
         return false;
-    if (lint->selected) run_count++;
-    if (test->selected &&
-        !dimension_start(&w->execution, w->execution.root, &runs[run_count],
-                         ZCL_DEV_PROOF_TEST, test_argv, test, true,
-                         &test_budget, why, why_len)) {
-        dimension_runs_wait(runs, run_count);
-        for (size_t i = 0; i < run_count; i++)
-            (void)dimension_finish(&w->execution, &runs[i], NULL, 0);
-        return false;
-    }
-    if (test->selected) run_count++;
+    dp_lint_hold_note(w->paths->phases, &hold);
     dimension_runs_wait(runs, run_count);
     dp_worker_lint_wall_note(w, runs, run_count);
     /* Fail closed on the first dimension that failed, in the order they
