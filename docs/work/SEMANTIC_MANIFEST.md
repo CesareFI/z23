@@ -486,7 +486,18 @@ a plan that reads it has no manifest and falls back.
 `CLANG_FACTS_TREE=<hex>` names the ZVCS tree the namespace probes are proved
 against. The target is opt-in: nothing else depends on it, and the sensor
 never enters z23, z23-dev, the test harness link or core. A manifest is
-rewritten when its source, a header of the component or the sensor changes.
+rewritten when its source, a header of the component or the sensor changes,
+and when its compile does: the rule keeps two stamps, recomputed on every
+run and replaced only when their bytes change. `build/clang-facts/<src>.argv`
+holds the TU's sensor arguments (compiler, toolchain identity and flags, so
+a `ZCL_DEV_HOT_OPT` or `CFLAGS` change re-senses every TU it reaches), and
+`build/clang-facts/.object-cc` the object compiler's IDENTITY text
+(`z23-clang-manifest object-cc`, so a new compiler, or new shared objects
+under an unchanged driver, re-senses every TU). The `semantic_sensor` group
+runs the rule twice unchanged (no re-sense), then with another hot
+optimizer and another toolchain identity (each re-senses). The stamps are
+the re-sense trigger, not a check: the planner does not compare an after
+manifest's IDENTITY with the current compile.
 The planner binds every after manifest to the tree it plans against (rule 9
 below), so a dependency the target misses can only cause a fallback.
 

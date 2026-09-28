@@ -7348,11 +7348,13 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 # feed the impact planner's optional "facts" input
 # (tools/dev/devloop_facts.c). Opt-in only: nothing else depends on this
 # target, so no default build, test link or proof ever reaches it. A
-# manifest is rewritten when its source, any header of the component or the
-# sensor changes; the planner still binds every after manifest to the tree it
-# plans against (devloop_facts_bind.c) and refuses a stale one, so a missed
-# dependency cannot narrow a plan. CLANG_FACTS_TREE=<hex> names the ZVCS tree
-# the namespace probes are proved against.
+# manifest is rewritten when its source, any header of the component, the
+# sensor, its sensor arguments (the .argv stamp) or the object compiler's
+# IDENTITY text (the .object-cc stamp) changes; the planner still binds
+# every after manifest to the tree it plans against (devloop_facts_bind.c)
+# and refuses a stale one, so a missed dependency cannot narrow a plan.
+# CLANG_FACTS_TREE=<hex> names the ZVCS tree the namespace probes are proved
+# against.
 #
 # CLANG_FACTS_REFUSED lists TUs no facts rule may sense: the identity TU's
 # dev object also bakes the host-local build receipt, which the
@@ -7374,16 +7376,39 @@ CLANG_FACTS_ZSMS = $(patsubst %.c,$(CLANG_FACTS_OUT_DIR)/%.zsm,$(CLANG_FACTS_SRC
 ZCL_OBJECT_CC = $(if $(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),$(wordlist 2,$(words $(CC)),$(CC)),$(CC))
 # The toolchain identity, when this parse fingerprinted one.
 CLANG_FACTS_TOOLCHAIN_ID = $(filter-out $(ZCL_ZERO_SHA256),$(BUILD_COMPILER_ID))
+# Everything the sensor is told about one TU's compile, after --out. The
+# rule below re-senses a TU when this text or the object compiler's IDENTITY
+# text changes, not only when a source or the sensor does: a compiler
+# upgrade, a toolchain change or a flag change (ZCL_DEV_HOT_OPT, CFLAGS)
+# re-senses every TU it reaches. Both stamps are recomputed on every run and
+# replaced only when their bytes change, so an unchanged compile re-senses
+# nothing.
+CLANG_FACTS_EMIT_ARGS = --facts $(if $(CLANG_FACTS_TREE),--tree $(CLANG_FACTS_TREE)) \
+	$(if $(CLANG_FACTS_TOOLCHAIN_ID),--toolchain-id $(CLANG_FACTS_TOOLCHAIN_ID)) \
+	--cc $(firstword $(ZCL_OBJECT_CC)) \
+	-- $(wordlist 2,$(words $(ZCL_OBJECT_CC)),$(ZCL_OBJECT_CC)) \
+	$(DEV_COMPILE_CFLAGS) $(ZCL_TU_RANDOM_SEED)
+CLANG_FACTS_CC_STAMP = $(CLANG_FACTS_OUT_DIR)/.object-cc
 clang-facts: $(CLANG_FACTS_ZSMS)
-$(CLANG_FACTS_OUT_DIR)/%.zsm: %.c $(CLANG_FACTS_HDRS) $(BIN_DIR)/z23-clang-manifest
+$(CLANG_FACTS_CC_STAMP): $(BIN_DIR)/z23-clang-manifest FORCE
+	@mkdir -p $(dir $@)
+	@$(BIN_DIR)/z23-clang-manifest object-cc --root . \
+	    --cc $(firstword $(ZCL_OBJECT_CC)) \
+	    $(if $(CLANG_FACTS_TOOLCHAIN_ID),--toolchain-id $(CLANG_FACTS_TOOLCHAIN_ID)) > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv -f $@.tmp $@; fi
+# A pattern-built prerequisite is intermediate and deleted after the run;
+# the stamp must survive to compare the next run against.
+.PRECIOUS: $(CLANG_FACTS_OUT_DIR)/%.argv
+$(CLANG_FACTS_OUT_DIR)/%.argv: %.c FORCE
+	@mkdir -p $(dir $@)
+	@printf '%s\n' '$(subst ','\'',$(strip $(CLANG_FACTS_EMIT_ARGS)))' > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv -f $@.tmp $@; fi
+$(CLANG_FACTS_OUT_DIR)/%.zsm: %.c $(CLANG_FACTS_HDRS) $(BIN_DIR)/z23-clang-manifest \
+		$(CLANG_FACTS_OUT_DIR)/%.argv $(CLANG_FACTS_CC_STAMP)
 	$(if $(filter $(CLANG_FACTS_REFUSED),$<),@echo "clang-facts: refused: $@: its object bakes a build receipt no facts rule may name" >&2; exit 1)
 	@mkdir -p $(dir $@)
-	$(BIN_DIR)/z23-clang-manifest emit --root . --source $< --out $@ --facts \
-	    $(if $(CLANG_FACTS_TREE),--tree $(CLANG_FACTS_TREE)) \
-	    $(if $(CLANG_FACTS_TOOLCHAIN_ID),--toolchain-id $(CLANG_FACTS_TOOLCHAIN_ID)) \
-	    --cc $(firstword $(ZCL_OBJECT_CC)) \
-	    -- $(wordlist 2,$(words $(ZCL_OBJECT_CC)),$(ZCL_OBJECT_CC)) \
-	    $(DEV_COMPILE_CFLAGS) $(ZCL_TU_RANDOM_SEED)
+	$(BIN_DIR)/z23-clang-manifest emit --root . --source $< --out $@ \
+	    $(CLANG_FACTS_EMIT_ARGS)
 
 # The raylib 6.0 stub must keep compiling against the window TU on every
 # host, raylib installed or not: hosts WITH raylib build the linked window
@@ -10277,7 +10302,7 @@ DEV_HOT_SRC_DIRS := core/modules/chain/src core/chainparams/src \
 	core/modules/sapling/src core/modules/script/src \
 	core/modules/validation/src
 DEV_COMPILE_CFLAGS = $(DEV_RESTART_CFLAGS)
-$(foreach d,$(DEV_HOT_SRC_DIRS),$(DEV_OBJ_DIR)/$(d)/%.o $(CLANG_FACTS_OUT_DIR)/$(d)/%.zsm): DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(foreach d,$(DEV_HOT_SRC_DIRS),$(DEV_OBJ_DIR)/$(d)/%.o $(CLANG_FACTS_OUT_DIR)/$(d)/%.zsm $(CLANG_FACTS_OUT_DIR)/$(d)/%.argv): DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 
 $(DEV_OBJ_DIR)/platform/modules/util/src/clientversion.o: DEV_COMPILE_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)
 $(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_FAST_EPOCH_OBJECT_PREREQ) $(BUILD_EPOCH_OBJECT_FORCE) | $(DEV_LEASE)

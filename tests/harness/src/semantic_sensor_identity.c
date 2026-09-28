@@ -4,6 +4,9 @@
  * Part of the semantic_sensor group (test_semantic_manifest.c), so it runs
  * only where build/bin/z23-clang-manifest is built.
  *
+ *   resense    the facts rule, really run for one hot TU: unchanged, it
+ *              does not re-sense; another hot optimizer or another
+ *              toolchain identity re-senses it.
  *   argv       `make -n` of dev objects and their clang-facts targets, for
  *              hot (-O2) and ordinary (-Og) directories: the sensor's
  *              --cc and argv after `--` equal the object's compiler (its
@@ -279,6 +282,90 @@ static int ssi_t_argv(void)
             bad += !ssi_probe_src(out, k_ssi_probe_srcs[k]);
         ASSERT_EQ(bad, 0);
     } TEST_END
+    free(out);
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
+/* ── resense: a compile change rewrites the manifest ────────────────────── */
+
+#define SSI_HOT_TU "core/params/src/params"
+
+static uint32_t ssi_changed(const uint8_t *a, size_t an, const uint8_t *b,
+                            size_t bn);
+
+/* Really run the facts rule for the hot TU into `dir`, with `extra` make
+ * variables (NULL-terminated). True when make succeeded; *emitted says
+ * whether the sensor ran. */
+static bool ssi_facts_run(const char *dir, const char *const *extra,
+                          char *out, size_t cap, bool *emitted)
+{
+    const char *argv[32];
+    char var[PATH_MAX + 32], goal[PATH_MAX + 64];
+    size_t k = 0;
+    bool timed_out = false;
+    const char *const env[] = {"env",         "-u", "MAKEFLAGS", "-u",
+                               "MFLAGS",      "-u", "MAKELEVEL", "-u",
+                               "MAKEOVERRIDES", "-u", "GNUMAKEFLAGS"};
+    for (size_t i = 0; i < sizeof(env) / sizeof(env[0]); i++)
+        argv[k++] = env[i];
+    (void)snprintf(var, sizeof(var), "CLANG_FACTS_OUT_DIR=%s", dir);
+    (void)snprintf(goal, sizeof(goal), "%s/" SSI_HOT_TU ".zsm", dir);
+    argv[k++] = "make";
+    argv[k++] = "--no-print-directory";
+    argv[k++] = "-o"; /* the group's sensor is the one under test */
+    argv[k++] = SSI_SENSOR;
+    argv[k++] = var;
+    for (size_t i = 0; extra[i] != NULL && k < 30; i++)
+        argv[k++] = extra[i];
+    argv[k++] = goal;
+    argv[k] = NULL;
+    int rc = zcl_spawn_capture_merged_observed(argv, out, cap, 600000,
+                                               &timed_out);
+    if (rc != 0 || timed_out)
+        printf("  make %s exited %d%s: %.2000s\n", goal, rc,
+               timed_out ? " (timed out)" : "", out);
+    *emitted = strstr(out, "z23-clang-manifest emit") != NULL;
+    return rc == 0 && !timed_out;
+}
+
+static int ssi_t_resense(void)
+{
+    int failures = 0;
+    char dir[1024] = {0}, path[PATH_MAX + 64];
+    char *out = zcl_malloc(SSI_MAKE_OUT, "ssi.resense_out");
+    uint8_t *first = NULL, *hot = NULL;
+    size_t fn = 0, hn = 0;
+    bool emitted = false;
+    static const char *const none[] = {NULL};
+    static const char *const opt[] = {"ZCL_DEV_HOT_OPT=-O3", NULL};
+    static const char *const tool[] = {
+        "ZCL_DEV_HOT_OPT=-O3",
+        "BUILD_COMPILER_ID="
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        NULL};
+    TEST_CASE("semantic_sensor: a flag or toolchain change re-senses the TU, an unchanged compile does not") {
+        ASSERT(out != NULL);
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_resense") != NULL);
+        (void)snprintf(path, sizeof(path), "%s/" SSI_HOT_TU ".zsm", dir);
+        ASSERT(ssi_facts_run(dir, none, out, SSI_MAKE_OUT, &emitted));
+        ASSERT(emitted);
+        ASSERT(sft_read(path, &first, &fn));
+        ASSERT(ssi_facts_run(dir, none, out, SSI_MAKE_OUT, &emitted));
+        ASSERT(!emitted);
+        /* The hot directories' optimizer: the object compiles differently. */
+        ASSERT(ssi_facts_run(dir, opt, out, SSI_MAKE_OUT, &emitted));
+        ASSERT(emitted);
+        ASSERT(sft_read(path, &hot, &hn));
+        ASSERT((ssi_changed(first, fn, hot, hn) &
+                (1u << VCS_SEMANTIC_SECTION_V1_IDENTITY)) != 0);
+        /* The toolchain identity alone. */
+        ASSERT(ssi_facts_run(dir, tool, out, SSI_MAKE_OUT, &emitted));
+        ASSERT(emitted);
+    } TEST_END
+    free(first);
+    free(hot);
     free(out);
     if (dir[0] != '\0')
         (void)test_rm_rf_recursive(dir);
@@ -701,6 +788,7 @@ int semantic_sensor_identity_tests(void)
 {
     int failures = 0;
     failures += ssi_t_argv();
+    failures += ssi_t_resense();
     failures += ssi_t_identity();
     failures += ssi_t_resolution();
     failures += ssi_t_widen();
