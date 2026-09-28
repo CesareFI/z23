@@ -619,6 +619,78 @@ static bool fxc_semantic(struct fxc *c, struct fxc_pair *p,
     return affected;
 }
 
+/* A position-only hit is safe to admit with no test obligation only for a
+ * function (id[0] == 'f') whose own span (wherever this manifest recorded
+ * one for it, in any file) is not FXI_DIRTY_SPAN: no changed file's diff
+ * region overlaps that span, so the entity's real code -- a body defined
+ * here, or nothing at all for a bare prototype -- provably sits outside
+ * every edit. A function's FUNCTIONS token hash cannot stand in for this:
+ * it hashes token spelling, so a bare "__LINE__" or "__builtin_LINE()"
+ * reads the same before and after a pure move even though its expansion
+ * changed, and is the reason fxc_mark_positions (line 404) folds a moved
+ * span in as "code-moved" (FXI_DIRTY_SPAN, conservative) rather than
+ * leaving it for the digest rule to catch. Span-clean is what this check
+ * relies on. Every other row this entity has (its DECLS/SYMBOLS/alias
+ * text) is still digest-covered: by the time fxc_position runs,
+ * fxc_semantic already returned false for this pair, so whole_digest
+ * (fxi_whole_digest, devloop_facts_index.c fxi_digests) is identical on
+ * both sides, and a second declaration's text (a header prototype, say)
+ * does not encode a line number to unsettle that. __COUNTER__ anywhere in
+ * either manifest already refuses narrowing outright (fxc_counts, run
+ * from fxc_coarse before fxc_fine), so a moved declaration cannot
+ * silently reorder someone else's counter.
+ *
+ * A variable never qualifies, moved or not: it has no span at all (spans
+ * come only from cm_emit_span, called for a function definition), so this
+ * check is vacuously true for it regardless of what its initializer does.
+ * cm_value_facts/cm_walk_site (clang_manifest_ast.c) record which macros a
+ * variable definition's initializer names, not the value they expanded
+ * to, so a __LINE__ that moves inside `int g = __LINE__;` changes no row
+ * and leaves whole_digest identical too -- there is no proof anywhere in
+ * the facts that its bytes are unaffected, so id[0] == 'v' is refused
+ * outright below (unknown widens). */
+static bool fxc_position_safe(const struct fxi *x, size_t dirty,
+                              const uint8_t *flags)
+{
+    return fxi_id(x, dirty)[0] == 'f' && !(flags[dirty] & FXI_DIRTY_SPAN);
+}
+
+/* fxc_first_root reports only ONE witness (the first root index, cond
+ * sites aside, that fxi_taint's multi-source BFS happens to connect to a
+ * dirty entity): a manifest can carry a second, disjoint position-dirty
+ * entity that no root examined above ever reaches through THAT witness,
+ * so checking fxc_position_safe on the reported witness alone would let
+ * an unrelated, unsafe move (a variable, or -- should fxc_semantic somehow
+ * have missed it -- a span-dirty function) hide behind a safe one reached
+ * by a different root in the same manifest. This re-taints from every
+ * UNSAFE position-dirty entity alone and reports whether any root reaches
+ * one; compile_only is granted only when this is false, so a mixed
+ * manifest never loses a test obligation to the safe witness fxc_position
+ * happened to report. */
+static bool fxc_position_unsafe_reachable(const struct fxi *x,
+                                          const uint8_t *flags)
+{
+    size_t n = fxi_count(x);
+    uint8_t *seed = zcl_calloc(n + 1, 1, "facts_tu.punsafe");
+    size_t *via = zcl_calloc(n + 1, sizeof(*via), "facts_tu.puvia");
+    bool reached = seed == NULL || via == NULL; /* OOM: never assume safety */
+    if (!reached) {
+        for (size_t e = 0; e < n; e++)
+            seed[e] = (flags[e] & FXI_DIRTY_POSITION) &&
+                      !fxc_position_safe(x, e, flags);
+        if (!fxi_taint(x, seed, via)) {
+            reached = true; /* taint failed: never assume safety */
+        } else {
+            for (size_t e = 0; !reached && e < n; e++)
+                reached = (fxi_root(x, e) || fxc_own_copy(x, e)) &&
+                          via[e] != SIZE_MAX;
+        }
+    }
+    free(seed);
+    free(via);
+    return reached;
+}
+
 static bool fxc_position(struct fxc_pair *p,
                          struct zcl_devloop_facts_tu_verdict *t, bool *ok)
 {
@@ -632,10 +704,14 @@ static bool fxc_position(struct fxc_pair *p,
                            : SIZE_MAX - 1;
         free(via);
         *ok = root != SIZE_MAX - 1;
-        if (*ok && root != SIZE_MAX)
-            return fxc_set(t, true, false, "position",
-                           "%s reaches %s, whose declaration moved",
-                           fxi_id(side[s], root), fxi_id(side[s], dirty));
+        if (*ok && root != SIZE_MAX) {
+            fxc_set(t, true, false, "position",
+                   "%s reaches %s, whose declaration moved",
+                   fxi_id(side[s], root), fxi_id(side[s], dirty));
+            if (!fxc_position_unsafe_reachable(side[s], flags[s]))
+                t->compile_only = true;
+            return true;
+        }
     }
     return false;
 }

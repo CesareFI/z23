@@ -1139,8 +1139,11 @@ the universe's completeness, whether the whole catalog is in scope, and the
 seeds the compile may re-emit. `semantic_consumer_live` compiles every
 variant (`-std=c23 -Og -g1`) and fails on any TU whose object changed that
 the consumer left unaffected. At the fixture's `-g1` every reader of a changed
-header that no other rule reaches is affected compile only
-(`debug-position`); the table names the TUs with a test obligation.
+header that no other rule reaches is affected compile only (`debug-position`);
+a reader that reaches only a bare prototype whose declaration moved is
+compile only too (`position`; a moved declaration with a body still folds
+in as `code-moved`, fully affected, since its own span carries the code).
+The table names the TUs with a test obligation.
 
 | variant | edit | affected TUs | obligations |
 |---|---|---|---|
@@ -1150,7 +1153,7 @@ header that no other rule reaches is affected compile only
 | nested | `CX_BASE`, used only in `CX_SCALE`'s body | the TU expanding `CX_SCALE` | narrowed |
 | typedef | `cx_count` becomes `long` | the TU naming it | narrowed |
 | tail | a comment after every declaration | none with a test obligation; all five compile only (`debug-position`: each line table records the header's MD5) | narrowed |
-| top | a comment before every declaration | the four TUs whose debug positions move (`position`) | narrowed |
+| top | a comment before every declaration | the four TUs whose debug positions move (`position`); each reaches only a bare header prototype, so each joins the compile set with no test obligation | narrowed |
 | signature | `cx_sum`'s parameter type, header and definer | the definer and its callers | narrowed |
 | static | a static's body; another TU has a same-name static | its TU; seeds the static and its caller | narrowed |
 | address | a body whose address another TU takes | its TU | `address-taken` |
@@ -1179,8 +1182,9 @@ header that no other rule reaches is affected compile only
 | hinl | the body of the header's `static inline cx_inl`, which `cx_b.c`'s `cx_inl_b` calls (against a tree with both), at `-O1` | all five: every reader defines its own copy (`interface`) | narrowed; seeds `cx_inl` and `cx_inl_b` |
 | hinl0 | the same at `-O0`, where `cx_b.c` emits `cx_inl` out of line | all five (`interface`) | narrowed; seeds `cx_inl` and `cx_inl_b` |
 | hinl_addr | the same, while `cx_d.c` returns `cx_inl`'s address | all five (`interface`) | `address-taken` |
-| gline | a comment line above every declaration of the header, compiled `-g`, while `cx_e.c` names only `struct cx_small` (against a tree with that use) | the four TUs whose named declarations moved (`position`), and `cx_e.c` (`debug-position`, compile only, not reached by the walk) | narrowed |
-| gline0 | the same at `-g0` | the four (`position`); `cx_e.c` unaffected | narrowed |
+| gline | a comment line above every declaration of the header, compiled `-g`, while `cx_e.c` names only `struct cx_small` (against a tree with that use) | the four TUs whose named declarations moved (`position`, compile only: each reaches only a bare prototype), and `cx_e.c` (`debug-position`, compile only, not reached by the walk) | narrowed |
+| gline0 | the same at `-g0` | the four (`position`, compile only); `cx_e.c` unaffected | narrowed |
+| lineinl | a comment line above the header's `static inline cx_lineinl`, which expands `__LINE__` (`cx_b.c` calls it) | all five: every reader's own copy's span overlaps the moved region (`code-moved`; its token hash reads the same, since it hashes `__LINE__`'s spelling, not its expansion, so span is what catches this) | narrowed; seeds `cx_lineinl` and `cx_lineinl_b` |
 
 The seven from `counter` to `unity` are minimized reproducers of dependencies
 a differential comparison against cold clang objects found missed;
