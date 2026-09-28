@@ -12,7 +12,10 @@ wallet seed; recovery software would need the same documented mapping.
 Version 0.3.6 runs the real app startup and EXIT controller in a C23 host
 SDK shell. The shell checks the receive address, derivation failure screens,
 secret-workspace wiping, USB reset and suspend, approval timeout, and EXIT
-event. It found that a failed internal derivation left formatted address
+event. It scripts valid and malformed APDUs through the app main loop and
+injects receive, send, and post-reply display exceptions. The payment route
+uses a rejecting stub; this shell does not exercise signing. It found that
+a failed internal derivation left formatted address
 lines in RAM; the app now clears them before showing the error screen.
 Two separately patched SDK builds produced identical 40,960-byte `.text`
 images, SHA-256

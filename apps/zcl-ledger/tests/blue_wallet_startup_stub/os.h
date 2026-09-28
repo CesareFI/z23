@@ -3,6 +3,7 @@
 #define ZCL_BLUE_WALLET_STARTUP_OS_H
 
 #include "../blue_wallet_sdk_stub/os.h"
+#include <setjmp.h>
 #include <stdlib.h>
 
 enum {
@@ -32,12 +33,26 @@ int cx_hash5(void *context, unsigned mode, const uint8_t *bytes,
 void os_boot(void);
 unsigned short io_exchange(unsigned char channel, unsigned short tx_length);
 
-#define BEGIN_TRY if (1)
-#define TRY if (1)
-#define CATCH_OTHER(error) else for (unsigned error = 0; error < 1; ++error)
-#define FINALLY if (1)
-#define END_TRY
-#define CLOSE_TRY ((void)0)
-#define THROW(error) abort()
+typedef struct blue_try_context {
+    jmp_buf jump;
+    volatile unsigned code;
+    struct blue_try_context *previous;
+} blue_try_context;
+
+void blue_try_enter(blue_try_context *context);
+void blue_try_leave(void);
+blue_try_context *blue_try_current(void);
+[[noreturn]] void blue_throw(unsigned error);
+
+#define BEGIN_TRY { blue_try_context blue_try;
+#define TRY blue_try_enter(&blue_try); \
+    if (setjmp(blue_try.jump) == 0) {
+#define CATCH_OTHER(error) goto blue_finally; } else { \
+    unsigned error = blue_try.code; blue_try.code = 0;
+#define FINALLY goto blue_finally; } blue_finally: \
+    if (blue_try_current() == &blue_try) blue_try_leave();
+#define END_TRY if (blue_try.code) blue_throw(blue_try.code); }
+#define CLOSE_TRY blue_try_leave()
+#define THROW(error) blue_throw(error)
 
 #endif

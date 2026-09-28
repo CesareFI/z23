@@ -23,6 +23,38 @@ static uint8_t external_hash[20], internal_hash[20];
 static unsigned derivations, displays, exits, aborts, signer_wipes;
 static bool reject_second_path, reject_pin, reject_init, reject_pair;
 static bool hashes_ready, payment_visible, timeout_pending;
+typedef struct { const uint8_t *bytes; size_t length; } request_frame;
+static const request_frame *requests;
+static size_t request_count, request_next, reply_count;
+static uint8_t replies[12][260];
+static size_t reply_lengths[12];
+static unsigned payment_commands;
+static blue_try_context *active_try;
+enum { IO_FAULT_NONE, IO_FAULT_RECEIVE, IO_FAULT_SEND };
+static unsigned io_fault;
+static size_t fault_after;
+static bool fault_fired;
+static unsigned display_fault_at;
+static bool display_fault_fired;
+
+void blue_try_enter(blue_try_context *context) {
+    context->code = 0;
+    context->previous = active_try;
+    active_try = context;
+}
+
+void blue_try_leave(void) {
+    assert(active_try);
+    active_try = active_try->previous;
+}
+
+blue_try_context *blue_try_current(void) { return active_try; }
+
+void blue_throw(unsigned error) {
+    assert(active_try && error);
+    active_try->code = error;
+    longjmp(active_try->jump, 1);
+}
 
 void blue_wallet_test_display(const bagl_element_t *elements, size_t count,
     unsigned int (*button)(unsigned int, unsigned int)) {
@@ -30,6 +62,10 @@ void blue_wallet_test_display(const bagl_element_t *elements, size_t count,
     shown = elements;
     shown_count = count;
     ++displays;
+    if (display_fault_at && displays == display_fault_at) {
+        display_fault_fired = true;
+        blue_throw(0x6813);
+    }
 }
 
 wallet_boot_material *wallet_payment_boot_material(void) {
@@ -59,10 +95,11 @@ bool wallet_payment_timeout(void) {
 }
 uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length) {
-    (void)apdu; (void)length; (void)reply; (void)capacity;
-    (void)reply_length;
-    assert(false);
-    return 0x6d00;
+    (void)reply; (void)capacity;
+    assert(apdu && length >= 2 && apdu[1] >= 0x20);
+    ++payment_commands;
+    *reply_length = 0;
+    return 0x6985;
 }
 void blue_wallet_signer_wipe(void) { ++signer_wipes; }
 
@@ -124,8 +161,30 @@ void io_seproxyhal_init(void) {}
 void USB_power(int enabled) { assert(enabled == 0 || enabled == 1); }
 void os_sched_exit(unsigned code) { assert(code == 0); ++exits; }
 unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
-    assert(channel == CHANNEL_APDU && tx_length == 0);
-    longjmp(request_boundary, 1);
+    if (tx_length) {
+        assert(channel == (CHANNEL_APDU | IO_RETURN_AFTER_TX));
+        if (io_fault == IO_FAULT_SEND && !fault_fired &&
+            reply_count == fault_after) {
+            fault_fired = true;
+            blue_throw(0x6811);
+        }
+        assert(reply_count < sizeof replies / sizeof replies[0]);
+        assert(tx_length <= sizeof replies[0]);
+        memcpy(replies[reply_count], G_io_apdu_buffer, tx_length);
+        reply_lengths[reply_count++] = tx_length;
+        return 0;
+    }
+    assert(channel == CHANNEL_APDU);
+    if (io_fault == IO_FAULT_RECEIVE && !fault_fired &&
+        request_next == fault_after) {
+        fault_fired = true;
+        blue_throw(0x6812);
+    }
+    if (request_next == request_count) longjmp(request_boundary, 1);
+    const request_frame *request = &requests[request_next++];
+    assert(request->length <= sizeof G_io_apdu_buffer);
+    memcpy(G_io_apdu_buffer, request->bytes, request->length);
+    return (unsigned short)request->length;
 }
 void io_seproxyhal_spi_send(const unsigned char *bytes,
     unsigned short length) { (void)bytes; (void)length; assert(false); }
@@ -153,18 +212,147 @@ void blue_wallet_test_finger(const unsigned char *buffer) {
     (void)exit_button->tap(exit_button);
 }
 
-static void start_until_request(void) {
+static void reset_start(void) {
     shown = NULL;
     shown_count = 0;
     derivations = 0;
+    request_next = 0;
+    reply_count = 0;
     hashes_ready = false;
     memset(external_hash, 0, sizeof external_hash);
     memset(internal_hash, 0, sizeof internal_hash);
+}
+
+static void start_until_request(void) {
+    reset_start();
     if (setjmp(request_boundary) == 0) {
         (void)blue_wallet_device_main();
         assert(false);
     }
+    active_try = NULL;
     assert(shown && find_text("EXIT"));
+}
+
+static void start_until_exit(void) {
+    reset_start();
+    assert(blue_wallet_device_main() == 0);
+    assert(!active_try && shown);
+}
+
+static void expect_status(size_t index, uint16_t status) {
+    assert(index < reply_count && reply_lengths[index] >= 2);
+    size_t tail = reply_lengths[index] - 2;
+    assert(replies[index][tail] == (uint8_t)(status >> 8));
+    assert(replies[index][tail + 1] == (uint8_t)status);
+}
+
+static void test_apdu_sequence(void) {
+    static const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
+    static const uint8_t address[] = {0xa5, 0x02, 0, 0, 0};
+    static const uint8_t short_frame[] = {0xa5};
+    static const uint8_t wrong_class[] = {0, 0x01, 0, 0, 0};
+    static const uint8_t wrong_path[] = {0xa5, 0x02, 1, 0, 0};
+    static const uint8_t unknown[] = {0xa5, 0x03, 0, 0, 0};
+    static const uint8_t bad_length[] = {0xa5, 0x02, 0, 0, 1};
+    static const uint8_t payment_begin[] = {0xa5, 0x20, 0, 0, 0};
+    static const request_frame sequence[] = {
+        {identity, sizeof identity}, {address, sizeof address},
+        {short_frame, sizeof short_frame},
+        {wrong_class, sizeof wrong_class},
+        {wrong_path, sizeof wrong_path}, {unknown, sizeof unknown},
+        {bad_length, sizeof bad_length},
+        {payment_begin, sizeof payment_begin}
+    };
+    requests = sequence;
+    request_count = sizeof sequence / sizeof sequence[0];
+    payment_visible = true;
+    unsigned before_aborts = aborts, before_displays = displays;
+    start_until_request();
+    assert(shown == receive_ui && request_next == request_count);
+    assert(reply_count == request_count && payment_commands == 1);
+    assert(aborts == before_aborts + 1 && displays == before_displays + 3);
+    assert(reply_lengths[0] == 7 && blue_wallet_identity_matches(
+        replies[0], reply_lengths[0]));
+    assert(reply_lengths[1] == 35 && memcmp(replies[1],
+        wallet_state.public_key, 33) == 0);
+    for (size_t i = 0; i < reply_count; ++i)
+        expect_status(i, i < 2 ? 0x9000 : i == 2 || i == 6 ? 0x6700 :
+            i == 3 ? 0x6e00 : i == 4 ? 0x6b00 :
+            i == 5 ? 0x6d00 : 0x6985);
+    requests = NULL;
+    request_count = 0;
+}
+
+static void test_unavailable_address_apdu(void) {
+    static const uint8_t address[] = {0xa5, 0x02, 0, 0, 0};
+    static const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
+    static const request_frame sequence[] = {
+        {address, sizeof address}, {identity, sizeof identity}
+    };
+    requests = sequence;
+    request_count = sizeof sequence / sizeof sequence[0];
+    reject_pin = true;
+    start_until_request();
+    assert(shown == error_ui && !wallet_state.address_ready);
+    assert(reply_count == request_count && !hashes_ready);
+    expect_status(0, 0x6985);
+    expect_status(1, 0x9000);
+    assert(blue_wallet_identity_matches(replies[1], reply_lengths[1]));
+    requests = NULL;
+    request_count = 0;
+}
+
+static void test_io_failures(void) {
+    static const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
+    static const request_frame one[] = {{identity, sizeof identity}};
+    requests = NULL;
+    request_count = 0;
+    io_fault = IO_FAULT_RECEIVE;
+    fault_after = 0;
+    fault_fired = false;
+    unsigned before = aborts;
+    start_until_exit();
+    assert(fault_fired && reply_count == 0 && aborts > before);
+    assert(shown == receive_ui);
+
+    requests = one;
+    request_count = 1;
+    io_fault = IO_FAULT_SEND;
+    fault_fired = false;
+    before = aborts;
+    start_until_exit();
+    assert(fault_fired && request_next == 1 && reply_count == 0);
+    assert(aborts > before && shown == receive_ui);
+
+    io_fault = IO_FAULT_RECEIVE;
+    fault_after = 1;
+    fault_fired = false;
+    before = aborts;
+    start_until_exit();
+    assert(fault_fired && request_next == 1 && reply_count == 1);
+    assert(blue_wallet_identity_matches(replies[0], reply_lengths[0]));
+    assert(aborts > before && shown == receive_ui);
+    io_fault = IO_FAULT_NONE;
+    requests = NULL;
+    request_count = 0;
+}
+
+static void test_post_reply_display_failure(void) {
+    static const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
+    static const request_frame one[] = {{identity, sizeof identity}};
+    requests = one;
+    request_count = 1;
+    payment_visible = true;
+    display_fault_at = displays + 2;
+    display_fault_fired = false;
+    unsigned before = aborts;
+    start_until_exit();
+    assert(display_fault_fired && request_next == 1 && reply_count == 1);
+    assert(blue_wallet_identity_matches(replies[0], reply_lengths[0]));
+    assert(aborts >= before + 2);
+    display_fault_at = 0;
+    requests = NULL;
+    request_count = 0;
 }
 
 static void check_error_startup(unsigned expected_derivations) {
@@ -225,5 +413,11 @@ int main(void) {
     check_error_startup(0);
     assert(displays == 8 && exits == 5);
     assert(aborts == 8 && signer_wipes == 7);
+    reject_pin = false;
+    test_apdu_sequence();
+    test_unavailable_address_apdu();
+    reject_pin = false;
+    test_io_failures();
+    test_post_reply_display_failure();
     return 0;
 }

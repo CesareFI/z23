@@ -38,7 +38,22 @@ functions in 4,542 files at cap 15 with 4,112 exact baseline pins.
 
 The shell replaces neither BOLOS nor its USB and touchscreen firmware. Its
 fake public points test control flow and address formatting, not real BIP32
-or EC behavior. The APDU loop stops at its first receive call; transaction
-upload, signing, power loss, USB descriptor recovery, firmware stack frames,
-and display timing still require other tests. Wallet 0.3.6 remains an offline
-candidate and has not been installed on the physical Blue.
+or EC behavior. The APDU shell now scripts eight frames through the actual
+Wallet main loop: identity, public-key receive, a short frame, wrong class,
+wrong path selector, unknown instruction, noncanonical length, and payment
+dispatch. It checks one reply per frame and the exact status for each. The
+payment command uses a rejecting test stub, so this test covers routing but
+not the payment controller. With PIN validation failing, the shell verifies
+that receive returns `6985` while identity remains available.
+
+The shell also injects exceptions before receiving, while sending, after a
+valid reply, and while redrawing after a valid reply. The post-reply case
+returns exactly one reply and unwinds through the outer cleanup handler. The
+exception model uses C23 `setjmp` and `longjmp` with the standard conditional
+form; it tests this app's cleanup structure, not BOLOS exception behavior.
+The focused startup test and all 50 Ledger CTests passed under Clang 22.1.6
+Debug with ASan/UBSan and GCC 16.1.1 Release after this extension.
+
+Transaction upload, signing, power loss, USB descriptor recovery, firmware
+stack frames, and display timing still require other tests. Wallet 0.3.6
+remains an offline candidate and has not been installed on the physical Blue.
