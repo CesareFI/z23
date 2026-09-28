@@ -724,8 +724,9 @@ static bool smt_revision_manifest(uint8_t revision, uint8_t **out, size_t *len)
     return ok;
 }
 
-/* Revision 2 names zcl.semantic_facts.v2 and the reader reports it;
- * revision 0 and 1 both write v1; a revision past 2 is refused. */
+/* Revisions 2 and 3 name zcl.semantic_facts.v2 and .v3 and the reader
+ * reports each; revision 0 and 1 both write v1; a revision past 3 is
+ * refused. */
 static int smt_t_facts_revision(void)
 {
     int failures = 0;
