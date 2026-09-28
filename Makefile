@@ -7289,18 +7289,29 @@ $(BIN_DIR)/arena_view: tools/arena_view.c \
 # (docs/work/SEMANTIC_MANIFEST.md). It is an external tool: it links libclang
 # and is never linked into z23, z23-dev, the test harness or core; Z23 reads
 # only the manifest bytes, through the libclang-free reader in
-# contexts/commons/modules/vcs/src/semantic_manifest*.c. Builds only where
-# libclang's C API is installed (apt install libclang-20-dev); point
-# CLANG_MANIFEST_LLVM_DIR at another LLVM prefix to use a different one.
+# contexts/commons/modules/vcs/src/semantic_manifest*.c. Installed C API
+# headers take precedence. Linux x86_64 can use the pinned source headers
+# below with its matching system libclang 18. An explicit LLVM prefix wins.
 .PHONY: clang-manifest
 CLANG_MANIFEST_LLVM_DIR ?= $(patsubst %/include/clang-c/Index.h,%,$(firstword \
 	$(wildcard /usr/lib/llvm-20/include/clang-c/Index.h \
 	           /usr/lib/llvm-21/include/clang-c/Index.h \
 	           /usr/lib/llvm-19/include/clang-c/Index.h \
 	           /usr/lib/llvm-18/include/clang-c/Index.h)))
+CLANG_MANIFEST_VENDOR_HDRS := $(wildcard vendor/clang-c-18/include/clang-c/*.h)
+ifeq ($(CLANG_MANIFEST_LLVM_DIR),)
+ifeq ($(ZCL_HOST_OS),Linux)
+ifeq ($(shell uname -m),x86_64)
+ifneq ($(wildcard /lib/x86_64-linux-gnu/libclang-18.so.18),)
+CLANG_MANIFEST_LLVM_DIR := vendor/clang-c-18
+CLANG_MANIFEST_SYSTEM_LIB := /lib/x86_64-linux-gnu/libclang-18.so.18
+endif
+endif
+endif
+endif
 # A user-owned header prefix may pair with an explicitly named system libclang
-# of the same version. Link that exact file, with no writable-prefix RUNPATH;
-# the proof worker checks and hashes the selected system library before tests.
+# of the same version. Link that exact file, with no writable-prefix RUNPATH.
+# The proof worker validates and hashes an explicit environment selection.
 ifneq ($(CLANG_MANIFEST_SYSTEM_LIB),)
 CLANG_MANIFEST_LIB_ARG = $(CLANG_MANIFEST_SYSTEM_LIB)
 CLANG_MANIFEST_RPATH_ARG :=
@@ -7340,8 +7351,19 @@ clang-manifest: $(BIN_DIR)/z23-clang-manifest
 # export it. The sensor then spells types by clang_getTypeSpelling, a
 # different grammar that its producer digest names (CM_TYPE_GRAMMAR).
 $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manifest.h \
-		$(CLANG_MANIFEST_CORE_HDRS)
+		$(CLANG_MANIFEST_CORE_HDRS) $(CLANG_MANIFEST_VENDOR_HDRS)
 	@mkdir -p $(dir $@)
+	@if [ "$(CLANG_MANIFEST_LLVM_DIR)" = vendor/clang-c-18 ]; then \
+	    if [ "$$(stat -L -c '%u:%a' / 2>/dev/null)" != 0:755 ] || \
+	       [ "$$(stat -L -c '%u:%a' /usr 2>/dev/null)" != 0:755 ] || \
+	       [ "$$(stat -L -c '%u:%a' /usr/lib 2>/dev/null)" != 0:755 ] || \
+	       [ "$$(stat -L -c '%u:%a' /lib 2>/dev/null)" != 0:755 ] || \
+	       [ "$$(stat -L -c '%u:%a' /lib/x86_64-linux-gnu 2>/dev/null)" != 0:755 ] || \
+	       [ "$$(stat -L -c '%u:%a' /lib/x86_64-linux-gnu/libclang-18.so.18 2>/dev/null)" != 0:644 ]; then \
+	        echo 'clang-manifest: pinned system libclang path is not root-controlled'; \
+	        exit 1; \
+	    fi; \
+	fi
 	@if [ -z "$(CLANG_MANIFEST_LLVM_DIR)" ] || \
 	    [ ! -f "$(CLANG_MANIFEST_LLVM_DIR)/include/clang-c/Index.h" ]; then \
 	    echo "clang-manifest: libclang C API not found."; \

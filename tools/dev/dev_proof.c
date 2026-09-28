@@ -8469,6 +8469,27 @@ static bool proof_loader_environment_check(char *why, size_t why_len)
     return true;
 }
 
+#if defined(__linux__) && defined(__x86_64__)
+static bool proof_clang_system_path_trusted(const char *path, bool directory)
+{
+    struct stat sb;
+    return stat(path, &sb) == 0 && sb.st_uid == 0 &&
+           (sb.st_mode & 022) == 0 &&
+           (directory ? S_ISDIR(sb.st_mode) : S_ISREG(sb.st_mode));
+}
+
+static bool proof_clang_system_lib_trusted(void)
+{
+    return proof_clang_system_path_trusted("/", true) &&
+           proof_clang_system_path_trusted("/usr", true) &&
+           proof_clang_system_path_trusted("/usr/lib", true) &&
+           proof_clang_system_path_trusted("/lib", true) &&
+           proof_clang_system_path_trusted("/lib/x86_64-linux-gnu", true) &&
+           proof_clang_system_path_trusted(
+               "/lib/x86_64-linux-gnu/libclang-18.so.18", false);
+}
+#endif
+
 static bool proof_clang_runtime_check(char *why, size_t why_len)
 {
 #if defined(__linux__) && defined(__x86_64__)
@@ -8479,12 +8500,24 @@ static bool proof_clang_runtime_check(char *why, size_t why_len)
         return false;
     }
     if (clang_lib) {
-        struct stat sb;
         if (!clang_prefix || strcmp(clang_lib,
                 "/lib/x86_64-linux-gnu/libclang-18.so.18") != 0 ||
-            stat(clang_lib, &sb) != 0 || !S_ISREG(sb.st_mode) ||
-            sb.st_uid != 0 || (sb.st_mode & 022) != 0) {
+            !proof_clang_system_lib_trusted()) {
             proof_why(why, why_len, "proof_clang_system_lib_untrusted");
+            return false;
+        }
+    } else if (!clang_prefix) {
+        /* The source-header fallback is a Make choice, so no environment
+         * selection reaches us. Refuse a present mutable system library
+         * before the candidate Makefile can build the test helper. */
+        struct stat sb;
+        int rc = stat("/lib/x86_64-linux-gnu/libclang-18.so.18", &sb);
+        if (rc == 0 && !proof_clang_system_lib_trusted()) {
+            proof_why(why, why_len, "proof_clang_system_lib_untrusted");
+            return false;
+        }
+        if (rc != 0 && errno != ENOENT) {
+            proof_why(why, why_len, "proof_clang_system_lib_unavailable");
             return false;
         }
     }
