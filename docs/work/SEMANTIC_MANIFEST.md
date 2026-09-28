@@ -147,8 +147,14 @@ were established:
   name flips it. A `__has_include_next` there is replayed from the start
   and from the slot after each search dir that could hold the header
   (other system headers include it with no LOOKUPS record), and is `none`
-  when no search dir holds it. A probe word only tested by `defined` or
-  `#ifdef` is no lookup. The sensor refuses `-Wp,` (a `-D` or `-std` there
+  when no search dir holds it. A probe word that is the operand of an
+  `#ifdef`-like directive (its name right after the `#`), or of a
+  `defined` on an `#if` or `#elif` line after nothing but other `defined`
+  tests and `! && ||`, is no lookup: anything else before it could be a
+  macro that turns the word into a live probe. The sensor refuses every
+  `-X` pass-through in any spelling (`-Xclang`, `-Xclang=`,
+  `-Xpreprocessor`, `-Xarch_host`, `-Xcompiler`, `-Xparser` reach the
+  front end), `-Wp,` and front-end plugins (a `-D` or `-std` there
   is one the scan cannot read) and `-fms-compatibility` or an MSVC target
   (either turns trigraphs off). The facts
   consumer treats a `none` record as reachable by every created or deleted
@@ -878,10 +884,13 @@ a probe word and a header name. `tests/harness/src/semantic_sensor_probe.c`
 checks each record; before the fix each case recorded nothing. It also
 records a system header's own conditionals, which it skipped before (a
 plain angled search there starts at the repo's `-I` dirs), and treats a
-probe word only tested by `defined` or `#ifdef` as no lookup. The sensor
-now refuses `-Wp,`, `-fms-compatibility` and an MSVC target instead of
+probe word only tested by an `#ifdef`-like directive or a plain `defined`
+test as no lookup. The sensor
+now refuses every `-X` pass-through, `-Wp,`, front-end plugins,
+`-fms-compatibility` and an MSVC target instead of
 scanning under rules it cannot read; the same test file checks each
-refusal, and each emitted a manifest before.
+refusal; each spelling but the separate `-Xclang` and `-Xpreprocessor`
+forms was accepted before.
 
 ### Darwin producer identity
 

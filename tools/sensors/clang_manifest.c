@@ -67,16 +67,19 @@ char *cm_take_string(CXString s)
 /* A plain declaration reports CXLanguage_C under C++ and Objective-C too, so
  * the argv check is the language guard. Driver aliases of -x and -std, the
  * Objective-C switches and a driver mode (clang++ parses .c as C++) are
- * refused with the escapes rather than modeled, as is -Wp, (it passes -D or
- * -std= to the preprocessor where the lookup scan cannot read them). */
+ * refused with the escapes rather than modeled. So is every pass-through
+ * the lookup scan cannot read a -D, -std or -fms-compatibility inside: the
+ * whole -X family in any spelling (-Xclang, -Xclang=, -Xpreprocessor,
+ * -Xarch_host, -Xcompiler and -Xparser each reach the front end; the
+ * others are refused with them rather than sorted), -Wp, and front-end
+ * plugins. */
 static bool cm_indirect_mode_arg(const char *a)
 {
-    static const char *const exact[] = {"-Xclang", "-Xpreprocessor", "-cc1",
-                                        "--config", "-config", "-ObjC",
-                                        "-ObjC++"};
-    static const char *const prefix[] = {"@", "--config=", "-config=",
-                                         "--language", "--std",
-                                         "--driver-mode", "-Wp,"};
+    static const char *const exact[] = {"-ObjC", "-ObjC++"};
+    static const char *const prefix[] = {
+        "@", "-X", "--X", "-Wp,", "--Wp,", "-cc1", "--config", "-config",
+        "--language", "--std", "--driver-mode", "-fplugin", "-fpass-plugin",
+        "-load"};
     for (size_t k = 0; k < sizeof(exact) / sizeof(exact[0]); k++)
         if (strcmp(a, exact[k]) == 0)
             return true;

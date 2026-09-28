@@ -191,7 +191,8 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * reads a resource, without an include directive the front end reports. The
  * scan finds every one in every file the TU reads, a system header's too
  * (its angled searches start at the repo's -I dirs), and records each as a
- * lookup; a word only tested by defined or #ifdef is none. A
+ * lookup; a word only an #ifdef-like directive or a plain defined test
+ * reads is none (cm_defined_operand). A
  * __has_include whose operand is a literal "x" or <x>, or an object-like
  * repo macro every definition of which is one plain string literal (the
  * front end's recorded expansion at that offset names the definition;
@@ -201,7 +202,8 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * the slot after each one its file was entered through (cm_entry_add), or,
  * in a system header, from the start and after each search dir that could
  * hold it (cm_cond_next_system); the slots before that start are recorded
- * present, with no claim. The sensor refuses -Wp, and MSVC compatibility,
+ * present, with no claim. The sensor refuses every -X pass-through, -Wp,,
+ * front-end plugins and MSVC compatibility,
  * whose -D, -std or trigraph rules the scan cannot read. Every other
  * spelling - another macro operand, __has_embed, the GNU __has_include__
  * words, #embed, an include_next start no slot names, an occurrence a
@@ -722,15 +724,89 @@ static bool cm_cond_resolve(struct cm_core *c, const struct cm_file *f,
     return ok;
 }
 
-/* Is the word at s[i] only tested for being defined: "defined W",
- * "defined ( W", or an #ifdef-like directive's operand? Blanks only between
- * (a comment there leaves it a lookup). The glibc headers guard each
+/* The end of the identifier at s[j], bounded by n; j when none starts. */
+static size_t cm_word_end(const char *s, size_t j, size_t n)
+{
+    while (j < n && cm_ident_char(s[j]))
+        j++;
+    return j;
+}
+
+static bool cm_word_is(const char *s, size_t a, size_t b, const char *w)
+{
+    return b - a == strlen(w) && memcmp(s + a, w, b - a) == 0;
+}
+
+/* The directive on the line holding s[a]: its name [*name, *end), found
+ * after only blanks, a '#' or "%:", and blanks. False on any other line. */
+static bool cm_line_directive(const char *s, size_t a, size_t *name,
+                              size_t *end)
+{
+    size_t j = a;
+    while (j > 0 && s[j - 1] != '\n')
+        j--;
+    j = cm_skip_space(s, j, a);
+    if (j < a && s[j] == '#')
+        j++;
+    else if (a - j >= 2 && s[j] == '%' && s[j + 1] == ':')
+        j += 2;
+    else
+        return false;
+    *name = cm_skip_space(s, j, a);
+    *end = cm_word_end(s, *name, a);
+    return true;
+}
+
+/* The end of the defined test "defined W" or "defined ( W )" at s[j],
+ * bounded by a; 0 when s[j] starts none. */
+static size_t cm_defined_test_end(const char *s, size_t j, size_t a)
+{
+    size_t e = cm_word_end(s, j, a), w;
+    bool paren;
+    if (!cm_word_is(s, j, e, "defined"))
+        return 0;
+    j = cm_skip_space(s, e, a);
+    paren = j < a && s[j] == '(';
+    w = cm_skip_space(s, paren ? j + 1 : j, a);
+    e = cm_word_end(s, w, a);
+    if (e == w)
+        return 0;
+    j = cm_skip_space(s, e, a);
+    if (!paren)
+        return j;
+    return j < a && s[j] == ')' ? j + 1 : 0;
+}
+
+/* Is [j, a) only defined tests and the operators ! && ||? Any other
+ * identifier could be a macro whose expansion reaches the "defined" at
+ * s[a] (a paste there makes it another identifier), and no other token
+ * is modelled. */
+static bool cm_only_defined_tests(const char *s, size_t j, size_t a)
+{
+    while (j < a) {
+        size_t e;
+        if (s[j] == ' ' || s[j] == '\t' || s[j] == '!' || s[j] == '&' ||
+            s[j] == '|') {
+            j++;
+            continue;
+        }
+        e = cm_defined_test_end(s, j, a);
+        if (e == 0)
+            return false;
+        j = e;
+    }
+    return true;
+}
+
+/* Is the word at s[i] only tested for being defined? Either the operand
+ * of an #ifdef-like directive (the word right after the '#': a macro may
+ * be named ifdef), or of a "defined W" or "defined ( W" on an #if or
+ * #elif line after nothing but other defined tests. Blanks only between;
+ * a comment there leaves it a lookup. The glibc headers guard each
  * __has_include with #ifdef __has_include. */
 static bool cm_defined_operand(const char *s, size_t i)
 {
-    static const char *const words[] = {"defined", "ifdef", "ifndef",
-                                        "elifdef", "elifndef"};
-    size_t b = i, a;
+    size_t b = i, a, name, end;
     bool paren = false;
     while (b > 0 && (s[b - 1] == ' ' || s[b - 1] == '\t'))
         b--;
@@ -741,10 +817,15 @@ static bool cm_defined_operand(const char *s, size_t i)
     }
     for (a = b; a > 0 && cm_ident_char(s[a - 1]); a--)
         ;
-    for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); w++)
-        if (b - a == strlen(words[w]) && memcmp(s + a, words[w], b - a) == 0)
-            return !paren || strcmp(words[w], "defined") == 0;
-    return false;
+    if (a == b || !cm_line_directive(s, a, &name, &end))
+        return false;
+    if (cm_word_is(s, a, b, "defined"))
+        return (cm_word_is(s, name, end, "if") ||
+                cm_word_is(s, name, end, "elif")) &&
+               cm_only_defined_tests(s, end, a);
+    return !paren && name == a &&
+           (cm_word_is(s, a, b, "ifdef") || cm_word_is(s, a, b, "ifndef") ||
+            cm_word_is(s, a, b, "elifdef") || cm_word_is(s, a, b, "elifndef"));
 }
 
 /* The conditional lookup at t[i], if any: replayed or recorded unbound. */

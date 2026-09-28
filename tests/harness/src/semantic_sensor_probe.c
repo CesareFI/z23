@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates, a system header's own included, and that the sensor refuses the options it cannot read (-Wp, and MSVC compatibility).
+ * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates, a system header's own included, and that the sensor refuses the options it cannot read (every -X pass-through, -Wp, plugins and MSVC compatibility).
  *
  * Each case emits one TU whose __has_include the scan could miss and
  * reads its LOOKUPS back: the probe must be there, replayed against its
@@ -101,6 +101,25 @@ static const struct ssp_case k_ssp_cases[] = {
      {"-std=c23", NULL, NULL}, "#include <probe2.h>\n",
      "#if __has_include_next(<probe2.h>)\n#endif\n", true, "probe2.h",
      SSP_BOUND},
+    {"after a macro named ifndef, which no #ifndef directive reads",
+     "#define ifndef !\n"
+     "#if ifndef __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after an empty macro named elifdef",
+     "#define elifdef\n"
+     "#if elifdef __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a defined a macro call pastes into another identifier",
+     "#define Xdefined !\n"
+     "#define FN(a) X ## a\n"
+     "#if FN(defined __has_include(<opt.h>))\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a defined an object-like macro opens a call around",
+     "#define OPEN FN(\n"
+     "#define Xdefined !\n"
+     "#define FN(a) X ## a\n"
+     "#if OPEN defined __has_include(<opt.h>))\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
 };
 
 /* Options the scan cannot read: the emit must refuse with `why`. */
@@ -128,6 +147,51 @@ static const struct ssp_refusal k_ssp_refusals[] = {
      "// note ?\?/\n"
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-std=c17", "--target=x86_64-pc-windows-msvc", NULL}, "MSVC target"},
+    {"a -D value passed through -Xclang=",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xclang=-DHAS(x)=__has_include(x)", NULL},
+     "indirect compiler options"},
+    {"a -std passed through -Xclang=",
+     "#if __has_in?\?/\n"
+     "clude(<opt.h>)\n" SSP_TAIL,
+     {"-Xclang=-std=c17", NULL, NULL}, "indirect compiler options"},
+    {"-fms-compatibility passed through -Xclang=",
+     "// note ?\?/\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c17", "-Xclang=-fms-compatibility", NULL},
+     "indirect compiler options"},
+    {"a -D value passed through -Xclang",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xclang", "-DHAS(x)=__has_include(x)"},
+     "indirect compiler options"},
+    {"a -D value passed through -Xpreprocessor",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xpreprocessor", "-DHAS(x)=__has_include(x)"},
+     "indirect compiler options"},
+    {"a -D value passed through -Xarch_host",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xarch_host", "-DHAS(x)=__has_include(x)"},
+     "indirect compiler options"},
+    {"a -D value passed through -Xcompiler",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xcompiler", "-DHAS(x)=__has_include(x)"},
+     "indirect compiler options"},
+    {"a -D value passed through -Xparser",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xparser", "-DHAS(x)=__has_include(x)"},
+     "indirect compiler options"},
+    {"a -D value passed through -Xopenmp-target=",
+     "#if HAS(<opt.h>)\n" SSP_TAIL,
+     {"-Xopenmp-target=x86_64-pc-linux-gnu", "-DHAS(x)=__has_include(x)",
+      NULL},
+     "indirect compiler options"},
+    {"a -std value -Xlinker hands the linker, which the scan would read",
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Xlinker", "-std=c17"}, "indirect compiler options"},
+    {"a front-end plugin",
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-fplugin=/nonexistent/probe-plugin.so", NULL},
+     "indirect compiler options"},
 };
 
 static bool ssp_write(const char *dir, const char *rel, const char *body)
