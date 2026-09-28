@@ -1393,9 +1393,10 @@ while an object is built. The path widens when:
   holds, a match-anything rule `%:` or `.DEFAULT` included) unless a
   conditional provably skips its include line (below); and a
   `$(shell)`, `!=` or `$(file)` that make runs while it reads the
-  makefiles and that writes a file (below). A missing optional file no
-  rule makes is read by nobody, and a depfile an include names
-  (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile graph.
+  makefiles and that writes a file, or names a missing optional include
+  (below). A missing optional file no rule makes is read by nobody, and a
+  depfile an include names (`$(OBJS:.o=.d)`, a literal `.d`) is left to
+  the depfile graph.
 
 Otherwise its compile set is empty. Its test groups stay selected: the
 plain plan's path groups, the impact rules and the runtime-input handling
@@ -1432,22 +1433,37 @@ any other `$(eval)`, or a `load`, opens every variable), an automatic
 variable, a substitution reference, and a `$(shell)` other than the compile
 epoch's. A variable several branches assign is the union of the values of
 every assignment before the directive. `$(wildcard)` globs the tree the plan
-reads, and `$(filter-out $(wildcard X),X)` is the words of X that name no
-file. The planner reads one tree, the one the plan is for. Two named
-premises carry what the text does not hold:
+reads as make's glob does (a `*`, `?` or `[...]` never matches a leading
+`.`); its value is the empty text when nothing matches and any text
+otherwise, since how make spells a match (its sorted order, a trailing
+`/`, a doubled `/`) is not read. `$(filter-out $(wildcard X),X)` is the
+words of X that name no file. Otherwise `$(filter)` and `$(filter-out)`
+keep or drop a word only when every pattern provably matches or misses
+it: a pattern with a `\` escape, or one that holds the goals or the
+epoch, makes the value any text, unless the word is itself the goals or
+the epoch. A reading is not used when a `$(shell)` or `!=` command make
+runs as it reads the makefiles names (as above, for a missing include)
+the last component with no pattern of a path the reading globbed: that
+command may create it. The planner reads one tree, the one the plan is
+for. Four named premises carry what the text does not hold:
 
-- `goal-builds-objects`: make runs to build objects, so `MAKECMDGOALS`
-  holds none of `vendor-ready`, `deploy`, `install`: a `$(filter)` of it
-  by those patterns alone is empty;
+- `no-repair-goal`: no goal on the make command line is `vendor-ready`,
+  `deploy` or `install` (the names the reading knows as repair goals), so
+  a `$(filter)` of `MAKECMDGOALS` by those patterns alone is empty;
 - `epoch-one-component`: the compile epoch `$(call zcl_compile_epoch,...)`
-  computes with `$(shell)` is one path component, or none, so
-  `$(wildcard build/obj/epochs/$(EPOCH)/.unverified)` globs
-  `build/obj/epochs/*/.unverified` and `build/obj/epochs/.unverified`.
+  computes with `$(shell)` is one path component other than `.` and `..`,
+  or none, so `$(wildcard build/obj/epochs/$(EPOCH)/.unverified)` globs
+  `build/obj/epochs/*/.unverified` and `build/obj/epochs/.unverified`;
+- `build-reads-planned-tree` (every skip): the build reads the tree the
+  plan globbed, and an include that exists under `build/` is current;
+- `no-command-line-override` (every skip): no command-line assignment or
+  `make -e` environment value overrides a variable the makefile sets with
+  `=` or `:=`.
 
 Each skipped include is recorded in the plan's `facts.make_guards.skipped`
 with the directive read (`guard`, `guard_at`), the premises that reading
 used and every path it globbed with what that found, so a reviewer can
-falsify the narrow; `facts.make_guards.premises` names both premises.
+falsify the narrow; `facts.make_guards.premises` names all four premises.
 Of the Makefile's identity markers, `epoch-recovery-ready.mk` is skipped
 when no epoch object directory holds `.unverified` (under
 `epoch-one-component`). `vendor-inputs-ready.mk` and `tor-inputs-ready.mk`
@@ -1466,7 +1482,11 @@ is UNKNOWN: outside quotes, a redirection to anything but a descriptor
 command substitution inside double quotes. So is a `$(file)` that is not
 a read (`$(file >f,...)`, `$(file >>f,...)`, an operator a reference
 spells). A plain `$(shell git ...)` or `$(shell cat f)` writes nothing and
-reads as before.
+reads as before. While an optional include is missing, a `$(shell)` or `!=`
+command whose text names its path or basename, or references a variable
+whose definition does (transitively; an `$(eval)` line or a computed name
+holding it counts for every variable), may create it (`$(shell cp t
+build/gen.mk)`, `X != ln -sf t build/gen.mk`): UNKNOWN.
 
 A line names a path by its literal path or basename, a directory it lives
 under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
@@ -1578,16 +1598,25 @@ none of them runs as part of building that commit's objects:
 - a target spelled `$(1)` inside a `define` that `$(call)` or `$(eval)`
   instantiates with arguments no line spells;
 - a missing optional include a conditional provably skips, read under
-  the premise `goal-builds-objects` (make runs to build objects:
-  `MAKECMDGOALS` holds no `vendor-ready`, `deploy` or `install` goal) or
-  `epoch-one-component` (the compile epoch `zcl_compile_epoch` computes
-  with `$(shell)` is one path component, or none): the plan is for the
-  build of the edited commit's objects, and each such reading is recorded
-  with the paths it globbed (Guarded includes, above);
-- a variable the root makefile assigns with `=` or `:=`, read as the
-  makefile sets it by the guard reading: a command-line assignment or
-  `make -e` overrides it, as the rest of the scan already takes a
-  single definition as the value;
+  the premise `no-repair-goal` (no command-line goal is `vendor-ready`,
+  `deploy` or `install`) or `epoch-one-component` (the compile epoch
+  `zcl_compile_epoch` computes with `$(shell)` is one path component, or
+  none), and always under `build-reads-planned-tree` (the build reads the
+  tree the plan globbed; an include that exists under `build/` is
+  current) and `no-command-line-override` (a variable the root makefile
+  assigns with `=` or `:=` has the value the makefile sets, as the rest
+  of the scan already takes a single definition as the value): the plan
+  is for the build of the edited commit's objects, and each such reading
+  is recorded with its premises and the paths it globbed (Guarded
+  includes, above);
+- a missing optional include a parse-time program creates without any
+  text naming it (`$(shell tools/mkgen.sh)` whose script writes
+  `build/gen.mk`): the script is an opaque program. Refusing every
+  parse-time command but a known read-only one while an optional include
+  is missing instead makes every real plan UNKNOWN: the gitignored
+  `contexts/commons/apps/local_gui_apps.mk` is missing in every checkout,
+  and the real Makefile runs repo scripts (`dev-linker-select.sh`,
+  `process-start-token.sh`) as it reads;
 - a define an `$(eval $(call NAME,...))` reads, read as its lines are
   written: a call argument that spells an `=` or a newline into one of
   them is not followed.
