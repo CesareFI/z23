@@ -224,6 +224,116 @@ static int ptl_case_checkpoint_blob_head(void)
     return failures;
 }
 
+static int ptl_case_store_issuer_restore(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: issuer store restart requires complete anchored catalog") {
+        ASSERT(ptl_fresh());
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t next[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t head[32], unused[32], absent[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), first, NULL));
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_fail(), second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 29, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "issuerstore");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), unused));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), head));
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 3, 2) == NULL); /* referenced leaf absent */
+        ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), unused));
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 2, 2) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 3, 1) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, NULL, 3, 2) == NULL);
+        memcpy(absent, head, sizeof(absent));
+        absent[0] ^= 1u;
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, absent, 3, 2) == NULL);
+        struct vcs_proof_issuer_log *restored =
+            vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                                                    store, head, 3, 2);
+        ASSERT(restored != NULL);
+        ASSERT_EQ(vcs_proof_issuer_log_count(restored), (uint64_t)2);
+        ASSERT(ptl_append(restored, ptf_pass(), next));
+        struct vcs_proof_ticket_v1 decoded;
+        ASSERT(vcs_proof_ticket_decode(next, sizeof(next), &decoded));
+        ASSERT_EQ(decoded.issuer_seq, (uint64_t)2);
+        vcs_proof_issuer_log_free(restored);
+        /* A signed ticket that escaped before the crash owns sequence 2.
+         * Reissuing it would create an issuer fork even without a checkpoint. */
+        ASSERT(ptl_append(g_l.logs[PTF_A], ptf_pass(), next));
+        ASSERT(vcs_proof_ticket_store_put(store, next, sizeof(next), unused));
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 4, 3) == NULL);
+        uint8_t later[VCS_PROOF_CHECKPOINT_WIRE_BYTES], later_head[32];
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 30, later));
+        ASSERT(vcs_proof_ticket_store_put(store, later, sizeof(later),
+                                          later_head));
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 5, 3) == NULL); /* stale durable head */
+        restored = vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                                                            store, later_head,
+                                                            5, 3);
+        ASSERT(restored != NULL);
+        ASSERT_EQ(vcs_proof_issuer_log_count(restored), (uint64_t)3);
+        vcs_proof_issuer_log_free(restored);
+        struct vcs_proof_issuer_log *fork = ptl_fork();
+        ASSERT(fork != NULL);
+        uint8_t forked[VCS_PROOF_TICKET_WIRE_BYTES];
+        ASSERT(ptl_append(fork, ptf_fail(), forked)); /* signed seq 0 fork */
+        vcs_proof_issuer_log_free(fork);
+        ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked),
+                                          unused));
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, later_head, 6, 3) == NULL);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_store_issuer_missing_cas(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: issuer restart refuses missing ticket CAS bytes") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], head[32], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 31, cp));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "issuercas");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), head));
+        uint8_t chunk[32];
+        char hex[65], path[640];
+        ASSERT(vcs_package_chunk_hash(ticket, sizeof(ticket), chunk));
+        zcl_hex_encode(chunk, sizeof(chunk), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/cas/sha3/%.2s/%s",
+                        dir, hex, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 2, 1) == NULL);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 static int ptl_case_catalog_budget(void)
 {
     int failures = 0;
@@ -1851,6 +1961,8 @@ int ptf_log_cases(void)
     int failures = 0;
     failures += ptl_case_issuer_restore();
     failures += ptl_case_checkpoint_blob_head();
+    failures += ptl_case_store_issuer_restore();
+    failures += ptl_case_store_issuer_missing_cas();
     failures += ptl_case_catalog_budget();
     failures += ptl_case_same_count();
     failures += ptl_case_same_size_ancestry();

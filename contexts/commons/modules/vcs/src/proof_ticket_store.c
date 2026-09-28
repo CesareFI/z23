@@ -192,6 +192,182 @@ static bool pts_valid_ticket(const struct pr_entry *e)
            vcs_proof_ticket_signature_valid(&t);
 }
 
+static void pts_approve_restore(void *context)
+{
+    *(bool *)context = true;
+}
+
+struct pts_restore {
+    struct vcs_package_store *store;
+    struct vcs_proof_receiver *receiver;
+    struct vcs_proof_issuer_log *fresh;
+    struct vcs_proof_issuer_log *result;
+    const uint8_t **wires;
+    size_t *lens;
+    uint8_t (*chunks)[32];
+    uint8_t pubkey[VCS_PROOF_PUBKEY_BYTES];
+    uint8_t head_wire[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+    uint8_t head_root[VCS_PROOF_ROOT_BYTES];
+    struct vcs_proof_checkpoint_v1 head;
+    size_t count;
+    uint64_t generation;
+};
+
+static void pts_restore_free(struct pts_restore *s)
+{
+    free(s->chunks);
+    free(s->wires);
+    free(s->lens);
+    vcs_proof_issuer_log_free(s->fresh);
+    vcs_proof_receiver_free(s->receiver);
+}
+
+static bool pts_restore_begin(struct pts_restore *s, const uint8_t seed[32],
+                              size_t max_catalog_rows)
+{
+    s->receiver = vcs_proof_receiver_new();
+    if (!s->receiver) return false;
+    struct vcs_package_store_summary first_row;
+    struct vcs_package_store_page first_page;
+    if (vcs_package_store_page_summaries(s->store, NULL, 1, 0,
+                                          &first_row, &first_page) !=
+        VCS_PACKAGE_STORE_PAGE_OK)
+        return false;
+    s->generation = first_page.generation;
+    s->fresh = vcs_proof_issuer_log_new(seed);
+    if (!s->fresh) return false;
+    vcs_proof_issuer_log_pubkey(s->fresh, s->pubkey);
+    return vcs_proof_receiver_rebuild_bounded(s->receiver, s->store,
+                                               max_catalog_rows,
+                                               NULL, NULL, NULL);
+}
+
+static bool pts_restore_empty(struct pts_restore *s)
+{
+    const struct pr_issuer *issuer = pr_issuer_find(s->receiver, s->pubkey);
+    if (issuer && issuer->cp_count) return false;
+    for (size_t i = 0; i < s->receiver->count; i++) {
+        const struct pr_entry *entry = &s->receiver->entries[i];
+        if (memcmp(entry->producer, s->pubkey, sizeof(s->pubkey)) == 0 &&
+            pts_valid_ticket(entry))
+            return false;
+    }
+    s->result = s->fresh;
+    s->fresh = NULL;
+    return true;
+}
+
+static bool pts_restore_no_tail(const struct pts_restore *s)
+{
+    /* A signed tail has authority even when it has not yet been checkpointed.
+     * Never reuse its sequence after a crash. */
+    for (size_t i = 0; i < s->receiver->count; i++) {
+        const struct pr_entry *entry = &s->receiver->entries[i];
+        if (memcmp(entry->producer, s->pubkey, sizeof(s->pubkey)) == 0 &&
+            entry->issuer_seq >= s->head.leaf_count && pts_valid_ticket(entry))
+            return false;
+    }
+    return true;
+}
+
+static bool pts_restore_head_valid(struct pts_restore *s,
+                                   const uint8_t blob_root[32],
+                                   size_t max_tickets)
+{
+    if (!vcs_proof_checkpoint_store_load(s->store, blob_root, s->pubkey,
+                                          s->head_wire, s->head_root) ||
+        !vcs_proof_checkpoint_decode(s->head_wire, sizeof(s->head_wire),
+                                      &s->head) ||
+        s->head.leaf_count == 0 || s->head.leaf_count > max_tickets ||
+        s->head.leaf_count > SIZE_MAX / sizeof(*s->wires) - 1u ||
+        s->head.leaf_count > SIZE_MAX / sizeof(*s->chunks) - 1u)
+        return false;
+    s->count = (size_t)s->head.leaf_count;
+    const struct pr_issuer *issuer = pr_issuer_find(s->receiver, s->pubkey);
+    return issuer && !issuer->equivocating &&
+           issuer->mmr.num_leaves == s->head.leaf_count &&
+           issuer->cp_count == issuer->verified_count &&
+           memcmp(issuer->last_root, s->head_root,
+                  sizeof(s->head_root)) == 0 && pts_restore_no_tail(s);
+}
+
+static bool pts_restore_select_wires(struct pts_restore *s)
+{
+    for (size_t seq = 0; seq < s->count; seq++) {
+        for (size_t one = pr_entry_seq_first(s->receiver, s->pubkey, seq); one;
+             one = s->receiver->entries[one - 1u].next_seq) {
+            const struct pr_entry *entry = &s->receiver->entries[one - 1u];
+            if (!pts_valid_ticket(entry)) continue;
+            if (s->wires[seq] || !entry->covered) return false;
+            s->wires[seq] = entry->wire;
+            s->lens[seq] = sizeof(entry->wire);
+        }
+        if (!s->wires[seq]) return false;
+    }
+    return true;
+}
+
+static bool pts_restore_head(struct pts_restore *s, const uint8_t seed[32],
+                             const uint8_t blob_root[32], size_t max_tickets)
+{
+    if (!pts_restore_head_valid(s, blob_root, max_tickets)) return false;
+    s->wires = zcl_calloc(s->count, sizeof(*s->wires),
+                          "proof_restore_store_wires");
+    s->lens = zcl_calloc(s->count, sizeof(*s->lens),
+                         "proof_restore_store_lens");
+    if (!s->wires || !s->lens || !pts_restore_select_wires(s)) return false;
+    s->result = vcs_proof_issuer_log_restore(seed, s->wires, s->lens, s->count,
+                                               max_tickets, s->head_wire,
+                                               sizeof(s->head_wire), s->head_root);
+    return s->result != NULL;
+}
+
+static bool pts_restore_recheck(struct pts_restore *s)
+{
+    if (s->count) {
+        s->chunks = zcl_calloc(s->count + 1u, sizeof(*s->chunks),
+                               "proof_restore_store_chunks");
+        if (!s->chunks) return false;
+        for (size_t i = 0; i < s->count; i++)
+            if (!vcs_package_chunk_hash(s->wires[i], s->lens[i],
+                                        s->chunks[i]))
+                return false;
+        if (!vcs_package_chunk_hash(s->head_wire, sizeof(s->head_wire),
+                                    s->chunks[s->count]))
+            return false;
+    }
+    bool approved = false;
+    if (vcs_package_store_publish_checked(s->store, s->generation,
+                                           (const uint8_t (*)[32])s->chunks,
+                                           s->count ? s->count + 1u : 0u,
+                                           pts_approve_restore, &approved) !=
+        VCS_PACKAGE_STORE_PAGE_OK)
+        return false;
+    return approved;
+}
+
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets)
+{
+    if (!seed || !store)
+        LOG_RETURN(NULL, PTS_LOG, "issuer store restore: null seed or store");
+    struct pts_restore s = {.store = store};
+    if (!pts_restore_begin(&s, seed, max_catalog_rows) ||
+        !(expected_head_blob_root ?
+          pts_restore_head(&s, seed, expected_head_blob_root, max_tickets) :
+          pts_restore_empty(&s)) || !pts_restore_recheck(&s)) {
+        LOG_ERROR(PTS_LOG,
+                  "issuer store restore: incomplete, stale, or contradictory history");
+        vcs_proof_issuer_log_free(s.result);
+        s.result = NULL;
+    }
+    struct vcs_proof_issuer_log *result = s.result;
+    pts_restore_free(&s);
+    return result;
+}
+
 /* Select the same signature-valid ticket at each sequence regardless of CAS
  * arrival order. Ticket ingest already records signed sequence forks. */
 static bool pts_delta(const struct vcs_proof_receiver *r,

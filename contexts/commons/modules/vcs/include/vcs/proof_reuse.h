@@ -31,6 +31,7 @@
 /* ── Issuer log (producer side) ─────────────────────────────────────── */
 
 struct vcs_proof_issuer_log;
+struct vcs_package_store;
 
 /* The seed stays in memory for this log's lifetime and is wiped on free. */
 struct vcs_proof_issuer_log *vcs_proof_issuer_log_new(const uint8_t seed[32]);
@@ -44,6 +45,17 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore(
     const size_t *ticket_lens, size_t count, size_t max_tickets,
     const uint8_t *checkpoint, size_t checkpoint_len,
     const uint8_t expected_head_root[VCS_PROOF_ROOT_BYTES]);
+/* Reconstruct a writable issuer from a complete, generation-checked package
+ * catalog and the durable content.v2 checkpoint blob head. NULL head means
+ * no ticket or checkpoint by this issuer may exist. Refuses signed forks,
+ * uncheckpointed tails, stale heads, missing CAS and exhausted work bounds.
+ * The caller must fence package-store imports/deletion, its database head,
+ * and the local issuer writer across recovery and subsequent issuance. A
+ * successful return is a checked snapshot, not a permanent store lock. */
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets);
 void vcs_proof_issuer_log_free(struct vcs_proof_issuer_log *log);
 void vcs_proof_issuer_log_pubkey(const struct vcs_proof_issuer_log *log,
                                  uint8_t out[VCS_PROOF_PUBKEY_BYTES]);
@@ -250,7 +262,6 @@ const char *vcs_proof_reuse_outcome_name(enum vcs_proof_reuse_outcome o);
 
 /* ── CAS placement ──────────────────────────────────────────────────── */
 
-struct vcs_package_store;
 /* Store a ticket, checkpoint or key preimage wire as a content.v2 blob. */
 bool vcs_proof_ticket_store_put(struct vcs_package_store *store,
                                 const uint8_t *wire, size_t len,
