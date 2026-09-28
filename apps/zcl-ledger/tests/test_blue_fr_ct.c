@@ -44,6 +44,21 @@ static struct fr random_field(uint64_t *state) {
     return value;
 }
 
+static void check_codec(const uint8_t bytes[32], bool valid) {
+    struct fr expected, actual;
+    uint8_t restored[32];
+    assert(blue_fr_from_bytes_canonical(&actual, bytes) == valid);
+    if (!valid) {
+        const struct fr zero = {0};
+        assert(memcmp(&actual, &zero, sizeof zero) == 0);
+        return;
+    }
+    assert(fr_from_bytes(&expected, bytes));
+    assert(memcmp(&actual, &expected, sizeof actual) == 0);
+    blue_fr_to_bytes(restored, &actual);
+    assert(memcmp(restored, bytes, sizeof restored) == 0);
+}
+
 int main(void) {
     struct fr zero, one, minus_one;
     fr_zero(&zero);
@@ -55,12 +70,29 @@ int main(void) {
         0x48, 0x7d, 0x9d, 0x29, 0x53, 0xa7, 0xed, 0x73
     };
     assert(fr_from_bytes(&minus_one, p_minus_one));
+    uint8_t boundary[32] = {0};
+    check_codec(boundary, true);
+    boundary[0] = 1;
+    check_codec(boundary, true);
+    check_codec(p_minus_one, true);
+    memcpy(boundary, p_minus_one, sizeof boundary);
+    ++boundary[0];
+    check_codec(boundary, false);
+    ++boundary[0];
+    check_codec(boundary, false);
+    struct fr cleared = minus_one;
+    assert(!blue_fr_from_bytes_canonical(&cleared, NULL));
+    assert(memcmp(&cleared, &zero, sizeof zero) == 0);
+    assert(!blue_fr_from_bytes_canonical(NULL, boundary));
     const struct fr *edges[] = {&zero, &one, &minus_one};
     for (size_t i = 0; i < 3; ++i)
         for (size_t j = 0; j < 3; ++j) check_pair(edges[i], edges[j]);
     uint64_t state = 0x23c1a55b7e491dc3ULL;
     for (size_t sample = 0; sample < 4096; ++sample) {
         struct fr a = random_field(&state), b = random_field(&state);
+        uint8_t encoded[32];
+        fr_to_bytes(encoded, &a);
+        check_codec(encoded, true);
         check_pair(&a, &b);
         check_pair(&a, &a);
     }

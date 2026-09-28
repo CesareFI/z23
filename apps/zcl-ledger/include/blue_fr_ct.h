@@ -4,8 +4,10 @@
 
 #include "sapling/fr.h"
 
-/* Isolated Cortex-M3 field candidate. Inputs must be canonical Montgomery
- * elements. No device key or signing command calls these functions. */
+/* Isolated Cortex-M0/M3 field candidate. Arithmetic inputs must be canonical
+ * Montgomery elements. No device key or signing command calls these functions. */
+bool blue_fr_from_bytes_canonical(struct fr *result, const uint8_t bytes[32]);
+void blue_fr_to_bytes(uint8_t bytes[32], const struct fr *value);
 void blue_fr_add_ct(struct fr *result, const struct fr *a, const struct fr *b);
 void blue_fr_sub_ct(struct fr *result, const struct fr *a, const struct fr *b);
 void blue_fr_neg_ct(struct fr *result, const struct fr *a);

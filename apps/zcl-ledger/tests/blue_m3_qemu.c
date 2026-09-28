@@ -431,6 +431,27 @@ static bool check_fs_boundary(void) {
     return true;
 }
 
+static bool check_fr_codec(void) {
+    static const uint8_t p_minus_one[32] = {
+        0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,
+        0xfe,0x5b,0xfe,0xff,0x02,0xa4,0xbd,0x53,
+        0x05,0xd8,0xa1,0x09,0x08,0xd8,0x39,0x33,
+        0x48,0x7d,0x9d,0x29,0x53,0xa7,0xed,0x73
+    };
+    struct fr field;
+    uint8_t restored[32], invalid[32];
+    if (!blue_fr_from_bytes_canonical(&field, p_minus_one)) return false;
+    blue_fr_to_bytes(restored, &field);
+    if (memcmp(restored, p_minus_one, sizeof restored) != 0) return false;
+    memcpy(invalid, p_minus_one, sizeof invalid);
+    ++invalid[0];
+    if (blue_fr_from_bytes_canonical(&field, invalid)) return false;
+    for (size_t i = 0; i < 4; ++i)
+        if (field.d[i]) return false;
+    ++invalid[0];
+    return !blue_fr_from_bytes_canonical(&field, invalid);
+}
+
 static union {
     blue_zip32_workspace fvk;
     blue_zip32_seed_workspace node;
@@ -633,6 +654,7 @@ static const struct {
 } cases[] = {
     {"KEY", check_key_vector},
     {"FIELD", check_fs_boundary},
+    {"FRCODEC", check_fr_codec},
     {"REDUCE", check_reduction},
     {"OUTOPEN", check_outgoing_open},
     {"NOTEOPEN", check_note_open},

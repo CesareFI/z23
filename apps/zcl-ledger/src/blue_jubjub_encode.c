@@ -37,15 +37,6 @@ static void field_inverse(struct fr *out, const struct fr *value) {
     wipe(&result, sizeof result);
 }
 
-static void field_to_bytes(uint8_t out[32], const struct fr *value) {
-    const struct fr one = {.d = {1}};
-    struct fr raw;
-    blue_fr_mul_ct(&raw, value, &one);
-    for (unsigned i = 0; i < 32; ++i)
-        out[i] = (uint8_t)(raw.d[i / 8] >> (8 * (i % 8)));
-    wipe(&raw, sizeof raw);
-}
-
 bool blue_jubjub_encode(uint8_t out[32], const struct jub_point *point) {
     if (!out || !point || !field_nonzero(&point->z)) return false;
     struct fr inverse, x, y;
@@ -53,8 +44,8 @@ bool blue_jubjub_encode(uint8_t out[32], const struct jub_point *point) {
     field_inverse(&inverse, &point->z);
     blue_fr_mul_ct(&x, &point->x, &inverse);
     blue_fr_mul_ct(&y, &point->y, &inverse);
-    field_to_bytes(encoded, &y);
-    field_to_bytes(x_bytes, &x);
+    blue_fr_to_bytes(encoded, &y);
+    blue_fr_to_bytes(x_bytes, &x);
     encoded[31] |= (uint8_t)((x_bytes[0] & 1u) << 7);
     memcpy(out, encoded, 32);
     wipe(&inverse, sizeof inverse);

@@ -154,6 +154,8 @@ committed transaction fixture. Cortex-M0 and Cortex-M3 emulators also check
 the exact output and reject an altered authentication tag. These modules
 are not linked into the installed Blue app. Recipient and amount verification,
 note commitment checks, device approval, and shielded signing remain absent.
+The isolated 32-bit-limb Fr codec rejects noncanonical public field bytes on
+both ARM emulators. Point decompression and validation are still absent.
 An isolated Sapling note-key derivation module also matches Z23's fixed KDF
 vector, independently checked with Python BLAKE2b. It requires a supplied DH
 result and ephemeral public key; it does not establish their authenticity.
