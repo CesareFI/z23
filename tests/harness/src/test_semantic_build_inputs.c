@@ -16,6 +16,7 @@
 #include "base/safe_alloc.h"
 #include "devloop.h"
 #include "devloop_facts.h"
+#include "test/semantic_facts_fixture.h"
 #include "vcs/semantic_manifest.h"
 
 #include <errno.h>
@@ -73,7 +74,17 @@ static bool sbi_manifest(const char *main_path, const char *extra_file,
     char why[128] = {0};
     bool ok = b != NULL;
     if (ok) {
-        vcs_semantic_record_v1_cstr(&r, "test-cc 1.0");
+        /* fxi_object_cc_known() requires "; object-cc " followed by
+         * something other than "unknown" (see
+         * tools/dev/devloop_facts_codegen.c): without it, an otherwise
+         * byte-identical before/after pair still reports identity-drift.
+         * SFT_OBJECT_CC/SFT_TOOLCHAIN_ID are the same fixed, known stand-in
+         * identity test_semantic_facts_live.c passes to the real sensor. */
+        vcs_semantic_record_v1_cstr(
+            &r, "test-cc 1.0; object-cc " SFT_OBJECT_CC
+                " sha3-256 "
+                "0000000000000000000000000000000000000000000000000000"
+                "000000000000 toolchain " SFT_TOOLCHAIN_ID);
         vcs_semantic_record_v1_cstr(&r, "");
         vcs_semantic_record_v1_cstr(&r, "x86_64-pc-linux-gnu");
         vcs_semantic_record_v1_cstr(&r, main_path);
