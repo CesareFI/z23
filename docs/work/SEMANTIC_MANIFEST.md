@@ -1310,7 +1310,6 @@ minute standalone with the fixed reproducers), and must yield narrowed
 verdicts that seed a changed function, so the group cannot pass on
 fallbacks alone; `ZCL_STRESS_TESTS=1` runs the full 51-case list instead,
 held to the same invariant.
-`ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]` runs a
 long range instead of either, and wins over `ZCL_STRESS_TESTS`; only such
 a range run may draw an edit that changes no file (NOOP), which fails a
 fixed reproducer or a default seed. `KIND` `any` draws the kind. `CC`
@@ -1318,12 +1317,14 @@ names the object compiler of both sides (`clang`, the sensor's, by
 default; `gcc` or any name on `PATH`), or `BEFORE>AFTER` for a compiler
 that changes between the sides; `OPT` replaces `-O1` with comma-separated
 flags in both argvs, or is `COMPILE/SENSOR` when the sensor is handed
-other flags than the compile. The toolchain reproducers
-(`k_sfz_tool_repros`) set the same fields. A reproducer marked known-RED
-names the fix it waits for and the exact false-negative lines it reports
-until then; it holds only when it fails with exactly those lines, and any
-other outcome (an ERROR, a different miss, or a PASS, which means the mark
-is stale) fails the group.
+other flags than the compile. The sensor is told each side's actual
+object compiler with `--cc` and a fixed stand-in toolchain identity with
+`--toolchain-id`, as the `clang-facts` rule tells it. The toolchain
+reproducers (`k_sfz_tool_repros`) set the same fields. A reproducer marked
+known-RED names the fix it waits for and the exact false-negative lines it
+reports until then; it holds only when it fails with exactly those lines,
+and any other outcome (an ERROR, a different miss, or a PASS, which means
+the mark is stale) fails the group.
 F7 (a `cleanup()` handler inlined into a function that is not seeded),
 F7_cleanup_same_name (the same miss while another file's same-name static
 also changes, which a seed matched by bare name would have hidden) and
@@ -1350,6 +1351,17 @@ that only a preprocessor probe names:
 The passing shapes beside them hold the model where the spelling is
 canonical: gcc `-O1` seeds the specialized static, and gcc `-O2` and
 `-O3` fall back (`inline-closure-unknown`).
+
+The decoy reproducers (`pass_opt_decoy_*`) guard the optimizer parse
+against spellings of a level that are no optimizer flag: gcc at `-O2`
+followed by `-DMODE=-O0` or `-Ix-O0`, or with `CFLAGS_EXTRA`
+`-DLVL=-O0` or `-Wl,-O0` last in the argv (and clang with the
+`-DLVL=-O0` one), gcc at `-O0` followed by `-Xlinker -O1`, and the level
+flipping `-O0` to `-O2` and back between the sides while the
+`-DLVL=-O0` decoy stays last and unchanged (`OPT` `BEFORE>AFTER`). A
+reader that took the last `-O` spelling for the level would model the
+`-O2` compiles as `-O0` and miss `t0_s.constprop.0`, as
+F10_opt_spelling_O02 does; each must pass.
 
 Measured at a88daa4ffd (2026-09-28), 2,250 generated cases over the new
 dimensions, each run also repeating the fixed set:

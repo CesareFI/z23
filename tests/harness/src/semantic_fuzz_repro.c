@@ -1114,6 +1114,48 @@ static const struct sfz_file k_f10_opt_spelling[] = {
          "}\n"},
 };
 
+/* k_f10_opt_spelling's edit under a Makefile whose CFLAGS_EXTRA, appended
+ * last to the argv, spells an optimizer level that is no optimizer flag:
+ * a macro value or a linker option. */
+#define SFZ_DECOY_FILES(extra)                                               \
+    {"inc2/h.h",                                                             \
+         "#ifndef H_H\n"                                                     \
+         "#define H_H\n"                                                     \
+         "int t0_f(void);\n"                                                 \
+         "#endif\n",                                                         \
+         SFZ_SAME},                                                          \
+    {"Makefile", "# p\nCFLAGS_EXTRA = " extra "\n", SFZ_SAME},              \
+    {"src/t0.c",                                                             \
+         "#include \"h.h\"\n"                                                \
+         "static __attribute__((noinline)) int t0_s(int x)\n"                \
+         "{\n"                                                               \
+         "    int r = 0;\n"                                                  \
+         "    for (int i = 0; i < x; i++)\n"                                 \
+         "        r += i * x;\n"                                             \
+         "    return r;\n"                                                   \
+         "}\n"                                                               \
+         "int t0_f(void)\n"                                                  \
+         "{\n"                                                               \
+         "    return t0_s(7);\n"                                             \
+         "}\n",                                                              \
+         "#include \"h.h\"\n"                                                \
+         "static __attribute__((noinline)) int t0_s(int x)\n"                \
+         "{\n"                                                               \
+         "    int r = 0;\n"                                                  \
+         "    for (int i = 0; i < x; i++)\n"                                 \
+         "        r += i * x;\n"                                             \
+         "    return r;\n"                                                   \
+         "}\n"                                                               \
+         "int t0_f(void)\n"                                                  \
+         "{\n"                                                               \
+         "    return t0_s(8);\n"                                             \
+         "}\n"}
+
+static const struct sfz_file k_decoy_define_last[] = {
+    SFZ_DECOY_FILES("-DLVL=-O0")};
+static const struct sfz_file k_decoy_linker_last[] = {
+    SFZ_DECOY_FILES("-Wl,-O0")};
+
 /* t0_a passes 8, not 7, to an external noinline function t0_b also calls.
  * gcc at -O3 (and -O5, which it reads as -O3) clones the callee for each
  * constant (t0_w.constprop.N); the consumer reads -O5 as the -O1
@@ -1351,6 +1393,55 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
                      "inlined at -O1",
            .files = SFZ_FILES(k_f12_header_static_inline)},
      .cc_before = "gcc", .cc_after = "gcc"},
+    /* Decoy optimizer spellings: the compile is at the level of its real
+     * -O flag while the argv also carries "-O0" or "-O1" in a position
+     * that is no optimizer flag (a macro value, an include directory, a
+     * linker option), some of them last. A reader of the argv that takes
+     * the last "-O" substring for the level sees -O0 and models no clone
+     * of t0_s, which gcc at -O2 emits as t0_s.constprop.0. Each must plan
+     * as the real level does (pass_opt_O2_gcc, pass_opt_O1_gcc). */
+    {.r = {.name = "pass_opt_decoy_define", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "-O2 then -DMODE=-O0",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2,-DMODE=-O0"},
+    {.r = {.name = "pass_opt_decoy_include_dir", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "-O2 then -Ix-O0",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2,-Ix-O0"},
+    {.r = {.name = "pass_opt_decoy_define_last", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "-O2, CFLAGS_EXTRA -DLVL=-O0 last",
+           .files = SFZ_FILES(k_decoy_define_last)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
+    {.r = {.name = "pass_opt_decoy_linker_last", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "-O2, CFLAGS_EXTRA -Wl,-O0 last",
+           .files = SFZ_FILES(k_decoy_linker_last)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
+    {.r = {.name = "pass_opt_decoy_xlinker_O0", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "-O0 then -Xlinker -O1",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O0,-Xlinker,-O1"},
+    {.r = {.name = "pass_opt_decoy_clang_define_last", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; clang at "
+                     "-O2, CFLAGS_EXTRA -DLVL=-O0 last",
+           .files = SFZ_FILES(k_decoy_define_last)},
+     .opt = "-O2"},
+    /* The real level flips between the sides while the decoy stays last
+     * and unchanged: the after side must plan at its own level. */
+    {.r = {.name = "pass_opt_decoy_flip_up", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc -O0 "
+                     "before, -O2 after, CFLAGS_EXTRA -DLVL=-O0 last",
+           .files = SFZ_FILES(k_decoy_define_last)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O0>-O2"},
+    {.r = {.name = "pass_opt_decoy_flip_down", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc -O2 "
+                     "before, -O0 after, CFLAGS_EXTRA -DLVL=-O0 last",
+           .files = SFZ_FILES(k_decoy_define_last)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2>-O0"},
 };
 const size_t k_sfz_ntool_repros =
     sizeof(k_sfz_tool_repros) / sizeof(k_sfz_tool_repros[0]);

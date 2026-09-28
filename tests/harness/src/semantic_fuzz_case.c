@@ -362,19 +362,29 @@ static bool add_tokens(struct sfz_flags *f, char *s, const char *sep,
     return true;
 }
 
-/* The case's optimizer flags for a compile (sensor false) or a sensor run:
- * COMPILE or COMPILE/SENSOR, a sensor handed other flags than the compile
- * it describes, as a build whose per-object flags never reach the
- * sensor's rule does. An empty half is -O1. */
-static void pick_opt(const char *opt, bool sensor, char *out, size_t n)
+/* The case's optimizer flags for one side's compile (sensor false) or
+ * sensor run. opt is BEFORE>AFTER when the flags drift between the sides.
+ * Each side's flags are COMPILE or COMPILE/SENSOR, a sensor handed other
+ * flags than the compile it describes, as a build whose per-object flags
+ * never reach the sensor's rule does. An empty half is -O1. */
+static void pick_opt(const char *opt, bool after, bool sensor, char *out,
+                     size_t n)
 {
-    const char *slash = strchr(opt, '/');
+    char side[128];
+    const char *gt = strchr(opt, '>');
+    if (gt == NULL)
+        (void)snprintf(side, sizeof(side), "%s", opt);
+    else if (after)
+        (void)snprintf(side, sizeof(side), "%s", gt + 1);
+    else
+        (void)snprintf(side, sizeof(side), "%.*s", (int)(gt - opt), opt);
+    const char *slash = strchr(side, '/');
     if (slash == NULL)
-        (void)snprintf(out, n, "%s", opt);
+        (void)snprintf(out, n, "%s", side);
     else if (sensor)
         (void)snprintf(out, n, "%s", slash + 1);
     else
-        (void)snprintf(out, n, "%.*s", (int)(slash - opt), opt);
+        (void)snprintf(out, n, "%.*s", (int)(slash - side), side);
     if (out[0] == '\0')
         (void)snprintf(out, n, "-O1");
 }
@@ -382,7 +392,7 @@ static void pick_opt(const char *opt, bool sensor, char *out, size_t n)
 /* The argv of a compile (sensor false) or of a sensor run: the fixed
  * flags, then the case's optimizer flags (which may override -g0), then
  * the project's. */
-static bool read_flags(const struct sfz_run *r, bool sensor,
+static bool read_flags(const struct sfz_run *r, bool after, bool sensor,
                        struct sfz_flags *f)
 {
     static const char *const fixed[] = {"-std=c23", "-g0", "-w",
@@ -398,7 +408,7 @@ static bool read_flags(const struct sfz_run *r, bool sensor,
     free(mk);
     for (size_t k = 0; k < sizeof(fixed) / sizeof(fixed[0]); k++)
         f->v[f->n++] = fixed[k];
-    pick_opt(r->c->opt, sensor, f->opt, sizeof(f->opt));
+    pick_opt(r->c->opt, after, sensor, f->opt, sizeof(f->opt));
     if (!add_tokens(f, f->opt, ",", "the case's optimizer flags"))
         return false;
     (void)snprintf(f->map, sizeof(f->map), "-ffile-prefix-map=%s=/zclassic23",
@@ -439,16 +449,18 @@ static void compile_job(struct sfz_job *j, const char *tool, const char *mode,
     j->argv[k] = NULL;
 }
 
-/* The fuzz case's --cc and --toolchain-id: the sensor's own clang, the
- * compiler that produced the object, and a fixed toolchain identity. Both
- * sides of every case run the same sensor, so a fixed identity is one
- * known value shared by every pair; without --cc IDENTITY says
- * "object-cc unknown" and the plan can never narrow past a TU. */
+/* The fuzz case's --cc and --toolchain-id: the actual object compiler (the
+ * facts rule's own $(CC) as it names it, clang or gcc), and a fixed
+ * toolchain identity ($(BUILD_COMPILER_ID) in the real build; the cases
+ * run no Make parse, so this fixed stand-in is that identity on both
+ * sides). Both sides of every case run the same sensor, so a fixed
+ * identity is one known value shared by every pair; without --cc IDENTITY
+ * says "object-cc unknown" and the plan can never narrow past a TU. */
 #define SFZ_TOOLCHAIN_ID \
     "6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f"
 
 /* sensor emit --root . --source <tu> --out facts/<tu>.<phase>.zsm --facts
- * --cc <clang> --toolchain-id <id> -- flags */
+ * --cc <cc> --toolchain-id <id> -- flags */
 static void sensor_job(struct sfz_job *j, const char *sensor, const char *cc,
                        const char *phase, const struct sfz_flags *f,
                        const char *tu)
@@ -502,18 +514,19 @@ static bool phase(struct sfz_run *r, const char *ph, const char *objdir)
     char facts[PATH_MAX + 16];
     bool ok;
     (void)snprintf(facts, sizeof(facts), "%s/facts/src", r->tree);
-    /* the side's object compiler: the sensor never sees which one */
-    const char *cc = r->c->cc[objdir == r->oa][0] ? r->c->cc[objdir == r->oa]
-                                                   : r->env->clang;
-    ok = jobs != NULL && read_flags(r, false, &f) && read_flags(r, true, &fs) &&
+    bool after = objdir == r->oa;
+    /* the side's object compiler, which the sensor names as the facts
+     * rule has it do */
+    const char *cc = r->c->cc[after][0] ? r->c->cc[after] : r->env->clang;
+    ok = jobs != NULL && read_flags(r, after, false, &f) &&
+         read_flags(r, after, true, &fs) &&
          sfz_mkdirs(facts);
     for (size_t k = 0; ok && k < n; k++) {
         const char *tu = r->tus.v[k];
         sfz_object(obj, sizeof(obj), objdir, tu);
         compile_job(&jobs[2 * k], cc, "-c", &f, tu, obj);
         job_log(&jobs[2 * k], r, tu, "cc", ph);
-        sensor_job(&jobs[2 * k + 1], r->env->sensor, r->env->clang, ph, &fs,
-                  tu);
+        sensor_job(&jobs[2 * k + 1], r->env->sensor, cc, ph, &fs, tu);
         job_log(&jobs[2 * k + 1], r, tu, "sensor", ph);
     }
     bad = ok ? run_jobs(r, jobs, 2 * n) : 1;

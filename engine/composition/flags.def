@@ -2088,7 +2088,7 @@ Z23_FLAG("ZCL_SEMANTIC_FACTS_FIXTURE_OUT", "env_test", "-", "-",
 Z23_FLAG("ZCL_SEMANTIC_FIXTURE_OUT", "env_test", "-", "-",
           "directory the semantic_sensor group copies its emitted manifests into (refreshes tests/fixtures/semantic_manifest) and makes semantic_manifest print the golden vector; first use tests/harness/src/test_semantic_manifest.c:auto")
 Z23_FLAG("ZCL_SEMANTIC_FUZZ_SEEDS", "env_test", "-", "-",
-          "FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]] seed range the semantic_facts_fuzz group generates and judges instead of its fixed default seed list (PROFILE all, no-ctr-line or gcc-deps; KIND forces one mutation kind, any draws it; CC the object compiler of both sides, or BEFORE>AFTER for one that drifts between them; OPT comma-separated flags in place of -O1, or COMPILE/SENSOR when the sensor is handed other flags than the compile); first use tests/harness/src/test_semantic_facts_fuzz.c:auto")
+          "FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]] seed range the semantic_facts_fuzz group generates and judges instead of its fixed default seed list (PROFILE all, no-ctr-line or gcc-deps; KIND forces one mutation kind, any draws it; CC the object compiler of both sides, or BEFORE>AFTER for one that drifts between them; OPT comma-separated flags in place of -O1, or COMPILE/SENSOR when the sensor is handed other flags than the compile, or BEFORE>AFTER for flags that drift between the sides); first use tests/harness/src/test_semantic_facts_fuzz.c:auto")
 Z23_FLAG("ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE", "env_build", "-", "-",
           "undocumented; first use tools/lint/lintc/gate_service_result_convergence.c:auto")
 Z23_FLAG("ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR", "env_build", "engine/services/src", "-",

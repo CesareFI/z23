@@ -626,7 +626,8 @@ static void prep_seed(struct sfz_group *g, struct sfz_seed s,
  * by default; "gcc", or any name on PATH), or BEFORE>AFTER for a compiler
  * that changes between the sides; OPT replaces -O1 with comma-separated
  * flags (-O0, -O2, -Og,-fno-inline, ...), or COMPILE/SENSOR when the
- * sensor is handed other flags than the compile (-O2/-Og). */
+ * sensor is handed other flags than the compile (-O2/-Og), each side's
+ * own as BEFORE>AFTER (-O0>-O2). */
 struct sfz_range {
     uint64_t first;
     size_t count;

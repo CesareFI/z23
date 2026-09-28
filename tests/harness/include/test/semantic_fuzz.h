@@ -83,8 +83,9 @@ extern const size_t k_sfz_nrepros;
  * looked up on PATH, and a case whose compiler is absent is a visible
  * SKIP) and the optimizer flags that replace -O1 in the argv (NULL: -O1;
  * several flags comma-separated; COMPILE/SENSOR when the sensor is handed
- * other flags than the compile). The sensor never sees which compiler
- * builds the object: only the argv. */
+ * other flags than the compile; BEFORE>AFTER when they drift between the
+ * sides). The sensor is told each side's compiler with --cc and a fixed
+ * stand-in toolchain identity, as the facts rule tells it. */
 struct sfz_tool_repro {
     struct sfz_repro r;
     const char *cc_before, *cc_after;
@@ -163,8 +164,8 @@ struct sfz_case {
     char cc[2][PATH_MAX];
     /* Comma-separated flags in place of -O1 in the compile's and the
      * sensor's argv alike, or COMPILE/SENSOR when the sensor is handed
-     * other flags than the compile it describes; "" (or an empty half) is
-     * -O1. */
+     * other flags than the compile it describes, each side's own as
+     * BEFORE>AFTER when they drift; "" (or an empty half) is -O1. */
     char opt[128];
 };
 
