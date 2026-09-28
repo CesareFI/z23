@@ -96,6 +96,120 @@ byte-equivalence witness; the receiver writes its own current-target depfile.
 The local witness says `attest_eligible=0`, launches two compilers and one
 preprocessor, and avoids zero proof compiles.
 
+On 2026-09-28, the measured witness on signed remote head
+`fd9f5217de6e5f80bb45abf05bd503c7f89ef602` from the separate verifier
+development worktree
+passed under `devbuild` job `3455175-45501939-1790601263128346361`
+(19 ms queue wait). It launched two direct `-c` GCC 14 children and one
+fresh `-E`, avoiding **zero** proof compiler launches. Cold and repeat `-c`
+each took 0.02 s wall, 0.01 s user, 0.00 s system; `-E` took 0.01 s wall,
+0.00 s user and system. Both objects were 13,288 bytes with SHA256
+`9c5a64f6007d0307885c5548dbff51bc278368fcf833cea47ce0de793c851368`.
+Both depfiles were 360 bytes with SHA256
+`6f32a40909bef856f304b218d8833a44025068f3d939a7ab41b9f617cc1da093`.
+Both compiler stderr files were empty. The raw `-E` output was 43,453
+bytes with SHA256
+`1fdf83949d6f104f260fa2a32d125c1907ad49afb1cbf899e46ad5a10827d5c8`;
+its depfile matched the cold depfile byte for byte. The witness prints these
+durable values and the current run's wall/CPU and byte counts. They are a
+local baseline only: no service, store lookup, link or test child ran.
+
+The first eligible candidate is restricted to the exact current three-file
+translation-unit chain. SHA3-256 of `result.c` is
+`f8a4357fa0cd51537c90b476512c18869a940fd6442a1f140baacec1367a923a`,
+of `base/result.h` is
+`e92c831f3170655fd955fcc8ca3ec7d886c7b15416e4c9045822bc87029fdd68`,
+and of `base/format_attribute.h` is
+`1667ffb42ea55553d38f931037cae523dfe61cabe6ec8a1f7c78b3b6b960d9be`.
+A changed source or header is a cold miss. These bytes must be delivered to
+the signer because the proof worktree files are mode 0600 and cannot be read
+by `z23verify`; the offline root publisher freezes the verified three-file
+snapshot under root ownership before the compiler starts. The signer and
+receiver must
+each run fresh raw `-E` with the exact pinned flags, environment and cwd, bind
+the whole resulting stream and depfile, and reject a namespace that changes
+either. A sparse snapshot or an installed tool image is not qualified merely
+by these three hashes.
+
+A separate sparse-tree test under `devbuild` job
+`4091410-45533905-1790601582793771072` (16.74 s queue wait) copied exactly
+these three files, created empty ordered `-I` directories, and used the same
+GCC 14 profile, fixed environment and dep target from a different physical
+cwd. Depfiles and stderr matched, but raw preprocessing differed at its
+physical-cwd line marker. The full-tree object SHA256 was the baseline
+`9c5a64f6007d0307885c5548dbff51bc278368fcf833cea47ce0de793c851368`,
+while the sparse object was
+`11a186c57b1f3c815ab6473d3b77b62c1ee57ab0c85854d76d5741e623e55d7a`.
+The sparse PP SHA256 was
+`d427248f3b7f8eda4492c9444abb7886805b5ab7228e34e8351cf2a0b28054a5`.
+This is a RED witness for relocation: the compiler must see a read-only
+snapshot at the **same physical cwd** as the cold proof. Rootless bind
+mounting is denied on this host, so byte equivalence at that path remains an
+installed-jail acceptance gate.
+
+`-fno-working-directory` is insufficient as a profile repair. Under
+`devbuild` job `126656-45543999-1790601683730422570`, it made raw `-E`,
+depfile and stderr bytes equal across the same original/sparse relocation,
+but the original object stayed at SHA256
+`9c5a64f6007d0307885c5548dbff51bc278368fcf833cea47ce0de793c851368`
+and the sparse object was
+`04db133444cef76d2d8755f4a3df390e33e4eb7cb1fde16f645c64d6f99957a0`.
+Independent read-only inspection found the first differing payload in a
+compressed `.gnu.lto_zcl_result_set_literal.*` function section: its IR
+contains the literal original or relocated physical cwd. Matching
+preprocessing cannot substitute for direct-source object equivalence under
+this `-g -flto=auto` profile. A verifier record keyed to one ephemeral proof
+generation's cwd may be ineligible for reuse by the next generation. The
+installed acceptance must show an unchanged cold proof and a later warm proof
+using the **same qualifying physical cwd**, or demonstrate and review a new
+byte-equivalent production profile before enabling any HIT.
+
+### First reusable target: strict non-LTO result.c
+
+The real `test_parallel` strict object rule already removes `-flto=auto`.
+`tools/verify/fixed_result_strict.args` pins its ordered GCC 14 direct-source
+arguments (188 lines including `cc` and the literal random seed), SHA3-256
+`5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf`.
+The current target is
+`build/test-rel-obj/epochs/b60169f84dce7eafc61905c86e562ee5ed2c21e369b9549cea655c5b3393c10e/platform/modules/base/src/result.o`.
+This strict profile includes `-DZCL_TESTING` and is separate from release
+LTO. Release result.c remains cold.
+
+The one-request `fixed_result_worker` runs the exact strict `-c` argv and a
+fresh checker `-E` with only `-fno-working-directory` added, under a fixed
+four-entry `execve` environment. Under `devbuild` job
+`1206686-45619625-1790602439990068131`, original and relocated sparse
+source trees yielded identical direct objects, depfiles, stderr and raw
+checker PP: object SHA256
+`e9c3c808981369e330579f176804c158ce73242004fd55767b6be1275c16bf76`
+(10,728 bytes), dep SHA256
+`2a5736e731a472ac277adc81e02fb2dfe1762fda76f0f7ce1ee7d0bc6df799c4`
+(369 bytes), empty stderr, checker PP SHA256
+`3ab6e90809157054042b29fc870f0ec728e3426b05f94cf3c0fb17f583e935fb`
+(43,372 bytes). Two full compilers and two preprocessors ran; zero proof
+launches were avoided. Local qualification emitted `attest_eligible=0`.
+
+For this versioned strict policy only, the verifier's physical cwd inside
+its installed jail is `/zclassic23`, so a signed `recorded_cwd=/zclassic23`
+would literally name the verifier's physical cwd. The receiver may construct
+that expected value across ephemeral proof cwd paths only after independently
+checking pinned raw source/header bytes, ordered search roots, fresh checker
+PP/dep bytes, tool image and current checker implementation root, plus the
+cross-cwd direct object equality gate. The receiver's actual cwd stays in
+its local proof receipt. This is a proposed policy, not an installed
+expected-key implementation or an eligible observation.
+Its closure root must include exact worker, signer, publisher and receiver
+admission/check implementation bytes (including ZCC, `verify_store` and
+`verify_attest`) as well as GCC driver, cc1, assembler, ELF loader, DSOs,
+specs, profile and jail policy. A changed implementation is a cold miss even
+when an ABI or output happens to remain the same.
+For the first exact pinned TU, a nonzero verifier `-E` or `-c` under otherwise
+eligible inputs blocks that request; it cannot fall through to a cold
+compile. The worker currently seals no FAIL, so this slice has no durable
+cross-request FAIL memory. Timeout and cancellation produce no observation.
+Any already signed FAIL in the root-owned observation store still blocks an
+exact-key PASS through the receiver's conflict rule.
+
 The administrator must run the following staging commands as root on a host
 where UIDs/GIDs 60092 and 60093 are free. These commands create no key, socket
 or running service. A pre-existing user or group with either ID is a hard
@@ -113,14 +227,15 @@ useradd --system --uid 60092 --gid 60092 --home-dir /var/lib/z23verify --shell /
 useradd --system --uid 60093 --gid 60093 --home-dir /var/lib/z23vcc --shell /usr/sbin/nologin z23vcc
 install -d -o root -g root -m 0755 /etc/z23verify /var/lib/z23verify /var/lib/z23verify/jails
 install -d -o z23verify -g z23verify -m 0700 /var/lib/z23verify/key
-install -d -o z23verify -g z23verify -m 0755 /var/lib/z23verify/cas /var/lib/z23verify/store
+install -d -o z23verify -g z23verify -m 0755 /var/lib/z23verify/cas
+install -d -o root -g root -m 0755 /var/lib/z23verify/store
 install -d -o root -g root -m 0755 /var/lib/z23verify/locks
-install -o z23verify -g z23verify -m 0644 /dev/null \
+install -o root -g root -m 0644 /dev/null \
   /var/lib/z23verify/locks/fixed_result.lock
 install -d -o z23vcc -g z23vcc -m 0700 /var/lib/z23vcc /var/lib/z23vcc/work
 ```
 
-The reviewed GCC 14 profile is staged only from a root-owned directory after
+The reviewed strict non-LTO profile is staged only from a root-owned directory after
 the administrator verifies its SHA3-256 against the value above. This pins
 the profile bytes but starts no compiler or signer. The staging path and
 installed profile must not be writable by either service account or the
@@ -130,14 +245,14 @@ developer:
 set -eu
 stage=/root/z23verify-staging
 test "$(stat -c %u "$stage")" = 0
-test "$(stat -c %u "$stage/fixed_result_gcc14.args")" = 0
+test "$(stat -c %u "$stage/fixed_result_strict.args")" = 0
 test "$(stat -c %a "$stage")" = 700
-test "$(openssl dgst -sha3-256 "$stage/fixed_result_gcc14.args" | awk '{print $NF}')" = \
-  befa08b481efd3d6387c61d39095f77ec65e9bf229f55a3da4a9cf4efdd20cfa
-install -o root -g root -m 0444 "$stage/fixed_result_gcc14.args" \
-  /etc/z23verify/fixed_result_gcc14.args
-test "$(openssl dgst -sha3-256 /etc/z23verify/fixed_result_gcc14.args | awk '{print $NF}')" = \
-  befa08b481efd3d6387c61d39095f77ec65e9bf229f55a3da4a9cf4efdd20cfa
+test "$(openssl dgst -sha3-256 "$stage/fixed_result_strict.args" | awk '{print $NF}')" = \
+  5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf
+install -o root -g root -m 0444 "$stage/fixed_result_strict.args" \
+  /etc/z23verify/fixed_result_strict.args
+test "$(openssl dgst -sha3-256 /etc/z23verify/fixed_result_strict.args | awk '{print $NF}')" = \
+  5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf
 ```
 
 The later service installer must pin the exact GCC 14 tool image, source
@@ -145,14 +260,26 @@ generation and mount policy in separate root-owned records and install the
 root-owned public key. No private key, socket or service is installed by this
 staging packet; proof reuse stays cold. A writable source checkout or the
 developer's copy of this manifest cannot serve as the installed pin.
-The one-TU observation store uses immutable
+The administrator also pins the store's distinct signer and publisher UIDs in
+`/etc/z23verify/store.policy`, owned by root with mode 0444 and a root-owned,
+non-writable parent. Its exact bytes are:
+
+```text
+z23verify.store.v1
+signer_uid=60092
+publisher_uid=0
+```
+
+The one-TU observation store uses root-owned
 `/var/lib/z23verify/store/<store-key>/<record-sha3>/attest.bin`, `object.o`,
 `deps.d` and `stderr.bin`. The root-precreated `fixed_result.lock` serializes
-all fixed-result keys: the signer takes an exclusive lock across staging,
-fsync and atomic publication; the receiver takes a shared lock across the
-complete observation scan and verified artifact materialization. Neither
-side creates or follows a lock symlink. A developer may open this public lock
-and delay a bounded request, so lock acquisition needs a deadline and refusal.
+all fixed-result keys: an offline root publisher takes an exclusive lock
+across staging, fsync and atomic no-clobber publication; the receiver takes a
+shared lock across the complete observation scan and verified artifact
+materialization. The signer writes only private staging and cannot mutate
+root-owned observation history. Neither side creates or follows a lock
+symlink. A developer may open this public lock and delay a bounded request,
+so lock acquisition needs a deadline and refusal.
 
 The later, reviewed installer must create a **root-owned, read-only mount
 namespace** for the compiler account. Its root contains only the pinned GCC
@@ -189,8 +316,8 @@ snapshot, change a DSO/spec file, inject an escaping symlink, and change an
 input during compilation. Each must alter the closure or refuse before any
 eligible record. The receiver must reject a wrong key, wrong argv/cwd,
 tampered object/dep/stderr, and conflicting signed PASS/FAIL observations.
-The signer must hold a trusted per-key exclusive lock while publishing each
-immutable observation; the receiver must hold the matching shared lock from
+The offline root publisher must hold the root-owned global lock exclusively
+while publishing each root-owned observation; the receiver holds it shared from
 the complete observation scan through verified artifact materialization.
 Store and lock paths require trusted ownership and descriptor-based,
 no-symlink traversal. A directory scan alone cannot rule out a signed FAIL
@@ -234,8 +361,9 @@ directory semantics, then bind the implementation bytes of all tools it used.
 
 ## Architecture
 
-**Account and files.** A signer account `z23verify` owns the key and
-content-addressed observations. A separate compiler account `z23vcc` runs
+**Account and files.** A signer account `z23verify` owns its private key and
+staging area; root retains custody of published observations. A separate
+compiler account `z23vcc` runs
 compiler children. The signer prepares a source snapshot that `z23vcc` can
 read but cannot write. Neither account can switch to the other. The
 developer account can read published items marked (r) and write none of them.
@@ -244,38 +372,29 @@ developer account can read published items marked (r) and write none of them.
 | --- | --- | --- |
 | `/var/lib/z23verify/key/` | 0700 | Ed25519 private key |
 | `/var/lib/z23verify/cas/` | 0755 | file contents copied and hashed by signer |
-| `/var/lib/z23verify/store/` (r) | 0755 | content-addressed objects and signed records, write-once by protocol |
+| `/var/lib/z23verify/store/` (r) | root 0755 | root-published observations; signer cannot unlink prior FAIL |
 | `/var/lib/z23verify/jails/` | root 0755 | versioned jail roots; synthetic source paths are signer-writable and compiler-read-only |
 | `/var/lib/z23vcc/work/` | 0700 | compiler scratch/output, no signing key |
 | `/etc/z23verify/verifier.pub` (r) | root 0644 | pinned public key |
+| `/etc/z23verify/store.policy` (r) | root 0444 | signer UID 60092, publisher UID 0 |
 | `/etc/z23verify/toolchain.conf` (r) | root 0644 | pinned compiler identity |
 | `/usr/local/libexec/z23-verifyd` | root 0755 | daemon binary |
 
-**Request path.** A developer-facing Unix socket accepts untrusted compile
-requests. A second socket between compiler and signer authenticates peers with
-`SO_PEERCRED`; the signer accepts observations only from the pinned compiler
-account. The signer uses `ProtectHome=yes`; the compiler runs inside a
-root-owned `RootDirectory` containing only a synthetic `/home` at the exact
-recorded source path. It uses `ProtectHome=no` inside that jail so the synthetic
-path remains visible, while the host home is absent. A request carries the
-normalized argv and recorded working directory,
-the unit's relative path, a manifest of every file the preprocessor opened
-(relative path to sha3), and the contents of any file missing from the store.
-
-Request processing then:
-
-1. the signer copies and re-hashes request bytes into its CAS;
-2. the signer materializes a frozen, compiler-read-only snapshot under the
-   versioned jail;
-3. the compiler service checks argv against a fixed allowlist of flags;
-4. a compiler child confined by Landlock (snapshot, pinned toolchain and system
-   include directories, a tmp directory, no access to `key/`, no network),
-   runs `-E` and requires the preprocessed-text hash to match the claim;
-5. that child compiles the real source, so warnings and `-Werror` behave as in a cold
-   build;
-6. hands output bytes and its complete tool/input identity to the signer over
-   authenticated Unix descriptors. The signer copies and hashes the output
-   into its own content-addressed store before signing `zcl.verify_attest.v1`.
+**Request path target.** The first installed path is one fixed strict
+`result.c` request. A root-owned launcher authenticates the signer account
+on its external Unix connection, constructs the pinned jail, and starts the
+compiler worker as UID 60093. The worker accepts one bounded `SOCK_SEQPACKET`
+request only from launcher UID 0 on a private socket. It runs the direct
+source checker and compile under the fixed environment, then returns the
+object, depfile, stderr and preprocessed stream as descriptors to the
+launcher. The root launcher waits for normal worker exit, copies and hashes
+those bytes, and writes a root-owned launch receipt for the exact mounted
+source/tool image and effective policy. The signer may seal only after it
+authenticates that launch receipt and independently checks the output and
+input closure. The root publisher reopens the receipt and signed staging,
+checks the installed pins, and adds the observation under `fixed_result.lock`.
+None of these launcher, signer or publisher authority checks is implemented
+by the current local worker qualification.
 
 This sequence remains an acceptance target. The current attestation record's
 `toolchain_id` must cover the driver, compiler backend, assembler, ELF loader,
@@ -288,9 +407,10 @@ prefix-mapped DWARF directory. Source argv spelling, symlink policy, random
 seed, environment and profile are part of the expected compile input.
 Current admission checks signed cwd and closure fields against receiver
 expectations, and its store key includes both. No installed verifier currently
-constructs those expectations. `SO_PEERCRED` attests the compiler service UID,
-not the truth of data sent by a compromised compiler service. That service
-remains a trust boundary requiring independent qualification.
+constructs those expectations. `SO_PEERCRED` on the worker socket attests the
+root launcher's UID, not the truth of the launch receipt or the mounted bytes.
+The installed launcher and publisher remain trust boundaries requiring
+independent qualification.
 
 **The record.** `zcl.verify_attest.v1` carries `toolchain_id`, `argv_norm`,
 `recorded_cwd`, `pp_sha3`, `closure_sha3`, `obj_sha3`, `dep_sha3`,

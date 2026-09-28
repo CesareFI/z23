@@ -11,6 +11,7 @@ repo=$(git rev-parse --show-toplevel)
 source_tu=platform/modules/base/src/result.c
 [[ -f $source_tu && ! -L $source_tu ]] || fail source_missing
 command -v openssl >/dev/null 2>&1 || fail sha3_tool_missing
+[[ -x /usr/bin/time ]] || fail time_tool_missing
 manifest=tools/verify/fixed_result_gcc14.args
 manifest_sha3=$(openssl dgst -sha3-256 "$manifest" | awk '{print $NF}')
 [[ $manifest_sha3 == befa08b481efd3d6387c61d39095f77ec65e9bf229f55a3da4a9cf4efdd20cfa ]] ||
@@ -45,16 +46,18 @@ args+=("${pinned[180]}")
 
 fixed_env=(LC_ALL=C TZ=UTC TMPDIR=/tmp PATH=/usr/bin:/bin)
 compile() {
-    local object=$1 dep=$2 stderr=$3
-    env -i "${fixed_env[@]}" "${args[@]}" -MMD -MP -MF "$dep" \
+    local object=$1 dep=$2 stderr=$3 timing=$4
+    /usr/bin/time -f 'wall_seconds=%e user_seconds=%U system_seconds=%S' \
+        -o "$timing" env -i "${fixed_env[@]}" "${args[@]}" -MMD -MP -MF "$dep" \
         -MT "$target" -c -o "$object" "$source_tu" 2> "$stderr"
 }
-compile "$work/cold.o" "$work/cold.d" "$work/cold.stderr"
-compile "$work/repeat.o" "$work/repeat.d" "$work/repeat.stderr"
+compile "$work/cold.o" "$work/cold.d" "$work/cold.stderr" "$work/cold.time"
+compile "$work/repeat.o" "$work/repeat.d" "$work/repeat.stderr" "$work/repeat.time"
 cmp "$work/cold.o" "$work/repeat.o" || fail object_bytes_differ
 cmp "$work/cold.d" "$work/repeat.d" || fail dep_bytes_differ
 cmp "$work/cold.stderr" "$work/repeat.stderr" || fail stderr_bytes_differ
-env -i "${fixed_env[@]}" "${args[@]}" -MMD -MP \
+/usr/bin/time -f 'wall_seconds=%e user_seconds=%U system_seconds=%S' \
+    -o "$work/preprocess.time" env -i "${fixed_env[@]}" "${args[@]}" -MMD -MP \
     -MF "$work/preprocess.d" -MT "$target" -E -o "$work/result.i" \
     "$source_tu" 2> "$work/preprocess.stderr"
 cmp "$work/cold.d" "$work/preprocess.d" || fail fresh_dep_bytes_differ
@@ -63,4 +66,14 @@ printf 'profile_green=1 source=%s cwd=%s gcc=%s flags=180 epoch_target=%s\n' \
     "$source_tu" "$repo" "$(realpath /usr/bin/cc)" "$target"
 printf 'manifest_sha3=%s\n' "$manifest_sha3"
 sha256sum "$work/cold.o" "$work/repeat.o" "$work/cold.d" "$work/result.i"
+for run in cold repeat preprocess; do
+    printf '%s ' "$run"
+    cat "$work/$run.time"
+done
+printf 'cold_bytes object=%s dep=%s stderr=%s preprocess=%s\n' \
+    "$(wc -c < "$work/cold.o")" "$(wc -c < "$work/cold.d")" \
+    "$(wc -c < "$work/cold.stderr")" "$(wc -c < "$work/result.i")"
+printf 'repeat_bytes object=%s dep=%s stderr=%s\n' \
+    "$(wc -c < "$work/repeat.o")" "$(wc -c < "$work/repeat.d")" \
+    "$(wc -c < "$work/repeat.stderr")"
 printf 'object_equal=1 dep_equal=1 fresh_dep_equal=1 compiler_launches=2 preprocess_launches=1 proof_launches_avoided=0 attest_eligible=0\n'
