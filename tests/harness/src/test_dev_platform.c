@@ -5745,10 +5745,17 @@ static int test_darwin_attested_descriptor_process(void)
 }
 #endif
 
+static bool dp_cancel_active_child_poll(void *opaque)
+{
+    bool *entered = opaque;
+    *entered = true;
+    return true;
+}
+
 static int test_resident_process_cancellation(void)
 {
     int failures = 0;
-    TEST("dev platform: resident cancellation promptly stops an active child group") {
+    TEST("dev platform: resident cancellation stops an active child and refuses a new spawn") {
         const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
         char *saved_copy = saved ? strdup(saved) : NULL;
         ASSERT(!saved || saved_copy);
@@ -5756,10 +5763,15 @@ static int test_resident_process_cancellation(void)
 
         const char *argv[] = { "sleep", "30", NULL };
         struct zcl_devloop_process_result result = {0};
-        zcl_devloop_process_cancel_request();
+        bool entered = false;
+        zcl_devloop_process_cancel_poll_set(dp_cancel_active_child_poll,
+                                             &entered);
         int64_t started = platform_time_monotonic_us();
-        ASSERT(zcl_devloop_process_run(".", argv, 60000, &result));
+        bool ran = zcl_devloop_process_run(".", argv, 60000, &result);
         int64_t elapsed_us = platform_time_monotonic_us() - started;
+        zcl_devloop_process_cancel_poll_clear();
+        zcl_devloop_process_cancel_clear();
+        ASSERT(ran && entered);
         ASSERT(result.cancelled);
         ASSERT(!result.timed_out);
         ASSERT(result.term_signal == SIGTERM);
@@ -5777,7 +5789,12 @@ static int test_resident_process_cancellation(void)
                (unsigned long long)cancel_budget.calib_med_us);
         ASSERT(elapsed_us >= 0 &&
                (uint64_t)elapsed_us < cancel_budget.effective_us);
+        struct zcl_devloop_process_result refused = {0};
+        zcl_devloop_process_cancel_request();
+        bool spawned = zcl_devloop_process_run(".", argv, 60000, &refused);
+        int refusal_errno = errno;
         zcl_devloop_process_cancel_clear();
+        ASSERT(!spawned && refused.cancelled && refusal_errno == ECANCELED);
 
         if (saved_copy) {
             ASSERT(platform_environment_set("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);

@@ -926,6 +926,14 @@ bool zcl_devloop_process_spawn_fd_attested(const char *cwd, int exec_fd,
 void zcl_devloop_process_cancel_request(void);
 void zcl_devloop_process_cancel_clear(void);
 bool zcl_devloop_process_cancel_requested(void);
+/* Bind a forked proof worker to its original watcher. Linux also receives a
+ * kernel parent-death signal; this check covers systems without that signal
+ * and the interval before the worker observes it. */
+void zcl_devloop_process_cancel_bind_parent(uint64_t expected_parent);
+#ifdef ZCL_TESTING
+/* Test-only stopped child fixture, inherited by fork before exec. */
+void zcl_devloop_process_test_preexec_notify_fd_set(int fd);
+#endif
 typedef bool (*zcl_devloop_process_cancel_poll_fn)(void *opaque);
 void zcl_devloop_process_cancel_poll_set(
     zcl_devloop_process_cancel_poll_fn poll_fn, void *opaque);

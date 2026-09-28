@@ -142,6 +142,7 @@ bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
 
 static volatile sig_atomic_t g_process_cancel_requested;
 static volatile sig_atomic_t g_process_active_leader;
+static pid_t g_process_cancel_parent;
 static zcl_devloop_process_cancel_poll_fn g_process_cancel_poll;
 static void *g_process_cancel_poll_opaque;
 static pthread_mutex_t g_process_cancel_poll_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -168,6 +169,9 @@ void zcl_devloop_process_cancel_clear(void)
 
 bool zcl_devloop_process_cancel_requested(void)
 {
+    if (g_process_cancel_parent > 1 &&
+        getppid() != g_process_cancel_parent)
+        g_process_cancel_requested = 1;
     return g_process_cancel_requested != 0;
 }
 
@@ -688,11 +692,69 @@ static const char *const *process_inherited_env(void)
     return (const char *const *)environ;
 }
 
-static bool process_run_impl(const char *cwd, int exec_fd,
-                             const char *const argv[],
-                             const char *const envp[], int timeout_ms,
-                             bool raise_stack,
-                             struct zcl_devloop_process_result *out)
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+/* The child may stop between setsid and exec. Poll the startup pipe so owner
+ * death and the command deadline still apply before the normal wait loop. */
+static ssize_t process_startup_read(int fd, char *byte, int64_t deadline_us,
+                                    struct zcl_devloop_process_result *out)
+{
+    for (;;) {
+        if (zcl_devloop_process_cancel_requested()) {
+            out->cancelled = true;
+            errno = ECANCELED;
+            return -1;
+        }
+        int64_t remaining_us = deadline_us - platform_time_monotonic_us();
+        if (remaining_us <= 0) {
+            out->timed_out = true;
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        int wait_ms = (int)((remaining_us + 999) / 1000);
+        if (wait_ms > 5)
+            wait_ms = 5;
+        struct pollfd pending = {.fd = fd, .events = POLLIN | POLLHUP};
+        int polled = poll(&pending, 1, wait_ms);
+        if (polled < 0 && errno == EINTR)
+            continue;
+        if (polled < 0)
+            return -1;
+        if (polled == 0)
+            continue;
+        ssize_t got = read(fd, byte, 1);
+        if (got < 0 && errno == EINTR)
+            continue;
+        return got;
+    }
+}
+#endif
+
+#ifdef ZCL_TESTING
+static int g_process_test_preexec_notify_fd = -1;
+
+void zcl_devloop_process_test_preexec_notify_fd_set(int fd)
+{
+    g_process_test_preexec_notify_fd = fd;
+}
+
+/* A deterministic stopped child between the first ready byte and exec. The
+ * watcher fixture receives both pids before killing its owner. */
+static void process_test_stall_before_exec(void)
+{
+    if (g_process_test_preexec_notify_fd < 0)
+        return;
+    pid_t pids[2] = {getppid(), getpid()};
+    if (write(g_process_test_preexec_notify_fd, pids, sizeof(pids)) !=
+        (ssize_t)sizeof(pids))
+        _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+    for (;;)
+        pause();
+}
+#endif
+
+static bool process_run_admit(const char *cwd, const char *const argv[],
+                              int timeout_ms,
+                              struct zcl_devloop_process_result *out)
 {
     if (!cwd || !cwd[0] || !argv || !argv[0] || !out || timeout_ms <= 0) {
         fprintf(stderr, "[devloop] process: invalid bounded invocation\n");
@@ -700,6 +762,23 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     }
     memset(out, 0, sizeof(*out));
     out->exit_code = -1;
+    if (zcl_devloop_process_cancel_requested()) {
+        out->cancelled = true;
+        errno = ECANCELED;
+        fprintf(stderr, "[devloop] process: owner cancelled before spawn\n");
+        return false;
+    }
+    return true;
+}
+
+static bool process_run_impl(const char *cwd, int exec_fd,
+                             const char *const argv[],
+                             const char *const envp[], int timeout_ms,
+                             bool raise_stack,
+                             struct zcl_devloop_process_result *out)
+{
+    if (!process_run_admit(cwd, argv, timeout_ms, out))
+        return false;
 
 #if !defined(ZCL_DEV_BUILD) && !defined(ZCL_TESTING)
     (void)exec_fd;
@@ -767,6 +846,9 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         char ready = '1';
         if (write(ready_fds[1], &ready, 1) != 1)
             _exit(ZCL_DEVLOOP_PROCESS_EXIT_SETUP_FAILED);
+#ifdef ZCL_TESTING
+        process_test_stall_before_exec();
+#endif
         /* Keep the CLOEXEC descriptor open through setup. The parent sees
          * EOF exactly when exec succeeds (or the child exits), separating
          * process startup from command body time without a wrapper. */
@@ -821,9 +903,9 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     char ready = 0;
     ssize_t ready_got;
     if (!darwin_attested_spawn) {
-        do {
-            ready_got = read(ready_fds[0], &ready, 1);
-        } while (ready_got < 0 && errno == EINTR);
+        int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
+        ready_got = process_startup_read(ready_fds[0], &ready, deadline_us,
+                                         out);
         if (ready_got != 1 || ready != '1') {
             close(ready_fds[0]);
             (void)kill(pid, SIGKILL);
@@ -834,13 +916,12 @@ static bool process_run_impl(const char *cwd, int exec_fd,
             fprintf(stderr, "[devloop] process: child session setup failed\n");
             return false;
         }
-        do {
-            ready_got = read(ready_fds[0], &ready, 1);
-        } while (ready_got < 0 && errno == EINTR);
+        ready_got = process_startup_read(ready_fds[0], &ready, deadline_us,
+                                         out);
         out->startup_us = platform_time_monotonic_us() - started_us;
         close(ready_fds[0]);
         if (ready_got != 0) {
-            (void)kill(pid, SIGKILL);
+            terminate_child_session(pid, SIGKILL);
             (void)waitpid(pid, NULL, 0);
             close(fds[0]);
             if (g_process_active_leader == (sig_atomic_t)pid)
@@ -857,7 +938,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     bool finished = false;
     int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
     while (!finished) {
-        if (!g_process_cancel_requested) {
+        if (!zcl_devloop_process_cancel_requested()) {
             pthread_mutex_lock(&g_process_cancel_poll_mu);
             zcl_devloop_process_cancel_poll_fn poll_fn =
                 g_process_cancel_poll;
@@ -880,7 +961,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
              * SAME iteration, before the cancel/deadline branch below runs.
              * Attribute the cancellation here or the receipt lies about why
              * the child died. */
-            if (g_process_cancel_requested != 0)
+            if (zcl_devloop_process_cancel_requested())
                 out->cancelled = true;
             break;
         }
@@ -894,7 +975,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
                 g_process_active_leader = 0;
             return false;
         }
-        bool cancelled = g_process_cancel_requested != 0;
+        bool cancelled = zcl_devloop_process_cancel_requested();
         if (cancelled || platform_time_monotonic_us() >= deadline_us) {
             out->cancelled = cancelled;
             out->timed_out = !cancelled;
@@ -973,6 +1054,17 @@ bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
 }
 
 #endif /* _WIN32 */
+
+void zcl_devloop_process_cancel_bind_parent(uint64_t expected_parent)
+{
+#if defined(_WIN32)
+    (void)expected_parent;
+#else
+    g_process_cancel_parent = expected_parent > 1 &&
+                              expected_parent <= INT_MAX
+        ? (pid_t)expected_parent : 0;
+#endif
+}
 
 /* One definition for every platform: the child gets exactly `envp`. */
 bool zcl_devloop_process_run_env(const char *cwd,

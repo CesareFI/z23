@@ -1080,6 +1080,7 @@ static void proof_worker_signal(int sig)
  * that request took effect is caught by the parent check that follows. */
 static void watch_proof_worker_bind_parent(pid_t parent)
 {
+    zcl_devloop_process_cancel_bind_parent((uint64_t)parent);
     if (!os_proc_bind_parent_death(SIGTERM, (uint64_t)parent))
         zcl_devloop_process_cancel_request();
 }
@@ -4237,6 +4238,113 @@ static const char *watch_sealer_test_worker_orphan(struct watch_context *ctx)
                        : "a proof worker outlived its killed watcher";
 }
 
+/* The process poll must notice the same parent loss while a bounded child
+ * already runs, rather than only between proof steps. */
+static bool watch_sealer_test_child_started(void *opaque)
+{
+    int *fd = opaque;
+    if (*fd >= 0) {
+        pid_t pids[2] = {getpid(), 0};
+        (void)write(*fd, pids, sizeof(pids));
+        (void)close(*fd);
+        *fd = -1;
+    }
+    return false;
+}
+
+static void watch_sealer_test_orphan_worker(const char *root, int started_fd,
+                                             int report_fd, bool preexec)
+{
+    const char *const argv[] = {"/bin/sleep", "3", NULL};
+    struct zcl_devloop_process_result result;
+    if (setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        _exit(1);
+    if (preexec) {
+#ifdef ZCL_TESTING
+        zcl_devloop_process_test_preexec_notify_fd_set(started_fd);
+#else
+        _exit(1);
+#endif
+    } else {
+        zcl_devloop_process_cancel_poll_set(
+            watch_sealer_test_child_started, &started_fd);
+    }
+    bool ran = zcl_devloop_process_run(root, argv, 5000, &result);
+    char verdict = result.cancelled && (ran != preexec) ? 'c' : 't';
+    (void)write(report_fd, &verdict, 1);
+    _exit(0);
+}
+
+static pid_t watch_sealer_test_active_orphan_spawn(struct watch_context *ctx,
+                                               const char *root, int started[2],
+                                               int report[2], bool preexec)
+{
+    pid_t watcher = fork();
+    if (watcher == 0) {
+        (void)close(started[0]);
+        (void)close(report[0]);
+        pid_t worker = watch_proof_worker_fork(ctx, -1);
+        if (worker == 0)
+            watch_sealer_test_orphan_worker(root, started[1],
+                                             report[1], preexec);
+        (void)close(started[1]);
+        (void)close(report[1]);
+        if (worker < 0)
+            _exit(1);
+        for (;;)
+            pause();
+    }
+    return watcher;
+}
+
+static void watch_sealer_test_orphan_cleanup(bool cancelled, pid_t pids[2])
+{
+    if (cancelled)
+        return;
+    if (pids[1] > 1) {
+        (void)kill(-pids[1], SIGKILL);
+        (void)kill(pids[1], SIGKILL);
+    }
+    if (pids[0] > 1)
+        (void)kill(pids[0], SIGKILL);
+}
+
+static const char *watch_sealer_test_active_worker_orphan(
+    struct watch_context *ctx, const char *root, bool preexec)
+{
+    int started[2] = {-1, -1}, report[2] = {-1, -1};
+    if (pipe(started) != 0)
+        return "active orphan fixture pipes";
+    if (pipe(report) != 0) {
+        (void)close(started[1]);
+        (void)close(started[0]);
+        return "active orphan fixture pipes";
+    }
+    pid_t watcher = watch_sealer_test_active_orphan_spawn(ctx, root, started,
+                                                      report, preexec);
+    (void)close(started[1]);
+    (void)close(report[1]);
+    struct pollfd ready = {.fd = started[0], .events = POLLIN};
+    pid_t pids[2] = {0, 0};
+    char verdict = 0;
+    bool active = watcher > 0 && poll(&ready, 1, 5000) == 1 &&
+                  read(started[0], pids, sizeof(pids)) ==
+                      (ssize_t)sizeof(pids) && pids[0] > 1;
+    if (watcher > 0) {
+        (void)kill(watcher, SIGKILL);
+        (void)waitpid(watcher, NULL, 0);
+    }
+    ready.fd = report[0];
+    bool cancelled = active && poll(&ready, 1, 6000) == 1 &&
+                     read(report[0], &verdict, 1) == 1 && verdict == 'c';
+    watch_sealer_test_orphan_cleanup(cancelled, pids);
+    (void)close(started[0]);
+    (void)close(report[0]);
+    return cancelled ? NULL : preexec
+        ? "a pre-exec proof child outlived its killed watcher"
+        : "an active proof child outlived its killed watcher";
+}
+
 /* Appends a failed phase to the report; later phases still run, so one run
  * shows every property that does not hold. */
 static void watch_sealer_test_note(char *report, size_t cap,
@@ -4284,6 +4392,14 @@ static const char *watch_sealer_test_phases(struct watch_context *ctx,
                            watch_sealer_test_teardown_unsealed(ctx, root));
     watch_sealer_test_note(report, sizeof(report),
                            watch_sealer_test_worker_orphan(ctx));
+    watch_sealer_test_note(report, sizeof(report),
+                           watch_sealer_test_active_worker_orphan(ctx, root,
+                                                                   false));
+#ifdef ZCL_TESTING
+    watch_sealer_test_note(report, sizeof(report),
+                           watch_sealer_test_active_worker_orphan(ctx, root,
+                                                                   true));
+#endif
     watch_sealer_test_note(report, sizeof(report),
                            watch_sealer_test_stop_failure(ctx, root));
     return report[0] ? report : NULL;
