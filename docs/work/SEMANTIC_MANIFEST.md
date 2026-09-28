@@ -1263,13 +1263,14 @@ three to eight TUs and one to four headers before and after one edit:
   `semantic_fuzz_templ.c`): 42 function templates (inline, macro,
   `_Generic`, layout, enum, weak, constructor, `__LINE__`, `__COUNTER__`,
   `__has_include`, alias, cleanup, header-static, `constexpr` and more)
-  under one of seventeen mutation kinds, the same bytes for the same seed
+  under one of seventeen mutation kinds (plus the data and path kinds
+  below), the same bytes for the same seed
   and profile. The `no-ctr-line` profile drops `__COUNTER__` and
   `__LINE__`, whose users make most plans `position-dependent`, so its
   plans narrow; `gcc-deps` writes the depfiles with gcc, which omits
   `__has_include` probes;
 - **fixed** (`tests/harness/src/semantic_fuzz_repro.c`): every minimized
-  reproducer a run found (F1 to F11) and the shapes that must keep
+  reproducer a run found (F1 to F14) and the shapes that must keep
   passing. They run on every run.
 
 Each TU is compiled with the clang of the LLVM whose libclang the sensor
@@ -1331,8 +1332,9 @@ included file does not seed the includer's functions) were known-RED at
 64370952d5; the consumer's cleanup-handler and `.c`-includes-`.c` fixes
 now cover all four, and they run as ordinary fixed reproducers.
 
-The known-RED reproducers are four families, three of them toolchain
-families (no text edit the consumer misreads) and one optimizer level:
+The known-RED reproducers are five families: three toolchain families
+(no text edit the consumer misreads), one optimizer level, and one file
+that only a preprocessor probe names:
 
 | reproducer | toolchain | missed | root cause |
 |---|---|---|---|
@@ -1341,6 +1343,9 @@ families (no text edit the consumer misreads) and one optimizer level:
 | F10_opt_spelling_O5 | gcc at `-O5` (gcc's `-O3`) | `t0_w.constprop.1` | `k_fxg_unbounded` lists `-O2` to `-O4` only; `-O5` falls to the `-O1` component model, which never seeds an external callee gcc clones |
 | F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | the `clang-facts` rule passes `$(DEV_COMPILE_CFLAGS)` as the `.zsm` target sees it (`-Og`), while the dev objects of the hot dirs (`core/modules/chain`, `crypto`, `script`, `validation` and four more) take `DEV_HOT_CFLAGS` (`-O2`), and `clientversion.o` extra defines, from target-specific assignments the facts rule never sees |
 | F12_header_static_inline_O0, _gcc | clang or gcc at `-O0`; a header `static inline` body changes | `h_inl` (each reader's out-of-line copy) | `fxc_seed_marked` (`tools/dev/devloop_facts_tu.c`) seeds only main-file functions and broadens only on a root, and `fxi_on_function` (`tools/dev/devloop_facts_index.c`) makes a header definition a root only with external linkage; at `-O1` the call is inlined and the caller seed covers it, at `-O0` (the callers model) the reader's own copy changes unseeded |
+| F13_has_embed_deleted | sensor's clang; the case file docs/banner.txt, which only `__has_embed` probes, is deleted | `t0.c` (object changed, out of the universe) | `cm_scan_has_include` (`tools/sensors/clang_manifest_lookup.c`) scans only `__has_include` with a literal operand and nothing scans `__has_embed`, so no manifest names the probed path; clang's depfile names a probed file only while it exists; the include graph refuses the deleted path (`include_input_missing`, `codeindex_impact.c`), `fxc_cross_check` (`tools/dev/devloop_facts_consumer.c`) marks the plan incomplete but, unlike `fxc_build_inputs`, puts no candidate in scope, and the file-seeded fallback has no TU for a `.h`, `docs/` or `.md` path |
+| F14_has_include_macro, _next | sensor's clang; the case header inc2/cfg_local.h, probed as `__has_include(CFG_LOCAL)` or with `__has_include_next`, is deleted | `t0.c` (as F13) | as F13: the text scan skips a macro operand and `__has_include_next` |
+| F15_has_include_macro_gcc_deps, _next_gcc_deps | sensor's clang, gcc depfiles (as the dev compile's); the case header inc2/cfg_local.h, probed as in F14, is created | `t0.c` (out of the universe of a narrowed plan), `t0_local` | as F14 for the sensor; gcc's depfile omits `__has_include` probes, so the created path, a regular file, has no reader and the include graph answers that as complete: the plan narrows past `t0.c` |
 
 The passing shapes beside them hold the model where the spelling is
 canonical: gcc `-O1` seeds the specialized static, and gcc `-O2` and
@@ -1372,6 +1377,37 @@ seed, and an unforced draw picks one of them one time in five. The
 reproducers D1 to D6 pin the same shapes plus a header macro that
 initializes a global const and a static const table inside a function.
 
+Seven path kinds change what a path resolves to while the includer's
+text stays the same. They too render their layer only in their own
+cases, and a range runs one only when it names it (never drawn):
+`symlink_retarget` (a header that is a symbolic link names another
+body), `file_macro` (a header returning `__FILE__` and `__FILE_NAME__`
+moves to the other include directory as a file or a link, or gains a
+same-bytes copy that shadows it), `pragma_alias` (a `#pragma once` header
+reached through a second path, a link that becomes a same-bytes file or
+names a same-bytes copy, so the header is read twice, or the reverse),
+`macro_include` (`#include SEL_HDR` names the other header), `embed_data`
+(a byte or the length of a file `#embed` reads), `hasembed` (a file
+`__has_embed` probes is created or deleted) and `hasinc_macro` (a header
+probed through a macro operand or `__has_include_next` is created or
+deleted). A case lays a link out as a link and compares it as git does,
+by its target text, so an edit to the file a link names changes only
+that file's path. The sensor records the path a link resolves to, so a
+TU that reads a header through a link is a reader of its target; a
+changed link is no regular file to the include graph, so a retarget
+falls back (`include-graph-truncated`). In 64 no-ctr-line seeds of each,
+only `hasembed` (26) and `hasinc_macro` (10) missed, every miss the
+deletion of a file only a probe names (F13, F14); with gcc depfiles
+(48 gcc-deps seeds) `hasinc_macro` also missed 12 creations, under
+narrowed plans (F15). 48 gcc-deps seeds each of `symlink_retarget`,
+`pragma_alias`, `macro_include` and `file_macro`, and 48 all-profile
+seeds each of `pragma_alias` and `embed_data`, found no miss. The
+`#embed` kinds need a compiler with `#embed` for the depfiles, so they
+do not run under gcc-deps with gcc 14. The reproducers
+`pass_has_embed_created`, `pass_has_embed_build_input`,
+`pass_link_retarget` and `pass_link_target_edit` pin the shapes around
+them that pass.
+
 Cases run four at once, each in its own
 process with two compiles or sensor runs at once. A compile or sensor
 run still going after 120 s, or a case process that has not reported
@@ -1379,8 +1415,8 @@ after 240 s, is killed with SIGKILL and the case is an ERROR. Every
 compile, sensor and gcc run gets only `PATH`, `LC_ALL=C`, `HOME` and a
 `TMPDIR` inside the case, so an inherited `CPATH` or `C_INCLUDE_PATH`
 cannot change what they read. The default
-run of 55
-cases takes about 17 s and yields 46 narrowed verdicts and 26 seeded
+run of 94
+cases (43 fixed, 51 seeds) takes about 11 s and yields 73 narrowed verdicts and 52 seeded
 changed functions.
 
 ### Measured: the consumer on engine/modules/hotswap (2026-09-27)
