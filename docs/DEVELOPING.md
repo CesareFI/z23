@@ -128,16 +128,29 @@ devbuild --plan                        # what a slot would grant; runs nothing
 ```
 
 `devbuild` is **not installed by any repository target.** It is a shared host
-program with a bounded CPU, RAM and I/O class broker. It refuses admission
-when the host has under 24 GiB available, and runs commands inside a
-`systemd-run --user --scope` with a CPU quota, a memory ceiling and CPU
-pinning that leaves two physical cores outside the development slice. Its
-current source and host contract are in
-[`../platform/deploy/devbuild-broker`](../platform/deploy/devbuild-broker) and
-[`../platform/deploy/README.md`](../platform/deploy/README.md).
-[`../platform/deploy/README.md`](../platform/deploy/README.md) is the door to
-the rest of that directory: which units a host runs, which of them a clone
-gets, and why the remainder stay host-local.
+program. Each project gets one slot: QEDC's slot admits one heavy job at a
+time; Z23's slot admits up to `DEVBUILD_Z23_LANES` concurrent jobs (default
+3, max 4), one per lane lock. `--wait` waiters are served FIFO through
+enqueue-ordered tickets, so a long-queued job is never passed over by a
+newer one; a `dev land` invocation, or `DEVBUILD_PRIORITY=land`, takes the
+next free Z23 lane ahead of ordinary waiters. It refuses admission when the
+host has under 24 GiB available, and runs commands inside a `systemd-run
+--user --scope` with a CPU quota, a memory ceiling and CPU pinning that
+leaves two physical cores outside the development slice. Each finished job
+appends one JSON line (project, pid, cwd, queue/run timings, rc, lane,
+mem/cpu use) to `~/.local/state/development/devbuild.jobs.jsonl` for
+measuring slot contention.
+[`../platform/deploy/devbuild`](../platform/deploy/devbuild) is the reference
+mirror of the installed script, with the exact contract in its header;
+[`../platform/deploy/test-devbuild.sh`](../platform/deploy/test-devbuild.sh)
+exercises lane overlap, FIFO order, landing priority, single-lane QEDC, and
+the accounting file against that mirror.
+[`../platform/deploy/devbuild-broker`](../platform/deploy/devbuild-broker) is
+a separate, not-yet-installed replacement candidate with a finer-grained
+CPU/RAM/I/O class broker; see
+[`../platform/deploy/README.md`](../platform/deploy/README.md) for its status.
+That README is the door to the rest of that directory: which units a host
+runs, which of them a clone gets, and why the remainder stay host-local.
 
 Read that file before working on a shared host, because three things in this
 tree call `devbuild` by name and fail without it:

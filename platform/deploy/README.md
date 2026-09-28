@@ -29,8 +29,18 @@ you are new; this page is about operating a host, not about building.
   `install-host-watchdog.sh`, `migrate-role-names.sh`, and the bundle and
   cutover scripts. Subdirectories `fleet-gateway/`, `devfleet/`, `examples/`,
   `systemd/` and `system/` carry their own READMEs or headers.
-- **[`devbuild`](devbuild)** — a reference copy, not an installed program. See
-  its header.
+- **[`devbuild`](devbuild)** — a reference copy, not an installed program, of
+  the shared host build scheduler. QEDC gets one heavy job at a time; Z23
+  gets up to `DEVBUILD_Z23_LANES` concurrent lanes (default 3, max 4), one
+  per lane lock. `--wait` waiters are served FIFO through enqueue-ordered
+  tickets so a long-queued job is never starved by newer ones; `dev land`
+  (or `DEVBUILD_PRIORITY=land`) takes the next free Z23 lane ahead of
+  ordinary waiters. Each finished job appends one JSON line — project, pid,
+  cwd, queued/started/ended, wait_s, run_s, rc, lane, mem_peak_mib, cpu_s,
+  cmd — to `~/.local/state/development/devbuild.jobs.jsonl`.
+  [`test-devbuild.sh`](test-devbuild.sh) exercises lane overlap, FIFO order,
+  landing priority, single-lane QEDC, and the accounting file against this
+  mirror. See the script's own header for the full enforcement contract.
 - **[`devbuild-broker`](devbuild-broker)** — a staged Linux replacement for the
   host scheduler. It admits two ordinary heavy lanes, reserves an additional
   interactive lane, and orders release proof ahead of ordinary queued work.
