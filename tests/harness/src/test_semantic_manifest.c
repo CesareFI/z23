@@ -1328,6 +1328,90 @@ static int smt_t_sensor_language_aliases(void)
     return failures;
 }
 
+/* A file-scope static assertion is C11/C23. libclang tags its cursor as C++
+ * by declaration kind alone, so it must not decide the TU language: a C TU
+ * that asserts at file scope, in the source or in a repo header it includes,
+ * under either spelling, is sensed. The same assertion in a C++ TU still
+ * refuses with the language reason and leaves no manifest. */
+static const char k_smt_assert_h[] =
+    "#ifndef ASSERTS_H\n"
+    "#define ASSERTS_H\n"
+    "_Static_assert(sizeof(int) >= 2, \"int width\");\n"
+    "#endif\n";
+
+static bool smt_assert_emit(const char *dir, const char *source,
+                            const char *const *flags, bool accepted)
+{
+    char out[PATH_MAX], message[4096];
+    const char *argv[16] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                            source, "--out", out, "--"};
+    uint8_t *m = NULL, section[32];
+    size_t n = 9, mn = 0;
+    bool timed_out = false, ok;
+    struct stat sb;
+    (void)snprintf(out, sizeof(out), "%s/%s.bin", dir, source);
+    for (size_t k = 0; flags[k] != NULL && n < 15; k++)
+        argv[n++] = flags[k];
+    argv[n] = NULL;
+    int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                               60000, &timed_out);
+    if (accepted)
+        ok = !timed_out && rc == 0 && smt_read(out, &m, &mn) &&
+             vcs_semantic_section_root_v1(m, mn,
+                     VCS_SEMANTIC_SECTION_V1_FUNCTIONS, section);
+    else
+        ok = !timed_out && rc != 0 &&
+             strstr(message, "unsupported translation-unit language") != NULL &&
+             stat(out, &sb) != 0 && errno == ENOENT;
+    if (!ok)
+        printf("  static assert %s %s: rc=%d: %s\n", source, flags[0], rc,
+               message);
+    free(m);
+    return ok;
+}
+
+static int smt_t_sensor_static_assert(void)
+{
+    int failures = 0;
+    char dir[1024] = {0};
+    static const char *const c11[] = {"-std=c11", NULL};
+    static const char *const c23[] = {"-std=c23", NULL};
+    static const char *const cxx[] = {"-x", "c++", "-std=c++17", NULL};
+    TEST_CASE("semantic_sensor: file-scope static_assert is C, not a C++ signal") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_assert") != NULL);
+        ASSERT(smt_write(dir, "asserts.h", k_smt_assert_h));
+        ASSERT(smt_write(dir, "c11.c",
+                         "#include \"asserts.h\"\n"
+                         "_Static_assert(sizeof(long) >= 4, \"long width\");\n"
+                         "int c11_value(void) { return 11; }\n"));
+        ASSERT(smt_write(dir, "c23.c",
+                         "#include \"asserts.h\"\n"
+                         "static_assert(sizeof(long) >= 4, \"long width\");\n"
+                         "static_assert(sizeof(char) == 1);\n"
+                         "_Static_assert(1, \"keyword\");\n"
+                         "int c23_value(void) { return 23; }\n"));
+        ASSERT(smt_write(dir, "cxx.c",
+                         "static_assert(sizeof(long) >= 4, \"long width\");\n"
+                         "int cxx_value() { return 17; }\n"));
+        ASSERT(smt_write(dir, "cxxdecl.c",
+                         "static_assert(sizeof(long) >= 4, \"long width\");\n"
+                         "class Widget {\n"
+                         "public:\n"
+                         "    int value() { return 42; }\n"
+                         "};\n"));
+        ASSERT(smt_assert_emit(dir, "c11.c", c11, true));
+        ASSERT(smt_assert_emit(dir, "c23.c", c23, true));
+        ASSERT(smt_assert_emit(dir, "cxx.c", cxx, false));
+        /* A genuine C++ declaration alongside the same static_assert must
+         * still refuse: the guard is narrow to CXCursor_StaticAssert, not a
+         * blanket pass for the whole translation unit. */
+        ASSERT(smt_assert_emit(dir, "cxxdecl.c", cxx, false));
+    } TEST_END
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
 #if defined(__APPLE__)
 /* Exercise the Apple libclang type-spelling adapter with facts enabled, so
  * these assertions also require a verified, nonzero producer identity. */
@@ -1718,6 +1802,7 @@ int test_semantic_sensor(void)
     failures += smt_t_sensor_language_aliases();
     failures += semantic_sensor_session_cases();
     failures += semantic_sensor_identity_tests();
+    failures += smt_t_sensor_static_assert();
 #if defined(__APPLE__)
     failures += smt_t_darwin_types();
     failures += smt_t_darwin_refusals();

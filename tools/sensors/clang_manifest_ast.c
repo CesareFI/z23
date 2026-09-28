@@ -1058,9 +1058,13 @@ static enum CXChildVisitResult cm_top_visit(CXCursor c, CXCursor parent,
     if (!cm_is_repo(f))
         return CXChildVisit_Continue;
     /* This walk models C declarations. A different language can have
-     * top-level declarations we do not emit, such as C++ templates. */
+     * top-level declarations we do not emit, such as C++ templates.
+     * libclang tags every static_assert cursor as C++, but a file-scope
+     * static_assert is C11/C23 and emits nothing; the argv check already
+     * refused a C++ translation unit. */
     enum CXLanguageKind language = clang_getCursorLanguage(c);
-    if (language != CXLanguage_Invalid && language != CXLanguage_C) {
+    if (clang_getCursorKind(c) != CXCursor_StaticAssert &&
+        language != CXLanguage_Invalid && language != CXLanguage_C) {
         (void)cm_fail(&st->core, "unsupported translation-unit language");
         return CXChildVisit_Break;
     }
