@@ -435,8 +435,42 @@ static bool ssi_sense(const char *root, const char *out, const char *tag,
     return true;
 }
 
-/* Plan variant v with before/after evidence; true when the plan widened
- * (verdict not narrowed) and every TU the report lists is affected. */
+/* Did the plan widen across the compiler change? Either every TU is
+ * affected and broadened for identity drift (the header path: each
+ * contributes its whole file-seeded plan), or the facts fell back or left
+ * the universe incomplete for identity drift (the .c path, where the TUs
+ * that read no changed file drift). */
+static bool ssi_widened(const struct scx_result *r)
+{
+    size_t drift = 0;
+    for (size_t k = 0; k < SCX_TU_COUNT; k++) {
+        const struct zcl_devloop_facts_tu_verdict *t =
+            scx_tu_of(r, k_scx_tus[k]);
+        drift += t != NULL && t->affected && t->broadened &&
+                 strcmp(t->reason, "identity-drift") == 0;
+    }
+    return drift == SCX_TU_COUNT || !r->verdict.narrowed ||
+           (!r->report.complete && r->report.reason != NULL &&
+            strcmp(r->report.reason, "identity-drift") == 0 &&
+            r->report.plain_universal);
+}
+
+static void ssi_print_plan(enum scx_variant v, const struct scx_result *r)
+{
+    printf("  %s across two compilers: narrowed %d reason %s, complete %d "
+           "(%s), universal %d\n", k_scx_edits[v].name,
+           (int)r->verdict.narrowed, r->verdict.reason,
+           (int)r->report.complete,
+           r->report.reason != NULL ? r->report.reason : "",
+           (int)r->report.plain_universal);
+    for (size_t k = 0; k < r->report.ntus; k++)
+        printf("    %s affected %d broadened %d %s\n", r->report.tus[k].path,
+               (int)r->report.tus[k].affected, (int)r->report.tus[k].broadened,
+               r->report.tus[k].reason);
+}
+
+/* Plan variant v with before/after evidence: under one compiler it must
+ * match the edit table; across two it must widen. */
 static bool ssi_plan(enum scx_variant v, uint8_t *const before[],
                      const size_t bn[], uint8_t *const after[],
                      const size_t an[], bool want_wide)
@@ -454,18 +488,12 @@ static bool ssi_plan(enum scx_variant v, uint8_t *const before[],
         ev.after_len[tu] = an[tu];
     }
     ok = ok && scx_consume(root, v, &ev, res);
-    if (ok && !want_wide) {
+    if (ok && !want_wide)
         ok = scx_compare(v, res, &unsafe, stdout) == 0;
-    } else if (ok) {
-        ok = !res->verdict.narrowed && res->report.ntus > 0;
-        for (size_t k = 0; ok && k < res->report.ntus; k++)
-            ok = res->report.tus[k].affected && res->report.tus[k].broadened;
-        if (!ok)
-            printf("  %s across two compilers: narrowed %d reason %s, "
-                   "universe %zu, affected %zu\n", k_scx_edits[v].name,
-                   (int)res->verdict.narrowed, res->verdict.reason,
-                   res->report.ntus, res->report.naffected);
-    }
+    else if (ok)
+        ok = ssi_widened(res);
+    if (res != NULL && (!ok || want_wide))
+        ssi_print_plan(v, res);
     if (res != NULL)
         scx_result_free(res);
     free(res);
