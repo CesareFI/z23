@@ -29,6 +29,10 @@ enum {
     BUILD_FABRIC_TRUST_STATE_MAX = 23,
     BUILD_FABRIC_ATTACH_SCAN_CAP = 256,
     BUILD_FABRIC_PROOF_HEADS_MAX = 256,
+    /* Exact v1 signed wire lengths; proof integration must check them against
+     * the canonical vcs/proof_ticket.h constants at compile time. */
+    BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES = 360,
+    BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES = 224,
 };
 
 struct db_build_job {
@@ -91,12 +95,24 @@ struct db_build_worker {
 };
 
 /* A single SQLite statement snapshots every locally anchored issuer, including
- * revoked workers. Eligibility is decided by the receiver, not this catalog.
+ * revoked workers. Any pending publication refuses as incomplete, including
+ * the first one before a head exists. Eligibility belongs to the receiver.
  * The result is volatile: replay CAS and recheck heads before publication. */
 struct db_build_worker_proof_head {
     char worker_id[BUILD_FABRIC_ID_HEX + 1];
     char signer_pubkey[BUILD_FABRIC_ID_HEX + 1];
     char checkpoint_blob_root[BUILD_FABRIC_ID_HEX + 1];
+};
+
+/* One transient publication intent on the existing worker authority row.
+ * Cleared with the head CAS. These bytes are never proof authority: callers
+ * must validate the signed wires and content.v2 CAS before finalization. */
+struct db_build_worker_proof_pending {
+    char worker_id[BUILD_FABRIC_ID_HEX + 1];
+    char signer_pubkey[BUILD_FABRIC_ID_HEX + 1];
+    char expected_head[BUILD_FABRIC_ID_HEX + 1];
+    uint8_t ticket_wire[BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES];
+    uint8_t checkpoint_wire[BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES];
 };
 
 struct db_build_receipt {
@@ -147,6 +163,18 @@ bool db_build_worker_insert_if_absent(struct node_db *ndb,
 bool db_build_worker_proof_head_cas(struct node_db *ndb,
     const char *worker_id, const char *expected_signer,
     const char *expected_head, const char *next_head);
+/* Stage exact signed wires before either immutable CAS put. Read returns 1
+ * pending, 0 idle, -1 missing/corrupt/SQL failure; output clears on refusal.
+ * Finalize requires the staged bytes, signer, and base head still match.
+ * Caller verifies both CAS blobs and checkpoint ancestry first. */
+bool db_build_worker_proof_pending_stage(
+    struct node_db *ndb, const struct db_build_worker_proof_pending *pending);
+int db_build_worker_proof_pending_find_checked(
+    struct node_db *ndb, const char *worker_id,
+    struct db_build_worker_proof_pending *out);
+bool db_build_worker_proof_pending_finalize(
+    struct node_db *ndb, const struct db_build_worker_proof_pending *pending,
+    const char *next_head);
 bool db_build_receipt_save(struct node_db *ndb,
                            const struct db_build_receipt *row);
 

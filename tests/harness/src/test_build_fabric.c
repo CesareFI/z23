@@ -32,6 +32,7 @@
 #include "vcs/build_release_regressions.h"
 #include "vcs/package_store.h"
 #include "vcs/package_build.h"
+#include "vcs/proof_ticket.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "crypto/sha3.h"
@@ -53,6 +54,11 @@ static const char id_c[] =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 static const char id_d[] =
     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+static_assert(BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES ==
+              VCS_PROOF_TICKET_WIRE_BYTES);
+static_assert(BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES ==
+              VCS_PROOF_CHECKPOINT_WIRE_BYTES);
 
 static bool bf_open(struct node_db *ndb, char *dir, size_t dir_cap,
                     char *path, size_t path_cap, const char *tag)
@@ -424,6 +430,140 @@ static int test_bf_proof_head_snapshot(void)
         ASSERT_EQ(db_build_workers_list(&ndb, legacy, 2), 0);
         ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 2), -1);
         node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_proof_pending_migration(void)
+{
+    int failures = 0;
+    TEST("build_fabric: interrupted v86 pending-column migration resumes") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "proof_pending_migrate"));
+        node_db_close(&ndb);
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(path, &raw) == SQLITE_OK);
+        /* Simulate a crash after the first ALTER, before the second column
+         * and the v86 version stamp. Migration must finish on reopen. */
+        ASSERT(sqlite3_exec(raw,
+            "DROP TRIGGER trg_build_worker_proof_pending_shape;"
+            "DROP TRIGGER trg_build_worker_proof_pending_insert;"
+            "DROP TRIGGER trg_build_worker_proof_pending_immutable;"
+            "DROP TRIGGER trg_build_worker_proof_pending_signer;"
+            "DROP TRIGGER trg_build_worker_proof_pending_delete;"
+            "DROP TRIGGER trg_build_worker_proof_pending_head;"
+            "ALTER TABLE build_workers DROP COLUMN "
+            "proof_pending_checkpoint_wire;"
+            "DELETE FROM schema_migrations WHERE version='086';"
+            "UPDATE node_state SET value=X'55000000' "
+            "WHERE key='schema_version'",
+            NULL, NULL, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_close(raw) == SQLITE_OK);
+        ASSERT(node_db_open(&ndb, path));
+        ASSERT_EQ(node_db_schema_version(&ndb), NODE_DB_SCHEMA_LATEST);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        ASSERT(db_build_worker_save(&ndb, &worker));
+        struct db_build_worker_proof_pending staged = {0}, observed;
+        (void)snprintf(staged.worker_id, sizeof(staged.worker_id), "%s", id_c);
+        (void)snprintf(staged.signer_pubkey, sizeof(staged.signer_pubkey),
+                       "%s", id_d);
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &staged));
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &ndb, id_c, &observed), 1);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_proof_pending(void)
+{
+    int failures = 0;
+    TEST("build_fabric: pending proof survives restart and blocks incomplete heads") {
+        struct node_db first, second;
+        char dir[256], path[320];
+        ASSERT(bf_open(&first, dir, sizeof(dir), path, sizeof(path),
+                       "proof_pending"));
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        ASSERT(db_build_worker_save(&first, &worker));
+        struct db_build_worker_proof_pending staged = {0}, observed;
+        (void)snprintf(staged.worker_id, sizeof(staged.worker_id), "%s", id_c);
+        (void)snprintf(staged.signer_pubkey, sizeof(staged.signer_pubkey),
+                       "%s", id_d);
+        memset(staged.ticket_wire, 0x7a, sizeof(staged.ticket_wire));
+        memset(staged.checkpoint_wire, 0x5c, sizeof(staged.checkpoint_wire));
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &first, id_c, &observed), 0);
+        ASSERT(db_build_worker_proof_pending_stage(&first, &staged));
+        memset(&second, 0, sizeof(second));
+        ASSERT(node_db_open(&second, path));
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &second, id_c, &observed), 1);
+        ASSERT_EQ(memcmp(observed.ticket_wire, staged.ticket_wire,
+                         sizeof(staged.ticket_wire)), 0);
+        ASSERT_EQ(memcmp(observed.checkpoint_wire, staged.checkpoint_wire,
+                         sizeof(staged.checkpoint_wire)), 0);
+        ASSERT(!db_build_worker_proof_pending_stage(&second, &staged));
+        ASSERT(!db_build_worker_proof_head_cas(&second, id_c, id_d, "", id_a));
+        struct db_build_worker_proof_head head[1];
+        memset(head, 0x7f, sizeof(head));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&second, head, 1), -1);
+        ASSERT_EQ(head[0].worker_id[0], '\0');
+        ASSERT(sqlite3_exec(second.db,
+            "UPDATE build_workers SET signer_pubkey='"
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "
+            "WHERE worker_id='"
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+            NULL, NULL, NULL) != SQLITE_OK);
+        ASSERT(sqlite3_exec(second.db,
+            "UPDATE build_workers SET proof_pending_checkpoint_wire=NULL "
+            "WHERE worker_id='"
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+            NULL, NULL, NULL) != SQLITE_OK);
+        ASSERT(sqlite3_exec(second.db,
+            "DELETE FROM build_workers WHERE worker_id='"
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+            NULL, NULL, NULL) != SQLITE_OK);
+        worker.last_seen_at++;
+        ASSERT(db_build_worker_save(&second, &worker));
+        node_db_close(&second);
+        node_db_close(&first);
+        ASSERT(node_db_open(&first, path));
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &first, id_c, &observed), 1);
+        struct db_build_worker_proof_pending wrong = observed;
+        wrong.ticket_wire[0] ^= 1u;
+        ASSERT(!db_build_worker_proof_pending_finalize(&first, &wrong, id_a));
+        ASSERT(db_build_worker_proof_pending_finalize(&first, &observed,
+                                                       id_a));
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &first, id_c, &observed), 0);
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&first, head, 1), 1);
+        ASSERT_STR_EQ(head[0].checkpoint_blob_root, id_a);
+        ASSERT(!db_build_worker_proof_pending_finalize(&first, &staged,
+                                                        id_b));
+        (void)snprintf(staged.expected_head, sizeof(staged.expected_head),
+                       "%s", id_a);
+        staged.ticket_wire[0] ^= 1u;
+        ASSERT(db_build_worker_proof_pending_stage(&first, &staged));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&first, head, 1), -1);
+        node_db_close(&first);
+        ASSERT(node_db_open(&first, path));
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &first, id_c, &observed), 1);
+        ASSERT_STR_EQ(observed.expected_head, id_a);
+        ASSERT(db_build_worker_proof_pending_finalize(&first, &observed,
+                                                       id_b));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&first, head, 1), 1);
+        ASSERT_STR_EQ(head[0].checkpoint_blob_root, id_b);
+        node_db_close(&first);
         test_rm_rf(dir);
         PASS();
     } _test_next:;
@@ -4211,6 +4351,8 @@ int test_build_fabric(void)
     failures += test_bf_lifecycle();
     failures += test_bf_proof_head_cas();
     failures += test_bf_proof_head_snapshot();
+    failures += test_bf_proof_pending_migration();
+    failures += test_bf_proof_pending();
     failures += test_bf_async_proof_events();
     failures += test_bf_async_timing_samples();
     failures += test_bf_async_timing_capacity();

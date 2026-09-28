@@ -518,11 +518,89 @@ static int db_migrate_step_81(struct node_db *ndb, int *current_ver,
     return 0;
 }
 
-static int db_migrate_finish_85(struct node_db *ndb, int *current_ver,
+/* v86 keeps only the exact signed bytes of one unfinished issuer publication.
+ * CAS remains the immutable proof history; these two fields are cleared in
+ * the same statement that advances the existing checkpoint head. */
+static int db_migrate_step_86(struct node_db *ndb, int *current_ver,
+                              int *floor_ver, int *applied)
+{
+    if (*current_ver >= 86) return 0;
+    const char *type = NULL;
+    if (sqlite3_table_column_metadata(ndb->db, NULL, "build_workers",
+            "proof_pending_ticket_wire", &type, NULL, NULL, NULL, NULL) !=
+        SQLITE_OK && !node_db_exec(ndb,
+            "ALTER TABLE build_workers ADD COLUMN proof_pending_ticket_wire BLOB"))
+        LOG_RETURN(-1, "db", "migrate v86: pending ticket column failed");
+    if (sqlite3_table_column_metadata(ndb->db, NULL, "build_workers",
+            "proof_pending_checkpoint_wire", &type, NULL, NULL, NULL, NULL) !=
+        SQLITE_OK && !node_db_exec(ndb,
+            "ALTER TABLE build_workers ADD COLUMN proof_pending_checkpoint_wire BLOB"))
+        LOG_RETURN(-1, "db", "migrate v86: pending checkpoint column failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_pending_shape "
+            "BEFORE UPDATE OF proof_pending_ticket_wire,"
+            "proof_pending_checkpoint_wire ON build_workers "
+            "WHEN (NEW.proof_pending_ticket_wire IS NULL)<>"
+            "(NEW.proof_pending_checkpoint_wire IS NULL) OR "
+            "(NEW.proof_pending_ticket_wire IS NOT NULL AND "
+            "(length(NEW.proof_pending_ticket_wire)<>360 OR "
+            "length(NEW.proof_pending_checkpoint_wire)<>224)) "
+            "BEGIN SELECT RAISE(ABORT,'proof pending wire shape'); END"))
+        LOG_RETURN(-1, "db", "migrate v86: pending shape guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_pending_insert "
+            "BEFORE INSERT ON build_workers "
+            "WHEN NEW.proof_pending_ticket_wire IS NOT NULL OR "
+            "NEW.proof_pending_checkpoint_wire IS NOT NULL "
+            "BEGIN SELECT RAISE(ABORT,'proof pending requires staging'); END"))
+        LOG_RETURN(-1, "db", "migrate v86: pending insert guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_pending_immutable "
+            "BEFORE UPDATE OF proof_pending_ticket_wire,"
+            "proof_pending_checkpoint_wire ON build_workers "
+            "WHEN OLD.proof_pending_ticket_wire IS NOT NULL AND NOT "
+            "(NEW.proof_pending_ticket_wire IS NULL AND "
+            "NEW.proof_pending_checkpoint_wire IS NULL AND "
+            "NEW.proof_checkpoint_head_sha3<>OLD.proof_checkpoint_head_sha3) "
+            "BEGIN SELECT RAISE(ABORT,'proof pending replaced'); END"))
+        LOG_RETURN(-1, "db", "migrate v86: pending immutable guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_pending_signer "
+            "BEFORE UPDATE OF signer_pubkey ON build_workers "
+            "WHEN OLD.proof_pending_ticket_wire IS NOT NULL AND "
+            "NEW.signer_pubkey<>OLD.signer_pubkey "
+            "BEGIN SELECT RAISE(ABORT,'proof pending signer changed'); END"))
+        LOG_RETURN(-1, "db", "migrate v86: pending signer guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_pending_delete "
+            "BEFORE DELETE ON build_workers "
+            "WHEN OLD.proof_pending_ticket_wire IS NOT NULL "
+            "BEGIN SELECT RAISE(ABORT,'proof pending deleted'); END"))
+        LOG_RETURN(-1, "db", "migrate v86: pending delete guard failed");
+    if (!node_db_exec(ndb,
+            "CREATE TRIGGER IF NOT EXISTS trg_build_worker_proof_pending_head "
+            "BEFORE UPDATE OF proof_checkpoint_head_sha3 ON build_workers "
+            "WHEN OLD.proof_pending_ticket_wire IS NOT NULL AND "
+            "(NEW.proof_pending_ticket_wire IS NOT NULL OR "
+            "NEW.proof_pending_checkpoint_wire IS NOT NULL) "
+            "BEGIN SELECT RAISE(ABORT,'proof pending head changed'); END"))
+        LOG_RETURN(-1, "db", "migrate v86: pending head guard failed");
+    if (!node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('086')"))
+        LOG_RETURN(-1, "db", "migrate v86: migration stamp failed");
+    DB_MIGRATE_PERSIST_VERSION_FLOOR(ndb, 86, *floor_ver);
+    *current_ver = 86;
+    (*applied)++;
+    return 0;
+}
+
+static int db_migrate_finish_86(struct node_db *ndb, int *current_ver,
                                 int *floor_ver, int *applied,
                                 int *version_out, int *floor_out)
 {
     if (db_migrate_step_85(ndb, current_ver, floor_ver, applied) < 0)
+        return DB_MIGRATE_SCHEMA_FAILED_PROPAGATE;
+    if (db_migrate_step_86(ndb, current_ver, floor_ver, applied) < 0)
         return DB_MIGRATE_SCHEMA_FAILED_PROPAGATE;
     *version_out = *current_ver;
     *floor_out = *floor_ver;
@@ -931,6 +1009,6 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version,
     (void)db_migrate_step_82(ndb, &current_ver, &applied, floor_ver);
     (void)db_migrate_step_83(ndb, &current_ver, &floor_ver, &applied);
     (void)db_migrate_step_84(ndb, &current_ver, &floor_ver, &applied);
-    return db_migrate_finish_85(ndb, &current_ver, &floor_ver, &applied,
+    return db_migrate_finish_86(ndb, &current_ver, &floor_ver, &applied,
                                 version, floor);
 }

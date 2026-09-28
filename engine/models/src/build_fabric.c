@@ -462,7 +462,9 @@ bool db_build_worker_proof_head_cas(struct node_db *ndb,
     AR_PREPARE_BOOL(ndb, st,
         "UPDATE build_workers SET proof_checkpoint_head_sha3=? "
         "WHERE worker_id=? AND signer_pubkey=? AND "
-        "proof_checkpoint_head_sha3=? RETURNING worker_id");
+        "proof_checkpoint_head_sha3=? AND "
+        "proof_pending_ticket_wire IS NULL AND "
+        "proof_pending_checkpoint_wire IS NULL RETURNING worker_id");
     AR_BIND_TEXT(st, 1, next_head);
     AR_BIND_TEXT(st, 2, worker_id);
     AR_BIND_TEXT(st, 3, expected_signer);
@@ -472,6 +474,166 @@ bool db_build_worker_proof_head_cas(struct node_db *ndb,
     int final_rc = sqlite3_finalize(st);
     bool ok = matched && complete && final_rc == SQLITE_OK;
     if (!ok) LOG_FAIL("model", "proof head CAS: conditional update refused");
+    AR_FINISH_SAVE(build_worker_callbacks_ready(), &row, ok);
+}
+
+static bool build_proof_pending_valid(
+    const struct db_build_worker_proof_pending *pending)
+{
+    return pending && build_hex_id(pending->worker_id) &&
+           build_hex_id(pending->signer_pubkey) &&
+           (!pending->expected_head[0] ||
+            build_hex_id(pending->expected_head));
+}
+
+bool db_build_worker_proof_pending_stage(
+    struct node_db *ndb, const struct db_build_worker_proof_pending *pending)
+{
+    if (!ndb || !ndb->open || !build_proof_pending_valid(pending))
+        LOG_FAIL("model", "proof pending stage: invalid input");
+    struct db_build_worker row;
+    if (db_build_worker_find_checked(ndb, pending->worker_id, &row) != 1 ||
+        strcmp(row.signer_pubkey, pending->signer_pubkey) != 0 ||
+        strcmp(row.proof_checkpoint_head_sha3, pending->expected_head) != 0)
+        LOG_FAIL("model", "proof pending stage: signer or head changed");
+    sqlite3_stmt *st = NULL;
+    AR_BEGIN_SAVE(build_worker_callbacks_ready(), "build_worker", &row,
+                  db_build_worker_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "UPDATE build_workers SET proof_pending_ticket_wire=?,"
+        "proof_pending_checkpoint_wire=? WHERE worker_id=? AND "
+        "signer_pubkey=? AND proof_checkpoint_head_sha3=? AND "
+        "proof_pending_ticket_wire IS NULL AND "
+        "proof_pending_checkpoint_wire IS NULL RETURNING worker_id");
+    AR_BIND_BLOB(st, 1, pending->ticket_wire,
+                 BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES);
+    AR_BIND_BLOB(st, 2, pending->checkpoint_wire,
+                 BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES);
+    AR_BIND_TEXT(st, 3, pending->worker_id);
+    AR_BIND_TEXT(st, 4, pending->signer_pubkey);
+    AR_BIND_TEXT(st, 5, pending->expected_head);
+    bool matched = AR_STEP_ROW(st);
+    bool complete = matched && AR_STEP_DONE(st);
+    int final_rc = sqlite3_finalize(st);
+    bool ok = matched && complete && final_rc == SQLITE_OK;
+    if (!ok) LOG_FAIL("model", "proof pending stage: conditional update refused");
+    AR_FINISH_SAVE(build_worker_callbacks_ready(), &row, ok);
+}
+
+static bool build_proof_pending_row_read(
+    sqlite3_stmt *st, struct db_build_worker_proof_pending *out)
+{
+    const unsigned char *signer = sqlite3_column_text(st, 0);
+    const unsigned char *head = sqlite3_column_text(st, 1);
+    if (sqlite3_column_type(st, 0) != SQLITE_TEXT ||
+        sqlite3_column_bytes(st, 0) != BUILD_FABRIC_ID_HEX ||
+        !build_hex_id((const char *)signer) ||
+        sqlite3_column_type(st, 1) != SQLITE_TEXT || !head ||
+        (sqlite3_column_bytes(st, 1) != 0 &&
+         (sqlite3_column_bytes(st, 1) != BUILD_FABRIC_ID_HEX ||
+          !build_hex_id((const char *)head))))
+        return false;
+    (void)snprintf(out->signer_pubkey, sizeof(out->signer_pubkey),
+                   "%s", (const char *)signer);
+    (void)snprintf(out->expected_head, sizeof(out->expected_head),
+                   "%s", (const char *)head);
+    return true;
+}
+
+static int build_proof_pending_status(
+    sqlite3_stmt *st, const char *worker_id,
+    struct db_build_worker_proof_pending *out)
+{
+    if (AR_STEP_ROW_READONLY(st) != SQLITE_ROW ||
+        !build_proof_pending_row_read(st, out))
+        return -1;
+    int ticket_type = sqlite3_column_type(st, 2);
+    int checkpoint_type = sqlite3_column_type(st, 3);
+    if (ticket_type == SQLITE_NULL && checkpoint_type == SQLITE_NULL)
+        return 0;
+    if (ticket_type != SQLITE_BLOB || checkpoint_type != SQLITE_BLOB ||
+        sqlite3_column_bytes(st, 2) !=
+            BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES ||
+        sqlite3_column_bytes(st, 3) !=
+            BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES)
+        return -1;
+    if (!sqlite3_column_blob(st, 2) || !sqlite3_column_blob(st, 3))
+        return -1;
+    AR_READ_BLOB(st, 2, out->ticket_wire, sizeof(out->ticket_wire));
+    AR_READ_BLOB(st, 3, out->checkpoint_wire,
+                 sizeof(out->checkpoint_wire));
+    (void)snprintf(out->worker_id, sizeof(out->worker_id), "%s",
+                   worker_id);
+    return 1;
+}
+
+int db_build_worker_proof_pending_find_checked(
+    struct node_db *ndb, const char *worker_id,
+    struct db_build_worker_proof_pending *out)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    if (!ndb || !ndb->open || !build_hex_id(worker_id) || !out) {
+        LOG_ERROR("model", "proof pending read: invalid input");
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(ndb->db,
+        "SELECT signer_pubkey,proof_checkpoint_head_sha3,"
+        "proof_pending_ticket_wire,proof_pending_checkpoint_wire "
+        "FROM build_workers WHERE worker_id=?", -1, &st, NULL);
+    if (rc != SQLITE_OK || sqlite3_bind_text(st, 1, worker_id, -1,
+                                             SQLITE_TRANSIENT) != SQLITE_OK) {
+        LOG_ERROR("model", "proof pending read: query failed: %s",
+                  sqlite3_errmsg(ndb->db));
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int status = build_proof_pending_status(st, worker_id, out);
+    int final_rc = sqlite3_finalize(st);
+    if (final_rc != SQLITE_OK) status = -1;
+    if (status != 1) memset(out, 0, sizeof(*out));
+    if (status < 0)
+        LOG_ERROR("model", "proof pending read: missing or corrupt row");
+    return status;
+}
+
+bool db_build_worker_proof_pending_finalize(
+    struct node_db *ndb, const struct db_build_worker_proof_pending *pending,
+    const char *next_head)
+{
+    if (!ndb || !ndb->open || !build_proof_pending_valid(pending) ||
+        !build_hex_id(next_head) ||
+        strcmp(pending->expected_head, next_head) == 0)
+        LOG_FAIL("model", "proof pending finalize: invalid input");
+    struct db_build_worker row;
+    if (db_build_worker_find_checked(ndb, pending->worker_id, &row) != 1 ||
+        strcmp(row.signer_pubkey, pending->signer_pubkey) != 0 ||
+        strcmp(row.proof_checkpoint_head_sha3, pending->expected_head) != 0)
+        LOG_FAIL("model", "proof pending finalize: signer or head changed");
+    (void)snprintf(row.proof_checkpoint_head_sha3,
+                   sizeof(row.proof_checkpoint_head_sha3), "%s", next_head);
+    sqlite3_stmt *st = NULL;
+    AR_BEGIN_SAVE(build_worker_callbacks_ready(), "build_worker", &row,
+                  db_build_worker_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "UPDATE build_workers SET proof_checkpoint_head_sha3=?,"
+        "proof_pending_ticket_wire=NULL,proof_pending_checkpoint_wire=NULL "
+        "WHERE worker_id=? AND signer_pubkey=? AND "
+        "proof_checkpoint_head_sha3=? AND proof_pending_ticket_wire=? AND "
+        "proof_pending_checkpoint_wire=? RETURNING worker_id");
+    AR_BIND_TEXT(st, 1, next_head);
+    AR_BIND_TEXT(st, 2, pending->worker_id);
+    AR_BIND_TEXT(st, 3, pending->signer_pubkey);
+    AR_BIND_TEXT(st, 4, pending->expected_head);
+    AR_BIND_BLOB(st, 5, pending->ticket_wire,
+                 BUILD_FABRIC_PROOF_TICKET_WIRE_BYTES);
+    AR_BIND_BLOB(st, 6, pending->checkpoint_wire,
+                 BUILD_FABRIC_PROOF_CHECKPOINT_WIRE_BYTES);
+    bool matched = AR_STEP_ROW(st);
+    bool complete = matched && AR_STEP_DONE(st);
+    int final_rc = sqlite3_finalize(st);
+    bool ok = matched && complete && final_rc == SQLITE_OK;
+    if (!ok) LOG_FAIL("model", "proof pending finalize: conditional update refused");
     AR_FINISH_SAVE(build_worker_callbacks_ready(), &row, ok);
 }
 
@@ -906,7 +1068,9 @@ static bool build_proof_head_read_text(sqlite3_stmt *st, int column,
 static bool build_proof_head_read(sqlite3_stmt *st,
                                   struct db_build_worker_proof_head *out)
 {
-    return build_proof_head_read_text(st, 0, out->worker_id) &&
+    return sqlite3_column_type(st, 3) == SQLITE_NULL &&
+           sqlite3_column_type(st, 4) == SQLITE_NULL &&
+           build_proof_head_read_text(st, 0, out->worker_id) &&
            build_proof_head_read_text(st, 1, out->signer_pubkey) &&
            build_proof_head_read_text(st, 2, out->checkpoint_blob_root);
 }
@@ -954,9 +1118,13 @@ int db_build_worker_proof_heads_snapshot(
     }
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(ndb->db,
-        "SELECT worker_id,signer_pubkey,proof_checkpoint_head_sha3 "
+        "SELECT worker_id,signer_pubkey,proof_checkpoint_head_sha3,"
+        "proof_pending_ticket_wire,proof_pending_checkpoint_wire "
         "FROM build_workers WHERE proof_checkpoint_head_sha3<>'' OR "
-        "proof_checkpoint_head_sha3 IS NULL ORDER BY worker_id LIMIT ?",
+        "proof_checkpoint_head_sha3 IS NULL OR "
+        "proof_pending_ticket_wire IS NOT NULL OR "
+        "proof_pending_checkpoint_wire IS NOT NULL "
+        "ORDER BY worker_id LIMIT ?",
         -1, &st, NULL);
     if (rc == SQLITE_OK && !st) rc = SQLITE_ERROR;
     if (rc == SQLITE_OK)
