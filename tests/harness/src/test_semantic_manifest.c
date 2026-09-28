@@ -1910,6 +1910,8 @@ static int smt_t_darwin_injected_image(void)
 
 /* semantic_sensor_identity.c: the facts rule's argv and the object compiler. */
 int semantic_sensor_identity_tests(void);
+/* semantic_sensor_probe.c: probes the conditional-lookup scan must see. */
+int semantic_sensor_probe_tests(void);
 
 int test_semantic_sensor(void)
 {
@@ -1927,6 +1929,7 @@ int test_semantic_sensor(void)
     failures += smt_t_sensor_language_aliases();
     failures += semantic_sensor_session_cases();
     failures += semantic_sensor_identity_tests();
+    failures += semantic_sensor_probe_tests();
     failures += smt_t_sensor_static_assert();
     failures += smt_t_sensor_static_assert_facts();
 #if defined(__APPLE__)

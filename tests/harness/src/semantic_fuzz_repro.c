@@ -905,10 +905,9 @@ static const struct sfz_file k_link_target_edit[] = {
  * change creates or deletes any path, or changes any path for an embed
  * (fxc_unbound_path, tools/dev/devloop_facts_tu.c); a macro operand and
  * __has_include_next the sensor can resolve are replayed like a literal
- * __has_include (revision 4); and the fuzz producer attests it sensed
- * every before reader, so a deleted path's readers come from the before
- * manifests instead of the depfile graph, which refuses a path the tree no
- * longer holds (fxc_change_readers, tools/dev/devloop_facts_consumer.c).
+ * __has_include (revision 4). A deleted path's plan still falls back on
+ * the include graph, which refuses a path the tree no longer holds; the
+ * facts universe, which the case judges, holds t0 by these rules alone.
  * Creating the __has_embed file passes too (pass_has_embed_created), and a
  * data/ path is a build input (pass_has_embed_build_input). */
 
@@ -932,6 +931,66 @@ static const struct sfz_file k_embed_created[] = {
     {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
     {"docs/blob.txt", NULL, "Z23\n"},
     SFZ_EMBED_T0("docs/blob.txt"),
+    SFZ_T1_ALONE,
+};
+
+/* Probes the text scan once missed (all but the last), each of inc1/opt.h,
+ * which the edit creates; gcc writes the depfiles, which omit a probe.
+ * t0's value flips. */
+#define SFZ_OPT_TAIL                                                         \
+    "#define T0_V 1\n"                                                       \
+    "#else\n"                                                                \
+    "#define T0_V 0\n"                                                       \
+    "#endif\n"                                                               \
+    "int t0_opt(int x)\n"                                                    \
+    "{\n"                                                                    \
+    "    return x + T0_V;\n"                                                 \
+    "}\n"
+#define SFZ_OPT_CREATED {"inc1/opt.h", NULL, "/* site */\n"}
+
+/* the probe is a -D value's macro, which no file holds */
+static const struct sfz_file k_probe_dash_d[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = -DHAS(x)=__has_include(x)\n", SFZ_SAME},
+    SFZ_OPT_CREATED,
+    {"src/t0.c", "#if HAS(<opt.h>)\n" SFZ_OPT_TAIL, SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* before C23 the apostrophe opens a character literal holding a comment
+ * opener */
+static const struct sfz_file k_probe_c17_apostrophe[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = -std=c17\n", SFZ_SAME},
+    SFZ_OPT_CREATED,
+    {"src/t0.c",
+     "#if 0\n"
+     "int t0_k = 1'a/*';\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SFZ_OPT_TAIL "/* end */\n",
+     SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* in an ISO C mode before C23 a trigraph splices the word's two lines */
+static const struct sfz_file k_probe_trigraph[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = -std=c17\n", SFZ_SAME},
+    SFZ_OPT_CREATED,
+    {"src/t0.c", "#if __has_in?\?/\nclude(<opt.h>)\n" SFZ_OPT_TAIL,
+     SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* a comment sits between the word and a header name holding a comment
+ * opener: that probe is unbound, and the scan must not lex the opener as a
+ * comment that hides the probe after it (semantic_sensor_probe.c checks
+ * the record; the unbound first probe widens t0 either way) */
+static const struct sfz_file k_probe_comment_hdr[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    SFZ_OPT_CREATED,
+    {"src/t0.c",
+     "#if __has_include(/**/<x/*y.h>)\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SFZ_OPT_TAIL "/* end */\n",
+     SFZ_SAME},
     SFZ_T1_ALONE,
 };
 
@@ -1426,6 +1485,23 @@ const struct sfz_repro k_sfz_repros[] = {
      "__has_include(<opt.h>) finds, is created with another OPT_V; gcc "
      "writes the depfiles",
      true, NULL, SFZ_FILES(k_has_include_shadow), NULL, true, 0},
+    {"pass_probe_dash_d_gcc_deps", "hasinc",
+     "inc1/opt.h, which t0 probes through a -D value's macro, is created; "
+     "gcc writes the depfiles. t1 compiles with the same -D, so it is "
+     "affected too (pinned over-selection 1)",
+     true, NULL, SFZ_FILES(k_probe_dash_d), NULL, true, 1},
+    {"pass_probe_c17_apostrophe_gcc_deps", "hasinc",
+     "inc1/opt.h, which t0 probes after a -std=c17 character literal "
+     "holding a comment opener, is created; gcc writes the depfiles",
+     true, NULL, SFZ_FILES(k_probe_c17_apostrophe), NULL, true, 0},
+    {"pass_probe_trigraph_gcc_deps", "hasinc",
+     "inc1/opt.h, which t0 probes with a word a -std=c17 trigraph splices, "
+     "is created; gcc writes the depfiles",
+     true, NULL, SFZ_FILES(k_probe_trigraph), NULL, true, 0},
+    {"pass_probe_comment_hdr_gcc_deps", "hasinc",
+     "inc1/opt.h, which t0 probes after a probe whose comment-led header "
+     "name holds a comment opener, is created; gcc writes the depfiles",
+     true, NULL, SFZ_FILES(k_probe_comment_hdr), NULL, true, 0},
     {"pass_link_retarget", "symlink_retarget",
      "inc1/h.h, a link t0 includes, names hdr/b.h instead of hdr/a.h", false,
      NULL, SFZ_FILES(k_link_retarget), NULL},

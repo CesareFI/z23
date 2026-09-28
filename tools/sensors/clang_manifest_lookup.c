@@ -199,15 +199,17 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * the slot after each one its file was entered through (cm_entry_add); the
  * slots before that start are recorded present, with no claim. Every other
  * spelling - another macro operand, __has_embed, the GNU __has_include__
- * words, #embed, an include_next start no slot names, or an occurrence a
- * line continuation runs through - is recorded with no negative claim
+ * words, #embed, an include_next start no slot names, an occurrence a
+ * line continuation or trigraph runs through, an operand holding a
+ * comment opener, a probe word in any file's #define body (a system
+ * header's too) or in a -D value - is recorded with no negative claim
  * (MISS_V1_NONE), as include_next is: a warm session then recreates the TU,
  * and the facts consumer treats it as reachable by every created or deleted
- * path (and #embed or __has_embed by every changed path). The scan lexes
- * the spliced text as translation phase 3 does (cm_code_mask): a word in a
- * comment or a character or string literal is no lookup, but one in a
- * skipped group counts too, which costs warm reuse and precision, never
- * truth.
+ * path (and #embed or __has_embed by every changed path). The scan reads
+ * the text as translation phases 1 to 3 do under the TU's -std
+ * (cm_lang_of, cm_splice, cm_code_mask): a word in a comment or a
+ * character or string literal is no lookup, but one in a skipped group
+ * counts too, which costs warm reuse and precision, never truth.
  * Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
 
 /* The longest spelled name an unbound record keeps. */
@@ -226,9 +228,12 @@ static size_t cm_skip_space(const char *s, size_t i, size_t n)
     return i;
 }
 
-/* A file's text as translation phase 2 leaves it: every backslash-newline
- * (clang also takes spaces between the two) removed. splices holds, strictly
- * increasing, each offset of the spliced text that one was removed before. */
+/* A file's text as translation phases 1 and 2 leave it: each trigraph
+ * replaced (when the TU's mode has them) and every backslash-newline (clang
+ * also takes spaces between the two) removed. splices holds, strictly
+ * increasing, each offset of the spliced text that one was removed before,
+ * or that holds a trigraph's replacement: an offset the front end reports
+ * past one no longer names the same byte here. */
 struct cm_spliced {
     const char *s;
     size_t n;
@@ -248,29 +253,61 @@ static size_t cm_continuation_end(const char *s, size_t i, size_t n)
     return 0;
 }
 
-static bool cm_splice(const char *s, size_t n, struct cm_spliced *t)
+/* The character the trigraph at s[i] stands for, else 0. */
+static char cm_trigraph(const char *s, size_t i, size_t n)
+{
+    static const char from[] = "=/'()!<>-", to[] = "#\\^[]|{}~";
+    const char *p;
+    if (n - i < 3 || s[i] != '?' || s[i + 1] != '?' || s[i + 2] == '\0')
+        return 0;
+    p = strchr(from, s[i + 2]);
+    return p == NULL ? 0 : to[p - from];
+}
+
+static bool cm_any_trigraph(const char *s, size_t n)
+{
+    for (size_t i = 0; i + 2 < n; i++)
+        if (cm_trigraph(s, i, n) != 0)
+            return true;
+    return false;
+}
+
+static bool cm_splice_mark(struct cm_spliced *t, size_t w)
+{
+    if (!cm_grow((void **)&t->splices, &t->cap, t->nsplices,
+                 sizeof(*t->splices)))
+        return false;
+    if (t->nsplices == 0 || t->splices[t->nsplices - 1] != w)
+        t->splices[t->nsplices++] = w;
+    return true;
+}
+
+static bool cm_splice(const char *s, size_t n, bool trigraphs,
+                      struct cm_spliced *t)
 {
     size_t w = 0;
     memset(t, 0, sizeof(*t));
     t->s = s;
     t->n = n;
-    if (memchr(s, '\\', n) == NULL)
+    trigraphs = trigraphs && cm_any_trigraph(s, n);
+    if (!trigraphs && memchr(s, '\\', n) == NULL)
         return true;
     t->owned = zcl_malloc(n + 1, "clang_manifest.spliced");
     if (t->owned == NULL)
         return false;
     for (size_t i = 0; i < n;) {
-        size_t end = s[i] == '\\' ? cm_continuation_end(s, i, n) : 0;
-        if (end == 0) {
-            t->owned[w++] = s[i++];
+        char tri = trigraphs ? cm_trigraph(s, i, n) : 0;
+        char ch = tri != 0 ? tri : s[i];
+        size_t width = tri != 0 ? 3 : 1;
+        size_t end = ch == '\\' ? cm_continuation_end(s, i + width - 1, n) : 0;
+        if ((end != 0 || tri != 0) && !cm_splice_mark(t, w))
+            return false;
+        if (end != 0) {
+            i = end;
             continue;
         }
-        if (!cm_grow((void **)&t->splices, &t->cap, t->nsplices,
-                     sizeof(*t->splices)))
-            return false;
-        if (t->nsplices == 0 || t->splices[t->nsplices - 1] != w)
-            t->splices[t->nsplices++] = w;
-        i = end;
+        t->owned[w++] = ch;
+        i += width;
     }
     t->owned[w] = '\0';
     t->s = t->owned;
@@ -384,7 +421,8 @@ static size_t cm_embed_at(const char *s, size_t i, size_t n)
 }
 
 /* A __has_include(...) with a literal operand, closed on its own spelling:
- * form and name; *end is just past the ')'. */
+ * form and name; *end is just past the ')'. An operand holding a comment
+ * opener is none: which name the front end reads there is left unbound. */
 static bool cm_literal_at(const char *s, size_t i, size_t n, uint8_t *form,
                           char name[PATH_MAX], size_t *end)
 {
@@ -392,7 +430,8 @@ static bool cm_literal_at(const char *s, size_t i, size_t n, uint8_t *form,
     if (j >= n || s[j] != '(')
         return false;
     if (!cm_include_operand(s, cm_skip_space(s, j + 1, n), n, form, name,
-                            &close))
+                            &close) ||
+        strstr(name, "/*") != NULL || strstr(name, "//") != NULL)
         return false;
     j = cm_skip_space(s, close + 1, n);
     if (j >= n || s[j] != ')')
@@ -684,21 +723,11 @@ static bool cm_blank(char ch)
 }
 
 /* The end of the header name the '<' at s[i] opens: just past its '>'; 0
- * when no such word precedes it, or a '"' or the line's end comes before
- * the '>' (then it is a punctuator and lexing goes on after it). */
-static size_t cm_hdr_end(const char *s, size_t i, size_t n)
+ * when a '"' or the line's end comes before the '>' (then it is a
+ * punctuator and lexing goes on after it). */
+static size_t cm_hdr_close(const char *s, size_t i, size_t n)
 {
-    size_t j = i, w;
-    while (j > 0 && cm_blank(s[j - 1]))
-        j--;
-    if (j > 0 && s[j - 1] == '(')
-        for (j--; j > 0 && cm_blank(s[j - 1]);)
-            j--;
-    for (w = j; w > 0 && cm_ident_char(s[w - 1]); w--)
-        ;
-    if (w == j || !cm_hdr_word(s, w, j))
-        return 0;
-    for (j = i + 1; j < n && s[j] != '\n' && s[j] != '"'; j++)
+    for (size_t j = i + 1; j < n && s[j] != '\n' && s[j] != '"'; j++)
         if (s[j] == '>')
             return j + 1;
     return 0;
@@ -734,17 +763,28 @@ static bool cm_digit(char ch)
     return ch >= '0' && ch <= '9';
 }
 
+/* The phase-3 lexer over one file's spliced text. */
+struct cm_lexer {
+    const char *s;
+    size_t n;
+    bool separators; /* C23 on: a pp-number takes digit separators */
+    int hdr;         /* 1 after a header-name word, 2 after its '(' too */
+};
+
 /* The end of the pp-number at s[i]: digits, letters, '_', '.', an exponent
- * sign, and a C23 digit separator followed by a digit or nondigit. */
-static size_t cm_ppnum_end(const char *s, size_t i, size_t n)
+ * sign, and (C23 on) a digit separator followed by a digit or nondigit.
+ * Before C23 a '\'' there opens a character literal. */
+static size_t cm_ppnum_end(const struct cm_lexer *L, size_t i)
 {
-    size_t j = i + 1;
+    const char *s = L->s;
+    size_t j = i + 1, n = L->n;
     while (j < n) {
         char c = s[j], p = s[j - 1];
         if ((c == '+' || c == '-') &&
             (p == 'e' || p == 'E' || p == 'p' || p == 'P'))
             j++;
-        else if (c == '\'' && j + 1 < n && cm_ident_char(s[j + 1]))
+        else if (c == '\'' && L->separators && j + 1 < n &&
+                 cm_ident_char(s[j + 1]))
             j += 2;
         else if (cm_ident_char(c) || c == '.')
             j++;
@@ -757,11 +797,12 @@ static size_t cm_ppnum_end(const char *s, size_t i, size_t n)
 /* The end of the token or gap at s[i], as translation phase 3 lexes the
  * spliced text; *code false for a comment or a literal. An identifier ends
  * at its last identifier byte, so an encoding prefix's literal (u8"x") is
- * the next token. */
-static size_t cm_lex_one(const char *s, size_t i, size_t n, bool *code)
+ * the next token. A '<' is a header name's only where one may start. */
+static size_t cm_lex_one(const struct cm_lexer *L, size_t i, bool *code)
 {
+    const char *s = L->s;
+    size_t n = L->n, j;
     char ch = s[i], nx = i + 1 < n ? s[i + 1] : '\0';
-    size_t j;
     *code = true;
     if (ch == '/' && (nx == '/' || nx == '*')) {
         *code = false;
@@ -772,60 +813,220 @@ static size_t cm_lex_one(const char *s, size_t i, size_t n, bool *code)
         return cm_literal_end(s, i, n);
     }
     if (cm_digit(ch) || (ch == '.' && cm_digit(nx)))
-        return cm_ppnum_end(s, i, n);
+        return cm_ppnum_end(L, i);
     if (cm_ident_char(ch)) {
         for (j = i + 1; j < n && cm_ident_char(s[j]); j++)
             ;
         return j;
     }
-    if (ch == '<' && (j = cm_hdr_end(s, i, n)) != 0)
+    if (ch == '<' && L->hdr != 0 && (j = cm_hdr_close(s, i, n)) != 0)
         return j;
     return i + 1;
 }
 
-/* code[i]: s[i] lies outside every comment and character or string
- * literal. A conditional-lookup word or directive can only start there; a
- * word in a comment or a literal is none (a header name's text is code, and
- * never opens a comment). The lexer is phase 3's over the spliced text,
- * with a header name recognized after an include-like directive word or a
- * conditional-lookup word. */
-static uint8_t *cm_code_mask(const struct cm_spliced *t)
+/* Where a header name may start after the token [i, end): past a
+ * header-name word and its '(', across blanks and comments (each only
+ * whitespace to phase 4), and nowhere else. */
+static int cm_hdr_after(const struct cm_lexer *L, size_t i, size_t end,
+                        bool code)
 {
+    const char *s = L->s;
+    if (!code)
+        return s[i] == '/' ? L->hdr : 0;
+    if (end - i == 1 && cm_blank(s[i]))
+        return L->hdr;
+    if (cm_ident_char(s[i]) && !cm_digit(s[i]))
+        return cm_hdr_word(s, i, end) ? 1 : 0;
+    return L->hdr == 1 && end - i == 1 && s[i] == '(' ? 2 : 0;
+}
+
+/* An #define (or %:define) directive's '#' at s[i]. */
+static bool cm_define_at(const char *s, size_t i, size_t n)
+{
+    size_t j;
+    if (s[i] == '#')
+        j = i + 1;
+    else if (s[i] == '%' && n - i >= 2 && s[i + 1] == ':')
+        j = i + 2;
+    else
+        return false;
+    j = cm_skip_directive_space(s, j, n);
+    return n - j >= 6 && memcmp(s + j, "define", 6) == 0 &&
+           (j + 6 == n || !cm_ident_char(s[j + 6]));
+}
+
+/* code[i] 2 across each #define directive, from its '#' to the newline
+ * that ends it (one inside a comment does not): a conditional-lookup word
+ * there is evaluated where the macro expands. */
+static void cm_mark_defines(const struct cm_spliced *t, uint8_t *code)
+{
+    const char *s = t->s;
+    size_t n = t->n;
+    for (size_t i = 0; i < n;) {
+        size_t j = i, end;
+        while (j < n && s[j] != '\n' && (cm_blank(s[j]) || code[j] == 0))
+            j++;
+        for (end = j; end < n && (s[end] != '\n' || code[end] == 0); end++)
+            ;
+        if (j < n && cm_define_at(s, j, n))
+            for (size_t k = j; k < end; k++)
+                code[k] = code[k] != 0 ? 2 : 0;
+        i = end + 1;
+    }
+}
+
+/* code[i]: 0 when s[i] lies inside a comment or a character or string
+ * literal, 2 inside a #define directive's code, else 1. A conditional-lookup
+ * word or directive can only start in code; a word in a comment or a
+ * literal is none (a header name's text is code, and never opens a
+ * comment). The lexer is phase 3's over the spliced text, with a header
+ * name recognized after an include-like directive word or a
+ * conditional-lookup word. */
+static uint8_t *cm_code_mask(const struct cm_spliced *t, bool separators)
+{
+    struct cm_lexer L = {.s = t->s, .n = t->n, .separators = separators};
     uint8_t *code = zcl_malloc(t->n + 1, "clang_manifest.code_mask");
     if (code == NULL)
         return NULL;
     for (size_t i = 0; i < t->n;) {
         bool is_code;
-        size_t end = cm_lex_one(t->s, i, t->n, &is_code);
+        size_t end = cm_lex_one(&L, i, &is_code);
         memset(code + i, is_code ? 1 : 0, end - i);
+        L.hdr = cm_hdr_after(&L, i, end, is_code);
         i = end;
     }
+    cm_mark_defines(t, code);
     return code;
 }
 
-bool cm_scan_has_include(struct cm_core *c)
+/* ---- what the scan reads: the TU's language, its files, its -D values ------ */
+
+/* How translation phases 1 and 3 read the TU, by the front end's rules:
+ * trigraphs in an ISO C mode before C23 unless -fno-trigraphs, and in any
+ * mode with -trigraphs or -ftrigraphs; digit separators from C23 on. With
+ * no -std the mode is gnu17. */
+struct cm_lang {
+    bool trigraphs;
+    bool separators;
+};
+
+/* A -std value: 0 an ISO C mode before C23, 1 a GNU mode before C23, 2
+ * C23 or later. */
+static int cm_std_kind(const char *v)
 {
-    for (size_t k = 0; k < c->nfiles; k++) {
-        const struct cm_file *f = &c->files[k];
-        struct cm_spliced t;
-        uint8_t *code = NULL;
-        bool ok;
-        if (f->origin == VCS_SEMANTIC_ORIGIN_V1_SYSTEM)
-            continue;
-        ok = cm_splice(f->contents, f->size, &t);
-        if (!ok)
-            (void)cm_fail(c, "cannot splice %s", f->path);
-        else if ((code = cm_code_mask(&t)) == NULL)
-            ok = cm_fail(c, "out of memory");
-        for (size_t i = 0; ok && i < t.n; i++) {
-            char ch = t.s[i];
-            if ((ch == '_' || ch == '#' || ch == '%') && code[i] != 0)
-                ok = cm_cond_at(c, f, &t, i);
-        }
-        free(code);
-        cm_spliced_free(&t);
-        if (!ok)
-            return false;
+    static const char *const c23[] = {"c23",   "c2x",   "c2y",         "gnu23",
+                                      "gnu2x", "gnu2y", "iso9899:2024"};
+    for (size_t k = 0; k < sizeof(c23) / sizeof(c23[0]); k++)
+        if (strcmp(v, c23[k]) == 0)
+            return 2;
+    return strncmp(v, "gnu", 3) == 0 ? 1 : 0;
+}
+
+static struct cm_lang cm_lang_of(const char *const *argv, size_t argc)
+{
+    int std = 1, tri = -1;
+    for (size_t k = 0; k < argc; k++) {
+        const char *a = argv[k];
+        if (strncmp(a, "-std=", 5) == 0 || strncmp(a, "--std=", 6) == 0)
+            std = cm_std_kind(strchr(a, '=') + 1);
+        else if (strcmp(a, "-ansi") == 0)
+            std = 0;
+        else if (strcmp(a, "-trigraphs") == 0 || strcmp(a, "-ftrigraphs") == 0)
+            tri = 1;
+        else if (strcmp(a, "-fno-trigraphs") == 0)
+            tri = 0;
     }
+    return (struct cm_lang){.trigraphs = tri < 0 ? std == 0 : tri == 1,
+                            .separators = std == 2};
+}
+
+/* A conditional-lookup word at s[i] in a macro's body (a #define's, or a
+ * -D value's): evaluated wherever the macro expands, and quoted names then
+ * search that file's directory, so the scan cannot replay it: recorded
+ * unbound, on f. */
+static bool cm_body_at(struct cm_core *c, const struct cm_file *f,
+                       const char *s, size_t i, size_t n)
+{
+    enum cm_cond_kind kind = CM_COND_OTHER;
+    char name[PATH_MAX];
+    uint8_t form;
+    if (cm_cond_word(s, i, n, &kind) == 0)
+        return true;
+    cm_cond_name("", s, i, n, name, &form);
+    return cm_cond_unbound(c, f, name, form);
+}
+
+/* The value of the -D (or --define-macro) option at argv[*k], or NULL;
+ * *k moves past a separate value. */
+static const char *cm_define_value(const char *const *argv, size_t argc,
+                                   size_t *k)
+{
+    const char *a = argv[*k];
+    if (strcmp(a, "-D") == 0 || strcmp(a, "--define-macro") == 0)
+        return *k + 1 < argc ? argv[++*k] : NULL;
+    if (strncmp(a, "-D", 2) == 0)
+        return a + 2;
+    if (strncmp(a, "--define-macro=", 15) == 0)
+        return a + 15;
+    return NULL;
+}
+
+/* Every conditional-lookup word in a -D value, recorded unbound on the
+ * main file: the macro it defines is text no file holds. */
+static bool cm_scan_argv(struct cm_core *c, const char *const *argv,
+                         size_t argc)
+{
+    const struct cm_file *main = NULL;
+    for (size_t k = 0; main == NULL && k < c->nfiles; k++)
+        if (c->files[k].origin == VCS_SEMANTIC_ORIGIN_V1_MAIN)
+            main = &c->files[k];
+    for (size_t k = 0; k < argc; k++) {
+        const char *v = cm_define_value(argv, argc, &k);
+        size_t n = v == NULL ? 0 : strlen(v);
+        for (size_t i = 0; i < n; i++)
+            if (!(main != NULL ? cm_body_at(c, main, v, i, n)
+                               : cm_fail(c, "no main file for a -D value")))
+                return false;
+    }
+    return true;
+}
+
+/* One file: in a repo file every conditional lookup, and in a system file
+ * each one a #define's body holds (a system header's own conditionals
+ * search system dirs). */
+static bool cm_scan_file(struct cm_core *c, const struct cm_file *f,
+                         struct cm_lang lang)
+{
+    bool sys = f->origin == VCS_SEMANTIC_ORIGIN_V1_SYSTEM, ok;
+    struct cm_spliced t;
+    uint8_t *code = NULL;
+    ok = cm_splice(f->contents, f->size, lang.trigraphs, &t);
+    if (!ok)
+        (void)cm_fail(c, "cannot splice %s", f->path);
+    else if ((code = cm_code_mask(&t, lang.separators)) == NULL)
+        ok = cm_fail(c, "out of memory");
+    for (size_t i = 0; ok && i < t.n; i++) {
+        char ch = t.s[i];
+        if (ch != '_' && ch != '#' && ch != '%')
+            continue;
+        if (code[i] == 2)
+            ok = cm_body_at(c, f, t.s, i, t.n);
+        else if (code[i] == 1 && !sys)
+            ok = cm_cond_at(c, f, &t, i);
+    }
+    free(code);
+    cm_spliced_free(&t);
+    return ok;
+}
+
+bool cm_scan_has_include(struct cm_core *c, const char *const *argv,
+                         size_t argc)
+{
+    struct cm_lang lang = cm_lang_of(argv, argc);
+    if (!cm_scan_argv(c, argv, argc))
+        return false;
+    for (size_t k = 0; k < c->nfiles; k++)
+        if (!cm_scan_file(c, &c->files[k], lang))
+            return false;
     return true;
 }

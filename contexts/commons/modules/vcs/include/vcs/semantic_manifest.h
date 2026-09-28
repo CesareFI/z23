@@ -117,9 +117,10 @@ enum vcs_semantic_section_v1 {
  *       main file, or a file found relative to its includer, a plain
  *       __has_include replay.
  * What stays unresolvable (another macro, __has_embed, #embed, an entry the
- * producer does not know) keeps its MISS_V1_NONE record. A revision-3
- * manifest makes none of these claims: a consumer must read its unbound
- * records as reaching any created or deleted path. */
+ * producer does not know, a probe in a #define body or a -D value) keeps its
+ * MISS_V1_NONE record. A revision-3 manifest makes none of these claims: a
+ * consumer must read its unbound records as reaching any created or
+ * deleted path. */
 #define VCS_SEMANTIC_FACTS_V4_NAME "zcl.semantic_facts.v4"
 /* Default producer caps: records per section and payload bytes per section. */
 #define VCS_SEMANTIC_FACTS_V1_DEFAULT_MAX_RECORDS 65536u

@@ -458,8 +458,9 @@ static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
         return false;
     if (o->facts && !cm_facts_begin(c, o->tree))
         return false;
-    return cm_walk(st) && cm_scan_has_include(c) && cm_emit_files(c) &&
-           cm_emit_deferred(c) && cm_emit_identity_libclang(st, main_path, args) &&
+    return cm_walk(st) && cm_scan_has_include(c, args->parse, args->nparse) &&
+           cm_emit_files(c) && cm_emit_deferred(c) &&
+           cm_emit_identity_libclang(st, main_path, args) &&
            cm_emit_facts(c, o->max_records, o->max_section_bytes);
 }
 

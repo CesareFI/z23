@@ -243,9 +243,12 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
                          const char *spelled, uint8_t form, uint8_t kind,
                          bool computed, const struct cm_file *hit);
 /* Every conditional lookup (__has_include and its relatives, #embed) in a
- * repo file: replayed when its operand is a literal, else recorded with no
- * negative claim. */
-bool cm_scan_has_include(struct cm_core *c);
+ * repo file, in the body of a #define in any file, and in a -D value of
+ * argv (the front end's): replayed when a repo file's operand is a literal
+ * or a macro the scan can expand, else recorded with no negative claim.
+ * argv's -std and trigraph flags say how the text is lexed. */
+bool cm_scan_has_include(struct cm_core *c, const char *const *argv,
+                         size_t argc);
 
 /* ---- records (clang_manifest_records.c) ----------------------------------- */
 
