@@ -1,6 +1,11 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_sapling_ock.h"
+#include "blue_sapling_out_open.h"
+#include "zcl_tx_shielded_replay.h"
 #include "zcl_zip243_host.h"
+#include "crypto/chacha20poly1305.h"
+#include "support/log_throttle.h"
+#include "base/log_level.h"
 
 #undef NDEBUG
 #include <assert.h>
@@ -8,6 +13,28 @@
 #include <string.h>
 
 enum { WIRE_BYTES = 1425, OUTPUT_OFFSET = 412 };
+
+/* Host-only support for the independent core AEAD oracle. */
+int64_t clock_now_wall_ms(void) { return 0; }
+bool zcl_alloc_fault_should_fail(const char *label) {
+    (void)label;
+    return false;
+}
+enum zcl_log_level zcl_log_level_get(void) { return ZCL_LOG_OFF; }
+void zcl_log_emit_at(enum zcl_log_level level, const char *format, ...) {
+    (void)level;
+    (void)format;
+}
+bool log_throttle_should_emit(struct log_throttle *throttle, uint64_t key,
+    int64_t now, int64_t interval, uint64_t *repetitions) {
+    (void)throttle; (void)key; (void)now; (void)interval;
+    (void)repetitions;
+    return false;
+}
+void memory_cleanse(void *memory, size_t length) {
+    volatile uint8_t *bytes = memory;
+    for (size_t i = 0; i < length; ++i) bytes[i] = 0;
+}
 
 static int hex_digit(int ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -39,6 +66,36 @@ static bool fail_final(void *context, uint8_t digest[32]) {
     return false;
 }
 
+static void capture_verified_output(const uint8_t wire[WIRE_BYTES],
+    zcl_tx_shielded_output_capture *output) {
+    static const uint8_t expected_digest[32] = {
+        0xd4,0x96,0x7a,0x82,0x69,0x00,0x77,0x09,
+        0xfd,0x06,0x3a,0x59,0x2f,0x73,0x59,0xb8,
+        0x64,0xfa,0x39,0x0c,0x76,0xf4,0x60,0x9d,
+        0xc9,0xf9,0xb9,0x60,0x69,0xc2,0x7c,0x8b
+    };
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay replay;
+    assert(zcl_tx_shielded_replay_begin_output(&replay, WIRE_BYTES,
+        0x76b809bbu, &hasher, 0, output));
+    for (unsigned pass = 1; pass <= 6; ++pass) {
+        for (size_t offset = 0; offset < WIRE_BYTES; offset += 220) {
+            size_t take = WIRE_BYTES - offset < 220 ?
+                WIRE_BYTES - offset : 220;
+            assert(zcl_tx_shielded_replay_feed(&replay,
+                wire + offset, take));
+        }
+        if (pass < 6) assert(zcl_tx_shielded_replay_next(&replay));
+    }
+    zcl_tx_shielded_facts facts;
+    uint8_t digest[32];
+    assert(zcl_tx_shielded_replay_finish(&replay, &facts, digest));
+    assert(facts.sapling_outputs == 1);
+    assert(memcmp(digest, expected_digest, sizeof digest) == 0);
+    zcl_tx_shielded_replay_abort(&replay);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     static const uint8_t ovk[32] = {
@@ -55,22 +112,62 @@ int main(int argc, char **argv) {
     };
     uint8_t wire[WIRE_BYTES], key[32];
     read_fixture(argv[1], wire);
-    const uint8_t *cv = wire + OUTPUT_OFFSET;
-    const uint8_t *cm = cv + 32;
-    const uint8_t *epk = cm + 32;
+    zcl_tx_shielded_output_capture output;
+    capture_verified_output(wire, &output);
+    assert(memcmp(output.cv, wire + OUTPUT_OFFSET, 32) == 0);
     struct blake2b_ctx context;
     zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
-    assert(blue_sapling_ock(key, ovk, cv, cm, epk, &hasher));
+    assert(blue_sapling_ock(key, ovk, output.cv, output.cm,
+        output.epk, &hasher));
     assert(memcmp(key, expected, sizeof key) == 0);
-    uint8_t changed[32];
-    memcpy(changed, cv, sizeof changed);
-    changed[0] ^= 1u;
-    assert(blue_sapling_ock(key, ovk, changed, cm, epk, &hasher));
+    uint8_t outgoing[64];
+    const uint8_t *out_ciphertext = output.out_ciphertext;
+    assert(blue_sapling_out_open(outgoing, key, out_ciphertext));
+    const uint8_t nonce[12] = {0};
+    uint8_t core_outgoing[64];
+    assert(chacha20poly1305_decrypt(out_ciphertext, 80,
+        NULL, 0, nonce, key, core_outgoing));
+    assert(memcmp(outgoing, core_outgoing, sizeof outgoing) == 0);
+    static const uint8_t expected_outgoing[64] = {
+        0x25,0xd4,0xfe,0xd2,0xb7,0xef,0x10,0x5c,
+        0xaa,0xe1,0xf6,0x9f,0x11,0x62,0x6d,0x7a,
+        0xc7,0x9a,0x51,0xa6,0x9f,0xc2,0x01,0x63,
+        0xb4,0x86,0x68,0xd7,0x0f,0xd1,0x0f,0x3a,
+        0xca,0xd2,0xf8,0xc7,0x01,0x5b,0xcd,0x97,
+        0x59,0x0b,0xf2,0xba,0x2f,0x68,0x30,0x8e,
+        0x18,0x6b,0x3d,0x62,0x41,0xa1,0xe8,0x72,
+        0x5c,0x21,0x08,0xf3,0x12,0x4b,0xba,0x06
+    };
+    assert(memcmp(outgoing, expected_outgoing, sizeof outgoing) == 0);
+    uint8_t altered_ciphertext[80];
+    memcpy(altered_ciphertext, out_ciphertext, sizeof altered_ciphertext);
+    altered_ciphertext[79] ^= 1u;
+    assert(!blue_sapling_out_open(outgoing, key, altered_ciphertext));
+    for (unsigned i = 0; i < sizeof outgoing; ++i)
+        assert(outgoing[i] == 0);
+    uint8_t wrong_key[32];
+    memcpy(wrong_key, key, sizeof wrong_key);
+    wrong_key[0] ^= 1u;
+    assert(!blue_sapling_out_open(outgoing, wrong_key, out_ciphertext));
+    for (unsigned i = 0; i < sizeof outgoing; ++i)
+        assert(outgoing[i] == 0);
+    memcpy(altered_ciphertext, out_ciphertext, sizeof altered_ciphertext);
+    altered_ciphertext[7] ^= 1u;
+    assert(!blue_sapling_out_open(outgoing, key, altered_ciphertext));
+    for (unsigned i = 0; i < sizeof outgoing; ++i)
+        assert(outgoing[i] == 0);
+    uint8_t changed_cv[32];
+    memcpy(changed_cv, output.cv, sizeof changed_cv);
+    changed_cv[0] ^= 1u;
+    assert(blue_sapling_ock(key, ovk, changed_cv, output.cm,
+        output.epk, &hasher));
     assert(memcmp(key, expected, sizeof key) != 0);
     hasher.final = fail_final;
-    assert(!blue_sapling_ock(key, ovk, cv, cm, epk, &hasher));
+    assert(!blue_sapling_ock(key, ovk, output.cv, output.cm,
+        output.epk, &hasher));
     for (unsigned i = 0; i < sizeof key; ++i) assert(key[i] == 0);
-    assert(!blue_sapling_ock(key, ovk, cv, cm, epk, NULL));
+    assert(!blue_sapling_ock(key, ovk, output.cv, output.cm,
+        output.epk, NULL));
     for (unsigned i = 0; i < sizeof key; ++i) assert(key[i] == 0);
     memset(&context, 0, sizeof context);
     puts("Blue Sapling outgoing key: passed");

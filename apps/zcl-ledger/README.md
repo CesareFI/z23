@@ -139,10 +139,14 @@ An isolated randomized SpendAuth candidate also derives
 matches. Its end-to-end public fixture runs in both ARM emulators; it is not
 routed through the Wallet review or approval screens.
 An isolated C23 outgoing-key derivation module checks the consensus-accepted
-Sapling output against an independently computed BLAKE2b test vector. It
-compiles for Cortex-M3 but is not linked into the installed Blue app. Output
-decryption, recipient display, and shielded signing still require device
-integration and approval tests.
+Sapling output against an independently computed BLAKE2b test vector. The
+six-pass replay capture now supplies its public `cv`, `cm`, `epk`, and outgoing
+ciphertext to a fixed-size C23 ChaCha20-Poly1305 decryptor. The decrypted
+64-byte `pk_d || esk` matches Z23's independent host implementation on the
+committed transaction fixture. Cortex-M0 and Cortex-M3 emulators also check
+the exact output and reject an altered authentication tag. These modules
+are not linked into the installed Blue app. Recipient and amount verification,
+note commitment checks, device approval, and shielded signing remain absent.
 An isolated Sapling note-key derivation module also matches Z23's fixed KDF
 vector, independently checked with Python BLAKE2b. It requires a supplied DH
 result and ephemeral public key; it does not establish their authenticity.
