@@ -146,6 +146,8 @@ uint64_t store_pool_budget(const struct vcs_package_store *store,
                            enum vcs_package_store_pool pool);
 uint64_t store_pool_usage_locked(struct vcs_package_store *store,
                                   enum vcs_package_store_pool pool);
+void store_pool_usages_locked(struct vcs_package_store *store,
+                              uint64_t usage[4]);
 enum vcs_package_store_result store_chunk_room(
     struct vcs_package_store *store, struct store_package *pkg,
     const uint8_t hash[32], const uint8_t package_root[32],

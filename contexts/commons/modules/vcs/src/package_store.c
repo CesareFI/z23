@@ -267,6 +267,20 @@ uint64_t store_pool_usage_locked(struct vcs_package_store *store,
     return usage;
 }
 
+void store_pool_usages_locked(struct vcs_package_store *store,
+                              uint64_t usage[4])
+{
+    memset(usage, 0, 4u * sizeof(*usage));
+    for (size_t i = 0; i < store->pkg_count; i++) {
+        enum vcs_package_store_pool pool =
+            store_package_pool(store, &store->pkgs[i]);
+        uint64_t bytes = 0;
+        store_package_present(store, &store->pkgs[i], NULL, &bytes);
+        usage[pool] = UINT64_MAX - usage[pool] < bytes
+                          ? UINT64_MAX : usage[pool] + bytes;
+    }
+}
+
 uint64_t vcs_package_store_pool_usage(struct vcs_package_store *store,
                                       enum vcs_package_store_pool pool)
 {
@@ -862,10 +876,12 @@ static enum vcs_package_store_result store_chunk_room_no_evict(
 {
     if (!store_cas_insert(store, hash))
         return VCS_PACKAGE_STORE_ERR_ALLOC;
+    uint64_t usage[4];
+    store_pool_usages_locked(store, usage);
     bool fits = true;
     for (int pool = VCS_PACKAGE_STORE_POOL_PINS;
          pool <= VCS_PACKAGE_STORE_POOL_STAGING; pool++) {
-        if (!store_room_available(store, pool, 0)) {
+        if (usage[pool] > store_pool_budget(store, pool)) {
             fits = false;
             break;
         }

@@ -68,9 +68,7 @@ static bool store_chunk_project(struct vcs_package_store *store,
                                 const uint8_t hash[32], uint64_t usage[4])
 {
     if (!store_cas_insert(store, hash)) return false;
-    for (int pool = VCS_PACKAGE_STORE_POOL_PINS;
-         pool <= VCS_PACKAGE_STORE_POOL_STAGING; pool++)
-        usage[pool] = store_pool_usage_locked(store, pool);
+    store_pool_usages_locked(store, usage);
     store_cas_remove(store, hash);
     return true;
 }
@@ -85,9 +83,7 @@ enum vcs_package_store_result store_chunk_room(
     *will_complete = (uint64_t)present + 1u == pkg->chunk_count;
     for (;;) {
         uint64_t before[4], after[4];
-        for (int pool = VCS_PACKAGE_STORE_POOL_PINS;
-             pool <= VCS_PACKAGE_STORE_POOL_STAGING; pool++)
-            before[pool] = store_pool_usage_locked(store, pool);
+        store_pool_usages_locked(store, before);
         if (!store_chunk_project(store, hash, after))
             LOG_RETURN(VCS_PACKAGE_STORE_ERR_ALLOC, STORE_LOG,
                        "project shared chunk admission");
