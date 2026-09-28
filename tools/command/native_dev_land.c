@@ -7722,6 +7722,37 @@ int zcl_native_dev_land_test_base_observe(const char *wt, const char *base)
 }
 #endif
 
+/* The watched wait a proving drive hands the proof step: this leaf's own
+ * observer over `wt`'s origin, asked every `interval_ms` (<= 0 selects
+ * ZCL_DEV_PROOF_BASE_PROBE_MS). One constructor, so the test seam below
+ * watches a worker exactly the way dl_drive_proof() does. */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+[[maybe_unused]] static struct zcl_dev_proof_base_probe dl_base_probe(
+    struct dl_base_probe_ctx *ctx, const char *wt, const char *base,
+    int interval_ms)
+{
+    ctx->wt = wt;
+    ctx->base = base;
+    return (struct zcl_dev_proof_base_probe){
+        .observe = dl_base_observe, .ctx = ctx, .interval_ms = interval_ms };
+}
+#endif
+
+#if defined(ZCL_TESTING) && !defined(_WIN32)
+/* The drive's watch over an already-forked proof worker: dl_base_probe()
+ * against `wt`'s origin, through the proof's own requester wait loop.
+ * Returns what that loop returns; `*superseded` says the probe cancelled. */
+int zcl_native_dev_land_test_watch_worker(const char *wt, const char *base,
+                                          int worker_pid, int interval_ms,
+                                          bool *superseded)
+{
+    struct dl_base_probe_ctx ctx;
+    const struct zcl_dev_proof_base_probe probe =
+        dl_base_probe(&ctx, wt, base, interval_ms);
+    return zcl_dev_proof_test_foreground_wait(worker_pid, &probe, superseded);
+}
+#endif
+
 /* Return 1 after this pair settles, 0 when a worker owns it, -1 on refusal. */
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static int dl_drive_proof(struct zcl_command_reply *reply)
@@ -7738,9 +7769,9 @@ static int dl_drive_proof(struct zcl_command_reply *reply)
                 "retry dev land drive after inspecting dev land status");
         return -1;
     }
-    struct dl_base_probe_ctx probe_ctx = { .wt = root, .base = base };
-    const struct zcl_dev_proof_base_probe probe = {
-        .observe = dl_base_observe, .ctx = &probe_ctx, .interval_ms = 0 };
+    struct dl_base_probe_ctx probe_ctx;
+    const struct zcl_dev_proof_base_probe probe =
+        dl_base_probe(&probe_ctx, root, base, 0);
     bool superseded = false;
     result = zcl_dev_proof_step_watched(root, local, base, &probe, &proof,
                                         &superseded);

@@ -32,6 +32,8 @@
 #include "util/spawn.h"
 #include "dev/dev_git_tree.h"
 #include "dev/dev_proof.h"
+#include "dev/dev_proof_budget.h"
+#include "dev/devloop.h"
 #include "base/bytes.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
@@ -44,6 +46,13 @@ bool zcl_native_dev_land_test_idle_note(int64_t age_s, char *detail,
 int64_t zcl_native_dev_land_test_idle_bound(void);
 /* The drive's base probe (dl_base_observe) against one worktree's origin. */
 int zcl_native_dev_land_test_base_observe(const char *wt, const char *base);
+#if !defined(_WIN32)
+/* dl_base_probe() watching an already-forked worker, as dl_drive_proof()
+ * does, through the proof's own requester wait loop. */
+int zcl_native_dev_land_test_watch_worker(const char *wt, const char *base,
+                                          int worker_pid, int interval_ms,
+                                          bool *superseded);
+#endif
 #if defined(__linux__)
 void zcl_native_dev_land_test_watcher_launch(const char *wt,
     const char *scheduler, char *detail, size_t cap);
@@ -5836,6 +5845,173 @@ static bool dlx_step_to(const char *stub, const char *state, int64_t attempt,
     return ok;
 }
 
+#if !defined(_WIN32)
+/* ── the drive's base watch over a real proof step ───────────────────────
+ *
+ * The forked worker stands in for the proof worker around ONE real proof
+ * step: the production step runner (own session; TERM, then KILL, of its
+ * process group on cancel) runs `argv`, under the SIGTERM handler the real
+ * worker inherits from its requester (a cancel request). The requester side
+ * is the drive's own base probe (dl_base_probe) through the proof's own
+ * wait loop, against a real bare origin. Only the step's command is a
+ * stand-in for the proof. */
+static void dlx_watch_worker_cancel(int signal_number)
+{
+    (void)signal_number;
+    zcl_devloop_process_cancel_request();
+}
+
+static void dlx_watch_worker_run(const char *dir, const char *const argv[],
+                                 int report_fd)
+{
+    struct sigaction action = {0};
+    action.sa_handler = dlx_watch_worker_cancel;
+    sigemptyset(&action.sa_mask);
+    zcl_devloop_process_cancel_clear();
+    char log[1200];
+    struct zcl_dev_proof_step step;
+    const struct zcl_dev_proof_budget budget =
+        zcl_dev_proof_budget_make(600000, 600000);
+    int64_t report[3] = { -1, -1, -1 };
+    if (sigaction(SIGTERM, &action, NULL) == 0 &&
+        snprintf(log, sizeof(log), "%s.step.log", dir) < (int)sizeof(log) &&
+        zcl_dev_proof_step_start(&step, dir, log, argv, &budget)) {
+        report[0] = step.child;
+        if (write(report_fd, &report[0], sizeof(report[0])) !=
+            (ssize_t)sizeof(report[0]))
+            _exit(1);
+        (void)zcl_dev_proof_steps_wait(&step, 1);
+        report[1] = (int64_t)step.report.cause;
+        report[2] = (int64_t)step.report.rc;
+    } else if (write(report_fd, &report[0], sizeof(report[0])) !=
+               (ssize_t)sizeof(report[0])) {
+        _exit(1);
+    }
+    _exit(write(report_fd, &report[1], 2 * sizeof(report[1])) ==
+                  (ssize_t)(2 * sizeof(report[1]))
+              ? 0 : 1);
+}
+
+struct dlx_watched {
+    int64_t step_child; /* the proof step's session leader */
+    int64_t cause;      /* enum zcl_dev_proof_kill_cause of the step's end */
+    int64_t rc;
+    int waited;         /* what the drive's watched wait returned */
+    bool superseded;
+};
+
+/* Start the worker, let `move` (when non-NULL) push a stranger commit to
+ * origin main once the step is running, then watch the worker exactly as
+ * a proving drive does until it exits. */
+static bool dlx_watch_proof(const struct dlx_rig *rig, const char *base,
+                            const char *const argv[], const char *move,
+                            struct dlx_watched *out)
+{
+    int fds[2];
+    char stranger[64];
+    memset(out, 0, sizeof(*out));
+    if (pipe(fds) != 0) return false;
+    pid_t worker = fork();
+    if (worker == 0) {
+        (void)close(fds[0]);
+        dlx_watch_worker_run(rig->bare, argv, fds[1]);
+    }
+    (void)close(fds[1]);
+    bool ok = worker > 0 &&
+        read(fds[0], &out->step_child, sizeof(out->step_child)) ==
+            (ssize_t)sizeof(out->step_child) &&
+        out->step_child > 0;
+    const char *push[] = { "push", "--quiet", "origin", "HEAD:main", NULL };
+    if (ok && move)
+        ok = dlx_commit(rig->clone, move, "elsewhere\n", stranger) &&
+             dlx_git(rig->clone, push) == 0;
+    if (worker > 0) {
+        if (!ok) (void)kill(worker, SIGTERM);
+        out->waited = zcl_native_dev_land_test_watch_worker(
+            rig->clone, base, (int)worker, 20, &out->superseded);
+    }
+    int64_t tail[2] = { -1, -1 };
+    ok = ok && read(fds[0], tail, sizeof(tail)) == (ssize_t)sizeof(tail);
+    (void)close(fds[0]);
+    out->cause = tail[0];
+    out->rc = tail[1];
+    return ok;
+}
+
+/* The step's session leader is gone, and nothing is left in its group. */
+static bool dlx_step_group_gone(int64_t leader)
+{
+    errno = 0;
+    bool leader_gone = kill((pid_t)leader, 0) != 0 && errno == ESRCH;
+    errno = 0;
+    bool group_gone = kill(-(pid_t)leader, 0) != 0 && errno == ESRCH;
+    return leader_gone && group_gone;
+}
+
+static int test_dev_land_drive_base_watch(void)
+{
+    int failures = 0;
+    TEST("land drive: main moving under a running proof cancels it as superseded and leaves no step process") {
+        struct dlx_rig rig;
+        struct dlx_watched w;
+        char base[64];
+        const char *never_ends[] = { "sleep", "120", NULL };
+        dlx_isolate("watch_moved");
+        ASSERT(dlx_rig_make(&rig, "watch_moved_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        ASSERT(dlx_watch_proof(&rig, base, never_ends, "stranger.txt", &w));
+        ASSERT_EQ(w.waited, 1);
+        ASSERT(w.superseded);
+        ASSERT_EQ(w.cause, (int64_t)ZCL_DEV_PROOF_KILL_CANCELLED);
+        ASSERT_EQ(w.rc, 130);
+        ASSERT(dlx_step_group_gone(w.step_child));
+        dlx_restore();
+        PASS();
+    }
+    TEST("land drive: an unreachable origin never cancels a running proof; it runs to its own end") {
+        struct dlx_rig rig;
+        struct dlx_watched w;
+        char base[64], missing[1200];
+        const char *short_step[] = { "sleep", "1", NULL };
+        dlx_isolate("watch_unknown");
+        ASSERT(dlx_rig_make(&rig, "watch_unknown_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        (void)snprintf(missing, sizeof(missing), "%s/absent", rig.bare);
+        const char *unreachable[] = { "remote", "set-url", "origin", missing,
+                                      NULL };
+        ASSERT(dlx_git(rig.clone, unreachable) == 0);
+        /* Even a base that is not the (unobservable) tip: only an
+         * affirmative answer may cancel. */
+        ASSERT(dlx_watch_proof(&rig, rig.tip, short_step, NULL, &w));
+        ASSERT_EQ(w.waited, 1);
+        ASSERT(!w.superseded);
+        ASSERT_EQ(w.cause, (int64_t)ZCL_DEV_PROOF_KILL_NONE);
+        ASSERT_EQ(w.rc, 0);
+        ASSERT(dlx_step_group_gone(w.step_child));
+        dlx_restore();
+        PASS();
+    }
+    TEST("land drive: an unmoved main lets a running proof finish") {
+        struct dlx_rig rig;
+        struct dlx_watched w;
+        char base[64];
+        const char *short_step[] = { "sleep", "1", NULL };
+        dlx_isolate("watch_current");
+        ASSERT(dlx_rig_make(&rig, "watch_current_rig"));
+        ASSERT(dlx_origin_main(&rig, base));
+        ASSERT(dlx_watch_proof(&rig, base, short_step, NULL, &w));
+        ASSERT_EQ(w.waited, 1);
+        ASSERT(!w.superseded);
+        ASSERT_EQ(w.cause, (int64_t)ZCL_DEV_PROOF_KILL_NONE);
+        ASSERT_EQ(w.rc, 0);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    return failures;
+}
+#endif
+
 static int test_dev_land_interrupted_proof(void)
 {
     int failures = 0;
@@ -6419,6 +6595,9 @@ int test_dev_land(void)
     failures += test_dev_land_missing_worker();
 
     failures += test_dev_land_interrupted_proof();
+#if !defined(_WIN32)
+    failures += test_dev_land_drive_base_watch();
+#endif
 
     failures += test_dev_land_competing_publish();
 
