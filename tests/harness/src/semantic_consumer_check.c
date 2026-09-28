@@ -133,6 +133,19 @@ scx_tu_of(const struct scx_result *r, const char *path)
     return NULL;
 }
 
+/* The verdict agrees with the row: absent when the row has no reason, else
+ * the same affected flag and reason, and compile-only exactly when the
+ * reason is debug-position. */
+static bool scx_tu_same(const struct scx_edit *e, size_t k,
+                        const struct zcl_devloop_facts_tu_verdict *t)
+{
+    if (e->reason[k] == NULL)
+        return t == NULL;
+    return t != NULL && t->affected == e->affected[k] &&
+           strcmp(t->reason, e->reason[k]) == 0 &&
+           t->compile_only == (strcmp(t->reason, "debug-position") == 0);
+}
+
 /* One TU against its row of the edit table: 0 when they agree. */
 static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
                              const struct scx_result *r, size_t *unsafe,
@@ -141,15 +154,9 @@ static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
     const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
     bool got_aff = t != NULL && t->affected;
     const char *got = t != NULL ? t->reason : NULL;
-    bool same = e->reason[k] == NULL
-                    ? t == NULL
-                    : t != NULL && got_aff == e->affected[k] &&
-                          strcmp(got, e->reason[k]) == 0 &&
-                          t->compile_only ==
-                              (strcmp(got, "debug-position") == 0);
     if (e->affected[k] && !got_aff)
         (*unsafe)++;
-    if (same)
+    if (scx_tu_same(e, k, t))
         return 0;
     if (why != NULL)
         fprintf(why, "  %s %s: want %s/%s, got %s/%s (%s)\n", e->name,
@@ -244,6 +251,29 @@ static size_t scx_obligated(const char *path, FILE *why,
     return 1;
 }
 
+/* Each affected TU not already in need[0..*n) joins it, except a
+ * compile-only one, which the walk must not reach. Returns the
+ * disagreements. */
+static size_t scx_need_tus(const struct scx_edit *e,
+                           const struct scx_result *r, const char **need,
+                           size_t *n, FILE *why)
+{
+    size_t bad = 0;
+    for (size_t k = 0; k < SCX_TU_COUNT; k++) {
+        const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
+        bool listed = false;
+        for (size_t i = 0; i < *n; i++)
+            listed = listed || strcmp(need[i], k_scx_tus[k]) == 0;
+        if (t == NULL || !t->affected || listed)
+            continue;
+        if (!t->compile_only)
+            need[(*n)++] = k_scx_tus[k];
+        else if (zcl_devloop_test_reached_has(k_scx_tus[k]))
+            bad += scx_obligated(k_scx_tus[k], why, e);
+    }
+    return bad;
+}
+
 /* A narrowed plan reaches every changed file and every affected TU (it
  * compiles them): each must be in the walk's reached set, not merely as
  * many files as there are of them. A missing one is unsafe. A TU the
@@ -254,24 +284,13 @@ static size_t scx_compare_reached(const struct scx_edit *e,
                                   FILE *why)
 {
     const char *need[SCX_TU_COUNT + 2];
-    size_t n = 0, bad = 0;
+    size_t n = 0;
     if (!r->verdict.narrowed)
         return 0;
     for (size_t i = 0; i < sizeof(e->changed) / sizeof(e->changed[0]); i++)
         if (e->changed[i] != NULL)
             need[n++] = e->changed[i];
-    for (size_t k = 0; k < SCX_TU_COUNT; k++) {
-        const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
-        bool listed = false;
-        for (size_t i = 0; i < n; i++)
-            listed = listed || strcmp(need[i], k_scx_tus[k]) == 0;
-        if (t != NULL && t->affected && t->compile_only && !listed)
-            bad += zcl_devloop_test_reached_has(k_scx_tus[k])
-                       ? scx_obligated(k_scx_tus[k], why, e)
-                       : 0;
-        else if (t != NULL && t->affected && !listed)
-            need[n++] = k_scx_tus[k];
-    }
+    size_t bad = scx_need_tus(e, r, need, &n, why);
     for (size_t i = 0; i < n; i++)
         if (!zcl_devloop_test_reached_has(need[i]))
             bad += scx_unreached(need[i], unsafe, why, e,

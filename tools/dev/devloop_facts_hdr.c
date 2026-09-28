@@ -653,6 +653,27 @@ static void fxh_scan_literal(struct fxh_scan *q)
     }
 }
 
+static bool fxh_blank(uint8_t c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v';
+}
+
+/* A token outside comments starts at q->i: true when it lies in the region
+ * from `lo` and counts; otherwise step over it (a literal whole). */
+static bool fxh_scan_token(struct fxh_scan *q, uint32_t lo, bool directives)
+{
+    uint8_t c = q->s[q->i];
+    q->directive = q->directive || (q->fresh && c == '#');
+    q->fresh = false;
+    if (q->line >= lo && (directives || !q->directive))
+        return true;
+    if (c == '"' || c == '\'')
+        fxh_scan_literal(q);
+    else
+        q->i++;
+    return false;
+}
+
 /* A token outside comments on a line in [lo, hi] of one text; directive
  * lines count only when `directives`. */
 static bool fxh_region_code(const uint8_t *s, size_t n, uint32_t lo,
@@ -660,24 +681,16 @@ static bool fxh_region_code(const uint8_t *s, size_t n, uint32_t lo,
 {
     struct fxh_scan q = {.s = s, .n = n, .line = 1, .fresh = true};
     while (q.i < n && q.line <= hi) {
-        uint8_t c = s[q.i];
-        if (c == '\n') {
+        if (s[q.i] == '\n')
             fxh_scan_newline(&q);
-        } else if (q.comment) {
+        else if (q.comment)
             fxh_scan_comment(&q);
-        } else if (c == ' ' || c == '\t' || c == '\r' || c == '\f' ||
-                   c == '\v' || fxh_scan_comment_open(&q)) {
-            q.i += c != '/';
-        } else {
-            q.directive = q.directive || (q.fresh && c == '#');
-            q.fresh = false;
-            if (q.line >= lo && (directives || !q.directive))
-                return true;
-            if (c == '"' || c == '\'')
-                fxh_scan_literal(&q);
-            else
-                q.i++;
-        }
+        else if (fxh_blank(s[q.i]))
+            q.i++;
+        else if (fxh_scan_comment_open(&q))
+            continue;
+        else if (fxh_scan_token(&q, lo, directives))
+            return true;
     }
     return false;
 }
