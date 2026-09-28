@@ -127,24 +127,65 @@ static int xor_order(int argc,char **argv)
     for(int i=0;i<6;i++)printf("%d ",order[i]);
     puts("6"); return 0;
 }
+static int open_listener(int family,uint16_t port,bool loopback)
+{
+    int fd=socket(family,SOCK_STREAM,0),one=1;
+    if(fd<0)return -1;
+    if(setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one))<0)goto failed;
+    if(family==AF_INET6){
+        struct sockaddr_in6 a={.sin6_family=AF_INET6,.sin6_port=htons(port)};
+        a.sin6_addr=loopback?in6addr_loopback:in6addr_any;
+        if(setsockopt(fd,IPPROTO_IPV6,IPV6_V6ONLY,&one,sizeof(one))<0||
+           bind(fd,(struct sockaddr*)&a,sizeof(a))<0)goto failed;
+    }else{
+        struct sockaddr_in a={.sin_family=AF_INET,.sin_addr.s_addr=htonl(loopback?INADDR_LOOPBACK:INADDR_ANY),.sin_port=htons(port)};
+        if(bind(fd,(struct sockaddr*)&a,sizeof(a))<0)goto failed;
+    }
+    if(listen(fd,1)<0)goto failed;
+    return fd;
+failed:
+    close(fd);return -1;
+}
+static uint16_t listener_port(int fd,int family)
+{
+    if(family==AF_INET6){
+        struct sockaddr_in6 a; socklen_t len=sizeof(a);
+        return getsockname(fd,(struct sockaddr*)&a,&len)<0?0:ntohs(a.sin6_port);
+    }
+    struct sockaddr_in a; socklen_t len=sizeof(a);
+    return getsockname(fd,(struct sockaddr*)&a,&len)<0?0:ntohs(a.sin_port);
+}
 static int ports_rebind(int argc,char **argv)
 {
     if(argc<3)return 2;
-    int *fds=zcl_calloc((size_t)argc,sizeof(*fds),
-                        "arena_product_journey_fds"); if(!fds)return 1; int rc=0;
-    for(int i=2;i<argc;i++){char *e=NULL;long port=strtol(argv[i],&e,10);if(!e||*e||port<1||port>65535){rc=1;break;}
-        int fd=socket(AF_INET,SOCK_STREAM,0); int one=1; struct sockaddr_in a={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_ANY),.sin_port=htons((uint16_t)port)};
-        if(fd<0||setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one))<0||bind(fd,(struct sockaddr*)&a,sizeof(a))<0){if(fd>=0)close(fd);rc=1;break;} fds[i]=fd;}
-    for(int i=2;i<argc;i++)if(fds[i]>0)close(fds[i]);
+    size_t count=(size_t)(argc-2)*2;
+    int *fds=zcl_calloc(count,sizeof(*fds),"arena_product_journey_fds");
+    if(!fds)return 1;
+    for(size_t i=0;i<count;i++)fds[i]=-1;
+    int rc=0;
+    for(int i=2;i<argc;i++){
+        char *e=NULL; long port=strtol(argv[i],&e,10);
+        if(!e||*e||port<1||port>65535){rc=1;break;}
+        for(int family=0;family<2;family++){
+            int fd=open_listener(family?AF_INET6:AF_INET,(uint16_t)port,false);
+            if(fd<0){rc=1;break;}
+            fds[(size_t)(i-2)*2+(size_t)family]=fd;
+        }
+        if(rc)break;
+    }
+    for(size_t i=0;i<count;i++)if(fds[i]>=0)close(fds[i]);
     free(fds);return rc;
 }
 static int listen_report(int argc,char **argv)
 {
-    if(argc!=3)return 2;
-    int fd=socket(AF_INET,SOCK_STREAM,0),one=1;struct sockaddr_in a={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_LOOPBACK)};socklen_t alen=sizeof(a);
-    if(fd<0||setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one))<0||bind(fd,(struct sockaddr*)&a,sizeof(a))<0||listen(fd,1)<0||getsockname(fd,(struct sockaddr*)&a,&alen)<0)return 1;
+    if(argc!=3 && (argc!=4 || strcmp(argv[3],"v6")))return 2;
+    int family=argc==4?AF_INET6:AF_INET;
+    int fd=open_listener(family,0,true);
+    if(fd<0)return 1;
+    uint16_t port=listener_port(fd,family);
+    if(!port){close(fd);return 1;}
     char tmp[4096];if(snprintf(tmp,sizeof(tmp),"%s.tmp",argv[2])<1)return 1;FILE*f=fopen(tmp,"w");if(!f)return 1;
-    bool ok=fprintf(f,"%ld %u\n",(long)getpid(),(unsigned)ntohs(a.sin_port))>0&&fclose(f)==0&&rename(tmp,argv[2])==0;if(!ok)return 1;for(;;)pause();
+    bool ok=fprintf(f,"%ld %u\n",(long)getpid(),(unsigned)port)>0&&fclose(f)==0&&rename(tmp,argv[2])==0;if(!ok)return 1;for(;;)pause();
 }
 static int chain_loaded(int argc,char **argv)
 {

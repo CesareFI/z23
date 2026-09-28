@@ -58,6 +58,7 @@ dht_lifecycle_probe_child() {
 
 dht_lifecycle_selftest() {
     local one_shell two_shell three_shell signal_shell
+    local v6_shell v6_pid v6_port v6_start
     local one_pid one_port one_start two_pid two_port two_start
     local three_pid three_port three_start signal_pid signal_port signal_start
     dht_make_work zcl23-dhtprobe
@@ -80,6 +81,23 @@ dht_lifecycle_selftest() {
     dht_probe_read_report "$DHT_WORK/two.report" two_pid two_port two_start
     [ "$one_port" != "$two_port" ] || dht_die "concurrent probes shared a port"
     DHT_OWNED_PORTS+=("$one_port" "$two_port")
+    "$DHT_ACCEPTANCE_C23" ports-rebind "$one_port" &&
+        dht_die "IPv4 listener was accepted as a free port"
+
+    dht_spawn_owned_command v6_shell "$DHT_WORK/v6.log" \
+        "$DHT_ACCEPTANCE_C23" listen-report "$DHT_WORK/v6.report" v6
+    dht_wait_file "$DHT_WORK/v6.report" "$v6_shell" ||
+        dht_die "IPv6 lifecycle probe did not become ready"
+    dht_probe_read_report "$DHT_WORK/v6.report" v6_pid v6_port v6_start
+    DHT_OWNED_PORTS+=("$v6_port")
+    "$DHT_ACCEPTANCE_C23" ports-rebind "$v6_port" &&
+        dht_die "IPv6-only listener was accepted as a free port"
+    kill -TERM "-$v6_shell"
+    dht_wait_owned_exit "$v6_shell" 143 "IPv6 lifecycle probe"
+    ! dht_process_identity_alive "$v6_pid" "$v6_start" ||
+        dht_die "IPv6 lifecycle probe left its owned listener alive"
+    "$DHT_ACCEPTANCE_C23" ports-rebind "$v6_port" ||
+        dht_die "IPv6 lifecycle port did not rebind after cleanup"
 
     printf '%s\n' release >"$DHT_WORK/two.release"
     dht_wait_owned_exit "$two_shell" 2 "forced-failure lifecycle probe"

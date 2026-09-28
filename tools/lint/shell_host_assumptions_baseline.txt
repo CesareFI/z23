@@ -34,7 +34,6 @@ ss	tools/dev/arena_acceptance.sh	3
 ss	tools/dev/market_acceptance.sh	1
 ss	tools/dev/market_moderation_acceptance.sh	1
 ss	tools/dev/market_onion_acceptance.sh	1
-ss	tools/dev/node_lifecycle.sh	2
 ss	tools/dev/noise_transport_interop.sh	3
 ss	tools/dev/science_acceptance.sh	4
 ss	tools/dev/store_onion_acceptance.sh	1

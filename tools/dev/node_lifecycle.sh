@@ -146,19 +146,20 @@ dht_make_work() {
 }
 
 dht_assert_port() {
-    local p="$1" owner_rpc="${2:-}" live owned out
+    local p="$1" owner_rpc="${2:-}" live owned
     for live in $DHT_LIVE_PORTS; do
         [ "$p" = "$live" ] && dht_die "port $p is in the live refuse-set"
     done
     if [ -n "$owner_rpc" ] && [ -n "${DHT_REMOTE_HOST[$owner_rpc]:-}" ]; then
-        # Fail closed: an unreachable host proves nothing about the port.
-        out="$(dht_node_exec "$owner_rpc" ss -tlnH "sport = :$p")" ||
-            dht_die "port claim check unreachable on ${DHT_REMOTE_HOST[$owner_rpc]}"
-        [ -n "$out" ] &&
-            dht_die "port $p is already listening on ${DHT_REMOTE_HOST[$owner_rpc]}"
+        # Probe on the node's host with the already shipped native helper.
+        # A missing helper or unreachable host cannot establish a free port.
+        dht_node_exec "$owner_rpc" \
+            "${DHT_REMOTE_DIR[$owner_rpc]}/bin/arena_product_journey_c23" \
+            ports-rebind "$p" ||
+            dht_die "port $p unavailable or probe failed on ${DHT_REMOTE_HOST[$owner_rpc]}"
     else
-        ss -tlnH "sport = :$p" 2>/dev/null | grep -q . &&
-            dht_die "port $p is already listening"
+        "$DHT_ACCEPTANCE_C23" ports-rebind "$p" ||
+            dht_die "port $p unavailable or probe failed on this host"
     fi
     for owned in "${DHT_OWNED_PORTS[@]:-}"; do
         [ "$owned" = "$p" ] && return 0
@@ -403,8 +404,8 @@ dht_spawn() {
     [ "$DHT_BUILDWORKERS" = 1 ] && worker_args+=("-buildworker=1")
     [ -z "$DHT_PARAMS_DIR" ] || params_args+=("-paramsdir=$DHT_PARAMS_DIR")
     if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
-        # Same flags, on the node's own host. setsid detaches the group from
-        # the ssh session; the echoed pid IS the remote pgid. The remote
+        # Same flags, on the node's own host. The native launcher detaches the
+        # group from the ssh session; the echoed pid IS the remote pgid. The remote
         # credential directory must already hold wallet-passphrase.
         local cmd=(env
             "CREDENTIALS_DIRECTORY=${DHT_REMOTE_DIR[$rpc]}/cred"
@@ -423,7 +424,7 @@ dht_spawn() {
                 dht_die "scheduled remote spawn failed"
         else
             pid="$("$DHT_SSH" -o BatchMode=yes "${DHT_REMOTE_HOST[$rpc]}" -- \
-                "setsid $(printf '%q ' "${cmd[@]}")>>$(printf '%q' "$dd/node.log") 2>&1 </dev/null & echo \$!" </dev/null)" ||
+                "$(printf '%q' "${DHT_REMOTE_DIR[$rpc]}/bin/process-group-exec") $(printf '%q ' "${cmd[@]}")>>$(printf '%q' "$dd/node.log") 2>&1 </dev/null & echo \$!" </dev/null)" ||
                 dht_die "remote spawn on ${DHT_REMOTE_HOST[$rpc]} failed"
         fi
         case "$pid" in ''|*[!0-9]*) dht_die "remote spawn returned no pid: $pid" ;; esac

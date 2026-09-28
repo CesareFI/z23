@@ -278,12 +278,13 @@ cj_multihost_setup() {
         "$DHT_SSH" -o BatchMode=yes "$host" -- "mkdir -p '$rdir/bin' '$rdir/cred' '$rdir/no-zk-params' && chmod 700 '$rdir/cred'" ||
             cj_die "scratch layout failed on $host"
         for bin in zclassic23 zcl-rpc arena_product_journey_c23 \
-                   zclassic23-package-verify; do
+                   zclassic23-package-verify process-group-exec; do
             case "$bin" in
                 zclassic23) source_bin="$NODE_BIN" ;;
                 zcl-rpc) source_bin="$RPC_BIN" ;;
                 arena_product_journey_c23) source_bin="$DHT_ACCEPTANCE_C23" ;;
                 zclassic23-package-verify) source_bin="$(dirname "$NODE_BIN")/$bin" ;;
+                process-group-exec) source_bin="$PROCESS_GROUP_EXEC" ;;
             esac
             "$DHT_SCP" -o BatchMode=yes "$source_bin" "$host:$rdir/bin/$bin" >/dev/null ||
                 cj_die "shipping $bin to $host failed"
