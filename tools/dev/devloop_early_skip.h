@@ -56,10 +56,13 @@ struct json_value;
  *     reaches) that reads the environment, starts a process, opens a file
  *     through fopen/open/openat/creat/dlopen or a platform_ *open* helper
  *     with a first argument that is not a string literal, or names a
- *     checkout path in a string literal (runtime data and fixtures). This
- *     is a text scan: comments count, a prototype (first parameter starts
- *     with a type keyword) does not, and a file read through a helper
- *     whose name holds none of these is not seen;
+ *     checkout path in a string literal (runtime data and fixtures; an
+ *     include directive's operand is keyed through its file instead). This
+ *     is a text scan after comments are blanked (string and character
+ *     literals kept, so a comment opener inside one hides nothing): an
+ *     opener prototype (first parameter starts with a type keyword) does
+ *     not count, and a file read through a helper whose name holds none
+ *     of these is not seen;
  *   - a quoted include that resolves nowhere, a computed include, an
  *     #include_next (the search it continues is not modelled), or an
  *     unreadable file;

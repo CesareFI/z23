@@ -527,20 +527,92 @@ static bool es_scan_directive(struct es_graph *g, uint32_t idx,
     return true;
 }
 
-static bool es_scan(struct es_graph *g, uint32_t idx, const char *text,
-                    size_t len)
+/* Join every include of node `idx`, then blank its directive lines: their
+ * operand is keyed through the file it resolves to (or the node is already
+ * unvouched), so it names no input the text vet must still see. */
+static bool es_scan(struct es_graph *g, uint32_t idx, char *text, size_t len)
 {
-    const char *end = text + len;
+    char *end = text + len;
     char name[ES_PATH_MAX];
-    for (const char *p = text; p < end;) {
-        const char *nl = memchr(p, '\n', (size_t)(end - p));
-        const char *line_end = nl ? nl : end;
+    for (char *p = text; p < end;) {
+        char *nl = memchr(p, '\n', (size_t)(end - p));
+        char *line_end = nl ? nl : end;
         enum es_inc kind = es_directive(p, line_end, name, sizeof(name));
         if (kind != ES_INC_NONE && !es_scan_directive(g, idx, kind, name))
             return false;
+        if (kind != ES_INC_NONE)
+            memset(p, ' ', (size_t)(line_end - p));
         p = nl ? nl + 1 : end;
     }
     return true;
+}
+
+static bool es_ident_char(char ch)
+{
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') || ch == '_';
+}
+
+/* A ' inside a number (1'000'000, C23) separates digits and opens no
+ * literal; a token that starts with a letter (u8'x', L'x') is a prefix. */
+static bool es_digit_separator(const char *text, size_t i)
+{
+    size_t j = i;
+    while (j > 0 && es_ident_char(text[j - 1]))
+        j--;
+    return j < i && text[j] >= '0' && text[j] <= '9';
+}
+
+/* The index of the quote closing the literal opened at `i`, or of the line
+ * end, which no literal crosses. */
+static size_t es_literal_end(const char *text, size_t len, size_t i)
+{
+    size_t j = i + 1;
+    while (j < len && text[j] != text[i] && text[j] != '\n')
+        j += text[j] == '\\' && j + 1 < len ? 2 : 1;
+    return j < len ? j : len - 1;
+}
+
+/* Blank a // comment from `i` up to its line end; a backslash-newline that
+ * would continue it only leaves more text to scan. */
+static size_t es_blank_line_comment(char *text, size_t len, size_t i)
+{
+    size_t j = i;
+    while (j < len && text[j] != '\n')
+        text[j++] = ' ';
+    return j - 1;
+}
+
+static size_t es_blank_block_comment(char *text, size_t len, size_t i)
+{
+    size_t j = i + 2;
+    text[i] = text[i + 1] = ' ';
+    while (j + 1 < len && !(text[j] == '*' && text[j + 1] == '/')) {
+        if (text[j] != '\n')
+            text[j] = ' ';
+        j++;
+    }
+    if (j + 1 >= len)
+        return len - 1;
+    text[j] = text[j + 1] = ' ';
+    return j + 1;
+}
+
+/* Blank every comment in place (newlines kept), string and character
+ * literals intact: a comment calls nothing and names no input. The file's
+ * digest is taken before. */
+static void es_strip_comments(char *text, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        char ch = text[i];
+        char next = i + 1 < len ? text[i + 1] : '\0';
+        if (ch == '"' || (ch == '\'' && !es_digit_separator(text, i)))
+            i = es_literal_end(text, len, i);
+        else if (ch == '/' && next == '/')
+            i = es_blank_line_comment(text, len, i);
+        else if (ch == '/' && next == '*')
+            i = es_blank_block_comment(text, len, i);
+    }
 }
 
 static void es_node_load(struct es_graph *g, uint32_t idx)
@@ -555,6 +627,9 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         return;
     }
     es_sha3_hex(text, len, g->nodes[idx].digest);
+    es_strip_comments(text, len);
+    if (es_scannable(g->nodes[idx].path) && !es_scan(g, idx, text, len))
+        es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     char seen[64] = "";
     const char *why = g->vet ? g->vet(g->vet_arg, text, seen, sizeof(seen))
                              : NULL;
@@ -564,8 +639,6 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
                        g->nodes[idx].path);
         es_node_bad(g, idx, why, what);
     }
-    if (es_scannable(g->nodes[idx].path) && !es_scan(g, idx, text, len))
-        es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     free(text);
 }
 
@@ -863,12 +936,6 @@ static const char *es_top_literal(const char *text,
         }
     }
     return NULL;
-}
-
-static bool es_ident_char(char ch)
-{
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-           (ch >= '0' && ch <= '9') || ch == '_';
 }
 
 /* A function that opens a file by the path its first argument names: the

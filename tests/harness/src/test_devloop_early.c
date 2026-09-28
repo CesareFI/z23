@@ -873,6 +873,43 @@ static int de_test_skip_helper(struct de_state *s)
             "#define EARLY_SKIP_DEP 1\n"));
         de_hole_decide(s, DE_HOLE_FLAGS);
         ASSERT(de_hole_is(s, "unvouched", "opens-file"));
+        /* A comment calls nothing; a comment opener inside a literal, or
+         * after a C23 digit separator, hides no call that follows it. */
+        ASSERT(de_skip_files(&s->fx,
+            "/* getenv(\"X\"), system(\"rm\") and fopen(path) */\n"
+            "// execv(path, argv)\n"
+            "#define EARLY_SKIP_DEP 1\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "no-record", ""));
+        ASSERT(de_skip_files(&s->fx,
+            "static const char *early_dep_s = \"/*\";\n"
+            "static const char *early_dep_e(void) { return getenv(\"X\"); }\n"
+            "/* */\n"
+            "#define EARLY_SKIP_DEP 1\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "unvouched", "reads-environment"));
+        ASSERT(de_skip_files(&s->fx,
+            "static int early_dep_n = 1'000; static const char *early_dep_s ="
+            " \"a'b // c\"; static const char *early_dep_e(void)"
+            " { return getenv(\"X\"); }\n"
+            "#define EARLY_SKIP_DEP 1\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, "unvouched", "reads-environment"));
+        /* An include's operand is keyed through the file it resolves to;
+         * the same path as data is an input no key names. */
+        ASSERT(de_write(s->fx.root, "tests/harness/src/early_skip_more.h",
+                        "#define EARLY_SKIP_MORE 1\n"));
+        ASSERT(de_skip_files(&s->fx,
+            "#include \"tests/harness/src/early_skip_more.h\"\n"
+            "#define EARLY_SKIP_DEP 1\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -I.");
+        ASSERT(de_hole_is(s, "no-record", ""));
+        ASSERT(de_skip_files(&s->fx,
+            "static const char *early_dep_p =\n"
+            "    \"tests/harness/src/early_skip_more.h\";\n"
+            "#define EARLY_SKIP_DEP 1\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS " -I.");
+        ASSERT(de_hole_is(s, "unvouched", "names-checkout-path"));
         ASSERT(de_write(s->fx.root, DE_HOLE_B,
                         "int open(const char *path, int flags, ...);\n"
                         "int early_hole_b(const char *p)\n"
@@ -885,7 +922,8 @@ static int de_test_skip_helper(struct de_state *s)
                         "#include <stdio.h>\n"
                         "int open(const char *path, int flags, ...);\n"
                         "FILE *early_hole_b(void)\n"
-                        "{ return fopen(\"test-tmp/early_hole\", \"rb\"); }\n"));
+                        "{ return fopen(\"test-tmp/early_hole\",\n"
+                        "               \"rb\"); }\n"));
         de_hole_decide(s, DE_HOLE_FLAGS);
         ASSERT(de_hole_is(s, "no-record", ""));
         PASS();
