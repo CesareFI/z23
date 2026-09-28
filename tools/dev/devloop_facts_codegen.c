@@ -10,63 +10,194 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Flags whose transforms the facts cannot bound. -O2 and above add clones
- * specialized by their callers (ipa-cp, ipa-sra, ipa-vrp, ipa-bit-cp),
- * caller-saved conventions (ipa-ra), merges of unrelated identical
- * functions (ipa-icf) and an inliner with unit-wide budgets; LTO,
- * whole-program and profile feedback decide from code or data no manifest
- * of this TU carries. Matched anywhere in the IDENTITY record, so a
- * definition or path that merely spells one also refuses. */
+/* -f flags whose transforms the facts cannot bound at any -O level. -O2 and
+ * above add clones specialized by their callers (ipa-cp, ipa-sra, ipa-vrp,
+ * ipa-bit-cp, ipa-cp-clone), caller-saved conventions (ipa-ra), merges of
+ * unrelated identical functions (ipa-icf) and an inliner with unit-wide
+ * budgets; LTO, whole-program and profile feedback decide from code or data
+ * no manifest of this TU carries. Matched anywhere in the IDENTITY record
+ * (not as a whitespace-delimited word: the identity's flags are the
+ * clang-manifest's length-prefixed strings concatenated back to back with
+ * no separator, never real command-line text), so a definition or path
+ * that merely spells one, or a future -fipa-* spelling, also refuses. */
 static const char *const k_fxg_unbounded[] = {
-    "-O2",           "-O3",         "-O4",
-    "-Os",           "-Oz",         "-Ofast",
-    "-flto",         "-fwhole-program", "-fipa-cp",
-    "-fipa-sra",     "-fipa-vrp",   "-fipa-bit-cp",
-    "-fipa-ra",      "-fipa-icf",   "-fipa-pta",
-    "-finline-small-functions",     "-finline-functions",
-    "-fprofile-use", "-fauto-profile", "-fprofile-sample-use",
+    "-flto",
+    "-fwhole-program",
+    "-fipa-",
+    "-finline-small-functions",
+    "-finline-functions",
+    "-fprofile-use",
+    "-fauto-profile",
+    "-fprofile-sample-use",
 };
 
-static const uint8_t *fxg_find(const uint8_t *s, size_t n, const char *tok,
-                               size_t from)
+/* True when the len-limited literal `lit` occurs at s[i]. */
+static bool fxg_at(const uint8_t *s, size_t n, size_t i, const char *lit)
 {
-    size_t k = strlen(tok);
-    for (size_t i = from; k > 0 && i + k <= n; i++)
-        if (memcmp(s + i, tok, k) == 0)
-            return s + i;
-    return NULL;
+    size_t k = strlen(lit);
+    return i + k <= n && memcmp(s + i, lit, k) == 0;
 }
 
-/* Every "-O" spelling but -O0 selects a level with interprocedural
- * propagation; a bare "-O" is -O1. */
-static bool fxg_optimizes(const uint8_t *s, size_t n)
+/* If position i names one of the unbounded -f flags, points *token at its
+ * literal spelling and returns true; leaves *token untouched otherwise. */
+static bool fxg_aux_unbounded_at(const uint8_t *s, size_t n, size_t i,
+                                 const char **token)
 {
-    for (const uint8_t *at = fxg_find(s, n, "-O", 0); at != NULL;
-         at = fxg_find(s, n, "-O", (size_t)(at - s) + 2)) {
-        size_t next = (size_t)(at - s) + 2;
-        if (next >= n || s[next] != '0')
+    for (size_t k = 0;
+         k < sizeof(k_fxg_unbounded) / sizeof(k_fxg_unbounded[0]); k++) {
+        if (fxg_at(s, n, i, k_fxg_unbounded[k])) {
+            *token = k_fxg_unbounded[k];
             return true;
+        }
     }
     return false;
 }
 
+/* The value of the run of ASCII digits starting at s[i] (i < n, s[i] a
+ * digit), parsed numerically with leading zeros (so "02" is 2), saturating
+ * at 2: only 0, 1 and "2 or more" ever matter to the model. *end is set
+ * past the last digit consumed. */
+static int fxg_digits_level(const uint8_t *s, size_t n, size_t i,
+                            size_t *end)
+{
+    int v = 0;
+    while (i < n && s[i] >= '0' && s[i] <= '9') {
+        v = v < 2 ? v * 10 + (s[i] - '0') : v;
+        if (v > 2)
+            v = 2;
+        i++;
+    }
+    *end = i;
+    return v;
+}
+
+enum fxg_opt {
+    FXG_OPT_NONE = 0, /* no -O / --optimize spelling at this position */
+    FXG_OPT_0,
+    FXG_OPT_1,
+    FXG_OPT_HIGH, /* -O2 and above, -Os/-Oz/-Ofast, or an unknown spelling */
+};
+
+/* A bare "-O" is -O1; -Og models like -O1; -Os, -Oz and -Ofast are
+ * unbounded; any other "-O..." spelling this parser does not know is
+ * unbounded too (unknown widens, it never narrows). Nothing here assumes a
+ * delimiter follows the spelling: the identity has none, so only the bytes
+ * immediately after "-O" are read, exactly like the flag text itself
+ * would read on a real command line. */
+static enum fxg_opt fxg_dash_o_at(const uint8_t *s, size_t n, size_t i,
+                                  const char **token)
+{
+    size_t p = i + 2, end;
+    int lvl;
+    if (!fxg_at(s, n, i, "-O"))
+        return FXG_OPT_NONE;
+    if (p >= n) {
+        *token = "-O";
+        return FXG_OPT_1;
+    }
+    if (s[p] >= '0' && s[p] <= '9') {
+        lvl = fxg_digits_level(s, n, p, &end);
+        if (lvl == 0) {
+            *token = "-O0";
+            return FXG_OPT_0;
+        }
+        if (lvl == 1) {
+            *token = "-O1";
+            return FXG_OPT_1;
+        }
+        *token = "-O2-or-higher";
+        return FXG_OPT_HIGH;
+    }
+    if (s[p] == 'g') {
+        *token = "-Og";
+        return FXG_OPT_1;
+    }
+    if (s[p] == 's' || s[p] == 'z') {
+        *token = "-Os";
+        return FXG_OPT_HIGH;
+    }
+    if (fxg_at(s, n, p, "fast")) {
+        *token = "-Ofast";
+        return FXG_OPT_HIGH;
+    }
+    *token = "an unrecognized -O spelling";
+    return FXG_OPT_HIGH;
+}
+
+/* "--optimize" is -O1; "--optimize=N" parses N the same way as -O<digits>;
+ * any other "--optimize..." spelling is unbounded. */
+static enum fxg_opt fxg_dash_dash_optimize_at(const uint8_t *s, size_t n,
+                                              size_t i, const char **token)
+{
+    static const char k_pre[] = "--optimize";
+    size_t pn = sizeof(k_pre) - 1, p, end;
+    int lvl;
+    if (!fxg_at(s, n, i, k_pre))
+        return FXG_OPT_NONE;
+    p = i + pn;
+    if (p >= n) {
+        *token = "--optimize";
+        return FXG_OPT_1;
+    }
+    if (s[p] != '=' || p + 1 >= n || s[p + 1] < '0' || s[p + 1] > '9') {
+        *token = "an unrecognized --optimize spelling";
+        return FXG_OPT_HIGH;
+    }
+    lvl = fxg_digits_level(s, n, p + 1, &end);
+    if (lvl == 0) {
+        *token = "--optimize=0";
+        return FXG_OPT_0;
+    }
+    if (lvl == 1) {
+        *token = "--optimize=1";
+        return FXG_OPT_1;
+    }
+    *token = "--optimize=N (N>=2 or unparsed)";
+    return FXG_OPT_HIGH;
+}
+
+/* Scans the raw identity bytes for every "-O" / "--optimize" and unbounded
+ * -f spelling, byte position by byte position. The identity is never
+ * whitespace-delimited command-line text: clang-manifest concatenates each
+ * flag's length-prefixed string directly after the last one, so a scan
+ * that requires a token boundary (as a shell's argv split would give it)
+ * silently fails to see "-O1" glued to the flag before it and falls back
+ * to the least conservative model. Matching by raw byte position, as the
+ * unbounded -f flags always have, is what actually matches this format. */
 enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
                                       const char **token)
 {
+    enum fxg_opt opt = FXG_OPT_NONE;
+    const char *opt_token = "";
+    const char *aux_token = NULL;
     *token = "";
     if (identity == NULL) {
         *token = "no identity record";
         return FXI_CODEGEN_UNBOUNDED;
     }
-    for (size_t k = 0; k < sizeof(k_fxg_unbounded) / sizeof(k_fxg_unbounded[0]);
-         k++) {
-        if (fxg_find(identity, len, k_fxg_unbounded[k], 0) != NULL) {
-            *token = k_fxg_unbounded[k];
-            return FXI_CODEGEN_UNBOUNDED;
+    for (size_t i = 0; i < len; i++) {
+        const char *tk = "";
+        enum fxg_opt o;
+        if (aux_token == NULL &&
+            fxg_aux_unbounded_at(identity, len, i, &aux_token))
+            continue;
+        o = fxg_dash_o_at(identity, len, i, &tk);
+        if (o == FXG_OPT_NONE)
+            o = fxg_dash_dash_optimize_at(identity, len, i, &tk);
+        if (o != FXG_OPT_NONE) {
+            opt = o; /* the LAST -O / --optimize spelling wins, as gcc/clang */
+            opt_token = tk;
         }
     }
-    return fxg_optimizes(identity, len) ? FXI_CODEGEN_COMPONENT
-                                        : FXI_CODEGEN_CALLERS;
+    if (aux_token != NULL) {
+        *token = aux_token;
+        return FXI_CODEGEN_UNBOUNDED;
+    }
+    if (opt == FXG_OPT_HIGH) {
+        *token = opt_token;
+        return FXI_CODEGEN_UNBOUNDED;
+    }
+    return opt == FXG_OPT_1 ? FXI_CODEGEN_COMPONENT : FXI_CODEGEN_CALLERS;
 }
 
 bool fxi_object_cc_known(const struct fxi *x)
