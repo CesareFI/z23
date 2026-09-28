@@ -1416,7 +1416,7 @@ static bool dev_proof_prerequisite_argv_has_lint(const char *source)
 {
     if (!source) return false;
     const char *block = strstr(source,
-                               "static const char *const helpers[] = {");
+                               "static const char *const proof_prefork_helpers[] = {");
     if (!block) return false;
     const char *end = strstr(block, "};");
     return range_contains(block, end, "\"build/bin/z23-lint\"");
