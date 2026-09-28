@@ -1412,6 +1412,128 @@ static int smt_t_sensor_static_assert(void)
     return failures;
 }
 
+/* A static assertion emits no bytes, but its condition reads sizes, offsets,
+ * enumerators and macros: when one of those changes, the assertion can stop
+ * holding and the TU stops compiling. The sensor records each entity the
+ * condition names as a ref from the pseudo-site "@assert:<file>" of the file
+ * the assertion is written in, at file scope and inside a struct alike; a
+ * block-scope assertion is part of its function's own refs. */
+static const char k_smt_sa_shape_h[] =
+    "#ifndef SHAPE_H\n"
+    "#define SHAPE_H\n"
+    "struct shape { int a; int b; };\n"
+    "enum shape_kind { SHAPE_KIND = 3 };\n"
+    "#define SHAPE_MAX 16\n"
+    "int shape_unrelated(int x);\n"
+    "#endif\n";
+static const char k_smt_sa_guard_h[] =
+    "#ifndef GUARD_H\n"
+    "#define GUARD_H\n"
+    "#include \"shape.h\"\n"
+    "static_assert(sizeof(struct shape) >= 8, \"shape size\");\n"
+    "static_assert(SHAPE_MAX <= 64, \"shape max\");\n"
+    "#endif\n";
+static const char k_smt_sa_use_c[] =
+    "#include \"guard.h\"\n"
+    "struct holder {\n"
+    "    int v;\n"
+    "    static_assert(SHAPE_KIND == 3, \"kind\");\n"
+    "};\n"
+    "static_assert(__builtin_offsetof(struct shape, b) == sizeof(int), \"b\");\n"
+    "int use_value(void)\n"
+    "{\n"
+    "    static_assert(_Alignof(struct shape) >= 1, \"block\");\n"
+    "    return shape_unrelated(1);\n"
+    "}\n";
+
+struct smt_ref_q {
+    const char *from, *to;
+    uint64_t kind;
+    size_t hits;
+};
+
+static bool smt_span_eq(const char *t, size_t n, const char *s)
+{
+    return n == strlen(s) && memcmp(t, s, n) == 0;
+}
+
+static bool smt_ref_cb(void *ctx, const struct vcs_semantic_fields_v1 *f)
+{
+    struct smt_ref_q *q = ctx;
+    if (f->ntext >= 2 && f->nnum >= 1 && f->num[0] == q->kind &&
+        smt_span_eq(f->text[0], f->text_len[0], q->from) &&
+        smt_span_eq(f->text[1], f->text_len[1], q->to))
+        q->hits++;
+    return true;
+}
+
+static size_t smt_refs(const uint8_t *m, size_t n, const char *from,
+                       uint64_t kind, const char *to)
+{
+    struct smt_ref_q q = {.from = from, .to = to, .kind = kind};
+    if (!vcs_semantic_section_v1_each(m, n, VCS_SEMANTIC_SECTION_V1_REFS,
+                                      smt_ref_cb, &q))
+        return SIZE_MAX;
+    return q.hits;
+}
+
+static bool smt_sa_emit(const char *dir, uint8_t **m, size_t *mn)
+{
+    char out[PATH_MAX], message[4096];
+    const char *argv[] = {SMT_SENSOR, "emit", "--root", dir, "--source",
+                          "use.c", "--out", out, "--facts", "--",
+                          "-std=c23", NULL};
+    bool timed_out = false;
+    (void)snprintf(out, sizeof(out), "%s/use.zsm", dir);
+    int rc = zcl_spawn_capture_merged_observed(argv, message, sizeof(message),
+                                               60000, &timed_out);
+    if (timed_out || rc != 0 || !smt_read(out, m, mn)) {
+        printf("  static assert facts: rc=%d: %s\n", rc, message);
+        return false;
+    }
+    return true;
+}
+
+static int smt_t_sensor_static_assert_facts(void)
+{
+    int failures = 0;
+    char dir[1024] = {0};
+    uint8_t *m = NULL;
+    size_t n = 0;
+    TEST_CASE("semantic_sensor: a static_assert's condition is an @assert ref") {
+        ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_safacts") != NULL);
+        ASSERT(smt_write(dir, "shape.h", k_smt_sa_shape_h));
+        ASSERT(smt_write(dir, "guard.h", k_smt_sa_guard_h));
+        ASSERT(smt_write(dir, "use.c", k_smt_sa_use_c));
+        ASSERT(smt_sa_emit(dir, &m, &n));
+        /* a header's file-scope assertion: sizeof names the struct, and the
+         * macro its condition expands is attributed to it too */
+        ASSERT_EQ(smt_refs(m, n, "@assert:guard.h",
+                           VCS_SEMANTIC_REF_V1_TYPE, "s:shape"), 1);
+        ASSERT_EQ(smt_refs(m, n, "@assert:guard.h",
+                           VCS_SEMANTIC_REF_V1_MACRO, "m:shape.h:SHAPE_MAX"), 1);
+        /* the main file's: offsetof at file scope, an enumerator in a
+         * struct's member list */
+        ASSERT_EQ(smt_refs(m, n, "@assert:use.c",
+                           VCS_SEMANTIC_REF_V1_TYPE, "s:shape"), 1);
+        ASSERT_EQ(smt_refs(m, n, "@assert:use.c",
+                           VCS_SEMANTIC_REF_V1_ENUMERATOR,
+                           "k:shape.h:SHAPE_KIND"), 1);
+        /* a block-scope assertion is its function's */
+        ASSERT_EQ(smt_refs(m, n, "f:use_value", VCS_SEMANTIC_REF_V1_TYPE,
+                           "s:shape"), 1);
+        /* nothing an assertion does not name */
+        ASSERT_EQ(smt_refs(m, n, "@assert:guard.h",
+                           VCS_SEMANTIC_REF_V1_ADDRESS, "f:shape_unrelated"), 0);
+        ASSERT_EQ(smt_refs(m, n, "@assert:use.c",
+                           VCS_SEMANTIC_REF_V1_CALL, "f:shape_unrelated"), 0);
+    } TEST_END
+    free(m);
+    if (dir[0] != '\0')
+        (void)test_rm_rf_recursive(dir);
+    return failures;
+}
+
 #if defined(__APPLE__)
 /* Exercise the Apple libclang type-spelling adapter with facts enabled, so
  * these assertions also require a verified, nonzero producer identity. */
@@ -1803,6 +1925,7 @@ int test_semantic_sensor(void)
     failures += semantic_sensor_session_cases();
     failures += semantic_sensor_identity_tests();
     failures += smt_t_sensor_static_assert();
+    failures += smt_t_sensor_static_assert_facts();
 #if defined(__APPLE__)
     failures += smt_t_darwin_types();
     failures += smt_t_darwin_refusals();

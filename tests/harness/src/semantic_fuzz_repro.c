@@ -1105,6 +1105,95 @@ static const struct sfz_file k_n2c_undef_between[] = {
     SFZ_T1_ALONE,
 };
 
+/* ---- static assertions: a compile-time check over a changed entity ---------- */
+
+/* inc2/guard.h asserts over struct shape (inc2/shape.h) and over a macro
+ * chain ending in SHAPE_MAX. t1 and t2 include guard.h and name nothing of
+ * shape.h themselves; t0 reads shape.h directly. An assertion emits no
+ * bytes, so when its operands change the readers' objects stay the same,
+ * but their compile can now fail: each is affected, compile only (pinned
+ * over-selection, one per reader). A change the assertions do not name
+ * leaves them alone. */
+#define SFZ_SA_GUARD                                                         \
+    "#ifndef GUARD_H\n"                                                      \
+    "#define GUARD_H\n"                                                      \
+    "#include \"shape.h\"\n"                                                 \
+    "#define GUARD_LIMIT (SHAPE_MAX * 2)\n"                                  \
+    "static_assert(sizeof(struct shape) >= 8, \"shape size\");\n"            \
+    "static_assert(GUARD_LIMIT <= 64, \"shape limit\");\n"                   \
+    "#endif\n"
+#define SFZ_SA_SHAPE(field, max, ret)                                        \
+    "#ifndef SHAPE_H\n"                                                      \
+    "#define SHAPE_H\n"                                                      \
+    "struct shape { int a; int b;" field " };\n"                             \
+    "#define SHAPE_MAX " max "\n"                                            \
+    ret " shape_unrel(int x);\n"                                             \
+    "#endif\n"
+#define SFZ_SA_T0                                                            \
+    {"src/t0.c",                                                             \
+     "#include \"shape.h\"\n"                                                \
+     "unsigned long t0_sz(void)\n"                                           \
+     "{\n"                                                                   \
+     "    return sizeof(struct shape);\n"                                    \
+     "}\n"                                                                   \
+     "long t0_u(void)\n"                                                     \
+     "{\n"                                                                   \
+     "    return shape_unrel(1);\n"                                          \
+     "}\n",                                                                  \
+     SFZ_SAME}
+#define SFZ_SA_READER(path, fn, v)                                           \
+    {path,                                                                   \
+     "#include \"guard.h\"\n"                                                \
+     "int " fn "(void)\n"                                                    \
+     "{\n"                                                                   \
+     "    return " v ";\n"                                                   \
+     "}\n",                                                                  \
+     SFZ_SAME}
+#define SFZ_SA_COMMON                                                        \
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME}, SFZ_SA_T0,             \
+        SFZ_SA_READER("src/t1.c", "t1_v", "7"),                              \
+        SFZ_SA_READER("src/t2.c", "t2_v", "9")
+
+/* SA1: struct shape gains a field; sizeof(struct shape) >= 8 still holds. */
+static const struct sfz_file k_sa1_struct_grows[] = {
+    {"inc2/guard.h", SFZ_SA_GUARD, SFZ_SAME},
+    {"inc2/shape.h", SFZ_SA_SHAPE("", "16", "int"),
+     SFZ_SA_SHAPE(" int c;", "16", "int")},
+    SFZ_SA_COMMON,
+};
+
+/* SA2: SHAPE_MAX, which the assertion reaches through GUARD_LIMIT, moves
+ * from 16 to 24; the limit still holds. */
+static const struct sfz_file k_sa2_macro_chain[] = {
+    {"inc2/guard.h", SFZ_SA_GUARD, SFZ_SAME},
+    {"inc2/shape.h", SFZ_SA_SHAPE("", "16", "int"),
+     SFZ_SA_SHAPE("", "24", "int")},
+    SFZ_SA_COMMON,
+};
+
+/* SA3: shape_unrel, which no assertion names, returns long; only t0, which
+ * calls it, is affected. */
+static const struct sfz_file k_sa3_unrelated_fn[] = {
+    {"inc2/guard.h", SFZ_SA_GUARD, SFZ_SAME},
+    {"inc2/shape.h", SFZ_SA_SHAPE("", "16", "int"),
+     SFZ_SA_SHAPE("", "16", "long")},
+    SFZ_SA_COMMON,
+};
+
+/* SA4: the assertion's own bound changes in guard.h. */
+static const struct sfz_file k_sa4_assert_edited[] = {
+    {"inc2/guard.h", SFZ_SA_GUARD,
+     "#ifndef GUARD_H\n"
+     "#define GUARD_H\n"
+     "#include \"shape.h\"\n"
+     "#define GUARD_LIMIT (SHAPE_MAX * 2)\n"
+     "static_assert(sizeof(struct shape) >= 4, \"shape size\");\n"
+     "static_assert(GUARD_LIMIT <= 64, \"shape limit\");\n"
+     "#endif\n"},
+    {"inc2/shape.h", SFZ_SA_SHAPE("", "16", "int"), SFZ_SAME},
+    SFZ_SA_COMMON,
+};
+
 const struct sfz_repro k_sfz_repros[] = {
     {"F1_flag", "flag", "Makefile CFLAGS_EXTRA gains -DPROJ_MODE=1", false,
      NULL, SFZ_FILES(k_f1_flag), NULL},
@@ -1239,6 +1328,23 @@ const struct sfz_repro k_sfz_repros[] = {
      "inc2/undef_b.h, previously a no-op, gains an #undef and redefine of "
      "UNDF_V, which inc1/def_a.h defines first",
      false, NULL, SFZ_FILES(k_n2c_undef_between), NULL, true, 0},
+    {"SA1_assert_struct_grows", "static_assert",
+     "struct shape gains a field; inc2/guard.h asserts over its size, so "
+     "t1 and t2, which name nothing of shape.h, compile (pinned "
+     "over-selection 2: their objects do not change)",
+     false, NULL, SFZ_FILES(k_sa1_struct_grows), NULL, true, 2},
+    {"SA2_assert_macro_chain", "static_assert",
+     "SHAPE_MAX, which guard.h's assertion reaches through GUARD_LIMIT, "
+     "moves from 16 to 24: t1 and t2 compile (pinned over-selection 2)",
+     false, NULL, SFZ_FILES(k_sa2_macro_chain), NULL, true, 2},
+    {"SA3_assert_unrelated_fn", "static_assert",
+     "shape_unrel, which no assertion names, returns long: only t0 is "
+     "affected",
+     false, NULL, SFZ_FILES(k_sa3_unrelated_fn), NULL, true, 0},
+    {"SA4_assert_edited", "static_assert",
+     "guard.h's size bound changes from 8 to 4: t1 and t2 compile (pinned "
+     "over-selection 2)",
+     false, NULL, SFZ_FILES(k_sa4_assert_edited), NULL, true, 2},
 };
 const size_t k_sfz_nrepros = sizeof(k_sfz_repros) / sizeof(k_sfz_repros[0]);
 
