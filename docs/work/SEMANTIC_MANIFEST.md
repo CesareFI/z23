@@ -1385,43 +1385,41 @@ while an object is built. The path widens when:
   a file; an `include`, `-include` or `sinclude` word that is not one
   literal file (a glob, a `$(wildcard)`, a reference no single definition
   gives); a missing file a mandatory `include` names; a missing file an
-  optional include names when a rule a `define` holds, a match-anything
-  rule (`%:`) or `.DEFAULT` could make it; and a generated include whose
-  recipe writes text no line holds (below). A
-  missing optional file no rule makes is read by nobody, and a depfile an
-  include names (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile
-  graph.
+  optional include names when any rule could make it (a rule a `define`
+  holds, a match-anything rule `%:` or `.DEFAULT` included); and a
+  `$(shell)`, `!=` or `$(file)` that make runs while it reads the
+  makefiles and that writes a file (below). A missing optional file no
+  rule makes is read by nobody, and a depfile an include names
+  (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile graph.
 
 Otherwise its compile set is empty. Its test groups stay selected: the
 plain plan's path groups, the impact rules and the runtime-input handling
 decide those, not this rule.
 
 **Generated includes.** An optional include that does not exist yet but
-a rule makes is made before anything else and then read, so that rule is
-reached and its recipe is read as what the makefile will hold. Each
-command must be `set`, `mkdir`, `trap` (no action, or an `rm`), `mktemp`,
-`true`, `:`, `exit`, `test`, `[`, `rm`, `touch`, `chmod`, `printf`,
-`echo`, `mv` (of a temporary file a shell variable names, which a bare
-assignment may set only from `$$(mktemp ...)`), or a program the tree
-holds by a relative path that is not handed the file (no argument or
-environment value holds `$@`, `$*`, a shell value `$$x`, or the target's
-last path part); a command substitution may run only `mktemp`,
-`dirname`, `basename` or `pwd`; the recipe may not expand a `$(shell)`,
-`$(file)` or `$(eval)`, itself or through a variable whose deferred value
-(`=`, `?=`, `+=`, a `define`) does. Only `printf` and `echo` may write to
-a file, and only once in the recipe: a second write can join the first's
-text (`>` then `>>`, `echo -n`), so it reaches every `.PHONY` name. What
-the one write puts in the makefile is computed: a `printf` format is
-applied to its arguments (`%s`, `%%`, `\n`, `\t`; again while arguments
-remain), and any other conversion (`%c`, `%b`, a width), an option, a
-shell value, or an `echo` backslash (`echo -e`, and dash reads escapes)
-reaches every `.PHONY` name. The written words are goal positions: a
-rule they print reaches its prerequisites, and text from a `#` to a
-newline is a comment except on a line a tab leads. Anything else (another
-command, a group or `exec` redirection, a copy such as `cp` or `cat`, a
-program's output redirected to a file, any rule above broken) is UNKNOWN.
-A match-anything rule (`%:`) or a `.DEFAULT` rule can make any file, so
-with one present every missing optional include is UNKNOWN.
+a rule can make is made before anything else and then read, and what its
+recipe writes is text no line holds: UNKNOWN, whatever the recipe is. The
+recipe is not read as shell. An optional include that exists is read as a
+makefile, like any other. It is taken as current: its rule remakes it
+only when one of that rule's prerequisites changed, and a changed path
+that reaches that rule already widens. A rule in any file make reads can
+remake it this way; another rule's recipe that rewrites it as a side
+effect runs only when that rule runs, which the same premise covers. The
+Makefile's own includes of this kind (`build/identity/vendor-inputs-ready.mk`,
+`view-inputs-ready.mk`, `tor-inputs-ready.mk`, `epoch-recovery-ready.mk`)
+are identity markers that sit behind conditionals the scan reads as
+taken, so a tree that lacks any of the four widens every build input.
+
+**Makefile text that writes a file.** A `$(shell)` or `!=` command that
+make runs while it reads the makefiles can rewrite an include before make
+reads it, missing or not. Any line but a recipe line (a tab-led line a
+`define` holds is one too) whose `$(shell)` or `!=` text, as written, writes a file
+is UNKNOWN: outside quotes, a redirection to anything but a descriptor
+(`2>&1`, `>&2`) or `/dev/null`, or a `tee`. Quote tracking stops at a
+command substitution inside double quotes. So is a `$(file)` that is not
+a read (`$(file >f,...)`, `$(file >>f,...)`, an operator a reference
+spells). A plain `$(shell git ...)` or `$(shell cat f)` writes nothing and
+reads as before.
 
 A line names a path by its literal path or basename, a directory it lives
 under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
@@ -1496,9 +1494,17 @@ none of them runs as part of building that commit's objects:
 - a script or program that runs make internally (a recipe runs a script
   that calls `make gen` itself): the script is an opaque program, the
   same premise the text scan makes for any script a recipe runs;
-- a program the tree holds that a generated include's recipe runs and
-  that writes that makefile by a name it holds itself, not through a
-  redirection: the same opaque-program premise;
+- an optional include that exists and whose rule, or another rule's
+  recipe, would rewrite it: it is read as it stands, and it changes only
+  when a rule that writes it runs, which a changed path reaching that rule
+  already widens;
+- a parse-time `$(shell)` whose command writes a file only through a
+  variable's value (`$(shell cmd $(TO))` with `TO := > f`), a `$(call)`,
+  or a script it runs: the check reads the command as written. Following
+  the references instead makes the real Makefile UNKNOWN: its
+  `zcl_compile_epoch` and `zcl_testcache_toolkey` commands expand a
+  computed name (`$($(2))`), and recipe-text variables (`mvp_gate`,
+  `INSTALL_C23_PRODUCTS`) hold redirections;
 - a hand-run goal (`make core-seal`, a `.PHONY` rule whose sub-make names
   only other `.PHONY` goals): it runs when someone names it, and what it
   rewrites changes objects then;
