@@ -106,6 +106,16 @@ cmake --build build/zcl-ledger --target blue-m3-qemu-image
 ctest --test-dir build/zcl-ledger -R '^blue-m3-qemu$' --output-on-failure -V
 ```
 
+The same toolchain builds `blue-wallet-m3-qemu-image`. It runs the Wallet's
+actual `main.c` on the Cortex-M3 with deterministic BOLOS call stubs, checks
+the receive address layout, both read-only APDU replies, EXIT, and a stack
+watermark. Run it with:
+
+```sh
+cmake --build build/zcl-ledger --target blue-wallet-m3-qemu-image
+ctest --test-dir build/zcl-ledger -R '^blue-wallet-m3-qemu$' --output-on-failure -V
+```
+
 The isolated ZIP32 case also checks normal and hardened child derivation
 against Z23's canonical synthetic-seed vectors. Child outputs and scratch
 buffers are cleared after the emulator comparison. It signs the ZIP243 digest
@@ -136,8 +146,9 @@ linked into Wallet, and its addresses differ from standard ZIP32 roots
 derived directly from a wallet seed.
 
 This board emulates the CPU, not Ledger BOLOS, its USB interface, touchscreen,
-or its app memory layout. A pass does not authorize installing or signing with
-Sapling on the physical Blue.
+or its app memory layout. The Wallet test uses fake BIP32 and EC calls and a
+different RAM layout from the linked device app. A pass does not authorize
+installing or signing with the physical Blue.
 The nonce test uses public fixture bytes. The installed Wallet does not call
 the nonce helper or access a Sapling device key.
 The emulator reports each arithmetic case's stack watermark separately and

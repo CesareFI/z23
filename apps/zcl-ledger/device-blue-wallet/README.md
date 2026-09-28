@@ -28,6 +28,10 @@ records the test coverage and limits.
 The [stack-path audit](../../../docs/experiments/2026-09-27-ledger-blue-wallet-036-stack-audit.md)
 corrects the named-frame gate to include `main` on payment and signing calls.
 The largest measured named path is 1,056 bytes; BOLOS frames remain excluded.
+The [Cortex-M3 startup test](../../../docs/experiments/2026-09-27-ledger-blue-wallet-036-m3-startup.md)
+runs `main.c`, both receive APDUs, and EXIT with deterministic firmware-call
+stubs. Its stack watermark is 976 bytes in the tested path; it does not run
+BOLOS or the linked Wallet image.
 
 Version 0.3.5 shares RAM between mutually exclusive boot derivation and
 payment state, and between output text and previous-transaction parsing.

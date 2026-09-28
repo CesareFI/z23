@@ -826,6 +826,48 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             PASS_REGULAR_EXPRESSION "M3 PASS"
             FAIL_REGULAR_EXPRESSION "M3 FAIL|M3 STACK SETUP FAIL"
             TIMEOUT 15)
+
+        set(BLUE_M3_WALLET_IMAGE
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-wallet-m3-qemu.elf")
+        add_custom_command(OUTPUT "${BLUE_M3_WALLET_IMAGE}"
+            COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m3 -mthumb
+                -O2 -ffunction-sections -fdata-sections
+                -Wall -Wextra -Werror -pedantic
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_wallet_startup_stub"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/src"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zripemd/include"
+                -nostartfiles -specs=rdimon.specs
+                -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
+                -Wl,--gc-sections
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_wallet_m3_qemu.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_wallet_protocol.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_wallet_receive.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/zcl_base58.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/src/zsha256.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zripemd/src/zripemd.c"
+                -o "${BLUE_M3_WALLET_IMAGE}"
+            DEPENDS tests/blue_wallet_m3_qemu.c tests/blue_m3_qemu.ld
+                device-blue-wallet/src/main.c
+                tests/blue_wallet_startup_stub/os.h
+                tests/blue_wallet_startup_stub/os_io_seproxyhal.h
+                tests/blue_wallet_startup_stub/core_cmFunc.h
+                src/blue_wallet_protocol.c src/blue_wallet_receive.c
+                src/zcl_base58.c
+                ../../contexts/commons/packages/zsha256/src/zsha256.c
+                ../../contexts/commons/packages/zripemd/src/zripemd.c
+            VERBATIM)
+        add_custom_target(blue-wallet-m3-qemu-image ALL
+            DEPENDS "${BLUE_M3_WALLET_IMAGE}")
+        add_test(NAME blue-wallet-m3-qemu COMMAND ${BLUE_QEMU}
+            -M mps2-an385 -cpu cortex-m3 -nographic
+            -semihosting-config enable=on,target=native
+            -kernel "${BLUE_M3_WALLET_IMAGE}")
+        set_tests_properties(blue-wallet-m3-qemu PROPERTIES
+            PASS_REGULAR_EXPRESSION "M3 WALLET PASS"
+            FAIL_REGULAR_EXPRESSION "M3 WALLET FAIL|M3 WALLET STACK SETUP FAIL"
+            TIMEOUT 15)
     endif()
 endif()
 

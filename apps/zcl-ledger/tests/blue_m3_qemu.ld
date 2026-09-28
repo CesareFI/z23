@@ -7,7 +7,11 @@ MEMORY {
 SECTIONS {
     .vectors : { KEEP(*(.vectors)) } > FLASH
     .text : { *(.text*) *(.rodata*) } > FLASH
-    .ARM.exidx : { *(.ARM.exidx*) } > FLASH
+    .ARM.exidx : {
+        __exidx_start = .;
+        *(.ARM.exidx*)
+        __exidx_end = .;
+    } > FLASH
     .data : AT(LOADADDR(.ARM.exidx) + SIZEOF(.ARM.exidx)) {
         _sdata = .; *(.data*) _edata = .;
     } > RAM
