@@ -29,21 +29,19 @@ bool blue_redjubjub_sign_isolated(uint8_t signature[64],
         blue_mod256_wipe(signature, 64);
         return false;
     }
-    uint8_t vkbar[32] = {0}, nonce[32] = {0};
-    uint8_t challenge[32] = {0}, candidate[64] = {0};
-    bool success = point_from_scalar(vkbar, secret);
+    uint8_t nonce[32] = {0};
+    uint8_t candidate[64] = {0};
+    bool success = point_from_scalar(candidate + 32, secret);
     if (success) success = blue_redjubjub_nonce_from_entropy(nonce,
-        entropy, vkbar, transaction_digest);
+        entropy, candidate + 32, transaction_digest);
     if (success) success = point_from_scalar(candidate, nonce);
-    if (success) success = blue_redjubjub_challenge(challenge,
-        candidate, vkbar, transaction_digest);
+    if (success) success = blue_redjubjub_challenge(candidate + 32,
+        candidate, candidate + 32, transaction_digest);
     if (success) success = blue_redjubjub_response(candidate + 32,
-        nonce, challenge, secret);
+        nonce, candidate + 32, secret);
     if (success) memcpy(signature, candidate, sizeof candidate);
     else blue_mod256_wipe(signature, sizeof candidate);
-    blue_mod256_wipe(vkbar, sizeof vkbar);
     blue_mod256_wipe(nonce, sizeof nonce);
-    blue_mod256_wipe(challenge, sizeof challenge);
     blue_mod256_wipe(candidate, sizeof candidate);
     return success;
 }

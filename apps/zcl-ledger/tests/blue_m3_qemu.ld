@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 ENTRY(blue_m3_reset)
 MEMORY {
-    FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 4M
+    FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 256K
     RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 6K
 }
 SECTIONS {

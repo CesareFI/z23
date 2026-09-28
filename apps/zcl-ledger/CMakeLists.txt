@@ -754,6 +754,42 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
         OUTPUT_VARIABLE BLUE_RDIMON_SPECS OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(EXISTS "${BLUE_RDIMON_SPECS}")
         set(BLUE_M3_IMAGE "${CMAKE_CURRENT_BINARY_DIR}/blue-m3-qemu.elf")
+        set(BLUE_SAPLING_ARM_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_challenge.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_nonce.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_response.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_sign_isolated.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_spend_auth.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_master.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_fvk.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_child.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_seed_bridge.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_generators.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_mod256.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_ct.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fs_ct.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_arithmetic.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_lowmem.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_encode.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/src/jubjub.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/src/blake2b.c")
+        set(BLUE_SAPLING_ARM_DEPENDS
+            ${BLUE_SAPLING_ARM_SOURCES}
+            tests/blue_m3_qemu.ld tests/blue_consensus_spend_fixture.h
+            include/blue_mod256.h include/blue_fr_ct.h include/blue_fs_ct.h
+            include/blue_jubjub_arithmetic.h include/blue_jubjub_lowmem.h
+            include/blue_jubjub_encode.h
+            include/blue_redjubjub_challenge.h
+            include/blue_redjubjub_nonce.h
+            include/blue_redjubjub_response.h
+            include/blue_redjubjub_sign_isolated.h
+            include/blue_sapling_spend_auth.h
+            include/blue_zip32_master.h
+            include/blue_zip32_fvk.h
+            include/blue_zip32_child.h
+            include/blue_zip32_seed_bridge.h
+            include/blue_sapling_generators.h)
         add_custom_command(OUTPUT "${BLUE_M3_IMAGE}"
             COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m3 -mthumb
                 -O2 -ffunction-sections -fdata-sections
@@ -767,55 +803,9 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
                 -nostartfiles -specs=rdimon.specs
                 -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
                 -Wl,--gc-sections
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_challenge.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_nonce.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_response.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_sign_isolated.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_spend_auth.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_master.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_fvk.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_child.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_seed_bridge.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_generators.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_mod256.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fr_ct.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_fs_ct.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_arithmetic.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_lowmem.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_encode.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/src/jubjub.c"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/src/blake2b.c"
+                ${BLUE_SAPLING_ARM_SOURCES}
                 -o "${BLUE_M3_IMAGE}"
-            DEPENDS tests/blue_m3_qemu.c tests/blue_m3_qemu.ld
-                tests/blue_consensus_spend_fixture.h
-                src/blue_redjubjub_challenge.c
-                src/blue_redjubjub_nonce.c
-                src/blue_redjubjub_response.c
-                src/blue_redjubjub_sign_isolated.c
-                src/blue_sapling_spend_auth.c
-                src/blue_zip32_master.c
-                src/blue_zip32_fvk.c src/blue_zip32_child.c
-                src/blue_zip32_seed_bridge.c
-                src/blue_sapling_generators.c
-                src/blue_mod256.c src/blue_fr_ct.c src/blue_fs_ct.c
-                src/blue_jubjub_arithmetic.c src/blue_jubjub_lowmem.c
-                src/blue_jubjub_encode.c
-                ../../core/modules/sapling/src/jubjub.c
-                ../../core/modules/crypto/src/blake2b.c
-                include/blue_mod256.h include/blue_fr_ct.h include/blue_fs_ct.h
-                include/blue_jubjub_arithmetic.h include/blue_jubjub_lowmem.h
-                include/blue_jubjub_encode.h
-                include/blue_redjubjub_challenge.h
-                include/blue_redjubjub_nonce.h
-                include/blue_redjubjub_response.h
-                include/blue_redjubjub_sign_isolated.h
-                include/blue_sapling_spend_auth.h
-                include/blue_zip32_master.h
-                include/blue_zip32_fvk.h
-                include/blue_zip32_child.h
-                include/blue_zip32_seed_bridge.h
-                include/blue_sapling_generators.h
+            DEPENDS ${BLUE_SAPLING_ARM_DEPENDS}
             VERBATIM)
         add_custom_target(blue-m3-qemu-image ALL DEPENDS "${BLUE_M3_IMAGE}")
         add_test(NAME blue-m3-qemu COMMAND ${BLUE_QEMU}
@@ -826,6 +816,43 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             PASS_REGULAR_EXPRESSION "M3 PASS"
             FAIL_REGULAR_EXPRESSION "M3 FAIL|M3 STACK SETUP FAIL"
             TIMEOUT 15)
+
+        set(BLUE_M0_SAPLING_IMAGE
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-m0-sapling-qemu.elf")
+        set(BLUE_M0_SAPLING_BINARY
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-m0-sapling-qemu.bin")
+        get_filename_component(BLUE_ARM_GCC_DIR "${BLUE_ARM_GCC}" DIRECTORY)
+        set(BLUE_ARM_OBJCOPY "${BLUE_ARM_GCC_DIR}/arm-none-eabi-objcopy")
+        add_custom_command(OUTPUT "${BLUE_M0_SAPLING_IMAGE}"
+                "${BLUE_M0_SAPLING_BINARY}"
+            COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m0 -mthumb
+                -O2 -ffunction-sections -fdata-sections -fstack-usage
+                -Wall -Wextra -Werror -pedantic
+                -DBLUE_QEMU_M0 -DZCL_FUZZ_QUIET_LOG_MACROS=1
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/util/include"
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/../../platform/modules/base/include"
+                -nostartfiles -specs=rdimon.specs
+                -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
+                -Wl,--gc-sections
+                ${BLUE_SAPLING_ARM_SOURCES}
+                -o "${BLUE_M0_SAPLING_IMAGE}"
+            COMMAND ${BLUE_ARM_OBJCOPY} -O binary
+                "${BLUE_M0_SAPLING_IMAGE}" "${BLUE_M0_SAPLING_BINARY}"
+            DEPENDS ${BLUE_SAPLING_ARM_DEPENDS}
+            VERBATIM)
+        add_custom_target(blue-m0-sapling-qemu-image ALL
+            DEPENDS "${BLUE_M0_SAPLING_BINARY}")
+        add_test(NAME blue-m0-sapling-qemu COMMAND ${BLUE_QEMU}
+            -M microbit -cpu cortex-m0 -nographic
+            -semihosting-config enable=on,target=native
+            -kernel "${BLUE_M0_SAPLING_BINARY}")
+        set_tests_properties(blue-m0-sapling-qemu PROPERTIES
+            PASS_REGULAR_EXPRESSION "M0 PASS"
+            FAIL_REGULAR_EXPRESSION "M0 FAIL|M0 STACK SETUP FAIL"
+            TIMEOUT 30)
 
         set(BLUE_M0_WALLET_IMAGE
             "${CMAKE_CURRENT_BINARY_DIR}/blue-wallet-m0-qemu.elf")

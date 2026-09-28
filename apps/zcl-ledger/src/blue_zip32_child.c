@@ -13,7 +13,8 @@ static const uint8_t expand_personal[16] = {
     'Z','c','a','s','h','_','E','x','p','a','n','d','S','e','e','d'
 };
 
-static bool child_root(uint8_t output[64], const struct zip32_xsk *parent,
+[[gnu::noinline]] static bool child_root(uint8_t output[64],
+    const struct zip32_xsk *parent,
     const struct zip32_fvk *fvk, uint32_t index) {
     uint8_t tag = index & ZIP32_HARDENED_KEY_LIMIT ? 0x11 : 0x12;
     uint8_t le_index[4] = {(uint8_t)index, (uint8_t)(index >> 8),

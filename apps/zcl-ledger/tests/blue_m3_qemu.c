@@ -21,10 +21,19 @@
 
 #include <stdint.h>
 #include <string.h>
+#ifdef BLUE_QEMU_M0
+#include <unistd.h>
+#define BLUE_QEMU_MODEL "M0"
+#else
+#define BLUE_QEMU_MODEL "M3"
+#endif
 
 extern uint8_t _sdata, _edata, _sidata, _sbss, _ebss;
 extern uint8_t _stack_bottom, _stack_top;
 extern void _exit(int status);
+#ifdef BLUE_QEMU_M0
+extern void initialise_monitor_handles(void);
+#endif
 void blue_m3_reset(void);
 
 enum zcl_log_level zcl_log_level_get(void) {
@@ -103,6 +112,9 @@ static bool same_point(const struct jub_point *a,
 }
 
 static void uart_text(const char *text) {
+#ifdef BLUE_QEMU_M0
+    (void)write(1, text, strlen(text));
+#else
     volatile uint32_t *const uart = (volatile uint32_t *)0x40004000u;
     uart[4] = 16u;
     uart[2] = 1u;
@@ -110,15 +122,23 @@ static void uart_text(const char *text) {
         while (uart[1] & 1u) {}
         uart[0] = (uint8_t)*text++;
     }
+#endif
 }
 
 static void uart_hex16(unsigned value) {
     static const char digits[] = "0123456789abcdef";
+#ifdef BLUE_QEMU_M0
+    char output[4];
+    for (int shift = 12; shift >= 0; shift -= 4)
+        output[(12 - shift) / 4] = digits[(value >> shift) & 15u];
+    (void)write(1, output, sizeof output);
+#else
     volatile uint32_t *const uart = (volatile uint32_t *)0x40004000u;
     for (int shift = 12; shift >= 0; shift -= 4) {
         while (uart[1] & 1u) {}
         uart[0] = (uint8_t)digits[(value >> shift) & 15u];
     }
+#endif
 }
 
 static bool check_reduction(void) {
@@ -348,6 +368,7 @@ static union {
 } checked_parent;
 static struct zip32_xsk checked_child;
 static uint8_t checked_seed[32];
+static bool bridge_ready;
 
 static bool fixture_bip32_node(void *context, const uint32_t path[3],
     uint8_t private_key[32], uint8_t chain_code[32]) {
@@ -375,7 +396,7 @@ static bool check_mapped_spend_signature(void) {
         0xcc,0xdb,0x19,0x82,0x4d,0x72,0xd3,0x57,
         0x7f,0x4b,0xee,0xc1,0x93,0x03,0xe9,0x7d
     };
-    bool valid = blue_zip32_derive_child(&checked_child,
+    bool valid = bridge_ready && blue_zip32_derive_child(&checked_child,
         &checked_parent.master, 0x80000000u, &checked_workspace.fvk);
     blue_mod256_wipe(&checked_parent, sizeof checked_parent);
     for (unsigned i = 0; i < sizeof signing_seed; ++i)
@@ -388,8 +409,10 @@ static bool check_mapped_spend_signature(void) {
         matches_hex(signing_signature + 32,
             "306569f4adfe9d09e708a61efc3ac2d86e10f8e4d783a404c1453ee21dacd20b");
     blue_mod256_wipe(&checked_parent, sizeof checked_parent);
+    blue_mod256_wipe(&checked_child, sizeof checked_child);
     blue_mod256_wipe(signing_seed, sizeof signing_seed);
     blue_mod256_wipe(signing_signature, sizeof signing_signature);
+    bridge_ready = false;
     return valid;
 }
 
@@ -413,9 +436,11 @@ static bool check_zip32_seed_bridge(void) {
             sizeof checked_parent.master.expsk) == 0;
     for (unsigned i = 0; i < sizeof checked_workspace.node; ++i)
         valid &= ((const uint8_t *)&checked_workspace.node)[i] == 0;
-    if (valid) valid = check_mapped_spend_signature();
-    blue_mod256_wipe(&checked_parent, sizeof checked_parent);
-    blue_mod256_wipe(&checked_child, sizeof checked_child);
+    bridge_ready = valid;
+    if (!valid) {
+        blue_mod256_wipe(&checked_parent, sizeof checked_parent);
+        blue_mod256_wipe(&checked_child, sizeof checked_child);
+    }
     return valid;
 }
 
@@ -545,6 +570,7 @@ static const struct {
     {"FVK", check_zip32_fvk},
     {"CHILD", check_zip32_children},
     {"BRIDGE", check_zip32_seed_bridge},
+    {"MAPPED", check_mapped_spend_signature},
     {"SAPLING", check_consensus_spend_signature}
 };
 
@@ -554,10 +580,13 @@ void blue_m3_reset(void) {
         *target = *source++;
     for (volatile uint8_t *target = &_sbss; target < &_ebss; ++target)
         *target = 0;
+#ifdef BLUE_QEMU_M0
+    initialise_monitor_handles();
+#endif
     volatile uint8_t *guard = &_stack_bottom;
     volatile uint8_t marker = 0;
     if ((uintptr_t)&marker <= (uintptr_t)guard + 1568u) {
-        uart_text("M3 STACK SETUP FAIL\n");
+        uart_text(BLUE_QEMU_MODEL " STACK SETUP FAIL\n");
         _exit(1);
     }
     bool passed = true;
@@ -575,15 +604,16 @@ void blue_m3_reset(void) {
         unsigned used = lowest == 1536 ? 512 : 2048u - lowest;
         if (used > peak) peak = used;
         if (!case_passed || lowest < 512) passed = false;
-        uart_text("M3 ");
+        uart_text(BLUE_QEMU_MODEL " ");
         uart_text(cases[test].name);
         uart_text(lowest == 1536 ? " <=0x" : " 0x");
         uart_hex16(used);
         uart_text("\n");
     }
-    uart_text("M3 STACK 0x");
+    uart_text(BLUE_QEMU_MODEL " STACK 0x");
     uart_hex16(peak);
     uart_text("\n");
-    uart_text(passed ? "M3 PASS\n" : "M3 FAIL\n");
+    uart_text(passed ? BLUE_QEMU_MODEL " PASS\n" :
+        BLUE_QEMU_MODEL " FAIL\n");
     _exit(passed ? 0 : 1);
 }

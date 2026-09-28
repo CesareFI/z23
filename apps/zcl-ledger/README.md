@@ -87,11 +87,12 @@ cmake --build build/zcl-ledger-fuzz --target fuzz-blue-shielded-review-apdu
 build/zcl-ledger-fuzz/fuzz-blue-shielded-review-apdu -runs=20000 -max_len=256
 ```
 
-When `arm-none-eabi-gcc`, its `rdimon.specs`, and `qemu-system-arm` are
-available, CMake also builds and runs `blue-m3-qemu`. It executes the C23
-Sapling Fr/Fs, low-memory Jubjub, and scalar-reduction arithmetic on QEMU's
-Cortex-M3 MPS2 board with 6 KiB of simulated RAM and a 2 KiB stack
-reservation. It checks a public SpendAuth key vector, a fixed public
+When `arm-none-eabi-gcc`, its `rdimon.specs`, `arm-none-eabi-objcopy`, and
+`qemu-system-arm` are available, CMake builds `blue-m3-qemu` and
+`blue-m0-sapling-qemu`. They execute the same C23 Sapling Fr/Fs, low-memory
+Jubjub, and scalar-reduction arithmetic on QEMU's Cortex-M3 MPS2 and
+Cortex-M0 micro:bit boards, each with 6 KiB of simulated RAM and a 2 KiB
+stack reservation. They check a public SpendAuth key vector, a fixed public
 RedJubjub signing equation with changed-response and changed-message
 rejections, device-side point encoding, the exact 32-byte transaction-digest
 challenge, an isolated entropy-seeded nonce derivation, a scalar-field
@@ -102,8 +103,8 @@ local tools:
 cmake -S apps/zcl-ledger -B build/zcl-ledger \
   -DBLUE_ARM_GCC=/absolute/path/arm-none-eabi-gcc \
   -DBLUE_QEMU=/absolute/path/qemu-system-arm
-cmake --build build/zcl-ledger --target blue-m3-qemu-image
-ctest --test-dir build/zcl-ledger -R '^blue-m3-qemu$' --output-on-failure -V
+cmake --build build/zcl-ledger --target blue-m3-qemu-image blue-m0-sapling-qemu-image
+ctest --test-dir build/zcl-ledger -R '^blue-(m3|m0-sapling)-qemu$' --output-on-failure -V
 ```
 
 The same toolchain builds `blue-wallet-m0-qemu-image`. It runs the Wallet's
@@ -128,8 +129,8 @@ the ZIP243 digest finish. This is tested with synthetic one- and two-spend
 transactions; the current Blue Review app remains read only.
 An isolated randomized SpendAuth candidate also derives
 `rsk = ask + ar`, recomputes the transaction's `rk`, and signs only when it
-matches. Its end-to-end public fixture runs in the Cortex-M3 emulator; it is
-not routed through the Wallet review or approval screens.
+matches. Its end-to-end public fixture runs in both ARM emulators; it is not
+routed through the Wallet review or approval screens.
 An isolated C23 outgoing-key derivation module checks the consensus-accepted
 Sapling output against an independently computed BLAKE2b test vector. It
 compiles for Cortex-M3 but is not linked into the installed Blue app. Output

@@ -53,34 +53,32 @@ static void select_limbs(uint32_t out[8], const uint32_t chosen[8],
 
 void blue_mod256_add(uint64_t result[4], const uint64_t a[4],
     const uint64_t b[4], const struct blue_mod256 *field) {
-    uint32_t x[8], y[8], sum[8], reduced[8], output[8];
+    uint32_t x[8], y[8], sum[8], reduced[8];
     unpack(x, a);
     unpack(y, b);
     uint32_t carry = add(sum, x, y);
     uint32_t borrow = subtract(reduced, sum, field->modulus);
-    select_limbs(output, reduced, sum, carry | (borrow ^ 1u));
-    pack(result, output);
+    select_limbs(sum, reduced, sum, carry | (borrow ^ 1u));
+    pack(result, sum);
     blue_mod256_wipe(x, sizeof x);
     blue_mod256_wipe(y, sizeof y);
     blue_mod256_wipe(sum, sizeof sum);
     blue_mod256_wipe(reduced, sizeof reduced);
-    blue_mod256_wipe(output, sizeof output);
 }
 
 void blue_mod256_sub(uint64_t result[4], const uint64_t a[4],
     const uint64_t b[4], const struct blue_mod256 *field) {
-    uint32_t x[8], y[8], difference[8], adjusted[8], output[8];
+    uint32_t x[8], y[8], difference[8], adjusted[8];
     unpack(x, a);
     unpack(y, b);
     uint32_t borrow = subtract(difference, x, y);
     add(adjusted, difference, field->modulus);
-    select_limbs(output, adjusted, difference, borrow);
-    pack(result, output);
+    select_limbs(difference, adjusted, difference, borrow);
+    pack(result, difference);
     blue_mod256_wipe(x, sizeof x);
     blue_mod256_wipe(y, sizeof y);
     blue_mod256_wipe(difference, sizeof difference);
     blue_mod256_wipe(adjusted, sizeof adjusted);
-    blue_mod256_wipe(output, sizeof output);
 }
 
 static void montgomery_round(uint64_t t[9], const uint32_t a[8],
@@ -107,7 +105,7 @@ static void montgomery_round(uint64_t t[9], const uint32_t a[8],
 
 void blue_mod256_mont_mul(uint64_t result[4], const uint64_t a[4],
     const uint64_t b[4], const struct blue_mod256 *field) {
-    uint32_t x[8], y[8], raw[8], reduced[8], output[8];
+    uint32_t x[8], y[8], raw[8], reduced[8];
     uint64_t t[9] = {0};
     unpack(x, a);
     unpack(y, b);
@@ -115,13 +113,12 @@ void blue_mod256_mont_mul(uint64_t result[4], const uint64_t a[4],
         montgomery_round(t, x, y[i], field);
     for (size_t i = 0; i < 8; ++i) raw[i] = (uint32_t)t[i];
     uint32_t borrow = subtract(reduced, raw, field->modulus);
-    select_limbs(output, reduced, raw,
+    select_limbs(raw, reduced, raw,
         (uint32_t)t[8] | (borrow ^ 1u));
-    pack(result, output);
+    pack(result, raw);
     blue_mod256_wipe(x, sizeof x);
     blue_mod256_wipe(y, sizeof y);
     blue_mod256_wipe(raw, sizeof raw);
     blue_mod256_wipe(reduced, sizeof reduced);
-    blue_mod256_wipe(output, sizeof output);
     blue_mod256_wipe(t, sizeof t);
 }

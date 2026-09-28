@@ -27,15 +27,15 @@ void blue_jub_identity(struct jub_point *result) {
 
 void blue_jub_add(struct jub_point *result, const struct jub_point *a,
     const struct jub_point *b) {
-    struct fr A, B, C, D, E, F, G, H, t1, t2;
+    struct fr A, B, C, D, E, F, G, H;
     blue_fr_mul_ct(&A, &a->x, &b->x);
     blue_fr_mul_ct(&B, &a->y, &b->y);
     blue_fr_mul_ct(&C, &a->t, &b->t);
     blue_fr_mul_ct(&C, &C, &curve_d);
     blue_fr_mul_ct(&D, &a->z, &b->z);
-    blue_fr_add_ct(&t1, &a->x, &a->y);
-    blue_fr_add_ct(&t2, &b->x, &b->y);
-    blue_fr_mul_ct(&E, &t1, &t2);
+    blue_fr_add_ct(&E, &a->x, &a->y);
+    blue_fr_add_ct(&F, &b->x, &b->y);
+    blue_fr_mul_ct(&E, &E, &F);
     blue_fr_sub_ct(&E, &E, &A);
     blue_fr_sub_ct(&E, &E, &B);
     blue_fr_sub_ct(&F, &D, &C);
@@ -53,19 +53,17 @@ void blue_jub_add(struct jub_point *result, const struct jub_point *a,
     wipe(&F, sizeof F);
     wipe(&G, sizeof G);
     wipe(&H, sizeof H);
-    wipe(&t1, sizeof t1);
-    wipe(&t2, sizeof t2);
 }
 
 void blue_jub_double(struct jub_point *result, const struct jub_point *a) {
-    struct fr A, B, C, D, E, F, G, H, t1;
+    struct fr A, B, C, D, E, F, G, H;
     blue_fr_mul_ct(&A, &a->x, &a->x);
     blue_fr_mul_ct(&B, &a->y, &a->y);
     blue_fr_mul_ct(&C, &a->z, &a->z);
     blue_fr_add_ct(&C, &C, &C);
     blue_fr_neg_ct(&D, &A);
-    blue_fr_add_ct(&t1, &a->x, &a->y);
-    blue_fr_mul_ct(&E, &t1, &t1);
+    blue_fr_add_ct(&E, &a->x, &a->y);
+    blue_fr_mul_ct(&E, &E, &E);
     blue_fr_sub_ct(&E, &E, &A);
     blue_fr_sub_ct(&E, &E, &B);
     blue_fr_add_ct(&G, &D, &B);
@@ -83,5 +81,4 @@ void blue_jub_double(struct jub_point *result, const struct jub_point *a) {
     wipe(&F, sizeof F);
     wipe(&G, sizeof G);
     wipe(&H, sizeof H);
-    wipe(&t1, sizeof t1);
 }

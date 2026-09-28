@@ -130,6 +130,11 @@ static void check_message_signature(const struct jub_point *generator) {
     assert(blue_jubjub_encode(rbar, &r));
     assert(blue_redjubjub_challenge(challenge_bytes, rbar,
         vkbar, message));
+    uint8_t in_place[32];
+    memcpy(in_place, vkbar, sizeof in_place);
+    assert(blue_redjubjub_challenge(in_place, rbar,
+        in_place, message));
+    assert(memcmp(in_place, challenge_bytes, sizeof in_place) == 0);
     assert(fs_from_bytes(&challenge, challenge_bytes));
     blue_fs_mul_ct(&product, &challenge, &secret);
     blue_fs_add_ct(&response, &nonce, &product);
@@ -138,6 +143,9 @@ static void check_message_signature(const struct jub_point *generator) {
     assert(blue_redjubjub_response(candidate, nonce_bytes,
         challenge_bytes, secret_bytes));
     assert(memcmp(candidate, sbar, sizeof candidate) == 0);
+    assert(blue_redjubjub_response(in_place, nonce_bytes,
+        in_place, secret_bytes));
+    assert(memcmp(in_place, sbar, sizeof in_place) == 0);
     assert(verify_public_signature(generator, rbar, vkbar, message, sbar));
     sbar[0] ^= 1u;
     assert(!verify_public_signature(generator, rbar, vkbar, message, sbar));
@@ -198,6 +206,11 @@ static void check_entropy_signature_isolated(
     };
     assert(memcmp(signature, expected_r, 32) == 0);
     assert(memcmp(signature + 32, expected_s, 32) == 0);
+    uint8_t overlapping[64] = {0};
+    memcpy(overlapping, secret_bytes, sizeof secret_bytes);
+    assert(blue_redjubjub_sign_isolated(overlapping, overlapping,
+        entropy, message));
+    assert(memcmp(overlapping, signature, sizeof overlapping) == 0);
     assert(verify_public_signature(generator, signature, vkbar,
         message, signature + 32));
     message[0] ^= 1u;
