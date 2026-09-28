@@ -6162,6 +6162,54 @@ static int test_ic_proof_compiles_against_a_private_store(void)
     } _test_next:;
     return failures;
 }
+
+static bool ic_candidate_zcc_stale_behavior_child(const char *root)
+{
+    if (setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0) return false;
+    const char *argv[] = {
+        "bash", "tools/dev/fixtures/proof/stale_candidate_zcc.sh", root, NULL
+    };
+    struct zcl_devloop_process_result run = {0};
+    if (!zcl_devloop_process_run(".", argv, 30000, &run) ||
+        run.exit_code != 0 || run.output_truncated) {
+        fprintf(stderr, "candidate zcc witness execution failed: %s\n",
+                run.output);
+        return false;
+    }
+    fprintf(stderr, "%s", run.output);
+    return strstr(run.output, "RED stale candidate wrapper:") != NULL &&
+           strstr(run.output,
+               "baseline=<zcl_result: missing format> "
+               "stale=<zcl_result: missing format> "
+               "fresh=<zcl_result: missing format v2>") != NULL &&
+           strstr(run.output,
+               "baseline_compile=1 stale_compile=0 fresh_compile=1 "
+               "links=3 executions=3") != NULL;
+}
+
+static int test_ic_candidate_zcc_stale_behavior_red(void)
+{
+    int failures = 0;
+    TEST("proof compile: candidate wrapper can serve stale executed behavior despite ZCC_VERIFIED") {
+        char root[4096];
+        test_make_tmpdir(root, sizeof(root), "proof_env", "candidate_zcc_red");
+        pid_t child = fork();
+        ASSERT(child >= 0);
+        if (child == 0)
+            _exit(ic_candidate_zcc_stale_behavior_child(root) ? 0 : 1);
+        int status = 0;
+        pid_t waited;
+        do {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        ASSERT(waited == child);
+        ASSERT(WIFEXITED(status));
+        ASSERT(WEXITSTATUS(status) == 0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
 #endif
 
 static int test_ic_landing_proof_lint_argv(void)
@@ -9110,6 +9158,7 @@ int test_impact_composition(void)
 #if !defined(_WIN32)
     failures += test_ic_proof_environment_refuses_inherited_shortcuts();
     failures += test_ic_proof_compiles_against_a_private_store();
+    failures += test_ic_candidate_zcc_stale_behavior_red();
 #endif
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
     failures += test_ic_proof_test_needs_build_the_sensor();
