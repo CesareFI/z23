@@ -437,7 +437,7 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
         int64_t now = (int64_t)platform_time_wall_unix();
         g_local_worker.approved_at = now;
         g_local_worker.last_seen_at = now;
-        ZCL_CHECK(build_fabric_worker_approve(ndb, &g_local_worker, now));
+        ZCL_CHECK(build_fabric_worker_enroll_local(ndb, &g_local_worker, now));
     }
     if (atomic_load(&g_requester_id) == SUPERVISOR_INVALID_ID) {
         supervisor_child_id id = bf_runtime_child(
