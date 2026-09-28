@@ -234,8 +234,18 @@ static char fxm_quote_after(const char *s, size_t k, size_t n, char q, bool *pla
     return q == '\0' && s[k] == '\'' ? '\'' : q;
 }
 
-/* Shell text s[0..n), as written, writes a file: outside quotes, a
- * redirection to anything but a descriptor or /dev/null, or a tee. */
+/* Unquoted shell text at s[k] (of s[0..n)) writes a file: a redirection
+ * to anything but a descriptor or /dev/null, or a tee. */
+static bool fxm_writes_at(const char *s, size_t k, size_t n)
+{
+    if (s[k] == '>')
+        return k + 1 == n || !fxm_quiet_redirect(s + k + 1);
+    return n - k >= 3 && strncmp(s + k, "tee", 3) == 0 &&
+           (k == 0 || !fxm_ident(s[k - 1])) && (k + 3 == n || !fxm_ident(s[k + 3]));
+}
+
+/* Shell text s[0..n), as written, writes a file outside quotes
+ * (fxm_writes_at). */
 static bool fxm_redirects(const char *s, size_t n)
 {
     char q = '\0';
@@ -245,10 +255,7 @@ static bool fxm_redirects(const char *s, size_t n)
             k++;
             continue;
         }
-        if (q == '\0' && s[k] == '>' && (k + 1 == n || !fxm_quiet_redirect(s + k + 1)))
-            return true;
-        if (q == '\0' && n - k >= 3 && strncmp(s + k, "tee", 3) == 0 &&
-            (k == 0 || !fxm_ident(s[k - 1])) && (k + 3 == n || !fxm_ident(s[k + 3])))
+        if (q == '\0' && fxm_writes_at(s, k, n))
             return true;
         if (!plain)
             q = fxm_quote_after(s, k, n, q, &plain);
