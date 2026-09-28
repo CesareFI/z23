@@ -836,12 +836,18 @@ static pid_t wtx_post_later(const char *name, int delay_ms, int post_fd)
 }
 
 /* One fixture job posted `delay_ms` after the drive starts. Returns jobs
- * run; *after_post_ms gets the drive's return time since the post. */
+ * run; *after_post_ms gets the drive's return time since the post and
+ * *after_start_ms its return time since the drive began. The drive begins
+ * before its first (empty) claim, so any wait the worker measures from
+ * that claim is a lower bound on *after_start_ms however late a loaded
+ * host runs the poster. A lower bound taken from the post is not: a
+ * poster delayed past the wait makes the claim look early. */
 static long long wtx_drive_late_post(struct wkr_drive_opts *o,
                                      const char *name, int delay_ms,
-                                     long long *after_post_ms)
+                                     long long *after_post_ms,
+                                     long long *after_start_ms)
 {
-    long long jobs, posted_ms = -1, done_ms;
+    long long jobs, posted_ms = -1, start_ms, done_ms;
     int st = 0;
     int post_pipe[2];
     pid_t pid;
@@ -856,6 +862,7 @@ static long long wtx_drive_late_post(struct wkr_drive_opts *o,
         (void)close(post_pipe[0]);
         return -1;
     }
+    start_ms = (long long)platform_time_monotonic_ms();
     jobs = zcl_devagent_worker_drive(o, wtx_fixture);
     done_ms = (long long)platform_time_monotonic_ms();
     if (read(post_pipe[0], &posted_ms, sizeof(posted_ms)) !=
@@ -863,6 +870,7 @@ static long long wtx_drive_late_post(struct wkr_drive_opts *o,
         jobs = -1;
     (void)close(post_pipe[0]);
     *after_post_ms = done_ms - posted_ms;
+    *after_start_ms = done_ms - start_ms;
     (void)waitpid(pid, &st, 0);
     return jobs;
 }
@@ -1820,7 +1828,7 @@ int test_devagent_worker(void)
     TEST("idle worker wakes on a queued row, not on its backoff")
     {
         struct wkr_drive_opts o;
-        long long after_post_ms = -1;
+        long long after_post_ms = -1, after_start_ms = -1;
         wtx_isolate("wake");
         (void)remove(g_fx_count);
         g_fx_mode = 0;
@@ -1832,7 +1840,8 @@ int test_devagent_worker(void)
         o.idle_start_s = 30;
         o.idle_limit_s = 60;
         o.deadline_s = 60;
-        ASSERT_EQ(wtx_drive_late_post(&o, "wtx-wake", 1500, &after_post_ms),
+        ASSERT_EQ(wtx_drive_late_post(&o, "wtx-wake", 1500, &after_post_ms,
+                                      &after_start_ms),
                   1);
         ASSERT_EQ(wtx_count_read(), 1);
         (void)printf("    devagent_worker wake latency: %lld ms after post\n",
@@ -1846,7 +1855,7 @@ int test_devagent_worker(void)
     TEST("a wake right after a failed claim waits out the one-second floor")
     {
         struct wkr_drive_opts o;
-        long long after_post_ms = -1;
+        long long after_post_ms = -1, after_start_ms = -1;
         wtx_isolate("floor");
         (void)remove(g_fx_count);
         g_fx_mode = 0;
@@ -1858,13 +1867,18 @@ int test_devagent_worker(void)
         o.idle_limit_s = 60;
         o.deadline_s = 60;
         /* Posted 0.2 s after the empty claim: the next claim still waits
-         * until 1 s after it, then happens at once. */
-        ASSERT_EQ(wtx_drive_late_post(&o, "wtx-floor", 200, &after_post_ms),
+         * until 1 s after it, then happens at once. The floor runs from
+         * the empty claim, which follows the drive start, so it is checked
+         * from the start: a poster the host runs late cannot fake an
+         * early claim. */
+        ASSERT_EQ(wtx_drive_late_post(&o, "wtx-floor", 200, &after_post_ms,
+                                      &after_start_ms),
                   1);
         ASSERT_EQ(wtx_count_read(), 1);
-        (void)printf("    devagent_worker floor wake: %lld ms after post\n",
-                     after_post_ms);
-        ASSERT(after_post_ms >= 700);
+        (void)printf("    devagent_worker floor wake: %lld ms after post, "
+                     "%lld ms after start\n",
+                     after_post_ms, after_start_ms);
+        ASSERT(after_start_ms >= 1000);
         ASSERT(after_post_ms < 2500);
         wtx_restore();
         PASS();
@@ -1873,7 +1887,7 @@ int test_devagent_worker(void)
     TEST("without a queue watch the backoff still bounds the idle wait")
     {
         struct wkr_drive_opts o;
-        long long after_post_ms = -1;
+        long long after_post_ms = -1, after_start_ms = -1;
         wtx_isolate("nowatch");
         (void)remove(g_fx_count);
         g_fx_mode = 0;
@@ -1885,13 +1899,16 @@ int test_devagent_worker(void)
         o.idle_start_s = 2;
         o.idle_limit_s = 4;
         /* Posted at 0.3 s: the timed path must not see it before its 2 s
-         * backoff expires, and must claim it right after. */
-        ASSERT_EQ(wtx_drive_late_post(&o, "wtx-nowatch", 300, &after_post_ms),
+         * backoff expires, and must claim it right after. The backoff runs
+         * from the empty claim, so it is checked from the drive start. */
+        ASSERT_EQ(wtx_drive_late_post(&o, "wtx-nowatch", 300, &after_post_ms,
+                                      &after_start_ms),
                   1);
         ASSERT_EQ(wtx_count_read(), 1);
-        (void)printf("    devagent_worker timed fallback: %lld ms after post\n",
-                     after_post_ms);
-        ASSERT(after_post_ms >= 1500);
+        (void)printf("    devagent_worker timed fallback: %lld ms after post, "
+                     "%lld ms after start\n",
+                     after_post_ms, after_start_ms);
+        ASSERT(after_start_ms >= 2000);
         ASSERT(after_post_ms < 3500);
         wtx_restore();
         PASS();
