@@ -4338,6 +4338,56 @@ static bool dp_orphan_lint_shape(const char *name, long *pid_out)
     return false;
 }
 
+/* A positive decimal field of `s` followed by `stop`; *next is past the
+ * stop byte. A sign or leading blank is not the shape strtol would accept. */
+static bool dp_orphan_decimal(const char *s, char stop, long *out,
+                              const char **next)
+{
+    char *end = NULL;
+    if (s[0] < '0' || s[0] > '9') return false;
+    long value = strtol(s, &end, 10);
+    if (!end || *end != stop || value <= 0) return false;
+    *out = value;
+    *next = end + 1;
+    return true;
+}
+
+/* mkdtemp's six-character [A-Za-z0-9] suffix, and nothing after it. */
+static bool dp_orphan_mkdtemp_suffix(const char *s)
+{
+    size_t i = 0;
+    for (; s[i]; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z')))
+            return false;
+    }
+    return i == 6;
+}
+
+/* `<32hex>.dp_shard_<pid>_<shard>_<6 mkdtemp chars>` -- the private root a
+ * dev_platform test shard (test_dev_platform.c dp_run_shard) makes beside
+ * the generation it runs in. A shard removes it on a normal exit; a proof
+ * cancelled mid-test (a superseded base, a budget kill) kills the shard
+ * first, so without this shape every cancelled test run left one behind.
+ * On a match, the pid substring is parsed into `*pid_out`. */
+static bool dp_orphan_shard_shape(const char *name, long *pid_out)
+{
+    static const char marker[] = ".dp_shard_";
+    size_t nlen = name ? strlen(name) : 0;
+    if (nlen <= PROOF_WARM_TAG_LEN || !dp_hex32(name, PROOF_WARM_TAG_LEN) ||
+        strncmp(name + PROOF_WARM_TAG_LEN, marker, sizeof(marker) - 1) != 0)
+        return false;
+    const char *rest = name + PROOF_WARM_TAG_LEN + sizeof(marker) - 1;
+    long pid = 0, shard = 0;
+    if (!dp_orphan_decimal(rest, '_', &pid, &rest) ||
+        !dp_orphan_decimal(rest, '_', &shard, &rest) ||
+        !dp_orphan_mkdtemp_suffix(rest))
+        return false;
+    if (pid_out) *pid_out = pid;
+    return true;
+}
+
 /* Is this sandbox's owner gone? Dead (kill fails ESRCH) is the only
  * eligible answer -- alive, or owned by someone else (EPERM), is left be,
  * exactly lint_purge_stale_sandboxes()'s own rule for the current root's
@@ -4415,7 +4465,22 @@ static bool dp_orphan_remove_tree(const char *path)
                 FTW_DEPTH | FTW_PHYS | FTW_MOUNT) == 0;
 }
 
-/* Does this pool entry match one of the two orphan shapes, and has it aged
+/* The shape a pool entry's name and contents match, as its reap reason, or
+ * NULL. A pid-owned shape (a lint sandbox, a test shard) matches only while
+ * its owner is dead. */
+static const char *dp_orphan_shape(const char *name, const char *path)
+{
+    long pid = 0;
+    if (dp_orphan_lint_shape(name, &pid))
+        return dp_orphan_lint_dead(pid) ? "dead_sandbox" : NULL;
+    if (dp_orphan_shard_shape(name, &pid))
+        return dp_orphan_lint_dead(pid) ? "dead_test_shard" : NULL;
+    if (warm_tag_name(name) && dp_orphan_gitdir_pruned(path, name))
+        return "pruned_gitdir";
+    return NULL;
+}
+
+/* Does this pool entry match one of the orphan shapes, and has it aged
  * past PROOF_WARM_IDLE_ACTIVE_SECONDS? Never the caller's own `in_use`
  * generation. Returns the reason string on a match, else NULL. */
 static const char *dp_orphan_reason(const char *in_use, const char *name,
@@ -4424,26 +4489,20 @@ static const char *dp_orphan_reason(const char *in_use, const char *name,
     if (strcmp(path, in_use) == 0) return NULL;
     struct stat st;
     if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return NULL;
-    long pid = 0;
-    const char *reason = NULL;
-    if (dp_orphan_lint_shape(name, &pid)) {
-        if (!dp_orphan_lint_dead(pid)) return NULL;
-        reason = "dead_sandbox";
-    } else if (warm_tag_name(name) && dp_orphan_gitdir_pruned(path, name)) {
-        reason = "pruned_gitdir";
-    } else {
-        return NULL;
-    }
+    const char *reason = dp_orphan_shape(name, path);
+    if (!reason) return NULL;
     int64_t touched = (int64_t)st.st_mtime;
     (void)warm_generation_touched(path, &touched);
     return now - touched > PROOF_WARM_IDLE_ACTIVE_SECONDS ? reason : NULL;
 }
 
-/* Reap two shapes of leftover dp_reap_survey() will never see, because
- * neither is warm_tag_name()'s bare 32-hex shape: a killed lint shard's
+/* Reap three shapes of leftover dp_reap_survey() will never see, because
+ * none is warm_tag_name()'s bare 32-hex shape: a killed lint shard's
  * sandbox base (test_make_lint_gates.c's own purge only ever reaches
  * siblings of the CURRENT run's root, so one left under an old generation
- * tag is never seen again), and a generation whose `.git` worktree admin
+ * tag is never seen again), a killed dev_platform test shard's private
+ * root (a proof cancelled mid-test never runs the shard's own cleanup),
+ * and a generation whose `.git` worktree admin
  * dir git already deleted while a read-only fixture inside it (planted by
  * a proof test) blocked the rest of the recursive delete -- without this,
  * warm_reapable()'s `git rev-parse` can never approve it again and it

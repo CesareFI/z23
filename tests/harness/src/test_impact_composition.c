@@ -4862,7 +4862,8 @@ static int test_pw_orphan_shapes_reaped(void)
 {
     int failures = 0;
     TEST("proof generation pool: a dead lint sandbox and a half-deleted "
-        "generation with a pruned gitdir are reaped; a live sandbox, a "
+        "generation with a pruned gitdir, and a dead test shard are reaped; "
+        "a live sandbox or shard, a malformed shard, a "
         "recent one, a resolvable gitdir, and a non-matching name are not") {
 #if defined(_WIN32)
         ASSERT(true);
@@ -4900,6 +4901,24 @@ static int test_pw_orphan_shapes_reaped(void)
         ASSERT(mkdir(path_dead, 0700) == 0);
         ASSERT(mkdir(path_live, 0700) == 0);
         ASSERT(mkdir(path_other, 0700) == 0);
+
+        /* Cases 7/8/9: dev_platform test-shard roots. A shard SIGKILLed by
+         * a cancelled proof never runs its own cleanup; only a dead owner's
+         * well-formed root is an orphan. */
+        char shard_dead[4096], shard_live[4096], shard_malformed[4096];
+        ASSERT(snprintf(shard_dead, sizeof(shard_dead),
+                        "%s/%s.dp_shard_%ld_3_AbC123", pool, tag_dead,
+                        (long)dead_child) > 0);
+        ASSERT(snprintf(shard_live, sizeof(shard_live),
+                        "%s/%s.dp_shard_%ld_1_XyZ789", pool, tag_live,
+                        (long)getpid()) > 0);
+        ASSERT(snprintf(shard_malformed, sizeof(shard_malformed),
+                        "%s/%s.dp_shard_%ld_2_too_long", pool, tag_dead,
+                        (long)dead_child) > 0);
+        ASSERT(mkdir(shard_dead, 0700) == 0);
+        ASSERT(mkdir(shard_live, 0700) == 0);
+        ASSERT(mkdir(shard_malformed, 0700) == 0);
+        ASSERT(ic_write(shard_dead, "home/partial", "x"));
 
         /* Cases 3/4/5: a `.git` file naming a gitdir, with a read-only
          * fixture directory inside standing in for what a proof test left
@@ -4964,6 +4983,9 @@ static int test_pw_orphan_shapes_reaped(void)
         ASSERT(utimensat(AT_FDCWD, path_dead, stamp_old, 0) == 0);
         ASSERT(utimensat(AT_FDCWD, path_live, stamp_old, 0) == 0);
         ASSERT(utimensat(AT_FDCWD, path_other, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, shard_dead, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, shard_live, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, shard_malformed, stamp_old, 0) == 0);
         ASSERT(utimensat(AT_FDCWD, path_pruned_old, stamp_old, 0) == 0);
         ASSERT(utimensat(AT_FDCWD, path_pruned_recent, stamp_recent, 0) ==
               0);
@@ -4980,10 +5002,13 @@ static int test_pw_orphan_shapes_reaped(void)
         ASSERT(stat(path_dead, &probe) != 0);
         ASSERT(stat(path_live, &probe) == 0);
         ASSERT(stat(path_other, &probe) == 0);
+        ASSERT(stat(shard_dead, &probe) != 0);
+        ASSERT(stat(shard_live, &probe) == 0);
+        ASSERT(stat(shard_malformed, &probe) == 0);
         ASSERT(stat(path_pruned_old, &probe) != 0);
         ASSERT(stat(path_pruned_recent, &probe) == 0);
         ASSERT(stat(path_resolvable, &probe) == 0);
-        ASSERT(removed >= 2);
+        ASSERT(removed >= 3);
         /* path_pruned_recent survives on purpose; put its read-only
          * fixture dir back to writable so cleanup (which does not chmod)
          * can remove it. */
