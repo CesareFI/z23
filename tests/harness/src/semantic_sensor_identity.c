@@ -115,47 +115,51 @@ static bool ssi_wrapper(const char *word)
            strcmp(base, "sccache") == 0;
 }
 
-/* Compare one source's object recipe and facts recipe. */
+/* The --cc value of a facts recipe, before its `--` (cut in place). */
+static const char *ssi_sensor_cc(char *zsm, const char *ztail)
+{
+    char *ccopt = strstr(zsm, " --cc ");
+    if (ccopt == NULL || ccopt >= ztail)
+        return NULL;
+    ccopt[6 + strcspn(ccopt + 6, " \t")] = '\0';
+    return ccopt + 6;
+}
+
+/* The object's flags (after its compiler word) against the sensor's. */
+static bool ssi_same_flags(const char *src, char *const *o, size_t on,
+                           char *const *z, size_t zn)
+{
+    for (size_t k = 0; k < on && k < zn; k++) {
+        if (strcmp(o[k], z[k]) != 0) {
+            printf("  argv %s: word %zu: object %s, sensor %s\n", src, k,
+                   o[k], z[k]);
+            return false;
+        }
+    }
+    if (on != zn)
+        printf("  argv %s: object has %zu flags, sensor %zu\n", src, on, zn);
+    return on == zn;
+}
+
+/* Compare one source's object recipe and facts recipe. A compiler mismatch
+ * is reported and the flags are still compared. */
 static bool ssi_same_argv(const char *src, char *obj, char *zsm)
 {
     char **o = zcl_calloc(SSI_TOKENS, sizeof(char *), "ssi.otok");
     char **z = zcl_calloc(SSI_TOKENS, sizeof(char *), "ssi.ztok");
     char *otail = strstr(obj, " -- "), *ztail = strstr(zsm, " -- ");
-    const char *cc = NULL;
-    size_t on = 0, zn = 0, oat = 0;
     bool ok = o != NULL && z != NULL && otail != NULL && ztail != NULL;
     if (ok) {
-        char *ccopt = strstr(zsm, " --cc ");
-        if (ccopt != NULL && ccopt < ztail) {
-            cc = ccopt + 6;
-            ccopt[6 + strcspn(cc, " \t")] = '\0';
-        }
-        on = ssi_split(otail + 4, o, SSI_TOKENS);
-        zn = ssi_split(ztail + 4, z, SSI_TOKENS);
-        oat = on > 0 && ssi_wrapper(o[0]) ? 1 : 0;
-    }
-    if (ok && on <= oat) {
-        printf("  argv %s: the object recipe names no compiler\n", src);
-        ok = false;
-    }
-    /* A compiler mismatch is reported and the flags are still compared. */
-    bool same_cc = ok && cc != NULL && strcmp(o[oat], cc) == 0;
-    if (ok && !same_cc)
-        printf("  argv %s: object compiler %s, sensor --cc %s\n", src, o[oat],
-               cc != NULL ? cc : "(none)");
-    bool flags_ok = ok;
-    for (size_t k = 0; flags_ok && k < on - oat - 1 && k < zn; k++) {
-        if (strcmp(o[oat + 1 + k], z[k]) != 0) {
-            printf("  argv %s: word %zu: object %s, sensor %s\n", src, k,
-                   o[oat + 1 + k], z[k]);
-            flags_ok = false;
-        }
-    }
-    ok = ok && same_cc && flags_ok;
-    if (flags_ok && on - oat - 1 != zn) {
-        printf("  argv %s: object has %zu flags, sensor %zu\n", src,
-               on - oat - 1, zn);
-        ok = false;
+        const char *cc = ssi_sensor_cc(zsm, ztail);
+        size_t on = ssi_split(otail + 4, o, SSI_TOKENS);
+        size_t zn = ssi_split(ztail + 4, z, SSI_TOKENS);
+        size_t at = on > 0 && ssi_wrapper(o[0]) ? 1 : 0;
+        bool same_cc = on > at && cc != NULL && strcmp(o[at], cc) == 0;
+        if (!same_cc)
+            printf("  argv %s: object compiler %s, sensor --cc %s\n", src,
+                   on > at ? o[at] : "(none)", cc != NULL ? cc : "(none)");
+        ok = on > at && ssi_same_flags(src, o + at + 1, on - at - 1, z, zn) &&
+             same_cc;
     }
     free(o);
     free(z);
