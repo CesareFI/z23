@@ -51,6 +51,10 @@ static void fxc_check_header(struct fxc *c, const char *id, const char *header)
 void fxc_check_decl(struct fxc *c, const struct fxi *x, size_t e)
 {
     const char *main = fxi_main(x);
+    /* An internal id (a header's static inline) is each reader's own copy:
+     * a reader with facts seeds its copy itself, and a reader without a
+     * manifest is affected "facts-missing" through the depfile graph, so no
+     * reader outside the candidates can reach it unseen. */
     if (!fxi_external(x, e))
         return;
     for (size_t k = 0; c->seed_reason == NULL && k < fxi_nrows(x, e); k++) {
