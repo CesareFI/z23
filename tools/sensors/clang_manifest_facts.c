@@ -231,9 +231,10 @@ bool cm_emit_facts(struct cm_core *c, uint32_t max_records,
         .max_section_bytes = max_section_bytes
                                  ? max_section_bytes
                                  : VCS_SEMANTIC_FACTS_V1_DEFAULT_MAX_SECTION_BYTES,
-        /* This producer writes the @scope and @cond sites (records.c,
-         * cond.c) and names anonymous members' records (ast.c). */
-        .revision = 2,
+        /* This producer writes the @scope, @cond and @assert sites
+         * (records.c, cond.c, ast.c) and names anonymous members' records
+         * (ast.c). */
+        .revision = 3,
     };
     if (!c->facts)
         return true;

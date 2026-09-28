@@ -61,6 +61,7 @@ struct cm_macro {
 struct cm_expansion {
     const struct cm_file *file;
     unsigned offset;
+    unsigned end; /* offset of the invocation's last byte (arguments included) */
     char *name;
     char *def_id; /* canonical macro identity (facts only) */
     bool in_fn;   /* inside a function definition's span */
@@ -77,6 +78,15 @@ struct cm_function {
     size_t ncallees;
     size_t capcallees;
     unsigned begin_line, end_line, begin_off, end_off;
+};
+
+/* A static_assert outside every function definition (facts revision 3):
+ * its site "@assert:<path>" and the offsets of its first and last byte in
+ * that file, where the expansions its condition makes are. */
+struct cm_assert {
+    const struct cm_file *file;
+    char *site;
+    unsigned begin, end;
 };
 
 /* One unknown-effect occurrence, counted at emission. */
@@ -102,6 +112,8 @@ struct cm_core {
     size_t nexps, capexps;
     struct cm_function *fns;
     size_t nfns, capfns;
+    struct cm_assert *asserts;
+    size_t nasserts, capasserts;
     struct vcs_semantic_builder_v1 *b;
     /* facts extension */
     bool facts;
@@ -243,7 +255,11 @@ bool cm_emit_enum(struct cm_core *c, const struct cm_file *f,
 bool cm_macro_def(struct cm_core *c, const struct cm_file *f, unsigned offset,
                   char *name, char *body);
 bool cm_macro_exp(struct cm_core *c, const struct cm_file *f, unsigned offset,
-                  char *name, char *def_id);
+                  unsigned end, char *name, char *def_id);
+/* Record a static_assert of f spanning [begin, end]; returns its site id
+ * ("@assert:<path>", owned by c), NULL with c failed when memory runs out. */
+const char *cm_assert_add(struct cm_core *c, const struct cm_file *f,
+                          unsigned begin, unsigned end);
 /* Takes ownership of fn's strings; returns the stored function. */
 struct cm_function *cm_function_add(struct cm_core *c,
                                     const struct cm_function *fn);

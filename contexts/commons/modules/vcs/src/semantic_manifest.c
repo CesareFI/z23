@@ -450,7 +450,8 @@ static bool sm_header_rules(const struct sm_rec *r)
 {
     /* num: max_records, max_section_bytes, complete */
     return (sm_span_is(&r->text[0], VCS_SEMANTIC_FACTS_V1_NAME) ||
-            sm_span_is(&r->text[0], VCS_SEMANTIC_FACTS_V2_NAME)) &&
+            sm_span_is(&r->text[0], VCS_SEMANTIC_FACTS_V2_NAME) ||
+            sm_span_is(&r->text[0], VCS_SEMANTIC_FACTS_V3_NAME)) &&
            r->num[0] >= 1 && r->num[0] <= VCS_SEMANTIC_MANIFEST_V1_MAX_RECORDS &&
            r->num[1] >= 4 && r->num[1] <= VCS_SEMANTIC_MANIFEST_V1_MAX_BYTES &&
            r->num[2] <= 1;

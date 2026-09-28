@@ -783,6 +783,87 @@ static bool fxc_read_changed(const struct fxc_pair *p, const char *path)
     return a == NULL || b == NULL || memcmp(a, b, 32) != 0;
 }
 
+/* ---- static assertions ---------------------------------------------------------- */
+
+/* The first "@assert:<path>" site of x that reaches a dirty id, or that
+ * expands __LINE__ while <path> changed (every line below an edit may move);
+ * SIZE_MAX when none does, SIZE_MAX - 1 when memory runs out. *dirty names
+ * what it reaches (the site itself for __LINE__). */
+static size_t fxc_assert_site(const struct fxc_pair *p, const struct fxi *x,
+                              const uint8_t *flags, size_t *dirty)
+{
+    const size_t n = fxi_count(x), plen = strlen(VCS_SEMANTIC_FACTS_ASSERT_SITE);
+    uint8_t *m = zcl_calloc(n + 1, 1, "facts_tu.amask");
+    size_t *via = zcl_calloc(n + 1, sizeof(*via), "facts_tu.avia");
+    size_t *line = zcl_calloc(n + 1, sizeof(*line), "facts_tu.aline");
+    size_t hit = SIZE_MAX - 1;
+    if (m != NULL && via != NULL && line != NULL) {
+        for (size_t e = 0; e < n; e++)
+            m[e] = flags[e] & (FXI_DIRTY_DIGEST | FXI_DIRTY_CHUNK);
+        if (fxi_taint(x, m, via) && fxi_expands_builtin(x, "__LINE__", line))
+            hit = SIZE_MAX;
+    }
+    for (size_t e = 0; hit == SIZE_MAX && e < n; e++) {
+        if (!fxi_is_site(x, e, VCS_SEMANTIC_FACTS_ASSERT_SITE))
+            continue;
+        if (via[e] != SIZE_MAX) {
+            hit = e;
+            *dirty = via[e];
+        } else if (line[e] != SIZE_MAX &&
+                   fxc_read_changed(p, fxi_id(x, e) + plen)) {
+            hit = e;
+            *dirty = e;
+        }
+    }
+    free(m);
+    free(via);
+    free(line);
+    return hit;
+}
+
+/* No changed id reaches the TU's code, but a static_assert it reads, in a
+ * header or at its own file scope, names one: the assertion can stop
+ * holding, and the TU stop compiling, though its object would not change.
+ * It joins the compile set with no test obligation. */
+static bool fxc_static_assert(const struct fxc_pair *p,
+                              struct zcl_devloop_facts_tu_verdict *t, bool *ok)
+{
+    struct fxi *side[2] = {p->xa, p->xb};
+    uint8_t *flags[2] = {p->fa, p->fb};
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_ASSERT)
+        return false;
+#endif
+    for (int s = 0; *ok && s < 2; s++) {
+        size_t dirty = 0, site = fxc_assert_site(p, side[s], flags[s], &dirty);
+        *ok = site != SIZE_MAX - 1;
+        if (*ok && site != SIZE_MAX) {
+            fxc_set(t, true, false, "static-assert", "%s reaches %s",
+                    fxi_id(side[s], site), fxi_id(side[s], dirty));
+            t->compile_only = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A manifest before facts revision 3 records no static_assert: nothing says
+ * none of the headers this TU read asserts over what changed, so the TU
+ * compiles (an assertion emits no bytes: no test obligation). */
+static bool fxc_assert_unattributed(const struct fxc_pair *p,
+                                    struct zcl_devloop_facts_tu_verdict *t)
+{
+    if (fxi_revision(p->xa) >= 3 && fxi_revision(p->xb) >= 3)
+        return false;
+    fxc_set(t, true, false, "static-assert-unattributed",
+            "a revision-%u manifest records no static_assert",
+            (unsigned)(fxi_revision(p->xa) < fxi_revision(p->xb)
+                           ? fxi_revision(p->xa)
+                           : fxi_revision(p->xb)));
+    t->compile_only = true;
+    return true;
+}
+
 /* The debug level either side compiles at. */
 static int fxc_debug_level(const struct fxc_pair *p)
 {
@@ -953,6 +1034,10 @@ static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
     if (fxc_position(p, t, &ok) || !ok)
         return ok;
     if (fxc_roots_differ(p, t))
+        return true;
+    if (fxc_static_assert(p, t, &ok) || !ok)
+        return ok;
+    if (fxc_assert_unattributed(p, t))
         return true;
     if (fxc_debug_position(c, p, t))
         return true;

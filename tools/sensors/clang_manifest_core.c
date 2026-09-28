@@ -158,6 +158,9 @@ void cm_core_free(struct cm_core *c)
         free(fn->id);
     }
     free(c->fns);
+    for (size_t k = 0; k < c->nasserts; k++)
+        free(c->asserts[k].site);
+    free(c->asserts);
     for (size_t k = 0; k < c->nocc; k++) {
         free(c->occ[k].site);
         free(c->occ[k].detail);

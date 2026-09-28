@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* A reader-side model of one TU's manifest (facts revision 1 or 2). Every
+/* A reader-side model of one TU's manifest (facts revision 1, 2 or 3). Every
  * record that belongs to an entity is attached to its canonical id:
  *   MACROS    m:<path>:<name>, and the name group m:<name> (every
  *             definition of that name the TU saw);
@@ -15,7 +15,9 @@
  *             e:<path>:<enum>; DECLS and FUNCTIONS f:/v:<name> (external)
  *             or f:/v:/t:/s:/u:/e:<path>:<name>; SYMBOLS its id;
  *   REFS and UNKNOWNS their site (the from id), including the pseudo-sites
- *             "@scope:<path>" and "@cond:<path>" of facts revision 2.
+ *             "@scope:<path>" and "@cond:<path>" of facts revision 2 and
+ *             "@assert:<path>" of revision 3 (never a root: the consumer
+ *             asks what each reaches, devloop_facts_tu.c).
  * An entity's digest hashes its records outside the main file; the main
  * file's records form the implementation root instead. Edges: every REFS
  * record, a tag named in a record's canonical type text ("struct N",

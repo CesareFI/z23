@@ -183,7 +183,7 @@ bool vcs_semantic_builder_v1_enable_facts(struct vcs_semantic_builder_v1 *b,
         f->max_records > VCS_SEMANTIC_MANIFEST_V1_MAX_RECORDS ||
         f->max_section_bytes < 4 ||
         f->max_section_bytes > VCS_SEMANTIC_MANIFEST_V1_MAX_BYTES ||
-        f->revision > 2)
+        f->revision > 3)
         return false;
     b->facts = true;
     b->caps = *f;
@@ -332,7 +332,9 @@ static bool sm_apply_caps(struct vcs_semantic_builder_v1 *b,
         ok = sm_add_raw(b, VCS_SEMANTIC_SECTION_V1_TRUNCATED, &rec);
     }
     vcs_semantic_record_v1_reset(&rec);
-    vcs_semantic_record_v1_cstr(&rec, b->caps.revision == 2
+    vcs_semantic_record_v1_cstr(&rec, b->caps.revision == 3
+                                          ? VCS_SEMANTIC_FACTS_V3_NAME
+                                      : b->caps.revision == 2
                                           ? VCS_SEMANTIC_FACTS_V2_NAME
                                           : VCS_SEMANTIC_FACTS_V1_NAME);
     vcs_semantic_record_v1_digest(&rec, b->caps.namespace_root);

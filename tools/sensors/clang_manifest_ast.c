@@ -248,6 +248,7 @@ static enum CXChildVisitResult cm_enum_visit(CXCursor c, CXCursor parent,
 /* ---- tags (struct/union/enum), including named tags nested in records ----- */
 
 static bool cm_tag(struct cm_state *st, const struct cm_file *f, CXCursor c);
+static bool cm_assert_site(struct cm_state *st, CXCursor c);
 
 static enum CXChildVisitResult cm_nested_visit(CXCursor c, CXCursor parent,
                                                CXClientData data)
@@ -265,6 +266,23 @@ static enum CXChildVisitResult cm_nested_visit(CXCursor c, CXCursor parent,
     if (cm_is_repo(f))
         (void)cm_tag(st, f, c);
     return st->core.failed ? CXChildVisit_Break : CXChildVisit_Continue;
+}
+
+/* A static_assert in a record's member list, or in an unnamed record nested
+ * in it, is the record's file's; a named nested record walks its own. */
+static enum CXChildVisitResult cm_record_assert_visit(CXCursor c, CXCursor parent,
+                                                     CXClientData data)
+{
+    struct cm_state *st = data;
+    enum CXCursorKind k = clang_getCursorKind(c);
+    (void)parent;
+    if (k == CXCursor_StaticAssert)
+        return cm_assert_site(st, c) ? CXChildVisit_Continue
+                                     : CXChildVisit_Break;
+    if ((k == CXCursor_StructDecl || k == CXCursor_UnionDecl) &&
+        clang_Cursor_isAnonymous(c))
+        return CXChildVisit_Recurse;
+    return CXChildVisit_Continue;
 }
 
 static const char *cm_tag_kind(enum CXCursorKind k)
@@ -291,6 +309,8 @@ static bool cm_tag(struct cm_state *st, const struct cm_file *f, CXCursor c)
             ok = cm_layout(st, f, c, name);
             if (ok)
                 clang_visitChildren(c, cm_nested_visit, st);
+            if (ok && st->core.facts && !st->core.failed)
+                clang_visitChildren(c, cm_record_assert_visit, st);
             ok = ok && !st->core.failed;
         }
     }
@@ -371,9 +391,13 @@ static bool cm_macro_expansion(struct cm_state *st, const struct cm_file *f,
 {
     char *name = cm_take_string(clang_getCursorSpelling(c));
     char *def_id = NULL;
+    CXFile file;
+    unsigned line, col, end = offset;
+    clang_getExpansionLocation(clang_getRangeEnd(clang_getCursorExtent(c)),
+                               &file, &line, &col, &end);
     if (name != NULL && st->core.facts)
         def_id = cm_macro_id(st, c, name);
-    return cm_macro_exp(&st->core, f, offset, name, def_id);
+    return cm_macro_exp(&st->core, f, offset, end, name, def_id);
 }
 
 /* ---- the facts of one definition -------------------------------------------- */
@@ -711,6 +735,27 @@ static bool cm_walk_site(struct cm_state *st, CXCursor c, const char *id,
     return !st->core.failed;
 }
 
+/* A static_assert outside every function definition (facts revision 3):
+ * each entity its condition names is a ref of "@assert:<path>", and each
+ * expansion inside its span a MACRO ref (cm_emit_assert_refs). One inside a
+ * function body is that function's, walked with its site. */
+static bool cm_assert_site(struct cm_state *st, CXCursor c)
+{
+    const struct cm_file *f = cm_cursor_file(st, c, NULL, NULL);
+    CXSourceRange ext = clang_getCursorExtent(c);
+    CXFile file;
+    unsigned line, col, begin, end;
+    const char *site;
+    if (!st->core.facts || !cm_is_repo(f))
+        return true;
+    clang_getExpansionLocation(clang_getRangeStart(ext), &file, &line, &col,
+                               &begin);
+    clang_getExpansionLocation(clang_getRangeEnd(ext), &file, &line, &col,
+                               &end);
+    site = cm_assert_add(&st->core, f, begin, end);
+    return site != NULL && cm_walk_site(st, c, site, NULL);
+}
+
 /* ---- functions ---------------------------------------------------------------- */
 
 static void cm_fn_tokens(struct cm_state *st, CXSourceRange ext,
@@ -1043,6 +1088,8 @@ static bool cm_dispatch(struct cm_state *st, CXCursor c,
     case CXCursor_UnionDecl:
     case CXCursor_EnumDecl:
         return cm_tag(st, f, c);
+    case CXCursor_StaticAssert:
+        return cm_assert_site(st, c);
     default:
         return true;
     }

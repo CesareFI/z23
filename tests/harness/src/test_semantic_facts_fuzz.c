@@ -683,6 +683,40 @@ static int sfz_t_sdir_mutant(struct sfz_group *g)
     return failures;
 }
 
+/* ---- the static_assert rule is load-bearing -------------------------------------- */
+
+/* SA1 with the consumer's static_assert rule dropped: t1 and t2, which read
+ * shape.h only through guard.h's assertion, fall back to unaffected, so the
+ * over-selection falls from its pin of 2 to exactly 0. Their objects do not
+ * change, so no object oracle sees the miss; only the pin does. */
+static int sfz_t_assert_mutant(struct sfz_group *g)
+{
+    int failures = 0;
+    const struct sfz_repro *base = NULL;
+    struct sfz_item it;
+    struct sfz_repro r;
+    size_t bad;
+    for (size_t k = 0; k < k_sfz_nrepros; k++)
+        if (strcmp(k_sfz_repros[k].name, "SA1_assert_struct_grows") == 0)
+            base = &k_sfz_repros[k];
+    TEST_CASE("semantic_facts_fuzz: without the static_assert rule the assertion's readers are left unaffected") {
+        ASSERT(base != NULL && base->over_pinned && base->over_want == 2);
+        memset(&it, 0, sizeof(it));
+        r = *base;
+        r.name = "SA1_assert_struct_grows_mutant";
+        r.over_want = 0;
+        prep_repro(g, &r, NULL, &it);
+        ASSERT(it.run);
+        zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NO_ASSERT;
+        bad = run_items(g, &it, 1);
+        zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NONE;
+        ASSERT_EQ(bad, (size_t)0);
+        ASSERT_EQ(it.o.status, SFZ_PASS);
+        ASSERT_EQ(it.o.over, (size_t)0);
+    } TEST_END
+    return failures;
+}
+
 /* ---- the seeds ------------------------------------------------------------------- */
 
 static unsigned profile_bits(enum sfz_profile p)
@@ -834,6 +868,7 @@ int test_semantic_facts_fuzz(void)
     if (failures == 0) {
         failures += sfz_t_repros(g);
         failures += sfz_t_sdir_mutant(g);
+        failures += sfz_t_assert_mutant(g);
         failures += sfz_t_seeds(g);
     }
     printf("semantic_facts_fuzz: mode=%s %zu cases (%zu fixed) in %.1f s: %zu pass, "

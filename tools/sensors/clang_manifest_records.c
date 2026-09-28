@@ -91,7 +91,7 @@ bool cm_macro_def(struct cm_core *c, const struct cm_file *f, unsigned offset,
 }
 
 bool cm_macro_exp(struct cm_core *c, const struct cm_file *f, unsigned offset,
-                  char *name, char *def_id)
+                  unsigned end, char *name, char *def_id)
 {
     struct cm_expansion *e;
     if (name == NULL ||
@@ -101,9 +101,29 @@ bool cm_macro_exp(struct cm_core *c, const struct cm_file *f, unsigned offset,
         return cm_fail(c, "out of memory");
     }
     e = &c->exps[c->nexps++];
-    *e = (struct cm_expansion){.file = f, .offset = offset, .name = name,
-                               .def_id = def_id};
+    *e = (struct cm_expansion){.file = f, .offset = offset,
+                               .end = end < offset ? offset : end,
+                               .name = name, .def_id = def_id};
     return true;
+}
+
+const char *cm_assert_add(struct cm_core *c, const struct cm_file *f,
+                          unsigned begin, unsigned end)
+{
+    size_t n = strlen(VCS_SEMANTIC_FACTS_ASSERT_SITE) + strlen(f->path) + 1;
+    char *site = zcl_malloc(n, "clang_manifest.assert_site");
+    if (site == NULL ||
+        !cm_grow((void **)&c->asserts, &c->capasserts, c->nasserts,
+                 sizeof(*c->asserts))) {
+        free(site);
+        (void)cm_fail(c, "out of memory");
+        return NULL;
+    }
+    (void)snprintf(site, n, "%s%s", VCS_SEMANTIC_FACTS_ASSERT_SITE, f->path);
+    c->asserts[c->nasserts++] = (struct cm_assert){
+        .file = f, .site = site, .begin = begin,
+        .end = end < begin ? begin : end};
+    return site;
 }
 
 struct cm_function *cm_function_add(struct cm_core *c,
@@ -254,6 +274,32 @@ static bool cm_emit_scope_refs(struct cm_core *c)
     return ok;
 }
 
+/* Facts revision 3: every expansion inside a static_assert outside every
+ * function definition is a MACRO ref of its "@assert:<path>" site. The
+ * assertion's extent in expansion offsets ends at its closing parenthesis;
+ * when a macro writes the assertion (`CHECK(x)`), it ends where that
+ * invocation begins instead, so an expansion that begins inside the span
+ * stretches it over the invocation's arguments. */
+static bool cm_emit_assert_refs(struct cm_core *c)
+{
+    bool ok = true;
+    for (size_t a = 0; ok && c->facts && a < c->nasserts; a++) {
+        const struct cm_assert *s = &c->asserts[a];
+        unsigned end = s->end;
+        for (size_t k = cm_exp_lower(c, s->file, s->begin);
+             ok && k < c->nexps && c->exps[k].file == s->file &&
+             c->exps[k].offset <= end;
+             k++) {
+            if (c->exps[k].end > end)
+                end = c->exps[k].end;
+            if (c->exps[k].def_id != NULL)
+                ok = cm_ref(c, s->site, VCS_SEMANTIC_REF_V1_MACRO,
+                            c->exps[k].def_id);
+        }
+    }
+    return ok;
+}
+
 bool cm_emit_deferred(struct cm_core *c)
 {
     char **used = NULL;
@@ -274,5 +320,6 @@ bool cm_emit_deferred(struct cm_core *c)
     free(used);
     for (size_t k = 0; ok && k < c->nfns; k++)
         ok = cm_emit_function(c, &c->fns[k]);
-    return ok && cm_emit_scope_refs(c) && cm_emit_conditionals(c);
+    return ok && cm_emit_scope_refs(c) && cm_emit_assert_refs(c) &&
+           cm_emit_conditionals(c);
 }

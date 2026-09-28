@@ -99,6 +99,11 @@ bool vcs_semantic_manifest_v1_each(const uint8_t *bytes, size_t len,
     return true;
 }
 
+static bool sf_name_is(const uint8_t *text, size_t len, const char *name)
+{
+    return len == strlen(name) && memcmp(text, name, len) == 0;
+}
+
 static bool sf_header(void *ctx, const struct vcs_semantic_fields_v1 *f)
 {
     struct vcs_semantic_facts_info_v1 *out = ctx;
@@ -138,11 +143,9 @@ bool vcs_semantic_facts_v1_info(const uint8_t *bytes, size_t len,
         return false;
     memcpy(out->namespace_root, digest, 32);
     out->present = true;
-    out->revision = text_len == strlen(VCS_SEMANTIC_FACTS_V2_NAME) &&
-                            memcmp(text, VCS_SEMANTIC_FACTS_V2_NAME,
-                                   text_len) == 0
-                        ? 2
-                        : 1;
+    out->revision = sf_name_is(text, text_len, VCS_SEMANTIC_FACTS_V3_NAME)   ? 3
+                    : sf_name_is(text, text_len, VCS_SEMANTIC_FACTS_V2_NAME) ? 2
+                                                                             : 1;
     return vcs_semantic_section_v1_each(bytes, len, VCS_SEMANTIC_SECTION_V1_FACTS,
                                         sf_header, out);
 }

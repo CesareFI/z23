@@ -90,6 +90,20 @@ enum vcs_semantic_section_v1 {
 #define VCS_SEMANTIC_FACTS_V2_NAME "zcl.semantic_facts.v2"
 #define VCS_SEMANTIC_FACTS_SCOPE_SITE "@scope:"
 #define VCS_SEMANTIC_FACTS_COND_SITE "@cond:"
+/* Revision 3: revision 2, plus a third pseudo-site whose presence the name
+ * promises:
+ *   "@assert:<path>" -KIND-> <id>  every entity the condition of a
+ *       static_assert written in <path> outside every function definition
+ *       names (at file scope or in a struct or union's member list): its
+ *       types, sizeof and offsetof operands, enumerators, functions,
+ *       variables, and each macro expanded inside it (MACRO refs to
+ *       "m:<defpath>:<name>").
+ * An assertion emits no bytes, but a change to what it reads can stop it
+ * holding, and so stop every reader of <path> compiling. A revision-2
+ * manifest makes no such claim: a consumer cannot tell that no assertion
+ * reads a changed entity. */
+#define VCS_SEMANTIC_FACTS_V3_NAME "zcl.semantic_facts.v3"
+#define VCS_SEMANTIC_FACTS_ASSERT_SITE "@assert:"
 /* Default producer caps: records per section and payload bytes per section. */
 #define VCS_SEMANTIC_FACTS_V1_DEFAULT_MAX_RECORDS 65536u
 #define VCS_SEMANTIC_FACTS_V1_DEFAULT_MAX_SECTION_BYTES (16u * 1024u * 1024u)
@@ -225,8 +239,9 @@ struct vcs_semantic_facts_v1 {
     uint8_t producer[32];
     uint32_t max_records;       /* >= 1 */
     uint64_t max_section_bytes; /* >= 4 */
-    /* 0 or 1 writes VCS_SEMANTIC_FACTS_V1_NAME, 2 writes
-     * VCS_SEMANTIC_FACTS_V2_NAME (the producer then emits its sites). */
+    /* 0 or 1 writes VCS_SEMANTIC_FACTS_V1_NAME, 2 VCS_SEMANTIC_FACTS_V2_NAME
+     * and 3 VCS_SEMANTIC_FACTS_V3_NAME (the producer then emits the sites
+     * that revision names). */
     uint8_t revision;
 };
 bool vcs_semantic_builder_v1_enable_facts(struct vcs_semantic_builder_v1 *b,
@@ -330,7 +345,7 @@ struct vcs_semantic_facts_info_v1 {
     bool complete;              /* no section was cut by a cap */
     uint8_t namespace_root[32];
     uint8_t producer[32]; /* all zero: the producer is unknown */
-    uint8_t revision;     /* 1 or 2: which extension name the FACTS record carries */
+    uint8_t revision;     /* 1, 2 or 3: which extension name the FACTS record carries */
     uint32_t max_records;
     uint64_t max_section_bytes;
 };
