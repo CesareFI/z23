@@ -3299,6 +3299,14 @@ static const char *const g_dp_hotswap_cache_files[][2] = {
       "#define ZCL_ECONOMICS_FIXTURE 4\n" },
 };
 
+#if defined(__APPLE__)
+#define DP_HOTSWAP_TEST_LINK_FLAGS \
+    "-bundle -Wl,-undefined,dynamic_lookup -Wl,-dead_strip"
+#else
+#define DP_HOTSWAP_TEST_LINK_FLAGS \
+    "-shared -nostartfiles -Wl,-Bsymbolic"
+#endif
+
 static bool dp_hotswap_cache_fixture_init(const char *root,
                                           const char *compiler_text)
 {
@@ -3325,7 +3333,7 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
         "CXX=g++\n"
         "COMPILER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "DEV_CFLAGS=-DZCL_DEV_BUILD -ffile-prefix-map=%s=/zclassic23\n"
-        "HOTSWAP_MODULE_LDFLAGS=-shared -nostartfiles -Wl,-Bsymbolic\n",
+        "HOTSWAP_MODULE_LDFLAGS=" DP_HOTSWAP_TEST_LINK_FLAGS "\n",
         compiler, canonical_root);
     return n > 0 && n < (int)sizeof(flags) &&
            dp_mk_write(root, "build/hotswap-fast/flags.env", flags);
@@ -3731,7 +3739,7 @@ static bool dp_ar_flags(const char *root, const char *extra)
         "DEV_CFLAGS=-DZCL_DEV_BUILD -std=c23 -O1 -Iinc_early -Iinc_late "
         "-Ibuild/fx-gen "
         "-ffile-prefix-map=%s=/zclassic23%s\n"
-        "HOTSWAP_MODULE_LDFLAGS=-shared -nostartfiles -Wl,-Bsymbolic\n",
+        "HOTSWAP_MODULE_LDFLAGS=" DP_HOTSWAP_TEST_LINK_FLAGS "\n",
         canonical, canonical, extra);
     return n > 0 && n < (int)sizeof(flags) &&
            dp_mk_write(root, "build/hotswap-fast/flags.env", flags);
@@ -3820,6 +3828,9 @@ static bool dp_ar_fresh(struct dp_ar_fx *fx, char object[65])
     (void)unlink(baseline);
     bool ok = dp_ar_save(fx, fx->root_a, &r, &hit, &attempts) && !hit &&
               attempts == 1 && r.compiler_processes == 2;
+    if (!ok)
+        fprintf(stderr, "hotswap fresh: attempts=%d hit=%d cc=%u why=%s\n",
+                attempts, hit, r.compiler_processes, fx->why);
     (void)snprintf(object, 65, "%s", r.candidate_object_sha256);
     return platform_environment_set("ZCL_DEV_ARTIFACT_CACHE", fx->cache, 1) ==
                0 && ok;
@@ -4191,14 +4202,19 @@ static bool dp_zcc_write_as(const struct dp_zcc_fx *z, bool v2)
 static bool dp_zcc_flags(const struct dp_zcc_fx *z)
 {
     char flags[PATH_MAX * 4];
+#if defined(__APPLE__)
+    static const char assembler_flags[] = " -fno-integrated-as";
+#else
+    static const char assembler_flags[] = "";
+#endif
     int n = snprintf(
         flags, sizeof(flags),
         "CC=%s cc\nCXX=g++\n"
         "COMPILER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "DEV_CFLAGS=-DZCL_DEV_BUILD -std=c23 -O1 -Iinc_early -Iinc_late "
-        "-Ibuild/fx-gen -ffile-prefix-map=%s=/zclassic23\n"
-        "HOTSWAP_MODULE_LDFLAGS=-shared -nostartfiles -Wl,-Bsymbolic\n",
-        z->zcc, z->abs);
+        "-Ibuild/fx-gen -ffile-prefix-map=%s=/zclassic23%s\n"
+        "HOTSWAP_MODULE_LDFLAGS=" DP_HOTSWAP_TEST_LINK_FLAGS "\n",
+        z->zcc, z->abs, assembler_flags);
     return n > 0 && n < (int)sizeof(flags) &&
            dp_mk_write(z->root, "build/hotswap-fast/flags.env", flags);
 }
@@ -4287,6 +4303,7 @@ static void dp_zcc_restore(const struct dp_zcc_fx *z)
     test_rm_rf_recursive(z->cache);
 }
 
+#if defined(__linux__)
 /* Cold build with the v1 assembler, then the v2 swap: both keyed. */
 static bool dp_zcc_swap(struct dp_zcc_fx *z,
                         struct zcl_devloop_hotswap_build_receipt *r1,
@@ -4320,19 +4337,34 @@ static bool dp_zcc_verdict(const struct dp_zcc_fx *z,
            r2->candidate_object_sha256, ok ? "PASS" : "FAIL");
     return ok;
 }
+#endif
 
 static bool run_hotswap_action_root_zcc_fixture(void)
 {
     struct dp_zcc_fx z = {0};
     struct dp_ar_env env;
-    struct zcl_devloop_hotswap_build_receipt r1 = {0}, r2 = {0};
+    struct zcl_devloop_hotswap_build_receipt r1 = {0};
     dp_ar_env_save(&env);
     if (!dp_zcc_paths(&z))
         return false;
     test_rm_rf_recursive(z.root);
     test_rm_rf_recursive(z.cache);
+#if defined(__APPLE__)
+    /* External assembly is not admitted by the action-root argv schema.
+     * Clang's integrated assembler would never execute a PATH `as` swap,
+     * so Darwin must refuse a keyed/cacheable claim for this mode. */
+    bool ok = dp_zcc_init(&z) && dp_zcc_save(&z, &r1) &&
+              !r1.artifact_cache_hit && !r1.cache_key_action_root[0] &&
+              strcmp(r1.cache_key_miss, "argv_unrecognised") == 0 &&
+              r1.compiler_processes > 0;
+    printf("    zcc: Darwin external assembler keyed=%s miss=%s cache_hit=%s -> %s\n",
+           r1.cache_key_action_root[0] ? "yes" : "no", r1.cache_key_miss,
+           r1.artifact_cache_hit ? "yes" : "no", ok ? "PASS" : "FAIL");
+#else
+    struct zcl_devloop_hotswap_build_receipt r2 = {0};
     bool built = dp_zcc_swap(&z, &r1, &r2);
     bool ok = dp_zcc_verdict(&z, &r1, &r2) && built;
+#endif
     dp_ar_env_restore(&env);
     dp_zcc_restore(&z);
     return ok;
@@ -6668,7 +6700,7 @@ static bool dp_hf_fixture_init(const char *cwd, const char *owner,
         "COMPILER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "DEV_CFLAGS=-DZCL_DEV_BUILD -std=c23 -Wall -Wextra -Werror -pedantic"
         " -I%s -I%s -I%s\n"
-        "HOTSWAP_MODULE_LDFLAGS=-shared -nostartfiles -Wl,-Bsymbolic\n",
+        "HOTSWAP_MODULE_LDFLAGS=" DP_HOTSWAP_TEST_LINK_FLAGS "\n",
         includes[0], includes[1], includes[2]);
     static const char *const defs[] = {
         "engine/composition/hotswap_swappable.def",
@@ -6766,7 +6798,7 @@ static bool dp_hf_expect(const char *stage, const struct dp_hf_seen *seen,
 }
 
 /* Green, unchanged re-save, owner mutation, owner restore. */
-static bool dp_hf_owner_cycle(const char *owner, char *mutated,
+[[maybe_unused]] static bool dp_hf_owner_cycle(const char *owner, char *mutated,
                               struct dp_hf_seen *green)
 {
     struct dp_hf_seen seen;
@@ -6795,7 +6827,7 @@ static bool dp_hf_owner_cycle(const char *owner, char *mutated,
 }
 
 /* A comment-only story edit is new story bytes: new key, same verdict. */
-static bool dp_hf_story_cycle(const char *story, char *edited,
+[[maybe_unused]] static bool dp_hf_story_cycle(const char *story, char *edited,
                               const struct dp_hf_seen *green)
 {
     struct dp_hf_seen seen;
@@ -7115,7 +7147,7 @@ static bool dp_hs_toolchain_drift(const char *owner)
     "    policy_shape_probe_ring[0] += pair.a;\n" \
     "    policy_shape_probe_names[1] = policy_shape_probe_names[0];\n"
 
-static bool dp_hs_state_matrix(const char *owner)
+[[maybe_unused]] static bool dp_hs_state_matrix(const char *owner)
 {
     static char base[16384], resized[16384], layout[16384], relocs[16384];
     return dp_hs_edit(owner, DP_HS_QUEUE, DP_HS_STATE_BASE, false, base,
@@ -7203,7 +7235,7 @@ static bool dp_hs_header_cases(const char *base, const char *added)
            dp_hs_refused("header-added", added, "HOT_FORK_SHAPE_HEADER_DRIFT");
 }
 
-static bool dp_hs_header_drift(const char *owner)
+[[maybe_unused]] static bool dp_hs_header_drift(const char *owner)
 {
     static char base[16384], added[16384];
     return dp_hs_edit(owner, DP_HS_INCLUDE, DP_HS_INCLUDE DP_HS_PROBE_INCLUDE,
@@ -7293,7 +7325,7 @@ static bool dp_hs_object_republished(void)
  * object touched in place after the resident linked is stale; one the
  * proof ladder republished (a new inode) leaves the object the resident
  * was linked from, which stays the baseline. */
-static bool dp_hs_resident_facts(const char *owner)
+[[maybe_unused]] static bool dp_hs_resident_facts(const char *owner)
 {
     char compiler[80];
     return dp_mk_write(k_dp_hf_root, k_dp_hf_owner, owner) &&
@@ -7313,7 +7345,7 @@ static bool dp_hs_resident_facts(const char *owner)
 }
 
 /* No object, an unparseable one, one without a symbol table, no session. */
-static bool dp_hs_missing_facts(void)
+[[maybe_unused]] static bool dp_hs_missing_facts(void)
 {
     static const char garbage[] = "not an ELF object";
     return dp_hs_write_object(garbage, sizeof(garbage) - 1, 5) &&
@@ -7352,7 +7384,7 @@ static bool dp_hs_closure_changed(const char *owner)
            dp_hf_drive(&seen) && dp_hs_story_green("closure-restored", owner);
 }
 
-static bool dp_hs_edit_matrix(const char *owner)
+[[maybe_unused]] static bool dp_hs_edit_matrix(const char *owner)
 {
     bool ok = dp_hs_story_green("baseline", owner);
     for (size_t i = 0; i < sizeof(k_dp_hs_edits) /
@@ -7364,7 +7396,7 @@ static bool dp_hs_edit_matrix(const char *owner)
 static int test_hotfork_shape_refusals(void)
 {
     int failures = 0;
-    TEST("dev platform: HOT_FORK refuses ABI, writable-state, init/fini, unresolved-reference, header-drift, toolchain, closure and missing-fact shapes by name and admits implementation-only edits") {
+    TEST("dev platform: HOT_FORK admits proven ELF edits or refuses unsupported Darwin shapes with restart") {
         static char owner[16384], story[16384];
         char cwd[PATH_MAX];
         ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
@@ -7378,17 +7410,33 @@ static int test_hotfork_shape_refusals(void)
         ASSERT(dp_hf_index(k_dp_hf_root));
         ASSERT(dp_hs_resident(1));
         ASSERT(dp_hf_env(cwd, true));
+#if defined(__APPLE__)
+        char edited[16448];
+        bool refused = dp_hs_refused("darwin-baseline", owner,
+                                     "HOT_FORK_SHAPE_UNSUPPORTED") &&
+                       dp_hs_edit(owner, DP_HS_QUEUE_RETURN,
+                                  "    return vcs_policy_limits_for(tier)->queue_priority + 1;\n",
+                                  false, edited,
+                                  sizeof(edited)) &&
+                       dp_hs_refused("darwin-body-edit", edited,
+                                     "HOT_FORK_SHAPE_UNSUPPORTED");
+#else
         bool edits = dp_hs_edit_matrix(owner);
         bool state = dp_hs_state_matrix(owner);
         bool drift = dp_hs_header_drift(owner);
         bool facts = dp_hs_resident_facts(owner) && dp_hs_missing_facts();
+#endif
         ASSERT(dp_hf_env(cwd, false));
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
+#if defined(__APPLE__)
+        ASSERT(refused);
+#else
         ASSERT(edits);
         ASSERT(state);
         ASSERT(drift);
         ASSERT(facts);
+#endif
         PASS();
     } _test_next:;
     return failures;
@@ -7453,7 +7501,7 @@ static bool dp_img_fixture(const char *path, const char *name, time_t when)
 static int test_hotfork_shape_image_cache(void)
 {
     int failures = 0;
-    TEST("dev platform: HOT_FORK parses the running image's symbols once per image identity and re-parses a changed image") {
+    TEST("dev platform: HOT_FORK caches ELF image symbols or refuses unsupported image facts") {
 #if defined(__linux__)
         static const char fixture[] = "test-tmp/dev_hotfork_image.o";
         static const char absent[] = "zcl_no_such_symbol_q7";
@@ -7488,41 +7536,57 @@ static int test_hotfork_shape_image_cache(void)
         ASSERT(p == p0 + 4);
         ASSERT(unlink(fixture) == 0);
         ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbok", false, &p) == -1);
+#else
+        unsigned long parses = 999;
+        ASSERT(zcl_hotfork_shape_test_image_defines("/no-elf-image", "main",
+                                                     false, &parses) == -1);
+        ASSERT(parses == 0);
 #endif
         PASS();
-    }
-#if defined(__linux__)
-    _test_next:;
-#endif
+    } _test_next:;
     return failures;
 }
 
 static int test_hotfork_story_file_green_and_red(void)
 {
     int failures = 0;
-    TEST("dev platform: HOT_FORK story file drives STORY_GREEN, a behavioral mutation STORY_RED, and the cache key") {
-        static char owner[16384], mutated[16384], story[16384], edited[16448];
-        char cwd[PATH_MAX];
+    TEST("dev platform: HOT_FORK story runs only for admitted shapes; Darwin refuses unsupported shapes") {
+        static char owner[16384], story[16384];
+#if defined(__linux__)
+        static char mutated[16384], edited[16448];
         struct dp_hf_seen green;
+#endif
+        char cwd[PATH_MAX];
         ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
         ASSERT(!getenv("ZCL_DEV_ARTIFACT_CACHE") &&
                !getenv("ZCL_DEVLOOP_TEST_PROCESS"));
         ASSERT(dp_hf_slurp(k_dp_hf_owner, owner, sizeof(owner)));
         ASSERT(dp_hf_slurp(k_dp_hf_story, story, sizeof(story)));
+#if defined(__linux__)
         memcpy(mutated, owner, sizeof(owner));
+#endif
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
         ASSERT(dp_hf_fixture_init(cwd, owner, story));
         ASSERT(dp_hf_index(k_dp_hf_root));
         ASSERT(dp_hs_resident(1));
         ASSERT(dp_hf_env(cwd, true));
+#if defined(__APPLE__)
+        bool refused = dp_hs_refused("darwin-story", owner,
+                                     "HOT_FORK_SHAPE_UNSUPPORTED");
+#else
         bool owner_ok = dp_hf_owner_cycle(owner, mutated, &green);
         bool story_ok = owner_ok && dp_hf_story_cycle(story, edited, &green);
+#endif
         ASSERT(dp_hf_env(cwd, false));
         test_rm_rf_recursive(k_dp_hf_root);
         test_rm_rf_recursive(k_dp_hf_cache);
+#if defined(__APPLE__)
+        ASSERT(refused);
+#else
         ASSERT(owner_ok);
         ASSERT(story_ok);
+#endif
         PASS();
     } _test_next:;
     return failures;
@@ -7780,7 +7844,7 @@ static bool dp_hc_cycle(const char *model)
 static int test_hotfork_resident_model_closure(void)
 {
     int failures = 0;
-    TEST("dev platform: HOT_FORK refuses, never STORY_GREEN, when a model TU the story reaches through the resident was edited or the call closure is unknown") {
+    TEST("dev platform: HOT_FORK refuses changed or unsupported resident call closure") {
 #if defined(__linux__)
         static char model[32768];
         char cwd[PATH_MAX];
@@ -7800,12 +7864,18 @@ static int test_hotfork_resident_model_closure(void)
         test_rm_rf_recursive(k_dp_hc_root);
         test_rm_rf_recursive(k_dp_hc_cache);
         ASSERT(ok);
+#else
+        char why[256] = {0};
+        ASSERT(!zcl_hotfork_shape_closure_admit("/no-elf-root", "owner.c",
+                                                NULL, "adapter", why,
+                                                sizeof(why)));
+        ASSERT(strncmp(why, "HOT_FORK_SHAPE_UNSUPPORTED",
+                       sizeof("HOT_FORK_SHAPE_UNSUPPORTED") - 1) == 0);
+        ASSERT(strstr(why, "fallback=restart") != NULL);
+        ASSERT(zcl_hotfork_shape_refused(why));
 #endif
         PASS();
-    }
-#if defined(__linux__)
-    _test_next:;
-#endif
+    } _test_next:;
     return failures;
 }
 

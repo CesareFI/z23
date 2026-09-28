@@ -386,6 +386,17 @@ static bool hs_lower_hex64(const char *value)
     return true;
 }
 
+static bool hs_plan_module_ldflags_safe(const char *flags)
+{
+#if defined(__APPLE__)
+    return strcmp(flags, "-bundle -Wl,-undefined,dynamic_lookup "
+                         "-Wl,-dead_strip") == 0;
+#else
+    return strstr(flags, "-Wl,-Bsymbolic") != NULL &&
+           strstr(flags, "-nostartfiles") != NULL;
+#endif
+}
+
 static bool hs_plan_apply_field(struct hs_action_plan *plan, const char *line)
 {
     return hs_plan_line(plan->cc, sizeof(plan->cc), line, "CC=") ||
@@ -554,8 +565,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
         !hs_lower_hex64(next.compiler_id) ||
         !next.cflags[0] || !next.ldflags[0] ||
         !strstr(next.cflags, "-DZCL_DEV_BUILD") ||
-        !strstr(next.ldflags, "-Wl,-Bsymbolic") ||
-        !strstr(next.ldflags, "-nostartfiles")) {
+        !hs_plan_module_ldflags_safe(next.ldflags)) {
         hs_why(why, why_len,
                "resident action plan incomplete or missing safety flags");
         return false;
