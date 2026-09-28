@@ -786,6 +786,29 @@ static bool wtx_fixture(const struct wkr_job *job, struct wkr_result *res)
     return true;
 }
 
+/* The executor child is a fork of this test image, and the image's own
+ * committed data (a ~900 MiB .bss) already exceeds a 512 MiB RLIMIT_DATA.
+ * Under that ceiling the child could not map one new page, so whether the
+ * fixture's fopen() of the run counter worked depended on the free heap it
+ * happened to inherit through fork — which varies with how many idle
+ * wakes the drive took, i.e. with host load. Give every drive the 512 MiB
+ * executor budget ABOVE what this image has already committed, as the
+ * production worker's image (a far smaller .bss under a 1024 MiB default)
+ * has. Without /proc the ceiling is the bare budget. */
+#define WTX_EXEC_BUDGET_MB 512
+static long long wtx_exec_mem_mb(void)
+{
+    long long data_kb = 0;
+    char line[256];
+    FILE *f = fopen("/proc/self/status", "r");
+    while (f && fgets(line, sizeof(line), f))
+        if (sscanf(line, "VmData: %lld kB", &data_kb) == 1)
+            break;
+    if (f)
+        (void)fclose(f);
+    return WTX_EXEC_BUDGET_MB + (data_kb > 0 ? (data_kb + 1023) / 1024 : 0);
+}
+
 static void wtx_opts(struct wkr_drive_opts *o, const char *worker,
                      const char *session)
 {
@@ -798,7 +821,7 @@ static void wtx_opts(struct wkr_drive_opts *o, const char *worker,
     o->max_jobs = 1;
     o->time_cap_s = 30;
     o->cpu_s = 30;
-    o->mem_mb = 512;
+    o->mem_mb = wtx_exec_mem_mb();
     o->token_cap = 32000;
 }
 
@@ -1041,6 +1064,15 @@ static void wtx_rlimit_child(const struct wkr_caps *caps)
     /* The CPU ceiling is unchanged in kind and still applied. */
     if (cpu.rlim_cur != (rlim_t)caps->cpu_s)
         bad |= 16;
+    /* The drives' fixture executor runs under these same caps: it must be
+     * able to map fresh memory beneath the ceiling, or each allocation it
+     * makes succeeds only when the heap inherited through fork happens to
+     * have room. 64 MiB is past glibc's largest mmap threshold, so this
+     * always asks the kernel for new pages. */
+    void *fresh = malloc((size_t)64 << 20);
+    if (!fresh)
+        bad |= 32;
+    free(fresh);
     _exit(bad);
 }
 
@@ -1091,6 +1123,7 @@ static int wtx_confine_cases(void)
         struct wkr_drive_opts o;
         struct wkr_caps caps;
         wtx_opts(&o, "wtx", "s-caps");
+        o.mem_mb = 512;
         ASSERT(zcl_devagent_worker_caps(&o, &caps));
         ASSERT_EQ(caps.memory_bytes, 512ull * 1024ull * 1024ull);
         ASSERT_EQ(caps.cpu_s, 30);
