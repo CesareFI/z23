@@ -418,9 +418,19 @@ int run_gate_script_with_env2(const char *script_rel,
                                      const char *env_value1,
                                      const char *env_name2,
                                      const char *env_value2);
+int run_gate_script_with_env3(const char *script_rel,
+                                     const char *env_name1,
+                                     const char *env_value1,
+                                     const char *env_name2,
+                                     const char *env_value2,
+                                     const char *env_name3,
+                                     const char *env_value3);
 int run_git_hooks_gate_with_path(const char *hooks_path);
-int run_git_hooks_gate_with_file(const char *hook_path);
-int run_git_hooks_gate_with_precommit_file(const char *hook_path);
+int run_git_hooks_gate_with_path_root(const char *hooks_path,
+                                             const char *root);
+int run_git_hooks_gate_with_file(const char *hook_path, const char *root);
+int run_git_hooks_gate_with_precommit_file(const char *hook_path,
+                                                  const char *root);
 int t_git_hooks_gate_enforces_tracked_pre_push(void);
 int t_git_hooks_gate_rejects_noop_pre_push(void);
 int t_git_hooks_gate_rejects_noop_pre_commit(void);

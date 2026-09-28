@@ -659,6 +659,79 @@ int run_gate_script_with_env2(const char *script_rel,
     return -1;
 }
 
+/* Like run_gate_script_with_env2 but exports THREE env vars. Used by the
+ * git-hooks-installed self-tests, which need to point the gate at a hermetic
+ * fixture root (ZCL_GIT_HOOK_ROOT) in ADDITION to the pre-existing
+ * hooks-path/file-content override each check already carries — otherwise
+ * the gate falls back to resolving this checkout's own real installed
+ * state, which makes the self-test's verdict depend on whether an operator
+ * happened to already run `make install-hooks` here. Mirrors the same
+ * fork/exec/redirect plumbing as its siblings. */
+int run_gate_script_with_env3(const char *script_rel,
+                                     const char *env_name1,
+                                     const char *env_value1,
+                                     const char *env_name2,
+                                     const char *env_value2,
+                                     const char *env_name3,
+                                     const char *env_value3)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork_with_retry();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (env_name1 && env_value1)
+            (void)setenv(env_name1, env_value1, 1);
+        if (env_name2 && env_value2)
+            (void)setenv(env_name2, env_value2, 1);
+        if (env_name3 && env_value3)
+            (void)setenv(env_name3, env_value3, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
 /* Snapshot the 1/5/15-minute load average into `out`. Best effort: a machine
  * without /proc/loadavg reports "unknown" rather than failing anything. This
  * is DIAGNOSTIC ONLY — nothing in this file branches on it. */

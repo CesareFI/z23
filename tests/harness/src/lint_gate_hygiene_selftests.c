@@ -27,43 +27,202 @@ int run_git_hooks_gate_with_path(const char *hooks_path)
                                     hooks_path);
 }
 
-int run_git_hooks_gate_with_file(const char *hook_path)
+/* Like run_git_hooks_gate_with_path, but ALSO points the gate's ZCL_GIT_HOOK_
+ * ROOT seam at a private fixture root (see build_git_hooks_fixture below) so
+ * the "build/githooks" literal resolves to that fixture's installed hooks
+ * instead of this checkout's own — the gate's verdict must never depend on
+ * whether an operator happened to already run `make install-hooks` here. */
+int run_git_hooks_gate_with_path_root(const char *hooks_path, const char *root)
 {
-    return run_gate_script_with_env2(
-        GIT_HOOKS_SCRIPT_REL,
-        "ZCL_GIT_HOOKS_PATH_FOR_TEST", "build/githooks",
-        "ZCL_GIT_HOOK_FILE_FOR_TEST", hook_path);
+    return run_gate_script_with_env2(GIT_HOOKS_SCRIPT_REL,
+                                     "ZCL_GIT_HOOKS_PATH_FOR_TEST", hooks_path,
+                                     "ZCL_GIT_HOOK_ROOT", root);
 }
 
-int run_git_hooks_gate_with_precommit_file(const char *hook_path)
+int run_git_hooks_gate_with_file(const char *hook_path, const char *root)
 {
-    return run_gate_script_with_env2(
+    return run_gate_script_with_env3(
         GIT_HOOKS_SCRIPT_REL,
         "ZCL_GIT_HOOKS_PATH_FOR_TEST", "build/githooks",
-        "ZCL_GIT_HOOK_PRECOMMIT_FILE_FOR_TEST", hook_path);
+        "ZCL_GIT_HOOK_FILE_FOR_TEST", hook_path,
+        "ZCL_GIT_HOOK_ROOT", root);
+}
+
+int run_git_hooks_gate_with_precommit_file(const char *hook_path,
+                                           const char *root)
+{
+    return run_gate_script_with_env3(
+        GIT_HOOKS_SCRIPT_REL,
+        "ZCL_GIT_HOOKS_PATH_FOR_TEST", "build/githooks",
+        "ZCL_GIT_HOOK_PRECOMMIT_FILE_FOR_TEST", hook_path,
+        "ZCL_GIT_HOOK_ROOT", root);
+}
+
+/* ── hermetic git-hooks-installed fixture ──────────────────────────────
+ *
+ * check_git_hooks_installed.sh resolves its "actual installed hooks"
+ * comparison against ZCL_GIT_HOOK_ROOT (default: this process's cwd, i.e.
+ * the real checkout) — so without an override, every check below silently
+ * asserts on whatever hook state an operator happened to leave lying around
+ * in THIS checkout, not on the gate's own logic. A fresh clone/worktree has
+ * no build/githooks until `make install-hooks` runs, so that leakage reads
+ * as a gate bug on a fresh checkout and a pass on a primed one.
+ *
+ * The fix: build a private, throwaway installed-hooks tree under test-tmp/
+ * using tools/scripts/install_git_hooks.sh — the SAME script `make
+ * install-hooks` runs — pointed at an isolated Git repo instead of the real
+ * checkout, then pass that root to the gate via the existing ZCL_GIT_HOOK_
+ * ROOT seam. The real checkout's own installed state (or lack of it) never
+ * enters the picture. */
+#define GIT_HOOKS_FIXTURE_ROOT_PREFIX "test-tmp/_git_hooks_fixture_root_tmp"
+#define INSTALL_GIT_HOOKS_SCRIPT_REL "tools/scripts/install_git_hooks.sh"
+
+static int run_git_init(const char *dir)
+{
+    pid_t pid = fork_with_retry();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        int fd = open("/dev/null", O_WRONLY);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execlp("git", "git", "init", "-q", dir, (char *)NULL);
+        _exit(127);
+    }
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        return -1;
+    }
+    if (WIFEXITED(rc))
+        return WEXITSTATUS(rc);
+    return -1;
+}
+
+/* Runs the REAL install recipe against the isolated fixture root. Mirrors
+ * `make install-hooks` (ZCL_GIT_HOOK_HOST=$(GIT_HOOK_HOST)
+ * tools/scripts/install_git_hooks.sh) but with the checkout-writing seams
+ * (ZCL_GIT_HOOK_SOURCE_ROOT / ZCL_GIT_HOOK_ROOT / ZCL_GIT_HOOK_NATIVE_BIN)
+ * pointed at the fixture instead of the real worktree. This whole self-test
+ * family compiles out on _WIN32 (see the file-top comment), so the host is
+ * always posix here. */
+static int run_install_git_hooks(const char *source_root, const char *root,
+                                 const char *native_bin)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), INSTALL_GIT_HOOKS_SCRIPT_REL) != 0)
+        return -1;
+
+    pid_t pid = fork_with_retry();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        int fd = open("/dev/null", O_WRONLY);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        (void)setenv("ZCL_GIT_HOOK_SOURCE_ROOT", source_root, 1);
+        (void)setenv("ZCL_GIT_HOOK_ROOT", root, 1);
+        (void)setenv("ZCL_GIT_HOOK_NATIVE_BIN", native_bin, 1);
+        (void)setenv("ZCL_GIT_HOOK_HOST", "posix", 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        return -1;
+    }
+    if (WIFEXITED(rc))
+        return WEXITSTATUS(rc);
+    return -1;
+}
+
+/* Builds the fixture root and returns 0 on success, filling `fixture_root`
+ * with its absolute path. Caller must teardown_git_hooks_fixture() it. */
+static int build_git_hooks_fixture(char *fixture_root, size_t cap)
+{
+    char dir[PATH_MAX], native_bin[PATH_MAX], real_bin[PATH_MAX];
+    const char *root_repo;
+
+    if (repo_path_pid(fixture_root, cap, GIT_HOOKS_FIXTURE_ROOT_PREFIX, "")
+        != 0)
+        return -1;
+    (void)test_rm_rf_recursive(fixture_root);
+    if (mkdir(fixture_root, 0755) != 0)
+        return -1;
+    /* install_git_hooks.sh refuses a ROOT that is not a Git worktree, and
+     * writes its core.hooksPath scoped --worktree to this private repo
+     * only — never the real checkout's config. */
+    if (run_git_init(fixture_root) != 0)
+        return -1;
+    if (snprintf(dir, sizeof(dir), "%s/build", fixture_root) >= (int)sizeof(dir)
+        || mkdir(dir, 0755) != 0)
+        return -1;
+    if (snprintf(dir, sizeof(dir), "%s/build/bin", fixture_root)
+            >= (int)sizeof(dir)
+        || mkdir(dir, 0755) != 0)
+        return -1;
+    if (repo_path(real_bin, sizeof(real_bin), "build/bin/z23-git-hook") != 0)
+        return -1;
+    if (snprintf(native_bin, sizeof(native_bin), "%s/build/bin/z23-git-hook",
+                fixture_root) >= (int)sizeof(native_bin))
+        return -1;
+    if (copy_file(real_bin, native_bin) != 0)
+        return -1;
+    if (chmod(native_bin, 0755) != 0)
+        return -1;
+    root_repo = repo_root();
+    if (!root_repo)
+        return -1;
+    if (run_install_git_hooks(root_repo, fixture_root, native_bin) != 0)
+        return -1;
+    return 0;
+}
+
+static void teardown_git_hooks_fixture(const char *fixture_root)
+{
+    if (fixture_root && fixture_root[0])
+        (void)test_rm_rf_recursive(fixture_root);
 }
 
 int t_git_hooks_gate_enforces_tracked_pre_push(void)
 {
     int failures = 0;
+    char fixture_root[PATH_MAX];
+    int fixture_ok = build_git_hooks_fixture(fixture_root,
+                                             sizeof(fixture_root)) == 0;
     TEST("[lint-gate] local pre-push hook gate enforces native worktree hooks") {
         ASSERT(run_git_hooks_gate_with_path(".git/hooks") != 0);
-        ASSERT(run_git_hooks_gate_with_path("build/githooks") == 0);
+        ASSERT(fixture_ok);
+        ASSERT(run_git_hooks_gate_with_path_root("build/githooks",
+                                                 fixture_root) == 0);
         PASS();
     } _test_next:;
+    if (fixture_ok)
+        teardown_git_hooks_fixture(fixture_root);
     return failures;
 }
 
 int t_git_hooks_gate_rejects_noop_pre_push(void)
 {
     int failures = 0;
-    char hook_path[PATH_MAX], fixture_path[PATH_MAX];
+    char hook_path[PATH_MAX], fixture_path[PATH_MAX], fixture_root[PATH_MAX];
     char *orig = NULL;
     int resolved = repo_path(hook_path, sizeof(hook_path),
                              GIT_HOOKS_PRE_PUSH_REL);
     int fixture_resolved = repo_path_pid(fixture_path, sizeof(fixture_path),
                                          GIT_HOOKS_PRE_PUSH_FIXTURE_REL, "");
-    int read_ok = (resolved == 0 && fixture_resolved == 0 &&
+    int fixture_ok = build_git_hooks_fixture(fixture_root,
+                                             sizeof(fixture_root)) == 0;
+    int read_ok = (resolved == 0 && fixture_resolved == 0 && fixture_ok &&
                    read_entire_file(hook_path, &orig) == 0);
     int planted_good = 0;
     int original_rc = -1;
@@ -75,14 +234,16 @@ int t_git_hooks_gate_rejects_noop_pre_push(void)
         planted_good = (write_file(fixture_path, orig) == 0 &&
                         chmod(fixture_path, 0755) == 0);
         if (planted_good)
-            original_rc = run_git_hooks_gate_with_file(fixture_path);
+            original_rc = run_git_hooks_gate_with_file(fixture_path,
+                                                       fixture_root);
         wrote_noop = (write_file(fixture_path,
                       "#!/usr/bin/env bash\n"
                       "# fixture: no local CI gate\n"
                       "exit 0\n") == 0 &&
                       chmod(fixture_path, 0755) == 0);
         if (wrote_noop)
-            noop_rc = run_git_hooks_gate_with_file(fixture_path);
+            noop_rc = run_git_hooks_gate_with_file(fixture_path,
+                                                    fixture_root);
         (void)unlink(fixture_path);
     }
 
@@ -96,19 +257,23 @@ int t_git_hooks_gate_rejects_noop_pre_push(void)
     } _test_next:;
 
     free(orig);
+    if (fixture_ok)
+        teardown_git_hooks_fixture(fixture_root);
     return failures;
 }
 
 int t_git_hooks_gate_rejects_noop_pre_commit(void)
 {
     int failures = 0;
-    char hook_path[PATH_MAX], fixture_path[PATH_MAX];
+    char hook_path[PATH_MAX], fixture_path[PATH_MAX], fixture_root[PATH_MAX];
     char *orig = NULL;
     int resolved = repo_path(hook_path, sizeof(hook_path),
                              GIT_HOOKS_PRECOMMIT_REL);
     int fixture_resolved = repo_path_pid(fixture_path, sizeof(fixture_path),
                                          GIT_HOOKS_PRECOMMIT_FIXTURE_REL, "");
-    int read_ok = (resolved == 0 && fixture_resolved == 0 &&
+    int fixture_ok = build_git_hooks_fixture(fixture_root,
+                                             sizeof(fixture_root)) == 0;
+    int read_ok = (resolved == 0 && fixture_resolved == 0 && fixture_ok &&
                    read_entire_file(hook_path, &orig) == 0);
     int planted_good = 0;
     int original_rc = -1;
@@ -120,14 +285,16 @@ int t_git_hooks_gate_rejects_noop_pre_commit(void)
         planted_good = (write_file(fixture_path, orig) == 0 &&
                         chmod(fixture_path, 0755) == 0);
         if (planted_good)
-            original_rc = run_git_hooks_gate_with_precommit_file(fixture_path);
+            original_rc = run_git_hooks_gate_with_precommit_file(
+                fixture_path, fixture_root);
         wrote_noop = (write_file(fixture_path,
                       "#!/usr/bin/env bash\n"
                       "# fixture: no main-checkout lane guard\n"
                       "exit 0\n") == 0 &&
                       chmod(fixture_path, 0755) == 0);
         if (wrote_noop)
-            noop_rc = run_git_hooks_gate_with_precommit_file(fixture_path);
+            noop_rc = run_git_hooks_gate_with_precommit_file(fixture_path,
+                                                             fixture_root);
         (void)unlink(fixture_path);
     }
 
@@ -141,6 +308,8 @@ int t_git_hooks_gate_rejects_noop_pre_commit(void)
     } _test_next:;
 
     free(orig);
+    if (fixture_ok)
+        teardown_git_hooks_fixture(fixture_root);
     return failures;
 }
 
