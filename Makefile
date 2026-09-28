@@ -942,6 +942,7 @@ DEV_STANDALONE_SRCS = tools/dev/hotswap_verify_so.c \
 	tools/dev/z23_doctor.c \
 	tools/dev/fleet_observe_main.c \
 	tools/dev/mvp_ledger_main.c \
+	tools/dev/test_group_weights_main.c \
 	tools/dev/action_root_reuse_study.c \
 	tools/dev/action_root_reuse_study_eval.c \
 	tools/dev/action_root_reuse_study_snap.c \
@@ -4318,7 +4319,33 @@ $(MVP_LEDGER_BIN): tools/dev/mvp_ledger.c tools/dev/mvp_ledger_tsv.c \
 	    -Iplatform/modules/json/include -Iplatform/modules/base/include \
 	    -Iplatform/modules/platform/include -Iplatform/modules/util/include \
 	    -o $@ $^
-# action-root-reuse-study: the offline experiment behind
+
+# test-group-weights: regenerates tools/dev/test_group_weights.tsv, the
+# expected wall seconds that make test_parallel dispatch longest-first. The
+# input is a MEASUREMENT (.cache/test-timing/last-run.json of a full cold
+# run), not source, so no freshness gate can reproduce it; the tool refuses a
+# focused or cached run instead of silently dropping weights. The core
+# (test_group_weights.c) has no main() and is linked by the runner and the
+# harness; test_group_weights_main.c is the CLI shim kept out of
+# DEVLOOP_ALL_SRCS via DEV_STANDALONE_SRCS.
+TEST_GROUP_WEIGHTS_BIN = $(BIN_DIR)/test-group-weights$(ZCL_HOST_EXEEXT)
+TEST_GROUP_WEIGHTS_TIMING ?= .cache/test-timing/last-run.json
+.PHONY: test-group-weights test-group-weights-regen
+test-group-weights: $(TEST_GROUP_WEIGHTS_BIN)
+$(TEST_GROUP_WEIGHTS_BIN): tools/dev/test_group_weights.c \
+		tools/dev/test_group_weights_main.c tools/dev/test_group_catalog.c \
+		platform/modules/json/src/json.c \
+		platform/modules/base/src/safe_alloc.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic $(ZCL_PLATFORM_CPPFLAGS) \
+	    -D_POSIX_C_SOURCE=200809L -Itools/dev \
+	    -Iplatform/modules/json/include -Iplatform/modules/base/include \
+	    -Iplatform/modules/platform/include \
+	    -o $@ $^ -lpthread
+test-group-weights-regen: $(TEST_GROUP_WEIGHTS_BIN)
+	$(TEST_GROUP_WEIGHTS_BIN) --timing=$(TEST_GROUP_WEIGHTS_TIMING) \
+	    --out=tools/dev/test_group_weights.tsv
+# action-root-reuse-study:the offline experiment behind
 # docs/experiments/2026-09-25-action-root-reuse.md. It extracts immutable
 # snapshots of recent first-parent main commits (plus --pick'ed small edits),
 # derives the v2 action_root of every dev compile action in each, and reports

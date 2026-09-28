@@ -4,9 +4,11 @@
 #include "test/test_group_selector.h"
 #include "platform/os_proc.h"
 #include "test_group_catalog.h"
+#include "test_group_weights.h"
 #include "util/clientversion.h"
 #include "json/json.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -1411,6 +1413,184 @@ static int test_runner_exact_selection(void)
     return failures;
 }
 
+/* ── Longest-expected-first dispatch ───────────────────────────────────── */
+
+enum { TGS_WEIGHT_ROWS = 4096 };
+
+static size_t tgs_catalog_index(const char *full_id)
+{
+    for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
+        if (strcmp(zcl_test_group_catalog_at(i), full_id) == 0)
+            return i;
+    return SIZE_MAX;
+}
+
+static bool tgs_write_file(const char *path, const char *text)
+{
+    FILE *fp = fopen(path, "wb");
+    if (!fp)
+        return false;
+    bool ok = fputs(text, fp) >= 0;
+    return fclose(fp) == 0 && ok;
+}
+
+/* Offset of the runner's verbose "[dispatch] ... <name>" line, or SIZE_MAX.
+ * Only dispatch lines count: the replayed transcript and the [done] lines
+ * name the same groups in other orders. */
+static size_t tgs_dispatch_pos(const char *out, const char *name)
+{
+    size_t name_len = strlen(name);
+    for (const char *line = out; line && *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (strncmp(line, "[dispatch", 9) == 0 && len > name_len &&
+            line[len - name_len - 1] == ' ' &&
+            memcmp(line + len - name_len, name, name_len) == 0)
+            return (size_t)(line - out);
+        line = end ? end + 1 : NULL;
+    }
+    return SIZE_MAX;
+}
+
+static int test_dispatch_order_pure(void)
+{
+    int failures = 0;
+    TEST("dispatch order: longest-expected-first, stable ties, zeros keep catalog order") {
+        const unsigned w[] = {0, 5, 0, 90, 5, 65};
+        const size_t want[] = {3, 5, 1, 4, 0, 2};
+        size_t order[6];
+        zcl_test_group_order_longest_first(w, 6, order);
+        for (size_t i = 0; i < 6; i++)
+            ASSERT_EQ(order[i], want[i]);
+        const unsigned zeros[4] = {0};
+        zcl_test_group_order_longest_first(zeros, 4, order);
+        for (size_t i = 0; i < 4; i++)
+            ASSERT_EQ(order[i], i);
+        zcl_test_group_order_longest_first(NULL, 4, order);
+        for (size_t i = 0; i < 4; i++)
+            ASSERT_EQ(order[i], i);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dispatch_weights_read(void)
+{
+    int failures = 0;
+    TEST("dispatch weights: malformed, unknown, missing rows weigh 0; last duplicate wins") {
+        static unsigned w[TGS_WEIGHT_ROWS];
+        static char text[1024];
+        size_t n = zcl_test_group_catalog_count();
+        ASSERT(n > 0 && n <= TGS_WEIGHT_ROWS);
+        char root[PATH_MAX], path[PATH_MAX + 32];
+        test_make_tmpdir(root, sizeof(root), "tgs_weights", "read");
+        int len = snprintf(path, sizeof(path), "%s/weights.tsv", root);
+        ASSERT(len > 0 && (size_t)len < sizeof(path));
+        char overlong[301];
+        memset(overlong, 'x', 300);
+        overlong[300] = '\0';
+        len = snprintf(text, sizeof(text),
+                       "# comment\ttest_hex_codec\t40\n"
+                       "test_codec_cursor\t9\n"
+                       "test_no_such_group_zz\t50\n"
+                       "test_hex_codec\tabc\n"
+                       "test_byte_order_codec\t12x\n"
+                       "\t30\n"
+                       "test_determinism\t99999999\n"
+                       "%s\t7\n"
+                       "test_base_foundation\t3\n"
+                       "test_base_foundation\t4\r\n"
+                       "test_chain\t7", overlong);
+        ASSERT(len > 0 && (size_t)len < sizeof(text));
+        ASSERT(tgs_write_file(path, text));
+        ASSERT_EQ(zcl_test_group_weights_read(path, w, n), (size_t)4);
+        ASSERT_EQ(w[tgs_catalog_index("test_codec_cursor")], 9u);
+        ASSERT_EQ(w[tgs_catalog_index("test_base_foundation")], 4u);
+        ASSERT_EQ(w[tgs_catalog_index("test_chain")], 7u);
+        ASSERT_EQ(w[tgs_catalog_index("test_hex_codec")], 0u);
+        ASSERT_EQ(w[tgs_catalog_index("test_byte_order_codec")], 0u);
+        ASSERT_EQ(w[tgs_catalog_index("test_determinism")], 0u);
+        /* A table that is not the catalog's shape is never indexed. */
+        ASSERT_EQ(zcl_test_group_weights_read(path, w, n - 1), (size_t)0);
+        ASSERT_EQ(w[tgs_catalog_index("test_codec_cursor")], 0u);
+        ASSERT(snprintf(path, sizeof(path), "%s/absent.tsv", root) > 0);
+        ASSERT_EQ(zcl_test_group_weights_read(path, w, n), (size_t)0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Run the real runner from a scratch cwd whose tools/dev/ holds `weights`
+ * (NULL = no weights file) over two cheap groups on one worker, so dispatch
+ * order is observable in its verbose transcript. */
+static int tgs_run_weighted(const char *root, const char *weights, char *out,
+                            size_t cap)
+{
+    char dir[PATH_MAX + 32], path[PATH_MAX + 64], exe[PATH_MAX];
+    char command[3 * PATH_MAX];
+    if (snprintf(dir, sizeof(dir), "%s/tools", root) <= 0 ||
+        (mkdir(dir, 0755) != 0 && errno != EEXIST) ||
+        snprintf(dir, sizeof(dir), "%s/tools/dev", root) <= 0 ||
+        (mkdir(dir, 0755) != 0 && errno != EEXIST) ||
+        snprintf(path, sizeof(path), "%s/test_group_weights.tsv", dir) <= 0)
+        return -1;
+    (void)remove(path);
+    if ((weights && !tgs_write_file(path, weights)) ||
+        !os_proc_exe_path(exe, sizeof(exe)))
+        return -1;
+    int n = snprintf(command, sizeof(command),
+                     "cd \"%s\" && \"%s\" --jobs=1 --verbose --no-cache "
+                     "--exact=test_hex_codec,test_codec_cursor 2>&1",
+                     root, exe);
+    if (n <= 0 || (size_t)n >= sizeof(command))
+        return -1;
+    return capture_command(command, out, cap);
+}
+
+static int test_runner_dispatches_longest_first(void)
+{
+    int failures = 0;
+    TEST("runner: tracked weights dispatch longest-first; no weights keep catalog order") {
+        static char out[1024 * 1024];
+        char root[PATH_MAX];
+        test_make_tmpdir(root, sizeof(root), "tgs_weights", "runner");
+        /* Control: no weights file, catalog order (hex_codec is row 0). */
+        int rc = tgs_run_weighted(root, NULL, out, sizeof(out));
+        dump_bad_rc("unweighted runner", rc, 0, out);
+        ASSERT(rc == 0);
+        size_t hex = tgs_dispatch_pos(out, "test_hex_codec");
+        size_t cursor = tgs_dispatch_pos(out, "test_codec_cursor");
+        ASSERT(hex != SIZE_MAX && cursor != SIZE_MAX);
+        ASSERT(hex < cursor);
+        /* Weighted: the later, heavier row goes first. Garbage rows around
+         * it weigh 0 and never fail the run. */
+        rc = tgs_run_weighted(root,
+                              "# weights\nnot a row\ntest_hex_codec\t-1\n"
+                              "test_unknown_zz\t99\ntest_codec_cursor\t9\n",
+                              out, sizeof(out));
+        dump_bad_rc("weighted runner", rc, 0, out);
+        ASSERT(rc == 0);
+        ASSERT(selector_output_contains(out, "groups_failed=0"));
+        hex = tgs_dispatch_pos(out, "test_hex_codec");
+        cursor = tgs_dispatch_pos(out, "test_codec_cursor");
+        ASSERT(hex != SIZE_MAX && cursor != SIZE_MAX);
+        ASSERT(cursor < hex);
+        /* Only malformed rows: catalog order again. */
+        rc = tgs_run_weighted(root, "test_codec_cursor 9\n\x01\t\t\n",
+                              out, sizeof(out));
+        dump_bad_rc("malformed-weights runner", rc, 0, out);
+        ASSERT(rc == 0);
+        hex = tgs_dispatch_pos(out, "test_hex_codec");
+        cursor = tgs_dispatch_pos(out, "test_codec_cursor");
+        ASSERT(hex != SIZE_MAX && cursor != SIZE_MAX);
+        ASSERT(hex < cursor);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_compile_scope_proof(void)
 {
     int failures = 0;
@@ -1444,6 +1624,9 @@ int test_test_group_selector(void)
     failures += test_process_sensitive_groups_are_catalog_exclusive();
     failures += test_runner_exact_selection();
     failures += test_runner_no_cache_outranks_env();
+    failures += test_dispatch_order_pure();
+    failures += test_dispatch_weights_read();
+    failures += test_runner_dispatches_longest_first();
     failures += test_assert_macros_report_where_and_what();
     failures += test_assert_messages_name_file_line_and_values();
     return failures;
