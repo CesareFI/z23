@@ -9199,12 +9199,20 @@ static pid_t dp_stalled_watcher(const char *root, pid_t *member)
             _exit(2);
         pid_t worker = fork();
         if (worker == 0) {
-            (void)signal(SIGTERM, SIG_IGN);
+            /* Reporting the pid is the readiness barrier: the parent may
+             * send SIGTERM as soon as it reads, so install SIG_IGN first. */
+            if (signal(SIGTERM, SIG_IGN) == SIG_ERR)
+                _exit(3);
+            pid_t ready_pid = getpid();
+            if (write(report[1], &ready_pid, sizeof(ready_pid)) !=
+                sizeof(ready_pid))
+                _exit(3);
+            (void)close(report[1]);
             for (;;)
                 (void)pause();
         }
-        if (worker < 0 ||
-            write(report[1], &worker, sizeof(worker)) != sizeof(worker))
+        (void)close(report[1]);
+        if (worker < 0)
             _exit(3);
         for (;;)
             (void)pause();
