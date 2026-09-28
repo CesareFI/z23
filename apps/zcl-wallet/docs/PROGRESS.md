@@ -7804,3 +7804,44 @@ Evidence is in `.cache/executor-shutdown-20260928/`, with exploratory pressure
 failures in `.cache/executor-pressure-20260928/`. Continue with permitted
 platform lifecycle/error-path work; hardware custody and the development-ref
 publication policy remain separate open gates.
+
+## Erase recovery input when the UI handoff fails — 2026-09-28
+
+The recovery keyboard relinquishes its transferred char array before the
+controller checks the setup clock or renders the waiting screen. Either step
+could throw before the worker received that array, leaving its copied words
+unerased. After mechanically extracting the existing callback into a named
+private submission method, two device regressions reproduce this on API30/36.
+The accepted-input control already passed before the fix. All fixtures use
+public marker text, an uninitialized cipher and a held disposable worker;
+no authentication, wallet derivation, real phrase or persistent record is used.
+
+The controller now retains erasure responsibility through the complete handoff.
+A finally block clears rejected input and input stranded by clock, rendering,
+callback allocation or submission failures. A successful submission leaves
+cleanup with the worker; the controller never wipes input still needed there.
+The original exception propagates. Three Android tests cover ordinary/fatal
+clock and rendering failures for both restore and backup confirmation, plus
+accepted input retained by the queued owner and cleared during cancellation.
+
+All 117 selected UI/authentication/secret/storage/native lifecycle cases pass
+with CheckJNI and no skips on API30/36 in 34.386/86.601 seconds. Actual
+balance/history/full-source-review process-kill/relaunch also passes on both.
+Full Gradle build/test/lint/isolation/alignment passes in 42 seconds; all 54 app
+JVM cases reran, with the 97 unchanged core cases up-to-date. Six relevant
+native key/record/secret-failure groups pass Clang/GCC ASan/UBSan in 3.79/4.82
+seconds. Existing mnemonic fuzzing, seeded with public zero-entropy vectors and
+invalid text, completes 396846 executions in 31 seconds with no finding:
+256-byte input, five-second-case and 512 MiB RSS bounds, 88 MiB observed.
+Native complexity caps 10/15, architecture and whitespace checks pass.
+
+No native or consensus source changes. Release DEX grows by 56 bytes to 92504;
+native libraries remain byte-identical and the unsigned APK remains 641659
+bytes, SHA256
+`fff5a50c500da1d4c4573f7ea6b537ad25ca6c07dd10721c1db663a0771222d4`.
+Source-only tree `327c74a0a64027864336b2b450aa59904b5ed48d`, containing final
+implementation/tests and preceding notes, reproduces the entire APK with
+57 uncached tasks in 48 seconds. The six original dirty sync files still match
+their preserved hashes. Evidence is in `.cache/recovery-handoff-20260928/`.
+Continue qualification of the current platform changes on the owned API35
+16 KiB profile, preserving the hardware-custody and publication gates.

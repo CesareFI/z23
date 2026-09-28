@@ -56,9 +56,11 @@ read-only processing measurement and release quality while physical custody
 qualification remains open. Executor draining now survives a queued cleanup
 failure, and shutdown failure after the pool enters SHUTDOWN now wakes an idle
 worker without interrupting active platform work. Authentication failure
-notification survives cancellation errors, and a bounded public-fixture sync
-benchmark is available. The current unsigned
-release has been reproduced from a fresh source-only directory on the same
+notification survives cancellation errors. Recovery submission now erases its
+transferred input if a clock, rendering or handoff error occurs before the
+worker takes responsibility. A bounded public-fixture sync benchmark is
+available. The current unsigned release has been reproduced from a fresh
+source-only directory on the same
 host/toolchain. Exact evidence and the next concrete task are in `PROGRESS.md`.
 TLS quarantine remains untouched; do not resume its review as an implicit next
 step or substitute weaker platform policy for unavailable hardware evidence.

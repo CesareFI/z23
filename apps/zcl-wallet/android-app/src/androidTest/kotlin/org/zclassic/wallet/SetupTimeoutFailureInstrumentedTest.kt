@@ -168,6 +168,24 @@ class SetupTimeoutFailureInstrumentedTest {
             assertTrue(worker.submit({ throw problem }) { error("Cancelled public cleanup fixture ran") })
         }
 
+        fun showRecovery(confirming: Boolean) {
+            try {
+                MainActivity::class.java.getDeclaredMethod("enterRecovery", Boolean::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType).apply { isAccessible = true }
+                    .invoke(controller, confirming, false)
+            } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        }
+
+        fun submitRecovery(words: CharArray, confirming: Boolean) {
+            try {
+                MainActivity::class.java.getDeclaredMethod("submitRecovery", CharArray::class.java,
+                    Boolean::class.javaPrimitiveType).apply { isAccessible = true }
+                    .invoke(controller, words, confirming)
+            } catch (wrapped: InvocationTargetException) { throw checkNotNull(wrapped.cause) }
+        }
+
+        fun assertQueued(count: Int) { assertEquals(count, checkNotNull(backend).queue.size) }
+
         fun failCancellation(problem: Throwable): CancellationSignal {
             val type = WalletAuthentication::class.java.declaredClasses.single { it.simpleName == "Pending" }
             val prepared = PreparedWalletAction(WalletAction.CREATE,
@@ -289,6 +307,51 @@ class SetupTimeoutFailureInstrumentedTest {
     @Test fun falsePostStillClosesTheWorkerAndReportsRefusal() = withFixture { fixture ->
         onMain { assertFalse(fixture.start()); fixture.assertRetired(); fixture.assertMessage(R.string.operation_failed) }
         fixture.finishWorker()
+    }
+
+    private fun failedRecoverySubmission(clock: Boolean) {
+        for (confirming in listOf(false, true)) for (fatal in listOf(false, true)) withFixture { fixture ->
+            val problem = if (fatal) OutOfMemoryError("Public recovery handoff failure")
+                else IllegalStateException("Public recovery handoff failure")
+            val words = charArrayOf('a', 'b', 'c')
+            try {
+                onMain {
+                    fixture.handler.enqueue = true
+                    assertTrue(fixture.start())
+                    fixture.showRecovery(confirming)
+                    if (clock) fixture.clockFailure.set(problem) else fixture.failRendering(problem)
+                    assertSame(problem, assertThrows(Throwable::class.java) {
+                        fixture.submitRecovery(words, confirming)
+                    })
+                    assertTrue("Failed recovery handoff retained its input", words.all { it == '\u0000' })
+                    fixture.assertQueued(0)
+                }
+            } finally { words.fill('\u0000') }
+        }
+    }
+
+    @Test fun recoveryClockFailureClearsInputBeforeWorkerHandoff() = failedRecoverySubmission(clock = true)
+
+    @Test fun recoveryRenderingFailureClearsInputBeforeWorkerHandoff() = failedRecoverySubmission(clock = false)
+
+    @Test fun acceptedRecoveryInputRemainsOwnedUntilQueuedCancellation() {
+        for (confirming in listOf(false, true)) withFixture { fixture ->
+            val words = charArrayOf('a', 'b', 'c')
+            try {
+                onMain {
+                    fixture.handler.enqueue = true
+                    assertTrue(fixture.start())
+                    fixture.showRecovery(confirming)
+                    fixture.submitRecovery(words, confirming)
+                    assertTrue(words.contentEquals(charArrayOf('a', 'b', 'c')))
+                    fixture.assertQueued(1)
+                    fixture.session.close()
+                    assertTrue(words.all { it == '\u0000' })
+                    fixture.assertQueued(0)
+                }
+                fixture.finishWorker()
+            } finally { words.fill('\u0000') }
+        }
     }
 
     private fun shownSecret(fixture: Fixture, input: Boolean): Pair<CharArray, View> {

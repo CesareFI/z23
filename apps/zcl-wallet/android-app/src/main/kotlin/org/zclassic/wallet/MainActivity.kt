@@ -162,18 +162,26 @@ class MainActivity : Activity() {
     private fun enterRecovery(confirming: Boolean, retry: Boolean = false) {
         if (!resumed || !setupOpen()) return
         busy = false
-        screens.enterRecovery(confirming, retry, { owned ->
+        screens.enterRecovery(confirming, retry, { owned -> submitRecovery(owned, confirming) }, ::restart)
+    }
+
+    private fun submitRecovery(owned: CharArray, confirming: Boolean) {
+        var transferred = false
+        try {
             val active = session
-            if (!resumed || busy || active == null || !setupOpen()) {
-                owned.fill('\u0000')
-            } else {
-                busy = true
-                screens.waiting()
-                val invalid = { enterRecovery(confirming, retry = true) }
-                if (confirming) active.confirmCreation(owned, invalid, ::received, ::failed)
-                else active.restore(owned, invalid, ::received, ::failed)
-            }
-        }, ::restart)
+            if (!resumed || busy || active == null || !setupOpen()) return
+            busy = true
+            screens.waiting()
+            val invalid = { enterRecovery(confirming, retry = true) }
+            if (confirming) active.confirmCreation(owned, invalid, ::received, ::failed)
+            else active.restore(owned, invalid, ::received, ::failed)
+            transferred = true
+        } finally {
+            // The view has already relinquished this copy. Own its erasure
+            // through clock, rendering, callback allocation and handoff errors.
+            // A successful handoff leaves cleanup with the bounded worker.
+            if (!transferred) owned.fill('\u0000')
+        }
     }
 
     private fun received(address: TransparentAddress) {
