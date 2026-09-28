@@ -91,6 +91,7 @@ struct fxm_line {
 
 struct fxm_rule {
     char *targets; /* expanded; its .PHONY words NUL-ended once paired */
+    bool gen;      /* makes an optional include that does not exist yet */
     bool reached;  /* can build, or run while building, an object: a
                     * file target, or a makefile's first rule (a bare make
                     * runs it) */
@@ -210,10 +211,21 @@ struct fxm_vname *fxm_vname(struct fxm *m, const char *name, size_t n);
 bool fxm_reach_name(struct fxm *m, const char *name, size_t len);
 /* Reach the .PHONY rule a word names, or every one a glob word matches. */
 bool fxm_token_phony(struct fxm *m, const char *t);
+/* Shell text of a recipe: the end of the command at p (its first
+ * separator outside quotes and references), p past the prefixes that lead
+ * a command, and the end of the word at p; NULL when a quote or reference
+ * does not close. */
+char *fxm_command_end(char *p);
+char *fxm_command_word(char *p, const char *e);
+char *fxm_word_end(char *p);
 
 /* make_goal.c: the .PHONY goals a line names through a value no text
  * spells. */
 bool fxm_goal_ref(struct fxm *m, const char *name, size_t n);
 bool fxm_goal_words(struct fxm *m, const char *raw, bool twice, bool shell);
+/* A recipe line of a rule that makes a missing optional include: the
+ * words it writes into that makefile reach what they name; a command
+ * whose output or copy can be makefile text no line holds is UNKNOWN. */
+bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l);
 
 #endif

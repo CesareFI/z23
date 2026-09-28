@@ -1384,14 +1384,31 @@ while an object is built. The path widens when:
   anywhere in the text; a conditional or `define` still open at the end of
   a file; an `include`, `-include` or `sinclude` word that is not one
   literal file (a glob, a `$(wildcard)`, a reference no single definition
-  gives); a missing file a mandatory `include` names; and a missing file
-  an optional include names when a rule target could make it. A missing
-  optional file no rule makes is read by nobody, and a depfile an include
-  names (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile graph.
+  gives); a missing file a mandatory `include` names; a missing file an
+  optional include names when a rule a `define` holds could make it; and
+  a generated include whose recipe writes text no line holds (below). A
+  missing optional file no rule makes is read by nobody, and a depfile an
+  include names (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile
+  graph.
 
 Otherwise its compile set is empty. Its test groups stay selected: the
 plain plan's path groups, the impact rules and the runtime-input handling
 decide those, not this rule.
+
+**Generated includes.** An optional include that does not exist yet but
+a rule makes is made before anything else and then read, so that rule is
+reached and its recipe is read as what the makefile will hold. Each
+command must be `set`, `mkdir`, `trap` (no action, or an `rm`), `mktemp`,
+`true`, `:`, `exit`, `test`, `[`, `rm`, `touch`, `chmod`, `printf`,
+`echo`, `mv` (of a temporary file a shell variable names, which a bare
+assignment may set only from `$$(mktemp ...)`), or a program the tree
+holds by a relative path; a command substitution may run only `mktemp`,
+`dirname`, `basename` or `pwd`. Only `printf` and `echo` may write to a
+file, and the words they write are goal positions: a rule they print
+reaches its prerequisites, a printed shell value (`$$x`) reaches every
+`.PHONY` name, and text from a `#` to a printed newline is a comment. Any
+other command, a group or `exec` redirection, a copy (`cp`, `cat`), or a
+program's output redirected to a file is UNKNOWN.
 
 A line names a path by its literal path or basename, a directory it lives
 under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
@@ -1466,6 +1483,9 @@ none of them runs as part of building that commit's objects:
 - a script or program that runs make internally (a recipe runs a script
   that calls `make gen` itself): the script is an opaque program, the
   same premise the text scan makes for any script a recipe runs;
+- a program the tree holds that a generated include's recipe runs and
+  that writes that makefile by a name it holds itself, not through a
+  redirection: the same opaque-program premise;
 - a hand-run goal (`make core-seal`, a `.PHONY` rule whose sub-make names
   only other `.PHONY` goals): it runs when someone names it, and what it
   rewrites changes objects then;

@@ -1017,6 +1017,54 @@ static int sbit_t_optional_include(void)
     return failures;
 }
 
+/* A missing optional include a rule makes: make runs that rule first and
+ * reads what it wrote. A rule it prints reaches its goals; a copy of
+ * another file or a program's output is text no line holds. */
+static int sbit_t_generated_include(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"gen_printf", "-include build/gen.mk\nbuild/gen.mk:\n"
+                       "\tprintf '%s\\n' 'build/a.o: | gen' > $@\n"
+                       SBI_OBJ_RULE SBI_GEN_RULE, NULL, NULL},
+        {"gen_copy", "-include build/gen.mk\nbuild/gen.mk: mk/tmpl.mk\n"
+                     "\tcp mk/tmpl.mk $@\n" SBI_OBJ_RULE SBI_GEN_RULE,
+         "mk/tmpl.mk", "build/a.o: | gen\n"},
+        {"gen_program", "-include build/gen.mk\nbuild/gen.mk:\n"
+                        "\ttools/mk/emit > $@\n" SBI_OBJ_RULE SBI_GEN_RULE,
+         NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a generated optional include reaches "
+             "the goals its recipe writes, and a copy or program output "
+             "widens") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* A generated optional include whose recipe writes only a comment (the
+ * real Makefile's identity markers) reaches nothing. */
+static int sbit_t_generated_comment(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    struct sbi_run r = {0};
+    TEST_CASE("semantic_build_inputs: a generated optional include whose "
+             "recipe writes only a comment narrows") {
+        ASSERT(sbi_consume("sbi_gen_comment",
+                           "-include build/ready.mk\nbuild/ready.mk:\n"
+                           "\t@set -eu; tmp=\"$$(mktemp \"$@.XXXXXX\")\"; "
+                           "trap 'rm -f \"$$tmp\"' EXIT; "
+                           "printf '%s\\n' '# ready' > \"$$tmp\"; "
+                           "mv -f -- \"$$tmp\" \"$@\"\n"
+                           SBI_OBJ_RULE SBI_GEN_RULE,
+                           changed, 1, &r));
+        ASSERT(sbi_narrowed(&r));
+    } TEST_END
+    zcl_devloop_facts_report_free(&r.rep);
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
@@ -1032,5 +1080,6 @@ int test_semantic_build_inputs(void)
           sbit_t_default_goal_skips_patterns() |
           sbit_t_computed_prerequisite() | sbit_t_computed_goal_word() |
           sbit_t_grouped_echo_pipe() | sbit_t_submake_goals() |
-          sbit_t_unreadable_text() | sbit_t_optional_include();
+          sbit_t_unreadable_text() | sbit_t_optional_include() |
+          sbit_t_generated_include() | sbit_t_generated_comment();
 }

@@ -988,22 +988,30 @@ static bool fxm_names_target(const char *t, const char *path)
 }
 
 /* An optional include that does not exist yet but a rule can make: make
- * makes it and reads what the recipe wrote, which no text here holds. A
- * rule's targets (a define's too) are expanded a many-word value as its
- * words. */
+ * runs that rule first and reads what its recipe wrote. The rule is
+ * reached, and its recipe lines say what the makefile holds
+ * (fxm_gen_recipe). A rule a define holds is made by an $(eval) no line
+ * spells: UNKNOWN. A target-specific value makes nothing. A rule's
+ * targets (a define's too) are expanded a many-word value as its words. */
 static void fxm_missing_made(struct fxm *m)
 {
     for (size_t k = 0; !m->unknown && m->missing.n > 0 && k < m->nlines; k++) {
         const struct fxm_line *l = &m->lines[k];
         size_t n = l->from > 0 ? l->from - 1 : 0;
+        bool made = false;
         const char *t;
-        if (n == 0 || (l->ctx != FXM_RULE && l->ctx != FXM_DEF))
+        if (n == 0 || (l->ctx != FXM_RULE && !(l->ctx == FXM_DEF && l->body)))
             continue;
         m->lists = true;
         t = fxm_expand(m, l->raw, l->raw[n - 1] == '&' ? n - 1 : n);
         m->lists = false;
-        for (size_t p = 0; t != NULL && !m->unknown && p < m->missing.n; p++)
-            m->unknown = fxm_names_target(t, m->missing.v[p]);
+        m->unknown |= t == NULL;
+        for (size_t p = 0; t != NULL && !made && p < m->missing.n; p++)
+            made = fxm_names_target(t, m->missing.v[p]);
+        if (made && l->ctx == FXM_RULE)
+            m->rules[l->rule].gen = m->rules[l->rule].reached = true;
+        else
+            m->unknown |= made;
     }
 }
 
@@ -1269,6 +1277,7 @@ static uint8_t fxm_rule(struct fxm *m, struct fxm_place *st, const char *s,
     while (fxm_space(*t))
         t++;
     r->reached = !st->goal && fxm_goal_target(t);
+    r->gen = false;
     st->goal |= r->reached;
     if ((r->targets = zcl_strdup(t, "facts_consumer.mktgt")) == NULL) {
         m->unknown = true;
