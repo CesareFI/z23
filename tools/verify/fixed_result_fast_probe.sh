@@ -1,37 +1,38 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
-# Local strict result.c worker acceptance. No same-UID result is eligible.
+# Local test-fast result.c worker acceptance. No same-UID result is eligible.
 set -euo pipefail
 
-fail() { printf 'fixed_result_strict_refuse=%s\n' "$1" >&2; exit 2; }
+fail() { printf 'fixed_result_fast_refuse=%s\n' "$1" >&2; exit 2; }
 repo=$(git rev-parse --show-toplevel)
 [[ $PWD == "$repo" && $PWD == "$(pwd -P)" ]] || fail physical_cwd_mismatch
 [[ $(realpath /usr/bin/cc) == /usr/bin/x86_64-linux-gnu-gcc-14 ]] ||
     fail gcc14_driver_mismatch
 command -v openssl >/dev/null || fail sha3_tool_missing
 [[ -x /usr/bin/time ]] || fail time_tool_missing
-manifest=tools/verify/fixed_result_strict.args
+manifest=tools/verify/fixed_result_fast.args
 manifest_hash=$(openssl dgst -sha3-256 "$manifest" | awk '{print $NF}')
-[[ $manifest_hash == 5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf ]] ||
+[[ $manifest_hash == 5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c ]] ||
     fail manifest_bytes_mismatch
-work=$(mktemp -d "$HOME/.z23-strict-result.XXXXXX")
+work=$(mktemp -d "$HOME/.z23-fast-result.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
-make -s --eval='__z23_strict_profile: ; @printf "__PROFILE_BEGIN__\n"; printf "%s\n" $(CC) $(TEST_REL_OBJECT_CFLAGS); printf "__TARGET__\n%s\n" "$(TEST_REL_OBJ_DIR)/platform/modules/base/src/result.o"' \
-    __z23_strict_profile > "$work/make.out"
+make -s --eval='__z23_fast_profile: ; @printf "__PROFILE_BEGIN__\n"; printf "%s\n" $(CC) $(TEST_FAST_OBJECT_CFLAGS) $(ZCL_TU_RANDOM_SEED); printf "__TARGET__\n%s\n" "$(TEST_FAST_OBJ_DIR)/platform/modules/base/src/result.o"' \
+    __z23_fast_profile > "$work/make.out"
 mapfile -t actual < <(awk '/^__PROFILE_BEGIN__$/ {inside=1; next} /^__TARGET__$/ {exit} inside {print}' "$work/make.out")
 mapfile -t pinned < "$manifest"
-[[ ${#actual[@]} == 188 && ${#pinned[@]} == 188 &&
+[[ ${#actual[@]} == 184 && ${#pinned[@]} == 183 &&
    ${actual[0]} == "$repo/build/bin/zcc" && ${actual[1]} == cc ]] ||
     fail make_profile_shape
-for ((i = 0; i < 187; i++)); do
+for ((i = 0; i < 182; i++)); do
     [[ ${actual[i + 1]} == "${pinned[i]//@CWD@/$repo}" ]] ||
         fail make_profile_mismatch
 done
-[[ ${pinned[187]} == '-frandom-seed=platform/modules/base/src/result.c' ]] ||
+[[ ${actual[183]} == '-frandom-seed=' &&
+   ${pinned[182]} == '-frandom-seed=platform/modules/base/src/result.c' ]] ||
     fail seed_mismatch
 target=$(sed -n '/^__TARGET__$/ {n;p;q}' "$work/make.out")
-[[ $target == build/test-rel-obj/epochs/*/platform/modules/base/src/result.o ]] ||
+[[ $target == build/test-obj/epochs/*/platform/modules/base/src/result.o ]] ||
     fail target_malformed
 
 /usr/bin/cc -std=c23 -Wall -Wextra -Werror -pedantic \
@@ -63,8 +64,80 @@ for name in result.o deps.d stderr.bin result.i; do
     cmp "$work/full/$name" "$work/sparse/$name" || fail "$name-byte-mismatch"
 done
 [[ $(sha256sum "$work/full/result.o" | awk '{print $1}') == \
-   e9c3c808981369e330579f176804c158ce73242004fd55767b6be1275c16bf76 ]] ||
+   32a13af795e799469c81dcf5e961a41fd3a6cb59745942efc17d2ae140454660 ]] ||
     fail object_baseline_mismatch
+
+# The key normalizes -MT across immutable test-fast epochs. Prove that only
+# depfile target bytes change when the direct-source output target changes.
+target_b=build/test-obj/epochs/$(printf 'b%.0s' {1..64})/platform/modules/base/src/result.o
+args=()
+for arg in "${pinned[@]}"; do args+=("${arg//@CWD@/$repo}"); done
+(
+    cd "$repo"
+    env -i LC_ALL=C TZ=UTC TMPDIR=/tmp PATH=/usr/bin:/bin "${args[@]}" \
+        -MMD -MP -MF "$work/epoch-b.d" -MT "$target_b" -c \
+        -o "$work/epoch-b.o" platform/modules/base/src/result.c \
+        2> "$work/epoch-b.err"
+)
+cmp "$work/full/result.o" "$work/epoch-b.o" || fail epoch_object_mismatch
+cmp "$work/full/stderr.bin" "$work/epoch-b.err" || fail epoch_stderr_mismatch
+if cmp -s "$work/full/deps.d" "$work/epoch-b.d"; then
+    fail epoch_dep_target_not_changed
+fi
+
+# Linux ZCC's private stage reaches GCC as /proc/self/fd/N/leaf. A direct
+# compile through that spelling must be byte-equivalent to the worker's
+# ordinary private-directory output spelling before their values normalize.
+mkdir "$work/fd-stage"
+args=()
+for arg in "${pinned[@]}"; do args+=("${arg//@CWD@/$repo}"); done
+(
+    cd "$repo"
+    exec {stage_fd}< "$work/fd-stage"
+    env -i LC_ALL=C TZ=UTC TMPDIR=/tmp PATH=/usr/bin:/bin "${args[@]}" \
+        -MMD -MP -MF "/proc/self/fd/$stage_fd/result.d" \
+        -MT "$target" -c -o "/proc/self/fd/$stage_fd/result.o" \
+        platform/modules/base/src/result.c 2> "$work/fd-stage.err"
+    exec {stage_fd}<&-
+)
+cmp "$work/full/result.o" "$work/fd-stage/result.o" || fail fd_object_mismatch
+cmp "$work/full/deps.d" "$work/fd-stage/result.d" || fail fd_dep_mismatch
+cmp "$work/full/stderr.bin" "$work/fd-stage.err" || fail fd_stderr_mismatch
+
+# A formerly absent earlier search-path header redirects this exact include.
+# Fresh preprocessing and the current-target depfile must expose the change;
+# the three positive input file hashes alone would not.
+mkdir -p "$work/sparse/src/engine/models/include/base"
+cp platform/modules/base/include/base/result.h \
+   "$work/sparse/src/engine/models/include/base/result.h"
+args=()
+for arg in "${pinned[@]}"; do args+=("${arg//@CWD@/$work/sparse/src}"); done
+(
+    cd "$work/sparse/src"
+    env -i LC_ALL=C TZ=UTC TMPDIR=/tmp PATH=/usr/bin:/bin "${args[@]}" \
+        -fno-working-directory -MMD -MP -MF "$work/shadow.d" \
+        -MT "$target" -E -o "$work/shadow.i" \
+        platform/modules/base/src/result.c 2> "$work/shadow.err"
+)
+if cmp -s "$work/sparse/result.i" "$work/shadow.i" ||
+   cmp -s "$work/sparse/deps.d" "$work/shadow.d"; then
+    fail header_shadow_not_detected
+fi
+rm "$work/sparse/src/engine/models/include/base/result.h"
+printf '#include_next <stdio.h>\n' > \
+    "$work/sparse/src/engine/models/include/stdio.h"
+(
+    cd "$work/sparse/src"
+    env -i LC_ALL=C TZ=UTC TMPDIR=/tmp PATH=/usr/bin:/bin "${args[@]}" \
+        -fno-working-directory -MMD -MP -MF "$work/system-shadow.d" \
+        -MT "$target" -E -o "$work/system-shadow.i" \
+        platform/modules/base/src/result.c 2> "$work/system-shadow.err"
+)
+if cmp -s "$work/sparse/result.i" "$work/system-shadow.i" ||
+   cmp -s "$work/sparse/deps.d" "$work/system-shadow.d"; then
+    fail system_header_shadow_not_detected
+fi
+rm "$work/sparse/src/engine/models/include/stdio.h"
 
 sed 's/<zcl_result: missing format>/<zcl_result: altered format>/' \
     "$work/sparse/src/platform/modules/base/src/result.c" > "$work/changed-source.c"
@@ -82,8 +155,6 @@ grep -Fx 'fixed_result_worker_refuse=launcher_peer_mismatch' "$work/serve.err" \
 
 # The stale pre-edit object and a fresh direct compile must be observably
 # different when this pinned source changes. Neither object is proof reuse.
-args=()
-for arg in "${pinned[@]}"; do args+=("${arg//@CWD@/$work/sparse/src}"); done
 (
     cd "$work/sparse/src"
     env -i LC_ALL=C TZ=UTC TMPDIR=/tmp PATH=/usr/bin:/bin "${args[@]}" \
@@ -119,4 +190,4 @@ wc -c "$work/full/result.o" "$work/full/deps.d" \
     "$work/full/stderr.bin" "$work/full/result.i"
 cat "$work/full.time" "$work/sparse.time"
 printf '%s\n' \
-    'object_equal=1 dep_equal=1 stderr_equal=1 pp_equal=1 profile_compiler_launches=3 preprocess_launches=2 worker_build_invocations=1 peer_fixture_build_invocations=1 driver_compile_link_invocations=2 executed_drivers=2 red_pin_compiler_launches=0 proof_launches_avoided=0 attest_eligible=0'
+    'object_equal=1 dep_equal=1 stderr_equal=1 pp_equal=1 epoch_object_equal=1 epoch_dep_target_differs=1 fd_output_parity=1 header_shadow_red=1 system_header_shadow_red=1 profile_compiler_launches=5 preprocess_launches=4 worker_build_invocations=1 peer_fixture_build_invocations=1 driver_compile_link_invocations=2 executed_drivers=2 red_pin_compiler_launches=0 proof_launches_avoided=0 attest_eligible=0'

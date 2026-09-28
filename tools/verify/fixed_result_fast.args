@@ -1,11 +1,9 @@
 cc
 -std=c23
 -g
--O3
 -march=x86-64-v3
 -Wall
 -Wextra
--Werror
 -pedantic
 -ffile-prefix-map=@CWD@=/zclassic23
 -gno-record-gcc-switches
@@ -176,13 +174,10 @@ cc
 -DZCL_AR_ENFORCE
 -Ivendor/include
 -Ivendor/x11/include
+-O1
+-g
 -DZCL_TESTING
 -Wno-deprecated-declarations
 -Wno-format-truncation
--Wno-format-overflow
--Wno-array-bounds
 -Wno-maybe-uninitialized
--Wno-stringop-truncation
--Wno-stringop-overread
--Wno-restrict
 -frandom-seed=platform/modules/base/src/result.c

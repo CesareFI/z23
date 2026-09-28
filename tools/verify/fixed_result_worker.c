@@ -1,9 +1,10 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
- * One strict non-LTO GCC14 result.c compiler worker. It holds no signing key and makes no
+ * One test-fast non-LTO GCC14 result.c compiler worker. It holds no signing key and makes no
  * attestation decision. Production mode requires the two installed UIDs and
  * a read-only jail; local qualification mode always reports ineligible. */
 #define _GNU_SOURCE
 #include "base/hex.h"
+#include "base/serialize_le.h"
 #include "platform/os_proc.h"
 #include "sha3/sha3.h"
 
@@ -28,14 +29,19 @@
 
 #define LAUNCHER_UID 0u
 #define COMPILER_UID 60093u
-#define PROFILE "/etc/z23verify/fixed_result_strict.args"
+#define PROFILE "/etc/z23verify/fixed_result_fast.args"
 #define SOURCE "platform/modules/base/src/result.c"
-#define MAX_ARGS 188u
+#define MAX_ARGS 183u
 #define MAX_PROFILE 65536u
 #define MAX_REQUEST 8192u
 
 static const char profile_sha3[] =
-    "5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf";
+    "5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c";
+static char *const compiler_env[] = {
+    "LC_ALL=C", "TZ=UTC", "TMPDIR=/tmp", "PATH=/usr/bin:/bin", NULL
+};
+static const char env_sha3[] =
+    "19c5ed02759b18a210013d167d7277a014dde893e1b8edaab69abc029700a3ec";
 
 static const char *refusal;
 static volatile sig_atomic_t cancelled;
@@ -76,7 +82,7 @@ static bool hex64(const char *s)
 
 static bool target_ok(const char *target)
 {
-    static const char prefix[] = "build/test-rel-obj/epochs/";
+    static const char prefix[] = "build/test-obj/epochs/";
     static const char suffix[] = "/platform/modules/base/src/result.o";
     size_t n = strlen(target), a = sizeof(prefix) - 1, b = sizeof(suffix) - 1;
     if (n != a + 64 + b || strncmp(target, prefix, a) != 0 ||
@@ -360,6 +366,35 @@ static void gcc_args(char *args[MAX_ARGS + 16],
     args[n] = NULL;
 }
 
+static void hash_u64(struct sha3_256_ctx *h, uint64_t value)
+{
+    uint8_t bytes[8];
+    zcl_write_u64_le(bytes, value);
+    sha3_256_write(h, bytes, sizeof(bytes));
+}
+
+static bool argv_sha3(char *const args[MAX_ARGS + 16], char hex[65])
+{
+    size_t count = 0;
+    while (count < MAX_ARGS + 16 && args[count]) count++;
+    if (count == MAX_ARGS + 16) return false;
+    static const char domain[] = "z23verify.fixed_result.exec_argv.v1\n";
+    struct sha3_256_ctx h;
+    sha3_256_init(&h);
+    sha3_256_write(&h, (const uint8_t *)domain, sizeof(domain) - 1);
+    hash_u64(&h, count);
+    for (size_t i = 0; i < count; i++) {
+        size_t len = strlen(args[i]);
+        if (len > PATH_MAX * 2) return false;
+        hash_u64(&h, len);
+        sha3_256_write(&h, (const uint8_t *)args[i], len);
+    }
+    uint8_t digest[32];
+    sha3_256_finalize(&h, digest);
+    zcl_hex_encode(digest, sizeof(digest), hex);
+    return true;
+}
+
 static pid_t start_gcc(char *const args[MAX_ARGS + 16], const char *err)
 {
     int stderr_fd = open(err, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
@@ -374,10 +409,7 @@ static pid_t start_gcc(char *const args[MAX_ARGS + 16], const char *err)
             dup2(nullfd, STDOUT_FILENO) < 0 ||
             dup2(stderr_fd, STDERR_FILENO) < 0) _exit(127);
         if (close_range(3, ~0u, 0) != 0) _exit(127);
-        char *const env[] = {
-            "LC_ALL=C", "TZ=UTC", "TMPDIR=/tmp", "PATH=/usr/bin:/bin", NULL
-        };
-        execve("/usr/bin/cc", args, env);
+        execve("/usr/bin/cc", args, compiler_env);
         _exit(127);
     }
     close(stderr_fd);
@@ -414,11 +446,15 @@ static bool wait_gcc_loop(pid_t pid, const struct timespec *start, int *status)
 
 static bool run_gcc(char *const profile[MAX_ARGS + 1], const char *target,
                     const char *out, const char *dep, const char *err,
-                    bool preprocess)
+                    bool preprocess, char digest_hex[65])
 {
     if (cancelled) { refusal = "compiler_cancelled"; return false; }
     char *args[MAX_ARGS + 16];
     gcc_args(args, profile, target, out, dep, preprocess);
+    if (!argv_sha3(args, digest_hex)) {
+        refusal = "compiler_argv_malformed";
+        return false;
+    }
     pid_t pid = start_gcc(args, err);
     if (pid < 0) return false;
     struct timespec start;
@@ -485,7 +521,8 @@ static bool compile_request_ok(const char *cwd, const char *target)
 }
 
 static bool compile_one(const char *cwd, const char *target, const char *outdir,
-                        bool installed, char paths[4][PATH_MAX])
+                        bool installed, char paths[4][PATH_MAX],
+                        char argv_hashes[2][65])
 {
     if (!compile_request_ok(cwd, target)) return false;
     if (installed && !installed_jail_ok(cwd)) return false;
@@ -493,7 +530,7 @@ static bool compile_one(const char *cwd, const char *target, const char *outdir,
     char expanded[PATH_MAX * 2];
     char *args[MAX_ARGS + 1];
     if (!read_profile(installed ? PROFILE :
-                      "tools/verify/fixed_result_strict.args", cwd,
+                      "tools/verify/fixed_result_fast.args", cwd,
                       profile, args, expanded)) return false;
     char pp_dep[PATH_MAX], pp_err[PATH_MAX];
     if (!output_paths(outdir, paths, pp_dep, pp_err)) {
@@ -502,9 +539,11 @@ static bool compile_one(const char *cwd, const char *target, const char *outdir,
     }
     if (chdir(cwd) != 0) { refusal = "cwd_open_failed"; return false; }
     if (!pinned_inputs_ok(installed)) return false;
-    if (!run_gcc(args, target, paths[3], pp_dep, pp_err, true)) return false;
+    if (!run_gcc(args, target, paths[3], pp_dep, pp_err, true,
+                 argv_hashes[0])) return false;
     if (cancelled) { refusal = "compiler_cancelled"; return false; }
-    if (!run_gcc(args, target, paths[0], paths[1], paths[2], false)) return false;
+    if (!run_gcc(args, target, paths[0], paths[1], paths[2], false,
+                 argv_hashes[1])) return false;
     if (!pinned_inputs_ok(installed)) return false;
     if (!files_equal(pp_dep, paths[1])) {
         refusal = "preprocess_dep_mismatch";
@@ -552,7 +591,7 @@ static bool receive_frame(char buffer[MAX_REQUEST])
 
 static bool parse_request(char buffer[MAX_REQUEST], char **cwd, char **target)
 {
-    static const char schema[] = "z23.vcc.fixed_result.v1\n";
+    static const char schema[] = "z23.vcc.fixed_result.fast.v1\n";
     if (strncmp(buffer, schema, sizeof(schema) - 1) != 0) {
         refusal = "request_schema_unknown";
         return false;
@@ -600,12 +639,26 @@ static bool open_result_fds(const char paths[4][PATH_MAX], int fd[4])
     return true;
 }
 
-static bool send_result(const char paths[4][PATH_MAX])
+static bool send_result(const char paths[4][PATH_MAX], const char *scratch,
+                        const char *target, const char hashes[2][65])
 {
     int fd[4];
     if (!open_result_fds(paths, fd)) return false;
-    char marker = 'O';
-    struct iovec io = {.iov_base = &marker, .iov_len = 1};
+    char frame[512];
+    int used = snprintf(frame, sizeof(frame),
+                        "z23vcc.result.fast.v1\n"
+                        "scratch=%s\n"
+                        "target=%s\n"
+                        "compile_argv_sha3=%s\n"
+                        "preprocess_argv_sha3=%s\n"
+                        "env_sha3=%s\n",
+                        scratch, target, hashes[1], hashes[0], env_sha3);
+    if (used <= 0 || used >= (int)sizeof(frame)) {
+        for (size_t i = 0; i < 4; i++) close(fd[i]);
+        refusal = "artifact_frame_limit";
+        return false;
+    }
+    struct iovec io = {.iov_base = frame, .iov_len = (size_t)used};
     union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(fd))]; } control = {0};
     struct msghdr msg = {.msg_iov = &io, .msg_iovlen = 1,
                          .msg_control = control.bytes,
@@ -615,10 +668,33 @@ static bool send_result(const char paths[4][PATH_MAX])
     c->cmsg_type = SCM_RIGHTS;
     c->cmsg_len = CMSG_LEN(sizeof(fd));
     memcpy(CMSG_DATA(c), fd, sizeof(fd));
-    bool ok = sendmsg(STDIN_FILENO, &msg, MSG_NOSIGNAL) == 1;
+    bool ok = sendmsg(STDIN_FILENO, &msg, MSG_NOSIGNAL) == used;
     for (size_t i = 0; i < 4; i++) close(fd[i]);
     if (!ok) refusal = "artifact_send_failed";
     return ok;
+}
+
+static bool wait_launcher_ack(void)
+{
+    struct pollfd ready = {.fd = STDIN_FILENO, .events = POLLIN};
+    if (poll(&ready, 1, 30000) != 1 || !(ready.revents & POLLIN) ||
+        (ready.revents & (POLLHUP | POLLERR | POLLNVAL)) || cancelled) {
+        refusal = cancelled ? "launcher_ack_cancelled" : "launcher_ack_deadline";
+        return false;
+    }
+    char byte[2] = {0};
+    char control[CMSG_SPACE(sizeof(int))] = {0};
+    struct iovec io = {.iov_base = byte, .iov_len = sizeof(byte)};
+    struct msghdr msg = {.msg_iov = &io, .msg_iovlen = 1,
+                         .msg_control = control,
+                         .msg_controllen = sizeof(control)};
+    ssize_t n = recvmsg(STDIN_FILENO, &msg, MSG_TRUNC);
+    if (n != 1 || byte[0] != 'A' || (msg.msg_flags & ~MSG_EOR) != 0 ||
+        msg.msg_controllen != 0 || cancelled) {
+        refusal = "launcher_ack_invalid";
+        return false;
+    }
+    return true;
 }
 
 static void cleanup_scratch(const char *dir)
@@ -637,7 +713,8 @@ static void cleanup_scratch(const char *dir)
 static int qualify_main(char **argv)
 {
     char paths[4][PATH_MAX];
-    if (!compile_one(argv[2], argv[3], argv[4], false, paths))
+    char argv_hashes[2][65];
+    if (!compile_one(argv[2], argv[3], argv[4], false, paths, argv_hashes))
         return fail(refusal ? refusal : "qualification_failed");
     printf("object=%s\ndep=%s\nstderr=%s\npreprocessed=%s\n"
            "compiler_launches=1 preprocess_launches=1 "
@@ -656,7 +733,8 @@ static int serve_main(void)
     char scratch[] = "/work/result.XXXXXX";
     if (!mkdtemp(scratch)) return fail("scratch_unavailable");
     char paths[4][PATH_MAX];
-    if (!compile_one(cwd, target, scratch, true, paths)) {
+    char argv_hashes[2][65];
+    if (!compile_one(cwd, target, scratch, true, paths, argv_hashes)) {
         cleanup_scratch(scratch);
         return fail(refusal ? refusal : "compile_failed");
     }
@@ -664,7 +742,8 @@ static int serve_main(void)
         cleanup_scratch(scratch);
         return fail("worker_cancelled");
     }
-    bool sent = send_result(paths);
+    bool sent = send_result(paths, scratch, target, argv_hashes);
+    if (sent) sent = wait_launcher_ack();
     cleanup_scratch(scratch);
     if (!sent) return fail(refusal);
     if (cancelled) return fail("worker_cancelled_after_send");

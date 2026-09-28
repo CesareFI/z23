@@ -164,32 +164,36 @@ installed acceptance must show an unchanged cold proof and a later warm proof
 using the **same qualifying physical cwd**, or demonstrate and review a new
 byte-equivalent production profile before enabling any HIT.
 
-### First reusable target: strict non-LTO result.c
+### First proof target: test-fast non-LTO result.c
 
-The real `test_parallel` strict object rule already removes `-flto=auto`.
-`tools/verify/fixed_result_strict.args` pins its ordered GCC 14 direct-source
-arguments (188 lines including `cc` and the literal random seed), SHA3-256
-`5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf`.
-The current target is
-`build/test-rel-obj/epochs/b60169f84dce7eafc61905c86e562ee5ed2c21e369b9549cea655c5b3393c10e/platform/modules/base/src/result.o`.
-This strict profile includes `-DZCL_TESTING` and is separate from release
-LTO. Release result.c remains cold.
+The mandatory `dev-proof-bundle-prefork` graph compiles the `test-fast`
+runner; it does not build the separate strict `test_parallel` object tree.
+That discovery cancelled native row 304 before publication. The signed
+strict worker remains historical, ineligible local qualification only.
+`tools/verify/fixed_result_fast.args` pins the real test-fast ordered GCC 14
+direct-source arguments (183 lines including `cc` and the literal random
+seed), SHA3-256
+`5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c`.
+The observed target was
+`build/test-obj/epochs/0033ccae6a292700d2b299aec57e346aa7f719bac2798a620d2ba9e155ebca5e/platform/modules/base/src/result.o`.
+The test-fast profile is non-LTO at `-O1` and includes `-DZCL_TESTING`;
+release LTO result.c remains cold.
 
-The one-request `fixed_result_worker` runs the exact strict `-c` argv and a
+The one-request `fixed_result_worker` runs the exact test-fast `-c` argv and a
 fresh checker `-E` with only `-fno-working-directory` added, under a fixed
-four-entry `execve` environment. Under `devbuild` job
-`1206686-45619625-1790602439990068131`, original and relocated sparse
+four-entry `execve` environment. An initial direct-GCC parity probe under
+`devbuild` job `2920421-46114889-1790607392629817218`, original and relocated sparse
 source trees yielded identical direct objects, depfiles, stderr and raw
 checker PP: object SHA256
-`e9c3c808981369e330579f176804c158ce73242004fd55767b6be1275c16bf76`
-(10,728 bytes), dep SHA256
-`2a5736e731a472ac277adc81e02fb2dfe1762fda76f0f7ce1ee7d0bc6df799c4`
-(369 bytes), empty stderr, checker PP SHA256
+`32a13af795e799469c81dcf5e961a41fd3a6cb59745942efc17d2ae140454660`
+(10,128 bytes), dep SHA256
+`6dc86a0691bc19c99e346c011b1106bcc49edd44f657edbef3f1c55c20f48277`
+(365 bytes), empty stderr, checker PP SHA256
 `3ab6e90809157054042b29fc870f0ec728e3426b05f94cf3c0fb17f583e935fb`
 (43,372 bytes). Two full compilers and two preprocessors ran; zero proof
 launches were avoided. Local qualification emitted `attest_eligible=0`.
 
-For this versioned strict policy only, the verifier's physical cwd inside
+For this versioned test-fast policy only, the verifier's physical cwd inside
 its installed jail is `/zclassic23`, so a signed `recorded_cwd=/zclassic23`
 would literally name the verifier's physical cwd. The receiver may construct
 that expected value across ephemeral proof cwd paths only after independently
@@ -235,7 +239,7 @@ install -o root -g root -m 0644 /dev/null \
 install -d -o z23vcc -g z23vcc -m 0700 /var/lib/z23vcc /var/lib/z23vcc/work
 ```
 
-The reviewed strict non-LTO profile is staged only from a root-owned directory after
+The reviewed test-fast non-LTO profile is staged only from a root-owned directory after
 the administrator verifies its SHA3-256 against the value above. This pins
 the profile bytes but starts no compiler or signer. The staging path and
 installed profile must not be writable by either service account or the
@@ -245,14 +249,14 @@ developer:
 set -eu
 stage=/root/z23verify-staging
 test "$(stat -c %u "$stage")" = 0
-test "$(stat -c %u "$stage/fixed_result_strict.args")" = 0
+test "$(stat -c %u "$stage/fixed_result_fast.args")" = 0
 test "$(stat -c %a "$stage")" = 700
-test "$(openssl dgst -sha3-256 "$stage/fixed_result_strict.args" | awk '{print $NF}')" = \
-  5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf
-install -o root -g root -m 0444 "$stage/fixed_result_strict.args" \
-  /etc/z23verify/fixed_result_strict.args
-test "$(openssl dgst -sha3-256 /etc/z23verify/fixed_result_strict.args | awk '{print $NF}')" = \
-  5fb3b13597488c20a9f5aeca2b654fad92b39714d93069c12c082206977aadaf
+test "$(openssl dgst -sha3-256 "$stage/fixed_result_fast.args" | awk '{print $NF}')" = \
+  5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c
+install -o root -g root -m 0444 "$stage/fixed_result_fast.args" \
+  /etc/z23verify/fixed_result_fast.args
+test "$(openssl dgst -sha3-256 /etc/z23verify/fixed_result_fast.args | awk '{print $NF}')" = \
+  5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c
 ```
 
 The later service installer must pin the exact GCC 14 tool image, source
@@ -380,21 +384,28 @@ developer account can read published items marked (r) and write none of them.
 | `/etc/z23verify/toolchain.conf` (r) | root 0644 | pinned compiler identity |
 | `/usr/local/libexec/z23-verifyd` | root 0755 | daemon binary |
 
-**Request path target.** The first installed path is one fixed strict
+**Request path target.** The first installed path is one fixed test-fast
 `result.c` request. A root-owned launcher authenticates the signer account
 on its external Unix connection, constructs the pinned jail, and starts the
 compiler worker as UID 60093. The worker accepts one bounded `SOCK_SEQPACKET`
 request only from launcher UID 0 on a private socket. It runs the direct
 source checker and compile under the fixed environment, then returns the
 object, depfile, stderr and preprocessed stream as descriptors to the
-launcher. The root launcher waits for normal worker exit, copies and hashes
-those bytes, and writes a root-owned launch receipt for the exact mounted
+launcher. Its result packet also binds the private scratch path, exact target,
+both raw GCC argv hashes and fixed environment root. The root launcher must
+observe the worker live, independently rederive those argv hashes from the
+pinned profile, copy and hash the descriptors, then send one byte `A` on the
+private socket within 30 seconds. The worker cleans scratch and exits normally
+only after that acknowledgment. The launcher writes a root-owned receipt only
+after observing exit 0, with no receipt on timeout, cancel, malformed packet,
+or missing acknowledgment. The receipt binds the exact mounted
 source/tool image and effective policy. The signer may seal only after it
 authenticates that launch receipt and independently checks the output and
 input closure. The root publisher reopens the receipt and signed staging,
 checks the installed pins, and adds the observation under `fixed_result.lock`.
-None of these launcher, signer or publisher authority checks is implemented
-by the current local worker qualification.
+The current local worker qualification exercises no root peer or mounted jail;
+the launcher, signer and publisher authority checks still require installation
+and live separate-account acceptance.
 
 This sequence remains an acceptance target. The current attestation record's
 `toolchain_id` must cover the driver, compiler backend, assembler, ELF loader,
