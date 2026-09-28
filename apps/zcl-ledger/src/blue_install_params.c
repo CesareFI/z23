@@ -34,3 +34,9 @@ size_t blue_install_params(const char *name, const char *version,
     } else output[length++] = 0;
     return length;
 }
+
+bool blue_install_image_allowed(const char *name, const char *version) {
+    if (!name || !version) return false;
+    return strcmp(name, "ZCL Wallet") != 0 ||
+           strcmp(version, "0.3.4") != 0;
+}

@@ -149,7 +149,7 @@ arm-none-eabi-objcopy -O binary --only-section=.text \
 sha256sum /tmp/zcl-wallet.bin
 ```
 
-The build rejects initialized `.data`, keeps at least 512 bytes of app SRAM
+The build rejects initialized `.data`, keeps at least 1,024 bytes of app SRAM
 after `.bss`, and checks named derivation, upload, formatting, replay, and
 touch paths against the 2,048-byte stack reservation with a separate
 512-byte margin. Before loading SDK make definitions, even for `clean`, it

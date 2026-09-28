@@ -55,8 +55,8 @@ check-image: default
 	@data_size=$$($(GCCPATH)arm-none-eabi-size -A bin/app.elf | awk '$$1 == ".data" { print $$2 }'); \
 	  bss_size=$$($(GCCPATH)arm-none-eabi-size -A bin/app.elf | awk '$$1 == ".bss" { print $$2 }'); \
 	  test "$$data_size" = 0 || { echo "Initialized .data requires loader allocation; refusing image" >&2; exit 1; }; \
-	  test -n "$$bss_size" && test "$$bss_size" -le 5632 || \
-	    { echo "Wallet image leaves less than 512 bytes of Blue SRAM after .bss (which includes the 2048-byte stack reservation); refusing image" >&2; exit 1; }
+	  test -n "$$bss_size" && test "$$bss_size" -le 5120 || \
+	    { echo "Wallet image leaves less than 1024 bytes of Blue SRAM after .bss (which includes the 2048-byte stack reservation); refusing image" >&2; exit 1; }
 
 HOST_CC ?= clang
 

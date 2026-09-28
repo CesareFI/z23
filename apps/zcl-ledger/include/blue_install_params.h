@@ -15,5 +15,6 @@ enum { ZCL_BLUE_INSTALL_PARAMS_MAX = 65 };
 size_t blue_install_params(const char *name, const char *version,
                            bool zcl_sign_path,
                            uint8_t output[ZCL_BLUE_INSTALL_PARAMS_MAX]);
+bool blue_install_image_allowed(const char *name, const char *version);
 
 #endif

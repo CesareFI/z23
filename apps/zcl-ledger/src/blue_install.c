@@ -447,9 +447,15 @@ static int read_binary(const char *path, uint8_t **data, size_t *length,
     if (!load_image_regular(path, &bytes, &count)) return -1;
     int result = -1;
     uint8_t hash[32];
+    bool blocked = false;
     if (SHA256(bytes, count, hash)) {
         for (size_t i = 0; i < sizeof profiles / sizeof profiles[0]; ++i) {
             if (CRYPTO_memcmp(hash, profiles[i].hash, sizeof hash) == 0) {
+                if (!blue_install_image_allowed(profiles[i].name,
+                                                profiles[i].version)) {
+                    blocked = true;
+                    break;
+                }
                 *profile = &profiles[i];
                 result = 0;
                 break;
@@ -457,7 +463,8 @@ static int read_binary(const char *path, uint8_t **data, size_t *length,
         }
     }
     if (result < 0)
-        fputs("App image SHA-256 does not match a reviewed build.\n", stderr);
+        fputs(blocked ? "App image is blocked after a physical device freeze.\n" :
+              "App image SHA-256 does not match a reviewed build.\n", stderr);
     if (result < 0) free(bytes);
     else { *data = bytes; *length = count; }
     return result;

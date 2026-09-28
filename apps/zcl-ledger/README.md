@@ -261,7 +261,7 @@ reported zero apps. Version 0.2.17 is built and simulated offline but is not
 installed or hardware-verified. Probe, Fixture, Review, and Sign Test remain
 development images, not payment signers.
 
-The uninstalled Wallet 0.3.4 candidate adds a separate final touchscreen
+The Wallet 0.3.4 candidate adds a separate final touchscreen
 `SIGN ZCL` approval and ordered transparent P2PKH signing. A synthetic
 fixture command prepares a previous transaction and unsigned v4 spend from
 a compressed public key without needing a chain UTXO:
@@ -270,7 +270,10 @@ a compressed public key without needing a chain UTXO:
 zcl-blue-wallet-fixture --prepare 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 ```
 
-After the exact 0.3.4 image is installed and its identity verified,
+The exact 0.3.4 image froze the Blue on opening and was deleted. The C23
+installer now blocks it. A corrected, separately pinned image must pass
+physical open, exit, and USB checks before this fixture is used on the Blue.
+With a qualified image installed and its identity verified,
 `zcl-blue-wallet-fixture --device /dev/hidrawN` can drive the same fixture
 through review and request one signature after the device's `SIGN ZCL`
 touch and terminal confirmation. It verifies the reply and assembles the
