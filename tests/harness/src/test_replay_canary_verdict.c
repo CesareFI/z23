@@ -655,17 +655,21 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
             _exit(127);
         }
 
-        /* Wait for reset_verdict's stamp, not a scheduling estimate. A
-         * missing stamp still fails the test after a bounded interval. */
+        /* Wait for reset_verdict's stamp or for the worker to end, never
+         * for a poll count: a loaded box only slows the stamp down. The
+         * worker's own alarm() bounds how long it can live, so a missing
+         * stamp still fails once the worker is gone. */
         struct stat st_stamp;
         bool stamp_present = false;
+        bool worker_gone = false;
+        int early_status = 0;
         struct timespec poll = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
-        for (unsigned attempt = 0; attempt < 1000; ++attempt) {
-            if (stat(stamp, &st_stamp) == 0) {
-                stamp_present = true;
-                break;
-            }
-            nanosleep(&poll, NULL);
+        while (!stamp_present && !worker_gone) {
+            stamp_present = stat(stamp, &st_stamp) == 0;
+            worker_gone = !stamp_present &&
+                          waitpid(pid, &early_status, WNOHANG) == pid;
+            if (!stamp_present && !worker_gone)
+                nanosleep(&poll, NULL);
         }
         struct stat st_mid;
         bool exists_mid = (stat(sentinel, &st_mid) == 0);
@@ -673,7 +677,8 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
         kill(-pid, SIGKILL);
         kill(pid, SIGKILL);
         int wstatus = 0;
-        waitpid(pid, &wstatus, 0);
+        if (!worker_gone)
+            waitpid(pid, &wstatus, 0);
 
         struct stat st_after;
         bool exists_after = (stat(sentinel, &st_after) == 0);
