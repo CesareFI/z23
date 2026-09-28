@@ -19,8 +19,10 @@
  * created 0700 when missing (pull and ack create it too, so a first run
  * never fails). outbox.jsonl is private to its owner. On POSIX a post opens
  * it with O_WRONLY|O_CREAT|O_APPEND and emits the row with ONE write() call.
- * Windows uses an owner-validated private handle and a nonblocking file lock
- * around the size/write pair, refusing contention without waiting. Both
+ * A private process lock covers sequence allocation through that write;
+ * posting may wait for another local poster to finish this short section.
+ * Windows also uses an owner-validated private handle and a nonblocking file
+ * lock around the size/write pair. Both
  * paths preserve complete row bytes without interleaving concurrent writes.
  *
  * INPUT (zcl.agent_mail_input.v1)
@@ -157,8 +159,9 @@
  * MAIL_CURSOR_AMBIGUOUS, MAIL_CURSOR_STALE, MAIL_STREAM_NAME_INVALID,
  * MAIL_STREAMS_TOO_MANY.
  *
- * PROCESS RULE. No spawn, no shell, no popen()/system(), no sleep, no poll
- * loop. Only local filesystem operations below.
+ * PROCESS RULE. No spawn, no shell, no popen()/system(), or peer wait. The
+ * platform private-file helper may wait for a local post lock. Only local
+ * filesystem operations below.
  */
 
 #include "command/native_command.h"
@@ -167,12 +170,12 @@
 #include "base/safe_alloc.h"
 #include "json/json.h"
 #include "platform/directory_compat.h"
+#include "platform/private_file.h"
 #include "platform/state_root.h"
 #include "platform/time_compat.h"
 #if defined(_WIN32)
 #include "platform/directory_transaction.h"
 #include "platform/private_directory.h"
-#include "platform/private_file.h"
 #endif
 
 #include <ctype.h>
@@ -919,25 +922,33 @@ static const struct dvm_fail_info *dvm_post_validate(
     return dvm_post_check_body_from_ref(in);
 }
 
-/* Next seq: one plus the largest seq already present. A duplicate seq under
- * concurrent posters is acceptable (bytes stay intact); the pull cursor
- * still advances past both on (ts, from, seq) order. */
-static long long dvm_post_next_seq(const char *outbox)
+/* Next seq: one plus the largest seq already present. The caller holds the
+ * mail post lock through the append, so concurrent posters cannot reuse it. */
+static bool dvm_post_next_seq(const char *outbox, long long *next)
 {
     long long seq = 0;
     FILE *f = fopen(outbox, "r");
-    if (!f)
-        return 1;
+    if (!f) {
+        if (errno != ENOENT) return false;
+        *next = 1;
+        return true;
+    }
     char buf[DVM_LINE_CAP];
     while (fgets(buf, sizeof(buf), f)) {
         long long s;
-        if (dvm_line_int(buf, "seq", &s) && s >= seq)
-            seq = s + 1;
-        else if (!dvm_line_int(buf, "seq", &s) && seq < 1)
-            seq = 1;
+        size_t len = strlen(buf);
+        if (len == 0 || buf[len - 1] != '\n' ||
+            !dvm_line_int(buf, "seq", &s) || s < 0 || s == LLONG_MAX) {
+            (void)fclose(f);
+            return false;
+        }
+        if (s >= seq) seq = s + 1;
     }
-    (void)fclose(f);
-    return seq < 1 ? 1 : seq;
+    bool read_ok = !ferror(f);
+    if (fclose(f) != 0) read_ok = false;
+    if (!read_ok) return false;
+    *next = seq < 1 ? 1 : seq;
+    return true;
 }
 
 /* Append line (len bytes) to the private outbox, per platform. Returns
@@ -1032,6 +1043,7 @@ static void dvm_post(const struct zcl_command_request *req,
 {
     struct dvm_post_input in;
     char outbox[DVM_PATH_CAP];
+    char lock_path[DVM_PATH_CAP];
     char ts[40];
     char line[DVM_LINE_CAP];
     const struct dvm_fail_info *invalid;
@@ -1066,8 +1078,6 @@ static void dvm_post(const struct zcl_command_request *req,
         dvm_fail(reply, "MAIL_WRITE_FAILED", "outbox path exceeds its bound", maildir);
         return;
     }
-    seq = dvm_post_next_seq(outbox);
-
     now = platform_time_wall_time_t();
     if (!platform_time_utc_tm(now, &tm_utc) ||
         strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm_utc) == 0) {
@@ -1076,17 +1086,41 @@ static void dvm_post(const struct zcl_command_request *req,
         return;
     }
 
+    path_length = snprintf(lock_path, sizeof(lock_path), "%s/post.lock",
+                           maildir);
+    if (path_length <= 0 || (size_t)path_length >= sizeof(lock_path)) {
+        dvm_fail(reply, "MAIL_WRITE_FAILED", "mail lock path exceeds its bound",
+                 maildir);
+        return;
+    }
+    struct platform_private_file lock;
+    platform_private_file_init(&lock);
+    if (!platform_private_file_open_locked_create_wait(lock_path, &lock)) {
+        dvm_fail(reply, "MAIL_WRITE_FAILED", "cannot lock the private outbox",
+                 lock_path);
+        return;
+    }
+    if (!dvm_post_next_seq(outbox, &seq)) {
+        platform_private_file_close(&lock);
+        dvm_fail(reply, "MAIL_READ_FAILED", "cannot read the private outbox",
+                 outbox);
+        return;
+    }
+
     invalid = dvm_post_compose(&in, seq, ts, line, sizeof(line), &len);
     if (invalid) {
+        platform_private_file_close(&lock);
         dvm_fail(reply, invalid->code, invalid->message, invalid->evidence);
         return;
     }
 
     if (!dvm_post_write_line(outbox, line, len)) {
+        platform_private_file_close(&lock);
         dvm_fail(reply, "MAIL_WRITE_FAILED", "cannot append the private outbox",
                  outbox);
         return;
     }
+    platform_private_file_close(&lock);
 
     const char *to = in.to, *kind = in.kind, *body = in.body, *from = in.from,
                *ref = in.ref;
