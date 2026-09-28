@@ -26,7 +26,7 @@
 /* Both domain strings are hashed or signed including their NUL, so no
  * body can begin with bytes that extend the domain. */
 #define VA_SIGN_DOMAIN "zcl.verify_attest.sig.v1"
-#define VA_STORE_DOMAIN "zcl.verify_attest.store.v1"
+#define VA_STORE_DOMAIN "zcl.verify_attest.store.v2"
 #define VA_SCHEMA_LEN (sizeof(ZCL_VERIFY_ATTEST_SCHEMA) - 1u)
 #define VA_HASH ZCL_VERIFY_ATTEST_HASH_BYTES
 #define VA_PUB ZCL_VERIFY_ATTEST_PUBKEY_BYTES
@@ -305,7 +305,9 @@ static void va_hash_text(struct sha3_256_ctx *ctx,
 void zcl_verify_attest_store_key(
     const struct zcl_verify_attest_text *toolchain_id,
     const struct zcl_verify_attest_text *argv_norm,
+    const struct zcl_verify_attest_text *recorded_cwd,
     const uint8_t pp_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
+    const uint8_t closure_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
     uint8_t out[ZCL_VERIFY_ATTEST_HASH_BYTES])
 {
     static const uint8_t zero[VA_HASH] = {0};
@@ -315,18 +317,23 @@ void zcl_verify_attest_store_key(
                    sizeof(VA_STORE_DOMAIN));
     va_hash_text(&ctx, toolchain_id);
     va_hash_text(&ctx, argv_norm);
+    va_hash_text(&ctx, recorded_cwd);
     sha3_256_write(&ctx, pp_sha3 ? pp_sha3 : zero, VA_HASH);
+    sha3_256_write(&ctx, closure_sha3 ? closure_sha3 : zero, VA_HASH);
     sha3_256_finalize(&ctx, out);
 }
 
 void zcl_verify_attest_store_key_hex(
     const struct zcl_verify_attest_text *toolchain_id,
     const struct zcl_verify_attest_text *argv_norm,
+    const struct zcl_verify_attest_text *recorded_cwd,
     const uint8_t pp_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
+    const uint8_t closure_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
     char out[ZCL_VERIFY_ATTEST_STORE_KEY_HEX])
 {
     uint8_t key[VA_HASH];
-    zcl_verify_attest_store_key(toolchain_id, argv_norm, pp_sha3, key);
+    zcl_verify_attest_store_key(toolchain_id, argv_norm, recorded_cwd,
+                                pp_sha3, closure_sha3, key);
     zcl_hex_encode(key, sizeof(key), out);
 }
 
@@ -701,8 +708,18 @@ static const char *va_field_check(
         return ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH;
     if (!va_text_eq(&r->argv_norm, &e->argv_norm))
         return ZCL_VERIFY_ATTEST_WHY_ARGV_MISMATCH;
+    if (r->recorded_cwd.len == 0u || e->recorded_cwd.len == 0u)
+        return ZCL_VERIFY_ATTEST_WHY_CWD_MISSING;
+    if (!va_text_eq(&r->recorded_cwd, &e->recorded_cwd))
+        return ZCL_VERIFY_ATTEST_WHY_CWD_MISMATCH;
     if (memcmp(r->pp_sha3, e->pp_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH;
+    static const uint8_t zero[VA_HASH] = {0};
+    if (memcmp(r->closure_sha3, zero, VA_HASH) == 0 ||
+        memcmp(e->closure_sha3, zero, VA_HASH) == 0)
+        return ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING;
+    if (memcmp(r->closure_sha3, e->closure_sha3, VA_HASH) != 0)
+        return ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH;
     zcl_sha3_256(obj, obj_len, obj_hash);
     if (memcmp(obj_hash, r->obj_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH;

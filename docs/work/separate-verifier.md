@@ -4,14 +4,23 @@
 
 A push proof may reuse a compiled object only on the word of a verifier that
 runs under its own account. Same-account reuse is refused, and stays refused:
-anything the proving account can write, a candidate can plant.
+anything the proving account can write, a candidate can plant. This is a
+design and an uninstalled trust boundary, not a working speed path. The
+current wrapper compiles cold in proof mode with `verified:no_verifier_key`.
 
-The verifier compiles each translation unit itself, with its own pinned
-compiler, and never runs the candidate's build scripts. Its only reusable
-product is a signed record: "this compiler, with these flags, on this
-preprocessed input, produced these bytes". The proof reuses an object only
-when its own preprocessing hashes to the same value and the record verifies
-under a key pinned by root.
+The proposed verifier would compile each translation unit itself, with its
+own pinned compiler, and never run the candidate's build scripts. Its only
+reusable product would be a signed record: "this compiler, with these flags
+and complete input closure, produced these bytes". A future proof may reuse
+an object only when its own input checks and the record verify under current
+receiver policy.
+The preprocessed stream is one input, but it is not a sufficient object key
+under the current debug/LTO profiles: a real Z23 unit compiled directly from
+`.c` differs bytewise from the same unit compiled from its exact `.i` stream.
+`tools/verify/real_tu_probe.sh` reproduces this on Linux x86-64 with GCC
+13/14 from one working directory. An eligible
+verifier must compile the real source with equivalent path and working
+directory semantics, then bind the implementation bytes of all tools it used.
 
 ## Threat model
 
@@ -25,8 +34,9 @@ under a key pinned by root.
 3. The attack defended here is hidden state: a planted object or PASS that
    changes a later, honest-looking proof. A malicious diff is out of scope;
    review sees it.
-4. The verifier never runs candidate-controlled code while it holds its key:
-   no Makefiles, configure scripts, compiler plugins or spec files.
+4. The signer never runs candidate-controlled code while it holds its key:
+   no Makefiles, configure scripts, compiler plugins or spec files. The
+   compiler runs under a different account with no access to that key.
 5. The verifier computes its own binding hash from bytes it copied itself and
    signs with a key only its account can read. Its public key is pinned in a
    root-owned file.
@@ -34,38 +44,63 @@ under a key pinned by root.
 
 ## Architecture
 
-**Account and files.** A system account `z23verify` owns everything below.
-The developer account can read the items marked (r) and write none of them.
+**Account and files.** A signer account `z23verify` owns the key and
+content-addressed observations. A separate compiler account `z23vcc` runs
+compiler children. The signer prepares a source snapshot that `z23vcc` can
+read but cannot write. Neither account can switch to the other. The
+developer account can read published items marked (r) and write none of them.
 
 | Path | Mode | Purpose |
 | --- | --- | --- |
 | `/var/lib/z23verify/key/` | 0700 | Ed25519 private key |
-| `/var/lib/z23verify/cas/` | 0755 | file contents by hash |
-| `/var/lib/z23verify/store/` (r) | 0755 | objects and signed records |
-| `/var/lib/z23verify/work/` | 0700 | throwaway source snapshots |
+| `/var/lib/z23verify/cas/` | 0755 | file contents copied and hashed by signer |
+| `/var/lib/z23verify/store/` (r) | 0755 | content-addressed objects and signed records, write-once by protocol |
+| `/var/lib/z23verify/jails/` | root 0755 | versioned jail roots; synthetic source paths are signer-writable and compiler-read-only |
+| `/var/lib/z23vcc/work/` | 0700 | compiler scratch/output, no signing key |
 | `/etc/z23verify/verifier.pub` (r) | root 0644 | pinned public key |
 | `/etc/z23verify/toolchain.conf` (r) | root 0644 | pinned compiler identity |
 | `/usr/local/libexec/z23-verifyd` | root 0755 | daemon binary |
 
-**Request path.** A systemd socket at `/run/z23verify/verify.sock` (owner
-`z23verify`, group of the developer account, mode 0660) starts the daemon,
-which runs with `ProtectHome=yes` and so cannot open a path the candidate
-names. A request carries the normalized argv and recorded working directory,
+**Request path.** A developer-facing Unix socket accepts untrusted compile
+requests. A second socket between compiler and signer authenticates peers with
+`SO_PEERCRED`; the signer accepts observations only from the pinned compiler
+account. The signer uses `ProtectHome=yes`; the compiler runs inside a
+root-owned `RootDirectory` containing only a synthetic `/home` at the exact
+recorded source path. It uses `ProtectHome=no` inside that jail so the synthetic
+path remains visible, while the host home is absent. A request carries the
+normalized argv and recorded working directory,
 the unit's relative path, a manifest of every file the preprocessor opened
 (relative path to sha3), and the contents of any file missing from the store.
 
-The daemon then:
+Request processing then:
 
-1. stores and re-hashes the bytes itself;
-2. builds a snapshot it owns;
-3. checks argv against a fixed allowlist of flags;
-4. in a child confined by Landlock (snapshot, pinned toolchain and system
+1. the signer copies and re-hashes request bytes into its CAS;
+2. the signer materializes a frozen, compiler-read-only snapshot under the
+   versioned jail;
+3. the compiler service checks argv against a fixed allowlist of flags;
+4. a compiler child confined by Landlock (snapshot, pinned toolchain and system
    include directories, a tmp directory, no access to `key/`, no network),
    runs `-E` and requires the preprocessed-text hash to match the claim;
-5. compiles the real source, so warnings and `-Werror` behave as in a cold
+5. that child compiles the real source, so warnings and `-Werror` behave as in a cold
    build;
-6. signs `zcl.verify_attest.v1` and publishes it under
-   `store/<H(toolchain_id, argv_norm, pp_sha3)>`.
+6. hands output bytes and its complete tool/input identity to the signer over
+   authenticated Unix descriptors. The signer copies and hashes the output
+   into its own content-addressed store before signing `zcl.verify_attest.v1`.
+
+This sequence remains an acceptance target. The current attestation record's
+`toolchain_id` must cover the driver, compiler backend, assembler, ELF loader,
+dynamic libraries, GCC specs and any other executable bytes the compile used.
+A driver hash alone does not qualify. Source snapshots must reproduce the
+direct-source object's path semantics, including debug and LTO sections; a
+matching preprocessed hash alone does not qualify.
+For LTO, `recorded_cwd` means the effective physical cwd used by GCC, not a
+prefix-mapped DWARF directory. Source argv spelling, symlink policy, random
+seed, environment and profile are part of the expected compile input.
+Current admission checks signed cwd and closure fields against receiver
+expectations, and its store key includes both. No installed verifier currently
+constructs those expectations. `SO_PEERCRED` attests the compiler service UID,
+not the truth of data sent by a compromised compiler service. That service
+remains a trust boundary requiring independent qualification.
 
 **The record.** `zcl.verify_attest.v1` carries `toolchain_id`, `argv_norm`,
 `recorded_cwd`, `pp_sha3`, `closure_sha3`, `obj_sha3`, `dep_sha3`,
@@ -74,19 +109,24 @@ by the signer's public key and an Ed25519 signature over a domain-separated
 message. The implementation and its byte layout live in
 `tools/dev/verify_attest.h`.
 
-**How the proof uses it.** The compiler wrapper gains a verified mode, set by
-the proof environment. In that mode it never reads or writes its own cache
-directory. It computes its own content key from the generation worktree,
-loads the stored entry, checks the signature against the pinned key, checks
-that `obj_sha3` matches the bytes it read and that `toolchain_id` matches
-its own compiler, and only then writes the object and depfile. Any mismatch
-compiles cold. The epoch-object publish path needs the same change.
+**How the proof will use it.** The compiler wrapper's verified mode is set by
+the proof environment and currently compiles cold. Future reuse must compute
+the full expected key from the generation worktree, load an entry from the
+separate verifier, and admit it under current receiver policy. Admission
+checks the signature, toolchain, flags, cwd, preprocessed input, complete
+closure and fetched object bytes before writing the object. The proof must
+generate its own depfile for its exact target during the input check; a donor
+depfile can name another `-MT` target even when object bytes match. Coverage
+sidecars remain fresh. Any mismatch compiles cold; an eligible contradiction
+remains blocking. The
+epoch-object publish path needs the same admission.
 
 **Admission refusals.** Each is a stable token: `no_verifier_key`,
 `attest_schema_unknown`, `attest_record_malformed`,
 `attest_signed_by_box_signer`, `attest_signer_not_verifier`,
 `attest_signature_invalid`, `attest_exit_nonzero`,
-`attest_toolchain_mismatch`, `attest_argv_mismatch`, `attest_pp_mismatch`,
+`attest_toolchain_mismatch`, `attest_argv_mismatch`, `attest_cwd_mismatch`,
+`attest_pp_mismatch`, `attest_closure_mismatch`,
 `attest_obj_hash_mismatch`, and `verifier_key_is_box_signer` when the pinned
 key is the per-box signer key.
 
@@ -101,10 +141,11 @@ generators are arbitrary code. Running them as the verifier would put
 candidate code inside the signer's account, and their output is not a
 function of anything the verifier can bind.
 
-**Why this is safe.**
+**Safety conditions for the proposed verifier.**
 
-- The one input the candidate chooses is argv, which is data checked against
-  an allowlist.
+- Candidate-supplied argv is parsed against an allowlist. Source/header bytes,
+  manifest and requested cwd are also untrusted inputs and require
+  independent validation in the compiler service.
 - Preprocessing reads files but runs no code. Includes are limited to the
   snapshot by Landlock and bounded by rlimits.
 - Refused flags, because they can run other programs or write elsewhere:
@@ -114,42 +155,39 @@ function of anything the verifier can bind.
 - `GCC_EXEC_PREFIX`, `COMPILER_PATH` and `DEPENDENCIES_OUTPUT` are scrubbed.
 - Generated headers are data; the preprocessed-text hash covers them.
 - A record claims only what a compiler run produced, not that the code is
-  correct, so building main's units needs no trust in main.
+  correct. Candidate code must still be treated as hostile compiler input.
 
 **Warm donors.** Same-account donor seeding stays refused. The verified path
 replaces it: the verifier becomes the donor.
 
-## Root setup (idempotent)
+## Privileged installation packet (pending implementation and grant)
 
-```sh
-id z23verify || useradd --system --user-group --home-dir /var/lib/z23verify --shell /usr/sbin/nologin z23verify
-install -d -o root -g root -m 0755 /etc/z23verify
-install -d -o z23verify -g z23verify -m 0755 /var/lib/z23verify /var/lib/z23verify/store /var/lib/z23verify/cas
-install -d -o z23verify -g z23verify -m 0700 /var/lib/z23verify/key /var/lib/z23verify/work
-# binary: built by z23verify from an owner-signed commit (git verify-commit), then:
-install -o root -g root -m 0755 z23-verifyd /usr/local/libexec/z23-verifyd
-test -s /var/lib/z23verify/key/signer.ed25519 || sudo -u z23verify /usr/local/libexec/z23-verifyd keygen
-sudo -u z23verify /usr/local/libexec/z23-verifyd pubkey | install -o root -m 0644 /dev/stdin /etc/z23verify/verifier.pub
-/usr/local/libexec/z23-verifyd toolchain-id /usr/bin/gcc | install -o root -m 0644 /dev/stdin /etc/z23verify/toolchain.conf
-install -m 0644 z23-verifyd.socket z23-verifyd.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now z23-verifyd.socket
-```
-
-- Socket unit: `ListenStream=/run/z23verify/verify.sock`,
-  `SocketUser=z23verify`, `SocketGroup=<developer group>`, `SocketMode=0660`.
-- Service unit: `User=z23verify`, `ProtectSystem=strict`, `ProtectHome=yes`,
-  `ReadWritePaths=/var/lib/z23verify`, `PrivateNetwork=yes`,
-  `PrivateTmp=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=`,
-  `RestrictAddressFamilies=AF_UNIX`, `MemoryMax=8G`, `Nice=10`.
+No installation command is valid yet: there is no daemon, signer, root-owned
+toolchain closure pin, or qualified object-equivalence test in the tree. An
+operator-granted install must review the exact signed source commit and binary
+hashes, create the two non-switchable accounts above, pin the full compiler
+closure and public key in root-owned files, and install separate Unix sockets.
+The signer service needs `User=z23verify`, `ProtectHome=yes`,
+`ProtectSystem=strict`, `PrivateNetwork=yes`, `NoNewPrivileges=yes`, and an
+empty capability bounding set. The compiler service needs `User=z23vcc`,
+`RootDirectory=` set to the reviewed jail, `ProtectHome=no` inside that jail,
+the other restrictions above, no key read permission, and bounded
+snapshot/toolchain filesystem access. The jail contains no host home and no
+signing key. Serialize requests sharing a jail/path or use disjoint jail
+versions. Qualify both directions of peer credentials, exact output
+copy/hash, key isolation, cancellation, and a real debug/LTO unit before
+enabling either socket. Installation and service activation need their own
+operator grant; development authorization does not include them.
 
 ## Teardown
 
 ```sh
-systemctl disable --now z23-verifyd.socket z23-verifyd.service
-rm /etc/systemd/system/z23-verifyd.*
+systemctl disable --now z23-verifyd.socket z23-verifyd.service z23-vccd.socket z23-vccd.service
+rm /etc/systemd/system/z23-verifyd.* /etc/systemd/system/z23-vccd.*
 systemctl daemon-reload
 userdel z23verify
-rm -rf /var/lib/z23verify /etc/z23verify /usr/local/libexec/z23-verifyd
+userdel z23vcc
+rm -rf /var/lib/z23verify /var/lib/z23vcc /etc/z23verify /usr/local/libexec/z23-verifyd /usr/local/libexec/z23-vccd
 ```
 
 Once the public key is gone, proofs go cold again automatically.
@@ -172,8 +210,9 @@ Each slice fails closed by default.
    Landlock code. Tests run it unprivileged with a trust root injected only
    under `ZCL_TESTING`. The refused flags, an out-of-snapshot include, a
    mismatched preprocessed hash and a device file are all refused; an honest
-   unit yields a verifiable record whose object is byte-identical to a local
-   cold compile.
+   real debug/LTO unit yields a verifiable record whose object is
+   byte-identical to a local cold compile. The current experimental `.i` core
+   did not pass this requirement and is not part of the admitted path.
 3. **Client submission and pre-warming main.** On a miss the wrapper queues
    a bounded, non-blocking request; a `verify warm` command pre-builds main's
    units after publication. With no socket, proofs are unchanged.
@@ -203,9 +242,8 @@ Each slice fails closed by default.
 
 1. **Binary provenance.** The daemon is built from an owner-signed commit by
    `z23verify`, and every upgrade needs root. Is that acceptable?
-2. **One account or two.** With one account, Landlock is the only barrier
-   between a compiler exploit and the key. A second account for compile
-   children would be stronger.
+2. **Path equivalence.** Reproduce direct-source debug/LTO object bytes from
+   the compiler account's owned snapshot without exposing the signing key.
 3. **Toolchain pin.** A compiler package upgrade makes everything miss until
    someone re-pins. Manual, or a root timer?
 4. **Test verdicts.** Reuse requires executing candidate code under a

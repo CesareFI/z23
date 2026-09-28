@@ -71,7 +71,11 @@
 #define ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO "attest_exit_nonzero"
 #define ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH "attest_toolchain_mismatch"
 #define ZCL_VERIFY_ATTEST_WHY_ARGV_MISMATCH "attest_argv_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_CWD_MISSING "attest_cwd_missing"
+#define ZCL_VERIFY_ATTEST_WHY_CWD_MISMATCH "attest_cwd_mismatch"
 #define ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH "attest_pp_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH "attest_closure_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING "attest_closure_missing"
 #define ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH "attest_obj_hash_mismatch"
 
 /* A borrowed byte string. Never NUL-terminated by contract; `len` is the
@@ -131,18 +135,24 @@ bool zcl_verify_attest_parse(const uint8_t *bytes, size_t len,
                              struct zcl_verify_attest_signed *out,
                              const char **why);
 
-/* Store key H(toolchain_id, argv_norm, pp_sha3): SHA3-256 over a domain
- * string and the three length-prefixed fields. */
+/* Store key H(toolchain_id, argv_norm, recorded_cwd, pp_sha3,
+ * closure_sha3): SHA3-256 over a domain string and length-prefixed fields.
+ * A matching preprocessed stream alone does not identify a direct-source
+ * object under debug/LTO profiles. */
 void zcl_verify_attest_store_key(
     const struct zcl_verify_attest_text *toolchain_id,
     const struct zcl_verify_attest_text *argv_norm,
+    const struct zcl_verify_attest_text *recorded_cwd,
     const uint8_t pp_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
+    const uint8_t closure_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
     uint8_t out[ZCL_VERIFY_ATTEST_HASH_BYTES]);
 
 void zcl_verify_attest_store_key_hex(
     const struct zcl_verify_attest_text *toolchain_id,
     const struct zcl_verify_attest_text *argv_norm,
+    const struct zcl_verify_attest_text *recorded_cwd,
     const uint8_t pp_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
+    const uint8_t closure_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES],
     char out[ZCL_VERIFY_ATTEST_STORE_KEY_HEX]);
 
 /* ── Trust root ─────────────────────────────────────────────────────────── */
@@ -210,7 +220,9 @@ bool zcl_verify_attest_test_override_compiled(void);
 struct zcl_verify_attest_expected {
     struct zcl_verify_attest_text toolchain_id;
     struct zcl_verify_attest_text argv_norm;
+    struct zcl_verify_attest_text recorded_cwd;
     uint8_t pp_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES];
+    uint8_t closure_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES];
 };
 
 enum zcl_verify_attest_verdict {

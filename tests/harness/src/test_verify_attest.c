@@ -118,7 +118,9 @@ static struct zcl_verify_attest_expected va_expected(void)
     memset(&e, 0, sizeof(e));
     e.toolchain_id = va_text(VA_TOOLCHAIN);
     e.argv_norm = va_text(VA_ARGV);
+    e.recorded_cwd = va_text(VA_CWD);
     memset(e.pp_sha3, 0x01, sizeof(e.pp_sha3));
+    memset(e.closure_sha3, 0x02, sizeof(e.closure_sha3));
     return e;
 }
 
@@ -237,14 +239,14 @@ static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
 }
 
 /* Pinned SHA3-256 of the hand-built body above and of the store key for
- * (VA_TOOLCHAIN, VA_ARGV, pp=0x01..). The store key is SHA3-256 over
- * "zcl.verify_attest.store.v1\0", then each text as u64le length and
- * bytes, then pp_sha3; it was computed outside the subject. Recomputing
- * either is a format change and needs a new schema string. */
+ * (VA_TOOLCHAIN, VA_ARGV, VA_CWD, pp=0x01.., closure=0x02..). The store
+ * key is SHA3-256 over "zcl.verify_attest.store.v2\0", each text as
+ * u64le length and bytes, then pp_sha3 and closure_sha3. Recomputing
+ * either is a format change and needs an explicit domain review. */
 #define VA_BODY_SHA3 \
     "4f587c7eb83e548084deed2806d472936e19d5b3e31063bdfd4a6a417f631828"
 #define VA_STORE_KEY \
-    "1642743adaad642e38b3b61bc4360c847aa2354b3f5cfe630eda7d2bee6ac2e8"
+    "eaca9745ca787a48dc08fffc09635c222404417dbec8ac02ea91639ba8c68cf2"
 
 static int test_va_encoding_vector(void)
 {
@@ -270,7 +272,8 @@ static int test_va_encoding_vector(void)
             printf("body sha3 = %s ", hex);
         ASSERT_STR_EQ(hex, VA_BODY_SHA3);
         zcl_verify_attest_store_key_hex(&e.toolchain_id, &e.argv_norm,
-                                        e.pp_sha3, hex);
+                                        &e.recorded_cwd, e.pp_sha3,
+                                        e.closure_sha3, hex);
         if (strcmp(hex, VA_STORE_KEY) != 0)
             printf("store key = %s ", hex);
         ASSERT_STR_EQ(hex, VA_STORE_KEY);
@@ -278,7 +281,20 @@ static int test_va_encoding_vector(void)
         char other[65];
         e.pp_sha3[31] ^= 1u;
         zcl_verify_attest_store_key_hex(&e.toolchain_id, &e.argv_norm,
-                                        e.pp_sha3, other);
+                                        &e.recorded_cwd, e.pp_sha3,
+                                        e.closure_sha3, other);
+        ASSERT(strcmp(other, hex) != 0);
+        e = va_expected();
+        e.recorded_cwd = va_text("/another-tree");
+        zcl_verify_attest_store_key_hex(&e.toolchain_id, &e.argv_norm,
+                                        &e.recorded_cwd, e.pp_sha3,
+                                        e.closure_sha3, other);
+        ASSERT(strcmp(other, hex) != 0);
+        e = va_expected();
+        e.closure_sha3[0] ^= 1u;
+        zcl_verify_attest_store_key_hex(&e.toolchain_id, &e.argv_norm,
+                                        &e.recorded_cwd, e.pp_sha3,
+                                        e.closure_sha3, other);
         ASSERT(strcmp(other, hex) != 0);
         PASS();
     } _test_next:;
@@ -398,11 +414,37 @@ static int test_va_refuse_fields(void)
                                r, e, SIZE_MAX,
                                ZCL_VERIFY_ATTEST_WHY_ARGV_MISMATCH);
     e = va_expected();
+    e.recorded_cwd = va_text("");
+    r.recorded_cwd = e.recorded_cwd;
+    failures += va_refuse_case("verify attest: missing cwd refuses",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_CWD_MISSING);
+    r = va_record();
+    e = va_expected();
+    e.recorded_cwd = va_text("/other-source-tree");
+    failures += va_refuse_case("verify attest: another working directory "
+                               "refuses attest_cwd_mismatch",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_CWD_MISMATCH);
+    e = va_expected();
     e.pp_sha3[0] ^= 0x80u;
     failures += va_refuse_case("verify attest: other preprocessed input "
                                "refuses attest_pp_mismatch",
                                r, e, SIZE_MAX,
                                ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH);
+    e = va_expected();
+    memset(e.closure_sha3, 0, sizeof(e.closure_sha3));
+    memset(r.closure_sha3, 0, sizeof(r.closure_sha3));
+    failures += va_refuse_case("verify attest: missing closure refuses",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING);
+    r = va_record();
+    e = va_expected();
+    e.closure_sha3[0] ^= 0x80u;
+    failures += va_refuse_case("verify attest: another input closure "
+                               "refuses attest_closure_mismatch",
+                               r, e, SIZE_MAX,
+                               ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH);
     e = va_expected();
     r.obj_sha3[5] ^= 0x10u;
     failures += va_refuse_case("verify attest: an object that is not the "
