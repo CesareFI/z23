@@ -58,7 +58,10 @@
 #     below it the job is refused (exit 75) rather than started into swap.
 #   * The job runs inside `systemd-run --user --scope --slice=development.slice`
 #     with CPUQuota set to 100% per worker core, MemoryMax=24G (48G for
-#     --exclusive), MemorySwapMax=0, CPUWeight=20 and IOWeight=20.
+#     --exclusive), MemorySwapMax=0, IOWeight=20, and a per-project
+#     CPUWeight: QEDC gets 20 * DEVBUILD_Z23_LANES (60 at the default of 3),
+#     matching the CPU share of all concurrent Z23 lanes combined; Z23 gets
+#     20 per job.
 #   * taskset pins the job to worker CPUs only: the first two physical cores
 #     of every socket are LEFT OUT so the live node and interactive work keep
 #     dedicated silicon. On this host that is 28 of 32 CPUs, hence the
@@ -72,8 +75,15 @@
 #     $HOME/.local/state/development/devbuild.jobs.jsonl with project, pid,
 #     cwd, queued/started/ended timestamps, wait_s, run_s, rc, lane,
 #     mem_peak_mib (from the scope's memory.peak, sampled every 2 s),
-#     cpu_s, and cmd. Best-effort; never fails the build. The scope unit is
-#     named devbuild-<pid>-<ns>.scope.
+#     cpu_s, tree (a 16-hex checkout fingerprint computed at enqueue from
+#     HEAD, `git diff HEAD --binary`, and untracked file names, sha256
+#     truncated), and cmd. Best-effort; never fails the build. The scope
+#     unit is named devbuild-<pid>-<ns>.scope.
+#   * Checkout fingerprint: before queuing, devbuild computes that same
+#     tree key and, if the identical cwd + cmd already recorded rc:0 on the
+#     identical tree in devbuild.jobs.jsonl, prints an advisory note on
+#     stderr ("already PASSED on this identical checkout"). Advisory only;
+#     the rerun proceeds either way.
 #   * `--plan` prints the decision and exits without running anything; it is
 #     the safe way to ask what a slot would grant.
 #
@@ -138,6 +148,22 @@ fi
 (( $# > 0 )) || { printf 'Usage: devbuild [--wait] [--project qedc|z23|--exclusive] COMMAND [ARGS...]\n' >&2; exit 64; }
 command_umask=$(umask)
 queued_at=$(date +%s)
+# Checkout fingerprint at enqueue: HEAD plus the working-tree diff and
+# untracked names. Two runs of the same command with the same fingerprint
+# did identical work; the accounting line records it so repeats can be
+# measured, and a repeat of a run that passed is named on stderr (advisory:
+# a rerun can be intentional, e.g. a flake hunt, so nothing is refused).
+tree_key=
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    tree_key=$( { git rev-parse HEAD; git diff HEAD --binary; git ls-files --others --exclude-standard; } 2>/dev/null | sha256sum | cut -c1-16 ) || tree_key=
+fi
+if [[ -n $tree_key && -r $HOME/.local/state/development/devbuild.jobs.jsonl ]]; then
+    same_cmd=$(printf '%s ' "$@" | head -c 300 | tr -d '"\\\000-\037')
+    prior=$(tail -n 400 "$HOME/.local/state/development/devbuild.jobs.jsonl" 2>/dev/null |
+        grep -F "\"tree\":\"$tree_key\"" | grep -F "\"cwd\":\"$(pwd | tr -d '"\\')\"" |
+        grep -F "\"cmd\":\"$same_cmd\"" | grep -F '"rc":0,' | tail -n 1) || prior=
+    [[ -z $prior ]] || printf 'devbuild: note: this exact command already PASSED on this identical checkout (tree %s); rerunning anyway\n' "$tree_key" >&2
+fi
 umask 077
 mkdir -p "$HOME/.local/state/development"
 lock_args=()
@@ -280,16 +306,25 @@ devbuild_account() {
     [[ $peak =~ ^[0-9]+$ ]] || peak=0
     [[ $cpu_us =~ ^[0-9]+$ ]] || cpu_us=0
     cmd=$(printf '%s ' "$@" | head -c 300 | tr -d '"\\\000-\037')
-    printf '{"project":"%s","pid":%d,"cwd":"%s","queued":%d,"started":%d,"ended":%d,"wait_s":%d,"run_s":%d,"rc":%d,"lane":%d,"mem_peak_mib":%d,"cpu_s":%d,"cmd":"%s"}\n' \
+    printf '{"project":"%s","pid":%d,"cwd":"%s","queued":%d,"started":%d,"ended":%d,"wait_s":%d,"run_s":%d,"rc":%d,"lane":%d,"mem_peak_mib":%d,"cpu_s":%d,"tree":"%s","cmd":"%s"}\n' \
         "$project" "$$" "$(pwd | tr -d '"\\')" "$queued_at" "$started_at" "$(date +%s)" \
         "$((started_at - queued_at))" "$(( $(date +%s) - started_at ))" "$rc" "${lane:-0}" \
-        "$((peak / 1048576))" "$((cpu_us / 1000000))" "$cmd" \
+        "$((peak / 1048576))" "$((cpu_us / 1000000))" "$tree_key" "$cmd" \
         >> "$HOME/.local/state/development/devbuild.jobs.jsonl" 2>/dev/null || true
 }
+# Fair share per project, not per job: Z23 may hold up to DEVBUILD_Z23_LANES
+# lanes at weight 20 each, so QEDC's single lane gets the matching project
+# weight. Under contention each project then gets about half the slice;
+# idle CPU still goes to whoever is running. QEDC measured 2026-09-28:
+# ~2.8 cores per gate unit at load 50 while three Z23 lanes ran at 20 each.
+cpu_weight=20
+z23_lanes=${DEVBUILD_Z23_LANES:-3}
+[[ $z23_lanes =~ ^[1-4]$ ]] || z23_lanes=3
+[[ $project != qedc ]] || cpu_weight=$((20 * z23_lanes))
 rc=0
 systemd-run --user --scope --quiet --unit="$unit" --slice=development.slice \
     --property="CPUQuota=$quota" --property="MemoryMax=$memory" \
-    --property=MemorySwapMax=0 --property=CPUWeight=20 --property=IOWeight=20 -- \
+    --property=MemorySwapMax=0 --property=CPUWeight="$cpu_weight" --property=IOWeight=20 -- \
     /usr/bin/env "DEVBUILD_ACTIVE=$project" "ZCC_MAX_MB=${ZCC_MAX_MB:-8192}" \
     /usr/bin/nice -n 10 /usr/bin/ionice -c 2 -n 7 \
     /usr/bin/taskset --cpu-list "$cpu_list" \

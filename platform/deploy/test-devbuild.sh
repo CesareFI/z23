@@ -209,3 +209,71 @@ new_rc=0
     exit 1
 }
 printf 'devbuild mirror: killed wrapper releases its lane, no lock leak PASS\n'
+
+# --- 8. Checkout fingerprint ("tree") accounting ----------------------------
+# The wrapper is invoked with cwd inside this git worktree (the repo this
+# script lives in), so every job below picks up a real tree_key.
+tree_line=$(grep '"pid"' "$jobs_file" | tail -1)
+tree_val=$(printf '%s' "$tree_line" | sed -n 's/.*"tree":"\([0-9a-f]*\)".*/\1/p')
+[[ $tree_val =~ ^[0-9a-f]{16}$ ]] || {
+    printf 'accounting line missing a 16-hex tree key: %s\n' "$tree_line" >&2; exit 1;
+}
+printf 'devbuild mirror: accounting line carries a 16-hex tree key PASS\n'
+
+# --- 8a. Rerunning the identical command on an unchanged tree notes it -----
+same_marker="identical checkout"
+"$root/devbuild" --project z23 true tree-fingerprint-probe-marker >"$scratch/tree-first.log" 2>&1
+"$root/devbuild" --project z23 true tree-fingerprint-probe-marker >"$scratch/tree-second.log" 2>&1
+grep -qF "$same_marker" "$scratch/tree-first.log" && {
+    printf 'first run of a never-before-seen command unexpectedly noted a repeat: %s\n' \
+        "$(cat "$scratch/tree-first.log")" >&2
+    exit 1
+}
+grep -qF "$same_marker" "$scratch/tree-second.log" || {
+    printf 'rerun on an identical checkout did not print the repeat note: %s\n' \
+        "$(cat "$scratch/tree-second.log")" >&2
+    exit 1
+}
+printf 'devbuild mirror: identical rerun prints already-PASSED note PASS\n'
+
+# --- 8b. Editing a tracked file changes the tree key and clears the note ---
+edited_file="$root/README.md"
+[[ -f $edited_file ]] || edited_file="$root/devbuild"
+orig_line=$(grep '"tree"' "$jobs_file" | tail -1)
+orig_tree=$(printf '%s' "$orig_line" | sed -n 's/.*"tree":"\([0-9a-f]*\)".*/\1/p')
+printf '\n# devbuild-mirror-test scratch edit\n' >> "$edited_file"
+restore_edit() { git -C "$root" checkout -- "$(basename "$edited_file")" 2>/dev/null || true; }
+"$root/devbuild" --project z23 true >"$scratch/tree-edited.log" 2>&1
+restore_edit
+grep -qF "$same_marker" "$scratch/tree-edited.log" && {
+    printf 'edited tree still reported an identical-checkout repeat: %s\n' \
+        "$(cat "$scratch/tree-edited.log")" >&2
+    exit 1
+}
+edited_line=$(grep '"tree"' "$jobs_file" | tail -1)
+edited_tree=$(printf '%s' "$edited_line" | sed -n 's/.*"tree":"\([0-9a-f]*\)".*/\1/p')
+[[ $edited_tree =~ ^[0-9a-f]{16}$ ]] || {
+    printf 'accounting line after edit missing a 16-hex tree key: %s\n' "$edited_line" >&2; exit 1;
+}
+[[ $edited_tree != "$orig_tree" ]] || {
+    printf 'tree key did not change after editing a tracked file (still %s)\n' "$orig_tree" >&2
+    exit 1
+}
+printf 'devbuild mirror: editing a tracked file changes the tree key, no stale note PASS\n'
+
+# --- 8c. Per-project CPUWeight: QEDC = 20 * DEVBUILD_Z23_LANES, Z23 = 20 ----
+weight_probe='cg=$(sed "s#.*/##" /proc/self/cgroup | tail -1); systemctl --user show -p CPUWeight "$cg"'
+export DEVBUILD_Z23_LANES=3
+"$root/devbuild" --wait --project qedc bash -c "$weight_probe" >"$scratch/weight-qedc.log" 2>&1
+"$root/devbuild" --wait --project z23 bash -c "$weight_probe" >"$scratch/weight-z23.log" 2>&1
+qedc_weight=$(sed -n 's/^CPUWeight=\([0-9]*\)$/\1/p' "$scratch/weight-qedc.log")
+z23_weight=$(sed -n 's/^CPUWeight=\([0-9]*\)$/\1/p' "$scratch/weight-z23.log")
+[[ $qedc_weight == 60 ]] || {
+    printf 'qedc CPUWeight expected 60, got %s: %s\n' "$qedc_weight" "$(cat "$scratch/weight-qedc.log")" >&2
+    exit 1
+}
+[[ $z23_weight == 20 ]] || {
+    printf 'z23 CPUWeight expected 20, got %s: %s\n' "$z23_weight" "$(cat "$scratch/weight-z23.log")" >&2
+    exit 1
+}
+printf 'devbuild mirror: per-project CPUWeight (qedc=60, z23=20) PASS\n'

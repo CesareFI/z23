@@ -135,11 +135,15 @@ enqueue-ordered tickets, so a long-queued job is never passed over by a
 newer one; a `dev land` invocation, or `DEVBUILD_PRIORITY=land`, takes the
 next free Z23 lane ahead of ordinary waiters. It refuses admission when the
 host has under 24 GiB available, and runs commands inside a `systemd-run
---user --scope` with a CPU quota, a memory ceiling and CPU pinning that
-leaves two physical cores outside the development slice. Each finished job
+--user --scope` with a CPU quota, a memory ceiling, CPU pinning that leaves
+two physical cores outside the development slice, and a per-project
+CPUWeight (QEDC `20 * DEVBUILD_Z23_LANES`, Z23 20). Each finished job
 appends one JSON line (project, pid, cwd, queue/run timings, rc, lane,
-mem/cpu use) to `~/.local/state/development/devbuild.jobs.jsonl` for
-measuring slot contention.
+mem/cpu use, tree — a 16-hex checkout fingerprint from HEAD, the
+working-tree diff and untracked file names) to
+`~/.local/state/development/devbuild.jobs.jsonl` for measuring slot
+contention; a repeat of the same cwd + cmd on the identical tree that
+previously exited 0 prints an advisory stderr note.
 [`../platform/deploy/devbuild`](../platform/deploy/devbuild) is the reference
 mirror of the installed script, with the exact contract in its header;
 [`../platform/deploy/test-devbuild.sh`](../platform/deploy/test-devbuild.sh)

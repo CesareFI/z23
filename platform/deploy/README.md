@@ -35,12 +35,20 @@ you are new; this page is about operating a host, not about building.
   per lane lock. `--wait` waiters are served FIFO through enqueue-ordered
   tickets so a long-queued job is never starved by newer ones; `dev land`
   (or `DEVBUILD_PRIORITY=land`) takes the next free Z23 lane ahead of
-  ordinary waiters. Each finished job appends one JSON line — project, pid,
-  cwd, queued/started/ended, wait_s, run_s, rc, lane, mem_peak_mib, cpu_s,
-  cmd — to `~/.local/state/development/devbuild.jobs.jsonl`.
+  ordinary waiters. Each job runs with a per-project CPUWeight: QEDC gets
+  `20 * DEVBUILD_Z23_LANES` (60 at the default of 3, matching all concurrent
+  Z23 lanes' combined share), Z23 gets 20. Each finished job appends one
+  JSON line — project, pid, cwd, queued/started/ended, wait_s, run_s, rc,
+  lane, mem_peak_mib, cpu_s, tree (a 16-hex checkout fingerprint from HEAD,
+  the working-tree diff and untracked file names), cmd — to
+  `~/.local/state/development/devbuild.jobs.jsonl`. A repeat of the same
+  cwd + cmd on the identical tree that previously exited 0 prints an
+  advisory stderr note.
   [`test-devbuild.sh`](test-devbuild.sh) exercises lane overlap, FIFO order,
-  landing priority, single-lane QEDC, and the accounting file against this
-  mirror. See the script's own header for the full enforcement contract.
+  landing priority, single-lane QEDC, the accounting file (including the
+  tree fingerprint and per-project CPUWeight), and the identical-checkout
+  note against this mirror. See the script's own header for the full
+  enforcement contract.
 - **[`devbuild-broker`](devbuild-broker)** — a staged Linux replacement for the
   host scheduler. It admits two ordinary heavy lanes, reserves an additional
   interactive lane, and orders release proof ahead of ordinary queued work.
