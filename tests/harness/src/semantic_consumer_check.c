@@ -146,6 +146,17 @@ static bool scx_tu_same(const struct scx_edit *e, size_t k,
            t->compile_only == (strcmp(t->reason, "debug-position") == 0);
 }
 
+/* Unsafe: a TU the row affects left out of the compile set, or one whose
+ * tests the row obligates held to the compile set only. */
+static bool scx_tu_unsafe(const struct scx_edit *e, size_t k, bool got_aff,
+                          const struct zcl_devloop_facts_tu_verdict *t)
+{
+    bool want_tests = e->affected[k] && e->reason[k] != NULL &&
+                      strcmp(e->reason[k], "debug-position") != 0;
+    return (e->affected[k] && !got_aff) ||
+           (want_tests && (!got_aff || t->compile_only));
+}
+
 /* One TU against its row of the edit table: 0 when they agree. */
 static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
                              const struct scx_result *r, size_t *unsafe,
@@ -154,12 +165,7 @@ static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
     const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
     bool got_aff = t != NULL && t->affected;
     const char *got = t != NULL ? t->reason : NULL;
-    bool want_tests = e->affected[k] && e->reason[k] != NULL &&
-                      strcmp(e->reason[k], "debug-position") != 0;
-    /* unsafe: a TU the row affects left out of the compile set, or one
-     * whose tests the row obligates held to the compile set only */
-    if ((e->affected[k] && !got_aff) ||
-        (want_tests && (!got_aff || t->compile_only)))
+    if (scx_tu_unsafe(e, k, got_aff, t))
         (*unsafe)++;
     if (scx_tu_same(e, k, t))
         return 0;
