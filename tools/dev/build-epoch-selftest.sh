@@ -612,13 +612,39 @@ chmod +x "$HOT_MAKE" "$HOT_HARNESS"
 # $HOT_MAKE and corrupt the very recursion-probe file this fixture reads
 # afterward. That corruption has nothing to do with t-hotswap's own recipe;
 # it previously produced a false "t-hotswap invoked recursive Make before
-# refusing a missing harness" verdict on every cold worktree. Priming here
-# with the real, unhijacked $(MAKE) makes vendor-ready a no-op for both
-# calls below on any tree, cold or warm; a priming failure fails this
+# refusing a missing harness" verdict on every cold worktree.
+#
+# `vendor-ready` is .PHONY, so calling it is NEVER a no-op: every call reruns
+# build_vendor.sh's full provenance verification and dep_audit.sh's full
+# dependency audit for real, even when every archive is already current. A
+# first version of this fix called it unconditionally and cost ~200s of pure,
+# repeated overhead on the warm trees landing proofs actually run on (measured
+# regression: 94-154s usual -> 366s), and running that real audit work with
+# this selftest's own ambient identity/session variables in scope risked
+# exactly the kind of cross-phase state disturbance it was meant to avoid (a
+# later phase's session acquire failed: "cp: cannot create ... .build-session
+# ...: No such file or directory" right after an unrelated "quarantined
+# unverified epoch" -- consistent with the extra wall time widening a PID-
+# reuse race in this script's own dead-owner detection, not anything vendor
+# priming touches directly: build_vendor.sh and dep_audit.sh reference no
+# source-identity, session, or epoch state at all).
+#
+# Gate priming on the one file $(VENDOR_BOOTSTRAP_MK)'s recipe writes only
+# after vendor-ready has already succeeded once: present means this tree is
+# warm and priming is skipped entirely (zero added cost, matching every other
+# already-primed tree); absent means truly cold, and priming pays the one
+# real, unavoidable bootstrap cost with a clean environment so it can only
+# ever observe or repair the real project's vendor state, never anything this
+# fixture's own later phases hold in $WORK. A priming failure fails this
 # selftest loudly instead of silently proceeding into a contaminated probe.
-if ! make --no-print-directory vendor-ready > "$HOT_FIX/vendor-prime.log" 2>&1; then
-    sed 's/^/build-epoch-selftest: vendor-ready priming: /' "$HOT_FIX/vendor-prime.log" >&2
-    fail 't-hotswap fixture priming failed: vendor-ready did not succeed with the real make'
+if [ ! -f "$ROOT/build/identity/vendor-inputs-ready.mk" ]; then
+    if ! env -u BUILD_SOURCE_RECORD -u ZCL_EPOCH_PROFILES -u ZCL_DEPFILE_PROFILES \
+            -u ZCL_SOURCE_IDENTITY_SESSION -u TEST_FAST_COMPILE_EPOCH \
+            make --no-print-directory vendor-ready \
+            > "$HOT_FIX/vendor-prime.log" 2>&1; then
+        sed 's/^/build-epoch-selftest: vendor-ready priming: /' "$HOT_FIX/vendor-prime.log" >&2
+        fail 't-hotswap fixture priming failed: vendor-ready did not succeed with the real make'
+    fi
 fi
 
 run_hot_fixture()
