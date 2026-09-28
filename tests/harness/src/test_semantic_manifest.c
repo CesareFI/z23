@@ -1695,6 +1695,9 @@ static int smt_t_darwin_injected_image(void)
 }
 #endif
 
+/* semantic_sensor_identity.c: the facts rule's argv and the object compiler. */
+int semantic_sensor_identity_tests(void);
+
 int test_semantic_sensor(void)
 {
     int failures = 0;
@@ -1710,6 +1713,7 @@ int test_semantic_sensor(void)
     failures += smt_t_sensor_home_guard();
     failures += smt_t_sensor_language_aliases();
     failures += semantic_sensor_session_cases();
+    failures += semantic_sensor_identity_tests();
 #if defined(__APPLE__)
     failures += smt_t_darwin_types();
     failures += smt_t_darwin_refusals();
