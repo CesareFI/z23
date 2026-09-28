@@ -111,6 +111,46 @@ fail()
     exit 1
 }
 
+# Device, inode, size, and nanosecond mtime/ctime of one path, portably.
+artifact_stamp()
+{
+    stat -Lc '%d:%i:%s:%Y:%Z:%y:%z' "$1" 2>/dev/null ||
+        stat -f '%d:%i:%z:%m:%c' "$1"
+}
+
+# This self-test runs inside lint and inside test groups, and a landing proof
+# requires both to leave the checkout's source inventory exactly as they found
+# it. The vendored archives (vendor/lib/*.a) and headers (vendor/include) are
+# part of that inventory, so the self-test records their paths and metadata
+# at start and fails at the end if any of them moved. Rebuilding them here
+# once made every proof on a host whose toolchain had changed fail with a
+# changed source mutation.
+vendor_input_state()
+{
+    local path
+    {
+        if [ -d vendor/lib ]; then
+            find vendor/lib -maxdepth 1 -name '*.a' ! -type d -print0
+        fi
+        if [ -d vendor/include ]; then
+            find vendor/include ! -type d -print0
+        fi
+    } | while IFS= read -r -d '' path; do
+        printf '%s %s\n' "$path" "$(artifact_stamp "$path")"
+    done | LC_ALL=C sort
+}
+VENDOR_STATE_BEFORE="$(vendor_input_state)"
+vendor_inputs_unchanged()
+{
+    local after
+    after="$(vendor_input_state)"
+    [ "$after" = "$VENDOR_STATE_BEFORE" ] && return 0
+    diff <(printf '%s\n' "$VENDOR_STATE_BEFORE") <(printf '%s\n' "$after") |
+        awk 'sub(/^[<>] /, "build-epoch-selftest: vendor input moved: ") &&
+             shown++ < 20' >&2 || true
+    fail 'the self-test changed vendor/lib/*.a or vendor/include; it must leave the source inventory untouched'
+}
+
 SELFTEST_TIMEOUT="${ZCL_BUILD_EPOCH_SELFTEST_TIMEOUT:-600}"
 [[ "$SELFTEST_TIMEOUT" =~ ^[1-9][0-9]*$ ]] ||
     fail "invalid ZCL_BUILD_EPOCH_SELFTEST_TIMEOUT=$SELFTEST_TIMEOUT (must be a positive integer)"
@@ -600,22 +640,12 @@ printf '%s\n' "$@" > "$Z23_HOT_HARNESS_ARGS"
 HOT_HARNESS_EOF
 chmod +x "$HOT_MAKE" "$HOT_HARNESS"
 
-# Prime vendor-ready with the REAL make before hijacking MAKE below: on a
-# cold checkout, reaching any goal first runs OpenSSL's real submake, which
-# inherits our fake MAKE and corrupts the recursion probe. vendor-ready is
-# .PHONY (never a no-op), so skip priming once build/identity/vendor-inputs-
-# ready.mk shows the tree is already warm. Use a clean env so priming can
-# only touch real vendor state, never this fixture's own session/epoch vars.
-if [ ! -f "$ROOT/build/identity/vendor-inputs-ready.mk" ]; then
-    if ! env -u BUILD_SOURCE_RECORD -u ZCL_EPOCH_PROFILES -u ZCL_DEPFILE_PROFILES \
-            -u ZCL_SOURCE_IDENTITY_SESSION -u TEST_FAST_COMPILE_EPOCH \
-            make --no-print-directory vendor-ready \
-            > "$HOT_FIX/vendor-prime.log" 2>&1; then
-        sed 's/^/build-epoch-selftest: vendor-ready priming: /' "$HOT_FIX/vendor-prime.log" >&2
-        fail 't-hotswap fixture priming failed: vendor-ready did not succeed with the real make'
-    fi
-fi
-
+# t-hotswap reads no vendor archive, but on a checkout with a missing archive
+# the Makefile's parse-time vendor bootstrap would run OpenSSL's real submake
+# under the fake MAKE below and corrupt the recursion probe. Emptying
+# VENDOR_MISSING_INPUTS for this one invocation skips that bootstrap, the same
+# way the view-header bootstrap is emptied, so the fixture never builds or
+# rewrites vendor/lib or vendor/include (see vendor_inputs_unchanged).
 run_hot_fixture()
 {
     BUILD_SOURCE_RECORD="$AMBIENT_RECORD" \
@@ -624,7 +654,7 @@ run_hot_fixture()
     make --no-print-directory \
         MAKE="$HOT_MAKE" BUILD_SOURCE_RECORD="$HOT_RECORD" \
         ZCL_EPOCH_PROFILES= ZCL_DEPFILE_PROFILES= \
-        VIEW_GEN_HEADERS_EARLY= VIEW_GEN_HEADERS= \
+        VIEW_GEN_HEADERS_EARLY= VIEW_GEN_HEADERS= VENDOR_MISSING_INPUTS= \
         TEST_FAST_COMPILE_EPOCH="$EPOCH_MAIN" \
         TEST_PARALLEL_FAST_CANDIDATE="$HOT_HARNESS" \
         TEST_PARALLEL_FAST_ACTIVE="$HOT_HARNESS" \
@@ -1098,6 +1128,7 @@ run_make_recovery()
     # This fixture supplies an already-probed compiler identity and its own
     # profile. Keep that probe's deployment environment: the included native
     # Makefile otherwise exports its release floor and changes Clang builtins.
+    # The probe links no vendor archive, so it skips the vendor bootstrap too.
     local log="$1"
     (
         cd "$ROOT"
@@ -1109,7 +1140,7 @@ run_make_recovery()
             MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET-}" \
             ZCL_EPOCH_PROFILES=test-fast ZCL_DEPFILE_PROFILES= \
             BUILD_DIR="$MAKE_RECOVERY" BIN_DIR="$MAKE_RECOVERY/bin" \
-            VIEW_GEN_HEADERS_EARLY= VIEW_GEN_HEADERS= \
+            VIEW_GEN_HEADERS_EARLY= VIEW_GEN_HEADERS= VENDOR_MISSING_INPUTS= \
             VIEW_BOOTSTRAP_MK="$MAKE_RECOVERY_VIEW_READY" \
             BUILD_SOURCE_RECORD="$MAKE_SOURCE_RECORD" \
             BUILD_COMPILER_ID="$COMPILER_ID" BUILD_SYSTEM_ID="$BSYS_REAL" \
@@ -1168,11 +1199,6 @@ grep -Fqx 'epoch-recovery-probe: restarts=1' "$MAKE_RECOVERY_FIRST_LOG" ||
 [ "$(wc -l < "$MAKE_RECOVERY_ACTIONS")" -eq 2 ] ||
     fail 'Make recovery did not compile and link exactly once'
 
-artifact_stamp()
-{
-    stat -Lc '%d:%i:%s:%Y:%Z:%y:%z' "$1" 2>/dev/null ||
-        stat -f '%d:%i:%z:%m:%c' "$1"
-}
 MAKE_RECOVERY_ARTIFACTS=(
     "$MAKE_RECOVERY_OBJECT" "$MAKE_RECOVERY_DEPFILE"
     "$MAKE_RECOVERY_RSP" "$MAKE_RECOVERY_BINARY" "$MAKE_RECOVERY_READY"
@@ -1820,6 +1846,9 @@ cache_env_pair agree 'zcc cc, SCCACHE_DIR' "$SHIM_ZCC $SHIM_CC" \
 [ "$(cache_env_compiler_id "$SHIM_ZCC $SHIM_CC")" = \
   "$(cache_env_compiler_id "$SHIM_ZCC $SHIM_CC" CCACHE_DIR=/a CCACHE_MAXSIZE=512M)" ] ||
     fail 'zcc cc: setting CCACHE_DIR and CCACHE_MAXSIZE moved the compiler identity'
+
+phase vendor-inputs-unchanged
+vendor_inputs_unchanged
 
 printf 'build-epoch-selftest: PASS toolchain_keyed=true stable_namespace=true source_bound_publish=true concurrent_publish=true late_marker_refusal=true make_recovery=true warm_no_rewrite=true degraded_probe_refused=true flake_retried=true wrapper_config_scoped=true cache_env_scoped=true compiler_id=%s\n' \
     "$COMPILER_ID"
