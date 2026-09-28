@@ -51,10 +51,6 @@ struct fxc {
     char seed_detail[192];
     struct codeindex *ci;       /* NULL when the index cannot open */
     int graph;                  /* codeindex_include_dim of the last query */
-    bool attested;              /* the facts directory holds the before
-                                   manifest of every TU whose before-state
-                                   depfile names a changed file
-                                   (ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE) */
 };
 
 /* consumer.c */

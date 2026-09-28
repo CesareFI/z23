@@ -6,9 +6,8 @@
  * and no Makefile names narrows the compile, but the plain plan's own path
  * groups for it are still selected as a test obligation; (d) a path the
  * include graph cannot answer for (here: deleted/never-created) widens too;
- * (e) with the producer's before-readers attestation the same deleted path
- * narrows, and (f) a deleted path an attested before manifest read affects
- * its TU.
+ * (e) a TU whose manifests predate facts revision 3 is affected by a created
+ * path.
  *
  * Each test hand-builds a minimal identity+files manifest (no libclang) for
  * one candidate TU and drives zcl_devloop_facts_consume() directly against a
@@ -29,7 +28,6 @@
 #include <sys/stat.h>
 
 #define SBI_TU "src/a.c"
-#define SBI_MARKER "facts/" ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE
 
 static bool sbi_mkdirs(char *full)
 {
@@ -62,14 +60,16 @@ static bool sbi_write(const char *root, const char *rel, const char *body)
     return ok;
 }
 
-/* A minimal, valid manifest for `main_path`: identity + FILES (the main file
- * and, when given, one more repo file read). No lookups/macros/decls/
- * layouts/enums/functions/spans: every one of those sections is legally
- * empty. */
+/* A minimal, valid manifest for `main_path` at facts `revision`: identity +
+ * FILES (the main file and, when given, one more repo file read). No
+ * lookups/macros/decls/layouts/enums/functions/spans: every one of those
+ * sections is legally empty, which from revision 3 on says the TU makes
+ * no conditional lookup. */
 static const char *const k_sbi_env[] = {VCS_SEMANTIC_ENV_V1_ALLOWLIST};
 #define SBI_ENV_COUNT (sizeof(k_sbi_env) / sizeof(k_sbi_env[0]))
 
 static bool sbi_manifest(const char *main_path, const char *extra_file,
+                         uint8_t revision,
                          uint8_t **out, size_t *out_len)
 {
     struct vcs_semantic_builder_v1 *b = vcs_semantic_builder_v1_new();
@@ -121,7 +121,7 @@ static bool sbi_manifest(const char *main_path, const char *extra_file,
     }
     if (ok) {
         struct vcs_semantic_facts_v1 facts = {
-            .max_records = 64, .max_section_bytes = 65536, .revision = 2};
+            .max_records = 64, .max_section_bytes = 65536, .revision = revision};
         ok = vcs_semantic_builder_v1_enable_facts(b, &facts);
     }
     ok = ok && vcs_semantic_builder_v1_finish(b, out, out_len, why, sizeof why);
@@ -130,21 +130,20 @@ static bool sbi_manifest(const char *main_path, const char *extra_file,
     return ok;
 }
 
-/* Write a.c's before/after manifest pair, each reading its extra file (when
- * given), plus the candidate scan marker. */
-static bool sbi_write_pair(const char *root, const char *before_extra,
-                           const char *after_extra)
+/* Write a.c's before/after manifest pair (byte-identical: the TU itself
+ * never changes in these tests) at facts `revision`, plus the candidate
+ * scan marker. */
+static bool sbi_write_tu_rev(const char *root, const char *extra_file,
+                             uint8_t revision)
 {
     uint8_t *m = NULL;
     size_t n = 0;
+    bool ok = sbi_manifest(SBI_TU, extra_file, revision, &m, &n);
     char full[4096];
     FILE *fp;
-    bool ok = true;
+    if (!ok)
+        return false;
     for (int pass = 0; ok && pass < 2; pass++) {
-        ok = sbi_manifest(SBI_TU, pass == 0 ? before_extra : after_extra, &m,
-                          &n);
-        if (!ok)
-            break;
         if (snprintf(full, sizeof(full), "%s/facts/%s%s", root, SBI_TU,
                      pass == 0 ? ".before.zsm" : ".after.zsm") >=
             (int)sizeof(full)) {
@@ -156,8 +155,6 @@ static bool sbi_write_pair(const char *root, const char *before_extra,
         ok = fp != NULL && fwrite(m, 1, n, fp) == n;
         if (fp != NULL && fclose(fp) != 0)
             ok = false;
-        free(m);
-        m = NULL;
     }
     free(m);
     /* A depfile naming only its own .c gives codeindex zero include edges,
@@ -171,10 +168,10 @@ static bool sbi_write_pair(const char *root, const char *before_extra,
                      "build/a.o: " SBI_TU " src/a.h\n");
 }
 
-/* The TU itself never changes in most tests: one manifest on both sides. */
+/* The current producer's revision. */
 static bool sbi_write_tu(const char *root, const char *extra_file)
 {
-    return sbi_write_pair(root, extra_file, extra_file);
+    return sbi_write_tu_rev(root, extra_file, 4);
 }
 
 static bool sbi_has_group(const struct zcl_devloop_plan *p, const char *g)
@@ -425,88 +422,35 @@ static int sbit_t_truncated(void)
     return failures;
 }
 
-/* (e): the same deleted path, with the producer's before-readers
- * attestation (ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE): the before manifests
- * here are every TU whose before-state depfile named it, and none read it,
- * so the compile narrows. Only the exact marker text attests. */
-static int sbit_t_deleted_attested(void)
+/* (e): a TU whose manifests predate facts revision 3 records none of its
+ * conditional lookups, so a created path may answer one it made: the TU is
+ * a member, affected whole, though it reads nothing that changed.
+ * At revision 3 on, the same empty LOOKUPS say it makes none. */
+static int sbit_t_old_revision_created(void)
 {
     int failures = 0;
-    TEST_CASE("semantic_build_inputs: a deleted path no attested before "
-             "manifest read narrows the compile") {
-        char root[4096];
-        const char *changed = "cfg/ghost.def";
-        struct zcl_devloop_plan plan = {0};
-        struct zcl_devloop_facts_verdict v = {0};
-        struct zcl_devloop_facts_report rep = {0};
-        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_attest") != NULL);
-        ASSERT(sbi_write_tu(root, NULL));
-        ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
-        ASSERT(sbi_write(root, SBI_MARKER, ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT));
-        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
-        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
-                                         &plan, &v, &rep));
-        ASSERT(rep.complete);
-        ASSERT(!sbi_tu_affected(&rep, NULL));
-        ASSERT(!plan.closure_universal);
-        zcl_devloop_facts_report_free(&rep);
-    } TEST_END
-    return failures;
-}
-
-static int sbit_t_marker_text(void)
-{
-    int failures = 0;
-    TEST_CASE("semantic_build_inputs: a marker with other text attests "
-             "nothing") {
-        char root[4096];
-        const char *changed = "cfg/ghost.def";
-        struct zcl_devloop_plan plan = {0};
-        struct zcl_devloop_facts_verdict v = {0};
-        struct zcl_devloop_facts_report rep = {0};
-        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_attest_bad") != NULL);
-        ASSERT(sbi_write_tu(root, NULL));
-        ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
-        ASSERT(sbi_write(root, SBI_MARKER, "zcl.facts.before_readers.v0\n"));
-        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
-        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
-                                         &plan, &v, &rep));
-        ASSERT(!rep.complete);
-        ASSERT(plan.closure_universal);
-        zcl_devloop_facts_report_free(&rep);
-    } TEST_END
-    return failures;
-}
-
-/* (f): an attested deleted path the before manifest read: the TU that read
- * it is affected, though the after-state depfile no longer names it. */
-static int sbit_t_deleted_read(void)
-{
-    int failures = 0;
-    TEST_CASE("semantic_build_inputs: a deleted path an attested before "
-             "manifest read affects that TU") {
-        char root[4096];
-        const char *changed = "cfg/gone.def";
-        struct zcl_devloop_plan plan = {0};
-        struct zcl_devloop_facts_verdict v = {0};
-        struct zcl_devloop_facts_report rep = {0};
-        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_attest_read") != NULL);
-        ASSERT(sbi_write_pair(root, changed, NULL));
-        ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
-        ASSERT(sbi_write(root, "facts/cfg/gone.def.before", "X\n"));
-        ASSERT(sbi_write(root, SBI_MARKER, ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT));
-        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
-        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
-                                         &plan, &v, &rep));
-        /* A member through its before manifest's FILES; the hand-built
-         * manifests name no producer, so the member's verdict is
-         * producer-unknown (sbit_t_deleted_attested: a non-member stays
-         * unaffected under the same producer). */
-        ASSERT(rep.complete);
-        ASSERT(sbi_tu_affected(&rep, "producer-unknown"));
-        ASSERT(!plan.closure_universal);
-        zcl_devloop_facts_report_free(&rep);
-    } TEST_END
+    for (uint8_t rev = 2; rev <= 3; rev++) {
+        TEST_CASE("semantic_build_inputs: a path created beside a TU read at "
+                  "an old facts revision affects it") {
+            char root[4096];
+            const char *changed = "src/new_opt.h";
+            struct zcl_devloop_plan plan = {0};
+            struct zcl_devloop_facts_verdict v = {0};
+            struct zcl_devloop_facts_report rep = {0};
+            ASSERT(test_mkdtemp(root, sizeof(root), "sbi_oldrev") != NULL);
+            ASSERT(sbi_write_tu_rev(root, NULL, rev));
+            ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
+            ASSERT(sbi_write(root, changed, "#define NEW_OPT 1\n"));
+            ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+            ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                             &plan, &v, &rep));
+            ASSERT(rep.complete);
+            /* a member; the hand-built manifests name no producer, so its
+             * verdict is producer-unknown, which already widens it whole */
+            ASSERT(sbi_tu_affected(&rep, NULL) == (rev < 3));
+            zcl_devloop_facts_report_free(&rep);
+        } TEST_END
+    }
     return failures;
 }
 
@@ -545,6 +489,6 @@ int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
           sbit_t_wildcard_var() | sbit_t_shell_find() | sbit_t_pattern_rule() |
-          sbit_t_truncated() | sbit_t_deleted_attested() | sbit_t_marker_text() |
-          sbit_t_deleted_read() | sbit_t_header_path();
+          sbit_t_truncated() | sbit_t_old_revision_created() |
+          sbit_t_header_path();
 }

@@ -29,7 +29,6 @@
 #include "sem_replay_build.h"
 #include "sem_replay_change.h"
 #include "sem_replay_classify.h"
-#include "devloop_facts.h"
 #include "sem_replay_plan.h"
 
 #define SR_FACTS_REL "build/sem-replay/facts"
@@ -618,27 +617,6 @@ static bool build_before(const struct sr_cfg *cfg, struct commit_run *r)
     return ok;
 }
 
-/* The before-readers attestation (devloop_facts.h): written only when the
- * parent built, every object had a depfile, and every TU whose parent
- * depfile names a changed file left its before manifest here. */
-static bool attest_before(const struct sr_cfg *cfg, const struct commit_run *r,
-                          size_t missing)
-{
-    static const char text[] = ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT;
-    char path[SR_PATH];
-    if (missing != 0 || (r->build_failed & 2) != 0)
-        return true;
-    for (size_t i = 0; i < r->bound_p.n; i++) {
-        snprintf(path, sizeof(path), "%s/%s/%s.before.zsm", cfg->repo, SR_FACTS_REL,
-                 r->bound_p.v[i]);
-        if (!sr_exists(path))
-            return true;
-    }
-    snprintf(path, sizeof(path), "%s/%s/%s", cfg->repo, SR_FACTS_REL,
-             ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE);
-    return sr_write_file(path, text, sizeof(text) - 1);
-}
-
 static bool before_side(const struct sr_cfg *cfg, struct commit_run *r)
 {
     size_t missing = 0;
@@ -647,7 +625,7 @@ static bool before_side(const struct sr_cfg *cfg, struct commit_run *r)
               sr_deps_pairs(cfg->repo, &r->snap_p, &r->ch.files, &r->pairs) &&
               keep_before(cfg, r) && argv_all(cfg, r, &r->snap_p, &r->argv_p) &&
               reset_facts(cfg) && sense_side(cfg, r, &r->bound_p, &r->argv_p, "before") &&
-              save_before_sources(cfg, r) && attest_before(cfg, r, missing);
+              save_before_sources(cfg, r);
     if (missing)
         fprintf(stderr, "sem-replay: %zu objects at %s have no depfile\n", missing, r->parent);
     return ok;

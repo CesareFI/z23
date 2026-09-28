@@ -11,8 +11,6 @@
 #include "platform/clock.h"
 #include "test/test_core.h"
 
-#include "devloop_facts.h"
-
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -618,26 +616,13 @@ static bool layout(struct sfz_run *r, const struct sfz_paths *before)
            sfz_mkdirs(r->log);
 }
 
-/* The before phase sensed every TU, so the facts directory holds the
- * before manifest of each TU whose before-state depfile names a changed
- * file: the producer's attestation the consumer reads for a deleted path. */
-static bool attest_before_readers(const struct sfz_run *r)
-{
-    static const char text[] = ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT;
-    char facts[PATH_MAX + 8];
-    (void)snprintf(facts, sizeof(facts), "%s/facts", r->tree);
-    return sfz_put(facts, ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE, text,
-                   sizeof(text) - 1);
-}
-
 static bool run_sides(struct sfz_run *r, const struct sfz_paths *before,
                       const struct sfz_paths *after)
 {
     char bdir[PATH_MAX + 8], adir[PATH_MAX + 8];
     (void)snprintf(bdir, sizeof(bdir), "%s/before", r->c->dir);
     (void)snprintf(adir, sizeof(adir), "%s/after", r->c->dir);
-    if (!layout(r, before) || !phase(r, "before", r->ob) ||
-        !attest_before_readers(r))
+    if (!layout(r, before) || !phase(r, "before", r->ob))
         return false;
     if (!apply_after(r, before, after, bdir, adir)) {
         sfz_why(r->out, "cannot lay the after side over %s\n", r->tree);

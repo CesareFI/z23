@@ -170,6 +170,18 @@ static bool fxc_probes(const struct fxc *c, const uint8_t *m, size_t n)
     return q.hit || fxc_unbound(c, m, n) != NULL;
 }
 
+/* A manifest before facts revision 3 on either side of the pair: the
+ * changed path its lookups that record no claim at all (such a sensor
+ * scanned no conditional lookup) may now resolve to, as for an unbound
+ * one, or NULL. */
+static const char *fxc_unbound_old(const struct fxc *c, const struct fxc_pair *p)
+{
+    if ((p->xa == NULL || fxi_revision(p->xa) >= 3) &&
+        (p->xb == NULL || fxi_revision(p->xb) >= 3))
+        return NULL;
+    return fxc_unbound_path(c, "", 0);
+}
+
 /* Some side of the pair read a changed file or looked it up. */
 static bool fxc_member(const struct fxc *c, const struct fxc_pair *p)
 {
@@ -177,7 +189,8 @@ static bool fxc_member(const struct fxc *c, const struct fxc_pair *p)
         if (fxi_file_digest(p->xa, c->files[k]) != NULL ||
             (p->xb != NULL && fxi_file_digest(p->xb, c->files[k]) != NULL))
             return true;
-    return fxc_probes(c, p->a, p->alen) || fxc_probes(c, p->b, p->blen);
+    return fxc_probes(c, p->a, p->alen) || fxc_probes(c, p->b, p->blen) ||
+           fxc_unbound_old(c, p) != NULL;
 }
 
 /* Every id a REFS ADDRESS record names, over every manifest here: a seed
@@ -1160,6 +1173,8 @@ static void fxc_unbound_verdict(const struct fxc *c, const struct fxc_pair *p,
     path = fxc_unbound(c, p->a, p->alen);
     if (path == NULL)
         path = fxc_unbound(c, p->b, p->blen);
+    if (path == NULL)
+        path = fxc_unbound_old(c, p);
     if (path != NULL)
         fxc_set(t, true, true, "lookup-unbound",
                 "a lookup that makes no negative claim may now resolve to %s",
