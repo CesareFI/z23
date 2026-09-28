@@ -200,8 +200,8 @@ uint64_t vcs_package_store_quota_bytes(void)
 }
 
 /* ── derived accounting ───────────────────────────────────────────── */
-static uint64_t store_pool_budget(const struct vcs_package_store *store,
-                                  enum vcs_package_store_pool pool)
+uint64_t store_pool_budget(const struct vcs_package_store *store,
+                           enum vcs_package_store_pool pool)
 {
     static const unsigned k_tenths[] = {
         VCS_PACKAGE_STORE_PINS_TENTHS, VCS_PACKAGE_STORE_HOT_TENTHS,
@@ -251,8 +251,8 @@ static enum vcs_package_store_pool store_package_pool(
                : VCS_PACKAGE_STORE_POOL_RARE;
 }
 
-static uint64_t store_pool_usage_locked(struct vcs_package_store *store,
-                                        enum vcs_package_store_pool pool)
+uint64_t store_pool_usage_locked(struct vcs_package_store *store,
+                                  enum vcs_package_store_pool pool)
 {
     uint64_t usage = 0;
     for (size_t i = 0; i < store->pkg_count; i++) {
@@ -876,35 +876,6 @@ static enum vcs_package_store_result store_chunk_room_no_evict(
     return VCS_PACKAGE_STORE_ERR_QUOTA;
 }
 
-static enum vcs_package_store_result store_chunk_room(
-    struct vcs_package_store *store, struct store_package *pkg,
-    size_t chunk_len, const uint8_t package_root[32], bool *will_complete)
-{
-    uint32_t present_before = 0;
-    uint64_t bytes_before = 0;
-    store_package_present(store, pkg, &present_before, &bytes_before);
-    *will_complete = (uint64_t)present_before + 1u == pkg->chunk_count;
-    enum vcs_package_store_pool pool;
-    uint64_t incoming;
-    if (*will_complete) {
-        pool = pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
-               : pkg->class_ == VCS_PACKAGE_STORE_CLASS_HOT
-                     ? VCS_PACKAGE_STORE_POOL_HOT : VCS_PACKAGE_STORE_POOL_RARE;
-        incoming = pkg->pinned ? chunk_len : bytes_before + chunk_len;
-    } else {
-        pool = pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
-                           : VCS_PACKAGE_STORE_POOL_STAGING;
-        incoming = chunk_len;
-    }
-    if (store_ensure_room(store, pool, incoming, package_root))
-        return VCS_PACKAGE_STORE_OK;
-    if (store->catalog_incomplete)
-        LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                   "chunk admission stopped: catalog incomplete");
-    store->quota_rejects_total++;
-    return VCS_PACKAGE_STORE_ERR_QUOTA;
-}
-
 static bool store_chunk_persist(struct vcs_package_store *store,
                                 const uint8_t hash[32],
                                 const uint8_t *chunk, size_t chunk_len,
@@ -921,7 +892,7 @@ static bool store_chunk_persist(struct vcs_package_store *store,
 
 static enum vcs_package_store_result store_chunk_admit(
     struct vcs_package_store *store, struct store_package *pkg,
-    const uint8_t hash[32], size_t chunk_len,
+    const uint8_t hash[32],
     const uint8_t package_root[32], bool no_evict, bool *will_complete)
 {
     if (!no_evict && !store_generation_advance(store))
@@ -934,8 +905,7 @@ static enum vcs_package_store_result store_chunk_admit(
     }
     enum vcs_package_store_result result = no_evict
         ? store_chunk_room_no_evict(store, hash)
-        : store_chunk_room(store, pkg, chunk_len, package_root,
-                           will_complete);
+        : store_chunk_room(store, pkg, hash, package_root, will_complete);
     if (result != VCS_PACKAGE_STORE_OK) return result;
     if (no_evict && !store_generation_advance(store))
         LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
@@ -995,7 +965,7 @@ static enum vcs_package_store_result store_put_chunk_mode(
     }
     bool will_complete = false;
     enum vcs_package_store_result result = store_chunk_admit(
-        store, pkg, hash, chunk_len, package_root, no_evict,
+        store, pkg, hash, package_root, no_evict,
         &will_complete);
     if (result != VCS_PACKAGE_STORE_OK) {
         store_process_unlock(store);

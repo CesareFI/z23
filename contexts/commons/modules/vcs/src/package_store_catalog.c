@@ -61,6 +61,65 @@ enum vcs_package_store_result store_chunk_hash_checked(
     return VCS_PACKAGE_STORE_OK;
 }
 
+/* A CAS hash may complete several staged manifests at once. Project all
+ * derived pools while holding the store and process locks, then remove the
+ * temporary index entry before any eviction can inspect CAS ownership. */
+static bool store_chunk_project(struct vcs_package_store *store,
+                                const uint8_t hash[32], uint64_t usage[4])
+{
+    if (!store_cas_insert(store, hash)) return false;
+    for (int pool = VCS_PACKAGE_STORE_POOL_PINS;
+         pool <= VCS_PACKAGE_STORE_POOL_STAGING; pool++)
+        usage[pool] = store_pool_usage_locked(store, pool);
+    store_cas_remove(store, hash);
+    return true;
+}
+
+enum vcs_package_store_result store_chunk_room(
+    struct vcs_package_store *store, struct store_package *pkg,
+    const uint8_t hash[32], const uint8_t package_root[32],
+    bool *will_complete)
+{
+    uint32_t present = 0;
+    store_package_present(store, pkg, &present, NULL);
+    *will_complete = (uint64_t)present + 1u == pkg->chunk_count;
+    for (;;) {
+        uint64_t before[4], after[4];
+        for (int pool = VCS_PACKAGE_STORE_POOL_PINS;
+             pool <= VCS_PACKAGE_STORE_POOL_STAGING; pool++)
+            before[pool] = store_pool_usage_locked(store, pool);
+        if (!store_chunk_project(store, hash, after))
+            LOG_RETURN(VCS_PACKAGE_STORE_ERR_ALLOC, STORE_LOG,
+                       "project shared chunk admission");
+        if (after[VCS_PACKAGE_STORE_POOL_PINS] >
+                store_pool_budget(store, VCS_PACKAGE_STORE_POOL_PINS) ||
+            after[VCS_PACKAGE_STORE_POOL_STAGING] >
+                store_pool_budget(store, VCS_PACKAGE_STORE_POOL_STAGING))
+            break;
+        bool evicted = false;
+        for (int pool = VCS_PACKAGE_STORE_POOL_HOT;
+             pool <= VCS_PACKAGE_STORE_POOL_RARE; pool++) {
+            uint64_t incoming = after[pool] > before[pool]
+                                    ? after[pool] - before[pool] : 0;
+            uint64_t old_evictions = store->evictions_total;
+            if (!store_ensure_room(store, pool, incoming, package_root)) {
+                if (store->catalog_incomplete)
+                    LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                               "shared chunk admission: catalog incomplete");
+                store->quota_rejects_total++;
+                return VCS_PACKAGE_STORE_ERR_QUOTA;
+            }
+            if (store->evictions_total != old_evictions) {
+                evicted = true;
+                break;
+            }
+        }
+        if (!evicted) return VCS_PACKAGE_STORE_OK;
+    }
+    store->quota_rejects_total++;
+    return VCS_PACKAGE_STORE_ERR_QUOTA;
+}
+
 uint8_t *store_read_file(const char *path, size_t *out_len)
 {
     *out_len = 0;

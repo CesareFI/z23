@@ -56,11 +56,57 @@
 
 #include "test/test_zcode_store_priv.h"
 
+static int store_case_shared_chunk_pool_boundary(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *s =
+        zs_open(dd, sizeof(dd), "sharedchunkq", 2000u);
+    ZS_CHECK("shared quota: store opens", s != NULL);
+    if (!s) return failures;
+    const char *names[] = { "a", "b", "c", "d" };
+    const size_t lens[] = { 200 };
+    struct zs_pkg pkg[4] = {0};
+    bool ready = true;
+    for (size_t i = 0; i < 4; i++) {
+        const char *path[] = { names[i] };
+        if (!zs_make_package(&pkg[i], 1, path, lens, 0x72)) {
+            ready = false;
+            break;
+        }
+    }
+    ZS_CHECK("shared quota: four manifests share one chunk", ready);
+    if (ready) {
+        for (size_t i = 0; i < 4; i++)
+            ZS_CHECK("shared quota: staged manifest admitted",
+                     vcs_package_store_put_manifest(s, pkg[i].wire,
+                                                    pkg[i].wire_len, NULL) ==
+                         VCS_PACKAGE_STORE_OK);
+        ZS_CHECK("shared quota: one chunk cannot complete four rare packages",
+                 vcs_package_store_put_chunk(s, pkg[0].root, names[0], 0,
+                                             pkg[0].contents[0], 200) ==
+                     VCS_PACKAGE_STORE_ERR_QUOTA);
+        ZS_CHECK("shared quota: refusal leaves rare pool empty",
+                 vcs_package_store_pool_usage(
+                     s, VCS_PACKAGE_STORE_POOL_RARE) == 0);
+        struct vcs_package_store_status st;
+        for (size_t i = 0; i < 4; i++)
+            ZS_CHECK("shared quota: staged package stays incomplete",
+                     vcs_package_store_package_status(s, pkg[i].root,
+                                                      &st) && !st.complete);
+    }
+    for (size_t i = 0; i < 4; i++) zs_free_package(&pkg[i]);
+    vcs_package_store_close(s);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 
 /* ── 6: staging quota ─────────────────────────────────────────────── */
 int t_store_staging_quota(void)
 {
     int failures = 0;
+    failures += store_case_shared_chunk_pool_boundary();
     /* quota 10000: staging budget 1000 bytes. */
     char dd[256];
     struct vcs_package_store *s =
