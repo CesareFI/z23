@@ -906,6 +906,15 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(!capability_attach.ok);
         ASSERT_STR_EQ(report.refusal, "attach-refused-job-state");
         ASSERT(db_build_job_save(&ndb, &queued_job));
+        /* A reopened receiver DB must recover the donor and queued duplicate
+         * from durable rows before deciding whether to launch an executor. */
+        node_db_close(&ndb);
+        ASSERT(node_db_open(&ndb, path));
+        ASSERT(db_build_action_find(&ndb, action_a.action_id, &durable_a));
+        ASSERT_STR_EQ(durable_a.state, "ACCEPTED");
+        ASSERT(db_build_action_find(&ndb, action_b.action_id,
+                                    &capability_action));
+        ASSERT_STR_EQ(capability_action.state, "QUEUED");
 #if defined(__linux__)
         int fds_before_attach = att_open_fd_count();
         uint64_t launches_before_attach = zcl_spawn_thread_launch_count();
