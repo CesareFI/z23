@@ -523,7 +523,7 @@ the reply carries:
 | `file-changed <path>` | a non-main file the accepted manifest read no longer has its SHA3; this also catches an edit that keeps size and mtime, which libclang's own preamble check misses |
 | `lookup-unbound <name>` | the accepted manifest has a lookup with no negative claim (`include_next`, computed, absolute, or a conditional lookup the text scan cannot replay: a macro-operand `__has_include`, `__has_include_next`, `__has_embed`, `#embed`), which cannot be re-checked |
 | `include-shadow-appeared <dir>/<name>`, `include-shadow-vanished ...` | the shadow candidates changed (below) |
-| `warm-unusable: <why>` | a reparse failed a post-check: `main file bytes differ`, `preamble-file-differs <path>`, `identity-moved`, `lookup-moved <name>`, or its own manifest's `include-shadow-appeared ...` / `include-shadow-vanished ...`; the reparse is discarded and retried once as a fresh parse |
+| `warm-unusable: <why>` | a reparse failed a post-check: `main file bytes differ`, `preamble-file-differs <path>`, `identity-moved`, `lookup-moved <name>`, or its own manifest failed the binding checks (`file-changed <path>`, `lookup-unbound <name>`, `include-shadow-appeared ...`, `include-shadow-vanished ...`); the reparse is discarded and retried once as a fresh parse |
 
 **Shadow candidates.** A reused preamble keeps how every include inside it
 resolved, including includes made inside system headers, which no LOOKUPS
@@ -556,10 +556,13 @@ check fail instead of hiding in the baseline. Each dir is read with
   spelled, form, kind) the accepted manifest also has is byte-identical. The
   warm extraction probes each slot below a hit with a fresh `stat`, so a
   header newly beside the includer, a slot that went away, or a moved hit
-  changes that record. Then the reparse's own manifest must have the shadow
-  candidates of the TU's baseline, because no cold parse checks it: this
-  catches a shadow that appeared after the pre-checks ran, and one of a
-  header only this reparse read (an include added below the preamble).
+  changes that record. Then the reparse's own manifest is bound exactly as
+  the next emit's pre-checks would bind it, because no cold parse checks
+  it: every non-main file it read still has the SHA3 it records, it made no
+  lookup without a negative claim, and its shadow candidates equal the TU's
+  baseline. This catches a file or shadow that moved after the pre-checks
+  ran, and anything only this reparse read (an include or a computed
+  include added below the preamble).
 
 On a mismatch the cold bytes are written, never the warm ones. The reply
 reports `"verify":"mismatch"` and the changed sections, stderr says so, and
