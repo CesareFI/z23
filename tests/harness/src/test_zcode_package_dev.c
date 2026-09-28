@@ -6286,12 +6286,55 @@ static int zpd_run_shard(unsigned shard)
     return failures;
 }
 
+#if !defined(_WIN32)
+/* The registered shards below are already proven independent: each owns a
+ * disjoint slice of the row table, keys its own fixture paths by its own
+ * pid (test_fmt_tmpdir), and the shard table exists precisely so CI can run
+ * them as separate processes. Calling the umbrella by its bare name ran
+ * every shard back to back in one process, so its wall time was the SUM of
+ * all three instead of the MAX of one. Fork one child per shard here so
+ * `ONLY=test_zcode_package_dev` pays for the slowest shard, not all three
+ * in series; test_zcode_package_dev_shard_01..03 (used by any caller that
+ * already runs shards as separate processes) are untouched. */
+static int zpd_run_umbrella_parallel(void)
+{
+    /* Flush whatever this process already buffered on stdout/stderr before
+     * forking, so a prior group's unflushed output in a full run is not
+     * duplicated once per child. */
+    (void)fflush(NULL);
+    pid_t child[ZPD_SHARD_COUNT];
+    for (unsigned s = 0; s < ZPD_SHARD_COUNT; s++) {
+        child[s] = fork();
+        if (child[s] == 0) {
+            int rc = zpd_run_shard(s);
+            (void)fflush(NULL);
+            _exit(rc < 0 ? 1 : (rc > 125 ? 125 : rc));
+        }
+    }
+    int failures = 0;
+    for (unsigned s = 0; s < ZPD_SHARD_COUNT; s++) {
+        int status = 0;
+        if (child[s] < 0 || waitpid(child[s], &status, 0) != child[s] ||
+            !WIFEXITED(status)) {
+            failures++;
+            continue;
+        }
+        failures += WEXITSTATUS(status);
+    }
+    return failures;
+}
+#endif
+
 int test_zcode_package_dev(void)
 {
     const char *fork_role = getenv("ZCL_TEST_FORK_ROLE");
     if (fork_role && fork_role[0])
         return zpd_focus_worker_role(fork_role);
+#if defined(_WIN32)
     return zpd_run_shard(ZPD_ALL_SHARDS);
+#else
+    return zpd_run_umbrella_parallel();
+#endif
 }
 
 /* The registered shard groups, one per owner in the table above. */
