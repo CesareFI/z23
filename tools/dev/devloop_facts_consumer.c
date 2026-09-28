@@ -137,13 +137,13 @@ static void fxc_note_moved(struct fxc *c)
 
 static bool fxc_before_attested(const struct fxc *c)
 {
+    static const char want[] = ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT;
     uint8_t *text = NULL;
     size_t len = 0;
     bool ok = zcl_devloop_facts_read(c->root, c->facts_dir,
-                                     FXC_BEFORE_READERS_FILE, "", 256, &text,
-                                     &len) &&
-              len == strlen(FXC_BEFORE_READERS_TEXT) &&
-              memcmp(text, FXC_BEFORE_READERS_TEXT, len) == 0;
+                                     ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE, "",
+                                     256, &text, &len) &&
+              len == sizeof(want) - 1 && memcmp(text, want, len) == 0;
     free(text);
     return ok;
 }

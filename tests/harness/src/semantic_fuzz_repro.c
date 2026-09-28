@@ -894,39 +894,103 @@ static const struct sfz_file k_link_target_edit[] = {
 #define SFZ_FILES(a) a, sizeof(a) / sizeof((a)[0])
 
 /* F13, F14: a file that only a probe names is deleted, and the TU that
- * probed it compiles the other branch. The sensor records no lookup for
- * the probe: cm_scan_has_include (tools/sensors/clang_manifest_lookup.c)
- * text-scans only `__has_include` with a literal operand, skipping a macro
- * operand and __has_include_next, and nothing scans __has_embed. So no
- * manifest names the path, and clang's depfile names a probed file only
- * while it exists. The deleted path has no reader anywhere: the include
- * graph refuses it (include_input_missing,
- * cognition/modules/codeindex/src/codeindex_impact.c), fxc_cross_check
- * (tools/dev/devloop_facts_consumer.c) marks the plan incomplete
- * (include-graph-truncated) but, unlike fxc_build_inputs for a build
- * input, puts no candidate in scope, and the file-seeded fallback has no TU
- * for a .h, docs/ or .md path. Creating the file passes: the after
- * depfile lists what the probe found (pass_has_embed_created), and a
+ * probed it compiles the other branch; F15: the file such a probe names is
+ * created, and the depfiles are gcc's, as the dev compile's are (gcc's
+ * depfile omits __has_include probes). All five were known-RED until the
+ * consumer read the lookups that make no negative claim: the sensor
+ * records a probe it cannot replay (__has_embed, #embed, a macro operand
+ * it cannot expand, __has_include_next from a file whose search start it
+ * does not know) with no claim, and nothing then named the path. Now a TU
+ * with such a lookup is a member, affected whole (lookup-unbound), when the
+ * change creates or deletes any path, or changes any path for an embed
+ * (fxc_unbound_path, tools/dev/devloop_facts_tu.c); a macro operand and
+ * __has_include_next the sensor can resolve are replayed like a literal
+ * __has_include (revision 4); and the fuzz producer attests it sensed
+ * every before reader, so a deleted path's readers come from the before
+ * manifests instead of the depfile graph, which refuses a path the tree no
+ * longer holds (fxc_change_readers, tools/dev/devloop_facts_consumer.c).
+ * Creating the __has_embed file passes too (pass_has_embed_created), and a
  * data/ path is a build input (pass_has_embed_build_input). */
-#define SFZ_KR_PROBE_ONLY(what)                                              \
-    "the sensor recording each " what " probe as a lookup of the probed "     \
-    "path, or the consumer putting every candidate in scope when the "        \
-    "include graph cannot name a deleted path's readers"
-#define SFZ_KR_PROBE_WHY                                                     \
-    "src/t0.c object changed, planned unaffected (not in the universe)\n"
 
-/* F15: the file such a probe names is created, and the depfiles are gcc's,
- * as the dev compile's are. gcc's depfile omits __has_include probes, so
- * with no lookup record either (as F14) the created path has no reader;
- * it is a regular file, so the include graph answers "no readers" as
- * complete, and the plan narrows with t0 out of its universe. */
-#define SFZ_KR_PROBE_CREATED(what)                                           \
-    "the sensor recording each " what " probe as a lookup of the probed "     \
-    "path: gcc's depfile omits probes, so nothing names a created file only "  \
-    "such a probe finds"
-#define SFZ_KR_CREATED_WHY                                                   \
-    "src/t0.c object changed, planned unaffected (not in the universe)\n"     \
-    "src/t0.c t0_local tu-missed\n"
+/* #embed of a file the edit creates, behind __has_embed (gcc 14 has
+ * neither, so the depfiles are clang's). */
+#define SFZ_EMBED_T0(path)                                                   \
+    {"src/t0.c",                                                             \
+     "static const unsigned char t0_blob[] = {\n"                            \
+     "#if __has_embed(\"../" path "\")\n"                                    \
+     "#embed \"../" path "\"\n"                                              \
+     ",\n"                                                                   \
+     "#endif\n"                                                              \
+     "0};\n"                                                                 \
+     "int t0_blob_len(int x)\n"                                              \
+     "{\n"                                                                   \
+     "    return x + (int)sizeof(t0_blob);\n"                                \
+     "}\n",                                                                  \
+     SFZ_SAME}
+
+static const struct sfz_file k_embed_created[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"docs/blob.txt", NULL, "Z23\n"},
+    SFZ_EMBED_T0("docs/blob.txt"),
+    SFZ_T1_ALONE,
+};
+
+/* A literal __has_include(<opt.h>) finds inc2/opt.h; the edit creates
+ * inc1/opt.h, searched first, with another value: the probe's answer stays
+ * true, but the include it guards now reads the new file. */
+static const struct sfz_file k_has_include_shadow[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc2/opt.h", "#define OPT_V 5\n", SFZ_SAME},
+    {"inc1/opt.h", NULL, "#define OPT_V 9\n"},
+    {"src/t0.c",
+     "#if __has_include(<opt.h>)\n"
+     "#include <opt.h>\n"
+     "#else\n"
+     "#define OPT_V 0\n"
+     "#endif\n"
+     "int t0_opt(int x)\n"
+     "{\n"
+     "    return x + OPT_V;\n"
+     "}\n",
+     SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* The __has_embed is a header's, relative to the header's own dir. */
+static const struct sfz_file k_has_embed_header_deleted[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"docs/banner.txt", "Z23\n", NULL},
+    {"inc1/banner.h",
+     "#ifndef BANNER_H\n"
+     "#define BANNER_H\n"
+     "#if __has_embed(\"../docs/banner.txt\")\n"
+     "#define T0_BANNER 1\n"
+     "#else\n"
+     "#define T0_BANNER 0\n"
+     "#endif\n"
+     "#endif\n",
+     SFZ_SAME},
+    {"src/t0.c",
+     "#include \"banner.h\"\n"
+     "int t0_banner(int x)\n"
+     "{\n"
+     "    return x + T0_BANNER * 7;\n"
+     "}\n",
+     SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* The macro-operand probe resolves to inc2/cfg_local.h; the edit creates
+ * a path no search of it can reach. A replayed probe bounds the change:
+ * t0 stays unaffected (an unbound one would widen it on any created path). */
+static const struct sfz_file k_has_include_macro_elsewhere[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    SFZ_CFG_MACRO,
+    {"inc2/cfg_local.h", "/* site overrides */\n", SFZ_SAME},
+    {"docs/notes.txt", NULL, "notes\n"},
+    SFZ_CFG_T0,
+    SFZ_T1_ALONE,
+};
 
 /* ---- negative-lookup and ordering families ---------------------------------- */
 
@@ -1267,35 +1331,47 @@ const struct sfz_repro k_sfz_repros[] = {
      "one entry of a static const table inside t0_pick", false, NULL,
      SFZ_FILES(k_d6_function_static_table), NULL},
     {"F13_has_embed_deleted", "hasembed",
-     "docs/banner.txt, which only t0's __has_embed probes, is deleted", false,
-     SFZ_KR_PROBE_ONLY("__has_embed"), SFZ_FILES(k_f13_has_embed_deleted),
-     SFZ_KR_PROBE_WHY},
+     "docs/banner.txt, which only t0's __has_embed probes, is deleted (fixed: "
+     "an unbound lookup reaches a deleted path)",
+     false, NULL, SFZ_FILES(k_f13_has_embed_deleted), NULL, true, 0},
     {"pass_has_embed_created", "hasembed",
      "docs/banner.txt, which only t0's __has_embed probes, is created", false,
      NULL, SFZ_FILES(k_has_embed_created), NULL},
     {"pass_has_embed_build_input", "hasembed",
      "data/banner.bin, which only t0's __has_embed probes, is deleted", false,
      NULL, SFZ_FILES(k_has_embed_data_deleted), NULL},
+    {"pass_has_embed_header_deleted", "hasembed",
+     "docs/banner.txt, which only inc1/banner.h's __has_embed probes, is "
+     "deleted; t0 reads banner.h",
+     false, NULL, SFZ_FILES(k_has_embed_header_deleted), NULL, true, 0},
+    {"pass_embed_created", "hasembed",
+     "docs/blob.txt, which t0 #embeds behind __has_embed, is created", false,
+     NULL, SFZ_FILES(k_embed_created), NULL, true, 0},
     {"F14_has_include_macro", "hasinc_macro",
      "inc2/cfg_local.h, which cfg.h probes as __has_include(CFG_LOCAL), is "
-     "deleted",
-     false, SFZ_KR_PROBE_ONLY("macro-operand __has_include"),
-     SFZ_FILES(k_f14_has_include_macro), SFZ_KR_PROBE_WHY},
+     "deleted (fixed: the sensor replays the expanded operand)",
+     false, NULL, SFZ_FILES(k_f14_has_include_macro), NULL, true, 0},
     {"F14_has_include_next", "hasinc_macro",
      "inc2/cfg_local.h, which cfg.h probes with __has_include_next, is "
-     "deleted",
-     false, SFZ_KR_PROBE_ONLY("__has_include_next"),
-     SFZ_FILES(k_f14_has_include_next), SFZ_KR_PROBE_WHY},
+     "deleted (fixed: the sensor replays the search from cfg.h's slot on)",
+     false, NULL, SFZ_FILES(k_f14_has_include_next), NULL, true, 0},
     {"F15_has_include_macro_gcc_deps", "hasinc_macro",
      "inc2/cfg_local.h, which cfg.h probes as __has_include(CFG_LOCAL), is "
-     "created; gcc writes the depfiles",
-     true, SFZ_KR_PROBE_CREATED("macro-operand __has_include"),
-     SFZ_FILES(k_f15_has_include_macro), SFZ_KR_CREATED_WHY},
+     "created; gcc writes the depfiles (fixed as F14)",
+     true, NULL, SFZ_FILES(k_f15_has_include_macro), NULL, true, 0},
     {"F15_has_include_next_gcc_deps", "hasinc_macro",
      "inc2/cfg_local.h, which cfg.h probes with __has_include_next, is "
-     "created; gcc writes the depfiles",
-     true, SFZ_KR_PROBE_CREATED("__has_include_next"),
-     SFZ_FILES(k_f15_has_include_next), SFZ_KR_CREATED_WHY},
+     "created; gcc writes the depfiles (fixed as F14)",
+     true, NULL, SFZ_FILES(k_f15_has_include_next), NULL, true, 0},
+    {"pass_has_include_macro_elsewhere", "hasinc_macro",
+     "docs/notes.txt, which no search of cfg.h's __has_include(CFG_LOCAL) "
+     "can reach, is created: t0 stays unaffected",
+     false, NULL, SFZ_FILES(k_has_include_macro_elsewhere), NULL, true, 0},
+    {"pass_has_include_shadow_gcc_deps", "shadow",
+     "inc1/opt.h, searched before the inc2/opt.h t0's literal "
+     "__has_include(<opt.h>) finds, is created with another OPT_V; gcc "
+     "writes the depfiles",
+     true, NULL, SFZ_FILES(k_has_include_shadow), NULL, true, 0},
     {"pass_link_retarget", "symlink_retarget",
      "inc1/h.h, a link t0 includes, names hdr/b.h instead of hdr/a.h", false,
      NULL, SFZ_FILES(k_link_retarget), NULL},

@@ -80,6 +80,16 @@ bool zcl_devloop_facts_narrow(const char *root, const char *facts_dir,
 
 #define ZCL_DEVLOOP_FACTS_TU_MAX 4096
 
+/* The before-readers attestation: a facts producer writes
+ * <facts>/ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE, holding exactly
+ * ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT, once it has sensed the before side
+ * of every TU whose before-state depfile names a changed file. Those before
+ * manifests then answer which TUs read a deleted path, which the depfile
+ * graph of the tree being planned may no longer list. Without it a deleted
+ * path's readers stay unknown. */
+#define ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE ".zcl-before-readers"
+#define ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT "zcl.facts.before_readers.v1\n"
+
 /* One translation unit of the universe: the TUs whose manifests read a
  * changed file, and every TU the depfile graph says reads one. */
 struct zcl_devloop_facts_tu_verdict {

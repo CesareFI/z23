@@ -93,6 +93,10 @@
  * runs at once, every run bounded by its own deadline; a case whose
  * process has not reported after this is killed and is an ERROR. */
 #define SFZ_CASE_BUDGET_S 240
+/* The exact false negatives F13 reports with the unbound-lookup rule
+ * dropped (sfz_t_unbound_mutant). */
+#define SFZ_UNBOUND_MUTANT_WHY                                               \
+    "src/t0.c object changed, planned unaffected (not in the universe)\n"
 
 enum sfz_profile { PROF_ALL, PROF_NO_CTR_LINE, PROF_GCC_DEPS, PROF_COUNT };
 
@@ -728,6 +732,40 @@ static int sfz_t_assert_mutant(struct sfz_group *g)
     return failures;
 }
 
+/* ---- the unbound-lookup rule is load-bearing ------------------------------------- */
+
+/* F13 with the consumer's unbound-lookup rule dropped: t0's __has_embed
+ * makes no negative claim, so nothing names the deleted docs/banner.txt
+ * and t0, whose branch flips, must be missed, exactly. */
+static int sfz_t_unbound_mutant(struct sfz_group *g)
+{
+    int failures = 0;
+    const struct sfz_repro *base = NULL;
+    struct sfz_item it;
+    struct sfz_repro r;
+    size_t bad;
+    for (size_t k = 0; k < k_sfz_nrepros; k++)
+        if (strcmp(k_sfz_repros[k].name, "F13_has_embed_deleted") == 0)
+            base = &k_sfz_repros[k];
+    TEST_CASE("semantic_facts_fuzz: without the unbound-lookup rule the TU whose __has_embed a deleted file answers is missed") {
+        ASSERT(base != NULL && base->known_red == NULL);
+        memset(&it, 0, sizeof(it));
+        r = *base;
+        r.name = "F13_has_embed_deleted_mutant";
+        r.known_red = "the unbound-lookup rule returns (mutant NO_UNBOUND "
+                      "drops it)";
+        r.known_red_why = SFZ_UNBOUND_MUTANT_WHY;
+        r.over_pinned = false;
+        prep_repro(g, &r, NULL, &it);
+        ASSERT(it.run);
+        zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NO_UNBOUND;
+        bad = run_items(g, &it, 1);
+        zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NONE;
+        ASSERT_EQ(bad, (size_t)0);
+    } TEST_END
+    return failures;
+}
+
 /* ---- the seeds ------------------------------------------------------------------- */
 
 static unsigned profile_bits(enum sfz_profile p)
@@ -880,6 +918,7 @@ int test_semantic_facts_fuzz(void)
         failures += sfz_t_repros(g);
         failures += sfz_t_sdir_mutant(g);
         failures += sfz_t_assert_mutant(g);
+        failures += sfz_t_unbound_mutant(g);
         failures += sfz_t_seeds(g);
     }
     printf("semantic_facts_fuzz: mode=%s %zu cases (%zu fixed) in %.1f s: %zu pass, "

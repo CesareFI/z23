@@ -54,16 +54,8 @@ struct fxc {
     bool attested;              /* the facts directory holds the before
                                    manifest of every TU whose before-state
                                    depfile names a changed file
-                                   (FXC_BEFORE_READERS) */
+                                   (ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE) */
 };
-
-/* The marker a facts producer writes at <facts>/FXC_BEFORE_READERS_FILE,
- * holding exactly FXC_BEFORE_READERS_TEXT, once it has sensed the before
- * side of every TU whose before-state depfile names a changed file. It is
- * the before-state evidence for a deleted path, whose old readers the
- * depfile graph of the tree being planned may no longer list. */
-#define FXC_BEFORE_READERS_FILE ".zcl-before-readers"
-#define FXC_BEFORE_READERS_TEXT "zcl.facts.before_readers.v1\n"
 
 /* consumer.c */
 bool fxc_strs_add(struct fxc_strs *s, const char *v);
