@@ -1389,9 +1389,9 @@ A line names a path by its literal path or basename, a directory it lives
 under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
 and `%` in make's own text; in a recipe or a `$(shell)` argument `%` is
 shell text, as in `printf '%s'`). A glob also names a path under a root the
-text cannot expand, so `$(CURDIR)/tools/x.sh` names `tools/x.sh`. A
-variable with one path-like definition is expanded; any other reference
-matches anything.
+text cannot expand, so `$(CURDIR)/tools/tsan.supp` names
+`tools/tsan.supp`. A variable with one path-like definition is expanded;
+any other reference matches anything.
 
 **Reached rules.** A rule is reached when a target is not a literal
 `.PHONY` name (it builds a file: an object, a generated source or header, a

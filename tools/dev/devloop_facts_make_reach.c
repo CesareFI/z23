@@ -255,21 +255,13 @@ static bool fxm_ref_shelly(struct fxm *m, const char *name, size_t n)
     struct fxm_vname *v;
     return *name == '$' || (v = fxm_vname(m, name, n)) == NULL || v->shelly;
 }
-/* Mark every variable the computed name `at` starts with (up to its
- * operator) may spell; whether one was new. A name with a character a
- * reference cannot spell outside its references ('@', ';', a space) is
- * never read as plain text, so it marks nothing; one that spells no name
- * of its own ($($(X)) :=) marks every variable. */
-static bool fxm_shelly_glob(struct fxm *m, const char *at)
+
+/* at[0..n) spells a name a reference can read: every character outside its
+ * references is one a variable name holds ('@', ';' and a space are not). */
+static bool fxm_plain_spelling(const char *at, size_t n)
 {
-    char pat[FXM_NAME_MAX], spelled[FXM_NAME_MAX];
-    const char *op = fxm_top(at, ":+?!=");
-    size_t n = op == NULL ? 0 : (size_t)(op - at);
-    bool grew = false;
     int depth = 0;
-    while (n > 0 && fxm_space(at[n - 1]))
-        n--;
-    for (size_t k = 0; k < n && k + 1 < FXM_NAME_MAX; k++) {
+    for (size_t k = 0; k < n; k++) {
         if (at[k] == '$' && (at[k + 1] == '(' || at[k + 1] == '{'))
             depth++;
         else if (depth > 0)
@@ -277,9 +269,28 @@ static bool fxm_shelly_glob(struct fxm *m, const char *at)
         else if (!fxm_ident(at[k]))
             return false;
     }
-    memcpy(spelled, at, n < FXM_NAME_MAX ? n : 0);
-    spelled[n < FXM_NAME_MAX ? n : 0] = '\0';
-    m->shelly_any |= n == 0 || n >= FXM_NAME_MAX || !fxm_name_glob(spelled, pat);
+    return true;
+}
+
+/* Mark every variable the computed name `at` starts with (up to its
+ * operator) may spell; whether one was new. A name no reference can read
+ * marks nothing; one that spells no name of its own ($($(X)) :=), or too
+ * long a one, marks every variable. */
+static bool fxm_shelly_glob(struct fxm *m, const char *at)
+{
+    char pat[FXM_NAME_MAX], spelled[FXM_NAME_MAX];
+    const char *op = fxm_top(at, ":+?!=");
+    size_t n = op == NULL ? 0 : (size_t)(op - at);
+    bool grew = false;
+    while (n > 0 && fxm_space(at[n - 1]))
+        n--;
+    if (n >= FXM_NAME_MAX || !fxm_plain_spelling(at, n)) {
+        m->shelly_any |= n >= FXM_NAME_MAX;
+        return false;
+    }
+    memcpy(spelled, at, n);
+    spelled[n] = '\0';
+    m->shelly_any |= n == 0 || !fxm_name_glob(spelled, pat);
     for (size_t k = 0; !m->shelly_any && k < m->nvnames; k++)
         if (!m->vnames[k].shelly && fxm_glob(pat, m->vnames[k].name))
             m->vnames[k].shelly = grew = true;
@@ -372,26 +383,46 @@ static bool fxm_plain_ref(struct fxm *m, char *d, const char *e)
     return n > 0 && name == d + 2 && name + n == e && fxm_plain_name(m, name, n);
 }
 
-/* The end of the shell command at p: the first ';', '&' or '|' outside
- * quotes, references and redirections; NULL when one does not close. */
+/* The last character of the unit at p that a shell quote or separator
+ * cannot split: a '$$', a make reference, or a character a backslash
+ * escapes; p itself for any other. NULL for a reference that does not
+ * close. */
+static char *fxm_unit_end(char *p, char quote)
+{
+    if (p[0] == '$' && p[1] == '$')
+        return p + 1;
+    if (p[0] == '$' && (p[1] == '(' || p[1] == '{'))
+        return fxm_ref_end(p);
+    if (p[0] == '\\' && quote != '\'' && p[1] != '\0')
+        return p + 1;
+    return p;
+}
+
+/* p (after s) separates two shell commands: ';', '&' or '|', but not the
+ * '&' of a redirection (>&2, <&0, &>). */
+static bool fxm_separator(const char *s, const char *p)
+{
+    if (*p == '&' && (p[1] == '>' || (p > s && (p[-1] == '<' || p[-1] == '>'))))
+        return false;
+    return *p == ';' || *p == '&' || *p == '|';
+}
+
+/* The end of the shell command at p: the first separator outside quotes
+ * and references; NULL when one does not close. */
 static char *fxm_command_end(char *p)
 {
     char quote = '\0';
     for (const char *s = p; *p != '\0'; p++) {
-        if (p[0] == '$' && p[1] == '$')
-            p++;
-        else if (p[0] == '$' && (p[1] == '(' || p[1] == '{')) {
-            if ((p = fxm_ref_end(p)) == NULL)
-                return NULL;
-        } else if (*p == '\\' && quote != '\'' && p[1] != '\0')
-            p++;
+        char *u = fxm_unit_end(p, quote);
+        if (u == NULL)
+            return NULL;
+        if (u != p)
+            p = u;
         else if (quote != '\0')
             quote = *p == quote ? '\0' : quote;
         else if (*p == '\'' || *p == '"')
             quote = *p;
-        else if (*p == '&' && (p[1] == '>' || (p > s && (p[-1] == '<' || p[-1] == '>'))))
-            continue;
-        else if (*p == ';' || *p == '&' || *p == '|')
+        else if (fxm_separator(s, p))
             return p;
     }
     return quote == '\0' ? p : NULL;
@@ -423,29 +454,38 @@ static char *fxm_command_word(char *p, const char *e)
     return p;
 }
 
-/* p..e is one echo or printf that runs nothing: no command substitution,
- * no redirection but to a descriptor or /dev/null, only plain references. */
+/* The '$' at p in an echo's arguments p..e: the last character of an
+ * escaped '$' or a plain reference; NULL for a command substitution or any
+ * other reference. */
+static char *fxm_quiet_dollar(struct fxm *m, char *p, const char *e)
+{
+    char *r;
+    if (p[1] == '$')
+        return p[2] == '(' || p[2] == '{' ? NULL : p + 1;
+    r = p[1] == '(' || p[1] == '{' ? fxm_ref_end(p) : p + 1;
+    return r != NULL && r < e && fxm_plain_ref(m, p, r) ? r : NULL;
+}
+
+/* p..e, an echo's or printf's arguments, runs nothing: no command
+ * substitution, no redirection but to a descriptor or /dev/null, and only
+ * plain references. */
+static bool fxm_quiet_args(struct fxm *m, char *p, const char *e)
+{
+    for (; p < e; p++) {
+        if (*p == '$' && (p = fxm_quiet_dollar(m, p, e)) == NULL)
+            return false;
+        if (*p == '`' || *p == '<' || (*p == '>' && !fxm_quiet_redirect(p + 1)))
+            return false;
+    }
+    return true;
+}
+
+/* p..e is one echo or printf that runs nothing. */
 static bool fxm_prints_only(struct fxm *m, char *p, const char *e)
 {
     p = fxm_command_word(p, e);
-    if (!fxm_starts_word(p, "echo") && !fxm_starts_word(p, "printf"))
-        return false;
-    for (char *r; p < e; p++) {
-        if (p[0] == '$' && p[1] == '$') {
-            if (p[2] == '(' || p[2] == '{')
-                return false;
-            p++;
-        } else if (p[0] == '$') {
-            r = p[1] == '(' || p[1] == '{' ? fxm_ref_end(p) : p + 1;
-            if (r == NULL || r >= e || !fxm_plain_ref(m, p, r))
-                return false;
-            p = r;
-        } else if (*p == '`' || *p == '<' ||
-                   (*p == '>' && !fxm_quiet_redirect(p + 1))) {
-            return false;
-        }
-    }
-    return true;
+    return (fxm_starts_word(p, "echo") || fxm_starts_word(p, "printf")) &&
+           fxm_quiet_args(m, p, e);
 }
 
 /* Blank in a recipe line each command that only prints: what it prints is
@@ -489,66 +529,83 @@ static bool fxm_running_call(const char *name)
     return false;
 }
 
+static void fxm_quiet_value(struct fxm *m, char *p, char *e, int depth);
+
+/* Blank the reference at p (in p..e) unless it runs something as it is
+ * expanded: a reference to a variable that may run make and a call that
+ * runs something stay whole; any other call is blanked around its
+ * arguments, which are blanked the same way. Past it; NULL to stop. */
+static char *fxm_quiet_ref(struct fxm *m, char *p, char *e, int depth)
+{
+    char *r, *q;
+    if (fxm_ident(p[1])) {
+        if (!fxm_is_maker(m, p + 1, 1))
+            memset(p, ' ', 2);
+        return p + 2;
+    }
+    if ((r = fxm_ref_end(p)) == NULL || r >= e)
+        return NULL;
+    for (q = p + 2; fxm_ident(*q); q++)
+        ;
+    if (q == r && !fxm_is_maker(m, p + 2, (size_t)(q - p - 2))) {
+        memset(p, ' ', (size_t)(r + 1 - p));
+    } else if (q > p + 2 && fxm_space(*q) && !fxm_running_call(p + 2)) {
+        memset(p, ' ', (size_t)(q - p));
+        *r = ' ';
+        fxm_quiet_value(m, q, r, depth + 1);
+    }
+    return r + 1;
+}
+
 /* Blank p..e, text whose value is only tested or printed, but for what
- * runs as it is expanded: a reference to a variable that may run make and
- * a call that runs something stay whole; any other call is blanked around
- * its arguments, which are blanked the same way. Text holding '$$' (a
- * reference a later expansion makes) stays as it is. */
+ * runs as it is expanded (fxm_quiet_ref). Text holding '$$' (a reference
+ * a later expansion makes) stays as it is from there on. */
 static void fxm_quiet_value(struct fxm *m, char *p, char *e, int depth)
 {
-    for (char *r, *q; p < e && depth < FXM_ROUNDS;) {
+    while (p != NULL && p < e && depth < FXM_ROUNDS) {
         if (p[0] == '$' && p[1] == '$')
             return;
-        if (p[0] == '$' && fxm_ident(p[1])) {
-            p += fxm_is_maker(m, p + 1, 1) ? 2 : 0;
-            if (p[0] == '$')
-                memset(p, ' ', 2), p += 2;
-            continue;
-        }
-        if (p[0] != '$' || (p[1] != '(' && p[1] != '{')) {
+        if (p[0] == '$' && (fxm_ident(p[1]) || p[1] == '(' || p[1] == '{'))
+            p = fxm_quiet_ref(m, p, e, depth);
+        else
             *p++ = ' ';
-            continue;
-        }
-        if ((r = fxm_ref_end(p)) == NULL || r >= e)
-            return;
-        for (q = p + 2; fxm_ident(*q); q++)
-            ;
-        if (q == r && !fxm_is_maker(m, p + 2, (size_t)(q - p - 2))) {
-            memset(p, ' ', (size_t)(r + 1 - p));
-        } else if (q > p + 2 && fxm_space(*q) && !fxm_running_call(p + 2)) {
-            memset(p, ' ', (size_t)(q - p));
-            *r = ' ';
-            fxm_quiet_value(m, q, r, depth + 1);
-        }
-        p = r + 1;
     }
 }
 
-/* Blank what a call can never put in its value: $(if)'s condition,
- * $(foreach)'s variable name, $(filter)'s and $(filter-out)'s patterns,
- * and all of $(error), $(info), $(warning), $(origin) and $(flavor), but
- * for what runs as it is expanded. A word there cannot become a
- * prerequisite or a goal. */
-static void fxm_blank(struct fxm *m, char *s)
+/* How much of the call at d is only tested or printed: 1 its first
+ * argument ($(if)'s condition, $(foreach)'s variable name, $(filter)'s and
+ * $(filter-out)'s patterns), 2 all of it ($(error), $(info), $(warning),
+ * $(origin), $(flavor)), 0 none. */
+static int fxm_quiet_call(const char *d)
 {
     static const char *const first[] = {"if", "filter", "filter-out", "foreach"};
     static const char *const whole[] = {"error", "info", "warning", "origin",
                                         "flavor"};
+    if (d[1] != '(' && d[1] != '{')
+        return 0;
+    for (size_t k = 0; k < sizeof(whole) / sizeof(whole[0]); k++)
+        if (fxm_starts_word(d + 2, whole[k]) && d[2 + strlen(whole[k])] != '(')
+            return 2;
+    for (size_t k = 0; k < sizeof(first) / sizeof(first[0]); k++)
+        if (fxm_starts_word(d + 2, first[k]) && d[2 + strlen(first[k])] != '(')
+            return 1;
+    return 0;
+}
+
+/* Blank what a call can never put in its value (fxm_quiet_call), but for
+ * what runs as it is expanded. A word there cannot become a prerequisite
+ * or a goal. */
+static void fxm_blank(struct fxm *m, char *s)
+{
     for (char *d = strchr(s, '$'); d != NULL; d = strchr(d + 1, '$')) {
+        int quiet = fxm_quiet_call(d);
         char close = d[1] == '(' ? ')' : '}', *a, *e;
-        bool one = false, all = false;
-        if (d[1] != '(' && d[1] != '{')
-            continue;
-        for (size_t k = 0; k < sizeof(first) / sizeof(first[0]); k++)
-            one |= fxm_starts_word(d + 2, first[k]) && d[2 + strlen(first[k])] != '(';
-        for (size_t k = 0; k < sizeof(whole) / sizeof(whole[0]); k++)
-            all |= fxm_starts_word(d + 2, whole[k]) && d[2 + strlen(whole[k])] != '(';
-        if (!one && !all)
+        if (quiet == 0)
             continue;
         for (a = d + 2; *a != '\0' && !fxm_space(*a); a++)
             ;
         e = fxm_arg_end(a, close);
-        while (all && e != NULL && *e == ',')
+        while (quiet == 2 && e != NULL && *e == ',')
             e = fxm_arg_end(e + 1, close);
         if (e != NULL)
             fxm_quiet_value(m, a, e, 0);
