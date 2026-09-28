@@ -58,9 +58,11 @@ does the following:
   `zcl_devloop_plan_proof_admissible`, with families expanded via
   `zcl_test_group_family_expand`. A universal or refused plan becomes the
   whole host-admitted catalog.
-- The reference is the full landing proof: all 213 lint gates plus every
-  host-admitted test group. `check-windows-cross-syntax` is counted at full
-  cost, and lint premise selection is out of scope.
+- The reference is the full landing proof: every lint gate (`make lint`;
+  count tracked live in the `<!-- LINT-GATES-BEGIN/END -->` block of
+  `docs/DEFENSIVE_CODING.md`, not re-pinned here) plus every host-admitted
+  test group. `check-windows-cross-syntax` is counted at full cost, and
+  lint premise selection is out of scope.
 - It builds a proof dependency graph that is kept apart from build
   dependencies. The graph has three layers:
   - CONTRACT: the groups the changed files name through the impact rules;
@@ -138,8 +140,9 @@ the impact rules attach to every C change: about 328 s per candidate. Lint
 premise selection is out of scope here; `check-windows-cross-syntax` is
 being made reusable in a separate lane and is counted at full cost.
 
-Per entry. Obligations are 213 lint gates plus 1193 host-admitted test
-groups; seconds are per candidate:
+Per entry. Obligations are every lint gate (count tracked live in
+`docs/DEFENSIVE_CODING.md`'s `<!-- LINT-GATES-BEGIN/END -->` block) plus
+1193 host-admitted test groups; seconds are per candidate:
 
 | entry | kind | contract | fallback | predict | fresh / total | rule s | selector s | reference s | savings (rule) | critical path s (rule / reference) | name-only s |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -177,7 +180,7 @@ groups; seconds are per candidate:
 Measured 2026-09-25 on the host above, on `lane/muse-shadow-reuse90-20260925`
 from `e1cbb7fe4a`. The report comes from the same test group; that run was a
 PASS with 0 skipped. The catalog now has 1194 host-admitted groups (1407
-obligations with the 213 lint gates). **Everything here is a shadow
+obligations counting that run's lint gates). **Everything here is a shadow
 prediction.** Every lint gate and every selected group still runs in the
 landing proof. Eligible reuse stays 0 until verdicts come from a separate
 uid (see "Measured numbers").
@@ -187,7 +190,8 @@ uid (see "Measured numbers").
 Each obligation the rule predicts fresh falls in exactly one class
 (`SHADOW-CLASS` and `SHADOW-CLASS-TOTAL` lines):
 
-- **lint**: the 213 lint gates;
+- **lint**: every lint gate (count tracked live in `docs/DEFENSIVE_CODING.md`'s
+  `<!-- LINT-GATES-BEGIN/END -->` block, not re-pinned here);
 - **floor**: the 13-group `make_lint_gates` family. The impact rules attach
   it to almost every change, and any path no rule maps falls back to it;
 - **direct**: the rest of the contract layer, meaning the groups the
@@ -770,7 +774,9 @@ No, with one exception that needs machinery that does not exist yet.
 
 ### Per entry
 
-Obligations are 213 lint gates plus 1194 groups. Seconds are per candidate,
+Obligations are every lint gate (count tracked live in
+`docs/DEFENSIVE_CODING.md`'s `<!-- LINT-GATES-BEGIN/END -->` block) plus
+1194 groups. Seconds are per candidate,
 at the lane-head reference of 6391.9 s. The class columns split the rule's
 fresh seconds; the premise columns price the seven declared gates.
 
@@ -844,7 +850,7 @@ marks the unit's own contract obligations. `contract_additive` marks a
 contract that grew, so the selector's callers and integration edges are
 kept. None of these groups is carried as eligible today (see above).
 
-Every entry: all 213 lint gates are predicted fresh (reason:
+Every entry: all lint gates are predicted fresh (reason:
 source-sensitive, changed source always reruns).
 
 Entries predicted ALL run the whole host-admitted catalog of 1193 groups,

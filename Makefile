@@ -13020,6 +13020,33 @@ check-toolchain:
 	@./tools/dev/check-toolchain.sh --selftest
 	@./tools/dev/check-toolchain.sh
 
+# Pins the devloop link-latency cut (2026-09-28): when the host has no mold
+# or lld, tools/dev/dev-linker-select.sh falls back to gold, which links
+# single-threaded unless asked. gold's --threads is a link-time-only
+# scheduling knob (no output-byte effect); dropping it silently would put
+# every test_parallel_fast / z23-dev incremental link back to single-thread
+# gold with no lint signal. mold/lld already parallelize internally, so this
+# only asserts the gold branch. Confinement: ZCL_DEV_LINKER (and therefore
+# this flag) feeds TEST_FAST_LDFLAGS/TEST_REL_LDFLAGS/DEV_LDFLAGS only --
+# $(LDFLAGS) itself (what $(ZCLASSIC23_BIN), the release/LTO link, uses)
+# must never carry it.
+check-dev-linker-threads:
+	@echo "══ LINT: dev/test linker keeps gold multi-threaded, release stays plain ══"
+	@sel="$$(tools/dev/dev-linker-select.sh)"; \
+	case "$$sel" in \
+	  *fuse-ld=gold*) \
+	    case "$$sel" in \
+	      *--thread-count=*) ;; \
+	      *) echo "check-dev-linker-threads: REFUSE: gold selected ('$$sel') without --thread-count" >&2; exit 1 ;; \
+	    esac ;; \
+	  *fuse-ld=mold*|*fuse-ld=lld*|"") ;; \
+	  *) echo "check-dev-linker-threads: REFUSE: unrecognized dev linker selection '$$sel'" >&2; exit 1 ;; \
+	esac; \
+	case "$$(printf '%s' '$(LDFLAGS)')" in \
+	  *thread-count*) echo "check-dev-linker-threads: REFUSE: release LDFLAGS must not carry the dev-only gold thread flag" >&2; exit 1 ;; \
+	  *) ;; \
+	esac
+
 # No Python source, shebang, or runtime invocation in the executable tree.
 # Historical vector comments may name a Python origin; they must not call it.
 check-no-python: $(LINTC_TOOL)
@@ -14561,7 +14588,8 @@ LINT_GATES := \
     check-no-operator-paths \
     check-no-unattended-publish \
     check-tor-dial-prewarm \
-    check-fleet-source-status
+    check-fleet-source-status \
+    check-dev-linker-threads
 
 # The driver execs gate scripts directly, so every gate backed by a built tool
 # (check-core-seal, check-observability-pairing, the package root projection

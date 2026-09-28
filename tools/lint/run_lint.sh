@@ -113,6 +113,7 @@ gate_command() {
         check-lint-cache)                  echo './tools/lint/lint_cache_selftest.sh' ;;
         check-lint-gate-wiring)            echo './tools/lint/check_lint_gate_wiring.sh --selftest && ./tools/lint/check_lint_gate_wiring.sh' ;;
         check-toolchain)                   echo './tools/dev/check-toolchain.sh --selftest && ./tools/dev/check-toolchain.sh' ;;
+        check-dev-linker-threads)          echo 'make check-dev-linker-threads' ;;
         check-fuzz-artifact-ledger)        echo './tools/lint/check_fuzz_artifact_replay.sh --ledger-only' ;;
         check-no-retired-agent-protocol)   echo './tools/lint/check_no_retired_agent_protocol.sh' ;;
         check-build-epoch-integrity)       echo 'tools/dev/build-epoch-integrity-cached.sh' ;;

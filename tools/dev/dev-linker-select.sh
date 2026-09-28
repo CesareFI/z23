@@ -31,5 +31,12 @@ if probe_fuse_ld mold; then
 elif probe_fuse_ld lld; then
     printf '%s' '-fuse-ld=lld'
 elif probe_fuse_ld gold; then
-    printf '%s' '-fuse-ld=gold'
+    # gold defaults to --no-threads; mold and lld parallelize internally
+    # with no flag needed, but gold's monolithic test_parallel_fast /
+    # z23-dev links (hundreds of objects, one shot, every edit) pay for
+    # single-threaded symbol resolution on every dev-loop link unless
+    # asked. --thread-count matches the devbuild scheduler's per-lane CPU
+    # share (28 logical CPUs / 3 z23 lanes), not the host's full core
+    # count, so a link never bids for CPU another lane already holds.
+    printf '%s' '-fuse-ld=gold -Wl,--threads -Wl,--thread-count=9'
 fi
