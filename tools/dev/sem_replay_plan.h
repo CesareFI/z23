@@ -12,6 +12,7 @@ struct sr_plan {
     bool ok;
     long groups_total;      /* execution_groups_total */
     char selector[32];      /* execution_selector */
+    bool closure_universal; /* the whole catalog is in scope */
     struct sr_strv groups;  /* execution_groups (may be abridged) */
     /* the facts object */
     bool has_facts, narrowed;

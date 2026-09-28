@@ -128,6 +128,10 @@ static void on_verdict(struct sr_plan *p, const char *path, const char *v)
 
 static void on_plain(struct sr_plan *p, const char *path, const char *v)
 {
+    if (strncmp(path, "data.", 5) == 0)
+        path += 5;
+    if (strcmp(path, "closure_universal") == 0)
+        p->closure_universal = strcmp(v, "true") == 0;
     if (strcmp(path, "execution_groups_total") == 0)
         p->groups_total = to_long(v);
     else if (strcmp(path, "execution_selector") == 0)

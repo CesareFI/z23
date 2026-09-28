@@ -618,7 +618,7 @@ static bool facts_compile_set(struct commit_run *r)
         r->facts_mode = "precise";
         return set_filter(&f->tus_affected, &r->tus_c, false, &r->facts);
     }
-    if (f->obl_plain_universal) {
+    if (f->obl_plain_universal || f->closure_universal) {
         r->facts_mode = "universal";
         return set_union(&r->tus_c, &r->tus_c, &r->facts);
     }

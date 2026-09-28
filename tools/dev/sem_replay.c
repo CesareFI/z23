@@ -7,6 +7,7 @@
  *
  *   z23-sem-replay run    --repo R --state S --sensor X --planner Y
  *                         --commits FILE [--jobs N] [--devbuild PATH]
+ *                         [--max-steps N]
  *   z23-sem-replay step   ... --index I --commit C
  *   z23-sem-replay repro  --repo R --state S [--label L] [--jobs N]
  *   z23-sem-replay report --state S
@@ -32,7 +33,8 @@ static int usage(void)
     fprintf(stderr,
             "usage: z23-sem-replay run|step|repro|report --repo DIR --state DIR\n"
             "       [--sensor BIN] [--planner BIN] [--commits FILE] [--jobs N]\n"
-            "       [--devbuild BIN] [--index N] [--commit SHA] [--label NAME]\n");
+            "       [--devbuild BIN] [--index N] [--commit SHA] [--label NAME]\n"
+            "       [--max-steps N]\n");
     return 2;
 }
 
@@ -40,6 +42,7 @@ struct opts {
     struct sr_cfg cfg;
     char commits[SR_PATH];
     char label[64];
+    int max_steps; /* 0: every remaining step */
 };
 
 static bool abs_path(const char *in, char out[SR_PATH])
@@ -74,6 +77,8 @@ static bool opt_value(struct opts *o, const char *key, const char *v)
         return (c->index = atoi(v)) >= 0;
     if (strcmp(key, "--commit") == 0)
         return snprintf(c->commit, sizeof(c->commit), "%s", v) > 0;
+    if (strcmp(key, "--max-steps") == 0)
+        return (o->max_steps = atoi(v)) > 0;
     if (strcmp(key, "--label") == 0)
         return snprintf(o->label, sizeof(o->label), "%s", v) > 0;
     fprintf(stderr, "sem-replay: unknown option %s\n", key);
@@ -126,14 +131,16 @@ static int run_all(const struct opts *o)
         fprintf(stderr, "sem-replay: cannot read %s\n", o->commits);
         return 2;
     }
-    int rc = 0, index = 0;
-    for (char *line = strtok(text, "\n"); line && rc == 0; line = strtok(NULL, "\n")) {
+    int rc = 0, index = 0, ran = 0;
+    for (char *line = strtok(text, "\n"); line && rc == 0 && (o->max_steps == 0 || ran < o->max_steps);
+         line = strtok(NULL, "\n")) {
         index++;
         line[strcspn(line, " \t\r")] = '\0';
         if (line[0] == '\0' || line[0] == '#' || step_done(&o->cfg, index, line))
             continue;
         fprintf(stderr, "sem-replay: step %d %s\n", index, line);
         rc = spawn_step(&o->cfg, index, line);
+        ran++;
     }
     free(text);
     if (rc == SR_STEP_FALSE_NEGATIVE)
