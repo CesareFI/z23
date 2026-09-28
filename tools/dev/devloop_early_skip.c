@@ -179,6 +179,31 @@ static void es_sha3_line(struct sha3_256_ctx *ctx, const char *label,
     sha3_256_write(ctx, (const unsigned char *)"\n", 1);
 }
 
+/* Drop the last segment of out[base, *o). False when there is none. */
+static bool es_path_up(char out[ES_PATH_MAX], size_t base, size_t *o)
+{
+    if (*o <= base)
+        return false;
+    while (*o > base && out[*o - 1] != '/')
+        (*o)--;
+    if (*o > base)
+        (*o)--;
+    return true;
+}
+
+/* Append one `len`-byte segment. False when it does not fit. */
+static bool es_path_push(char out[ES_PATH_MAX], size_t base, size_t *o,
+                         const char *seg, size_t len)
+{
+    if (*o + len + 2 >= ES_PATH_MAX)
+        return false;
+    if (*o > base)
+        out[(*o)++] = '/';
+    memcpy(out + *o, seg, len);
+    *o += len;
+    return true;
+}
+
 /* `dir`/`name` with "." and ".." folded. False when it would climb above
  * its start, is empty, or does not fit. */
 static bool es_path_fold(const char *in, char out[ES_PATH_MAX])
@@ -186,25 +211,14 @@ static bool es_path_fold(const char *in, char out[ES_PATH_MAX])
     size_t base = in[0] == '/' ? 1 : 0, o = base;
     out[0] = '/';
     for (const char *p = in; *p;) {
-        while (*p == '/')
-            p++;
+        p += strspn(p, "/");
         size_t len = strcspn(p, "/");
         bool dot = len == 1 && p[0] == '.';
         bool up = len == 2 && p[0] == '.' && p[1] == '.';
-        if (up && o <= base)
+        bool ok = up ? es_path_up(out, base, &o)
+                : len && !dot ? es_path_push(out, base, &o, p, len) : true;
+        if (!ok)
             return false;
-        while (up && o > base && out[o - 1] != '/')
-            o--;
-        if (up && o > base)
-            o--;
-        if (len && !dot && !up) {
-            if (o + len + 2 >= ES_PATH_MAX)
-                return false;
-            if (o > base)
-                out[o++] = '/';
-            memcpy(out + o, p, len);
-            o += len;
-        }
         p += len;
     }
     out[o] = '\0';

@@ -452,15 +452,22 @@ static uint32_t early_join_rows(const struct zcl_devloop_early_skip *s,
 /* Verify mode: the skipped groups run anyway, uncached, in their own
  * process. Every failure there is a false narrow: a skip that would have
  * hidden it. Their records are dropped. */
+static bool early_verify_clean(const struct zcl_devloop_process_result *p,
+                               uint32_t failed, uint32_t groups_ran,
+                               uint32_t groups)
+{
+    return failed == 0 && p->exit_code == 0 && !p->timed_out &&
+           !p->term_signal && groups_ran == groups;
+}
+
 static void early_verify_judge(const struct zcl_devloop_process_result *p,
                                bool ran, struct zcl_devloop_early_skip *s)
 {
     uint32_t failed = 0, groups_ran = 0;
     bool summary = ran && early_summary(p->output, "groups_failed=", &failed) &&
                    early_summary(p->output, "groups_ran=", &groups_ran);
-    bool clean = summary && failed == 0 && p->exit_code == 0 &&
-                 !p->timed_out && !p->term_signal &&
-                 groups_ran == s->verify_groups;
+    bool clean = summary &&
+                 early_verify_clean(p, failed, groups_ran, s->verify_groups);
     s->verify_status = p->cancelled ? "cancelled" : clean ? "green"
                      : summary && failed == 0 ? "incomplete" : "red";
     /* A runner that died without a summary attributes nothing: every
