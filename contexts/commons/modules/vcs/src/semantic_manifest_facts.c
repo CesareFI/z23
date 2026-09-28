@@ -143,7 +143,8 @@ bool vcs_semantic_facts_v1_info(const uint8_t *bytes, size_t len,
         return false;
     memcpy(out->namespace_root, digest, 32);
     out->present = true;
-    out->revision = sf_name_is(text, text_len, VCS_SEMANTIC_FACTS_V3_NAME)   ? 3
+    out->revision = sf_name_is(text, text_len, VCS_SEMANTIC_FACTS_V4_NAME)   ? 4
+                    : sf_name_is(text, text_len, VCS_SEMANTIC_FACTS_V3_NAME) ? 3
                     : sf_name_is(text, text_len, VCS_SEMANTIC_FACTS_V2_NAME) ? 2
                                                                              : 1;
     return vcs_semantic_section_v1_each(bytes, len, VCS_SEMANTIC_SECTION_V1_FACTS,

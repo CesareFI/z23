@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* A reader-side model of one TU's manifest (facts revision 1, 2 or 3). Every
+/* A reader-side model of one TU's manifest (facts revision 1 to 4). Every
  * record that belongs to an entity is attached to its canonical id:
  *   MACROS    m:<path>:<name>, and the name group m:<name> (every
  *             definition of that name the TU saw);

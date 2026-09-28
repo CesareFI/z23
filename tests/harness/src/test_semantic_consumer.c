@@ -201,17 +201,17 @@ static int sct_t_missing(const struct sct_fixtures *f, struct scx_result *res)
  * static_assert. NULL when the name is not there once. */
 static uint8_t *sct_revision2(const uint8_t *m, size_t n)
 {
-    static const char v3[] = VCS_SEMANTIC_FACTS_V3_NAME;
-    const size_t len = sizeof(v3) - 1;
+    static const char cur[] = VCS_SEMANTIC_FACTS_V4_NAME;
+    const size_t len = sizeof(cur) - 1;
     uint8_t *out = zcl_malloc(n + 1, "sct.rev2");
     size_t hits = 0;
     if (out == NULL)
         return NULL;
     memcpy(out, m, n);
-    static_assert(sizeof(VCS_SEMANTIC_FACTS_V2_NAME) == sizeof(v3),
+    static_assert(sizeof(VCS_SEMANTIC_FACTS_V2_NAME) == sizeof(cur),
                   "the revision names differ only in their digit");
     for (size_t k = 0; k + len <= n; k++) {
-        if (memcmp(out + k, v3, len) != 0)
+        if (memcmp(out + k, cur, len) != 0)
             continue;
         memcpy(out + k, VCS_SEMANTIC_FACTS_V2_NAME, len);
         hits++;

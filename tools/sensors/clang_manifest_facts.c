@@ -234,7 +234,7 @@ bool cm_emit_facts(struct cm_core *c, uint32_t max_records,
         /* This producer writes the @scope, @cond and @assert sites
          * (records.c, cond.c, ast.c) and names anonymous members' records
          * (ast.c). */
-        .revision = 3,
+        .revision = 4,
     };
     if (!c->facts)
         return true;

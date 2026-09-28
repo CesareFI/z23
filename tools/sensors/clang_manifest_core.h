@@ -96,6 +96,16 @@ struct cm_occurrence {
     char *detail;
 };
 
+/* How a directive entered a file (cm_lookup_directive): the combined search
+ * index (quote dirs, then angled dirs) of the slot it was found in, or one
+ * of the two marks below. A file entered several ways has one per way. */
+#define CM_ENTRY_NORMAL UINT32_MAX
+#define CM_ENTRY_UNKNOWN (UINT32_MAX - 1u)
+struct cm_entry {
+    const struct cm_file *file;
+    uint32_t slot;
+};
+
 struct cm_core {
     char root[PATH_MAX];
     size_t root_len;
@@ -114,6 +124,8 @@ struct cm_core {
     size_t nfns, capfns;
     struct cm_assert *asserts;
     size_t nasserts, capasserts;
+    struct cm_entry *entries;
+    size_t nentries, capentries;
     struct vcs_semantic_builder_v1 *b;
     /* facts extension */
     bool facts;

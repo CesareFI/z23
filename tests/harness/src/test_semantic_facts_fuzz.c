@@ -96,7 +96,8 @@
 /* The exact false negatives F13 reports with the unbound-lookup rule
  * dropped (sfz_t_unbound_mutant). */
 #define SFZ_UNBOUND_MUTANT_WHY                                               \
-    "src/t0.c object changed, planned unaffected (not in the universe)\n"
+    "src/t0.c object changed, planned unaffected (not in the universe)\n"     \
+    "src/t0.c t0_banner tu-missed\n"
 
 enum sfz_profile { PROF_ALL, PROF_NO_CTR_LINE, PROF_GCC_DEPS, PROF_COUNT };
 

@@ -724,15 +724,15 @@ static bool smt_revision_manifest(uint8_t revision, uint8_t **out, size_t *len)
     return ok;
 }
 
-/* Revisions 2 and 3 name zcl.semantic_facts.v2 and .v3 and the reader
- * reports each; revision 0 and 1 both write v1; a revision past 3 is
- * refused. */
+/* Revisions 2, 3 and 4 name zcl.semantic_facts.v2, .v3 and .v4 and the
+ * reader reports each; revision 0 and 1 both write v1; a revision past 4
+ * is refused. */
 static int smt_t_facts_revision(void)
 {
     int failures = 0;
-    TEST_CASE("semantic_manifest: facts revisions 2 and 3 are named, validated and read back") {
-        uint8_t revs[] = {0, 1, 2, 3};
-        uint8_t want[] = {1, 1, 2, 3};
+    TEST_CASE("semantic_manifest: facts revisions 2 to 4 are named, validated and read back") {
+        uint8_t revs[] = {0, 1, 2, 3, 4};
+        uint8_t want[] = {1, 1, 2, 3, 4};
         uint8_t *m = NULL;
         size_t n = 0;
         for (size_t k = 0; k < sizeof(revs); k++) {
@@ -742,13 +742,14 @@ static int smt_t_facts_revision(void)
             ASSERT(vcs_semantic_facts_v1_info(m, n, &info));
             ASSERT(info.present);
             ASSERT_EQ(info.revision, want[k]);
-            ASSERT(smt_has_bytes(m, n, want[k] == 3   ? VCS_SEMANTIC_FACTS_V3_NAME
+            ASSERT(smt_has_bytes(m, n, want[k] == 4   ? VCS_SEMANTIC_FACTS_V4_NAME
+                                       : want[k] == 3 ? VCS_SEMANTIC_FACTS_V3_NAME
                                        : want[k] == 2 ? VCS_SEMANTIC_FACTS_V2_NAME
                                                       : VCS_SEMANTIC_FACTS_V1_NAME));
             free(m);
             m = NULL;
         }
-        ASSERT(!smt_revision_manifest(4, &m, &n));
+        ASSERT(!smt_revision_manifest(5, &m, &n));
         free(m);
     } TEST_END
     return failures;

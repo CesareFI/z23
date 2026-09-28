@@ -38,7 +38,7 @@
  *   4. Facts info (vcs_semantic_facts_v1_info) is consistent with the
  *      sections the manifest actually carries: present iff a FACTS record
  *      exists (tag 10 has records), complete iff no TRUNCATED record
- *      (tag 15) exists, and revision is 1, 2 or 3 exactly when present.
+ *      (tag 15) exists, and revision is 1 to 4 exactly when present.
  *
  * If a decoded record cannot be re-expressed by the builder — a record
  * whose section the builder API refuses to accept directly (only FACTS and
@@ -146,7 +146,7 @@ static void sm_check_facts_consistency(const uint8_t *bytes, size_t len)
                 (int)info.complete, truncated_records);
         __builtin_trap();
     }
-    if (info.present && (info.revision < 1 || info.revision > 3)) {
+    if (info.present && (info.revision < 1 || info.revision > 4)) {
         fprintf(stderr,
                 "fuzz_semantic_manifest: facts_v1_info.revision=%u out of "
                 "range while present\n",

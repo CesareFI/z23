@@ -219,7 +219,8 @@ static bool fxi_on_facts(struct fxi *x, const struct vcs_semantic_fields_v1 *f)
     memcpy(x->producer, f->digest[1], 32);
     x->complete = f->num[2] == 1;
     x->revision =
-        fxi_path_is(f->text[0], f->text_len[0], VCS_SEMANTIC_FACTS_V3_NAME)   ? 3
+        fxi_path_is(f->text[0], f->text_len[0], VCS_SEMANTIC_FACTS_V4_NAME)   ? 4
+        : fxi_path_is(f->text[0], f->text_len[0], VCS_SEMANTIC_FACTS_V3_NAME) ? 3
         : fxi_path_is(f->text[0], f->text_len[0], VCS_SEMANTIC_FACTS_V2_NAME) ? 2
                                                                               : 1;
     return true;

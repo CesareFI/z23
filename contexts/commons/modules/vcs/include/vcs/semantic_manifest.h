@@ -104,6 +104,23 @@ enum vcs_semantic_section_v1 {
  * reads a changed entity. */
 #define VCS_SEMANTIC_FACTS_V3_NAME "zcl.semantic_facts.v3"
 #define VCS_SEMANTIC_FACTS_ASSERT_SITE "@assert:"
+/* Revision 4: revision 3, plus LOOKUPS records for the conditional lookups
+ * earlier revisions left without a negative claim whenever the producer can
+ * resolve them:
+ *   __has_include(M) and its GNU spelling, where M is a macro the front end
+ *       expanded to a string literal: one HAS_INCLUDE record per literal
+ *       the TU's definitions of M give, replayed like a literal operand;
+ *   __has_include_next from a file entered through a known search slot:
+ *       one HAS_INCLUDE record per entry, replayed from the slot after it,
+ *       in the quoted slot numbering, with every slot before the search's
+ *       start listed among the record's present (unclaimed) slots; from the
+ *       main file, or a file found relative to its includer, a plain
+ *       __has_include replay.
+ * What stays unresolvable (another macro, __has_embed, #embed, an entry the
+ * producer does not know) keeps its MISS_V1_NONE record. A revision-3
+ * manifest makes none of these claims: a consumer must read its unbound
+ * records as reaching any created or deleted path. */
+#define VCS_SEMANTIC_FACTS_V4_NAME "zcl.semantic_facts.v4"
 /* Default producer caps: records per section and payload bytes per section. */
 #define VCS_SEMANTIC_FACTS_V1_DEFAULT_MAX_RECORDS 65536u
 #define VCS_SEMANTIC_FACTS_V1_DEFAULT_MAX_SECTION_BYTES (16u * 1024u * 1024u)
@@ -239,9 +256,9 @@ struct vcs_semantic_facts_v1 {
     uint8_t producer[32];
     uint32_t max_records;       /* >= 1 */
     uint64_t max_section_bytes; /* >= 4 */
-    /* 0 or 1 writes VCS_SEMANTIC_FACTS_V1_NAME, 2 VCS_SEMANTIC_FACTS_V2_NAME
-     * and 3 VCS_SEMANTIC_FACTS_V3_NAME (the producer then emits the sites
-     * that revision names). */
+    /* 0 or 1 writes VCS_SEMANTIC_FACTS_V1_NAME, 2 VCS_SEMANTIC_FACTS_V2_NAME,
+     * 3 VCS_SEMANTIC_FACTS_V3_NAME and 4 VCS_SEMANTIC_FACTS_V4_NAME (the
+     * producer then emits the sites and lookups that revision names). */
     uint8_t revision;
 };
 bool vcs_semantic_builder_v1_enable_facts(struct vcs_semantic_builder_v1 *b,
@@ -345,7 +362,7 @@ struct vcs_semantic_facts_info_v1 {
     bool complete;              /* no section was cut by a cap */
     uint8_t namespace_root[32];
     uint8_t producer[32]; /* all zero: the producer is unknown */
-    uint8_t revision;     /* 1, 2 or 3: which extension name the FACTS record carries */
+    uint8_t revision;     /* 1 to 4: which extension name the FACTS record carries */
     uint32_t max_records;
     uint64_t max_section_bytes;
 };
