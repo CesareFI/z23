@@ -271,6 +271,8 @@ static void wtx_authority_stage(const char *name)
 static void wtx_queue_post(const char *name)
 {
     struct wtx_call c;
+    /* The worker may claim immediately after post; make its evidence ready. */
+    wtx_authority_stage(name);
     wtx_begin(&c, "dev.agent.queue", "zcl.agent_queue.v1");
     (void)json_push_kv_str(&c.input, "action", "post");
     (void)json_push_kv_str(&c.input, "kind", "leaf");
@@ -278,7 +280,6 @@ static void wtx_queue_post(const char *name)
     zcl_native_handle_dev_agent_queue(&c.request, &c.reply);
     (void)wtx_ok(&c);
     wtx_end(&c);
-    wtx_authority_stage(name);
 }
 
 static bool wtx_queue_verb(const char *action, const char *extra_key,
@@ -808,12 +809,16 @@ static void wtx_opts(struct wkr_drive_opts *o, const char *worker,
  * system-wide monotonic clock. */
 
 #if !defined(_WIN32)
-static pid_t wtx_post_later(const char *name, int delay_ms)
+static pid_t wtx_post_later(const char *name, int delay_ms, int post_fd)
 {
     pid_t pid = fork();
     if (pid == 0) {
+        long long posted_ms;
         platform_sleep_ms(delay_ms);
         wtx_queue_post(name);
+        posted_ms = (long long)platform_time_monotonic_ms();
+        (void)write(post_fd, &posted_ms, sizeof(posted_ms));
+        (void)close(post_fd);
         _exit(0);
     }
     return pid;
@@ -825,19 +830,28 @@ static long long wtx_drive_late_post(struct wkr_drive_opts *o,
                                      const char *name, int delay_ms,
                                      long long *after_post_ms)
 {
-    long long t0, jobs;
+    long long jobs, posted_ms = -1, done_ms;
     int st = 0;
+    int post_pipe[2];
     pid_t pid;
     /* Initialize the empty queue through a mutating verb, never a read. */
     if (!wtx_queue_verb("reap", NULL, NULL))
         return -1;
-    t0 = (long long)platform_time_monotonic_ms();
-    pid = wtx_post_later(name, delay_ms);
-    if (pid < 0)
+    if (pipe(post_pipe) != 0)
         return -1;
+    pid = wtx_post_later(name, delay_ms, post_pipe[1]);
+    (void)close(post_pipe[1]);
+    if (pid < 0) {
+        (void)close(post_pipe[0]);
+        return -1;
+    }
     jobs = zcl_devagent_worker_drive(o, wtx_fixture);
-    *after_post_ms =
-        (long long)platform_time_monotonic_ms() - (t0 + delay_ms);
+    done_ms = (long long)platform_time_monotonic_ms();
+    if (read(post_pipe[0], &posted_ms, sizeof(posted_ms)) !=
+        (ssize_t)sizeof(posted_ms))
+        jobs = -1;
+    (void)close(post_pipe[0]);
+    *after_post_ms = done_ms - posted_ms;
     (void)waitpid(pid, &st, 0);
     return jobs;
 }
