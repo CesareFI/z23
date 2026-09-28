@@ -618,7 +618,8 @@ static void print_commit_inputs(const char *state, const struct table *t, const 
     if (fp)
         fclose(fp);
     if (any)
-        printf(" | %s | %s |\n", col(t, r, "commit"), col(t, r, "c_reason"));
+        printf(" | %s | %s |\n", col(t, r, "commit"),
+               is_one(t, r, "c_narrowed") ? "narrowed" : col(t, r, "c_reason"));
 }
 
 static void print_inputs(const char *state, const struct table *t)
