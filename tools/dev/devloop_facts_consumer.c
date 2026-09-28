@@ -240,11 +240,13 @@ static bool fxc_build_input(const char *path)
 /* ---- make inputs: the paths the makefile text names ---------------------------- */
 
 /* Make reads a path when a makefile names it: its own name, a literal path
- * or basename, a directory ending in '/', or a glob or pattern ('*', '%')
- * outside a whole-line comment. A path-like variable (one definition, no
- * whitespace) is expanded, any other reference matches anything, and a
- * function call is its arguments. What the text cannot be read for is
- * UNKNOWN, and UNKNOWN is a make input. */
+ * or basename, a directory it lives under (with or without a trailing '/':
+ * a bare directory handed to a recipe's tool is as much a mention as one
+ * spelled with the slash), or a glob or pattern ('*', '%') outside a
+ * whole-line comment. A path-like variable (one definition, no whitespace)
+ * is expanded, any other reference matches anything, and a function call is
+ * its arguments. What the text cannot be read for is UNKNOWN, and UNKNOWN
+ * is a make input. */
 #define FXM_FILES_MAX 64
 #define FXM_TEXT_MAX (64u << 20)
 #define FXM_LINE_MAX (8u << 20)
@@ -561,6 +563,13 @@ static bool fxm_named(const char *t, const char *path)
     base = base != NULL ? base + 1 : path;
     bn = strlen(base);
     if (tn > 1 && t[tn - 1] == '/' && strncmp(path, t, tn) == 0)
+        return true;
+    /* A directory mention with no trailing slash (the common recipe-argument
+     * form: a tool is handed a bare directory and reads whatever is under
+     * it) is just as much a directory as one written with a trailing '/':
+     * t is an exact path-component prefix of path when the next byte of
+     * path after t is '/'. */
+    if (tn > 0 && strncmp(path, t, tn) == 0 && path[tn] == '/')
         return true;
     for (const char *h = strstr(t, base); h != NULL; h = strstr(h + 1, base))
         if ((h == t || h[-1] == '/') && !fxm_ident(h[bn]))

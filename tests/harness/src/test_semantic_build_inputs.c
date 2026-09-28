@@ -246,6 +246,141 @@ static int sbit_t_makefile_mention(void)
     return failures;
 }
 
+/* (b, bare directory): a recipe hands a tool a directory the changed file
+ * lives under, with no trailing '/' and no wildcard naming the extension
+ * (the common `tool $(DIR) out` form: the tool globs $(DIR) itself, and the
+ * Makefile text never spells the file or its pattern). This still widens:
+ * a scanner that requires a trailing slash to recognize a directory mention
+ * would narrow wrongly here, since make (via the tool it runs) does read
+ * every file under that directory. */
+static int sbit_t_bare_dir(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a bare directory argument (no "
+             "trailing slash, no wildcard) still widens for a file under "
+             "it") {
+        char root[4096];
+        const char *changed = "contexts/wallet/views/foo.chtml";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_baredir") != NULL);
+        ASSERT(sbi_write_tu(root, NULL));
+        ASSERT(sbi_write(root, "Makefile",
+                         "build/a.o: " SBI_TU "\n"
+                         "\t$(CC) -c $< -o $@\n"
+                         "\n"
+                         "gen.h: tools/gen_templates\n"
+                         "\ttools/gen_templates contexts/wallet/views gen.h\n"));
+        ASSERT(sbi_write(root, changed, ""));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        ASSERT(!rep.complete);
+        ASSERT(strcmp(rep.reason, "build-input-changed") == 0);
+        ASSERT(sbi_tu_affected(&rep, "build-input-changed"));
+        ASSERT(plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
+/* (b, $(wildcard $(VAR)/*.ext)): a variable holding a bare directory, used
+ * inside $(wildcard ...) to build the glob. Confirms the macro-expansion
+ * path already widens this common generated-header pattern. */
+static int sbit_t_wildcard_var(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: $(wildcard $(VAR)/*.ext) widens for a "
+             "file the glob matches") {
+        char root[4096];
+        const char *changed = "cfg/data/x.dat";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_wildvar") != NULL);
+        ASSERT(sbi_write_tu(root, NULL));
+        ASSERT(sbi_write(root, "Makefile",
+                         "DATADIR := cfg/data\n"
+                         "DATASRC := $(wildcard $(DATADIR)/*.dat)\n"
+                         "build/a.o: " SBI_TU " $(DATASRC)\n"
+                         "\t$(CC) -c $< -o $@\n"));
+        ASSERT(sbi_write(root, changed, ""));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        ASSERT(!rep.complete);
+        ASSERT(sbi_tu_affected(&rep, "build-input-changed"));
+        ASSERT(plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
+/* (b, $(shell find ... -name '*.ext')): a dynamic directory listing built
+ * at parse time. Confirms the raw shell-argument text (including the glob)
+ * is still tokenized and matched. */
+static int sbit_t_shell_find(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: $(shell find ... -name PATTERN) "
+             "widens for a file the pattern matches") {
+        char root[4096];
+        const char *changed = "cfg/gen/x.tpl";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_shellfind") != NULL);
+        ASSERT(sbi_write_tu(root, NULL));
+        ASSERT(sbi_write(root, "Makefile",
+                         "TPLSRC := $(shell find cfg/gen -name '*.tpl')\n"
+                         "build/a.o: " SBI_TU " $(TPLSRC)\n"
+                         "\t$(CC) -c $< -o $@\n"));
+        ASSERT(sbi_write(root, changed, ""));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        ASSERT(!rep.complete);
+        ASSERT(sbi_tu_affected(&rep, "build-input-changed"));
+        ASSERT(plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
+/* (b, pattern rule `%.gen: %.src`): a static pattern rule names no
+ * particular path, only a suffix pattern. Confirms the whole-line scan
+ * (not just var definitions) matches target/prerequisite lines too. */
+static int sbit_t_pattern_rule(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a pattern rule prerequisite widens "
+             "for a file its suffix matches") {
+        char root[4096];
+        const char *changed = "cfg/thing.src";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_patrule") != NULL);
+        ASSERT(sbi_write_tu(root, NULL));
+        ASSERT(sbi_write(root, "Makefile",
+                         "build/a.o: " SBI_TU "\n"
+                         "\t$(CC) -c $< -o $@\n"
+                         "\n"
+                         "%.gen: %.src\n"
+                         "\ttools/gen $< $@\n"));
+        ASSERT(sbi_write(root, changed, ""));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        ASSERT(!rep.complete);
+        ASSERT(sbi_tu_affected(&rep, "build-input-changed"));
+        ASSERT(plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
 /* (d): a changed path the include graph refuses to answer for (it does not
  * exist on disk, so codeindex will not vouch for its reverse-includes)
  * keeps today's full fallback, exactly like a Makefile mention. */
@@ -308,6 +443,7 @@ static int sbit_t_header_path(void)
 
 int test_semantic_build_inputs(void)
 {
-    return sbit_t_narrow() | sbit_t_makefile_mention() |
+    return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
+          sbit_t_wildcard_var() | sbit_t_shell_find() | sbit_t_pattern_rule() |
           sbit_t_truncated() | sbit_t_header_path();
 }
