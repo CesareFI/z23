@@ -11,6 +11,7 @@
 #include "base/safe_alloc.h"
 #include "sha3/sha3.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -179,7 +180,8 @@ static bool cm_trace_run(const char *exe, char *buf, size_t cap)
 {
     size_t nenv = 0, got = 0;
     int fds[2], status = 0;
-    pid_t pid;
+    pid_t pid = -1;
+    bool spawned;
     posix_spawn_file_actions_t fa;
     while (environ != NULL && environ[nenv] != NULL)
         nenv++;
@@ -193,24 +195,44 @@ static bool cm_trace_run(const char *exe, char *buf, size_t cap)
     envp[0] = (char *)"LD_TRACE_LOADED_OBJECTS=1";
     for (size_t k = 0; k < nenv; k++)
         envp[k + 1] = environ[k];
-    ok = posix_spawn_file_actions_init(&fa) == 0;
-    ok = ok && posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO) == 0 &&
-         posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
-                                          O_WRONLY, 0) == 0 &&
-         posix_spawn_file_actions_addclose(&fa, fds[0]) == 0 &&
-         posix_spawn(&pid, exe, &fa, NULL, argv, envp) == 0;
-    (void)posix_spawn_file_actions_destroy(&fa);
+    if (posix_spawn_file_actions_init(&fa) == 0) {
+        ok = posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO) == 0 &&
+             posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
+                                              O_WRONLY, 0) == 0 &&
+             posix_spawn_file_actions_addclose(&fa, fds[0]) == 0 &&
+             posix_spawn(&pid, exe, &fa, NULL, argv, envp) == 0;
+        (void)posix_spawn_file_actions_destroy(&fa);
+    } else {
+        ok = false;
+    }
+    spawned = ok;
     (void)close(fds[1]);
-    for (ssize_t r = 1; ok && r > 0;) {
-        r = read(fds[0], buf + got, cap - 1 - got);
-        got += r > 0 ? (size_t)r : 0;
-        ok = r >= 0 && got < cap - 1;
+    /* Drained to EOF even past cap, so the child never blocks on a full
+     * pipe; an overflow only fails the trace. */
+    for (bool full = false; spawned;) {
+        char sink[4096];
+        bool room = got < cap - 1;
+        ssize_t r = room ? read(fds[0], buf + got, cap - 1 - got)
+                         : read(fds[0], sink, sizeof(sink));
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0) {
+            ok = ok && r == 0 && !full;
+            break;
+        }
+        if (room)
+            got += (size_t)r;
+        else
+            full = true;
     }
     (void)close(fds[0]);
     buf[got] = '\0';
-    if (ok || got > 0)
-        ok = waitpid(pid, &status, 0) == pid && ok && WIFEXITED(status) &&
-             WEXITSTATUS(status) == 0;
+    if (spawned) {
+        pid_t w;
+        while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR)
+            ;
+        ok = ok && w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
     free(envp);
     return ok;
 }
