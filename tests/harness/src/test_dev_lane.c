@@ -115,6 +115,7 @@ static const char *const dln_check_rels[] = {
     "build/githooks/pre-push",
     "build/bin/z23-lint",
     "build/bin/z23-fleet-observe",
+    "build/bin/gen_capability_inventory",
     "build/hotswap/zcl_rollback_fixture_a.so",
     "build/hotswap/zcl_rollback_fixture_b.so",
     "build/fixtures/rlc_child_v1",
@@ -237,7 +238,7 @@ int test_dev_lane(void)
         ASSERT(dln_bool(&reply, "ok"));
         ASSERT_STR_EQ(dln_str(&reply, "path"), lane);
         ASSERT(strlen(dln_str(&reply, "head")) == 40);
-        ASSERT(dln_int(&reply, "dependencies") == 16);
+        ASSERT(dln_int(&reply, "dependencies") == 17);
         ASSERT(dln_int(&reply, "libtor_links") == 1);
         ASSERT(dln_bool(&reply, "hooks_installed"));
 
@@ -269,7 +270,7 @@ int test_dev_lane(void)
         char parent[512], root[600], lane[600], check[800];
         struct json_value input;
         struct zcl_command_reply reply;
-        struct stat before[16], after;
+        struct stat before[17], after;
         size_t i;
 
         test_make_tmpdir(parent, sizeof(parent), "dev_lane", "again");
@@ -284,7 +285,7 @@ int test_dev_lane(void)
         (void)json_push_kv_str(&input, "base", "HEAD");
         dln_call(root, &input, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
-        ASSERT(dln_int(&reply, "dependencies") == 16);
+        ASSERT(dln_int(&reply, "dependencies") == 17);
         zcl_command_reply_free(&reply);
 
         for (i = 0; dln_check_rels[i]; i++) {

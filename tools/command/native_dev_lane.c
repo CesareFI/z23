@@ -87,6 +87,7 @@ static const char *const DLN_REQUIRED[] = {
     "build/githooks",
     "build/bin/z23-lint",
     "build/bin/z23-fleet-observe",
+    "build/bin/gen_capability_inventory",
     "build/hotswap/zcl_rollback_fixture_a.so",
     "build/hotswap/zcl_rollback_fixture_b.so",
     "build/fixtures/rlc_child_v1",
@@ -151,7 +152,7 @@ static const char *dln_dep_fix(const char *rel)
     if (strncmp(rel, "vendor/", 7) == 0)
         return "make vendor";
     if (strncmp(rel, "build/bin/", 10) == 0)
-        return "make build/bin/z23-lint build/bin/z23-fleet-observe";
+        return "make build/bin/z23-lint build/bin/z23-fleet-observe build/bin/gen_capability_inventory";
     if (strncmp(rel, "build/fixtures/", 15) == 0)
         return "make build/fixtures/rlc_child_v1 build/fixtures/rlc_child_broken";
     if (strncmp(rel, "build/hotswap/", 14) == 0)
