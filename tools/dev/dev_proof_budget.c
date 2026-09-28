@@ -17,12 +17,14 @@
  * no-progress window AND its budget is already spent, or when it crosses the
  * hard ceiling no matter how loud it is. */
 
+#define _GNU_SOURCE
 #include "dev_proof_budget.h"
 #include "devloop.h"
 
 #include "base/safe_alloc.h"
 #include "platform/private_directory.h"
 #include "platform/os_proc.h"
+#include "platform/process_compat.h"
 #include "platform/time_compat.h"
 
 #include <errno.h>
@@ -455,55 +457,119 @@ static bool proof_step_prepare(struct zcl_dev_proof_step *step, const char *root
     return true;
 }
 
-bool zcl_dev_proof_step_start(struct zcl_dev_proof_step *step, const char *root,
-                              const char *log_path, const char *const argv[],
-                              const struct zcl_dev_proof_budget *budget)
+static void proof_step_child_exec(const char *root, const char *log_path,
+                                   const char *const argv[],
+                                   int executable_fd)
+{
+    if (setsid() < 0 || chdir(root) != 0) _exit(127);
+    struct rlimit stack = {.rlim_cur = RLIM_INFINITY,
+                           .rlim_max = RLIM_INFINITY};
+    (void)setrlimit(RLIMIT_STACK, &stack);
+    int fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0 ||
+        dup2(fd, STDERR_FILENO) < 0)
+        _exit(127);
+    if (fd > STDERR_FILENO) close(fd);
+    /* A sandbox does not revoke inherited descriptors. Keep only the log,
+     * inert stdin, and the exact executable until exec. */
+    int input = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (input < 0 || dup2(input, STDIN_FILENO) < 0) {
+        (void)dprintf(STDERR_FILENO,
+                      "proof step: inert stdin setup failed: %s\n",
+                      strerror(errno));
+        _exit(127);
+    }
+    if (input > STDERR_FILENO) close(input);
+    if (!(executable_fd >= 0
+              ? os_proc_close_inherited_fds_except(executable_fd)
+              : os_proc_close_inherited_fds())) {
+        (void)dprintf(STDERR_FILENO,
+                      "proof step: descriptor confinement failed: %s\n",
+                      strerror(errno));
+        _exit(127);
+    }
+    if (executable_fd >= 0) {
+        extern char **environ;
+        platform_execve_fd(executable_fd, (char *const *)argv, environ);
+    } else {
+        execvp(argv[0], (char *const *)argv);
+    }
+    _exit(127);
+}
+
+static bool proof_step_start_impl(struct zcl_dev_proof_step *step,
+                                  const char *root, const char *log_path,
+                                  const char *const argv[],
+                                  const struct zcl_dev_proof_budget *budget,
+                                  int executable_fd)
 {
     if (!proof_step_prepare(step, root, log_path, argv, budget)) return false;
+    if (executable_fd >= 0) {
+        struct stat image;
+        if (executable_fd <= STDERR_FILENO ||
+            fstat(executable_fd, &image) != 0 || !S_ISREG(image.st_mode) ||
+            !(image.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+            step->report.rc = -1;
+            step->finished = true;
+            return false;
+        }
+    }
+#if defined(__APPLE__)
+    if (executable_fd >= 0) {
+        int64_t child = -1;
+        if (!zcl_devloop_process_spawn_fd_attested(root, executable_fd, argv,
+                                                    log_path, &child)) {
+            if (errno == ECANCELED ||
+                zcl_devloop_process_cancel_requested()) {
+                step->report.cause = ZCL_DEV_PROOF_KILL_CANCELLED;
+                step->report.rc = 130;
+            } else {
+                step->report.rc = -1;
+            }
+            step->finished = true;
+            return false;
+        }
+        step->child = child;
+        step->started = true;
+        step->started_us = platform_time_monotonic_us();
+        step->last_progress_us = step->started_us;
+        return true;
+    }
+#endif
     pid_t child = fork();
     if (child < 0) {
         step->report.rc = -1;
         step->finished = true;
         return false;
     }
-    if (child == 0) {
-        if (setsid() < 0 || chdir(root) != 0) _exit(127);
-        struct rlimit stack = {.rlim_cur = RLIM_INFINITY,
-                               .rlim_max = RLIM_INFINITY};
-        (void)setrlimit(RLIMIT_STACK, &stack);
-        int fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-        if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0 ||
-            dup2(fd, STDERR_FILENO) < 0)
-            _exit(127);
-        if (fd > STDERR_FILENO) close(fd);
-        /* Neither Seatbelt nor Landlock revokes inherited open-file
-         * authority: an fd the worker holds (a lock, a signer, a socket) is
-         * usable by generation code whatever the pathname sandbox says.
-         * Keep only the log streams and inert stdin before executing any
-         * generation code. Census the real descriptors, not the current
-         * descriptor limit, which may have been lowered since they opened. */
-        int input = open("/dev/null", O_RDONLY | O_CLOEXEC);
-        if (input < 0 || dup2(input, STDIN_FILENO) < 0) {
-            (void)dprintf(STDERR_FILENO,
-                          "proof step: inert stdin setup failed: %s\n",
-                          strerror(errno));
-            _exit(127);
-        }
-        if (input > STDERR_FILENO) close(input);
-        if (!os_proc_close_inherited_fds()) {
-            (void)dprintf(STDERR_FILENO,
-                          "proof step: descriptor confinement failed: %s\n",
-                          strerror(errno));
-            _exit(127);
-        }
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
-    }
+    if (child == 0) proof_step_child_exec(root, log_path, argv, executable_fd);
     step->child = (int64_t)child;
     step->started = true;
     step->started_us = platform_time_monotonic_us();
     step->last_progress_us = step->started_us;
     return true;
+}
+
+bool zcl_dev_proof_step_start(struct zcl_dev_proof_step *step,
+                              const char *root, const char *log_path,
+                              const char *const argv[],
+                              const struct zcl_dev_proof_budget *budget)
+{
+    return proof_step_start_impl(step, root, log_path, argv, budget, -1);
+}
+
+bool zcl_dev_proof_step_start_fd(struct zcl_dev_proof_step *step,
+                                 const char *root, const char *log_path,
+                                 const char *const argv[],
+                                 const struct zcl_dev_proof_budget *budget,
+                                 int executable_fd)
+{
+    if (executable_fd < 0) {
+        errno = EINVAL;
+        return false;
+    }
+    return proof_step_start_impl(step, root, log_path, argv, budget,
+                                  executable_fd);
 }
 
 bool zcl_dev_proof_step_poll(struct zcl_dev_proof_step *step)

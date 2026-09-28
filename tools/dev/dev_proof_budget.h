@@ -122,6 +122,13 @@ struct zcl_dev_proof_step {
 bool zcl_dev_proof_step_start(struct zcl_dev_proof_step *step, const char *root,
                               const char *log_path, const char *const argv[],
                               const struct zcl_dev_proof_budget *budget);
+/* Start the exact already-open executable. The caller retains ownership of
+ * executable_fd through the child lifetime and may hash that same fd. */
+bool zcl_dev_proof_step_start_fd(struct zcl_dev_proof_step *step,
+                                 const char *root, const char *log_path,
+                                 const char *const argv[],
+                                 const struct zcl_dev_proof_budget *budget,
+                                 int executable_fd);
 /* Advance one step's watch without blocking. Returns true once it has
  * finished (exited, or been killed by its own budget). */
 bool zcl_dev_proof_step_poll(struct zcl_dev_proof_step *step);

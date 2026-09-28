@@ -475,10 +475,65 @@ static void darwin_reap_suspended(pid_t pid)
     while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 }
 
+static int darwin_attested_actions_close(posix_spawn_file_actions_t *actions,
+                                          int output_fd, int output_read_fd,
+                                          int ready_read_fd, int ready_write_fd,
+                                          int input_fd)
+{
+    int rc = 0;
+    if (input_fd > STDERR_FILENO)
+        rc = posix_spawn_file_actions_addclose(actions, input_fd);
+    if (rc == 0 && output_read_fd >= 0)
+        rc = posix_spawn_file_actions_addclose(actions, output_read_fd);
+    if (rc == 0 && output_fd > STDERR_FILENO)
+        rc = posix_spawn_file_actions_addclose(actions, output_fd);
+    if (rc == 0 && ready_read_fd >= 0)
+        rc = posix_spawn_file_actions_addclose(actions, ready_read_fd);
+    if (rc == 0 && ready_write_fd >= 0)
+        rc = posix_spawn_file_actions_addclose(actions, ready_write_fd);
+    return rc;
+}
+
+static bool darwin_attested_actions_init(posix_spawn_file_actions_t *actions,
+                                          const char *cwd, int output_fd,
+                                          int output_read_fd, int ready_read_fd,
+                                          int ready_write_fd, int input_fd)
+{
+    int rc = posix_spawn_file_actions_init(actions);
+    if (rc != 0) {
+        fprintf(stderr,
+                "[devloop] process: spawn file-actions init failed: %s\n",
+                strerror(rc));
+        errno = rc;
+        return false;
+    }
+    rc = posix_spawn_file_actions_addchdir_np(actions, cwd);
+    if (rc == 0)
+        rc = posix_spawn_file_actions_adddup2(actions, output_fd,
+                                               STDOUT_FILENO);
+    if (rc == 0)
+        rc = posix_spawn_file_actions_adddup2(actions, output_fd,
+                                               STDERR_FILENO);
+    if (rc == 0 && input_fd >= 0)
+        rc = posix_spawn_file_actions_adddup2(actions, input_fd,
+                                               STDIN_FILENO);
+    if (rc == 0)
+        rc = darwin_attested_actions_close(actions, output_fd,
+                                            output_read_fd, ready_read_fd,
+                                            ready_write_fd, input_fd);
+    if (rc == 0) return true;
+    fprintf(stderr, "[devloop] process: spawn file-actions setup failed: %s\n",
+            strerror(rc));
+    (void)posix_spawn_file_actions_destroy(actions);
+    errno = rc;
+    return false;
+}
+
 static bool darwin_spawn_fd_attested(const char *cwd, int exec_fd,
                                      const char *const argv[], int output_fd,
                                      int output_read_fd, int ready_read_fd,
-                                     int ready_write_fd, pid_t *pid_out)
+                                     int ready_write_fd, int input_fd,
+                                     pid_t *pid_out)
 {
     struct stat executable_stat;
     if (fstat(exec_fd, &executable_stat) != 0) {
@@ -519,38 +574,13 @@ static bool darwin_spawn_fd_attested(const char *cwd, int exec_fd,
     }
 
     posix_spawn_file_actions_t actions;
-    int rc = posix_spawn_file_actions_init(&actions);
-    if (rc != 0) {
-        fprintf(stderr,
-                "[devloop] process: spawn file-actions init failed: %s\n",
-                strerror(rc));
+    if (!darwin_attested_actions_init(&actions, cwd, output_fd, output_read_fd,
+                                       ready_read_fd, ready_write_fd,
+                                       input_fd))
         return false;
-    }
-    rc = posix_spawn_file_actions_addchdir_np(&actions, cwd);
-    if (rc == 0)
-        rc = posix_spawn_file_actions_adddup2(&actions, output_fd,
-                                               STDOUT_FILENO);
-    if (rc == 0)
-        rc = posix_spawn_file_actions_adddup2(&actions, output_fd,
-                                               STDERR_FILENO);
-    if (rc == 0)
-        rc = posix_spawn_file_actions_addclose(&actions, output_read_fd);
-    if (rc == 0)
-        rc = posix_spawn_file_actions_addclose(&actions, output_fd);
-    if (rc == 0)
-        rc = posix_spawn_file_actions_addclose(&actions, ready_read_fd);
-    if (rc == 0)
-        rc = posix_spawn_file_actions_addclose(&actions, ready_write_fd);
-    if (rc != 0) {
-        fprintf(stderr,
-                "[devloop] process: spawn file-actions setup failed: %s\n",
-                strerror(rc));
-        (void)posix_spawn_file_actions_destroy(&actions);
-        return false;
-    }
 
     posix_spawnattr_t attributes;
-    rc = posix_spawnattr_init(&attributes);
+    int rc = posix_spawnattr_init(&attributes);
     if (rc != 0) {
         fprintf(stderr, "[devloop] process: spawn attributes init failed: %s\n",
                 strerror(rc));
@@ -599,6 +629,54 @@ static bool darwin_spawn_fd_attested(const char *cwd, int exec_fd,
         return false;
     }
     *pid_out = pid;
+    return true;
+}
+
+bool zcl_devloop_process_spawn_fd_attested(const char *cwd, int exec_fd,
+                                            const char *const argv[],
+                                            const char *log_path,
+                                            int64_t *pid_out)
+{
+    if (!cwd || !*cwd || !argv || !argv[0] || !log_path || !pid_out) {
+        errno = EINVAL;
+        return false;
+    }
+    if (zcl_devloop_process_cancel_requested()) {
+        errno = ECANCELED;
+        return false;
+    }
+    int output = open(log_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                      0600);
+    if (output < 0) return false;
+    int input = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (input < 0) {
+        int saved = errno;
+        close(output);
+        errno = saved;
+        return false;
+    }
+    pid_t pid = -1;
+    bool ok = darwin_spawn_fd_attested(cwd, exec_fd, argv, output, -1, -1,
+                                        -1, input, &pid);
+    int saved = errno;
+    close(input);
+    close(output);
+    if (!ok) {
+        errno = saved;
+        return false;
+    }
+    if (zcl_devloop_process_cancel_requested()) {
+        darwin_reap_suspended(pid);
+        errno = ECANCELED;
+        return false;
+    }
+    if (kill(pid, SIGCONT) != 0) {
+        saved = errno;
+        darwin_reap_suspended(pid);
+        errno = saved;
+        return false;
+    }
+    *pid_out = (int64_t)pid;
     return true;
 }
 #endif
@@ -661,7 +739,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
 #if defined(__APPLE__)
     if (exec_fd >= 0) {
         if (!darwin_spawn_fd_attested(cwd, exec_fd, argv, fds[1], fds[0],
-                                      ready_fds[0], ready_fds[1], &pid)) {
+                                      ready_fds[0], ready_fds[1], -1, &pid)) {
             close(fds[0]);
             close(fds[1]);
             close(ready_fds[0]);

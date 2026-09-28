@@ -911,6 +911,15 @@ bool zcl_devloop_process_run_env(const char *cwd,
 bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
                                 const char *const argv[], int timeout_ms,
                                 struct zcl_devloop_process_result *out);
+#if defined(__APPLE__)
+/* Start a proof step suspended, compare the already-open Mach-O's
+ * CodeDirectory with the child's mapped CodeDirectory, then resume it.
+ * The caller owns exec_fd and reaps the returned session leader. */
+bool zcl_devloop_process_spawn_fd_attested(const char *cwd, int exec_fd,
+                                            const char *const argv[],
+                                            const char *log_path,
+                                            int64_t *pid_out);
+#endif
 /* Async-signal-safe cancellation owned by the resident watcher. A request
  * terminates the active bounded child process group; clear only when the
  * watcher begins a new ownership lifetime. */
