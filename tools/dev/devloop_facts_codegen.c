@@ -78,25 +78,33 @@ enum fxg_opt {
     FXG_OPT_HIGH, /* -O2 and above, -Os/-Oz/-Ofast, or an unknown spelling */
 };
 
-/* A bare "-O" is -O1; -Og models like -O1; -Os, -Oz and -Ofast are
- * unbounded; any other "-O..." spelling this parser does not know is
- * unbounded too (unknown widens, it never narrows). Nothing here assumes a
- * delimiter follows the spelling: the identity has none, so only the bytes
- * immediately after "-O" are read, exactly like the flag text itself
- * would read on a real command line. */
-static enum fxg_opt fxg_dash_o_at(const uint8_t *s, size_t n, size_t i,
-                                  const char **token)
+/* Classifies one whole "-O..." argv token (s[0]=='-' && s[1]=='O', already
+ * checked by the caller; n is the token's own length, not a position in a
+ * larger buffer). A bare "-O" is -O1; -Og models like -O1; -Os, -Oz and
+ * -Ofast are unbounded; digits after "-O" are read numerically (leading
+ * zeros included). Anything else the token could still be -- a known
+ * spelling with trailing garbage glued on ("-O1x"), or a spelling this
+ * parser does not know -- is an unrecognized -O spelling and unbounded
+ * too: unknown widens, it never narrows. Requiring the parsed suffix to
+ * reach exactly the token's end (not just its own buffer) is what makes
+ * this a whole-token match: applied only per argv element (see
+ * fxi_codegen_model_of), never to a raw byte position, so an "-O" spelled
+ * inside another flag's text can't be mistaken for one. */
+static enum fxg_opt fxg_dash_o_token(const uint8_t *s, size_t n,
+                                     const char **token)
 {
-    size_t p = i + 2, end;
+    size_t p = 2, end;
     int lvl;
-    if (!fxg_at(s, n, i, "-O"))
-        return FXG_OPT_NONE;
-    if (p >= n) {
+    if (p == n) {
         *token = "-O";
         return FXG_OPT_1;
     }
     if (s[p] >= '0' && s[p] <= '9') {
         lvl = fxg_digits_level(s, n, p, &end);
+        if (end != n) {
+            *token = "an unrecognized -O spelling";
+            return FXG_OPT_HIGH;
+        }
         if (lvl == 0) {
             *token = "-O0";
             return FXG_OPT_0;
@@ -108,15 +116,15 @@ static enum fxg_opt fxg_dash_o_at(const uint8_t *s, size_t n, size_t i,
         *token = "-O2-or-higher";
         return FXG_OPT_HIGH;
     }
-    if (s[p] == 'g') {
+    if (s[p] == 'g' && p + 1 == n) {
         *token = "-Og";
         return FXG_OPT_1;
     }
-    if (s[p] == 's' || s[p] == 'z') {
+    if ((s[p] == 's' || s[p] == 'z') && p + 1 == n) {
         *token = "-Os";
         return FXG_OPT_HIGH;
     }
-    if (fxg_at(s, n, p, "fast")) {
+    if (p + 4 == n && fxg_at(s, n, p, "fast")) {
         *token = "-Ofast";
         return FXG_OPT_HIGH;
     }
@@ -124,18 +132,17 @@ static enum fxg_opt fxg_dash_o_at(const uint8_t *s, size_t n, size_t i,
     return FXG_OPT_HIGH;
 }
 
-/* "--optimize" is -O1; "--optimize=N" parses N the same way as -O<digits>;
- * any other "--optimize..." spelling is unbounded. */
-static enum fxg_opt fxg_dash_dash_optimize_at(const uint8_t *s, size_t n,
-                                              size_t i, const char **token)
+/* Classifies one whole "--optimize..." argv token (the 10-byte prefix
+ * already checked by the caller): "--optimize" alone is -O1;
+ * "--optimize=N" parses N the same way as -O<digits>, again requiring the
+ * digits to reach the token's end; any other "--optimize..." spelling is
+ * unbounded. */
+static enum fxg_opt fxg_optimize_token(const uint8_t *s, size_t n,
+                                       const char **token)
 {
-    static const char k_pre[] = "--optimize";
-    size_t pn = sizeof(k_pre) - 1, p, end;
+    size_t p = 10, end;
     int lvl;
-    if (!fxg_at(s, n, i, k_pre))
-        return FXG_OPT_NONE;
-    p = i + pn;
-    if (p >= n) {
+    if (p == n) {
         *token = "--optimize";
         return FXG_OPT_1;
     }
@@ -144,6 +151,10 @@ static enum fxg_opt fxg_dash_dash_optimize_at(const uint8_t *s, size_t n,
         return FXG_OPT_HIGH;
     }
     lvl = fxg_digits_level(s, n, p + 1, &end);
+    if (end != n) {
+        *token = "an unrecognized --optimize spelling";
+        return FXG_OPT_HIGH;
+    }
     if (lvl == 0) {
         *token = "--optimize=0";
         return FXG_OPT_0;
@@ -156,17 +167,68 @@ static enum fxg_opt fxg_dash_dash_optimize_at(const uint8_t *s, size_t n,
     return FXG_OPT_HIGH;
 }
 
-/* Scans the raw identity bytes for every "-O" / "--optimize" and unbounded
- * -f spelling, byte position by byte position. The identity is never
- * whitespace-delimited command-line text: clang-manifest concatenates each
- * flag's length-prefixed string directly after the last one, so a scan
- * that requires a token boundary (as a shell's argv split would give it)
- * silently fails to see "-O1" glued to the flag before it and falls back
- * to the least conservative model. Matching by raw byte position, as the
- * unbounded -f flags always have, is what actually matches this format. */
+/* Dispatches one whole argv token to whichever classifier applies, or
+ * FXG_OPT_NONE for a token that is neither spelling. */
+static enum fxg_opt fxg_opt_of_token(const uint8_t *s, size_t n,
+                                     const char **token)
+{
+    if (n >= 2 && s[0] == '-' && s[1] == 'O')
+        return fxg_dash_o_token(s, n, token);
+    if (n >= 10 && memcmp(s, "--optimize", 10) == 0)
+        return fxg_optimize_token(s, n, token);
+    return FXG_OPT_NONE;
+}
+
+/* Reads a little-endian u32 at *p, advancing it past the 4 bytes, if that
+ * many remain before `end`; leaves *p unmoved and returns false on
+ * truncation. */
+static bool fxg_take_u32(const uint8_t **p, const uint8_t *end, uint32_t *v)
+{
+    if ((size_t)(end - *p) < 4)
+        return false;
+    *v = (uint32_t)(*p)[0] | ((uint32_t)(*p)[1] << 8) |
+         ((uint32_t)(*p)[2] << 16) | ((uint32_t)(*p)[3] << 24);
+    *p += 4;
+    return true;
+}
+
+/* Reads one schema "T"/"Q"/"P"/"A" field of the IDENTITY record (see
+ * fxi_codegen_model_of): a u32le length then that many raw,
+ * non-NUL-terminated bytes at *p, advancing it past both; false (leaving
+ * *p unmoved) on truncation. */
+static bool fxg_take_text(const uint8_t **p, const uint8_t *end,
+                          const uint8_t **s, size_t *slen)
+{
+    uint32_t len;
+    if (!fxg_take_u32(p, end, &len) || (size_t)(end - *p) < len)
+        return false;
+    *s = *p;
+    *slen = len;
+    *p += len;
+    return true;
+}
+
+/* The IDENTITY record's own schema (k_sm_schema[VCS_SEMANTIC_SECTION_V1_
+ * IDENTITY] == "TQTP[A[D[D[D[e" in
+ * contexts/commons/modules/vcs/src/semantic_manifest.c, written in this
+ * order by cm_emit_identity in tools/sensors/clang_manifest_core.c):
+ * compiler text, resource-dir path, triple text, main-path path, then a
+ * u32 argc and that many argv texts ("A": the flags actually passed to
+ * the compiler), then three directory lists and an env-entry list this
+ * parser does not need. The unbounded -f flags above are still matched
+ * anywhere in the raw record (conservative: a definition or path that
+ * merely spells one also refuses), but the -O/--optimize last-wins rule
+ * is applied only to these whole argv tokens, never to a raw byte
+ * position: a byte scan cannot tell "-O0" the flag from "-O0" glued
+ * inside -DMODE=-O0, -I/opt/x-O0dir or -Wl,-O1, so it can let text in an
+ * unrelated flag's value override the real optimizer level. Walking the
+ * schema instead reads each argv element as the compiler would. */
 enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
                                       const char **token)
 {
+    const uint8_t *p, *end, *s;
+    size_t slen;
+    uint32_t argc;
     enum fxg_opt opt = FXG_OPT_NONE;
     const char *opt_token = "";
     const char *aux_token = NULL;
@@ -175,23 +237,34 @@ enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
         *token = "no identity record";
         return FXI_CODEGEN_UNBOUNDED;
     }
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len && aux_token == NULL; i++)
+        fxg_aux_unbounded_at(identity, len, i, &aux_token);
+    if (aux_token != NULL) {
+        *token = aux_token;
+        return FXI_CODEGEN_UNBOUNDED;
+    }
+    p = identity;
+    end = identity + len;
+    if (!fxg_take_text(&p, end, &s, &slen) || /* compiler */
+        !fxg_take_text(&p, end, &s, &slen) || /* resource_dir */
+        !fxg_take_text(&p, end, &s, &slen) || /* triple */
+        !fxg_take_text(&p, end, &s, &slen) || /* main_path */
+        !fxg_take_u32(&p, end, &argc)) {
+        *token = "malformed identity record (argv header)";
+        return FXI_CODEGEN_UNBOUNDED;
+    }
+    for (uint32_t i = 0; i < argc; i++) {
         const char *tk = "";
         enum fxg_opt o;
-        if (aux_token == NULL &&
-            fxg_aux_unbounded_at(identity, len, i, &aux_token))
-            continue;
-        o = fxg_dash_o_at(identity, len, i, &tk);
-        if (o == FXG_OPT_NONE)
-            o = fxg_dash_dash_optimize_at(identity, len, i, &tk);
+        if (!fxg_take_text(&p, end, &s, &slen)) {
+            *token = "malformed identity record (argv element)";
+            return FXI_CODEGEN_UNBOUNDED;
+        }
+        o = fxg_opt_of_token(s, slen, &tk);
         if (o != FXG_OPT_NONE) {
             opt = o; /* the LAST -O / --optimize spelling wins, as gcc/clang */
             opt_token = tk;
         }
-    }
-    if (aux_token != NULL) {
-        *token = aux_token;
-        return FXI_CODEGEN_UNBOUNDED;
     }
     if (opt == FXG_OPT_HIGH) {
         *token = opt_token;
