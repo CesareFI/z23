@@ -262,6 +262,32 @@ static char *dep_rule_end(char *p)
     return p;
 }
 
+/* Lexically resolve "." and ".." components: a depfile spells a prerequisite
+ * the way the include named it ("tools/dev/../../engine/x.def"). */
+static void normalize_path(const char *in, char *out, size_t cap)
+{
+    size_t n = 0;
+    while (*in && n + 1 < cap) {
+        size_t len = strcspn(in, "/");
+        if (len == 1 && in[0] == '.') {
+            /* skip */
+        } else if (len == 2 && in[0] == '.' && in[1] == '.' && n > 0 &&
+                   !(n >= 2 && out[n - 1] == '.' && out[n - 2] == '.')) {
+            while (n > 0 && out[n - 1] != '/')
+                n--;
+            n = n > 0 ? n - 1 : 0;
+        } else if (len > 0 && n + len + 2 < cap) {
+            if (n > 0)
+                out[n++] = '/';
+            memcpy(out + n, in, len);
+            n += len;
+        }
+        in += len;
+        in += *in == '/';
+    }
+    out[n] = '\0';
+}
+
 /* Does the first rule of depfile text name a path in files? The target is
  * skipped; continuation backslashes are separators. */
 static bool dep_names(char *text, const struct sr_strv *files)
@@ -278,7 +304,8 @@ static bool dep_names(char *text, const struct sr_strv *files)
             break;
         char save = p[len];
         p[len] = '\0';
-        const char *name = strncmp(p, "./", 2) == 0 ? p + 2 : p;
+        char name[SR_PATH];
+        normalize_path(p, name, sizeof(name));
         bool hit = sr_strv_has(files, name);
         p[len] = save;
         if (hit)

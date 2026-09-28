@@ -270,6 +270,11 @@ struct commit_run {
     struct sr_snap snap_p, snap_c;
     struct sr_strv tus_c, bound_p, bound_c;
     struct sr_strv make_set, changed, removed, plain, facts, fn, plain_fn;
+    /* TUs whose compile argv differs between P and C (a build input such
+     * as the source-identity stamp), and the false negatives split by it:
+     * fn_flags changed through their argv, fn_source through their source. */
+    struct sr_argv_map argv_p, argv_c;
+    struct sr_strv drift, fn_flags, fn_source;
     struct sr_plan plain_plan, facts_plan;
     const char *facts_mode;
     struct sr_cost build_c;
@@ -284,7 +289,7 @@ struct commit_run {
      * fixtures are not part of the change it is testing. */
     struct {
         bool run;
-        struct sr_strv files, set, fn;
+        struct sr_strv files, set, fn, fn_source;
         struct sr_plan plain, facts;
         const char *mode;
         double cpu_facts, saved_make;
@@ -298,14 +303,18 @@ static void commit_run_free(struct commit_run *r)
     sr_snap_free(&r->snap_c);
     struct sr_strv *sets[] = {&r->tus_c, &r->bound_p, &r->bound_c, &r->make_set,
                               &r->changed, &r->removed, &r->plain, &r->facts,
-                              &r->fn, &r->plain_fn};
+                              &r->fn, &r->plain_fn, &r->drift,
+                              &r->fn_flags, &r->fn_source};
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
         sr_strv_free(sets[i]);
     sr_plan_free(&r->plain_plan);
     sr_plan_free(&r->facts_plan);
+    sr_argv_free(&r->argv_p);
+    sr_argv_free(&r->argv_c);
     sr_strv_free(&r->cv.files);
     sr_strv_free(&r->cv.set);
     sr_strv_free(&r->cv.fn);
+    sr_strv_free(&r->cv.fn_source);
     sr_plan_free(&r->cv.plain);
     sr_plan_free(&r->cv.facts);
 }
@@ -441,15 +450,24 @@ static bool sense_batch(const struct sr_cfg *cfg, struct commit_run *r,
 }
 
 static bool sense_side(const struct sr_cfg *cfg, struct commit_run *r,
-                       const struct sr_strv *tus, const char *epoch,
+                       const struct sr_strv *tus, const struct sr_argv_map *m,
                        const char *side)
 {
-    struct sr_argv_map m;
     struct batch b = {0};
-    bool ok = sr_make_argv(cfg->repo, epoch, tus, r->log, &m) &&
-              add_sensing(cfg, &b, tus, &m, side, r->log) && sense_batch(cfg, r, &b);
+    bool ok = add_sensing(cfg, &b, tus, m, side, r->log) && sense_batch(cfg, r, &b);
     batch_free(&b);
-    sr_argv_free(&m);
+    return ok;
+}
+
+/* The compile argv of every object of snap, from one make -n. */
+static bool argv_all(const struct sr_cfg *cfg, struct commit_run *r,
+                     const struct sr_snap *snap, struct sr_argv_map *out)
+{
+    struct sr_strv tus = {0};
+    bool ok = snap_tus(snap, &tus) && sr_make_argv(cfg->repo, snap->epoch, &tus, r->log, out);
+    if (ok && out->tus.n != tus.n)
+        fprintf(stderr, "sem-replay: make -n named %zu of %zu objects\n", out->tus.n, tus.n);
+    sr_strv_free(&tus);
     return ok;
 }
 
@@ -490,7 +508,8 @@ static bool before_side(const struct sr_cfg *cfg, struct commit_run *r)
     free(lc);
     sr_snap_free(&prev);
     ok = ok && sr_deps_hits(cfg->repo, &r->snap_p, &r->ch.files, &r->bound_p, &missing) &&
-         reset_facts(cfg) && sense_side(cfg, r, &r->bound_p, r->snap_p.epoch, "before") &&
+         argv_all(cfg, r, &r->snap_p, &r->argv_p) && reset_facts(cfg) &&
+         sense_side(cfg, r, &r->bound_p, &r->argv_p, "before") &&
          save_before_sources(cfg, r);
     if (missing)
         fprintf(stderr, "sem-replay: %zu objects at %s have no depfile\n", missing, r->parent);
@@ -548,20 +567,14 @@ static void record_compiles(const struct sr_cfg *cfg, struct commit_run *r,
 static bool after_batch(const struct sr_cfg *cfg, struct commit_run *r,
                         const struct sr_strv *timed)
 {
-    struct sr_strv all = {0};
-    struct sr_argv_map m = {0};
     struct batch b = {0};
     char tmp[SR_PATH];
     snprintf(tmp, sizeof(tmp), "%s/tmp-obj", cfg->state);
-    bool ok = sr_mkdirs(tmp) && set_union(&r->plain, timed, &all) &&
-              sr_make_argv(cfg->repo, r->snap_c.epoch, &all, r->log, &m) &&
-              add_sensing(cfg, &b, &r->plain, &m, "after", r->log) &&
-              add_compiles(&b, timed, &m, tmp, r->log) && sense_batch(cfg, r, &b);
+    bool ok = sr_mkdirs(tmp) && add_sensing(cfg, &b, &r->plain, &r->argv_c, "after", r->log) &&
+              add_compiles(&b, timed, &r->argv_c, tmp, r->log) && sense_batch(cfg, r, &b);
     if (ok)
         record_compiles(cfg, r, &b);
     batch_free(&b);
-    sr_argv_free(&m);
-    sr_strv_free(&all);
     return ok;
 }
 
@@ -575,12 +588,35 @@ static bool extra_before(const struct sr_cfg *cfg, struct commit_run *r)
         fprintf(stderr, "sem-replay: %zu TUs read a changed file only after; sensing their before side\n",
                 extra.n);
         ok = sr_git_checkout(cfg->repo, r->parent, r->log) &&
-             sense_side(cfg, r, &extra, r->snap_p.epoch, "before") &&
+             sense_side(cfg, r, &extra, &r->argv_p, "before") &&
              sr_git_checkout(cfg->repo, cfg->commit, r->log);
     }
     sr_strv_free(&only_c);
     sr_strv_free(&tus_p);
     sr_strv_free(&extra);
+    return ok;
+}
+
+static bool same_words(const struct sr_strv *a, const struct sr_strv *b)
+{
+    if (a->n != b->n)
+        return false;
+    for (size_t i = 0; i < a->n; i++)
+        if (strcmp(a->v[i], b->v[i]) != 0)
+            return false;
+    return true;
+}
+
+/* TUs present on both sides whose compile argv changed. */
+static bool find_drift(struct commit_run *r)
+{
+    bool ok = true;
+    for (size_t i = 0; ok && i < r->argv_c.tus.n; i++) {
+        const struct sr_strv *before = sr_argv_find(&r->argv_p, r->argv_c.tus.v[i]);
+        if (before != NULL && !same_words(before, &r->argv_c.flags[i]))
+            ok = sr_strv_push(&r->drift, r->argv_c.tus.v[i]);
+    }
+    sr_strv_sort_unique(&r->drift);
     return ok;
 }
 
@@ -594,7 +630,8 @@ static bool after_side(const struct sr_cfg *cfg, struct commit_run *r,
     ok = ok && sr_snap_take(cfg->repo, &r->snap_p, &r->snap_c) &&
          snap_tus(&r->snap_c, &r->tus_c) &&
          sr_deps_hits(cfg->repo, &r->snap_c, &r->ch.files, &r->bound_c, &missing) &&
-         compare_snaps(r) && set_union(&r->bound_p, &r->bound_c, &bounds) &&
+         compare_snaps(r) && argv_all(cfg, r, &r->snap_c, &r->argv_c) && find_drift(r) &&
+         set_union(&r->bound_p, &r->bound_c, &bounds) &&
          set_filter(&bounds, &r->tus_c, false, &r->plain) &&
          set_union(&r->make_set, &r->plain, &want);
     for (size_t i = 0; ok && i < want.n; i++)
@@ -677,12 +714,14 @@ static bool compare_c_variant(const struct cost_table *costs, struct commit_run 
         return true;
     bool ok = compile_set_of(&r->cv.facts, r, &r->cv.set, &r->cv.mode) &&
               set_filter(&r->changed, &r->cv.set, true, &r->cv.fn) &&
+              set_filter(&r->cv.fn, &r->drift, true, &r->cv.fn_source) &&
               set_filter(&r->make_set, &r->cv.set, true, &make_minus);
     r->cv.cpu_facts = cost_sum(costs, &r->cv.set, NULL);
     r->cv.saved_make = cost_sum(costs, &make_minus, NULL);
     for (size_t i = 0; i < r->cv.fn.n; i++)
-        fprintf(stderr, "sem-replay: C-only plan leaves out changed object %s (%s, %s)\n",
-                r->cv.fn.v[i], r->cv.mode, or_dash(r->cv.facts.reason));
+        fprintf(stderr, "sem-replay: C-only plan leaves out changed object %s (%s, %s, %s)\n",
+                r->cv.fn.v[i], r->cv.mode, or_dash(r->cv.facts.reason),
+                sr_strv_has(&r->drift, r->cv.fn.v[i]) ? "argv changed" : "FALSE NEGATIVE");
     sr_strv_free(&make_minus);
     return ok;
 }
@@ -695,6 +734,8 @@ static bool compare_sets(const struct cost_table *costs, struct commit_run *r)
               set_filter(&r->changed, &r->plain, true, &r->plain_fn) &&
               set_filter(&r->make_set, &r->facts, true, &make_minus) &&
               set_filter(&r->plain, &r->facts, true, &plain_minus) &&
+              set_filter(&r->fn, &r->drift, false, &r->fn_flags) &&
+              set_filter(&r->fn, &r->drift, true, &r->fn_source) &&
               compare_c_variant(costs, r);
     r->cpu_make = cost_sum(costs, &r->make_set, &r->cost_missing);
     r->cpu_facts = cost_sum(costs, &r->facts, NULL);
@@ -728,6 +769,9 @@ static bool write_sets(const struct commit_run *r)
     write_set(fp, "plain", &r->plain);
     write_set(fp, "facts", &r->facts);
     write_set(fp, "fn", &r->fn);
+    write_set(fp, "fn_source", &r->fn_source);
+    write_set(fp, "fn_flags", &r->fn_flags);
+    write_set(fp, "drift", &r->drift);
     write_set(fp, "plain_fn", &r->plain_fn);
     write_set(fp, "tu", &r->facts_plan.tu_rows);
     write_set(fp, "plain_group", &r->plain_plan.groups);
@@ -736,6 +780,7 @@ static bool write_sets(const struct commit_run *r)
     write_set(fp, "c_file", &r->cv.files);
     write_set(fp, "c_facts", &r->cv.set);
     write_set(fp, "c_fn", &r->cv.fn);
+    write_set(fp, "c_fn_source", &r->cv.fn_source);
     write_set(fp, "c_tu", &r->cv.facts.tu_rows);
     return fclose(fp) == 0;
 }
@@ -746,9 +791,9 @@ const char *const sr_result_header =
     "narrowed\treason\tobl_reason\tuni_complete\tuni_reason\tuni_total\t"
     "uni_affected\tbuild_wall\tbuild_cpu\tsense_n\tsense_fail\tsense_cpu\t"
     "sense_wall\tcpu_make\tcpu_facts\tcpu_changed\tsaved_make\tsaved_plain\tcost_missing\t"
-    "repro_rebuilt\trepro_mismatch\tcold_checked\tcold_mismatch\tbuild_failed\t"
+    "repro_rebuilt\trepro_mismatch\tcold_checked\tcold_mismatch\tbuild_failed\tdrift\tfn_source\tfn_flags\t"
     "c_run\tc_files\tc_facts\tc_mode\tc_fn\tc_groups_plain\tc_groups_facts\t"
-    "c_obl_facts\tc_narrowed\tc_reason\tc_uni_reason\tc_cpu_facts\tc_saved_make\n";
+    "c_obl_facts\tc_narrowed\tc_reason\tc_uni_reason\tc_cpu_facts\tc_saved_make\tc_fn_source\n";
 
 /* The C-only columns; without a separate C-only plan they repeat the
  * whole commit's. */
@@ -757,12 +802,12 @@ static void write_c_variant(FILE *fp, const struct commit_run *r)
     bool run = r->cv.run;
     const struct sr_plan *p = run ? &r->cv.plain : &r->plain_plan;
     const struct sr_plan *f = run ? &r->cv.facts : &r->facts_plan;
-    fprintf(fp, "%d\t%zu\t%zu\t%s\t%zu\t%ld\t%ld\t%ld\t%d\t%s\t%s\t%.3f\t%.3f\n", run,
+    fprintf(fp, "%d\t%zu\t%zu\t%s\t%zu\t%ld\t%ld\t%ld\t%d\t%s\t%s\t%.3f\t%.3f\t%zu\n", run,
             run ? r->cv.files.n : r->ch.files.n, run ? r->cv.set.n : r->facts.n,
             run ? r->cv.mode : r->facts_mode, run ? r->cv.fn.n : r->fn.n, p->groups_total,
             f->groups_total, f->obl_facts, f->narrowed, or_dash(f->reason),
             or_dash(f->uni_reason), run ? r->cv.cpu_facts : r->cpu_facts,
-            run ? r->cv.saved_make : r->saved_make);
+            run ? r->cv.saved_make : r->saved_make, run ? r->cv.fn_source.n : r->fn_source.n);
 }
 
 static bool write_result(const struct sr_cfg *cfg, const struct commit_run *r)
@@ -790,6 +835,7 @@ static bool write_result(const struct sr_cfg *cfg, const struct commit_run *r)
             r->cost_missing);
     fprintf(fp, "%zu\t%zu\t%zu\t%zu\t%d\t", r->repro_rebuilt, r->repro_mismatch,
             r->cold_checked, r->cold_mismatch, r->build_failed);
+    fprintf(fp, "%zu\t%zu\t%zu\t", r->drift.n, r->fn_source.n, r->fn_flags.n);
     write_c_variant(fp, r);
     return fclose(fp) == 0;
 }
@@ -799,13 +845,20 @@ static void report_false_negatives(const struct sr_cfg *cfg, const struct commit
     char path[SR_PATH], keep[SR_PATH], facts[SR_PATH];
     path_in(path, sizeof(path), cfg, "FALSE_NEGATIVES.tsv");
     FILE *fp = fopen(path, "a");
-    for (size_t i = 0; i < r->fn.n; i++) {
+    for (size_t i = 0; i < r->fn_source.n; i++) {
         fprintf(stderr, "FALSE NEGATIVE: commit %s TU %s (facts %s, reason %s, obligations %s)\n",
-                cfg->commit, r->fn.v[i], r->facts_mode, or_dash(r->facts_plan.reason),
+                cfg->commit, r->fn_source.v[i], r->facts_mode, or_dash(r->facts_plan.reason),
                 or_dash(r->facts_plan.obl_reason));
         if (fp)
-            fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", cfg->commit, r->fn.v[i], r->facts_mode,
+            fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", cfg->commit, r->fn_source.v[i], r->facts_mode,
                     or_dash(r->facts_plan.reason), or_dash(r->facts_plan.obl_reason));
+    }
+    for (size_t i = 0; i < r->cv.fn_source.n; i++) {
+        fprintf(stderr, "FALSE NEGATIVE (C-only plan): commit %s TU %s (facts %s, reason %s)\n",
+                cfg->commit, r->cv.fn_source.v[i], r->cv.mode, or_dash(r->cv.facts.reason));
+        if (fp)
+            fprintf(fp, "%s\t%s\tc-only %s\t%s\t%s\n", cfg->commit, r->cv.fn_source.v[i],
+                    r->cv.mode, or_dash(r->cv.facts.reason), or_dash(r->cv.facts.obl_reason));
     }
     if (fp)
         fclose(fp);
@@ -847,7 +900,7 @@ int sr_step(const struct sr_cfg *cfg)
          compare_sets(&costs, &r) && write_sets(&r) && write_result(cfg, &r) &&
          save_last(cfg, &r);
     int rc = ok ? SR_STEP_OK : SR_STEP_FAILED;
-    if (ok && r.fn.n > 0 && !r.build_failed) {
+    if (ok && (r.fn_source.n > 0 || r.cv.fn_source.n > 0) && !r.build_failed) {
         report_false_negatives(cfg, &r);
         rc = SR_STEP_FALSE_NEGATIVE;
     }
