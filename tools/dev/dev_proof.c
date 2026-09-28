@@ -4404,12 +4404,14 @@ static int dp_orphan_unlink_cb(const char *path, const struct stat *st,
 }
 
 /* Recursively remove one eligible orphan. FTW_PHYS means a symlink inside
- * is unlinked itself and never followed, so the walk cannot leave the
- * entry's own tree. */
+ * is unlinked itself and never followed, and FTW_MOUNT keeps the walk off
+ * any filesystem mounted inside the entry, so it cannot leave the entry's
+ * own tree. */
 static bool dp_orphan_remove_tree(const char *path)
 {
     dp_generation_unlock(path);
-    return nftw(path, dp_orphan_unlink_cb, 32, FTW_DEPTH | FTW_PHYS) == 0;
+    return nftw(path, dp_orphan_unlink_cb, 32,
+                FTW_DEPTH | FTW_PHYS | FTW_MOUNT) == 0;
 }
 
 /* Does this pool entry match one of the two orphan shapes, and has it aged
