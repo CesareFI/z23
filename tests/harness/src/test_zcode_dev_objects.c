@@ -10538,9 +10538,26 @@ static int test_zd_publish_in_running_node(void)
 }
 #endif
 
+/* Every sub-suite below keeps its package stores (and the node/zcode
+ * datadirs around them) in per-pid test-tmp directories that this same
+ * process writes, reads back and removes; none of them cuts power or kills a
+ * writer mid-write, so a package store's per-write fsync barrier protects
+ * nothing here. The group therefore runs with the package store's documented
+ * deferred-sync mode on, exactly as test_zcode_swarm_net's zwn_run_rows
+ * does: measured under strace on a disk-backed test-tmp, that drops the
+ * group's package-store fsyncs from 122 to 1. It drops only each
+ * store_atomic_write's own fsync; content addressing, verification and the
+ * temp+rename discipline are unchanged, so every assertion reads the same
+ * bytes it did before. (Most of the group's remaining fsyncs, ~3.4k, are
+ * vcs_object puts into .zvcs repositories, which have no such mode.) Every
+ * sub-suite's TEST exits (ASSERT's goto included) return here, and the prior
+ * mode is restored before this function's single return, so nothing outside
+ * this group sees it. */
 int test_zcode_dev_objects(void)
 {
     int failures = 0;
+    bool zd_prior_store_sync = vcs_package_store_deferred_sync_enabled();
+    vcs_package_store_set_deferred_sync(true);
 #if !defined(_WIN32)
     failures += test_zd_publish_routes_to_store_owner();
     failures += test_zd_publish_owner_probe_error();
@@ -10582,6 +10599,7 @@ int test_zcode_dev_objects(void)
     failures += test_zd_improve_command();
     failures += test_zd_task_index();
     failures += test_zd_async_no_peer_next();
+    vcs_package_store_set_deferred_sync(zd_prior_store_sync);
     printf("=== zcode_dev_objects: %d failures ===\n", failures);
     return failures;
 }
