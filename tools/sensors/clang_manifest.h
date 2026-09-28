@@ -70,6 +70,7 @@ struct cm_opts {
     const char *out;
     const char *tree;
     const char *cc;
+    const char *toolchain_id;
     bool facts;
     uint32_t max_records;
     uint64_t max_section_bytes;

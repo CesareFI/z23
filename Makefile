@@ -7274,6 +7274,7 @@ CLANG_MANIFEST_LLVM_DIR ?= $(patsubst %/include/clang-c/Index.h,%,$(firstword \
 	           /usr/lib/llvm-19/include/clang-c/Index.h \
 	           /usr/lib/llvm-18/include/clang-c/Index.h)))
 CLANG_MANIFEST_CORE_SRCS := tools/sensors/clang_manifest_core.c \
+	tools/sensors/clang_manifest_cc.c \
 	tools/sensors/clang_manifest_paths.c \
 	tools/sensors/clang_manifest_lookup.c \
 	tools/sensors/clang_manifest_records.c \
@@ -7334,7 +7335,11 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 # sensor above to build/clang-facts/<src>.zsm. The sensor is the only producer:
 # it parses each TU a second time with its dev object's own compile: --cc
 # names the compiler that builds the object ($(ZCL_OBJECT_CC), recorded in
-# IDENTITY by path and content hash), and after `--` come the object's own
+# IDENTITY by path, content hash and loaded shared objects), --toolchain-id
+# the build's toolchain identity ($(BUILD_COMPILER_ID): the driver's cc1,
+# as, ld and the other programs and runtime objects it selects; omitted, so
+# IDENTITY says "object-cc unknown", when this parse never fingerprinted it),
+# and after `--` come the object's own
 # flags, $(DEV_COMPILE_CFLAGS) as the object's target sees it plus
 # $(ZCL_TU_RANDOM_SEED). The hot directories' optimizer reaches both targets
 # from one assignment (DEV_HOT_SRC_DIRS, at the dev object rule), and the
@@ -7367,12 +7372,15 @@ CLANG_FACTS_ZSMS = $(patsubst %.c,$(CLANG_FACTS_OUT_DIR)/%.zsm,$(CLANG_FACTS_SRC
 # The compiler command of every dev object: $(CC) without the compile-cache
 # wrapper word (ZCL_CCACHE_BIN above), which only runs it.
 ZCL_OBJECT_CC = $(if $(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),$(wordlist 2,$(words $(CC)),$(CC)),$(CC))
+# The toolchain identity, when this parse fingerprinted one.
+CLANG_FACTS_TOOLCHAIN_ID = $(filter-out $(ZCL_ZERO_SHA256),$(BUILD_COMPILER_ID))
 clang-facts: $(CLANG_FACTS_ZSMS)
 $(CLANG_FACTS_OUT_DIR)/%.zsm: %.c $(CLANG_FACTS_HDRS) $(BIN_DIR)/z23-clang-manifest
 	$(if $(filter $(CLANG_FACTS_REFUSED),$<),@echo "clang-facts: refused: $@: its object bakes a build receipt no facts rule may name" >&2; exit 1)
 	@mkdir -p $(dir $@)
 	$(BIN_DIR)/z23-clang-manifest emit --root . --source $< --out $@ --facts \
 	    $(if $(CLANG_FACTS_TREE),--tree $(CLANG_FACTS_TREE)) \
+	    $(if $(CLANG_FACTS_TOOLCHAIN_ID),--toolchain-id $(CLANG_FACTS_TOOLCHAIN_ID)) \
 	    --cc $(firstword $(ZCL_OBJECT_CC)) \
 	    -- $(wordlist 2,$(words $(ZCL_OBJECT_CC)),$(ZCL_OBJECT_CC)) \
 	    $(DEV_COMPILE_CFLAGS) $(ZCL_TU_RANDOM_SEED)

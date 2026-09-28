@@ -123,8 +123,13 @@ struct cm_core {
     struct cm_occurrence *occ;
     size_t nocc, capocc;
     /* The absolute realpath of the compiler that builds the object
-     * (cm_resolve_cc), or NULL when the caller named none. */
+     * (cm_resolve_cc), or NULL when the caller named none or it resolved
+     * only to a compile-cache wrapper. */
     const char *object_cc;
+    /* The build's toolchain identity (Make's $(BUILD_COMPILER_ID): the
+     * driver's subprograms, assemblers, linkers, runtime objects and
+     * compile environment), or NULL when the caller named none. */
+    const char *toolchain_id;
     bool failed;
     char why[512];
 };
@@ -179,14 +184,32 @@ bool cm_emit_files(struct cm_core *c);
 
 /* Output-only argv controls: 1 drop this, 2 drop this and the next. */
 int cm_output_arg(const char *a);
+
+/* ---- object compiler (clang_manifest_cc.c) -------------------------------- */
+
+enum cm_cc_resolution {
+    CM_CC_NONE,    /* nothing executable by that name: refuse */
+    CM_CC_FOUND,   /* out holds the compiler's absolute realpath */
+    CM_CC_WRAPPED, /* only a compile-cache wrapper resolved: unknown */
+};
 /* The absolute realpath of the compiler command `cc`: as given (relative to
  * the current directory) when it holds a '/', else the first executable
- * regular file of that name on PATH, as execvp() would run it. Call before
- * cm_core_init, which enters the root. False when nothing resolves. */
-bool cm_resolve_cc(const char *cc, char out[PATH_MAX]);
-/* IDENTITY's compiler text is "<front end>; object-cc <path> sha3-256 <hex>"
- * (the spelled realpath of c->object_cc and the SHA3-256 of its bytes), or
- * "<front end>; object-cc unknown" without one. */
+ * regular file of that name on PATH, as execvp() would run it. A ccache,
+ * sccache or zcc image is resolved through: a masquerade link runs the next
+ * program of the link's name on PATH that is not a wrapper, and when there
+ * is none the compiler is unknown. Call before cm_core_init, which enters
+ * the root. */
+enum cm_cc_resolution cm_resolve_cc(const char *cc, char out[PATH_MAX]);
+/* 64 lowercase hex digits, not all zero (Make's unfingerprinted value). */
+bool cm_toolchain_id_ok(const char *id);
+/* "object-cc <path> sha3-256 <hex> libs <closure> toolchain <id>": the
+ * spelled realpath of c->object_cc, the SHA3-256 of its bytes, "none" for a
+ * script or static image or "sha3-256 <hex>" over every shared object the
+ * dynamic loader maps for it (by realpath and bytes), and c->toolchain_id.
+ * "object-cc unknown" when either input is missing or the loaded objects
+ * cannot be established. NULL, with c->why set, on a read failure. */
+char *cm_object_cc_text(struct cm_core *c);
+/* IDENTITY's compiler text is "<front end>; <cm_object_cc_text>". */
 bool cm_emit_identity(struct cm_core *c, const struct cm_identity *id);
 
 /* ---- lookups (clang_manifest_lookup.c) ------------------------------------ */

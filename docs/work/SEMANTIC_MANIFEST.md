@@ -145,17 +145,35 @@ stronger equivalence check.
   source path. Any front-end error refuses the manifest.
 - **Object compiler.** The front end that parses is not the compiler that
   builds the object. `emit --cc CC` names the object's compiler (a path, or
-  a name looked up on `PATH` as `execvp` would), and the identity's
-  `compiler` text becomes `<front end version>; object-cc <path> sha3-256
-  <hex>`: the compiler's realpath, spelled like any other path (a compiler
-  under `$HOME` outside the checkout is refused), and the SHA3-256 of its
-  bytes. Without `--cc` the text ends `; object-cc unknown`; a `--cc` that
-  resolves to no executable file refuses the manifest. The byte format is
-  unchanged (the field was always free text), so v1 readers and the
-  checked-in fixtures, which carry the front end version alone, still
-  decode. A compiler upgrade, or a switch between compilers, changes the
-  IDENTITY record and so is identity drift to every consumer. Two
-  manifests that both say `object-cc unknown` still compare equal.
+  a name looked up on `PATH` as `execvp` would) and `--toolchain-id HEX`
+  the build's toolchain identity (Make's `$(BUILD_COMPILER_ID)`, from
+  `tools/dev/build-epoch-key.sh compiler-id`: the bytes of every program
+  the driver names for `cc1`, `cc1plus`, `collect2`, `lto1`, `as` and `ld`,
+  the linkers, the runtime and startup objects, the include search roots
+  and the compile environment). The identity's `compiler` text becomes
+  `<front end version>; object-cc <path> sha3-256 <hex> libs <closure>
+  toolchain <id>`: the compiler's realpath, spelled like any other path (a
+  compiler under `$HOME` outside the checkout is refused), the SHA3-256 of
+  its bytes, and `libs none` for a script or static image or `libs sha3-256
+  <hex>` over the realpath and bytes of every shared object the dynamic
+  loader maps for it (a dynamically linked clang's `libLLVM` and
+  `libclang-cpp`). On Linux the loader's trace mode lists those objects;
+  an image whose objects cannot be listed (any other format, or a failed
+  trace) is unknown. A compile cache is never the compiler: `--cc` that
+  resolves to a `ccache`, `sccache` or `zcc` image is resolved through, as
+  the cache's masquerade link runs the next program of the link's name on
+  `PATH` that is not a cache, and is unknown when there is none. Without
+  `--cc` or `--toolchain-id` the text ends `; object-cc unknown`; a `--cc`
+  that resolves to no executable file, or a `--toolchain-id` that is not
+  64 lowercase hex digits (or is Make's all-zero unfingerprinted value),
+  refuses the manifest. The shared objects of the programs the driver runs
+  (gcc's `cc1` links `libisl`, `libmpc` and `libgmp`) are bound only as far
+  as the toolchain identity binds them, by those programs' bytes. The byte
+  format is unchanged (the field was always free text), so v1 readers and
+  older manifests, which carry the front end version alone, still decode.
+  A compiler upgrade, or a switch between compilers, changes the IDENTITY
+  record and so is identity drift to every consumer. Two manifests that
+  both say `object-cc unknown` still compare equal.
 - **Stripped comments.** `clang_tokenize` keeps comments as tokens. The sensor
   drops them from function token hashes and from macro bodies. The
   `comment_only` seed puts a comment inside a function body and inside a
@@ -449,9 +467,11 @@ adds that latency. It never changes an object either, because it writes none.
 `make clang-facts` runs the sensor over every TU of one component
 (`CLANG_FACTS_COMPONENT`, default `engine/modules/hotswap`) with each TU's
 own dev object compile, writing `build/clang-facts/<src>.zsm`: `--cc` is the
-object's compiler (`$(CC)` without its compile-cache wrapper), and the argv
-after `--` is the object's `$(DEV_COMPILE_CFLAGS)` as its target sees it,
-plus `$(ZCL_TU_RANDOM_SEED)`. The hot directories' `-O2` reaches the object
+object's compiler (`$(CC)` without its compile-cache wrapper),
+`--toolchain-id` is `$(BUILD_COMPILER_ID)` (omitted, so the compiler is
+unknown, when the parse fingerprinted none), and the argv after `--` is the
+object's `$(DEV_COMPILE_CFLAGS)` as its target sees it, plus
+`$(ZCL_TU_RANDOM_SEED)`. The hot directories' `-O2` reaches the object
 and the manifest from one assignment (`DEV_HOT_SRC_DIRS`); the
 `semantic_sensor` group dry-runs both rules for hot and ordinary sources and
 requires equal compiler and argv. The identity TU

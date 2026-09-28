@@ -11,11 +11,14 @@
  *              The identity TU, whose object bakes a receipt only its own
  *              rule may name, must be refused rather than sensed with other
  *              flags.
- *   compiler   --cc names the object compiler in IDENTITY by spelled path
- *              and SHA3-256 of its bytes; no --cc is "object-cc unknown";
- *              an unresolvable one refuses. Manifests of the same tree
- *              under two compilers differ in IDENTITY alone, and the
- *              consumer widens across them where it narrows under one.
+ *   compiler   --cc names the object compiler in IDENTITY by spelled path,
+ *              SHA3-256 of its bytes and of the objects the loader maps
+ *              for it, with --toolchain-id; no --cc or no toolchain is
+ *              "object-cc unknown"; an unresolvable one refuses, and a
+ *              compile-cache masquerade is resolved through (or unknown).
+ *              Manifests of the same tree under two compilers differ in
+ *              IDENTITY alone, and the consumer widens across them where
+ *              it narrows under one.
  */
 
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
@@ -286,12 +289,14 @@ static int ssi_t_argv(void)
 
 #define SSI_CC_A "bin-a/cc"
 #define SSI_CC_B "bin-b/cc"
+/* A stand-in for Make's $(BUILD_COMPILER_ID). */
+#define SSI_TC "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 
 static bool ssi_emit(const char *root, const char *source, const char *out,
-                     const char *cc, const char *const *flags, size_t nflags,
-                     char *message, size_t cap)
+                     const char *cc, const char *tc, const char *const *flags,
+                     size_t nflags, char *message, size_t cap)
 {
-    const char *argv[48];
+    const char *argv[56];
     size_t k = 0;
     bool timed_out = false;
     argv[k++] = SSI_SENSOR;
@@ -307,8 +312,12 @@ static bool ssi_emit(const char *root, const char *source, const char *out,
         argv[k++] = "--cc";
         argv[k++] = cc;
     }
+    if (tc != NULL) {
+        argv[k++] = "--toolchain-id";
+        argv[k++] = tc;
+    }
     argv[k++] = "--";
-    for (size_t i = 0; i < nflags && k < 47; i++)
+    for (size_t i = 0; i < nflags && k < 55; i++)
         argv[k++] = flags[i];
     argv[k] = NULL;
     int rc = zcl_spawn_capture_merged_observed(argv, message, cap, 60000,
@@ -320,7 +329,7 @@ static bool ssi_emit_ok(const char *root, const char *source, const char *out,
                         const char *cc, const char *const *flags, size_t nflags)
 {
     char message[4096];
-    bool ok = ssi_emit(root, source, out, cc, flags, nflags, message,
+    bool ok = ssi_emit(root, source, out, cc, SSI_TC, flags, nflags, message,
                        sizeof(message));
     if (!ok)
         printf("  emit %s --cc %s failed: %s\n", source,
@@ -403,13 +412,121 @@ static int ssi_t_identity(void)
                   1u << VCS_SEMANTIC_SECTION_V1_IDENTITY);
         ASSERT(ssi_has(m[4], n[4], "; object-cc @sys/"));
         (void)snprintf(out, sizeof(out), "%s/missing.zsm", root);
-        ASSERT(!ssi_emit(root, "ssi.c", out, "zfx-no-such-compiler", flags, 2,
-                         message, sizeof(message)));
+        ASSERT(!ssi_emit(root, "ssi.c", out, "zfx-no-such-compiler", SSI_TC,
+                         flags, 2, message, sizeof(message)));
         ASSERT(strstr(message, "object compiler") != NULL);
         ASSERT(access(out, F_OK) != 0);
     } TEST_END
     for (size_t k = 0; k < 5; k++)
         free(m[k]);
+    if (root[0] != '\0')
+        (void)test_rm_rf_recursive(root);
+    return failures;
+}
+
+/* The compiler text of one emit of ssi.c under `path_env` (NULL keeps PATH). */
+static bool ssi_emit_text(const char *root, const char *cc, const char *tc,
+                          const char *path_env, uint8_t **m, size_t *n)
+{
+    static const char *const flags[] = {"-std=c23", "-O1"};
+    char out[PATH_MAX], message[4096];
+    const char *old = getenv("PATH");
+    char *saved = old != NULL ? strdup(old) : NULL;
+    bool ok;
+    (void)snprintf(out, sizeof(out), "%s/r.zsm", root);
+    (void)unlink(out);
+    if (path_env != NULL && setenv("PATH", path_env, 1) != 0) {
+        free(saved);
+        return false;
+    }
+    ok = ssi_emit(root, "ssi.c", out, cc, tc, flags, 2, message,
+                  sizeof(message));
+    if (path_env != NULL)
+        (void)(saved != NULL ? setenv("PATH", saved, 1) : unsetenv("PATH"));
+    free(saved);
+    if (!ok)
+        printf("  emit --cc %s failed: %s\n", cc, message);
+    return ok && sft_read(out, m, n);
+}
+
+/* A compile-cache wrapper and a masquerade link to it named like the
+ * compiler, in <root>/bin-w; <root>/bin-o holds only the link. */
+static bool ssi_write_wrapper(const char *root)
+{
+    char path[PATH_MAX], link[PATH_MAX];
+    static const char body[] = "#!/bin/sh\nexit 0 # compile cache\n";
+    (void)snprintf(path, sizeof(path), "%s/bin-w", root);
+    if (!scx_mkdir(path))
+        return false;
+    (void)snprintf(path, sizeof(path), "%s/bin-o", root);
+    if (!scx_mkdir(path))
+        return false;
+    (void)snprintf(path, sizeof(path), "%s/bin-w/ccache", root);
+    if (!ssi_write(path, body) || chmod(path, 0755) != 0)
+        return false;
+    (void)snprintf(link, sizeof(link), "%s/bin-w/cc", root);
+    if (symlink("ccache", link) != 0)
+        return false;
+    (void)snprintf(link, sizeof(link), "%s/bin-o/cc", root);
+    return symlink("../bin-w/ccache", link) == 0;
+}
+
+static int ssi_t_resolution(void)
+{
+    int failures = 0;
+    char root[1024] = {0}, want_a[160], path[PATH_MAX], text[512];
+    char message[4096], out[PATH_MAX];
+    uint8_t *m = NULL;
+    size_t n = 0;
+    static const char *const flags[] = {"-std=c23", "-O1"};
+    TEST_CASE("semantic_sensor: IDENTITY binds the toolchain and resolves through a compile cache") {
+        ASSERT(test_mkdtemp(root, sizeof(root), "semsensor_ccres") != NULL);
+        ASSERT(ssi_write_compilers(root, want_a, sizeof(want_a)));
+        ASSERT(ssi_write_wrapper(root));
+        (void)snprintf(out, sizeof(out), "%s/ssi.c", root);
+        ASSERT(ssi_write(out, "int ssi_value(int x) { return x + 1; }\n"));
+        /* A script compiler: its bytes, no loaded objects, the toolchain. */
+        (void)snprintf(text, sizeof(text), "; %s libs none toolchain " SSI_TC,
+                       want_a);
+        (void)snprintf(path, sizeof(path), "%s/" SSI_CC_A, root);
+        ASSERT(ssi_emit_text(root, path, SSI_TC, NULL, &m, &n));
+        ASSERT(ssi_has(m, n, text));
+        free(m);
+        m = NULL;
+        /* No toolchain identity: the subprograms are unbound, so unknown. */
+        ASSERT(ssi_emit_text(root, path, NULL, NULL, &m, &n));
+        ASSERT(ssi_has(m, n, "; object-cc unknown"));
+        free(m);
+        m = NULL;
+        /* The masquerade link runs the next `cc` on PATH, not the cache. */
+        (void)snprintf(path, sizeof(path), "%s/bin-w:%s/bin-a", root, root);
+        ASSERT(ssi_emit_text(root, "cc", SSI_TC, path, &m, &n));
+        ASSERT(ssi_has(m, n, text));
+        ASSERT(!ssi_has(m, n, "ccache"));
+        free(m);
+        m = NULL;
+        /* ...and with no compiler behind it the compiler is unknown. */
+        (void)snprintf(path, sizeof(path), "%s/bin-o", root);
+        ASSERT(ssi_emit_text(root, "cc", SSI_TC, path, &m, &n));
+        ASSERT(ssi_has(m, n, "; object-cc unknown"));
+        free(m);
+        m = NULL;
+#if defined(__linux__)
+        /* A dynamic image: every object the loader maps for it is bound. */
+        ASSERT(ssi_emit_text(root, "sh", SSI_TC, NULL, &m, &n));
+        ASSERT(ssi_has(m, n, " libs sha3-256 "));
+        free(m);
+        m = NULL;
+#endif
+        (void)snprintf(out, sizeof(out), "%s/zero.zsm", root);
+        (void)snprintf(path, sizeof(path), "%s/" SSI_CC_A, root);
+        ASSERT(!ssi_emit(root, "ssi.c", out, path,
+                         "0000000000000000000000000000000000000000000000000000000000000000",
+                         flags, 2, message, sizeof(message)));
+        ASSERT(strstr(message, "--toolchain-id") != NULL);
+        ASSERT(access(out, F_OK) != 0);
+    } TEST_END
+    free(m);
     if (root[0] != '\0')
         (void)test_rm_rf_recursive(root);
     return failures;
@@ -553,6 +670,7 @@ int semantic_sensor_identity_tests(void)
     int failures = 0;
     failures += ssi_t_argv();
     failures += ssi_t_identity();
+    failures += ssi_t_resolution();
     failures += ssi_t_widen();
     return failures;
 }

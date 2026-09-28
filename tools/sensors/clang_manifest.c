@@ -10,18 +10,23 @@
  * core, clang_manifest_core.h.
  *
  *   z23-clang-manifest emit --root DIR --source FILE --out FILE [--cc CC]
- *                           [--facts] [--tree HEX] [--max-records N]
- *                           [--max-section-bytes N] -- ARGV...
+ *                           [--toolchain-id HEX] [--facts] [--tree HEX]
+ *                           [--max-records N] [--max-section-bytes N]
+ *                           -- ARGV...
  *   z23-clang-manifest session [--verify-cold] [--no-warm] [--max-tus N]
+ *   z23-clang-manifest object-cc --root DIR --cc CC [--toolchain-id HEX]
  *   z23-clang-manifest root FILE
  *   z23-clang-manifest dump FILE
  *   z23-clang-manifest diff OLD NEW
  *
  * --cc names the compiler that builds the TU's object (a path, or a name
- * looked up on PATH). IDENTITY records it by realpath and content hash, so
- * a compiler change is identity drift; without it IDENTITY says
- * "object-cc unknown". ARGV is the object's own compile argv after the
- * compiler word.
+ * looked up on PATH, resolved through a compile-cache masquerade) and
+ * --toolchain-id the build's toolchain identity (Make's BUILD_COMPILER_ID).
+ * IDENTITY records the compiler by realpath, content hash and loaded shared
+ * objects, and the toolchain identity, so a compiler change is identity
+ * drift; without both IDENTITY says "object-cc unknown". ARGV is the
+ * object's own compile argv after the compiler word. `object-cc` prints
+ * the text IDENTITY would record, for a build rule to re-sense on change.
  */
 /* realpath() is declared only under _DEFAULT_SOURCE on glibc without the
  * fortify inline; set it before the first header pulls in <features.h>. */
@@ -487,6 +492,63 @@ static bool cm_emit_parse(struct cm_state *st, const struct cm_opts *o,
     return true;
 }
 
+/* Resolve --cc and check --toolchain-id into c, before cm_core_init enters
+ * the root: a relative --cc names a file under the caller's directory, as
+ * the compile would run it. False (reported) refuses; a compiler that
+ * resolves only to a compile-cache wrapper is left unknown. */
+static bool cm_bind_object_cc(struct cm_core *c, const char *cc,
+                              const char *toolchain_id, char cc_real[PATH_MAX],
+                              char *why, size_t why_len)
+{
+    enum cm_cc_resolution r = cc != NULL ? cm_resolve_cc(cc, cc_real)
+                                         : CM_CC_WRAPPED;
+    if (cc != NULL && r == CM_CC_NONE) {
+        (void)snprintf(why, why_len, "object compiler %s is not an "
+                       "executable file (as given, or on PATH)", cc);
+        return false;
+    }
+    if (toolchain_id != NULL && !cm_toolchain_id_ok(toolchain_id)) {
+        (void)snprintf(why, why_len, "--toolchain-id %s is not a nonzero "
+                       "64-digit lowercase hex identity", toolchain_id);
+        return false;
+    }
+    c->object_cc = r == CM_CC_FOUND ? cc_real : NULL;
+    c->toolchain_id = toolchain_id;
+    return true;
+}
+
+/* object-cc --root DIR --cc CC [--toolchain-id HEX]: IDENTITY's object
+ * compiler text, one line on stdout. */
+static int cm_cmd_object_cc(int argc, char **argv)
+{
+    const char *root = NULL, *cc = NULL, *toolchain_id = NULL;
+    struct cm_core core = {0};
+    char cc_real[PATH_MAX], *text = NULL, why[512];
+    for (int k = 2; k + 1 < argc; k += 2) {
+        if (strcmp(argv[k], "--root") == 0)
+            root = argv[k + 1];
+        else if (strcmp(argv[k], "--cc") == 0)
+            cc = argv[k + 1];
+        else if (strcmp(argv[k], "--toolchain-id") == 0)
+            toolchain_id = argv[k + 1];
+        else
+            return 2;
+    }
+    if (root == NULL || cc == NULL || argc % 2 != 0)
+        return 2;
+    if (!cm_bind_object_cc(&core, cc, toolchain_id, cc_real, why, sizeof(why))) {
+        fprintf(stderr, "clang-manifest: refused: %s\n", why);
+        return 3;
+    }
+    bool ok = cm_core_init(&core, root) && (text = cm_object_cc_text(&core)) != NULL &&
+              printf("%s\n", text) > 0 && fflush(stdout) == 0;
+    if (!ok)
+        fprintf(stderr, "clang-manifest: refused: %s\n", core.why);
+    free(text);
+    cm_core_free(&core);
+    return ok ? 0 : 3;
+}
+
 /* Release everything one emit allocated. A front end that does not own the
  * TU keeps it (and its index) for the next emit; nothing else survives. */
 static void cm_state_free(struct cm_state *st, const struct cm_front *front,
@@ -526,15 +588,11 @@ bool cm_emit_bytes(const struct cm_opts *o, const struct cm_front *front,
         return false;
     }
     (void)snprintf(capture, sizeof(capture), "%s.clang-v", o->out);
-    /* Resolved before cm_core_init enters the root: a relative --cc names
-     * a file under the caller's directory, as the compile would run it. */
-    if (o->cc != NULL && !cm_resolve_cc(o->cc, cc_real)) {
-        (void)snprintf(why, why_len, "object compiler %s is not an "
-                       "executable file (as given, or on PATH)", o->cc);
+    if (!cm_bind_object_cc(&st->core, o->cc, o->toolchain_id, cc_real, why,
+                           why_len)) {
         free(st);
         return false;
     }
-    st->core.object_cc = o->cc != NULL ? cc_real : NULL;
     ok = cm_core_init(&st->core, o->root) &&
          cm_norm_path(&st->core, o->source, &main_path);
     if (ok && (main_path[0] == '@' || strcmp(main_path, ".") == 0))
@@ -656,12 +714,14 @@ static int cm_usage(void)
 {
     fprintf(stderr,
             "usage: z23-clang-manifest emit --root DIR --source FILE --out FILE [--cc CC]\n"
-            "           [--facts] [--tree HEX] [--max-records N]\n"
-            "           [--max-section-bytes N] -- ARGV...\n"
+            "           [--toolchain-id HEX] [--facts] [--tree HEX]\n"
+            "           [--max-records N] [--max-section-bytes N] -- ARGV...\n"
             "       z23-clang-manifest session [--verify-cold] [--no-warm]\n"
             "           [--max-tus N]\n"
             "           (one TAB-separated emit request per stdin line)\n"
-            "       (--cc: the object's compiler, recorded in IDENTITY)\n"
+            "       (--cc: the object's compiler, --toolchain-id: the build's\n"
+            "        BUILD_COMPILER_ID; both recorded in IDENTITY)\n"
+            "       z23-clang-manifest object-cc --root DIR --cc CC [--toolchain-id HEX]\n"
             "       z23-clang-manifest root FILE\n"
             "       z23-clang-manifest dump FILE\n"
             "       z23-clang-manifest diff OLD NEW\n");
@@ -680,6 +740,8 @@ static bool cm_opt_value(struct cm_opts *o, const char *key, const char *v)
         o->tree = v;
     else if (strcmp(key, "--cc") == 0)
         o->cc = v;
+    else if (strcmp(key, "--toolchain-id") == 0)
+        o->toolchain_id = v;
     else if (strcmp(key, "--max-records") == 0)
         o->max_records = (uint32_t)strtoul(v, NULL, 10);
     else if (strcmp(key, "--max-section-bytes") == 0)
@@ -714,6 +776,8 @@ bool cm_parse_opts(int argc, char **argv, int first, struct cm_opts *o)
 int main(int argc, char **argv)
 {
     struct cm_opts o = {0};
+    if (argc >= 2 && strcmp(argv[1], "object-cc") == 0)
+        return cm_cmd_object_cc(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "root") == 0)
         return cm_cmd_root(argv[2]);
     if (argc >= 3 && strcmp(argv[1], "dump") == 0)

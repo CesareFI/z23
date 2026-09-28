@@ -10,13 +10,11 @@
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
-#include "sha3/sha3.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 static const char *const k_cm_env[] = {VCS_SEMANTIC_ENV_V1_ALLOWLIST};
@@ -218,83 +216,23 @@ static bool cm_env_list(struct cm_core *c, struct vcs_semantic_record_v1 *rec)
     return true;
 }
 
-static bool cm_exec_file(const char *path, char out[PATH_MAX])
-{
-    struct stat st;
-    return access(path, X_OK) == 0 && stat(path, &st) == 0 &&
-           S_ISREG(st.st_mode) && realpath(path, out) != NULL;
-}
-
-bool cm_resolve_cc(const char *cc, char out[PATH_MAX])
-{
-    const char *path = getenv("PATH");
-    if (cc == NULL || cc[0] == '\0')
-        return false;
-    if (strchr(cc, '/') != NULL)
-        return cm_exec_file(cc, out);
-    for (const char *p = path; p != NULL;) {
-        const char *colon = strchr(p, ':');
-        size_t n = colon != NULL ? (size_t)(colon - p) : strlen(p);
-        char candidate[PATH_MAX];
-        int w = n == 0 ? snprintf(candidate, sizeof(candidate), "%s", cc)
-                       : snprintf(candidate, sizeof(candidate), "%.*s/%s",
-                                  (int)n, p, cc);
-        if (w > 0 && (size_t)w < sizeof(candidate) &&
-            cm_exec_file(candidate, out))
-            return true;
-        p = colon != NULL ? colon + 1 : NULL;
-    }
-    return false;
-}
-
-static bool cm_file_sha3(const char *path, uint8_t d[32])
-{
-    struct sha3_256_ctx ctx;
-    unsigned char buf[65536];
-    size_t n;
-    FILE *fp = fopen(path, "rb");
-    if (fp == NULL)
-        return false;
-    sha3_256_init(&ctx);
-    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0)
-        sha3_256_write(&ctx, buf, n);
-    bool ok = !ferror(fp);
-    if (fclose(fp) != 0)
-        ok = false;
-    sha3_256_finalize(&ctx, d);
-    return ok;
-}
-
 /* The front end names only itself; the object is built by another compiler
  * (or another version of this one), whose code generation the facts must
- * not be assumed to match. Its spelled realpath and the SHA3-256 of its
- * bytes make any compiler change IDENTITY drift. */
+ * not be assumed to match. cm_object_cc_text (clang_manifest_cc.c) names
+ * it, so any compiler change is IDENTITY drift. */
 static char *cm_compiler_text(struct cm_core *c, const char *front_end)
 {
-    char *spelled = NULL, *out = NULL;
-    uint8_t d[32];
-    char hex[65] = "";
+    char *object_cc = cm_object_cc_text(c), *out;
     size_t n;
-    if (c->object_cc != NULL) {
-        if (!cm_file_sha3(c->object_cc, d)) {
-            (void)cm_fail(c, "cannot read the object compiler %s", c->object_cc);
-            return NULL;
-        }
-        if (!cm_spell_real(c, c->object_cc, &spelled))
-            return NULL;
-        cm_hex(d, hex);
-    }
-    n = strlen(front_end) + (spelled != NULL ? strlen(spelled) : 0) +
-        sizeof("; object-cc unknown sha3-256 ") + sizeof(hex);
+    if (object_cc == NULL)
+        return NULL;
+    n = strlen(front_end) + strlen(object_cc) + 3;
     out = zcl_malloc(n, "clang_manifest.compiler");
-    if (out != NULL && spelled != NULL)
-        (void)snprintf(out, n, "%s; object-cc %s sha3-256 %s", front_end,
-                       spelled, hex);
-    else if (out != NULL)
-        (void)snprintf(out, n, "%s; object-cc unknown", front_end);
+    if (out != NULL)
+        (void)snprintf(out, n, "%s; %s", front_end, object_cc);
     else
         (void)cm_fail(c, "out of memory");
-    free(spelled);
+    free(object_cc);
     return out;
 }
 
