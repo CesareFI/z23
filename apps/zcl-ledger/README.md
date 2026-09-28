@@ -134,7 +134,8 @@ bytes and releases the verified bytes to its caller only after all six
 identical uploads and the ZIP243 digest finish. This is tested with synthetic
 one- and two-spend transactions; the current Blue Review app remains read only.
 It can also capture one selected Sapling output's value commitment, note
-commitment, ephemeral key, and outgoing ciphertext. This capture is usable
+commitment, ephemeral key, note ciphertext, and outgoing ciphertext. This
+capture is usable
 only after all six uploads match; abort or mismatch erases it. Tests cover
 first and second output selection, different upload chunk sizes, and changes
 in each later replay pass. The captured bytes are public wire fields, not a

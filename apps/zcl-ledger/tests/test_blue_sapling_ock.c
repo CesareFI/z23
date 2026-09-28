@@ -159,6 +159,8 @@ int main(int argc, char **argv) {
     zcl_tx_shielded_output_capture output;
     capture_verified_output(wire, &output);
     assert(memcmp(output.cv, wire + OUTPUT_OFFSET, 32) == 0);
+    assert(memcmp(output.enc_ciphertext,
+        wire + OUTPUT_OFFSET + 96, 580) == 0);
     struct blake2b_ctx context;
     zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
     assert(blue_sapling_ock(key, ovk, output.cv, output.cm,

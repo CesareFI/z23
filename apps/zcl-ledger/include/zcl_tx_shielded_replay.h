@@ -11,7 +11,8 @@
 #endif
 
 typedef struct {
-    uint8_t cv[32], cm[32], epk[32], out_ciphertext[80];
+    uint8_t cv[32], cm[32], epk[32];
+    uint8_t enc_ciphertext[580], out_ciphertext[80];
 } zcl_tx_shielded_output_capture;
 
 typedef struct {
@@ -46,7 +47,7 @@ bool zcl_tx_shielded_replay_begin_rk(zcl_tx_shielded_replay *state,
     uint32_t expected_length, uint32_t branch_id,
     const zcl_zip243_hasher *blake, uint32_t spend_index,
     uint8_t spend_rk[32]);
-/* Capture the selected output's cv, cm, epk, and outgoing ciphertext from
+/* Capture the selected output's cv, cm, epk, and both ciphertexts from
  * pass one. The capture is provisional until all six full-wire commitments
  * match. Failure or abort clears it; after success the caller owns and must
  * erase it. No recipient or amount is established by capture alone;

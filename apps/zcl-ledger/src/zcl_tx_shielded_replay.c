@@ -14,9 +14,7 @@ static const zcl_tx_shielded_span selected_span[6] = {
 };
 
 enum { SPEND_RK_OFFSET = 3 * 32, SPEND_RK_LENGTH = 32 };
-enum { OUTPUT_ENC_LENGTH = 580, OUTPUT_CIPHERTEXT_OFFSET = 96 + OUTPUT_ENC_LENGTH };
-
-static_assert(sizeof(zcl_tx_shielded_output_capture) == 176,
+static_assert(sizeof(zcl_tx_shielded_output_capture) == 756,
     "Sapling output capture must contain only selected wire fields");
 
 static_assert(sizeof(zcl_tx_shielded_replay) <= 576,
@@ -58,10 +56,7 @@ static void capture_output(zcl_tx_shielded_replay *state, uint8_t byte) {
     if (state->pass != 1 || !state->output_capture ||
         state->wire.item_index != state->output_index) return;
     uint32_t offset = state->wire.field_used;
-    if (offset >= OUTPUT_CIPHERTEXT_OFFSET &&
-        offset < OUTPUT_CIPHERTEXT_OFFSET + 80)
-        offset -= OUTPUT_ENC_LENGTH;
-    else if (offset >= 96) return;
+    if (offset >= sizeof *state->output_capture) return;
     ((uint8_t *)state->output_capture)[offset] = byte;
     ++state->output_used;
 }

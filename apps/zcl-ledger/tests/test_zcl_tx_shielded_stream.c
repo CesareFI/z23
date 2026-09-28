@@ -444,6 +444,7 @@ static void check_output_capture(size_t chunk) {
     assert(memcmp(output.cv, wire + 412, 32) == 0);
     assert(memcmp(output.cm, wire + 444, 32) == 0);
     assert(memcmp(output.epk, wire + 476, 32) == 0);
+    assert(memcmp(output.enc_ciphertext, wire + 412 + 96, 580) == 0);
     assert(memcmp(output.out_ciphertext, wire + 412 + 676, 80) == 0);
     assert(zcl_zip243_shielded_digest(wire, sizeof wire,
         0x76b809bb, &hasher, reference) == 0);
@@ -472,7 +473,7 @@ static void check_output_capture_rejections(void) {
             assert(zcl_tx_shielded_replay_next(&state));
         }
         assert(memcmp(&output, &zero, sizeof output) != 0);
-        wire[412 + 676 + 7] ^= 1u;
+        wire[412 + 96 + 7] ^= 1u;
         replay_pass(&state, wire, sizeof wire, 17);
         if (changed_pass < 6)
             assert(!zcl_tx_shielded_replay_next(&state));
@@ -483,8 +484,17 @@ static void check_output_capture_rejections(void) {
                 &facts, digest));
         }
         assert(memcmp(&output, &zero, sizeof output) == 0);
-        wire[412 + 676 + 7] ^= 1u;
+        wire[412 + 96 + 7] ^= 1u;
     }
+    assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+        0x76b809bb, &hasher, 0, &output));
+    replay_pass(&state, wire, sizeof wire, 220);
+    assert(zcl_tx_shielded_replay_next(&state));
+    wire[412 + 676 + 7] ^= 1u;
+    replay_pass(&state, wire, sizeof wire, 17);
+    assert(!zcl_tx_shielded_replay_next(&state));
+    assert(memcmp(&output, &zero, sizeof output) == 0);
+    wire[412 + 676 + 7] ^= 1u;
     assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
         0x76b809bb, &hasher, 0, &output));
     assert(zcl_tx_shielded_replay_feed(&state, wire, 1100));
@@ -524,6 +534,7 @@ static void check_second_output_capture(void) {
     assert(memcmp(output.cv, wire + 1360, 32) == 0);
     assert(memcmp(output.cm, wire + 1392, 32) == 0);
     assert(memcmp(output.epk, wire + 1424, 32) == 0);
+    assert(memcmp(output.enc_ciphertext, wire + 1360 + 96, 580) == 0);
     assert(memcmp(output.out_ciphertext, wire + 1360 + 676, 80) == 0);
     assert(memcmp(output.cv, wire + 412, 32) != 0);
 }
@@ -592,6 +603,7 @@ static void check_consensus_spend(const char *path) {
     assert(memcmp(output.cv, wire + 412, 32) == 0);
     assert(memcmp(output.cm, wire + 444, 32) == 0);
     assert(memcmp(output.epk, wire + 476, 32) == 0);
+    assert(memcmp(output.enc_ciphertext, wire + 412 + 96, 580) == 0);
     assert(memcmp(output.out_ciphertext, wire + 412 + 676, 80) == 0);
     assert(memcmp(digest, expected, sizeof expected) == 0);
 }
