@@ -169,3 +169,43 @@ for f in "$state/z23.queue"/* "$state/z23.priority"/* "$state/qedc.queue"/*; do
 done
 (( leftover == 0 )) || { printf 'leftover queue/priority marker files remain\n' >&2; exit 1; }
 printf 'devbuild mirror: no leftover ticket or priority files PASS\n'
+
+# --- 7. Killing a running wrapper does not leak its lane lock ---------------
+# The memory/CPU sampler is a backgrounded subshell that used to inherit
+# copies of the wrapper's lane/heavy-lock file descriptors and loop forever;
+# if the wrapper itself was killed (not just its child command), the sampler
+# kept those descriptors open and the lane stayed locked. The sampler now
+# exits with the wrapper (polls `kill -0` on the wrapper's own pid) and
+# explicitly closes fds 4/5/6/8/9, so a killed wrapper's lane frees up.
+"$root/devbuild" --wait --project z23 sleep 8 >"$scratch/term1.log" 2>&1 & pids+=("$!")
+"$root/devbuild" --wait --project z23 sleep 8 >"$scratch/term2.log" 2>&1 & pids+=("$!")
+"$root/devbuild" --wait --project z23 sleep 8 >"$scratch/term3.log" 2>&1 & term3=$!
+pids+=("$term3")
+for _ in {1..100}; do
+    running=0
+    for log in "$scratch/term1.log" "$scratch/term2.log" "$scratch/term3.log"; do
+        grep -q 'devbuild: z23 lane' "$log" 2>/dev/null && running=$((running + 1))
+    done
+    (( running == 3 )) && break
+    sleep 0.1
+done
+(( running == 3 )) || { printf 'not all three z23 lane jobs reached running state\n' >&2; exit 1; }
+sleep 0.5
+kill -TERM "$term3"
+lock_freed=0
+for _ in {1..100}; do
+    grep -qw "$term3" /proc/locks || { lock_freed=1; break; }
+    sleep 0.1
+done
+(( lock_freed )) || {
+    printf 'killed wrapper pid %s still holds a lock entry in /proc/locks\n' "$term3" >&2
+    exit 1
+}
+new_rc=0
+"$root/devbuild" --project z23 true >"$scratch/term-new.log" 2>&1 || new_rc=$?
+(( new_rc == 0 )) || {
+    printf 'a new z23 job (no --wait) could not get a lane after the kill (rc=%d): %s\n' \
+        "$new_rc" "$(cat "$scratch/term-new.log")" >&2
+    exit 1
+}
+printf 'devbuild mirror: killed wrapper releases its lane, no lock leak PASS\n'

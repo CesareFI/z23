@@ -260,19 +260,22 @@ cg="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/developm
 sample="$HOME/.local/state/development/.sample-$$"
 # Peak memory and CPU seconds of this job's own scope, sampled every 2 s
 # (the scope is gone once the command exits). Advisory only.
-( while :; do
+# It holds no lock fd and exits with this wrapper, so a killed wrapper can
+# never leave a lane locked behind it.
+devbuild_pid=$$
+( while kill -0 "$devbuild_pid" 2>/dev/null; do
       if [[ -r $cg/memory.peak ]]; then
           printf '%s %s\n' "$(cat "$cg/memory.peak" 2>/dev/null)" \
               "$(awk '$1 == "usage_usec" {print $2}' "$cg/cpu.stat" 2>/dev/null)" \
               > "$sample.tmp" 2>/dev/null && mv -f "$sample.tmp" "$sample"
       fi
       sleep 2
-  done ) &
+  done ) 4>&- 5>&- 6>&- 8>&- 9>&- &
 sampler=$!
 devbuild_account() {
     local cmd peak=0 cpu_us=0
     kill "$sampler" 2>/dev/null || true
-    read -r peak cpu_us < "$sample" 2>/dev/null || true
+    { read -r peak cpu_us < "$sample"; } 2>/dev/null || true
     rm -f "$sample" "$sample.tmp"
     [[ $peak =~ ^[0-9]+$ ]] || peak=0
     [[ $cpu_us =~ ^[0-9]+$ ]] || cpu_us=0
