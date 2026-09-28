@@ -13045,7 +13045,8 @@ check-dev-linker-threads:
 	case "$$(printf '%s' '$(LDFLAGS)')" in \
 	  *thread-count*) echo "check-dev-linker-threads: REFUSE: release LDFLAGS must not carry the dev-only gold thread flag" >&2; exit 1 ;; \
 	  *) ;; \
-	esac
+	esac; \
+	tools/dev/dev-linker-shootout.sh --self-test
 
 # No Python source, shebang, or runtime invocation in the executable tree.
 # Historical vector comments may name a Python origin; they must not call it.

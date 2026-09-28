@@ -31,7 +31,7 @@ select_fastest()
 
 self_test()
 {
-    local scratch a b bad selected
+    local scratch a b bad selected w
     scratch="$(mktemp -d "${TMPDIR:-/tmp}/zcl-linker-selftest.XXXXXX")"
     trap "rm -rf -- '$scratch'" EXIT INT TERM
     a="$scratch/a.json"; b="$scratch/b.json"; c="$scratch/c.json"
@@ -56,6 +56,41 @@ self_test()
     if select_fastest "$bad" >/dev/null 2>&1; then
         fail 'non-identical candidate was selectable'
     fi
+    # A gold-tuned DEV_LDFLAGS (dev-linker-select.sh's fallback: mold and
+    # lld absent) must not hand its gold-only --threads/--thread-count to a
+    # candidate that does not understand them — lld rejects --thread-count
+    # outright, which would fail that candidate's link and corrupt the
+    # receipt.
+    local -a stripped candidate_words
+    stripped=()
+    while IFS= read -r w; do stripped+=("$w"); done < <(
+        strip_linker_specific_ld_words -pthread -rdynamic -pie \
+            -fuse-ld=gold -Wl,--threads -Wl,--thread-count=9)
+    [ "${#stripped[@]}" -eq 3 ] &&
+        [ "${stripped[0]}" = -pthread ] &&
+        [ "${stripped[1]}" = -rdynamic ] &&
+        [ "${stripped[2]}" = -pie ] ||
+        fail 'strip_linker_specific_ld_words left a gold-only or -fuse-ld token behind'
+    candidate_words=()
+    while IFS= read -r w; do candidate_words+=("$w"); done < <(
+        candidate_ld_words lld "${stripped[@]}")
+    for w in "${candidate_words[@]}"; do
+        case "$w" in
+            -Wl,--thread-count=*|-Wl,--threads)
+                fail 'lld candidate received a gold-only thread flag';;
+        esac
+    done
+    candidate_words=()
+    while IFS= read -r w; do candidate_words+=("$w"); done < <(
+        candidate_ld_words gold "${stripped[@]}")
+    case " ${candidate_words[*]} " in
+        *' -Wl,--threads '*) ;;
+        *) fail 'gold candidate is missing --threads';;
+    esac
+    case " ${candidate_words[*]} " in
+        *' -Wl,--thread-count=9 '*) ;;
+        *) fail 'gold candidate is missing --thread-count';;
+    esac
     printf 'dev-linker-shootout: self-test PASS\n'
 }
 
@@ -63,6 +98,44 @@ plan_value()
 {
     local key="$1"
     sed -n "s/^${key}=//p" "$PLAN" | sed -n '1p'
+}
+
+# The plan's DEV_LDFLAGS carries whatever tools/dev/dev-linker-select.sh
+# picked for THIS host's default linker, including linker-specific tuning
+# that only that one linker understands (gold's --threads/--thread-count:
+# dev-linker-select.sh's fallback branch, since gold defaults to
+# --no-threads and every dev/test link paid for idle cores otherwise; see
+# check-dev-linker-threads). The shootout tries every OTHER installed
+# linker too, so any such tuning must come out of the shared base flags
+# before -fuse-ld=<candidate> is appended, or a linker that does not
+# understand it (lld has no --thread-count) fails its link and the
+# shootout receipt is wrong. Strip here; a linker-specific candidate adds
+# its own tuning back in candidate_ld_words below. Keep this list and
+# dev-linker-select.sh's gold branch in sync.
+strip_linker_specific_ld_words()
+{
+    local word
+    for word in "$@"; do
+        case "$word" in
+            -fuse-ld=*|-Wl,--threads|-Wl,--no-threads|-Wl,--thread-count=*)
+                continue;;
+        esac
+        printf '%s\n' "$word"
+    done
+}
+
+# base_ld (already stripped) plus the candidate's own linker-specific
+# tuning. Only gold gets --threads/--thread-count today; bfd, lld and mold
+# get none (lld/mold already parallelize internally with no flag needed;
+# bfd has no equivalent knob this shootout uses).
+candidate_ld_words()
+{
+    local candidate_name="$1"
+    shift
+    printf '%s\n' "$@"
+    case "$candidate_name" in
+        gold) printf '%s\n' '-Wl,--threads' '-Wl,--thread-count=9';;
+    esac
 }
 
 linker_available()
@@ -98,10 +171,9 @@ run_shootout()
     read -r -a ld_words <<<"$ldflags_text"
     read -r -a libs_words <<<"$libs_text"
     base_ld=()
-    for word in "${ld_words[@]}"; do
-        case "$word" in -fuse-ld=*) continue;; esac
+    while IFS= read -r word; do
         base_ld+=("$word")
-    done
+    done < <(strip_linker_specific_ld_words "${ld_words[@]}")
     linkers=()
     for name in bfd gold lld mold; do
         linker_available "$name" && linkers+=("$name")
@@ -113,13 +185,18 @@ run_shootout()
     rows="$scratch/rows"
     : >"$rows"
     local reference_probe='' name run candidate probe start end elapsed rc
+    local -a this_ld
     for name in "${linkers[@]}"; do
+        this_ld=()
+        while IFS= read -r word; do
+            this_ld+=("$word")
+        done < <(candidate_ld_words "$name" "${base_ld[@]}")
         : >"$scratch/$name.samples"
         rc=0
         for ((run=1; run<=RUNS; run++)); do
             candidate="$scratch/zclassic23-dev-$name"
             start="$(date +%s%N)"
-            if ! (cd "$ROOT" && "${cc_words[@]}" "${base_ld[@]}" \
+            if ! (cd "$ROOT" && "${cc_words[@]}" "${this_ld[@]}" \
                     "-fuse-ld=$name" -o "$candidate" "@$link_rsp" \
                     "${libs_words[@]}") >"$scratch/$name.link.log" 2>&1; then
                 rc=1
