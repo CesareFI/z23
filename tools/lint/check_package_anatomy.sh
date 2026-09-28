@@ -101,6 +101,19 @@ check_package() {
     m="$d/zcode-package.json"
     [ -f "$m" ] || return
 
+    # ONE recursive listing of the package directory, reused by R3, R4, R7,
+    # R8 and R9 below instead of each running its own `find`. Those five
+    # checks used to fork find+sort up to five times per package (plus a
+    # `head`); across ~80 real packages and the selftest's 209 synthetic
+    # ones (70 good + 70 bad + 69 hollow, each scanned by a full subprocess
+    # of this same script), that was several thousand forks doing the same
+    # directory walk. Filtering this one sorted list in bash preserves the
+    # exact match semantics of each original find (see the comment at each
+    # site) and the exact "$d"-sorted order, so what gets reported and when
+    # is unchanged — only how many processes it costs to learn it.
+    local -a all_files=()
+    while IFS= read -r f; do all_files+=("$f"); done < <(find "$d" -type f | sort)
+
     # R2 — manifest shape (flat-field extraction; the byte-exact parse is
     # contexts/commons/modules/vcs/src/package_prepare.c's job, this gate checks the contract).
     grep -q '"schema": 1' "$m" || fail "$pkg: manifest schema is not 1"
@@ -130,11 +143,11 @@ check_package() {
                 declared_files["$rel"]=1
             fi
         done <<< "$manifest_files_text"
-        while IFS= read -r f; do
+        for f in "${all_files[@]}"; do
             rel="${f#"$d"/}"
             [ -n "${declared_files[$rel]+present}" ] \
                 || fail "$pkg: $rel exists but is not listed in manifest files[]"
-        done < <(find "$d" -type f | sort)
+        done
         for rel in "${!declared_files[@]}"; do
             [ -f "$d/$rel" ] \
                 || fail "$pkg: manifest files[] lists $rel but it does not exist"
@@ -143,8 +156,11 @@ check_package() {
 
     # R4 — exactly one public header, namespaced, with the <PKG>_H guard.
     local -a hdrs=()
-    while IFS= read -r f; do hdrs+=("$f"); done \
-        < <(find "$d/include" -name '*.h' -type f 2>/dev/null | sort)
+    for f in "${all_files[@]}"; do
+        case "$f" in
+            "$d"/include/*.h) hdrs+=("$f") ;;
+        esac
+    done
     if [ "${#hdrs[@]}" -ne 1 ]; then
         fail "$pkg: expected exactly 1 public header, found ${#hdrs[@]}"
     elif [ "${hdrs[0]}" != "$d/include/$pkg/$pkg.h" ]; then
@@ -197,7 +213,11 @@ check_package() {
 
     # R7 — primary TU is src/<pkg>.c; extras are internal and declared.
     [ -f "$d/src/$pkg.c" ] || fail "$pkg: missing primary translation unit src/$pkg.c"
-    while IFS= read -r f; do
+    for f in "${all_files[@]}"; do
+        case "$f" in
+            "$d"/src/*) ;;
+            *) continue ;;
+        esac
         rel="${f#"$d"/}"
         case "$rel" in
             "src/$pkg.c") continue ;;
@@ -207,17 +227,31 @@ check_package() {
             src/*.c) ;;  # internal helper TU: allowed when declared (R3 did)
             *) fail "$pkg: unexpected file under src/: $rel" ;;
         esac
-    done < <(find "$d/src" -type f | sort)
+    done
 
     # R8 — tests exist.
-    if [ -z "$(find "$d/tests" -name '*.c' -type f 2>/dev/null)" ]; then
-        fail "$pkg: tests/ holds no .c file"
-    fi
+    local has_test=""
+    for f in "${all_files[@]}"; do
+        case "$f" in
+            "$d"/tests/*.c) has_test=1; break ;;
+        esac
+    done
+    [ -n "$has_test" ] || fail "$pkg: tests/ holds no .c file"
 
-    # R9 — no executable build logic.
-    local b
-    b="$(find "$d" -type f \( -iname 'Makefile*' -o -iname 'configure*' \
-         -o -iname 'CMakeLists*' -o -name '*.sh' \) | head -1)"
+    # R9 — no executable build logic. -iname is case-insensitive for
+    # Makefile/configure/CMakeLists (matching find's -iname); *.sh stays
+    # case-sensitive (matching find's plain -name).
+    local b="" bn bn_lc
+    for f in "${all_files[@]}"; do
+        bn="${f##*/}"
+        bn_lc="${bn,,}"
+        case "$bn_lc" in
+            makefile*|configure*|cmakelists*) b="$f"; break ;;
+        esac
+        case "$bn" in
+            *.sh) b="$f"; break ;;
+        esac
+    done
     [ -z "$b" ] || fail "$pkg: executable build logic $b — the recipe is declarative"
 }
 
