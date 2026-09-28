@@ -120,26 +120,38 @@ enum cm_image { CM_IMAGE_SCRIPT, CM_IMAGE_STATIC, CM_IMAGE_DYNAMIC,
                 CM_IMAGE_UNKNOWN };
 
 #if defined(__linux__)
-/* PT_INTERP among the program headers of a native-endian ELF image. */
-static enum cm_image cm_elf_image(FILE *fp, const unsigned char *id)
+/* The program header table of a native-endian ELF image: its offset, entry
+ * count and entry size. False for another class or byte order. */
+static bool cm_elf_phdrs(FILE *fp, const unsigned char *id, uint64_t *off,
+                         unsigned *phnum, unsigned *phentsize)
 {
-    bool wide = id[EI_CLASS] == ELFCLASS64;
     uint16_t one = 1;
     unsigned char host = *(unsigned char *)&one ? ELFDATA2LSB : ELFDATA2MSB;
     Elf64_Ehdr e64;
     Elf32_Ehdr e32;
-    uint64_t off;
-    unsigned phnum, phentsize;
-    if ((id[EI_CLASS] != ELFCLASS64 && id[EI_CLASS] != ELFCLASS32) ||
-        id[EI_DATA] != host || fseek(fp, 0, SEEK_SET) != 0)
-        return CM_IMAGE_UNKNOWN;
-    if (wide ? fread(&e64, sizeof(e64), 1, fp) != 1
-             : fread(&e32, sizeof(e32), 1, fp) != 1)
-        return CM_IMAGE_UNKNOWN;
-    off = wide ? e64.e_phoff : e32.e_phoff;
-    phnum = wide ? e64.e_phnum : e32.e_phnum;
-    phentsize = wide ? e64.e_phentsize : e32.e_phentsize;
-    if (phentsize < (wide ? sizeof(Elf64_Phdr) : sizeof(Elf32_Phdr)))
+    if (id[EI_DATA] != host || fseek(fp, 0, SEEK_SET) != 0)
+        return false;
+    if (id[EI_CLASS] == ELFCLASS64 && fread(&e64, sizeof(e64), 1, fp) == 1) {
+        *off = e64.e_phoff;
+        *phnum = e64.e_phnum;
+        *phentsize = e64.e_phentsize;
+        return *phentsize >= sizeof(Elf64_Phdr);
+    }
+    if (id[EI_CLASS] == ELFCLASS32 && fread(&e32, sizeof(e32), 1, fp) == 1) {
+        *off = e32.e_phoff;
+        *phnum = e32.e_phnum;
+        *phentsize = e32.e_phentsize;
+        return *phentsize >= sizeof(Elf32_Phdr);
+    }
+    return false;
+}
+
+/* PT_INTERP among the program headers of a native-endian ELF image. */
+static enum cm_image cm_elf_image(FILE *fp, const unsigned char *id)
+{
+    uint64_t off = 0;
+    unsigned phnum = 0, phentsize = 0;
+    if (!cm_elf_phdrs(fp, id, &off, &phnum, &phentsize))
         return CM_IMAGE_UNKNOWN;
     for (unsigned k = 0; k < phnum; k++) {
         uint32_t type;
@@ -174,66 +186,84 @@ static enum cm_image cm_image_of(const char *path)
     return kind;
 }
 
-/* Run the dynamic loader in trace mode on `exe` (it lists the objects it
- * would map and exits without running the program) into buf. */
-static bool cm_trace_run(const char *exe, char *buf, size_t cap)
+/* Start `exe` under the loader's trace mode, its stdout on out_fd (closed
+ * in the child along with in_fd) and its stderr discarded. */
+static bool cm_trace_spawn(const char *exe, int in_fd, int out_fd, pid_t *pid)
 {
-    size_t nenv = 0, got = 0;
-    int fds[2], status = 0;
-    pid_t pid = -1;
-    bool spawned;
+    size_t nenv = 0;
     posix_spawn_file_actions_t fa;
+    bool ok;
     while (environ != NULL && environ[nenv] != NULL)
         nenv++;
     char **envp = zcl_calloc(nenv + 2, sizeof(char *), "clang_manifest.trace_env");
     char *argv[] = {(char *)exe, NULL};
-    bool ok = envp != NULL && pipe(fds) == 0;
-    if (!ok) {
+    if (envp == NULL || posix_spawn_file_actions_init(&fa) != 0) {
         free(envp);
         return false;
     }
     envp[0] = (char *)"LD_TRACE_LOADED_OBJECTS=1";
     for (size_t k = 0; k < nenv; k++)
         envp[k + 1] = environ[k];
-    if (posix_spawn_file_actions_init(&fa) == 0) {
-        ok = posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO) == 0 &&
-             posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
-                                              O_WRONLY, 0) == 0 &&
-             posix_spawn_file_actions_addclose(&fa, fds[0]) == 0 &&
-             posix_spawn(&pid, exe, &fa, NULL, argv, envp) == 0;
-        (void)posix_spawn_file_actions_destroy(&fa);
-    } else {
-        ok = false;
-    }
-    spawned = ok;
-    (void)close(fds[1]);
-    /* Drained to EOF even past cap, so the child never blocks on a full
-     * pipe; an overflow only fails the trace. */
-    for (bool full = false; spawned;) {
+    ok = posix_spawn_file_actions_adddup2(&fa, out_fd, STDOUT_FILENO) == 0 &&
+         posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
+                                          O_WRONLY, 0) == 0 &&
+         posix_spawn_file_actions_addclose(&fa, in_fd) == 0 &&
+         posix_spawn(pid, exe, &fa, NULL, argv, envp) == 0;
+    (void)posix_spawn_file_actions_destroy(&fa);
+    free(envp);
+    return ok;
+}
+
+/* Read fd to end of file into buf (NUL-terminated), draining past cap so
+ * the writer never blocks on a full pipe; an overflow only fails. */
+static bool cm_drain(int fd, char *buf, size_t cap)
+{
+    size_t got = 0;
+    bool full = false;
+    for (;;) {
         char sink[4096];
         bool room = got < cap - 1;
-        ssize_t r = room ? read(fds[0], buf + got, cap - 1 - got)
-                         : read(fds[0], sink, sizeof(sink));
+        ssize_t r = room ? read(fd, buf + got, cap - 1 - got)
+                         : read(fd, sink, sizeof(sink));
         if (r < 0 && errno == EINTR)
             continue;
         if (r <= 0) {
-            ok = ok && r == 0 && !full;
-            break;
+            buf[got] = '\0';
+            return r == 0 && !full;
         }
         if (room)
             got += (size_t)r;
         else
             full = true;
     }
-    (void)close(fds[0]);
-    buf[got] = '\0';
-    if (spawned) {
-        pid_t w;
-        while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR)
-            ;
-        ok = ok && w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* Reap pid; true when it exited 0. */
+static bool cm_reap(pid_t pid)
+{
+    int status = 0;
+    pid_t w;
+    while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR)
+        ;
+    return w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* Run the dynamic loader in trace mode on `exe` (it lists the objects it
+ * would map and exits without running the program) into buf. */
+static bool cm_trace_run(const char *exe, char *buf, size_t cap)
+{
+    int fds[2];
+    pid_t pid = -1;
+    bool ok;
+    if (pipe(fds) != 0)
+        return false;
+    ok = cm_trace_spawn(exe, fds[0], fds[1], &pid);
+    (void)close(fds[1]);
+    if (ok) {
+        ok = cm_drain(fds[0], buf, cap);
+        ok = cm_reap(pid) && ok;
     }
-    free(envp);
+    (void)close(fds[0]);
     return ok;
 }
 
