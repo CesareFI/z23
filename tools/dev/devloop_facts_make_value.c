@@ -257,26 +257,36 @@ struct fxg_found {
     bool full;
 };
 
+/* ch is in the bracket class c[0..e) (past its '[' and any '!' or '^'). */
+static bool fxg_class(const char *c, const char *e, char ch)
+{
+    for (; c < e; c++) {
+        if (c + 2 < e && c[1] == '-') {
+            if (ch >= c[0] && ch <= c[2])
+                return true;
+            c += 2;
+        } else if (ch == *c) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* A pattern character of a glob component: FXG_EPOCH any run too. */
 static bool fxg_match(const char *p, const char *s)
 {
+    const char *e;
+    bool neg;
     if (*p == '\0')
         return *s == '\0';
     if (*p == '*' || *p == FXG_EPOCH)
         return fxg_match(p + 1, s) || (*s != '\0' && fxg_match(p, s + 1));
     if (*s == '\0')
         return false;
-    if (*p == '[') {
-        const char *e = strchr(p + 1, ']');
-        bool neg = p[1] == '!' || p[1] == '^', in = false;
-        if (e == NULL)
-            return *s == '[' && fxg_match(p + 1, s + 1);
-        for (const char *c = p + 1 + neg; c < e; c++)
-            in = in || (c + 2 < e && c[1] == '-' ? (*s >= c[0] && *s <= c[2])
-                                                  : *s == *c);
-        return in != neg && fxg_match(e + 1, s + 1);
-    }
-    return (*p == '?' || *p == *s) && fxg_match(p + 1, s + 1);
+    if (*p != '[' || (e = strchr(p + 1, ']')) == NULL)
+        return (*p == '?' || *p == *s) && fxg_match(p + 1, s + 1);
+    neg = p[1] == '!' || p[1] == '^';
+    return fxg_class(p + 1 + neg, e, *s) != neg && fxg_match(e + 1, s + 1);
 }
 
 static void fxg_found_add(struct fxg_found *f, const char *path)
@@ -572,34 +582,56 @@ static void fxg_filter(struct fxg *g, const struct fxg_val *pats,
     *v = r;
 }
 
+/* The literal word w names a file make's $(wildcard) finds (recorded). */
+static bool fxg_there(struct fxg *g, const char *w)
+{
+    char full[ZCL_DEVLOOP_PATH_MAX * 2];
+    struct stat st;
+    bool there = strpbrk(w, "*?[\\\x06\x07") == NULL && *w != '/' &&
+                 *w != '~' && strstr(w, "..") == NULL &&
+                 snprintf(full, sizeof(full), "%s/%s", g->m->root, w) <
+                     (int)sizeof(full) &&
+                 stat(full, &st) == 0;
+    fxg_record(g, w, there ? w : "");
+    return there;
+}
+
+/* The words of s no file answers for, into buf; false when they do not
+ * fit. */
+static bool fxg_missing_words(struct fxg *g, const char *s, char *buf,
+                              size_t cap, size_t *out)
+{
+    char w[ZCL_DEVLOOP_PATH_MAX];
+    const char *p;
+    size_t n;
+    *out = 0;
+    while ((p = fxg_word(&s, &n)) != NULL) {
+        if (n >= sizeof(w) || *out + n + 2 > cap)
+            return false;
+        memcpy(w, p, n);
+        w[n] = '\0';
+        if (fxg_there(g, w))
+            continue;
+        if (*out > 0)
+            buf[(*out)++] = ' ';
+        memcpy(buf + *out, w, n + 1);
+        *out += n;
+    }
+    return true;
+}
+
 /* $(filter-out $(wildcard X),X): X's words no file answers for. Another
  * $(filter-out) keeps at most its text's words. */
 static void fxg_missing(struct fxg *g, struct fxg_val *v)
 {
     struct fxg_val r = {.n = 0};
-    char buf[FXG_TEXT], full[ZCL_DEVLOOP_PATH_MAX * 2], w[ZCL_DEVLOOP_PATH_MAX];
-    struct stat st;
+    char buf[FXG_TEXT];
     for (size_t a = 0; !v->any && !r.any && a < v->n; a++) {
-        const char *s = v->alt[a], *p;
-        size_t n, out = 0;
-        while ((p = fxg_word(&s, &n)) != NULL && n < sizeof(w)) {
-            bool there;
-            memcpy(w, p, n);
-            w[n] = '\0';
-            there = strpbrk(w, "*?[\\\x06\x07") == NULL && *w != '/' &&
-                    *w != '~' && strstr(w, "..") == NULL &&
-                    snprintf(full, sizeof(full), "%s/%s", g->m->root, w) <
-                        (int)sizeof(full) &&
-                    stat(full, &st) == 0;
-            fxg_record(g, w, there ? w : "");
-            if (!there) {
-                out += (size_t)snprintf(buf + out, sizeof(buf) - out, "%s%s",
-                                        out ? " " : "", w);
-            }
-        }
-        r.any = p != NULL || out >= sizeof(buf) - 1;
-        if (!r.any)
+        size_t out;
+        if (fxg_missing_words(g, v->alt[a], buf, sizeof(buf), &out))
             fxg_push(g, &r, buf, out);
+        else
+            fxg_any(&r);
     }
     if (!v->any)
         *v = r;
@@ -610,6 +642,30 @@ static const char *fxg_last_slash(const char *w, size_t n)
     while (n > 0 && w[n - 1] != '/')
         n--;
     return n > 0 ? w + n - 1 : NULL;
+}
+
+/* Each word of s with the prefix or suffix x, or past its last '/'
+ * (notdir), into buf; false when a word holds the goals or it does not
+ * fit. */
+static bool fxg_map_words(const char *s, const char *x, bool pre, bool notdir,
+                          char *buf, size_t cap, size_t *out)
+{
+    const char *w;
+    size_t n, xn = strlen(x);
+    *out = 0;
+    while ((w = fxg_word(&s, &n)) != NULL) {
+        const char *slash = notdir ? fxg_last_slash(w, n) : NULL;
+        if (slash != NULL) {
+            n -= (size_t)(slash + 1 - w);
+            w = slash + 1;
+        }
+        if (*out + n + xn + 2 > cap || memchr(w, FXG_GOAL, n) != NULL)
+            return false;
+        *out += (size_t)snprintf(buf + *out, cap - *out, "%s%s%.*s%s",
+                                 *out ? " " : "", pre ? x : "", (int)n, w,
+                                 pre ? "" : x);
+    }
+    return true;
 }
 
 /* Each word of v with the prefix or suffix fix (addprefix, addsuffix), or
@@ -626,23 +682,12 @@ static void fxg_words_map(struct fxg *g, const struct fxg_val *fix, bool pre,
     }
     for (size_t a = 0; a < (notdir ? 1 : fix->n) && !r.any; a++)
         for (size_t b = 0; b < v->n && !r.any; b++) {
-            const char *s = v->alt[b], *w, *x = notdir ? "" : fix->alt[a];
-            size_t n, out = 0, xn = strlen(x);
-            while (!r.any && (w = fxg_word(&s, &n)) != NULL) {
-                const char *slash = notdir ? fxg_last_slash(w, n) : NULL;
-                if (slash != NULL) {
-                    n -= (size_t)(slash + 1 - w);
-                    w = slash + 1;
-                }
-                r.any = out + n + xn + 2 > sizeof(buf) || memchr(w, FXG_GOAL, n);
-                if (r.any)
-                    break;
-                out += (size_t)snprintf(buf + out, sizeof(buf) - out,
-                                        "%s%s%.*s%s", out ? " " : "",
-                                        pre ? x : "", (int)n, w, pre ? "" : x);
-            }
-            if (!r.any)
+            size_t out;
+            if (fxg_map_words(v->alt[b], notdir ? "" : fix->alt[a], pre,
+                              notdir, buf, sizeof(buf), &out))
                 fxg_push(g, &r, buf, out);
+            else
+                fxg_any(&r);
         }
     *v = r;
 }
