@@ -5578,13 +5578,6 @@ static bool proof_prepare_environment(void)
     return proof_scrub_credentials() && setenv("ZCL_LINT_CACHE", "0", 1) == 0;
 }
 
-#if defined(ZCL_TESTING)
-bool zcl_dev_proof_test_prepare_environment(void)
-{
-    return proof_prepare_environment();
-}
-#endif
-
 /* The compile cache a proof builds through. zcc's shared store
  * (~/.cache/zcc, or wherever ZCC_DIR points) is keyed with the build root
  * prefix-mapped away (tools/zcc.c recorded_cwd), so every worktree of this

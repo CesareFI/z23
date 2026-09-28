@@ -7445,7 +7445,7 @@ static int test_ic_proof_env_scrubs_credentials(void)
         if (saved_sock) (void)setenv("SSH_AUTH_SOCK", saved_sock, 1);
         free(saved_start);
         free(saved_sock);
-    }
+    } _test_next:;
     return failures;
 }
 

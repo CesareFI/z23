@@ -367,8 +367,6 @@ struct zcl_dev_proof_capsule_argv {
 #if defined(ZCL_TESTING)
 /* Watcher admission fixture: a held execution guard must preserve pending
  * edit work without forking a worker or arming a watcher. */
-/* The proof worker's environment preparation, credentials scrubbed. */
-bool zcl_dev_proof_test_prepare_environment(void);
 bool zcl_dev_proof_test_edit_busy(const char *root);
 bool zcl_dev_proof_test_edit_lifetime(const char *root);
 /* The generation's exact required/optional dependency policy and copy path.
