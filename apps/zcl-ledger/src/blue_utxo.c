@@ -163,3 +163,14 @@ bool blue_utxo_check_inputs(const char *rpc_binary, const uint8_t *wire,
                         .count = previous_count, .next_height = next_height};
     return zcl_tx_inputs_visit(wire, length, check_input, &check) == 0;
 }
+
+bool blue_utxo_recheck_at_tip(const char *rpc_binary,
+                              const blue_chain_tip *initial,
+                              const uint8_t *wire, size_t length,
+                              const zcl_tx_previous_transaction *previous,
+                              size_t previous_count) {
+    return initial && blue_chain_tip_still_current(rpc_binary, initial) &&
+        blue_utxo_check_inputs(rpc_binary, wire, length, previous,
+                               previous_count, initial->next_height) &&
+        blue_chain_tip_still_current(rpc_binary, initial);
+}

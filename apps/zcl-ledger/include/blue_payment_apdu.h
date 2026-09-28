@@ -45,8 +45,8 @@ bool blue_payment_apdu_touch_continue(blue_payment_apdu *state,
  * review session. No APDU may turn it into payment approval. */
 bool blue_payment_apdu_touch_confirm(blue_payment_apdu *state);
 /* Only the device's final touchscreen callback may arm a verified review.
- * APDU dispatch must never call this function. The read-only Wallet image
- * does not call it. */
+ * APDU dispatch must never call this function. The signing candidate calls
+ * it only from its final touchscreen approval callback. */
 bool blue_payment_apdu_touch_approve(blue_payment_apdu *state);
 /* Consumes one approved digest in input order. Signing failure must abort. */
 bool blue_payment_apdu_take_digest(blue_payment_apdu *state,

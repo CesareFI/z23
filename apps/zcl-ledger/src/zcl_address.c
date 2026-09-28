@@ -1,49 +1,22 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_address.h"
 #include "zcl_base58.h"
+#include "zcl_host_crypto.h"
+#include "zsha256/zsha256.h"
 
-#include <openssl/core_names.h>
-#include <openssl/evp.h>
-#include <openssl/params.h>
-#include <openssl/sha.h>
 #include <string.h>
-
-static int valid_pubkey(const uint8_t pubkey[ZCL_COMPRESSED_PUBKEY_SIZE]) {
-    if (pubkey[0] != 2 && pubkey[0] != 3) return 0;
-    static const char group[] = "secp256k1";
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *)group,
-                               sizeof group - 1),
-        OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY, (void *)pubkey,
-                                ZCL_COMPRESSED_PUBKEY_SIZE),
-        OSSL_PARAM_END
-    };
-    EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
-    EVP_PKEY *key = NULL;
-    int valid = context && EVP_PKEY_fromdata_init(context) > 0 &&
-                EVP_PKEY_fromdata(context, &key, EVP_PKEY_PUBLIC_KEY,
-                                  params) > 0;
-    if (valid) {
-        EVP_PKEY_CTX *check = EVP_PKEY_CTX_new(key, NULL);
-        valid = check && EVP_PKEY_public_check(check) == 1;
-        EVP_PKEY_CTX_free(check);
-    }
-    EVP_PKEY_free(key);
-    EVP_PKEY_CTX_free(context);
-    return valid;
-}
 
 int zcl_address_from_hash160(const uint8_t hash[ZCL_HASH160_SIZE],
                               bool script_hash,
                               char address[ZCL_ADDRESS_SIZE]) {
     if (!hash || !address) return -1;
-    uint8_t digest[SHA256_DIGEST_LENGTH], checksum[SHA256_DIGEST_LENGTH];
+    uint8_t digest[32], checksum[32];
     uint8_t payload[26];
     payload[0] = 0x1c;
     payload[1] = script_hash ? 0xbd : 0xb8;
     memcpy(payload + 2, hash, ZCL_HASH160_SIZE);
-    if (!SHA256(payload, 22, digest) ||
-        !SHA256(digest, sizeof digest, checksum)) return -1;
+    zsha256(payload, 22, digest);
+    zsha256(digest, sizeof digest, checksum);
     memcpy(payload + 22, checksum, 4);
     return zcl_base58_encode(payload, sizeof payload, address,
                              ZCL_ADDRESS_SIZE);
@@ -51,12 +24,8 @@ int zcl_address_from_hash160(const uint8_t hash[ZCL_HASH160_SIZE],
 
 int zcl_address_from_pubkey(const uint8_t pubkey[ZCL_COMPRESSED_PUBKEY_SIZE],
                             char address[ZCL_ADDRESS_SIZE]) {
-    if (!pubkey || !address || !valid_pubkey(pubkey)) return -1;
-    uint8_t digest[SHA256_DIGEST_LENGTH], hash[ZCL_HASH160_SIZE];
-    unsigned int hash_length = 0;
-    if (!SHA256(pubkey, ZCL_COMPRESSED_PUBKEY_SIZE, digest) ||
-        EVP_Digest(digest, sizeof digest, hash, &hash_length,
-                   EVP_ripemd160(), NULL) != 1 || hash_length != 20)
-        return -1;
+    if (!pubkey || !address || !zcl_host_pubkey_valid(pubkey)) return -1;
+    uint8_t hash[ZCL_HASH160_SIZE];
+    if (!zcl_host_hash160(pubkey, hash)) return -1;
     return zcl_address_from_hash160(hash, false, address);
 }

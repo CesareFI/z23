@@ -842,8 +842,10 @@ bool redjubjub_sign(const uint8_t sk[32],
      * deterministic-style RedJubjub nonce; an all-zero T from a failed
      * RNG would make r predictable and leak the signing key. */
     uint8_t T[80];
-    if (!redjubjub_nonce_bytes(T, sizeof(T), "redjubjub_T"))
+    if (!redjubjub_nonce_bytes(T, sizeof(T), "redjubjub_T")) {
+        memory_cleanse(T, sizeof(T));
         return false;
+    }
 
     /* r = H*(T || vk || msg) where vk = sk * G */
     struct jub_point vk_point;
@@ -894,14 +896,14 @@ bool redjubjub_sign(const uint8_t sk[32],
     memcpy(sig_out + 32, Sbar, 32);
 
     /* Cleanse secret intermediates */
-    memset(T, 0, sizeof(T));
-    memset(r_scalar, 0, 32);
-    memset(c_scalar, 0, 32);
-    memset(&r_fs, 0, sizeof(r_fs));
-    memset(&c_fs, 0, sizeof(c_fs));
-    memset(&sk_fs, 0, sizeof(sk_fs));
-    memset(&product, 0, sizeof(product));
-    memset(&S_fs, 0, sizeof(S_fs));
+    memory_cleanse(T, sizeof(T));
+    memory_cleanse(r_scalar, sizeof(r_scalar));
+    memory_cleanse(c_scalar, sizeof(c_scalar));
+    memory_cleanse(&r_fs, sizeof(r_fs));
+    memory_cleanse(&c_fs, sizeof(c_fs));
+    memory_cleanse(&sk_fs, sizeof(sk_fs));
+    memory_cleanse(&product, sizeof(product));
+    memory_cleanse(&S_fs, sizeof(S_fs));
 
     return true;
 }

@@ -15,5 +15,7 @@ uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
 void wallet_payment_display(void);
 bool wallet_payment_visible(void);
 void wallet_payment_abort(void);
+/* Ends an unconsumed final approval on the 30-second UX ticker callback. */
+bool wallet_payment_timeout(void);
 
 #endif

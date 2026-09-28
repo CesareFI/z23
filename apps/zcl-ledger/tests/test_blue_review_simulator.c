@@ -2,7 +2,9 @@
 #include "blue_review_app.h"
 #include "blue_review_accessible.h"
 #include "blue_review_render.h"
+#include "blue_review_screen.h"
 #include "blue_review_simulate.h"
+#include "blue_sapling_fixture.h"
 #include "zcl_zip243_host.h"
 
 #undef NDEBUG
@@ -92,7 +94,7 @@ static void simulate(const uint8_t *wire, size_t length) {
     assert(reply_length == 76 && app.transaction.reviewed_length == length);
     assert(blue_review_app_next(&app, sha256));
     expect_screen(&app, "PUBLIC IN/OUT: 1/2");
-    assert(strcmp(app.lines[1], "OUTPUTS: 0.49999755 ZCL") == 0);
+    assert(strcmp(app.lines[1], "PUB OUT: 0.49999755 ZCL") == 0);
     assert(strcmp(app.lines[3], "FEE UNKNOWN; SPROUT: 0") == 0);
     assert(strcmp(app.lines[4], "SHIELDED HIDDEN; NO SIGNING") == 0);
     blue_review_app_toggle_text(&app);
@@ -119,6 +121,8 @@ static void simulate(const uint8_t *wire, size_t length) {
     assert(command(&app, apdu, 5, &reply_length) == 0x9000);
     expect_screen(&app, "CONNECT Z23");
     assert(!blue_review_app_next(&app, sha256));
+    for (size_t i = 0; i < sizeof app.transaction.wire; ++i)
+        assert(app.transaction.wire[i] == 0);
 }
 
 static void test_accessible_wrap(void) {
@@ -142,6 +146,24 @@ static void test_accessible_wrap(void) {
     assert(snprintf(path, sizeof path, "/tmp/zcl-accessible-%ld.png",
                     (long)getpid()) > 0);
     assert(blue_review_render_preview_png(path, &app, true, 0));
+    assert(unlink(path) == 0);
+}
+
+static void test_max_public_output_render(void) {
+    uint8_t reply[76] = {0};
+    uint64_t amount = UINT64_C(2100000000000000);
+    for (unsigned i = 0; i < 8; ++i)
+        reply[20 + i] = (uint8_t)(amount >> (8 * i));
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
+    assert(blue_review_screen_format(reply, lines));
+    assert(strcmp(lines[1], "PUB OUT: 21000000.00000000 ZCL") == 0);
+    char path[96];
+    assert(snprintf(path, sizeof path, "/tmp/zcl-max-output-%ld.png",
+                    (long)getpid()) > 0);
+    assert(blue_review_render_lines_png(path, lines,
+        "ZCL Shielded", "NEXT / REFRESH", false, -1));
+    assert(blue_review_render_lines_png(path, lines,
+        "ZCL Shielded", "NEXT / REFRESH", true, 1));
     assert(unlink(path) == 0);
 }
 
@@ -187,6 +209,78 @@ static void simulate_scripts(void) {
     assert(blue_review_app_next(&app, sha256));
     expect_screen(&app, "OUTPUT 2/2: OP_RETURN");
     assert(strcmp(app.lines[4], "TOKEN STATUS UNVERIFIED") == 0);
+}
+
+static void simulate_rejected_review(void) {
+    blue_review_app app = {0};
+    uint8_t apdu[260] = {0xa5, 0x10, 0, 0, 2, 29, 0};
+    size_t reply_length = 0;
+    blue_review_app_reset(&app);
+    assert(command(&app, apdu, 7, &reply_length) == 0x9000);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x11, 0, 0, 8,
+                            4, 0, 0, 0x80, 0x85, 0x20, 0x2f, 0x89}, 13);
+    assert(command(&app, apdu, 13, &reply_length) == 0x9000);
+    strcpy(app.lines[0], "UPLOADING");
+    apdu[4] = 9;
+    assert(command(&app, apdu, 13, &reply_length) == 0x6700);
+    assert(reply_length == 0);
+    assert(app.transaction.expected == 0);
+    assert(app.transaction.received == 0);
+    assert(app.transaction.wire[3] == 0);
+    assert(strcmp(app.lines[0], "CONNECT Z23") == 0);
+}
+
+static bool shielded_page(const blue_review_app *app, void *context) {
+    unsigned *pages = context;
+    ++*pages;
+    if (*pages == 1) return strcmp(app->lines[0], "CONNECT Z23") == 0;
+    return strcmp(app->lines[0], "PUBLIC IN/OUT: 0/0") == 0 &&
+        strcmp(app->lines[2], "SHIELDED SPEND/OUT: 1/1") == 0 &&
+        strcmp(app->lines[3], "FEE UNKNOWN; SPROUT: 0") == 0 &&
+        strcmp(app->lines[4], "SHIELDED HIDDEN; NO SIGNING") == 0;
+}
+
+static void simulate_shielded_fixture(void) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    zcl_tx_review review;
+    assert(zcl_tx_review_parse(wire, sizeof wire, &review) == 0);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    uint8_t digest[32];
+    assert(zcl_zip243_shielded_digest(wire, sizeof wire, 0x76b809bb,
+        &hasher, digest) == 0);
+    assert(blue_review_simulate(wire, sizeof wire, &review, true,
+        0x76b809bb, digest));
+    unsigned pages = 0;
+    assert(blue_review_simulate_pages(wire, sizeof wire, &review,
+        shielded_page, &pages));
+    assert(pages == 3);
+}
+
+static void simulate_interrupted_shielded(void) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    blue_review_app app = {0};
+    uint8_t apdu[260] = {0xa5, 0x10, 0, 0, 2,
+        (uint8_t)sizeof wire, (uint8_t)(sizeof wire >> 8)};
+    size_t reply_length = 0;
+    blue_review_app_reset(&app);
+    assert(command(&app, apdu, 7, &reply_length) == 0x9000);
+    apdu[1] = 0x11;
+    apdu[4] = 220;
+    memcpy(apdu + 5, wire, 220);
+    assert(command(&app, apdu, 225, &reply_length) == 0x9000);
+    assert(app.transaction.received == 220);
+    apdu[4] = 219;
+    assert(command(&app, apdu, 225, &reply_length) == 0x6700);
+    assert(app.transaction.received == 0);
+    for (size_t i = 0; i < sizeof app.transaction.wire; ++i)
+        assert(app.transaction.wire[i] == 0);
+    assert(strcmp(app.lines[0], "CONNECT Z23") == 0);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x14, 0, 0, 4,
+        0xbb, 0x09, 0xb8, 0x76}, 9);
+    assert(command(&app, apdu, 9, &reply_length) == 0x6985);
 }
 
 static uint32_t random_word(uint32_t *state) {
@@ -240,7 +334,11 @@ int main(int argc, char **argv) {
     assert(!blue_review_simulate(wire, length, &review, true,
                                  0x76b809bb, digest));
     simulate_scripts();
+    simulate_rejected_review();
+    simulate_shielded_fixture();
+    simulate_interrupted_shielded();
     simulate_malformed_commands();
     test_accessible_wrap();
+    test_max_public_output_render();
     return 0;
 }

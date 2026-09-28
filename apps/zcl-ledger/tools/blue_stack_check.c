@@ -35,7 +35,7 @@ static const char *const frame_names[FRAME_COUNT] = {
     "blue_payment_screen_mark_account", "confirm_review",
     "blue_payment_apdu_touch_approve", "blue_payment_sign_next",
     "blue_wallet_sign_digest", "blue_payment_apdu_take_digest",
-    "blue_ecdsa_der_low_s", "public_hash160",
+    "blue_ecdsa_der_low_s", "blue_wallet_public_hash160",
     "blue_payment_sign_command"
 };
 
@@ -113,7 +113,7 @@ static void report_signing_candidate(const stack_frames *frames,
     paths[18] = base + frames->bytes[49];
     paths[19] = base + frames->bytes[50];
     paths[20] = base + frames->bytes[51];
-    printf("Unreachable signing candidates: derive %u; digest %u; DER %u; public hash %u; BOLOS frames excluded\n",
+    printf("Signing paths: derive %u; digest %u; DER %u; public hash %u; BOLOS frames excluded\n",
            paths[17], paths[18], paths[19], paths[20]);
 }
 

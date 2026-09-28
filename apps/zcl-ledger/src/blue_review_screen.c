@@ -75,7 +75,7 @@ bool blue_review_screen_format(
     size_t used = 0;
     if (!format_pair(lines[0], "PUBLIC IN/OUT: ",
                      read_u32(reply), read_u32(reply + 4)) ||
-        !append_text(lines[1], &used, "OUTPUTS: ") ||
+        !append_text(lines[1], &used, "PUB OUT: ") ||
         !append_zcl(lines[1], &used, read_u64(reply + 20)) ||
         !format_pair(lines[2], "SHIELDED SPEND/OUT: ",
                      read_u32(reply + 8), read_u32(reply + 12)))
@@ -95,6 +95,63 @@ bool blue_review_screen_format(
         lines[5][used++] = hex[reply[44 + i] & 15];
     }
     lines[5][used] = 0;
+    return true;
+}
+
+bool blue_review_screen_zip243(
+    const uint8_t reply[76],
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    if (!blue_review_screen_format(reply, lines)) return false;
+    static const char hex[] = "0123456789abcdef";
+    memset(lines[5], 0, ZCL_BLUE_REVIEW_LINE_SIZE);
+    memcpy(lines[5], "ZIP243 PREFIX: ", sizeof "ZIP243 PREFIX: " - 1);
+    for (unsigned i = 0; i < 8; ++i) {
+        lines[5][15 + 2 * i] = hex[reply[44 + i] >> 4];
+        lines[5][16 + 2 * i] = hex[reply[44 + i] & 15];
+    }
+    lines[5][31] = 0;
+    return true;
+}
+
+bool blue_review_screen_zip243_digest(const uint8_t digest[32],
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    if (!digest || !lines) return false;
+    static const char hex[] = "0123456789abcdef";
+    memset(lines, 0, ZCL_BLUE_REVIEW_LINES * ZCL_BLUE_REVIEW_LINE_SIZE);
+    memcpy(lines[0], "ZIP243 DIGEST", sizeof "ZIP243 DIGEST");
+    for (unsigned row = 0; row < 4; ++row) {
+        for (unsigned i = 0; i < 8; ++i) {
+            uint8_t byte = digest[row * 8 + i];
+            lines[row + 1][2 * i] = hex[byte >> 4];
+            lines[row + 1][2 * i + 1] = hex[byte & 15];
+        }
+    }
+    memcpy(lines[5], "READ ONLY; NO SIGNING",
+        sizeof "READ ONLY; NO SIGNING");
+    return true;
+}
+
+bool blue_review_screen_progress(uint8_t pass, uint32_t received,
+    uint32_t total,
+    char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE]) {
+    if (!lines || pass < 1 || pass > 6 || !total || received > total)
+        return false;
+    memset(lines, 0, ZCL_BLUE_REVIEW_LINES * ZCL_BLUE_REVIEW_LINE_SIZE);
+    size_t used = 0;
+    if (!append_text(lines[0], &used, "REVIEW PASS: ") ||
+        !append_number(lines[0], &used, pass) ||
+        !append_text(lines[0], &used, "/6")) return false;
+    used = 0;
+    if (!append_text(lines[1], &used, "UPLOAD BYTES: ") ||
+        !append_number(lines[1], &used, received) ||
+        !append_text(lines[1], &used, "/") ||
+        !append_number(lines[1], &used, total)) return false;
+    memcpy(lines[2], "CHECKING FULL TRANSACTION",
+        sizeof "CHECKING FULL TRANSACTION");
+    memcpy(lines[3], "SHIELDED DETAILS HIDDEN",
+        sizeof "SHIELDED DETAILS HIDDEN");
+    memcpy(lines[4], "READ ONLY; NO SIGNING",
+        sizeof "READ ONLY; NO SIGNING");
     return true;
 }
 

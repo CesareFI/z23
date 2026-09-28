@@ -90,7 +90,7 @@ int main(void) {
     char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
     assert(blue_review_screen_format(reply, lines));
     assert(strcmp(lines[0], "PUBLIC IN/OUT: 2/3") == 0);
-    assert(strcmp(lines[1], "OUTPUTS: 0.39062500 ZCL") == 0);
+    assert(strcmp(lines[1], "PUB OUT: 0.39062500 ZCL") == 0);
     assert(strcmp(lines[2], "SHIELDED SPEND/OUT: 1/4") == 0);
     assert(strcmp(lines[3], "FEE UNKNOWN; SPROUT: 0") == 0);
     assert(strcmp(lines[4], "SHIELDED HIDDEN; NO SIGNING") == 0);
@@ -100,6 +100,6 @@ int main(void) {
     review.transparent_output_zat = 2100000000000000ULL;
     blue_review_encode_summary(&review, reply);
     assert(blue_review_screen_format(reply, lines));
-    assert(strcmp(lines[1], "OUTPUTS: 21000000.00000000 ZCL") == 0);
+    assert(strcmp(lines[1], "PUB OUT: 21000000.00000000 ZCL") == 0);
     return 0;
 }

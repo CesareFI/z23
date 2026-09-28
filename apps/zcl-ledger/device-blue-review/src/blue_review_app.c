@@ -24,12 +24,12 @@ uint16_t blue_review_app_command(blue_review_app *app,
     uint16_t status = blue_review_handle(&app->transaction, apdu,
         apdu_length, reply, reply_capacity, reply_length, digest,
         zip243_hasher);
-    if (instruction == 0x10 || instruction == 0x13 ||
-        (instruction == 0x11 && status != 0x9000))
+    if (instruction == 0x10 || instruction == 0x13 || status != 0x9000)
         blue_review_app_reset(app);
     if (instruction != 0x12) return status;
     if (status != 0x9000 || *reply_length != sizeof app->reply ||
         !blue_review_screen_format(reply, app->lines)) {
+        blue_review_abort(&app->transaction);
         blue_review_app_reset(app);
         if (status == 0x9000) status = 0x6a80;
         *reply_length = 0;
@@ -58,7 +58,7 @@ bool blue_review_app_next(blue_review_app *app, blue_review_hash_fn hash) {
             app->transaction.reviewed_length, next - 1, hash, app->lines);
     if (!formatted) {
         blue_review_app_reset(app);
-        app->transaction.reviewed_length = 0;
+        blue_review_abort(&app->transaction);
         return false;
     }
     app->page = next >= count ? 0 : next + 1;

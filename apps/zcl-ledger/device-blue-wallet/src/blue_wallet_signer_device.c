@@ -23,8 +23,9 @@ void blue_wallet_signer_wipe(void) {
 }
 
 static bool request_valid(uint8_t path, const uint8_t *digest,
-    const uint8_t *public_key, const uint8_t *signature) {
-    return digest && public_key && signature &&
+    const uint8_t *public_key, const uint8_t *signature,
+    const blue_payment_owned_hashes *owned) {
+    return digest && public_key && signature && owned &&
         (path == BLUE_PAYMENT_INPUT_EXTERNAL ||
          path == BLUE_PAYMENT_INPUT_INTERNAL) &&
         os_global_pin_is_validated();
@@ -51,17 +52,25 @@ static bool derive_pair(uint8_t path) {
 bool blue_wallet_sign_digest(void *context, uint8_t path,
     const uint8_t digest[32], uint8_t public_key[33],
     uint8_t signature[BLUE_ECDSA_DER_MAX], size_t *signature_length) {
-    (void)context;
+    const blue_payment_owned_hashes *owned = context;
     blue_wallet_signer_wipe();
     if (public_key) memset(public_key, 0, 33);
     if (signature) memset(signature, 0, BLUE_ECDSA_DER_MAX);
     if (!signature_length) return false;
     *signature_length = 0;
-    if (!request_valid(path, digest, public_key, signature)) return false;
+    if (!request_valid(path, digest, public_key, signature, owned)) return false;
     bool valid = derive_pair(path);
     if (valid) {
         public_key[0] = (uint8_t)(2u | (public_point.W[64] & 1u));
         memcpy(public_key + 1, public_point.W + 1, 32);
+        uint8_t hash160[20] = {0};
+        const uint8_t *expected = path == BLUE_PAYMENT_INPUT_EXTERNAL ?
+            owned->external : owned->internal;
+        valid = blue_wallet_public_hash160(public_key, hash160) &&
+            memcmp(hash160, expected, sizeof hash160) == 0;
+        wipe(hash160, sizeof hash160);
+    }
+    if (valid) {
         unsigned int info = 0;
         int count = (cx_ecdsa_sign)(&secret.key, CX_RND_RFC6979,
             CX_SHA256, digest, 32, signature, BLUE_ECDSA_DER_MAX, &info);

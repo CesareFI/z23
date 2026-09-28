@@ -46,9 +46,11 @@ static void check_mutations(blue_wallet_state *state) {
 
 int main(void) {
     uint8_t identity_v8[7] = {'Z', 'C', 'L', 8, 1, 0x90, 0};
+    uint8_t identity_v11[7] = {'Z', 'C', 'L', 11, 15, 0x90, 0};
     uint8_t identity_current[7] = {'Z', 'C', 'L',
         BLUE_WALLET_PROTOCOL_VERSION, BLUE_WALLET_CAPABILITIES, 0x90, 0};
     assert(blue_wallet_identity_matches(identity_v8, sizeof identity_v8));
+    assert(blue_wallet_identity_matches(identity_v11, sizeof identity_v11));
     assert(blue_wallet_identity_matches(identity_current,
         sizeof identity_current));
     identity_current[4] ^= 2;

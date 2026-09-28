@@ -2,7 +2,9 @@
 #include "os.h"
 #include "os_io_seproxyhal.h"
 #include "blue_payment_apdu.h"
+#include "blue_payment_sign.h"
 #include "blue_wallet_layout.h"
+#include "blue_wallet_signer_device.h"
 #include "wallet_payment_device.h"
 
 #include <string.h>
@@ -17,9 +19,12 @@ static char others_text[32];
 static char own_text[32];
 static char input_path_text[20];
 static bool totals_view;
+static bool sign_review_view, sign_approved_view;
 static uint8_t account_hash160[20];
 static uint8_t internal_hash160[20];
 static bool account_ready;
+
+enum { SIGN_APPROVAL_MS = 30000 };
 
 void wallet_payment_set_account_hashes(const uint8_t external_hash160[20],
                                        const uint8_t internal_hash[20]) {
@@ -56,6 +61,7 @@ static bool sha_init(void *context) {
 }
 
 void wallet_payment_abort(void) {
+    UX_CALLBACK_SET_INTERVAL(0);
     blue_payment_apdu_abort(&payment);
     memset(&payment_blake, 0, sizeof payment_blake);
     memset(&payment_sha, 0, sizeof payment_sha);
@@ -66,10 +72,18 @@ void wallet_payment_abort(void) {
     visible = false;
     displayed_view = 0;
     totals_view = false;
+    sign_review_view = false;
+    sign_approved_view = false;
 }
 
 bool wallet_payment_visible(void) {
     return visible;
+}
+
+bool wallet_payment_timeout(void) {
+    if (!visible || !payment.approved) return false;
+    wallet_payment_abort();
+    return true;
 }
 
 uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
@@ -78,6 +92,8 @@ uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
         if (reply_length) *reply_length = 0;
         return 0x6985;
     }
+    if (apdu && length >= 2 && apdu[1] == 0x20)
+        wallet_payment_abort();
     zcl_zip243_hasher blake = {.context = &payment_blake,
         .init = blake_init, .update = hash_update, .final = hash_final};
     zcl_tx_replay_sha256 sha = {.context = &payment_sha,
@@ -85,8 +101,19 @@ uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     blue_payment_owned_hashes owned;
     memcpy(owned.external, account_hash160, sizeof owned.external);
     memcpy(owned.internal, internal_hash160, sizeof owned.internal);
-    uint16_t status = blue_payment_apdu_handle(&payment, apdu, length,
-        reply, capacity, reply_length, &blake, &sha, hash_sha256, &owned);
+    bool sign_command = apdu && length >= 2 && apdu[1] == 0x29;
+    uint16_t status = sign_command
+        ? blue_payment_sign_command(&payment, apdu, length, &owned,
+            blue_wallet_sign_digest, &owned, blue_wallet_public_hash160,
+            reply, capacity, reply_length)
+        : blue_payment_apdu_handle(&payment, apdu, length,
+            reply, capacity, reply_length, &blake, &sha,
+            hash_sha256, &owned);
+    if (status != 0x9000) {
+        wallet_payment_abort();
+        return status;
+    }
+    if (sign_command && !payment.approved) UX_CALLBACK_SET_INTERVAL(0);
     visible = true;
     return status;
 }
@@ -101,7 +128,9 @@ static const bagl_element_t *exit_review(const bagl_element_t *element) {
 static const bagl_element_t *continue_review(const bagl_element_t *element);
 static const bagl_element_t *show_totals(const bagl_element_t *element);
 static const bagl_element_t *show_fee(const bagl_element_t *element);
+static const bagl_element_t *show_sign_review(const bagl_element_t *element);
 static const bagl_element_t *confirm_review(const bagl_element_t *element);
+static const bagl_element_t *approve_sign(const bagl_element_t *element);
 
 static unsigned int output_ui_button(unsigned int mask, unsigned int count) {
     (void)mask;
@@ -130,6 +159,18 @@ static unsigned int ended_ui_button(unsigned int mask, unsigned int count) {
 }
 
 static unsigned int confirmed_ui_button(unsigned int mask, unsigned int count) {
+    return output_ui_button(mask, count);
+}
+
+static unsigned int sign_ui_button(unsigned int mask, unsigned int count) {
+    return output_ui_button(mask, count);
+}
+
+static unsigned int signing_ui_button(unsigned int mask, unsigned int count) {
+    return output_ui_button(mask, count);
+}
+
+static unsigned int signed_ui_button(unsigned int mask, unsigned int count) {
     return output_ui_button(mask, count);
 }
 
@@ -210,7 +251,39 @@ static const bagl_element_t totals_ui[] = {
     LABEL(339, "BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     LABEL(364, "NO SIGNING", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
     BUTTON(20, "BACK", show_fee),
-    BUTTON(165, "DONE", confirm_review)
+    BUTTON(165, "NEXT", show_sign_review)
+};
+
+static const bagl_element_t sign_ui[] = {
+    BACKGROUND,
+    LABEL(25, "FINAL PAYMENT CHECK", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(70, "SEND TO OTHERS", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(105, others_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(150, "FEE", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(185, fee_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(225, input_path_text, BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(263, "CHAIN UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(295, "BRANCH UNCHECKED", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(331, "SIGN ON DEVICE?", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    BUTTON(20, "NO SIGN", confirm_review),
+    BUTTON(165, "SIGN ZCL", approve_sign)
+};
+
+static const bagl_element_t signing_ui[] = {
+    BACKGROUND,
+    LABEL(105, "SIGNING APPROVED", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(180, "SEND SIGN REQUESTS", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(245, "NO BROADCAST", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(290, "APPROVAL EXPIRES 30S", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    BUTTON(165, "EXIT", exit_review)
+};
+
+static const bagl_element_t signed_ui[] = {
+    BACKGROUND,
+    LABEL(105, "SIGNATURES READY", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(180, "VERIFY IN Z23", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    LABEL(245, "NO BROADCAST", BAGL_FONT_OPEN_SANS_LIGHT_16_22PX),
+    BUTTON(165, "EXIT", exit_review)
 };
 
 static const bagl_element_t confirmed_ui[] = {
@@ -271,18 +344,28 @@ static void display_totals(void) {
     UX_DISPLAY(totals_ui, NULL);
 }
 
-void wallet_payment_display(void) {
-    uint8_t view = payment.review_confirmed ? 8 :
+static uint8_t payment_view(void) {
+    return payment.review_confirmed ? 8 :
+        sign_approved_view ?
+            (payment.next_sign_index == payment.input_count ? 11 : 10) :
+        sign_review_view ? 9 :
         payment.review.pending ? 2 :
         payment.fee_ready ? (totals_view ? 7 : 6) :
         payment.review.verified ? 3 :
         payment.active ? 1 : 4;
+}
+
+void wallet_payment_display(void) {
+    uint8_t view = payment_view();
     if (view == displayed_view) return;
     displayed_view = view;
     if (view == 2) display_output();
     else if (view == 8) { UX_DISPLAY(confirmed_ui, NULL); }
     else if (view == 6) display_fee();
     else if (view == 7) display_totals();
+    else if (view == 9) { UX_DISPLAY(sign_ui, NULL); }
+    else if (view == 10) { UX_DISPLAY(signing_ui, NULL); }
+    else if (view == 11) { UX_DISPLAY(signed_ui, NULL); }
     else if (view == 3) { UX_DISPLAY(complete_ui, NULL); }
     else if (view == 1) { UX_DISPLAY(waiting_ui, NULL); }
     else { UX_DISPLAY(ended_ui, NULL); }
@@ -290,7 +373,8 @@ void wallet_payment_display(void) {
 
 static const bagl_element_t *show_totals(const bagl_element_t *element) {
     (void)element;
-    if (payment.fee_ready) {
+    if (visible && payment.fee_ready && !payment.review_confirmed &&
+        !totals_view) {
         totals_view = true;
         displayed_view = 0;
         wallet_payment_display();
@@ -300,8 +384,20 @@ static const bagl_element_t *show_totals(const bagl_element_t *element) {
 
 static const bagl_element_t *show_fee(const bagl_element_t *element) {
     (void)element;
-    if (payment.fee_ready) {
+    if (visible && payment.fee_ready && !payment.review_confirmed &&
+        totals_view && !sign_review_view) {
         totals_view = false;
+        displayed_view = 0;
+        wallet_payment_display();
+    }
+    return NULL;
+}
+
+static const bagl_element_t *show_sign_review(const bagl_element_t *element) {
+    (void)element;
+    if (visible && payment.fee_ready && totals_view &&
+        !payment.review_confirmed && !sign_review_view) {
+        sign_review_view = true;
         displayed_view = 0;
         wallet_payment_display();
     }
@@ -310,7 +406,9 @@ static const bagl_element_t *show_fee(const bagl_element_t *element) {
 
 static const bagl_element_t *confirm_review(const bagl_element_t *element) {
     (void)element;
-    if (!totals_view || !blue_payment_apdu_touch_confirm(&payment)) {
+    if (payment.review_confirmed || sign_approved_view) return NULL;
+    if (!sign_review_view || !totals_view ||
+        !blue_payment_apdu_touch_confirm(&payment)) {
         wallet_payment_abort();
         UX_DISPLAY(ended_ui, NULL);
         return NULL;
@@ -320,8 +418,25 @@ static const bagl_element_t *confirm_review(const bagl_element_t *element) {
     return NULL;
 }
 
+static const bagl_element_t *approve_sign(const bagl_element_t *element) {
+    (void)element;
+    if (sign_approved_view || payment.review_confirmed) return NULL;
+    if (!sign_review_view || !totals_view ||
+        !blue_payment_apdu_touch_approve(&payment)) {
+        wallet_payment_abort();
+        UX_DISPLAY(ended_ui, NULL);
+        return NULL;
+    }
+    sign_approved_view = true;
+    UX_CALLBACK_SET_INTERVAL(SIGN_APPROVAL_MS);
+    displayed_view = 0;
+    wallet_payment_display();
+    return NULL;
+}
+
 static const bagl_element_t *continue_review(const bagl_element_t *element) {
     (void)element;
+    if (!visible || !payment.active || !payment.review.pending) return NULL;
     blue_payment_owned_hashes owned;
     memcpy(owned.external, account_hash160, sizeof owned.external);
     memcpy(owned.internal, internal_hash160, sizeof owned.internal);

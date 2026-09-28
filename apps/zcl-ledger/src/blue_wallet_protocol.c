@@ -8,6 +8,7 @@ bool blue_wallet_identity_matches(const uint8_t *reply, size_t length) {
     return reply && length == 7 &&
         memcmp(reply, prefix, sizeof prefix) == 0 &&
         ((reply[3] == 8 && reply[4] == 1) ||
+         (reply[3] == 11 && reply[4] == 15) ||
          (reply[3] == BLUE_WALLET_PROTOCOL_VERSION &&
           reply[4] == BLUE_WALLET_CAPABILITIES)) &&
         reply[5] == 0x90 && reply[6] == 0;

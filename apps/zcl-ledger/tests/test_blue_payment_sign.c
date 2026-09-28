@@ -1,7 +1,10 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_payment_sign.h"
+#include "blue_payment_host_verify.h"
+#include "zcl_host_crypto.h"
 
 #include <openssl/core_names.h>
+#include <openssl/ecdsa.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/sha.h>
@@ -46,6 +49,122 @@ static bool hash_public_key(const uint8_t public_key[33],
     return SHA256(public_key, 33, first) != NULL &&
         EVP_Digest(first, sizeof first, hash160, &length,
                    EVP_ripemd160(), NULL) == 1 && length == 20;
+}
+
+static bool verify_host_signature(void *context,
+    const uint8_t public_key[33], const uint8_t digest[32],
+    const uint8_t *der, size_t der_length) {
+    signer_fixture *fixture = context;
+    if (memcmp(public_key, fixture->public_key, 33) != 0) return false;
+    EVP_PKEY_CTX *verify = EVP_PKEY_CTX_new(fixture->key, NULL);
+    bool valid = verify && EVP_PKEY_verify_init(verify) > 0 &&
+        EVP_PKEY_CTX_set_signature_md(verify, EVP_sha256()) > 0 &&
+        EVP_PKEY_verify(verify, der, der_length, digest, 32) == 1;
+    EVP_PKEY_CTX_free(verify);
+    return valid;
+}
+
+static void expect_host_rejection(const uint8_t *reply, size_t reply_length,
+    const uint8_t digest[32], const uint8_t hash160[20],
+    signer_fixture *signer) {
+    blue_payment_verified_signature result;
+    memset(&result, 0xcc, sizeof result);
+    assert(!blue_payment_host_verify(reply, reply_length, 0,
+        BLUE_PAYMENT_INPUT_EXTERNAL, hash160, digest, hash_public_key,
+        verify_host_signature, signer, &result));
+    blue_payment_verified_signature empty;
+    memset(&empty, 0, sizeof empty);
+    assert(memcmp(&result, &empty, sizeof result) == 0);
+}
+
+static void test_high_s_reply(const uint8_t *reply, size_t length,
+    const uint8_t digest[32], const uint8_t hash160[20],
+    signer_fixture *signer) {
+    const uint8_t *cursor = reply + 36;
+    ECDSA_SIG *parsed = d2i_ECDSA_SIG(NULL, &cursor, reply[35]);
+    assert(parsed && cursor == reply + length);
+    const BIGNUM *r = NULL, *s = NULL;
+    ECDSA_SIG_get0(parsed, &r, &s);
+    BIGNUM *order = NULL, *high = BN_new(), *copy = BN_dup(r);
+    assert(BN_hex2bn(&order,
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
+        == 64);
+    assert(high && copy && BN_sub(high, order, s) == 1);
+    assert(ECDSA_SIG_set0(parsed, copy, high) == 1);
+    BN_free(order);
+    uint8_t frame[BLUE_PAYMENT_SIGN_REPLY_MAX + 2];
+    memcpy(frame, reply, 36);
+    int der_length = i2d_ECDSA_SIG(parsed, NULL);
+    assert(der_length >= 8 && der_length <= BLUE_ECDSA_DER_MAX);
+    uint8_t *output = frame + 36;
+    assert(i2d_ECDSA_SIG(parsed, &output) == der_length);
+    frame[35] = (uint8_t)der_length;
+    frame[36 + der_length] = 0x90;
+    frame[37 + der_length] = 0;
+    assert(verify_host_signature(signer, signer->public_key, digest,
+        frame + 36, (size_t)der_length));
+    expect_host_rejection(frame, (size_t)der_length + 38,
+        digest, hash160, signer);
+    ECDSA_SIG_free(parsed);
+}
+
+static void test_host_reply(const uint8_t *reply, size_t length,
+    const uint8_t digest[32], const blue_payment_owned_hashes *owned,
+    signer_fixture *signer) {
+    uint8_t frame[BLUE_PAYMENT_SIGN_REPLY_MAX + 2];
+    memcpy(frame, reply, length);
+    frame[length] = 0x90;
+    frame[length + 1] = 0;
+    blue_payment_verified_signature result;
+    assert(blue_payment_host_verify(frame, length + 2, 0,
+        BLUE_PAYMENT_INPUT_EXTERNAL, owned->external, digest,
+        hash_public_key, verify_host_signature, signer, &result));
+    uint8_t portable_hash[20];
+    assert(zcl_host_pubkey_valid(signer->public_key));
+    assert(zcl_host_hash160(signer->public_key, portable_hash));
+    assert(memcmp(portable_hash, owned->external,
+        sizeof portable_hash) == 0);
+    assert(zcl_host_verify_signature(NULL, signer->public_key,
+        digest, reply + 36, reply[35]));
+    blue_payment_verified_signature portable_result;
+    assert(blue_payment_host_verify(frame, length + 2, 0,
+        BLUE_PAYMENT_INPUT_EXTERNAL, owned->external, digest,
+        zcl_host_hash160, zcl_host_verify_signature,
+        NULL, &portable_result));
+    assert(memcmp(&portable_result, &result, sizeof result) == 0);
+    assert(result.index == 0 &&
+        result.path == BLUE_PAYMENT_INPUT_EXTERNAL &&
+        memcmp(result.digest, digest, 32) == 0 &&
+        result.der_length == reply[35] &&
+        memcmp(result.public_key, reply + 2, 33) == 0 &&
+        memcmp(result.der, reply + 36, result.der_length) == 0);
+    test_high_s_reply(reply, length, digest, owned->external, signer);
+    expect_host_rejection(frame, length + 1, digest, owned->external, signer);
+    frame[length] = 0x69;
+    expect_host_rejection(frame, length + 2, digest, owned->external, signer);
+    frame[length] = 0x90;
+    frame[0] = 1;
+    expect_host_rejection(frame, length + 2, digest, owned->external, signer);
+    frame[0] = 0;
+    frame[1] = BLUE_PAYMENT_INPUT_INTERNAL;
+    expect_host_rejection(frame, length + 2, digest, owned->external, signer);
+    frame[1] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    frame[35]++;
+    expect_host_rejection(frame, length + 2, digest, owned->external, signer);
+    frame[35]--;
+    frame[36] = 0x31;
+    expect_host_rejection(frame, length + 2, digest, owned->external, signer);
+    frame[36] = 0x30;
+    uint8_t wrong_digest[32], wrong_hash[20];
+    memcpy(wrong_digest, digest, sizeof wrong_digest);
+    memcpy(wrong_hash, owned->external, sizeof wrong_hash);
+    wrong_digest[0] ^= 1;
+    wrong_hash[0] ^= 1;
+    assert(!zcl_host_verify_signature(NULL, signer->public_key,
+        wrong_digest, reply + 36, reply[35]));
+    expect_host_rejection(frame, length + 2, wrong_digest,
+        owned->external, signer);
+    expect_host_rejection(frame, length + 2, digest, wrong_hash, signer);
 }
 
 static bool sign_digest(void *context, uint8_t path,
@@ -108,6 +227,7 @@ static void test_signed_reply(signer_fixture *signer,
     assert(EVP_PKEY_verify(verify, reply + 36, reply[35],
                            digest, sizeof digest) == 1);
     EVP_PKEY_CTX_free(verify);
+    test_host_reply(reply, length, digest, owned, signer);
     assert(!state.approved && state.next_sign_index == 1);
     uint8_t zero[36] = {0};
     assert(memcmp(state.input_record[0], zero, sizeof zero) == 0);
@@ -209,6 +329,67 @@ static void test_sign_command(signer_fixture *signer,
         &length) == 0x6985);
     assert(length == 0 && signer->calls == calls + 1);
     for (size_t i = 0; i < sizeof frame; ++i) assert(frame[i] == 0);
+}
+
+static void test_interrupted_two_input_signing(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    static const uint8_t first[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    static const uint8_t second[6] = {0xa5, 0x29, 0, 0, 1, 1};
+    blue_payment_apdu state;
+    uint8_t digest[32], reply[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    initialize_review(&state, digest);
+    state.input_count = state.bound_inputs = 2;
+    memcpy(state.input_record[1], digest, sizeof digest);
+    state.input_record[1][0] ^= 1;
+    state.input_record[1][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    assert(blue_payment_apdu_touch_approve(&state));
+    size_t reply_length = 0;
+    unsigned prior_calls = signer->calls;
+    assert(blue_payment_sign_command(&state, first, sizeof first, owned,
+        sign_digest, signer, hash_public_key, reply, sizeof reply,
+        &reply_length) == 0x9000);
+    assert(reply_length >= 44 && signer->calls == prior_calls + 1);
+    assert(state.approved && state.next_sign_index == 1);
+    blue_payment_apdu_abort(&state); /* USB reset or app restart. */
+    memset(reply, 0xcc, sizeof reply);
+    reply_length = 99;
+    assert(blue_payment_sign_command(&state, second, sizeof second, owned,
+        sign_digest, signer, hash_public_key, reply, sizeof reply,
+        &reply_length) == 0x6985);
+    assert(reply_length == 0 && signer->calls == prior_calls + 1);
+    for (size_t i = 0; i < sizeof reply; ++i) assert(reply[i] == 0);
+}
+
+static void test_ordered_two_input_signing(signer_fixture *signer,
+    const blue_payment_owned_hashes *owned) {
+    static const uint8_t first[6] = {0xa5, 0x29, 0, 0, 1, 0};
+    static const uint8_t second[6] = {0xa5, 0x29, 0, 0, 1, 1};
+    blue_payment_apdu state;
+    uint8_t digest[32], second_digest[32], reply[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    initialize_review(&state, digest);
+    memcpy(second_digest, digest, sizeof digest);
+    second_digest[0] ^= 1;
+    state.input_count = state.bound_inputs = 2;
+    memcpy(state.input_record[1], second_digest, sizeof second_digest);
+    state.input_record[1][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    assert(blue_payment_apdu_touch_approve(&state));
+    size_t length = 0;
+    unsigned calls = signer->calls;
+    assert(blue_payment_sign_command(&state, first, sizeof first, owned,
+        sign_digest, signer, hash_public_key, reply, sizeof reply,
+        &length) == 0x9000);
+    assert(reply[0] == 0 && state.approved && state.next_sign_index == 1);
+    assert(blue_payment_sign_command(&state, second, sizeof second, owned,
+        sign_digest, signer, hash_public_key, reply, sizeof reply,
+        &length) == 0x9000);
+    assert(reply[0] == 1 && signer->calls == calls + 2 &&
+        !state.approved && state.next_sign_index == 2);
+    EVP_PKEY_CTX *verify = EVP_PKEY_CTX_new(signer->key, NULL);
+    assert(verify && EVP_PKEY_verify_init(verify) > 0);
+    assert(EVP_PKEY_CTX_set_signature_md(verify, EVP_sha256()) > 0);
+    assert(EVP_PKEY_verify(verify, reply + 36, reply[35],
+        second_digest, sizeof second_digest) == 1);
+    EVP_PKEY_CTX_free(verify);
 }
 
 static void reject_sign_command(signer_fixture *signer,
@@ -318,6 +499,8 @@ int main(void) {
     test_fail_closed(&signer, &owned);
     test_readonly_confirmation(&signer, &owned);
     test_sign_command(&signer, &owned);
+    test_interrupted_two_input_signing(&signer, &owned);
+    test_ordered_two_input_signing(&signer, &owned);
     test_sign_command_rejections(&signer, &owned);
     test_wrong_indices(&signer, &owned);
     test_malformed_command_fuzz(&signer, &owned);

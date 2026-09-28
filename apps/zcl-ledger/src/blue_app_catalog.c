@@ -21,15 +21,20 @@ int blue_app_catalog_parse(const uint8_t *page, size_t length,
     size_t offset = 1;
     while (offset < length) {
         if (*count == capacity || length - offset < 70) return -1;
-        ++offset; /* Ledger's entry-size field precedes the fixed fields. */
+        size_t entry_length = page[offset++];
+        if (entry_length < 70 || entry_length > length - offset) return -1;
+        size_t entry_end = offset + entry_length;
+        blue_app_entry *entry = &entries[*count];
         uint32_t flags = 0;
         for (unsigned i = 0; i < 4; ++i)
             flags = (flags << 8) | page[offset++];
-        offset += 64; /* Code/data hash and app hash. */
+        memcpy(entry->hash_code_data, page + offset, 32);
+        offset += 32;
+        memcpy(entry->hash, page + offset, 32);
+        offset += 32;
         size_t name_length = page[offset++];
-        if (name_length > length - offset ||
+        if (name_length != entry_end - offset ||
             !valid_name(page + offset, name_length)) return -1;
-        blue_app_entry *entry = &entries[*count];
         memcpy(entry->name, page + offset, name_length);
         entry->name[name_length] = 0;
         entry->flags = flags;
@@ -37,4 +42,16 @@ int blue_app_catalog_parse(const uint8_t *page, size_t length,
         ++*count;
     }
     return 0;
+}
+
+bool blue_app_catalog_unique_hash(const blue_app_entry *entries,
+    size_t count, const char *name, const uint8_t expected[32]) {
+    if (!entries || !name || !expected) return false;
+    size_t found = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (strcmp(entries[i].name, name)) continue;
+        if (memcmp(entries[i].hash, expected, 32)) return false;
+        ++found;
+    }
+    return found == 1;
 }

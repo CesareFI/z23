@@ -36,4 +36,6 @@ uint16_t blue_review_handle(blue_review_state *state,
 void blue_review_encode_summary(const zcl_tx_review *review,
                                 uint8_t reply[44]);
 
+void blue_review_abort(blue_review_state *state);
+
 #endif

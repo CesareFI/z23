@@ -1,7 +1,24 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "os.h"
 #include "os_io_seproxyhal.h"
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+#include "blue_shielded_review_app.h"
+typedef blue_shielded_review_app blue_review_app;
+#define blue_review_app_reset blue_shielded_review_app_reset
+#define blue_review_app_toggle_text blue_shielded_review_app_toggle_text
+#define blue_review_app_toggle_dark blue_shielded_review_app_toggle_dark
+#define blue_review_app_advance(app, hash) blue_shielded_review_app_next(app)
+#define blue_review_app_command(app, apdu, length, reply, capacity, used, hash, blake) \
+    blue_shielded_review_app_command(app, apdu, length, reply, capacity, \
+        used, blake)
+#define blue_review_abort blue_shielded_review_abort
+#define ZCL_BLUE_REVIEW_TITLE "ZCL Shielded"
+#define ZCL_BLUE_NEXT_LABEL "NEXT / REFRESH"
+#else
 #include "blue_review_app.h"
+#define ZCL_BLUE_REVIEW_TITLE "ZCL Review"
+#define ZCL_BLUE_NEXT_LABEL "NEXT PAGE"
+#endif
 #include "blue_review_accessible.h"
 #include "blue_review_layout.h"
 #include <string.h>
@@ -17,10 +34,12 @@ static cx_blake2b_t zip_context;
 static bagl_element_t large_element;
 static char large_text[40];
 
+#ifndef ZCL_BLUE_SHIELDED_REVIEW
 static bool transaction_digest(const uint8_t *wire, size_t length,
                                uint8_t digest[32]) {
     return cx_hash_sha256(wire, (unsigned int)length, digest) == 32;
 }
+#endif
 
 static bool zip243_start(void *context, const uint8_t personal[16]) {
     uint8_t mutable_personal[16];
@@ -112,7 +131,7 @@ static const bagl_element_t review_ui[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_MIDDLE
         },
-        .text = "ZCL Review"
+        .text = ZCL_BLUE_REVIEW_TITLE
     },
     THEME_BUTTON(0, "DARK"), THEME_BUTTON(1, "LIGHT"),
     {
@@ -221,7 +240,7 @@ static const bagl_element_t review_ui[] = {
                        BAGL_FONT_ALIGNMENT_CENTER |
                        BAGL_FONT_ALIGNMENT_MIDDLE
         },
-        .text = "NEXT PAGE", .overfgcolor = 0x37ae99,
+        .text = ZCL_BLUE_NEXT_LABEL, .overfgcolor = 0x37ae99,
         .overbgcolor = ZCL_BLUE_COLOR_BODY, .tap = show_latest
     },
     {
@@ -298,7 +317,7 @@ static const bagl_element_t review_ui_large[] = {
             .font_id = BAGL_FONT_OPEN_SANS_LIGHT_14px |
                        BAGL_FONT_ALIGNMENT_MIDDLE
         },
-        .text = "ZCL Review"
+        .text = ZCL_BLUE_REVIEW_TITLE
     },
     THEME_BUTTON(0, "DARK"), THEME_BUTTON(1, "LIGHT"),
     LARGE_INDEX(0, "DETAIL 1/6"), LARGE_INDEX(1, "DETAIL 2/6"),
@@ -433,7 +452,11 @@ static const bagl_element_t *toggle_dark(const bagl_element_t *element) {
 
 static const bagl_element_t *show_latest(const bagl_element_t *element) {
     (void)element;
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+    blue_review_app_advance(&review_app, NULL);
+#else
     blue_review_app_advance(&review_app, transaction_digest);
+#endif
     display_review();
     return NULL;
 }
@@ -488,18 +511,22 @@ static void answer_command(void) {
                     .context = &zip_context, .init = zip243_start,
                     .update = zip243_update, .final = zip243_finish
                 };
+#ifdef ZCL_BLUE_SHIELDED_REVIEW
+                sw = blue_review_app_command(&review_app, G_io_apdu_buffer,
+                    rx, G_io_apdu_buffer, sizeof G_io_apdu_buffer - 2,
+                    &reply_length, NULL, &hasher);
+#else
                 sw = blue_review_app_command(&review_app, G_io_apdu_buffer,
                     rx, G_io_apdu_buffer, sizeof G_io_apdu_buffer - 2,
                     &reply_length, transaction_digest, &hasher);
+#endif
                 tx = reply_length;
             }
             CATCH_OTHER(error) {
                 sw = (error & 0xf000) == 0x6000 ||
                      (error & 0xf000) == 0x9000
                          ? error : (0x6800 | (error & 0x07ff));
-                review_app.transaction.expected = 0;
-                review_app.transaction.received = 0;
-                review_app.transaction.reviewed_length = 0;
+                blue_review_abort(&review_app.transaction);
                 blue_review_app_reset(&review_app);
             }
             FINALLY {}

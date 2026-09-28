@@ -1,0 +1,52 @@
+/* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
+#ifndef ZCL_TX_SHIELDED_REPLAY_H
+#define ZCL_TX_SHIELDED_REPLAY_H
+
+#include "zcl_tx_shielded_stream.h"
+#include "zcl_zip243.h"
+#include "zsha256/zsha256.h"
+
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
+#error "Shielded ZIP-243 replay requires ISO C23"
+#endif
+
+typedef struct {
+    zcl_tx_shielded_stream wire;
+    zcl_tx_shielded_facts facts;
+    zcl_zip243_hasher blake;
+    zsha256_ctx sha;
+    uint8_t commitment[32], parts[6][32], header[8], tail[16];
+    uint8_t *spend_rk;
+    uint32_t expected, branch_id;
+    uint32_t spend_index;
+    uint8_t pass, header_used, tail_used, rk_used;
+    bool failed;
+} zcl_tx_shielded_replay;
+
+/* The host uploads the identical complete wire six times. Each pass derives
+ * one ZIP-243 section hash from independently parsed bytes and checks its
+ * full-wire SHA-256 against pass one. No partial or substituted pass returns
+ * a digest. Branch selection and payment approval still need trusted device
+ * policy; this read-only digest grants no signing authority. */
+bool zcl_tx_shielded_replay_begin(zcl_tx_shielded_replay *state,
+    uint32_t expected_length, uint32_t branch_id,
+    const zcl_zip243_hasher *blake);
+/* Capture one indexed spend rk from the first parsed pass. The output is
+ * provisional until finish succeeds after six identical complete passes.
+ * A failed replay clears the caller's 32-byte rk. On success, the caller
+ * owns and must erase the verified rk. Output must not overlap the replay
+ * state or the hash context. */
+bool zcl_tx_shielded_replay_begin_rk(zcl_tx_shielded_replay *state,
+    uint32_t expected_length, uint32_t branch_id,
+    const zcl_zip243_hasher *blake, uint32_t spend_index,
+    uint8_t spend_rk[32]);
+bool zcl_tx_shielded_replay_feed(zcl_tx_shielded_replay *state,
+    const uint8_t *bytes, size_t length);
+bool zcl_tx_shielded_replay_next(zcl_tx_shielded_replay *state);
+bool zcl_tx_shielded_replay_finish(zcl_tx_shielded_replay *state,
+    zcl_tx_shielded_facts *facts, uint8_t digest[32]);
+/* Erase an active replay and any provisional rk. Call before abandoning an
+ * upload or reusing a state that began with rk capture. */
+void zcl_tx_shielded_replay_abort(zcl_tx_shielded_replay *state);
+
+#endif

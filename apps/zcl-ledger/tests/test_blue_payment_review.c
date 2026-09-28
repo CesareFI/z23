@@ -4,11 +4,20 @@
 #include "blue_payment_screen.h"
 #include "blue_payment_simulate.h"
 #include "blue_payment_live.h"
+#include "blue_payment_sign.h"
+#include "blue_payment_host_sign.h"
+#include "blue_payment_host_ownership.h"
+#include "blue_payment_host_assemble.h"
+#include "blue_payment_fixture.h"
+#include "zcl_tx_script_facts.h"
+#include "zcl_tx_review.h"
 #include "zcl_zip243_host.h"
 #include "zcl_zip243.h"
 
 #include "crypto/blake2b.h"
 #include <openssl/evp.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
 #include <openssl/sha.h>
 
 #undef NDEBUG
@@ -489,9 +498,50 @@ typedef struct {
     unsigned exchanges, continued, reset_after_reply;
     uint8_t interrupted_apdu[260];
     size_t interrupted_length;
-    bool refuse_touch, wrong_identity, fail_previous_chunk, no_owned_hashes,
+    blue_payment_sign_digest_fn signing;
+    blue_payment_pubkey_hash_fn signing_hash;
+    void *signer_context;
+    uint8_t last_sign_reply[BLUE_PAYMENT_SIGN_REPLY_MAX];
+    size_t last_sign_length;
+    bool refuse_touch, wrong_identity, signing_identity, corrupt_sign_reply,
+        corrupt_second_sign_reply,
+        fail_previous_chunk, no_owned_hashes,
         connection_lost, reset_on_touch;
 } live_fixture;
+
+static bool live_identity_reply(const live_fixture *live, uint8_t *reply,
+    size_t capacity, size_t *reply_length) {
+    if (capacity < 7) return false;
+    const uint8_t identity[7] = {'Z', 'C', 'L',
+        live->wrong_identity ? 8 : live->signing_identity ? 12 : 11,
+        live->signing_identity ? 31 : 15, 0x90, 0};
+    memcpy(reply, identity, sizeof identity);
+    *reply_length = sizeof identity;
+    return true;
+}
+
+static uint16_t live_command_status(live_fixture *live,
+    const uint8_t *apdu, size_t apdu_length, uint8_t *reply,
+    size_t capacity, size_t *payload) {
+    if (apdu[1] != 0x29)
+        return blue_payment_apdu_handle(&live->apdu.state,
+            apdu, apdu_length, reply, capacity, payload,
+            &live->apdu.blake, &live->apdu.sha, screen_hash,
+            live->no_owned_hashes ? NULL : &live->apdu.owned);
+    uint16_t status = blue_payment_sign_command(&live->apdu.state,
+        apdu, apdu_length, &live->apdu.owned, live->signing,
+        live->signer_context, live->signing_hash, reply, capacity, payload);
+    if (status == 0x9000 && *payload > 36 &&
+        (live->corrupt_sign_reply ||
+         (live->corrupt_second_sign_reply && apdu[5] == 1)))
+        reply[*payload - 1] ^= 1;
+    if (status == 0x9000) {
+        assert(*payload <= sizeof live->last_sign_reply);
+        memcpy(live->last_sign_reply, reply, *payload);
+        live->last_sign_length = *payload;
+    }
+    return status;
+}
 
 static bool live_exchange(void *context, const uint8_t *apdu,
     size_t apdu_length, uint8_t *reply, size_t capacity,
@@ -499,20 +549,16 @@ static bool live_exchange(void *context, const uint8_t *apdu,
     live_fixture *live = context;
     ++live->exchanges;
     if (live->connection_lost) return false;
-    if (capacity < 7 || apdu_length < 5) return false;
+    if (capacity < 2 || apdu_length < 5) return false;
     if (live->fail_previous_chunk && apdu[1] == 0x27) return false;
     if (apdu[1] == 0x01) {
-        const uint8_t identity[7] = {'Z', 'C', 'L',
-            live->wrong_identity ? 8 : 11, 15, 0x90, 0};
-        memcpy(reply, identity, sizeof identity);
-        *reply_length = sizeof identity;
+        if (!live_identity_reply(live, reply, capacity, reply_length))
+            return false;
         goto exchanged;
     }
     size_t payload = 0;
-    uint16_t status = blue_payment_apdu_handle(&live->apdu.state,
-        apdu, apdu_length, reply, capacity - 2, &payload,
-        &live->apdu.blake, &live->apdu.sha, screen_hash,
-        live->no_owned_hashes ? NULL : &live->apdu.owned);
+    uint16_t status = live_command_status(live, apdu, apdu_length,
+        reply, capacity - 2, &payload);
     reply[payload] = (uint8_t)(status >> 8);
     reply[payload + 1] = (uint8_t)status;
     *reply_length = payload + 2;
@@ -603,6 +649,31 @@ static void test_live_usb_interruptions(const fixture *spend,
     EVP_MD_CTX_free(live.apdu.sha_context);
 }
 
+static void test_live_review_status(void) {
+    const uint8_t pending[8] = {1, 3, 1, 0, 2, 0, 0x90, 0};
+    const uint8_t acknowledged[8] = {1, 3, 0, 0, 2, 1, 0x90, 0};
+    assert(blue_payment_live_review_status(pending, sizeof pending,
+                                           0, 2) == 0);
+    assert(blue_payment_live_review_status(acknowledged,
+                                           sizeof acknowledged, 0, 2) == 1);
+    assert(blue_payment_live_review_status(pending, sizeof pending,
+                                           0, 1) == -1);
+    assert(blue_payment_live_review_status(pending, sizeof pending,
+                                           1, 2) == -1);
+    assert(blue_payment_live_review_status(acknowledged,
+                                           sizeof acknowledged, 0, 0) == -1);
+    assert(blue_payment_live_review_status(pending, 7, 0, 2) == -1);
+    uint8_t stale[8];
+    memcpy(stale, acknowledged, sizeof stale);
+    stale[4] = 1;
+    assert(blue_payment_live_review_status(stale, sizeof stale,
+                                           0, 2) == -1);
+    stale[4] = 2;
+    stale[3] = 1;
+    assert(blue_payment_live_review_status(stale, sizeof stale,
+                                           0, 2) == -1);
+}
+
 static void test_live_driver(const fixture *item) {
     blue_payment_live_plan plan;
     assert(blue_payment_live_prepare(item->bytes, item->length,
@@ -621,6 +692,13 @@ static void test_live_driver(const fixture *item) {
     uint8_t unbound_path = 0;
     assert(!blue_payment_apdu_take_digest(&live.apdu.state, 0,
         unbound_digest, &unbound_path));
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){.signing_identity = true};
+    apdu_init(&live.apdu);
+    assert(blue_payment_live_run(item->bytes, item->length, &plan,
+        live_exchange, live_continue, &live));
+    assert(live.continued == 2 && live.apdu.state.review.verified);
     EVP_MD_CTX_free(live.apdu.sha_context);
 
     uint8_t changed[sizeof item->bytes];
@@ -846,6 +924,571 @@ static void test_live_two_inputs(void) {
     EVP_MD_CTX_free(live.apdu.sha_context);
 }
 
+typedef struct {
+    EVP_PKEY *key;
+    uint8_t public_key[33];
+    unsigned calls;
+} flow_signer;
+
+static void flow_signer_init(flow_signer *signer) {
+    static char group[] = "secp256k1";
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, group,
+                               sizeof group - 1), OSSL_PARAM_END
+    };
+    EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    assert(context && EVP_PKEY_keygen_init(context) > 0);
+    assert(EVP_PKEY_CTX_set_params(context, params) > 0);
+    assert(EVP_PKEY_generate(context, &signer->key) > 0);
+    EVP_PKEY_CTX_free(context);
+    uint8_t point[65];
+    size_t length = 0;
+    assert(EVP_PKEY_get_octet_string_param(signer->key,
+        OSSL_PKEY_PARAM_PUB_KEY, point, sizeof point, &length) > 0);
+    assert(length == sizeof point && point[0] == 4);
+    signer->public_key[0] = (uint8_t)(2u | (point[64] & 1u));
+    memcpy(signer->public_key + 1, point + 1, 32);
+}
+
+static bool flow_public_hash(const uint8_t public_key[33],
+    uint8_t hash160[20]) {
+    uint8_t digest[32];
+    unsigned length = 0;
+    return SHA256(public_key, 33, digest) &&
+        EVP_Digest(digest, sizeof digest, hash160, &length,
+                   EVP_ripemd160(), NULL) == 1 && length == 20;
+}
+
+static bool flow_sign_key(flow_signer *signer, const uint8_t digest[32],
+    uint8_t public_key[33], uint8_t signature[BLUE_ECDSA_DER_MAX],
+    size_t *signature_length) {
+    ++signer->calls;
+    EVP_PKEY_CTX *operation = EVP_PKEY_CTX_new(signer->key, NULL);
+    *signature_length = BLUE_ECDSA_DER_MAX;
+    bool valid = operation && EVP_PKEY_sign_init(operation) > 0 &&
+        EVP_PKEY_CTX_set_signature_md(operation, EVP_sha256()) > 0 &&
+        EVP_PKEY_sign(operation, signature, signature_length,
+                      digest, 32) > 0;
+    EVP_PKEY_CTX_free(operation);
+    if (valid) memcpy(public_key, signer->public_key, 33);
+    return valid;
+}
+
+static bool flow_sign(void *context, uint8_t path, const uint8_t digest[32],
+    uint8_t public_key[33], uint8_t signature[BLUE_ECDSA_DER_MAX],
+    size_t *signature_length) {
+    return path == BLUE_PAYMENT_INPUT_EXTERNAL &&
+        flow_sign_key(context, digest, public_key, signature,
+            signature_length);
+}
+
+typedef struct { flow_signer keys[2]; } flow_pair;
+
+static bool flow_sign_pair(void *context, uint8_t path,
+    const uint8_t digest[32], uint8_t public_key[33],
+    uint8_t signature[BLUE_ECDSA_DER_MAX], size_t *signature_length) {
+    flow_pair *pair = context;
+    if (path != BLUE_PAYMENT_INPUT_EXTERNAL &&
+        path != BLUE_PAYMENT_INPUT_INTERNAL) return false;
+    return flow_sign_key(&pair->keys[path - 1], digest, public_key,
+        signature, signature_length);
+}
+
+static void flow_verify_signature(const flow_signer *signer,
+    const uint8_t reply[BLUE_PAYMENT_SIGN_REPLY_MAX], size_t length,
+    const uint8_t digest[32]) {
+    assert(length >= 44 && length <= BLUE_PAYMENT_SIGN_REPLY_MAX);
+    assert(reply[0] == 0 && reply[1] == BLUE_PAYMENT_INPUT_EXTERNAL);
+    assert(memcmp(reply + 2, signer->public_key, 33) == 0);
+    assert(reply[35] == length - 36);
+    EVP_PKEY_CTX *verify = EVP_PKEY_CTX_new(signer->key, NULL);
+    assert(verify && EVP_PKEY_verify_init(verify) > 0);
+    assert(EVP_PKEY_CTX_set_signature_md(verify, EVP_sha256()) > 0);
+    assert(EVP_PKEY_verify(verify, reply + 36, reply[35],
+                           digest, 32) == 1);
+    EVP_PKEY_CTX_free(verify);
+}
+
+static bool flow_host_verify(void *context, const uint8_t public_key[33],
+    const uint8_t digest[32], const uint8_t *der, size_t der_length) {
+    flow_signer *signer = context;
+    if (memcmp(public_key, signer->public_key, 33) != 0) return false;
+    EVP_PKEY_CTX *verify = EVP_PKEY_CTX_new(signer->key, NULL);
+    bool valid = verify && EVP_PKEY_verify_init(verify) > 0 &&
+        EVP_PKEY_CTX_set_signature_md(verify, EVP_sha256()) > 0 &&
+        EVP_PKEY_verify(verify, der, der_length, digest, 32) == 1;
+    EVP_PKEY_CTX_free(verify);
+    return valid;
+}
+
+static bool flow_host_verify_pair(void *context,
+    const uint8_t public_key[33], const uint8_t digest[32],
+    const uint8_t *der, size_t der_length) {
+    flow_pair *pair = context;
+    for (size_t i = 0; i < 2; ++i)
+        if (memcmp(public_key, pair->keys[i].public_key, 33) == 0)
+            return flow_host_verify(&pair->keys[i], public_key,
+                digest, der, der_length);
+    return false;
+}
+
+static bool flow_approve(void *context) {
+    live_fixture *live = context;
+    return blue_payment_apdu_touch_approve(&live->apdu.state);
+}
+
+static void flow_prepare_minimal(live_fixture *live,
+    const uint8_t digest[32], const uint8_t owned_hash[20]) {
+    apdu_init(&live->apdu);
+    memcpy(live->apdu.owned.external, owned_hash, 20);
+    blue_payment_apdu *state = &live->apdu.state;
+    state->review.verified = true;
+    state->fee_ready = true;
+    state->input_count = state->bound_inputs = 1;
+    state->input_paths = BLUE_PAYMENT_INPUT_EXTERNAL;
+    state->input_zat = 2;
+    state->output_zat = state->fee_zat = 1;
+    memcpy(state->input_record[0], digest, 32);
+    state->input_record[0][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+}
+
+static void flow_host_sign_refusals(flow_signer *signer,
+    const uint8_t owned_hash[20]) {
+    uint8_t digest[1][32] = {{0x42}};
+    uint8_t hashes[1][20];
+    memcpy(hashes[0], owned_hash, 20);
+    const uint8_t paths[1] = {BLUE_PAYMENT_INPUT_EXTERNAL};
+    blue_payment_verified_signature signatures[1];
+    live_fixture live = {.signing = flow_sign,
+        .signing_hash = flow_public_hash, .signer_context = signer};
+    flow_prepare_minimal(&live, digest[0], owned_hash);
+    unsigned calls = signer->calls;
+    assert(!blue_payment_host_sign(1, paths, hashes,
+        (const uint8_t (*)[32])digest, live_exchange, flow_approve,
+        &live, flow_public_hash, flow_host_verify, signer, signatures));
+    assert(signer->calls == calls && !signatures[0].der_length);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){.signing_identity = true,
+        .signing = flow_sign, .signing_hash = flow_public_hash,
+        .signer_context = signer, .corrupt_sign_reply = true};
+    flow_prepare_minimal(&live, digest[0], owned_hash);
+    assert(!blue_payment_host_sign(1, paths, hashes,
+        (const uint8_t (*)[32])digest, live_exchange, flow_approve,
+        &live, flow_public_hash, flow_host_verify, signer, signatures));
+    assert(signer->calls == calls + 1 && !signatures[0].der_length &&
+        !live.apdu.state.approved && !live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+
+    live = (live_fixture){.signing_identity = true,
+        .signing = flow_sign, .signing_hash = flow_public_hash,
+        .signer_context = signer};
+    flow_prepare_minimal(&live, digest[0], owned_hash);
+    assert(blue_payment_apdu_touch_approve(&live.apdu.state));
+    signatures[0].der_length = 8;
+    assert(!blue_payment_host_sign(1, paths, NULL,
+        (const uint8_t (*)[32])digest, live_exchange, flow_approve,
+        &live, flow_public_hash, flow_host_verify, signer, signatures));
+    assert(!signatures[0].der_length && !live.apdu.state.approved &&
+        !live.apdu.state.fee_ready && signer->calls == calls + 1);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+}
+
+static void flow_partial_result_refusal(flow_signer *signer,
+    const uint8_t owned_hash[20]) {
+    uint8_t digests[2][32] = {{0x41}, {0x42}};
+    uint8_t hashes[2][20];
+    memcpy(hashes[0], owned_hash, 20);
+    memcpy(hashes[1], owned_hash, 20);
+    const uint8_t paths[2] = {
+        BLUE_PAYMENT_INPUT_EXTERNAL, BLUE_PAYMENT_INPUT_EXTERNAL};
+    live_fixture live = {.signing_identity = true,
+        .signing = flow_sign, .signing_hash = flow_public_hash,
+        .signer_context = signer, .corrupt_second_sign_reply = true};
+    flow_prepare_minimal(&live, digests[0], owned_hash);
+    live.apdu.state.input_count = live.apdu.state.bound_inputs = 2;
+    memcpy(live.apdu.state.input_record[1], digests[1], 32);
+    live.apdu.state.input_record[1][32] = BLUE_PAYMENT_INPUT_EXTERNAL;
+    blue_payment_verified_signature signatures[2];
+    unsigned calls = signer->calls;
+    assert(!blue_payment_host_sign(2, paths, hashes,
+        (const uint8_t (*)[32])digests, live_exchange, flow_approve,
+        &live, flow_public_hash, flow_host_verify, signer, signatures));
+    assert(signer->calls == calls + 2 &&
+        !signatures[0].der_length && !signatures[1].der_length &&
+        !live.apdu.state.approved && !live.apdu.state.fee_ready);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+}
+
+static bool capture_signed_input(void *context, const zcl_tx_input *input) {
+    zcl_tx_input *captured = context;
+    if (input->index != 0) return false;
+    *captured = *input;
+    return true;
+}
+
+typedef struct {
+    zcl_tx_input inputs[2];
+    uint32_t seen;
+} two_script_capture;
+
+static bool capture_two_scripts(void *context, const zcl_tx_input *input) {
+    two_script_capture *capture = context;
+    if (input->index != capture->seen || capture->seen >= 2) return false;
+    capture->inputs[capture->seen++] = *input;
+    return true;
+}
+
+static void check_two_script_inputs(const uint8_t *wire, size_t length,
+    const uint8_t der[8]) {
+    two_script_capture captured = {0};
+    assert(zcl_tx_inputs_visit(wire, length,
+        capture_two_scripts, &captured) == 0 && captured.seen == 2);
+    for (uint8_t i = 0; i < 2; ++i) {
+        assert(captured.inputs[i].script_length == 44);
+        assert(captured.inputs[i].script[0] == 9);
+        assert(memcmp(captured.inputs[i].script + 1, der, 8) == 0);
+        assert(captured.inputs[i].script[9] == 1 &&
+               captured.inputs[i].script[10] == 33 &&
+               captured.inputs[i].script[12] == i + 1);
+    }
+}
+
+static void test_two_input_script_layout(void) {
+    fixture spend = make_fixture();
+    assert(spend.length + 41 <= sizeof spend.bytes);
+    memmove(spend.bytes + 91, spend.bytes + 50, spend.length - 50);
+    memcpy(spend.bytes + 50, spend.bytes + 9, 41);
+    spend.bytes[50] ^= 1;
+    spend.bytes[8] = 2;
+    spend.length += 41;
+    static const uint8_t der[8] = {
+        0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01
+    };
+    uint8_t expected[2][32] = {{1}, {2}};
+    blue_payment_verified_signature signatures[2] = {0};
+    for (uint8_t i = 0; i < 2; ++i) {
+        signatures[i].index = i;
+        signatures[i].path = i ? BLUE_PAYMENT_INPUT_INTERNAL :
+                                 BLUE_PAYMENT_INPUT_EXTERNAL;
+        memcpy(signatures[i].digest, expected[i], 32);
+        signatures[i].public_key[0] = 2;
+        signatures[i].public_key[1] = (uint8_t)(i + 1);
+        memcpy(signatures[i].der, der, sizeof der);
+        signatures[i].der_length = sizeof der;
+    }
+    uint8_t output[512];
+    size_t length = 0;
+    assert(blue_payment_host_assemble(spend.bytes, spend.length,
+        signatures, (const uint8_t (*)[32])expected, 2,
+        output, sizeof output, &length));
+    assert(length == spend.length + 88);
+    check_two_script_inputs(output, length, der);
+    assert(memcmp(output + 91 + 88, spend.bytes + 91,
+        spend.length - 91) == 0);
+    uint8_t overlapping[512];
+    memcpy(overlapping, spend.bytes, spend.length);
+    size_t rejected = 99;
+    assert(!blue_payment_host_assemble(overlapping, spend.length,
+        signatures, (const uint8_t (*)[32])expected, 2,
+        overlapping, sizeof overlapping, &rejected));
+    assert(rejected == 0);
+    assert(!blue_payment_host_assemble(overlapping, spend.length,
+        signatures, (const uint8_t (*)[32])expected, 2,
+        overlapping + 1, sizeof overlapping - 1, &rejected));
+    assert(rejected == 0);
+    blue_payment_verified_signature swapped[2] = {
+        signatures[1], signatures[0]
+    };
+    assert(!blue_payment_host_assemble(spend.bytes, spend.length,
+        swapped, (const uint8_t (*)[32])expected, 2,
+        output, sizeof output, &length));
+    assert(length == 0);
+}
+
+static void flow_check_assembly_rejections(const fixture *spend,
+    const uint8_t *signed_wire, size_t signed_length,
+    const blue_payment_verified_signature *verified,
+    const uint8_t expected_digests[1][32]) {
+    uint8_t output[512];
+    size_t length = 99;
+    assert(!blue_payment_host_assemble(spend->bytes, spend->length,
+        verified, expected_digests, 1, output, signed_length - 1, &length));
+    assert(length == 0);
+    length = 99;
+    assert(!blue_payment_host_assemble(signed_wire, signed_length,
+        verified, expected_digests, 1, output, sizeof output, &length));
+    assert(length == 0);
+    length = 99;
+    assert(!blue_payment_host_assemble(spend->bytes, spend->length,
+        verified, expected_digests, 0, output, sizeof output, &length));
+    assert(length == 0);
+    blue_payment_verified_signature wrong = *verified;
+    wrong.index = 1;
+    length = 99;
+    assert(!blue_payment_host_assemble(spend->bytes, spend->length,
+        &wrong, expected_digests, 1, output, sizeof output, &length));
+    assert(length == 0);
+    wrong = *verified;
+    wrong.digest[0] ^= 1;
+    length = 99;
+    assert(!blue_payment_host_assemble(spend->bytes, spend->length,
+        &wrong, expected_digests, 1, output, sizeof output, &length));
+    assert(length == 0);
+}
+
+static void flow_check_assembly(const fixture *spend,
+    const uint8_t *reply, size_t reply_length, const uint8_t digest[32],
+    const uint8_t owned_hash[20],
+    const zcl_tx_previous_transaction *source, flow_signer *signer) {
+    uint8_t response[BLUE_PAYMENT_SIGN_REPLY_MAX + 2];
+    memcpy(response, reply, reply_length);
+    response[reply_length] = 0x90;
+    response[reply_length + 1] = 0;
+    blue_payment_verified_signature verified;
+    assert(blue_payment_host_verify(response, reply_length + 2, 0,
+        BLUE_PAYMENT_INPUT_EXTERNAL, owned_hash, digest, flow_public_hash,
+        flow_host_verify, signer, &verified));
+    uint8_t expected_digests[1][32];
+    memcpy(expected_digests[0], digest, 32);
+    uint8_t signed_wire[512];
+    size_t signed_length = 0;
+    assert(blue_payment_host_assemble(spend->bytes, spend->length,
+        &verified, (const uint8_t (*)[32])expected_digests, 1,
+        signed_wire, sizeof signed_wire, &signed_length));
+    assert(signed_length == spend->length + verified.der_length + 36);
+    zcl_tx_review original, assembled;
+    assert(zcl_tx_review_parse(spend->bytes, spend->length, &original) == 0);
+    assert(zcl_tx_review_parse(signed_wire, signed_length, &assembled) == 0);
+    assert(assembled.transparent_inputs == original.transparent_inputs &&
+        assembled.transparent_outputs == original.transparent_outputs &&
+        assembled.transparent_output_zat == original.transparent_output_zat);
+    zcl_tx_input input = {0};
+    assert(zcl_tx_inputs_visit(signed_wire, signed_length,
+        capture_signed_input, &input) == 0);
+    assert(input.script_length == (size_t)verified.der_length + 36 &&
+        input.script[0] == verified.der_length + 1 &&
+        memcmp(input.script + 1, verified.der, verified.der_length) == 0 &&
+        input.script[verified.der_length + 1] == 1 &&
+        input.script[verified.der_length + 2] == 33 &&
+        memcmp(input.script + verified.der_length + 3,
+            verified.public_key, 33) == 0);
+    assert(memcmp(signed_wire + 51 + input.script_length,
+        spend->bytes + 51, spend->length - 51) == 0);
+    struct blake2b_ctx blake_context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&blake_context);
+    zcl_tx_transparent_facts facts;
+    uint8_t signed_digest[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    /* Preflight accepts only unsigned inputs. */
+    assert(zcl_tx_transparent_bound_digests(signed_wire, signed_length,
+        source, 1, 0x76b809bb, screen_hash, &hasher, &facts,
+        signed_digest, ZCL_TX_PREFLIGHT_MAX_INPUTS) != 0);
+    flow_check_assembly_rejections(spend, signed_wire, signed_length,
+        &verified, (const uint8_t (*)[32])expected_digests);
+}
+
+static void flow_readonly_never_signs(const fixture *spend,
+    const blue_payment_live_plan *plan,
+    const zcl_tx_previous_transaction *source,
+    const uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32],
+    const uint8_t owned_hash[20], flow_signer *signer) {
+    live_fixture live = {0};
+    apdu_init(&live.apdu);
+    memcpy(live.apdu.owned.external, owned_hash, 20);
+    assert(blue_payment_live_run_bound(spend->bytes, spend->length,
+        plan, source, 1, 100000000, digests,
+        live_exchange, live_continue, &live));
+    assert(blue_payment_apdu_touch_confirm(&live.apdu.state));
+    uint8_t frame[BLUE_PAYMENT_SIGN_REPLY_MAX] = {0xa5, 0x29, 0, 0, 1, 0};
+    size_t reply_length = 99;
+    unsigned calls = signer->calls;
+    assert(blue_payment_sign_command(&live.apdu.state, frame, 6,
+        &live.apdu.owned, flow_sign, signer, flow_public_hash,
+        frame, sizeof frame, &reply_length) == 0x6985);
+    assert(reply_length == 0 && signer->calls == calls);
+    for (size_t i = 0; i < sizeof frame; ++i) assert(frame[i] == 0);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+}
+
+static void test_review_to_signature_flow(void) {
+    flow_signer signer = {0};
+    flow_signer_init(&signer);
+    uint8_t owned_hash[20];
+    assert(flow_public_hash(signer.public_key, owned_hash));
+    blue_payment_fixture built;
+    assert(blue_payment_fixture_make(owned_hash, &built));
+    fixture previous = {.length = built.previous_length};
+    fixture spend = {.length = built.unsigned_length};
+    memcpy(previous.bytes, built.previous, previous.length);
+    memcpy(spend.bytes, built.unsigned_wire, spend.length);
+    assert(previous.length == 85 && spend.length == 136);
+    zcl_tx_previous_transaction source = {
+        .wire = previous.bytes, .length = previous.length
+    };
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    assert(expected_bound_digests(&spend, &source, 1, digests) == 100000000);
+    blue_payment_live_plan plan;
+    assert(blue_payment_live_prepare(spend.bytes, spend.length,
+                                     0x76b809bb, &plan));
+    flow_readonly_never_signs(&spend, &plan, &source,
+        (const uint8_t (*)[32])digests, owned_hash, &signer);
+    flow_host_sign_refusals(&signer, owned_hash);
+    flow_partial_result_refusal(&signer, owned_hash);
+    live_fixture live = {.signing_identity = true,
+        .signing = flow_sign, .signing_hash = flow_public_hash,
+        .signer_context = &signer};
+    apdu_init(&live.apdu);
+    memcpy(live.apdu.owned.external, owned_hash, 20);
+    assert(blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, &source, 1, 100000000, (const uint8_t (*)[32])digests,
+        live_exchange, live_continue, &live));
+    assert(live.continued == 2 && live.apdu.state.fee_ready &&
+           live.apdu.state.own_output_zat == 100000000);
+    uint8_t paths[1] = {BLUE_PAYMENT_INPUT_EXTERNAL};
+    uint8_t hashes[1][20];
+    memcpy(hashes[0], owned_hash, 20);
+    blue_payment_verified_signature signatures[1];
+    assert(blue_payment_host_sign(1, paths,
+        (const uint8_t (*)[20])hashes,
+        (const uint8_t (*)[32])digests, live_exchange, flow_approve,
+        &live, flow_public_hash, flow_host_verify, &signer, signatures));
+    assert(signer.calls == 4 && !live.apdu.state.approved);
+    assert(signatures[0].index == 0 && signatures[0].der_length >= 8);
+    flow_verify_signature(&signer, live.last_sign_reply,
+        live.last_sign_length, digests[0]);
+    flow_check_assembly(&spend, live.last_sign_reply,
+        live.last_sign_length, digests[0],
+        owned_hash, &source, &signer);
+    EVP_MD_CTX_free(live.apdu.sha_context);
+    EVP_PKEY_free(signer.key);
+}
+
+static void test_two_path_review_to_signed_wire(void) {
+    flow_pair pair = {0};
+    flow_signer_init(&pair.keys[0]);
+    flow_signer_init(&pair.keys[1]);
+    uint8_t external[20], internal[20];
+    assert(flow_public_hash(pair.keys[0].public_key, external));
+    assert(flow_public_hash(pair.keys[1].public_key, internal));
+    assert(memcmp(external, internal, 20) != 0);
+    blue_payment_fixture first, second;
+    assert(blue_payment_fixture_make(external, &first));
+    assert(blue_payment_fixture_make(internal, &second));
+    fixture spend = {.length = first.unsigned_length + 41};
+    memcpy(spend.bytes, first.unsigned_wire, first.unsigned_length);
+    memmove(spend.bytes + 91, spend.bytes + 50,
+        first.unsigned_length - 50);
+    memcpy(spend.bytes + 50, second.unsigned_wire + 9, 41);
+    spend.bytes[8] = 2;
+    zcl_tx_previous_transaction previous[2] = {
+        {.wire = first.previous, .length = first.previous_length},
+        {.wire = second.previous, .length = second.previous_length}
+    };
+    blue_payment_host_ownership owned = {0};
+    assert(blue_payment_host_classify_inputs(spend.bytes, spend.length,
+        previous, 2, screen_hash, external, internal, &owned));
+    assert(owned.paths[0] == BLUE_PAYMENT_INPUT_EXTERNAL &&
+        owned.paths[1] == BLUE_PAYMENT_INPUT_INTERNAL &&
+        owned.facts.fee_zat == 500000000);
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    assert(expected_bound_digests(&spend, previous, 2, digests) ==
+        owned.facts.fee_zat);
+    blue_payment_live_plan plan;
+    assert(blue_payment_live_prepare(spend.bytes, spend.length,
+        BLUE_PAYMENT_FIXTURE_BRANCH, &plan));
+    live_fixture live = {.signing_identity = true,
+        .signing = flow_sign_pair, .signing_hash = flow_public_hash,
+        .signer_context = &pair};
+    apdu_init(&live.apdu);
+    memcpy(live.apdu.owned.external, external, 20);
+    memcpy(live.apdu.owned.internal, internal, 20);
+    assert(blue_payment_live_run_bound(spend.bytes, spend.length,
+        &plan, previous, 2, owned.facts.fee_zat,
+        (const uint8_t (*)[32])digests,
+        live_exchange, live_continue, &live));
+    blue_payment_verified_signature signatures[2];
+    assert(blue_payment_host_sign(2, owned.paths,
+        (const uint8_t (*)[20])owned.hashes,
+        (const uint8_t (*)[32])digests, live_exchange, flow_approve,
+        &live, flow_public_hash, flow_host_verify_pair, &pair,
+        signatures));
+    assert(pair.keys[0].calls == 1 && pair.keys[1].calls == 1 &&
+        !live.apdu.state.approved && signatures[0].index == 0 &&
+        signatures[1].index == 1);
+    uint8_t signed_wire[512];
+    size_t signed_length = 0;
+    assert(blue_payment_host_assemble(spend.bytes, spend.length,
+        signatures, (const uint8_t (*)[32])digests, 2,
+        signed_wire, sizeof signed_wire, &signed_length));
+    two_script_capture captured = {0};
+    assert(zcl_tx_inputs_visit(signed_wire, signed_length,
+        capture_two_scripts, &captured) == 0 && captured.seen == 2);
+    for (size_t i = 0; i < 2; ++i) {
+        const zcl_tx_input *input = &captured.inputs[i];
+        assert(input->script_length ==
+            (size_t)signatures[i].der_length + 36 &&
+            memcmp(input->script + signatures[i].der_length + 3,
+                pair.keys[i].public_key, 33) == 0);
+    }
+    EVP_MD_CTX_free(live.apdu.sha_context);
+    EVP_PKEY_free(pair.keys[0].key);
+    EVP_PKEY_free(pair.keys[1].key);
+}
+
+static void test_signing_usb_interruptions(void) {
+    flow_signer signer = {0};
+    flow_signer_init(&signer);
+    uint8_t owned_hash[20];
+    assert(flow_public_hash(signer.public_key, owned_hash));
+    blue_payment_fixture built;
+    assert(blue_payment_fixture_make(owned_hash, &built));
+    fixture spend = {.length = built.unsigned_length};
+    memcpy(spend.bytes, built.unsigned_wire, spend.length);
+    zcl_tx_previous_transaction previous = {
+        .wire = built.previous, .length = built.previous_length};
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+    assert(expected_bound_digests(&spend, &previous, 1, digests) ==
+        100000000);
+    blue_payment_live_plan plan;
+    assert(blue_payment_live_prepare(spend.bytes, spend.length,
+        BLUE_PAYMENT_FIXTURE_BRANCH, &plan));
+    const uint8_t paths[1] = {BLUE_PAYMENT_INPUT_EXTERNAL};
+    uint8_t hashes[1][20];
+    memcpy(hashes[0], owned_hash, 20);
+    for (unsigned cut = 1; cut <= 2; ++cut) {
+        live_fixture live = {.signing_identity = true,
+            .signing = flow_sign, .signing_hash = flow_public_hash,
+            .signer_context = &signer};
+        apdu_init(&live.apdu);
+        memcpy(live.apdu.owned.external, owned_hash, 20);
+        assert(blue_payment_live_run_bound(spend.bytes, spend.length,
+            &plan, &previous, 1, 100000000,
+            (const uint8_t (*)[32])digests,
+            live_exchange, live_continue, &live));
+        live.reset_after_reply = live.exchanges + cut;
+        unsigned calls = signer.calls;
+        blue_payment_verified_signature signature = {.der_length = 8};
+        assert(!blue_payment_host_sign(1, paths,
+            (const uint8_t (*)[20])hashes,
+            (const uint8_t (*)[32])digests, live_exchange, flow_approve,
+            &live, flow_public_hash, flow_host_verify, &signer,
+            &signature));
+        assert(!signature.der_length && !live.apdu.state.approved &&
+            !live.apdu.state.fee_ready && live.connection_lost &&
+            signer.calls == calls + (cut == 2));
+        live.connection_lost = false;
+        uint8_t request[6] = {0xa5, 0x29, 0, 0, 1, 0};
+        uint8_t reply[BLUE_PAYMENT_SIGN_REPLY_MAX + 2];
+        size_t reply_length = 0;
+        assert(live_exchange(&live, request, sizeof request,
+            reply, sizeof reply, &reply_length));
+        assert(reply_length == 2 && reply[0] == 0x69 && reply[1] == 0x85 &&
+            signer.calls == calls + (cut == 2));
+        EVP_MD_CTX_free(live.apdu.sha_context);
+    }
+    EVP_PKEY_free(signer.key);
+}
+
 int main(int argc, char **argv) {
     fixture item = make_fixture();
     test_success(&item);
@@ -854,9 +1497,14 @@ int main(int argc, char **argv) {
     test_apdu(&item);
     test_apdu_fail_closed(&item);
     test_apdu_mutations();
+    test_live_review_status();
     test_live_driver(&item);
     test_live_bound();
     test_live_two_inputs();
+    test_two_input_script_layout();
+    test_review_to_signature_flow();
+    test_two_path_review_to_signed_wire();
+    test_signing_usb_interruptions();
     if (argc == 2) {
         FILE *file = fopen(argv[1], "wb");
         assert(file);

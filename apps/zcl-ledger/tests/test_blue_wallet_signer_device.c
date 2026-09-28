@@ -7,9 +7,10 @@
 #include <stdbool.h>
 #include <string.h>
 
-static bool pin_valid = true, fail_pair, fail_sign, bad_public,
+static bool pin_valid = true, fail_pair, fail_sign, fail_hash, bad_public,
     bad_sign_length;
 static unsigned derive_calls, sign_calls, last_path[5];
+static blue_payment_owned_hashes owned;
 
 int os_global_pin_is_validated(void) { return pin_valid; }
 
@@ -40,7 +41,7 @@ int cx_ecfp_generate_pair(unsigned curve, cx_ecfp_public_key_t *public_key,
     public_key->W_len = 65;
     public_key->W[0] = 4;
     if (bad_public) public_key->W[0] = 3;
-    memset(public_key->W + 1, 0x31, 64);
+    memset(public_key->W + 1, last_path[3] ? 0x32 : 0x31, 64);
     public_key->W[64] = 1;
     return 0;
 }
@@ -62,6 +63,14 @@ int cx_ecdsa_sign(const cx_ecfp_private_key_t *private_key, int mode,
     return sizeof der;
 }
 
+bool blue_wallet_public_hash160(const uint8_t compressed[33],
+    uint8_t hash160[20]) {
+    if (fail_hash || (compressed[1] != 0x31 && compressed[1] != 0x32))
+        return false;
+    memset(hash160, compressed[1] == 0x31 ? 0x11 : 0x22, 20);
+    return true;
+}
+
 #include "../device-blue-wallet/src/blue_wallet_signer_device.c"
 
 static void expect_wiped(void) {
@@ -75,14 +84,14 @@ static void expect_wiped(void) {
 static void test_paths(void) {
     uint8_t digest[32] = {0xa5}, public_key[33], signature[72];
     size_t length = 0;
-    assert(blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+    assert(blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
     assert(length == 8 && public_key[0] == 3);
     assert(last_path[0] == 0x8000002c && last_path[1] == 0x80000093);
     assert(last_path[2] == 0x80000000 && last_path[3] == 0 &&
            last_path[4] == 0);
     expect_wiped();
-    assert(blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_INTERNAL,
+    assert(blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_INTERNAL,
         digest, public_key, signature, &length));
     assert(last_path[3] == 1 && derive_calls == 2 && sign_calls == 2);
     expect_wiped();
@@ -94,7 +103,7 @@ static void test_fail_closed(void) {
     memset(public_key, 0xcc, sizeof public_key);
     memset(signature, 0xcc, sizeof signature);
     pin_valid = false;
-    assert(!blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
     assert(length == 0 && derive_calls == 2);
     for (size_t i = 0; i < sizeof public_key; ++i)
@@ -102,17 +111,17 @@ static void test_fail_closed(void) {
     for (size_t i = 0; i < sizeof signature; ++i)
         assert(signature[i] == 0);
     pin_valid = true;
-    assert(!blue_wallet_sign_digest(NULL, 3, digest,
+    assert(!blue_wallet_sign_digest(&owned, 3, digest,
         public_key, signature, &length));
     assert(derive_calls == 2);
     fail_pair = true;
-    assert(!blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
     assert(length == 0 && sign_calls == 2);
     expect_wiped();
     fail_pair = false;
     fail_sign = true;
-    assert(!blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
     assert(length == 0 && sign_calls == 3);
     for (size_t i = 0; i < sizeof public_key; ++i)
@@ -133,13 +142,13 @@ static void test_malformed_sdk_results(void) {
     uint8_t digest[32] = {0xa5}, public_key[33], signature[72];
     size_t length = 99;
     bad_public = true;
-    assert(!blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
     assert(length == 0);
     expect_wiped();
     bad_public = false;
     bad_sign_length = true;
-    assert(!blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
         digest, public_key, signature, &length));
     assert(length == 0);
     for (size_t i = 0; i < sizeof public_key; ++i)
@@ -149,10 +158,38 @@ static void test_malformed_sdk_results(void) {
     expect_wiped();
 }
 
+static void test_account_guard(void) {
+    uint8_t digest[32] = {0xa5}, public_key[33], signature[72];
+    size_t length = 99;
+    unsigned before = sign_calls;
+    owned.external[0] ^= 1u;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest, public_key, signature, &length));
+    assert(length == 0 && sign_calls == before);
+    owned.external[0] ^= 1u;
+    for (size_t i = 0; i < sizeof public_key; ++i)
+        assert(public_key[i] == 0);
+    for (size_t i = 0; i < sizeof signature; ++i)
+        assert(signature[i] == 0);
+    expect_wiped();
+    fail_hash = true;
+    assert(!blue_wallet_sign_digest(&owned, BLUE_PAYMENT_INPUT_INTERNAL,
+        digest, public_key, signature, &length));
+    assert(sign_calls == before);
+    fail_hash = false;
+    assert(!blue_wallet_sign_digest(NULL, BLUE_PAYMENT_INPUT_EXTERNAL,
+        digest, public_key, signature, &length));
+    assert(sign_calls == before);
+    expect_wiped();
+}
+
 int main(void) {
+    memset(owned.external, 0x11, sizeof owned.external);
+    memset(owned.internal, 0x22, sizeof owned.internal);
     test_paths();
     test_fail_closed();
     test_exception_cleanup();
     test_malformed_sdk_results();
+    test_account_guard();
     return 0;
 }

@@ -6,6 +6,7 @@
 #include "blue_utxo.h"
 #include "ledger_hid.h"
 #include "zcl_tx_prevout.h"
+#include "zcl_tx_review.h"
 #include "zcl_zip243_host.h"
 #include "crypto/blake2b.h"
 #include "zsha256/zsha256.h"
@@ -21,7 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-typedef struct { int fd; } live_device;
+typedef struct { int fd; uint32_t outputs; } live_device;
 
 static bool sha256_bytes(const uint8_t *bytes, size_t length,
     uint8_t digest[32]) {
@@ -48,7 +49,7 @@ static bool read_exact(int fd, uint8_t *bytes, size_t length) {
 }
 
 static bool read_wire(const char *path, uint8_t **wire, size_t *length) {
-    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0) return false;
     struct stat info;
     bool valid = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
@@ -111,12 +112,9 @@ static int review_status(live_device *device, uint32_t index) {
     uint8_t reply[16];
     size_t length = 0;
     if (!live_exchange(device, command, sizeof command, reply,
-                       sizeof reply, &length) || length != 8 ||
-        reply[0] != 1 || reply[1] != 3 || reply[3] != 0 ||
-        reply[6] != 0x90 || reply[7] != 0) return -1;
-    if (reply[2] == 0 && reply[5] == index + 1) return 1;
-    if (reply[2] == 1 && reply[5] == index) return 0;
-    return -1;
+                       sizeof reply, &length)) return -1;
+    return blue_payment_live_review_status(reply, length, index,
+                                            device->outputs);
 }
 
 static bool wait_for_touch(void *context, uint32_t index,
@@ -136,13 +134,142 @@ static bool wait_for_touch(void *context, uint32_t index,
     return false;
 }
 
-static bool review_tip_unchanged(bool reviewed, const char *rpc_binary,
-                                 const blue_chain_tip *initial) {
+static bool review_inputs_unchanged(bool reviewed, const char *rpc_binary,
+                                   const blue_chain_tip *initial,
+                                   const uint8_t *wire, size_t length,
+                                   const zcl_tx_previous_transaction *previous,
+                                   size_t previous_count) {
     if (!reviewed) return false;
-    if (blue_chain_tip_still_current(rpc_binary, initial)) return true;
-    fputs("Cannot confirm the local node tip remained unchanged during Blue review; discard this result.\n",
+    if (blue_utxo_recheck_at_tip(rpc_binary, initial, wire, length,
+                                 previous, previous_count)) return true;
+    fputs("Cannot confirm the local node tip and input UTXOs remained unchanged during Blue review; discard this result.\n",
           stderr);
     return false;
+}
+
+typedef struct {
+    blue_chain_tip tip;
+    uint32_t branch_id;
+    uint8_t *wire;
+    size_t length;
+    blue_payment_live_plan *plan;
+    size_t previous_count;
+    uint8_t *previous_bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS];
+    zcl_tx_previous_transaction previous[ZCL_TX_PREFLIGHT_MAX_INPUTS];
+    zcl_tx_transparent_facts facts;
+    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
+} review_job;
+
+static void free_job(review_job *job) {
+    if (!job) return;
+    free_previous(job->previous_bytes, job->previous_count);
+    free(job->plan);
+    free(job->wire);
+    free(job);
+}
+
+static void report_unreviewable_wire(const uint8_t *wire, size_t length) {
+    zcl_tx_review facts;
+    if (zcl_tx_review_parse(wire, length, &facts) == 0 &&
+        (facts.sapling_spends || facts.sapling_outputs ||
+         facts.sprout_joinsplits || facts.value_balance_zat)) {
+        fputs("Transactions with shielded fields cannot be reviewed by this Blue Wallet yet.\n",
+              stderr);
+        return;
+    }
+    fputs("The transaction cannot be reviewed by this Blue Wallet.\n", stderr);
+}
+
+static bool prepare_wire(review_job *job, const char *rpc_binary,
+                         const char *path) {
+    if (!blue_chain_tip_query(rpc_binary, &job->tip) ||
+        !blue_mainnet_branch_for_height(job->tip.next_height,
+                                         &job->branch_id)) {
+        fputs("Cannot verify a synced ZCL mainnet tip at or after Sapling activation.\n",
+              stderr);
+        return false;
+    }
+    if (!read_wire(path, &job->wire, &job->length)) {
+        fputs("Expected a nonempty regular unsigned transaction file within the Blue size limit.\n",
+              stderr);
+        return false;
+    }
+    job->plan = malloc(sizeof *job->plan);
+    if (!job->plan) {
+        fputs("Cannot allocate the Blue review plan.\n", stderr);
+        return false;
+    }
+    if (!blue_payment_live_prepare(job->wire, job->length,
+                                   job->branch_id, job->plan)) {
+        report_unreviewable_wire(job->wire, job->length);
+        return false;
+    }
+    return true;
+}
+
+static bool prepare_inputs(review_job *job, const char *rpc_binary,
+                           char *const paths[]) {
+    if (!load_previous(paths, job->previous_count,
+                       job->previous_bytes, job->previous)) {
+        fputs("Expected nonempty regular previous transaction files within the Blue size limit.\n",
+              stderr);
+        return false;
+    }
+    struct blake2b_ctx blake_context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&blake_context);
+    if (zcl_tx_transparent_bound_digests(job->wire, job->length,
+            job->previous, job->previous_count, job->branch_id,
+            sha256_bytes, &hasher, &job->facts, job->digests,
+            ZCL_TX_PREFLIGHT_MAX_INPUTS) < 0) {
+        fputs("Input outpoints do not match previous transactions or digest calculation failed.\n",
+              stderr);
+        return false;
+    }
+    if (!blue_utxo_check_inputs(rpc_binary, job->wire, job->length,
+                                job->previous, job->previous_count,
+                                job->tip.next_height)) {
+        fputs("A supplied input failed the local node's confirmation, UTXO, maturity, amount, or script check.\n",
+              stderr);
+        return false;
+    }
+    if (!blue_chain_tip_still_current(rpc_binary, &job->tip)) {
+        fputs("Cannot confirm the local node tip remained unchanged during input checks; review stopped.\n",
+              stderr);
+        return false;
+    }
+    return true;
+}
+
+static bool run_device(review_job *job, const char *device_path,
+                       const char *rpc_binary) {
+    live_device device = {.fd = open_blue(device_path),
+                          .outputs = job->plan->count};
+    if (device.fd < 0) {
+        fputs("The selected interface is not an accessible Ledger Blue.\n",
+              stderr);
+        return false;
+    }
+    printf("Read-only mainnet test review at node next height %u "
+           "(branch %08x): %u hash-bound input(s), %u output(s), "
+           "fee %llu zatoshi. Local UTXO status checked; independent peer sync and account ownership remain unverified.\n",
+           job->tip.next_height, job->branch_id,
+           job->facts.transparent_inputs, job->facts.transparent_outputs,
+           (unsigned long long)job->facts.fee_zat);
+    puts("This command never requests a payment signature. Choose NO SIGN on the Blue.");
+    fflush(stdout);
+    bool valid = blue_payment_live_run_bound(job->wire, job->length, job->plan,
+        job->previous, job->previous_count, job->facts.fee_zat,
+        (const uint8_t (*)[32])job->digests,
+        live_exchange, wait_for_touch, &device);
+    valid = review_inputs_unchanged(valid, rpc_binary, &job->tip,
+        job->wire, job->length, job->previous, job->previous_count);
+    close(device.fd);
+    if (!valid) {
+        fputs("Blue review stopped; no payment was signed.\n", stderr);
+        return false;
+    }
+    puts("Blue matched every input digest and displayed the fee. Choose NO SIGN, then tap EXIT on the Blue.");
+    return true;
 }
 
 int main(int argc, char **argv) {
@@ -152,94 +279,15 @@ int main(int argc, char **argv) {
             argv[0]);
         return 2;
     }
-    uint32_t branch_id;
-    blue_chain_tip tip;
-    uint8_t *wire = NULL;
-    size_t length = 0;
-    if (!blue_chain_tip_query(argv[3], &tip) ||
-        !blue_mainnet_branch_for_height(tip.next_height, &branch_id)) {
-        fputs("Cannot verify a synced ZCL mainnet tip at or after Sapling activation.\n",
-              stderr);
+    review_job *job = calloc(1, sizeof *job);
+    if (!job) {
+        fputs("Cannot allocate the Blue review job.\n", stderr);
         return 1;
     }
-    if (!read_wire(argv[4], &wire, &length)) {
-        fputs("Expected a regular unsigned transaction file.\n",
-              stderr);
-        return 1;
-    }
-    blue_payment_live_plan *plan = malloc(sizeof *plan);
-    if (!plan || !blue_payment_live_prepare(wire, length, branch_id, plan)) {
-        fputs("The transaction cannot be reviewed by this Blue Wallet.\n", stderr);
-        free(plan);
-        free(wire);
-        return 1;
-    }
-    size_t previous_count = (size_t)argc - 5;
-    uint8_t *previous_bytes[ZCL_TX_PREFLIGHT_MAX_INPUTS] = {0};
-    zcl_tx_previous_transaction previous[ZCL_TX_PREFLIGHT_MAX_INPUTS] = {0};
-    bool loaded = load_previous(argv + 5, previous_count,
-                                previous_bytes, previous);
-    zcl_tx_transparent_facts facts;
-    uint8_t digests[ZCL_TX_PREFLIGHT_MAX_INPUTS][32];
-    struct blake2b_ctx blake_context;
-    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&blake_context);
-    if (!loaded || zcl_tx_transparent_bound_digests(wire, length,
-            previous, previous_count, branch_id, sha256_bytes, &hasher,
-            &facts, digests, ZCL_TX_PREFLIGHT_MAX_INPUTS) < 0) {
-        fputs("Input outpoints do not match previous transactions or digest calculation failed.\n",
-              stderr);
-        free_previous(previous_bytes, previous_count);
-        free(plan);
-        free(wire);
-        return 1;
-    }
-    if (!blue_utxo_check_inputs(argv[3], wire, length, previous,
-                                previous_count, tip.next_height)) {
-        fputs("A supplied input failed the local node's confirmation, UTXO, maturity, amount, or script check.\n",
-              stderr);
-        free_previous(previous_bytes, previous_count);
-        free(plan);
-        free(wire);
-        return 1;
-    }
-    if (!blue_chain_tip_still_current(argv[3], &tip)) {
-        fputs("Cannot confirm the local node tip remained unchanged during input checks; review stopped.\n",
-              stderr);
-        free_previous(previous_bytes, previous_count);
-        free(plan);
-        free(wire);
-        return 1;
-    }
-    live_device device = {.fd = open_blue(argv[2])};
-    if (device.fd < 0) {
-        fputs("The selected interface is not an accessible Ledger Blue.\n",
-              stderr);
-        free_previous(previous_bytes, previous_count);
-        free(plan);
-        free(wire);
-        return 1;
-    }
-    printf("Read-only mainnet test review at node next height %u "
-           "(branch %08x): %u hash-bound input(s), %u output(s), "
-           "fee %llu zatoshi. Local UTXO status checked; independent peer sync and account ownership remain unverified.\n",
-           tip.next_height, branch_id,
-           facts.transparent_inputs, facts.transparent_outputs,
-           (unsigned long long)facts.fee_zat);
-    puts("The app cannot sign a payment.");
-    fflush(stdout);
-    bool valid = blue_payment_live_run_bound(wire, length, plan,
-        previous, previous_count, facts.fee_zat,
-        (const uint8_t (*)[32])digests,
-        live_exchange, wait_for_touch, &device);
-    valid = review_tip_unchanged(valid, argv[3], &tip);
-    close(device.fd);
-    free_previous(previous_bytes, previous_count);
-    free(plan);
-    free(wire);
-    if (!valid) {
-        fputs("Blue review stopped; no payment was signed.\n", stderr);
-        return 1;
-    }
-    puts("Blue matched every input digest and displayed the fee; NO SIGNING. Tap EXIT on the Blue.");
-    return 0;
+    job->previous_count = (size_t)argc - 5;
+    bool valid = prepare_wire(job, argv[3], argv[4]) &&
+        prepare_inputs(job, argv[3], argv + 5) &&
+        run_device(job, argv[2], argv[3]);
+    free_job(job);
+    return valid ? 0 : 1;
 }

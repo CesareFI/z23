@@ -289,18 +289,8 @@ static bool derive_sapling_id(struct sapling_id *id, const uint8_t seed[32])
     return true;
 }
 
-/* Probe the native prover <-> consensus verifier positive round-trip: build
- * ONE Sapling output with the real prover and feed it to the REAL verifier
- * sapling_check_output. Returns the verifier's verdict.
- *
- * NOTE (loud): today this returns FALSE — the in-binary C23 Groth16 prover
- * emits an output proof that the consensus verifier REJECTS. This is a
- * PRE-EXISTING prover<->verifier gap, independent of Lane C: test_snark_kat
- * KAT B reports the identical "verify(real prover proof) = false" and gates
- * only its NEGATIVE cases for exactly this reason. Lane C uses this probe to
- * assert that the verifier verdict reached through the simulator EQUALS the
- * verdict of a direct round-trip — an honest invariant that is green today
- * (both reject) and auto-tightens to "accept" the day the prover is fixed. */
+/* Build one Sapling output with the native C23 prover and return the
+ * independent consensus verifier's verdict. */
 static bool prover_verifier_roundtrip_ok(void)
 {
     uint8_t ovk[32]; memset(ovk, 0x33, 32);
@@ -336,6 +326,143 @@ static bool drive_real_verifier(const struct transaction *tx,
     return contextual_check_transaction(tx, &st, cp, nHeight, 100);
 }
 
+static void print_blue_fixture_hex(const char *name,
+                                   const uint8_t *bytes, size_t length)
+{
+    printf("%s=", name);
+    for (size_t i = 0; i < length; ++i) printf("%02x", bytes[i]);
+    putchar('\n');
+}
+
+static bool blue_note_matches(const struct output_description *od,
+                              const uint8_t note[564],
+                              const struct sapling_id *id,
+                              uint64_t value)
+{
+    if (note[0] != 1 || memcmp(note + 1, id->d, 11)) return false;
+    uint64_t recovered = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        recovered |= (uint64_t)note[12 + i] << (8 * i);
+    if (recovered != value) return false;
+    for (unsigned i = 52; i < 564; ++i)
+        if (note[i] != 0xf6) return false;
+    uint8_t cm[32];
+    return sapling_compute_cm(note + 1, id->pk_d, recovered,
+                              note + 20, cm) &&
+           memcmp(cm, od->cm.data, sizeof cm) == 0;
+}
+
+static bool blue_recover_output(const struct output_description *od,
+                                const struct sapling_id *id,
+                                uint64_t value)
+{
+    uint8_t ock[32], outgoing[64], epk[32], dh[32], key[32], note[564];
+    bool ok = sapling_prf_ock(ock, id->ovk, od->cv.data,
+                             od->cm.data, od->ephemeral_key.data) &&
+              sapling_out_decrypt(ock, od->out_ciphertext,
+                                  sizeof od->out_ciphertext, outgoing) &&
+              memcmp(outgoing, id->pk_d, 32) == 0;
+    if (ok) ok = sapling_ka_derivepublic(id->d, outgoing + 32, epk) &&
+                 memcmp(epk, od->ephemeral_key.data, sizeof epk) == 0;
+    if (ok) ok = sapling_ka_agree(id->pk_d, outgoing + 32, dh) &&
+                 sapling_kdf(key, dh, od->ephemeral_key.data) &&
+                 sapling_note_decrypt(key, od->enc_ciphertext,
+                                      sizeof od->enc_ciphertext, note) &&
+                 blue_note_matches(od, note, id, value);
+    memory_cleanse(ock, sizeof ock);
+    memory_cleanse(outgoing, sizeof outgoing);
+    memory_cleanse(epk, sizeof epk);
+    memory_cleanse(dh, sizeof dh);
+    memory_cleanse(key, sizeof key);
+    memory_cleanse(note, sizeof note);
+    return ok;
+}
+
+static bool blue_rejects_altered_output(const struct output_description *od,
+                                        const struct sapling_id *id,
+                                        uint64_t value)
+{
+    struct output_description altered = *od;
+    altered.out_ciphertext[sizeof altered.out_ciphertext - 1] ^= 1u;
+    if (blue_recover_output(&altered, id, value)) return false;
+    altered = *od;
+    altered.enc_ciphertext[sizeof altered.enc_ciphertext - 1] ^= 1u;
+    if (blue_recover_output(&altered, id, value)) return false;
+    altered = *od;
+    altered.cm.data[0] ^= 1u;
+    if (blue_recover_output(&altered, id, value)) return false;
+    return !blue_recover_output(od, id, value + 1);
+}
+
+static bool blue_output_checks(bool built,
+                               const struct output_description *od,
+                               const struct sapling_id *id,
+                               uint64_t value)
+{
+    return built && blue_recover_output(od, id, value) &&
+           blue_rejects_altered_output(od, id, value);
+}
+
+static bool emit_blue_spend_fixture(const struct transaction *tx,
+                                    uint32_t branch,
+                                    const struct sapling_id *id,
+                                    const uint8_t ar[32])
+{
+    struct sighash_type hash_type = {.raw = 1};
+    struct precomputed_tx_data tx_data;
+    struct script empty = {.size = 0};
+    struct uint256 digest;
+    precompute_tx_data(tx, &tx_data);
+    if (!signature_hash(&empty, tx, NOT_AN_INPUT, hash_type, 0, branch,
+                        &tx_data, &digest)) return false;
+    struct byte_stream wire;
+    stream_init(&wire, 2048);
+    bool valid = transaction_serialize(tx, &wire) && !wire.error;
+    if (valid) {
+        printf("BLUE_SAPLING_BRANCH=%08x\n", branch);
+        print_blue_fixture_hex("BLUE_SAPLING_SIGHASH",
+                               digest.data, sizeof digest.data);
+        print_blue_fixture_hex("BLUE_SAPLING_WIRE", wire.data, wire.size);
+        if (getenv("ZCL_BLUE_EXPORT_TEST_KEYS")) {
+            print_blue_fixture_hex("BLUE_SAPLING_TEST_ASK", id->ask, 32);
+            print_blue_fixture_hex("BLUE_SAPLING_TEST_AR", ar, 32);
+            print_blue_fixture_hex("BLUE_SAPLING_TEST_OVK", id->ovk, 32);
+            print_blue_fixture_hex("BLUE_SAPLING_TEST_D", id->d, 11);
+            print_blue_fixture_hex("BLUE_SAPLING_TEST_PK_D", id->pk_d, 32);
+        }
+    }
+    stream_free(&wire);
+    return valid;
+}
+
+static int maybe_export_blue_spend_fixture(const struct transaction *tx,
+                                           const struct consensus_params *cp,
+                                           int height, bool verified,
+                                           bool recovered,
+                                           bool enabled,
+                                           const struct sapling_id *id,
+                                           const uint8_t ar[32])
+{
+    if (!enabled || !getenv("ZCL_BLUE_EXPORT_SAPLING_WIRE")) return 0;
+    uint32_t branch = consensus_current_epoch_branch_id(height, cp);
+    bool valid = verified && recovered &&
+                 emit_blue_spend_fixture(tx, branch, id, ar);
+    printf("  export consensus-verified Blue spend fixture... %s\n",
+           valid ? "OK" : "FAIL");
+    return valid ? 0 : 1;
+}
+
+static int report_unavailable_blue_fixture(int failures) {
+    bool requested = getenv("ZCL_BLUE_EXPORT_SAPLING_WIRE") != NULL;
+    if (requested)
+        printf("  export consensus-verified Blue spend fixture... FAIL "
+               "(prover unavailable)\n");
+    printf("Sapling Lane C: %s (%d failures, prover legs skipped)\n",
+           failures == 0 && !requested ? "OK" : "FAIL",
+           failures + requested);
+    return failures + requested;
+}
+
 /* Per-component capture of the z->z tx so the caller can localize exactly
  * which fields are (non-)deterministic across two same-seed builds. */
 struct zz_components {
@@ -361,7 +488,8 @@ struct zz_components {
 static int build_and_verify(uint64_t seed, bool verify_ok,
                             struct uint256 *tz_txid_out,
                             struct uint256 *zz_txid_out,
-                            struct zz_components *zc_out)
+                            struct zz_components *zc_out,
+                            bool export_blue_fixture)
 {
     int failures = 0;
 
@@ -392,15 +520,15 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
     seed32[31] = 0x5C;   /* Lane C tag */
     struct sapling_id id;
     SS_CHECK("derive Sapling spending key + address", derive_sapling_id(&id, seed32));
+    uint8_t ar[32] = {0};
 
     /* ── Simulator: Sapling active at height 100, live tree, real verifier ── */
     struct simnet s;
     SS_CHECK("simnet_init", simnet_init(&s));
     simnet_activate_sapling_at(&s, SAPLING_H);
     SS_CHECK("enable in-sim Sapling tree", simnet_enable_sapling_tree(&s));
-    /* Enable the in-mint contextual verifier ONLY when the prover<->verifier
-     * round-trip is known good; today it is not (see prover_verifier_roundtrip_ok),
-     * so mints advance via connect_block and we drive the verifier explicitly. */
+    /* Enable the in-mint contextual verifier when the direct prover/verifier
+     * probe succeeds. The explicit check below still records its verdict. */
     simnet_enable_contextual_check(&s, verify_ok);
 
     /* Fund: one coinbase output of FUND_VALUE at height 100. */
@@ -501,11 +629,8 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
     transaction_compute_hash(&tz);
     struct uint256 tz_txid = tz.hash;
 
-    /* Drive the REAL shielded verifier on the t->z tx. Its verdict must equal
-     * the up-front probe: the sim reaches the same check_output/final_check
-     * result as a direct prover->verifier round-trip. Green today (both reject
-     * — pre-existing prover gap), auto-tightens to accept when the prover
-     * is fixed. */
+    /* Drive the real shielded verifier on the t->z transaction. Its verdict
+     * must equal the up-front prover/verifier probe. */
     SS_CHECK("t->z: REAL verifier (contextual_check_transaction) verdict == probe",
              drive_real_verifier(&tz, &s.params.consensus, tz_height) == verify_ok);
 
@@ -547,6 +672,7 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
 
     uint8_t spend_nf[32]; memset(spend_nf, 0, sizeof(spend_nf));
     int zz_height = tz_height + 1;
+    bool zz_output_recovered = false;
 
     if (zz.v_shielded_spend && zz.v_shielded_output && witnessed) {
         zz.num_shielded_spend  = 1;
@@ -560,7 +686,7 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
                  incremental_witness_merkle_path(&w, path, &path_len));
         uint64_t position = simnet_sapling_tree_size(&s) - 1;   /* == 0 */
 
-        uint8_t ar[32], spend_rcv[32];
+        uint8_t spend_rcv[32];
         bool spend_built = direct_build_spend_description(
                      id.ask, id.nsk, id.d, id.pk_d, note_rcm,
                      (uint64_t)SHIELDED_VALUE, position, anchor.data,
@@ -577,7 +703,10 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
                      NULL, od->cv.data, od->cm.data, od->ephemeral_key.data,
                      od->enc_ciphertext, od->out_ciphertext, od->zkproof,
                      out_rcv);
-        SS_CHECK("build z->z output (real prover)", out_built);
+        zz_output_recovered = blue_output_checks(out_built, od, &id,
+                                                  (uint64_t)SHIELDED_VALUE);
+        SS_CHECK("build and recover z->z output; reject alterations",
+                 zz_output_recovered);
 
         /* Sapling sighash, spend_auth_sig (rsk = ask + ar in Fs), binding sig. */
         transaction_compute_hash(&zz);
@@ -626,8 +755,15 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
 
     /* Drive the REAL shielded verifier on the z->z tx (check_spend +
      * check_output + final_check). Verdict must equal the probe. */
+    bool zz_verified = drive_real_verifier(&zz, &s.params.consensus, zz_height);
     SS_CHECK("z->z: REAL verifier (contextual_check_transaction) verdict == probe",
-             drive_real_verifier(&zz, &s.params.consensus, zz_height) == verify_ok);
+             zz_verified == verify_ok);
+    failures += maybe_export_blue_spend_fixture(&zz, &s.params.consensus,
+                                                 zz_height, zz_verified,
+                                                 zz_output_recovered,
+                                                 export_blue_fixture,
+                                                 &id, ar);
+    memory_cleanse(ar, sizeof ar);
 
     /* ── Drive the REAL durable nullifier path on the z->z block ── */
     {
@@ -807,10 +943,8 @@ int test_simnet_sapling_shielded_send(void)
                    "Tree plumbing above ran.\n",
                    zclassic_sapling_prover_backend(),
                    zclassic_sapling_prover_status());
-        printf("Sapling Lane C: %s (%d failures, prover legs skipped)\n",
-               failures == 0 ? "OK" : "FAIL", failures);
         atomic_store(&g_deferred_proof_validation_below_height, saved_defer);
-        return failures;
+        return report_unavailable_blue_fixture(failures);
     }
     printf("  ~/.zcash-params present — running REAL prover/verifier legs\n");
 
@@ -822,15 +956,9 @@ int test_simnet_sapling_shielded_send(void)
     printf("  [PROBE] native prover output proof verifies through the REAL "
            "consensus verifier: %s\n", verify_ok ? "YES" : "NO");
     if (!verify_ok) {
-        printf("  [BLOCKER — pre-existing, NOT Lane C] the in-binary C23 Groth16 "
-               "prover emits proofs the consensus verifier REJECTS "
-               "(sapling_check_output). Same result as test_snark_kat KAT B's "
-               "diagnostic. The full shielded send is built with the REAL prover, "
-               "driven through the REAL verifier, and advances real sim state "
-               "(tree/anchor/witness/nullifier/txid-determinism); the ONE thing "
-               "blocked is the verifier ACCEPTING the proof. This test asserts "
-               "the sim reaches the same verdict as a direct round-trip, so it is "
-               "green today and auto-tightens to 'accept' when the prover lands.\n");
+        printf("  [PROVER FAILURE] native output proof rejected by "
+               "sapling_check_output; the simulator will compare its "
+               "contextual verdict with this direct probe.\n");
     }
 
     /* Deliverables 1,3,4,5 + txid determinism: two identical builds. */
@@ -838,9 +966,9 @@ int test_simnet_sapling_shielded_send(void)
     struct uint256 tz1, zz1, tz2, zz2;
     struct zz_components zc1 = {0}, zc2 = {0};
     printf("  --- build #1 (seed=0x%016llx) ---\n", (unsigned long long)SEED);
-    failures += build_and_verify(SEED, verify_ok, &tz1, &zz1, &zc1);
+    failures += build_and_verify(SEED, verify_ok, &tz1, &zz1, &zc1, true);
     printf("  --- build #2 (same seed) ---\n");
-    failures += build_and_verify(SEED, verify_ok, &tz2, &zz2, &zc2);
+    failures += build_and_verify(SEED, verify_ok, &tz2, &zz2, &zc2, false);
 
     /* t->z (transparent-in, one shielded OUTPUT) is fully deterministic — the
      * native OUTPUT prover + all seeded randomness reproduce it byte-for-byte. */
@@ -849,17 +977,8 @@ int test_simnet_sapling_shielded_send(void)
     SS_CHECK("t->z and z->z are distinct txs",
              memcmp(tz1.data, zz1.data, 32) != 0);
 
-    /* z->z per-component determinism localization.
-     *
-     * The single non-deterministic field is the native SPEND Groth16 proof.
-     * The Sapling sighash (ZIP-243) hashes each spend's zkproof
-     * (domain/consensus/src/sighash.c:108), so a non-deterministic spend proof
-     * cascades into the sighash → spend_auth_sig + binding_sig → txid. Fields
-     * that DON'T depend on the spend proof — anchor, spend value-commitment,
-     * nullifier, rk, and the OUTPUT proof — ARE byte-stable and hard-asserted;
-     * the proof-dependent fields are asserted to move TOGETHER with the spend
-     * proof (an equivalence that is green today and auto-tightens to full
-     * determinism the moment the spend prover is fixed). */
+    /* Compare fields independent of the spend proof, then check that any
+     * proof change propagates through ZIP243 to signatures and transaction ID. */
     if (zc1.populated && zc2.populated) {
         SS_CHECK("z->z anchor deterministic",
                  memcmp(zc1.anchor, zc2.anchor, 32) == 0);
@@ -877,17 +996,9 @@ int test_simnet_sapling_shielded_send(void)
         printf("  [DIAG] z->z SPEND Groth16 proof deterministic: %s\n",
                spend_proof_det ? "YES" : "NO");
         if (!spend_proof_det) {
-            printf("  [BLOCKER #2 — pre-existing, NOT Lane C] the native C23 "
-                   "Sapling SPEND prover (sapling_create_spend_proof) emits a "
-                   "NON-DETERMINISTIC 192-byte proof for identical inputs + "
-                   "seeded blinding — every other shielded field is byte-stable, "
-                   "only the spend zkproof moves. This is a second native-prover "
-                   "defect (the first being that its proofs do not verify). Via "
-                   "the ZIP-243 sighash it makes spend_auth_sig, binding_sig and "
-                   "the full z->z txid non-reproducible. The t->z (output-only) "
-                   "proof IS deterministic, which proves the determinism seams "
-                   "(Lane B sapling + Lane C Groth16 r,s + RedJubjub nonce) are "
-                   "correct — the residual is inside the spend circuit synthesis.\n");
+            printf("  [PROVER FAILURE] identical seeded spend inputs produced "
+                   "different proof bytes; ZIP243 and dependent signatures "
+                   "must change with them.\n");
         }
         /* Proof-dependent fields move together with the spend proof: */
         SS_CHECK("z->z spend_auth_sig tracks spend-proof determinism",

@@ -51,16 +51,19 @@ sha256sum /tmp/zcl-review.bin
 Version 0.4.0's former image hash was
 `f442caa2e21e3b2f830f48f71ba23531ba6cfdf51bd4d888ee59bfd0e0e72dae`.
 It is no longer accepted by the installer after a live USB lockup.
-Review 0.4.4 is an offline UX candidate that has not been installed. It uses
+Review 0.4.5 is an offline UX candidate that has not been installed. It uses
 the common C23 Base58 encoder for output addresses. Its
 2,304-byte transaction limit reserves 2 KiB of Blue SRAM for the stack
 and 144 bytes of linker SRAM headroom. The build checks the known call paths
 against the 2 KiB stack reserve and keeps 512 bytes of headroom. The
 same C23 app controller runs in the host simulator, including the published
 transparent fixture and public P2SH and OP_RETURN output pages. The simulator
-also sends 10,000 deterministic malformed APDUs. The device result remains
-unverified; the candidate is not pinned for installation. The 0.4.4 `.text`
-SHA-256 is `c7685268f58f5913196f1b9a1547484a9fe8be7f14355325d9e6745f1a3e39eb`;
+also sends 10,000 deterministic malformed APDUs. Rejected commands erase the
+transaction buffer and reset the display state to `CONNECT Z23`; beginning a new
+review and clearing a completed review also erase the previous buffer. The
+device result remains unverified; the candidate is not pinned for
+installation. The 0.4.5 `.text` SHA-256 is
+`c23c78c978245da12af43dd44b44e63f8a695857be8a2c9ca632804d2c00d37c`;
 this records the offline build and does not authorize installation.
 After a new image hash is pinned, install only on the dedicated test Blue at
 its home screen using
@@ -98,8 +101,9 @@ Protocol commands use CLA `A5`, P1/P2 zero, and one-byte `Lc`:
 | `14` | Four-byte little-endian consensus branch ID | 32-byte ZIP-243 shielded SIGHASH_ALL digest |
 
 Each chunk is at most 220 bytes from the host CLI. An invalid size or
-truncated transaction fails. `12` consumes the pending review even if the
-transaction is invalid. `14` requires a complete transaction and leaves it
+truncated transaction fails. Any rejected command erases the pending or
+completed review. `12` consumes the pending review even if the transaction is
+invalid. `14` requires a complete transaction and leaves it
 pending for `12`; the caller must supply a branch ID valid for the transaction's
 height. The app does not check that relationship. Neither digest is a device
 approval. The summary fields and limitations are documented in

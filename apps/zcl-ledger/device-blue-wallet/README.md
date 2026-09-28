@@ -1,8 +1,43 @@
 <!-- Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. -->
 
-# ZCL Wallet receive and read-only review candidate for Ledger Blue
+# ZCL Wallet candidate for Ledger Blue
 
-Version 0.2.16 derives
+The isolated `candidate/blue_zip32_seed_device.c` adapter checks PIN state
+and requests a hardened BOLOS BIP32 node for a Ledger-specific Sapling root.
+It is compiled with the pinned Blue SDK and tested with a host syscall shim,
+but is not linked into the Wallet image. No Sapling key or signing APDU is
+available in Wallet 0.3.4. This mapping is not the standard ZIP32 root of a
+wallet seed; recovery software would need the same documented mapping.
+
+Version 0.3.4 checks the device-derived public key against the selected
+account's startup-derived HASH160 before ECDSA runs. A missing account
+binding, failed hash, or mismatched key clears the reply without signing.
+Version 0.3.3 cleared a rejected payment request before returning to the
+receive screen after the APDU reply. Earlier candidates could abort the
+review but still mark the payment view visible. This candidate has not been
+installed on a physical Blue.
+
+Version 0.3.0 routes the one-byte-index INS `29` signing command after a
+separate final touchscreen `SIGN ZCL` tap. The Blue displays the amount to
+other addresses, fee, derivation path, and explicit `CHAIN UNCHECKED` and
+`BRANCH UNCHECKED` warnings before that tap. A `NO SIGN` tap completes the
+read-only review without arming signing. The approved latch is single-use per
+input, ordered, and bound to the Blue-derived ZIP-243 digest and its verified
+previous output. The command returns the index, path, compressed public key,
+and canonical low-S DER signature. The host must verify the signature and
+assemble the transparent transaction separately. The app never broadcasts.
+Version 0.3.0 has passed SDK-shim touchscreen tests and two independent SDK
+builds. It has not been installed or tested on a physical Blue. Its protocol
+identity is version `0C`, capabilities `1F`; version `0B`/`0F` remains the
+read-only identity. Sapling spends, shielded multisig, ZSLP, and P2SH
+redemption are not supported by this candidate. Do not use it with funds.
+The existing host review command accepts both protocol identities and never
+sends INS `29`; on version 0.3.0 the owner chooses `NO SIGN` to finish that
+read-only workflow.
+
+## Read-only predecessor
+
+Version 0.2.18 derives
 `m/44'/147'/0'/0/0` on the Blue after PIN validation, retains only the
 compressed public key, and displays its ZCL mainnet P2PKH address across
 three large-text lines. The host reads the public key through INS `02`,
@@ -80,6 +115,18 @@ Version 0.2.16 labels the read-only totals action DONE, labels its final
 page REVIEW COMPLETE, and displays the unchecked chain and branch warnings
 on separate 22-pixel lines. The simulator verifies that every label fits
 the Blue viewport. This image has not been installed on a physical Blue.
+Version 0.2.17 ignores duplicate DONE taps and delayed BACK or TOTALS taps
+after the review completes. The SDK-shim touchscreen test confirms that the
+completion page remains visible and no signing approval is set. This image
+has not been installed on a physical Blue.
+Version 0.2.18 also ignores repeated CONTINUE taps after an output
+has been acknowledged and delayed CONTINUE taps after EXIT. The SDK-shim
+test checks the output address lines, account label, value, acknowledgement
+count, and resulting screen. This revision has not been installed on a
+physical Blue.
+Its output screen source and standalone preview produce identical 320 × 480
+RGB pixels in the SDK shim for a device-formatted account output; this does
+not establish physical framebuffer identity.
 Do not receive funds or sign payments with it.
 
 ## Build
@@ -124,6 +171,16 @@ zero `.data`, and identical `.text` SHA-256
 `2c6000584ccd6826c5ea92133bad0ab0dd3926afbc3015c9f8ab868a77f38fb6`
 in two independently patched SDK trees. Its largest named C stack path
 remains 752 bytes, excluding BOLOS frames.
+Version 0.2.17 produced 34,048 bytes of `.text`, 5,472 bytes of `.bss`,
+zero `.data`, and `.text` SHA-256
+`386c39a9861431501e57c22fbb312a087f7623362a60800b6b602e229ff288bd`
+in two independent patched SDK builds. Its largest named C stack path remains
+752 bytes, excluding BOLOS frames.
+Version 0.2.18 produced 34,048 bytes of `.text`, 5,472 bytes of `.bss`,
+zero `.data`, and `.text` SHA-256
+`a2b78a3add93ca47177e2307c5c2ef50348240c2a8aff5d0bac37686425afd7a`
+in builds against two independent patched SDK trees. Its largest named C
+stack path remains 752 bytes, excluding BOLOS frames.
 The stack gate also checks four currently unreachable signing paths through
 the strict command parser. Their largest named C path is 728 bytes; the gate
 rejected a deliberate 1,600-byte signer-frame substitution. A separate
@@ -136,11 +193,31 @@ The [signing callback experiment](../../../docs/experiments/2026-09-27-ledger-bl
 records the tests and limits.
 The [signing footprint experiment](../../../docs/experiments/2026-09-27-ledger-blue-signing-footprint.md)
 records the forced-link and stack-gate results.
-The installer does not accept this image yet. Device-side USB, screen, EXIT,
-and recovery checks are pending.
+The installer accepts the independently reproduced 0.3.4 `.text` image
+with SHA-256
+`e6c158621a68bbf30ae92a7223fe151aa9d57fd184466b0c6537c0cf39c5bf6a`.
+Version 0.3.1 resets the payment view when a new review begins, so an
+earlier signing page cannot remain selected for the new transaction.
+Version 0.3.2 expires an unconsumed final touchscreen approval after 30
+seconds on the SDK ticker. USB reset and suspend also abort the review.
+Device-side USB, screen, EXIT, and recovery checks are pending.
 The host-tested candidate INS `29` requires exactly one input-index byte and
 returns one verified-path public key and normalized ECDSA signature only
 after touchscreen approval. Wallet 0.2.14 does not route this command.
+The separate C23 host reply verifier checks exact response framing, expected
+input index and path, public-key HASH160, canonical low-S DER, and a
+caller-verified signature over the device-derived ZIP-243 digest before any
+signature bytes can enter transaction assembly. Wallet 0.2.18 still does not
+route INS `29`.
+The C23 host assembler can place a verified P2PKH reply into each empty
+transparent input script, preserving the reviewed outputs and requiring the
+expected input index and ZIP-243 digest for every signature. This assembly
+path is host-tested only. A C23 host collector now requires the version 12
+signing identity, waits for a final approval callback, requests INS `29` in
+input order, verifies each returned signature, and clears every collected
+signature on failure. The fixture-only CLI calls this collector after final
+touchscreen approval and assembles the result in memory. It has no save or
+broadcast path and has not been run on the physical Blue.
 
 ## USB protocol
 
@@ -148,7 +225,7 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 
 | INS | Reply before `9000` |
 | --- | --- |
-| `01` | `ZCL`, protocol version `0B`, receive, review, previous-wire, and digest capability `0F` |
+| `01` | `ZCL`, protocol version `0C`, receive, review, previous-wire, digest, and signing-candidate capability `1F` |
 | `02` | 33-byte compressed public key when the address is ready |
 | `20` | Begin read-only replay: 12-byte length, input index, known mainnet branch ID; unknown IDs fail closed |
 | `21` | Feed one chunk; reply reports pass and pending output |
@@ -159,6 +236,7 @@ All APDUs use CLA `A5`, P1/P2 zero, and an exact one-byte `Lc`.
 | `26` | Begin the next previous wire with a four-byte little-endian length |
 | `27` | Feed previous-wire bytes; exact SHA-256d and structure are checked at finish |
 | `28` | Finish the previous wire only if its P2PKH hash equals a Blue-derived external or internal hash; reply contains bound count, input count, fee-ready flag, eight-byte fee, and 32-byte input ZIP-243 digest |
+| `29` | Sign the next ordered input only after the final `SIGN ZCL` touch; reply contains input index, path, compressed public key, DER length, and low-S DER signature |
 
 INS `02` returns `6985` if derivation or address formatting fails. A review
 upload chunk must stop on the exact output boundary. Only the touchscreen
@@ -166,7 +244,8 @@ CONTINUE callback acknowledges that output; USB cannot do so. Previous-wire
 commands are accepted only after all outputs and the complete spending wire
 have been reviewed. Any malformed command invalidates the review. USB reset
 or suspend also cancels an idle review and returns to the receive screen. No
-command signs or approves a payment.
+read-only command signs or approves a payment. INS `29` requires separate
+touchscreen signing approval in version 0.3.0.
 After hardware validation, run
 `zcl-ledger receive-address --json /dev/hidrawN` while the app is open and
 compare the returned address with all characters on the Blue screen.

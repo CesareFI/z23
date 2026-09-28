@@ -21,12 +21,17 @@ typedef bool (*blue_payment_live_exchange)(void *context,
 typedef bool (*blue_payment_live_continue)(void *context,
     uint32_t index, const blue_payment_screen *screen);
 
+/* Returns 0 while output index awaits a tap, 1 after that tap, and -1 for
+ * any response that does not belong to this review and output count. */
+int blue_payment_live_review_status(const uint8_t *reply, size_t length,
+    uint32_t index, uint32_t total);
+
 /* The plan accepts only an unsigned all-transparent v4 transaction. It has no
  * signing authority and never treats host screen text as device evidence. */
 bool blue_payment_live_prepare(const uint8_t *wire, size_t length,
     uint32_t branch_id, blue_payment_live_plan *plan);
 
-/* Replays the exact planned bytes to Wallet protocol 11/capability 15. Every
+/* Replays the exact planned bytes to Wallet protocol 11 or 12. Every
  * output chunk ends on its final byte; a verified touchscreen callback is
  * required before the next chunk. Failure attempts a read-only review abort. */
 bool blue_payment_live_run(const uint8_t *wire, size_t length,

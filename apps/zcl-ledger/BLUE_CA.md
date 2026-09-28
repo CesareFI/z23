@@ -47,6 +47,8 @@ build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-delete-fixture \
   "$HOME/.local/share/z23/blue-ca.pem"
 build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-install \
   "$HOME/.local/share/z23/blue-ca.pem" app.bin
+build/zcl-ledger/zcl-blue-install /dev/hidrawN --ca-verify \
+  "$HOME/.local/share/z23/blue-ca.pem" app.bin
 ```
 
 The installer hashes the Blue target ID, the firmware version returned by
@@ -57,7 +59,9 @@ the commit command. The binary SHA-256 allowlist still applies before USB
 access. The connected Blue accepted signed ZCL Sign Test and ZCL Review
 installs through this path.
 The read-only `--ca-list` command uses the same authenticated channel and
-lists installed app names without installing, deleting, or signing. On the
+lists installed app names and application hashes. `--ca-verify` compares a
+reviewed image's calculated installation hash with exactly one matching-name
+catalog entry; it has not yet been exercised against the physical Blue. On the
 dedicated BOLOS 2.1.1 Blue it reported ZCL Sign Test, ZCL Review, and ZCL
 Probe. The catalog does not report app versions, and an entry does not prove
 that its app opens correctly.

@@ -6,6 +6,7 @@
 #include "blue_install_params.h"
 #include "ledger_hid.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/hidraw.h>
 #include <openssl/crypto.h>
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 enum { TARGET_ID = 0x31010004, MAX_CODE = 65536, CHUNK = 208 };
@@ -63,6 +65,27 @@ static const app_profile profiles[] = {
          0xc0, 0xf9, 0x4a, 0xa3, 0x7b, 0x86, 0x2d, 0x08}, false
     },
     {
+        "ZCL Shielded Review", "0.5.0",
+        {0x42, 0xfc, 0x4f, 0xe0, 0xc7, 0xe9, 0xac, 0x38,
+         0x64, 0xed, 0x49, 0x77, 0xb0, 0xac, 0x60, 0x1b,
+         0x74, 0x2c, 0x95, 0x86, 0x87, 0x98, 0xfa, 0x80,
+         0x80, 0x70, 0x34, 0xb8, 0x3f, 0xd0, 0xee, 0xc2}, false
+    },
+    {
+        "ZCL Shielded Review", "0.5.1",
+        {0x87, 0x7b, 0x78, 0x74, 0x7b, 0x4f, 0x57, 0x36,
+         0x42, 0x92, 0xaa, 0x4d, 0x70, 0xbf, 0x7a, 0xf5,
+         0x6a, 0x0a, 0xc9, 0x42, 0x4d, 0x4a, 0x28, 0xf5,
+         0x67, 0x70, 0xe6, 0x4e, 0xb4, 0xe6, 0x01, 0x97}, false
+    },
+    {
+        "ZCL Shielded Review", "0.5.2",
+        {0x8d, 0x37, 0xf0, 0xde, 0x33, 0x40, 0x8c, 0xe3,
+         0xd6, 0xe7, 0x20, 0x12, 0x16, 0x36, 0x46, 0x90,
+         0x8b, 0x89, 0x78, 0xe3, 0xfd, 0x88, 0xe1, 0x9d,
+         0x7a, 0xa9, 0x2d, 0x08, 0x46, 0x0f, 0x08, 0x5b}, false
+    },
+    {
         "ZCL Sign Test", "0.1.0",
         {0x0f, 0xc3, 0x89, 0x31, 0xf3, 0x34, 0x47, 0x15,
          0x09, 0x09, 0x53, 0x53, 0x84, 0x95, 0xc9, 0x64,
@@ -70,11 +93,11 @@ static const app_profile profiles[] = {
          0xc2, 0xdc, 0x7e, 0x56, 0x88, 0x74, 0x59, 0x0b}, true
     },
     {
-        "ZCL Wallet", "0.1.0",
-        {0xba, 0xf3, 0x61, 0x50, 0x56, 0x3c, 0xec, 0xd6,
-         0x59, 0x69, 0x24, 0x34, 0x80, 0x0d, 0x5b, 0xb1,
-         0x06, 0xa9, 0x67, 0x9a, 0x9f, 0xa6, 0xe3, 0x65,
-         0x98, 0xa3, 0xe3, 0x8f, 0xb0, 0x83, 0x6d, 0xf2}, true
+        "ZCL Wallet", "0.3.4",
+        {0xe6, 0xc1, 0x58, 0x62, 0x1a, 0x68, 0xbb, 0xf3,
+         0x0a, 0xe9, 0x2a, 0x72, 0x23, 0xfe, 0x15, 0x1a,
+         0xa9, 0xd5, 0x7f, 0xd1, 0x84, 0x46, 0x6b, 0x0c,
+         0x65, 0x37, 0xc0, 0xcf, 0x39, 0xc5, 0xbf, 0x6a}, true
     }
 };
 
@@ -338,19 +361,30 @@ static int load_segment(installer *device, uint32_t address,
     return no_reply(device, 0, 0, command, 9);
 }
 
+static bool prepare_image(size_t code_length, const app_profile *profile,
+                          uint8_t create[21],
+                          uint8_t params[ZCL_BLUE_INSTALL_PARAMS_MAX],
+                          size_t *params_length) {
+    if (code_length < 1024 || code_length > MAX_CODE || code_length % 64)
+        return false;
+    *params_length = blue_install_params(profile->name, profile->version,
+                                         profile->zcl_sign_path, params);
+    if (!*params_length) return false;
+    memset(create, 0, 21);
+    create[0] = 0x0b;
+    put_be32(create + 1, (uint32_t)code_length);
+    put_be32(create + 9, (uint32_t)*params_length);
+    put_be32(create + 17, 1);
+    return true;
+}
+
 static int install(installer *device, const uint8_t *code,
                    size_t code_length, const app_profile *profile,
                    EVP_PKEY *ca_key) {
-    if (code_length < 1024 || code_length > MAX_CODE || code_length % 64)
-        return -1;
-    uint8_t params[ZCL_BLUE_INSTALL_PARAMS_MAX];
-    size_t params_length = blue_install_params(profile->name, profile->version,
-                                              profile->zcl_sign_path, params);
-    if (!params_length) return -1;
-    uint8_t create[21] = {0x0b};
-    put_be32(create + 1, (uint32_t)code_length);
-    put_be32(create + 9, (uint32_t)params_length);
-    put_be32(create + 17, 1);
+    uint8_t params[ZCL_BLUE_INSTALL_PARAMS_MAX], create[21];
+    size_t params_length = 0;
+    if (!prepare_image(code_length, profile, create, params,
+                       &params_length)) return -1;
     uint8_t commit[1 + 1 + 73] = {0x09};
     size_t commit_length = 1;
     if (ca_key) {
@@ -376,30 +410,54 @@ static int install(installer *device, const uint8_t *code,
     return no_reply(device, 0, 0, commit, commit_length);
 }
 
+static bool read_image_exact(int fd, uint8_t *bytes, size_t length) {
+    for (size_t used = 0; used < length;) {
+        ssize_t got = read(fd, bytes + used, length - used);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) return false;
+        used += (size_t)got;
+    }
+    uint8_t extra;
+    return read(fd, &extra, 1) == 0;
+}
+
+static bool load_image_regular(const char *path, uint8_t **data,
+                               size_t *length) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return false;
+    struct stat info;
+    bool valid = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
+        info.st_size >= 1024 && info.st_size <= MAX_CODE &&
+        info.st_size % 64 == 0;
+    size_t count = valid ? (size_t)info.st_size : 0;
+    uint8_t *bytes = valid ? malloc(count) : NULL;
+    if (!bytes) valid = false;
+    if (valid) valid = read_image_exact(fd, bytes, count);
+    if (close(fd) != 0) valid = false;
+    if (!valid) { free(bytes); return false; }
+    *data = bytes;
+    *length = count;
+    return true;
+}
+
 static int read_binary(const char *path, uint8_t **data, size_t *length,
                        const app_profile **profile) {
-    FILE *file = fopen(path, "rb");
-    if (!file) return -1;
-    uint8_t *bytes = malloc(MAX_CODE + 1);
-    size_t count = bytes ? fread(bytes, 1, MAX_CODE + 1, file) : 0;
-    int result = bytes && !ferror(file) && feof(file) &&
-        count >= 1024 && count <= MAX_CODE && count % 64 == 0 ? 0 : -1;
-    fclose(file);
+    uint8_t *bytes = NULL;
+    size_t count = 0;
+    if (!load_image_regular(path, &bytes, &count)) return -1;
+    int result = -1;
     uint8_t hash[32];
-    if (result == 0) {
-        result = -1;
-        if (SHA256(bytes, count, hash)) {
-            for (size_t i = 0; i < sizeof profiles / sizeof profiles[0]; ++i) {
-                if (CRYPTO_memcmp(hash, profiles[i].hash, sizeof hash) == 0) {
-                    *profile = &profiles[i];
-                    result = 0;
-                    break;
-                }
+    if (SHA256(bytes, count, hash)) {
+        for (size_t i = 0; i < sizeof profiles / sizeof profiles[0]; ++i) {
+            if (CRYPTO_memcmp(hash, profiles[i].hash, sizeof hash) == 0) {
+                *profile = &profiles[i];
+                result = 0;
+                break;
             }
         }
-        if (result < 0)
-            fputs("App image SHA-256 does not match a reviewed build.\n", stderr);
     }
+    if (result < 0)
+        fputs("App image SHA-256 does not match a reviewed build.\n", stderr);
     if (result < 0) free(bytes);
     else { *data = bytes; *length = count; }
     return result;
@@ -427,7 +485,8 @@ static int enroll_ca(installer *device, EVP_PKEY *ca_key) {
     return no_reply(device, 0, 0, command, sizeof command);
 }
 
-static int list_apps(installer *device) {
+static int list_apps(installer *device, const char *name,
+                     const uint8_t expected[32]) {
     blue_app_entry entries[64];
     size_t count = 0;
     for (size_t page = 0; page < 32; ++page) {
@@ -440,8 +499,19 @@ static int list_apps(installer *device) {
                                    64 - count, &page_count) < 0)
             return -1;
         if (!page_count) {
-            for (size_t i = 0; i < count; ++i)
-                printf("%s\n", entries[i].name);
+            if (expected) {
+                if (!blue_app_catalog_unique_hash(entries, count,
+                                                   name, expected)) return -1;
+                printf("%s catalog hash matches the reviewed installation payload.\n",
+                       name);
+                return 0;
+            }
+            for (size_t i = 0; i < count; ++i) {
+                printf("%s app hash ", entries[i].name);
+                for (size_t j = 0; j < sizeof entries[i].hash; ++j)
+                    printf("%02x", entries[i].hash[j]);
+                putchar('\n');
+            }
             printf("%zu application(s) listed by Ledger Blue.\n", count);
             return 0;
         }
@@ -450,45 +520,62 @@ static int list_apps(installer *device) {
     return -1;
 }
 
+static int verify_catalog(installer *device, const uint8_t *code,
+                          size_t code_length, const app_profile *profile) {
+    uint8_t params[ZCL_BLUE_INSTALL_PARAMS_MAX], create[21], digest[32];
+    size_t params_length = 0;
+    if (!prepare_image(code_length, profile, create, params,
+                       &params_length) ||
+        blue_ca_app_hash(TARGET_ID, device->version,
+            device->version_length, create, code, code_length,
+            params, params_length, digest) < 0) return -1;
+    int result = list_apps(device, profile->name, digest);
+    OPENSSL_cleanse(digest, sizeof digest);
+    return result;
+}
+
 static int run_installer(installer *device, bool delete_app, bool channel_only,
                          const app_profile *profile,
                          const uint8_t *code, size_t code_length,
                          EVP_PKEY *ca_key, bool enroll, bool reset,
-                         bool list) {
+                         bool list, bool verify) {
     int result = establish_channel(device, enroll || reset ? NULL : ca_key);
     if (result == 0) result = verify_secure_version(device);
-    if (result == 0 && list)
-        result = list_apps(device);
-    else if (result == 0 && enroll)
-        result = enroll_ca(device, ca_key);
-    else if (result == 0 && reset) {
+    if (result != 0) return result;
+    if (verify) return verify_catalog(device, code, code_length, profile);
+    if (list) return list_apps(device, NULL, NULL);
+    if (enroll) return enroll_ca(device, ca_key);
+    if (reset) {
         const uint8_t command = 0x13;
-        result = no_reply(device, 0, 0, &command, 1);
-    } else if (result == 0 && delete_app) {
+        return no_reply(device, 0, 0, &command, 1);
+    }
+    if (delete_app) {
         uint8_t delete_command[2 + 32] = {0x0c};
         size_t name_length = strlen(profile->name);
         delete_command[1] = (uint8_t)name_length;
         memcpy(delete_command + 2, profile->name, name_length);
-        result = no_reply(device, 0, 0, delete_command,
-                          2 + name_length);
-    } else if (result == 0 && !channel_only) {
-        printf("Secure channel established; loading %s.\n", profile->name);
-        result = install(device, code, code_length, profile, ca_key);
+        return no_reply(device, 0, 0, delete_command, 2 + name_length);
     }
-    return result;
+    if (!channel_only) {
+        printf("Secure channel established; loading %s.\n", profile->name);
+        return install(device, code, code_length, profile, ca_key);
+    }
+    return 0;
 }
 
 static void report_result(int result, bool delete_app, bool channel_only,
-                          bool enroll, bool reset, bool list,
+                          bool enroll, bool reset, bool list, bool verify,
                           const app_profile *profile) {
     if (result == 0 && enroll) puts("Blue accepted the Z23 custom CA enrollment command.");
     else if (result == 0 && reset) puts("Blue accepted the custom CA reset command.");
     else if (result == 0 && delete_app)
         printf("%s delete command accepted by Ledger Blue.\n", profile->name);
-    else if (result == 0 && list) return;
+    else if (result == 0 && (list || verify)) return;
     else if (result == 0 && channel_only) puts("Ledger Blue secure channel established.");
     else if (result == 0)
         printf("%s install command accepted by Ledger Blue.\n", profile->name);
+    else if (verify)
+        fputs("Ledger Blue catalog image check failed.\n", stderr);
     else fputs("Ledger Blue installation failed. Check its screen.\n", stderr);
 }
 
@@ -496,7 +583,7 @@ typedef struct {
     const char *image_path;
     const char *ca_path;
     const app_profile *profile;
-    bool channel_only, delete_app, enroll, reset, list;
+    bool channel_only, delete_app, enroll, reset, list, verify;
 } install_args;
 
 static bool parse_ca_read_args(int argc, char **argv,
@@ -515,29 +602,39 @@ static bool parse_ca_read_args(int argc, char **argv,
     return true;
 }
 
+static bool parse_ca_delete_args(int argc, char **argv,
+                                install_args *args) {
+    if (argc != 4) return false;
+    const char *name = NULL;
+    if (strcmp(argv[2], "--ca-delete-fixture") == 0)
+        name = "ZCL Fixture";
+    else if (strcmp(argv[2], "--ca-delete-review") == 0)
+        name = "ZCL Review";
+    else if (strcmp(argv[2], "--ca-delete-shielded-review") == 0)
+        name = "ZCL Shielded Review";
+    else if (strcmp(argv[2], "--ca-delete-sign-test") == 0)
+        name = "ZCL Sign Test";
+    else if (strcmp(argv[2], "--ca-delete-wallet") == 0)
+        name = "ZCL Wallet";
+    if (!name) return false;
+    args->ca_path = argv[3];
+    args->delete_app = true;
+    args->profile = profile_named(name);
+    return args->profile != NULL;
+}
+
 static bool parse_ca_args(int argc, char **argv, install_args *args) {
-    if (parse_ca_read_args(argc, argv, args)) return true;
-    if (argc == 4 && strcmp(argv[2], "--ca-delete-fixture") == 0) {
-        args->ca_path = argv[3];
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Fixture");
-    } else if (argc == 4 && strcmp(argv[2], "--ca-delete-review") == 0) {
-        args->ca_path = argv[3];
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Review");
-    } else if (argc == 4 && strcmp(argv[2], "--ca-delete-sign-test") == 0) {
-        args->ca_path = argv[3];
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Sign Test");
-    } else if (argc == 4 && strcmp(argv[2], "--ca-delete-wallet") == 0) {
-        args->ca_path = argv[3];
-        args->delete_app = true;
-        args->profile = profile_named("ZCL Wallet");
-    } else if (argc == 5 && strcmp(argv[2], "--ca-install") == 0) {
+    if (parse_ca_read_args(argc, argv, args) ||
+        parse_ca_delete_args(argc, argv, args)) return true;
+    if (argc == 5 && strcmp(argv[2], "--ca-install") == 0) {
         args->ca_path = argv[3];
         args->image_path = argv[4];
+    } else if (argc == 5 && strcmp(argv[2], "--ca-verify") == 0) {
+        args->ca_path = argv[3];
+        args->image_path = argv[4];
+        args->verify = true;
     } else return false;
-    return !args->delete_app || args->profile != NULL;
+    return true;
 }
 
 static const app_profile *plain_delete_profile(const char *option) {
@@ -546,6 +643,8 @@ static const app_profile *plain_delete_profile(const char *option) {
         return profile_named("ZCL Fixture");
     if (strcmp(option, "--delete-review") == 0)
         return profile_named("ZCL Review");
+    if (strcmp(option, "--delete-shielded-review") == 0)
+        return profile_named("ZCL Shielded Review");
     if (strcmp(option, "--delete-sign-test") == 0)
         return profile_named("ZCL Sign Test");
     if (strcmp(option, "--delete-wallet") == 0)
@@ -574,23 +673,27 @@ static int parse_args(int argc, char **argv, install_args *args) {
 int main(int argc, char **argv) {
     install_args args;
     if (parse_args(argc, argv, &args) < 0) {
-        fprintf(stderr, "Usage: %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-sign-test|--delete-wallet|--ca-reset\n"
+        fprintf(stderr, "Usage: %s /dev/hidrawN app.bin|--channel-only|--delete|--delete-fixture|--delete-review|--delete-shielded-review|--delete-sign-test|--delete-wallet|--ca-reset\n"
                         "       %s /dev/hidrawN --ca-enroll PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-channel-only PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-list PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-fixture PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-review PRIVATE_KEY_FILE\n"
+                        "       %s /dev/hidrawN --ca-delete-shielded-review PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-sign-test PRIVATE_KEY_FILE\n"
                         "       %s /dev/hidrawN --ca-delete-wallet PRIVATE_KEY_FILE\n"
-                        "       %s /dev/hidrawN --ca-install PRIVATE_KEY_FILE app.bin\n",
-                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+                        "       %s /dev/hidrawN --ca-install PRIVATE_KEY_FILE app.bin\n"
+                        "       %s /dev/hidrawN --ca-verify PRIVATE_KEY_FILE app.bin\n",
+                argv[0], argv[0], argv[0], argv[0], argv[0], argv[0],
+                argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     uint8_t *code = NULL;
     size_t code_length = 0;
     if (args.image_path &&
         read_binary(args.image_path, &code, &code_length, &args.profile) < 0) {
-        fputs("Expected a reviewed, 64-byte-aligned ZCL app binary.\n", stderr);
+        fputs("Expected a regular ZCL app binary, 64-byte-aligned and matched to a reviewed image.\n",
+              stderr);
         return 1;
     }
     EVP_PKEY *ca_key = args.ca_path ? blue_ca_load(args.ca_path) : NULL;
@@ -608,9 +711,11 @@ int main(int argc, char **argv) {
     installer device = {.fd = fd};
     int result = run_installer(&device, args.delete_app, args.channel_only,
                                args.profile, code, code_length, ca_key,
-                               args.enroll, args.reset, args.list);
+                               args.enroll, args.reset, args.list,
+                               args.verify);
     report_result(result, args.delete_app, args.channel_only,
-                  args.enroll, args.reset, args.list, args.profile);
+                  args.enroll, args.reset, args.list, args.verify,
+                  args.profile);
     OPENSSL_cleanse(&device.channel, sizeof device.channel);
     close(fd);
     EVP_PKEY_free(ca_key);

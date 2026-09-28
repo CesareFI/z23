@@ -131,16 +131,17 @@ static uint64_t bi_sub(struct bigint *a, const struct bigint *c)
     return borrow;
 }
 
-/* a += r + w*r, with w in {0,1}.  Branchless: the weight only ever
- * multiplies a public constant, and the carry chain is unconditional. */
+/* a += r + w*r, with w in {0,1}.  The mask selects the public constant
+ * without a wide multiplication; the carry chain is unconditional. */
 static void bi_add_r_weighted(struct bigint *a, const struct bigint *r,
                               uint64_t w)
 {
     jubjub_uint128 carry = 0;
+    uint64_t mask = (uint64_t)0 - w;
     for (int i = 0; i < NL; i++) {
         jubjub_uint128 sum = (jubjub_uint128)a->d[i] +
                              (jubjub_uint128)r->d[i] +
-                             (jubjub_uint128)r->d[i] * w + carry;
+                             (jubjub_uint128)(r->d[i] & mask) + carry;
         a->d[i] = (uint64_t)sum;
         carry = sum >> 64;
     }
@@ -171,9 +172,12 @@ void jubjub_to_scalar(const unsigned char *input, unsigned char *result)
     {
         uint64_t carry = 0;
         for (int i = 0; i < NL; i++) {
-            jubjub_uint128 s = (jubjub_uint128)r3.d[i] * 3u + carry;
-            r3.d[i] = (uint64_t)s;
-            carry = (uint64_t)(s >> 64);
+            uint64_t limb = r3.d[i];
+            uint64_t twice = limb + limb;
+            uint64_t thrice = twice + limb;
+            uint64_t result = thrice + carry;
+            carry = (twice < limb) + (thrice < twice) + (result < thrice);
+            r3.d[i] = result;
         }
     }
 
@@ -205,4 +209,7 @@ void jubjub_to_scalar(const unsigned char *input, unsigned char *result)
     /* Back to canonical form: result = A - r (in [0, r)). */
     (void)bi_sub(&acc, &r);
     bi_to_bytes(&acc, result, 32);
+    /* acc contains the reduced secret scalar after the output copy. */
+    volatile unsigned char *secret = (volatile unsigned char *)&acc;
+    for (size_t i = 0; i < sizeof acc; ++i) secret[i] = 0;
 }

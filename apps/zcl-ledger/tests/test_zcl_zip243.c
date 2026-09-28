@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "zcl_zip243.h"
+#include "zcl_tx_review.h"
 #include "zcl_tx_stream_zip243.h"
 #include "zcl_tx_replay_zip243.h"
 #include "crypto/blake2b.h"
@@ -103,6 +104,38 @@ static void replay_rejects_changes(const uint8_t *wire, size_t length) {
     EVP_MD_CTX_free(sha_context);
 }
 
+static void shielded_byte_binding(uint8_t *wire, size_t length,
+    size_t offset, bool bound, const uint8_t expected[32],
+    const zcl_zip243_hasher *hasher) {
+    wire[offset] ^= 1;
+    uint8_t digest[32];
+    assert(zcl_zip243_shielded_digest(wire, length, 0x76b809bb,
+                                      hasher, digest) == 0);
+    assert((memcmp(digest, expected, sizeof digest) != 0) == bound);
+    wire[offset] ^= 1;
+}
+
+static void shielded_section_binding(uint8_t *wire, size_t length,
+    const uint8_t expected[32], const zcl_zip243_hasher *hasher) {
+    enum { OUTPUT_AMOUNT = 10, VALUE_BALANCE = 47, SPEND_CV = 56,
+        SAPLING_OUTPUT_CV = 1209 };
+    assert(length == 4118 && wire[8] == 0 && wire[9] == 2 &&
+           wire[18] == 9 && wire[36] == 2 && wire[55] == 3 &&
+           wire[1208] == 3 && wire[4053] == 0);
+    shielded_byte_binding(wire, length, OUTPUT_AMOUNT, true,
+                          expected, hasher);
+    shielded_byte_binding(wire, length, VALUE_BALANCE, true,
+                          expected, hasher);
+    for (size_t i = 0; i < 3; ++i) {
+        shielded_byte_binding(wire, length, SPEND_CV + i * 384,
+                              true, expected, hasher);
+        shielded_byte_binding(wire, length, SPEND_CV + 320 + i * 384,
+                              false, expected, hasher);
+        shielded_byte_binding(wire, length, SAPLING_OUTPUT_CV + i * 948,
+                              true, expected, hasher);
+    }
+}
+
 static void replay_rejects_missing_input(const uint8_t *wire, size_t length,
     const uint8_t script_code[25]) {
     struct blake2b_ctx blake_context;
@@ -190,6 +223,49 @@ static void test_streaming(const uint8_t *wire, size_t length,
         50000000, &facts, digest));
 }
 
+static void mixed_sapling_binding(const uint8_t *transparent,
+    size_t length, const uint8_t script_code[25],
+    const zcl_zip243_hasher *hasher) {
+    enum { OUTPUT_SIZE = 948, BINDING_SIZE = 64 };
+    uint8_t wire[8192];
+    assert(length + OUTPUT_SIZE + BINDING_SIZE < sizeof wire);
+    assert(transparent[length - 3] == 0 &&
+           transparent[length - 2] == 0 &&
+           transparent[length - 1] == 0);
+    memcpy(wire, transparent, length - 2);
+    wire[length - 2] = 1;
+    for (size_t i = 0; i < OUTPUT_SIZE; ++i)
+        wire[length - 1 + i] = (uint8_t)(i * 17 + 3);
+    wire[length - 1 + OUTPUT_SIZE] = 0;
+    memset(wire + length + OUTPUT_SIZE, 0x5a, BINDING_SIZE);
+    size_t mixed_length = length + OUTPUT_SIZE + BINDING_SIZE;
+    zcl_tx_review review;
+    assert(zcl_tx_review_parse(wire, mixed_length, &review) == 0);
+    assert(review.sapling_spends == 0 && review.sapling_outputs == 1);
+    zcl_tx_stream device_stream;
+    assert(zcl_tx_stream_begin(&device_stream, (uint32_t)mixed_length));
+    assert(!zcl_tx_stream_feed(&device_stream, wire, mixed_length,
+                               NULL, NULL, NULL));
+    uint8_t expected[32], digest[32];
+    assert(zcl_zip243_transparent_digest(wire, mixed_length, 0,
+        script_code, 25, 50000000, 0x76b809bb,
+        hasher, expected) == 0);
+    wire[length - 1] ^= 1;
+    assert(zcl_zip243_transparent_digest(wire, mixed_length, 0,
+        script_code, 25, 50000000, 0x76b809bb,
+        hasher, digest) == 0 && memcmp(digest, expected, 32));
+    wire[length - 1] ^= 1;
+    wire[length + OUTPUT_SIZE - 2] ^= 1;
+    assert(zcl_zip243_transparent_digest(wire, mixed_length, 0,
+        script_code, 25, 50000000, 0x76b809bb,
+        hasher, digest) == 0 && memcmp(digest, expected, 32));
+    wire[length + OUTPUT_SIZE - 2] ^= 1;
+    wire[mixed_length - 1] ^= 1;
+    assert(zcl_zip243_transparent_digest(wire, mixed_length, 0,
+        script_code, 25, 50000000, 0x76b809bb,
+        hasher, digest) == 0 && !memcmp(digest, expected, 32));
+}
+
 int main(int argc, char **argv) {
     assert(argc == 3);
     static uint8_t wire[8192];
@@ -207,6 +283,7 @@ int main(int argc, char **argv) {
     assert(zcl_zip243_shielded_digest(wire, length, 0x76b809bb,
                                       &hasher, digest) == 0);
     assert(memcmp(digest, expected, 32) == 0);
+    shielded_section_binding(wire, length, expected, &hasher);
     wire[length - 1] ^= 1;
     assert(zcl_zip243_shielded_digest(wire, length, 0x76b809bb,
                                       &hasher, digest) == 0);
@@ -240,6 +317,7 @@ int main(int argc, char **argv) {
                                          50000000, 0x76b809bb,
                                          &hasher, digest) == 0);
     assert(memcmp(digest, transparent_expected, 32) == 0);
+    mixed_sapling_binding(wire, length, script_code, &hasher);
     test_streaming(wire, length, script_code);
     assert(zcl_zip243_transparent_digest(wire, length, 0,
                                          script_code, sizeof script_code,

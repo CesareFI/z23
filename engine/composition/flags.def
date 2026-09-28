@@ -209,6 +209,10 @@ Z23_FLAG("ZCL_BIN_DIR", "env_build", "-", "-",
           "undocumented; first use tools/dev/arena_demo.sh:44")
 Z23_FLAG("ZCL_BIP_PAGE_CACHE_KIB", "env_runtime", "-", "-",
           "undocumented; first use engine/modules/storage/src/block_index_projection.c:94")
+Z23_FLAG("ZCL_BLUE_EXPORT_SAPLING_WIRE", "env_test", "-", "-",
+          "Exports deterministic public Sapling wire only after the simulator's consensus verifier accepts it.")
+Z23_FLAG("ZCL_BLUE_EXPORT_TEST_KEYS", "env_test", "-", "-",
+          "Includes public-seed simnet ask, ar, ovk, diversifier, and recipient key with a verified Blue wire export for signing and output-recovery tests.")
 Z23_FLAG("ZCL_BLOCKER_ESCAPE_SCAN_FILES", "env_build", "-", "-",
           "undocumented; first use tools/lint/lintc/gate_blocker_escape.c:382")
 Z23_FLAG("ZCL_BLOCKER_HANDOFF_BASELINE", "env_build", "-", "-",

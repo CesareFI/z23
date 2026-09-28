@@ -11,6 +11,22 @@ typedef struct {
     uint32_t seen;
 } output_capture;
 
+static bool review_status_header(const uint8_t *reply, size_t length,
+    uint32_t index, uint32_t total) {
+    return reply && length == 8 && total &&
+        total <= BLUE_PAYMENT_REVIEW_MAX_OUTPUTS && index < total &&
+        reply[0] == 1 && reply[1] == 3 && reply[3] == 0 &&
+        reply[4] == total && reply[6] == 0x90 && reply[7] == 0;
+}
+
+int blue_payment_live_review_status(const uint8_t *reply, size_t length,
+    uint32_t index, uint32_t total) {
+    if (!review_status_header(reply, length, index, total)) return -1;
+    if (reply[2] == 1 && reply[5] == index) return 0;
+    if (reply[2] == 0 && reply[5] == index + 1) return 1;
+    return -1;
+}
+
 static bool capture_end(void *context, uint32_t index,
     uint64_t amount_zat, zcl_tx_stream_output_type type,
     const uint8_t hash160[20]) {
@@ -62,6 +78,20 @@ static bool send_command(blue_payment_live_exchange exchange, void *context,
         reply_length == expected_length + 2 &&
         (!expected_length || !memcmp(reply, expected, expected_length)) &&
         reply[expected_length] == 0x90 && reply[expected_length + 1] == 0;
+}
+
+static bool review_identity(blue_payment_live_exchange exchange,
+    void *context) {
+    static const uint8_t apdu[5] = {0xa5, 0x01, 0, 0, 0};
+    static const uint8_t prefix[3] = {'Z', 'C', 'L'};
+    uint8_t reply[7];
+    size_t length = 0;
+    return exchange(context, apdu, sizeof apdu, reply, sizeof reply,
+            &length) && length == sizeof reply &&
+        memcmp(reply, prefix, sizeof prefix) == 0 &&
+        ((reply[3] == 11 && reply[4] == 15) ||
+         (reply[3] == 12 && reply[4] == 31)) &&
+        reply[5] == 0x90 && reply[6] == 0;
 }
 
 static void put_u32(uint8_t bytes[4], uint32_t value) {
@@ -123,15 +153,13 @@ bool blue_payment_live_run(const uint8_t *wire, size_t length,
     const blue_payment_live_plan *plan,
     blue_payment_live_exchange exchange,
     blue_payment_live_continue continuation, void *context) {
-    static const uint8_t identity[] = {'Z', 'C', 'L', 11, 15};
     if (!wire || !plan || !exchange || !continuation ||
         !plan->count || plan->count > BLUE_PAYMENT_REVIEW_MAX_OUTPUTS ||
         length != plan->wire_length) return false;
     uint8_t actual_hash[32];
     zsha256(wire, length, actual_hash);
     if (memcmp(actual_hash, plan->wire_hash, sizeof actual_hash) ||
-        !send_command(exchange, context, 0x01, NULL, 0,
-                      identity, sizeof identity)) return false;
+        !review_identity(exchange, context)) return false;
     uint8_t begin[12];
     put_u32(begin, (uint32_t)length);
     put_u32(begin + 4, 0);

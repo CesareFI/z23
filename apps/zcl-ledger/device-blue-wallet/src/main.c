@@ -187,7 +187,8 @@ static bool derive_public_key(unsigned int chain, uint8_t compressed[33]) {
     return true;
 }
 
-static bool public_hash160(const uint8_t compressed[33], uint8_t hash160[20]) {
+bool blue_wallet_public_hash160(const uint8_t compressed[33],
+    uint8_t hash160[20]) {
     uint8_t digest[32];
     cx_ripemd160_t ripemd;
     return cx_hash_sha256(compressed, 33, digest) == 32 &&
@@ -198,7 +199,8 @@ static bool public_hash160(const uint8_t compressed[33], uint8_t hash160[20]) {
 
 static bool format_receive_address(void) {
     uint8_t digest[32], checksum[32], payload[26];
-    if (!public_hash160(wallet_state.public_key, payload + 2)) return false;
+    if (!blue_wallet_public_hash160(wallet_state.public_key,
+            payload + 2)) return false;
     payload[0] = 0x1c;
     payload[1] = 0xb8;
     if (cx_hash_sha256(payload, 22, digest) != 32 ||
@@ -209,7 +211,7 @@ static bool format_receive_address(void) {
         !blue_wallet_receive_split(receive_address, address_lines)) return false;
     uint8_t internal_public[33], internal_hash160[20];
     bool valid = derive_public_key(1, internal_public) &&
-        public_hash160(internal_public, internal_hash160);
+        blue_wallet_public_hash160(internal_public, internal_hash160);
     wipe(internal_public, sizeof internal_public);
     if (!valid) return false;
     wallet_payment_set_account_hashes(payload + 2, internal_hash160);
@@ -255,7 +257,8 @@ unsigned char io_event(unsigned char channel) {
         if (!UX_DISPLAYED()) UX_DISPLAYED_EVENT();
         break;
     case SEPROXYHAL_TAG_TICKER_EVENT:
-        UX_TICKER_EVENT(G_io_seproxyhal_spi_buffer, (void)0;);
+        UX_TICKER_EVENT(G_io_seproxyhal_spi_buffer,
+            if (wallet_payment_timeout()) UX_DISPLAY(receive_ui, NULL););
         break;
     default:
         break;
@@ -288,6 +291,8 @@ static void answer_command(void) {
                     status = wallet_payment_command(G_io_apdu_buffer,
                         received, G_io_apdu_buffer,
                         sizeof G_io_apdu_buffer - 2, &length);
+                    if (status != 0x9000 && wallet_state.address_ready)
+                        redraw_receive = true;
                 } else {
                     bool was_visible = wallet_payment_visible();
                     if (was_visible) wallet_payment_abort();

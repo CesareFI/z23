@@ -100,6 +100,8 @@ static void test_minimal_review(void) {
     memcpy(apdu, begin, sizeof begin);
     assert(call(&state, apdu, sizeof begin, &reply_length) == 0x9000);
     assert(state.reviewed_length == 0);
+    for (size_t i = 0; i < sizeof state.wire; ++i)
+        assert(state.wire[i] == 0);
 }
 
 static void test_state_and_bounds(void) {
@@ -139,6 +141,44 @@ static void test_state_and_bounds(void) {
                               &hasher) == 0x6a80);
 }
 
+static void assert_cleared(const blue_review_state *state) {
+    const uint8_t *bytes = (const uint8_t *)state;
+    for (size_t i = 0; i < sizeof *state; ++i) assert(bytes[i] == 0);
+}
+
+static void test_rejected_command_erases_review(void) {
+    blue_review_state state = {0};
+    uint8_t apdu[260] = {0xa5, 0x10, 0, 0, 2, 29, 0};
+    size_t reply_length = 0;
+    assert(call(&state, apdu, 7, &reply_length) == 0x9000);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x11, 0, 0, 8,
+                            4, 0, 0, 0x80, 0x85, 0x20, 0x2f, 0x89}, 13);
+    assert(call(&state, apdu, 13, &reply_length) == 0x9000);
+    assert(state.received == 8 && state.wire[3] == 0x80);
+    apdu[0] = 0;
+    assert(call(&state, apdu, 13, &reply_length) == 0x6e00);
+    assert(reply_length == 0);
+    assert_cleared(&state);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x12, 0, 0, 0}, 5);
+    assert(call(&state, apdu, 5, &reply_length) == 0x6985);
+
+    memcpy(apdu, (uint8_t[]){0xa5, 0x10, 0, 0, 2, 29, 0}, 7);
+    assert(call(&state, apdu, 7, &reply_length) == 0x9000);
+    memset(apdu, 0, 34);
+    apdu[0] = 0xa5;
+    apdu[1] = 0x11;
+    apdu[4] = 29;
+    memcpy(apdu + 5, (uint8_t[]){4, 0, 0, 0x80, 0x85, 0x20, 0x2f, 0x89}, 8);
+    assert(call(&state, apdu, 34, &reply_length) == 0x9000);
+    memcpy(apdu, (uint8_t[]){0xa5, 0x12, 0, 0, 0}, 5);
+    assert(call(&state, apdu, 5, &reply_length) == 0x9000);
+    assert(state.reviewed_length == 29 && state.wire[3] == 0x80);
+    memcpy(apdu, (uint8_t[]){0xa5, 0xff, 0, 0, 0}, 5);
+    assert(call(&state, apdu, 5, &reply_length) == 0x6d00);
+    assert(reply_length == 0);
+    assert_cleared(&state);
+}
+
 static void test_published_transaction(const char *path) {
     uint8_t wire[245];
     size_t length = read_vector(path, wire);
@@ -165,13 +205,14 @@ static void test_published_transaction(const char *path) {
     char lines[ZCL_BLUE_REVIEW_LINES][ZCL_BLUE_REVIEW_LINE_SIZE];
     assert(blue_review_screen_format(apdu, lines));
     assert(strcmp(lines[0], "PUBLIC IN/OUT: 1/2") == 0);
-    assert(strcmp(lines[1], "OUTPUTS: 0.49999755 ZCL") == 0);
+    assert(strcmp(lines[1], "PUB OUT: 0.49999755 ZCL") == 0);
 }
 
 int main(int argc, char **argv) {
     assert(argc == 2);
     test_minimal_review();
     test_state_and_bounds();
+    test_rejected_command_erases_review();
     test_published_transaction(argv[1]);
     return 0;
 }

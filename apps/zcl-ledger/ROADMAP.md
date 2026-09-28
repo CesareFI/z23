@@ -31,11 +31,11 @@ on the Blue for the exact transaction facts.
 
 | Capability | Proven today | Required before payment use |
 | --- | --- | --- |
-| USB and app management | Authenticated CA install and app catalog on BOLOS 2.1.1 | Repeatable install, open, exit, and recovery checks for the final app |
-| Screen accessibility | C23 offline screenshots, word-wrapped 22-pixel text, and light/dark controls in the uninstalled Review 0.4.4 candidate; uninstalled Wallet 0.2.16 uses 22-pixel output, input-path, and separate chain/branch warning labels and has 320×480 internal-address, fee, totals, and completion previews; Wallet 0.2.1 physical review froze | Physical font, color, tap, page, EXIT, fee, and USB checks before inclusion in a signing app |
+| USB and app management | Authenticated CA install and app catalog on BOLOS 2.1.1; catalog parser retains manager-reported app hashes and checks record lengths | Match the final installed image hash to a pinned build, then repeat install, open, exit, and recovery checks |
+| Screen accessibility | C23 offline screenshots, word-wrapped 22-pixel text, and light/dark controls in the uninstalled Review 0.4.4 candidate; Wallet 0.3.4 has pixel-pinned 320×480 output, fee, totals, and final signing pages with separate chain/branch warnings; Wallet 0.2.1 physical review froze | Physical font, color, tap, page, EXIT, fee, and USB checks on the exact 0.3.4 image |
 | Transparent addresses | Public-key fixture and fixed-message seed-derived signing test; Wallet 0.2.1 opened to a steady receive screen with working EXIT, and its 35-character address matched the host result; the app was later deleted after a review freeze | Selectable path and account, repeated receive and interruption checks |
-| Transparent payments | The host displays P2PKH/P2SH outputs and preflights up to 16 hash-bound v1-v4 P2PKH inputs; uninstalled Wallet 0.2.16 binds those wires, requires input hashes to match its two fixed public keys, rejects unknown mainnet branch IDs, derives a fee, shows verified input paths and device-derived own/other output totals, and returns one input-specific ZIP-243 digest per bound input for independent host comparison. The host derives the branch from a local mainnet node tip and checks each input's value and script hash against that node's UTXO view; independent peer synchronization and complete ownership policy remain unchecked. Read-only DONE cannot arm the unrouted signing path. Physical Wallet 0.2.1 review froze before an output was confirmed; exact P2PKH matches to device-derived external 0/0 and internal 1/0 addresses are distinguished without claiming change | Diagnose and pass BOLOS USB/touch, fee, digest, and recovery tests; verify independent chain state, derive change and account on device, and require a separate explicit payment approval before signatures |
-| Sapling payments | Host and Review compute ZIP-243 digests; no Sapling keys or signing in Review | ZCL branch selection, key derivation, note and output binding, exact on-device review, spend authorization, and end-to-end test transactions |
+| Transparent payments | The host preflights up to 16 hash-bound v1-v4 P2PKH inputs and compares device ZIP-243 digests. Uninstalled Wallet 0.3.4 binds previous wires to captured outpoints, calculates the fee, distinguishes its two fixed addresses, and routes ordered signing only after a separate final `SIGN ZCL` tap. A C23 host collector requests protocol-12 signatures in order, verifies each reply, and clears partial results on failure; synthetic end-to-end tests assemble a transparent v4 wire. A separate host planner classifies hash-bound inputs against both fixed device paths and rejects unknown or ambiguous hashes. The host checks a local node's UTXO view; independent peer synchronization and authenticated retrieval of both device public keys remain unchecked. Physical Wallet 0.2.1 review froze before an output was confirmed | Pass exact-image BOLOS USB, touch, signing, fee, digest, and recovery tests; bind the ownership planner and collector to a live test CLI, prove independent chain state, and authenticate the installed image before payment use |
+| Sapling payments | Z23 has C23 ZIP32, Jubjub, note, prover, and ZIP-243 code; host and Review compute shielded digests and a synthetic mixed fixture checks output binding. Wallet 0.3.4 explicitly rejects nonzero shielded counts and has no Sapling keys or signing. Existing six-generator RedJubjub storage needs 768 bytes against 668 bytes of SRAM headroom; the existing scalar multiply also needs a 2,368-byte frame against a 2,048-byte stack reservation, and `fr.c` does not compile unchanged for Cortex-M3. An isolated C23 Fr/Fs and low-memory Jubjub path passes host differential tests, a known SpendAuth `ask` to `ak` vector, three public RedJubjub signing-equation cases, and an ARM Cortex-M3 run under QEMU. C23 challenge and entropy-seeded nonce helpers match independently calculated BLAKE2b vectors on host and ARM. An isolated complete ZIP32 master derivation matches Z23's expanded-key, chain-code, and diversifier-key reference fields on host and ARM, with a 1,332-byte QEMU stack peak for that case. A separate full-viewing-key projection matches Z23's `ak`, `nk`, and parent fingerprint vector; the separate FVK QEMU case peaks at 1,500 bytes with its output in test BSS. The ARM public fixture derives nonce, encodes its own points, checks the response equation, and rejects changed response and message bytes. A host fixed public signature passes an independent group-equation check and rejects altered response, altered message, and noncanonical response. Separately measured QEMU cases peak at 1,500 bytes of the 2 KiB test stack and pass a 512-byte margin gate; they do not include BOLOS, USB, or screen frames. No device seed source, account path, RNG, target timing, or physical Blue Sapling check has passed | Define a recoverable device seed and account derivation, measure full image and stack with BOLOS and screen frames, bind signing to device-verified notes, outputs, memos, and approval, then prove end-to-end test transactions |
 | Sapling memos | Z23 wallet stores 512-byte decrypted note memos; Review sees only encrypted transaction bytes | Classify absent, UTF-8, and opaque memo forms; show text or an explicit binary warning; bind any displayed outgoing memo to a device-verifiable transaction commitment before signing |
 | Transparent multisig | Host recognizes P2SH scripts but cannot infer a threshold | Redeem-script and cosigner validation, device confirmation, and independently verified signatures |
 | ZSLP | Host detects an output-zero marker | Token parser, input lineage and supply validation, token-aware display, and test transactions |
@@ -47,14 +47,31 @@ payment signing on synthetic fixtures; test-network transactions; Sapling
 spends and receives; token-aware and multisig flows. Every signing path must
 reject a transaction type it cannot fully review. The Blue has 6 KiB of app
 SRAM, including its reserved stack, so larger transactions require bounded
-streaming and measured stack use. The uninstalled, read-only Wallet 0.2.16 candidate
+streaming and measured stack use. The uninstalled Wallet 0.3.4 candidate
 uses one BLAKE2b context and a SHA-256 commitment across three identical
 uploads, then reuses that SHA-256 context to verify previous wires. Its
-5,472-byte `.bss` includes the 2 KiB stack reservation and leaves 672
-bytes after the section. The read-only reviewer can build without OpenSSL or
-PNG, but the installer and certificate tools still require OpenSSL. A signing
-design still needs independently verified chain state, branch selection,
-change, and payment approval.
+5,476-byte `.bss` includes the 2 KiB stack reservation and leaves 668
+bytes after the section. The reviewer and signer build without OpenSSL or
+PNG on the device; the installer and certificate tools still use OpenSSL.
+The final touchscreen approval is simulated but has not been exercised on
+the physical Blue. Independently verified chain state, active branch, and
+complete change/account policy remain open.
+The fixture-only CLI now prepares a public-key-derived one-input v4 spend
+and has a bounded live review/signature route. Offline construction and
+simulation pass; this CLI has not signed on the physical Blue. It has no
+transaction save or broadcast path.
+The C23 simulator also completes a two-input transparent review through the
+external and internal paths, verifies both signatures against their distinct
+public keys, and assembles the signed wire. This uses synthetic previous
+transactions and generated test keys; it establishes no chain provenance.
+The 0.3.4 candidate clears an unconsumed final signing approval after a
+30-second SDK ticker interval in the host-side UI simulation. Its actual
+timer cadence, USB reset delivery, and expired approval refusal require
+physical Blue checks.
+Protocol version and capability bytes are not installed-image
+authentication. The authenticated BOLOS catalog hash must be checked
+against the pinned image and bound to the subsequent app session before
+payment signing can be considered ready.
 The [Wallet 0.2.15 experiment](../../docs/experiments/2026-09-27-ledger-blue-local-sha-and-readonly-approval.md)
 records the host tests, image hash, and SDK patch gate.
 Device tests start on the dedicated test
