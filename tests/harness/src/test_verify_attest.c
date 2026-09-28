@@ -451,17 +451,52 @@ static int test_va_refuse_fields(void)
                                "attested bytes refuses attest_obj_hash_mismatch",
                                r, e, SIZE_MAX,
                                ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH);
-    r = va_record();
-    r.exit_code = 1;
-    failures += va_refuse_case("verify attest: a failed compile refuses "
-                               "attest_exit_nonzero",
-                               r, e, SIZE_MAX,
-                               ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
     /* Byte 21 is the schema's last character: "v1" becomes "v0". */
     failures += va_refuse_case("verify attest: another schema refuses "
                                "attest_schema_unknown",
                                va_record(), e, 21u,
                                ZCL_VERIFY_ATTEST_WHY_SCHEMA_UNKNOWN);
+    return failures;
+}
+
+static int test_va_signed_failure_blocks(void)
+{
+    int failures = 0;
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    TEST("verify attest: exact signed compile failure blocks fallback") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        r.exit_code = 1;
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
+            rec, len, NULL, 0, &e, &root);
+        ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
+        ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
+        d = zcl_verify_attest_admit(rec, len, NULL, 1, &e, &root);
+        ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
+        ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
+        e.toolchain_id = va_text("different-toolchain");
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH));
+        e = va_expected();
+        e.closure_sha3[0] ^= 1u;
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH));
+        e = va_expected();
+        e.pp_sha3[0] ^= 1u;
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH));
+        e.pp_sha3[0] ^= 1u;
+        rec[len - 1u] ^= 1u;
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID));
+        PASS();
+    } _test_next:;
+    free(rec);
     return failures;
 }
 
@@ -883,6 +918,7 @@ int test_verify_attest(void)
     failures += test_va_parse_strict();
     failures += test_va_admit();
     failures += test_va_refuse_fields();
+    failures += test_va_signed_failure_blocks();
     failures += test_va_empty_object();
     failures += test_va_refuse_signers();
     failures += test_va_path_policy();

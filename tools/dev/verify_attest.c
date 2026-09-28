@@ -635,6 +635,13 @@ static struct zcl_verify_attest_decision va_decide(const char *refusal)
     return d;
 }
 
+static struct zcl_verify_attest_decision va_signed_failure(void)
+{
+    struct zcl_verify_attest_decision d = {
+        ZCL_VERIFY_ATTEST_FAIL, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO};
+    return d;
+}
+
 static const char *va_root_check(const struct zcl_verify_attest_trust_root *r)
 {
     if (!r || !r->loaded)
@@ -696,14 +703,10 @@ static bool va_text_eq(const struct zcl_verify_attest_text *a,
                              memcmp(a->bytes, b->bytes, a->len) == 0));
 }
 
-static const char *va_field_check(
+static const char *va_input_check(
     const struct zcl_verify_attest_record *r,
-    const struct zcl_verify_attest_expected *e, const uint8_t *obj,
-    size_t obj_len)
+    const struct zcl_verify_attest_expected *e)
 {
-    uint8_t obj_hash[VA_HASH];
-    if (r->exit_code != 0)
-        return ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO;
     if (!va_text_eq(&r->toolchain_id, &e->toolchain_id))
         return ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH;
     if (!va_text_eq(&r->argv_norm, &e->argv_norm))
@@ -720,6 +723,13 @@ static const char *va_field_check(
         return ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING;
     if (memcmp(r->closure_sha3, e->closure_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH;
+    return NULL;
+}
+
+static const char *va_object_check(const struct zcl_verify_attest_record *r,
+                                   const uint8_t *obj, size_t obj_len)
+{
+    uint8_t obj_hash[VA_HASH];
     if (obj_len == 0u)
         return ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY;
     zcl_sha3_256(obj, obj_len, obj_hash);
@@ -736,7 +746,7 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
 {
     struct zcl_verify_attest_signed parsed;
     const char *why = NULL;
-    if (!expected || (!record_bytes && record_len) || (!obj_bytes && obj_len))
+    if (!expected || (!record_bytes && record_len))
         return va_decide(ZCL_VERIFY_ATTEST_WHY_ARGUMENTS);
     why = va_root_check(trust_root);
     if (why)
@@ -745,6 +755,12 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
         return va_decide(why);
     why = va_signer_check(record_bytes, &parsed, trust_root);
     if (!why)
-        why = va_field_check(&parsed.record, expected, obj_bytes, obj_len);
+        why = va_input_check(&parsed.record, expected);
+    if (!why && parsed.record.exit_code != 0)
+        return va_signed_failure();
+    if (!why && !obj_bytes && obj_len)
+        return va_decide(ZCL_VERIFY_ATTEST_WHY_ARGUMENTS);
+    if (!why)
+        why = va_object_check(&parsed.record, obj_bytes, obj_len);
     return va_decide(why);
 }

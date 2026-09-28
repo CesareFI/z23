@@ -229,6 +229,9 @@ struct zcl_verify_attest_expected {
 enum zcl_verify_attest_verdict {
     ZCL_VERIFY_ATTEST_REFUSE = 0,
     ZCL_VERIFY_ATTEST_ADMIT = 1,
+    /* Exact, signed compile failure: the caller must fail, not compile past
+     * it as though the verifier had no matching observation. */
+    ZCL_VERIFY_ATTEST_FAIL = 2,
 };
 
 struct zcl_verify_attest_decision {
@@ -237,8 +240,11 @@ struct zcl_verify_attest_decision {
 };
 
 /* Decide whether `obj_bytes` may be reused on the strength of
- * `record_bytes`. Refuses by name on any doubt; admits only when every
- * check passes. `trust_root` NULL or not loaded refuses no_verifier_key. */
+ * `record_bytes`. A valid verifier signature over the exact expected inputs
+ * with a nonzero compiler exit returns FAIL, which blocks cold fallback;
+ * an unrelated or malformed record returns REFUSE. A successful record
+ * admits only after the exact fetched object bytes match. `trust_root` NULL
+ * or not loaded refuses no_verifier_key. */
 struct zcl_verify_attest_decision zcl_verify_attest_admit(
     const uint8_t *record_bytes, size_t record_len,
     const uint8_t *obj_bytes, size_t obj_len,

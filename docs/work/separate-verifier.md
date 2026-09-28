@@ -124,11 +124,13 @@ epoch-object publish path needs the same admission.
 **Admission refusals.** Each is a stable token: `no_verifier_key`,
 `attest_schema_unknown`, `attest_record_malformed`,
 `attest_signed_by_box_signer`, `attest_signer_not_verifier`,
-`attest_signature_invalid`, `attest_exit_nonzero`,
+`attest_signature_invalid`,
 `attest_toolchain_mismatch`, `attest_argv_mismatch`, `attest_cwd_mismatch`,
 `attest_pp_mismatch`, `attest_closure_mismatch`,
 `attest_obj_hash_mismatch`, and `verifier_key_is_box_signer` when the pinned
 key is the per-box signer key.
+An exact signed record with a nonzero compiler exit returns blocking
+`attest_exit_nonzero`; it is a failed compile, not a missing cache entry.
 
 **Trust-root refusals.** The loader refuses a key file that is missing
 (`no_verifier_key`, the normal state until a verifier is installed), not a
