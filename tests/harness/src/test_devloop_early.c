@@ -318,16 +318,24 @@ static bool de_facts_plan(const struct zcl_devloop_plan *proof,
     return !zcl_devloop_plan_proof_admissible(&early->plan, NULL);
 }
 
-/* The proof outputs the early stage must never change. */
-static bool de_same_proof(const struct zcl_devloop_restart_proof_receipt *a,
-                          const struct zcl_devloop_restart_proof_receipt *b)
+/* The selection the early stage must never change: byte-identical. */
+static bool de_same_selection(
+    const struct zcl_devloop_restart_proof_receipt *a,
+    const struct zcl_devloop_restart_proof_receipt *b)
 {
     return strcmp(a->groups, b->groups) == 0 &&
            strcmp(a->groups_sha256, b->groups_sha256) == 0 &&
            strcmp(a->deferred_groups, b->deferred_groups) == 0 &&
            strcmp(a->deferred_groups_sha256, b->deferred_groups_sha256) == 0 &&
            strcmp(a->priority_group, b->priority_group) == 0 &&
-           strcmp(a->source_cas_sha3, b->source_cas_sha3) == 0 &&
+           strcmp(a->source_cas_sha3, b->source_cas_sha3) == 0;
+}
+
+/* The proof outputs the early stage must never change. */
+static bool de_same_proof(const struct zcl_devloop_restart_proof_receipt *a,
+                          const struct zcl_devloop_restart_proof_receipt *b)
+{
+    return de_same_selection(a, b) &&
            a->group_count == b->group_count &&
            a->groups_selected == b->groups_selected &&
            a->groups_immediate_selected == b->groups_immediate_selected &&
