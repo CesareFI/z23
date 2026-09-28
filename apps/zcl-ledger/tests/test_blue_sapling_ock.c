@@ -1,6 +1,11 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_sapling_ock.h"
 #include "blue_sapling_aead.h"
+#include "blue_sapling_kdf.h"
+#include "blue_jubjub_decode.h"
+#include "blue_jubjub_lowmem.h"
+#include "blue_jubjub_arithmetic.h"
+#include "blue_jubjub_encode.h"
 #include "zcl_tx_shielded_replay.h"
 #include "zcl_zip243_host.h"
 #include "crypto/chacha20poly1305.h"
@@ -139,6 +144,55 @@ static void check_note_ciphertext(void) {
     for (size_t i = 0; i < sizeof recovered; ++i) assert(recovered[i] == 0);
 }
 
+/* The fixture's esk is public test data. This does not exercise device keys. */
+static void check_fixture_note(const zcl_tx_shielded_output_capture *output,
+    const uint8_t outgoing[64], const zcl_zip243_hasher *hasher) {
+    blue_jubjub_decode_workspace workspace;
+    struct jub_point point, reference, product;
+    uint8_t dh[32], expected_dh[32], key[32];
+    uint8_t plain[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    uint8_t core_plain[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    assert(blue_jubjub_decode_public(&point, &workspace, outgoing));
+    assert(jub_from_bytes(&reference, outgoing));
+    jub_mul_by_cofactor(&reference, &reference);
+    for (unsigned i = 0; i < 3; ++i) blue_jub_double(&point, &point);
+    assert(blue_jubjub_scalar_mul_lowmem(&product, &point, outgoing + 32));
+    assert(blue_jubjub_encode(dh, &product));
+    jub_scalar_mul(&product, &reference, outgoing + 32);
+    jub_to_bytes(expected_dh, &product);
+    assert(memcmp(dh, expected_dh, sizeof dh) == 0);
+    assert(blue_sapling_kdf(key, dh, output->epk, hasher));
+    assert(blue_sapling_note_open(plain, key, output->enc_ciphertext));
+    const uint8_t nonce[12] = {0};
+    assert(chacha20poly1305_decrypt(output->enc_ciphertext,
+        BLUE_SAPLING_NOTE_CIPHER_BYTES, NULL, 0, nonce, key, core_plain));
+    assert(memcmp(plain, core_plain, sizeof plain) == 0);
+    assert(plain[0] == 0x01);
+    static const uint8_t expected_diversifier[11] = {
+        0x9c,0xf4,0x94,0x19,0x06,0xe9,0xf1,0x95,
+        0x1a,0x91,0x99
+    };
+    static const uint8_t expected_value[8] = {
+        0xf0,0xb9,0xf5,0x05,0x00,0x00,0x00,0x00
+    };
+    assert(memcmp(plain + 1, expected_diversifier, 11) == 0);
+    assert(memcmp(plain + 12, expected_value, 8) == 0);
+    uint8_t changed_epk[32];
+    memcpy(changed_epk, output->epk, sizeof changed_epk);
+    changed_epk[0] ^= 1u;
+    assert(blue_sapling_kdf(key, dh, changed_epk, hasher));
+    assert(!blue_sapling_note_open(plain, key, output->enc_ciphertext));
+    for (size_t i = 0; i < sizeof plain; ++i) assert(plain[i] == 0);
+    memory_cleanse(&point, sizeof point);
+    memory_cleanse(&reference, sizeof reference);
+    memory_cleanse(&product, sizeof product);
+    memory_cleanse(dh, sizeof dh);
+    memory_cleanse(expected_dh, sizeof expected_dh);
+    memory_cleanse(key, sizeof key);
+    memory_cleanse(plain, sizeof plain);
+    memory_cleanse(core_plain, sizeof core_plain);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     check_note_ciphertext();
@@ -185,6 +239,7 @@ int main(int argc, char **argv) {
         0x5c,0x21,0x08,0xf3,0x12,0x4b,0xba,0x06
     };
     assert(memcmp(outgoing, expected_outgoing, sizeof outgoing) == 0);
+    check_fixture_note(&output, outgoing, &hasher);
     uint8_t altered_ciphertext[80];
     memcpy(altered_ciphertext, out_ciphertext, sizeof altered_ciphertext);
     altered_ciphertext[79] ^= 1u;

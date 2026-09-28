@@ -115,10 +115,18 @@ endif()
 
 add_executable(test-blue-sapling-ock
     tests/test_blue_sapling_ock.c
+    src/blue_jubjub_lowmem.c src/blue_jubjub_arithmetic.c
+    src/blue_jubjub_encode.c src/blue_jubjub_decode.c
+    src/blue_fr_ct.c src/blue_fr_sqrt.c src/blue_mod256.c
+    ../../core/modules/sapling/src/fr.c
+    ../../core/modules/sapling/src/fr_avx512.c
+    ../../core/modules/crypto/src/simd_dispatch.c
     ../../core/modules/crypto/src/chacha20poly1305.c)
 target_link_libraries(test-blue-sapling-ock PRIVATE
-    blue_sapling_ock blue_sapling_aead zcl_zip243_host_hash)
+    blue_sapling_ock blue_sapling_aead blue_sapling_kdf
+    zcl_zip243_host_hash)
 target_include_directories(test-blue-sapling-ock PRIVATE
+    ../../core/modules/sapling/include
     ../../core/modules/crypto/include
     ../../platform/modules/base/include
     ../../platform/modules/support/include
@@ -130,7 +138,7 @@ target_compile_options(test-blue-sapling-ock PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test-blue-sapling-ock PRIVATE
-        -fsanitize=address,undefined -fno-omit-frame-pointer)
+        -O2 -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(test-blue-sapling-ock PRIVATE
         -fsanitize=address,undefined)
 endif()

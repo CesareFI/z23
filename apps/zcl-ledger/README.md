@@ -13,6 +13,12 @@ The bounded [`blue_sapling_aead` API](include/blue_sapling_aead.h)
 authenticates and decrypts fixed-size outgoing and note ciphertexts in C23.
 The note result is not a verified output: the device still needs independent
 key derivation, ephemeral-key and commitment checks, and recipient policy.
+The host-only consensus fixture now replays the complete transaction, opens
+the selected outgoing ciphertext, computes cofactored Jubjub agreement with
+the fixture's public test scalar, derives the note key, and authenticates the
+580-byte note ciphertext. Z23's separate Jubjub and AEAD implementations
+check the same result. This path does not handle a device secret or authorize
+shielded signing.
 This source is exercised on ARM emulators and is not linked into an installed
 Blue app.
 The [Blue development guide](DEVELOPMENT.md) records the open-source C23
