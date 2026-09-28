@@ -8,6 +8,78 @@ anything the proving account can write, a candidate can plant. This is a
 design and an uninstalled trust boundary, not a working speed path. The
 current wrapper compiles cold in proof mode with `verified:no_verifier_key`.
 
+## Fixed result.c installation packet (not installed)
+
+The first executable scope is only
+`platform/modules/base/src/result.c` on Linux x86-64 with GCC 13, using the
+exact direct-source flags in `tools/verify/real_tu_probe.sh`. The local
+`tools/verify/tree_closure.c` utility hashes a complete bounded tree in sorted
+order, including path, entry type, mode, owner, link target and regular-file
+bytes. It refuses special entries, writable entries, escaping links and
+unsafe ancestry. Its output says `attest_eligible=0`: it is a prerequisite,
+not an installed signer or an assertion that a compiler used only that tree.
+Its local test mode permits ancestors owned by the testing UID; installed
+trust requires root-owned ancestors and read-only mounts instead.
+
+The administrator must run the following staging commands as root on a host
+where UIDs/GIDs 60092 and 60093 are free. These commands create no key, socket
+or running service. A pre-existing user or group with either ID is a hard
+refusal; do not remap an existing account or reuse its files.
+
+```sh
+set -eu
+test -z "$(getent passwd 60092)" && test -z "$(getent group 60092)"
+test -z "$(getent passwd 60093)" && test -z "$(getent group 60093)"
+test -z "$(getent passwd z23verify)" && test -z "$(getent passwd z23vcc)"
+test -z "$(getent group z23verify)" && test -z "$(getent group z23vcc)"
+groupadd --system --gid 60092 z23verify
+groupadd --system --gid 60093 z23vcc
+useradd --system --uid 60092 --gid 60092 --home-dir /var/lib/z23verify --shell /usr/sbin/nologin z23verify
+useradd --system --uid 60093 --gid 60093 --home-dir /var/lib/z23vcc --shell /usr/sbin/nologin z23vcc
+install -d -o root -g root -m 0755 /etc/z23verify /var/lib/z23verify /var/lib/z23verify/jails
+install -d -o z23verify -g z23verify -m 0700 /var/lib/z23verify/key
+install -d -o z23verify -g z23verify -m 0755 /var/lib/z23verify/cas /var/lib/z23verify/store
+install -d -o z23vcc -g z23vcc -m 0700 /var/lib/z23vcc /var/lib/z23vcc/work
+```
+
+The later, reviewed installer must create a **root-owned, read-only mount
+namespace** for the compiler account. Its root contains only the pinned GCC
+driver, cc1, assembler, ELF interpreter, every loaded shared object, GCC specs
+and start files actually reachable by this compile, all system include trees,
+one signer-copied source snapshot at the same physical cwd and source argv
+spelling as the cold build, a fixed `/dev/null`, and bounded scratch. The
+developer account cannot write any mounted input. `z23vcc` cannot write any
+input or see the signer key. The signer controls its source snapshot and checks
+its tree before and after the child exits. The tool image and namespace
+skeleton are root-owned and immutable while requests are served. The child
+starts with empty environment plus an explicit, hashed whitelist, no inherited
+file descriptors except stdio and authenticated IPC, no network, and fails if
+any mount/confinement operation fails. Landlock remains a second layer; it
+cannot replace the mount namespace because this kernel lets a Landlocked child
+observe ungranted path metadata with `stat(2)` and `access(2)`.
+
+The closure identifier must hash canonical complete tool-image and source
+trees, the immutable namespace skeleton, exact environment, direct-source
+argv, physical cwd, and isolation policy. Hash the trees before and after the
+compile, and refuse on a changed hash or any missing/unreadable entry. The
+receiver independently reconstructs the expected closure from its current
+generation worktree; it must not copy the signer's claimed hash. Whole-tree
+identity binds absent header lookups such as `__has_include("optional.h")`:
+adding a previously absent file changes the directory hash. An observation
+can become eligible only after the installed service proves this confinement
+and the receiver verifies a root-pinned key and every stored artifact.
+
+One fixed-TU acceptance run must first prove direct-source object, depfile
+and stderr byte equality against a cold compile under the exact profile. RED
+fixtures must replace `cc1` while leaving the GCC driver unchanged, set
+`COMPILER_PATH`/`GCC_EXEC_PREFIX`, add an optional header absent in the prior
+snapshot, change a DSO/spec file, inject an escaping symlink, and change an
+input during compilation. Each must alter the closure or refuse before any
+eligible record. The receiver must reject a wrong key, wrong argv/cwd,
+tampered object/dep/stderr, and conflicting signed PASS/FAIL observations.
+Until this run succeeds under the real accounts and root-owned image, proof
+reuse remains cold and `attest_eligible=0`.
+
 The proposed verifier would compile each translation unit itself, with its
 own pinned compiler, and never run the candidate's build scripts. Its only
 reusable product would be a signed record: "this compiler, with these flags
