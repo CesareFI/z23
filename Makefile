@@ -4377,8 +4377,10 @@ action-root-reuse-study: $(ACTION_ROOT_STUDY_BIN) \
 # plan (docs/work/SEMANTIC_MANIFEST.md, "Replay on real history"). Its
 # sources carry the only main() and stay out of every node, dev and test
 # link via DEV_STANDALONE_SRCS. The run itself drives git, make, the sensor
-# (make clang-manifest) and a z23-dev planner in a dedicated worktree.
-SEM_REPLAY_BIN = $(BIN_DIR)/z23-sem-replay$(ZCL_HOST_EXEEXT)
+# (make clang-manifest) and a z23-dev planner in a dedicated worktree. It is
+# POSIX-only (fork, wait4, objcopy), so the name carries no host executable
+# suffix and check-standalone-tools-link derives and builds it.
+SEM_REPLAY_BIN = $(BIN_DIR)/z23-sem-replay
 SEM_REPLAY_SRCS = tools/dev/sem_replay.c tools/dev/sem_replay_util.c \
 	tools/dev/sem_replay_build.c tools/dev/sem_replay_change.c \
 	tools/dev/sem_replay_plan.c tools/dev/sem_replay_step.c \
