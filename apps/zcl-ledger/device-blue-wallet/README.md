@@ -42,6 +42,10 @@ The [Cortex-M3 startup test](../../../docs/experiments/2026-09-27-ledger-blue-wa
 runs `main.c`, both receive APDUs, and EXIT with deterministic firmware-call
 stubs. Its stack watermark is 976 bytes in the tested path; it does not run
 BOLOS or the linked Wallet image.
+The [Cortex-M0 EXIT packet test](../../../docs/experiments/2026-09-27-ledger-blue-wallet-m0-touch.md)
+checks an outside touch and a center-button release while the ARM harness
+waits for another APDU. Its 992-byte stack watermark applies only to that
+test route.
 
 Version 0.3.5 shares RAM between mutually exclusive boot derivation and
 payment state, and between output text and previous-transaction parsing.

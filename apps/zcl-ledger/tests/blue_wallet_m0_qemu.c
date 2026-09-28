@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 #define main blue_wallet_device_main
 #include "../device-blue-wallet/src/main.c"
@@ -15,11 +16,12 @@
 extern uint8_t _sdata, _edata, _sidata, _sbss, _ebss;
 extern uint8_t _stack_bottom, _stack_top;
 extern void _exit(int status);
-void blue_m3_reset(void);
+extern void initialise_monitor_handles(void);
+void blue_wallet_reset(void);
 
 __attribute__((used, section(".vectors")))
-const uintptr_t blue_wallet_m3_vectors[2] = {
-    (uintptr_t)&_stack_top, (uintptr_t)blue_m3_reset
+const uintptr_t blue_wallet_m0_vectors[2] = {
+    (uintptr_t)&_stack_top, (uintptr_t)blue_wallet_reset
 };
 
 unsigned char G_io_apdu_buffer[260];
@@ -28,26 +30,20 @@ static blue_try_context *active_try;
 static wallet_boot_material boot_material;
 static const bagl_element_t *shown;
 static size_t shown_count;
-static bool account_ready, exited, failed;
+static bool account_ready, exited, failed, outside_rejected;
 static unsigned request_step, replies_valid, derivations, wipes;
 
-static void uart_text(const char *message) {
-    volatile uint32_t *const uart = (volatile uint32_t *)0x40004000u;
-    uart[4] = 16u;
-    uart[2] = 1u;
-    while (*message) {
-        while (uart[1] & 1u) {}
-        uart[0] = (uint8_t)*message++;
-    }
+static void test_text(const char *message) {
+    (void)write(1, message, strlen(message));
 }
 
-static void uart_hex16(unsigned value) {
+static void test_hex16(unsigned value) {
     static const char digits[] = "0123456789abcdef";
-    volatile uint32_t *const uart = (volatile uint32_t *)0x40004000u;
+    char output[4];
     for (int shift = 12; shift >= 0; shift -= 4) {
-        while (uart[1] & 1u) {}
-        uart[0] = (uint8_t)digits[(value >> shift) & 15u];
+        output[(12 - shift) / 4] = digits[(value >> shift) & 15u];
     }
+    (void)write(1, output, sizeof output);
 }
 
 void blue_try_enter(blue_try_context *context) {
@@ -77,15 +73,37 @@ void blue_wallet_test_display(const bagl_element_t *elements, size_t count,
 }
 
 void blue_wallet_test_finger(const unsigned char *buffer) {
-    if (!buffer || buffer[0] != SEPROXYHAL_TAG_FINGER_EVENT) failed = true;
+    if (!buffer || buffer[0] != SEPROXYHAL_TAG_FINGER_EVENT) {
+        failed = true;
+        return;
+    }
+    if (buffer[3] != SEPROXYHAL_TAG_FINGER_EVENT_RELEASE) return;
+    unsigned x = ((unsigned)buffer[4] << 8) | buffer[5];
+    unsigned y = ((unsigned)buffer[6] << 8) | buffer[7];
     for (size_t i = 0; i < shown_count; ++i) {
-        if (shown[i].text && strcmp(shown[i].text, "EXIT") == 0 &&
-            shown[i].tap) {
+        const bagl_element_t *element = &shown[i];
+        if ((element->component.type & BAGL_FLAG_TOUCHABLE) &&
+            element->tap &&
+            x >= (unsigned)element->component.x &&
+            x < (unsigned)(element->component.x + element->component.width) &&
+            y >= (unsigned)element->component.y &&
+            y < (unsigned)(element->component.y + element->component.height)) {
+            if (!element->text || strcmp(element->text, "EXIT") != 0)
+                failed = true;
             (void)shown[i].tap(&shown[i]);
             return;
         }
     }
-    failed = true;
+}
+
+static void finger_release(unsigned x, unsigned y) {
+    G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_FINGER_EVENT;
+    G_io_seproxyhal_spi_buffer[3] = SEPROXYHAL_TAG_FINGER_EVENT_RELEASE;
+    G_io_seproxyhal_spi_buffer[4] = (uint8_t)(x >> 8);
+    G_io_seproxyhal_spi_buffer[5] = (uint8_t)x;
+    G_io_seproxyhal_spi_buffer[6] = (uint8_t)(y >> 8);
+    G_io_seproxyhal_spi_buffer[7] = (uint8_t)y;
+    (void)io_event(CHANNEL_SPI);
 }
 
 wallet_boot_material *wallet_payment_boot_material(void) {
@@ -195,8 +213,9 @@ unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
         memcpy(G_io_apdu_buffer, address, sizeof address);
         return sizeof address;
     }
-    G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_FINGER_EVENT;
-    (void)io_event(CHANNEL_SPI);
+    finger_release(0, 0);
+    outside_rejected = !exited;
+    finger_release(160, ZCL_WALLET_EXIT_Y + 24);
     blue_throw(0x6812);
 }
 
@@ -251,26 +270,28 @@ static bool boot_material_clear(void) {
 
 static bool wallet_run_valid(int result, unsigned used) {
     return result == 0 && !failed && !active_try && exited &&
-        replies_valid == 2 && account_ready && derivations == 2 &&
+        replies_valid == 2 && account_ready && outside_rejected &&
+        derivations == 2 &&
         wipes >= 2 && shown == receive_ui && wallet_state.address_ready &&
         strlen(receive_address) == ZCL_WALLET_ADDRESS_CHARS &&
         address_lines_match() && boot_material_clear() && used <= 1536;
 }
 
-void blue_m3_reset(void) {
+void blue_wallet_reset(void) {
     reset_ram();
+    initialise_monitor_handles();
     volatile uint8_t *guard = &_stack_bottom;
     volatile uint8_t marker = 0;
     if ((uintptr_t)&marker <= (uintptr_t)guard + 1568u) {
-        uart_text("M3 WALLET STACK SETUP FAIL\n");
+        test_text("M0 WALLET STACK SETUP FAIL\n");
         _exit(1);
     }
     for (unsigned i = 0; i < 1536; ++i) guard[i] = 0xa5u;
     int result = blue_wallet_device_main();
     unsigned used = stack_used(guard);
     bool valid = wallet_run_valid(result, used);
-    uart_text("M3 WALLET STACK 0x");
-    uart_hex16(used);
-    uart_text(valid ? "\nM3 WALLET PASS\n" : "\nM3 WALLET FAIL\n");
+    test_text("M0 WALLET STACK 0x");
+    test_hex16(used);
+    test_text(valid ? "\nM0 WALLET PASS\n" : "\nM0 WALLET FAIL\n");
     _exit(valid ? 0 : 1);
 }

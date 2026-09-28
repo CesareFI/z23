@@ -827,10 +827,10 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             FAIL_REGULAR_EXPRESSION "M3 FAIL|M3 STACK SETUP FAIL"
             TIMEOUT 15)
 
-        set(BLUE_M3_WALLET_IMAGE
-            "${CMAKE_CURRENT_BINARY_DIR}/blue-wallet-m3-qemu.elf")
-        add_custom_command(OUTPUT "${BLUE_M3_WALLET_IMAGE}"
-            COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m3 -mthumb
+        set(BLUE_M0_WALLET_IMAGE
+            "${CMAKE_CURRENT_BINARY_DIR}/blue-wallet-m0-qemu.elf")
+        add_custom_command(OUTPUT "${BLUE_M0_WALLET_IMAGE}"
+            COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m0 -mthumb
                 -O2 -ffunction-sections -fdata-sections
                 -Wall -Wextra -Werror -pedantic
                 -DHAVE_BOLOS_APP_STACK_CANARY
@@ -840,16 +840,16 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zripemd/include"
                 -nostartfiles -specs=rdimon.specs
-                -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_m3_qemu.ld
+                -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_wallet_m0_qemu.ld
                 -Wl,--gc-sections
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_wallet_m3_qemu.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_wallet_m0_qemu.c"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_wallet_protocol.c"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_wallet_receive.c"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/zcl_base58.c"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zsha256/src/zsha256.c"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../../contexts/commons/packages/zripemd/src/zripemd.c"
-                -o "${BLUE_M3_WALLET_IMAGE}"
-            DEPENDS tests/blue_wallet_m3_qemu.c tests/blue_m3_qemu.ld
+                -o "${BLUE_M0_WALLET_IMAGE}"
+            DEPENDS tests/blue_wallet_m0_qemu.c tests/blue_wallet_m0_qemu.ld
                 device-blue-wallet/src/main.c
                 tests/blue_wallet_startup_stub/os.h
                 tests/blue_wallet_startup_stub/os_io_seproxyhal.h
@@ -859,15 +859,15 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
                 ../../contexts/commons/packages/zsha256/src/zsha256.c
                 ../../contexts/commons/packages/zripemd/src/zripemd.c
             VERBATIM)
-        add_custom_target(blue-wallet-m3-qemu-image ALL
-            DEPENDS "${BLUE_M3_WALLET_IMAGE}")
-        add_test(NAME blue-wallet-m3-qemu COMMAND ${BLUE_QEMU}
-            -M mps2-an385 -cpu cortex-m3 -nographic
+        add_custom_target(blue-wallet-m0-qemu-image ALL
+            DEPENDS "${BLUE_M0_WALLET_IMAGE}")
+        add_test(NAME blue-wallet-m0-qemu COMMAND ${BLUE_QEMU}
+            -M microbit -cpu cortex-m0 -nographic
             -semihosting-config enable=on,target=native
-            -kernel "${BLUE_M3_WALLET_IMAGE}")
-        set_tests_properties(blue-wallet-m3-qemu PROPERTIES
-            PASS_REGULAR_EXPRESSION "M3 WALLET PASS"
-            FAIL_REGULAR_EXPRESSION "M3 WALLET FAIL|M3 WALLET STACK SETUP FAIL"
+            -kernel "${BLUE_M0_WALLET_IMAGE}")
+        set_tests_properties(blue-wallet-m0-qemu PROPERTIES
+            PASS_REGULAR_EXPRESSION "M0 WALLET PASS"
+            FAIL_REGULAR_EXPRESSION "M0 WALLET FAIL|M0 WALLET STACK SETUP FAIL"
             TIMEOUT 15)
     endif()
 endif()

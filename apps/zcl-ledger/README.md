@@ -106,14 +106,14 @@ cmake --build build/zcl-ledger --target blue-m3-qemu-image
 ctest --test-dir build/zcl-ledger -R '^blue-m3-qemu$' --output-on-failure -V
 ```
 
-The same toolchain builds `blue-wallet-m3-qemu-image`. It runs the Wallet's
-actual `main.c` on the Cortex-M3 with deterministic BOLOS call stubs, checks
-the receive address layout, both read-only APDU replies, EXIT, and a stack
-watermark. Run it with:
+The same toolchain builds `blue-wallet-m0-qemu-image`. It runs the Wallet's
+actual `main.c` on QEMU's Cortex-M0 micro:bit board with deterministic BOLOS
+call stubs, checks the receive address layout, both read-only APDU replies,
+an outside touch, EXIT, and a stack watermark. Run it with:
 
 ```sh
-cmake --build build/zcl-ledger --target blue-wallet-m3-qemu-image
-ctest --test-dir build/zcl-ledger -R '^blue-wallet-m3-qemu$' --output-on-failure -V
+cmake --build build/zcl-ledger --target blue-wallet-m0-qemu-image
+ctest --test-dir build/zcl-ledger -R '^blue-wallet-m0-qemu$' --output-on-failure -V
 ```
 
 The isolated ZIP32 case also checks normal and hardened child derivation
