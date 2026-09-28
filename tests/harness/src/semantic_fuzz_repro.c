@@ -1219,9 +1219,9 @@ const struct sfz_repro k_sfz_repros[] = {
      false, NULL, SFZ_FILES(k_n1a_quoted_shadow), NULL, true, 0},
     {"N1b_isystem_lookup", "neg_isystem_lookup",
      "sys/sx.h, an -isystem dir __has_include(<sx.h>) probes, is created "
-     "(the -isystem path itself is an identity-drift fallback, so t1 is "
-     "predicted though unchanged: pinned over-selection 1)",
-     false, NULL, SFZ_FILES(k_n1b_isystem_lookup), NULL, true, 1},
+     "(sys comes into existence, so every TU's search list changes; t1's "
+     "lookups all resolve as before, so only t0 is affected)",
+     false, NULL, SFZ_FILES(k_n1b_isystem_lookup), NULL, true, 0},
     {"N1c_include_next_chain", "neg_include_next_chain",
      "inc2/chain.h, a new step between inc1's include_next and inc3's "
      "final header, is created",

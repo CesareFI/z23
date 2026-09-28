@@ -45,6 +45,8 @@ struct fxc {
     const char *seed_reason;    /* a seed the walk cannot bound, or NULL */
     struct fxc_strs checked;    /* declaring headers whose readers were checked */
     bool universal;             /* nothing bounds the change: every group is in scope */
+    bool sdir;                  /* a TU's search dirs changed: its broadened
+                                   TUs join the file-seeded fallback */
     char seed_detail[192];
     struct codeindex *ci;       /* NULL when the index cannot open */
     int graph;                  /* codeindex_include_dim of the last query */
@@ -64,6 +66,17 @@ struct zcl_devloop_facts_tu_verdict *fxc_tu_new(struct fxc *c,
 int fxc_readers(struct fxc *c, const char *path, char (*out)[256], int cap);
 /* The universe is not known: the first reason and path win. */
 void fxc_incomplete(struct fxc *c, const char *reason, const char *path);
+
+/* sdir.c: a pair whose IDENTITY records differ. UNCHANGED and CHANGED
+ * only when nothing but the -I/-iquote/-isystem/-idirafter dirs differ and
+ * both sides' recorded lookups decide the resolution; DRIFT otherwise. */
+enum fxc_sdir {
+    FXC_SDIR_DRIFT,     /* not only search dirs, or nothing proves which */
+    FXC_SDIR_UNCHANGED, /* every lookup, probe answer and file as before */
+    FXC_SDIR_CHANGED,   /* some lookup, probe answer or file moved */
+};
+enum fxc_sdir fxc_sdir_delta(const uint8_t *before, size_t blen,
+                             const uint8_t *after, size_t alen);
 
 /* tu.c: decide one candidate TU; false only for memory. */
 bool fxc_tu_eval(struct fxc *c, const char *path);

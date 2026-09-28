@@ -63,6 +63,8 @@
 
 #include "test/semantic_fuzz.h"
 
+#include "devloop.h"
+
 #include "base/safe_alloc.h"
 
 #include "platform/clock.h"
@@ -646,6 +648,41 @@ static int sfz_t_repros(struct sfz_group *g)
     return failures;
 }
 
+/* ---- the search-dir replay is load-bearing --------------------------------------- */
+
+/* SD3 with the consumer's search-dir replay dropped, so every
+ * search-dir-only identity change reads as resolving as before: t0, whose
+ * __has_include answer the added dir flips while its file set stays the
+ * same, must be missed, exactly. */
+static int sfz_t_sdir_mutant(struct sfz_group *g)
+{
+    int failures = 0;
+    const struct sfz_tool_repro *t = NULL;
+    struct sfz_item it;
+    struct sfz_repro r;
+    size_t bad;
+    for (size_t k = 0; k < k_sfz_ntool_repros; k++)
+        if (strcmp(k_sfz_tool_repros[k].r.name, "SD3_dir_satisfies_probe") == 0)
+            t = &k_sfz_tool_repros[k];
+    TEST_CASE("semantic_facts_fuzz: without the search-dir replay the TU whose probe an added dir answers is missed") {
+        ASSERT(t != NULL);
+        memset(&it, 0, sizeof(it));
+        r = t->r;
+        r.name = "SD3_dir_satisfies_probe_mutant";
+        r.known_red = "the search-dir replay returns (mutant NO_SDIR_REPLAY "
+                      "drops it)";
+        r.known_red_why =
+            "src/t0.c object changed, planned unaffected (not in the universe)\n";
+        prep_repro(g, &r, t, &it);
+        ASSERT(it.run);
+        zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NO_SDIR_REPLAY;
+        bad = run_items(g, &it, 1);
+        zcl_devloop_test_consumer_mutant = ZCL_DEVLOOP_MUTANT_NONE;
+        ASSERT_EQ(bad, (size_t)0);
+    } TEST_END
+    return failures;
+}
+
 /* ---- the seeds ------------------------------------------------------------------- */
 
 static unsigned profile_bits(enum sfz_profile p)
@@ -796,6 +833,7 @@ int test_semantic_facts_fuzz(void)
     } TEST_END
     if (failures == 0) {
         failures += sfz_t_repros(g);
+        failures += sfz_t_sdir_mutant(g);
         failures += sfz_t_seeds(g);
     }
     printf("semantic_facts_fuzz: mode=%s %zu cases (%zu fixed) in %.1f s: %zu pass, "

@@ -125,6 +125,12 @@ static bool fxc_plain(struct fxc *c, const struct zcl_devloop_plan *given,
     return zcl_devloop_plan_add_closure(c->root, c->files, c->nfiles, plan);
 }
 
+static bool fxc_broadened(struct fxc *c, const struct zcl_devloop_plan *given,
+                          struct zcl_devloop_plan *plan, bool c_path);
+
+/* After a search-dir change a TU that read no changed file can be affected
+ * without making the change universal: its file-seeded closure joins the
+ * plan, and when the groups overflow, every group is in scope. */
 bool fxc_fallback(struct fxc *c, const struct zcl_devloop_plan *given,
                   struct zcl_devloop_plan *plan,
                   struct zcl_devloop_facts_verdict *v)
@@ -133,6 +139,8 @@ bool fxc_fallback(struct fxc *c, const struct zcl_devloop_plan *given,
     if (!fxc_plain(c, given, plan, v, r->reason, r->detail))
         return false;
     plan->closure_universal |= c->universal;
+    if (c->sdir && !c->universal && !fxc_broadened(c, given, plan, false))
+        plan->closure_universal = true;
     return true;
 }
 

@@ -204,6 +204,51 @@ static bool fxc_same_file_set(const struct fxc_pair *p)
     return true;
 }
 
+/* ---- compile identity ------------------------------------------------------------ */
+
+/* The pair's compile identity: NULL when the IDENTITY records are equal
+ * (*sdir false), or differ only in search dirs under which every lookup
+ * resolves as before (*sdir true: the lookups' slots moved with the dirs,
+ * so fxc_sdir_delta compared LOOKUPS by what each slot names, not by
+ * bytes). Else why the TU is affected: "search-dir-resolution-change" when
+ * only search dirs differ and a lookup, probe answer or file moved,
+ * "identity-drift" for anything else. Any search-dir change leaves the
+ * universe incomplete: a plan it narrows stays feedback, never proof. */
+static const char *fxc_identity(struct fxc *c, const struct fxc_pair *p,
+                                bool *sdir)
+{
+    enum fxc_sdir d;
+    *sdir = false;
+    if (!fxi_object_cc_known(p->xa) || !fxi_object_cc_known(p->xb) ||
+        strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
+        return "identity-drift";
+    if (fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY))
+        return NULL;
+    d = fxc_sdir_delta(p->b, p->blen, p->a, p->alen);
+    if (d == FXC_SDIR_DRIFT)
+        return "identity-drift";
+    c->sdir = true;
+    fxc_incomplete(c, "search-dir-delta", p->path);
+    *sdir = true;
+    return d == FXC_SDIR_CHANGED ? "search-dir-resolution-change" : NULL;
+}
+
+static const char *fxc_identity_detail(const char *why)
+{
+    return strcmp(why, "identity-drift") == 0
+               ? "compiler unknown, or it, target, flags or environment changed"
+               : "a search-dir change moved an include, a probe answer or a file";
+}
+
+/* An include resolved differently or the file set changed; after a
+ * search-dir change (sdir) the lookups were compared already. */
+static bool fxc_resolution_moved(const struct fxc_pair *p, bool sdir)
+{
+    return (!sdir && (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||
+                      !fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_PROBES))) ||
+           !fxc_same_file_set(p);
+}
+
 static const char *fxc_producer_check(struct fxc *c, const struct fxc_pair *p)
 {
     static const uint8_t zero[32] = {0};
@@ -242,19 +287,14 @@ static bool fxc_coarse_evidence(struct fxc *c, const struct fxc_pair *p,
                                 struct zcl_devloop_facts_tu_verdict *t)
 {
     const char *why;
+    bool sdir;
     if (!fxi_complete(p->xa) || !fxi_complete(p->xb))
         return fxc_set(t, true, true, "truncated", "a producer cap cut a section");
     if ((why = fxc_producer_check(c, p)) != NULL)
         return fxc_set(t, true, true, why, "FACTS producer digests");
-    if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY) ||
-        !fxi_object_cc_known(p->xa) || !fxi_object_cc_known(p->xb) ||
-        strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
-        return fxc_set(t, true, true, "identity-drift",
-                       "compiler unknown, or it, target, flags or "
-                       "environment changed");
-    if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||
-        !fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_PROBES) ||
-        !fxc_same_file_set(p))
+    if ((why = fxc_identity(c, p, &sdir)) != NULL)
+        return fxc_set(t, true, true, why, "%s", fxc_identity_detail(why));
+    if (fxc_resolution_moved(p, sdir))
         return fxc_set(t, true, true, "include-resolution-change",
                        "an include resolved differently or the file set changed");
     return false;
@@ -925,41 +965,43 @@ static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
 /* Why a TU that read no changed file still recompiles, or NULL: its compile
  * identity, its include resolution or another file it read changed under
  * it, or its before side is missing so nothing says it did not. */
-static const char *fxc_outsider_reason(const struct fxc *c,
-                                       const struct fxc_pair *p)
+static const char *fxc_outsider_reason(struct fxc *c, const struct fxc_pair *p)
 {
+    const char *why;
+    bool sdir;
 #if defined(ZCL_TESTING)
     if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_OUTSIDER)
         return NULL;
 #endif
     if (p->xb == NULL)
         return "facts-missing";
-    if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY) ||
-        !fxi_object_cc_known(p->xa) || !fxi_object_cc_known(p->xb) ||
-        strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
-        return "identity-drift";
-    if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||
-        !fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_PROBES) ||
-        !fxc_same_file_set(p))
+    if ((why = fxc_identity(c, p, &sdir)) != NULL)
+        return why;
+    if (fxc_resolution_moved(p, sdir))
         return "include-resolution-change";
     return fxc_unrequested(c, p) != NULL ? "unrequested-change" : NULL;
 }
 
-/* Such a TU is affected whole, and no fact bounds the change to the files
- * asked about: the universe is incomplete and every group is in scope. */
+/* Such a TU is affected whole. When only its search dirs moved one of its
+ * lookups, that is all that changed under it: it alone joins the plan.
+ * Otherwise no fact bounds the change to the files asked about: the
+ * universe is incomplete and every group is in scope. */
 static bool fxc_outsider(struct fxc *c, const struct fxc_pair *p)
 {
     const char *why = fxc_outsider_reason(c, p);
     struct zcl_devloop_facts_tu_verdict *t;
+    bool moved;
     if (why == NULL)
         return true;
     t = fxc_tu_new(c, p->path);
     if (t == NULL)
         return false;
+    moved = strcmp(why, "search-dir-resolution-change") == 0;
     fxc_identities(c, p, t);
-    fxc_set(t, true, true, why, "it read none of the changed files");
+    fxc_set(t, true, true, why, "it read none of the changed files%s",
+            moved ? "; a search-dir change moved a lookup or a file" : "");
     fxc_incomplete(c, why, p->path);
-    c->universal = true;
+    c->universal = c->universal || !moved;
     return true;
 }
 

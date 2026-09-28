@@ -1008,6 +1008,30 @@ manifest read, such as a makefile or a flag file, affects every candidate
 (`build-input-changed`). An unreadable candidate manifest leaves the
 universe incomplete (`facts-invalid`).
 
+**Search-dir deltas** (`tools/dev/devloop_facts_sdir.c`). When a pair's
+IDENTITY records differ only in the `-I`, `-iquote`, `-isystem` and
+`-idirafter` options of argv and in the quote, angled and ignored dir
+lists, the consumer replays both sides' LOOKUPS instead of widening: each
+lookup's key (includer, spelling, form, kind), its answer, its hit and the
+dir its hit slot names under that side's lists must match, and the file
+set must be the same. Then the TU is decided as with an equal identity; a
+TU whose lookups moved is `search-dir-resolution-change`, affected whole,
+and a TU that read no changed file joins the plan alone (its file-seeded
+closure) rather than making the change universal. Any search-dir change
+leaves the universe incomplete (`search-dir-delta`), so a plan it narrows
+is feedback, never proof. Nothing is proved, and the TU stays
+`identity-drift`, when any other argv word, the compiler, target, resource
+dir, main file or environment differs; when argv carries a forced include,
+module, VFS overlay or pass-through option (`-include`, `-imacros`,
+`-fmodule*`, `-fimplicit-module-maps`, `-ivfsoverlay`, `-Xclang`,
+`-Xpreprocessor`, `-Wp,`); when a search-dir value is not spelled exactly
+as its canonical list entry (a symlink, `./` or `..` changes the opened
+names `__FILE__` expands to); when a lookup makes no claim
+(`include_next`, a computed or unbound spelling, `#embed`) or its replay
+saw another file first; when a file is read that no claimed lookup
+reached; or when the TU reads a system header, whose own includes and
+probes the sensor does not record.
+
 **Each member**, in order; the first rule that fires is its reason:
 
 | reason | affected | broadened | what fired |
@@ -1015,6 +1039,7 @@ universe incomplete (`facts-invalid`).
 | `truncated`, `producer-unknown`, `producer-mismatch` | yes | yes | the evidence cannot be trusted |
 | `identity-drift` | yes | yes | compiler, target, flags or environment changed, or either side's IDENTITY names no known object compiler (`object-cc unknown`, or no `object-cc` at all) |
 | `include-resolution-change` | yes | yes | LOOKUPS, PROBES or the file set changed |
+| `search-dir-resolution-change` | yes | yes | only search dirs changed, and a lookup, probe answer or the file set moved under them |
 | `source-changed` | yes | yes | the TU's own main file changed |
 | `position-dependent` | yes | yes | the TU expands `__COUNTER__` on either side: its values count every expansion before them in the TU, so any edit above one may renumber it |
 | `macro-unattributed` | yes | yes | a revision-1 manifest cannot attribute a macro change |
