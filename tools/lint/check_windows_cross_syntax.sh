@@ -356,111 +356,12 @@ fi
 
 printf '%s\0' "${COMPILE_FLAGS[@]}" "${INC_FLAGS[@]}" > "$WORK/flags.nul"
 
-# ── Self-test: prove the flag set actually rejects a Windows-only error ──
-if [ "${1:-}" = "--self-test" ]; then
-    if ! command -v "$CC_BIN" >/dev/null 2>&1; then
-        if [ "${ZCL_REQUIRE_MINGW:-0}" = 1 ]; then
-            echo "  $GATE --self-test: FAIL — required compiler '$CC_BIN'" \
-                 "is unavailable." >&2
-            exit 2
-        fi
-        echo "  $GATE --self-test: SKIP — '$CC_BIN' is not installed;" \
-             "cannot prove the gate trips without the compiler it gates."
-        exit 0
-    fi
-    violating="$WORK/violating.c"
-    cat > "$violating" <<'PROBE'
-#if defined(_WIN32)
-int zcl_gate_wincross_probe(void) { return this_identifier_does_not_exist; }
-#else
-int zcl_gate_wincross_probe(void) { return 0; }
-#endif
-PROBE
-    mapfile -t -d '' flags < "$WORK/flags.nul"
-    if [ "${#flags[@]}" -gt 0 ]; then
-        last=$((${#flags[@]} - 1))
-        if [ -z "${flags[$last]}" ]; then
-            unset "flags[$last]"
-        fi
-    fi
-    if "$CC_BIN" "${flags[@]}" "$violating" >/dev/null 2>&1; then
-        echo "FAIL: --self-test — mingw ACCEPTED a TU with an undeclared"
-        echo "  identifier inside #if defined(_WIN32). The gate is hollow:"
-        echo "  it would report clean on a real Windows-only syntax error."
-        exit 1
-    fi
-    clean="$WORK/clean.c"
-    printf 'int zcl_gate_wincross_clean(int a);\nint zcl_gate_wincross_clean(int a) { return a + 1; }\n' > "$clean"
-    if ! "$CC_BIN" "${flags[@]}" "$clean" >/dev/null 2>&1; then
-        echo "FAIL: --self-test — mingw REJECTED a trivially clean TU."
-        echo "  The gate would false-fail every contributor."
-        exit 1
-    fi
-    compat="$WORK/test_compat.c"
-    cat > "$compat" <<'PROBE'
-#include <fcntl.h>
-#include <sys/stat.h>
-int zcl_gate_wincross_test_compat(void)
-{
-    zcl_win_suppress_abort_dialog();
-    return mkdir("fixture", 0700) + O_CLOEXEC;
-}
-PROBE
-    if ! "$CC_BIN" "${flags[@]}" -include test/windows_compat.h \
-            "$compat" >/dev/null 2>&1; then
-        echo "FAIL: --self-test — the native test-profile compatibility" \
-             "header did not compile a representative POSIX-style test TU."
-        exit 1
-    fi
-    fake_compiler="$WORK/fake-compiler"
-    cat > "$fake_compiler" <<'PROBE'
-#!/usr/bin/env bash
-echo "gcc: fatal error: cannot execute 'cc1': CreateProcess: No such file or directory" >&2
-exit 86
-PROBE
-    chmod +x "$fake_compiler"
-    fake_log="$WORK/fake-compiler.log"
-    set +e
-    "$fake_compiler" "$clean" >"$fake_log" 2>&1
-    fake_rc=$?
-    set -e
-    fake_kind="$(compile_result_kind "$fake_log" "$fake_rc")"
-    if [ "$fake_kind" != COMPILER_FAILURE ]; then
-        echo "FAIL: --self-test — a nonzero compiler with no conventional" \
-             "source diagnostic was classified '$fake_kind', not an" \
-             "infrastructure failure."
-        exit 1
-    fi
-    mixed_log="$WORK/mixed-compiler.log"
-    printf '%s\n' \
-        'fixture.c:1:2: error: ordinary source rejection' \
-        'cc1.exe: out of memory allocating 4096 bytes' > "$mixed_log"
-    mixed_kind="$(compile_result_kind "$mixed_log" 1)"
-    if [ "$mixed_kind" != COMPILER_FAILURE ]; then
-        echo "FAIL: --self-test — a source diagnostic followed by a backend" \
-             "crash was classified '$mixed_kind', not infrastructure failure."
-        exit 1
-    fi
-    echo "  OK: --self-test — flag set trips on a Windows-only undeclared" \
-         "identifier, passes clean and test-compat code, rejects a crashed" \
-         "compiler backend"
-
-    # The per-TU result cache, proven against this gate's real compiler and
-    # real flag set. Everything above is hollow if a stale cached verdict
-    # can be replayed, so the two are graded together.
-    selftest_srcs="$WORK/selftest-srcs.txt"
-    if MAKEFLAGS= make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs 2>/dev/null |
-            grep -E '\.c$' | LC_ALL=C sort -u > "$selftest_srcs.tmp"; then
-        mv "$selftest_srcs.tmp" "$selftest_srcs"
-    else
-        : > "$selftest_srcs"
-    fi
-    tu_cache_selftest "$GATE" "$SCRIPT_DIR/check_windows_cross_syntax.sh" \
-        "$CC_BIN" "$WORK/flags.nul" "$WORK" "$(head -1 "$selftest_srcs")"
-    exit 0
-fi
-
-# ── Source set: every TU the release node binary actually compiles ───────
+# ── Source set: every TU the release node binary actually compiles. Computed
+#    ONCE here, ahead of the self-test below, so both the self-test's
+#    single-TU cache probe and the compile sweep share one Makefile parse
+#    (`make print-node-c23-srcs`, ~4s) instead of paying it twice — once when
+#    `--self-test` and the default gate run were separate process
+#    invocations chained with `&&` in the Makefile recipe. ─────────────────
 SRC_LIST="$WORK/srcs.txt"
 if ! MAKEFLAGS= make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs > "$SRC_LIST.raw" 2>"$WORK/print-node-c23-srcs.err"; then
     echo "$GATE: FATAL — 'make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs' failed:" >&2
@@ -475,6 +376,109 @@ SRC_COUNT="$(grep -c . "$SRC_LIST" || true)"
 [ -n "$SRC_COUNT" ] || SRC_COUNT=0
 gate_require_scanned "$SRC_COUNT" "$SRC_FLOOR" "$GATE" \
     "'make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs' printed no translation units — NODE_C23_SRCS moved or the target broke"
+
+# ── Self-test: prove the flag set actually rejects a Windows-only error.
+#    Runs standalone under `--self-test`, and also as the first phase of a
+#    default (no-argument) invocation before falling through to the compile
+#    sweep — the SKIP contract above already guarantees mingw is present by
+#    the time a default-mode run reaches here. ─────────────────────────────
+if ! command -v "$CC_BIN" >/dev/null 2>&1; then
+    if [ "${ZCL_REQUIRE_MINGW:-0}" = 1 ]; then
+        echo "  $GATE --self-test: FAIL — required compiler '$CC_BIN'" \
+             "is unavailable." >&2
+        exit 2
+    fi
+    echo "  $GATE --self-test: SKIP — '$CC_BIN' is not installed;" \
+         "cannot prove the gate trips without the compiler it gates."
+    exit 0
+fi
+violating="$WORK/violating.c"
+cat > "$violating" <<'PROBE'
+#if defined(_WIN32)
+int zcl_gate_wincross_probe(void) { return this_identifier_does_not_exist; }
+#else
+int zcl_gate_wincross_probe(void) { return 0; }
+#endif
+PROBE
+mapfile -t -d '' flags < "$WORK/flags.nul"
+if [ "${#flags[@]}" -gt 0 ]; then
+    last=$((${#flags[@]} - 1))
+    if [ -z "${flags[$last]}" ]; then
+        unset "flags[$last]"
+    fi
+fi
+if "$CC_BIN" "${flags[@]}" "$violating" >/dev/null 2>&1; then
+    echo "FAIL: --self-test — mingw ACCEPTED a TU with an undeclared"
+    echo "  identifier inside #if defined(_WIN32). The gate is hollow:"
+    echo "  it would report clean on a real Windows-only syntax error."
+    exit 1
+fi
+clean="$WORK/clean.c"
+printf 'int zcl_gate_wincross_clean(int a);\nint zcl_gate_wincross_clean(int a) { return a + 1; }\n' > "$clean"
+if ! "$CC_BIN" "${flags[@]}" "$clean" >/dev/null 2>&1; then
+    echo "FAIL: --self-test — mingw REJECTED a trivially clean TU."
+    echo "  The gate would false-fail every contributor."
+    exit 1
+fi
+compat="$WORK/test_compat.c"
+cat > "$compat" <<'PROBE'
+#include <fcntl.h>
+#include <sys/stat.h>
+int zcl_gate_wincross_test_compat(void)
+{
+zcl_win_suppress_abort_dialog();
+return mkdir("fixture", 0700) + O_CLOEXEC;
+}
+PROBE
+if ! "$CC_BIN" "${flags[@]}" -include test/windows_compat.h \
+        "$compat" >/dev/null 2>&1; then
+    echo "FAIL: --self-test — the native test-profile compatibility" \
+         "header did not compile a representative POSIX-style test TU."
+    exit 1
+fi
+fake_compiler="$WORK/fake-compiler"
+cat > "$fake_compiler" <<'PROBE'
+#!/usr/bin/env bash
+echo "gcc: fatal error: cannot execute 'cc1': CreateProcess: No such file or directory" >&2
+exit 86
+PROBE
+chmod +x "$fake_compiler"
+fake_log="$WORK/fake-compiler.log"
+set +e
+"$fake_compiler" "$clean" >"$fake_log" 2>&1
+fake_rc=$?
+set -e
+fake_kind="$(compile_result_kind "$fake_log" "$fake_rc")"
+if [ "$fake_kind" != COMPILER_FAILURE ]; then
+    echo "FAIL: --self-test — a nonzero compiler with no conventional" \
+         "source diagnostic was classified '$fake_kind', not an" \
+         "infrastructure failure."
+    exit 1
+fi
+mixed_log="$WORK/mixed-compiler.log"
+printf '%s\n' \
+    'fixture.c:1:2: error: ordinary source rejection' \
+    'cc1.exe: out of memory allocating 4096 bytes' > "$mixed_log"
+mixed_kind="$(compile_result_kind "$mixed_log" 1)"
+if [ "$mixed_kind" != COMPILER_FAILURE ]; then
+    echo "FAIL: --self-test — a source diagnostic followed by a backend" \
+         "crash was classified '$mixed_kind', not infrastructure failure."
+    exit 1
+fi
+echo "  OK: --self-test — flag set trips on a Windows-only undeclared" \
+     "identifier, passes clean and test-compat code, rejects a crashed" \
+     "compiler backend"
+
+# The per-TU result cache, proven against this gate's real compiler and
+# real flag set. Everything above is hollow if a stale cached verdict
+# can be replayed, so the two are graded together. SRC_LIST is the same
+# list the compile sweep below will use, computed once above.
+tu_cache_selftest "$GATE" "$SCRIPT_DIR/check_windows_cross_syntax.sh" \
+    "$CC_BIN" "$WORK/flags.nul" "$WORK" "$(head -1 "$SRC_LIST")"
+
+if [ "${1:-}" = "--self-test" ]; then
+    exit 0
+fi
 
 # ── Parallel compile. Each TU writes its OWN log: concurrent writers
 #    sharing one fd tear output once a diagnostic exceeds PIPE_BUF. ───────
