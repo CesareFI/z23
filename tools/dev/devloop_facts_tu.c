@@ -469,8 +469,21 @@ static bool fxc_new_ids(struct fxc *c, const struct fxi *x,
     return true;
 }
 
+/* A function another file defines with internal linkage: a header's static
+ * or static inline, or a static of an included .c. The TU compiles its own
+ * copy under the canonical id its manifest gives it, and may emit it though
+ * nothing here calls it (gcc emits an unreferenced plain static at -O0; a
+ * `used` or `constructor` attribute, which the facts do not record, does
+ * at any level). */
+static bool fxc_own_copy(const struct fxi *x, size_t e)
+{
+    return fxi_defined_function(x, e) && !fxi_main_function(x, e) &&
+           !fxi_external(x, e);
+}
+
 /* The first root of x that reaches an entity with `mask` bits; SIZE_MAX
- * when none does. *dirty names the entity it reaches. */
+ * when none does. *dirty names the entity it reaches. A TU's own copy of
+ * another file's internal function is a root: its bytes are this TU's. */
 static size_t fxc_first_root(const struct fxi *x, const uint8_t *flags,
                              uint8_t mask, size_t *via, size_t *dirty)
 {
@@ -485,7 +498,7 @@ static size_t fxc_first_root(const struct fxi *x, const uint8_t *flags,
     /* The main file's own #if names the cause best when it moved. */
     for (size_t e = 0; hit != SIZE_MAX - 1 && e < fxi_count(x); e++) {
         bool cond = fxi_is_site(x, e, VCS_SEMANTIC_FACTS_COND_SITE);
-        if (!fxi_root(x, e) || via[e] == SIZE_MAX ||
+        if (!(fxi_root(x, e) || fxc_own_copy(x, e)) || via[e] == SIZE_MAX ||
             (hit != SIZE_MAX && !cond))
             continue;
         hit = e;
@@ -516,8 +529,11 @@ static bool fxc_in_changed_c(const struct fxc *c, const struct fxi *x,
  * defines that reach a semantic change, grown by fxi_codegen_closure under
  * the optimizer the identity names (unbounded: "inline-closure-unknown");
  * main-file functions among them, and those a changed .c defines, seed the
- * walk. Any other root that reaches a change, or a definition from another
- * file every reader emits among them, seeds the whole file as well. */
+ * walk, and so does the TU's own copy of another file's internal function
+ * (its id names it in every reader, so the walk finds its callers there and
+ * a manifest that takes its address refuses). Any other root that reaches a
+ * change, or an external definition from another file every reader emits
+ * among them, seeds the whole file as well. */
 /* The marked functions: seeds, or a broadened TU. */
 static bool fxc_seed_marked(struct fxc *c, const struct fxi *x,
                             const uint8_t *mark,
@@ -525,11 +541,14 @@ static bool fxc_seed_marked(struct fxc *c, const struct fxi *x,
 {
     bool ok = true;
     for (size_t e = 0; ok && e < fxi_count(x); e++) {
+        bool main, own;
         if (!mark[e] || !fxi_defined_function(x, e))
             continue;
-        if (fxi_main_function(x, e) || fxc_in_changed_c(c, x, e))
+        main = fxi_main_function(x, e);
+        own = fxc_own_copy(x, e);
+        if (main || own || fxc_in_changed_c(c, x, e))
             ok = fxc_seed_add(c, x, e);
-        if (!fxi_main_function(x, e) && fxi_root(x, e))
+        if (!main && !own && fxi_root(x, e))
             t->broadened = true;
     }
     return ok;

@@ -1021,7 +1021,7 @@ universe incomplete (`facts-invalid`).
 | `unrequested-change` | yes | yes | a file it read changed that the request does not name |
 | `after-stale` and the rule-9 reasons | yes | yes | the after manifest is not the parse of this tree |
 | `macro-conditional`, `header-unattributed`, `position-unknown` | yes | yes | a conditional or other directive of a changed header changed, a changed text names no id the header declares, or the header's positions could not be read |
-| `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU |
+| `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU, except a function another file defines with internal linkage (a header's `static inline`), which is the TU's own copy and seeds instead |
 | `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
 | `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
 | `name-collision` | yes | yes | an id shares its name with a new or removed external id |
@@ -1034,9 +1034,16 @@ changed header text chunk names it, or when its whole-record digest differs
 **Obligations.** A broadened TU contributes its whole file-seeded plan
 (`tu-broadened`). For the others, the seeds are the main-file functions a
 dirty id reaches, grown by the code-generation closure; a non-main
-function in that closure (a header definition every reader emits)
-broadens the TU instead, and an unbounded optimizer refuses
-(`inline-closure-unknown`). The caller walk keeps a caller only when its
+function in that closure with external linkage (a header definition every
+reader emits) broadens the TU instead, and an unbounded optimizer refuses
+(`inline-closure-unknown`). A function another file defines with internal
+linkage, such as a header's `static inline`, is compiled by each reader as
+its own copy under the id `f:<header>:<name>`: it seeds like a main-file
+function, so the walk reaches its callers in every reader and a manifest
+that takes its address refuses. Such a copy is also a root of its TU even
+where nothing there calls it: gcc emits an unreferenced plain `static` at
+`-O0`, and a `used` or `constructor` attribute, which the facts do not
+record, emits it at any level. The caller walk keeps a caller only when its
 manifest names the callee's canonical id. A seed whose address some
 manifest takes (`address-taken`), a header-declared seed with a reader
 that has no manifest or with readers the graph cannot list
@@ -1165,6 +1172,9 @@ the consumer left unaffected.
 | unity_nobefore | as `unity`, with the includer's before manifest withheld | the definer, and the includer (`facts-missing`) | falls back, universe incomplete `facts-missing` |
 | unity_nofacts | the static `cx_twice` in `cx_a.c`, which an includer with no manifest compiles | `cx_a.c`, and the includer (`facts-missing`, from the depfile graph) | falls back, universe incomplete `facts-missing` |
 | unity_add | `cx_sum`'s body, and `cx_e.c` gains its `#include "cx_c.c"` (both requested) | the definer, and the includer (`include-resolution-change`) | falls back `include-resolution-changed` |
+| hinl | the body of the header's `static inline cx_inl`, which `cx_b.c`'s `cx_inl_b` calls (against a tree with both), at `-O1` | all five: every reader defines its own copy (`interface`) | narrowed; seeds `cx_inl` and `cx_inl_b` |
+| hinl0 | the same at `-O0`, where `cx_b.c` emits `cx_inl` out of line | all five (`interface`) | narrowed; seeds `cx_inl` and `cx_inl_b` |
+| hinl_addr | the same, while `cx_d.c` returns `cx_inl`'s address | all five (`interface`) | `address-taken` |
 
 The seven from `counter` to `unity` are minimized reproducers of dependencies
 a differential comparison against cold clang objects found missed;
@@ -1173,7 +1183,10 @@ a differential comparison against cold clang objects found missed;
 includer seeding the first two miss `cx_e_sum` and `cx_e_top_a`, and
 `unity_addr` narrows with no obligation. `unity_trunc`, `unity_nobefore`
 and `unity_nofacts` come from the final review: each narrowed before the
-incompleteness rule above. A narrowed plan must reach every
+incompleteness rule above. `hinl0` is the fuzz family F12
+(`F12_header_static_inline_O0`): before the reader's own copy seeded, the
+consumer left `cx_inl` out of the seeds and every reader but `cx_b.c`
+unaffected, and `hinl_addr` narrowed with no obligation. A narrowed plan must reach every
 changed file and every affected TU, checked as a set through a test hook on
 the files the fold reached. A count check would not do: with a fold that
 drops the affected TUs, `unity2` reaches 3 files where 2 are needed and
