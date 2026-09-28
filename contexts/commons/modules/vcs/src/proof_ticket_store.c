@@ -519,7 +519,7 @@ static bool pts_scan_one(struct vcs_proof_receiver *r,
 static bool pts_scan(struct vcs_proof_receiver *r,
                      struct vcs_package_store *store, struct pts_cps *cps,
                      struct pts_counts *n, struct pts_chunks *chunks,
-                     uint64_t *generation)
+                     uint64_t *generation, size_t max_catalog_rows)
 {
     struct vcs_package_store_summary *rows =
         zcl_calloc(VCS_PACKAGE_STORE_PAGE_MAX, sizeof(*rows),
@@ -529,6 +529,7 @@ static bool pts_scan(struct vcs_proof_receiver *r,
     bool resume = false;
     bool done = false;
     bool ok = true;
+    size_t scanned = 0;
     while (ok && !done) {
         struct vcs_package_store_page page;
         enum vcs_package_store_page_result result =
@@ -542,6 +543,13 @@ static bool pts_scan(struct vcs_proof_receiver *r,
             ok = false;
             break;
         }
+        if (page.count > max_catalog_rows - scanned) {
+            LOG_ERROR(PTS_LOG,
+                      "rebuild: catalog row budget exhausted before complete scan");
+            ok = false;
+            break;
+        }
+        scanned += page.count;
         *generation = page.generation;
         for (size_t i = 0; ok && i < page.count; i++)
             ok = pts_scan_one(r, store, cps, n, chunks, rows[i].root);
@@ -754,10 +762,10 @@ static bool pts_restore_anchored_fork(const struct vcs_proof_receiver *old,
     return true;
 }
 
-bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
-                                struct vcs_package_store *store,
-                                size_t *tickets, size_t *checkpoints,
-                                size_t *skipped)
+bool vcs_proof_receiver_rebuild_bounded(
+    struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
+    size_t *skipped)
 {
     if (tickets) *tickets = 0;
     if (checkpoints) *checkpoints = 0;
@@ -771,7 +779,8 @@ bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
     struct pts_counts n = {0};
     struct pts_chunks chunks = {0};
     uint64_t generation = 0;
-    bool ok = pts_scan(staging, store, &cps, &n, &chunks, &generation) &&
+    bool ok = pts_scan(staging, store, &cps, &n, &chunks, &generation,
+                       max_catalog_rows) &&
               pts_replay(staging, &cps, &n) &&
               pts_restore_anchored_fork(r, staging) &&
               pts_preserves_prior(r, staging);
@@ -785,4 +794,13 @@ bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
     if (checkpoints) *checkpoints = n.checkpoints;
     if (skipped) *skipped = n.skipped;
     return ok;
+}
+
+bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
+                                struct vcs_package_store *store,
+                                size_t *tickets, size_t *checkpoints,
+                                size_t *skipped)
+{
+    return vcs_proof_receiver_rebuild_bounded(r, store, SIZE_MAX,
+                                              tickets, checkpoints, skipped);
 }

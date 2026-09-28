@@ -278,5 +278,12 @@ bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t *tickets, size_t *checkpoints,
                                 size_t *skipped);
+/* Same atomic rebuild, with a total catalog-row work budget in addition to
+ * the store's per-page limit. Exhaustion refuses; it never publishes a view
+ * that could omit a later ticket, checkpoint or contradiction. */
+bool vcs_proof_receiver_rebuild_bounded(
+    struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
+    size_t *skipped);
 
 #endif /* ZCL_VCS_PROOF_REUSE_H */

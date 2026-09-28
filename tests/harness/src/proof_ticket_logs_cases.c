@@ -224,6 +224,44 @@ static int ptl_case_checkpoint_blob_head(void)
     return failures;
 }
 
+static int ptl_case_catalog_budget(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: exhausted catalog budget retains old receiver") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 19, cp));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *delta[] = {ticket};
+        ASSERT(ptl_sync_wires(cp, delta, 1, &rep));
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)1);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "catalogcap");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
+        size_t tickets = 9, cps = 9, skipped = 9;
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(g_l.rx, store, 1,
+                    &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
+                  (uint64_t)1);
+        ASSERT(vcs_proof_receiver_rebuild_bounded(g_l.rx, store, 2,
+                    &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)1);
+        ASSERT_EQ(cps, (size_t)1);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 static int ptl_case_same_count(void)
 {
     int failures = 0;
@@ -1813,6 +1851,7 @@ int ptf_log_cases(void)
     int failures = 0;
     failures += ptl_case_issuer_restore();
     failures += ptl_case_checkpoint_blob_head();
+    failures += ptl_case_catalog_budget();
     failures += ptl_case_same_count();
     failures += ptl_case_same_size_ancestry();
     failures += ptl_case_late_same_size_fork();
