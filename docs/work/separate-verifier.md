@@ -10,9 +10,10 @@ current wrapper compiles cold in proof mode with `verified:no_verifier_key`.
 
 ## Fixed result.c installation packet (not installed)
 
-The first executable scope is only
-`platform/modules/base/src/result.c` on Linux x86-64 with GCC 13, using the
-exact direct-source flags in `tools/verify/real_tu_probe.sh`. The local
+The first translation-unit scope is only
+`platform/modules/base/src/result.c` on Linux x86-64. The older local GCC 13
+direct-source probe uses `tools/verify/real_tu_probe.sh`; the current
+build-only production profile below resolves `cc` to GCC 14. The local
 `tools/verify/tree_closure.c` utility hashes a complete bounded tree in sorted
 order, including path, entry type, mode, owner, link target and regular-file
 bytes. It refuses special entries, writable entries, escaping links and
@@ -66,6 +67,35 @@ and separate UIDs at execution. The receiver must construct the expected
 source content root from its own exact generation tree and read the installed
 tool and policy pins independently; it cannot copy a candidate's six claims.
 
+### Current build-only result.c command
+
+`tools/verify/fixed_result_gcc14.args` pins the **ordered** current Make
+`BUILD_ONLY_OBJECT_CFLAGS` for `result.c`: `cc` plus 180 arguments, including
+`-std=c23`, every define and include in its original order, the physical-cwd
+prefix map, and the literal source random seed. The manifest SHA3-256 is
+`befa08b481efd3d6387c61d39095f77ec65e9bf229f55a3da4a9cf4efdd20cfa`.
+`@CWD@` is replaced only with the verified physical cwd. The local witness
+requires `/usr/bin/cc` to resolve to GCC 14, compares every expanded Make
+argument to this manifest, and then runs direct-source GCC under exactly
+`LC_ALL=C`, `TZ=UTC`, `TMPDIR=/tmp`, `PATH=/usr/bin:/bin`. It appends the real
+epoch recipe's `-MMD -MP -MF <dep> -MT <epoch target> -c -o <object> <source>`.
+Two distinct output paths must produce byte-identical objects, depfiles and
+stderr; a fresh `-E` with the same target must produce the same depfile. The
+witness prints its exact hashes and compiler launch counts. The current
+combiner above still describes its earlier GCC 13 probe profile and must not
+be used as the expected key for this GCC 14 command.
+
+This tracked manifest is a reviewable build-profile input, **not** an
+installed root pin. Make expansion checks detect drift for local development;
+candidate-controlled Make is never the receiver's authority. An installed
+producer must use a root-owned copy of the reviewed profile and current tool
+image, and the receiver must compare the fixed profile, physical cwd, source
+snapshot, full namespace and fixed environment independently. Epoch `-MT`,
+`-MF` and `-o` values need typed normalization supported by an observed
+byte-equivalence witness; the receiver writes its own current-target depfile.
+The local witness says `attest_eligible=0`, launches two compilers and one
+preprocessor, and avoids zero proof compiles.
+
 The administrator must run the following staging commands as root on a host
 where UIDs/GIDs 60092 and 60093 are free. These commands create no key, socket
 or running service. A pre-existing user or group with either ID is a hard
@@ -84,8 +114,45 @@ useradd --system --uid 60093 --gid 60093 --home-dir /var/lib/z23vcc --shell /usr
 install -d -o root -g root -m 0755 /etc/z23verify /var/lib/z23verify /var/lib/z23verify/jails
 install -d -o z23verify -g z23verify -m 0700 /var/lib/z23verify/key
 install -d -o z23verify -g z23verify -m 0755 /var/lib/z23verify/cas /var/lib/z23verify/store
+install -d -o root -g root -m 0755 /var/lib/z23verify/locks
+install -o z23verify -g z23verify -m 0644 /dev/null \
+  /var/lib/z23verify/locks/fixed_result.lock
 install -d -o z23vcc -g z23vcc -m 0700 /var/lib/z23vcc /var/lib/z23vcc/work
 ```
+
+The reviewed GCC 14 profile is staged only from a root-owned directory after
+the administrator verifies its SHA3-256 against the value above. This pins
+the profile bytes but starts no compiler or signer. The staging path and
+installed profile must not be writable by either service account or the
+developer:
+
+```sh
+set -eu
+stage=/root/z23verify-staging
+test "$(stat -c %u "$stage")" = 0
+test "$(stat -c %u "$stage/fixed_result_gcc14.args")" = 0
+test "$(stat -c %a "$stage")" = 700
+test "$(openssl dgst -sha3-256 "$stage/fixed_result_gcc14.args" | awk '{print $NF}')" = \
+  befa08b481efd3d6387c61d39095f77ec65e9bf229f55a3da4a9cf4efdd20cfa
+install -o root -g root -m 0444 "$stage/fixed_result_gcc14.args" \
+  /etc/z23verify/fixed_result_gcc14.args
+test "$(openssl dgst -sha3-256 /etc/z23verify/fixed_result_gcc14.args | awk '{print $NF}')" = \
+  befa08b481efd3d6387c61d39095f77ec65e9bf229f55a3da4a9cf4efdd20cfa
+```
+
+The later service installer must pin the exact GCC 14 tool image, source
+generation and mount policy in separate root-owned records and install the
+root-owned public key. No private key, socket or service is installed by this
+staging packet; proof reuse stays cold. A writable source checkout or the
+developer's copy of this manifest cannot serve as the installed pin.
+The one-TU observation store uses immutable
+`/var/lib/z23verify/store/<store-key>/<record-sha3>/attest.bin`, `object.o`,
+`deps.d` and `stderr.bin`. The root-precreated `fixed_result.lock` serializes
+all fixed-result keys: the signer takes an exclusive lock across staging,
+fsync and atomic publication; the receiver takes a shared lock across the
+complete observation scan and verified artifact materialization. Neither
+side creates or follows a lock symlink. A developer may open this public lock
+and delay a bounded request, so lock acquisition needs a deadline and refusal.
 
 The later, reviewed installer must create a **root-owned, read-only mount
 namespace** for the compiler account. Its root contains only the pinned GCC
