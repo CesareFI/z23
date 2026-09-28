@@ -302,6 +302,43 @@ static bool transport_read_file(struct vcs_package_store *store,
                 VCS_PACKAGE_STORE_OK;
 }
 
+static enum vcs_package_transport_result transport_open_complete_carrier(
+    struct vcs_package_store *store, const uint8_t transport_root[32],
+    struct vcs_package_manifest *outer, uint8_t **wire_out,
+    size_t *wire_len_out)
+{
+    *wire_out = NULL;
+    *wire_len_out = 0;
+    vcs_package_manifest_init(outer);
+    uint8_t checked_root[32];
+    if (vcs_package_store_get_manifest_wire(
+            store, transport_root, wire_out, wire_len_out) !=
+            VCS_PACKAGE_STORE_OK ||
+        !vcs_package_manifest_parse(*wire_out, *wire_len_out, outer) ||
+        !vcs_package_manifest_root(outer, checked_root) ||
+        memcmp(checked_root, transport_root, 32) != 0) {
+        free(*wire_out);
+        *wire_out = NULL;
+        vcs_package_manifest_free(outer);
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_MANIFEST,
+                   "vcs.package.transport", "carrier root rejected");
+    }
+    /* Metadata can arrive before source chunks during a swarm transfer.
+     * Refuse that prefix before any inner manifest, recipe, or signed release
+     * is admitted, so retry after the carrier completes starts cleanly. */
+    struct vcs_package_store_status outer_status;
+    if (!vcs_package_store_package_status(
+            store, transport_root, &outer_status) ||
+        !outer_status.complete) {
+        free(*wire_out);
+        *wire_out = NULL;
+        vcs_package_manifest_free(outer);
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE,
+                   "vcs.package.transport", "carrier CAS incomplete");
+    }
+    return VCS_PACKAGE_TRANSPORT_OK;
+}
+
 enum vcs_package_transport_result vcs_package_transport_import(
     struct vcs_package_store *store, const uint8_t transport_root[32],
     struct vcs_package_transport_import *receipt)
@@ -313,19 +350,11 @@ enum vcs_package_transport_result vcs_package_transport_import(
     uint8_t *outer_wire = NULL;
     size_t outer_wire_len = 0;
     struct vcs_package_manifest outer;
-    vcs_package_manifest_init(&outer);
-    uint8_t checked_root[32];
-    if (vcs_package_store_get_manifest_wire(
-            store, transport_root, &outer_wire, &outer_wire_len) !=
-            VCS_PACKAGE_STORE_OK ||
-        !vcs_package_manifest_parse(outer_wire, outer_wire_len, &outer) ||
-        !vcs_package_manifest_root(&outer, checked_root) ||
-        memcmp(checked_root, transport_root, 32) != 0) {
-        free(outer_wire);
-        vcs_package_manifest_free(&outer);
-        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_MANIFEST,
-                   "vcs.package.transport", "carrier root rejected");
-    }
+    enum vcs_package_transport_result opened =
+        transport_open_complete_carrier(store, transport_root, &outer,
+                                        &outer_wire, &outer_wire_len);
+    if (opened != VCS_PACKAGE_TRANSPORT_OK)
+        return opened;
     uint8_t *release_wire = NULL, *recipe_wire = NULL, *manifest_wire = NULL;
     size_t release_len = 0, recipe_len = 0, manifest_len = 0;
     bool read = transport_read_file(

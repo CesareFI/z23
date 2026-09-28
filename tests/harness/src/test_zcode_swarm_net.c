@@ -3226,6 +3226,83 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
     return failures;
 }
 
+static int zwn_t_incomplete_carrier_import(const struct chain_params *params)
+{
+    (void)params;
+    int failures = 0;
+    const struct zwn_package_scenario *scenario = &zwn_package_scenarios[0];
+    struct vcs_package_prepared prepared = {0};
+    struct vcs_package_transport transport;
+    vcs_package_transport_init(&transport);
+    char datadir[1024];
+    test_make_tmpdir(datadir, sizeof(datadir), "zcode_swarm_net",
+                     "partial-carrier-import");
+    struct vcs_package_store *store = NULL;
+    TEST("incomplete carrier cannot admit an inner manifest or release") {
+        ASSERT(zwn_prepare_package_transport(
+            scenario, scenario->source_dir, scenario->publisher_sequence,
+            scenario->expected_package_root_hex, &prepared, &transport));
+        store = vcs_package_store_open(
+            datadir, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+        ASSERT(store != NULL);
+        uint8_t admitted_root[32];
+        ASSERT(vcs_package_store_put_manifest(
+                   store, transport.transport_manifest_wire,
+                   transport.transport_manifest_wire_len, admitted_root) ==
+               VCS_PACKAGE_STORE_OK);
+        ASSERT(memcmp(admitted_root, transport.transport_root, 32) == 0);
+        ASSERT(vcs_package_content_put_file(
+                   store, admitted_root, VCS_PACKAGE_TRANSPORT_RELEASE_PATH,
+                   transport.release_wire, transport.release_wire_len) ==
+               VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_package_content_put_file(
+                   store, admitted_root, VCS_PACKAGE_TRANSPORT_RECIPE_PATH,
+                   transport.recipe_wire, transport.recipe_wire_len) ==
+               VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_package_content_put_file(
+                   store, admitted_root, VCS_PACKAGE_TRANSPORT_MANIFEST_PATH,
+                   transport.package_manifest_wire,
+                   transport.package_manifest_wire_len) ==
+               VCS_PACKAGE_STORE_OK);
+        struct vcs_package_store_status status;
+        ASSERT(vcs_package_store_package_status(store, admitted_root,
+                                                &status));
+        ASSERT(!status.complete);
+        struct vcs_package_transport_import receipt;
+        ASSERT(vcs_package_transport_import(store, admitted_root, &receipt) ==
+               VCS_PACKAGE_TRANSPORT_ERR_STORE);
+        ASSERT(!vcs_package_store_package_status(
+            store, transport.package_root, &status));
+        char release_hex[65], release_path[1400];
+        zcl_hex_encode(transport.release_id, 32, release_hex);
+        ASSERT(snprintf(release_path, sizeof(release_path), "%s/releases/%s",
+                        vcs_package_store_root_dir(store), release_hex) > 0);
+        ASSERT(access(release_path, F_OK) != 0);
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(
+            datadir, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+        ASSERT(store != NULL);
+        ASSERT(vcs_package_store_package_status(store, admitted_root,
+                                                &status));
+        ASSERT(!status.complete);
+        ASSERT(!vcs_package_store_package_status(
+            store, transport.package_root, &status));
+        ASSERT(vcs_package_transport_store(
+                   store, &transport, scenario->source_dir) ==
+               VCS_PACKAGE_TRANSPORT_OK);
+        ASSERT(vcs_package_store_package_status(
+            store, transport.package_root, &status));
+        ASSERT(status.complete);
+        ASSERT(access(release_path, F_OK) == 0);
+        PASS();
+    } _test_next:
+    vcs_package_store_close(store);
+    vcs_package_transport_free(&transport);
+    vcs_package_prepared_free(&prepared);
+    test_rm_rf_recursive(datadir);
+    return failures;
+}
+
 /* One data-driven product acceptance. The runner knows only the generic
  * package lifecycle; platform/modules/base is scenario data and a later library can use
  * the same path without another publish/fetch/reproduce harness. */
@@ -7117,6 +7194,7 @@ static const struct zwn_case g_zwn_cases[] = {
     ZWN_CASE(zwn_t_golden_plain, 1),
     ZWN_CASE(zwn_t_golden_restart, 3),
     ZWN_CASE(zwn_t_golden_disconnect, 2),
+    ZWN_CASE(zwn_t_incomplete_carrier_import, 0),
     ZWN_CASE(zwn_t_package_lifecycle, 0),
     ZWN_CASE(zwn_t_sovereign_source_build, 4),
     ZWN_CASE(zwn_t_malicious, 4),
@@ -7150,6 +7228,7 @@ static const struct zwn_case g_zwn_cases[] = {
 static const char *const g_zwn_original[] = {
     "zwn_t_fixture_abort_reacquire", "zwn_t_golden_plain",
     "zwn_t_golden_restart", "zwn_t_golden_disconnect",
+    "zwn_t_incomplete_carrier_import",
     "zwn_t_package_lifecycle", "zwn_t_sovereign_source_build",
     "zwn_t_malicious", "zwn_t_corrupt_provider_repair",
     "zwn_t_corrupt_local_repair", "zwn_t_unrequested",
