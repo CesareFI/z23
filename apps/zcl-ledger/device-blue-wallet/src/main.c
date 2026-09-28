@@ -25,14 +25,6 @@
 unsigned char G_io_seproxyhal_spi_buffer[IO_SEPROXYHAL_BUFFER_SIZE_B];
 ux_state_t ux;
 
-typedef struct {
-    uint8_t raw[32];
-    uint8_t chain[32];
-    cx_ecfp_private_key_t key;
-} private_material;
-
-static private_material secret;
-static cx_ecfp_public_key_t public_key;
 static blue_wallet_state wallet_state;
 static char receive_address[ZCL_WALLET_ADDRESS_CHARS + 1];
 static char address_lines[ZCL_WALLET_ADDRESS_LINES][ZCL_WALLET_ADDRESS_LINE_SIZE];
@@ -45,7 +37,6 @@ static void wipe(void *memory, size_t length) {
 static const bagl_element_t *exit_app(const bagl_element_t *element) {
     (void)element;
     wallet_payment_abort();
-    wipe(&secret, sizeof secret);
     blue_wallet_signer_wipe();
     os_sched_exit(0);
     return NULL;
@@ -171,19 +162,30 @@ static bool derive_public_key(unsigned int chain, uint8_t compressed[33]) {
         0x8000002c, 0x80000093, 0x80000000, chain, 0
     };
     if (!compressed || chain > 1 || !os_global_pin_is_validated()) return false;
+    wallet_boot_material *material = wallet_payment_boot_material();
     os_perso_derive_node_bip32(CX_CURVE_256K1, path, 5,
-                                secret.raw, secret.chain);
-    cx_ecfp_init_private_key(CX_CURVE_256K1, secret.raw, 32, &secret.key);
-    wipe(secret.raw, sizeof secret.raw);
-    wipe(secret.chain, sizeof secret.chain);
-    int generated = cx_ecfp_generate_pair(CX_CURVE_256K1, &public_key,
-                                           &secret.key, 1);
-    wipe(&secret, sizeof secret);
-    if (generated != 0 || public_key.W_len != 65 || public_key.W[0] != 4)
+                                material->raw, material->chain);
+    (void)cx_ecfp_init_private_key(CX_CURVE_256K1, material->raw, 32,
+                                   &material->key);
+    wipe(material->raw, sizeof material->raw);
+    wipe(material->chain, sizeof material->chain);
+    if (material->key.curve != CX_CURVE_256K1 ||
+        material->key.d_len != 32) {
+        wallet_payment_boot_clear();
         return false;
-    compressed[0] = (uint8_t)(2u | (public_key.W[64] & 1u));
-    memcpy(compressed + 1, public_key.W + 1, 32);
-    wipe(&public_key, sizeof public_key);
+    }
+    int generated = cx_ecfp_generate_pair(CX_CURVE_256K1,
+                                           &material->public_key,
+                                           &material->key, 1);
+    wipe(&material->key, sizeof material->key);
+    if (generated != 0 || material->public_key.W_len != 65 ||
+        material->public_key.W[0] != 4) {
+        wallet_payment_boot_clear();
+        return false;
+    }
+    compressed[0] = (uint8_t)(2u | (material->public_key.W[64] & 1u));
+    memcpy(compressed + 1, material->public_key.W + 1, 32);
+    wallet_payment_boot_clear();
     return true;
 }
 
@@ -306,7 +308,6 @@ static void answer_command(void) {
             CATCH_OTHER(error) {
                 if (!received) {
                     wallet_payment_abort();
-                    wipe(&secret, sizeof secret);
                     blue_wallet_signer_wipe();
                     CLOSE_TRY;
                     THROW(error);
@@ -319,7 +320,6 @@ static void answer_command(void) {
                 redraw_receive = true;
             }
             FINALLY {
-                wipe(&secret, sizeof secret);
                 blue_wallet_signer_wipe();
             }
         }
@@ -354,7 +354,7 @@ __attribute__((section(".boot"))) int main(void) {
         }
         CATCH_OTHER(error) { (void)error; }
         FINALLY {
-            wipe(&secret, sizeof secret);
+            wallet_payment_abort();
             blue_wallet_signer_wipe();
         }
     }

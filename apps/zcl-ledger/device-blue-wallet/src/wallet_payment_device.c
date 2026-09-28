@@ -9,15 +9,20 @@
 
 #include <string.h>
 
-static blue_payment_apdu payment;
+static union {
+    blue_payment_apdu payment;
+    wallet_boot_material boot;
+} workspace;
+static_assert(sizeof workspace.payment >= sizeof workspace.boot);
+#define payment workspace.payment
 static cx_blake2b_t payment_blake;
 static cx_sha256_t payment_sha;
 static bool visible;
 static uint8_t displayed_view;
-static char fee_text[32];
-static char others_text[32];
-static char own_text[32];
-static char input_path_text[20];
+static char fee_text[BLUE_PAYMENT_AMOUNT_TEXT_SIZE];
+static char others_text[BLUE_PAYMENT_AMOUNT_TEXT_SIZE];
+static char own_text[BLUE_PAYMENT_AMOUNT_TEXT_SIZE];
+static char input_path_text[16];
 static bool totals_view;
 static bool sign_review_view, sign_approved_view;
 static uint8_t account_hash160[20];
@@ -25,6 +30,15 @@ static uint8_t internal_hash160[20];
 static bool account_ready;
 
 enum { SIGN_APPROVAL_MS = 30000 };
+
+wallet_boot_material *wallet_payment_boot_material(void) {
+    return &workspace.boot;
+}
+
+void wallet_payment_boot_clear(void) {
+    volatile uint8_t *bytes = (volatile uint8_t *)&workspace.boot;
+    for (size_t i = 0; i < sizeof workspace.boot; ++i) bytes[i] = 0;
+}
 
 void wallet_payment_set_account_hashes(const uint8_t external_hash160[20],
                                        const uint8_t internal_hash[20]) {

@@ -32,6 +32,14 @@ static void check_address(const blue_payment_screen *screen,
 }
 
 int main(int argc, char **argv) {
+    struct {
+        char text[BLUE_PAYMENT_AMOUNT_TEXT_SIZE];
+        uint8_t guard;
+    } amount = {.guard = 0xa5};
+    assert(blue_payment_amount_text(2100000000000000ULL, amount.text));
+    assert(strcmp(amount.text, "21000000.00000000 ZCL") == 0);
+    assert(amount.guard == 0xa5);
+    assert(!blue_payment_amount_text(2100000000000001ULL, amount.text));
     assert(strcmp(blue_payment_input_paths_label(
         BLUE_PAYMENT_INPUT_EXTERNAL), "INPUT EXT 0/0") == 0);
     assert(strcmp(blue_payment_input_paths_label(

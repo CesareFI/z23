@@ -70,10 +70,13 @@ static bool append_number(char *text, size_t capacity, size_t *used,
     return true;
 }
 
-bool blue_payment_amount_text(uint64_t zat, char text[32]) {
+bool blue_payment_amount_text(uint64_t zat,
+                              char text[BLUE_PAYMENT_AMOUNT_TEXT_SIZE]) {
     if (!text || zat > ZCL_MAX_MONEY_ZAT) return false;
     size_t used = 0;
-    if (!append_number(text, 32, &used, zat / 100000000)) return false;
+    if (!append_number(text, BLUE_PAYMENT_AMOUNT_TEXT_SIZE, &used,
+                       zat / 100000000) ||
+        used + 1 + 8 + 5 > BLUE_PAYMENT_AMOUNT_TEXT_SIZE) return false;
     text[used++] = '.';
     uint64_t fraction = zat % 100000000;
     uint64_t place = 10000000;

@@ -184,6 +184,21 @@ static bool screen_sha256(const uint8_t *bytes, size_t length,
     return true;
 }
 
+static void test_boot_workspace(void) {
+    memset(&payment, 0xa5, sizeof payment);
+    assert((void *)wallet_payment_boot_material() == (void *)&payment);
+    wallet_payment_boot_clear();
+    const uint8_t *bytes = (const uint8_t *)&payment;
+    for (size_t i = 0; i < sizeof *wallet_payment_boot_material(); ++i)
+        assert(bytes[i] == 0);
+    for (size_t i = sizeof *wallet_payment_boot_material();
+         i < sizeof payment; ++i) assert(bytes[i] == 0xa5);
+    wallet_payment_abort();
+    for (size_t i = 0; i < sizeof payment.input_record; ++i)
+        assert(((const uint8_t *)payment.input_record)[i] == 0);
+    assert(payment.review.replay.wire.failed);
+}
+
 static void test_output_touches(void) {
     uint8_t external[20] = {0}, internal[20] = {0};
     external[0] = 0x11;
@@ -563,6 +578,7 @@ static void test_rejected_signing_returns_to_receive(void) {
 
 int main(int argc, char **argv) {
     assert(argc == 1 || argc == 4 || argc == 5 || argc == 6);
+    test_boot_workspace();
     if (argc >= 4) {
         fee_snapshot = argv[1];
         totals_snapshot = argv[2];

@@ -27,6 +27,10 @@ struct bagl_element_s {
 
 typedef struct { uint8_t unused; } cx_blake2b_t;
 typedef struct { uint8_t unused; } cx_sha256_t;
+typedef struct { unsigned curve, d_len; uint8_t d[32]; }
+    cx_ecfp_private_key_t;
+typedef struct { unsigned curve, W_len; uint8_t W[65]; }
+    cx_ecfp_public_key_t;
 
 int cx_blake2b_init2(void *context, unsigned bits, const void *key,
     size_t key_length, const uint8_t *personal, size_t personal_length);

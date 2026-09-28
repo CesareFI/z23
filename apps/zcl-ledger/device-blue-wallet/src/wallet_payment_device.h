@@ -5,6 +5,16 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "os.h"
+
+typedef struct {
+    uint8_t raw[32], chain[32];
+    cx_ecfp_private_key_t key;
+    cx_ecfp_public_key_t public_key;
+} wallet_boot_material;
+
+wallet_boot_material *wallet_payment_boot_material(void);
+void wallet_payment_boot_clear(void);
 
 /* Called only after device-side key derivation and receive-address formatting. */
 void wallet_payment_set_account_hashes(const uint8_t external_hash160[20],

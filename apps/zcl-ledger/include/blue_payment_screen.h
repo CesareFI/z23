@@ -15,6 +15,8 @@ typedef struct {
     char kind[20];
 } blue_payment_screen;
 
+enum { BLUE_PAYMENT_AMOUNT_TEXT_SIZE = 24 };
+
 typedef enum {
     BLUE_PAYMENT_ACCOUNT_UNKNOWN,
     BLUE_PAYMENT_THIS_ACCOUNT,
@@ -53,6 +55,7 @@ bool blue_payment_screen_format(const blue_payment_output *output,
     blue_payment_screen *screen);
 
 /* Formats a bounded transparent ZCL amount without host-provided text. */
-bool blue_payment_amount_text(uint64_t zat, char text[32]);
+bool blue_payment_amount_text(uint64_t zat,
+                              char text[BLUE_PAYMENT_AMOUNT_TEXT_SIZE]);
 
 #endif

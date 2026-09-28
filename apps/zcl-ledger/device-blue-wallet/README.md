@@ -6,16 +6,24 @@ The isolated `candidate/blue_zip32_seed_device.c` adapter checks PIN state
 and requests a hardened BOLOS BIP32 node for a Ledger-specific Sapling root.
 It is compiled with the pinned Blue SDK and tested with a host syscall shim,
 but is not linked into the Wallet image. No Sapling key or signing APDU is
-available in Wallet 0.3.4. This mapping is not the standard ZIP32 root of a
+available in Wallet 0.3.5. This mapping is not the standard ZIP32 root of a
 wallet seed; recovery software would need the same documented mapping.
+
+Version 0.3.5 shares RAM between mutually exclusive boot derivation and
+payment state, and between output text and previous-transaction parsing.
+It keeps the 16-input limit and requires 1,024 bytes of SRAM above `.bss`.
+Two separately patched Blue SDK builds produced identical 40,960-byte
+`.text` images with SHA-256
+`d99812f8ed00e4accc3466efe1eb400b756a38677a84175897785a031e2db448`.
+The app has not been installed or opened on a physical Blue. Version 0.3.4
+froze on opening and was deleted; its exact image is blocked by the installer.
 
 Version 0.3.4 checks the device-derived public key against the selected
 account's startup-derived HASH160 before ECDSA runs. A missing account
 binding, failed hash, or mismatched key clears the reply without signing.
 Version 0.3.3 cleared a rejected payment request before returning to the
 receive screen after the APDU reply. Earlier candidates could abort the
-review but still mark the payment view visible. This candidate has not been
-installed on a physical Blue.
+review but still mark the payment view visible.
 
 Version 0.3.0 routes the one-byte-index INS `29` signing command after a
 separate final touchscreen `SIGN ZCL` tap. The Blue displays the amount to
@@ -193,9 +201,10 @@ The [signing callback experiment](../../../docs/experiments/2026-09-27-ledger-bl
 records the tests and limits.
 The [signing footprint experiment](../../../docs/experiments/2026-09-27-ledger-blue-signing-footprint.md)
 records the forced-link and stack-gate results.
-The installer accepts the independently reproduced 0.3.4 `.text` image
-with SHA-256
+The installer previously accepted the independently reproduced 0.3.4
+`.text` image with SHA-256
 `e6c158621a68bbf30ae92a7223fe151aa9d57fd184466b0c6537c0cf39c5bf6a`.
+That image is now blocked after its physical startup freeze.
 Version 0.3.1 resets the payment view when a new review begins, so an
 earlier signing page cannot remain selected for the new transaction.
 Version 0.3.2 expires an unconsumed final touchscreen approval after 30

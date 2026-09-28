@@ -7,8 +7,11 @@
 
 typedef struct {
     blue_payment_review review;
-    blue_payment_screen screen;
-    zcl_tx_previous_stream previous;
+    /* Previous-wire upload begins only after every output screen is closed. */
+    union {
+        blue_payment_screen screen;
+        zcl_tx_previous_stream previous;
+    };
     /* Outpoint until bound; then ZIP-243 digest plus derivation path byte. */
     uint8_t input_record[ZCL_TX_STREAM_MAX_INPUTS][36];
     uint32_t sequences[ZCL_TX_STREAM_MAX_INPUTS];
