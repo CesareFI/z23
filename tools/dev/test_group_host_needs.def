@@ -35,7 +35,15 @@
  * the test dimension, binds the built bytes into the test receipt, and fails
  * by name (test_need_unbuildable_<target>) when the build cannot produce
  * `value`. The group is never gated out and never left to self-skip; a
- * proof that selects no such group builds nothing extra.
+ * proof that selects no such group builds nothing extra. A need the proof
+ * already provides -- a path it admits content-checked
+ * (build/bin/zclassic23) or a target its prefork step always builds (fbsh)
+ * -- is left as provided rather than rebuilt. Local `make t`, `make t-fast`,
+ * `make t-fast-exact` and `make test-parallel` read the same rows through
+ * `test_parallel --list-build-needs` and build exactly the targets their own
+ * selection needs before the run, failing by the same name.
+ * A group may declare several BUILD rows with distinct targets; it declares
+ * at most one FILE or ENV row and never mixes the two shapes.
  */
 
 /* tests/harness/src/test_onion_pair_watch_live.c reports
@@ -62,3 +70,39 @@ ZCL_TEST_GROUP_BUILD_NEED("test_semantic_facts_live",
                           "build/bin/z23-clang-manifest", "clang-manifest")
 ZCL_TEST_GROUP_BUILD_NEED("test_semantic_consumer_live",
                           "build/bin/z23-clang-manifest", "clang-manifest")
+
+/* tests/harness/src/test_fleet_gateway.c: every shard spawns the gateway
+ * build/bin/z23-fleet-gateway, which fork/execs the node by its
+ * compatibility name build/bin/zclassic23 for each tool call. Neither is a
+ * default test prerequisite, and a shard without them can only fail. A proof
+ * generation admits the dev node at build/bin/zclassic23, content-checked,
+ * so the proof's test-needs step leaves it alone and builds only the
+ * gateway; a local run builds both. The base group fleet_gateway only checks
+ * the shard partition and needs neither. */
+#define ZCL_FLEET_GATEWAY_SHARD_NEEDS(id_)                                   \
+    ZCL_TEST_GROUP_BUILD_NEED(id_, "build/bin/z23-fleet-gateway",            \
+                              "fleet-gateway")                               \
+    ZCL_TEST_GROUP_BUILD_NEED(id_, "build/bin/zclassic23", "zclassic23")
+ZCL_FLEET_GATEWAY_SHARD_NEEDS("test_fleet_gateway_shard_01")
+ZCL_FLEET_GATEWAY_SHARD_NEEDS("test_fleet_gateway_shard_02")
+ZCL_FLEET_GATEWAY_SHARD_NEEDS("test_fleet_gateway_shard_03")
+ZCL_FLEET_GATEWAY_SHARD_NEEDS("test_fleet_gateway_shard_04")
+ZCL_FLEET_GATEWAY_SHARD_NEEDS("test_fleet_gateway_shard_05")
+ZCL_FLEET_GATEWAY_SHARD_NEEDS("test_fleet_gateway_shard_06")
+#undef ZCL_FLEET_GATEWAY_SHARD_NEEDS
+
+/* These exec the node by its compatibility name build/bin/zclassic23 (the
+ * `z23` product symlinked by `make zclassic23`) and self-skip where it is
+ * absent. A proof generation admits the dev node at that path, so only a
+ * local run builds it. */
+ZCL_TEST_GROUP_BUILD_NEED("test_cli_auth_robust", "build/bin/zclassic23",
+                          "zclassic23")
+ZCL_TEST_GROUP_BUILD_NEED("test_cli_argv_strict", "build/bin/zclassic23",
+                          "zclassic23")
+ZCL_TEST_GROUP_BUILD_NEED("test_importblockindex_cli_dispatch",
+                          "build/bin/zclassic23", "zclassic23")
+
+/* tests/harness/src/test_freebsd_sh.c execs build/bin/fbsh and self-skips
+ * where it is absent. The proof's prefork step builds fbsh for every test
+ * selection, so only a local run needs this row. */
+ZCL_TEST_GROUP_BUILD_NEED("test_freebsd_sh", "build/bin/fbsh", "fbsh")

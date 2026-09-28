@@ -5635,45 +5635,79 @@ static bool proof_zcc_private_close(const char *state, const char *key)
  * Makefile target (proof-lint-prebuild) that names `lint`'s own prerequisite
  * list, so the two can never drift apart. `jobs` is stored by pointer and
  * must outlive argv. */
+static const char *const proof_prefork_helpers[] = {
+    "zcl-nodectl", "zclassic23-acme", "fbsh", "engine-unit",
+    "tools/file_size_policy", "fleet-board-bridge", "git-hook",
+    "build/bin/z23-lint",
+};
+
+#define PROOF_PREFORK_HELPER_COUNT \
+    (sizeof(proof_prefork_helpers) / sizeof(proof_prefork_helpers[0]))
+
 static bool proof_prefork_argv(const char *jobs, bool lint_full,
                                const char **argv, size_t argv_cap)
 {
-    static const char *const helpers[] = {
-        "zcl-nodectl", "zclassic23-acme", "fbsh", "engine-unit",
-        "tools/file_size_policy", "fleet-board-bridge", "git-hook",
-        "build/bin/z23-lint",
-    };
     size_t n = 0;
     if (!jobs || !*jobs || !argv || argv_cap < PROOF_PREFORK_ARGV_CAP)
         return false;
     argv[n++] = "make";
     argv[n++] = "--no-print-directory";
     argv[n++] = jobs;
-    for (size_t i = 0; i < sizeof(helpers) / sizeof(helpers[0]); i++)
-        argv[n++] = helpers[i];
+    for (size_t i = 0; i < PROOF_PREFORK_HELPER_COUNT; i++)
+        argv[n++] = proof_prefork_helpers[i];
     if (lint_full) argv[n++] = "proof-lint-prebuild";
     argv[n] = NULL;
     return true;
 }
 
-/* Resolve one selected group's declared need and, for a BUILD need whose
- * target the argv does not already name, append the target (and the path it
- * builds, in the parallel `values`). Refuses an unregistered group and an
- * argv with no room: a need dropped here would leave its group to skip. */
+/* Does the prefork step build `target` for every test-selected proof? */
+static bool proof_prefork_builds(const char *target)
+{
+    for (size_t i = 0; i < PROOF_PREFORK_HELPER_COUNT; i++)
+        if (strcmp(proof_prefork_helpers[i], target) == 0) return true;
+    return false;
+}
+
+static bool proof_admitted_target(const char *rel);
+
+/* Does the test-needs argv already name `target` past its make prefix? */
+static bool dp_argv_names(const char **argv, size_t n, const char *target)
+{
+    for (size_t i = 3; i < n; i++)
+        if (strcmp(argv[i], target) == 0) return true;
+    return false;
+}
+
+/* Resolve one selected group's declared BUILD needs and append each target
+ * the argv does not already name (and the path it builds, in the parallel
+ * `values`). A need the proof already provides is left out: a path the
+ * generation carries as an admitted executable (proof_admitted_executables),
+ * content-checked against the sealed source, and a target the prefork step
+ * builds for every test-selected proof (proof_prefork_helpers). Both are
+ * already bound into the test receipt by test_helpers_hash(), so clearing
+ * and relinking them here would only build the same source twice and bind
+ * the same bytes twice.
+ * Refuses an unregistered group and an argv with no room: a need dropped
+ * here would leave its group to fail on a missing tool. */
 static bool dp_test_need_add(const char *id, const char **argv,
                              const char **values, size_t argv_cap, size_t *n)
 {
     char full[ZCL_TEST_GROUP_FULL_MAX];
-    struct zcl_test_group_host_need need;
+    struct zcl_test_group_host_need needs[PROOF_TEST_NEEDS_ARGV_CAP];
+    size_t count = 0;
     if (!zcl_test_group_resolve_exact(id, full) ||
-        !zcl_test_group_host_need(full, &need))
+        !zcl_test_group_build_needs_add(full, needs, PROOF_TEST_NEEDS_ARGV_CAP,
+                                        &count))
         return false;
-    if (need.kind != ZCL_HOST_NEED_BUILD) return true;
-    for (size_t i = 3; i < *n; i++)
-        if (strcmp(argv[i], need.target) == 0) return true;
-    if (*n + 1 >= argv_cap) return false;
-    values[*n] = need.value;
-    argv[(*n)++] = need.target;
+    for (size_t k = 0; k < count; k++) {
+        if (proof_admitted_target(needs[k].value) ||
+            proof_prefork_builds(needs[k].target) ||
+            dp_argv_names(argv, *n, needs[k].target))
+            continue;
+        if (*n + 1 >= argv_cap) return false;
+        values[*n] = needs[k].value;
+        argv[(*n)++] = needs[k].target;
+    }
     return true;
 }
 
@@ -6652,6 +6686,15 @@ static const struct proof_admitted_executable proof_admitted_executables[] = {
 
 #define PROOF_ADMITTED_EXECUTABLE_COUNT \
     (sizeof(proof_admitted_executables) / sizeof(proof_admitted_executables[0]))
+
+/* Does a test-selected generation carry `rel` as an admitted executable? */
+static bool proof_admitted_target(const char *rel)
+{
+    for (size_t i = 0; i < PROOF_ADMITTED_EXECUTABLE_COUNT; i++)
+        if (strcmp(proof_admitted_executables[i].target, rel) == 0)
+            return true;
+    return false;
+}
 
 /* Index each entry by name: a caller that wants one path out of the set
  * must not have to count rows. */

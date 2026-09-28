@@ -76,19 +76,66 @@ static bool host_need_row_valid(size_t i)
     return true;
 }
 
+/* Two rows for one group may coexist only when both are BUILD rows naming
+ * different targets: a group can exec more than one tool the tree builds,
+ * but it has at most one FILE/ENV gate, and a target is named once. */
+static bool host_need_pair_valid(size_t i, size_t j)
+{
+    const struct zcl_test_group_host_need *a = &g_host_needs[i];
+    const struct zcl_test_group_host_need *b = &g_host_needs[j];
+    if (strcmp(a->group, b->group) != 0)
+        return true;
+    if (a->kind == ZCL_HOST_NEED_BUILD && b->kind == ZCL_HOST_NEED_BUILD &&
+        strcmp(a->target, b->target) != 0)
+        return true;
+    fprintf(stderr,
+            "test_group_host_need: group '%s' declares two needs that are "
+            "not distinct BUILD targets\n", a->group);
+    return false;
+}
+
 bool zcl_test_group_host_needs_valid(void)
 {
     for (size_t i = 0; i < ZCL_HOST_NEED_COUNT; i++) {
         if (!host_need_row_valid(i))
             return false;
-        for (size_t j = 0; j < i; j++) {
-            if (strcmp(g_host_needs[i].group, g_host_needs[j].group) != 0)
-                continue;
+        for (size_t j = 0; j < i; j++)
+            if (!host_need_pair_valid(i, j))
+                return false;
+    }
+    return true;
+}
+
+/* Is `target` already one of the first `n` collected needs? */
+static bool host_need_target_listed(const struct zcl_test_group_host_need *needs,
+                                    size_t n, const char *target)
+{
+    for (size_t k = 0; k < n; k++)
+        if (strcmp(needs[k].target, target) == 0)
+            return true;
+    return false;
+}
+
+bool zcl_test_group_build_needs_add(const char *group,
+                                    struct zcl_test_group_host_need *needs,
+                                    size_t cap, size_t *n)
+{
+    struct zcl_test_group_host_need gate;
+    if (!needs || !n || *n > cap || !zcl_test_group_host_need(group, &gate))
+        return false;
+    for (size_t i = 0; i < ZCL_HOST_NEED_COUNT; i++) {
+        const struct zcl_test_group_host_need *row = &g_host_needs[i];
+        if (row->kind != ZCL_HOST_NEED_BUILD ||
+            strcmp(row->group, group) != 0 ||
+            host_need_target_listed(needs, *n, row->target))
+            continue;
+        if (*n >= cap) {
             fprintf(stderr,
-                    "test_group_host_need: group '%s' declares two needs\n",
-                    g_host_needs[i].group);
+                    "test_group_host_need: no room for '%s' build need '%s'\n",
+                    group, row->target);
             return false;
         }
+        needs[(*n)++] = *row;
     }
     return true;
 }
@@ -101,6 +148,7 @@ bool zcl_test_group_host_need(const char *group,
     out->kind = ZCL_HOST_NEED_NONE;
     out->group = NULL;
     out->value = NULL;
+    out->target = NULL;
     if (!group || !group[0] || !zcl_test_group_catalog_contains(group)) {
         fprintf(stderr,
                 "test_group_host_need: '%s' is not a registered test group\n",

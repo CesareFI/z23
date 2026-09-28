@@ -3776,6 +3776,23 @@ $(TEST_TSAN_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_TSAN_
 $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(TEST_TSAN_OBJS))) test -s "$@"
 
+# Build, before a local run, every BUILD need (tools/dev/test_group_host_needs.def)
+# of exactly the groups that run selects: the runner resolves its own selector
+# ($(1): runner, $(2): its selection args) with --list-build-needs, which
+# prints nothing for a selection without one, so an ordinary run pays one
+# runner exec. Each target is its own single-goal make, so it resolves its own
+# epoch profile the way a standalone `make <target>` does, and runs inside the
+# checkout lock this recipe already holds (checkout-lock.sh is re-entrant).
+# A target that fails, or leaves its path absent, fails the run by the same
+# name a landing proof uses. The runner never builds; a proof execs it too.
+ZCL_TEST_BUILD_NEEDS = needs="$$($(1) --list-build-needs $(2))" || exit 2; \
+	printf '%s\n' "$$needs" | while read -r target path; do \
+	  [ -n "$$target" ] || continue; \
+	  { $(MAKE) --no-print-directory "$$target" </dev/null && [ -e "$$path" ]; } || { \
+	    echo "FAIL test_need_unbuildable_$$target: make $$target did not produce $$path" >&2; \
+	    exit 1; }; \
+	done
+
 # Both active runners need the fixed package verifier. The source-wide fast
 # runner also needs the gateway and dev node: its fleet group exits with an
 # empty log when either is missing. Build these exact fixtures before tests;
@@ -3828,6 +3845,7 @@ test-parallel:
 .PHONY: test-parallel-locked
 test-parallel-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure \
 	$(BIN_DIR)/z23-git-hook$(ZCL_HOST_EXEEXT) $(BIN_DIR)/z23-lint
+	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_REL_ACTIVE),$(TEST_PARALLEL_ARGS))
 	$(ZCL_TEST_STACK_SETUP) && $(LINKED_TEST_ENV) $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)
 
 # ── prove-cold-join — the one command a stranger can run ─────────────────
@@ -4434,6 +4452,7 @@ t:
 	    $(ZCL_FROZEN_TOOLCHAIN_ARGS)
 
 t-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_REL_ACTIVE),--only=$(ONLY))
 	$(ZCL_TEST_STACK_SETUP) && $(LINKED_TEST_ENV) $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)
 
 # Hot-path variant for edit loops. It resolves the complete source inventory in
@@ -4455,6 +4474,7 @@ t-fast:
 
 t-fast-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure \
 	$(BIN_DIR)/z23-git-hook$(ZCL_HOST_EXEEXT) $(BIN_DIR)/z23-lint
+	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_FAST_ACTIVE),--only=$(ONLY))
 	$(ZCL_TEST_STACK_SETUP) && $(LINKED_TEST_ENV) $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)
 
 # Proof-facing sibling of t-fast. The human convenience target above keeps its
@@ -4470,6 +4490,7 @@ t-fast-exact:
 
 t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure \
 	$(BIN_DIR)/z23-git-hook$(ZCL_HOST_EXEEXT) $(BIN_DIR)/z23-lint
+	+@$(call ZCL_TEST_BUILD_NEEDS,$(TEST_PARALLEL_FAST_ACTIVE),--exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS))
 	$(ZCL_TEST_STACK_SETUP) && \
 	  $(LINKED_TEST_ENV) $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED) $(T_FAST_EXACT_ARGS)
 

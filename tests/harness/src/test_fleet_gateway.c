@@ -3722,6 +3722,26 @@ static int gw_run_cases(unsigned shard)
     return failures;
 }
 
+/* Both executables a shard runs must exist before it spawns anything. An
+ * absent one is a FAIL that names the path -- never a SKIP, and never the
+ * spawn failure it would otherwise surface as. The runner's
+ * --list-build-needs (tools/dev/test_group_host_needs.def) is what builds
+ * them before a local or proof run. */
+static bool gw_binaries_present(unsigned shard, const char *bin,
+                                const char *node)
+{
+    const char *const paths[] = {bin, node};
+    bool present = true;
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        if (access(paths[i], X_OK) == 0)
+            continue;
+        printf("FAIL fleet_gateway shard=%u: missing binary %s\n",
+               shard + 1u, paths[i]);
+        present = false;
+    }
+    return present;
+}
+
 /* One shard: private state root, one gateway, the owned rows, then the stop
  * and the ambient XDG root restored. */
 static int gw_run_shard(unsigned shard)
@@ -3741,9 +3761,13 @@ static int gw_run_shard(unsigned shard)
     }
     printf("=== fleet_gateway shard=%u pid=%ld state=%s ===\n", shard + 1u,
            (long)getpid(), state);
+    if (!gw_binaries_present(shard, bin, node)) {
+        gw_xdg_restore(&xdg);
+        return 1;
+    }
     if (!gw_spawn(bin, node, state)) {
-        /* Say so: a missing gateway or node binary used to exit 1 with an
-         * empty log, indistinguishable from a crash. */
+        /* Both binaries exist (checked above), so this is the gateway
+         * itself failing to bind or announce its port. */
         printf("FAIL fleet_gateway shard=%u: gateway did not start "
                "(gateway=%s node=%s)\n", shard + 1u, bin, node);
         gw_xdg_restore(&xdg);

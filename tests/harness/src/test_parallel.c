@@ -46,6 +46,7 @@
 #include "kernel/command_registry.h"
 #include "session/agent_broker.h"
 #include "devloop_reflex_runner.h"
+#include "test/selection_build_needs.h"
 #include "test/test_group_selector.h"
 #include "test_group_catalog.h"
 #include "test/test_helpers.h"
@@ -1944,24 +1945,52 @@ static void raise_stack_limit(void)
 }
 
 /* Selection retains the ordinary params opt-in even during a focused proof. */
+static bool params_gated(const char *group)
+{
+    return getenv("ZCL_PARAMS_TESTS") == NULL && group_is_params_heavy(group);
+}
+
+static size_t params_gate_mark(struct group_result *results, const char *only)
+{
+    size_t gated = 0;
+    if (only)
+        return 0;
+    for (size_t i = 0; i < g_num_groups; i++) {
+        if (results[i].skipped || !params_gated(g_groups[i].name))
+            continue;
+        results[i].status = 0;
+        results[i].skipped = 1;
+        gated++;
+    }
+    return gated;
+}
+
 static size_t gate_params_groups(struct group_result *results,
                                 const char *only)
 {
-    size_t gated = 0;
-    if (getenv("ZCL_PARAMS_TESTS") == NULL && !only) {
-        for (size_t i = 0; i < g_num_groups; i++) {
-            if (results[i].skipped || !group_is_params_heavy(g_groups[i].name))
-                continue;
-            results[i].status = 0;
-            results[i].skipped = 1;
-            gated++;
-        }
-    }
+    size_t gated = params_gate_mark(results, only);
     if (gated)
         printf("test_parallel: %zu params-heavy group(s) gated out "
                "(set ZCL_PARAMS_TESTS=1 or use --only/--exact to run)\n",
                gated);
     return gated;
+}
+
+/* --only=SUBSTR / --exact=FULL_ID[,FULL...]: mark every group the selector
+ * does not carry so it is neither dispatched nor counted. Returns how many
+ * were marked; no selector marks nothing. */
+static size_t selector_premark(struct group_result *results, const char *only,
+                               bool only_exact)
+{
+    size_t marked = 0;
+    for (size_t i = 0; i < g_num_groups; i++) {
+        if (test_group_selector_selects(g_groups[i].name, only, only_exact))
+            continue;
+        results[i].status = 0; /* excludes from dispatch loop */
+        results[i].skipped = 1;
+        marked++;
+    }
+    return marked;
 }
 
 static bool cache_snapshot_selection_valid(bool snapshot, size_t changed_count,
@@ -1980,6 +2009,32 @@ static bool exact_selection_valid(bool exact, const char *only)
     fprintf(stderr, "test_parallel: --exact contains no registered group: "
                     "%.*s\n", (int)missing_len, missing ? missing : "");
     return false;
+}
+
+#define BUILD_NEEDS_MAX 16u
+
+/* --list-build-needs: print `<make-target> <path>` per BUILD need of the
+ * groups this selector would dispatch (zcl_test_selection_build_needs, under
+ * the same params gate), and nothing at all when they declare none. The
+ * checkout-locked Makefile recipes (t, t-fast, t-fast-exact, test-parallel)
+ * run one `make <target>` per line before the run and fail by name when the
+ * path is still absent, so a local run builds what a landing proof's
+ * test-needs step builds, from the same table. The runner itself never
+ * builds: a proof execs it too. */
+static int build_needs_list(const char *only, bool only_exact)
+{
+    struct zcl_test_group_host_need needs[BUILD_NEEDS_MAX];
+    size_t n = 0;
+    if (!exact_selection_valid(only_exact, only) ||
+        !zcl_test_selection_build_needs(only, only_exact,
+                                        only ? NULL : params_gated, needs,
+                                        BUILD_NEEDS_MAX, &n)) {
+        fprintf(stderr, "test_parallel: build needs unresolved\n");
+        return 2;
+    }
+    for (size_t k = 0; k < n; k++)
+        printf("%s %s\n", needs[k].target, needs[k].value);
+    return 0;
 }
 
 /* A cache hit, SKIP, load-flaky rerun, or missing closure is not a fresh
@@ -2159,6 +2214,7 @@ int main(int argc, char **argv)
     int timeout_secs = 300;
     bool verbose = false;
     bool list_only = false;
+    bool list_build_needs = false;
     const char *only = NULL; /* --only=SUBSTR or --exact=FULL_ID[,FULL...] */
     bool only_exact = false;
     /* Content-addressed test cache. Default OFF so the canonical push gate
@@ -2192,6 +2248,8 @@ int main(int argc, char **argv)
             verbose = true;
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = true;
+        } else if (strcmp(argv[i], "--list-build-needs") == 0) {
+            list_build_needs = true;
         } else if (strncmp(argv[i], "--only=", 7) == 0) {
             if (only) {
                 fprintf(stderr,
@@ -2236,7 +2294,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr,
                     "Usage: %s [--jobs=N] [--timeout=SECS] [--verbose] "
-                    "[--list|--source-id|--source-record] "
+                    "[--list|--list-build-needs|--source-id|--source-record] "
                     "[--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
                     "[--cache|--no-cache] "
                     "[--cache-snapshot --changed-source=PATH] "
@@ -2250,6 +2308,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+    if (list_build_needs) return build_needs_list(only, only_exact);
     if (!cache_snapshot_selection_valid(cache_snapshot, changed_source_count,
                                         cli_cache)) {
         fprintf(stderr, "test_parallel: cache snapshot requires --cache and "
@@ -2349,27 +2408,12 @@ int main(int argc, char **argv)
      * group in ~seconds instead of waiting on the slowest group. Proof
      * automation uses --exact: a stale short id must not accidentally select
      * a differently named group and report green. */
-    size_t pre_skipped = 0;
-    if (only) {
-        for (size_t i = 0; i < g_num_groups; i++) {
-            bool selected = only_exact
-                                ? test_group_selector_matches_exact_set(
-                                      g_groups[i].name, only)
-                                : test_group_selector_matches(
-                                      g_groups[i].name, only, false);
-            if (!selected) {
-                results[i].status = 0; /* excludes from dispatch loop */
-                results[i].skipped = 1;
-                pre_skipped++;
-            }
-        }
-        if (pre_skipped == g_num_groups) {
-            fprintf(stderr,
-                    "test_parallel: --%s=%s matched no groups\n",
-                    only_exact ? "exact" : "only", only);
-            free(results);
-            return 2;
-        }
+    size_t pre_skipped = selector_premark(results, only, only_exact);
+    if (only && pre_skipped == g_num_groups) {
+        fprintf(stderr, "test_parallel: --%s=%s matched no groups\n",
+                only_exact ? "exact" : "only", only);
+        free(results);
+        return 2;
     }
     pre_skipped += fold_umbrellas_into_shards(results, only_exact);
 

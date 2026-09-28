@@ -43,4 +43,19 @@ static inline bool test_group_selector_matches_exact_set(
     return false;
 }
 
+/* Does a run with this selector carry `registered_name`? The one predicate
+ * the runner's dispatch and its --list-build-needs both ask: no selector
+ * carries every group, --exact a comma-separated set of full ids, --only a
+ * substring. */
+static inline bool test_group_selector_selects(const char *registered_name,
+                                               const char *only,
+                                               bool only_exact)
+{
+    if (!only)
+        return true;
+    return only_exact
+               ? test_group_selector_matches_exact_set(registered_name, only)
+               : test_group_selector_matches(registered_name, only, false);
+}
+
 #endif /* ZCL_TEST_GROUP_SELECTOR_H */

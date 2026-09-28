@@ -34,17 +34,31 @@ struct zcl_test_group_host_need {
     const char *target; /* BUILD only: the Make target; NULL otherwise */
 };
 
-/* Every declared row names a registered catalog group exactly once, with a
- * known kind and a non-empty value. A violation is named on the diagnostic
- * stream and returns false; no caller may proceed on a false. */
+/* Every declared row names a registered catalog group with a known kind and
+ * a non-empty value. A group declares at most one row, except that it may
+ * declare several BUILD rows naming distinct targets (a group that execs two
+ * tools the tree builds). A violation is named on the diagnostic stream and
+ * returns false; no caller may proceed on a false. */
 bool zcl_test_group_host_needs_valid(void);
 
-/* Resolve `group`'s declared need. Returns false — and names why — when the
+/* Resolve `group`'s gating need: its FILE/ENV row, or its first BUILD row
+ * (which never gates), or NONE. Returns false — and names why — when the
  * table is invalid or `group` is not a registered catalog id; that is a
  * refusal, not an answer. Returns true with out->kind == ZCL_HOST_NEED_NONE
  * for a registered group that declares no need. */
 bool zcl_test_group_host_need(const char *group,
                               struct zcl_test_group_host_need *out);
+
+/* Append to needs[0..*n) every BUILD row `group` declares whose target is
+ * not already listed, in table order, advancing *n. Collecting over a whole
+ * selection therefore names each Make target once. The one resolver both the
+ * proof's test-needs step and the local runner's --list-build-needs read, so
+ * a local run and a landing proof build the same tools for the same groups.
+ * Refuses an unregistered group, an invalid table, and a full array -- a
+ * dropped need would leave its group to fail on a missing tool. */
+bool zcl_test_group_build_needs_add(const char *group,
+                                    struct zcl_test_group_host_need *needs,
+                                    size_t cap, size_t *n);
 
 /* Is the need satisfied by the tree at `root` and this process's environment?
  * FILE and BUILD resolve `<root>/<value>`, so they answer for the tree a

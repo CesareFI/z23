@@ -67,6 +67,7 @@
 #include "platform/ram_scratch.h"
 #include "platform/time_compat.h"
 #include "kernel/command_registry.h"
+#include "test/selection_build_needs.h"
 #include "test/testcache.h"
 #include "vcs/vcs_object.h"
 #include "test_group_catalog.h"
@@ -6117,6 +6118,128 @@ static int test_ic_proof_test_needs_build_the_sensor(void)
     return failures;
 }
 
+/* The fleet gateway shards exec two binaries the tree builds: the gateway
+ * and the node by its compatibility name. The proof admits the node at that
+ * path (content-checked) and its prefork step always builds fbsh, so its
+ * test-needs step builds only the gateway and never relinks either;
+ * test_freebsd_sh and the node-exec CLI groups add nothing to a proof. */
+static int test_ic_proof_test_needs_leave_provided_tools(void)
+{
+    int failures = 0;
+    TEST("proof test needs: fleet gateway shards build only the gateway; "
+         "admitted and prefork-built needs are never rebuilt") {
+        const char *argv[PROOF_TEST_NEEDS_ARGV_CAP];
+        size_t targets = 99;
+        char jobs[] = "-j4";
+
+        ASSERT(zcl_dev_proof_test_needs_argv(
+            jobs, "test_fleet_gateway_shard_01,test_fleet_gateway_shard_06",
+            argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == 1);
+        ASSERT(argv[3] && strcmp(argv[3], "fleet-gateway") == 0);
+        ASSERT(argv[4] == NULL);
+        ASSERT(!ic_argv_has(argv, "zclassic23"));
+
+        targets = 99;
+        ASSERT(zcl_dev_proof_test_needs_argv(
+            jobs,
+            "test_freebsd_sh,test_cli_auth_robust,test_cli_argv_strict,"
+            "test_importblockindex_cli_dispatch,test_fleet_gateway",
+            argv, PROOF_TEST_NEEDS_ARGV_CAP, &targets));
+        ASSERT(targets == 0);
+        ASSERT(argv[0] == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Is `target` among needs[0..n)? */
+static bool ic_needs_have(const struct zcl_test_group_host_need *needs,
+                          size_t n, const char *target, const char *value)
+{
+    for (size_t k = 0; k < n; k++)
+        if (strcmp(needs[k].target, target) == 0 &&
+            strcmp(needs[k].value, value) == 0)
+            return true;
+    return false;
+}
+
+static bool ic_gate_everything(const char *group)
+{
+    (void)group;
+    return true;
+}
+
+/* The local runner's --list-build-needs: the Make targets a selection's
+ * groups declare, each once, from the table the proof reads -- and nothing
+ * at all for a selection that declares none, so an ordinary run pays no
+ * build. */
+static int test_ic_local_selection_build_needs(void)
+{
+    int failures = 0;
+    TEST("local build needs: a selection lists exactly its groups' BUILD "
+         "targets once; an ordinary selection lists none") {
+        struct zcl_test_group_host_need needs[16];
+        size_t n = 99;
+
+        ASSERT(zcl_test_selection_build_needs("test_fleet_gateway_shard_01",
+                                              false, NULL, needs, 16, &n));
+        ASSERT(n == 2);
+        ASSERT(ic_needs_have(needs, n, "fleet-gateway",
+                             "build/bin/z23-fleet-gateway"));
+        ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));
+
+        /* Six shards and the base group: still two targets, named once. */
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("fleet_gateway", false, NULL,
+                                              needs, 16, &n));
+        ASSERT(n == 2);
+
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs(
+            "test_semantic_sensor,test_freebsd_sh", true, NULL, needs, 16,
+            &n));
+        ASSERT(n == 2);
+        ASSERT(ic_needs_have(needs, n, "clang-manifest",
+                             "build/bin/z23-clang-manifest"));
+        ASSERT(ic_needs_have(needs, n, "fbsh", "build/bin/fbsh"));
+
+        /* Ordinary selections: nothing to build. */
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_impact_composition", true,
+                                              NULL, needs, 16, &n));
+        ASSERT(n == 0);
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_fleet_gateway", true,
+                                              NULL, needs, 16, &n));
+        ASSERT(n == 0);
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("", false, NULL, needs, 16,
+                                              &n));
+        ASSERT(n == 0);
+
+        /* The whole catalog lists every declared target once; a gate that
+         * leaves every group out lists none. */
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
+                                              &n));
+        ASSERT(n == 4);
+        ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
+                                              needs, 16, &n));
+        ASSERT(n == 0);
+
+        /* Refused, never truncated, when there is no room. */
+        ASSERT(!zcl_test_selection_build_needs("test_fleet_gateway_shard_01",
+                                               false, NULL, needs, 1, &n));
+        ASSERT(!zcl_test_selection_build_needs("x", false, NULL, NULL, 16,
+                                               &n));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ic_proof_prefork_builds_the_shared_targets(void)
 {
     int failures = 0;
@@ -8697,6 +8820,8 @@ int test_impact_composition(void)
 #endif
     failures += test_ic_proof_lint_and_test_share_admitted_executables();
     failures += test_ic_proof_test_needs_build_the_sensor();
+    failures += test_ic_proof_test_needs_leave_provided_tools();
+    failures += test_ic_local_selection_build_needs();
     failures += test_ic_proof_prefork_builds_the_shared_targets();
     failures += test_ic_generation_docs_tools_builds_the_checker_binaries();
     failures += test_ic_generation_hooks_configure_points_at_its_own_copy();
