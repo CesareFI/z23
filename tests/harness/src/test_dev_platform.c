@@ -4303,9 +4303,8 @@ static void dp_zcc_restore(const struct dp_zcc_fx *z)
     test_rm_rf_recursive(z->cache);
 }
 
-#if defined(__linux__)
 /* Cold build with the v1 assembler, then the v2 swap: both keyed. */
-static bool dp_zcc_swap(struct dp_zcc_fx *z,
+[[maybe_unused]] static bool dp_zcc_swap(struct dp_zcc_fx *z,
                         struct zcl_devloop_hotswap_build_receipt *r1,
                         struct zcl_devloop_hotswap_build_receipt *r2)
 {
@@ -4316,7 +4315,7 @@ static bool dp_zcc_swap(struct dp_zcc_fx *z,
 
 /* The root moved, the object was rebuilt (not served), and the new
  * assembler is what ran. */
-static bool dp_zcc_verdict(const struct dp_zcc_fx *z,
+[[maybe_unused]] static bool dp_zcc_verdict(const struct dp_zcc_fx *z,
                            const struct zcl_devloop_hotswap_build_receipt *r1,
                            const struct zcl_devloop_hotswap_build_receipt *r2)
 {
@@ -4337,7 +4336,6 @@ static bool dp_zcc_verdict(const struct dp_zcc_fx *z,
            r2->candidate_object_sha256, ok ? "PASS" : "FAIL");
     return ok;
 }
-#endif
 
 static bool run_hotswap_action_root_zcc_fixture(void)
 {
