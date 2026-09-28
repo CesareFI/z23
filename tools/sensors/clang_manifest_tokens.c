@@ -68,34 +68,45 @@ static size_t cm_tok_offset(CXSourceLocation l)
     return off;
 }
 
+/* The character the trigraph at s[i] stands for when the TU has them,
+ * else 0. */
+static char cm_tok_trigraph(const char *s, size_t n, size_t i, bool trigraphs)
+{
+    static const char from[] = "=/'()!<>-", to[] = "#\\^[]|{}~";
+    const char *p;
+    if (!trigraphs || n - i < 3 || s[i] != '?' || s[i + 1] != '?' ||
+        s[i + 2] == '\0')
+        return 0;
+    p = strchr(from, s[i + 2]);
+    return p == NULL ? 0 : to[p - from];
+}
+
+/* Just past the newline of the line splice whose backslash ends at s[j]
+ * (blanks, then a newline, maybe after a CR), or 0 when none follows. */
+static size_t cm_tok_splice_end(const char *s, size_t n, size_t j)
+{
+    while (j < n && (s[j] == ' ' || s[j] == '\t'))
+        j++;
+    if (j < n && s[j] == '\r')
+        j++;
+    return j < n && s[j] == '\n' ? j + 1 : 0;
+}
+
 /* The character at s[*i] after translation phases 1 and 2 (a trigraph
  * replaced when the TU has them; a backslash, optional blanks and a newline
  * removed), advancing *i past it; 0 at the end. */
 static char cm_tok_char(const char *s, size_t n, size_t *i, bool trigraphs)
 {
-    static const char from[] = "=/'()!<>-", to[] = "#\\^[]|{}~";
     while (*i < n) {
-        char ch = s[*i];
-        size_t w = 1, j;
-        const char *p;
-        if (trigraphs && n - *i >= 3 && s[*i] == '?' && s[*i + 1] == '?' &&
-            s[*i + 2] != '\0' && (p = strchr(from, s[*i + 2])) != NULL) {
-            ch = to[p - from];
-            w = 3;
-        }
-        if (ch != '\\') {
+        char tri = cm_tok_trigraph(s, n, *i, trigraphs);
+        char ch = tri != 0 ? tri : s[*i];
+        size_t w = tri != 0 ? 3 : 1;
+        size_t end = ch == '\\' ? cm_tok_splice_end(s, n, *i + w) : 0;
+        if (end == 0) {
             *i += w;
             return ch;
         }
-        for (j = *i + w; j < n && (s[j] == ' ' || s[j] == '\t'); j++)
-            ;
-        if (j < n && s[j] == '\r')
-            j++;
-        if (j >= n || s[j] != '\n') {
-            *i += w;
-            return ch;
-        }
-        *i = j + 1;
+        *i = end;
     }
     return 0;
 }

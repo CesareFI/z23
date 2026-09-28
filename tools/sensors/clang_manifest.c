@@ -571,12 +571,21 @@ static bool cm_measure_lang(struct cm_state *st, const struct cm_args *args,
     return true;
 }
 
+/* The TU's lexing rule, its AST walk, clang's lexing of every file it
+ * read, then the conditional-lookup scan over those tokens. */
+static bool cm_walk_and_scan(struct cm_state *st, const struct cm_args *args)
+{
+    struct cm_lang lang = {0};
+    return cm_measure_lang(st, args, &lang) && cm_walk(st) &&
+           cm_tokenize_files(st, lang.trigraphs) &&
+           cm_scan_has_include(&st->core, args->parse, args->nparse, lang);
+}
+
 static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
                        const char *main_path, const struct cm_args *args,
                        const char *report)
 {
     struct cm_core *c = &st->core;
-    struct cm_lang lang = {0};
 #if CM_TYPE_PRETTY_PRINTED
     st->policy = clang_getCursorPrintingPolicy(
         clang_getTranslationUnitCursor(st->tu));
@@ -595,10 +604,8 @@ static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
         return false;
     if (o->facts && !cm_facts_begin(c, o->tree))
         return false;
-    return cm_measure_lang(st, args, &lang) &&
-           cm_tokenize_files(st, lang.trigraphs) && cm_walk(st) &&
-           cm_scan_has_include(c, args->parse, args->nparse, lang) &&
-           cm_emit_files(c) && cm_emit_deferred(c) &&
+    return cm_walk_and_scan(st, args) && cm_emit_files(c) &&
+           cm_emit_deferred(c) &&
            cm_emit_identity_libclang(st, main_path, args) &&
            cm_emit_facts(c, o->max_records, o->max_section_bytes);
 }

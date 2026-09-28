@@ -133,27 +133,37 @@ were established:
   (the probe is evaluated where the macro expands, against that file's
   directory), and for one in a `-D` value, on the main file. Its spelled
   name is the occurrence's text (for example `__has_include(OPT_HDR)` or
-  `#embed "blob.bin"`). The scan reads the file's text as translation
-  phases 1 to 3 do, under the rules the front end itself applies to the
-  TU: the sensor parses a small probe file with the TU's own argv and reads
-  back whether trigraphs are replaced and whether a pp-number takes a
-  digit separator, so no option's arity can mislead it (`-I -std=c17`
-  names no `-std`). Each answer comes from how the front end lexes or
-  types the probe's text (`sizeof("??=")`, a macro that counts the
-  arguments `0'1, 2'3` splits into, `sizeof('a')` for C++), never from a
-  macro such as `__STDC_VERSION__`, which `-D`, `-U` or an `-include` file
-  can change; the probe first drops any macro named like its own words.
-  It parses with `--no-default-config`, as the TU does, so no clang
-  config file adds flags.
-  By clang's rules trigraphs are replaced in an ISO
-  C mode before C23 (unless `-fno-trigraphs`; in any mode with
-  `-trigraphs`), lines are spliced, and a pp-number takes a digit
-  separator only from C23 on (before it, `'` opens a character literal).
-  So a word in a comment or in a character or string literal is no lookup
-  (a header name after an include-like directive or a probe word, across
-  blanks and comments, is lexed as one and never opens a comment); a word
-  in a skipped group is recorded too: that costs warm reuse and narrowing,
-  never truth. A system header's own conditionals are scanned too: an
+  `#embed "blob.bin"`). Which words are live comes from clang's own
+  lexing: the sensor tokenizes every file the TU read with
+  `clang_tokenize`, which re-lexes it raw under the TU's own language
+  options, so a word in a comment or in a character, string or raw string
+  literal (every prefix, `R`, `u8R`, `uR`, `UR`, `LR`, on one line or
+  several; clang enables raw strings in every GNU mode, with no `-std`,
+  and with `-fraw-string-literals`) is no identifier token and no lookup.
+  Raw lexing covers the groups the preprocessor skipped, so a word in a
+  skipped group is recorded too: that costs warm reuse and narrowing,
+  never truth. A directive is a `#` or `%:` token first on its logical
+  line (comments count as whitespace), then its name. Raw lexing differs
+  from the preprocessor's in two places, and the sensor lexes both as the
+  preprocessor does: after an include-like directive (`#include`,
+  `#include_next`, `#import`, `#embed`, `#__include_macros`) or a probe
+  word and its `(`, a `<` opens one header name up to its `>`, which never
+  opens a comment or a literal; and a `#warning` or `#error` line is plain
+  text, where `/*` opens nothing. Where raw tokens run past such a span
+  the file is tokenized again from its end. The sensor refuses a TU where
+  raw tokens run past a `<`...`>` span on a `#pragma` line (some pragmas
+  take a header name) and fails the emit when a file's tokens stop short
+  of its last non-blank byte. The scan then reads each live word's operand
+  in the text as translation phases 1 and 2 leave it, under the one rule
+  it cannot read from the tokens: the sensor parses a small probe file
+  with the TU's own argv and reads back whether trigraphs are replaced
+  from how it lexes `sizeof("??=")`, so neither an option's arity
+  (`-I -std=c17` names no `-std`) nor a macro such as `__STDC_VERSION__`,
+  which `-D`, `-U` or an `-include` file can change, misleads it; the
+  probe first drops any
+  macro named like its own words, and `sizeof('a')` refuses C++. It
+  parses with `--no-default-config`, as the TU does, so no clang config
+  file adds flags. A system header's own conditionals are scanned too: an
   angled search starts at the repo's `-I` dirs, so a repo dir gaining the
   name flips it. A `__has_include_next` there is replayed from the start
   and from the slot after each search dir that could hold the header
@@ -910,6 +920,16 @@ misled it (each case is in the same test file). The probe measures by
 lexing and typing alone: a first version read `__STDC_VERSION__` and
 `sizeof`, which `-D__STDC_VERSION__=202311L`, `-U__STDC_VERSION__`, an
 `-include` file that undefines it, and `-Dsizeof(x)=2` each made lie.
+
+Four review rounds each found a gap between the scan's own lexer and
+clang's (trigraphs, digit separators, macros that lie about the language,
+raw strings), so the scan no longer lexes: which words are live comes
+from `clang_tokenize` under the TU's language options
+(`tools/sensors/clang_manifest_tokens.c`), and the digit separator
+measurement is gone. A probe after a raw string holding `" /*` (under
+`-std=gnu23`, with no `-std`, with `-fraw-string-literals`, with each
+prefix, and across lines) and one after a `#warning` line holding `/*`
+recorded nothing before; each is a case in the same test file.
 
 ### Darwin producer identity
 

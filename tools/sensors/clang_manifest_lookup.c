@@ -293,6 +293,27 @@ static bool cm_splice_mark(struct cm_spliced *t, size_t w)
     return true;
 }
 
+/* One step of cm_splice at raw offset *i: a trigraph, a continuation or a
+ * plain character, written at spliced offset *w; map records where each
+ * raw byte it covers lands. */
+static bool cm_splice_step(const char *s, size_t n, bool trigraphs,
+                           struct cm_spliced *t, size_t *i, size_t *w)
+{
+    char tri = trigraphs ? cm_trigraph(s, *i, n) : 0;
+    char ch = tri != 0 ? tri : s[*i];
+    size_t width = tri != 0 ? 3 : 1;
+    size_t end = ch == '\\' ? cm_continuation_end(s, *i + width - 1, n) : 0;
+    size_t next = end != 0 ? end : *i + width;
+    if ((end != 0 || tri != 0) && !cm_splice_mark(t, *w))
+        return false;
+    for (size_t k = *i; k < next; k++)
+        t->map[k] = *w;
+    if (end == 0)
+        t->owned[(*w)++] = ch;
+    *i = next;
+    return true;
+}
+
 static bool cm_splice(const char *s, size_t n, bool trigraphs,
                       struct cm_spliced *t)
 {
@@ -307,22 +328,9 @@ static bool cm_splice(const char *s, size_t n, bool trigraphs,
     t->map = zcl_calloc(n + 1, sizeof(*t->map), "clang_manifest.splice_map");
     if (t->owned == NULL || t->map == NULL)
         return false;
-    for (size_t i = 0; i < n;) {
-        char tri = trigraphs ? cm_trigraph(s, i, n) : 0;
-        char ch = tri != 0 ? tri : s[i];
-        size_t width = tri != 0 ? 3 : 1;
-        size_t end = ch == '\\' ? cm_continuation_end(s, i + width - 1, n) : 0;
-        if ((end != 0 || tri != 0) && !cm_splice_mark(t, w))
+    for (size_t i = 0; i < n;)
+        if (!cm_splice_step(s, n, trigraphs, t, &i, &w))
             return false;
-        for (size_t k = i; k < (end != 0 ? end : i + width); k++)
-            t->map[k] = w;
-        if (end != 0) {
-            i = end;
-            continue;
-        }
-        t->owned[w++] = ch;
-        i += width;
-    }
     t->owned[w] = '\0';
     t->map[n] = w;
     t->s = t->owned;
