@@ -76,6 +76,7 @@
 #define ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH "attest_pp_mismatch"
 #define ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH "attest_closure_mismatch"
 #define ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING "attest_closure_missing"
+#define ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY "attest_obj_empty"
 #define ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH "attest_obj_hash_mismatch"
 
 /* A borrowed byte string. Never NUL-terminated by contract; `len` is the

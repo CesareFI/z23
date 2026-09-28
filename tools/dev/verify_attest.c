@@ -720,6 +720,8 @@ static const char *va_field_check(
         return ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING;
     if (memcmp(r->closure_sha3, e->closure_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH;
+    if (obj_len == 0u)
+        return ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY;
     zcl_sha3_256(obj, obj_len, obj_hash);
     if (memcmp(obj_hash, r->obj_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH;

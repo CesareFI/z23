@@ -465,6 +465,28 @@ static int test_va_refuse_fields(void)
     return failures;
 }
 
+static int test_va_empty_object(void)
+{
+    int failures = 0;
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    TEST("verify attest: signed empty output is not a compiled object") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        zcl_sha3_256((const unsigned char *)"", 0u, r.obj_sha3);
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
+            rec, len, NULL, 0u, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY));
+        PASS();
+    } _test_next:;
+    free(rec);
+    return failures;
+}
+
 static int test_va_refuse_signers(void)
 {
     int failures = 0;
@@ -861,6 +883,7 @@ int test_verify_attest(void)
     failures += test_va_parse_strict();
     failures += test_va_admit();
     failures += test_va_refuse_fields();
+    failures += test_va_empty_object();
     failures += test_va_refuse_signers();
     failures += test_va_path_policy();
     failures += test_va_pubkey_parse();
