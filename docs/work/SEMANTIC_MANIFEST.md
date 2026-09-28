@@ -108,20 +108,32 @@ were established:
 - `1 derived_stat`: the hit is the compiler's. The slots come from the
   compiler's own printed search list, and every probe below the hit was
   confirmed absent by `stat`.
-- `2 replayed_stat`: a `__has_include` found by a text scan, resolved by
-  replaying that search list, with every probe confirmed by `stat`.
+- `2 replayed_stat`: a conditional lookup found by a text scan, resolved
+  by replaying that search list, with every probe confirmed by `stat`. The
+  scan replays a `__has_include` whose operand is a literal `"x"` or `<x>`,
+  or (facts manifests, revision 4) an object-like repo macro every
+  definition of which is one plain string literal, found through the
+  expansion the front end recorded at the operand. It replays a
+  `__has_include_next` the same way, starting at the slot after each one
+  its file was entered through (a main file, or a file found in its
+  includer's own dir, searches as `__has_include` does); the slots before
+  that start are listed in `present[]`, with no claim.
 - `0 none`: `include_next`, a computed include, or an absolute include. No
   negative claim is made for these. The text scan also writes a `none`
   record (kind `has_include`, no hit) for every conditional lookup it finds
-  in a repo file and cannot replay: a `__has_include` whose operand is not a
-  literal `"x"` or `<x>` (a macro, say), `__has_include_next`,
-  `__has_embed`, the GNU `__has_include__` and `__has_include_next__`
-  spellings, an `#embed` (or `%:embed`) directive, and any of these that a
-  line continuation runs through. Its spelled name is the occurrence's text
-  (for example `__has_include(OPT_HDR)` or `#embed "blob.bin"`). The scan
-  reads the file's text after line splicing, not tokens, so a word in a
-  comment or a skipped group is recorded too: that costs warm reuse and
-  narrowing, never truth.
+  in a repo file and cannot replay: any other macro operand (a predefined
+  or command-line macro, a function-like one, a body that is not one plain
+  string literal), a `__has_include_next` whose file was entered in a way
+  no slot names, `__has_embed`, the GNU `__has_include__` and
+  `__has_include_next__` spellings, an `#embed` (or `%:embed`) directive,
+  and any of these that a line continuation runs through. Its spelled name
+  is the occurrence's text (for example `__has_include(OPT_HDR)` or
+  `#embed "blob.bin"`). The scan reads the file's text after line
+  splicing, not tokens, so a word in a comment or a skipped group is
+  recorded too: that costs warm reuse and narrowing, never truth. The facts
+  consumer treats a `none` record as reachable by every created or deleted
+  path, and one whose name starts `#embed` or `__has_embed` by every changed
+  path (see the universe below).
 
 The compiler never reports probes directly, so no miss here is compiler-exact.
 Each miss is derived from exact inputs and is stat-confirmed at sensor time.
@@ -601,7 +613,7 @@ the reply carries:
 | `argv-changed` | the request's argv, and so flags, C mode, target, sysroot or resource dir, differs |
 | `producer-changed`, `producer-unnamed` | the producer digest (sensor bytes, libclang build ids, type grammar), recomputed on every emit, moved or cannot be named |
 | `file-changed <path>` | a non-main file the accepted manifest read no longer has its SHA3; this also catches an edit that keeps size and mtime, which libclang's own preamble check misses |
-| `lookup-unbound <name>` | the accepted manifest has a lookup with no negative claim (`include_next`, computed, absolute, or a conditional lookup the text scan cannot replay: a macro-operand `__has_include`, `__has_include_next`, `__has_embed`, `#embed`), which cannot be re-checked |
+| `lookup-unbound <name>` | the accepted manifest has a lookup with no negative claim (`include_next`, computed, absolute, or a conditional lookup the text scan cannot replay: see `0 none` above, for example `__has_embed` or `#embed`), which cannot be re-checked |
 | `include-shadow-appeared <dir>/<name>`, `include-shadow-vanished ...` | the shadow candidates changed (below) |
 | `warm-unusable: <why>` | a reparse failed a post-check: `main file bytes differ`, `preamble-file-differs <path>`, `identity-moved`, `lookup-moved <name>`, or its own manifest failed the binding checks (`file-changed <path>`, `lookup-unbound <name>`, `include-shadow-appeared ...`, `include-shadow-vanished ...`); the reparse is discarded and retried once as a fresh parse |
 
@@ -824,6 +836,18 @@ reader of `<path>` then stops compiling. A revision-2 manifest makes no
 such claim, so the consumer cannot tell from one that no assertion reads a
 change. Readers accept all three extension names.
 
+### Facts revision 4
+
+Facts revision 4 (`zcl.semantic_facts.v4`) changes no record layout. It
+names a producer whose text scan replays two more conditional lookups
+into `replayed_stat` LOOKUPS and PROBES records: a `__has_include` whose
+operand is an object-like repo macro that expands to one plain string
+literal, and a `__has_include_next` from the slot after the one its file
+was entered through (see the miss evidence above). An earlier revision
+records both as `none`. Readers accept all four extension names; a
+revision-3 manifest stays valid, and the consumer treats its unbound
+records as it treats any `none` record, which can only widen.
+
 ### Darwin producer identity
 
 The Mac lane's commits 12892e0ca1 and cf39ed1765 give the sensor a producer
@@ -1013,11 +1037,31 @@ main file (a header's view of it), one over all of them.
 manifest) is a member, and so is one whose LOOKUPS hit a changed path or
 whose PROBES claim a changed path absent: a `__has_include` of a header
 created or deleted reads no file on the side where it is absent, and gcc's
-depfiles omit such a probe altogether. The members are cross-checked against the depfile
+depfiles omit such a probe altogether.
+A lookup with no negative claim (`0 none`) may now resolve to any
+created or deleted path, and an `#embed` or `__has_embed` also weighs or
+reads what it finds, so such a lookup makes its candidate a member of
+every change that creates or deletes a path (every change at all, for
+the embed spellings) and, unless another rule already affects the TU as
+more than a compile, `lookup-unbound` (`fxc_unbound_verdict`,
+`tools/dev/devloop_facts_tu.c`). A changed path is created or deleted
+when the tree has nothing there or the facts directory holds no
+`<path>.before` text of it.
+The members are cross-checked against the depfile
 graph (`codeindex_reverse_includes`): a TU the graph says reads a changed
 file but no manifest pair describes is affected (`facts-missing`, or
 `include-resolution-change` when it has an after manifest). A graph that
-is truncated or unavailable leaves the universe incomplete. A candidate
+is truncated or unavailable leaves the universe incomplete, and so does a
+deleted path, which the graph refuses (`include_input_missing`,
+`cognition/modules/codeindex/src/codeindex_impact.c`) and whose
+after-state depfiles no longer name it, unless the producer attests its
+before readers: `<facts>/.zcl-before-readers` holding exactly
+`zcl.facts.before_readers.v1` and a newline, written only once the before
+side of every TU whose before-state depfile names a changed file was
+sensed into that facts directory (the replay writes it when the parent
+built and every object had a depfile; the fuzz harness senses every TU).
+Those before manifests then name the deleted path's readers, each a
+member, and the graph adds only the readers it still lists. A candidate
 that read no changed file is checked too: a changed IDENTITY, include
 resolution, file set or unrequested file read, or a missing before side,
 affects it whole and makes the universe incomplete. A changed file that is
@@ -1067,6 +1111,7 @@ probes the sensor does not record.
 | `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU, except a function another file defines with internal linkage (a header's `static inline`), which is the TU's own copy and seeds instead |
 | `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
 | `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
+| `lookup-unbound` | yes | yes | none of the above, while a lookup of either side makes no negative claim (`0 none`) and the change creates or deletes a path, or changes any path while the lookup is an `#embed` or `__has_embed`: nothing bounds which file it now finds or reads |
 | `static-assert` | yes, compile only | no | none of the above, while an `@assert:<path>` site of the TU (a `static_assert` of its own file scope, or of a header it reads) reaches a dirty id, or expands `__LINE__` while `<path>` changed: the assertion may stop holding and the TU stop compiling, though its object cannot change. The TU is in the compile set with no seed and no test obligation |
 | `static-assert-unattributed` | yes, compile only | no | none of the above, while either side is a manifest before facts revision 3, which records no `static_assert`: nothing rules out an assertion that reads the change |
 | `debug-position` | yes, compile only | no | none of the above, while the compile writes debug information (`-g1` and above, or any `-g` spelling it does not know; the last `-g` option decides, but a bare `-g`, `-ggdb` or `-gdwarf-N` keeps a higher level already set) and a file it read changed: clang's DWARF 5 line tables (its default since clang 14) record the MD5 of every file in the TU's file table, so any byte of such a file changes the object, a comment that keeps the line count too; `-g2` and above also record the line and column of every type, function and variable the TU uses, and `-g3` (or `-fdebug-macro`) every `#define`, and `-gembed-source` (with any level, unless `-gno-embed-source` follows) every byte of the file itself. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. Only a compile whose object compiler is known to write no checksum (gcc) and that embeds no source may narrow this, at `-g2` and above, to a changed file with a token outside comments on a moved or changed line; the identity does not name the object compiler yet, so nothing narrows it. `-g0` or no `-g` never fires it |
@@ -1318,7 +1363,7 @@ three to eight TUs and one to four headers before and after one edit:
   plans narrow; `gcc-deps` writes the depfiles with gcc, which omits
   `__has_include` probes;
 - **fixed** (`tests/harness/src/semantic_fuzz_repro.c`): every minimized
-  reproducer a run found (F1 to F14) and the shapes that must keep
+  reproducer a run found (F1 to F15) and the shapes that must keep
   passing. They run on every run.
 
 Each TU is compiled with the clang of the LLVM whose libclang the sensor
@@ -1395,19 +1440,36 @@ main-file function and made it a root of its TU; it now must pass. F10
 after `-O` and `--optimize` numerically instead of matching a prefix,
 and widened on an unrecognized spelling instead of falling to `-O0` or
 no optimizer; it now must pass.
+F13 (a file only `__has_embed` probes is deleted), F14 (a header probed
+through a macro operand or `__has_include_next` is deleted) and F15 (the
+same header created, with gcc depfiles, which omit the probe) were
+known-RED until the sensor recorded every probe and the consumer read
+every probe it could not bound as reachable: the text scan records a
+lookup for each probe, replays a string-literal macro operand and a
+`__has_include_next` into stat-confirmed slots (facts revision 4), and
+leaves the rest `0 none`; the consumer makes a TU with a `none` lookup a
+member, `lookup-unbound`, whenever a path is created or deleted (any
+changed path, for `#embed` and `__has_embed`); and the producer's
+before-readers attestation lets a deleted path's readers come from the
+before manifests instead of the depfile graph, which refuses it. All five
+now must pass with over-selection 0. `F13_has_embed_deleted_mutant`
+(mutant `NO_UNBOUND`, which makes a `none` lookup reach no changed path)
+must miss exactly `t0.c` and `t0_banner`. The fixed shapes
+`pass_embed_created` (an `#embed` of a created file),
+`pass_has_include_shadow_gcc_deps` (a literal `__has_include` shadowed
+by a file created in an earlier `-I` dir), `pass_has_embed_header_deleted`
+(the probe sits in a header) and `pass_has_include_macro_elsewhere` (a
+created path the macro operand's replayed search never visits, which must
+leave the plan with no TU) pin over-selection 0.
 
-The known-RED reproducers are two families: one toolchain family (no
-text edit the consumer misreads), and one file that only a preprocessor
-probe names:
+The one known-RED reproducer is a toolchain case (no text edit the
+consumer misreads):
 
 | reproducer | toolchain | missed | root cause |
 |---|---|---|---|
 | F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | a sensor deliberately handed other optimizer flags than the compile (`OPT` `COMPILE/SENSOR`) models the wrong codegen no matter what the real Makefile rule passes; `ff12233071` fixed the real rule's own drift (`F9_cc_drift`), not a sensor forced away from it |
-| F13_has_embed_deleted | sensor's clang; the case file docs/banner.txt, which only `__has_embed` probes, is deleted | `t0.c` (object changed, out of the universe) | `cm_scan_has_include` (`tools/sensors/clang_manifest_lookup.c`) scans only `__has_include` with a literal operand and nothing scans `__has_embed`, so no manifest names the probed path; clang's depfile names a probed file only while it exists; the include graph refuses the deleted path (`include_input_missing`, `codeindex_impact.c`), `fxc_cross_check` (`tools/dev/devloop_facts_consumer.c`) marks the plan incomplete but, unlike `fxc_build_inputs`, puts no candidate in scope, and the file-seeded fallback has no TU for a `.h`, `docs/` or `.md` path |
-| F14_has_include_macro, _next | sensor's clang; the case header inc2/cfg_local.h, probed as `__has_include(CFG_LOCAL)` or with `__has_include_next`, is deleted | `t0.c` (as F13) | as F13: the text scan skips a macro operand and `__has_include_next` |
-| F15_has_include_macro_gcc_deps, _next_gcc_deps | sensor's clang, gcc depfiles (as the dev compile's); the case header inc2/cfg_local.h, probed as in F14, is created | `t0.c` (out of the universe of a narrowed plan), `t0_local` | as F14 for the sensor; gcc's depfile omits `__has_include` probes, so the created path, a regular file, has no reader and the include graph answers that as complete: the plan narrows past `t0.c` |
 
-The passing shapes beside them hold the model where the spelling is
+The passing shapes beside it hold the model where the spelling is
 canonical: gcc `-O1` seeds the specialized static, and gcc `-O2` and
 `-O3` fall back (`inline-closure-unknown`).
 
