@@ -944,7 +944,11 @@ DEV_STANDALONE_SRCS = tools/dev/hotswap_verify_so.c \
 	tools/dev/mvp_ledger_main.c \
 	tools/dev/action_root_reuse_study.c \
 	tools/dev/action_root_reuse_study_eval.c \
-	tools/dev/action_root_reuse_study_snap.c
+	tools/dev/action_root_reuse_study_snap.c \
+	tools/dev/sem_replay.c tools/dev/sem_replay_util.c \
+	tools/dev/sem_replay_build.c tools/dev/sem_replay_change.c \
+	tools/dev/sem_replay_plan.c tools/dev/sem_replay_step.c \
+	tools/dev/sem_replay_report.c
 # The mutation harness proper (operators + campaign core) has no main() and
 # is proved by the registered `mutation_harness` group, so it is linked into
 # the dev binary and the test harness but kept out of the release node — a
@@ -4366,6 +4370,34 @@ action-root-reuse-study: $(ACTION_ROOT_STUDY_BIN) \
 	  --main-ref='$(ACTION_ROOT_STUDY_MAIN_REF)' \
 	  --corpus=$(ACTION_ROOT_STUDY_CORPUS) --jobs=$(ACTION_ROOT_STUDY_JOBS) \
 	  $(addprefix --pick=,$(ACTION_ROOT_STUDY_PICKS))
+
+# z23-sem-replay: replay real commits through the incremental test-fast
+# object build, the semantic sensor and dev.change.plan, and compare what
+# make recompiled, which object bytes changed, the plain plan and the facts
+# plan (docs/work/SEMANTIC_MANIFEST.md, "Replay on real history"). Its
+# sources carry the only main() and stay out of every node, dev and test
+# link via DEV_STANDALONE_SRCS. The run itself drives git, make, the sensor
+# (make clang-manifest) and a z23-dev planner in a dedicated worktree.
+SEM_REPLAY_BIN = $(BIN_DIR)/z23-sem-replay$(ZCL_HOST_EXEEXT)
+SEM_REPLAY_SRCS = tools/dev/sem_replay.c tools/dev/sem_replay_util.c \
+	tools/dev/sem_replay_build.c tools/dev/sem_replay_change.c \
+	tools/dev/sem_replay_plan.c tools/dev/sem_replay_step.c \
+	tools/dev/sem_replay_report.c
+.PHONY: sem-replay-bin
+sem-replay-bin: $(SEM_REPLAY_BIN)
+$(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
+		tools/dev/sem_replay_build.h tools/dev/sem_replay_change.h \
+		tools/dev/sem_replay_plan.h tools/dev/sem_replay_step.h \
+		contexts/commons/packages/zjsonp/src/zjsonp.c \
+		contexts/commons/packages/zutf8/src/zutf8.c \
+		platform/modules/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(ZCL_WARN_FORMAT_TRUNCATION) \
+	    $(ZCL_PLATFORM_CPPFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+	    -Itools/dev -Icontexts/commons/packages/zjsonp/include \
+	    -Icontexts/commons/packages/zutf8/include \
+	    -Iplatform/modules/sha3/include -Iplatform/modules/base/include \
+	    -o $@ $(filter %.c,$^)
 
 .PHONY: check-capability-closure
 # Make already captured this exact record before dispatching lint. Pass it to
