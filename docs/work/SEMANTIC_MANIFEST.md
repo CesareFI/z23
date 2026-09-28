@@ -489,8 +489,8 @@ the session started in. Each request writes its manifest to its `--out`,
 exactly as `emit` would, and prints one JSON line on stdout:
 
 ```
-{"seq","ok","source","out","root","bytes","tu","written","verify","reason",
- "sections","warm_ms","warm_parse_ms","cold_ms","bind_ms"}
+{"seq","ok","source","out","root","bytes","tu","written","verify","trust",
+ "reason","sections","warm_ms","warm_parse_ms","cold_ms","bind_ms"}
 ```
 
 A refused request prints `{"seq","ok":false,"source","why"}`.
@@ -579,6 +579,24 @@ check fail instead of hiding in the baseline. Each dir is read with
   baseline. This catches a file or shadow that moved after the pre-checks
   ran, and anything only this reparse read (an include or a computed
   include added below the preamble).
+
+**Trust in the reply.** Every successful reply carries `"trust"`, the
+session's statement of what the written bytes rest on:
+
+| `trust` | `written` | `verify` | The bytes written |
+|---|---|---|---|
+| `verified` | `cold` | `equal` | the cold front end's, and a warm parse of this same emit produced the identical bytes |
+| `cold` | `cold` | `skipped` or `mismatch` | the cold front end's; no warm result matched them this emit (none was tried, it was unusable, or it differed) |
+| `qualified` | `warm` | `skipped` | a warm reparse's, used on the pre- and post-checks above alone, with no cold parse this emit |
+
+A `qualified` manifest is **advisory only**. A consumer may use it to narrow
+work (an impact plan's closure, which files to look at first), but must
+never treat it as equal to a cold emit where the result needs proof, for
+example to publish a proof receipt or to accept a reuse: for that, emit cold
+or run the session with `--verify-cold`, where every reply is `verified` or
+`cold`. The label lives only in the reply line, a signal of this session
+run: the manifest bytes and format carry no trust label, and a `.zsm` file
+alone does not say how it was produced.
 
 On a mismatch the cold bytes are written, never the warm ones. The reply
 reports `"verify":"mismatch"` and the changed sections, stderr says so, and

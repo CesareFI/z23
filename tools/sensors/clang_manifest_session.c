@@ -31,7 +31,10 @@
  *   - On a mismatch the cold bytes are written, never the warm ones, and
  *     warm reuse is disabled for that TU for the rest of the session.
  *   - Any warm failure, post-check failure or unqualified case writes the
- *     cold bytes. */
+ *     cold bytes.
+ *   - The reply's "trust" says which case wrote the bytes: "verified" or
+ *     "cold" (cold bytes), or "qualified" (warm bytes no cold parse checked
+ *     this emit, advisory only). The manifest bytes carry no such label. */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
@@ -231,6 +234,17 @@ static void cm_reply_refused(unsigned seq, const char *source, const char *why)
     (void)fflush(stdout);
 }
 
+/* How far the written bytes can be trusted, for the reply only (the manifest
+ * bytes carry no label): "qualified" warm bytes no cold parse checked this
+ * emit; "verified" cold bytes a warm parse of this emit equalled; "cold"
+ * cold bytes alone. */
+static const char *cm_trust(const struct cm_outcome *r)
+{
+    if (strcmp(r->written, "warm") == 0)
+        return "qualified";
+    return strcmp(r->verify, "equal") == 0 ? "verified" : "cold";
+}
+
 static void cm_reply_ok(unsigned seq, const struct cm_opts *o,
                         const struct cm_outcome *r, const uint8_t *m,
                         size_t n)
@@ -249,6 +263,8 @@ static void cm_reply_ok(unsigned seq, const struct cm_opts *o,
     cm_json_str("written", r->written);
     putchar(',');
     cm_json_str("verify", r->verify);
+    putchar(',');
+    cm_json_str("trust", cm_trust(r));
     putchar(',');
     cm_json_str("reason", r->reason);
     putchar(',');
