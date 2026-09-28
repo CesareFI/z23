@@ -3785,7 +3785,11 @@ $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 # checkout lock this recipe already holds (checkout-lock.sh is re-entrant).
 # A target that fails, or leaves its path absent, fails the run by the same
 # name a landing proof uses. The runner never builds; a proof execs it too.
-ZCL_TEST_BUILD_NEEDS = needs="$$($(1) --list-build-needs $(2))" || exit 2; \
+# The call lines are `+` so the per-target makes share the jobserver; under
+# make -n/-q/-t (ZCL_MAKE_NO_EXEC) they expand to a no-op instead of running a
+# runner the dry run never built.
+ZCL_TEST_BUILD_NEEDS = $(if $(ZCL_MAKE_NO_EXEC),: test build needs not listed in a dry run,$(ZCL_TEST_BUILD_NEEDS_RUN))
+ZCL_TEST_BUILD_NEEDS_RUN = needs="$$($(1) --list-build-needs $(2))" || exit 2; \
 	printf '%s\n' "$$needs" | while read -r target path; do \
 	  [ -n "$$target" ] || continue; \
 	  { $(MAKE) --no-print-directory "$$target" </dev/null && [ -e "$$path" ]; } || { \
