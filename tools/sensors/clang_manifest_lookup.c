@@ -798,6 +798,31 @@ static bool cm_only_defined_tests(const char *s, size_t j, size_t a)
     return true;
 }
 
+/* The identifier [*a, *b) before the word at s[i], across blanks and at
+ * most one '(' (*paren); *a == *b when none. */
+static void cm_word_before(const char *s, size_t i, size_t *a, size_t *b,
+                           bool *paren)
+{
+    size_t j = i;
+    *paren = false;
+    while (j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t'))
+        j--;
+    if (j > 0 && s[j - 1] == '(') {
+        *paren = true;
+        for (j--; j > 0 && (s[j - 1] == ' ' || s[j - 1] == '\t'); j--)
+            ;
+    }
+    for (*b = j; j > 0 && cm_ident_char(s[j - 1]); j--)
+        ;
+    *a = j;
+}
+
+static bool cm_ifdef_word(const char *s, size_t a, size_t b)
+{
+    return cm_word_is(s, a, b, "ifdef") || cm_word_is(s, a, b, "ifndef") ||
+           cm_word_is(s, a, b, "elifdef") || cm_word_is(s, a, b, "elifndef");
+}
+
 /* Is the word at s[i] only tested for being defined? Either the operand
  * of an #ifdef-like directive (the word right after the '#': a macro may
  * be named ifdef), or of a "defined W" or "defined ( W" on an #if or
@@ -806,26 +831,16 @@ static bool cm_only_defined_tests(const char *s, size_t j, size_t a)
  * __has_include with #ifdef __has_include. */
 static bool cm_defined_operand(const char *s, size_t i)
 {
-    size_t b = i, a, name, end;
-    bool paren = false;
-    while (b > 0 && (s[b - 1] == ' ' || s[b - 1] == '\t'))
-        b--;
-    if (b > 0 && s[b - 1] == '(') {
-        paren = true;
-        for (b--; b > 0 && (s[b - 1] == ' ' || s[b - 1] == '\t'); b--)
-            ;
-    }
-    for (a = b; a > 0 && cm_ident_char(s[a - 1]); a--)
-        ;
+    size_t a, b, name, end;
+    bool paren;
+    cm_word_before(s, i, &a, &b, &paren);
     if (a == b || !cm_line_directive(s, a, &name, &end))
         return false;
     if (cm_word_is(s, a, b, "defined"))
         return (cm_word_is(s, name, end, "if") ||
                 cm_word_is(s, name, end, "elif")) &&
                cm_only_defined_tests(s, end, a);
-    return !paren && name == a &&
-           (cm_word_is(s, a, b, "ifdef") || cm_word_is(s, a, b, "ifndef") ||
-            cm_word_is(s, a, b, "elifdef") || cm_word_is(s, a, b, "elifndef"));
+    return !paren && name == a && cm_ifdef_word(s, a, b);
 }
 
 /* The conditional lookup at t[i], if any: replayed or recorded unbound. */
