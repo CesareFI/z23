@@ -89,15 +89,15 @@ static bool snap_tus(const struct sr_snap *s, struct sr_strv *out)
 
 /* ── make ─────────────────────────────────────────────────────────────── */
 
-static bool rsp_path(const struct sr_cfg *cfg, const char *log, char out[SR_PATH])
+static bool fast_target(const struct sr_cfg *cfg, const char *log, char out[SR_PATH])
 {
     char *argv[] = {"make", "-s", "--no-print-directory", "--eval",
-                    "zsr-print: ; @echo ZSR_RSP=$(TEST_PARALLEL_FAST_LINK_RSP)",
+                    "zsr-print: ; @echo ZSR_TARGET=$(TEST_PARALLEL_FAST_CANDIDATE)",
                     "zsr-print", NULL};
     char *text = NULL;
     size_t len = 0;
     int rc = sr_capture(argv, cfg->repo, log, &text, &len);
-    const char *hit = text ? strstr(text, "ZSR_RSP=") : NULL;
+    const char *hit = text ? strstr(text, "ZSR_TARGET=") : NULL;
     bool ok = rc == 0 && hit != NULL;
     if (ok) {
         snprintf(out, SR_PATH, "%s", hit + 8);
@@ -105,7 +105,7 @@ static bool rsp_path(const struct sr_cfg *cfg, const char *log, char out[SR_PATH
         ok = out[0] != '\0';
     }
     if (!ok)
-        fprintf(stderr, "sem-replay: cannot name the test-fast link inputs (make %d)\n", rc);
+        fprintf(stderr, "sem-replay: cannot name the test-fast binary (make %d)\n", rc);
     free(text);
     return ok;
 }
@@ -114,7 +114,7 @@ bool sr_make_objects(const struct sr_cfg *cfg, const char *log,
                      const struct sr_strv *what_if, struct sr_cost *cost)
 {
     char rsp[SR_PATH], jobs[16];
-    if (!rsp_path(cfg, log, rsp))
+    if (!fast_target(cfg, log, rsp))
         return false;
     snprintf(jobs, sizeof(jobs), "-j%d", cfg->jobs);
     struct sr_strv cmd = {0};

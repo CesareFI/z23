@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "sem_replay.h"
+#include "sem_replay_build.h"
 #include "sem_replay_step.h"
 
 static int usage(void)
@@ -148,6 +149,22 @@ static int run_all(const struct opts *o)
     return rc;
 }
 
+/* argv: print the compile argv make gives one TU (--commit names the TU). */
+static int print_argv(const struct sr_cfg *c)
+{
+    char epoch[SR_PATH];
+    struct sr_strv tus = {0};
+    struct sr_argv_map m = {0};
+    bool ok = sr_epoch_dir(c->repo, epoch) && sr_strv_push(&tus, c->commit) &&
+              sr_make_argv(c->repo, epoch, &tus, NULL, &m);
+    const struct sr_strv *flags = ok ? sr_argv_find(&m, c->commit) : NULL;
+    for (size_t i = 0; flags && i < flags->n; i++)
+        printf("%s\n", flags->v[i]);
+    sr_argv_free(&m);
+    sr_strv_free(&tus);
+    return flags ? 0 : 1;
+}
+
 static bool need_tools(const struct sr_cfg *c)
 {
     bool ok = c->repo[0] && c->sensor[0] && c->planner[0];
@@ -164,6 +181,8 @@ int main(int argc, char **argv)
     const char *cmd = argv[1];
     if (strcmp(cmd, "report") == 0)
         return sr_report(&o.cfg);
+    if (strcmp(cmd, "argv") == 0)
+        return o.cfg.repo[0] && o.cfg.commit[0] ? print_argv(&o.cfg) : usage();
     if (strcmp(cmd, "repro") == 0)
         return o.cfg.repo[0] ? sr_repro(&o.cfg, o.label) : usage();
     if (!need_tools(&o.cfg))

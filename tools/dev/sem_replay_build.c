@@ -391,6 +391,11 @@ static bool argv_collect(char *out, size_t len, struct sr_argv_map *m)
     struct sr_strv **fl = NULL;
     size_t cap = 0;
     bool ok = true;
+    /* make -n prints a recipe as written: sh removes backslash-newline
+     * pairs, so one logical command spans several printed lines. */
+    for (size_t i = 0; i + 1 < len; i++)
+        if (out[i] == '\\' && out[i + 1] == '\n')
+            out[i] = out[i + 1] = ' ';
     for (char *p = out; ok && p < out + len;) {
         char *nl = memchr(p, '\n', (size_t)(out + len - p));
         size_t ll = nl ? (size_t)(nl - p) : (size_t)(out + len - p);

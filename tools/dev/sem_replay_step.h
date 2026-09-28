@@ -30,8 +30,10 @@ int sr_step(const struct sr_cfg *cfg);
 int sr_repro(const struct sr_cfg *cfg, const char *label);
 int sr_report(const struct sr_cfg *cfg);
 
-/* The make build of every test-fast object at the checked-out tree, with
- * the compiler cache disabled so every recipe compiles. */
+/* The make build of the test-fast binary at the checked-out tree, with the
+ * compiler cache disabled so every recipe compiles. Its link runs the
+ * aggregate epoch verification; building the objects alone would leave the
+ * epoch marked unverified, and the next make would discard every object. */
 bool sr_make_objects(const struct sr_cfg *cfg, const char *log,
                      const struct sr_strv *what_if, struct sr_cost *cost);
 
