@@ -71,7 +71,10 @@
 #
 # Env:
 #   ZCL_MINGW_CC   compiler (default: x86_64-w64-mingw32-gcc)
-#   ZCL_CC_JOBS    parallel workers (default: nproc, capped at 32)
+#   ZCL_WIN_CROSS_JOBS  parallel workers, wins over ZCL_CC_JOBS (default:
+#                       ZCL_CC_JOBS, else nproc, capped at 32)
+#   ZCL_CC_JOBS    parallel workers when ZCL_WIN_CROSS_JOBS is unset
+#                  (default: nproc, capped at 32)
 #   ZCL_LINT_TU_CACHE=0  bypass the per-TU result cache (default: on)
 #   ZCL_REQUIRE_MINGW=1  missing compiler is a hard acceptance failure
 #
@@ -377,6 +380,27 @@ SRC_COUNT="$(grep -c . "$SRC_LIST" || true)"
 gate_require_scanned "$SRC_COUNT" "$SRC_FLOOR" "$GATE" \
     "'make -s ZCL_TARGET=windows-x86_64 print-node-c23-srcs' printed no translation units — NODE_C23_SRCS moved or the target broke"
 
+# ── Largest-first dispatch ─────────────────────────────────────────────────
+# With the per-TU cache off (landing's setting), every worker below pulls its
+# next TU straight off this list in order, so its order IS the schedule.
+# Sorting by byte size, largest first, is the classic LPT (longest-
+# processing-time-first) list-scheduling heuristic: with N workers pulling
+# from a shared queue, putting the biggest jobs first keeps a single large
+# straggler from landing on a worker late and setting the tail alone. Byte
+# size stands in for compile time (bigger .c file, more to preprocess and
+# parse); nothing below this reads SRC_LIST for anything but a path lookup,
+# so reordering it changes dispatch order only, never which files are
+# compiled, classified, or reported. Fails open: if `stat` cannot size every
+# path in one pass (a path vanished, coreutils differs), SRC_LIST is left in
+# its original order rather than dropping files from the scan.
+SRC_BY_SIZE="$WORK/srcs_by_size.txt"
+if tr '\n' '\0' < "$SRC_LIST" | xargs -0 -r stat --printf='%s\t%n\n' 2>/dev/null |
+        LC_ALL=C sort -t $'\t' -k1,1nr | cut -f2- \
+        > "$SRC_BY_SIZE" &&
+        [ "$(grep -c . "$SRC_BY_SIZE" || true)" = "$SRC_COUNT" ]; then
+    mv "$SRC_BY_SIZE" "$SRC_LIST"
+fi
+
 # ── Self-test: prove the flag set actually rejects a Windows-only error.
 #    Runs standalone under `--self-test`, and also as the first phase of a
 #    default (no-argument) invocation before falling through to the compile
@@ -482,7 +506,19 @@ fi
 
 # ── Parallel compile. Each TU writes its OWN log: concurrent writers
 #    sharing one fd tear output once a diagnostic exceeds PIPE_BUF. ───────
-JOBS="${ZCL_CC_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+# ZCL_WIN_CROSS_JOBS, when set, wins over ZCL_CC_JOBS. run_lint.sh sets both
+# from one host budget: this gate (2376 TUs) reliably outlasts its sibling
+# sweep check-clang-portability (2395 TUs, but ~2x faster per TU — measured
+# on the dev reference host, cache off: ~21-23 s at 12-16 workers versus this
+# gate's ~40-55 s at the same width), so a 50/50 split of the shared budget
+# under-uses this gate's share for most of its own run once the sibling
+# finishes. ZCL_WIN_CROSS_JOBS lets run_lint.sh give this gate the larger
+# slice while keeping the SAME combined peak (both gates dispatch together
+# under LONG_POLE_FIRST, so the sum is what bounds concurrent cc1/clang
+# children, not either share alone). Falling back to ZCL_CC_JOBS keeps a
+# manual `ZCL_CC_JOBS=<n>` override (standalone profiling, the doc comment
+# above) working exactly as before for whoever does not set the new var.
+JOBS="${ZCL_WIN_CROSS_JOBS:-${ZCL_CC_JOBS:-$(nproc 2>/dev/null || echo 4)}}"
 case "$JOBS" in
     ''|*[!0-9]*) JOBS=4 ;;
 esac

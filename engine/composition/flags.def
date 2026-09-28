@@ -2578,6 +2578,8 @@ Z23_FLAG("ZCL_WINDOWS_ACCEPTANCE_GUARD_SCRATCH", "env_build", "-", "-",
           "first use tools/lint/lintc/gate_windows_acceptance_guard_selftest.c:auto; documented at docs/experiments/2026-09-03-muse-vs-glm-lint-gate.md:27: | /tmp, python, jq, perl | none used; fixtures under $HOME/.local/state/zclassic23/scra...")
 Z23_FLAG("ZCL_WINDOWS_ACCEPTANCE_ROOT", "env_build", "-", "-",
           "undocumented; first use tools/lint/check_windows_acceptance.sh:auto")
+Z23_FLAG("ZCL_WIN_CROSS_JOBS", "env_build", "ZCL_CC_JOBS", "-",
+          "undocumented; first use tools/lint/check_windows_cross_syntax.sh:auto")
 Z23_FLAG("ZCL_WRS_DIR", "env_test", "-", "-",
           "undocumented; first use tests/harness/src/test_wallet_recovery_safety.c:auto")
 Z23_FLAG("ZCL_WRS_GO", "env_test", "-", "-",

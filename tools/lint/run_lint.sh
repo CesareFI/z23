@@ -47,9 +47,13 @@
 #   ZCL_LINT_BUDGET_SEC  soft wall-time budget, warn-only past it (default 75)
 #   ZCL_LINT_TIMING_DIR  artifact dir (default .cache/lint-timing)
 #   ZCL_LINT_VERBOSE=1   print the full per-gate timing table, not just top 10
-#   ZCL_CC_JOBS           nested compiler workers per compiler-sweep gate;
-#                         defaults to half of ZCL_HOST_JOBS, clamped 6..16,
+#   ZCL_CC_JOBS           nested compiler workers for check-clang-portability;
+#                         defaults to 3/8 of ZCL_HOST_JOBS, clamped 4..12,
 #                         when a sweep gate runs, else 1
+#   ZCL_WIN_CROSS_JOBS    nested compiler workers for check-windows-cross-
+#                         syntax; defaults to 5/8 of ZCL_HOST_JOBS, clamped
+#                         6..20, when a sweep gate runs, else unset (that
+#                         gate then falls back to ZCL_CC_JOBS itself)
 #   ZCL_TOOLS_LINK_JOBS   nested standalone-link workers; defaults to 1 here
 #   ZCL_FUZZ_REPLAY_JOBS  nested fuzz-replay workers; defaults to 1 here
 #   ZCL_LINT_CACHE=1     opt in to the result cache (same as --cache)
@@ -522,30 +526,42 @@ main() {
     # of cc1/clang children (and OOM/backend crashes) on large Windows hosts.
     # Explicit operator overrides remain available for standalone profiling;
     # the umbrella's safe default is one nested worker per running gate —
-    # EXCEPT the two compiler-sweep gates (check-clang-portability,
-    # check-windows-cross-syntax), which are the ONLY readers of
-    # ZCL_CC_JOBS anywhere in the tree (nothing else greps for it), so
-    # raising their default here is already scoped to them without
-    # touching how any other gate is dispatched: every other gate simply
-    # never looks at this variable, at any value.
+    # EXCEPT the two compiler-sweep gates (check-clang-portability, reading
+    # ZCL_CC_JOBS; check-windows-cross-syntax, reading ZCL_WIN_CROSS_JOBS
+    # first and falling back to ZCL_CC_JOBS) — the ONLY readers of either
+    # var anywhere in the tree (nothing else greps for them), so raising
+    # their defaults here is already scoped to them without touching how
+    # any other gate is dispatched.
     #
-    # Their width is half the processors this run may use, clamped to
-    # [6, 16] — the same half-the-host rule check-standalone-tools-link
-    # already uses for its nested make. Both sweeps are dispatched first
-    # (LONG_POLE_FIRST), so they overlap the short gates for the first few
-    # seconds and then run nearly alone. A fixed 6 left most of a 28-way
-    # grant idle for the second half of the run while
-    # check-windows-cross-syntax (2339 mingw TUs, ~490 CPU-seconds cold)
-    # set the lint wall.
-    local sweep_host sweep_jobs
+    # Both sweeps are dispatched first (LONG_POLE_FIRST), so they overlap
+    # the short gates for the first few seconds and then run nearly alone
+    # together. An even 50/50 split of the host between the two of them —
+    # what this used to compute — leaves real wall on the table: measured
+    # on the dev reference host, cache off, three runs each,
+    # check-clang-portability (2395 TUs) finishes in 21-23 s at 12-16
+    # workers while check-windows-cross-syntax (2376 TUs, roughly 2x the
+    # per-TU cost) needs 40-55 s at the very same width. For most of its
+    # own run the sibling has already exited and freed its half of the
+    # host, while this gate stayed capped at its half. Skewing the SAME
+    # combined budget — still what bounds concurrent cc1/clang children,
+    # since both sweeps start together — 5/8 to windows-cross-syntax and
+    # 3/8 to clang-portability keeps that peak no higher than the old
+    # 50/50 split (same sweep_host on each side of the sum) while giving
+    # the true long pole more of it for its whole run, not only after the
+    # sibling finishes.
+    local sweep_host win_cross_jobs clang_port_jobs
     sweep_host="${ZCL_HOST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
     [[ "$sweep_host" =~ ^[0-9]+$ ]] || sweep_host=8
-    sweep_jobs=$((sweep_host / 2))
-    [ "$sweep_jobs" -ge 6 ] || sweep_jobs=6
-    [ "$sweep_jobs" -le 16 ] || sweep_jobs=16
+    win_cross_jobs=$((sweep_host * 5 / 8))
+    [ "$win_cross_jobs" -ge 6 ] || win_cross_jobs=6
+    [ "$win_cross_jobs" -le 20 ] || win_cross_jobs=20
+    clang_port_jobs=$((sweep_host * 3 / 8))
+    [ "$clang_port_jobs" -ge 4 ] || clang_port_jobs=4
+    [ "$clang_port_jobs" -le 12 ] || clang_port_jobs=12
     case " ${gates[*]} " in
         *' check-clang-portability '*|*' check-windows-cross-syntax '*)
-            export ZCL_CC_JOBS="${ZCL_CC_JOBS:-$sweep_jobs}" ;;
+            export ZCL_CC_JOBS="${ZCL_CC_JOBS:-$clang_port_jobs}"
+            export ZCL_WIN_CROSS_JOBS="${ZCL_WIN_CROSS_JOBS:-$win_cross_jobs}" ;;
         *) export ZCL_CC_JOBS="${ZCL_CC_JOBS:-1}" ;;
     esac
     export ZCL_TOOLS_LINK_JOBS="${ZCL_TOOLS_LINK_JOBS:-1}"
