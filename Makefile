@@ -948,7 +948,7 @@ DEV_STANDALONE_SRCS = tools/dev/hotswap_verify_so.c \
 	tools/dev/sem_replay.c tools/dev/sem_replay_util.c \
 	tools/dev/sem_replay_build.c tools/dev/sem_replay_change.c \
 	tools/dev/sem_replay_plan.c tools/dev/sem_replay_step.c \
-	tools/dev/sem_replay_report.c
+	tools/dev/sem_replay_report.c tools/dev/sem_replay_classify.c
 # The mutation harness proper (operators + campaign core) has no main() and
 # is proved by the registered `mutation_harness` group, so it is linked into
 # the dev binary and the test harness but kept out of the release node — a
@@ -4382,12 +4382,13 @@ SEM_REPLAY_BIN = $(BIN_DIR)/z23-sem-replay$(ZCL_HOST_EXEEXT)
 SEM_REPLAY_SRCS = tools/dev/sem_replay.c tools/dev/sem_replay_util.c \
 	tools/dev/sem_replay_build.c tools/dev/sem_replay_change.c \
 	tools/dev/sem_replay_plan.c tools/dev/sem_replay_step.c \
-	tools/dev/sem_replay_report.c
+	tools/dev/sem_replay_report.c tools/dev/sem_replay_classify.c
 .PHONY: sem-replay-bin
 sem-replay-bin: $(SEM_REPLAY_BIN)
 $(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
 		tools/dev/sem_replay_build.h tools/dev/sem_replay_change.h \
 		tools/dev/sem_replay_plan.h tools/dev/sem_replay_step.h \
+		tools/dev/sem_replay_classify.h \
 		contexts/commons/packages/zjsonp/src/zjsonp.c \
 		contexts/commons/packages/zutf8/src/zutf8.c \
 		platform/modules/sha3/src/sha3.c

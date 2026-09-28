@@ -142,7 +142,7 @@ static void price_sets(struct pricing *pr, const char *file, double out[P_N])
         fclose(fp);
 }
 
-#define SR_COLS 64
+#define SR_COLS 128
 
 struct row {
     char *line;
@@ -260,21 +260,24 @@ static bool is_one(const struct table *t, const struct row *r, const char *name)
 static void print_commits(const struct table *t)
 {
     printf("## Per commit\n\n");
-    printf("Compile counts are TUs; CPU is priced per TU (see Pricing). FN is changed objects "
-           "the facts set left out through their source; +argv counts those whose compile argv "
-           "also changed (the identity-stamped TU).\n\n");
-    printf("| # | commit | kind | files c/h/other | make | changed | plain | facts (mode) | FN | "
-           "groups plain / facts / obligations | verdict | extraction CPU s | "
-           "compile CPU make / plain / facts / changed s |\n");
+    printf("Compile counts are TUs; CPU is priced per TU (see Pricing). changed splits into "
+           "code (objects differ after objcopy --strip-debug) and debug (only debug sections "
+           "differ). Misses are changed objects the facts compile set left out: code, "
+           "debug-only, and argv (the identity-stamped TU, whose compile argv changes every "
+           "commit).\n\n");
+    printf("| # | commit | kind | files c/h/other | make | changed (code/debug) | plain | "
+           "facts (mode) | misses code/debug/argv | groups plain / facts / obligations | verdict | "
+           "sensor CPU s | compile CPU make / plain / facts / changed s |\n");
     printf("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < t->n; i++) {
         const struct row *r = &t->rows[i];
-        printf("| %s | %s | %s | %s/%s/%s | %s | %s | %s | %s (%s) | %s +%s argv | %s / %s / %s | "
-               "%s | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
+        printf("| %s | %s | %s | %s/%s/%s | %s | %s (%s/%s) | %s | %s (%s) | %s/%s/%s | "
+               "%s / %s / %s | %s | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
                col(t, r, "idx"), col(t, r, "commit"), col(t, r, "kind"), col(t, r, "c"),
                col(t, r, "h"), col(t, r, "other"), col(t, r, "make"), col(t, r, "changed"),
-               col(t, r, "plain"), col(t, r, "facts"), col(t, r, "facts_mode"),
-               col(t, r, "fn_source"), col(t, r, "fn_flags"), col(t, r, "groups_plain"),
+               col(t, r, "code_changed"), col(t, r, "debug_changed"), col(t, r, "plain"),
+               col(t, r, "facts"), col(t, r, "facts_mode"), col(t, r, "fn_code"),
+               col(t, r, "fn_debug"), col(t, r, "fn_flags"), col(t, r, "groups_plain"),
                col(t, r, "groups_facts"), col(t, r, "obl_facts"),
                is_one(t, r, "narrowed") ? "narrowed" : col(t, r, "reason"),
                num(t, r, "sense_cpu"), r->p[P_MAKE], r->p[P_PLAIN], r->p[P_FACTS],
@@ -286,25 +289,25 @@ static void print_commits(const struct table *t)
 struct agg {
     char name[128];
     size_t commits, narrowed, precise;
-    double make, changed, plain, facts, fn_source, fn_flags, gplain, gfacts, obl, sense;
+    double make, changed, code, debug, plain, facts, fn_code, fn_debug, fn_flags;
+    double gplain, gfacts, obl, sense;
     double p[P_N];
 };
 
 static void agg_add(struct agg *a, const struct table *t, const struct row *r)
 {
+    static const char *const cols[] = {"make", "changed", "code_changed", "debug_changed",
+                                       "plain", "facts", "fn_code", "fn_debug", "fn_flags",
+                                       "groups_plain", "groups_facts", "obl_facts",
+                                       "sense_cpu"};
+    double *dst[] = {&a->make, &a->changed, &a->code, &a->debug, &a->plain, &a->facts,
+                     &a->fn_code, &a->fn_debug, &a->fn_flags, &a->gplain, &a->gfacts,
+                     &a->obl, &a->sense};
     a->commits++;
     a->narrowed += is_one(t, r, "narrowed");
     a->precise += strcmp(col(t, r, "facts_mode"), "precise") == 0;
-    a->make += num(t, r, "make");
-    a->changed += num(t, r, "changed");
-    a->plain += num(t, r, "plain");
-    a->facts += num(t, r, "facts");
-    a->fn_source += num(t, r, "fn_source");
-    a->fn_flags += num(t, r, "fn_flags");
-    a->gplain += num(t, r, "groups_plain");
-    a->gfacts += num(t, r, "groups_facts");
-    a->obl += num(t, r, "obl_facts");
-    a->sense += num(t, r, "sense_cpu");
+    for (size_t k = 0; k < sizeof(cols) / sizeof(cols[0]); k++)
+        *dst[k] += num(t, r, cols[k]);
     for (int k = 0; k < P_N; k++)
         a->p[k] += r->p[k];
 }
@@ -323,11 +326,11 @@ static struct agg *agg_find(struct agg *v, size_t *n, size_t cap, const char *na
 
 static void print_agg_row(const struct agg *a)
 {
-    printf("| %s | %zu | %zu / %zu | %.0f | %.0f | %.0f | %.0f | %.0f +%.0f argv | "
+    printf("| %s | %zu | %zu / %zu | %.0f | %.0f (%.0f/%.0f) | %.0f | %.0f | %.0f/%.0f/%.0f | "
            "%.0f / %.0f / %.0f | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
-           a->name, a->commits, a->narrowed, a->precise, a->make, a->plain, a->facts, a->changed,
-           a->fn_source, a->fn_flags, a->gplain, a->gfacts, a->obl, a->sense, a->p[P_MAKE],
-           a->p[P_PLAIN], a->p[P_FACTS], a->p[P_CHANGED]);
+           a->name, a->commits, a->narrowed, a->precise, a->make, a->changed, a->code, a->debug,
+           a->plain, a->facts, a->fn_code, a->fn_debug, a->fn_flags, a->gplain, a->gfacts, a->obl,
+           a->sense, a->p[P_MAKE], a->p[P_PLAIN], a->p[P_FACTS], a->p[P_CHANGED]);
 }
 
 static void print_groups(const struct table *t, const char *key, const char *title)
@@ -343,8 +346,8 @@ static void print_groups(const struct table *t, const char *key, const char *tit
         agg_add(&total, t, &t->rows[i]);
     }
     printf("## %s\n\n", title);
-    printf("| %s | commits | narrowed / precise | make | plain | facts | changed | FN | "
-           "groups plain / facts / obligations | extraction CPU s | "
+    printf("| %s | commits | narrowed / precise | make | changed (code/debug) | plain | facts | "
+           "misses code/debug/argv | groups plain / facts / obligations | sensor CPU s | "
            "compile CPU make / plain / facts / changed s |\n", key);
     printf("|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < n; i++)
@@ -353,16 +356,46 @@ static void print_groups(const struct table *t, const char *key, const char *tit
     printf("\n");
 }
 
-static int cmp_waste(const void *a, const void *b)
+/* What a precise plan could still remove: compile CPU (the facts set's
+ * minus the changed objects') and test groups (the facts plan's minus the
+ * obligations its verdict named). */
+static double waste_cpu(const struct agg *a)
 {
-    const struct agg *x = a, *y = b;
-    double wx = x->p[P_FACTS] - x->p[P_CHANGED], wy = y->p[P_FACTS] - y->p[P_CHANGED];
-    return (wx < wy) - (wx > wy);
+    return a->p[P_FACTS] - a->p[P_CHANGED];
 }
 
-/* Fallback reasons, ranked by what a precise plan could still remove: the
- * facts set's CPU minus the changed objects' CPU, and the facts plan's test
- * groups minus the obligations the facts verdict named. */
+static double waste_groups(const struct agg *a)
+{
+    return a->gfacts - a->obl;
+}
+
+static int cmp_waste_cpu(const void *a, const void *b)
+{
+    double x = waste_cpu(a), y = waste_cpu(b);
+    return (x < y) - (x > y);
+}
+
+static int cmp_waste_groups(const void *a, const void *b)
+{
+    double x = waste_groups(a), y = waste_groups(b);
+    return (x < y) - (x > y);
+}
+
+static void print_fallback_rows(struct agg *v, size_t n, int (*cmp)(const void *, const void *),
+                                const char *title)
+{
+    qsort(v, n, sizeof(v[0]), cmp);
+    printf("### %s\n\n", title);
+    printf("| rank | reason | commits | facts TUs | changed TUs | compile CPU s precision could "
+           "drop | groups facts / plain / obligations | groups precision could drop |\n");
+    printf("|---|---|---|---|---|---|---|---|\n");
+    for (size_t i = 0; i < n; i++)
+        printf("| %zu | %s | %zu | %.0f | %.0f | %.1f | %.0f / %.0f / %.0f | %.0f |\n", i + 1,
+               v[i].name, v[i].commits, v[i].facts, v[i].changed, waste_cpu(&v[i]), v[i].gfacts,
+               v[i].gplain, v[i].obl, waste_groups(&v[i]));
+    printf("\n");
+}
+
 static void print_fallbacks(const struct table *t, const char *reason_col, const char *title)
 {
     struct agg v[64];
@@ -375,47 +408,69 @@ static void print_fallbacks(const struct table *t, const char *reason_col, const
         if (a)
             agg_add(a, t, r);
     }
-    qsort(v, n, sizeof(v[0]), cmp_waste);
     printf("## %s\n\n", title);
-    printf("| rank | reason | commits | facts TUs | changed TUs | TUs precision could drop | "
-           "CPU s precision could drop | groups facts / obligations |\n");
-    printf("|---|---|---|---|---|---|---|---|\n");
-    for (size_t i = 0; i < n; i++)
-        printf("| %zu | %s | %zu | %.0f | %.0f | %.0f | %.1f | %.0f / %.0f |\n", i + 1, v[i].name,
-               v[i].commits, v[i].facts, v[i].changed, v[i].facts - v[i].changed,
-               v[i].p[P_FACTS] - v[i].p[P_CHANGED], v[i].gfacts, v[i].obl);
-    printf("\n");
+    print_fallback_rows(v, n, cmp_waste_cpu, "Ranked by compile CPU");
+    print_fallback_rows(v, n, cmp_waste_groups, "Ranked by test groups");
 }
 
-/* The same commits planned with only their C text. */
+/* The same commits planned with only the inputs a compile reads. */
 static void print_c_variant(const struct table *t)
 {
-    double facts = 0, fns = 0, fna = 0, gp = 0, gf = 0, obl = 0, cpu = 0;
+    double facts = 0, fnc = 0, fnd = 0, fna = 0, gp = 0, gf = 0, obl = 0, cpu = 0;
     size_t precise = 0;
-    printf("## C-only plans (the commit's .c, .h, .def and .inc files only)\n\n");
-    printf("| # | commit | separate plan | C files | facts (mode) | changed | FN | "
-           "groups plain / facts / obligations | verdict | compile CPU facts s |\n");
+    printf("## Compiled-inputs variant (.c, .h and any changed path a depfile names)\n\n");
+    printf("| # | commit | separate plan | files | facts (mode) | changed | misses code/debug/argv "
+           "| groups plain / facts / obligations | verdict | compile CPU facts s |\n");
     printf("|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < t->n; i++) {
         const struct row *r = &t->rows[i];
         double fn_argv = num(t, r, "c_fn") - num(t, r, "c_fn_source");
-        printf("| %s | %s | %s | %s | %s (%s) | %s | %s +%.0f argv | %s / %s / %s | %s | %.1f |\n",
+        printf("| %s | %s | %s | %s | %s (%s) | %s | %s/%s/%.0f | %s / %s / %s | %s | %.1f |\n",
                col(t, r, "idx"), col(t, r, "commit"), col(t, r, "c_run"), col(t, r, "c_files"),
                col(t, r, "c_facts"), col(t, r, "c_mode"), col(t, r, "changed"),
-               col(t, r, "c_fn_source"), fn_argv, col(t, r, "c_groups_plain"),
-               col(t, r, "c_groups_facts"), col(t, r, "c_obl_facts"),
+               col(t, r, "c_fn_code"), col(t, r, "c_fn_debug"), fn_argv,
+               col(t, r, "c_groups_plain"), col(t, r, "c_groups_facts"), col(t, r, "c_obl_facts"),
                is_one(t, r, "c_narrowed") ? "narrowed" : col(t, r, "c_reason"), r->p[P_CFACTS]);
         precise += strcmp(col(t, r, "c_mode"), "precise") == 0;
         facts += num(t, r, "c_facts");
-        fns += num(t, r, "c_fn_source");
+        fnc += num(t, r, "c_fn_code");
+        fnd += num(t, r, "c_fn_debug");
         fna += fn_argv;
         gp += num(t, r, "c_groups_plain");
         gf += num(t, r, "c_groups_facts");
         obl += num(t, r, "c_obl_facts");
         cpu += r->p[P_CFACTS];
     }
-    printf("| **total** | | %zu precise | | %.0f | | %.0f +%.0f argv | %.0f / %.0f / %.0f | | %.1f |\n\n",
-           precise, facts, fns, fna, gp, gf, obl, cpu);
+    printf("| **total** | | %zu precise | | %.0f | | %.0f/%.0f/%.0f | %.0f / %.0f / %.0f | | %.1f |\n\n",
+           precise, facts, fnc, fnd, fna, gp, gf, obl, cpu);
+}
+
+/* The sensor's cost for a full re-extraction (both sides of every TU that
+ * reads a changed file) against incremental extraction (after side only,
+ * over the TUs make rebuilt, the facts plan found affected, or whose
+ * manifest bytes changed), and the compile CPU the facts plan saved. */
+static void print_sensor(const struct table *t)
+{
+    static const char *const cols[] = {"sense_n", "sense_cpu", "sense_after_n",
+                                       "sense_after_cpu", "sense_make_n", "sense_make_cpu",
+                                       "sense_aff_n", "sense_aff_cpu", "sense_zsm_n",
+                                       "sense_zsm_cpu"};
+    double s[10] = {0}, saved = 0;
+    for (size_t i = 0; i < t->n; i++) {
+        const struct row *r = &t->rows[i];
+        for (size_t k = 0; k < 10; k++)
+            s[k] += num(t, r, cols[k]);
+        saved += r->p[P_MAKE] - r->p[P_FACTS] > 0 ? r->p[P_MAKE] - r->p[P_FACTS] : 0;
+    }
+    printf("## Sensor cost against compile CPU saved\n\n");
+    printf("| extraction | TUs sensed | sensor CPU s |\n|---|---|---|\n");
+    printf("| full (before and after, every TU reading a changed file) | %.0f | %.1f |\n", s[0], s[1]);
+    printf("| after side only, same TUs | %.0f | %.1f |\n", s[2], s[3]);
+    printf("| after side, TUs make rebuilt | %.0f | %.1f |\n", s[4], s[5]);
+    printf("| after side, TUs the facts plan found affected | %.0f | %.1f |\n", s[6], s[7]);
+    printf("| after side, TUs whose manifest bytes changed | %.0f | %.1f |\n\n", s[8], s[9]);
+    printf("Compile CPU the facts set saved against make, summed over commits where it was "
+           "smaller: %.1f s.\n\n", saved);
 }
 
 static void print_pricing(const struct pricing *pr)
@@ -506,6 +561,115 @@ static void print_costs(const char *state, const struct sr_strv *dirs)
     free(cwall.v);
 }
 
+/* ── changed inputs and line shifts ───────────────────────────────────── */
+
+static void row_dir(const struct table *t, const struct row *r, char *out, size_t cap)
+{
+    snprintf(out, cap, "%03d_%s", atoi(col(t, r, "idx")), col(t, r, "commit"));
+}
+
+struct input_class {
+    char name[32];
+    size_t files, read, named, commits_named;
+};
+
+static struct input_class *class_find(struct input_class *v, size_t *n, const char *name)
+{
+    for (size_t i = 0; i < *n; i++)
+        if (strcmp(v[i].name, name) == 0)
+            return &v[i];
+    if (*n == 16)
+        return NULL;
+    memset(&v[*n], 0, sizeof(v[*n]));
+    snprintf(v[*n].name, sizeof(v[*n].name), "%s", name);
+    return &v[(*n)++];
+}
+
+/* One inputs.tsv row: file, class, readers, named, named_variant. */
+static bool input_row(char *line, char **f)
+{
+    return split_tabs(line, f) >= 5 && strcmp(f[0], "file") != 0;
+}
+
+static void print_commit_inputs(const char *state, const struct table *t, const struct row *r,
+                                struct input_class *cls, size_t *ncls)
+{
+    char dir[64], path[SR_PATH], line[SR_PATH + 128], *f[SR_COLS];
+    row_dir(t, r, dir, sizeof(dir));
+    snprintf(path, sizeof(path), "%s/run/%s/inputs.tsv", state, dir);
+    FILE *fp = fopen(path, "r");
+    bool fallback = strcmp(col(t, r, "reason"), "build-input-changed") == 0;
+    bool any = false;
+    while (fp && fgets(line, sizeof(line), fp) != NULL) {
+        if (!input_row(line, f))
+            continue;
+        struct input_class *c = class_find(cls, ncls, f[1]);
+        if (c) {
+            c->files++;
+            c->read += atoi(f[2]) > 0;
+            c->named += atoi(f[3]) == 1;
+        }
+        if (!fallback)
+            continue;
+        printf("%s%s (%s, %s readers%s)", any ? "; " : "| ", f[0], f[1], f[2],
+               atoi(f[3]) == 1 ? ", named" : "");
+        any = true;
+    }
+    if (fp)
+        fclose(fp);
+    if (any)
+        printf(" | %s | %s |\n", col(t, r, "commit"), col(t, r, "c_reason"));
+}
+
+static void print_inputs(const char *state, const struct table *t)
+{
+    struct input_class cls[16];
+    size_t ncls = 0;
+    printf("## Changed non-C inputs\n\n");
+    printf("### Commits whose facts plan fell back on build-input-changed\n\n");
+    printf("Each changed path other than .c and .h: its class, how many compiles' depfiles name "
+           "it, and whether the plan named it as the cause (the plan names the first). The last "
+           "column is the compiled-inputs variant's verdict for the same commit.\n\n");
+    printf("| inputs (class, readers) | commit | variant verdict |\n|---|---|---|\n");
+    for (size_t i = 0; i < t->n; i++)
+        print_commit_inputs(state, t, &t->rows[i], cls, &ncls);
+    printf("\n### By class, over all commits\n\n");
+    printf("| class | changed paths | read by a compile | named as a fallback cause |\n");
+    printf("|---|---|---|---|\n");
+    for (size_t i = 0; i < ncls; i++)
+        printf("| %s | %zu | %zu | %zu |\n", cls[i].name, cls[i].files, cls[i].read,
+               cls[i].named);
+    printf("\n");
+}
+
+static void print_shifts(const char *state, const struct table *t)
+{
+    size_t rows = 0;
+    printf("## Debug-only misses and the line shifts behind them\n\n");
+    printf("Each left-out object whose bytes agree with the before object after objcopy "
+           "--strip-debug; the changed files it reads and the hunks that shift the lines below "
+           "them (L<old line><delta>).\n\n");
+    printf("| # | commit | TU | changed file read | shifting hunks |\n|---|---|---|---|---|\n");
+    for (size_t i = 0; i < t->n; i++) {
+        char dir[64], path[SR_PATH], line[2 * SR_PATH], *f[SR_COLS];
+        row_dir(t, &t->rows[i], dir, sizeof(dir));
+        snprintf(path, sizeof(path), "%s/run/%s/shifts.tsv", state, dir);
+        FILE *fp = fopen(path, "r");
+        while (fp && fgets(line, sizeof(line), fp) != NULL) {
+            if (split_tabs(line, f) < 3)
+                continue;
+            printf("| %s | %s | %s | %s | %s |\n", col(t, &t->rows[i], "idx"),
+                   col(t, &t->rows[i], "commit"), f[0], f[1], f[2]);
+            rows++;
+        }
+        if (fp)
+            fclose(fp);
+    }
+    if (rows == 0)
+        printf("| | | none | | |\n");
+    printf("\n");
+}
+
 int sr_report(const struct sr_cfg *cfg)
 {
     struct table t = {0};
@@ -517,9 +681,11 @@ int sr_report(const struct sr_cfg *cfg)
     print_commits(&t);
     print_groups(&t, "kind", "By change kind");
     print_groups(&t, "facts_mode", "By facts compile-set mode");
-    print_fallbacks(&t, "reason", "Fallback reasons (facts plan not precise), by verdict reason");
-    print_fallbacks(&t, "uni_reason", "Fallback reasons, by compile-universe reason");
+    print_fallbacks(&t, "reason", "Fallback reasons (facts compile set not precise)");
+    print_inputs(cfg->state, &t);
+    print_shifts(cfg->state, &t);
     print_c_variant(&t);
+    print_sensor(&t);
     print_costs(cfg->state, &dirs);
     print_pricing(&pr);
     prices_free(&pr.catalog);

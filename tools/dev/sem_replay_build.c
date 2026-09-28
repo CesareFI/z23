@@ -338,6 +338,52 @@ bool sr_deps_hits(const char *repo, const struct sr_snap *snap,
     return true;
 }
 
+/* Every path of files that the first rule of depfile text names. */
+static bool dep_named(char *text, const struct sr_strv *files, const char *tu,
+                      struct sr_strv *out)
+{
+    char *p = strstr(text, ": ");
+    if (p == NULL)
+        return true;
+    *dep_rule_end(p) = '\0';
+    bool ok = true;
+    for (p += 2; ok && *p;) {
+        p += strspn(p, " \t\n\\");
+        size_t len = strcspn(p, " \t\n");
+        if (len == 0)
+            break;
+        char name[SR_PATH], pair[2 * SR_PATH + 2];
+        char save = p[len];
+        p[len] = '\0';
+        normalize_path(p, name, sizeof(name));
+        p[len] = save;
+        p += len;
+        if (!sr_strv_has(files, name))
+            continue;
+        snprintf(pair, sizeof(pair), "%s\t%s", name, tu);
+        ok = sr_strv_push(out, pair);
+    }
+    return ok;
+}
+
+bool sr_deps_pairs(const char *repo, const struct sr_snap *snap,
+                   const struct sr_strv *files, struct sr_strv *out)
+{
+    bool ok = true;
+    for (size_t i = 0; ok && i < snap->n; i++) {
+        char path[SR_PATH], *text = NULL;
+        size_t n = 0, tl = strlen(snap->v[i].tu);
+        snprintf(path, sizeof(path), "%s/%s/%.*s.d", repo, snap->epoch,
+                 (int)(tl - 2), snap->v[i].tu);
+        if (sr_read_file(path, &text, &n))
+            ok = dep_named(text, files, snap->v[i].tu, out);
+        free(text);
+    }
+    sr_strv_sort_unique(out);
+    return ok;
+}
+
+
 /* ── compile argv from make -n ────────────────────────────────────────── */
 
 static int find_word(const struct sr_strv *w, const char *s, size_t from)

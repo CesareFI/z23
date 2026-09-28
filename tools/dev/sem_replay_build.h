@@ -42,6 +42,11 @@ bool sr_deps_hits(const char *repo, const struct sr_snap *snap,
                   const struct sr_strv *files, struct sr_strv *out,
                   size_t *missing);
 
+/* "path\tTU" for every TU of snap whose depfile names a path in files
+ * (sorted): which compiles read each changed file. */
+bool sr_deps_pairs(const char *repo, const struct sr_snap *snap,
+                   const struct sr_strv *files, struct sr_strv *out);
+
 /* The exact compile argv of each TU, from one `make -n -W <src>... <obj>...`
  * in repo. flags[i] holds the words after the recipe's "--" (the compiler
  * words included) for tus.v[i]. */
