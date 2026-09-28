@@ -781,18 +781,22 @@ const struct sfz_repro k_sfz_repros[] = {
     {"F6_alias", "body_extern", "body of h_api, which h_api_compat aliases",
      false, NULL, SFZ_FILES(k_f6_alias), NULL},
     {"F7_cleanup_handler", "body_static",
-     "body of a cleanup() handler that t0_work inlines", false, NULL,
-     SFZ_FILES(k_f7_cleanup_handler), NULL},
+     "body of a cleanup() handler that t0_work inlines (fixed by f6b50b90fd: "
+     "the handler's runner is seeded)",
+     false, NULL, SFZ_FILES(k_f7_cleanup_handler), NULL},
     {"F7_cleanup_same_name", "body_static",
      "t0's work() inlines a cleanup() handler whose body changed; t1's own "
-     "static work() changed too",
+     "static work() changed too; a seed matched by bare name would hide a "
+     "miss behind t1's static work",
      false, NULL, SFZ_FILES(k_f7_cleanup_same_name), NULL},
     {"F8_c_includes_c", "body_static",
-     "test_b.c #includes b.c to reach its statics; b_k body changes", false,
-     NULL, SFZ_FILES(k_f8_c_includes_c), NULL},
+     "test_b.c #includes b.c to reach its statics; b_k body changes (fixed "
+     "by f6b50b90fd: the includer's functions are seeded)",
+     false, NULL, SFZ_FILES(k_f8_c_includes_c), NULL},
     {"F8_c_includes_c_renamed", "body_static",
-     "a.c #includes b.c (unity build); b_k body changes", false, NULL,
-     SFZ_FILES(k_f8_c_includes_c_renamed), NULL},
+     "a.c #includes b.c (unity build); b_k body changes; a_b_api and a_use "
+     "are seeded",
+     false, NULL, SFZ_FILES(k_f8_c_includes_c_renamed), NULL},
     {"pass_hd", "macro_value", "H_A 1->3 flips H_D", false, NULL,
      SFZ_FILES(k_pass_hd), NULL},
     {"pass_hdrproto", "body_static",
