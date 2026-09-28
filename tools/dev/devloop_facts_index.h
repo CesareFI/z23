@@ -130,6 +130,15 @@ enum fxi_codegen fxi_codegen_model(const struct fxi *x, const char **token);
 /* Same, over raw identity bytes (the test seam). */
 enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
                                       const char **token);
+/* The debug information level the IDENTITY argv asks for, the last -g
+ * option deciding: 0 none (no -g, or -g0 last), 1 line tables and function
+ * descriptions (-g1, -gline-tables-only, -gmlt), 2 types and declarations
+ * with their lines (-g, -g2, -ggdb, -gdwarf-N), 3 macro definitions too
+ * (-g3, or -fdebug-macro with any level). A -g spelling it does not know,
+ * or an identity it cannot read, is 3. */
+int fxi_debug_level(const struct fxi *x);
+/* Same, over raw identity bytes (the test seam). */
+int fxi_debug_level_of(const uint8_t *identity, size_t len);
 /* Grow the set in mark (fxi_count() slots; nonzero: a function whose code
  * may change) to every defined function or static variable of the TU the
  * compile may re-emit under `model`. False only for memory. */

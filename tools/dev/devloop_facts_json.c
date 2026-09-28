@@ -235,6 +235,7 @@ static void fx_tu_json(const struct zcl_devloop_facts_tu_verdict *t,
             t->has_artifact ? "" : "artifact-evidence-absent");
     fw_kbool(w, "affected", t->affected);
     fw_kbool(w, "broadened", t->broadened);
+    fw_kbool(w, "compile_only", t->compile_only);
     fw_kstr(w, "reason", t->reason);
     fw_kstr(w, "detail", t->detail);
     fw_raw(w, "}");

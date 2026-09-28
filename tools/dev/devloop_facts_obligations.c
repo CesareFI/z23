@@ -200,7 +200,8 @@ static bool fxc_broadened(struct fxc *c, const struct zcl_devloop_plan *given,
     return ok;
 }
 
-/* Changed files and every affected TU are reached by construction. */
+/* Changed files and every affected TU are reached by construction; a TU
+ * in the compile set only (a debug position moved) adds no obligation. */
 static const char **fxc_fold_list(const struct fxc *c, size_t *n)
 {
     const struct zcl_devloop_facts_report *r = c->report;
@@ -212,7 +213,7 @@ static const char **fxc_fold_list(const struct fxc *c, size_t *n)
     for (size_t k = 0; k < c->nfiles; k++)
         fold[(*n)++] = c->files[k];
     for (size_t k = 0; k < r->ntus; k++)
-        if (r->tus[k].affected)
+        if (r->tus[k].affected && !r->tus[k].compile_only)
             fold[(*n)++] = r->tus[k].path;
     return fold;
 }
@@ -296,7 +297,8 @@ static bool fxc_foreign_affected(const struct fxc *c)
 {
     const struct zcl_devloop_facts_report *r = c->report;
     for (size_t k = 0; k < r->ntus; k++)
-        if (r->tus[k].affected && !fxc_is_changed(c, r->tus[k].path))
+        if (r->tus[k].affected && !r->tus[k].compile_only &&
+            !fxc_is_changed(c, r->tus[k].path))
             return true;
     return false;
 }

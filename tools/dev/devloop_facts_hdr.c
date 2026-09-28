@@ -590,3 +590,103 @@ bool fxh_span_dirty(const struct fxh_diff *d, uint32_t lo, uint32_t hi,
     uint32_t rlo = after ? d->a_lo : d->b_lo, rhi = after ? d->a_hi : d->b_hi;
     return rlo <= rhi && lo <= rhi && hi >= rlo;
 }
+
+/* ---- code in the region ------------------------------------------------------- */
+
+struct fxh_scan {
+    const uint8_t *s;
+    size_t n, i;
+    uint32_t line;
+    bool comment;   /* inside a block comment */
+    bool fresh;     /* nothing but blanks and comments yet on this line */
+    bool directive; /* this line, or the one it continues, is a directive */
+};
+
+static void fxh_scan_newline(struct fxh_scan *q)
+{
+    q->directive = q->directive && q->i > 0 && q->s[q->i - 1] == '\\';
+    q->line++;
+    q->fresh = true;
+    q->i++;
+}
+
+/* Inside a block comment: up to its end or the end of the line. */
+static void fxh_scan_comment(struct fxh_scan *q)
+{
+    for (; q->i < q->n && q->s[q->i] != '\n'; q->i++) {
+        if (q->s[q->i] == '*' && q->i + 1 < q->n && q->s[q->i + 1] == '/') {
+            q->comment = false;
+            q->i += 2;
+            return;
+        }
+    }
+}
+
+/* A comment opens at q->i: skip a line comment, enter a block comment. */
+static bool fxh_scan_comment_open(struct fxh_scan *q)
+{
+    if (q->s[q->i] != '/' || q->i + 1 >= q->n)
+        return false;
+    if (q->s[q->i + 1] == '/') {
+        while (q->i < q->n && q->s[q->i] != '\n')
+            q->i++;
+        return true;
+    }
+    if (q->s[q->i + 1] != '*')
+        return false;
+    q->comment = true;
+    q->i += 2;
+    return true;
+}
+
+/* A string or character literal from q->i, to its end on this line. */
+static void fxh_scan_literal(struct fxh_scan *q)
+{
+    uint8_t quote = q->s[q->i++];
+    for (; q->i < q->n && q->s[q->i] != '\n'; q->i++) {
+        if (q->s[q->i] == quote) {
+            q->i++;
+            return;
+        }
+        if (q->s[q->i] == '\\' && q->i + 1 < q->n && q->s[q->i + 1] != '\n')
+            q->i++;
+    }
+}
+
+/* A token outside comments on a line in [lo, hi] of one text; directive
+ * lines count only when `directives`. */
+static bool fxh_region_code(const uint8_t *s, size_t n, uint32_t lo,
+                            uint32_t hi, bool directives)
+{
+    struct fxh_scan q = {.s = s, .n = n, .line = 1, .fresh = true};
+    while (q.i < n && q.line <= hi) {
+        uint8_t c = s[q.i];
+        if (c == '\n') {
+            fxh_scan_newline(&q);
+        } else if (q.comment) {
+            fxh_scan_comment(&q);
+        } else if (c == ' ' || c == '\t' || c == '\r' || c == '\f' ||
+                   c == '\v' || fxh_scan_comment_open(&q)) {
+            q.i += c != '/';
+        } else {
+            q.directive = q.directive || (q.fresh && c == '#');
+            q.fresh = false;
+            if (q.line >= lo && (directives || !q.directive))
+                return true;
+            if (c == '"' || c == '\'')
+                fxh_scan_literal(&q);
+            else
+                q.i++;
+        }
+    }
+    return false;
+}
+
+bool fxh_region_has_code(const struct fxh_diff *d, bool directives)
+{
+    return (d->b_lo <= d->b_hi &&
+            fxh_region_code(d->before, d->blen, d->b_lo, d->b_hi,
+                            directives)) ||
+           (d->a_lo <= d->a_hi &&
+            fxh_region_code(d->after, d->alen, d->a_lo, d->a_hi, directives));
+}

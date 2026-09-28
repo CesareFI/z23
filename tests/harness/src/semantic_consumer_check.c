@@ -144,7 +144,9 @@ static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
     bool same = e->reason[k] == NULL
                     ? t == NULL
                     : t != NULL && got_aff == e->affected[k] &&
-                          strcmp(got, e->reason[k]) == 0;
+                          strcmp(got, e->reason[k]) == 0 &&
+                          t->compile_only ==
+                              (strcmp(got, "debug-position") == 0);
     if (e->affected[k] && !got_aff)
         (*unsafe)++;
     if (same)
@@ -231,9 +233,22 @@ static size_t scx_unreached(const char *path, size_t *unsafe, FILE *why,
     return 1;
 }
 
+/* A TU in the compile set only (its debug positions moved) that the walk
+ * folded into the test obligations anyway. */
+static size_t scx_obligated(const char *path, FILE *why,
+                            const struct scx_edit *e)
+{
+    if (why != NULL)
+        fprintf(why, "  %s reached: %s is compile-only, yet the plan folds "
+                "its tests\n", e->name, path);
+    return 1;
+}
+
 /* A narrowed plan reaches every changed file and every affected TU (it
  * compiles them): each must be in the walk's reached set, not merely as
- * many files as there are of them. A missing one is unsafe. */
+ * many files as there are of them. A missing one is unsafe. A TU the
+ * consumer marks compile-only must not be reached unless another rule
+ * needs it: it adds no test obligation. */
 static size_t scx_compare_reached(const struct scx_edit *e,
                                   const struct scx_result *r, size_t *unsafe,
                                   FILE *why)
@@ -250,7 +265,11 @@ static size_t scx_compare_reached(const struct scx_edit *e,
         bool listed = false;
         for (size_t i = 0; i < n; i++)
             listed = listed || strcmp(need[i], k_scx_tus[k]) == 0;
-        if (t != NULL && t->affected && !listed)
+        if (t != NULL && t->affected && t->compile_only && !listed)
+            bad += zcl_devloop_test_reached_has(k_scx_tus[k])
+                       ? scx_obligated(k_scx_tus[k], why, e)
+                       : 0;
+        else if (t != NULL && t->affected && !listed)
             need[n++] = k_scx_tus[k];
     }
     for (size_t i = 0; i < n; i++)

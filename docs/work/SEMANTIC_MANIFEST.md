@@ -1023,6 +1023,7 @@ universe incomplete (`facts-invalid`).
 | `macro-conditional`, `header-unattributed`, `position-unknown` | yes | yes | a conditional or other directive of a changed header changed, a changed text names no id the header declares, or the header's positions could not be read |
 | `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU, except a function another file defines with internal linkage (a header's `static inline`), which is the TU's own copy and seeds instead |
 | `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
+| `debug-position` | yes, compile only | no | none of the above, and the compile records declaration positions (`-g`, `-g2`, `-ggdb`, `-gdwarf-N`, or any `-g` spelling it does not know; the last `-g` option decides) while a changed file it read has a token outside comments on a moved or changed line (a `#define` too at `-g3` or with `-fdebug-macro`): the debug information records the line and column of every type, function and variable the TU uses, so its object changes. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. `-g1` and line tables record only functions and external variables, which `position` names; `-g0` or no `-g` never fires it |
 | `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
 | `name-collision` | yes | yes | an id shares its name with a new or removed external id |
 | `unaffected` | no | no | no changed id reaches its code |
@@ -1079,7 +1080,8 @@ reason, up to a byte bound), `universe` (`applied`, `complete`, `reason`,
 `tus`, one page of entries from `facts_offset` (at least one per page),
 each with its path, the four identities (`source`, `fact`, `interface`,
 `implementation`; `action` and `artifact` null with a reason when their
-evidence is absent), `affected`, `broadened`, `reason` and `detail`.
+evidence is absent), `affected`, `broadened`, `compile_only` (affected for
+its object bytes only: no obligation), `reason` and `detail`.
 
 ### Falsification
 
@@ -1175,6 +1177,8 @@ the consumer left unaffected.
 | hinl | the body of the header's `static inline cx_inl`, which `cx_b.c`'s `cx_inl_b` calls (against a tree with both), at `-O1` | all five: every reader defines its own copy (`interface`) | narrowed; seeds `cx_inl` and `cx_inl_b` |
 | hinl0 | the same at `-O0`, where `cx_b.c` emits `cx_inl` out of line | all five (`interface`) | narrowed; seeds `cx_inl` and `cx_inl_b` |
 | hinl_addr | the same, while `cx_d.c` returns `cx_inl`'s address | all five (`interface`) | `address-taken` |
+| gline | a comment line above every declaration of the header, compiled `-g`, while `cx_e.c` names only `struct cx_small` (against a tree with that use) | the four TUs whose named declarations moved (`position`), and `cx_e.c` (`debug-position`, compile only, not reached by the walk) | narrowed |
+| gline0 | the same at `-g0` | the four (`position`); `cx_e.c` unaffected | narrowed |
 
 The seven from `counter` to `unity` are minimized reproducers of dependencies
 a differential comparison against cold clang objects found missed;
@@ -1186,8 +1190,11 @@ and `unity_nofacts` come from the final review: each narrowed before the
 incompleteness rule above. `hinl0` is the fuzz family F12
 (`F12_header_static_inline_O0`): before the reader's own copy seeded, the
 consumer left `cx_inl` out of the seeds and every reader but `cx_b.c`
-unaffected, and `hinl_addr` narrowed with no obligation. A narrowed plan must reach every
-changed file and every affected TU, checked as a set through a test hook on
+unaffected, and `hinl_addr` narrowed with no obligation. `gline` is the
+replay of 45fb85e113, where two lines above a header struct moved its
+`DW_AT_decl_line` in a reader the consumer called unaffected. A narrowed
+plan must reach every changed file and every affected TU but a
+compile-only one, which it must not reach through the fold, checked as a set through a test hook on
 the files the fold reached. A count check would not do: with a fold that
 drops the affected TUs, `unity2` reaches 3 files where 2 are needed and
 `unity_ab` 3 where 3 are needed, yet both miss `cx_e.c`, and the set check

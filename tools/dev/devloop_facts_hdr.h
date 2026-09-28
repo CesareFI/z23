@@ -57,5 +57,9 @@ bool fxh_position_dirty(const struct fxh_diff *d, const char *name);
 /* Lines [lo, hi] of one side's text meet its region. */
 bool fxh_span_dirty(const struct fxh_diff *d, uint32_t lo, uint32_t hi,
                     bool after);
+/* A region line of either text holds a token outside comments: a
+ * declaration there may have moved, its line or its column. Directive
+ * lines count only when `directives` (-g3 records each #define's line). */
+bool fxh_region_has_code(const struct fxh_diff *d, bool directives);
 
 #endif /* ZCL_TOOLS_DEV_DEVLOOP_FACTS_HDR_H */

@@ -91,6 +91,9 @@ struct zcl_devloop_facts_tu_verdict {
     const char *action_reason; /* why action is null ("" when present) */
     bool affected;
     bool broadened; /* its obligations are seeded by the whole file */
+    /* affected for its object bytes only (a debug position moved): in the
+     * compile set, with no test obligation of its own */
+    bool compile_only;
     const char *reason; /* see docs/work/SEMANTIC_MANIFEST.md, "Consumer" */
     char detail[192];
 };

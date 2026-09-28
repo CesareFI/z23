@@ -520,6 +520,113 @@ static void fxi_digests(struct fxi *x)
     }
 }
 
+/* ---- debug information level ---------------------------------------------- */
+
+/* -g spellings with a fixed level; any other -g option that does not only
+ * modify the format (below) is taken at 3. */
+static const struct {
+    const char *flag;
+    int level;
+} k_fxi_g_levels[] = {
+    {"-g0", 0},    {"-ggdb0", 0},       {"-g1", 1},
+    {"-ggdb1", 1}, {"-gline-tables-only", 1}, {"-gmlt", 1},
+    {"-gline-directives-only", 1}, {"-g", 2}, {"-g2", 2},
+    {"-ggdb", 2},  {"-ggdb2", 2},       {"-g3", 3},
+    {"-ggdb3", 3},
+};
+
+/* Options that change how debug information is written, not whether. */
+static const char *const k_fxi_g_modifiers[] = {
+    "-gno-",          "-gz",            "-gcolumn-info",
+    "-gstrict-dwarf", "-grecord-",      "-gpubnames",
+    "-ggnu-pubnames", "-gembed-source", "-gsimple-template-names",
+    "-gstatement-frontiers", "-gvariable-location-views",
+    "-ginline-points", "-gdescribe-dies", "-gas-loc",
+    "-ginternal-reset-location-views",
+};
+
+/* Options that turn full debug information on in a given format. */
+static const char *const k_fxi_g_formats[] = {
+    "-gdwarf", "-gsplit-dwarf", "-gcodeview", "-gbtf", "-gctf",
+};
+
+static bool fxi_has_prefix(const uint8_t *t, size_t n, const char *p)
+{
+    size_t k = strlen(p);
+    return n >= k && memcmp(t, p, k) == 0;
+}
+
+static bool fxi_prefix_in(const uint8_t *t, size_t n, const char *const *v,
+                          size_t nv)
+{
+    for (size_t k = 0; k < nv; k++)
+        if (fxi_has_prefix(t, n, v[k]))
+            return true;
+    return false;
+}
+
+/* The level after one -g option, given the level before it. */
+static int fxi_g_option(const uint8_t *t, size_t n, int level)
+{
+    for (size_t k = 0; k < sizeof(k_fxi_g_levels) / sizeof(k_fxi_g_levels[0]);
+         k++)
+        if (fxi_path_is((const char *)t, n, k_fxi_g_levels[k].flag))
+            return k_fxi_g_levels[k].level;
+    if (fxi_prefix_in(t, n, k_fxi_g_modifiers,
+                      sizeof(k_fxi_g_modifiers) / sizeof(k_fxi_g_modifiers[0])))
+        return level;
+    if (fxi_prefix_in(t, n, k_fxi_g_formats,
+                      sizeof(k_fxi_g_formats) / sizeof(k_fxi_g_formats[0])))
+        return level > 2 ? level : 2;
+    return 3;
+}
+
+/* One text field of a record body at *at: its bytes and length. */
+static bool fxi_text_at(const uint8_t *s, size_t n, size_t *at,
+                        const uint8_t **t, size_t *len)
+{
+    if (n - *at < 4)
+        return false;
+    *len = zcl_read_u32_le(s + *at);
+    *at += 4;
+    if (*len > n - *at)
+        return false;
+    *t = s + *at;
+    *at += *len;
+    return true;
+}
+
+int fxi_debug_level_of(const uint8_t *identity, size_t len)
+{
+    size_t at = 0, n = 0;
+    const uint8_t *t = NULL;
+    uint32_t argc;
+    int level = 0;
+    bool macro = false;
+    /* compiler, resource dir, target and main file come before argv */
+    for (int k = 0; k < 4; k++)
+        if (identity == NULL || !fxi_text_at(identity, len, &at, &t, &n))
+            return 3;
+    if (len - at < 4)
+        return 3;
+    argc = zcl_read_u32_le(identity + at);
+    at += 4;
+    for (uint32_t k = 0; k < argc; k++) {
+        if (!fxi_text_at(identity, len, &at, &t, &n))
+            return 3;
+        if (fxi_path_is((const char *)t, n, "-fdebug-macro"))
+            macro = true;
+        else if (fxi_has_prefix(t, n, "-g"))
+            level = fxi_g_option(t, n, level);
+    }
+    return macro && level > 0 ? 3 : level;
+}
+
+int fxi_debug_level(const struct fxi *x)
+{
+    return fxi_debug_level_of(x->identity, x->identity_len);
+}
+
 struct fxi *fxi_open(const uint8_t *m, size_t n, const char **why)
 {
     struct fxi *x = zcl_calloc(1, sizeof(*x), "facts_index");

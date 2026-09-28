@@ -910,9 +910,10 @@ static bool fxc_build_inputs(struct fxc *c)
         struct zcl_devloop_facts_tu_verdict *t = fxc_tu_find(c, c->cand.v[k]);
         if (t == NULL && (t = fxc_tu_new(c, c->cand.v[k])) == NULL)
             return false;
-        if (t->affected)
+        if (t->affected && !t->compile_only)
             continue;
         t->affected = t->broadened = true;
+        t->compile_only = false;
         t->reason = "build-input-changed";
         (void)snprintf(t->detail, sizeof(t->detail), "%s", hit);
     }

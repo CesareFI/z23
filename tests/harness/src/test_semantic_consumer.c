@@ -29,6 +29,8 @@
  *               of scope, so each rule is load-bearing.
  *   model       -O0, -O1 and -Og bound the re-emitted code; -O2 and above,
  *               LTO, IPA clone or merge flags and profile feedback do not.
+ *   debug       the last -g option sets the debug level; an unknown one
+ *               or an unreadable identity is the highest.
  *   fallback    a reader without facts is affected ("facts-missing"); with
  *               no depfile graph the universe is incomplete and the
  *               obligations are exactly the file-seeded plan; a .c-only
@@ -380,6 +382,64 @@ static int sct_t_codegen_model(void)
     return failures;
 }
 
+/* An IDENTITY record body: four empty texts, then argv (space-separated). */
+static size_t sct_identity(const char *argv, uint8_t *out, size_t cap)
+{
+    size_t at, argc = 0;
+    char copy[256];
+    memset(out, 0, 20);
+    (void)snprintf(copy, sizeof(copy), "%s", argv);
+    at = 20;
+    for (char *save = NULL, *t = strtok_r(copy, " ", &save); t != NULL;
+         t = strtok_r(NULL, " ", &save)) {
+        size_t n = strlen(t);
+        if (at + 4 + n > cap)
+            return 0;
+        out[at] = (uint8_t)n;
+        out[at + 1] = out[at + 2] = out[at + 3] = 0;
+        memcpy(out + at + 4, t, n);
+        at += 4 + n;
+        argc++;
+    }
+    out[16] = (uint8_t)argc;
+    return at;
+}
+
+static int sct_t_debug_level(void)
+{
+    static const struct {
+        const char *argv;
+        int want;
+    } k[] = {
+        {"-std=c23 -O1", 0},
+        {"-O1 -g0", 0},
+        {"-g -g0", 0},
+        {"-g1", 1},
+        {"-gline-tables-only", 1},
+        {"-g", 2},
+        {"-O1 -g -gno-record-gcc-switches", 2},
+        {"-gdwarf-4", 2},
+        {"-g0 -g", 2},
+        {"-g3", 3},
+        {"-g -fdebug-macro", 3},
+        {"-gweird-future-flag", 3},
+    };
+    uint8_t buf[512];
+    int failures = 0;
+    TEST_CASE("semantic_consumer: the debug level is the last -g option's, 3 for one it does not know") {
+        for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+            size_t n = sct_identity(k[i].argv, buf, sizeof(buf));
+            int got = fxi_debug_level_of(buf, n);
+            if (got != k[i].want)
+                printf("[%s: level %d, want %d] ", k[i].argv, got, k[i].want);
+            ASSERT(n > 0);
+            ASSERT_EQ(got, k[i].want);
+        }
+        ASSERT_EQ(fxi_debug_level_of(buf, 7), 3); /* cut: unreadable */
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_consumer(void)
 {
     int failures = 0;
@@ -398,6 +458,7 @@ int test_semantic_consumer(void)
         failures += sct_t_identities(f, res);
         failures += sct_t_command(f, res);
         failures += sct_t_codegen_model();
+        failures += sct_t_debug_level();
     }
     for (int v = 0; f != NULL && v < SCX_VARIANT_COUNT; v++)
         for (size_t tu = 0; tu < SCX_TU_COUNT; tu++)

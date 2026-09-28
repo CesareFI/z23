@@ -41,6 +41,7 @@ static bool fxc_set(struct zcl_devloop_facts_tu_verdict *t, bool affected,
     va_list ap;
     t->affected = affected;
     t->broadened = broadened;
+    t->compile_only = false;
     t->reason = reason;
     va_start(ap, fmt);
     (void)vsnprintf(t->detail, sizeof(t->detail), fmt, ap);
@@ -655,6 +656,36 @@ static bool fxc_roots_differ(const struct fxc_pair *p,
     return false;
 }
 
+/* No changed id reaches the TU's code, but a changed file it read moved
+ * text that may hold a declaration: at -g2 and above the debug information
+ * records the line (and column) of every type, function and variable the
+ * TU uses, and at -g3 of every #define, so its object bytes change although
+ * its code does not. It joins the compile set and adds no test obligation.
+ * -g1 and line tables record only functions and external variables, which
+ * the position rule names. The first such file names the reason. */
+static bool fxc_debug_position(struct fxc *c, const struct fxc_pair *p,
+                               struct zcl_devloop_facts_tu_verdict *t)
+{
+    int level = fxi_debug_level(p->xa);
+    if (level < 2)
+        return false;
+    for (size_t k = 0; k < c->nfiles; k++) {
+        const uint8_t *b = fxi_file_digest(p->xb, c->files[k]);
+        const uint8_t *a = fxi_file_digest(p->xa, c->files[k]);
+        const struct fxc_hdr *h;
+        if (a == NULL || b == NULL || memcmp(a, b, 32) == 0 ||
+            (h = fxc_hdr_load(c, c->files[k])) == NULL ||
+            (h->reason == NULL && !fxh_region_has_code(&h->diff, level >= 3)))
+            continue;
+        fxc_set(t, true, false, "debug-position",
+                "-g%d records a declaration position %s may have moved",
+                level, c->files[k]);
+        t->compile_only = true;
+        return true;
+    }
+    return false;
+}
+
 /* One side of a TU broadened by a changed .c it includes: every function
  * that .c defines here, and every function that reaches one, seeds the walk
  * (grown by the code-generation closure), whatever the dirty flags say. */
@@ -770,6 +801,8 @@ static bool fxc_fine(struct fxc *c, struct fxc_pair *p,
     if (fxc_position(p, t, &ok) || !ok)
         return ok;
     if (fxc_roots_differ(p, t))
+        return true;
+    if (fxc_debug_position(c, p, t))
         return true;
     return fxc_set(t, false, false, "unaffected",
                    "no changed id reaches its code");
@@ -887,7 +920,8 @@ bool fxc_name_collisions(struct fxc *c)
         struct zcl_devloop_facts_tu_verdict *t = &c->report->tus[k];
         struct fxc_pair p = {0};
         const char *hit = NULL;
-        if (t->affected || !fxc_load_pair(c, t->path, &p)) {
+        if ((t->affected && !t->compile_only) ||
+            !fxc_load_pair(c, t->path, &p)) {
             fxc_pair_free(&p);
             continue;
         }
