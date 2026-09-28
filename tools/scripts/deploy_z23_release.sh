@@ -332,6 +332,9 @@ case "$cmd" in
     enable) ;;
     start)
         [ "${Z23_DEPLOY_TEST_FAIL_HOST:-}" != "$Z23_DEPLOY_TEST_HOST" ] || exit 1
+        if [ -s "$HOME/z23.pid" ]; then
+            kill "$(cat "$HOME/z23.pid")" 2>/dev/null || true
+        fi
         "$HOME/.local/bin/zclassic23" >/dev/null 2>&1 &
         printf '%s\n' "$!" >"$HOME/z23.pid"
         ;;
@@ -452,6 +455,9 @@ selftest_stop_nodes() {
 selftest_cleanup() {
     case "${SELFTEST_TMP:-}" in
         /tmp/z23-release-deploy-selftest.*)
+            # A failed assertion exits through here, so the fake nodes the
+            # systemctl mock started must stop here too, not only on PASS.
+            selftest_stop_nodes "$SELFTEST_TMP"
             find "$SELFTEST_TMP" -depth -delete 2>/dev/null || true ;;
     esac
 }

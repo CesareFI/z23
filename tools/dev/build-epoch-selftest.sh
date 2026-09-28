@@ -149,8 +149,13 @@ load_average()
 # forever. On expiry the watchdog reports the reason and terminates the
 # script; the EXIT trap still removes the work directory and reaps children,
 # and the driver sees a FAIL. A hung gate turns red, never waits.
-( trap - EXIT HUP INT TERM
-  sleep "$SELFTEST_TIMEOUT"
+# The sleep runs as its own child so cleanup's TERM to the watchdog can
+# take it down too; a bare foreground sleep outlived the watchdog as an
+# orphan and held the caller's build scope for the whole budget.
+( trap - EXIT HUP INT
+  trap 'kill "$watchdog_sleep" 2>/dev/null; exit 0' TERM
+  sleep "$SELFTEST_TIMEOUT" & watchdog_sleep=$!
+  wait "$watchdog_sleep" || exit 0
   printf 'build-epoch-selftest: FAIL: %s exceeded outer wall-clock budget of %ss (phase=%s, load average=%s); failing closed instead of holding the lint gate\n' \
       "tools/dev/build-epoch-selftest.sh" "$SELFTEST_TIMEOUT" \
       "$(cat "$PHASE_FILE" 2>/dev/null || printf unknown)" \
