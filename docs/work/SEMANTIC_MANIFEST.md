@@ -1277,12 +1277,15 @@ on both sides. The change set is planned in process exactly as
    file is not covered by it.
 
 A false negative prints the seed, profile, mutation, TU and function and
-fails the group. The default run is a fixed list of 44 (seed, profile,
-kind) cases, and must yield narrowed verdicts that seed a changed
-function, so the group cannot pass on fallbacks alone.
+fails the group. Every fixed reproducer always runs. On top of those, the
+default run adds a fixed list of 16 (seed, profile, kind) cases (about a
+minute standalone), and must yield narrowed verdicts that seed a changed
+function, so the group cannot pass on fallbacks alone; `ZCL_STRESS_TESTS=1`
+runs the full 44-case list instead, held to the same invariant.
 `ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]` runs a long range
-instead; only such a range run may draw an edit that changes no file
-(NOOP), which fails a fixed reproducer or a default seed. A reproducer marked known-RED names the fix it waits for and the
+instead of either, and wins over `ZCL_STRESS_TESTS`; only such a range run
+may draw an edit that changes no file (NOOP), which fails a fixed
+reproducer or a default seed. A reproducer marked known-RED names the fix it waits for and the
 exact false-negative lines it reports until then; it holds only when it
 fails with exactly those lines, and any other outcome (an ERROR, a
 different miss, or a PASS, which means the mark is stale) fails the group.

@@ -24,11 +24,22 @@
  *               symbol at its address.
  *
  * A false negative prints the case (seed, profile, mutation), the TU and
- * the function, and fails. The default run is a fixed list of 44 seeds;
- * ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]] runs a long range
- * instead (PROFILE all, no-ctr-line or gcc-deps; KIND forces one mutation
- * kind). The default seeds must yield narrowed plans that seed a changed
- * function, so the group cannot pass on fallbacks alone. Cases run in
+ * the function, and fails. Every fixed reproducer (semantic_fuzz_repro.c,
+ * known-RED and pass guards alike) runs every time regardless of mode:
+ * they are the regressions this group exists to catch. On top of those,
+ * three seed modes, printed in the summary line as `mode=...`:
+ *   default   a fixed list of 16 seeds (~60s standalone with the fixed
+ *             reproducers on an unloaded host) covering every mutation
+ *             kind and every profile;
+ *   full      ZCL_STRESS_TESTS=1 (this repo's existing opt-in-to-the-slow-
+ *             path convention): the full fixed list of 44 seeds;
+ *   custom    ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]] runs a
+ *             long range instead (PROFILE all, no-ctr-line or gcc-deps;
+ *             KIND forces one mutation kind), and wins over ZCL_STRESS_TESTS.
+ * Both the default and full seed lists must yield narrowed plans that seed
+ * a changed function, so the group cannot pass on fallbacks alone; a
+ * custom range is not held to that (it may deliberately probe a
+ * fallback-only slice). Cases run in
  * forked children, SFZ_CASES_AT_ONCE at once, each handing its outcome
  * back over a pipe; reports print in case order. Self-skips,
  * visibly, where the sensor has not been built (`make clang-manifest`),
@@ -85,13 +96,14 @@ struct sfz_seed {
     const char *kind; /* the mutation kind, NULL: drawn from the seed */
 };
 
-/* The default run: 44 (seed, profile, kind) cases covering every mutation
- * kind, most in the no-ctr-line profile where plans narrow, some whose
- * plans must fall back (flag, counter_c), and gcc depfiles for the probed
- * paths gcc omits. Chosen from a 4,900-case run at this rule set; each
- * passed there and most narrowed with seeds. The four data-kind cases come
- * from 150-case runs of each kind with the symbol oracle. */
-static const struct sfz_seed k_default_seeds[] = {
+/* The full run (ZCL_STRESS_TESTS=1): 44 (seed, profile, kind) cases
+ * covering every mutation kind, most in the no-ctr-line profile where
+ * plans narrow, some whose plans must fall back (flag, counter_c), and
+ * gcc depfiles for the probed paths gcc omits. Chosen from a 4,900-case
+ * run at this rule set; each passed there and most narrowed with seeds.
+ * The four data-kind cases come from 150-case runs of each kind with the
+ * symbol oracle. */
+static const struct sfz_seed k_default_seeds_full[] = {
     {20007, PROF_ALL, "hasinc"},
     {20015, PROF_ALL, "shadow"},
     {20029, PROF_ALL, "body_extern"},
@@ -139,6 +151,31 @@ static const struct sfz_seed k_default_seeds[] = {
     {34000, PROF_NO_CTR_LINE, "data_index"},
 };
 
+/* The default run: 16 of the 44 above, a subset of k_default_seeds_full
+ * chosen to keep every profile, most mutation kinds and every data kind
+ * represented, plus enough seeds that are known (from a run of the full
+ * list) to produce a seeded verdict that the invariant below holds with
+ * margin. Standalone this is well under a minute on an unloaded host;
+ * ZCL_STRESS_TESTS=1 runs the full list instead. */
+static const struct sfz_seed k_default_seeds_fast[] = {
+    {20007, PROF_ALL, "hasinc"},
+    {20055, PROF_ALL, "header_inline"},
+    {20122, PROF_ALL, "multi"},
+    {22402, PROF_GCC_DEPS, "shadow"},
+    {22414, PROF_GCC_DEPS, "typedef"},
+    {22449, PROF_GCC_DEPS, "layout"},
+    {23000, PROF_NO_CTR_LINE, "header_const"},
+    {23005, PROF_NO_CTR_LINE, "body_static"},
+    {23022, PROF_NO_CTR_LINE, "body_extern"},
+    {23037, PROF_NO_CTR_LINE, "enum_value"},
+    {23058, PROF_NO_CTR_LINE, "flag"},
+    {23059, PROF_NO_CTR_LINE, "body_static"},
+    {23149, PROF_NO_CTR_LINE, "macro_cond"},
+    {31000, PROF_NO_CTR_LINE, "data_string"},
+    {32000, PROF_NO_CTR_LINE, "data_table"},
+    {34000, PROF_NO_CTR_LINE, "data_index"},
+};
+
 struct sfz_tally {
     size_t cases, pass, fail, noop, error, skipped, narrowed;
     size_t tus, predicted, changed, cfun, cobj, covered_seed, reloc;
@@ -151,6 +188,7 @@ struct sfz_group {
     struct sfz_tally t;
     bool kept; /* a failing case directory was left for inspection */
     bool noop_ok; /* a range run: an edit that changed nothing is no failure */
+    const char *seed_mode; /* "default", "full" or "custom": printed in the summary */
 };
 
 /* ---- discovery -------------------------------------------------------------- */
@@ -553,26 +591,36 @@ static bool seeds_override(struct sfz_range *r, bool *bad)
 static int sfz_t_seeds(struct sfz_group *g)
 {
     int failures = 0;
-    size_t n = sizeof(k_default_seeds) / sizeof(k_default_seeds[0]);
     struct sfz_range r;
     bool bad_env = false, custom = seeds_override(&r, &bad_env);
+    /* ZCL_SEMANTIC_FUZZ_SEEDS wins over ZCL_STRESS_TESTS; otherwise
+     * ZCL_STRESS_TESTS=1 (the repo's existing opt-in-to-the-slow-path
+     * convention) runs the full 44-seed list, and a plain run stays to
+     * the fast 16-seed default. */
+    bool stress = !custom && getenv("ZCL_STRESS_TESTS") != NULL;
+    const struct sfz_seed *dseeds = stress ? k_default_seeds_full
+                                            : k_default_seeds_fast;
+    size_t dn = stress ? sizeof(k_default_seeds_full) / sizeof(k_default_seeds_full[0])
+                        : sizeof(k_default_seeds_fast) / sizeof(k_default_seeds_fast[0]);
+    size_t n = custom ? r.count : dn;
     size_t narrowed0 = g->t.narrowed, seeded0 = g->t.covered_seed;
     struct sfz_item *v = NULL;
+    g->seed_mode = custom ? "custom" : stress ? "full" : "default";
     TEST_CASE("semantic_facts_fuzz: generated seeds plan safely") {
         /* FIRST:COUNT[:all|no-ctr-line|gcc-deps[:KIND]] */
         ASSERT(!bad_env);
-        n = custom ? r.count : n;
         g->noop_ok = custom;
         v = zcl_calloc(n, sizeof(*v), "sfz.seeds");
         ASSERT(v != NULL);
         for (size_t k = 0; k < n; k++)
             prep_seed(g, custom ? (struct sfz_seed){r.first + k, r.profile,
                                                     r.kind[0] ? r.kind : NULL}
-                                : k_default_seeds[k],
+                                : dseeds[k],
                       &v[k]);
         ASSERT_EQ(run_items(g, v, n), (size_t)0);
-        /* the default seeds must exercise narrowed plans that seed a
-         * changed function, not only fallbacks */
+        /* the default and full seed lists must exercise narrowed plans
+         * that seed a changed function, not only fallbacks; a custom
+         * range is not held to that (it may probe a fallback-only slice) */
         ASSERT(custom || g->t.narrowed > narrowed0);
         ASSERT(custom || g->t.covered_seed > seeded0);
     } TEST_END
@@ -598,12 +646,12 @@ int test_semantic_facts_fuzz(void)
         failures += sfz_t_repros(g);
         failures += sfz_t_seeds(g);
     }
-    printf("semantic_facts_fuzz: %zu cases (%zu fixed) in %.1f s: %zu pass, %zu "
-           "fail, %zu noop, %zu error, %zu skipped; %zu narrowed verdicts; %zu "
+    printf("semantic_facts_fuzz: mode=%s %zu cases (%zu fixed) in %.1f s: %zu pass, "
+           "%zu fail, %zu noop, %zu error, %zu skipped; %zu narrowed verdicts; %zu "
            "TUs, %zu predicted, %zu changed; %zu changed functions, %zu changed "
            "data objects, %zu seeded, "
            "%zu relocation-only; planning %.1f s\n",
-           g->t.cases, k_sfz_nrepros,
+           g->seed_mode != NULL ? g->seed_mode : "unknown", g->t.cases, k_sfz_nrepros,
            (double)(clock_now_monotonic_ns() - t0) / 1e9, g->t.pass, g->t.fail,
            g->t.noop, g->t.error, g->t.skipped, g->t.narrowed, g->t.tus,
            g->t.predicted, g->t.changed, g->t.cfun, g->t.cobj, g->t.covered_seed,
