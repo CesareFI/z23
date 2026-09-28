@@ -49,6 +49,7 @@
 #include "test/selection_build_needs.h"
 #include "test/test_group_selector.h"
 #include "test_group_catalog.h"
+#include "test_group_weights.h"
 #include "test/test_helpers.h"
 #include "test/testcache.h"
 #include "dev_proof_observation.h"
@@ -113,6 +114,33 @@ static const struct test_group g_groups[] = {
 
 static const size_t g_num_groups =
     sizeof(g_groups) / sizeof(g_groups[0]);
+
+/* ── Dispatch order ────────────────────────────────────────────────────
+ *
+ * The parallel phases hand out groups longest-expected-first (LPT), so the
+ * long poles start while every worker is still busy instead of starting
+ * last and leaving the pool idle behind them. Expected seconds come from the
+ * tracked tools/dev/test_group_weights.tsv, which a fresh proof generation
+ * carries. It is read at run time: regenerating it changes no binary and no
+ * test-cache key. Groups without a row weigh 0 and keep catalog order among
+ * themselves; a missing or malformed file is plain catalog order. Only the
+ * ORDER changes: selection, isolation, environment, the exclusive pre-pass
+ * and the rerun-alone tail are untouched, and the transcript still replays
+ * in catalog order. .cache/test-timing/last-run.json is deliberately not
+ * consulted: it holds whatever subset ran last, and a proof never sees it,
+ * so local runs order exactly as proofs do. */
+static unsigned g_expected_seconds[sizeof(g_groups) / sizeof(g_groups[0])];
+static size_t g_dispatch_order[sizeof(g_groups) / sizeof(g_groups[0])];
+
+static void dispatch_order_prepare(void)
+{
+    size_t weighted = zcl_test_group_weights_read(
+        ZCL_TEST_GROUP_WEIGHTS_PATH, g_expected_seconds, g_num_groups);
+    zcl_test_group_order_longest_first(g_expected_seconds, g_num_groups,
+                                       g_dispatch_order);
+    printf("test_parallel: dispatch longest-expected-first, %zu weighted "
+           "groups from %s\n", weighted, ZCL_TEST_GROUP_WEIGHTS_PATH);
+}
 
 /* ── Parent-side worker pool ───────────────────────────────────────*/
 
@@ -1279,6 +1307,17 @@ static bool pool_phase_selects(enum pool_phase phase, const char *name)
     return phase == POOL_PHASE_QUIET_LINT ? quiet : !quiet;
 }
 
+/* One whole line per finished phase: its makespan is the number the
+ * dispatch order exists to shrink, so every transcript carries it. */
+static void print_phase_done(enum pool_phase phase, size_t groups,
+                             int64_t start_us)
+{
+    int64_t elapsed_us = platform_time_monotonic_us() - start_us;
+    printf("test_parallel: %s phase done groups=%zu makespan_s=%.1f\n",
+           phase == POOL_PHASE_QUIET_LINT ? "quiet-lint" : "general",
+           groups, (double)elapsed_us / 1e6);
+}
+
 /* Run one bounded parallel phase. The quiet lint phase and general phase use
  * the same fork, timeout, capture, and accounting machinery; only group
  * admission differs. That makes isolation a scheduling fact, never a timeout
@@ -1293,12 +1332,16 @@ static bool run_parallel_phase(
         if (results[i].status == -1 &&
             pool_phase_selects(phase, g_groups[i].name))
             remaining++;
-    size_t next_idx = 0;
+    const size_t phase_groups = remaining;
+    const int64_t phase_start_us = platform_time_monotonic_us();
+    /* Walk the longest-expected-first permutation, not the catalog. */
+    size_t next_pos = 0;
     while (remaining > 0) {
-        while (next_idx < g_num_groups) {
+        while (next_pos < g_num_groups) {
+            size_t next_idx = g_dispatch_order[next_pos];
             if (results[next_idx].status != -1 ||
                 !pool_phase_selects(phase, g_groups[next_idx].name)) {
-                next_idx++;
+                next_pos++;
                 continue;
             }
             int slot = find_free_slot(slots, jobs);
@@ -1326,7 +1369,7 @@ static bool run_parallel_phase(
                        g_groups[next_idx].name);
 #endif
             }
-            next_idx++;
+            next_pos++;
         }
 
         time_t now_tick = platform_time_wall_time_t();
@@ -1386,6 +1429,7 @@ static bool run_parallel_phase(
         remaining--;
         (*reaped)++;
     }
+    print_phase_done(phase, phase_groups, phase_start_us);
     return true;
 }
 
@@ -2579,6 +2623,7 @@ int main(int argc, char **argv)
     /* stdout is unbuffered, so this line reaches a proof's log whole the
      * moment the last run-alone group has been reaped. */
     printf("%s groups=%zu\n", ZCL_TEST_EXCLUSIVE_PASS_DONE, exclusive_ran);
+    dispatch_order_prepare();
 
     /* A shard invokes its own compiler/lint subprocesses, so eight shards per
      * checkout oversubscribe a 16-core host as soon as a second worktree runs
