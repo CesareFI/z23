@@ -987,32 +987,6 @@ static bool fxm_names_target(const char *t, const char *path)
     return false;
 }
 
-/* A target word that makes any file: match-anything (%) or .DEFAULT. */
-static bool fxm_makes_anything(const char *t)
-{
-    while (*t != '\0') {
-        size_t n = 0;
-        while (fxm_space(*t))
-            t++;
-        while (t[n] != '\0' && !fxm_space(t[n]))
-            n++;
-        if ((n == 1 && t[0] == '%') || (n == 8 && strncmp(t, ".DEFAULT", 8) == 0))
-            return true;
-        t += n;
-    }
-    return false;
-}
-
-/* A match-anything rule (%:) or .DEFAULT makes any file: every missing
- * optional include is made by a recipe no rule names it in. */
-static bool fxm_anything_made(const struct fxm *m)
-{
-    for (size_t r = 0; m->missing.n > 0 && r < m->nrules; r++)
-        if (fxm_makes_anything(m->rules[r].targets))
-            return true;
-    return false;
-}
-
 /* An optional include that does not exist yet but a rule can make: make
  * runs that rule first and reads what its recipe wrote. The rule is
  * reached, and its recipe lines say what the makefile holds

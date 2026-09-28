@@ -235,5 +235,8 @@ bool fxm_goal_words(struct fxm *m, const char *raw, bool twice, bool shell);
 bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l);
 /* Mark every variable a recipe runs something by expanding (vname.runs). */
 void fxm_gen_runs(struct fxm *m);
+/* A match-anything rule (%:) or .DEFAULT exists while an optional include
+ * is missing: it makes that include by a recipe no rule names it in. */
+bool fxm_anything_made(const struct fxm *m);
 
 #endif

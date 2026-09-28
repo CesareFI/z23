@@ -713,3 +713,29 @@ bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l)
     }
     return grew;
 }
+
+/* A target word that makes any file: match-anything (%) or .DEFAULT. */
+static bool fxm_makes_anything(const char *t)
+{
+    while (*t != '\0') {
+        size_t n = 0;
+        while (fxm_space(*t))
+            t++;
+        while (t[n] != '\0' && !fxm_space(t[n]))
+            n++;
+        if ((n == 1 && t[0] == '%') || (n == 8 && strncmp(t, ".DEFAULT", 8) == 0))
+            return true;
+        t += n;
+    }
+    return false;
+}
+
+/* A match-anything rule (%:) or .DEFAULT makes any file: every missing
+ * optional include is made by a recipe no rule names it in. */
+bool fxm_anything_made(const struct fxm *m)
+{
+    for (size_t r = 0; m->missing.n > 0 && r < m->nrules; r++)
+        if (fxm_makes_anything(m->rules[r].targets))
+            return true;
+    return false;
+}
