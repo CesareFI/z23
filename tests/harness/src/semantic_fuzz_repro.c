@@ -1572,22 +1572,17 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
     {.r = {.name = "F12_header_static_inline_O0", .kind = "header_inline",
            .detail = "the body of a header static inline t0_a calls; clang "
-                     "at -O0 emits it out of line",
-           .known_red = "a header definition of any linkage that the closure"
-                        " reaches broadens its TU: fxc_seed_marked broadens"
-                        " only on a root, and an internal-linkage header"
-                        " function is none (devloop_facts_index.c)",
-           .files = SFZ_FILES(k_f12_header_static_inline),
-           .known_red_why = "src/t0.c h_inl NOT-COVERED\n"},
+                     "at -O0 emits it out of line (fixed by e1497f368f: a "
+                     "TU's own copy of another file's internal function "
+                     "seeds like a main-file function and is a root of "
+                     "its TU)",
+           .files = SFZ_FILES(k_f12_header_static_inline)},
      .opt = "-O0"},
     {.r = {.name = "F12_header_static_inline_O0_gcc", .kind = "header_inline",
            .detail = "the body of a header static inline t0_a calls; gcc "
-                     "at -O0 emits it out of line",
-           .known_red = "a header definition of any linkage that the closure"
-                        " reaches broadens its TU (as"
-                        " F12_header_static_inline_O0)",
-           .files = SFZ_FILES(k_f12_header_static_inline),
-           .known_red_why = "src/t0.c h_inl NOT-COVERED\n"},
+                     "at -O0 emits it out of line (fixed by e1497f368f, as "
+                     "F12_header_static_inline_O0)",
+           .files = SFZ_FILES(k_f12_header_static_inline)},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O0"},
     {.r = {.name = "pass_header_static_inline_O1", .kind = "header_inline",
            .detail = "the body of a header static inline t0_a calls; "
