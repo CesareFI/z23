@@ -1331,8 +1331,8 @@ included file does not seed the includer's functions) were known-RED at
 64370952d5; the consumer's cleanup-handler and `.c`-includes-`.c` fixes
 now cover all four, and they run as ordinary fixed reproducers.
 
-The known-RED reproducers are three toolchain families, none a text
-edit the consumer misreads:
+The known-RED reproducers are four families, three of them toolchain
+families (no text edit the consumer misreads) and one optimizer level:
 
 | reproducer | toolchain | missed | root cause |
 |---|---|---|---|
@@ -1340,10 +1340,26 @@ edit the consumer misreads:
 | F10_opt_spelling_O02, _long | gcc at `-O02`, `--optimize=2` | `t0_s.constprop.0` | `fxg_optimizes` (`tools/dev/devloop_facts_codegen.c`) reads `-O0` as a prefix and needs `-O`: gcc's `-O2` is modeled as `-O0` or no optimizer (callers only) |
 | F10_opt_spelling_O5 | gcc at `-O5` (gcc's `-O3`) | `t0_w.constprop.1` | `k_fxg_unbounded` lists `-O2` to `-O4` only; `-O5` falls to the `-O1` component model, which never seeds an external callee gcc clones |
 | F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | the `clang-facts` rule passes `$(DEV_COMPILE_CFLAGS)` as the `.zsm` target sees it (`-Og`), while the dev objects of the hot dirs (`core/modules/chain`, `crypto`, `script`, `validation` and four more) take `DEV_HOT_CFLAGS` (`-O2`), and `clientversion.o` extra defines, from target-specific assignments the facts rule never sees |
+| F12_header_static_inline_O0, _gcc | clang or gcc at `-O0`; a header `static inline` body changes | `h_inl` (each reader's out-of-line copy) | `fxc_seed_marked` (`tools/dev/devloop_facts_tu.c`) seeds only main-file functions and broadens only on a root, and `fxi_on_function` (`tools/dev/devloop_facts_index.c`) makes a header definition a root only with external linkage; at `-O1` the call is inlined and the caller seed covers it, at `-O0` (the callers model) the reader's own copy changes unseeded |
 
 The passing shapes beside them hold the model where the spelling is
 canonical: gcc `-O1` seeds the specialized static, and gcc `-O2` and
 `-O3` fall back (`inline-closure-unknown`).
+
+Measured at a88daa4ffd (2026-09-28), 2,250 generated cases over the new
+dimensions, each run also repeating the fixed set:
+
+| range | cases | generated FAIL | family |
+|---|---|---|---|
+| gcc `-O1` (no-ctr-line) | 500 | 0 | none |
+| gcc `-Og` | 400 | 0 | none |
+| gcc `-O2` objects, sensor `-Og` | 300 | 0 | none drawn (F11 is hand-made) |
+| clang `-O0` | 250 | 18 | F12 |
+| gcc `-O0` | 250 | 25 | F12 |
+| gcc `-O1` (gcc-deps) | 200 | 0 | none |
+| gcc `-O1,-g` (all) | 150 | 0 | none |
+| clang to gcc drift | 100 | 80 | F9 |
+| clang `-O3` | 100 | 0 | none (falls back) |
 
 Four generator kinds edit only data: `data_string` (a string literal in
 a body, of the same length or longer, so a later literal moves),
