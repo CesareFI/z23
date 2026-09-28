@@ -5,7 +5,10 @@
  * pattern or sub-make) widens to the whole catalog; (c) a path no TU reads
  * and no Makefile names narrows the compile, but the plain plan's own path
  * groups for it are still selected as a test obligation; (d) a path the
- * include graph cannot answer for (here: deleted/never-created) widens too.
+ * include graph cannot answer for (here: deleted/never-created) widens too;
+ * (e) with the producer's before-readers attestation the same deleted path
+ * narrows, and (f) a deleted path an attested before manifest read affects
+ * its TU.
  *
  * Each test hand-builds a minimal identity+files manifest (no libclang) for
  * one candidate TU and drives zcl_devloop_facts_consume() directly against a
@@ -26,6 +29,7 @@
 #include <sys/stat.h>
 
 #define SBI_TU "src/a.c"
+#define SBI_MARKER "facts/" ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE
 
 static bool sbi_mkdirs(char *full)
 {
@@ -126,18 +130,21 @@ static bool sbi_manifest(const char *main_path, const char *extra_file,
     return ok;
 }
 
-/* Write a.c's before/after manifest pair (byte-identical: the TU itself
- * never changes in these tests), plus the candidate scan marker. */
-static bool sbi_write_tu(const char *root, const char *extra_file)
+/* Write a.c's before/after manifest pair, each reading its extra file (when
+ * given), plus the candidate scan marker. */
+static bool sbi_write_pair(const char *root, const char *before_extra,
+                           const char *after_extra)
 {
     uint8_t *m = NULL;
     size_t n = 0;
-    bool ok = sbi_manifest(SBI_TU, extra_file, &m, &n);
     char full[4096];
     FILE *fp;
-    if (!ok)
-        return false;
+    bool ok = true;
     for (int pass = 0; ok && pass < 2; pass++) {
+        ok = sbi_manifest(SBI_TU, pass == 0 ? before_extra : after_extra, &m,
+                          &n);
+        if (!ok)
+            break;
         if (snprintf(full, sizeof(full), "%s/facts/%s%s", root, SBI_TU,
                      pass == 0 ? ".before.zsm" : ".after.zsm") >=
             (int)sizeof(full)) {
@@ -149,6 +156,8 @@ static bool sbi_write_tu(const char *root, const char *extra_file)
         ok = fp != NULL && fwrite(m, 1, n, fp) == n;
         if (fp != NULL && fclose(fp) != 0)
             ok = false;
+        free(m);
+        m = NULL;
     }
     free(m);
     /* A depfile naming only its own .c gives codeindex zero include edges,
@@ -160,6 +169,12 @@ static bool sbi_write_tu(const char *root, const char *extra_file)
            sbi_write(root, "src/a.h", "\n") &&
            sbi_write(root, "build/a.d",
                      "build/a.o: " SBI_TU " src/a.h\n");
+}
+
+/* The TU itself never changes in most tests: one manifest on both sides. */
+static bool sbi_write_tu(const char *root, const char *extra_file)
+{
+    return sbi_write_pair(root, extra_file, extra_file);
 }
 
 static bool sbi_has_group(const struct zcl_devloop_plan *p, const char *g)
@@ -410,6 +425,91 @@ static int sbit_t_truncated(void)
     return failures;
 }
 
+/* (e): the same deleted path, with the producer's before-readers
+ * attestation (ZCL_DEVLOOP_FACTS_BEFORE_READERS_FILE): the before manifests
+ * here are every TU whose before-state depfile named it, and none read it,
+ * so the compile narrows. Only the exact marker text attests. */
+static int sbit_t_deleted_attested(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a deleted path no attested before "
+             "manifest read narrows the compile") {
+        char root[4096];
+        const char *changed = "cfg/ghost.def";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_attest") != NULL);
+        ASSERT(sbi_write_tu(root, NULL));
+        ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
+        ASSERT(sbi_write(root, SBI_MARKER, ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        ASSERT(rep.complete);
+        ASSERT(!sbi_tu_affected(&rep, NULL));
+        ASSERT(!plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
+static int sbit_t_marker_text(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a marker with other text attests "
+             "nothing") {
+        char root[4096];
+        const char *changed = "cfg/ghost.def";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_attest_bad") != NULL);
+        ASSERT(sbi_write_tu(root, NULL));
+        ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
+        ASSERT(sbi_write(root, SBI_MARKER, "zcl.facts.before_readers.v0\n"));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        ASSERT(!rep.complete);
+        ASSERT(plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
+/* (f): an attested deleted path the before manifest read: the TU that read
+ * it is affected, though the after-state depfile no longer names it. */
+static int sbit_t_deleted_read(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a deleted path an attested before "
+             "manifest read affects that TU") {
+        char root[4096];
+        const char *changed = "cfg/gone.def";
+        struct zcl_devloop_plan plan = {0};
+        struct zcl_devloop_facts_verdict v = {0};
+        struct zcl_devloop_facts_report rep = {0};
+        ASSERT(test_mkdtemp(root, sizeof(root), "sbi_attest_read") != NULL);
+        ASSERT(sbi_write_pair(root, changed, NULL));
+        ASSERT(sbi_write(root, "Makefile", "all:\n\t@true\n"));
+        ASSERT(sbi_write(root, "facts/cfg/gone.def.before", "X\n"));
+        ASSERT(sbi_write(root, SBI_MARKER, ZCL_DEVLOOP_FACTS_BEFORE_READERS_TEXT));
+        ASSERT(zcl_devloop_plan_files(&changed, 1, &plan));
+        ASSERT(zcl_devloop_facts_consume(root, &changed, 1, "facts", NULL,
+                                         &plan, &v, &rep));
+        /* A member through its before manifest's FILES; the hand-built
+         * manifests name no producer, so the member's verdict is
+         * producer-unknown (sbit_t_deleted_attested: a non-member stays
+         * unaffected under the same producer). */
+        ASSERT(rep.complete);
+        ASSERT(sbi_tu_affected(&rep, "producer-unknown"));
+        ASSERT(!plan.closure_universal);
+        zcl_devloop_facts_report_free(&rep);
+    } TEST_END
+    return failures;
+}
+
 /* (a): a changed .def some TU's manifest lists as a file it read routes
  * through the existing header path (it is never classified as a build
  * input candidate at all, make-mentioned or not). */
@@ -445,5 +545,6 @@ int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
           sbit_t_wildcard_var() | sbit_t_shell_find() | sbit_t_pattern_rule() |
-          sbit_t_truncated() | sbit_t_header_path();
+          sbit_t_truncated() | sbit_t_deleted_attested() | sbit_t_marker_text() |
+          sbit_t_deleted_read() | sbit_t_header_path();
 }
