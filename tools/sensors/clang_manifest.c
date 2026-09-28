@@ -65,14 +65,15 @@ char *cm_take_string(CXString s)
 /* ---- argv --------------------------------------------------------------------- */
 
 /* A plain declaration reports CXLanguage_C under C++ and Objective-C too, so
- * the argv check is the language guard. Driver aliases of -x and -std, the
- * Objective-C switches and a driver mode (clang++ parses .c as C++) are
- * refused with the escapes rather than modeled. So is every pass-through
- * the lookup scan cannot read a -D, -std or -fms-compatibility inside: the
- * whole -X family in any spelling (-Xclang, -Xclang=, -Xpreprocessor,
- * -Xarch_host, -Xcompiler and -Xparser each reach the front end; the
- * others are refused with them rather than sorted), -Wp, and front-end
- * plugins. */
+ * the argv check is the language guard (the lexing probe, cm_measure_lang,
+ * checks it again from the front end's side). Driver aliases of -x and
+ * -std, the Objective-C switches and a driver mode (clang++ parses .c as
+ * C++) are refused with the escapes rather than modeled. So is every
+ * pass-through the lookup scan cannot read a -D, -std or
+ * -fms-compatibility inside: the whole -X family but -Xlinker, in any
+ * spelling (-Xclang, -Xclang=, -Xpreprocessor, -Xarch_host, -Xcompiler and
+ * -Xparser each reach the front end; the others are refused with them
+ * rather than sorted), -Wp, and front-end plugins. */
 static bool cm_indirect_mode_arg(const char *a)
 {
     static const char *const exact[] = {"-ObjC", "-ObjC++"};
@@ -89,28 +90,44 @@ static bool cm_indirect_mode_arg(const char *a)
     return false;
 }
 
+/* Why one argv word refuses the TU, or NULL. */
+static const char *cm_refused_flag(const char *a)
+{
+    if (cm_indirect_mode_arg(a))
+        return "indirect compiler options";
+    if (strncmp(a, "-fms-compatibility", 18) == 0)
+        return "MSVC compatibility";
+    if (strcmp(a, "-std") == 0)
+        return "-std has no joined value";
+    return NULL;
+}
+
+/* -Xlinker is the one pass-through let through: clang hands its value to
+ * the linker alone (never the front end), so the value is skipped here
+ * as clang skips it, and no word of it is read as a flag. */
 static bool cm_scan_language_flags(struct cm_core *c,
                                    const char *const *argv, size_t argc,
                                    const char **mode, const char **standard)
 {
     for (size_t k = 0; k < argc; k++) {
-        const char *a = argv[k];
-        if (cm_indirect_mode_arg(a))
-            return cm_fail(c, "unsupported translation-unit language: indirect compiler options");
-        if (strncmp(a, "-fms-compatibility", 18) == 0)
-            return cm_fail(c, "unsupported translation-unit language: MSVC compatibility");
+        const char *a = argv[k], *why;
+        if (strcmp(a, "-Xlinker") == 0) {
+            k++;
+            continue;
+        }
+        why = cm_refused_flag(a);
+        if (why != NULL)
+            return cm_fail(c, "unsupported translation-unit language: %s", why);
         if (strcmp(a, "-ansi") == 0)
             *standard = "c89";
         else if (strncmp(a, "-std=", 5) == 0)
             *standard = a + 5;
-        else if (strcmp(a, "-std") == 0)
-            return cm_fail(c, "unsupported translation-unit language: -std has no joined value");
-        if (strcmp(argv[k], "-x") == 0) {
+        if (strcmp(a, "-x") == 0) {
             if (++k == argc)
                 return cm_fail(c, "unsupported translation-unit language: -x has no value");
             *mode = argv[k];
-        } else if (strncmp(argv[k], "-x", 2) == 0 && argv[k][2] != '\0') {
-            *mode = argv[k] + 2;
+        } else if (strncmp(a, "-x", 2) == 0 && a[2] != '\0') {
+            *mode = a + 2;
         }
     }
     return true;
@@ -455,11 +472,109 @@ static bool cm_refuse_msvc_target(struct cm_state *st)
     return true;
 }
 
+/* ---- the TU's lexing rules, as the front end applies them ------------------- */
+
+/* A probe parsed under the TU's own argv: each array's size says one rule
+ * the front end applies (sizeof("??=") is 2 when trigraphs are replaced;
+ * separators come with a mode after C17; foreign is C++ or Objective-C).
+ * Reading these from argv instead would trust a model of every option's
+ * arity: "-I -std=c17" or "-Xlinker -std=c17" names no -std at all. */
+#define CM_LANG_PROBE "clang-manifest-lang-probe.c"
+static const char k_cm_lang_probe[] =
+    "extern const char cm_lang_trigraphs[sizeof(\"?\?=\")];\n"
+    "#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L\n"
+    "extern const char cm_lang_separators[2];\n"
+    "#else\n"
+    "extern const char cm_lang_separators[1];\n"
+    "#endif\n"
+    "#if defined(__cplusplus) || defined(__OBJC__)\n"
+    "extern const char cm_lang_foreign[2];\n"
+    "#else\n"
+    "extern const char cm_lang_foreign[1];\n"
+    "#endif\n";
+
+struct cm_lang_seen {
+    long long trigraphs, separators, foreign;
+};
+
+static enum CXChildVisitResult cm_lang_visit(CXCursor cur, CXCursor parent,
+                                             CXClientData data)
+{
+    struct cm_lang_seen *s = data;
+    CXString n;
+    const char *name;
+    long long size;
+    (void)parent;
+    if (clang_getCursorKind(cur) != CXCursor_VarDecl)
+        return CXChildVisit_Continue;
+    n = clang_getCursorSpelling(cur);
+    name = clang_getCString(n);
+    size = clang_getArraySize(clang_getCursorType(cur));
+    if (name != NULL && strcmp(name, "cm_lang_trigraphs") == 0)
+        s->trigraphs = size;
+    else if (name != NULL && strcmp(name, "cm_lang_separators") == 0)
+        s->separators = size;
+    else if (name != NULL && strcmp(name, "cm_lang_foreign") == 0)
+        s->foreign = size;
+    clang_disposeString(n);
+    return CXChildVisit_Continue;
+}
+
+static unsigned cm_error_count(CXTranslationUnit tu)
+{
+    unsigned n = clang_getNumDiagnostics(tu), errors = 0;
+    for (unsigned k = 0; k < n; k++) {
+        CXDiagnostic d = clang_getDiagnostic(tu, k);
+        errors += clang_getDiagnosticSeverity(d) >= CXDiagnostic_Error;
+        clang_disposeDiagnostic(d);
+    }
+    return errors;
+}
+
+/* Parse the probe with the TU's argv (without the -v suffix, and with -w so
+ * no warning option can turn it into an error) and read its sizes. */
+static bool cm_measure_lang(struct cm_state *st, const struct cm_args *args,
+                            struct cm_lang *lang)
+{
+    struct cm_core *c = &st->core;
+    struct CXUnsavedFile f = {.Filename = CM_LANG_PROBE,
+                              .Contents = k_cm_lang_probe,
+                              .Length = sizeof(k_cm_lang_probe) - 1};
+    struct cm_lang_seen seen = {0};
+    size_t n = args->nparse >= CM_SUFFIX_N ? args->nparse - CM_SUFFIX_N : 0;
+    const char **argv = zcl_calloc(n + 2, sizeof(char *), "clang_manifest.lang");
+    CXTranslationUnit tu = NULL;
+    enum CXErrorCode rc;
+    unsigned errors = 1;
+    if (argv == NULL)
+        return cm_fail(c, "out of memory");
+    memcpy(argv, args->parse, n * sizeof(char *));
+    argv[n] = "-w";
+    rc = clang_parseTranslationUnit2(st->index, CM_LANG_PROBE, argv,
+                                     (int)n + 1, &f, 1, CXTranslationUnit_None,
+                                     &tu);
+    free(argv);
+    if (rc == CXError_Success && tu != NULL) {
+        errors = cm_error_count(tu);
+        clang_visitChildren(clang_getTranslationUnitCursor(tu), cm_lang_visit,
+                            &seen);
+        clang_disposeTranslationUnit(tu);
+    }
+    if (errors != 0 || seen.foreign != 1 ||
+        (seen.trigraphs != 2 && seen.trigraphs != 4) ||
+        (seen.separators != 1 && seen.separators != 2))
+        return cm_fail(c, "unsupported translation-unit language: the front end's lexing probe failed");
+    lang->trigraphs = seen.trigraphs == 2;
+    lang->separators = seen.separators == 2;
+    return true;
+}
+
 static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
                        const char *main_path, const struct cm_args *args,
                        const char *report)
 {
     struct cm_core *c = &st->core;
+    struct cm_lang lang = {0};
 #if CM_TYPE_PRETTY_PRINTED
     st->policy = clang_getCursorPrintingPolicy(
         clang_getTranslationUnitCursor(st->tu));
@@ -478,7 +593,8 @@ static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
         return false;
     if (o->facts && !cm_facts_begin(c, o->tree))
         return false;
-    return cm_walk(st) && cm_scan_has_include(c, args->parse, args->nparse) &&
+    return cm_measure_lang(st, args, &lang) && cm_walk(st) &&
+           cm_scan_has_include(c, args->parse, args->nparse, lang) &&
            cm_emit_files(c) && cm_emit_deferred(c) &&
            cm_emit_identity_libclang(st, main_path, args) &&
            cm_emit_facts(c, o->max_records, o->max_section_bytes);

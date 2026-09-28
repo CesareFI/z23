@@ -242,13 +242,21 @@ bool cm_emit_identity(struct cm_core *c, const struct cm_identity *id);
 bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
                          const char *spelled, uint8_t form, uint8_t kind,
                          bool computed, const struct cm_file *hit);
-/* Every conditional lookup (__has_include and its relatives, #embed) in a
- * repo file, in the body of a #define in any file, and in a -D value of
- * argv (the front end's): replayed when a repo file's operand is a literal
- * or a macro the scan can expand, else recorded with no negative claim.
- * argv's -std and trigraph flags say how the text is lexed. */
+/* How translation phases 1 and 3 read the TU's text: whether trigraphs are
+ * replaced, and whether a pp-number takes a digit separator. The front end
+ * measures both under the TU's own argv (clang_manifest.c,
+ * cm_measure_lang), so no option spelling can mislead the scan. */
+struct cm_lang {
+    bool trigraphs;
+    bool separators;
+};
+
+/* Every conditional lookup (__has_include and its relatives, #embed) in
+ * every file the TU reads and in a -D value of argv (the front end's):
+ * replayed when the operand is a literal or a macro the scan can expand,
+ * else recorded with no negative claim. lang says how the text is lexed. */
 bool cm_scan_has_include(struct cm_core *c, const char *const *argv,
-                         size_t argc);
+                         size_t argc, struct cm_lang lang);
 
 /* ---- records (clang_manifest_records.c) ----------------------------------- */
 

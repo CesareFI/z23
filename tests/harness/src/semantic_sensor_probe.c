@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates, a system header's own included, and that the sensor refuses the options it cannot read (every -X pass-through, -Wp, plugins and MSVC compatibility).
+ * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates, a system header's own included, and that the sensor refuses the options it cannot read (every -X pass-through but -Xlinker, -Wp, plugins and MSVC compatibility), whatever option values spell like -std.
  *
  * Each case emits one TU whose __has_include the scan could miss and
  * reads its LOOKUPS back: the probe must be there, replayed against its
@@ -120,6 +120,24 @@ static const struct ssp_case k_ssp_cases[] = {
      "#define FN(a) X ## a\n"
      "#if OPEN defined __has_include(<opt.h>))\n" SSP_TAIL,
      {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a ??/ comment, with -std=c17 only an -I value",
+     "// note ?\?/\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-I", "-std=c17"}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a ??/ comment, with -std=c17 only an -Xlinker value",
+     "// note ?\?/\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-Xlinker", "-std=c17", NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"a word a trigraph joins, with -std=c23 only an -iquote value",
+     "#if __has_in?\?/\n"
+     "clude(<opt.h>)\n" SSP_TAIL,
+     {"-std=c17", "-iquote", "-std=c23"}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after an apostrophe, with -std=c23 only an -I value",
+     "#if 0\n"
+     "int k = 1'a/*';\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
+     {"-std=c17", "-I", "-std=c23"}, NULL, NULL, false, "opt.h", SSP_ANY},
 };
 
 /* Options the scan cannot read: the emit must refuse with `why`. */
@@ -185,9 +203,6 @@ static const struct ssp_refusal k_ssp_refusals[] = {
      {"-Xopenmp-target=x86_64-pc-linux-gnu", "-DHAS(x)=__has_include(x)",
       NULL},
      "indirect compiler options"},
-    {"a -std value -Xlinker hands the linker, which the scan would read",
-     "#if __has_include(<opt.h>)\n" SSP_TAIL,
-     {"-std=c23", "-Xlinker", "-std=c17"}, "indirect compiler options"},
     {"a front-end plugin",
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-std=c23", "-fplugin=/nonexistent/probe-plugin.so", NULL},

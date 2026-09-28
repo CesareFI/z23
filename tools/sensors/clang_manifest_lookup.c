@@ -213,8 +213,9 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * (MISS_V1_NONE), as include_next is: a warm session then recreates the TU,
  * and the facts consumer treats it as reachable by every created or deleted
  * path (and #embed or __has_embed by every changed path). The scan reads
- * the text as translation phases 1 to 3 do under the TU's -std
- * (cm_lang_of, cm_splice, cm_code_mask): a word in a comment or a
+ * the text as translation phases 1 to 3 do, with the trigraph and digit
+ * separator rules the front end measured for the TU (cm_measure_lang,
+ * cm_splice, cm_code_mask): a word in a comment or a
  * character or string literal is no lookup, but one in a skipped group
  * counts too, which costs warm reuse and precision, never truth.
  * Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
@@ -1078,45 +1079,6 @@ static uint8_t *cm_code_mask(const struct cm_spliced *t, bool separators)
 
 /* ---- what the scan reads: the TU's language, its files, its -D values ------ */
 
-/* How translation phases 1 and 3 read the TU, by the front end's rules:
- * trigraphs in an ISO C mode before C23 unless -fno-trigraphs, and in any
- * mode with -trigraphs or -ftrigraphs; digit separators from C23 on. With
- * no -std the mode is gnu17. */
-struct cm_lang {
-    bool trigraphs;
-    bool separators;
-};
-
-/* A -std value: 0 an ISO C mode before C23, 1 a GNU mode before C23, 2
- * C23 or later. */
-static int cm_std_kind(const char *v)
-{
-    static const char *const c23[] = {"c23",   "c2x",   "c2y",         "gnu23",
-                                      "gnu2x", "gnu2y", "iso9899:2024"};
-    for (size_t k = 0; k < sizeof(c23) / sizeof(c23[0]); k++)
-        if (strcmp(v, c23[k]) == 0)
-            return 2;
-    return strncmp(v, "gnu", 3) == 0 ? 1 : 0;
-}
-
-static struct cm_lang cm_lang_of(const char *const *argv, size_t argc)
-{
-    int std = 1, tri = -1;
-    for (size_t k = 0; k < argc; k++) {
-        const char *a = argv[k];
-        if (strncmp(a, "-std=", 5) == 0 || strncmp(a, "--std=", 6) == 0)
-            std = cm_std_kind(strchr(a, '=') + 1);
-        else if (strcmp(a, "-ansi") == 0)
-            std = 0;
-        else if (strcmp(a, "-trigraphs") == 0 || strcmp(a, "-ftrigraphs") == 0)
-            tri = 1;
-        else if (strcmp(a, "-fno-trigraphs") == 0)
-            tri = 0;
-    }
-    return (struct cm_lang){.trigraphs = tri < 0 ? std == 0 : tri == 1,
-                            .separators = std == 2};
-}
-
 /* A conditional-lookup word at s[i] in a macro's body (a #define's, or a
  * -D value's): evaluated wherever the macro expands, and quoted names then
  * search that file's directory, so the scan cannot replay it: recorded
@@ -1197,9 +1159,8 @@ static bool cm_scan_file(struct cm_core *c, const struct cm_file *f,
 }
 
 bool cm_scan_has_include(struct cm_core *c, const char *const *argv,
-                         size_t argc)
+                         size_t argc, struct cm_lang lang)
 {
-    struct cm_lang lang = cm_lang_of(argv, argc);
     if (!cm_scan_argv(c, argv, argc))
         return false;
     for (size_t k = 0; k < c->nfiles; k++)

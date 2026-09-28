@@ -134,7 +134,11 @@ were established:
   directory), and for one in a `-D` value, on the main file. Its spelled
   name is the occurrence's text (for example `__has_include(OPT_HDR)` or
   `#embed "blob.bin"`). The scan reads the file's text as translation
-  phases 1 to 3 do under the TU's `-std`: trigraphs are replaced in an ISO
+  phases 1 to 3 do, under the rules the front end itself applies to the
+  TU: the sensor parses a small probe file with the TU's own argv and reads
+  back whether trigraphs are replaced and whether a pp-number takes a
+  digit separator, so no option's arity can mislead it (`-I -std=c17`
+  names no `-std`). By clang's rules trigraphs are replaced in an ISO
   C mode before C23 (unless `-fno-trigraphs`; in any mode with
   `-trigraphs`), lines are spliced, and a pp-number takes a digit
   separator only from C23 on (before it, `'` opens a character literal).
@@ -152,7 +156,8 @@ were established:
   `defined` on an `#if` or `#elif` line after nothing but other `defined`
   tests and `! && ||`, is no lookup: anything else before it could be a
   macro that turns the word into a live probe. The sensor refuses every
-  `-X` pass-through in any spelling (`-Xclang`, `-Xclang=`,
+  `-X` pass-through but `-Xlinker` (whose value only the linker reads) in
+  any spelling (`-Xclang`, `-Xclang=`,
   `-Xpreprocessor`, `-Xarch_host`, `-Xcompiler`, `-Xparser` reach the
   front end), `-Wp,` and front-end plugins (a `-D` or `-std` there
   is one the scan cannot read) and `-fms-compatibility` or an MSVC target
@@ -886,11 +891,15 @@ records a system header's own conditionals, which it skipped before (a
 plain angled search there starts at the repo's `-I` dirs), and treats a
 probe word only tested by an `#ifdef`-like directive or a plain `defined`
 test as no lookup. The sensor
-now refuses every `-X` pass-through, `-Wp,`, front-end plugins,
+now refuses every `-X` pass-through but `-Xlinker`, `-Wp,`, front-end
+plugins,
 `-fms-compatibility` and an MSVC target instead of
 scanning under rules it cannot read; the same test file checks each
 refusal; each spelling but the separate `-Xclang` and `-Xpreprocessor`
-forms was accepted before.
+forms was accepted before. It also reads the trigraph and digit separator
+rules from the front end's own parse of a probe file rather than from
+argv, where a value of `-I`, `-iquote` or `-Xlinker` spelled like `-std`
+misled it (each case is in the same test file).
 
 ### Darwin producer identity
 
