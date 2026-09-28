@@ -1,14 +1,14 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0.
  * Fixed-size embedded form of Z23's C23 ChaCha20-Poly1305 arithmetic.
- * Sapling outgoing plaintext is always 64 bytes, with no associated data
+ * Sapling outgoing and note plaintexts have fixed sizes, no associated data,
  * and a zero nonce; this form needs no allocator, threads, or logging. */
-#include "blue_sapling_out_open.h"
+#include "blue_sapling_aead.h"
 
 #include <stddef.h>
 #include <string.h>
 
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
-#error "The Blue Sapling outgoing decryptor requires ISO C23"
+#error "The Blue Sapling decryptor requires ISO C23"
 #endif
 
 static void wipe(void *memory, size_t length) {
@@ -150,29 +150,64 @@ static void poly_finish(poly_state *state, uint8_t tag[16]) {
     store32(tag + 8, h2); store32(tag + 12, h3);
 }
 
-bool blue_sapling_out_open(uint8_t plaintext[64], const uint8_t key[32],
-    const uint8_t ciphertext[80]) {
-    if (!plaintext) return false;
-    memset(plaintext, 0, 64);
-    if (!key || !ciphertext) return false;
-    uint8_t block[64], tag[16], lengths[16] = {0};
+static bool authentic(const uint8_t key[32],
+    const uint8_t *ciphertext, size_t plain_length) {
+    uint8_t block[64], tag[16], tail[16] = {0}, lengths[16] = {0};
     poly_state state;
     chacha_block(key, 0, block);
     poly_init(&state, block);
-    poly_blocks(&state, ciphertext, 64);
-    lengths[8] = 64;
+    size_t full = plain_length & ~(size_t)15;
+    poly_blocks(&state, ciphertext, full);
+    size_t remaining = plain_length - full;
+    if (remaining) {
+        memcpy(tail, ciphertext + full, remaining);
+        poly_blocks(&state, tail, sizeof tail);
+    }
+    for (unsigned i = 0; i < 8; ++i)
+        lengths[8 + i] = (uint8_t)((uint64_t)plain_length >> (8u * i));
     poly_blocks(&state, lengths, sizeof lengths);
     poly_finish(&state, tag);
     uint8_t difference = 0;
     for (unsigned i = 0; i < 16; ++i)
-        difference |= tag[i] ^ ciphertext[64 + i];
+        difference |= tag[i] ^ ciphertext[plain_length + i];
     wipe(&state, sizeof state);
     wipe(block, sizeof block);
     wipe(tag, sizeof tag);
-    if (difference) return false;
-    chacha_block(key, 1, block);
-    for (unsigned i = 0; i < 64; ++i)
-        plaintext[i] = ciphertext[i] ^ block[i];
+    wipe(tail, sizeof tail);
+    return difference == 0;
+}
+
+static void decrypt(uint8_t *plaintext, const uint8_t key[32],
+    const uint8_t *ciphertext, size_t plain_length) {
+    uint8_t block[64];
+    for (size_t offset = 0; offset < plain_length; offset += 64) {
+        chacha_block(key, 1u + (uint32_t)(offset / 64), block);
+        size_t take = plain_length - offset < 64 ?
+            plain_length - offset : 64;
+        for (size_t i = 0; i < take; ++i)
+            plaintext[offset + i] = ciphertext[offset + i] ^ block[i];
+    }
     wipe(block, sizeof block);
+}
+
+static bool open(uint8_t *plaintext, size_t plain_length,
+    const uint8_t key[32], const uint8_t *ciphertext) {
+    if (!plaintext) return false;
+    memset(plaintext, 0, plain_length);
+    if (!key || !ciphertext || !authentic(key, ciphertext, plain_length))
+        return false;
+    decrypt(plaintext, key, ciphertext, plain_length);
     return true;
+}
+
+bool blue_sapling_out_open(uint8_t plaintext[BLUE_SAPLING_OUT_PLAIN_BYTES],
+    const uint8_t key[32],
+    const uint8_t ciphertext[BLUE_SAPLING_OUT_CIPHER_BYTES]) {
+    return open(plaintext, BLUE_SAPLING_OUT_PLAIN_BYTES, key, ciphertext);
+}
+
+bool blue_sapling_note_open(uint8_t plaintext[BLUE_SAPLING_NOTE_PLAIN_BYTES],
+    const uint8_t key[32],
+    const uint8_t ciphertext[BLUE_SAPLING_NOTE_CIPHER_BYTES]) {
+    return open(plaintext, BLUE_SAPLING_NOTE_PLAIN_BYTES, key, ciphertext);
 }

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_sapling_ock.h"
-#include "blue_sapling_out_open.h"
+#include "blue_sapling_aead.h"
 #include "zcl_tx_shielded_replay.h"
 #include "zcl_zip243_host.h"
 #include "crypto/chacha20poly1305.h"
@@ -96,8 +96,52 @@ static void capture_verified_output(const uint8_t wire[WIRE_BYTES],
     zcl_tx_shielded_replay_abort(&replay);
 }
 
+static void check_note_ciphertext(void) {
+    const uint8_t nonce[12] = {0};
+    uint8_t key[32], plain[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    uint8_t cipher[BLUE_SAPLING_NOTE_CIPHER_BYTES];
+    uint8_t recovered[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    uint8_t core_recovered[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    for (size_t i = 0; i < sizeof key; ++i) key[i] = (uint8_t)i;
+    for (size_t i = 0; i < sizeof plain; ++i)
+        plain[i] = (uint8_t)(i * 73u + 11u);
+    uint8_t zero[BLUE_SAPLING_NOTE_PLAIN_BYTES] = {0};
+    uint8_t stream[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    uint8_t zero_cipher[BLUE_SAPLING_NOTE_CIPHER_BYTES];
+    assert(chacha20_encrypt(key, 1, nonce, zero, sizeof zero, stream));
+    assert(chacha20poly1305_encrypt(stream, sizeof stream, NULL, 0,
+        nonce, key, zero_cipher));
+    assert(memcmp(zero_cipher, zero, sizeof zero) == 0);
+    static const uint8_t tag[16] = {
+        0x95,0x22,0xd6,0x67,0x36,0x7b,0x4c,0x44,
+        0x02,0xb1,0x2d,0x0b,0x07,0x3e,0x21,0x53
+    };
+    assert(memcmp(zero_cipher + sizeof zero, tag, sizeof tag) == 0);
+    assert(blue_sapling_note_open(recovered, key, zero_cipher));
+    assert(memcmp(recovered, stream, sizeof stream) == 0);
+    assert(chacha20poly1305_encrypt(plain, sizeof plain, NULL, 0,
+        nonce, key, cipher));
+    assert(blue_sapling_note_open(recovered, key, cipher));
+    assert(chacha20poly1305_decrypt(cipher, sizeof cipher, NULL, 0,
+        nonce, key, core_recovered));
+    assert(memcmp(recovered, plain, sizeof plain) == 0);
+    assert(memcmp(recovered, core_recovered, sizeof recovered) == 0);
+    cipher[0] ^= 1u;
+    assert(!blue_sapling_note_open(recovered, key, cipher));
+    for (size_t i = 0; i < sizeof recovered; ++i) assert(recovered[i] == 0);
+    cipher[0] ^= 1u;
+    cipher[sizeof cipher - 1] ^= 1u;
+    assert(!blue_sapling_note_open(recovered, key, cipher));
+    for (size_t i = 0; i < sizeof recovered; ++i) assert(recovered[i] == 0);
+    cipher[sizeof cipher - 1] ^= 1u;
+    key[0] ^= 1u;
+    assert(!blue_sapling_note_open(recovered, key, cipher));
+    for (size_t i = 0; i < sizeof recovered; ++i) assert(recovered[i] == 0);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
+    check_note_ciphertext();
     static const uint8_t ovk[32] = {
         0xce,0x03,0x88,0x0a,0x87,0x50,0x48,0xf6,
         0x17,0x8e,0xbd,0x84,0x2e,0xdb,0xcb,0xd2,

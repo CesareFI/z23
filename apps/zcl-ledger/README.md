@@ -9,6 +9,12 @@ need Ledger Live, Python, Rust, or a network connection at runtime. The host
 can encode a transparent address from a supplied public key or the receive
 candidate's device-derived public key. The host does not derive device keys,
 sign transactions, or access recovery words.
+The bounded [`blue_sapling_aead` API](include/blue_sapling_aead.h)
+authenticates and decrypts fixed-size outgoing and note ciphertexts in C23.
+The note result is not a verified output: the device still needs independent
+key derivation, ephemeral-key and commitment checks, and recipient policy.
+This source is exercised on ARM emulators and is not linked into an installed
+Blue app.
 The [Blue development guide](DEVELOPMENT.md) records the open-source C23
 toolchain, image checks, and evidence gates for extending the device app.
 The reusable [`zcl_tx_stream` API](include/zcl_tx_stream.h) parses unsigned,

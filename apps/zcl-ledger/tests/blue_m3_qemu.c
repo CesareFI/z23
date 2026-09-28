@@ -11,7 +11,7 @@
 #include "blue_zip32_child.h"
 #include "blue_zip32_seed_bridge.h"
 #include "blue_sapling_spend_auth.h"
-#include "blue_sapling_out_open.h"
+#include "blue_sapling_aead.h"
 #include "blue_consensus_spend_fixture.h"
 #include "blue_sapling_generators.h"
 #include "blue_mod256.h"
@@ -200,6 +200,38 @@ static bool check_outgoing_open(void) {
     changed[79] ^= 1u;
     if (blue_sapling_out_open(recovered, key, changed)) return false;
     for (unsigned i = 0; i < sizeof recovered; ++i)
+        if (recovered[i]) return false;
+    return true;
+}
+
+static bool check_note_open(void) {
+    static const uint8_t key[32] = {
+        0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+        0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+        0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+        0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
+    };
+    static const uint8_t cipher[BLUE_SAPLING_NOTE_CIPHER_BYTES] = {
+        [BLUE_SAPLING_NOTE_PLAIN_BYTES] =
+            0x95,0x22,0xd6,0x67,0x36,0x7b,0x4c,0x44,
+            0x02,0xb1,0x2d,0x0b,0x07,0x3e,0x21,0x53
+    };
+    static const uint8_t first[8] = {
+        0x18,0xb8,0x42,0x31,0xad,0xe6,0xa6,0xd1
+    };
+    static const uint8_t last[8] = {
+        0x71,0xc7,0x04,0x32,0xec,0x34,0xbf,0xc6
+    };
+    uint8_t recovered[BLUE_SAPLING_NOTE_PLAIN_BYTES];
+    if (!blue_sapling_note_open(recovered, key, cipher) ||
+        memcmp(recovered, first, sizeof first) != 0 ||
+        memcmp(recovered + sizeof recovered - sizeof last,
+            last, sizeof last) != 0) return false;
+    uint8_t wrong_key[32];
+    memcpy(wrong_key, key, sizeof key);
+    wrong_key[0] ^= 1u;
+    if (blue_sapling_note_open(recovered, wrong_key, cipher)) return false;
+    for (size_t i = 0; i < sizeof recovered; ++i)
         if (recovered[i]) return false;
     return true;
 }
@@ -603,6 +635,7 @@ static const struct {
     {"FIELD", check_fs_boundary},
     {"REDUCE", check_reduction},
     {"OUTOPEN", check_outgoing_open},
+    {"NOTEOPEN", check_note_open},
     {"EQUATION", check_signing_equation},
     {"CHALLENGE", check_challenge},
     {"NONCE", check_entropy_signature},

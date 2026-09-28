@@ -104,12 +104,12 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
 
-add_library(blue_sapling_out_open STATIC src/blue_sapling_out_open.c)
-target_include_directories(blue_sapling_out_open PUBLIC include)
-target_compile_options(blue_sapling_out_open PRIVATE
+add_library(blue_sapling_aead STATIC src/blue_sapling_aead.c)
+target_include_directories(blue_sapling_aead PUBLIC include)
+target_compile_options(blue_sapling_aead PRIVATE
     -Wall -Wextra -Werror -pedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_options(blue_sapling_out_open PRIVATE
+    target_compile_options(blue_sapling_aead PRIVATE
         -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
 
@@ -117,7 +117,7 @@ add_executable(test-blue-sapling-ock
     tests/test_blue_sapling_ock.c
     ../../core/modules/crypto/src/chacha20poly1305.c)
 target_link_libraries(test-blue-sapling-ock PRIVATE
-    blue_sapling_ock blue_sapling_out_open zcl_zip243_host_hash)
+    blue_sapling_ock blue_sapling_aead zcl_zip243_host_hash)
 target_include_directories(test-blue-sapling-ock PRIVATE
     ../../core/modules/crypto/include
     ../../platform/modules/base/include
@@ -780,7 +780,7 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_response.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_redjubjub_sign_isolated.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_spend_auth.c"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_out_open.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_sapling_aead.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_master.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_fvk.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_zip32_child.c"
@@ -805,7 +805,7 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             include/blue_redjubjub_response.h
             include/blue_redjubjub_sign_isolated.h
             include/blue_sapling_spend_auth.h
-            include/blue_sapling_out_open.h
+            include/blue_sapling_aead.h
             include/blue_zip32_master.h
             include/blue_zip32_fvk.h
             include/blue_zip32_child.h
