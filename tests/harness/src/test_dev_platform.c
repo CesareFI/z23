@@ -8801,29 +8801,41 @@ static bool dp_path_exists(const char *path)
 }
 
 /* The leader of dp_leaderless_session: forks `members` idle members that
- * work from `member_cwd`, reports its pid and the last member's, and exits
- * when `go_fd` reaches EOF. */
+ * work from `member_cwd`, reports its pid and the last member's once every
+ * member has settled there, and exits when `go_fd` reaches EOF. The report
+ * is the caller's readiness barrier: a member still in the leader's
+ * directory (the root) would vouch for the session the caller is about to
+ * prove unprovable. */
 [[noreturn]] static void dp_leaderless_leader(const char *root, int members,
                                               const char *member_cwd,
                                               int report_fd, int go_fd)
 {
+    int settled[2];
     (void)setsid();
-    if (chdir(root) != 0)
+    if (chdir(root) != 0 || pipe(settled) != 0)
         _exit(2);
     pid_t last = -1;
     for (int i = 0; i < members; i++) {
         last = fork();
         if (last == 0) {
-            if (chdir(member_cwd) != 0)
+            char one = 1;
+            (void)close(settled[0]);
+            if (chdir(member_cwd) != 0 || write(settled[1], &one, 1) != 1)
                 _exit(2);
+            (void)close(settled[1]);
             for (;;)
                 pause();
         }
         if (last < 0)
             _exit(3);
     }
-    pid_t pids[2] = {getpid(), last};
+    (void)close(settled[1]);
     char byte;
+    for (int i = 0; i < members; i++)
+        if (read(settled[0], &byte, 1) != 1)
+            _exit(3);
+    (void)close(settled[0]);
+    pid_t pids[2] = {getpid(), last};
     if (write(report_fd, pids, sizeof(pids)) != sizeof(pids))
         _exit(3);
     ssize_t got = read(go_fd, &byte, 1);
