@@ -138,6 +138,33 @@ static const struct ssp_case k_ssp_cases[] = {
      "#endif\n"
      "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
      {"-std=c17", "-I", "-std=c23"}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after an apostrophe before C23, with __STDC_VERSION__ set by -D",
+     "#if 0\n"
+     "int k = 1'a/*';\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
+     {"-std=c17", "-D__STDC_VERSION__=202311L", NULL}, NULL, NULL, false,
+     "opt.h", SSP_ANY},
+    {"after a C23 digit separator, with __STDC_VERSION__ dropped by -U",
+     "#if 0\n"
+     "int k = 1'a'/*;\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
+     {"-std=c23", "-U__STDC_VERSION__", NULL}, NULL, NULL, false, "opt.h",
+     SSP_ANY},
+    {"after a C23 digit separator, with __STDC_VERSION__ dropped by an "
+     "-include file",
+     "#if 0\n"
+     "int k = 1'a'/*;\n"
+     "#endif\n"
+     "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
+     {"-std=c23", "-include", "probe.h"}, "#undef __STDC_VERSION__\n", NULL,
+     false, "opt.h", SSP_ANY},
+    {"after a ??/ comment, with sizeof redefined by -D",
+     "// note ?\?/\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", "-Dsizeof(x)=2", NULL}, NULL, NULL, false, "opt.h",
+     SSP_ANY},
 };
 
 /* Options the scan cannot read: the emit must refuse with `why`. */

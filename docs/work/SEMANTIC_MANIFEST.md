@@ -138,7 +138,14 @@ were established:
   TU: the sensor parses a small probe file with the TU's own argv and reads
   back whether trigraphs are replaced and whether a pp-number takes a
   digit separator, so no option's arity can mislead it (`-I -std=c17`
-  names no `-std`). By clang's rules trigraphs are replaced in an ISO
+  names no `-std`). Each answer comes from how the front end lexes or
+  types the probe's text (`sizeof("??=")`, a macro that counts the
+  arguments `0'1, 2'3` splits into, `sizeof('a')` for C++), never from a
+  macro such as `__STDC_VERSION__`, which `-D`, `-U` or an `-include` file
+  can change; the probe first drops any macro named like its own words.
+  It parses with `--no-default-config`, as the TU does, so no clang
+  config file adds flags.
+  By clang's rules trigraphs are replaced in an ISO
   C mode before C23 (unless `-fno-trigraphs`; in any mode with
   `-trigraphs`), lines are spliced, and a pp-number takes a digit
   separator only from C23 on (before it, `'` opens a character literal).
@@ -899,7 +906,10 @@ refusal; each spelling but the separate `-Xclang` and `-Xpreprocessor`
 forms was accepted before. It also reads the trigraph and digit separator
 rules from the front end's own parse of a probe file rather than from
 argv, where a value of `-I`, `-iquote` or `-Xlinker` spelled like `-std`
-misled it (each case is in the same test file).
+misled it (each case is in the same test file). The probe measures by
+lexing and typing alone: a first version read `__STDC_VERSION__` and
+`sizeof`, which `-D__STDC_VERSION__=202311L`, `-U__STDC_VERSION__`, an
+`-include` file that undefines it, and `-Dsizeof(x)=2` each made lie.
 
 ### Darwin producer identity
 

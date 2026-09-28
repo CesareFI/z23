@@ -49,9 +49,11 @@
 /* Appended to the caller's argv for the parse only (never to the identity):
  * -v makes the front end print its exact include search list; the two
  * warning flags keep gcc-only warning options and -Werror from turning a
- * semantic parse into a refusal. Real errors still refuse. */
+ * semantic parse into a refusal (real errors still refuse); and
+ * --no-default-config keeps a clang config file beside the library or in
+ * a user config dir from adding flags the argv never names. */
 static const char *const k_cm_suffix[] = {"-v", "-Wno-unknown-warning-option",
-                                          "-Wno-error"};
+                                          "-Wno-error", "--no-default-config"};
 #define CM_SUFFIX_N (sizeof(k_cm_suffix) / sizeof(k_cm_suffix[0]))
 
 char *cm_take_string(CXString s)
@@ -475,23 +477,28 @@ static bool cm_refuse_msvc_target(struct cm_state *st)
 /* ---- the TU's lexing rules, as the front end applies them ------------------- */
 
 /* A probe parsed under the TU's own argv: each array's size says one rule
- * the front end applies (sizeof("??=") is 2 when trigraphs are replaced;
- * separators come with a mode after C17; foreign is C++ or Objective-C).
- * Reading these from argv instead would trust a model of every option's
- * arity: "-I -std=c17" or "-Xlinker -std=c17" names no -std at all. */
+ * the front end applies, measured by how it lexes or types the text, never
+ * by a macro (-D, -U or an -include file can make any macro lie):
+ * sizeof("??=") is 2 when trigraphs are replaced; CM_N counts 2 arguments
+ * when 0'1 and 2'3 are pp-numbers with separators, and 1 when each ' opens
+ * the character literal '1, 2'; sizeof('a') is 1 in C++ (a char), and more
+ * in C (an int); in Objective-C "id" is a builtin type, so the typedef
+ * fails and the probe with it. The #undef lines drop any macro the argv or
+ * an -include file gave the probe's own words. Reading these rules from
+ * argv instead would trust a model of every option's arity: "-I -std=c17"
+ * or "-Xlinker -std=c17" names no -std at all. */
 #define CM_LANG_PROBE "clang-manifest-lang-probe.c"
 static const char k_cm_lang_probe[] =
+    "#undef CM_N\n#undef CM_N2\n#undef cm_lang_trigraphs\n"
+    "#undef cm_lang_separators\n#undef cm_lang_foreign\n#undef extern\n"
+    "#undef const\n#undef char\n#undef sizeof\n#undef typedef\n"
+    "#undef int\n#undef id\n"
+    "#define CM_N2(a, b, n, ...) n\n"
+    "#define CM_N(...) CM_N2(__VA_ARGS__, 2, 1, 0)\n"
     "extern const char cm_lang_trigraphs[sizeof(\"?\?=\")];\n"
-    "#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L\n"
-    "extern const char cm_lang_separators[2];\n"
-    "#else\n"
-    "extern const char cm_lang_separators[1];\n"
-    "#endif\n"
-    "#if defined(__cplusplus) || defined(__OBJC__)\n"
-    "extern const char cm_lang_foreign[2];\n"
-    "#else\n"
-    "extern const char cm_lang_foreign[1];\n"
-    "#endif\n";
+    "extern const char cm_lang_separators[CM_N(0'1, 2'3)];\n"
+    "extern const char cm_lang_foreign[sizeof('a')];\n"
+    "typedef int id;\n";
 
 struct cm_lang_seen {
     long long trigraphs, separators, foreign;
@@ -532,7 +539,8 @@ static unsigned cm_error_count(CXTranslationUnit tu)
 }
 
 /* Parse the probe with the TU's argv (without the -v suffix, and with -w so
- * no warning option can turn it into an error) and read its sizes. */
+ * no warning option can turn it into an error, and no default config
+ * file adds to it) and read its sizes. */
 static bool cm_measure_lang(struct cm_state *st, const struct cm_args *args,
                             struct cm_lang *lang)
 {
@@ -542,16 +550,17 @@ static bool cm_measure_lang(struct cm_state *st, const struct cm_args *args,
                               .Length = sizeof(k_cm_lang_probe) - 1};
     struct cm_lang_seen seen = {0};
     size_t n = args->nparse >= CM_SUFFIX_N ? args->nparse - CM_SUFFIX_N : 0;
-    const char **argv = zcl_calloc(n + 2, sizeof(char *), "clang_manifest.lang");
+    const char **argv = zcl_calloc(n + 3, sizeof(char *), "clang_manifest.lang");
     CXTranslationUnit tu = NULL;
     enum CXErrorCode rc;
     unsigned errors = 1;
     if (argv == NULL)
         return cm_fail(c, "out of memory");
     memcpy(argv, args->parse, n * sizeof(char *));
-    argv[n] = "-w";
+    argv[n] = "--no-default-config";
+    argv[n + 1] = "-w";
     rc = clang_parseTranslationUnit2(st->index, CM_LANG_PROBE, argv,
-                                     (int)n + 1, &f, 1, CXTranslationUnit_None,
+                                     (int)n + 2, &f, 1, CXTranslationUnit_None,
                                      &tu);
     free(argv);
     if (rc == CXError_Success && tu != NULL) {
@@ -560,7 +569,7 @@ static bool cm_measure_lang(struct cm_state *st, const struct cm_args *args,
                             &seen);
         clang_disposeTranslationUnit(tu);
     }
-    if (errors != 0 || seen.foreign != 1 ||
+    if (errors != 0 || seen.foreign <= 1 ||
         (seen.trigraphs != 2 && seen.trigraphs != 4) ||
         (seen.separators != 1 && seen.separators != 2))
         return cm_fail(c, "unsupported translation-unit language: the front end's lexing probe failed");
