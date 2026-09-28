@@ -1269,13 +1269,14 @@ three to eight TUs and one to four headers before and after one edit:
   plans narrow; `gcc-deps` writes the depfiles with gcc, which omits
   `__has_include` probes;
 - **fixed** (`tests/harness/src/semantic_fuzz_repro.c`): every minimized
-  reproducer a run found (F1 to F8) and four shapes that must keep
+  reproducer a run found (F1 to F11) and the shapes that must keep
   passing. They run on every run.
 
 Each TU is compiled with the clang of the LLVM whose libclang the sensor
 links (the sensor's `DT_RUNPATH`), `-std=c23 -O1 -ffunction-sections
 -fdata-sections` plus the project's flags, and sensed with the same argv,
-on both sides. The change set is planned in process exactly as
+on both sides, unless a toolchain case says otherwise (below). The change
+set is planned in process exactly as
 `dev.change.plan` with `"facts"` plans it, and two oracles judge the plan:
 
 1. every TU the plan leaves unaffected, or out of its universe, has a
@@ -1302,19 +1303,26 @@ on both sides. The change set is planned in process exactly as
    itself or a header (a header static), so a same-name static in another
    file is not covered by it.
 
-A false negative prints the seed, profile, mutation, TU and function and
 fails the group. Every fixed reproducer always runs. On top of those, the
 default run adds a fixed list of 6 (seed, profile, kind) cases (about a
-minute standalone with the fixed reproducers), and must yield narrowed verdicts that seed a changed
-function, so the group cannot pass on fallbacks alone; `ZCL_STRESS_TESTS=1`
-runs the full 44-case list instead, held to the same invariant.
-`ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]` runs a long range
-instead of either, and wins over `ZCL_STRESS_TESTS`; only such a range run
-may draw an edit that changes no file (NOOP), which fails a fixed
-reproducer or a default seed. A reproducer marked known-RED names the fix it waits for and the
-exact false-negative lines it reports until then; it holds only when it
-fails with exactly those lines, and any other outcome (an ERROR, a
-different miss, or a PASS, which means the mark is stale) fails the group.
+minute standalone with the fixed reproducers), and must yield narrowed
+verdicts that seed a changed function, so the group cannot pass on
+fallbacks alone; `ZCL_STRESS_TESTS=1` runs the full 44-case list instead,
+held to the same invariant.
+`ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]` runs a
+long range instead of either, and wins over `ZCL_STRESS_TESTS`; only such
+a range run may draw an edit that changes no file (NOOP), which fails a
+fixed reproducer or a default seed. `KIND` `any` draws the kind. `CC`
+names the object compiler of both sides (`clang`, the sensor's, by
+default; `gcc` or any name on `PATH`), or `BEFORE>AFTER` for a compiler
+that changes between the sides; `OPT` replaces `-O1` with comma-separated
+flags in both argvs, or is `COMPILE/SENSOR` when the sensor is handed
+other flags than the compile. The toolchain reproducers
+(`k_sfz_tool_repros`) set the same fields. A reproducer marked known-RED
+names the fix it waits for and the exact false-negative lines it reports
+until then; it holds only when it fails with exactly those lines, and any
+other outcome (an ERROR, a different miss, or a PASS, which means the mark
+is stale) fails the group.
 F7 (a `cleanup()` handler inlined into a function that is not seeded),
 F7_cleanup_same_name (the same miss while another file's same-name static
 also changes, which a seed matched by bare name would have hidden) and
@@ -1322,6 +1330,20 @@ both F8 shapes (a `.c` that `#include`s another `.c`: an edit to the
 included file does not seed the includer's functions) were known-RED at
 64370952d5; the consumer's cleanup-handler and `.c`-includes-`.c` fixes
 now cover all four, and they run as ordinary fixed reproducers.
+
+The known-RED reproducers are three toolchain families, none a text
+edit the consumer misreads:
+
+| reproducer | toolchain | missed | root cause |
+|---|---|---|---|
+| F9_cc_drift | objects by clang before, gcc after; same argv; a comment in `t0_a` | `t1.c` (object changed, out of the universe), `t0_a` | the IDENTITY record names the sensor's own libclang version (`tools/sensors/clang_manifest.c`, `cm_emit_identity_libclang`) and the flags after `--`, which never include the compiler (`Makefile`, `clang-facts` rule): a compiler change or upgrade is no identity drift |
+| F10_opt_spelling_O02, _long | gcc at `-O02`, `--optimize=2` | `t0_s.constprop.0` | `fxg_optimizes` (`tools/dev/devloop_facts_codegen.c`) reads `-O0` as a prefix and needs `-O`: gcc's `-O2` is modeled as `-O0` or no optimizer (callers only) |
+| F10_opt_spelling_O5 | gcc at `-O5` (gcc's `-O3`) | `t0_w.constprop.1` | `k_fxg_unbounded` lists `-O2` to `-O4` only; `-O5` falls to the `-O1` component model, which never seeds an external callee gcc clones |
+| F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | the `clang-facts` rule passes `$(DEV_COMPILE_CFLAGS)` as the `.zsm` target sees it (`-Og`), while the dev objects of the hot dirs (`core/modules/chain`, `crypto`, `script`, `validation` and four more) take `DEV_HOT_CFLAGS` (`-O2`), and `clientversion.o` extra defines, from target-specific assignments the facts rule never sees |
+
+The passing shapes beside them hold the model where the spelling is
+canonical: gcc `-O1` seeds the specialized static, and gcc `-O2` and
+`-O3` fall back (`inline-closure-unknown`).
 
 Four generator kinds edit only data: `data_string` (a string literal in
 a body, of the same length or longer, so a later literal moves),

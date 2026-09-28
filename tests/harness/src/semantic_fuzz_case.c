@@ -325,15 +325,31 @@ static bool add_tokens(struct sfz_flags *f, char *s, const char *sep,
     return true;
 }
 
-/* The argv of a compile (sensor false) or of a sensor run. The case's
- * optimizer flags are COMPILE or COMPILE/SENSOR: a sensor handed other
- * flags than the compile it describes, as a build whose per-object flags
- * never reach the sensor's rule does. */
+/* The case's optimizer flags for a compile (sensor false) or a sensor run:
+ * COMPILE or COMPILE/SENSOR, a sensor handed other flags than the compile
+ * it describes, as a build whose per-object flags never reach the
+ * sensor's rule does. An empty half is -O1. */
+static void pick_opt(const char *opt, bool sensor, char *out, size_t n)
+{
+    const char *slash = strchr(opt, '/');
+    if (slash == NULL)
+        (void)snprintf(out, n, "%s", opt);
+    else if (sensor)
+        (void)snprintf(out, n, "%s", slash + 1);
+    else
+        (void)snprintf(out, n, "%.*s", (int)(slash - opt), opt);
+    if (out[0] == '\0')
+        (void)snprintf(out, n, "-O1");
+}
+
+/* The argv of a compile (sensor false) or of a sensor run: the fixed
+ * flags, then the case's optimizer flags (which may override -g0), then
+ * the project's. */
 static bool read_flags(const struct sfz_run *r, bool sensor,
                        struct sfz_flags *f)
 {
-    static const char *const fixed[] = {"-g0", "-w", "-ffunction-sections",
-                                        "-fdata-sections"};
+    static const char *const fixed[] = {"-std=c23", "-g0", "-w",
+                                        "-ffunction-sections", "-fdata-sections"};
     char path[PATH_MAX * 2];
     uint8_t *mk = NULL;
     size_t n = 0;
@@ -343,22 +359,11 @@ static bool read_flags(const struct sfz_run *r, bool sensor,
     if (sfz_slurp(path, &mk, &n) && (line = strstr((char *)mk, "CFLAGS_EXTRA =")))
         (void)sscanf(line + strlen("CFLAGS_EXTRA ="), "%511[^\n]", f->extra);
     free(mk);
-    /* -std=c23, then the case's optimizer flags (-O1 unless it names others) */
-    f->v[f->n++] = "-std=c23";
-    const char *slash = strchr(r->c->opt, '/');
-    if (slash == NULL)
-        (void)snprintf(f->opt, sizeof(f->opt), "%s", r->c->opt);
-    else if (sensor)
-        (void)snprintf(f->opt, sizeof(f->opt), "%s", slash + 1);
-    else
-        (void)snprintf(f->opt, sizeof(f->opt), "%.*s",
-                       (int)(slash - r->c->opt), r->c->opt);
-    if (f->opt[0] == '\0')
-        (void)snprintf(f->opt, sizeof(f->opt), "-O1");
-    if (!add_tokens(f, f->opt, ",", "the case's optimizer flags"))
-        return false;
     for (size_t k = 0; k < sizeof(fixed) / sizeof(fixed[0]); k++)
         f->v[f->n++] = fixed[k];
+    pick_opt(r->c->opt, sensor, f->opt, sizeof(f->opt));
+    if (!add_tokens(f, f->opt, ",", "the case's optimizer flags"))
+        return false;
     (void)snprintf(f->map, sizeof(f->map), "-ffile-prefix-map=%s=/zclassic23",
                    r->tree);
     f->v[f->n++] = f->map;
