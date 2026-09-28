@@ -70,6 +70,25 @@ static bool abs_path(const char *in, char out[SR_PATH])
     return true;
 }
 
+/* The absolute path of this binary, which run re-executes per step: argv0
+ * itself when it holds a slash, else its first match on PATH, as execvp
+ * found it (an empty PATH entry is the working directory). */
+static bool self_path(const char *argv0, char out[SR_PATH])
+{
+    const char *path = getenv("PATH");
+    char cand[SR_PATH];
+    if (strchr(argv0, '/') != NULL || path == NULL)
+        return abs_path(argv0, out);
+    for (const char *p = path; *p != '\0';) {
+        size_t n = strcspn(p, ":");
+        snprintf(cand, sizeof(cand), "%.*s/%s", (int)(n ? n : 1), n ? p : ".", argv0);
+        if (access(cand, X_OK) == 0)
+            return abs_path(cand, out);
+        p += n + (p[n] == ':');
+    }
+    return abs_path(argv0, out);
+}
+
 static bool opt_value(struct opts *o, const char *key, const char *v)
 {
     struct sr_cfg *c = &o->cfg;
@@ -104,9 +123,7 @@ static bool parse_opts(int argc, char **argv, struct opts *o)
     memset(o, 0, sizeof(*o));
     o->cfg.jobs = 8;
     snprintf(o->label, sizeof(o->label), "check");
-    /* run re-executes this binary per step. /proc/self/exe names it on
-     * Linux; a host without /proc (macOS) falls back to argv[0]. */
-    if (!abs_path(sr_exists("/proc/self/exe") ? "/proc/self/exe" : argv[0], o->cfg.self))
+    if (!self_path(argv[0], o->cfg.self))
         return false;
     for (int i = 2; i + 1 < argc; i += 2)
         if (!opt_value(o, argv[i], argv[i + 1]))

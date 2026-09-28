@@ -839,6 +839,48 @@ What mutation testing does NOT catch is in
 [`tools/dev/mutation_harness.h`](../tools/dev/mutation_harness.h); read it
 before treating any score as a quality claim.
 
+### Measuring what the semantic facts plan saves — z23-sem-replay
+
+`dev.change.plan` can narrow its compile and test-group sets with semantic
+facts. `z23-sem-replay` measures that narrowing on real commits. For each
+commit it checks out the parent and the commit in a dedicated worktree,
+builds the test-fast objects with the real Makefile, reads the depfiles to
+see which TUs make recompiled, and runs `dev.change.plan` twice, once plain
+and once with the facts. It then counts TU compiles for make, for the objects
+whose bytes changed, for the plain plan and for the facts plan, and test
+groups for the plain and facts plans. `report` prints a headline, per-commit
+rows and totals.
+
+A step exits 3 when an object make rebuilt has changed code and the facts
+plan left it out: a code false negative. That object would have been stale if
+the plan had been trusted. The step writes the TU to `MISSES.tsv` and stops
+the run.
+
+```bash
+make sem-replay-bin clang-manifest dev-bin
+build/bin/z23-sem-replay run --repo <dedicated worktree> --state build/sem-replay \
+    --sensor build/bin/z23-clang-manifest --planner build/bin/z23-dev \
+    --commits <file of SHAs, oldest first>
+build/bin/z23-sem-replay report --state build/sem-replay
+make t-fast ONLY=sem_replay        # the tool's own self-test
+```
+
+`run` replays one step per commit and resumes after the last finished one.
+`--devbuild <path>` runs each step through that host scheduler command, and
+`--jobs N` (at most 8) bounds each build. The worktree named by `--repo` is
+checked out and rebuilt, so it must hold no other work.
+
+**This is a reporting tool. No replay runs in `make ff`, `t-fast`,
+`t-fast-exact`, the land path or the proof path, and nothing there reads its
+output or depends on its exit code.** The test build only compiles the binary,
+so that the `sem_replay` group, an ordinary test group, can run it. That
+group proves the tool on a throwaway three-commit git repository with
+stand-in sensor and planner programs. It checks that a facts reply that
+leaves out the changed TU exits 3 and names the TU in `MISSES.tsv`, and that
+a correct narrowing produces the exact hand-computed counts. The method and
+its limits are in
+[`work/SEMANTIC_MANIFEST.md`](./work/SEMANTIC_MANIFEST.md#replay-on-real-history).
+
 ### Proving a permissionless cold join
 
 One claim gets asserted often enough in prose that it earned a single command:

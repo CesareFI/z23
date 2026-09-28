@@ -28,7 +28,9 @@
  *
  *   step C1 with a facts reply that lists no TU: make rebuilt src/a.c and its
  *   code changed, so the step must exit SR_STEP_FALSE_NEGATIVE (3) and write
- *   the TU to MISSES.tsv and sets.tsv.
+ *   the TU to MISSES.tsv and sets.tsv. `run` over the same commit, with the
+ *   tool found on PATH by its bare name, re-executes itself for the step and
+ *   stops with the same exit.
  *
  *   step C2 with a facts reply that narrows to src/a.c: make rebuilds a.o and
  *   b.o, only a.o's bytes change, the plain plan selects both TUs and two
@@ -527,6 +529,31 @@ static void srt_run_dir(char out[32], int index, const char *commit)
     snprintf(out, 32, "%03d_%.10s", index, commit);
 }
 
+/* z23-sem-replay run over one commit, the tool named by its bare name on
+ * PATH: run re-executes itself for the step, so this also proves it finds
+ * its own path without /proc. */
+static int srt_replay_run(const struct srt_fx *fx, const char *commit)
+{
+    static char pathvar[8192];
+    char state[PATH_MAX + 16], commits[PATH_MAX + 16], sensor[PATH_MAX + 16];
+    char plan[PATH_MAX + 32], bindir[PATH_MAX], text[80];
+    const char *old = getenv("PATH");
+    snprintf(bindir, sizeof bindir, "%s", fx->tool);
+    *strrchr(bindir, '/') = '\0';
+    snprintf(pathvar, sizeof pathvar, "PATH=%s:%s", bindir, old ? old : "/usr/bin:/bin");
+    snprintf(state, sizeof state, "%s/state-run", fx->root);
+    snprintf(commits, sizeof commits, "%s/commits.txt", fx->root);
+    snprintf(sensor, sizeof sensor, "%s/fx-sensor", fx->tools);
+    snprintf(plan, sizeof plan, "%s/fx-planner-omits", fx->tools);
+    snprintf(text, sizeof text, "%s\n", commit);
+    if (!srt_write(fx->root, "commits.txt", text))
+        return -1;
+    const char *argv[] = {pathvar,   strrchr(fx->tool, '/') + 1, "run", "--repo", fx->repo,
+                          "--state", state, "--sensor", sensor, "--planner", plan,
+                          "--jobs",  "2",   "--commits", commits, NULL};
+    return srt_run(argv);
+}
+
 #endif /* !_WIN32 */
 
 int test_sem_replay(void)
@@ -568,6 +595,15 @@ int test_sem_replay(void)
         ASSERT_STR_EQ(text, want);
         snprintf(path, sizeof path, "%s/run/%s/sets.tsv", state_a, dir_a);
         ASSERT(srt_file_has(path, "\nfn_code\tsrc/a.c\n"));
+        PASS();
+    }
+
+    TEST("run over the same commit re-executes itself and stops with exit 3") {
+        int rc = srt_replay_run(&fx, fx.c1);
+        if (rc != SRT_EXIT_FALSE_NEGATIVE)
+            printf("(run output: %s) ", g_srt_out);
+        ASSERT_EQ(rc, SRT_EXIT_FALSE_NEGATIVE);
+        ASSERT(strstr(g_srt_out, "stopped at a code false negative") != NULL);
         PASS();
     }
 

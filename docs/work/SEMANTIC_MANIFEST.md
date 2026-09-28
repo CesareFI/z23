@@ -1572,6 +1572,57 @@ manifests ran from 59,253 to 841,893 bytes per TU.
 **A narrowed plan is not proof.** Proof still runs the full closure, so the
 saving is feedback work only.
 
+## Replay on real history
+
+The tables above plan single edits and extracted commits. `z23-sem-replay`
+(`tools/dev/sem_replay*.c`, `make sem-replay-bin`) checks the facts plan
+against what an incremental build actually does, one real commit at a time,
+in a dedicated worktree:
+
+1. Check out the parent, run make's test-fast object build with the compile
+   cache off so every recipe compiles, snapshot every object of the live
+   epoch (`build/test-obj/.current-epoch`), and run the sensor on each TU
+   whose depfile names a changed file.
+2. Check out the commit and make again; this is the measured incremental
+   build. A TU is in make's set when its object's inode or mtime moved, and
+   in the changed set when its object's bytes changed. Sense the same bound
+   at the commit.
+3. Plan the commit's changed files with `dev.change.plan`, once plain and
+   once with the facts directory. The facts plan's compile set is the
+   affected TUs of a complete universe, every TU when the plan widens to the
+   whole catalog, or the plain set when it falls back.
+4. Compare make's set, the changed set, the plain set (TUs whose depfile
+   names a changed file) and the facts set. A changed object the facts set
+   leaves out is a miss. `objcopy --strip-debug` splits misses into code
+   misses (the stripped objects still differ) and debug-only misses (only
+   line information moved). A TU whose compile argv changed between the two
+   sides is counted apart as an argv miss.
+5. Stop on a code miss: the step exits 3, writes the TU to `MISSES.tsv`, and
+   keeps the facts directory for the reproduction. Debug-only and argv
+   misses are counted and do not stop the run. When either build failed,
+   misses are recorded and the run continues.
+
+Each step writes `run/<NN>_<commit>/result.tsv` and the sets behind it.
+`report` prints a headline (compiler executions the facts plan avoided
+against make, and test-group executions it avoided against the plain plan),
+the per-commit table, totals by change kind and by facts compile-set mode,
+the fallback reasons ranked by the compile CPU and the test groups precision
+could drop, and the sensor's CPU against each set's compile CPU. `repro`
+rebuilds every object and checks the bytes are reproducible. `catalog`
+compiles every TU cold with make's argv to price TUs make never rebuilt.
+
+The replay is bounded by the history it is given. A commit that touches no
+compiled input measures nothing. The miss check is only as strong as make's
+dependency tracking: a TU make did not rebuild and whose bytes did not change
+cannot be a miss.
+
+**This is a reporting tool, not a gate.** Nothing in `make ff`, `t-fast`,
+`t-fast-exact`, landing or proof runs a replay or reads its output. Its
+self-test, the `sem_replay` test group, runs the built binary on a
+three-commit fixture repository with stand-in sensor and planner programs.
+The test checks two things: a facts reply that omits the changed TU exits 3
+and names that TU, and a correct narrowing reports exact counts.
+
 ## A future native C23 compiler
 
 A native front end emits the same contract by linking the same core and
