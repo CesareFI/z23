@@ -568,6 +568,26 @@ static long seed_stale_pass(const char *vd, const char *from)
     return stale_ts;
 }
 
+/* Polls for `stamp` until it exists or worker `pid` has exited (reaped
+ * here; *gone reports it). No poll count bounds the wait: the worker's own
+ * alarm() bounds its life, so a loaded box only slows the answer down. */
+static bool canary_wait_stamp(const char *stamp, pid_t pid, bool *gone)
+{
+    struct stat st;
+    int status = 0;
+    struct timespec poll = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+    *gone = false;
+    for (;;) {
+        if (stat(stamp, &st) == 0)
+            return true;
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            *gone = true;
+            return false;
+        }
+        nanosleep(&poll, NULL);
+    }
+}
+
 /* THE named top defect, hardened two ways:
  *
  *   1. A STALE PASS from a previous successful run is pre-seeded in the
@@ -659,18 +679,8 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
          * for a poll count: a loaded box only slows the stamp down. The
          * worker's own alarm() bounds how long it can live, so a missing
          * stamp still fails once the worker is gone. */
-        struct stat st_stamp;
-        bool stamp_present = false;
         bool worker_gone = false;
-        int early_status = 0;
-        struct timespec poll = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
-        while (!stamp_present && !worker_gone) {
-            stamp_present = stat(stamp, &st_stamp) == 0;
-            worker_gone = !stamp_present &&
-                          waitpid(pid, &early_status, WNOHANG) == pid;
-            if (!stamp_present && !worker_gone)
-                nanosleep(&poll, NULL);
-        }
+        bool stamp_present = canary_wait_stamp(stamp, pid, &worker_gone);
         struct stat st_mid;
         bool exists_mid = (stat(sentinel, &st_mid) == 0);
 
