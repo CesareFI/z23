@@ -987,14 +987,12 @@ static bool fxm_names_target(const char *t, const char *path)
     return false;
 }
 
-/* An optional include that does not exist yet but a rule can make (a rule
- * a define holds too, or a match-anything or .DEFAULT rule): make runs
- * that rule first and reads what it wrote, text no line here holds:
- * UNKNOWN. An include that exists is read as it stands; its rule remakes
- * it only when a prerequisite changed, and a changed path that reaches
- * that rule already widens (docs/work/SEMANTIC_MANIFEST.md). A
- * target-specific value makes nothing. A rule's targets (a define's too)
- * are expanded a many-word value as its words. */
+/* An optional include that does not exist yet but a rule can make (one a
+ * define holds, match-anything or .DEFAULT too) is made first, and what it
+ * wrote is text no line holds: UNKNOWN. One that exists is read as it
+ * stands (docs/work/SEMANTIC_MANIFEST.md). A target-specific value makes
+ * nothing. A rule's targets (a define's too) are expanded a many-word
+ * value as its words. */
 static void fxm_missing_made(struct fxm *m)
 {
     m->unknown |= fxm_anything_made(m);
