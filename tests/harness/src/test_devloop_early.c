@@ -293,13 +293,21 @@ static bool de_proof_plan(struct zcl_devloop_plan *plan)
     return zcl_devloop_plan_proof_admissible(plan, NULL);
 }
 
-/* A facts-narrowed plan: the first path group only, SEMANTIC incomplete
- * as the facts walk leaves it, so it is never admissible. */
+/* A facts-narrowed plan: the dev_platform path group only, SEMANTIC
+ * incomplete as the facts walk leaves it, so it is never admissible. */
 static bool de_facts_plan(const struct zcl_devloop_plan *proof,
                           struct zcl_devloop_early_plan *early)
 {
+    size_t at = 0;
+    while (at < proof->path_groups_len &&
+           strcmp(proof->path_groups[at], "dev_platform") != 0)
+        at++;
+    if (at == proof->path_groups_len)
+        return false;
     memset(early, 0, sizeof(*early));
     early->plan = *proof;
+    (void)snprintf(early->plan.path_groups[0],
+                   sizeof(early->plan.path_groups[0]), "%s", "dev_platform");
     early->plan.path_groups_len = 1;
     early->plan.closure_groups_len = 0;
     early->plan.dims[ZCL_DEVLOOP_DIM_SEMANTIC].status =
@@ -381,6 +389,9 @@ static bool de_prove(struct de_state *s,
         &s->early, &s->process, s->why, sizeof(s->why));
     if (!ok)
         printf("[prove: %s] ", s->why);
+    if (s->early.reason && s->early.reason[0])
+        printf("[early %s: %s %s] ", s->early.status, s->early.reason,
+               s->early.detail);
     return ok;
 }
 
@@ -412,6 +423,11 @@ static int de_test_order(struct de_state *s)
         ASSERT(s->early.full_first_exec_us >=
                s->early.first_exec_us + s->early.wall_us);
         ASSERT(s->early.full_wall_us > 0);
+        printf("[edit->early first exec %lld us, early wall %lld us, "
+               "edit->full first exec %lld us, full wall %lld us] ",
+               (long long)s->early.first_exec_us, (long long)s->early.wall_us,
+               (long long)s->early.full_first_exec_us,
+               (long long)s->early.full_wall_us);
         ASSERT_STR_EQ(s->early.artifact_sha256, s->with.artifact_sha256);
         (void)snprintf(s->early_line, sizeof(s->early_line), "early %s",
                        s->early.groups);

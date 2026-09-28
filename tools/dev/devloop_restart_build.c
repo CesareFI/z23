@@ -2451,6 +2451,9 @@ struct rr_prove_ctx {
     bool immediate_only;
     bool guard_source;
     const struct dev_source_record *epoch_source;
+    /* The early feedback stage (devloop_early.h); NULL receipt: none. */
+    const struct zcl_devloop_early_plan *early_plan;
+    struct zcl_devloop_early_receipt *early;
     int64_t started;
     char root[PATH_MAX];
     struct rr_plan plan;
@@ -2964,13 +2967,49 @@ static bool rr_prove_run_tests(struct rr_prove_ctx *ctx,
     return true;
 }
 
+/* FEEDBACK ONLY. After the full plan was admitted and selected and its
+ * candidate rehashed, the facts groups run on those same bytes before the
+ * full plan does. The stage reads the selected groups only to skip a set
+ * that would merely repeat them; it never writes the proof receipt, the
+ * test cache (its runner gets --no-cache) or the failure-first store, so
+ * the full plan runs exactly as it would without it. */
+static void rr_prove_run_early(struct rr_prove_ctx *ctx)
+{
+    if (ctx->early)
+        zcl_devloop_early_run(ctx->root, ctx->receipt->artifact_path,
+                              ctx->receipt->artifact_sha256, ctx->early_plan,
+                              ctx->receipt->groups, ctx->started, ctx->early);
+}
+
+/* The full plan's measures beside the early stage's, from the same
+ * origin. */
+static bool rr_prove_run_full(struct rr_prove_ctx *ctx,
+                              struct rr_prove_test_args *ta)
+{
+    int64_t full_started = platform_time_monotonic_us();
+    bool ok = rr_prove_run_tests(ctx, ta);
+    if (ctx->early) {
+        ctx->early->full_first_exec_us =
+            full_started - (ctx->early->origin_us ? ctx->early->origin_us
+                                                  : ctx->started);
+        ctx->early->full_wall_us = platform_time_monotonic_us() - full_started;
+    }
+    return ok;
+}
+
+struct rr_prove_early_io {
+    const struct zcl_devloop_early_plan *plan;
+    struct zcl_devloop_early_receipt *receipt;
+};
+
 static bool rr_restart_prove(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     const struct zcl_devloop_plan *proof_plan,
     struct zcl_devloop_restart_proof_receipt *receipt,
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len, bool immediate_only, bool guard_source,
-    const struct dev_source_record *epoch_source)
+    const struct dev_source_record *epoch_source,
+    struct rr_prove_early_io early)
 {
     struct rr_prove_ctx ctx = {
         .repo_root = repo_root, .source_tus = source_tus,
@@ -2978,9 +3017,14 @@ static bool rr_restart_prove(
         .receipt = receipt, .process = process, .why = why,
         .why_len = why_len, .immediate_only = immediate_only,
         .guard_source = guard_source, .epoch_source = epoch_source,
+        .early_plan = early.plan, .early = early.receipt,
         .started = platform_time_monotonic_us(),
     };
     if (why && why_len) why[0] = 0;
+    if (early.receipt) {
+        memset(early.receipt, 0, sizeof(*early.receipt));
+        zcl_devloop_early_skip(early.receipt, "full_plan_not_reached", "");
+    }
     if (!rr_prove_validate_inputs(&ctx))
         return false;
     if (!rr_prove_select_groups(&ctx))
@@ -2996,8 +3040,11 @@ static bool rr_restart_prove(
     struct rr_prove_test_args ta = {0};
     if (!rr_prove_build_test_args(&ctx, &ta))
         return false;
-    return rr_prove_run_tests(&ctx, &ta);
+    rr_prove_run_early(&ctx);
+    return rr_prove_run_full(&ctx, &ta);
 }
+
+static const struct rr_prove_early_io k_rr_no_early = {0};
 
 bool zcl_devloop_restart_prove(
     const char *repo_root, const char *const *source_tus, size_t source_count,
@@ -3007,7 +3054,8 @@ bool zcl_devloop_restart_prove(
     char *why, size_t why_len)
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, false, true, NULL);
+                            receipt, process, why, why_len, false, true, NULL,
+                            k_rr_no_early);
 }
 
 bool zcl_devloop_restart_prove_immediate(
@@ -3018,7 +3066,8 @@ bool zcl_devloop_restart_prove_immediate(
     char *why, size_t why_len)
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, true, true, NULL);
+                            receipt, process, why, why_len, true, true, NULL,
+                            k_rr_no_early);
 }
 
 bool zcl_devloop_restart_prove_early(
@@ -3029,11 +3078,10 @@ bool zcl_devloop_restart_prove_early(
     struct zcl_devloop_early_receipt *early,
     struct zcl_devloop_process_result *process, char *why, size_t why_len)
 {
-    (void)early_plan;
-    memset(early, 0, sizeof(*early));
-    zcl_devloop_early_skip(early, "not_wired", "");
+    struct rr_prove_early_io io = { .plan = early_plan, .receipt = early };
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, false, true, NULL);
+                            receipt, process, why, why_len, false, true, NULL,
+                            io);
 }
 
 static void rr_output_preview(const struct zcl_devloop_process_result *process,
@@ -3369,7 +3417,7 @@ static bool rr_emit_event(
     uint64_t source_guard_bytes_read, uint64_t source_bytes_total,
     bool source_byte_accounting_complete,
     int64_t impact_us, int64_t closure_us, bool closure_refresh_deferred,
-    bool feedback_parallel)
+    bool feedback_parallel, const struct zcl_devloop_early_receipt *early)
 {
     const char *progress_phase = zcl_devloop_progress_phase(status, phase);
     struct json_value doc, receipt;
@@ -3424,6 +3472,7 @@ static bool rr_emit_event(
         json_free(&receipt);
     }
     rr_emit_event_focused_scope(&doc, status, proof);
+    zcl_devloop_early_json(early, &doc);
     rr_emit_event_next_action(&doc, status);
     char wire[16384];
     size_t n = json_write(&doc, wire, sizeof(wire) - 1);
@@ -3454,6 +3503,8 @@ struct rr_event_ctx {
     char why[512];
     struct dev_source_record source_before, source_after;
     bool source_superseded;
+    /* Feedback only: never read by any verdict below. */
+    struct zcl_devloop_early_receipt early;
     bool *focused_complete;
 };
 
@@ -3565,7 +3616,8 @@ static int rr_event_handle_build_failure(struct rr_event_ctx *ctx)
         &ctx->build_process, ctx->why, ctx->source_guard_us,
         ctx->source_guard_captures, ctx->source_guard_bytes_read,
         ctx->source_bytes_total, ctx->source_byte_accounting_complete,
-        ctx->impact_us, ctx->closure_us, ctx->plan.closure_snapshot, false);
+        ctx->impact_us, ctx->closure_us, ctx->plan.closure_snapshot, false,
+        NULL);
     if (!emitted)
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
     return fallback_pending ? ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING
@@ -3575,10 +3627,21 @@ static int rr_event_handle_build_failure(struct rr_event_ctx *ctx)
 static bool rr_event_prove_phase(struct rr_event_ctx *ctx)
 {
     ctx->why[0] = 0;
+    struct rr_prove_early_io early = {
+        .plan = zcl_devloop_early_plan_resident(
+            ctx->repo_root, ctx->source_tus, ctx->source_count),
+        .receipt = &ctx->early,
+    };
     bool ok = rr_restart_prove(ctx->repo_root, ctx->source_tus,
-                              ctx->source_count, &ctx->plan, &ctx->proof,
-                              &ctx->proof_process, ctx->why, sizeof(ctx->why),
-                              true, false, &ctx->source_before);
+                               ctx->source_count, &ctx->plan, &ctx->proof,
+                               &ctx->proof_process, ctx->why,
+                               sizeof(ctx->why), true, false,
+                               &ctx->source_before, early);
+    /* Without its plan the stage skips; the full plan ran regardless. */
+    if (!early.plan)
+        zcl_devloop_early_skip(&ctx->early, "out_of_memory",
+                               "early feedback plan");
+    free((void *)early.plan);
     if (!ok)
         return false;
     int64_t guard_started = platform_time_monotonic_us();
@@ -3651,7 +3714,8 @@ static int rr_event_superseded(struct rr_event_ctx *ctx)
         ctx->publish_mode, &ctx->build, NULL, &ctx->build_process, ctx->why,
         ctx->source_guard_us, ctx->source_guard_captures,
         ctx->source_guard_bytes_read, ctx->source_bytes_total, false,
-        ctx->impact_us, ctx->closure_us, ctx->plan.closure_snapshot, false);
+        ctx->impact_us, ctx->closure_us, ctx->plan.closure_snapshot, false,
+        NULL);
     return emitted ? ZCL_DEVLOOP_RESTART_EVENT_CANCELLED
                    : ZCL_DEVLOOP_RESTART_EVENT_ERROR;
 }
@@ -3681,7 +3745,7 @@ static int rr_event_finish(struct rr_event_ctx *ctx, bool ok)
         ctx->why, ctx->source_guard_us, ctx->source_guard_captures,
         ctx->source_guard_bytes_read, ctx->source_bytes_total,
         ctx->source_byte_accounting_complete, ctx->impact_us, ctx->closure_us,
-        ctx->plan.closure_snapshot, false);
+        ctx->plan.closure_snapshot, false, &ctx->early);
     if (!emitted)
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
     if (ok) {
@@ -3741,7 +3805,7 @@ int zcl_devloop_restart_event_proving(const char *repo_root,
             ctx.source_guard_us, ctx.source_guard_captures,
             ctx.source_guard_bytes_read, ctx.source_bytes_total,
             ctx.source_byte_accounting_complete, ctx.impact_us,
-            ctx.closure_us, ctx.plan.closure_snapshot, false))
+            ctx.closure_us, ctx.plan.closure_snapshot, false, NULL))
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
 
     ok = rr_event_prove_phase(&ctx);
@@ -3804,7 +3868,7 @@ static int rr_story_finish(const char *repo_root,
         rr_focused_detail(ok, fallback, proof),
         platform_time_monotonic_us() - started, publish_mode, NULL, proof,
         process, why, 0, proof->source_guard_captures, 0, 0, false,
-        0, 0, plan->closure_snapshot, false);
+        0, 0, plan->closure_snapshot, false, NULL);
     if (!emitted)
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
     if (ok)
@@ -3828,7 +3892,7 @@ int zcl_devloop_restart_story_prove_event(
     struct zcl_devloop_process_result process = {0};
     bool ok = closure_ok && rr_restart_prove(
         repo_root, source_tus, source_count, &plan, &proof, &process,
-        why, sizeof(why), true, true, NULL);
+        why, sizeof(why), true, true, NULL, k_rr_no_early);
     return rr_story_finish(repo_root, source_tus, source_count, publish_mode,
                            started, &plan, &proof, &process, why, ok);
 }

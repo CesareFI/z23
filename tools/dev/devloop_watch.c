@@ -2,6 +2,7 @@
 
 #define _GNU_SOURCE
 #include "devloop.h"
+#include "devloop_early.h"
 #include "dev_proof.h"
 #include "devloop_watch_classify.h"
 
@@ -4697,8 +4698,10 @@ int zcl_devloop_watch_mode_until(const char *repo_root,
                 !watch_emit_impact_ready(&ctx, &edit_epoch))
                 break;
             watch_trace_mark(&ctx.trace.impact_ready_us);
+            zcl_devloop_early_note_edit(edit_epoch.seen_us);
         } else {
             (void)zcl_devloop_event_edit_epoch_set("");
+            zcl_devloop_early_note_edit(0);
             fprintf(stderr,
                     "[devloop] immutable edit epoch deferred; conservative "
                     "source reconciliation required\n");
