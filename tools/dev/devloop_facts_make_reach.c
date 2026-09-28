@@ -129,15 +129,25 @@ static bool fxm_name_glob(const char *name, char *pat)
     return literal;
 }
 
-/* Text that may run make by itself: the command make in any case ($(MAKE),
- * make, gmake, cmake; not MAKEFLAGS or Makefile), $(eval) or $(file). */
+/* The command make at p, in any case: make, $(MAKE), gmake, cmake,
+ * $(MAKE_COMMAND); not MAKEFLAGS or Makefile. */
+static bool fxm_make_at(const char *p)
+{
+    if ((p[0] | 0x20) != 'm' || (p[1] | 0x20) != 'a' || (p[2] | 0x20) != 'k' ||
+        (p[3] | 0x20) != 'e')
+        return false;
+    return !fxm_ident(p[4]) ||
+           (strncmp(p + 4, "_COMMAND", 8) == 0 && !fxm_ident(p[12]));
+}
+
+/* Text that may run make by itself: the command make (fxm_make_at),
+ * $(eval) or $(file). */
 static bool fxm_direct_maker(const char *s)
 {
     static const char *const marks[] = {"$(eval", "${eval", "$(file",
                                         "${file"};
     for (const char *p = s; *p != '\0'; p++)
-        if ((p[0] | 0x20) == 'm' && (p[1] | 0x20) == 'a' &&
-            (p[2] | 0x20) == 'k' && (p[3] | 0x20) == 'e' && !fxm_ident(p[4]))
+        if (fxm_make_at(p))
             return true;
     for (size_t k = 0; k < sizeof(marks) / sizeof(marks[0]); k++)
         if (strstr(s, marks[k]) != NULL)
@@ -201,9 +211,13 @@ static void fxm_vnames(struct fxm *m)
         if (w == 0 || strcmp(m->vnames[w - 1].name, m->vnames[k].name) != 0)
             m->vnames[w++] = m->vnames[k];
     m->nvnames = w;
+    /* The first two name goals and prerequisites too. */
     for (size_t k = 0; k < m->nvnames; k++)
         for (size_t h = 0; h < sizeof(hooks) / sizeof(hooks[0]); h++)
-            m->vnames[k].live |= strcmp(m->vnames[k].name, hooks[h]) == 0;
+            if (strcmp(m->vnames[k].name, hooks[h]) == 0) {
+                m->vnames[k].live = true;
+                m->vnames[k].goal = h < 2;
+            }
 }
 
 static struct fxm_vname *fxm_vname(struct fxm *m, const char *name, size_t n)
@@ -488,10 +502,47 @@ static bool fxm_prints_only(struct fxm *m, char *p, const char *e)
            fxm_quiet_args(m, p, e);
 }
 
+/* After a group's closing ')' or '}' at p: what the group prints feeds
+ * something (a pipe, a redirection, a word it joins) rather than ending
+ * with a separator or the line. */
+static bool fxm_group_feeds(const char *p)
+{
+    while (fxm_space(*++p))
+        ;
+    if (*p == '|')
+        return p[1] != '|';
+    return *p != '\0' && *p != ';' && *p != '&' && *p != ')' && *p != '}';
+}
+
+/* A group or command substitution in s (outside quotes and make
+ * references) whose output feeds another command: an echo in it prints
+ * into that command. */
+static bool fxm_fed_group(char *s)
+{
+    char quote = '\0';
+    for (char *p = s; *p != '\0'; p++) {
+        char *u = fxm_unit_end(p, quote);
+        if (u == NULL || (p[0] == '$' && p[1] == '$' && p[2] == '('))
+            return true;
+        if (u != p)
+            p = u;
+        else if (quote != '\0')
+            quote = *p == quote ? '\0' : quote;
+        else if (*p == '\'' || *p == '"')
+            quote = *p;
+        else if ((*p == ')' || *p == '}') && fxm_group_feeds(p))
+            return true;
+    }
+    return false;
+}
+
 /* Blank in a recipe line each command that only prints: what it prints is
- * text, never a goal make runs. One piped into another command stays. */
+ * text, never a goal make runs. One piped into another command stays, and
+ * so does every one in a line whose group feeds another command. */
 static void fxm_quiet_recipe(struct fxm *m, char *s)
 {
+    if (fxm_fed_group(s))
+        return;
     for (char *p = s, *e; *p != '\0'; p = e + 1) {
         if ((e = fxm_command_end(p)) == NULL)
             return;
@@ -595,7 +646,7 @@ static int fxm_quiet_call(const char *d)
 /* Blank what a call can never put in its value (fxm_quiet_call), but for
  * what runs as it is expanded. A word there cannot become a prerequisite
  * or a goal. */
-static void fxm_blank(struct fxm *m, char *s)
+void fxm_blank(struct fxm *m, char *s)
 {
     for (char *d = strchr(s, '$'); d != NULL; d = strchr(d + 1, '$')) {
         int quiet = fxm_quiet_call(d);
@@ -842,12 +893,14 @@ bool fxm_live(const struct fxm *m, const struct fxm_line *l)
     return m->whole || m->rules[l->rule].reached || l->runs_make;
 }
 
+static bool fxm_recipe_reaches(struct fxm *m, struct fxm_line *l);
+
 /* A line whose .PHONY names and references reach: a directive (not a
  * conditional: it cannot make a rule run), a definition of a live or
  * computed variable or one that runs make as it is read, the prerequisites
- * of a reached rule, and a recipe line of one that runs make (only make
- * runs a rule; any other command cannot). */
-static bool fxm_reaches(struct fxm *m, const struct fxm_line *l)
+ * of a reached rule, and a recipe line that runs make (only make runs a
+ * rule; any other command cannot) as fxm_recipe_reaches says. */
+static bool fxm_reaches(struct fxm *m, struct fxm_line *l)
 {
     struct fxm_vname *v;
     switch (l->ctx) {
@@ -860,7 +913,7 @@ static bool fxm_reaches(struct fxm *m, const struct fxm_line *l)
     case FXM_RULE:
         return m->whole || m->rules[l->rule].reached;
     case FXM_RECIPE:
-        return m->whole || (m->rules[l->rule].reached && l->runs_make);
+        return fxm_recipe_reaches(m, l);
     default:
         return false;
     }
@@ -883,22 +936,715 @@ static bool fxm_follow(struct fxm *m, const struct fxm_line *l)
     return grew;
 }
 
+/* ---- make inputs: goals a line spells through a value no text holds ------------ */
+
+/* A variable that reaches a goal position: its value may be a goal or a
+ * prerequisite. */
+static bool fxm_goal_mark(struct fxm_vname *v)
+{
+    bool grew = !v->goal;
+    v->goal = v->live = true;
+    return grew;
+}
+
+static bool fxm_goal_glob(struct fxm *m, const char *pat)
+{
+    bool grew = false;
+    for (size_t k = 0; k < m->nvnames; k++)
+        if (!m->vnames[k].goal && fxm_glob(pat, m->vnames[k].name))
+            grew |= fxm_goal_mark(&m->vnames[k]);
+    return grew;
+}
+
+/* A reference from a goal position (a computed one: every variable its
+ * spelling matches; one no text defines is kept by name, for a make
+ * command that sets it). */
+static bool fxm_goal_ref(struct fxm *m, const char *name, size_t n)
+{
+    char pat[FXM_NAME_MAX];
+    struct fxm_vname *v;
+    if (*name == '$')
+        return fxm_name_glob(name, pat) && fxm_goal_glob(m, pat);
+    if ((v = fxm_vname(m, name, n)) != NULL)
+        return fxm_goal_mark(v);
+    if (n >= sizeof(pat))
+        return false;
+    memcpy(pat, name, n);
+    pat[n] = '\0';
+    if (fxc_strs_has(&m->goal_names, pat))
+        return false;
+    m->unknown |= !fxc_strs_add(&m->goal_names, pat);
+    return true;
+}
+
+/* A call whose value holds words of its arguments as they stand. */
+static bool fxm_passes_words(const char *fn, size_t n)
+{
+    static const char *const fns[] = {
+        "if",       "or",     "and",        "strip",   "sort",
+        "firstword", "lastword", "word",    "wordlist", "filter",
+        "filter-out", "foreach", "call",    "value",   "eval",
+        "wildcard", "patsubst"};
+    for (size_t k = 0; k < sizeof(fns) / sizeof(fns[0]); k++)
+        if (strlen(fns[k]) == n && strncmp(fn, fns[k], n) == 0)
+            return true;
+    return false;
+}
+
+static bool fxm_goal_refs(struct fxm *m, const char *s, const char *end,
+                          bool twice, int depth);
+
+/* One word of a goal position that is one reference d..e (e its last
+ * character): its variable's words stand alone in the position (it is in
+ * a goal position too); a call that passes its arguments' words on
+ * ($(call F,..) and $(value F) F's too) is read for its arguments' own
+ * such references. Any other call's value, and a reference joined to
+ * other text, is a glob the expansion already spells. */
+static bool fxm_goal_unit(struct fxm *m, const char *d, const char *e,
+                          bool twice, int depth)
+{
+    const char *name, *p = d + 2;
+    size_t n = fxm_ref_name(d, &name), k = 0;
+    bool grew = false;
+    if (d[1] != '(' && d[1] != '{')
+        return n > 0 && fxm_goal_ref(m, name, n);
+    while (fxm_ident(p[k]))
+        k++;
+    if (k == 0 || !fxm_space(p[k]))
+        return n > 0 && fxm_goal_ref(m, name, n);
+    if (!fxm_passes_words(p, k) || depth >= FXM_ROUNDS)
+        return false;
+    if (name != p && n > 0)
+        grew = fxm_goal_ref(m, name, n);
+    grew |= fxm_goal_refs(m, p + k + 1, e, twice, depth + 1);
+    return grew;
+}
+
+/* Every word of s..end (a goal position's text) that is one reference
+ * (fxm_goal_unit); with twice, '$$(' is a reference too (text a later
+ * $(eval) expands again). */
+static bool fxm_goal_refs(struct fxm *m, const char *s, const char *end,
+                          bool twice, int depth)
+{
+    bool grew = false;
+    while (s < end) {
+        const char *w, *d, *e = NULL;
+        int nest = 0;
+        while (s < end && fxm_sep(*s))
+            s++;
+        for (w = s; s < end && (nest > 0 || !fxm_sep(*s)); s++)
+            nest += (*s == '(' || *s == '{') - (*s == ')' || *s == '}');
+        while (w < s && (*w == '@' || *w == '-' || *w == '+'))
+            w++;
+        d = twice && w + 1 < s && w[0] == '$' && w[1] == '$' ? w + 1 : w;
+        if (s - d < 2 || d[0] != '$')
+            continue;
+        if (d[1] == '(' || d[1] == '{')
+            e = fxm_ref_end((char *)d);
+        else if (s - d == 2)
+            e = d + 1;
+        if (e == s - 1)
+            grew |= fxm_goal_unit(m, d, e, twice, depth);
+    }
+    return grew;
+}
+
+/* A word a goal position spells that names a variable (a call argument, a
+ * name held in a value). */
+static bool fxm_goal_var(struct fxm *m, const char *t)
+{
+    struct fxm_vname *v;
+    if ((t = fxm_word_of(t)) == NULL)
+        return false;
+    if (strpbrk(t, FXM_WILDS) != NULL)
+        return fxm_goal_glob(m, t);
+    v = fxm_vname(m, t, strlen(t));
+    return v != NULL && fxm_goal_mark(v);
+}
+
+/* A word of a goal position no literal text pins: a lone pattern, or a run
+ * of values no text spells (an automatic variable's, a call's new words, a
+ * join of two values); not one variable's value alone (FXM_ANY), whose
+ * definition is followed. Every .PHONY name it can match is reached. */
+static bool fxm_open_phony(struct fxm *m, const char *t)
+{
+    bool grew = false;
+    while (*t == '@' || *t == '-' || *t == '+')
+        t++;
+    if ((t[0] == FXM_ANY && t[1] == '\0') || fxm_word_of(t) != NULL)
+        return false;
+    for (size_t k = 0; k < m->npairs; k++)
+        if (!m->rules[m->pairs[k].rule].reached && fxm_glob(t, m->pairs[k].name))
+            grew |= fxm_reach_name(m, m->pairs[k].name, strlen(m->pairs[k].name));
+    return grew;
+}
+
+/* A shell word a backslash escapes: the name the shell makes of it is not
+ * the text. */
+static bool fxm_escaped(struct fxm *m, const char *t)
+{
+    (void)m;
+    return strchr(t, '\\') != NULL;
+}
+
+/* Every rule is reached: a goal position spells any name. */
+static bool fxm_reach_all(struct fxm *m)
+{
+    bool grew = false;
+    for (size_t r = 0; r < m->nrules; r++) {
+        grew |= !m->rules[r].reached;
+        m->rules[r].reached = true;
+    }
+    return grew;
+}
+
+/* Blank the words a call's value never holds alone (FXM_HIDE_ON ..
+ * FXM_HIDE_OFF): the value's own words spell them joined. */
+static void fxm_unhide(char *t)
+{
+    int depth = 0;
+    for (; *t != '\0'; t++) {
+        depth += (*t == FXM_HIDE_ON) - (*t == FXM_HIDE_OFF);
+        if (depth > 0 || *t == FXM_HIDE_OFF)
+            *t = ' ';
+    }
+}
+
+/* One goal position's text (as written, less what only tests or prints):
+ * the variables it reads and spells are goal positions too; a word no
+ * literal text pins reaches what it can match (fxm_open_phony). In a shell
+ * command (shell), '%' is shell text, a backslash-escaped word reaches
+ * every rule, and a word joined across quotes (ge"n") is the name it
+ * joins to. */
+static bool fxm_goal_words(struct fxm *m, const char *raw, bool twice,
+                           bool shell)
+{
+    char *t, *w;
+    bool grew = fxm_goal_refs(m, raw, raw + strlen(raw), twice, 0);
+    if ((t = (char *)fxm_expand(m, raw, strlen(raw))) == NULL)
+        return grew;
+    for (char *c = t; shell && *c != '\0'; c++)
+        *c = *c == '%' ? FXM_PCT : *c;
+    grew |= fxm_tokens(m, t, fxm_goal_var);
+    fxm_unhide(t);
+    grew |= fxm_tokens(m, t, fxm_open_phony);
+    if (!shell)
+        return grew;
+    if (fxm_tokens(m, t, fxm_escaped))
+        grew |= fxm_reach_all(m);
+    w = t;
+    for (const char *c = t; *c != '\0'; c++)
+        if (*c != '"' && *c != '\'')
+            *w++ = *c;
+    *w = '\0';
+    grew |= fxm_tokens(m, t, fxm_token_phony);
+    return grew;
+}
+
+/* The make command word at p in s: make, gmake or $(MAKE) (fxm_make_at)
+ * as a word of its own, not a part of cmake or remake. */
+static bool fxm_make_word(const char *s, const char *p)
+{
+    if (!fxm_make_at(p))
+        return false;
+    if (p > s && p[-1] == 'g')
+        p--;
+    return p == s || !fxm_ident(p[-1]);
+}
+
+/* Text that names the make command. */
+static bool fxm_make_text(const char *s)
+{
+    for (const char *p = s; *p != '\0'; p++)
+        if (fxm_make_word(s, p))
+            return true;
+    return false;
+}
+
+/* A glob of a name matches a variable whose value may hold make. */
+static bool fxm_cmd_glob(const struct fxm *m, const char *pat)
+{
+    for (size_t k = 0; k < m->nvnames; k++)
+        if (m->vnames[k].cmd && fxm_glob(pat, m->vnames[k].name))
+            return true;
+    return false;
+}
+
+/* A reference to a variable whose value may hold the make command (a
+ * computed one: one its spelling matches; $($(X)) spells its name in a
+ * value, whose words fxm_spells_cmd reads). */
+static bool fxm_is_cmd(struct fxm *m, const char *name, size_t n)
+{
+    char pat[FXM_NAME_MAX];
+    struct fxm_vname *v;
+    if (*name == '$')
+        return fxm_name_glob(name, pat) && fxm_cmd_glob(m, pat);
+    v = fxm_vname(m, name, n);
+    return v != NULL && v->cmd;
+}
+
+/* A word that spells a variable whose value may hold make (a call
+ * argument, a name held in a value). */
+static bool fxm_spells_cmd(struct fxm *m, const char *t)
+{
+    struct fxm_vname *v;
+    if ((t = fxm_word_of(t)) == NULL)
+        return false;
+    if (strpbrk(t, FXM_WILDS) != NULL)
+        return fxm_cmd_glob(m, t);
+    v = fxm_vname(m, t, strlen(t));
+    return v != NULL && v->cmd;
+}
+
+/* Mark every variable whose value may hold the make command, closed over
+ * references and spellings. */
+static void fxm_cmds(struct fxm *m)
+{
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (size_t k = 0; k < m->nlines; k++) {
+            const struct fxm_line *l = &m->lines[k];
+            struct fxm_vname *v;
+            if (l->ctx != FXM_DEF ||
+                (v = fxm_vname(m, l->name, strlen(l->name))) == NULL || v->cmd)
+                continue;
+            if (fxm_make_text(l->raw) ||
+                fxm_each_ref(m, l->raw, true, fxm_is_cmd) ||
+                fxm_tokens(m, l->text, fxm_spells_cmd))
+                v->cmd = grew = true;
+        }
+    }
+}
+
+/* The shell command at p names make outside its quotes: the make command,
+ * or a variable that may hold it. */
+static bool fxm_unquoted_make(struct fxm *m, const char *p)
+{
+    const char *s = p, *name;
+    char quote = '\0';
+    size_t n;
+    for (; *p != '\0'; p++) {
+        if (quote == '\0' && (fxm_make_word(s, p) ||
+                              (*p == '$' && (n = fxm_ref_name(p, &name)) > 0 &&
+                               fxm_is_cmd(m, name, n))))
+            return true;
+        if (*p == '\\' && quote != '\'' && p[1] != '\0')
+            p++;
+        else if (quote != '\0')
+            quote = *p == quote ? '\0' : quote;
+        else if (*p == '\'' || *p == '"')
+            quote = *p;
+    }
+    return false;
+}
+
+/* The command word of the shell command at p (past its prefixes and its
+ * NAME=value words); its length in *n. */
+static char *fxm_command_name(char *p, size_t *n)
+{
+    p = fxm_command_word(p, p + strlen(p));
+    for (;;) {
+        size_t k = 0;
+        while (fxm_ident(p[k]))
+            k++;
+        if (k == 0 || p[k] != '=')
+            break;
+        for (p += k; *p != '\0' && !fxm_space(*p); p++)
+            ;
+        while (fxm_space(*p))
+            p++;
+    }
+    for (*n = 0; p[*n] != '\0' && !fxm_space(p[*n]); (*n)++)
+        ;
+    return p;
+}
+
+/* The command at p runs what it is given as commands: a shell, eval or
+ * xargs. */
+static bool fxm_executor(char *p)
+{
+    static const char *const ex[] = {"sh", "bash", "dash", "zsh", "ksh",
+                                     "eval", "xargs", "source", "$(SHELL)",
+                                     "${SHELL}"};
+    size_t n;
+    const char *w = fxm_command_name(p, &n), *base = w;
+    for (size_t k = 0; k < n; k++)
+        base = w[k] == '/' ? w + k + 1 : base;
+    n -= (size_t)(base - w);
+    for (size_t k = 0; k < sizeof(ex) / sizeof(ex[0]); k++)
+        if (strlen(ex[k]) == n && strncmp(base, ex[k], n) == 0)
+            return true;
+    return false;
+}
+
+/* The shell command at p runs make with its words: it names make outside
+ * quotes, its command word does ("$(MAKE)"), or it is a shell or eval
+ * given text that names make. */
+static bool fxm_runs_make(struct fxm *m, char *p)
+{
+    size_t n;
+    char *w = fxm_command_name(p, &n), save = w[n];
+    bool named;
+    if (fxm_unquoted_make(m, p))
+        return true;
+    w[n] = '\0';
+    named = fxm_make_text(w) || fxm_each_ref(m, w, false, fxm_is_cmd);
+    w[n] = save;
+    return named || (fxm_executor(p) && fxm_make_text(p));
+}
+
+/* The end of the shell word at p: an unquoted space outside make
+ * references; NULL when a quote or reference does not close. */
+static char *fxm_word_end(char *p)
+{
+    char quote = '\0';
+    for (; *p != '\0'; p++) {
+        char *u = fxm_unit_end(p, quote);
+        if (u == NULL)
+            return NULL;
+        if (u != p)
+            p = u;
+        else if (quote != '\0')
+            quote = *p == quote ? '\0' : quote;
+        else if (*p == '\'' || *p == '"')
+            quote = *p;
+        else if (fxm_space(*p))
+            return p;
+    }
+    return quote == '\0' ? p : NULL;
+}
+
+/* A make option whose value is the next word. */
+static bool fxm_option_arg(const char *w)
+{
+    static const char *const opts[] = {
+        "-C", "-f", "-o", "-W", "-I", "--file", "--makefile", "--directory",
+        "--include-dir", "--old-file", "--assume-old", "--what-if",
+        "--new-file", "--assume-new"};
+    for (size_t k = 0; k < sizeof(opts) / sizeof(opts[0]); k++)
+        if (strcmp(w, opts[k]) == 0)
+            return true;
+    return false;
+}
+
+/* NAME[0..n) is read in a goal position. */
+static bool fxm_goal_name(struct fxm *m, const char *name, size_t n)
+{
+    char buf[FXM_NAME_MAX];
+    struct fxm_vname *v = fxm_vname(m, name, n);
+    if (v != NULL)
+        return v->goal;
+    if (n >= sizeof(buf))
+        return true;
+    memcpy(buf, name, n);
+    buf[n] = '\0';
+    return fxc_strs_has(&m->goal_names, buf);
+}
+
+/* A goal token that may name a file target: one no literal text pins, a
+ * glob, or a literal name no .PHONY rule has. */
+static bool fxm_file_token(struct fxm *m, const char *t)
+{
+    const char *w;
+    while (*t == '@' || *t == '-' || *t == '+')
+        t++;
+    if ((w = fxm_word_of(t)) == NULL)
+        return strpbrk(t, "\x01\x03*%?[") != NULL;
+    return strpbrk(w, FXM_WILDS) != NULL || !fxm_in(&m->phony, w, strlen(w));
+}
+
+/* Probe mode: whether the goal word w may name a file target. */
+static void fxm_probe_word(struct fxm *m, const char *w)
+{
+    char *t = (char *)fxm_expand(m, w, strlen(w));
+    m->file_goal |= t == NULL || fxm_tokens(m, t, fxm_file_token);
+}
+
+/* A shell redirection word (>f, 2>&1, <f): no goal; *skip_next when its
+ * file is the next word. */
+static bool fxm_redirection(const char *w, bool *skip_next)
+{
+    const char *p = w;
+    while (*p >= '0' && *p <= '9')
+        p++;
+    if (*p != '<' && *p != '>')
+        return false;
+    while (*p == '<' || *p == '>' || *p == '&')
+        p++;
+    *skip_next = *p == '\0';
+    return true;
+}
+
+static bool fxm_goal_command(struct fxm *m, char *p);
+
+/* A command word that is one $(call F,...): F is read in a goal position,
+ * and each argument's words are words of the command (an option among
+ * them names no goal wherever the call puts it). */
+static bool fxm_goal_call(struct fxm *m, char *w)
+{
+    char close = w[1] == '(' ? ')' : '}', *end = fxm_ref_end(w), *a, *e;
+    const char *name;
+    size_t n = fxm_ref_name(w, &name);
+    bool grew;
+    if (end == NULL || end[1] != '\0' || n == 0) {
+        if (m->probe)
+            fxm_probe_word(m, w);
+        return !m->probe && fxm_goal_words(m, w, false, true);
+    }
+    grew = !m->probe && fxm_goal_ref(m, name, n);
+    for (a = (char *)name + n; *a == ','; a = e) {
+        char save;
+        if ((e = fxm_arg_end(a + 1, close)) == NULL)
+            break;
+        save = *e;
+        *e = '\0';
+        grew |= fxm_goal_command(m, a + 1);
+        *e = save;
+    }
+    return grew;
+}
+
+/* NAME=value (its name w[0..*k)): a variable a command sets. */
+static bool fxm_assignment(const char *w, size_t *k)
+{
+    *k = 0;
+    while (fxm_ident(w[*k]))
+        (*k)++;
+    return *k > 0 && w[*k] == '=';
+}
+
+/* One word of a command that runs make: an option (and its value) and a
+ * redirection name no goal; NAME=value sets a variable the make reads,
+ * whose value counts once NAME is read in a goal position (the line is
+ * pending until then); any other word is a goal (fxm_goal_words; in probe
+ * mode only tested, fxm_probe_word). */
+static bool fxm_goal_word(struct fxm *m, char *w, bool *skip_next)
+{
+    size_t k;
+    if (*skip_next) {
+        *skip_next = false;
+        return false;
+    }
+    if (*w == '-') {
+        *skip_next = fxm_option_arg(w);
+        return false;
+    }
+    if (fxm_redirection(w, skip_next))
+        return false;
+    while (*w == '@' || *w == '+')
+        w++;
+    if (w[0] == '$' && (w[1] == '(' || w[1] == '{') &&
+        fxm_starts_word(w + 2, "call"))
+        return fxm_goal_call(m, w);
+    if (!fxm_assignment(w, &k)) {
+        if (m->probe)
+            fxm_probe_word(m, w);
+        return !m->probe && fxm_goal_words(m, w, false, true);
+    }
+    if (m->probe)
+        return false;
+    if (fxm_goal_name(m, w, k))
+        return fxm_goal_words(m, w + k + 1, false, true);
+    m->pending = true;
+    return false;
+}
+
+/* A word that runs make: the make command, or a variable that may hold
+ * it (then the goals are in its value: in probe mode, any may be a
+ * file). */
+static bool fxm_make_word_of(struct fxm *m, const char *w)
+{
+    if (fxm_make_text(w))
+        return true;
+    if (!fxm_each_ref(m, w, false, fxm_is_cmd))
+        return false;
+    m->file_goal |= m->probe;
+    return true;
+}
+
+/* The words of a command that runs make, or of one piped into a shell
+ * (fxm_goal_word); in probe mode only those after the make word. */
+static bool fxm_goal_command(struct fxm *m, char *p)
+{
+    bool grew = false, skip = false, seen = !m->probe;
+    while (*p != '\0') {
+        char *e, save;
+        while (fxm_space(*p))
+            p++;
+        if (*p == '\0')
+            break;
+        if ((e = fxm_word_end(p)) == NULL) {
+            m->file_goal |= m->probe;
+            grew |= !m->probe && fxm_goal_words(m, p, false, true);
+            break;
+        }
+        save = *e;
+        *e = '\0';
+        if (seen)
+            grew |= fxm_goal_word(m, p, &skip);
+        else
+            seen = fxm_make_word_of(m, p);
+        *e = save;
+        p = e;
+    }
+    return grew;
+}
+
+/* The shell command at p is a shell or eval given a script. */
+static bool fxm_script_runner(char *p)
+{
+    static const char *const sh[] = {"sh", "bash", "dash", "zsh", "ksh", "eval"};
+    size_t n;
+    const char *w = fxm_command_name(p, &n), *base = w;
+    for (size_t k = 0; k < n; k++)
+        base = w[k] == '/' ? w + k + 1 : base;
+    n -= (size_t)(base - w);
+    for (size_t k = 0; k < sizeof(sh) / sizeof(sh[0]); k++)
+        if (strlen(sh[k]) == n && strncmp(base, sh[k], n) == 0)
+            return true;
+    return false;
+}
+
+static bool fxm_goal_recipe(struct fxm *m, char *s, int depth);
+
+/* A shell or eval command that runs make: its script (the text past the
+ * command word, one level of quotes dropped) is read as recipe commands
+ * of its own. */
+static bool fxm_goal_script(struct fxm *m, char *p, int depth)
+{
+    size_t n;
+    char *w = fxm_command_name(p, &n);
+    char *t = zcl_strdup(w + n, "facts_consumer.mkscript"), *o;
+    bool grew;
+    if (t == NULL) {
+        m->unknown = true;
+        return false;
+    }
+    o = t;
+    for (const char *c = t; *c != '\0'; c++)
+        if (*c != '"' && *c != '\'')
+            *o++ = *c;
+    *o = '\0';
+    grew = fxm_goal_recipe(m, t, depth + 1);
+    free(t);
+    return grew;
+}
+
+/* A recipe line's commands that run make (fxm_runs_make; a shell's script
+ * is read for its own), and the commands piped into a shell or xargs:
+ * their words are the goals the make takes. */
+static bool fxm_goal_recipe(struct fxm *m, char *s, int depth)
+{
+    bool grew = false;
+    for (char *p = s, *e; p != NULL && *p != '\0'; p = *e != '\0' ? e + 1 : NULL) {
+        char save;
+        bool fed;
+        if ((e = fxm_command_end(p)) == NULL)
+            e = p + strlen(p);
+        fed = *e == '|' && e[1] != '|' && fxm_executor(e + 1);
+        save = *e;
+        *e = '\0';
+        if (!fed && depth < 2 && fxm_script_runner(p) && fxm_runs_make(m, p))
+            grew |= fxm_goal_script(m, p, depth);
+        else if (fed && m->probe)
+            m->file_goal = true;
+        else if (fed || fxm_runs_make(m, p))
+            grew |= fxm_goal_command(m, p);
+        *e = save;
+    }
+    return grew;
+}
+
+/* A recipe line that reaches: under .ONESHELL or .RECIPEPREFIX any; else
+ * one that runs make, in a reached rule, or in any rule when a make it
+ * runs may name a file target (it can build an object in the same run as
+ * the other goals it names; one that names only .PHONY goals builds what
+ * a hand-run goal builds). */
+static bool fxm_recipe_reaches(struct fxm *m, struct fxm_line *l)
+{
+    if (m->whole)
+        return true;
+    if (!l->runs_make)
+        return false;
+    if (m->rules[l->rule].reached)
+        return true;
+    if (l->file_goal == 0) {
+        m->probe = true;
+        m->file_goal = false;
+        if (fxm_said(m, l) == NULL)
+            m->file_goal = true;
+        else
+            (void)fxm_goal_recipe(m, m->line.p, 0);
+        m->probe = false;
+        l->file_goal = m->file_goal ? 2 : 1;
+    }
+    return l->file_goal == 2;
+}
+
+/* A line in a goal position: what it spells may be a goal a make takes or
+ * a prerequisite of a rule that runs: a reached rule's prerequisites, a
+ * recipe line's commands that run make, an $(eval) directive (the rules it
+ * makes), and a definition of a variable those read, or a computed one. */
+static bool fxm_goal_line(struct fxm *m, struct fxm_line *l)
+{
+    struct fxm_vname *v;
+    switch (l->ctx) {
+    case FXM_ACTIVE:
+        return strstr(l->raw, "$(eval") != NULL || strstr(l->raw, "${eval") != NULL;
+    case FXM_DEF:
+        v = fxm_vname(m, l->name, strlen(l->name));
+        return l->name[0] == '\0' || v == NULL || v->goal;
+    case FXM_RULE:
+        return m->whole || m->rules[l->rule].reached;
+    case FXM_RECIPE:
+        return fxm_recipe_reaches(m, l);
+    default:
+        return false;
+    }
+}
+
+static bool fxm_goal_follow(struct fxm *m, const struct fxm_line *l)
+{
+    bool twice = l->ctx != FXM_RECIPE && (l->ctx != FXM_RULE || m->second);
+    struct fxm_vname *v = fxm_vname(m, l->name, strlen(l->name));
+    char *eq;
+    if (fxm_said(m, l) == NULL)
+        return false;
+    if (l->ctx == FXM_RECIPE)
+        return fxm_goal_recipe(m, m->line.p, 0);
+    /* A recipe line a define holds, and a variable whose value holds make,
+     * are recipe text: their own commands that run make take its goals. */
+    if (l->ctx == FXM_DEF && l->body && l->raw[0] == '\t')
+        return fxm_goal_recipe(m, m->line.p, 0);
+    if (l->ctx == FXM_DEF && v != NULL && v->cmd)
+        return fxm_goal_recipe(m, l->body || (eq = (char *)fxm_top(m->line.p, "=")) == NULL
+                                      ? m->line.p : eq + 1, 0);
+    return fxm_goal_words(m, m->line.p, twice, false);
+}
+
 /* From every line that reaches, reach the .PHONY rules it names and the
- * variables it references, until nothing new is reached. */
+ * variables it references, and from every goal position what it spells,
+ * until nothing new is reached. */
 void fxm_reach(struct fxm *m)
 {
     bool grew = true;
     fxm_strs_seal(&m->phony);
     fxm_pairs(m);
+    fxm_cmds(m);
     while (grew && !m->unknown) {
         grew = false;
         for (size_t k = 0; k < m->nlines; k++) {
             struct fxm_line *l = &m->lines[k];
-            if (l->followed || !fxm_reaches(m, l))
-                continue;
-            l->followed = true;
-            grew |= fxm_follow(m, l);
+            if (!l->followed && fxm_reaches(m, l)) {
+                l->followed = true;
+                grew |= fxm_follow(m, l);
+            }
+            if (!m->unknown && !l->goal_followed && fxm_goal_line(m, l)) {
+                l->goal_followed = true;
+                m->pending = false;
+                grew |= fxm_goal_follow(m, l);
+                l->goal_followed = !m->pending;
+            }
         }
     }
 }
-

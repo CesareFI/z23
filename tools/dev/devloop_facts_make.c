@@ -68,7 +68,7 @@ static int fxm_next_line(struct fxm_buf *line, const char **at, bool *recipe,
 }
 
 static bool fxm_var_add(struct fxm *m, const char *name, size_t n,
-                        const char *value)
+                        const char *value, bool many)
 {
     struct fxm_var *v;
     if (m->nvars == m->capvars) {
@@ -83,6 +83,7 @@ static bool fxm_var_add(struct fxm *m, const char *name, size_t n,
     v = &m->vars[m->nvars];
     v->name = zcl_malloc(n + 1, "facts_consumer.mkvar");
     v->value = value != NULL ? zcl_strdup(value, "facts_consumer.mkval") : NULL;
+    v->many = many;
     if (v->name == NULL || (value != NULL && v->value == NULL)) {
         free(v->name);
         free(v->value);
@@ -137,7 +138,7 @@ static bool fxm_def(struct fxm *m, char *line, bool *in_define)
         p = fxm_skip_prefixes(p + 6);
         for (n = 0; fxm_ident(p[n]); n++)
             ;
-        return n == 0 || fxm_var_add(m, p, n, NULL);
+        return n == 0 || fxm_var_add(m, p, n, NULL, false);
     }
     for (name = p, n = 0; fxm_ident(p[n]); n++)
         ;
@@ -150,9 +151,9 @@ static bool fxm_def(struct fxm *m, char *line, bool *in_define)
     end = line + strlen(line);
     while (end > v && fxm_space(end[-1]))
         *--end = '\0';
-    if (!path_like || *v == '\0' || strpbrk(v, " \t") != NULL)
+    if (!path_like || *v == '\0')
         v = NULL;
-    return fxm_var_add(m, name, n, v);
+    return fxm_var_add(m, name, n, v, v != NULL && strpbrk(v, " \t") != NULL);
 }
 
 static int fxm_var_cmp(const void *a, const void *b)
@@ -188,7 +189,7 @@ static const char *fxm_value(const struct fxm *m, const char *name, size_t n)
         if (d == 0 && m->vars[mid].name[n] != '\0')
             d = 1;
         if (d == 0)
-            return m->vars[mid].value;
+            return m->vars[mid].many && !m->lists ? NULL : m->vars[mid].value;
         if (d < 0)
             lo = mid + 1;
         else
@@ -205,41 +206,390 @@ static void fxm_shell_text(struct fxm_buf *b, size_t from)
             b->p[k] = FXM_PCT;
 }
 
-/* The body of one reference: a function call yields its arguments ('%' in
- * a $(shell) argument is shell text), a path-like variable its value, an
- * automatic variable nothing, anything else FXM_ANY. */
-static bool fxm_inner(const struct fxm *m, const char *s, size_t n,
+/* '%' in b[from..to) is a make pattern, a recipe's too: FXM_OPEN. */
+static void fxm_pattern_text(struct fxm_buf *b, size_t from, size_t to)
+{
+    for (size_t k = from; k < to && k < b->n; k++)
+        if (b->p[k] == '%')
+            b->p[k] = FXM_OPEN;
+}
+
+/* The end of the call argument that starts at s[k] (a ',' outside any
+ * reference), or n. */
+static size_t fxm_arg_to(const char *s, size_t k, size_t n)
+{
+    int depth = 0;
+    for (; k < n; k++) {
+        if (s[k] == '(' || s[k] == '{')
+            depth++;
+        else if (s[k] == ')' || s[k] == '}')
+            depth--;
+        else if (s[k] == ',' && depth == 0)
+            return k;
+    }
+    return n;
+}
+
+/* A call whose value holds only words its arguments spell: $(foreach)'s
+ * and $(call)'s through the variables they read, $(wildcard)'s and
+ * $(patsubst)'s through their patterns. */
+static bool fxm_passing_call(const char *s, size_t k)
+{
+    static const char *const fns[] = {
+        "if",     "or",       "and",    "strip",  "sort",    "firstword",
+        "lastword", "word",   "wordlist", "filter", "filter-out", "foreach",
+        "call",   "value",    "eval",   "error",  "info",    "warning",
+        "wildcard", "patsubst"};
+    for (size_t f = 0; f < sizeof(fns) / sizeof(fns[0]); f++)
+        if (strlen(fns[f]) == k && strncmp(s, fns[f], k) == 0)
+            return true;
+    return false;
+}
+
+/* s[0..n) less its surrounding spaces is word. */
+static bool fxm_trimmed_is(const char *s, size_t n, const char *word)
+{
+    while (n > 0 && fxm_space(*s)) {
+        s++;
+        n--;
+    }
+    while (n > 0 && fxm_space(s[n - 1]))
+        n--;
+    return n == strlen(word) && strncmp(s, word, n) == 0;
+}
+
+/* t[0..n) between FXM_HIDE_ON and FXM_HIDE_OFF: words of a call's value
+ * that never stand alone in it. */
+static bool fxm_hidden(struct fxm_buf *out, const char *t, size_t n)
+{
+    char on = FXM_HIDE_ON, off = FXM_HIDE_OFF;
+    return fxm_put(out, &on, 1) && fxm_put(out, t, n) && fxm_put(out, &off, 1) &&
+           fxm_put(out, " ", 1);
+}
+
+/* $(addprefix P,W) (prefix) or $(addsuffix S,W) after its leading space:
+ * P glued before an FXM_OPEN run, or S after one; W's words are joined. */
+static bool fxm_join_call(const char *s, size_t k, size_t arg, size_t n,
+                          bool prefix, struct fxm_buf *out)
+{
+    char open = FXM_OPEN;
+    return (prefix || fxm_put(out, &open, 1)) &&
+           fxm_put(out, s + k + 1, arg - k - 1) &&
+           (!prefix || fxm_put(out, &open, 1)) && fxm_put(out, " ", 1) &&
+           fxm_hidden(out, s + arg, n - arg);
+}
+
+static bool fxm_round(struct fxm *m, const char *in, struct fxm_buf *out,
+                      bool *left);
+
+/* s[0..n) expanded FXM_ROUNDS deep into x (y scratch), its surrounding
+ * spaces dropped; false when it cannot be, or a reference remains. */
+static bool fxm_expand_into(struct fxm *m, const char *s, size_t n,
+                            struct fxm_buf *x, struct fxm_buf *y)
+{
+    bool ok = fxm_put(x, s, n), left = true;
+    char *p, *e;
+    for (int r = 0; ok && left && r < FXM_ROUNDS; r++) {
+        struct fxm_buf t;
+        ok = fxm_round(m, x->p, y, &left);
+        t = *x;
+        *x = *y;
+        *y = t;
+    }
+    if (!ok || left)
+        return false;
+    for (p = x->p; fxm_space(*p); p++)
+        ;
+    for (e = p + strlen(p); e > p && fxm_space(e[-1]); e--)
+        ;
+    memmove(x->p, p, (size_t)(e - p));
+    x->p[e - p] = '\0';
+    return true;
+}
+
+/* The text of the repo file path names ('$' in it FXM_ANY: make does not
+ * expand it again); NULL when it is not one literal repo file. */
+static uint8_t *fxm_file_text(const struct fxm *m, const char *path, size_t *len)
+{
+    uint8_t *b = NULL;
+    if (*path == '\0' || strpbrk(path, FXM_WILDS) != NULL || *path == '/' ||
+        strstr(path, "..") != NULL ||
+        !zcl_devloop_facts_read(m->root, NULL, path, "", FXM_FILE_MAX, &b, len))
+        return NULL;
+    if (memchr(b, '\0', *len) != NULL) {
+        free(b);
+        return NULL;
+    }
+    for (size_t k = 0; k < *len; k++)
+        b[k] = b[k] == '$' ? (uint8_t)FXM_ANY : b[k];
+    return b;
+}
+
+/* $(file <PATH) (a, n: its argument text): its arguments and the words of
+ * the repo file PATH expands to, read now as make reads it; FXM_OPEN when
+ * it names no such file. $(file >..) writes: its value is empty. */
+static bool fxm_file_call(struct fxm *m, const char *a, size_t n,
+                          struct fxm_buf *out)
+{
+    struct fxm_buf x = {0}, y = {0};
+    uint8_t *b = NULL;
+    size_t k = 0, len = 0;
+    char open = FXM_OPEN;
+    bool ok;
+    while (k < n && fxm_space(a[k]))
+        k++;
+    if (k < n && a[k] == '<' && fxm_expand_into(m, a + k + 1, n - k - 1, &x, &y))
+        b = fxm_file_text(m, x.p, &len);
+    ok = fxm_put(out, a, n) && fxm_put(out, " ", 1) &&
+         (k == n || a[k] != '<' ||
+          (b != NULL ? fxm_put(out, (const char *)b, len) : fxm_put(out, &open, 1))) &&
+         fxm_put(out, " ", 1);
+    free(x.p);
+    free(y.p);
+    free(b);
+    return ok;
+}
+
+/* t[0..n) holds a character a name spells (not only '.', '-', runs and
+ * separators). */
+static bool fxm_literal_char_n(const char *t, size_t n)
+{
+    for (size_t k = 0; k < n; k++)
+        if (fxm_ident(t[k]) && t[k] != '.' && t[k] != '-')
+            return true;
+    return false;
+}
+
+
+/* A call whose value's words are each a part of one argument word (4:
+ * $(notdir), 5: $(basename)), or all of one shape (1: $(dir), ending in
+ * '/'; 2: $(suffix), starting with '.'; 3: $(abspath) and $(realpath),
+ * starting with '/'); 0 for any other. */
+static int fxm_shrink_kind(const char *s, size_t k)
+{
+    static const char *const fns[] = {"dir", "suffix", "abspath", "notdir",
+                                      "basename", "realpath"};
+    static const int kind[] = {1, 2, 3, 4, 5, 3};
+    for (size_t f = 0; f < sizeof(fns) / sizeof(fns[0]); f++)
+        if (strlen(fns[f]) == k && strncmp(s, fns[f], k) == 0)
+            return kind[f];
+    return 0;
+}
+
+/* The last c in w[from..n); n for none. */
+static size_t fxm_last(const char *w, size_t from, size_t n, char c)
+{
+    size_t at = n;
+    for (size_t k = from; k < n; k++)
+        at = w[k] == c ? k : at;
+    return at;
+}
+
+/* The first run character (a wildcard or unknown) in w[from..n); n for
+ * none. */
+static size_t fxm_first_run(const char *w, size_t from, size_t n)
+{
+    for (size_t k = from; k < n; k++)
+        if (strchr(FXM_WILDS, w[k]) != NULL)
+            return k;
+    return n;
+}
+
+/* $(notdir) (kind 4) or $(basename) (kind 5) of the word w[0..n), as a
+ * glob: what follows its last '/'; what precedes its last component's
+ * '.', or its text up to a run in that component and then any run (the
+ * run may hold the '.'). A part no literal text pins is FXM_OPEN. */
+static bool fxm_shrink_word(int kind, const char *w, size_t n,
+                            struct fxm_buf *out)
+{
+    size_t slash = fxm_last(w, 0, n, '/'), from = slash < n ? slash + 1 : 0;
+    size_t cut;
+    char open = FXM_OPEN;
+    bool run = false;
+    if (kind == 4) {
+        w += from;
+        n -= from;
+    } else if ((cut = fxm_first_run(w, from, n)) < n) {
+        n = cut;
+        run = true;
+    } else {
+        n = fxm_last(w, from, n, '.');
+    }
+    if (n == 0 && !run)
+        return true;
+    if (!fxm_literal_char_n(w, n))
+        return fxm_put(out, &open, 1) && fxm_put(out, " ", 1);
+    return fxm_put(out, w, n) && (!run || fxm_put(out, &open, 1)) &&
+           fxm_put(out, " ", 1);
+}
+
+/* $(dir) and the like (fxm_shrink_kind; a[0..n) its argument text): the
+ * arguments hidden (their words name paths, never a goal as they stand),
+ * then each word's part (fxm_shrink_word, the arguments expanded a
+ * many-word value as its words) or the shape every part has. */
+static bool fxm_shrink_call(struct fxm *m, int kind, const char *a, size_t n,
+                            struct fxm_buf *out)
+{
+    static const char *const shape[] = {"", "\x03/ ", ".\x03 ", "/\x03 "};
+    struct fxm_buf x = {0}, y = {0};
+    char open[] = {FXM_OPEN, ' '};
+    bool ok, lists = m->lists;
+    if (!fxm_hidden(out, a, n))
+        return false;
+    if (kind < 4)
+        return fxm_put(out, shape[kind], strlen(shape[kind]));
+    m->lists = true;
+    ok = fxm_expand_into(m, a, n, &x, &y);
+    m->lists = lists;
+    if (!ok)
+        ok = fxm_put(out, open, 2);
+    else
+        for (const char *p = x.p, *e; ok && *p != '\0'; p = e) {
+            while (fxm_sep(*p))
+                p++;
+            for (e = p; *e != '\0' && !fxm_sep(*e); e++)
+                ;
+            ok = e == p || fxm_shrink_word(kind, p, (size_t)(e - p), out);
+        }
+    free(x.p);
+    free(y.p);
+    return ok;
+}
+
+/* The value of the call s[0..n) (its name s[0..k)): its arguments, '%' in
+ * a $(shell) argument shell text and in $(patsubst)'s patterns a make
+ * pattern; $(addprefix) and $(addsuffix) as fxm_join_call says; a call
+ * that makes words its arguments do not spell also yields a lone
+ * FXM_OPEN. Words that never stand alone in the value (those a join or a
+ * '%' $(patsubst) pattern rewrites) sit between FXM_HIDE_ON and
+ * FXM_HIDE_OFF. */
+static bool fxm_call(struct fxm *m, const char *s, size_t k, size_t n,
+                     struct fxm_buf *out)
+{
+    size_t arg = fxm_arg_to(s, k + 1, n), to = n, at;
+    char open = FXM_OPEN;
+    bool pattern = k == 8 && strncmp(s, "patsubst", 8) == 0;
+    if (!fxm_put(out, " ", 1))
+        return false;
+    if (k == 4 && strncmp(s, "file", 4) == 0)
+        return fxm_file_call(m, s + k + 1, n - k - 1, out);
+    if (fxm_shrink_kind(s, k) > 0)
+        return fxm_shrink_call(m, fxm_shrink_kind(s, k), s + k + 1, n - k - 1, out);
+    if (k == 9 && (strncmp(s, "addprefix", 9) == 0 || strncmp(s, "addsuffix", 9) == 0))
+        return fxm_join_call(s, k, arg, n, s[3] == 'p', out);
+    if (pattern && fxm_trimmed_is(s + k + 1, arg - k - 1, "%"))
+        to = fxm_arg_to(s, arg + 1, n);
+    at = out->n;
+    if (!fxm_put(out, s + k + 1, to - k - 1))
+        return false;
+    if (k == 5 && strncmp(s, "shell", 5) == 0)
+        fxm_shell_text(out, at);
+    if (pattern)
+        fxm_pattern_text(out, at, at + fxm_arg_to(s, arg + 1, n) - k - 1);
+    if (to < n)
+        return fxm_put(out, " ", 1) && fxm_hidden(out, s + to, n - to);
+    if (!fxm_put(out, " ", 1))
+        return false;
+    return fxm_passing_call(s, k) || (fxm_put(out, &open, 1) && fxm_put(out, " ", 1));
+}
+
+/* A substitution reference's value (s[0..n), its ':' at colon): each
+ * word that ends as its pattern does, rewritten, as a glob; any other
+ * word of the variable's value as it is (an include's many-word value's
+ * words; else FXM_ANY, the definition's words being followed, or
+ * FXM_OPEN for an automatic variable's). */
+static bool fxm_subst_ref(struct fxm *m, const char *s, size_t colon,
+                          size_t n, struct fxm_buf *out)
+{
+    const char *eq = memchr(s + colon, '=', n - colon), *v;
+    size_t at, to = (size_t)(eq + 1 - s), k = 0;
+    char open = FXM_OPEN, rest = strchr("@<^+*?|%", s[0]) != NULL ? FXM_OPEN : FXM_ANY;
+    while (k < colon && fxm_ident(s[k]))
+        k++;
+    v = k == colon && k > 0 && m->lists ? fxm_value(m, s, k) : NULL;
+    if (fxm_trimmed_is(s + colon + 1, (size_t)(eq - s) - colon - 1, "%")) {
+        v = NULL; /* every word is rewritten: none stays as it is */
+        rest = ' ';
+    }
+    if (!fxm_put(out, " ", 1) ||
+        (memchr(s + to, '%', n - to) == NULL && !fxm_put(out, &open, 1)))
+        return false;
+    at = out->n;
+    if (!fxm_put(out, s + to, n - to))
+        return false;
+    fxm_pattern_text(out, at, out->n);
+    return fxm_put(out, " ", 1) &&
+           (v != NULL ? fxm_put(out, v, strlen(v)) : fxm_put(out, &rest, 1)) &&
+           fxm_put(out, " ", 1);
+}
+
+/* The ':' of a substitution reference s[0..n) ($(X:a=b)): outside any
+ * reference, an '=' after it; n for none. */
+static size_t fxm_subst_colon(const char *s, size_t n)
+{
+    int depth = 0;
+    for (size_t k = 0; k < n; k++) {
+        if (s[k] == '(' || s[k] == '{')
+            depth++;
+        else if (s[k] == ')' || s[k] == '}')
+            depth--;
+        else if (s[k] == ':' && depth == 0)
+            return memchr(s + k, '=', n - k) != NULL ? k : n;
+    }
+    return n;
+}
+
+/* The body of one reference: a call its value (fxm_call), a substitution
+ * reference its rewritten words (fxm_subst_ref), an automatic variable
+ * FXM_OPEN (a value no text of the makefile spells), a path-like variable
+ * its value, anything else FXM_ANY. */
+static bool fxm_inner(struct fxm *m, const char *s, size_t n,
                       struct fxm_buf *out)
 {
     const char *v;
-    size_t k = 0, at;
-    char any = FXM_ANY;
+    size_t k = 0, colon;
+    char any = FXM_ANY, open = FXM_OPEN;
     while (k < n && fxm_ident(s[k]))
         k++;
-    if (k > 0 && k < n && fxm_space(s[k])) {
-        if (!fxm_put(out, " ", 1))
-            return false;
-        at = out->n;
-        if (!fxm_put(out, s + k + 1, n - k - 1))
-            return false;
-        if (k == 5 && strncmp(s, "shell", 5) == 0)
-            fxm_shell_text(out, at);
-        return fxm_put(out, " ", 1);
-    }
+    if (k > 0 && k < n && fxm_space(s[k]))
+        return fxm_call(m, s, k, n, out);
+    if ((colon = fxm_subst_colon(s, n)) < n)
+        return fxm_subst_ref(m, s, colon, n, out);
     if (n > 0 && strchr("@<^+*?|%", s[0]) != NULL)
-        return true;
+        return fxm_put(out, &open, 1);
     v = k == n && k > 0 ? fxm_value(m, s, n) : NULL;
-    return v != NULL ? fxm_put(out, v, strlen(v)) : fxm_put(out, &any, 1);
+    if (v == NULL)
+        return fxm_put(out, &any, 1);
+    k = out->n;
+    if (!fxm_put(out, v, strlen(v)))
+        return false;
+    /* A many-word value read in place: what its calls only test or print
+     * is no word of it. */
+    if (m->lists)
+        fxm_blank(m, out->p + k);
+    return true;
 }
 
-/* The reference at d ('$'): where the text resumes, NULL when out cannot
- * hold it. */
-static const char *fxm_ref(const struct fxm *m, const char *d,
+/* A call's value is words: one glued to text before or after it is a run
+ * of that text's word (FXM_ANY on that side). */
+static bool fxm_glued(const char *s, size_t n)
+{
+    size_t k = 0;
+    while (k < n && fxm_ident(s[k]))
+        k++;
+    return k > 0 && k < n && fxm_space(s[k]);
+}
+
+/* The reference at d ('$'): where the text resumes; NULL when out cannot
+ * hold it or it does not close (then the text is UNKNOWN). */
+static const char *fxm_ref(struct fxm *m, const char *d,
                            struct fxm_buf *out)
 {
-    char open = d[1], close = open == '(' ? ')' : '}';
+    char open = d[1], close = open == '(' ? ')' : '}', any = FXM_ANY;
     const char *q = d + 2;
     int depth = 1;
+    bool call;
+    size_t n;
     if (open == '\0')
         return d + 1;
     if (open != '(' && open != '{')
@@ -247,12 +597,21 @@ static const char *fxm_ref(const struct fxm *m, const char *d,
     for (; *q != '\0' && depth > 0; q++)
         depth += *q == open ? 1 : *q == close ? -1 : 0;
     if (depth > 0)
-        return fxm_inner(m, "", 0, out) ? q : NULL;
-    return fxm_inner(m, d + 2, (size_t)(q - 1 - (d + 2)), out) ? q : NULL;
+        return NULL;
+    n = (size_t)(q - 1 - (d + 2));
+    call = fxm_glued(d + 2, n);
+    if (call && out->n > 0 && !fxm_sep(out->p[out->n - 1]) &&
+        !fxm_put(out, &any, 1))
+        return NULL;
+    if (!fxm_inner(m, d + 2, n, out))
+        return NULL;
+    if (call && *q != '\0' && !fxm_sep(*q) && !fxm_put(out, &any, 1))
+        return NULL;
+    return q;
 }
 
 /* One expansion round of in into out; *left: a reference remains. */
-static bool fxm_round(const struct fxm *m, const char *in, struct fxm_buf *out,
+static bool fxm_round(struct fxm *m, const char *in, struct fxm_buf *out,
                       bool *left)
 {
     const char *p = in;
@@ -272,12 +631,12 @@ static bool fxm_round(const struct fxm *m, const char *in, struct fxm_buf *out,
     return p != NULL;
 }
 
-/* A glob against a path: '*', '%', '$' and FXM_ANY match any run of
+/* A glob against a path: '*', '%', '$', FXM_ANY and FXM_OPEN match any run of
  * characters, '/' included; '?' and a '[...]' set match any one character
  * (a superset of the set); a trailing '/' matches a whole directory. */
 static bool fxm_run(char ch)
 {
-    return ch == '*' || ch == '%' || ch == '$' || ch == FXM_ANY;
+    return ch == '*' || ch == '%' || ch == '$' || ch == FXM_ANY || ch == FXM_OPEN;
 }
 
 static const char *fxm_one_end(const char *p)
@@ -335,10 +694,7 @@ static bool fxm_named(const char *t, const char *path)
 
 static bool fxm_literal_char(const char *t)
 {
-    for (; *t != '\0'; t++)
-        if (fxm_ident(*t) && *t != '.' && *t != '-')
-            return true;
-    return false;
+    return fxm_literal_char_n(t, strlen(t));
 }
 
 /* A word as make or the shell would use it: recipe prefixes and a leading
@@ -398,9 +754,9 @@ static bool fxm_token(struct fxm *m, const char *t)
     return false;
 }
 
-static bool fxm_sep(char ch)
+bool fxm_sep(char ch)
 {
-    return ch != '\0' && strchr(" \t\r\n,(){};|'\"`=<>&!:", ch) != NULL;
+    return ch != '\0' && strchr(" \t\r\n,(){};|'\"`=<>&!:" "\x04\x05", ch) != NULL;
 }
 
 /* fn over every word of s; whether it held for any. */
@@ -473,19 +829,47 @@ static bool fxm_exists(const char *root, const char *rel)
            stat(full, &st) == 0 && S_ISREG(st.st_mode);
 }
 
-/* One word of an include line: a literal repo file is read; a file that
- * does not exist is generated by a rule the text holds; a reference in a
- * mandatory include is UNKNOWN. */
+/* A depfile an include line names: $(X:.o=.d), $(X:%.o=%.d), or a
+ * literal name ending in .d. Its text is a compiler's -MD output, whose
+ * prerequisite lines name only what that compile read: the depfiles
+ * themselves answer for it (docs/work/SEMANTIC_MANIFEST.md). */
+static bool fxm_depfile_word(const char *w, size_t n)
+{
+    char close;
+    int depth = 1;
+    size_t k = 2;
+    if (n >= 2 && w[n - 2] == '.' && w[n - 1] == 'd')
+        if (memchr(w, '$', n) == NULL)
+            return true;
+    if (n < 8 || w[0] != '$' || (w[1] != '(' && w[1] != '{') ||
+        strncmp(w + n - 3, ".d", 2) != 0 || (w[n - 4] != '=' && w[n - 4] != '%'))
+        return false;
+    close = w[1] == '(' ? ')' : '}';
+    for (; k < n && depth > 0; k++)
+        depth += w[k] == w[1] ? 1 : w[k] == close ? -1 : 0;
+    return depth == 0 && k == n && fxm_subst_colon(w + 2, n - 3) < n - 3;
+}
+
+/* One word of an include line: a literal repo file is read; a missing one
+ * is made by a rule the text holds (UNKNOWN, checked once every rule is
+ * read) or read by nobody; a word that is not one literal file (a
+ * reference no single definition gives, a glob) is UNKNOWN, optional or
+ * not: what it reads can reach any goal. */
 static void fxm_include_word(struct fxm *m, const char *w, bool optional)
 {
-    if (strpbrk(w, "*%$\x01") != NULL) {
-        m->unknown |= !optional;
+    if (strpbrk(w, FXM_WILDS) != NULL) {
+        m->unknown = true;
         return;
     }
     if (w[0] == '/' || strstr(w, "..") != NULL)
         return; /* outside the tree: not a tracked input */
-    if (fxm_exists(m->root, w) && !fxm_load(m, w))
-        m->unknown = true;
+    if (fxm_exists(m->root, w)) {
+        m->unknown |= !fxm_load(m, w);
+        return;
+    }
+    if (fxm_depfile_word(w, strlen(w)))
+        return;
+    m->unknown |= !optional || !fxc_strs_add(&m->missing, w);
 }
 
 /* Every whitespace-separated word of an expanded include line's argument
@@ -505,6 +889,27 @@ static void fxm_include_words(struct fxm *m, char *s, bool optional)
     }
 }
 
+/* The include line's argument text p, less its depfile words, into in. */
+static bool fxm_include_text(const char *p, struct fxm_buf *in)
+{
+    in->n = 0;
+    if (!fxm_put(in, "", 0))
+        return false;
+    while (*p != '\0') {
+        const char *w;
+        int depth = 0;
+        while (fxm_space(*p))
+            p++;
+        for (w = p; *p != '\0' && (depth > 0 || !fxm_space(*p)); p++)
+            depth += (*p == '(' || *p == '{') - (*p == ')' || *p == '}');
+        if (p > w && !fxm_depfile_word(w, (size_t)(p - w)) &&
+            (!fxm_put(in, w, (size_t)(p - w)) || !fxm_put(in, " ", 1)))
+            return false;
+    }
+    return true;
+}
+
+/* An include line: its words expanded (a many-word value as its words). */
 static void fxm_include(struct fxm *m, const char *line)
 {
     const char *p = line;
@@ -513,17 +918,61 @@ static void fxm_include(struct fxm *m, const char *line)
     struct fxm_buf *in = &m->a, *out = &m->b;
     while (*p != '\0' && !fxm_space(*p))
         p++;
-    in->n = 0;
-    if (!fxm_put(in, p, strlen(p)))
-        m->unknown = true;
+    m->unknown |= !fxm_include_text(p, in);
+    m->lists = true;
     for (int r = 0; !m->unknown && left && r < FXM_ROUNDS; r++) {
         struct fxm_buf *t = in;
         m->unknown |= !fxm_round(m, in->p, out, &left);
         in = out;
         out = t;
     }
+    m->lists = false;
+    m->unknown |= left;
     if (!m->unknown)
         fxm_include_words(m, in->p, optional);
+}
+
+/* A target word of a rule's expanded targets names path: one that spells
+ * literal text (a target no text pins, $(1) in a define, is a premise:
+ * docs/work/SEMANTIC_MANIFEST.md). */
+static bool fxm_names_target(const char *t, const char *path)
+{
+    char w[ZCL_DEVLOOP_PATH_MAX];
+    while (*t != '\0') {
+        size_t n = 0;
+        while (fxm_space(*t))
+            t++;
+        while (t[n] != '\0' && !fxm_space(t[n]))
+            n++;
+        if (n >= sizeof(w))
+            return true;
+        memcpy(w, t, n);
+        w[n] = '\0';
+        if (n > 0 && fxm_word_of(w) != NULL && fxm_glob(w, path))
+            return true;
+        t += n;
+    }
+    return false;
+}
+
+/* An optional include that does not exist yet but a rule can make: make
+ * makes it and reads what the recipe wrote, which no text here holds. A
+ * rule's targets (a define's too) are expanded a many-word value as its
+ * words. */
+static void fxm_missing_made(struct fxm *m)
+{
+    for (size_t k = 0; !m->unknown && m->missing.n > 0 && k < m->nlines; k++) {
+        const struct fxm_line *l = &m->lines[k];
+        size_t n = l->from > 0 ? l->from - 1 : 0;
+        const char *t;
+        if (n == 0 || (l->ctx != FXM_RULE && l->ctx != FXM_DEF))
+            continue;
+        m->lists = true;
+        t = fxm_expand(m, l->raw, l->raw[n - 1] == '&' ? n - 1 : n);
+        m->lists = false;
+        for (size_t p = 0; t != NULL && !m->unknown && p < m->missing.n; p++)
+            m->unknown = fxm_names_target(t, m->missing.v[p]);
+    }
 }
 
 static bool fxm_is_include(const char *p)
@@ -538,7 +987,7 @@ static void fxm_defs(struct fxm *m, size_t f, bool includes)
 {
     const char *at = m->text[f];
     bool recipe, comment, in_define = false;
-    int r;
+    int r = 0;
     while (!m->unknown &&
            (r = fxm_next_line(&m->line, &at, &recipe, &comment)) > 0) {
         const char *p = fxm_skip_prefixes(m->line.p);
@@ -748,6 +1197,25 @@ static uint8_t fxm_define_line(struct fxm *m, struct fxm_place *st,
     return FXM_DEF;
 }
 
+/* A makefile's first rule with a target make can take as the goal of a
+ * bare make: one that is no pattern and not led by '.' (unless it holds a
+ * '/'), as GNU make picks it. */
+static bool fxm_goal_target(const char *t)
+{
+    while (*t != '\0') {
+        size_t n = 0;
+        while (fxm_space(*t))
+            t++;
+        while (t[n] != '\0' && !fxm_space(t[n]))
+            n++;
+        if (n > 0 && memchr(t, '%', n) == NULL &&
+            (*t != '.' || memchr(t, '/', n) != NULL))
+            return true;
+        t += n;
+    }
+    return false;
+}
+
 /* A rule line: .PHONY's names, or a new rule with its expanded targets. */
 static uint8_t fxm_rule(struct fxm *m, struct fxm_place *st, const char *s,
                         size_t colon)
@@ -768,8 +1236,7 @@ static uint8_t fxm_rule(struct fxm *m, struct fxm_place *st, const char *s,
     r = &m->rules[m->nrules];
     while (fxm_space(*t))
         t++;
-    /* A makefile's first rule not led by '.' is the goal of a bare make. */
-    r->reached = !st->goal && *t != '.';
+    r->reached = !st->goal && fxm_goal_target(t);
     st->goal |= r->reached;
     if ((r->targets = zcl_strdup(t, "facts_consumer.mktgt")) == NULL) {
         m->unknown = true;
@@ -862,7 +1329,7 @@ static void fxm_lines_of(struct fxm *m, size_t f)
     struct fxm_place st = {.rule = FXM_NONE};
     const char *at = m->text[f];
     bool recipe, comment;
-    int r;
+    int r = 0;
     while (!m->unknown &&
            (r = fxm_next_line(&m->line, &at, &recipe, &comment)) > 0) {
         uint8_t ctx;
@@ -874,7 +1341,8 @@ static void fxm_lines_of(struct fxm *m, size_t f)
                           ctx == FXM_RULE || ctx == FXM_RECIPE ? st.rule
                                                                : FXM_NONE);
     }
-    m->unknown |= r < 0;
+    /* A conditional or a define the file leaves open: make stops. */
+    m->unknown |= r < 0 || st.depth != 0 || st.in_define;
 }
 
 /* ---- make inputs: variable references ------------------------------------------- */
@@ -901,6 +1369,8 @@ static void fxm_free(struct fxm *m)
     free(m->vnames);
     fxc_strs_free(&m->files);
     fxc_strs_free(&m->phony);
+    fxc_strs_free(&m->missing);
+    fxc_strs_free(&m->goal_names);
     fxc_strs_free(&m->makers);
     free(m->line.p);
     free(m->a.p);
@@ -941,6 +1411,18 @@ static bool fxm_submake(const char *root, const char *path)
     return false;
 }
 
+void fxm_analyse(struct fxm *m)
+{
+    fxm_read_all(m);
+    for (size_t f = 0; !m->unknown && f < m->files.n; f++)
+        fxm_lines_of(m, f);
+    fxm_missing_made(m);
+    if (!m->unknown)
+        fxm_makers(m);
+    if (!m->unknown)
+        fxm_reach(m);
+}
+
 void fxm_classify(const char *root, const char *const *paths, const bool *want,
                   bool *make, size_t n)
 {
@@ -949,13 +1431,7 @@ void fxm_classify(const char *root, const char *const *paths, const bool *want,
     for (size_t k = 0; k < n; k++)
         make[k] = want[k] && (fxm_makefile_name(paths[k]) ||
                               fxm_submake(root, paths[k]));
-    fxm_read_all(&m);
-    for (size_t f = 0; !m.unknown && f < m.files.n; f++)
-        fxm_lines_of(&m, f);
-    if (!m.unknown)
-        fxm_makers(&m);
-    if (!m.unknown)
-        fxm_reach(&m);
+    fxm_analyse(&m);
     for (size_t k = 0; !m.unknown && k < m.nlines; k++)
         if (fxm_live(&m, &m.lines[k]))
             (void)fxm_tokens(&m, m.lines[k].text, fxm_token);

@@ -38,11 +38,15 @@
  * or .RECIPEPREFIX. */
 #define FXM_FILES_MAX 64
 #define FXM_TEXT_MAX (64u << 20)
+#define FXM_FILE_MAX (1u << 20) /* a file $(file <) reads */
 #define FXM_LINE_MAX (8u << 20)
 #define FXM_ROUNDS 8
 #define FXM_ANY '\x01'
 #define FXM_PCT '\x02' /* a '%' that is shell text */
-#define FXM_WILDS "*%$?[\x01"
+#define FXM_OPEN '\x03' /* a value no text of the line spells */
+#define FXM_HIDE_ON '\x04' /* words a call's value never holds alone... */
+#define FXM_HIDE_OFF '\x05' /* ...up to here */
+#define FXM_WILDS "*%$?[\x01\x03"
 #define FXM_NONE UINT32_MAX
 #define FXM_COND_MAX 64
 #define FXM_NAME_MAX 256
@@ -55,6 +59,7 @@ struct fxm_buf {
 struct fxm_var {
     char *name;
     char *value; /* NULL: not one path-like definition */
+    bool many;   /* value holds one plain definition's many words */
 };
 
 /* Where a logical line sits: when its mentions count. */
@@ -78,6 +83,9 @@ struct fxm_line {
     uint8_t ctx;
     bool runs_make; /* FXM_RECIPE: may run make */
     bool followed;  /* what it names was reached */
+    bool goal_followed; /* ...and, a goal position, what it spells */
+    uint8_t file_goal;  /* FXM_RECIPE: 0 not yet known, 1 its makes name only
+                         * .PHONY goals, 2 one may name a file */
     bool body;      /* FXM_DEF: a line a define holds */
 };
 
@@ -99,6 +107,8 @@ struct fxm_vname {
     const char *name;
     bool live;
     bool shelly; /* a definition may carry shell syntax into a recipe */
+    bool goal;   /* its value may be a goal or a prerequisite */
+    bool cmd;    /* its value may hold the make command */
 };
 
 /* The rule a line belongs to as the text is read. */
@@ -123,6 +133,10 @@ struct fxm {
     bool second; /* .SECONDEXPANSION: a prerequisite list is expanded twice */
     bool body;   /* the placed line is one a define holds */
     bool shelly_any; /* any variable may carry shell syntax */
+    bool lists;      /* an include line: a many-word value is its words */
+    bool pending;    /* a goal position waits on a variable not yet read in one */
+    bool probe;      /* goal words are only tested for a file goal... */
+    bool file_goal;  /* ...and one was met */
     const char *const *paths;
     const bool *want; /* the paths asked about */
     bool *make;       /* ...and those the text names */
@@ -135,6 +149,8 @@ struct fxm {
     struct fxm_rule *rules;
     size_t nrules, caprules;
     struct fxc_strs phony;  /* literal .PHONY names, sorted */
+    struct fxc_strs missing; /* optional includes that do not exist */
+    struct fxc_strs goal_names; /* undefined variables goal positions read */
     struct fxc_strs makers; /* variables whose value may run make, sorted */
     struct fxm_pair *pairs;
     size_t npairs;
@@ -155,6 +171,8 @@ const char *fxm_top(const char *s, const char *set);
 bool fxm_glob(const char *p, const char *s);
 /* The word t names past a recipe's @, - and + prefixes; NULL for none. */
 const char *fxm_word_of(const char *t);
+/* ch splits words: a space or a character a name never holds. */
+bool fxm_sep(char ch);
 /* fn over each word of s; true when any call returned true. */
 bool fxm_tokens(struct fxm *m, char *s, bool (*fn)(struct fxm *, const char *));
 /* s[0..n) with its path-like variables expanded; NULL when it cannot be. */
@@ -169,7 +187,15 @@ void fxm_def_name(const char *p, char *out);
 /* p past its override, export and private prefixes. */
 const char *fxm_skip_prefixes(const char *p);
 
+/* Read the makefiles, place their lines and reach from the objects: what
+ * fxm_classify asks the lines about next. */
+void fxm_analyse(struct fxm *m);
+
 /* make_reach.c: which rules run while an object is built. */
+/* Blank in s what its calls can never put in their values (an $(if)
+ * condition, a $(filter) pattern, an $(error) message), but for what runs
+ * as it is expanded. */
+void fxm_blank(struct fxm *m, char *s);
 void fxm_makers(struct fxm *m);
 void fxm_reach(struct fxm *m);
 /* A line whose mentions count (see the rule above). */
