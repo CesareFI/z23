@@ -3070,13 +3070,19 @@ static int test_ic_ram_scratch_reservations_hold_under_concurrency(void)
         ASSERT(getcwd(cwd, sizeof(cwd)) != NULL);
         snprintf(root, sizeof(root), "%s/%s", cwd, relative);
         setenv("ZCL_RAM_SCRATCH_ROOT", root, 1);
-        /* The room is measured on this filesystem, with a wide churn margin,
-         * so ordinary activity cannot flip a verdict mid-test. */
+        /* Scale the churn margin to the room on this filesystem. A proof
+         * worktree may live on the shared RAM scratch mount, where the fixed
+         * 1 GiB margin used to demand 11 GiB free even though the production
+         * admission floor is 8 GiB. Keep enough headroom for concurrent
+         * activity while testing the same reservation inequality. */
         const uint64_t min_free = PLATFORM_RAM_SCRATCH_MIN_FREE_BYTES;
-        const uint64_t margin = 1024ull * 1024ull * 1024ull;
         uint64_t free_bytes = 0;
         ASSERT(platform_disk_space_available(root, &free_bytes));
-        ASSERT(free_bytes > min_free + 3 * margin);
+        ASSERT(free_bytes > min_free + 4ull * 64ull * 1024ull * 1024ull);
+        uint64_t margin = (free_bytes - min_free) / 4u;
+        if (margin > 1024ull * 1024ull * 1024ull)
+            margin = 1024ull * 1024ull * 1024ull;
+        ASSERT(margin >= 64ull * 1024ull * 1024ull);
         uint64_t first_bytes = free_bytes - min_free - margin;
         uint64_t second_bytes = 2 * margin;
         /* Two reservations that together exceed the room: the first is
