@@ -74,17 +74,30 @@ PROBE_MK="$WORK/probe.mk"
     printf '.DEFAULT_GOAL := zcl-depfile-default\n'
 } > "$PROBE_MK"
 
+# The 15 probes below each read the same read-only PROBE_MK/Makefile and each
+# write to their own $WORK/*.out file under -n (dry-run: make only prints what
+# it would do, so no probe ever creates or mutates a file). That makes them
+# provably independent of one another, so run_probe launches each in the
+# background against its own scratch subdirectory and wait_probes blocks on
+# every recorded PID individually (never a bare `wait`), failing loudly and
+# printing every failing probe's own output if any of them reports non-zero.
+PROBE_PIDS=()
+PROBE_OUTPUTS=()
+PROBE_GOALS=()
+
 run_probe()
 {
-    local output="$1"
+    local output="$1" scratch
     shift
+    scratch="${output%.out}.scratch"
+    mkdir -p "$scratch"
     (
         cd "$ROOT"
         make -f "$PROBE_MK" --no-print-directory -n \
             ZCL_STANDALONE_CLEAN=1 \
             BUILD_SOURCE_RECORD="$SOURCE_RECORD" \
-            BUILD_DIR="$WORK/build" \
-            BIN_DIR="$WORK/build/bin" \
+            BUILD_DIR="$scratch/build" \
+            BIN_DIR="$scratch/build/bin" \
             VIEW_GEN_HEADERS= VIEW_GEN_HEADERS_EARLY= \
             VENDOR_LIBS= \
             ALL_OBJS="$WORK/build-only.o" \
@@ -100,10 +113,28 @@ run_probe()
             NODE_C23_PACKAGE_VERIFY_OBJ="$WORK/node-c23.o" \
             NODE_C23_LINK_RSP="$WORK/node-c23.rsp" \
             "$@"
-    ) > "$output" 2>&1 || {
-        sed -n '1,120p' "$output" >&2
-        fail "Make probe failed: ${*:-default goal}"
-    }
+    ) > "$output" 2>&1 &
+    PROBE_PIDS+=("$!")
+    PROBE_OUTPUTS+=("$output")
+    PROBE_GOALS+=("${*:-default goal}")
+}
+
+wait_probes()
+{
+    local i pid failed=0
+    for i in "${!PROBE_PIDS[@]}"; do
+        pid="${PROBE_PIDS[$i]}"
+        if ! wait "$pid"; then
+            sed -n '1,120p' "${PROBE_OUTPUTS[$i]}" >&2
+            printf 'make-depfile-scope-selftest: FAIL: Make probe failed: %s\n' \
+                "${PROBE_GOALS[$i]}" >&2
+            failed=1
+        fi
+    done
+    PROBE_PIDS=()
+    PROBE_OUTPUTS=()
+    PROBE_GOALS=()
+    [ "$failed" -eq 0 ] || exit 1
 }
 
 assert_exact_profiles()
@@ -121,10 +152,14 @@ assert_exact_profiles()
     done
 }
 
+# Every probe below reads the same read-only PROBE_MK/Makefile and writes to
+# its own scratch subdirectory and its own $WORK/*.out file (see run_probe's
+# comment above), so all 15 launch concurrently; wait_probes then blocks on
+# each one's own PID and checks its own rc before any assert_exact_profiles
+# call runs, so a probe's own Make failure is still caught exactly where it
+# happened, just as loudly as when these ran one at a time.
 run_probe "$WORK/dev.out" fast-compile
-assert_exact_profiles "$WORK/dev.out" dev
 run_probe "$WORK/build.out" build-only
-assert_exact_profiles "$WORK/build.out" build-only
 # t / t-fast now validate ONLY= at Makefile PARSE time (see the ONLY_REQUIRED_GOALS
 # block in the Makefile), so naming either as a probe goal without one is a
 # parse error before any depfile logic is reached. ONLY= is a command-line
@@ -132,41 +167,46 @@ assert_exact_profiles "$WORK/build.out" build-only
 # which depfile scope is selected — which is the only thing these two probes
 # measure. Any registered group name works; boot_phase is small and stable.
 run_probe "$WORK/fast.out" t-fast ONLY=boot_phase
-assert_exact_profiles "$WORK/fast.out" test-fast
 run_probe "$WORK/strict.out" t ONLY=boot_phase
-assert_exact_profiles "$WORK/strict.out" test-strict
 run_probe "$WORK/failure-id.out" dev-failure-execution-id
-assert_exact_profiles "$WORK/failure-id.out" ""
 
 # Module recipes compile directly and never consume the linked harness's
 # object graph. A newer unrelated header must not schedule object rebuilds.
 run_probe "$WORK/hot-loop.out" t-hotswap ONLY=boot_phase
-assert_exact_profiles "$WORK/hot-loop.out" ""
 run_probe "$WORK/hot-module.out" hotswap-test-so
-assert_exact_profiles "$WORK/hot-module.out" ""
 run_probe "$WORK/hot-both.out" t-hotswap hotswap-test-so ONLY=boot_phase
-assert_exact_profiles "$WORK/hot-both.out" ""
 run_probe "$WORK/hot-mixed.out" t-hotswap t-fast ONLY=boot_phase
-assert_exact_profiles "$WORK/hot-mixed.out" "build-only dev test-fast test-strict node-c23"
 
 # The shipped node binary, under both spellings of its goal. Narrowing to
 # node-c23 alone is the point: a missing exact-goal branch would silently widen
 # this to every profile, and a missing -include would silently empty it.
 run_probe "$WORK/node.out" zclassic23
-assert_exact_profiles "$WORK/node.out" node-c23
 run_probe "$WORK/node-alias.out" z23
-assert_exact_profiles "$WORK/node-alias.out" node-c23
 run_probe "$WORK/verifier.out" zclassic23-package-verify
-assert_exact_profiles "$WORK/verifier.out" node-c23
 
 # Two goals and an unknown explicit goal are ambiguous. They must import every
 # depfile, so every newer header schedules a rebuild. No explicit goal is the
 # exact spelling of `.DEFAULT_GOAL := z23`, so it remains node-c23 scoped.
 run_probe "$WORK/mixed.out" fast-compile build-only
-assert_exact_profiles "$WORK/mixed.out" "build-only dev test-fast test-strict node-c23"
 run_probe "$WORK/unknown.out" zcl-depfile-unknown
-assert_exact_profiles "$WORK/unknown.out" "build-only dev test-fast test-strict node-c23"
 run_probe "$WORK/default.out"
+
+wait_probes
+
+assert_exact_profiles "$WORK/dev.out" dev
+assert_exact_profiles "$WORK/build.out" build-only
+assert_exact_profiles "$WORK/fast.out" test-fast
+assert_exact_profiles "$WORK/strict.out" test-strict
+assert_exact_profiles "$WORK/failure-id.out" ""
+assert_exact_profiles "$WORK/hot-loop.out" ""
+assert_exact_profiles "$WORK/hot-module.out" ""
+assert_exact_profiles "$WORK/hot-both.out" ""
+assert_exact_profiles "$WORK/hot-mixed.out" "build-only dev test-fast test-strict node-c23"
+assert_exact_profiles "$WORK/node.out" node-c23
+assert_exact_profiles "$WORK/node-alias.out" node-c23
+assert_exact_profiles "$WORK/verifier.out" node-c23
+assert_exact_profiles "$WORK/mixed.out" "build-only dev test-fast test-strict node-c23"
+assert_exact_profiles "$WORK/unknown.out" "build-only dev test-fast test-strict node-c23"
 assert_exact_profiles "$WORK/default.out" node-c23
 
 printf '%s\n' \
