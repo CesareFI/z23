@@ -741,12 +741,13 @@ static const char *va_object_check(const struct zcl_verify_attest_record *r,
 static const char *va_artifacts_check(const struct zcl_verify_attest_record *r,
                                       const uint8_t *obj, size_t obj_len,
                                       const uint8_t *dep, size_t dep_len,
-                                      const uint8_t *stderr, size_t stderr_len)
+                                      const uint8_t *stderr_bytes,
+                                      size_t stderr_len)
 {
     const char *why = NULL;
     uint8_t hash[VA_HASH];
     if ((!obj && obj_len) || (!dep && dep_len) ||
-        (!stderr && stderr_len))
+        (!stderr_bytes && stderr_len))
         return ZCL_VERIFY_ATTEST_WHY_ARGUMENTS;
     why = va_object_check(r, obj, obj_len);
     if (why)
@@ -756,7 +757,7 @@ static const char *va_artifacts_check(const struct zcl_verify_attest_record *r,
     zcl_sha3_256(dep, dep_len, hash);
     if (memcmp(hash, r->dep_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_DEP_MISMATCH;
-    zcl_sha3_256(stderr, stderr_len, hash);
+    zcl_sha3_256(stderr_bytes, stderr_len, hash);
     if (memcmp(hash, r->stderr_sha3, VA_HASH) != 0)
         return ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH;
     return NULL;
