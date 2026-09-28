@@ -8638,14 +8638,17 @@ struct dp_inside_stop {
         dprintf(fd, "%ld verify ready proofq1\n", (long)getpid()) <= 0)
         _exit(2);
     pid_t leader = getpid();
+    uint64_t born = 0;
+    /* The parent kills this leader as soon as it reads ready_fd. Capture its
+     * birth token before the helper can be scheduled after that kill. */
+    if (!os_proc_pid_start_token((uint64_t)leader, &born))
+        _exit(2);
     pid_t helper = fork();
     if (helper == 0) {
         char go = 0;
-        uint64_t born = 0;
         (void)close(fd);
         (void)close(ready_fd);
-        if (!os_proc_pid_start_token((uint64_t)leader, &born) ||
-            read(cmd_fd, &go, 1) != 1)
+        if (read(cmd_fd, &go, 1) != 1)
             _exit(3);
         struct zcl_devloop_watch_stop io = {.expect_born = born,
                                             .budget_ms = 5000};
