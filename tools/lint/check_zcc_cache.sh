@@ -22,6 +22,10 @@
 
 set -euo pipefail
 
+# The proof builds cold with ZCC_VERIFIED, but this fixture first tests the
+# ordinary cache and sets proof mode explicitly for its refusal cases.
+unset ZCC_VERIFIED
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"

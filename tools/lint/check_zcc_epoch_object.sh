@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# Test ordinary epoch-cache hits even when the proof runner is compiling
+# cold; the verified-mode case below sets ZCC_VERIFIED explicitly.
+unset ZCC_VERIFIED
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [ -n "${ZCC_EPOCH_TEST_BIN:-}" ]; then
