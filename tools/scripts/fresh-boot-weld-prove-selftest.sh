@@ -171,35 +171,44 @@ case "$scenario" in
     install_and_climb)
         # H*=checkpoint at install; every subsequent height comes from the
         # query path, one per observed sample. No timed climb loop lives here.
-        # Never move H* BACKWARDS: if a query already seeded (and advanced)
-        # the file while this boot path was being scheduled, clobbering it
-        # here would undo an observed climb and cost an extra sample — a
-        # boot/query interleaving, i.e. exactly the kind of ordering-by-luck
-        # this fixture exists to be free of.
-        _prev=-1
-        [ -r "$datadir/fake_hstar" ] && _prev="$(cat "$datadir/fake_hstar")"
-        case "$_prev" in
-            ''|*[!0-9]*) _prev=-1 ;;
-        esac
-        [ "$_prev" -lt "$cp_height" ] && echo "$cp_height" > "$datadir/fake_hstar"
+        #
+        # This boot path does NOT write fake_hstar itself. It used to, guarded
+        # by "only write if the on-disk value isn't already >= checkpoint" —
+        # but that guard reads the file, decides, and writes in three separate
+        # steps with no lock between them, so a query process (a fresh exec of
+        # this same script, run by the driver's sampling loop) could advance
+        # the file to checkpoint+1 in the gap between this boot process's read
+        # and its write, and this process would then clobber that advance back
+        # down to checkpoint using its now-stale decision — losing a sample's
+        # worth of climb. That TOCTOU only had room to fire when the boot
+        # process was scheduled late enough for a query to land inside the
+        # gap, which a saturated host makes far more likely, not less: it
+        # reproduced running these eleven scenarios concurrently on a loaded
+        # box (loadavg more than double the online CPU count) after this
+        # file's own scenarios stopped
+        # being one exclusive serial group. scenario_seed_hstar() below already
+        # seeds this exact value the first time a QUERY sees no file, and only
+        # the query path ever advances it afterward — one process, no
+        # concurrent writer, no TOCTOU. Boot needs no write of its own.
         : > "$datadir/consensus-bundle-installed.marker"
         echo "[install_consensus_bundle] autodetected consensus bundle installed $bundle_path (H*=$cp_height)"
         while true; do sleep 1; done
         ;;
     refused_tamper)
-        echo "-1" > "$datadir/fake_hstar"
         echo "[install_consensus_bundle] autodetected bundle $bundle_path did not install (marked .failed -> normal boot next time): bundle admission/validation failed: artifact digest mismatch"
         [ -n "$bundle_path" ] && : > "${bundle_path}.failed"
         while true; do sleep 1; done
         ;;
     chain_binding_blocked)
-        echo "-1" > "$datadir/fake_hstar"
         echo "[install_consensus_bundle] autodetected bundle $bundle_path did not install (marked .failed -> normal boot next time): selected-chain binding failed (the bundle's height/hash is not on this node's validated header chain, or the node is not the open singleton): chain binding: selected frontier changed or is not durable"
         [ -n "$bundle_path" ] && : > "${bundle_path}.failed"
         while true; do sleep 1; done
         ;;
     frozen_at_checkpoint)
-        echo "$cp_height" > "$datadir/fake_hstar"
+        # Same reasoning as install_and_climb above: the query path's own
+        # scenario_seed_hstar() already seeds $cp_height on first read, and
+        # this scenario never advances past it, so a boot-side write is both
+        # redundant and (under load) the only way this value could race.
         : > "$datadir/consensus-bundle-installed.marker"
         echo "[install_consensus_bundle] autodetected consensus bundle installed $bundle_path (H*=$cp_height)"
         while true; do sleep 1; done
@@ -207,8 +216,8 @@ case "$scenario" in
     tamper_falsely_installed)
         # A deliberate REGRESSION fixture: despite tamper, the fake installs
         # anyway. Proves the driver's PASS predicate genuinely checks the
-        # marker + .failed absence, not merely "H* moved".
-        echo "$cp_height" > "$datadir/fake_hstar"
+        # marker + .failed absence, not merely "H* moved". Same no-boot-write
+        # reasoning as install_and_climb/frozen_at_checkpoint above.
         : > "$datadir/consensus-bundle-installed.marker"
         echo "[install_consensus_bundle] autodetected consensus bundle installed $bundle_path (H*=$cp_height) [SELFTEST REGRESSION FIXTURE]"
         while true; do sleep 1; done
@@ -391,17 +400,60 @@ test_denylist_refuses_live_datadir() {
     printf '[fresh-boot-weld-prove-selftest] PASS: a --work-base under a live datadir is refused, never booted against\n'
 }
 
-test_no_bundle_found_skips
-test_explicit_bundle_discovery
-test_negative_pass_tamper_refused
-test_negative_fails_if_marker_present
-test_positive_pass_install_and_climb
-test_positive_pass_survives_an_already_expired_deadline
-test_positive_blocked_chain_binding
-test_positive_fails_frozen_at_checkpoint
-test_positive_inconclusive_when_rpc_never_answers
-test_negative_inconclusive_when_no_decision_reached
-test_denylist_refuses_live_datadir
+# ── run the 11 cases concurrently, not serially ────────────────────────────
+# Each test_* function is a self-contained scenario: its own $OUTPUT file,
+# its own $SCENARIO/$EXTRA_ARGS (globals only this function's own frame ever
+# reads, both set and consumed before the next test runs), and its own
+# work directory inside the real driver (fresh-boot-weld-prove.sh derives
+# WORK/NEG_DD from ITS OWN pid, "zcl-weld-{POS,NEG}-$$", so two concurrent
+# driver child processes can never collide on a directory). The fake
+# $ZCL_NODE_BIN is a plain script exec'd fresh per call, not a listening
+# server, so the fixed --rpcport/--port the driver passes are never actually
+# bound — nothing here contends on a socket either. Two of the eleven cases
+# are genuinely STATIONARY fixtures whose driver leg must exhaust a real
+# deadline (frozen_at_checkpoint: 8s, never_rpc: 6s) rather than conclude
+# early; run serially those two alone cost 14s of dead wall time on top of
+# the other nine, and the whole file was ~46-71s of pure sum. Running all
+# eleven as background jobs and waiting bounds the wall time by the SLOWEST
+# single case instead of their sum — each job's stdout+stderr is captured to
+# its own log so a failure's diagnostics (including the fail() elapsed/
+# loadavg footer) are not interleaved with the others, then replayed in
+# order once every job has finished.
+run_parallel_cases() {
+    local names=("$@") pids=() logs=() name log failed=0 i
+    for name in "${names[@]}"; do
+        log="$SANDBOX/parallel-$name.log"
+        ( "$name" ) >"$log" 2>&1 &
+        pids+=("$!")
+        logs+=("$log")
+    done
+    for i in "${!pids[@]}"; do
+        name="${names[$i]}"
+        log="${logs[$i]}"
+        if wait "${pids[$i]}"; then
+            cat "$log"
+        else
+            printf '[fresh-boot-weld-prove-selftest] %s FAILED (parallel job):\n' "$name" >&2
+            cat "$log" >&2
+            failed=1
+        fi
+    done
+    return "$failed"
+}
+
+run_parallel_cases \
+    test_no_bundle_found_skips \
+    test_explicit_bundle_discovery \
+    test_negative_pass_tamper_refused \
+    test_negative_fails_if_marker_present \
+    test_positive_pass_install_and_climb \
+    test_positive_pass_survives_an_already_expired_deadline \
+    test_positive_blocked_chain_binding \
+    test_positive_fails_frozen_at_checkpoint \
+    test_positive_inconclusive_when_rpc_never_answers \
+    test_negative_inconclusive_when_no_decision_reached \
+    test_denylist_refuses_live_datadir
+[ "$?" = 0 ] || exit 1
 
 printf '[fresh-boot-weld-prove-selftest] ALL 11 HERMETIC ASSERTIONS PASSED (%ss elapsed, loadavg %s — reported, never asserted)\n' \
     "$(( $(date +%s) - SELFTEST_STARTED ))" "$(loadavg_now)"
