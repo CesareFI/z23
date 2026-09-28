@@ -139,8 +139,6 @@ cognition/modules/codeindex/src/codeindex_store.c:ci_store_write_image_fd:19
 cognition/modules/codeindex/src/codeindex_store_hash.c:projection_column:22
 cognition/modules/codeindex/src/codeindex_store_hash.c:projection_meta_value_locked:18
 cognition/modules/codeindex/src/codeindex_store_read.c:ci_store_meta_get:17
-cognition/modules/codeindex/src/codeindex_store_shard.c:ci_store_scan_shards_are_valid:10
-cognition/modules/codeindex/src/codeindex_store_shard.c:scan_shard_digest:4
 cognition/modules/codeindex/src/codeindex_vector_hint.c:segment_shape:17
 cognition/modules/codeindex/src/codeindex_vector_hint.c:zcl_code_concept_card_v1_validate_ontology:21
 cognition/modules/codeindex/src/codeindex_vector_hint.c:zcl_code_embedding_segment_v1_parse:36
@@ -2226,7 +2224,6 @@ engine/services/src/build_fabric_evidence.c:bf_proof_evaluate:149
 engine/services/src/build_fabric_evidence.c:build_fabric_receipt_observe_remote:42
 engine/services/src/build_fabric_evidence_parse.c:build_fabric_fuzz_evidence_parse:25
 engine/services/src/build_fabric_evidence_parse.c:build_fabric_test_evidence_parse:19
-engine/services/src/build_fabric_runtime.c:build_fabric_runtime_register:20
 engine/services/src/build_fabric_service.c:bf_capability_has:16
 engine/services/src/build_fabric_service.c:bf_leased_transition:22
 engine/services/src/build_fabric_service.c:build_fabric_cancel:17
@@ -2241,7 +2238,6 @@ engine/services/src/build_fabric_worker.c:bfw_paths_init:30
 engine/services/src/build_fabric_worker.c:build_fabric_worker_execute:118
 engine/services/src/build_fabric_worker_binding.c:bfw_load_zcode_context:23
 engine/services/src/build_fabric_worker_feedback.c:build_fabric_worker_feedback_capture:39
-engine/services/src/build_fabric_worker_identity.c:build_fabric_worker_identity_load:29
 engine/services/src/canary_sentinel_watch.c:process_sentinel:56
 engine/services/src/chain_evidence_authority_service.c:chain_evidence_controller_import_snapshot_evidence:30
 engine/services/src/chain_evidence_authority_service.c:chain_evidence_controller_mark_fully_validated:31
@@ -3928,7 +3924,6 @@ tools/dev/devloop_plan.c:zcl_devloop_path_is_relevant:19
 tools/dev/devloop_plan.c:zcl_devloop_plan_files:38
 tools/dev/devloop_plan.c:zcl_devloop_plan_proof_admissible:17
 tools/dev/devloop_process.c:darwin_code_signature_region:20
-tools/dev/devloop_process.c:darwin_spawn_fd_attested:13
 tools/dev/devloop_process.c:process_run_impl:28
 tools/dev/devloop_process.c:process_run_impl#2:60
 tools/dev/devloop_watch.c:add_watch_recursive:21
@@ -3959,7 +3954,6 @@ tools/dev/mutation_run.c:zcl_mut_campaign_run:36
 tools/dev/mutation_run.c:zcl_mut_plan_from_dryrun:21
 tools/dev/mutation_run.c:zcl_mut_shell_split:24
 tools/dev/mutation_run.c:zcl_mut_spawn:58
-tools/dev/test_group_catalog.c:expand_plan:15
 tools/dev/windows_headless_run.c:append_argument:20
 tools/dev/windows_headless_run.c:wmain:36
 tools/dev/z23_bounded_run.c:append_argument:20

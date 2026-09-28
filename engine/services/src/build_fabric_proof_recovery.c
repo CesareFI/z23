@@ -4,8 +4,11 @@
 #include "services/build_fabric_proof_recovery.h"
 
 #include "base/hex.h"
+#include "base/log_macros.h"
+#include "base/safe_alloc.h"
 #include "models/build_fabric.h"
 #include "vcs/blob_store.h"
+#include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/proof_reuse.h"
 
@@ -29,9 +32,12 @@ static bool bfpr_catalog_roots(struct vcs_package_store *store,
 {
     *roots = NULL;
     *count = 0;
-    if (!max_rows || max_rows > SIZE_MAX / sizeof(**roots)) return false;
-    uint8_t (*all)[32] = malloc(max_rows * sizeof(*all));
-    if (!all) return false;
+    if (!max_rows || max_rows > SIZE_MAX / sizeof(**roots))
+        LOG_RETURN(false, "build_fabric", "invalid proof catalog row budget");
+    uint8_t (*all)[32] = zcl_malloc(max_rows * sizeof(*all),
+                                   "proof catalog roots");
+    if (!all)
+        LOG_RETURN(false, "build_fabric", "allocate proof catalog roots");
     struct vcs_package_store_summary page_rows[VCS_PACKAGE_STORE_PAGE_MAX];
     struct vcs_package_store_page page;
     uint8_t cursor[32];
@@ -60,7 +66,7 @@ static bool bfpr_catalog_roots(struct vcs_package_store *store,
     if (!complete) {
         free(all);
         *count = 0;
-        return false;
+        LOG_RETURN(false, "build_fabric", "proof catalog scan incomplete");
     }
     *roots = all;
     return true;
@@ -86,12 +92,16 @@ static bool bfpr_issuer_wire(const uint8_t *wire, size_t len,
 
 static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
                                     const uint8_t issuer[32],
-                                    size_t max_catalog_rows)
+                                    size_t max_catalog_rows,
+                                    uint8_t (**hashes_out)[32],
+                                    size_t *hash_count_out)
 {
+    *hashes_out = NULL;
+    *hash_count_out = 0;
     uint8_t (*roots)[32] = NULL;
     size_t count = 0;
     if (!bfpr_catalog_roots(store, max_catalog_rows, &roots, &count))
-        return false;
+        LOG_RETURN(false, "build_fabric", "pin issuer catalog unavailable");
     bool ok = true;
     for (size_t i = 0; ok && i < count; i++) {
         uint8_t wire[VCS_BLOB_MAX_BYTES + 1u];
@@ -104,12 +114,19 @@ static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
             ok = false;
             break;
         }
-        if (bfpr_issuer_wire(wire, len, issuer) &&
-            vcs_package_store_pin(store, roots[i], true) !=
-                VCS_PACKAGE_STORE_OK)
+        if (!bfpr_issuer_wire(wire, len, issuer)) continue;
+        if (vcs_package_store_pin(store, roots[i], true) !=
+                VCS_PACKAGE_STORE_OK ||
+            !vcs_package_chunk_hash(wire, len, roots[*hash_count_out]))
             ok = false;
+        else
+            (*hash_count_out)++;
     }
-    free(roots);
+    if (ok) *hashes_out = roots;
+    else {
+        free(roots);
+        *hash_count_out = 0;
+    }
     return ok;
 }
 
@@ -270,60 +287,172 @@ static bool bfpr_inputs_valid(struct node_db *ndb, const char *worker_id,
     return ndb && worker_id && signer_seed && had_pending && next_head_hex;
 }
 
+static struct zcl_result bfpr_load_pending(
+    struct node_db *ndb, const char *worker_id,
+    struct db_build_worker_proof_pending *pending, bool *found_out)
+{
+    int found = db_build_worker_proof_pending_find_checked(
+        ndb, worker_id, pending);
+    if (found < 0)
+        return ZCL_ERR(-1, "proof-pending-replay-missing-or-corrupt-row");
+    *found_out = found > 0;
+    return ZCL_OK;
+}
+
+static struct zcl_result bfpr_validate_pending(
+    struct vcs_package_store *store, const uint8_t signer_seed[32],
+    const struct db_build_worker_proof_pending *pending,
+    uint8_t expected_head[32], struct vcs_proof_ticket_v1 *ticket,
+    struct vcs_proof_checkpoint_v1 *checkpoint)
+{
+    uint8_t pubkey[32];
+    enum bfpr_issuer_state issuer =
+        bfpr_issuer_matches(signer_seed, pending, pubkey);
+    if (issuer == BFPR_ISSUER_UNAVAILABLE)
+        return ZCL_ERR(-1, "proof-pending-replay-issuer-key-unavailable");
+    if (issuer != BFPR_ISSUER_MATCH)
+        return ZCL_ERR(-1, "proof-pending-replay-signer-changed");
+    if (!bfpr_signed_pair(pending, pubkey, ticket, checkpoint) ||
+        !bfpr_parent_matches(store, pending->expected_head, pubkey,
+                             ticket, checkpoint))
+        return ZCL_ERR(-1, "proof-pending-replay-signed-chain-invalid");
+    enum bfpr_transfer_state transfer =
+        bfpr_transfer_ready(store, pending, expected_head);
+    if (transfer == BFPR_TRANSFER_ROOT_INVALID)
+        return ZCL_ERR(-1, "proof-pending-replay-root-invalid");
+    if (transfer != BFPR_TRANSFER_COMPLETE)
+        return ZCL_ERR(-1, "proof-pending-replay-transfer-incomplete");
+    return ZCL_OK;
+}
+
+static struct zcl_result bfpr_pending_replay_impl(
+    struct node_db *ndb, struct vcs_package_store *store,
+    const char *worker_id, const uint8_t signer_seed[32],
+    size_t max_catalog_rows, size_t max_tickets,
+    bool *had_pending, char next_head_hex[65], uint64_t *generation_out,
+    uint8_t (**chunk_hashes_out)[32], size_t *chunk_count_out)
+{
+    bfpr_clear_outputs(had_pending, next_head_hex);
+    if (generation_out) *generation_out = 0;
+    if (chunk_hashes_out) *chunk_hashes_out = NULL;
+    if (chunk_count_out) *chunk_count_out = 0;
+    if (!bfpr_inputs_valid(ndb, worker_id, signer_seed,
+                           had_pending, next_head_hex))
+        return ZCL_ERR(-1, "proof-pending-replay-invalid-input");
+    struct db_build_worker_proof_pending pending;
+    bool found = false;
+    ZCL_CHECK(bfpr_load_pending(ndb, worker_id, &pending, &found));
+    if (!found) return ZCL_OK;
+    if (!store || !max_catalog_rows || !max_tickets)
+        return ZCL_ERR(-1, "proof-pending-replay-store-or-budget-missing");
+
+    struct vcs_proof_ticket_v1 ticket;
+    struct vcs_proof_checkpoint_v1 cp;
+    uint8_t expected_head[32];
+    ZCL_CHECK(bfpr_validate_pending(store, signer_seed, &pending,
+                                    expected_head, &ticket, &cp));
+
+    uint64_t generation = 0;
+    uint8_t (*chunk_hashes)[32] = NULL;
+    size_t chunk_count = 0;
+    struct vcs_proof_issuer_log *restored =
+        vcs_proof_issuer_log_restore_from_store_at_generation(
+            signer_seed, store, expected_head, max_catalog_rows,
+            max_tickets, &generation, &chunk_hashes, &chunk_count);
+    if (!restored)
+        return ZCL_ERR(-1, "proof-pending-replay-incomplete-history");
+    bool exact = bfpr_replay_selects_staged(restored, &pending, &ticket, &cp);
+    vcs_proof_issuer_log_free(restored);
+    if (!exact) {
+        free(chunk_hashes);
+        return ZCL_ERR(-1, "proof-pending-replay-ticket-not-selected");
+    }
+    zcl_hex_encode(expected_head, sizeof(expected_head), next_head_hex);
+    *had_pending = true;
+    if (generation_out) *generation_out = generation;
+    if (chunk_hashes_out && chunk_count_out) {
+        *chunk_hashes_out = chunk_hashes;
+        *chunk_count_out = chunk_count;
+    } else {
+        free(chunk_hashes);
+    }
+    return ZCL_OK;
+}
+
 struct zcl_result build_fabric_proof_pending_replay(
     struct node_db *ndb, struct vcs_package_store *store,
     const char *worker_id, const uint8_t signer_seed[32],
     size_t max_catalog_rows, size_t max_tickets,
     bool *had_pending, char next_head_hex[65])
 {
-    bfpr_clear_outputs(had_pending, next_head_hex);
-    if (!bfpr_inputs_valid(ndb, worker_id, signer_seed,
-                           had_pending, next_head_hex))
-        return ZCL_ERR(-1, "proof-pending-replay-invalid-input");
-    struct db_build_worker_proof_pending pending;
-    int found = db_build_worker_proof_pending_find_checked(
-        ndb, worker_id, &pending);
-    if (found < 0)
-        return ZCL_ERR(-1, "proof-pending-replay-missing-or-corrupt-row");
-    if (found == 0) return ZCL_OK;
-    if (!store || !max_catalog_rows || !max_tickets)
-        return ZCL_ERR(-1, "proof-pending-replay-store-or-budget-missing");
+    return bfpr_pending_replay_impl(
+        ndb, store, worker_id, signer_seed, max_catalog_rows,
+        max_tickets, had_pending, next_head_hex, NULL, NULL, NULL);
+}
 
-    uint8_t pubkey[32];
-    enum bfpr_issuer_state issuer =
-        bfpr_issuer_matches(signer_seed, &pending, pubkey);
-    if (issuer == BFPR_ISSUER_UNAVAILABLE)
-        return ZCL_ERR(-1, "proof-pending-replay-issuer-key-unavailable");
-    if (issuer != BFPR_ISSUER_MATCH)
-        return ZCL_ERR(-1, "proof-pending-replay-signer-changed");
+struct bfpr_commit_context {
+    struct node_db *ndb;
+    const struct db_build_worker_proof_pending *pending;
+    const char *next_head;
+};
 
-    struct vcs_proof_ticket_v1 ticket;
-    struct vcs_proof_checkpoint_v1 cp;
-    if (!bfpr_signed_pair(&pending, pubkey, &ticket, &cp) ||
-        !bfpr_parent_matches(store, pending.expected_head, pubkey,
-                             &ticket, &cp))
-        return ZCL_ERR(-1, "proof-pending-replay-signed-chain-invalid");
+static bool bfpr_finalize_under_store_lock(void *context)
+{
+    struct bfpr_commit_context *commit = context;
+    return db_build_worker_proof_pending_finalize(
+        commit->ndb, commit->pending, commit->next_head);
+}
 
-    uint8_t expected_head[32];
-    enum bfpr_transfer_state transfer =
-        bfpr_transfer_ready(store, &pending, expected_head);
-    if (transfer == BFPR_TRANSFER_ROOT_INVALID)
-        return ZCL_ERR(-1, "proof-pending-replay-root-invalid");
-    if (transfer != BFPR_TRANSFER_COMPLETE)
-        return ZCL_ERR(-1, "proof-pending-replay-transfer-incomplete");
-
-    struct vcs_proof_issuer_log *restored =
-        vcs_proof_issuer_log_restore_from_store(
-            signer_seed, store, expected_head,
-            max_catalog_rows, max_tickets);
-    if (!restored)
-        return ZCL_ERR(-1, "proof-pending-replay-incomplete-history");
-    bool exact = bfpr_replay_selects_staged(restored, &pending, &ticket, &cp);
-    vcs_proof_issuer_log_free(restored);
-    if (!exact)
-        return ZCL_ERR(-1, "proof-pending-replay-ticket-not-selected");
-    zcl_hex_encode(expected_head, sizeof(expected_head), next_head_hex);
-    *had_pending = true;
+static struct zcl_result bfpr_guarded_finalize(
+    struct node_db *ndb, struct vcs_package_store *store,
+    const struct db_build_worker_proof_pending *pending,
+    const char *next_head, size_t max_catalog_rows, uint64_t generation,
+    uint8_t (*history_hashes)[32], size_t history_count,
+    uint8_t (*chunk_hashes)[32], size_t chunk_count)
+{
+    if (chunk_count > SIZE_MAX / sizeof(*history_hashes) ||
+        history_count > SIZE_MAX / sizeof(*history_hashes) - chunk_count) {
+        free(history_hashes);
+        free(chunk_hashes);
+        return ZCL_ERR(-1, "proof-pending-publish-chunk-budget-overflow");
+    }
+    uint8_t (*all_hashes)[32] = zcl_realloc(
+        history_hashes, (history_count + chunk_count) *
+                        sizeof(*history_hashes), "proof chunk guard hashes");
+    if (!all_hashes) {
+        free(history_hashes);
+        free(chunk_hashes);
+        return ZCL_ERR(-1, "proof-pending-publish-chunk-guard-allocation");
+    }
+    memcpy(all_hashes + history_count, chunk_hashes,
+           chunk_count * sizeof(*chunk_hashes));
+    free(chunk_hashes);
+#ifdef ZCL_TESTING
+    if (bfpr_before_finalize_hook) {
+        void (*hook)(void *) = bfpr_before_finalize_hook;
+        void *context = bfpr_before_finalize_context;
+        bfpr_before_finalize_hook = NULL;
+        bfpr_before_finalize_context = NULL;
+        hook(context);
+    }
+#endif
+    struct bfpr_commit_context commit = {ndb, pending, next_head};
+    bool committed = false;
+    enum vcs_package_store_page_result guard =
+        vcs_package_store_commit_if_generation(
+            store, generation, max_catalog_rows,
+            (const uint8_t (*)[32])all_hashes,
+            history_count + chunk_count, bfpr_finalize_under_store_lock,
+            &commit, &committed);
+    free(all_hashes);
+    if (guard == VCS_PACKAGE_STORE_PAGE_STALE)
+        return ZCL_ERR(-1, "proof-pending-publish-stale-generation");
+    if (guard == VCS_PACKAGE_STORE_PAGE_INCOMPLETE)
+        return ZCL_ERR(-1, "proof-pending-publish-incomplete-catalog");
+    if (guard != VCS_PACKAGE_STORE_PAGE_OK)
+        return ZCL_ERR(-1, "proof-pending-publish-store-guard-refused");
+    if (!committed)
+        return ZCL_ERR(-1, "proof-pending-publish-conditional-head-refused");
     return ZCL_OK;
 }
 
@@ -359,27 +488,32 @@ struct zcl_result build_fabric_proof_pending_publish(
     zcl_hex_encode(checkpoint_root, sizeof(checkpoint_root), checkpoint_hex);
     if (strcmp(checkpoint_hex, next_head) != 0)
         return ZCL_ERR(-1, "proof-pending-publish-head-changed");
-    if (!bfpr_pin_issuer_history(store, issuer, max_catalog_rows))
+    uint8_t (*history_hashes)[32] = NULL;
+    size_t history_count = 0;
+    if (!bfpr_pin_issuer_history(store, issuer, max_catalog_rows,
+                                 &history_hashes, &history_count))
         return ZCL_ERR(-1, "proof-pending-publish-history-pin-refused");
 
     /* Pinning changes store generation. Replay again against the fully
      * pinned issuer closure before the conditional DB publication. */
     had_pending = false;
-    ZCL_CHECK(build_fabric_proof_pending_replay(
+    uint64_t generation = 0;
+    uint8_t (*chunk_hashes)[32] = NULL;
+    size_t chunk_count = 0;
+    struct zcl_result replay = bfpr_pending_replay_impl(
         ndb, store, worker_id, signer_seed, max_catalog_rows,
-        max_tickets, &had_pending, next_head));
-    if (!had_pending || strcmp(checkpoint_hex, next_head) != 0)
-        return ZCL_ERR(-1, "proof-pending-publish-replay-changed");
-#ifdef ZCL_TESTING
-    if (bfpr_before_finalize_hook) {
-        void (*hook)(void *) = bfpr_before_finalize_hook;
-        void *context = bfpr_before_finalize_context;
-        bfpr_before_finalize_hook = NULL;
-        bfpr_before_finalize_context = NULL;
-        hook(context);
+        max_tickets, &had_pending, next_head, &generation,
+        &chunk_hashes, &chunk_count);
+    if (!replay.ok) {
+        free(history_hashes);
+        return replay;
     }
-#endif
-    if (!db_build_worker_proof_pending_finalize(ndb, &pending, next_head))
-        return ZCL_ERR(-1, "proof-pending-publish-conditional-head-refused");
-    return ZCL_OK;
+    if (!had_pending || strcmp(checkpoint_hex, next_head) != 0) {
+        free(history_hashes);
+        free(chunk_hashes);
+        return ZCL_ERR(-1, "proof-pending-publish-replay-changed");
+    }
+    return bfpr_guarded_finalize(
+        ndb, store, &pending, next_head, max_catalog_rows, generation,
+        history_hashes, history_count, chunk_hashes, chunk_count);
 }

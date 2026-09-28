@@ -76,6 +76,74 @@ struct zcl_result build_fabric_worker_capabilities_for_test(
 }
 #endif
 
+#if !defined(_WIN32)
+static struct zcl_result bfw_create_key(const char *path, uint8_t seed[32])
+{
+    if (!zcl_random_secret_bytes(seed, 32, "zbuild_worker_key"))
+        return ZCL_ERR(-1, "worker key CSPRNG failed");
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        OPENSSL_cleanse(seed, 32);
+        return ZCL_ERR(-1, "create worker key: %s", strerror(errno));
+    }
+    ssize_t wrote = write(fd, seed, 32);
+    bool synced = wrote == 32 && fsync(fd) == 0;
+    bool ok = close(fd) == 0 && synced;
+    OPENSSL_cleanse(seed, 32);
+    if (!ok) {
+        (void)unlink(path);
+        return ZCL_ERR(-1, "durable worker key write failed");
+    }
+    return ZCL_OK;
+}
+
+static struct zcl_result bfw_read_private_seed(int fd, uint8_t seed[32])
+{
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        (st.st_mode & 077) != 0 || st.st_size != (off_t)32) {
+        close(fd);
+        return ZCL_ERR(-1, "worker key must be a private 32-byte regular file");
+    }
+    size_t off = 0;
+    while (off < 32) {
+        ssize_t got = read(fd, seed + off, 32 - off);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) break;
+        off += (size_t)got;
+    }
+    close(fd);
+    if (off != 32) {
+        OPENSSL_cleanse(seed, 32);
+        return ZCL_ERR(-1, "worker key read was truncated");
+    }
+    return ZCL_OK;
+}
+
+static struct zcl_result bfw_load_seed(const char *datadir,
+                                       uint8_t seed[32])
+{
+    char zcode[BFW_IDENTITY_PATH_MAX];
+    char path[BFW_IDENTITY_PATH_MAX];
+    int n = snprintf(zcode, sizeof(zcode), "%s/zcode", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(zcode))
+        return ZCL_ERR(-1, "worker key path too long");
+    if (mkdir(zcode, 0700) != 0 && errno != EEXIST)
+        return ZCL_ERR(-1, "mkdir %s: %s", zcode, strerror(errno));
+    n = snprintf(path, sizeof(path), "%s/build-worker.ed25519", zcode);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return ZCL_ERR(-1, "worker key path too long");
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0 && errno == ENOENT) {
+        ZCL_CHECK(bfw_create_key(path, seed));
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+    }
+    if (fd < 0)
+        return ZCL_ERR(-1, "open worker key: %s", strerror(errno));
+    return bfw_read_private_seed(fd, seed);
+}
+#endif
+
 static struct zcl_result build_fabric_worker_identity_load_impl(
     const char *datadir, struct db_build_worker *worker,
     uint8_t signer_secret[32], uint8_t signer_pubkey[32],
@@ -95,61 +163,8 @@ static struct zcl_result build_fabric_worker_identity_load_impl(
     if (!datadir || !datadir[0] || !worker || !signer_secret ||
         !signer_pubkey)
         return ZCL_ERR(-1, "worker identity requires datadir and outputs");
-    char zcode[BFW_IDENTITY_PATH_MAX];
-    char path[BFW_IDENTITY_PATH_MAX];
-    int n = snprintf(zcode, sizeof(zcode), "%s/zcode", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(zcode))
-        return ZCL_ERR(-1, "worker key path too long");
-    if (mkdir(zcode, 0700) != 0 && errno != EEXIST)
-        return ZCL_ERR(-1, "mkdir %s: %s", zcode, strerror(errno));
-    n = snprintf(path, sizeof(path), "%s/build-worker.ed25519", zcode);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return ZCL_ERR(-1, "worker key path too long");
     uint8_t seed[32];
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0 && errno == ENOENT) {
-        if (!zcl_random_secret_bytes(seed, sizeof(seed), "zbuild_worker_key"))
-            return ZCL_ERR(-1, "worker key CSPRNG failed");
-        fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (fd < 0) {
-            OPENSSL_cleanse(seed, sizeof(seed));
-            return ZCL_ERR(-1, "create worker key: %s", strerror(errno));
-        }
-        ssize_t wrote = write(fd, seed, sizeof(seed));
-        bool synced = wrote == (ssize_t)sizeof(seed) && fsync(fd) == 0;
-        bool ok = close(fd) == 0 && synced;
-        if (!ok) {
-            (void)unlink(path);
-            OPENSSL_cleanse(seed, sizeof(seed));
-            return ZCL_ERR(-1, "durable worker key write failed");
-        }
-        fd = open(path, O_RDONLY | O_CLOEXEC);
-    }
-    if (fd < 0) {
-        OPENSSL_cleanse(seed, sizeof(seed));
-        return ZCL_ERR(-1, "open worker key: %s", strerror(errno));
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
-        (st.st_mode & 077) != 0 || st.st_size != (off_t)sizeof(seed)) {
-        close(fd);
-        OPENSSL_cleanse(seed, sizeof(seed));
-        return ZCL_ERR(-1, "worker key must be a private 32-byte regular file");
-    }
-    size_t off = 0;
-    while (off < sizeof(seed)) {
-        ssize_t got = read(fd, seed + off, sizeof(seed) - off);
-        if (got < 0 && errno == EINTR)
-            continue;
-        if (got <= 0)
-            break;
-        off += (size_t)got;
-    }
-    close(fd);
-    if (off != sizeof(seed)) {
-        OPENSSL_cleanse(seed, sizeof(seed));
-        return ZCL_ERR(-1, "worker key read was truncated");
-    }
+    ZCL_CHECK(bfw_load_seed(datadir, seed));
     ed25519_keypair(signer_pubkey, signer_secret, seed);
     static const char domain[] = "zcl.build_worker.v1";
     struct sha3_256_ctx sha;

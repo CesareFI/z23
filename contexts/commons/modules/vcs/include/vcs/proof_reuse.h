@@ -56,6 +56,14 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
     const uint8_t seed[32], struct vcs_package_store *store,
     const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
     size_t max_catalog_rows, size_t max_tickets);
+/* Same verified replay, returning the exact catalog generation and selected
+ * ticket/head CAS chunk hashes at its guarded publication point. Caller owns
+ * *chunk_hashes_out and frees it. All outputs clear on refusal. */
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store_at_generation(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets, uint64_t *generation_out,
+    uint8_t (**chunk_hashes_out)[32], size_t *chunk_count_out);
 /* Reconstruct and replace an in-memory issuer projection while the store
  * generation, catalog, selected issuer ticket chunks and head chunk remain
  * guarded. Failure leaves *live unchanged. The replaced log is freed after

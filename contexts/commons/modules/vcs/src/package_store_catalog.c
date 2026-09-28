@@ -629,6 +629,42 @@ enum vcs_package_store_page_result vcs_package_store_publish_if_generation(
                                              publish, context);
 }
 
+enum vcs_package_store_page_result vcs_package_store_commit_if_generation(
+    struct vcs_package_store *store, uint64_t generation,
+    size_t max_catalog_rows,
+    const uint8_t (*chunk_hashes)[32], size_t chunk_count,
+    bool (*commit)(void *context), void *context, bool *committed_out)
+{
+    if (committed_out) *committed_out = false;
+    if (!store || !commit || !committed_out || !max_catalog_rows ||
+        (chunk_count && !chunk_hashes))
+        LOG_RETURN(VCS_PACKAGE_STORE_PAGE_INPUT, STORE_LOG,
+                   "invalid guarded DB commit arguments");
+    pthread_mutex_lock(&store->lock);
+    if (!store_process_lock(store)) {
+        pthread_mutex_unlock(&store->lock);
+        LOG_RETURN(VCS_PACKAGE_STORE_PAGE_IO, STORE_LOG,
+                   "lock store for guarded DB commit");
+    }
+    enum vcs_package_store_page_result result = VCS_PACKAGE_STORE_PAGE_OK;
+    if (!store_generation_check(store) ||
+        generation != store->shared_generation)
+        result = VCS_PACKAGE_STORE_PAGE_STALE;
+    else if (store->pkg_count > max_catalog_rows)
+        result = VCS_PACKAGE_STORE_PAGE_INCOMPLETE;
+    else
+        result = store_catalog_validate_disk(store);
+    if (result == VCS_PACKAGE_STORE_PAGE_OK)
+        result = store_validate_chunks(store, chunk_hashes, chunk_count);
+    if (result == VCS_PACKAGE_STORE_PAGE_OK)
+        *committed_out = commit(context);
+    store_process_unlock(store);
+    pthread_mutex_unlock(&store->lock);
+    if (result != VCS_PACKAGE_STORE_PAGE_OK)
+        LOG_ERROR(STORE_LOG, "guarded DB commit refused (%d)", (int)result);
+    return result;
+}
+
 size_t vcs_package_store_list_summaries(
     struct vcs_package_store *store, bool complete_only,
     struct vcs_package_store_summary *out, size_t max)

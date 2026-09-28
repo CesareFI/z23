@@ -314,6 +314,44 @@ static void bf_runtime_execute_claimed(struct node_db *ndb,
     supervisor_tick(id);
 }
 
+static struct zcl_result bf_runtime_recover_pending(
+    struct node_db *ndb, const char *datadir, const char *worker_id,
+    const uint8_t seed[32]);
+
+static bool bf_worker_recover_at_start(struct node_db *ndb)
+{
+    struct db_build_worker worker;
+    uint8_t secret[32] = {0}, pubkey[32], seed[32] = {0};
+    struct zcl_result result = build_fabric_worker_identity_load_with_seed(
+        g_worker_datadir, &worker, secret, pubkey, seed);
+    if (result.ok && (strcmp(worker.worker_id, g_local_worker.worker_id) != 0 ||
+                      memcmp(pubkey, g_local_pubkey, sizeof(pubkey)) != 0))
+        result = ZCL_ERR(-1, "build worker recovery identity changed");
+    if (result.ok)
+        result = bf_runtime_recover_pending(
+            ndb, g_worker_datadir, g_local_worker.worker_id, seed);
+    OPENSSL_cleanse(seed, sizeof(seed));
+    OPENSSL_cleanse(secret, sizeof(secret));
+    if (!result.ok)
+        LOG_ERROR("build_fabric", "worker recovery refused: %s",
+                  result.message);
+    return result.ok;
+}
+
+static bool bf_worker_wait_for_recovery(struct node_db *ndb)
+{
+    while (!g_shutdown_requested && !bf_worker_recover_at_start(ndb)) {
+        atomic_fetch_add(&g_recovery_failures, 1);
+        supervisor_child_id id = atomic_load(&g_worker_id);
+        supervisor_progress_idle(id);
+        supervisor_tick(id);
+        for (unsigned int second = 0; second < 60u &&
+                                      !g_shutdown_requested; second++)
+            platform_sleep_ms(1000);
+    }
+    return !g_shutdown_requested;
+}
+
 static void *bf_worker_loop(void *arg)
 {
     (void)arg;
@@ -334,6 +372,7 @@ static void *bf_worker_loop(void *arg)
         atomic_fetch_add(&g_worker_failures, 1);
         return NULL;
     }
+    if (!bf_worker_wait_for_recovery(ndb)) return NULL;
     uint64_t completed = 0;
     while (!g_shutdown_requested) {
         supervisor_child_id id = atomic_load(&g_worker_id);
@@ -439,42 +478,33 @@ static struct zcl_result bf_runtime_recover_pending(
     return recovered;
 }
 
+static struct zcl_result bf_runtime_enroll_worker(const char *datadir)
+{
+    if (!datadir || !getcwd(g_worker_workspace,
+                            sizeof(g_worker_workspace)))
+        return ZCL_ERR(-1, "build worker cannot resolve its workspace");
+    int ddn = snprintf(g_worker_datadir, sizeof(g_worker_datadir),
+                       "%s", datadir);
+    if (ddn <= 0 || (size_t)ddn >= sizeof(g_worker_datadir))
+        return ZCL_ERR(-1, "build worker datadir is too long");
+    ZCL_CHECK(build_fabric_worker_identity_load(
+        datadir, &g_local_worker, g_local_secret, g_local_pubkey));
+    struct node_db *ndb = app_runtime_node_db();
+    if (!ndb || !ndb->open)
+        return ZCL_ERR(-1, "build worker database is unavailable");
+    int64_t now = (int64_t)platform_time_wall_unix();
+    g_local_worker.approved_at = now;
+    g_local_worker.last_seen_at = now;
+    return build_fabric_worker_enroll_local(ndb, &g_local_worker, now);
+}
+
 struct zcl_result build_fabric_runtime_register(bool worker_enabled,
                                                 const char *datadir)
 {
     supervisor_domains_init();
     atomic_store(&g_worker_enabled, worker_enabled);
-    if (worker_enabled && !atomic_load(&g_worker_started)) {
-        if (!datadir || !getcwd(g_worker_workspace,
-                                sizeof(g_worker_workspace)))
-            return ZCL_ERR(-1, "build worker cannot resolve its workspace");
-        int ddn = snprintf(g_worker_datadir, sizeof(g_worker_datadir),
-                           "%s", datadir);
-        if (ddn <= 0 || (size_t)ddn >= sizeof(g_worker_datadir))
-            return ZCL_ERR(-1, "build worker datadir is too long");
-        uint8_t issuer_seed[32] = {0};
-        ZCL_CHECK(build_fabric_worker_identity_load_with_seed(
-            datadir, &g_local_worker, g_local_secret, g_local_pubkey,
-            issuer_seed));
-        struct node_db *ndb = app_runtime_node_db();
-        if (!ndb || !ndb->open) {
-            OPENSSL_cleanse(issuer_seed, sizeof(issuer_seed));
-            return ZCL_ERR(-1, "build worker database is unavailable");
-        }
-        int64_t now = (int64_t)platform_time_wall_unix();
-        g_local_worker.approved_at = now;
-        g_local_worker.last_seen_at = now;
-        struct zcl_result enrolled = build_fabric_worker_enroll_local(
-            ndb, &g_local_worker, now);
-        if (!enrolled.ok) {
-            OPENSSL_cleanse(issuer_seed, sizeof(issuer_seed));
-            return enrolled;
-        }
-        struct zcl_result recovered = bf_runtime_recover_pending(
-            ndb, datadir, g_local_worker.worker_id, issuer_seed);
-        OPENSSL_cleanse(issuer_seed, sizeof(issuer_seed));
-        if (!recovered.ok) return recovered;
-    }
+    if (worker_enabled && !atomic_load(&g_worker_started))
+        ZCL_CHECK(bf_runtime_enroll_worker(datadir));
     if (atomic_load(&g_requester_id) == SUPERVISOR_INVALID_ID) {
         supervisor_child_id id = bf_runtime_child(
             &g_requester_contract, "build.requester", bf_requester_tick);

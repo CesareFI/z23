@@ -358,6 +358,17 @@ enum vcs_package_store_page_result vcs_package_store_publish_checked(
     struct vcs_package_store *store, uint64_t generation,
     const uint8_t (*chunk_hashes)[32], size_t chunk_count,
     void (*publish)(void *context), void *context);
+/* Rare durable publication bridge. Revalidate the full catalog generation,
+ * caller-bounded row count, and exact selected CAS chunks under the store
+ * process lock, then run one conditional DB commit. The callback and any DB
+ * hooks it runs must not call a package-store API: the store lock is held.
+ * A false callback leaves committed_out false; stale/incomplete catalogs
+ * never call it. Package/chain workers must not call this on a P0 path. */
+enum vcs_package_store_page_result vcs_package_store_commit_if_generation(
+    struct vcs_package_store *store, uint64_t generation,
+    size_t max_catalog_rows,
+    const uint8_t (*chunk_hashes)[32], size_t chunk_count,
+    bool (*commit)(void *context), void *context, bool *committed_out);
 size_t vcs_package_store_list_summaries(
     struct vcs_package_store *store, bool complete_only,
     struct vcs_package_store_summary *out, size_t max);

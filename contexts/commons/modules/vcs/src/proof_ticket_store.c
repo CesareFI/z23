@@ -375,13 +375,31 @@ static bool pts_restore_recheck(struct pts_restore *s,
     return guarded.approved;
 }
 
+static void pts_restore_take_guard(struct pts_restore *s,
+                                   uint64_t *generation_out,
+                                   uint8_t (**chunk_hashes_out)[32],
+                                   size_t *chunk_count_out)
+{
+    if (!s->result) return;
+    if (generation_out) *generation_out = s->generation;
+    if (chunk_hashes_out && chunk_count_out) {
+        *chunk_hashes_out = s->chunks;
+        *chunk_count_out = s->count ? s->count + 1u : 0u;
+        s->chunks = NULL;
+    }
+}
+
 static struct vcs_proof_issuer_log *pts_restore_from_store(
     const uint8_t seed[32], struct vcs_package_store *store,
     const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
     size_t max_catalog_rows, size_t max_tickets,
     struct vcs_proof_issuer_log **live,
-    struct vcs_proof_issuer_log **old)
+    struct vcs_proof_issuer_log **old, uint64_t *generation_out,
+    uint8_t (**chunk_hashes_out)[32], size_t *chunk_count_out)
 {
+    if (generation_out) *generation_out = 0;
+    if (chunk_hashes_out) *chunk_hashes_out = NULL;
+    if (chunk_count_out) *chunk_count_out = 0;
     if (!seed || !store)
         LOG_RETURN(NULL, PTS_LOG, "issuer store restore: null seed or store");
     struct pts_restore s = {.store = store};
@@ -396,6 +414,8 @@ static struct vcs_proof_issuer_log *pts_restore_from_store(
         s.result = NULL;
     }
     struct vcs_proof_issuer_log *result = s.result;
+    pts_restore_take_guard(&s, generation_out, chunk_hashes_out,
+                           chunk_count_out);
     pts_restore_free(&s);
     return result;
 }
@@ -411,7 +431,7 @@ bool vcs_proof_issuer_log_restore_publish_from_store(
     struct vcs_proof_issuer_log *old = NULL;
     struct vcs_proof_issuer_log *fresh = pts_restore_from_store(
         seed, store, expected_head_blob_root, max_catalog_rows,
-        max_tickets, live, &old);
+        max_tickets, live, &old, NULL, NULL, NULL);
     if (!fresh) return false;
     vcs_proof_issuer_log_free(old);
     return true;
@@ -424,7 +444,21 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
 {
     return pts_restore_from_store(
         seed, store, expected_head_blob_root, max_catalog_rows,
-        max_tickets, NULL, NULL);
+        max_tickets, NULL, NULL, NULL, NULL, NULL);
+}
+
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store_at_generation(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets, uint64_t *generation_out,
+    uint8_t (**chunk_hashes_out)[32], size_t *chunk_count_out)
+{
+    if (!generation_out || !chunk_hashes_out || !chunk_count_out)
+        LOG_RETURN(NULL, PTS_LOG, "issuer restore guard outputs missing");
+    return pts_restore_from_store(
+        seed, store, expected_head_blob_root, max_catalog_rows,
+        max_tickets, NULL, NULL, generation_out,
+        chunk_hashes_out, chunk_count_out);
 }
 
 /* Select the same signature-valid ticket at each sequence regardless of CAS
