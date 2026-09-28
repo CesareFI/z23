@@ -600,43 +600,12 @@ printf '%s\n' "$@" > "$Z23_HOT_HARNESS_ARGS"
 HOT_HARNESS_EOF
 chmod +x "$HOT_MAKE" "$HOT_HARNESS"
 
-# Prime vendor-ready with the REAL make before either t-hotswap call below
-# runs with MAKE hijacked to the fake recursion probe. On a cold checkout,
-# reaching ANY goal first runs the unconditional `-include
-# $(VENDOR_BOOTSTRAP_MK)` bootstrap (tools/scripts/build_vendor.sh), which
-# shells out to a REAL recursive `make build_libs` to build OpenSSL from
-# source. That nested build inherits whatever MAKE= this fixture exports --
-# GNU Make always exports $(MAKE) into every recipe's environment, not just
-# the recipe that set it -- so with the fake MAKE override active, OpenSSL's
-# own internal submake calls (`$(MAKE) _build_libs`) silently hijack
-# $HOT_MAKE and corrupt the very recursion-probe file this fixture reads
-# afterward. That corruption has nothing to do with t-hotswap's own recipe;
-# it previously produced a false "t-hotswap invoked recursive Make before
-# refusing a missing harness" verdict on every cold worktree.
-#
-# `vendor-ready` is .PHONY, so calling it is NEVER a no-op: every call reruns
-# build_vendor.sh's full provenance verification and dep_audit.sh's full
-# dependency audit for real, even when every archive is already current. A
-# first version of this fix called it unconditionally and cost ~200s of pure,
-# repeated overhead on the warm trees landing proofs actually run on (measured
-# regression: 94-154s usual -> 366s), and running that real audit work with
-# this selftest's own ambient identity/session variables in scope risked
-# exactly the kind of cross-phase state disturbance it was meant to avoid (a
-# later phase's session acquire failed: "cp: cannot create ... .build-session
-# ...: No such file or directory" right after an unrelated "quarantined
-# unverified epoch" -- consistent with the extra wall time widening a PID-
-# reuse race in this script's own dead-owner detection, not anything vendor
-# priming touches directly: build_vendor.sh and dep_audit.sh reference no
-# source-identity, session, or epoch state at all).
-#
-# Gate priming on the one file $(VENDOR_BOOTSTRAP_MK)'s recipe writes only
-# after vendor-ready has already succeeded once: present means this tree is
-# warm and priming is skipped entirely (zero added cost, matching every other
-# already-primed tree); absent means truly cold, and priming pays the one
-# real, unavoidable bootstrap cost with a clean environment so it can only
-# ever observe or repair the real project's vendor state, never anything this
-# fixture's own later phases hold in $WORK. A priming failure fails this
-# selftest loudly instead of silently proceeding into a contaminated probe.
+# Prime vendor-ready with the REAL make before hijacking MAKE below: on a
+# cold checkout, reaching any goal first runs OpenSSL's real submake, which
+# inherits our fake MAKE and corrupts the recursion probe. vendor-ready is
+# .PHONY (never a no-op), so skip priming once build/identity/vendor-inputs-
+# ready.mk shows the tree is already warm. Use a clean env so priming can
+# only touch real vendor state, never this fixture's own session/epoch vars.
 if [ ! -f "$ROOT/build/identity/vendor-inputs-ready.mk" ]; then
     if ! env -u BUILD_SOURCE_RECORD -u ZCL_EPOCH_PROFILES -u ZCL_DEPFILE_PROFILES \
             -u ZCL_SOURCE_IDENTITY_SESSION -u TEST_FAST_COMPILE_EPOCH \
