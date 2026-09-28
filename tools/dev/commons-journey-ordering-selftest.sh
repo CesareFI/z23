@@ -111,5 +111,53 @@ grep -qF 'intervention=latecomer-restart-toward-survivor-after-requester-exit' <
 grep -qF '[ "$CJ_TWOHOST" = 1 ] || cj_stop_publisher' <<<"$survival" ||
     fail "other topologies lost their publisher-stop operation"
 
+# A Linux executable cannot run on an arm64 Mac. The physical-host journey
+# must reject that topology before allocating remote scratch or copying bytes.
+setup="$(awk '/^cj_multihost_setup\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+compat="$(awk '/^cj_require_compatible_binary_host\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$JOURNEY")"
+[ -n "$setup" ] && [ -n "$compat" ] ||
+    { fail "multi-host binary compatibility preflight missing"; exit 2; }
+compat_at="$(printf '%s\n' "$setup" | grep -nF 'cj_require_compatible_binary_host "$host"' | head -1 | cut -d: -f1 || true)"
+scratch_at="$(printf '%s\n' "$setup" | grep -nF 'mktemp -d /tmp/z23-mh-' | head -1 | cut -d: -f1 || true)"
+ship_at="$(printf '%s\n' "$setup" | grep -nF '"$DHT_SCP"' | head -1 | cut -d: -f1 || true)"
+if [ -z "$compat_at" ] || [ -z "$scratch_at" ] || [ -z "$ship_at" ] ||
+   [ "$compat_at" -ge "$scratch_at" ] || [ "$compat_at" -ge "$ship_at" ]; then
+    fail "binary compatibility must be checked before remote scratch and SCP"
+else
+    pass "binary compatibility precedes remote scratch and SCP"
+fi
+
+# Run only the extracted preflight with a fake remote uname. No SSH connection,
+# remote scratch, transfer or daemon is involved in this fixture.
+eval "$compat"
+DHT_SSH=ssh
+ssh() {
+    case "$*" in
+        *'uname -s') printf '%s\n' "$CJ_FIXTURE_REMOTE_OS" ;;
+        *'uname -m') printf '%s\n' "$CJ_FIXTURE_REMOTE_ARCH" ;;
+        *) fail "unexpected preflight command: $*"; return 1 ;;
+    esac
+}
+cj_die() { printf '%s\n' "$*" >&2; return 1; }
+host_os="$(uname -s)"; host_arch="$(uname -m)"
+if [ "$host_os:$host_arch" = Darwin:arm64 ]; then
+    CJ_FIXTURE_REMOTE_OS=Linux CJ_FIXTURE_REMOTE_ARCH=x86_64
+else
+    CJ_FIXTURE_REMOTE_OS=Darwin CJ_FIXTURE_REMOTE_ARCH=arm64
+fi
+if incompatible="$(cj_require_compatible_binary_host fixture-host 2>&1)"; then
+    fail "incompatible host accepted this host's binary"
+elif ! grep -qF 'HOST_BINARY_INCOMPATIBLE' <<<"$incompatible"; then
+    fail "incompatible host lacked a named refusal: $incompatible"
+else
+    pass "incompatible remote binary refuses by name"
+fi
+CJ_FIXTURE_REMOTE_OS="$host_os" CJ_FIXTURE_REMOTE_ARCH="$host_arch"
+if ! cj_require_compatible_binary_host fixture-host; then
+    fail "matching host OS and architecture was refused"
+else
+    pass "matching remote platform passes preflight"
+fi
+
 [ "$FAIL" -eq 0 ] || exit 1
 printf 'commons-journey-ordering: OK\n'

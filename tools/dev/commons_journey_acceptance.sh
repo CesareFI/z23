@@ -228,6 +228,22 @@ cj_wait_rpc_or_die() {
 # fail-closed, gives each a scratch dir, and ships the exact local binaries
 # (verified by sha3 after the copy) so every host runs the same bytes the
 # facts file names. Nothing here runs unless ZCL_COMMONS_MULTIHOST=1.
+cj_require_compatible_binary_host() {
+    local host="$1" local_os local_arch remote_os remote_arch
+    # The local plumbing shim runs every "host" on this kernel. A real remote
+    # host must be able to execute the exact binary this harness will ship.
+    [ "$DHT_SSH" = ssh ] || return 0
+    local_os="$(uname -s)"; local_arch="$(uname -m)"
+    remote_os="$("$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5 "$host" -- uname -s)" ||
+        { cj_die "HOST_PLATFORM_UNAVAILABLE: cannot read OS on $host"; return 1; }
+    remote_arch="$("$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5 "$host" -- uname -m)" ||
+        { cj_die "HOST_PLATFORM_UNAVAILABLE: cannot read architecture on $host"; return 1; }
+    [ -n "$remote_os" ] && [ -n "$remote_arch" ] ||
+        { cj_die "HOST_PLATFORM_UNAVAILABLE: empty platform on $host"; return 1; }
+    [ "$local_os:$local_arch" = "$remote_os:$remote_arch" ] ||
+        { cj_die "HOST_BINARY_INCOMPATIBLE: $host is $remote_os/$remote_arch; local binaries are $local_os/$local_arch"; return 1; }
+}
+
 cj_multihost_setup() {
     if [ "$CJ_MULTIHOST" != 1 ] && [ "$CJ_TWOHOST" != 1 ]; then
         CJ_PEER_ADDR_A=127.0.0.1; CJ_PEER_ADDR_B=127.0.0.1; CJ_PEER_ADDR_C=127.0.0.1
@@ -264,6 +280,7 @@ cj_multihost_setup() {
     for host in "${hosts[@]}"; do
         "$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5 "$host" -- true ||
             cj_die "cannot reach $host (BatchMode ssh); multi-host acceptance fails closed"
+        cj_require_compatible_binary_host "$host"
     done
     CJ_RDIR_B="$("$DHT_SSH" -o BatchMode=yes "$CJ_HOST_B" -- 'mktemp -d /tmp/z23-mh-XXXXXXXX')" ||
         cj_die "no scratch dir on $CJ_HOST_B"
