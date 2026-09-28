@@ -1,0 +1,636 @@
+/* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
+ * Receiver-side, bounded read of one fixed-result verifier observation key.
+ * The signer publishes under an exclusive fixed_result.lock; this reader
+ * holds its shared lock until the caller has materialized verified bytes. */
+#define _POSIX_C_SOURCE 200809L
+#include "verify_store.h"
+
+#include "base/hex.h"
+#include "base/safe_alloc.h"
+#include "sha3/sha3.h"
+
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define VS_MAX_OBSERVATIONS 64u
+#define VS_MAX_DIR_ENTRIES 96u
+#define VS_MAX_RECORD (128u * 1024u)
+#define VS_MAX_OBJECT (8u * 1024u * 1024u)
+#define VS_MAX_DEP (4u * 1024u * 1024u)
+#define VS_MAX_STDERR (4u * 1024u * 1024u)
+#define VS_MAX_TOTAL (64u * 1024u * 1024u)
+#define VS_KEY_HEX 64u
+#define VS_POLICY "z23verify.store.v1\nsigner_uid="
+#define VS_PUBLISHER "publisher_uid="
+
+struct vs_bytes {
+    uint8_t *p;
+    size_t n;
+};
+
+struct vs_member {
+    struct zcl_verify_attest_observation view;
+    struct vs_bytes record, object, dep, stderr_bytes;
+};
+
+static void vs_result_init(struct zcl_verify_store_result *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->verdict = ZCL_VERIFY_STORE_COLD;
+    out->reason = "store_unavailable";
+    out->lock_fd = -1;
+}
+
+void zcl_verify_store_result_release(struct zcl_verify_store_result *result)
+{
+    if (!result) return;
+    free(result->object);
+    free(result->depfile);
+    free(result->stderr_bytes);
+    if (result->lock_fd >= 0) (void)close(result->lock_fd);
+    vs_result_init(result);
+}
+
+static void vs_set(struct zcl_verify_store_result *out,
+                   enum zcl_verify_store_verdict verdict, const char *reason)
+{
+    out->verdict = verdict;
+    out->reason = reason;
+}
+
+static bool vs_mode(const struct stat *st, uid_t owner, mode_t type)
+{
+    return st->st_uid == owner && (st->st_mode & S_IFMT) == type &&
+           (st->st_mode & 0022) == 0;
+}
+
+static int vs_child_dir(int parent, const char *name, uid_t owner)
+{
+    int fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+                                     O_CLOEXEC);
+    struct stat st;
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) != 0 || !vs_mode(&st, owner, S_IFDIR)) {
+        (void)close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static bool vs_same_file(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+           a->st_uid == b->st_uid && a->st_mode == b->st_mode &&
+           a->st_nlink == b->st_nlink && a->st_size == b->st_size &&
+           a->st_mtime == b->st_mtime && a->st_ctime == b->st_ctime;
+}
+
+static const char *vs_read_exact(int fd, const struct stat *before,
+                                 size_t *total, struct vs_bytes *out)
+{
+    size_t len = (size_t)before->st_size;
+    uint8_t *p = zcl_malloc(len ? len : 1u, "verify store artifact");
+    if (!p) return "store_out_of_memory";
+    const char *why = NULL;
+    size_t at = 0;
+    while (at < len) {
+        ssize_t n = read(fd, p + at, len - at);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { why = "store_file_changed"; break; }
+        at += (size_t)n;
+    }
+    struct stat after;
+    if (!why && (fstat(fd, &after) != 0 ||
+                 !vs_same_file(before, &after)))
+        why = "store_file_changed";
+    if (why) free(p);
+    else {
+        out->p = p;
+        out->n = len;
+        *total += len;
+    }
+    return why;
+}
+
+/* A missing artifact is distinct from an empty present artifact. The caller
+ * keeps the record in the set either way, so an exact signed FAIL still wins. */
+static const char *vs_read_file(int parent, const char *name, uid_t owner,
+                                size_t limit, size_t *total,
+                                struct vs_bytes *out)
+{
+    int fd = openat(parent, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+                                     O_CLOEXEC);
+    if (fd < 0) return errno == ENOENT ? "store_artifact_missing"
+                                      : "store_file_unreadable";
+    struct stat before;
+    const char *why = NULL;
+    if (fstat(fd, &before) != 0 || !vs_mode(&before, owner, S_IFREG) ||
+        before.st_nlink != 1)
+        why = "store_file_unsafe";
+    else if (before.st_size < 0 || (uint64_t)before.st_size > limit ||
+             (size_t)before.st_size > VS_MAX_TOTAL - *total)
+        why = "store_bytes_limit";
+    else
+        why = vs_read_exact(fd, &before, total, out);
+    if (close(fd) != 0 && !why) why = "store_file_changed";
+    return why;
+}
+
+static void vs_member_free(struct vs_member *m)
+{
+    free(m->record.p);
+    free(m->object.p);
+    free(m->dep.p);
+    free(m->stderr_bytes.p);
+}
+
+static bool vs_hex_name(const char *name)
+{
+    if (strlen(name) != VS_KEY_HEX) return false;
+    for (size_t i = 0; i < VS_KEY_HEX; ++i)
+        if (!((name[i] >= '0' && name[i] <= '9') ||
+              (name[i] >= 'a' && name[i] <= 'f')))
+            return false;
+    return true;
+}
+
+static const char *vs_record_name_check(const struct vs_member *m,
+                                        const char *name)
+{
+    uint8_t hash[SHA3_256_OUTPUT_SIZE];
+    char hex[VS_KEY_HEX + 1u];
+    if (!m->record.p) return "store_record_missing";
+    zcl_sha3_256(m->record.p, m->record.n, hash);
+    zcl_hex_encode(hash, sizeof(hash), hex);
+    return strcmp(hex, name) == 0 ? NULL : "store_record_name_mismatch";
+}
+
+static bool vs_dot_name(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
+static const char *vs_member_children(int fd)
+{
+    const char *unknown = NULL;
+    int scan_fd = dup(fd);
+    DIR *entries = scan_fd >= 0 ? fdopendir(scan_fd) : NULL;
+    if (!entries) {
+        if (scan_fd >= 0) (void)close(scan_fd);
+        return "store_observation_unreadable";
+    }
+    size_t seen = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *e = readdir(entries);
+        if (!e) {
+            if (errno != 0) unknown = "store_observation_unreadable";
+            break;
+        }
+        if (vs_dot_name(e->d_name))
+            continue;
+        if (strcmp(e->d_name, "attest.bin") == 0 ||
+            strcmp(e->d_name, "object.o") == 0 ||
+            strcmp(e->d_name, "deps.d") == 0 ||
+            strcmp(e->d_name, "stderr.bin") == 0)
+            { if (++seen > 4u) unknown = "store_observation_children_limit";
+              continue; }
+        if (++seen > 4u) {
+            unknown = "store_observation_children_limit";
+            break;
+        }
+        unknown = "store_observation_child_unknown";
+    }
+    if (closedir(entries) != 0) unknown = "store_observation_unreadable";
+    return unknown;
+}
+
+static bool vs_limit_failure(const char *why)
+{
+    return why && (strcmp(why, "store_bytes_limit") == 0 ||
+                   strcmp(why, "store_out_of_memory") == 0);
+}
+
+static const char *vs_member_artifacts(int fd, const char *name,
+                                       uid_t signer, size_t *total,
+                                       struct vs_member *m, bool *complete)
+{
+    const char *first = vs_read_file(fd, "attest.bin", signer,
+                                     VS_MAX_RECORD, total, &m->record);
+    bool record_read = first == NULL;
+    const char *why = vs_read_file(fd, "object.o", signer,
+                                   VS_MAX_OBJECT, total, &m->object);
+    bool bounded = vs_limit_failure(why);
+    if (!first) first = why;
+    why = vs_read_file(fd, "deps.d", signer, VS_MAX_DEP, total, &m->dep);
+    bounded |= vs_limit_failure(why);
+    if (!first) first = why;
+    why = vs_read_file(fd, "stderr.bin", signer,
+                       VS_MAX_STDERR, total, &m->stderr_bytes);
+    bounded |= vs_limit_failure(why);
+    if (!first) first = why;
+    if (!first) first = vs_record_name_check(m, name);
+    m->view = (struct zcl_verify_attest_observation){
+        .record_bytes = m->record.p, .record_len = m->record.n,
+        .obj_bytes = m->object.p, .obj_len = m->object.n,
+        .dep_bytes = m->dep.p, .dep_len = m->dep.n,
+        .stderr_bytes = m->stderr_bytes.p, .stderr_len = m->stderr_bytes.n,
+    };
+    *complete = record_read && !bounded;
+    return first;
+}
+
+static const char *vs_member_read(int key_fd, const char *name, uid_t signer,
+                                  size_t *total, struct vs_member *m,
+                                  bool *complete)
+{
+    *complete = false;
+    int fd = vs_child_dir(key_fd, name, signer);
+    if (fd < 0) return "store_observation_unsafe";
+    const char *children_why = vs_member_children(fd);
+    const char *why = vs_member_artifacts(fd, name, signer, total, m,
+                                          complete);
+    if (close(fd) != 0) *complete = false;
+    return why ? why : children_why;
+}
+
+static bool vs_scan_entries(DIR *dir, int key_fd, uid_t signer,
+                             struct vs_member *members, size_t *count,
+                             const char **scan_why)
+{
+    size_t total = 0, entries_seen = 0;
+    bool incomplete = false;
+    for (;;) {
+        errno = 0;
+        struct dirent *e = readdir(dir);
+        if (!e) { if (errno != 0) incomplete = true; break; }
+        if (vs_dot_name(e->d_name))
+            continue;
+        if (++entries_seen > VS_MAX_DIR_ENTRIES) { incomplete = true; break; }
+        if (!vs_hex_name(e->d_name)) {
+            if (!*scan_why) *scan_why = "store_child_unknown";
+            continue;
+        }
+        if (*count == VS_MAX_OBSERVATIONS) { incomplete = true; break; }
+        bool member_complete = false;
+        const char *why = vs_member_read(key_fd, e->d_name, signer,
+                                         &total, &members[*count],
+                                         &member_complete);
+        if (why && !*scan_why) *scan_why = why;
+        (*count)++;
+        if (!member_complete) incomplete = true;
+    }
+    return !incomplete;
+}
+
+static void vs_take_hit(struct vs_member *m, const char *store_key,
+                        const struct zcl_verify_attest_trust_root *root,
+                        struct zcl_verify_store_result *out)
+{
+    out->object = m->object.p; out->object_len = m->object.n;
+    out->depfile = m->dep.p; out->depfile_len = m->dep.n;
+    out->stderr_bytes = m->stderr_bytes.p;
+    out->stderr_len = m->stderr_bytes.n;
+    memcpy(out->store_key, store_key, ZCL_VERIFY_ATTEST_STORE_KEY_HEX);
+    uint8_t record_hash[SHA3_256_OUTPUT_SIZE];
+    zcl_sha3_256(m->record.p, m->record.n, record_hash);
+    zcl_hex_encode(record_hash, sizeof(record_hash), out->record_sha3);
+    memcpy(out->verifier_pubkey, root->verifier_pubkey,
+           sizeof(out->verifier_pubkey));
+    m->object.p = m->dep.p = m->stderr_bytes.p = NULL;
+    vs_set(out, ZCL_VERIFY_STORE_HIT, NULL);
+}
+
+static void vs_scan_decide(struct vs_member *members, size_t count,
+                           const char *scan_why, const char *store_key,
+                           const struct zcl_verify_attest_expected *expected,
+                           const struct zcl_verify_attest_trust_root *root,
+                           struct zcl_verify_store_result *out)
+{
+    struct zcl_verify_attest_observation views[VS_MAX_OBSERVATIONS];
+    for (size_t i = 0; i < count; ++i) views[i] = members[i].view;
+    size_t selected = SIZE_MAX;
+    struct zcl_verify_attest_decision d = zcl_verify_attest_admit_set(
+        views, count, expected, root, &selected);
+    if (d.verdict == ZCL_VERIFY_ATTEST_FAIL)
+        vs_set(out, ZCL_VERIFY_STORE_BLOCK, d.reason);
+    else if (scan_why || d.verdict != ZCL_VERIFY_ATTEST_ADMIT ||
+             selected >= count)
+        vs_set(out, ZCL_VERIFY_STORE_COLD, scan_why ? scan_why : d.reason);
+    else
+        vs_take_hit(&members[selected], store_key, root, out);
+}
+
+/* Full enumeration under LOCK_SH. A bounded overflow blocks rather than
+ * compiling past an unseen signed failure. Other malformed children are
+ * cold, but all readable records still reach admit_set first. */
+static void vs_scan(int key_fd, uid_t signer, const char *store_key,
+                    const struct zcl_verify_attest_expected *expected,
+                    const struct zcl_verify_attest_trust_root *root,
+                    struct zcl_verify_store_result *out)
+{
+    struct vs_member *members = zcl_calloc(VS_MAX_OBSERVATIONS,
+                                            sizeof(*members),
+                                            "verify store observations");
+    if (!members) { vs_set(out, ZCL_VERIFY_STORE_BLOCK, "store_out_of_memory"); return; }
+    int iter_fd = dup(key_fd);
+    DIR *dir = iter_fd >= 0 ? fdopendir(iter_fd) : NULL;
+    if (!dir) {
+        if (iter_fd >= 0) (void)close(iter_fd);
+        free(members);
+        vs_set(out, ZCL_VERIFY_STORE_BLOCK, "store_scan_incomplete");
+        return;
+    }
+    size_t count = 0;
+    const char *scan_why = NULL;
+    bool complete = vs_scan_entries(dir, key_fd, signer, members, &count,
+                                     &scan_why);
+    if (closedir(dir) != 0) complete = false;
+    if (!complete)
+        vs_set(out, ZCL_VERIFY_STORE_BLOCK, "store_scan_incomplete");
+    else
+        vs_scan_decide(members, count, scan_why, store_key, expected, root, out);
+    for (size_t i = 0; i < count; ++i) vs_member_free(&members[i]);
+    free(members);
+}
+
+static bool vs_expected_ready(const struct zcl_verify_attest_expected *e)
+{
+    static const uint8_t zero[ZCL_VERIFY_ATTEST_HASH_BYTES] = {0};
+    return e && e->toolchain_id.bytes && e->toolchain_id.len > 0 &&
+           e->toolchain_id.len <= ZCL_VERIFY_ATTEST_TOOLCHAIN_MAX &&
+           e->argv_norm.bytes && e->argv_norm.len > 0 &&
+           e->argv_norm.len <= ZCL_VERIFY_ATTEST_ARGV_MAX &&
+           e->recorded_cwd.bytes && e->recorded_cwd.len > 0 &&
+           e->recorded_cwd.len <= ZCL_VERIFY_ATTEST_CWD_MAX &&
+           memcmp(e->closure_sha3, zero, sizeof(zero)) != 0;
+}
+
+static bool vs_policy_uids(uid_t *signer, uid_t *publisher,
+                            const char **why);
+
+static int vs_open_store_lock(int base_fd, uid_t anchor_owner,
+                              uid_t publisher, int *store_fd,
+                              struct zcl_verify_store_result *out)
+{
+    int locks_fd = vs_child_dir(base_fd, "locks", anchor_owner);
+    *store_fd = vs_child_dir(base_fd, "store", publisher);
+    if (locks_fd < 0 || *store_fd < 0) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
+        if (locks_fd >= 0) (void)close(locks_fd);
+        return -1;
+    }
+    int fd = openat(locks_fd, "fixed_result.lock",
+                    O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    (void)close(locks_fd);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || !vs_mode(&st, publisher, S_IFREG) ||
+        (st.st_mode & 0777) != 0644 || st.st_nlink != 1) {
+        if (fd >= 0) (void)close(fd);
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_lock_unsafe");
+        return -1;
+    }
+    if (flock(fd, LOCK_SH | LOCK_NB) != 0) {
+        (void)close(fd);
+        vs_set(out, ZCL_VERIFY_STORE_BLOCK, "store_lock_unavailable");
+        return -1;
+    }
+    return fd;
+}
+
+static void vs_refresh_hit(bool production, uid_t signer, uid_t publisher,
+                           const struct zcl_verify_attest_box_key *box,
+                           const struct zcl_verify_attest_trust_root *root,
+                           struct zcl_verify_store_result *out)
+{
+    struct zcl_verify_attest_trust_root current;
+    uid_t fresh_signer = 0, fresh_publisher = 0;
+    const char *why = NULL, *policy_why = NULL;
+    bool policy_current = !production ||
+        (vs_policy_uids(&fresh_signer, &fresh_publisher, &policy_why) &&
+         fresh_signer == signer && fresh_publisher == publisher);
+    if (policy_current &&
+        zcl_verify_attest_trust_root_load(NULL, box, &current, &why) &&
+        memcmp(root->verifier_pubkey, current.verifier_pubkey,
+               ZCL_VERIFY_ATTEST_PUBKEY_BYTES) == 0)
+        return;
+    free(out->object); free(out->depfile); free(out->stderr_bytes);
+    out->object = out->depfile = out->stderr_bytes = NULL;
+    out->object_len = out->depfile_len = out->stderr_len = 0;
+    memset(out->store_key, 0, sizeof(out->store_key));
+    memset(out->record_sha3, 0, sizeof(out->record_sha3));
+    memset(out->verifier_pubkey, 0, sizeof(out->verifier_pubkey));
+    vs_set(out, ZCL_VERIFY_STORE_COLD,
+           !policy_current ? "store_policy_changed" :
+           (why ? why : "verifier_key_changed"));
+}
+
+static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
+                         uid_t publisher,
+                         bool production,
+                         const struct zcl_verify_attest_expected *expected,
+                         const struct zcl_verify_attest_box_key *box,
+                         struct zcl_verify_store_result *out)
+{
+    int store_fd = -1, lock_fd = -1, key_fd = -1;
+    if (!vs_expected_ready(expected)) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_expected_unqualified");
+        return;
+    }
+    if (!box || !box->known) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "box_signer_key_unknown");
+        return;
+    }
+    struct zcl_verify_attest_trust_root root;
+    const char *why = NULL;
+    if (!zcl_verify_attest_trust_root_load(NULL, box, &root, &why)) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
+        return;
+    }
+    lock_fd = vs_open_store_lock(base_fd, anchor_owner, publisher,
+                                 &store_fd,
+                                 out);
+    if (lock_fd < 0) goto done;
+    char key[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
+    zcl_verify_attest_store_key_hex(&expected->toolchain_id,
+                                    &expected->argv_norm,
+                                    &expected->recorded_cwd,
+                                    expected->pp_sha3,
+                                    expected->closure_sha3, key);
+    key_fd = vs_child_dir(store_fd, key, publisher);
+    if (key_fd < 0) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD,
+               errno == ENOENT ? "attest_no_observation" : "store_key_unsafe");
+        goto done;
+    }
+    vs_scan(key_fd, publisher, key, expected, &root, out);
+    if (out->verdict == ZCL_VERIFY_STORE_HIT) {
+        vs_refresh_hit(production, signer, publisher, box, &root, out);
+        if (out->verdict == ZCL_VERIFY_STORE_HIT) {
+            out->lock_fd = lock_fd;
+            lock_fd = -1;
+        }
+    }
+done:
+    if (key_fd >= 0) (void)close(key_fd);
+    if (lock_fd >= 0) (void)close(lock_fd);
+    if (store_fd >= 0) (void)close(store_fd);
+}
+
+static bool vs_parse_policy_uids(const char *text, size_t len,
+                                 uid_t *signer, uid_t *publisher,
+                                 const char **why)
+{
+    size_t prefix = sizeof(VS_POLICY) - 1u;
+    static const char suffix[] = "\n" VS_PUBLISHER "0\n";
+    size_t suffix_len = sizeof(suffix) - 1u;
+    if (len <= prefix + suffix_len ||
+        memcmp(text, VS_POLICY, prefix) != 0 ||
+        memcmp(text + len - suffix_len, suffix, suffix_len) != 0) {
+        *why = "store_policy_malformed";
+        return false;
+    }
+    unsigned long value = 0;
+    for (size_t i = prefix; i < len - suffix_len; ++i) {
+        unsigned digit = (unsigned)(text[i] - '0');
+        if (!isdigit((unsigned char)text[i]) ||
+            value > (UINT_MAX - digit) / 10ul) {
+            *why = "store_policy_malformed";
+            return false;
+        }
+        value = value * 10ul + digit;
+    }
+    if (value == 0 || value > UINT_MAX || (uid_t)value == geteuid()) {
+        *why = value == 0 ? "store_policy_malformed" : "store_owner_same_uid";
+        return false;
+    }
+    *signer = (uid_t)value;
+    *publisher = 0;
+    return true;
+}
+
+static bool vs_read_policy_file(int fd, uid_t *signer, uid_t *publisher,
+                                const char **why)
+{
+    struct stat before, after;
+    if (fstat(fd, &before) != 0 || !vs_mode(&before, 0, S_IFREG) ||
+        (before.st_mode & 0777) != 0444 || before.st_nlink != 1 ||
+        before.st_size < 0 || before.st_size > 96) {
+        *why = "store_policy_unsafe";
+        return false;
+    }
+    char text[97];
+    size_t at = 0;
+    while (at < (size_t)before.st_size) {
+        ssize_t n = read(fd, text + at, (size_t)before.st_size - at);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { *why = "store_policy_changed"; return false; }
+        at += (size_t)n;
+    }
+    if (fstat(fd, &after) != 0 || !vs_same_file(&before, &after)) {
+        *why = "store_policy_changed";
+        return false;
+    }
+    text[at] = '\0';
+    return vs_parse_policy_uids(text, at, signer, publisher, why);
+}
+
+/* Root-owned policy path, loaded by descriptors each time. No environment
+ * override is compiled into this production loader. */
+static bool vs_policy_uids(uid_t *signer, uid_t *publisher,
+                            const char **why)
+{
+    int root = -1, etc = -1, dir = -1, fd = -1;
+    struct stat st;
+    bool ok = false;
+    *why = "store_policy_missing";
+    root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (root < 0 || fstat(root, &st) != 0 || !vs_mode(&st, 0, S_IFDIR))
+        goto done;
+    etc = vs_child_dir(root, "etc", 0);
+    if (etc < 0) { *why = "store_policy_path_unsafe"; goto done; }
+    dir = vs_child_dir(etc, "z23verify", 0);
+    if (dir < 0) { *why = "store_policy_path_unsafe"; goto done; }
+    fd = openat(dir, "store.policy", O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+                                       O_CLOEXEC);
+    if (fd >= 0) ok = vs_read_policy_file(fd, signer, publisher, why);
+done:
+    if (fd >= 0) (void)close(fd);
+    if (dir >= 0) (void)close(dir);
+    if (etc >= 0) (void)close(etc);
+    if (root >= 0) (void)close(root);
+    return ok;
+}
+
+void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
+                             const struct zcl_verify_attest_box_key *box,
+                             struct zcl_verify_store_result *out)
+{
+    if (!out) return;
+    vs_result_init(out);
+    uid_t signer = 0, publisher = 0;
+    const char *why = NULL;
+    if (!vs_policy_uids(&signer, &publisher, &why)) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
+        return;
+    }
+    int root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat st;
+    if (root < 0 || fstat(root, &st) != 0 || !vs_mode(&st, 0, S_IFDIR)) {
+        if (root >= 0) (void)close(root);
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
+        return;
+    }
+    int var = vs_child_dir(root, "var", 0);
+    int lib = var >= 0 ? vs_child_dir(var, "lib", 0) : -1;
+    int base = lib >= 0 ? vs_child_dir(lib, "z23verify", 0) : -1;
+    if (base < 0)
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
+    else
+        vs_lookup_at(base, 0, signer, publisher, true, expected, box, out);
+    if (base >= 0) (void)close(base);
+    if (lib >= 0) (void)close(lib);
+    if (var >= 0) (void)close(var);
+    (void)close(root);
+}
+
+#ifdef ZCL_TESTING
+void zcl_verify_store_lookup_fixture(
+    const char *root_path, unsigned signer_uid, unsigned publisher_uid,
+    bool allow_same_uid,
+    const struct zcl_verify_attest_expected *expected,
+    const struct zcl_verify_attest_box_key *box,
+    struct zcl_verify_store_result *out)
+{
+    if (!out) return;
+    vs_result_init(out);
+    if (!root_path || root_path[0] != '/' || signer_uid == 0 ||
+        (!allow_same_uid && (uid_t)signer_uid == geteuid())) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid");
+        return;
+    }
+    int root = open(root_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    struct stat st;
+    if (root < 0 || fstat(root, &st) != 0 ||
+        !vs_mode(&st, (uid_t)signer_uid, S_IFDIR)) {
+        if (root >= 0) (void)close(root);
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
+        return;
+    }
+    vs_lookup_at(root, (uid_t)signer_uid, (uid_t)signer_uid,
+                 (uid_t)publisher_uid, false,
+                 expected, box, out);
+    (void)close(root);
+}
+#endif
