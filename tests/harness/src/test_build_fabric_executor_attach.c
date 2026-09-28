@@ -305,12 +305,19 @@ static bool att_physical_run(struct node_db *ndb, const char *workspace,
                             &claimed, &got).ok || !got)
         return false;
     int64_t started = platform_time_monotonic_us();
+    struct build_fabric_host_accounting accounting;
     struct zcl_result executed = build_fabric_worker_execute(
         ndb, workspace, workspace, action_id, lease_id, secret, pubkey,
-        out_receipt, NULL, NULL);
+        out_receipt, NULL, &accounting);
     *wall_us = platform_time_monotonic_us() - started;
     if (!executed.ok) {
         printf("worker detail: %s\n", executed.message);
+        return false;
+    }
+    if (!accounting.measured || accounting.host_executor_launches != 1u) {
+        printf("worker launch observation: measured=%d launches=%llu\n",
+               accounting.measured ? 1 : 0,
+               (unsigned long long)accounting.host_executor_launches);
         return false;
     }
     return !admit || build_fabric_receipt_admit(
@@ -870,6 +877,7 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(db_build_job_save(&ndb, &queued_job));
 #if defined(__linux__)
         int fds_before_attach = att_open_fd_count();
+        uint64_t launches_before_attach = zcl_spawn_thread_launch_count();
         int64_t attach_self_before, attach_child_before;
         int64_t attach_self_after, attach_child_after;
         ASSERT(fds_before_attach >= 0);
@@ -879,12 +887,16 @@ static int test_bf_attach_avoids_second_compile(void)
         struct zcl_result attached =
             build_fabric_runtime_try_attach_queued_for_test(
                 &ndb, dir, secret, pubkey, &receipt_b, &report);
+        ASSERT_RESULT_OK(attached);
 #if defined(__linux__)
+        uint64_t launches_after_attach = zcl_spawn_thread_launch_count();
         ASSERT(att_cpu_us(RUSAGE_SELF, &attach_self_after));
         ASSERT(att_cpu_us(RUSAGE_CHILDREN, &attach_child_after));
         ASSERT(att_open_fd_count() == fds_before_attach);
+        /* The four ldd closure probes are real host launches. An executor
+         * launch here would exceed this measured identity-check budget. */
+        ASSERT_EQ(launches_after_attach - launches_before_attach, 4u);
 #endif
-        ASSERT_RESULT_OK(attached);
         ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_HIT);
         ASSERT_EQ(report.compiler_processes, 0);
         char key_hex[65];
@@ -1037,8 +1049,11 @@ static int test_bf_attach_avoids_second_compile(void)
                (long long)report.attach_wall_us,
                (unsigned long long)report.restored_bytes);
 #if defined(__linux__)
-        printf(" key_self_cpu_us=%lld key_child_cpu_us=%lld "
+        printf(" host_attach_launches=%llu "
+               "key_self_cpu_us=%lld key_child_cpu_us=%lld "
                "attach_self_cpu_us=%lld attach_child_cpu_us=%lld",
+               (unsigned long long)(launches_after_attach -
+                                    launches_before_attach),
                (long long)(key_self_after - key_self_before),
                (long long)(key_child_after - key_child_before),
                (long long)(attach_self_after - attach_self_before),
