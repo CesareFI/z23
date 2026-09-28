@@ -4,6 +4,7 @@
 
 #include "test_group_weights.h"
 #include "test_group_catalog.h"
+#include "base/safe_alloc.h"
 #include "json/json.h"
 
 #include <errno.h>
@@ -128,7 +129,8 @@ static bool weights_load_timing(const char *path, struct json_value *doc,
         weights_why(why, why_len, "timing artifact cannot be opened");
         return false;
     }
-    char *bytes = malloc(WEIGHTS_TIMING_MAX_BYTES);
+    char *bytes = zcl_malloc(WEIGHTS_TIMING_MAX_BYTES,
+                             "test_group_weights.timing");
     if (!bytes) {
         (void)fclose(fp);
         weights_why(why, why_len, "timing buffer allocation failed");
@@ -279,7 +281,8 @@ bool zcl_test_group_weights_render(const char *timing_path,
     json_init(&doc);
     const struct json_value *rows = NULL;
     size_t n = zcl_test_group_catalog_count();
-    unsigned *w = calloc(n ? n : 1, sizeof(*w));
+    unsigned *w = zcl_calloc(n ? n : 1, sizeof(*w),
+                             "test_group_weights.table");
     bool ok = w && weights_load_timing(timing_path, &doc, why, why_len) &&
               weights_timing_is_full(&doc, &rows, why, why_len);
     if (!w)
