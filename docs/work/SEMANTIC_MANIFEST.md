@@ -126,14 +126,23 @@ were established:
   string literal), a `__has_include_next` whose file was entered in a way
   no slot names, `__has_embed`, the GNU `__has_include__` and
   `__has_include_next__` spellings, an `#embed` (or `%:embed`) directive,
-  and any of these that a line continuation runs through. Its spelled name
-  is the occurrence's text (for example `__has_include(OPT_HDR)` or
-  `#embed "blob.bin"`). The scan lexes the file's text after line
-  splicing as translation phase 3 does, so a word in a comment or in a
-  character or string literal is no lookup (a header name after an
-  include-like directive or a probe word is lexed as one and never opens a
-  comment); a word in a skipped group is recorded too: that costs warm
-  reuse and narrowing, never truth. The facts
+  and any of these that a line continuation or a trigraph runs through, or
+  whose header name holds `/*` or `//`. It also writes one for a probe
+  word in the body of a `#define` in any file, a system header's too
+  (the probe is evaluated where the macro expands, against that file's
+  directory), and for one in a `-D` value, on the main file. Its spelled
+  name is the occurrence's text (for example `__has_include(OPT_HDR)` or
+  `#embed "blob.bin"`). The scan reads the file's text as translation
+  phases 1 to 3 do under the TU's `-std`: trigraphs are replaced in an ISO
+  C mode before C23 (unless `-fno-trigraphs`; in any mode with
+  `-trigraphs`), lines are spliced, and a pp-number takes a digit
+  separator only from C23 on (before it, `'` opens a character literal).
+  So a word in a comment or in a character or string literal is no lookup
+  (a header name after an include-like directive or a probe word, across
+  blanks and comments, is lexed as one and never opens a comment); a word
+  in a skipped group is recorded too: that costs warm reuse and narrowing,
+  never truth. A system header's own conditionals are not scanned: they
+  search the system dirs. The facts
   consumer treats a `none` record as reachable by every created or deleted
   path, and one whose name starts `#embed` or `__has_embed` by every changed
   path (see the universe below).
@@ -851,6 +860,15 @@ records both as `none`. Readers accept all four extension names; a
 revision-3 manifest stays valid, and the consumer treats its unbound
 records as it treats any `none` record, which can only widen.
 
+Within revision 4 (this lane's first producer missed them) the text scan
+also records a probe it could not see before: one a `-D` value writes,
+one in any `#define` body, a system header's too (each unbound, as
+the macro is evaluated where it expands); one after a pre-C23 `'`, which
+opens a character literal rather than a digit separator; one a trigraph
+`??/` splices in an ISO mode before C23; and one after a comment between
+a probe word and a header name. `tests/harness/src/semantic_sensor_probe.c`
+checks each record; before the fix each case recorded nothing.
+
 ### Darwin producer identity
 
 The Mac lane's commits 12892e0ca1 and cf39ed1765 give the sensor a producer
@@ -1047,9 +1065,11 @@ reads what it finds, so such a lookup makes its candidate a member of
 every change that creates or deletes a path (every change at all, for
 the embed spellings) and, unless another rule already affects the TU as
 more than a compile, `lookup-unbound` (`fxc_unbound_verdict`,
-`tools/dev/devloop_facts_tu.c`). A changed path is created or deleted
-when the tree has nothing there or the facts directory holds no
-`<path>.before` text of it.
+`tools/dev/devloop_facts_tu.c`). A manifest before facts revision 3, on
+either side, counts as such a lookup: its producer recorded no
+conditional lookup, so nothing bounds the ones its TU made. A changed
+path is created or deleted when the tree has nothing there or the facts
+directory holds no `<path>.before` text of it.
 The members are cross-checked against the depfile
 graph (`codeindex_reverse_includes`): a TU the graph says reads a changed
 file but no manifest pair describes is affected (`facts-missing`, or
@@ -1057,14 +1077,12 @@ file but no manifest pair describes is affected (`facts-missing`, or
 is truncated or unavailable leaves the universe incomplete, and so does a
 deleted path, which the graph refuses (`include_input_missing`,
 `cognition/modules/codeindex/src/codeindex_impact.c`) and whose
-after-state depfiles no longer name it, unless the producer attests its
-before readers: `<facts>/.zcl-before-readers` holding exactly
-`zcl.facts.before_readers.v1` and a newline, written only once the before
-side of every TU whose before-state depfile names a changed file was
-sensed into that facts directory (the replay writes it when the parent
-built and every object had a depfile; the fuzz harness senses every TU).
-Those before manifests then name the deleted path's readers, each a
-member, and the graph adds only the readers it still lists. A candidate
+after-state depfiles no longer name it: its old readers are unknown. (A
+producer could name them: a later lane may attest the before readers
+with a marker bound to the change, carrying the attested path set and the
+SHA3-256 of every before manifest, with every `.before` that has no
+`.after` read as `facts-missing`. An unbound marker is no evidence, since
+gcc's depfiles omit a probe.) A candidate
 that read no changed file is checked too: a changed IDENTITY, include
 resolution, file set or unrequested file read, or a missing before side,
 affects it whole and makes the universe incomplete. A changed file that is
@@ -1114,7 +1132,7 @@ probes the sensor does not record.
 | `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU, except a function another file defines with internal linkage (a header's `static inline`), which is the TU's own copy and seeds instead |
 | `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
 | `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
-| `lookup-unbound` | yes | yes | none of the above, while a lookup of either side makes no negative claim (`0 none`) and the change creates or deletes a path, or changes any path while the lookup is an `#embed` or `__has_embed`: nothing bounds which file it now finds or reads |
+| `lookup-unbound` | yes | yes | none of the above, while a lookup of either side makes no negative claim (`0 none`) and the change creates or deletes a path, or changes any path while the lookup is an `#embed` or `__has_embed`; or either side is a manifest before facts revision 3 and the change creates or deletes a path: nothing bounds which file it now finds or reads |
 | `static-assert` | yes, compile only | no | none of the above, while an `@assert:<path>` site of the TU (a `static_assert` of its own file scope, or of a header it reads) reaches a dirty id, or expands `__LINE__` while `<path>` changed: the assertion may stop holding and the TU stop compiling, though its object cannot change. The TU is in the compile set with no seed and no test obligation |
 | `static-assert-unattributed` | yes, compile only | no | none of the above, while either side is a manifest before facts revision 3, which records no `static_assert`: nothing rules out an assertion that reads the change |
 | `debug-position` | yes, compile only | no | none of the above, while the compile writes debug information (`-g1` and above, or any `-g` spelling it does not know; the last `-g` option decides, but a bare `-g`, `-ggdb` or `-gdwarf-N` keeps a higher level already set) and a file it read changed: clang's DWARF 5 line tables (its default since clang 14) record the MD5 of every file in the TU's file table, so any byte of such a file changes the object, a comment that keeps the line count too; `-g2` and above also record the line and column of every type, function and variable the TU uses, and `-g3` (or `-fdebug-macro`) every `#define`, and `-gembed-source` (with any level, unless `-gno-embed-source` follows) every byte of the file itself. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. Only a compile whose object compiler is known to write no checksum (gcc) and that embeds no source may narrow this, at `-g2` and above, to a changed file with a token outside comments on a moved or changed line; the identity does not name the object compiler yet, so nothing narrows it. `-g0` or no `-g` never fires it |
@@ -1452,12 +1470,16 @@ lookup for each probe, replays a string-literal macro operand and a
 `__has_include_next` into stat-confirmed slots (facts revision 4), and
 leaves the rest `0 none`; the consumer makes a TU with a `none` lookup a
 member, `lookup-unbound`, whenever a path is created or deleted (any
-changed path, for `#embed` and `__has_embed`); and the producer's
-before-readers attestation lets a deleted path's readers come from the
-before manifests instead of the depfile graph, which refuses it. All five
-now must pass with over-selection 0. `F13_has_embed_deleted_mutant`
-(mutant `NO_UNBOUND`, which makes a `none` lookup reach no changed path)
-must miss exactly `t0.c` and `t0_banner`. The fixed shapes
+changed path, for `#embed` and `__has_embed`). A deleted path's plan
+still falls back on the include graph, which refuses it; the facts
+universe the case judges holds t0 by these rules alone. All five now
+must pass with over-selection 0. The mutant `NO_UNBOUND` makes a `none`
+lookup reach no changed path: `F13_has_embed_deleted_mutant` and
+`pass_probe_dash_d_gcc_deps_mutant` must then report exactly `t0.c`
+planned unaffected (not in the universe). F14 and F15 hold by the replay
+alone, which records a hit or stat-confirmed absent slots for the probed
+header.
+The fixed shapes
 `pass_embed_created` (an `#embed` of a created file),
 `pass_has_include_shadow_gcc_deps` (a literal `__has_include` shadowed
 by a file created in an earlier `-I` dir), `pass_has_embed_header_deleted`
@@ -1467,7 +1489,17 @@ leave the plan with no TU), `pass_probe_word_in_comment` (a path only a
 comment and a string literal name is created: no TU) and
 `pass_probe_after_separator` (a real `__has_embed` after a C23 digit
 separator and a string holding a comment opener, which a lexer that took
-the separator for a quote would hide) pin over-selection 0.
+the separator for a quote would hide) pin over-selection 0. Four more
+create `inc1/opt.h` under gcc depfiles, each probed where the scan once
+could not see it: through a `-D` value's macro
+(`pass_probe_dash_d_gcc_deps`; t1 compiles with the same `-D`, so its
+pin is 1), after a `-std=c17` character literal `'a/*'` that a C23 lexer
+reads as a digit separator and a comment (`pass_probe_c17_apostrophe_gcc_deps`),
+through a word a `-std=c17` trigraph `??/` splices
+(`pass_probe_trigraph_gcc_deps`), and after a probe whose header name,
+past a comment, holds `/*` (`pass_probe_comment_hdr_gcc_deps`). The first
+three missed t0 under the first revision-4 sensor (see Facts revision 4); all
+four pin over-selection 0 except the `-D` case.
 
 The one known-RED reproducer is a toolchain case (no text edit the
 consumer misreads):
