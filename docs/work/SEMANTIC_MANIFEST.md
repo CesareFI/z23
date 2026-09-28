@@ -274,7 +274,9 @@ never serves either one.
   It also leaves seven sections empty and requires `finish()` to succeed
   with zero records in each, reads facts revision 2 back, renders the dump's
   composites exactly, and recomputes the Windows acceptance ledger digest from the
-  fixture files on disk (see "Windows acceptance").
+  fixture files on disk (see "Windows acceptance"). It also dry-runs the
+  `clang-facts` rule against the dev object rule (see "The producer: the
+  libclang sensor").
 - `semantic_sensor` runs the sensor live, and prints a visible SKIP when the
   sensor binary has not been built. It proves:
   - the fixture tree gives byte-identical manifests before and after
@@ -478,8 +480,12 @@ unknown, when the parse fingerprinted none), and the argv after `--` is the
 object's `$(DEV_COMPILE_CFLAGS)` as its target sees it, plus
 `$(ZCL_TU_RANDOM_SEED)`. The hot directories' `-O2` reaches the object
 and the manifest from one assignment (`DEV_HOT_SRC_DIRS`); the
-`semantic_sensor` group dry-runs both rules for hot and ordinary sources and
-requires equal compiler and argv. The identity TU
+`semantic_manifest` group, which needs only `make` and so runs where the
+sensor is not built, dry-runs both rules and requires equal compiler and
+argv for one TU of every `DEV_HOT_SRC_DIRS` directory, every dev object or
+object directory the Makefile gives its own `DEV_COMPILE_CFLAGS` or `CC`
+(read from `make -p`, which must list every hot directory), and ordinary
+samples. The identity TU
 (`platform/modules/util/src/clientversion.c`) is refused: its object also
 bakes a host-local build receipt that only its own object rule may name, so
 a plan that reads it has no manifest and falls back.

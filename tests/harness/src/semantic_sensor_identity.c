@@ -1,19 +1,25 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: semantic_sensor checks that facts describe the object: the clang-facts rule senses each TU with its dev object's own argv, and the object compiler enters the IDENTITY record.
  *
- * Part of the semantic_sensor group (test_semantic_manifest.c), so it runs
- * only where build/bin/z23-clang-manifest is built.
+ * argv runs in the semantic_manifest group: it needs only make, so it
+ * runs wherever the tree builds. The rest is part of the semantic_sensor
+ * group (test_semantic_manifest.c) and runs only where
+ * build/bin/z23-clang-manifest is built.
  *
- *   resense    the facts rule, really run for one hot TU: unchanged, it
- *              does not re-sense; another hot optimizer or another
- *              toolchain identity re-senses it.
  *   argv       `make -n` of dev objects and their clang-facts targets, for
- *              hot (-O2) and ordinary (-Og) directories: the sensor's
- *              --cc and argv after `--` equal the object's compiler (its
- *              compile-cache wrapper dropped) and flags, token for token.
+ *              one TU of every directory in DEV_HOT_SRC_DIRS (-O2),
+ *              every dev object or object directory the Makefile gives its
+ *              own DEV_COMPILE_CFLAGS or CC (found in `make -p`; each hot
+ *              directory must be among them), and ordinary (-Og)
+ *              samples: the sensor's --cc and argv after `--` equal the
+ *              object's compiler (its compile-cache wrapper dropped) and
+ *              flags, token for token.
  *              The identity TU, whose object bakes a receipt only its own
  *              rule may name, must be refused rather than sensed with other
  *              flags.
+ *   resense    the facts rule, really run for one hot TU: unchanged, it
+ *              does not re-sense; another hot optimizer or another
+ *              toolchain identity re-senses it.
  *   compiler   --cc names the object compiler in IDENTITY by spelled path,
  *              SHA3-256 of its bytes and of the objects the loader maps
  *              for it, with --toolchain-id; no --cc or no toolchain is
@@ -38,6 +44,7 @@
 #include "util/spawn.h"
 #include "vcs/semantic_manifest.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -50,22 +57,30 @@
 #define SSI_MAKE_OUT (4u << 20)
 #define SSI_TOKENS 1024
 
+int semantic_sensor_argv_tests(void);
 int semantic_sensor_identity_tests(void);
 
 /* ── argv: the facts rule senses exactly what the object compiles ───────── */
 
-/* Hot directories (DEV_HOT_CFLAGS), ordinary ones, and the identity TU. */
-static const char *const k_ssi_probe_srcs[] = {
-    "core/modules/chain/src/chain.c",
-    "core/chainparams/src/chainparams.c",
-    "core/modules/crypto/src/aes256.c",
-    "core/modules/validation/src/accept_block_header.c",
+/* Ordinary (-Og) samples; the hot directories and every dev-object
+ * override come from the Makefile's own database (ssi_derive). */
+static const char *const k_ssi_ordinary_srcs[] = {
     "engine/modules/hotswap/src/hotswap_activate.c",
     "platform/modules/util/src/signal_handler.c",
-    "platform/modules/util/src/clientversion.c",
 };
-#define SSI_NPROBE (sizeof(k_ssi_probe_srcs) / sizeof(k_ssi_probe_srcs[0]))
 #define SSI_IDENTITY_TU "platform/modules/util/src/clientversion.c"
+#define SSI_MAX_PROBES 256
+
+/* The sources the dry run compares, derived from the Makefile. */
+struct ssi_probes {
+    char dev_obj_dir[PATH_MAX];
+    char hot[1024];           /* DEV_HOT_SRC_DIRS, as the Makefile expands it */
+    char *src[SSI_MAX_PROBES];
+    size_t n;
+    size_t hot_dirs, hot_found; /* hot directories, and those the scan saw */
+    size_t overrides;          /* dev-object DEV_COMPILE_CFLAGS/CC overrides */
+    bool unprobed;             /* an override this test cannot place */
+};
 
 /* Backslash-newline continuations joined, so one recipe is one line. */
 static void ssi_join(char *s)
@@ -215,33 +230,210 @@ static bool ssi_write(const char *path, const char *text)
     return ok;
 }
 
-/* A probe makefile read after the repository's: every sample's dev object
- * and facts target, named as the Makefile itself names them. */
-static bool ssi_probe_makefile(const char *path)
+static bool ssi_probe_add(struct ssi_probes *p, const char *src)
 {
-    char text[4096];
-    size_t w = (size_t)snprintf(text, sizeof(text), "SSI_SRCS :=");
-    for (size_t k = 0; k < SSI_NPROBE && w < sizeof(text); k++)
-        w += (size_t)snprintf(text + w, sizeof(text) - w, " %s",
-                              k_ssi_probe_srcs[k]);
-    if (w >= sizeof(text))
+    for (size_t k = 0; k < p->n; k++)
+        if (strcmp(p->src[k], src) == 0)
+            return true;
+    if (p->n >= SSI_MAX_PROBES || (p->src[p->n] = strdup(src)) == NULL)
         return false;
-    w += (size_t)snprintf(
-        text + w, sizeof(text) - w,
-        "\n.PHONY: ssi-argv-probe\n"
-        "ssi-argv-probe: $(patsubst %%.c,$(DEV_OBJ_DIR)/%%.o,$(SSI_SRCS)) "
-        "$(patsubst %%.c,$(CLANG_FACTS_OUT_DIR)/%%.zsm,$(SSI_SRCS))\n");
-    return w < sizeof(text) && ssi_write(path, text);
+    p->n++;
+    return true;
 }
 
-static bool ssi_dry_run(const char *probe, char *out, size_t cap)
+/* The first .c of dir, in byte order: one TU the directory's flags reach. */
+static bool ssi_first_c(const char *dir, char *out, size_t cap)
 {
-    const char *argv[64];
+    DIR *d = opendir(dir);
+    char best[NAME_MAX + 1] = "";
+    if (d == NULL)
+        return false;
+    for (struct dirent *e = readdir(d); e != NULL; e = readdir(d)) {
+        size_t n = strlen(e->d_name);
+        if (n > 2 && strcmp(e->d_name + n - 2, ".c") == 0 &&
+            (best[0] == '\0' || strcmp(e->d_name, best) < 0))
+            (void)snprintf(best, sizeof(best), "%s", e->d_name);
+    }
+    (void)closedir(d);
+    return best[0] != '\0' &&
+           (size_t)snprintf(out, cap, "%s/%s", dir, best) < cap;
+}
+
+static bool ssi_is_hot(const struct ssi_probes *p, const char *dir, size_t n)
+{
+    for (const char *h = p->hot; *h != '\0';) {
+        size_t w = strcspn(h, " ");
+        if (w == n && strncmp(h, dir, n) == 0)
+            return true;
+        h += w;
+        h += strspn(h, " ");
+    }
+    return false;
+}
+
+/* A dev-object override target or pattern ("<DEV_OBJ_DIR>/<dir>/%.o" or
+ * "<DEV_OBJ_DIR>/<path>.o"): probe the TU it reaches. */
+static void ssi_override(struct ssi_probes *p, const char *target, size_t len)
+{
+    size_t root = strlen(p->dev_obj_dir);
+    char path[PATH_MAX], src[PATH_MAX];
+    if (len <= root + 3 || strncmp(target, p->dev_obj_dir, root) != 0 ||
+        target[root] != '/' || strncmp(target + len - 2, ".o", 2) != 0)
+        return;
+    p->overrides++;
+    target += root + 1;
+    len -= root + 1;
+    if (len > 4 && strncmp(target + len - 4, "/%.o", 4) == 0 &&
+        memchr(target, '%', len - 4) == NULL) {
+        size_t before = p->n;
+        (void)snprintf(path, sizeof(path), "%.*s", (int)(len - 4), target);
+        if (!ssi_first_c(path, src, sizeof(src)) || !ssi_probe_add(p, src))
+            p->unprobed = true;
+        p->hot_found += p->n > before && ssi_is_hot(p, path, len - 4);
+    } else if (memchr(target, '%', len) == NULL) {
+        (void)snprintf(src, sizeof(src), "%.*s.c", (int)(len - 2), target);
+        if (access(src, F_OK) != 0 || !ssi_probe_add(p, src))
+            p->unprobed = true;
+    } else {
+        printf("  argv: override pattern %.*s names no directory\n",
+               (int)len, target);
+        p->unprobed = true;
+    }
+}
+
+/* "# VAR op value" (a pattern block's variable) or "tgt: VAR op value". */
+static bool ssi_is_override_var(const char *s)
+{
+    static const char *const vars[] = {"DEV_COMPILE_CFLAGS ", "CC "};
+    for (size_t k = 0; k < sizeof(vars) / sizeof(vars[0]); k++) {
+        size_t n = strlen(vars[k]);
+        if (strncmp(s, vars[k], n) == 0 &&
+            (strncmp(s + n, "= ", 2) == 0 || strncmp(s + n, ":= ", 3) == 0 ||
+             strncmp(s + n, "+= ", 3) == 0 || strncmp(s + n, "?= ", 3) == 0 ||
+             strncmp(s + n, "::= ", 4) == 0))
+            return true;
+    }
+    return false;
+}
+
+/* One line of `make -p`: the probe's echoes, pattern-specific blocks
+ * ("<pattern> :" then "# makefile ..." then "# VAR op value") and
+ * target-specific assignments ("<target>: VAR op value"). */
+static void ssi_db_line(struct ssi_probes *p, const char *line, char *pattern,
+                        size_t cap)
+{
+    const char *colon;
+    size_t n = strlen(line);
+    if (strncmp(line, "echo SSI_DEV_OBJ_DIR=", 21) == 0) {
+        (void)snprintf(p->dev_obj_dir, sizeof(p->dev_obj_dir), "%s", line + 21);
+    } else if (strncmp(line, "echo SSI_HOT_DIRS=", 18) == 0) {
+        (void)snprintf(p->hot, sizeof(p->hot), "%s", line + 18);
+    } else if (line[0] == '#') {
+        if (pattern[0] != '\0' && strncmp(line, "# ", 2) == 0 &&
+            ssi_is_override_var(line + 2))
+            ssi_override(p, pattern, strlen(pattern));
+        return;
+    } else if (n > 2 && strcmp(line + n - 2, " :") == 0 && n - 2 < cap) {
+        (void)snprintf(pattern, cap, "%.*s", (int)(n - 2), line);
+        return;
+    } else if ((colon = strstr(line, ".o: ")) != NULL &&
+               ssi_is_override_var(colon + 4)) {
+        ssi_override(p, line, (size_t)(colon + 2 - line));
+    }
+    pattern[0] = '\0';
+}
+
+/* `make -p -n` of a probe that echoes DEV_OBJ_DIR and DEV_HOT_SRC_DIRS,
+ * into `db` (a file: the database is tens of megabytes). */
+static bool ssi_database(const char *dir, const char *db)
+{
+    char probe[PATH_MAX];
+    bool timed_out = false;
+    char msg[4096];
+    (void)snprintf(probe, sizeof(probe), "%s/db.mk", dir);
+    if (!ssi_write(probe, ".PHONY: ssi-db\nssi-db:\n"
+                          "\t@echo SSI_DEV_OBJ_DIR=$(DEV_OBJ_DIR)\n"
+                          "\t@echo SSI_HOT_DIRS=$(DEV_HOT_SRC_DIRS)\n"))
+        return false;
+    const char *argv[] = {"sh", "-c", "f=$1; shift; exec \"$@\" >\"$f\" 2>&1",
+                          "sh", db, "env", "-u", "MAKEFLAGS", "-u", "MFLAGS",
+                          "-u", "MAKELEVEL", "-u", "MAKEOVERRIDES", "-u",
+                          "GNUMAKEFLAGS", "make", "--no-print-directory", "-p",
+                          "-n", "-f", "Makefile", "-f", probe, "ssi-db", NULL};
+    int rc = zcl_spawn_capture_merged_observed(argv, msg, sizeof(msg), 600000,
+                                               &timed_out);
+    if (rc != 0 || timed_out)
+        printf("  make -p exited %d%s: %s\n", rc,
+               timed_out ? " (timed out)" : "", msg);
+    return rc == 0 && !timed_out;
+}
+
+/* The probe set: one TU of every directory and every object the Makefile
+ * gives its own DEV_COMPILE_CFLAGS or CC, plus the ordinary samples. */
+static bool ssi_derive(const char *dir, struct ssi_probes *p)
+{
+    char db[PATH_MAX], pattern[PATH_MAX] = "";
+    char *line = NULL;
+    size_t lcap = 0;
+    ssize_t got;
+    FILE *fp;
+    (void)snprintf(db, sizeof(db), "%s/db.txt", dir);
+    if (!ssi_database(dir, db) || (fp = fopen(db, "r")) == NULL)
+        return false;
+    /* Pass 0 reads the echoes (DEV_OBJ_DIR, the hot list), pass 1 the
+     * overrides, wherever make printed its database relative to them. */
+    for (int pass = 0; pass < 2 && fseek(fp, 0, SEEK_SET) == 0; pass++) {
+        while ((got = getline(&line, &lcap, fp)) > 0) {
+            if (line[got - 1] == '\n')
+                line[got - 1] = '\0';
+            if ((strncmp(line, "echo SSI_", 9) == 0) == (pass == 0))
+                ssi_db_line(p, line, pattern, sizeof(pattern));
+        }
+    }
+    free(line);
+    (void)fclose(fp);
+    for (const char *h = p->hot; *h != '\0'; h += strspn(h, " ")) {
+        h += strcspn(h, " ");
+        p->hot_dirs++;
+    }
+    for (size_t k = 0; k < sizeof(k_ssi_ordinary_srcs) / sizeof(char *); k++)
+        if (!ssi_probe_add(p, k_ssi_ordinary_srcs[k]))
+            return false;
+    return p->dev_obj_dir[0] != '\0';
+}
+
+/* A probe makefile read after the repository's: every probed source's dev
+ * object and facts target, named as the Makefile itself names them. */
+static bool ssi_probe_makefile(const char *path, const struct ssi_probes *p)
+{
+    size_t cap = 64 + p->n * (PATH_MAX / 4), w;
+    char *text = zcl_malloc(cap, "ssi.probe_mk");
+    bool ok = text != NULL;
+    w = ok ? (size_t)snprintf(text, cap, "SSI_SRCS :=") : 0;
+    for (size_t k = 0; ok && k < p->n && w < cap; k++)
+        w += (size_t)snprintf(text + w, cap - w, " %s", p->src[k]);
+    if (ok && w < cap)
+        w += (size_t)snprintf(
+            text + w, cap - w,
+            "\n.PHONY: ssi-argv-probe\n"
+            "ssi-argv-probe: $(patsubst %%.c,$(DEV_OBJ_DIR)/%%.o,$(SSI_SRCS)) "
+            "$(patsubst %%.c,$(CLANG_FACTS_OUT_DIR)/%%.zsm,$(SSI_SRCS))\n");
+    ok = ok && w < cap && ssi_write(path, text);
+    free(text);
+    return ok;
+}
+
+static bool ssi_dry_run(const char *probe, const struct ssi_probes *p,
+                        char *out, size_t cap)
+{
+    const char **argv = zcl_calloc(32 + 2 * p->n, sizeof(char *), "ssi.argv");
     size_t k = 0;
     bool timed_out = false;
     const char *const env[] = {"env",         "-u", "MAKEFLAGS", "-u",
                                "MFLAGS",      "-u", "MAKELEVEL", "-u",
                                "MAKEOVERRIDES", "-u", "GNUMAKEFLAGS"};
+    if (argv == NULL)
+        return false;
     for (size_t i = 0; i < sizeof(env) / sizeof(env[0]); i++)
         argv[k++] = env[i];
     argv[k++] = "make";
@@ -251,9 +443,9 @@ static bool ssi_dry_run(const char *probe, char *out, size_t cap)
     argv[k++] = "Makefile";
     argv[k++] = "-f";
     argv[k++] = probe;
-    for (size_t i = 0; i < SSI_NPROBE; i++) {
+    for (size_t i = 0; i < p->n; i++) {
         argv[k++] = "-W";
-        argv[k++] = k_ssi_probe_srcs[i];
+        argv[k++] = p->src[i];
     }
     argv[k++] = "ssi-argv-probe";
     argv[k] = NULL;
@@ -262,30 +454,52 @@ static bool ssi_dry_run(const char *probe, char *out, size_t cap)
     if (rc != 0 || timed_out)
         printf("  make -n exited %d%s: %.2000s\n", rc,
                timed_out ? " (timed out)" : "", out);
+    free(argv);
     return rc == 0 && !timed_out;
 }
 
+/* Needs only `make`: no sensor, so it runs in the semantic_manifest group
+ * wherever the tree builds. */
 static int ssi_t_argv(void)
 {
     int failures = 0;
     char dir[1024] = {0}, probe[PATH_MAX];
     char *out = zcl_malloc(SSI_MAKE_OUT, "ssi.make_out");
-    TEST_CASE("semantic_sensor: clang-facts senses each TU with its dev object's own compiler and argv") {
-        ASSERT(out != NULL);
+    struct ssi_probes *p = zcl_calloc(1, sizeof(*p), "ssi.probes");
+    TEST_CASE("semantic_manifest: clang-facts senses each TU with its dev object's own compiler and argv") {
+        ASSERT(out != NULL && p != NULL);
         ASSERT(test_mkdtemp(dir, sizeof(dir), "semsensor_argv") != NULL);
+        ASSERT(ssi_derive(dir, p));
+        printf("  argv: %zu hot directories (%zu seen as overrides), "
+               "%zu dev-object overrides, %zu sources probed\n",
+               p->hot_dirs, p->hot_found, p->overrides, p->n);
+        ASSERT(!p->unprobed);
+        ASSERT(p->hot_dirs > 0);
+        ASSERT_EQ(p->hot_found, p->hot_dirs);
         (void)snprintf(probe, sizeof(probe), "%s/probe.mk", dir);
-        ASSERT(ssi_probe_makefile(probe));
-        ASSERT(ssi_dry_run(probe, out, SSI_MAKE_OUT));
+        ASSERT(ssi_probe_makefile(probe, p));
+        ASSERT(ssi_dry_run(probe, p, out, SSI_MAKE_OUT));
         ssi_join(out);
-        size_t bad = 0;
-        for (size_t k = 0; k < SSI_NPROBE; k++)
-            bad += !ssi_probe_src(out, k_ssi_probe_srcs[k]);
+        size_t bad = 0, identity = 0;
+        for (size_t k = 0; k < p->n; k++) {
+            bad += !ssi_probe_src(out, p->src[k]);
+            identity += strcmp(p->src[k], SSI_IDENTITY_TU) == 0;
+        }
         ASSERT_EQ(bad, 0);
+        ASSERT_EQ(identity, 1);
     } TEST_END
+    for (size_t k = 0; p != NULL && k < p->n; k++)
+        free(p->src[k]);
+    free(p);
     free(out);
     if (dir[0] != '\0')
         (void)test_rm_rf_recursive(dir);
     return failures;
+}
+
+int semantic_sensor_argv_tests(void)
+{
+    return ssi_t_argv();
 }
 
 /* ── resense: a compile change rewrites the manifest ────────────────────── */
@@ -787,7 +1001,6 @@ static int ssi_t_unknown(void)
 int semantic_sensor_identity_tests(void)
 {
     int failures = 0;
-    failures += ssi_t_argv();
     failures += ssi_t_resense();
     failures += ssi_t_identity();
     failures += ssi_t_resolution();

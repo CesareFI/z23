@@ -7343,7 +7343,9 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 # flags, $(DEV_COMPILE_CFLAGS) as the object's target sees it plus
 # $(ZCL_TU_RANDOM_SEED). The hot directories' optimizer reaches both targets
 # from one assignment (DEV_HOT_SRC_DIRS, at the dev object rule), and the
-# semantic_sensor group dry-runs both rules and requires equal argv. It costs
+# semantic_manifest group (make alone, no sensor) dry-runs both rules for
+# every hot directory and every dev object with its own DEV_COMPILE_CFLAGS
+# or CC (found in `make -p`), and requires equal argv. It costs
 # 1.2-1.6x `clang -fsyntax-only` and never compiles an object. The manifests
 # feed the impact planner's optional "facts" input
 # (tools/dev/devloop_facts.c). Opt-in only: nothing else depends on this
