@@ -7845,3 +7845,46 @@ implementation/tests and preceding notes, reproduces the entire APK with
 their preserved hashes. Evidence is in `.cache/recovery-handoff-20260928/`.
 Continue qualification of the current platform changes on the owned API35
 16 KiB profile, preserving the hardware-custody and publication gates.
+
+## Current executor and recovery fixes at 16 KiB — 2026-09-28
+
+The exact debug/test APKs from `394723709` pass all 117 selected cases on the
+owned Google API35 16 KiB profile with CheckJNI and no skips in 69.319 seconds.
+This includes the new idle-shutdown, active-operation and recovery-handoff
+regressions. Balance, history and full-source review process-kill/relaunch
+also pass. The kernel reports 16384-byte pages; the image fingerprint and
+2048 MiB/two-core configuration remain those recorded above. No app RAM
+increase, package disabling, compatibility-property change or weaker custody
+policy was used.
+
+The current normal release also qualifies its isolated decoder after the
+executor change. The unchanged external fixture build/check passes in ten
+seconds (one task executed, 69 up-to-date). Locally signing with the existing
+development certificate preserves every original ZIP payload and passes
+signature/16 KiB alignment checks. Actual permission denial passes in 6.205
+seconds. On the imagefile-camera restart, the full denial/retry/foreground
+grant/capture/isolated-decode/exact public address, 1.25 amount and CameraFixture
+review passes in 9.315 seconds, with no remaining preview, camera worker,
+wallet directory or active CameraService client. Permission is revoked afterward
+and both owned emulator launches exit successfully.
+
+The first post-restart camera attempt did not execute: Android could not find
+the external instrumentation runner. Retained PackageManager logs show an APK
+parse failure and deletion of that fixture package during boot. The fixture
+had originally been installed by streamed install. Reinstalling the unchanged
+fixture and verifying its installed SHA256 against the local APK restored the
+runner; no target code, test, guard or wallet state was changed. The underlying
+parse-failure cause is not established. The earlier debug boot also recorded
+separate SystemUI, Google Play services and launcher crashes; the selected
+wallet tests completed, and the later camera launch's crash buffer is empty.
+This evidence does not qualify the emulator image's overall stability or
+package persistence.
+
+Unsigned release SHA256 remains
+`fff5a50c500da1d4c4573f7ea6b537ad25ca6c07dd10721c1db663a0771222d4`;
+the local development-signed APK is
+`41f5f37a8bf3f95685fbf774e0ce0ba0f31bd188efe07f3ac851a60be4e381f0`.
+Evidence is in `.cache/current-platform-api35-16k-20260928/`. These are
+non-custodial emulator observations; physical camera/arm64 behavior and
+successful hardware-authenticated custody remain open. The preceding source
+build, sanitizer, fuzz, complexity and exact-reproduction evidence applies.
