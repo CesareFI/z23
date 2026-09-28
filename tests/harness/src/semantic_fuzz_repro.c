@@ -1513,21 +1513,18 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
            .files = SFZ_FILES(k_f9_cc_drift)},
      .cc_before = "clang", .cc_after = "gcc"},
     {.r = {.name = "F10_opt_spelling_O02", .kind = "body_extern",
-           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O02",
-           .known_red = "an optimizer parse that fails closed: the codegen"
-                        " model reads -O02 as -O0, --optimize=2 as no "
-                        "optimizer and -O5 as the -O1 component model",
-           .files = SFZ_FILES(k_f10_opt_spelling),
-           .known_red_why = "src/t0.c t0_s.constprop.0 NOT-COVERED\n"},
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "-O02 (fixed by 3eb2f44f3a: the digits after -O and "
+                     "--optimize are read numerically instead of matched "
+                     "by prefix, and an unrecognized spelling widens "
+                     "instead of falling to -O0/no optimizer)",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O02"},
     {.r = {.name = "F10_opt_spelling_long", .kind = "body_extern",
            .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
-                     "--optimize=2",
-           .known_red = "an optimizer parse that fails closed: the codegen"
-                        " model reads -O02 as -O0, --optimize=2 as no "
-                        "optimizer and -O5 as the -O1 component model",
-           .files = SFZ_FILES(k_f10_opt_spelling),
-           .known_red_why = "src/t0.c t0_s.constprop.0 NOT-COVERED\n"},
+                     "--optimize=2 (fixed by 3eb2f44f3a, as "
+                     "F10_opt_spelling_O02)",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "--optimize=2"},
     {.r = {.name = "pass_opt_O1_gcc", .kind = "body_extern",
            .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O1",
@@ -1539,12 +1536,9 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
     {.r = {.name = "F10_opt_spelling_O5", .kind = "body_extern",
            .detail = "t0_a passes 8, not 7, to an external noinline t0_w; "
-                     "gcc at -O5",
-           .known_red = "an optimizer parse that fails closed: the codegen"
-                        " model reads -O02 as -O0, --optimize=2 as no "
-                        "optimizer and -O5 as the -O1 component model",
-           .files = SFZ_FILES(k_f10_extern_clone),
-           .known_red_why = "src/t0.c t0_w.constprop.1 NOT-COVERED\n"},
+                     "gcc at -O5 (fixed by 3eb2f44f3a, as "
+                     "F10_opt_spelling_O02)",
+           .files = SFZ_FILES(k_f10_extern_clone)},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O5"},
     {.r = {.name = "pass_extern_clone_O3", .kind = "body_extern",
            .detail = "t0_a passes 8, not 7, to an external noinline t0_w; "

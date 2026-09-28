@@ -1342,16 +1342,18 @@ ff12233071's fix to that rule's own drift (which F9 exercises) leaves F11
 red: measured, it still misses exactly `t0_q` and `t0_eq`. F12 was
 known-RED until e1497f368f seeded a TU's own copy of another file's
 internal-linkage function (such as a header `static inline`) like a
-main-file function and made it a root of its TU; it now must pass.
+main-file function and made it a root of its TU; it now must pass. F10
+(all three spellings) was known-RED until 3eb2f44f3a read the digits
+after `-O` and `--optimize` numerically instead of matching a prefix,
+and widened on an unrecognized spelling instead of falling to `-O0` or
+no optimizer; it now must pass.
 
-The known-RED reproducers are three families: two toolchain families (no
+The known-RED reproducers are two families: one toolchain family (no
 text edit the consumer misreads), and one file that only a preprocessor
 probe names:
 
 | reproducer | toolchain | missed | root cause |
 |---|---|---|---|
-| F10_opt_spelling_O02, _long | gcc at `-O02`, `--optimize=2` | `t0_s.constprop.0` | `fxg_optimizes` (`tools/dev/devloop_facts_codegen.c`) reads `-O0` as a prefix and needs `-O`: gcc's `-O2` is modeled as `-O0` or no optimizer (callers only) |
-| F10_opt_spelling_O5 | gcc at `-O5` (gcc's `-O3`) | `t0_w.constprop.1` | `k_fxg_unbounded` lists `-O2` to `-O4` only; `-O5` falls to the `-O1` component model, which never seeds an external callee gcc clones |
 | F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | a sensor deliberately handed other optimizer flags than the compile (`OPT` `COMPILE/SENSOR`) models the wrong codegen no matter what the real Makefile rule passes; `ff12233071` fixed the real rule's own drift (`F9_cc_drift`), not a sensor forced away from it |
 | F13_has_embed_deleted | sensor's clang; the case file docs/banner.txt, which only `__has_embed` probes, is deleted | `t0.c` (object changed, out of the universe) | `cm_scan_has_include` (`tools/sensors/clang_manifest_lookup.c`) scans only `__has_include` with a literal operand and nothing scans `__has_embed`, so no manifest names the probed path; clang's depfile names a probed file only while it exists; the include graph refuses the deleted path (`include_input_missing`, `codeindex_impact.c`), `fxc_cross_check` (`tools/dev/devloop_facts_consumer.c`) marks the plan incomplete but, unlike `fxc_build_inputs`, puts no candidate in scope, and the file-seeded fallback has no TU for a `.h`, `docs/` or `.md` path |
 | F14_has_include_macro, _next | sensor's clang; the case header inc2/cfg_local.h, probed as `__has_include(CFG_LOCAL)` or with `__has_include_next`, is deleted | `t0.c` (as F13) | as F13: the text scan skips a macro operand and `__has_include_next` |
@@ -1369,8 +1371,8 @@ followed by `-DMODE=-O0` or `-Ix-O0`, or with `CFLAGS_EXTRA`
 flipping `-O0` to `-O2` and back between the sides while the
 `-DLVL=-O0` decoy stays last and unchanged (`OPT` `BEFORE>AFTER`). A
 reader that took the last `-O` spelling for the level would model the
-`-O2` compiles as `-O0` and miss `t0_s.constprop.0`, as
-F10_opt_spelling_O02 does; each must pass.
+`-O2` compiles as `-O0` and miss `t0_s.constprop.0`, the miss
+F10_opt_spelling_O02 exhibited before 3eb2f44f3a; each must pass.
 
 Measured at a88daa4ffd (2026-09-28), 2,250 generated cases over the new
 dimensions, each run also repeating the fixed set:
