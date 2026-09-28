@@ -781,35 +781,18 @@ const struct sfz_repro k_sfz_repros[] = {
     {"F6_alias", "body_extern", "body of h_api, which h_api_compat aliases",
      false, NULL, SFZ_FILES(k_f6_alias), NULL},
     {"F7_cleanup_handler", "body_static",
-     "body of a cleanup() handler that t0_work inlines", false,
-     "the consumer's cleanup-handler fix: t0_work runs and inlines its "
-     "__attribute__((cleanup)) handler t0_release, whose body changed, and "
-     "is not a seed",
-     SFZ_FILES(k_f7_cleanup_handler),
-     "src/t0.c t0_work NOT-COVERED\n"},
+     "body of a cleanup() handler that t0_work inlines", false, NULL,
+     SFZ_FILES(k_f7_cleanup_handler), NULL},
     {"F7_cleanup_same_name", "body_static",
      "t0's work() inlines a cleanup() handler whose body changed; t1's own "
      "static work() changed too",
-     false,
-     "the consumer's cleanup-handler fix (as F7_cleanup_handler); a seed "
-     "matched by bare name would hide it behind t1's static work",
-     SFZ_FILES(k_f7_cleanup_same_name),
-     "src/t0.c work NOT-COVERED\n"},
+     false, NULL, SFZ_FILES(k_f7_cleanup_same_name), NULL},
     {"F8_c_includes_c", "body_static",
      "test_b.c #includes b.c to reach its statics; b_k body changes", false,
-     "the consumer's .c-includes-.c fix: test_b.c compiles b.c's statics "
-     "into its own object, and a b.c edit does not seed the includer's "
-     "functions that inline them (test_b_k)",
-     SFZ_FILES(k_f8_c_includes_c),
-     "src/test_b.c test_b_k NOT-COVERED\n"},
+     NULL, SFZ_FILES(k_f8_c_includes_c), NULL},
     {"F8_c_includes_c_renamed", "body_static",
-     "a.c #includes b.c (unity build); b_k body changes", false,
-     "the consumer's .c-includes-.c fix: a.c compiles b.c's functions into "
-     "its own object, and a b.c edit does not seed the includer's functions "
-     "that inline them (a_b_api, a_use)",
-     SFZ_FILES(k_f8_c_includes_c_renamed),
-     "src/a.c a_b_api NOT-COVERED\n"
-     "src/a.c a_use NOT-COVERED\n"},
+     "a.c #includes b.c (unity build); b_k body changes", false, NULL,
+     SFZ_FILES(k_f8_c_includes_c_renamed), NULL},
     {"pass_hd", "macro_value", "H_A 1->3 flips H_D", false, NULL,
      SFZ_FILES(k_pass_hd), NULL},
     {"pass_hdrproto", "body_static",

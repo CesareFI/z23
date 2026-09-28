@@ -1286,12 +1286,13 @@ instead; only such a range run may draw an edit that changes no file
 exact false-negative lines it reports until then; it holds only when it
 fails with exactly those lines, and any other outcome (an ERROR, a
 different miss, or a PASS, which means the mark is stale) fails the group.
-At 64370952d5 the known-RED reproducers are F7 (a `cleanup()` handler
-inlined into a function that is not seeded) and both F8 shapes (a `.c`
-that `#include`s another `.c`: an edit to the included file does not seed
-the includer's functions). F7_cleanup_same_name repeats F7 while another
-file's same-name static also changes, which a seed matched by bare name
-would have hidden.
+F7 (a `cleanup()` handler inlined into a function that is not seeded),
+F7_cleanup_same_name (the same miss while another file's same-name static
+also changes, which a seed matched by bare name would have hidden) and
+both F8 shapes (a `.c` that `#include`s another `.c`: an edit to the
+included file does not seed the includer's functions) were known-RED at
+64370952d5; the consumer's cleanup-handler and `.c`-includes-`.c` fixes
+now cover all four, and they run as ordinary fixed reproducers.
 
 Four generator kinds edit only data: `data_string` (a string literal in
 a body, of the same length or longer, so a later literal moves),
