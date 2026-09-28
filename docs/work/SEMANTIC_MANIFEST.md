@@ -566,10 +566,12 @@ by identity (`clang_getFile` of the source), and closes the file table with
 `clang_findIncludesInFile` over every file read. Every front-end instance
 prints its own `-v` search list block, so the sensor parses the last one.
 
-**Measured** at commit `29d490b7fc` on the development host (28 CPUs under
-the `devbuild` slot; 1-minute loadavg 11.5 at the start of the three runs and
-6.8 at the end). The TUs were the 12 TUs of `engine/modules/hotswap` with the
-dev compile argv (`DEV_COMPILE_CFLAGS`, 147 `-I` dirs), `--facts`. Each run
+**Measured** at commit `29d490b7fc`, on the branch this work was ported from
+(before main added the attribute and alias refs), on the
+development host (28 CPUs under the `devbuild` slot; 1-minute loadavg 11.5
+at the start of the three runs and 6.8 at the end). The TUs were the 12 TUs
+of `engine/modules/hotswap` with the dev compile argv
+(`DEV_COMPILE_CFLAGS`, 147 `-I` dirs), `--facts`. Each run
 did the same three rounds over all 12 TUs:
 
 - r1: the tree as committed;
@@ -643,7 +645,11 @@ request at a time). The cold CPU column is user plus system time from
   shadowing one a system header includes, a flag change, and a body edit
   after it. Each one checks the reported TU reuse, and each written manifest
   is compared byte for byte with a cold process. The group then runs the
-  qualified mode and the fault flag.
+  qualified mode and the fault flag. A second fixture adds a `cleanup(f)`
+  local, an `alias("x")` definition and an asm label declared in a header
+  inside the preamble; after a body edit, an alias retarget and a label
+  edit, each written manifest carries the attribute and alias refs a cold
+  process derives, verified and qualified.
 - Mutants were checked against the group:
   - dropping the file pre-check is caught (`preamble-file-differs`);
   - dropping the lookup post-check turns the beside-the-includer shadow into
