@@ -5,6 +5,7 @@
 
 #include "sem_replay_build.h"
 
+#include "base/hex.h"
 #include "base/safe_alloc.h"
 
 #include <dirent.h>
@@ -224,13 +225,7 @@ bool sr_snap_save(const struct sr_snap *s, const char *path)
 
 static bool unhex(const char *h, uint8_t out[32])
 {
-    for (size_t i = 0; i < 32; i++) {
-        unsigned v = 0;
-        if (sscanf(h + 2 * i, "%2x", &v) != 1)
-            return false;
-        out[i] = (uint8_t)v;
-    }
-    return true;
+    return zcl_hex_decode(h, out, 32);
 }
 
 static bool snap_line(struct sr_snap *s, char *line)

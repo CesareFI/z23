@@ -6,6 +6,7 @@
 
 #include "sem_replay.h"
 
+#include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "platform/clock.h"
 
@@ -342,12 +343,7 @@ bool sr_hash_file(const char *path, uint8_t out[32])
 
 void sr_hex(const uint8_t in[32], char out[65])
 {
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        out[2 * i] = digits[in[i] >> 4];
-        out[2 * i + 1] = digits[in[i] & 15];
-    }
-    out[64] = '\0';
+    zcl_hex_encode(in, 32, out);
 }
 
 /* ── sh word splitting ────────────────────────────────────────────────── */
