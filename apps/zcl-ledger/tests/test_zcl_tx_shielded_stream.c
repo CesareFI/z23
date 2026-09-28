@@ -423,6 +423,111 @@ static void check_replay_rk_second_spend(void) {
     assert(memcmp(digest, expected, sizeof digest) == 0);
 }
 
+static void check_output_capture(size_t chunk) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output;
+    assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+        0x76b809bb, &hasher, 0, &output));
+    for (unsigned pass = 1; pass < 6; ++pass) {
+        replay_pass(&state, wire, sizeof wire, chunk);
+        assert(zcl_tx_shielded_replay_next(&state));
+    }
+    replay_pass(&state, wire, sizeof wire, chunk);
+    zcl_tx_shielded_facts facts;
+    uint8_t digest[32], reference[32];
+    assert(zcl_tx_shielded_replay_finish(&state, &facts, digest));
+    assert(facts.sapling_outputs == 1);
+    assert(memcmp(output.cv, wire + 412, 32) == 0);
+    assert(memcmp(output.cm, wire + 444, 32) == 0);
+    assert(memcmp(output.epk, wire + 476, 32) == 0);
+    assert(memcmp(output.out_ciphertext, wire + 412 + 676, 80) == 0);
+    assert(zcl_zip243_shielded_digest(wire, sizeof wire,
+        0x76b809bb, &hasher, reference) == 0);
+    assert(memcmp(digest, reference, sizeof digest) == 0);
+    zcl_tx_shielded_replay_abort(&state);
+    assert(memcmp(output.cv, wire + 412, 32) == 0);
+}
+
+static void check_output_capture_rejections(void) {
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
+    blue_sapling_fixture(wire);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output, zero = {0};
+    assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+        0x76b809bb, &hasher, 1, &output));
+    replay_pass(&state, wire, sizeof wire, 220);
+    assert(!zcl_tx_shielded_replay_next(&state));
+    assert(memcmp(&output, &zero, sizeof output) == 0);
+    for (unsigned changed_pass = 2; changed_pass <= 6; ++changed_pass) {
+        assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+            0x76b809bb, &hasher, 0, &output));
+        for (unsigned pass = 1; pass < changed_pass; ++pass) {
+            replay_pass(&state, wire, sizeof wire, 220);
+            assert(zcl_tx_shielded_replay_next(&state));
+        }
+        assert(memcmp(&output, &zero, sizeof output) != 0);
+        wire[412 + 676 + 7] ^= 1u;
+        replay_pass(&state, wire, sizeof wire, 17);
+        if (changed_pass < 6)
+            assert(!zcl_tx_shielded_replay_next(&state));
+        else {
+            zcl_tx_shielded_facts facts;
+            uint8_t digest[32];
+            assert(!zcl_tx_shielded_replay_finish(&state,
+                &facts, digest));
+        }
+        assert(memcmp(&output, &zero, sizeof output) == 0);
+        wire[412 + 676 + 7] ^= 1u;
+    }
+    assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+        0x76b809bb, &hasher, 0, &output));
+    assert(zcl_tx_shielded_replay_feed(&state, wire, 1100));
+    assert(memcmp(&output, &zero, sizeof output) != 0);
+    zcl_tx_shielded_replay_abort(&state);
+    assert(memcmp(&output, &zero, sizeof output) == 0);
+    assert(!zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+        0x76b809bb, &hasher, 4096, &output));
+    assert(memcmp(&output, &zero, sizeof output) == 0);
+}
+
+static void check_second_output_capture(void) {
+    uint8_t original[BLUE_SYNTHETIC_SAPLING_BYTES];
+    uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES + 948];
+    blue_sapling_fixture(original);
+    memcpy(wire, original, 412 + 948);
+    wire[411] = 2;
+    for (unsigned i = 0; i < 948; ++i)
+        wire[1360 + i] = (uint8_t)(i * 13u + 5u);
+    memcpy(wire + 2308, original + 1360,
+        sizeof original - 1360);
+    struct blake2b_ctx context;
+    zcl_zip243_hasher hasher = zcl_zip243_host_hasher(&context);
+    zcl_tx_shielded_replay state;
+    zcl_tx_shielded_output_capture output;
+    assert(zcl_tx_shielded_replay_begin_output(&state, sizeof wire,
+        0x76b809bb, &hasher, 1, &output));
+    for (unsigned pass = 1; pass < 6; ++pass) {
+        replay_pass(&state, wire, sizeof wire, 63);
+        assert(zcl_tx_shielded_replay_next(&state));
+    }
+    replay_pass(&state, wire, sizeof wire, 63);
+    zcl_tx_shielded_facts facts;
+    uint8_t digest[32];
+    assert(zcl_tx_shielded_replay_finish(&state, &facts, digest));
+    assert(facts.sapling_outputs == 2);
+    assert(memcmp(output.cv, wire + 1360, 32) == 0);
+    assert(memcmp(output.cm, wire + 1392, 32) == 0);
+    assert(memcmp(output.epk, wire + 1424, 32) == 0);
+    assert(memcmp(output.out_ciphertext, wire + 1360 + 676, 80) == 0);
+    assert(memcmp(output.cv, wire + 412, 32) != 0);
+}
+
 static void reject_substituted_spend_rk(void) {
     uint8_t wire[BLUE_SYNTHETIC_SAPLING_BYTES];
     blue_sapling_fixture(wire);
@@ -475,6 +580,20 @@ static void check_consensus_spend(const char *path) {
     assert(facts.sapling_spends == 1 && facts.sapling_outputs == 1);
     assert(memcmp(rk, wire + 27 + 96, sizeof rk) == 0);
     assert(memcmp(digest, expected, sizeof expected) == 0);
+    zcl_tx_shielded_output_capture output;
+    assert(zcl_tx_shielded_replay_begin_output(&state,
+        (uint32_t)length, 0x76b809bb, &hasher, 0, &output));
+    for (unsigned pass = 1; pass < 6; ++pass) {
+        replay_pass(&state, wire, length, 220);
+        assert(zcl_tx_shielded_replay_next(&state));
+    }
+    replay_pass(&state, wire, length, 220);
+    assert(zcl_tx_shielded_replay_finish(&state, &facts, digest));
+    assert(memcmp(output.cv, wire + 412, 32) == 0);
+    assert(memcmp(output.cm, wire + 444, 32) == 0);
+    assert(memcmp(output.epk, wire + 476, 32) == 0);
+    assert(memcmp(output.out_ciphertext, wire + 412 + 676, 80) == 0);
+    assert(memcmp(digest, expected, sizeof expected) == 0);
 }
 
 int main(int argc, char **argv) {
@@ -497,6 +616,10 @@ int main(int argc, char **argv) {
     check_replay_rk_capture(220);
     check_replay_rk_rejections();
     check_replay_rk_second_spend();
+    check_output_capture(1);
+    check_output_capture(220);
+    check_output_capture_rejections();
+    check_second_output_capture();
     reject_substituted_spend_rk();
     length = read_vector(argv[2], wire);
     assert(length == 245);

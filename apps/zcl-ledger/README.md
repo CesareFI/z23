@@ -124,9 +124,16 @@ of a synthetic Sapling transaction with the normal child's spending key and
 checks the exact signature against the host result; host verification rejects
 a changed transaction.
 The shielded replay can capture a selected spend's `rk` from parsed wire
-bytes and releases it for signing only after all six identical uploads and
-the ZIP243 digest finish. This is tested with synthetic one- and two-spend
-transactions; the current Blue Review app remains read only.
+bytes and releases the verified bytes to its caller only after all six
+identical uploads and the ZIP243 digest finish. This is tested with synthetic
+one- and two-spend transactions; the current Blue Review app remains read only.
+It can also capture one selected Sapling output's value commitment, note
+commitment, ephemeral key, and outgoing ciphertext. This capture is usable
+only after all six uploads match; abort or mismatch erases it. Tests cover
+first and second output selection, different upload chunk sizes, and changes
+in each later replay pass. The captured bytes are public wire fields, not a
+verified recipient or amount. Device output decryption and note commitment
+checks remain prerequisites for approving a shielded payment.
 An isolated randomized SpendAuth candidate also derives
 `rsk = ask + ar`, recomputes the transaction's `rk`, and signs only when it
 matches. Its end-to-end public fixture runs in both ARM emulators; it is not

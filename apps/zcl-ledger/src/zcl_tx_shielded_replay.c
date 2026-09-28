@@ -14,6 +14,10 @@ static const zcl_tx_shielded_span selected_span[6] = {
 };
 
 enum { SPEND_RK_OFFSET = 3 * 32, SPEND_RK_LENGTH = 32 };
+enum { OUTPUT_ENC_LENGTH = 580, OUTPUT_CIPHERTEXT_OFFSET = 96 + OUTPUT_ENC_LENGTH };
+
+static_assert(sizeof(zcl_tx_shielded_output_capture) == 176,
+    "Sapling output capture must contain only selected wire fields");
 
 static_assert(sizeof(zcl_tx_shielded_replay) <= 576,
     "Shielded replay state exceeds its bounded-memory budget");
@@ -21,6 +25,8 @@ static_assert(sizeof(zcl_tx_shielded_replay) <= 576,
 void zcl_tx_shielded_replay_abort(zcl_tx_shielded_replay *state) {
     if (!state) return;
     if (state->spend_rk) memset(state->spend_rk, 0, 32);
+    if (state->output_capture)
+        memset(state->output_capture, 0, sizeof *state->output_capture);
     memset(state, 0, sizeof *state);
 }
 
@@ -37,25 +43,49 @@ static bool start_pass(zcl_tx_shielded_replay *state) {
             section_personal[state->pass - 1]);
 }
 
-static bool valid_captured_rk(const zcl_tx_shielded_replay *state,
+static bool captures_valid(const zcl_tx_shielded_replay *state,
     const zcl_tx_shielded_facts *facts) {
-    return !state->spend_rk ||
+    bool spend_ok = !state->spend_rk ||
         (state->spend_index < facts->sapling_spends &&
          state->rk_used == SPEND_RK_LENGTH);
+    bool output_ok = !state->output_capture ||
+        (state->output_index < facts->sapling_outputs &&
+         state->output_used == sizeof *state->output_capture);
+    return spend_ok && output_ok;
+}
+
+static void capture_output(zcl_tx_shielded_replay *state, uint8_t byte) {
+    if (state->pass != 1 || !state->output_capture ||
+        state->wire.item_index != state->output_index) return;
+    uint32_t offset = state->wire.field_used;
+    if (offset >= OUTPUT_CIPHERTEXT_OFFSET &&
+        offset < OUTPUT_CIPHERTEXT_OFFSET + 80)
+        offset -= OUTPUT_ENC_LENGTH;
+    else if (offset >= 96) return;
+    ((uint8_t *)state->output_capture)[offset] = byte;
+    ++state->output_used;
+}
+
+static bool capture_spend_rk(zcl_tx_shielded_replay *state,
+    zcl_tx_shielded_span span, const uint8_t *bytes, size_t length) {
+    if (state->pass != 1 || !state->spend_rk ||
+        span != ZCL_SHIELDED_SPEND ||
+        state->wire.item_index != state->spend_index ||
+        state->wire.field_used < SPEND_RK_OFFSET ||
+        state->wire.field_used >= SPEND_RK_OFFSET + SPEND_RK_LENGTH)
+        return true;
+    if (length != 1) return false;
+    state->spend_rk[state->wire.field_used - SPEND_RK_OFFSET] = bytes[0];
+    ++state->rk_used;
+    return true;
 }
 
 static bool observe(void *context, zcl_tx_shielded_span span,
     const uint8_t *bytes, size_t length) {
     zcl_tx_shielded_replay *state = context;
-    if (state->pass == 1 && state->spend_rk &&
-        span == ZCL_SHIELDED_SPEND &&
-        state->wire.item_index == state->spend_index &&
-        state->wire.field_used >= SPEND_RK_OFFSET &&
-        state->wire.field_used < SPEND_RK_OFFSET + SPEND_RK_LENGTH) {
-        if (length != 1) return false;
-        state->spend_rk[state->wire.field_used - SPEND_RK_OFFSET] = bytes[0];
-        ++state->rk_used;
-    }
+    if (span == ZCL_SHIELDED_SOUTPUT && length == 1)
+        capture_output(state, bytes[0]);
+    if (!capture_spend_rk(state, span, bytes, length)) return false;
     if (state->pass == 1 && span == ZCL_SHIELDED_HEADER) {
         if (length > sizeof state->header - state->header_used)
             return false;
@@ -101,6 +131,23 @@ bool zcl_tx_shielded_replay_begin(zcl_tx_shielded_replay *state,
         branch_id, blake, 0, NULL);
 }
 
+bool zcl_tx_shielded_replay_begin_output(zcl_tx_shielded_replay *state,
+    uint32_t expected_length, uint32_t branch_id,
+    const zcl_zip243_hasher *blake, uint32_t output_index,
+    zcl_tx_shielded_output_capture *output) {
+    if (output) memset(output, 0, sizeof *output);
+    if (!state) return false;
+    if (!zcl_tx_shielded_replay_begin(state, expected_length,
+            branch_id, blake)) return false;
+    if (!output || output_index >= 4096) {
+        zcl_tx_shielded_replay_abort(state);
+        return false;
+    }
+    state->output_capture = output;
+    state->output_index = output_index;
+    return true;
+}
+
 bool zcl_tx_shielded_replay_feed(zcl_tx_shielded_replay *state,
     const uint8_t *bytes, size_t length) {
     if (!state) return false;
@@ -120,7 +167,7 @@ static bool complete_pass(zcl_tx_shielded_replay *state) {
     if (state->pass == 1) {
         if (state->header_used != 8 || state->tail_used != 16)
             return false;
-        if (!valid_captured_rk(state, &checked)) return false;
+        if (!captures_valid(state, &checked)) return false;
         memcpy(state->commitment, sha_digest, sizeof sha_digest);
         state->facts = checked;
     } else if (zsha256_compare(state->commitment, sha_digest) != 0)
@@ -169,6 +216,7 @@ bool zcl_tx_shielded_replay_finish(zcl_tx_shielded_replay *state,
     *facts = state->facts;
     memcpy(digest, result, sizeof result);
     state->spend_rk = NULL;
+    state->output_capture = NULL;
     state->pass = 7;
     return true;
 }

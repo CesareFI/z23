@@ -11,15 +11,21 @@
 #endif
 
 typedef struct {
+    uint8_t cv[32], cm[32], epk[32], out_ciphertext[80];
+} zcl_tx_shielded_output_capture;
+
+typedef struct {
     zcl_tx_shielded_stream wire;
     zcl_tx_shielded_facts facts;
     zcl_zip243_hasher blake;
     zsha256_ctx sha;
     uint8_t commitment[32], parts[6][32], header[8], tail[16];
     uint8_t *spend_rk;
+    zcl_tx_shielded_output_capture *output_capture;
     uint32_t expected, branch_id;
-    uint32_t spend_index;
+    uint32_t spend_index, output_index;
     uint8_t pass, header_used, tail_used, rk_used;
+    uint16_t output_used;
     bool failed;
 } zcl_tx_shielded_replay;
 
@@ -40,13 +46,23 @@ bool zcl_tx_shielded_replay_begin_rk(zcl_tx_shielded_replay *state,
     uint32_t expected_length, uint32_t branch_id,
     const zcl_zip243_hasher *blake, uint32_t spend_index,
     uint8_t spend_rk[32]);
+/* Capture the selected output's cv, cm, epk, and outgoing ciphertext from
+ * pass one. The capture is provisional until all six full-wire commitments
+ * match. Failure or abort clears it; after success the caller owns and must
+ * erase it. No recipient or amount is established by capture alone;
+ * decryption and note-commitment verification are needed.
+ * The capture must not overlap replay state or the hash context. */
+bool zcl_tx_shielded_replay_begin_output(zcl_tx_shielded_replay *state,
+    uint32_t expected_length, uint32_t branch_id,
+    const zcl_zip243_hasher *blake, uint32_t output_index,
+    zcl_tx_shielded_output_capture *output);
 bool zcl_tx_shielded_replay_feed(zcl_tx_shielded_replay *state,
     const uint8_t *bytes, size_t length);
 bool zcl_tx_shielded_replay_next(zcl_tx_shielded_replay *state);
 bool zcl_tx_shielded_replay_finish(zcl_tx_shielded_replay *state,
     zcl_tx_shielded_facts *facts, uint8_t digest[32]);
-/* Erase an active replay and any provisional rk. Call before abandoning an
- * upload or reusing a state that began with rk capture. */
+/* Erase an active replay and any provisional rk or output capture. Call
+ * before abandoning an upload or reusing a state that began with capture. */
 void zcl_tx_shielded_replay_abort(zcl_tx_shielded_replay *state);
 
 #endif
