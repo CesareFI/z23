@@ -889,6 +889,85 @@ int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
         AR_BIND_INT(st, 1, (int64_t)max), build_worker_read(&out[count], st));
 }
 
+static bool build_proof_head_read_text(sqlite3_stmt *st, int column,
+                                       char out[BUILD_FABRIC_ID_HEX + 1])
+{
+    if (sqlite3_column_type(st, column) != SQLITE_TEXT ||
+        sqlite3_column_bytes(st, column) != BUILD_FABRIC_ID_HEX)
+        return false;
+    const unsigned char *value = sqlite3_column_text(st, column);
+    if (!value)
+        return false;
+    memcpy(out, value, BUILD_FABRIC_ID_HEX);
+    out[BUILD_FABRIC_ID_HEX] = '\0';
+    return build_hex_id(out);
+}
+
+static bool build_proof_head_read(sqlite3_stmt *st,
+                                  struct db_build_worker_proof_head *out)
+{
+    return build_proof_head_read_text(st, 0, out->worker_id) &&
+           build_proof_head_read_text(st, 1, out->signer_pubkey) &&
+           build_proof_head_read_text(st, 2, out->checkpoint_blob_root);
+}
+
+/* -2 means a complete head set exceeds max; -3 marks a malformed row. */
+static int build_proof_heads_scan(sqlite3_stmt *st,
+                                  struct db_build_worker_proof_head *out,
+                                  size_t max)
+{
+    size_t count = 0;
+    int rc;
+    while ((rc = AR_STEP_ROW_READONLY(st)) == SQLITE_ROW) {
+        if (count == max)
+            return -2;
+        if (!build_proof_head_read(st, &out[count]))
+            return -3;
+        count++;
+    }
+    return rc == SQLITE_DONE ? (int)count : -1;
+}
+
+static int build_proof_heads_refuse(struct node_db *ndb,
+    struct db_build_worker_proof_head *out, size_t max, int status)
+{
+    memset(out, 0, max * sizeof(*out));
+    if (status == -2)
+        LOG_ERROR("model", "db_build_worker_proof_heads_snapshot: "
+                  "capacity exceeded");
+    else if (status == -3)
+        LOG_ERROR("model", "db_build_worker_proof_heads_snapshot: "
+                  "malformed head row");
+    else
+        LOG_ERROR("model", "db_build_worker_proof_heads_snapshot: "
+                  "incomplete query: %s", sqlite3_errmsg(ndb->db));
+    return status == -2 ? -2 : -1;
+}
+
+int db_build_worker_proof_heads_snapshot(
+    struct node_db *ndb, struct db_build_worker_proof_head *out, size_t max)
+{
+    if (!ndb || !ndb->open || !out || max == 0 ||
+        max > BUILD_FABRIC_PROOF_HEADS_MAX) {
+        LOG_ERROR("model", "db_build_worker_proof_heads_snapshot: bad args");
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(ndb->db,
+        "SELECT worker_id,signer_pubkey,proof_checkpoint_head_sha3 "
+        "FROM build_workers WHERE proof_checkpoint_head_sha3<>'' OR "
+        "proof_checkpoint_head_sha3 IS NULL ORDER BY worker_id LIMIT ?",
+        -1, &st, NULL);
+    if (rc == SQLITE_OK && !st) rc = SQLITE_ERROR;
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_int64(st, 1, (sqlite3_int64)max + 1);
+    int status = rc == SQLITE_OK ? build_proof_heads_scan(st, out, max) : -1;
+    int finalized = st ? sqlite3_finalize(st) : SQLITE_OK;
+    if (status < 0 || finalized != SQLITE_OK)
+        return build_proof_heads_refuse(ndb, out, max, status);
+    return status;
+}
+
 int db_build_job_receipts_checked(struct node_db *ndb, const char *job_id,
                                   struct db_build_receipt *out, size_t max)
 {

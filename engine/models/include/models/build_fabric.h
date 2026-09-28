@@ -28,6 +28,7 @@ enum {
     BUILD_FABRIC_SIGNATURE_HEX = 128,
     BUILD_FABRIC_TRUST_STATE_MAX = 23,
     BUILD_FABRIC_ATTACH_SCAN_CAP = 256,
+    BUILD_FABRIC_PROOF_HEADS_MAX = 256,
 };
 
 struct db_build_job {
@@ -87,6 +88,15 @@ struct db_build_worker {
     int64_t approved_at;
     int64_t expires_at;
     int64_t last_seen_at;
+};
+
+/* A single SQLite statement snapshots every locally anchored issuer, including
+ * revoked workers. Eligibility is decided by the receiver, not this catalog.
+ * The result is volatile: replay CAS and recheck heads before publication. */
+struct db_build_worker_proof_head {
+    char worker_id[BUILD_FABRIC_ID_HEX + 1];
+    char signer_pubkey[BUILD_FABRIC_ID_HEX + 1];
+    char checkpoint_blob_root[BUILD_FABRIC_ID_HEX + 1];
 };
 
 struct db_build_receipt {
@@ -171,6 +181,11 @@ bool db_build_attach_settle_job(struct node_db *ndb,
                                 const struct db_build_job *job, int64_t now);
 int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
                           size_t max);
+/* Returns the complete ordered head set, -1 on query/corrupt-row failure, or
+ * -2 if it exceeds max. Any refusal clears all written rows. max must be in
+ * [1, BUILD_FABRIC_PROOF_HEADS_MAX]; a successful count is never truncated. */
+int db_build_worker_proof_heads_snapshot(
+    struct node_db *ndb, struct db_build_worker_proof_head *out, size_t max);
 int db_build_job_receipts(struct node_db *ndb, const char *job_id,
                           struct db_build_receipt *out, size_t max);
 int db_build_job_receipts_checked(struct node_db *ndb, const char *job_id,

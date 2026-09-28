@@ -369,6 +369,67 @@ static int test_bf_proof_head_cas(void)
     return failures;
 }
 
+static int test_bf_proof_head_snapshot(void)
+{
+    int failures = 0;
+    TEST("build_fabric: proof head snapshot refuses incomplete catalog") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "proof_heads_snapshot"));
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        ASSERT(db_build_worker_save(&ndb, &worker));
+        ASSERT(db_build_worker_proof_head_cas(&ndb, id_c, id_d, "", id_a));
+        bf_worker(&worker);
+        (void)snprintf(worker.worker_id, sizeof(worker.worker_id), "%s", id_a);
+        (void)snprintf(worker.signer_pubkey, sizeof(worker.signer_pubkey),
+                       "%s", id_b);
+        worker.revoked = 1;
+        ASSERT(db_build_worker_save(&ndb, &worker));
+        ASSERT(db_build_worker_proof_head_cas(&ndb, id_a, id_b, "", id_d));
+        struct db_build_worker_proof_head heads[2];
+        memset(heads, 0x7f, sizeof(heads));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 2), 2);
+        ASSERT_STR_EQ(heads[0].worker_id, id_a);
+        ASSERT_STR_EQ(heads[0].signer_pubkey, id_b);
+        ASSERT_STR_EQ(heads[0].checkpoint_blob_root, id_d);
+        ASSERT_STR_EQ(heads[1].worker_id, id_c);
+        ASSERT_STR_EQ(heads[1].checkpoint_blob_root, id_a);
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 1), -2);
+        ASSERT_EQ(heads[0].worker_id[0], '\0');
+        struct node_db peer;
+        memset(&peer, 0, sizeof(peer));
+        ASSERT(node_db_open(&peer, path));
+        ASSERT(db_build_worker_proof_head_cas(&peer, id_c, id_d, id_a, id_b));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 2), 2);
+        ASSERT_STR_EQ(heads[1].checkpoint_blob_root, id_b);
+        node_db_close(&peer);
+        node_db_close(&ndb);
+        ASSERT(node_db_open(&ndb, path));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 2), 2);
+        ASSERT_STR_EQ(heads[1].checkpoint_blob_root, id_b);
+        ASSERT(sqlite3_exec(ndb.db, "PRAGMA ignore_check_constraints=ON",
+                            NULL, NULL, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_exec(ndb.db,
+            "UPDATE build_workers SET proof_checkpoint_head_sha3='bad' "
+            "WHERE worker_id='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+            NULL, NULL, NULL) == SQLITE_OK);
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 2), -1);
+        ASSERT_EQ(heads[0].worker_id[0], '\0');
+        ASSERT_EQ(heads[1].worker_id[0], '\0');
+        ASSERT(sqlite3_exec(ndb.db, "DROP TABLE build_workers",
+                            NULL, NULL, NULL) == SQLITE_OK);
+        struct db_build_worker legacy[2];
+        ASSERT_EQ(db_build_workers_list(&ndb, legacy, 2), 0);
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 2), -1);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_async_proof_events(void)
 {
     int failures = 0;
@@ -4149,6 +4210,7 @@ int test_build_fabric(void)
     failures += test_bf_candidate_query_partial();
     failures += test_bf_lifecycle();
     failures += test_bf_proof_head_cas();
+    failures += test_bf_proof_head_snapshot();
     failures += test_bf_async_proof_events();
     failures += test_bf_async_timing_samples();
     failures += test_bf_async_timing_capacity();
