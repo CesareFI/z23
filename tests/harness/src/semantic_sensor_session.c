@@ -1023,11 +1023,36 @@ static int sss_t_post(struct sss_ctx *c)
 
 /* ── argv a reparse cannot bind ───────────────────────────────────────────── */
 
-/* A response file's contents and an implicit module map lie outside every
- * file the manifest hashes: such a TU is recreated on every emit. */
+/* A response file could change the compiler's argv unseen, so the sensor
+ * refuses it before parsing and writes nothing. An implicit module map lies
+ * outside every file the manifest hashes: such a TU is recreated on every
+ * emit. */
 static bool sss_rsp_setup(const char *root)
 {
     return sss_write(root, "rsp.txt", "-DFX_RSP=1\n");
+}
+
+/* The session refuses argv carrying a response file and writes no output. */
+static bool sss_rsp_refused(struct sss_ctx *c, struct sss_proc *p, char *reply,
+                            size_t cap)
+{
+    char out[PATH_MAX];
+    struct sss_argv a;
+    sss_argv(&a, false);
+    a.items[a.n++] = "@rsp.txt";
+    (void)snprintf(out, sizeof(out), "%s/rsp.session.bin", c->root);
+    if (!sss_rsp_setup(c->root) || !sss_request(p, c->root, out, &a, reply, cap))
+        return false;
+    if (strstr(reply, "\"ok\":false") == NULL ||
+        strstr(reply, "indirect compiler options") == NULL) {
+        printf("FAIL response-file argv is not refused: %s\n", reply);
+        return false;
+    }
+    if (access(out, F_OK) == 0) {
+        printf("FAIL a refused request wrote %s\n", out);
+        return false;
+    }
+    return true;
 }
 
 static int sss_t_untrackable(struct sss_ctx *c)
@@ -1036,24 +1061,17 @@ static int sss_t_untrackable(struct sss_ctx *c)
     struct sss_proc p = {0};
     char reply[SSS_REPLY_MAX], log[PATH_MAX];
     bool started = false;
-    const struct sss_step base = {"rsp-base", sss_rsp_setup, false,
-                                  "created", "first-parse"};
-    const struct sss_step again = {"rsp-again", sss_none, false, "recreated",
-                                   "argv-untrackable"};
-    const struct sss_step mod = {"modules", sss_none, false, "recreated",
-                                 "argv-"};
+    const struct sss_step mod = {"modules", sss_none, false, "created",
+                                 "first-parse"};
     const struct sss_step mod_again = {"modules-again", sss_body, false,
                                        "recreated", "argv-untrackable"};
-    TEST_CASE("semantic_sensor: a response file or -fmodules argv recreates "
-              "the TU on every emit") {
+    TEST_CASE("semantic_sensor: a response file is refused, and a -fmodules "
+              "argv recreates the TU on every emit") {
         ASSERT(sss_fresh(c, "untrackable"));
         (void)snprintf(log, sizeof(log), "%s/untrackable.err", c->dir);
         ASSERT(sss_start(&p, c->sensor, false, false, log));
         started = true;
-        c->extra[0] = "@rsp.txt";
-        ASSERT(sss_run_step(c, &p, &base, NULL, NULL, reply, sizeof(reply)));
-        ASSERT(sss_run_step(c, &p, &again, NULL, NULL, reply, sizeof(reply)));
-        ASSERT(sss_is(reply, "verify", "equal"));
+        ASSERT(sss_rsp_refused(c, &p, reply, sizeof(reply)));
         c->extra[0] = "-fmodules";
         c->extra[1] = "-fmodules-cache-path=mc";
         ASSERT(sss_run_step(c, &p, &mod, NULL, NULL, reply, sizeof(reply)));
@@ -1061,7 +1079,8 @@ static int sss_t_untrackable(struct sss_ctx *c)
                             sizeof(reply)));
         ASSERT(sss_is(reply, "verify", "equal"));
         started = false;
-        ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 0);
+        /* the refused response-file request makes the session exit 3 */
+        ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 3);
         ASSERT(strstr(reply, "\"warm_written\":0,") != NULL);
     } TEST_END
     c->extra[0] = NULL;
