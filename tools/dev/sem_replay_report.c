@@ -229,6 +229,32 @@ static void print_fallbacks(const struct table *t)
     printf("\n");
 }
 
+/* The same commits planned with only their C text. */
+static void print_c_variant(const struct table *t)
+{
+    double facts = 0, fn = 0, gp = 0, gf = 0, obl = 0, saved = 0;
+    printf("## C-only plans (the commit's .c, .h, .def and .inc files only)\n\n");
+    printf("| # | commit | separate plan | C files | facts (mode) | changed | FN | groups plain / facts / obligations | verdict |\n");
+    printf("|---|---|---|---|---|---|---|---|---|\n");
+    for (size_t i = 0; i < t->n; i++) {
+        const struct row *r = &t->rows[i];
+        bool narrowed = strcmp(col(t, r, "c_narrowed"), "1") == 0;
+        printf("| %s | %s | %s | %s | %s (%s) | %s | %s | %s / %s / %s | %s |\n",
+               col(t, r, "idx"), col(t, r, "commit"), col(t, r, "c_run"), col(t, r, "c_files"),
+               col(t, r, "c_facts"), col(t, r, "c_mode"), col(t, r, "changed"),
+               col(t, r, "c_fn"), col(t, r, "c_groups_plain"), col(t, r, "c_groups_facts"),
+               col(t, r, "c_obl_facts"), narrowed ? "narrowed" : col(t, r, "c_reason"));
+        facts += num(t, r, "c_facts");
+        fn += num(t, r, "c_fn");
+        gp += num(t, r, "c_groups_plain");
+        gf += num(t, r, "c_groups_facts");
+        obl += num(t, r, "c_obl_facts");
+        saved += num(t, r, "c_saved_make");
+    }
+    printf("| **total** | | | | %.0f | | %.0f | %.0f / %.0f / %.0f | compile CPU saved vs make %.1f s |\n\n",
+           facts, fn, gp, gf, obl, saved);
+}
+
 static int cmp_double(const void *a, const void *b)
 {
     double x = *(const double *)a, y = *(const double *)b;
@@ -319,6 +345,7 @@ int sr_report(const struct sr_cfg *cfg)
     print_groups(&t, "kind", "By change kind");
     print_groups(&t, "facts_mode", "By facts compile-set mode");
     print_fallbacks(&t);
+    print_c_variant(&t);
     print_costs(cfg->state, &dirs);
     for (size_t i = 0; i < t.n; i++)
         free(t.rows[i].line);

@@ -39,6 +39,11 @@ static char **steal_argv(struct sr_strv *s)
     return v;
 }
 
+static const char *or_dash(const char *s)
+{
+    return s && s[0] ? s : "-";
+}
+
 static const char *basename_of(const char *p)
 {
     const char *s = strrchr(p, '/');
@@ -274,6 +279,16 @@ struct commit_run {
     double cpu_make, cpu_facts, cpu_changed, saved_make, saved_plain;
     size_t cost_missing;
     bool build_failed;
+    /* The same commit planned with only its C text (.c, .h, .def, .inc):
+     * what an edit loop plans when the commit's docs, scripts and
+     * fixtures are not part of the change it is testing. */
+    struct {
+        bool run;
+        struct sr_strv files, set, fn;
+        struct sr_plan plain, facts;
+        const char *mode;
+        double cpu_facts, saved_make;
+    } cv;
 };
 
 static void commit_run_free(struct commit_run *r)
@@ -288,6 +303,11 @@ static void commit_run_free(struct commit_run *r)
         sr_strv_free(sets[i]);
     sr_plan_free(&r->plain_plan);
     sr_plan_free(&r->facts_plan);
+    sr_strv_free(&r->cv.files);
+    sr_strv_free(&r->cv.set);
+    sr_strv_free(&r->cv.fn);
+    sr_plan_free(&r->cv.plain);
+    sr_plan_free(&r->cv.facts);
 }
 
 /* ── compile cost table ───────────────────────────────────────────────── */
@@ -589,51 +609,93 @@ static bool after_side(const struct sr_cfg *cfg, struct commit_run *r,
 
 /* ── plans and the comparison ─────────────────────────────────────────── */
 
-static bool plan_both(const struct sr_cfg *cfg, struct commit_run *r)
+static bool is_c_text(const char *f)
+{
+    static const char *const ext[] = {".c", ".h", ".def", ".inc"};
+    size_t n = strlen(f);
+    for (size_t i = 0; i < sizeof(ext) / sizeof(ext[0]); i++) {
+        size_t m = strlen(ext[i]);
+        if (n > m && strcmp(f + n - m, ext[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void plan_pair(const struct sr_cfg *cfg, const struct commit_run *r,
+                      const struct sr_strv *files, const char *tag,
+                      struct sr_plan *plain, struct sr_plan *facts)
 {
     char plain_raw[SR_PATH], facts_raw[SR_PATH];
-    snprintf(plain_raw, sizeof(plain_raw), "%s/plan-plain", r->dir);
-    snprintf(facts_raw, sizeof(facts_raw), "%s/plan-facts", r->dir);
-    bool a = sr_plan_run(cfg->planner, cfg->repo, &r->ch.files, NULL, plain_raw,
-                         &r->plain_plan);
-    bool b = sr_plan_run(cfg->planner, cfg->repo, &r->ch.files, SR_FACTS_REL,
-                         facts_raw, &r->facts_plan);
+    snprintf(plain_raw, sizeof(plain_raw), "%s/plan-%splain", r->dir, tag);
+    snprintf(facts_raw, sizeof(facts_raw), "%s/plan-%sfacts", r->dir, tag);
+    bool a = sr_plan_run(cfg->planner, cfg->repo, files, NULL, plain_raw, plain);
+    bool b = sr_plan_run(cfg->planner, cfg->repo, files, SR_FACTS_REL, facts_raw, facts);
     if (!a || !b)
-        fprintf(stderr, "sem-replay: planner failed (plain %d, facts %d): %s%s\n", a, b,
-                r->plain_plan.error, r->facts_plan.error);
-    return true; /* a planner failure is a recorded outcome, not a stop */
+        fprintf(stderr, "sem-replay: planner failed (%splain %d, facts %d): %s%s\n", tag,
+                a, b, plain->error, facts->error);
+}
+
+/* A planner failure is a recorded outcome, not a stop. */
+static bool plan_all(const struct sr_cfg *cfg, struct commit_run *r)
+{
+    plan_pair(cfg, r, &r->ch.files, "", &r->plain_plan, &r->facts_plan);
+    for (size_t i = 0; i < r->ch.files.n; i++)
+        if (is_c_text(r->ch.files.v[i]) && !sr_strv_push(&r->cv.files, r->ch.files.v[i]))
+            return false;
+    r->cv.run = r->cv.files.n > 0 && r->cv.files.n < r->ch.files.n;
+    if (r->cv.run)
+        plan_pair(cfg, r, &r->cv.files, "c-", &r->cv.plain, &r->cv.facts);
+    return true;
 }
 
 /* The facts plan's compile set: the affected TUs of a complete universe;
  * every TU when the plan widens to the whole catalog; else the plain set
  * the plan fell back to. */
-static bool facts_compile_set(struct commit_run *r)
+static bool compile_set_of(const struct sr_plan *f, const struct commit_run *r,
+                           struct sr_strv *out, const char **mode)
 {
-    const struct sr_plan *f = &r->facts_plan;
     if (!f->ok) {
-        r->facts_mode = "planner-error";
-        return set_union(&r->plain, &r->plain, &r->facts);
+        *mode = "planner-error";
+        return set_union(&r->plain, &r->plain, out);
     }
     if (f->uni_applied && f->uni_complete) {
-        r->facts_mode = "precise";
-        return set_filter(&f->tus_affected, &r->tus_c, false, &r->facts);
+        *mode = "precise";
+        return set_filter(&f->tus_affected, &r->tus_c, false, out);
     }
     if (f->obl_plain_universal || f->closure_universal) {
-        r->facts_mode = "universal";
-        return set_union(&r->tus_c, &r->tus_c, &r->facts);
+        *mode = "universal";
+        return set_union(&r->tus_c, &r->tus_c, out);
     }
-    r->facts_mode = "fallback";
-    return set_union(&r->plain, &r->plain, &r->facts);
+    *mode = "fallback";
+    return set_union(&r->plain, &r->plain, out);
+}
+
+static bool compare_c_variant(const struct cost_table *costs, struct commit_run *r)
+{
+    struct sr_strv make_minus = {0};
+    if (!r->cv.run)
+        return true;
+    bool ok = compile_set_of(&r->cv.facts, r, &r->cv.set, &r->cv.mode) &&
+              set_filter(&r->changed, &r->cv.set, true, &r->cv.fn) &&
+              set_filter(&r->make_set, &r->cv.set, true, &make_minus);
+    r->cv.cpu_facts = cost_sum(costs, &r->cv.set, NULL);
+    r->cv.saved_make = cost_sum(costs, &make_minus, NULL);
+    for (size_t i = 0; i < r->cv.fn.n; i++)
+        fprintf(stderr, "sem-replay: C-only plan leaves out changed object %s (%s, %s)\n",
+                r->cv.fn.v[i], r->cv.mode, or_dash(r->cv.facts.reason));
+    sr_strv_free(&make_minus);
+    return ok;
 }
 
 static bool compare_sets(const struct cost_table *costs, struct commit_run *r)
 {
     struct sr_strv make_minus = {0}, plain_minus = {0};
-    bool ok = facts_compile_set(r) &&
+    bool ok = compile_set_of(&r->facts_plan, r, &r->facts, &r->facts_mode) &&
               set_filter(&r->changed, &r->facts, true, &r->fn) &&
               set_filter(&r->changed, &r->plain, true, &r->plain_fn) &&
               set_filter(&r->make_set, &r->facts, true, &make_minus) &&
-              set_filter(&r->plain, &r->facts, true, &plain_minus);
+              set_filter(&r->plain, &r->facts, true, &plain_minus) &&
+              compare_c_variant(costs, r);
     r->cpu_make = cost_sum(costs, &r->make_set, &r->cost_missing);
     r->cpu_facts = cost_sum(costs, &r->facts, NULL);
     r->cpu_changed = cost_sum(costs, &r->changed, NULL);
@@ -671,6 +733,10 @@ static bool write_sets(const struct commit_run *r)
     write_set(fp, "plain_group", &r->plain_plan.groups);
     write_set(fp, "facts_group", &r->facts_plan.groups);
     write_set(fp, "obligation_group", &r->facts_plan.obl_groups);
+    write_set(fp, "c_file", &r->cv.files);
+    write_set(fp, "c_facts", &r->cv.set);
+    write_set(fp, "c_fn", &r->cv.fn);
+    write_set(fp, "c_tu", &r->cv.facts.tu_rows);
     return fclose(fp) == 0;
 }
 
@@ -680,11 +746,23 @@ const char *const sr_result_header =
     "narrowed\treason\tobl_reason\tuni_complete\tuni_reason\tuni_total\t"
     "uni_affected\tbuild_wall\tbuild_cpu\tsense_n\tsense_fail\tsense_cpu\t"
     "sense_wall\tcpu_make\tcpu_facts\tcpu_changed\tsaved_make\tsaved_plain\tcost_missing\t"
-    "repro_rebuilt\trepro_mismatch\tcold_checked\tcold_mismatch\tbuild_failed\n";
+    "repro_rebuilt\trepro_mismatch\tcold_checked\tcold_mismatch\tbuild_failed\t"
+    "c_run\tc_files\tc_facts\tc_mode\tc_fn\tc_groups_plain\tc_groups_facts\t"
+    "c_obl_facts\tc_narrowed\tc_reason\tc_uni_reason\tc_cpu_facts\tc_saved_make\n";
 
-static const char *or_dash(const char *s)
+/* The C-only columns; without a separate C-only plan they repeat the
+ * whole commit's. */
+static void write_c_variant(FILE *fp, const struct commit_run *r)
 {
-    return s && s[0] ? s : "-";
+    bool run = r->cv.run;
+    const struct sr_plan *p = run ? &r->cv.plain : &r->plain_plan;
+    const struct sr_plan *f = run ? &r->cv.facts : &r->facts_plan;
+    fprintf(fp, "%d\t%zu\t%zu\t%s\t%zu\t%ld\t%ld\t%ld\t%d\t%s\t%s\t%.3f\t%.3f\n", run,
+            run ? r->cv.files.n : r->ch.files.n, run ? r->cv.set.n : r->facts.n,
+            run ? r->cv.mode : r->facts_mode, run ? r->cv.fn.n : r->fn.n, p->groups_total,
+            f->groups_total, f->obl_facts, f->narrowed, or_dash(f->reason),
+            or_dash(f->uni_reason), run ? r->cv.cpu_facts : r->cpu_facts,
+            run ? r->cv.saved_make : r->saved_make);
 }
 
 static bool write_result(const struct sr_cfg *cfg, const struct commit_run *r)
@@ -710,8 +788,9 @@ static bool write_result(const struct sr_cfg *cfg, const struct commit_run *r)
             r->build_c.wall_s, r->build_c.cpu_s, r->sense_n, r->sense_fail, r->sense_cpu,
             r->sense_wall, r->cpu_make, r->cpu_facts, r->cpu_changed, r->saved_make, r->saved_plain,
             r->cost_missing);
-    fprintf(fp, "%zu\t%zu\t%zu\t%zu\t%d\n", r->repro_rebuilt, r->repro_mismatch,
+    fprintf(fp, "%zu\t%zu\t%zu\t%zu\t%d\t", r->repro_rebuilt, r->repro_mismatch,
             r->cold_checked, r->cold_mismatch, r->build_failed);
+    write_c_variant(fp, r);
     return fclose(fp) == 0;
 }
 
@@ -764,7 +843,7 @@ int sr_step(const struct sr_cfg *cfg)
               cost_load(&costs, cost_path) && before_side(cfg, &r) &&
               after_side(cfg, &r, &costs);
     cost_free(&costs); /* after_side appended the TUs it timed */
-    ok = ok && cost_load(&costs, cost_path) && plan_both(cfg, &r) &&
+    ok = ok && cost_load(&costs, cost_path) && plan_all(cfg, &r) &&
          compare_sets(&costs, &r) && write_sets(&r) && write_result(cfg, &r) &&
          save_last(cfg, &r);
     int rc = ok ? SR_STEP_OK : SR_STEP_FAILED;
