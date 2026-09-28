@@ -980,6 +980,27 @@ static int sbit_t_submake_goals(void)
     return failures;
 }
 
+/* A recipe written after the rule line's ';' is a recipe line of the rule:
+ * its sub-make naming a file goal reaches its other goals, as a tab-led
+ * one does (95). */
+static int sbit_t_submake_inline(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"inline_file", SBI_OBJ_RULE ".PHONY: gen ci\n"
+                        "gen:\n\tsh tools/x.sh > gen.h\n"
+                        "ci: ; $(MAKE) gen build/a.o\n", NULL, NULL},
+        {"inline_static", SBI_OBJ_RULE ".PHONY: gen ci\n"
+                          "gen:\n\tsh tools/x.sh > gen.h\n"
+                          "ci:: ; $(MAKE) gen build/a.o\n", NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a sub-make in a recipe after the rule "
+             "line's ';' that builds an object reaches its other goals") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
 /* Text the scanner cannot read to its end widens everything: an unclosed
  * reference, an unclosed conditional. */
 static int sbit_t_unreadable_text(void)
@@ -1276,6 +1297,7 @@ int test_semantic_build_inputs(void)
           sbit_t_default_goal_skips_patterns() |
           sbit_t_computed_prerequisite() | sbit_t_computed_goal_word() |
           sbit_t_grouped_echo_pipe() | sbit_t_submake_goals() |
+          sbit_t_submake_inline() |
           sbit_t_unreadable_text() | sbit_t_optional_include() |
           sbit_t_generated_include() | sbit_t_generated_marker() |
           sbit_t_generated_comment() |

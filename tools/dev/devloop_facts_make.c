@@ -1361,6 +1361,26 @@ static void fxm_keep_line(struct fxm *m, uint8_t ctx, uint32_t rule)
     m->nlines++;
 }
 
+/* A rule line's recipe past its ';' (`ci: ; $(MAKE) gen all`) is a
+ * recipe line of that rule too. */
+static void fxm_inline_recipe(struct fxm *m, uint32_t rule)
+{
+    const char *semi = fxm_top(m->line.p + m->from, ";");
+    char *rest;
+    if (semi == NULL)
+        return;
+    if ((rest = zcl_strdup(semi + 1, "facts_consumer.mkinline")) == NULL) {
+        m->unknown = true;
+        return;
+    }
+    m->line.n = 0;
+    m->unknown |= !fxm_put(&m->line, rest, strlen(rest));
+    free(rest);
+    m->from = 0;
+    if (!m->unknown)
+        fxm_keep_line(m, FXM_RECIPE, rule);
+}
+
 /* Every logical line of one makefile but its whole-line comments. */
 static void fxm_lines_of(struct fxm *m, size_t f)
 {
@@ -1378,6 +1398,8 @@ static void fxm_lines_of(struct fxm *m, size_t f)
             fxm_keep_line(m, ctx,
                           ctx == FXM_RULE || ctx == FXM_RECIPE ? st.rule
                                                                : FXM_NONE);
+        if (!m->unknown && ctx == FXM_RULE)
+            fxm_inline_recipe(m, st.rule);
     }
     /* A conditional or a define the file leaves open: make stops. */
     m->unknown |= r < 0 || st.depth != 0 || st.in_define;
