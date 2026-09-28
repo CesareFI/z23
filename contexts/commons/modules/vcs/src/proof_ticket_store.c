@@ -213,6 +213,12 @@ struct pts_restore {
     uint64_t generation;
 };
 
+static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
+                                struct vcs_package_store *store,
+                                size_t max_catalog_rows, size_t *tickets,
+                                size_t *checkpoints, size_t *skipped,
+                                uint64_t *generation_out);
+
 static void pts_restore_free(struct pts_restore *s)
 {
     free(s->chunks);
@@ -227,19 +233,11 @@ static bool pts_restore_begin(struct pts_restore *s, const uint8_t seed[32],
 {
     s->receiver = vcs_proof_receiver_new();
     if (!s->receiver) return false;
-    struct vcs_package_store_summary first_row;
-    struct vcs_package_store_page first_page;
-    if (vcs_package_store_page_summaries(s->store, NULL, 1, 0,
-                                          &first_row, &first_page) !=
-        VCS_PACKAGE_STORE_PAGE_OK)
-        return false;
-    s->generation = first_page.generation;
     s->fresh = vcs_proof_issuer_log_new(seed);
     if (!s->fresh) return false;
     vcs_proof_issuer_log_pubkey(s->fresh, s->pubkey);
-    return vcs_proof_receiver_rebuild_bounded(s->receiver, s->store,
-                                               max_catalog_rows,
-                                               NULL, NULL, NULL);
+    return pts_rebuild_bounded(s->receiver, s->store, max_catalog_rows,
+                               NULL, NULL, NULL, &s->generation);
 }
 
 static bool pts_restore_empty(struct pts_restore *s)
@@ -707,10 +705,19 @@ static bool pts_scan(struct vcs_proof_receiver *r,
     bool ok = true;
     size_t scanned = 0;
     while (ok && !done) {
+        size_t remaining = max_catalog_rows - scanned;
+        if (remaining == 0) {
+            LOG_ERROR(PTS_LOG,
+                      "rebuild: catalog row budget exhausted before complete scan");
+            ok = false;
+            break;
+        }
+        size_t page_limit = remaining < VCS_PACKAGE_STORE_PAGE_MAX
+                          ? remaining : VCS_PACKAGE_STORE_PAGE_MAX;
         struct vcs_package_store_page page;
         enum vcs_package_store_page_result result =
             vcs_package_store_page_summaries(store, resume ? cursor : NULL,
-                                             VCS_PACKAGE_STORE_PAGE_MAX,
+                                             page_limit,
                                              resume ? *generation : 0,
                                              rows, &page);
         if (result != VCS_PACKAGE_STORE_PAGE_OK) {
@@ -938,21 +945,29 @@ static bool pts_restore_anchored_fork(const struct vcs_proof_receiver *old,
     return true;
 }
 
-bool vcs_proof_receiver_rebuild_bounded(
-    struct vcs_proof_receiver *r, struct vcs_package_store *store,
-    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
-    size_t *skipped)
+static void pts_report_counts(const struct pts_counts *n, size_t *tickets,
+                              size_t *checkpoints, size_t *skipped)
 {
-    if (tickets) *tickets = 0;
-    if (checkpoints) *checkpoints = 0;
-    if (skipped) *skipped = 0;
+    if (tickets) *tickets = n->tickets;
+    if (checkpoints) *checkpoints = n->checkpoints;
+    if (skipped) *skipped = n->skipped;
+}
+
+static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
+                                struct vcs_package_store *store,
+                                size_t max_catalog_rows, size_t *tickets,
+                                size_t *checkpoints, size_t *skipped,
+                                uint64_t *generation_out)
+{
+    struct pts_counts n = {0};
+    pts_report_counts(&n, tickets, checkpoints, skipped);
+    if (generation_out) *generation_out = 0;
     if (!r || !store)
         LOG_RETURN(false, PTS_LOG, "rebuild: null argument");
     struct vcs_proof_receiver *staging = vcs_proof_receiver_new();
     if (!staging)
         LOG_RETURN(false, PTS_LOG, "rebuild: cannot allocate staging receiver");
     struct pts_cps cps = {0};
-    struct pts_counts n = {0};
     struct pts_chunks chunks = {0};
     uint64_t generation = 0;
     bool ok = pts_scan(staging, store, &cps, &n, &chunks, &generation,
@@ -962,14 +977,22 @@ bool vcs_proof_receiver_rebuild_bounded(
               pts_preserves_prior(r, staging);
     free(cps.items);
     if (ok) ok = pts_publish_rechecked(r, staging, store, &chunks, generation);
+    if (ok && generation_out) *generation_out = generation;
     if (!ok)
         n = (struct pts_counts){0};
     vcs_proof_receiver_free(staging);
     free(chunks.hashes);
-    if (tickets) *tickets = n.tickets;
-    if (checkpoints) *checkpoints = n.checkpoints;
-    if (skipped) *skipped = n.skipped;
+    pts_report_counts(&n, tickets, checkpoints, skipped);
     return ok;
+}
+
+bool vcs_proof_receiver_rebuild_bounded(
+    struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
+    size_t *skipped)
+{
+    return pts_rebuild_bounded(r, store, max_catalog_rows, tickets,
+                               checkpoints, skipped, NULL);
 }
 
 bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,

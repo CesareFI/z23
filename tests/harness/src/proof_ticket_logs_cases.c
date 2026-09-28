@@ -251,6 +251,8 @@ static int ptl_case_store_issuer_restore(void)
         store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
         ASSERT(store != NULL);
         ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
+                    store, head, 0, 2) == NULL);
+        ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
                     store, head, 2, 2) == NULL);
         ASSERT(vcs_proof_issuer_log_restore_from_store(g_l.seed[PTF_A],
                     store, head, 3, 1) == NULL);
@@ -356,6 +358,11 @@ static int ptl_case_catalog_budget(void)
         ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 9, cps = 9, skipped = 9;
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(g_l.rx, store, 0,
+                    &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(skipped, (size_t)0);
         ASSERT(!vcs_proof_receiver_rebuild_bounded(g_l.rx, store, 1,
                     &tickets, &cps, &skipped));
         ASSERT_EQ(tickets, (size_t)0);
@@ -366,6 +373,101 @@ static int ptl_case_catalog_budget(void)
                     &tickets, &cps, &skipped));
         ASSERT_EQ(tickets, (size_t)1);
         ASSERT_EQ(cps, (size_t)1);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
+static int ptl_case_page_budget_conflict(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: conflict past page one cannot become a miss") {
+        ASSERT(ptl_fresh());
+        uint8_t pass[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t fail[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp_a[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_b[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t pass_root[32], fail_root[32], root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), pass, NULL));
+        ASSERT(ptf_emit(&g_l, PTF_B, &g_l.base, ptf_fail(), fail, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp_a));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_B], 11, cp_b));
+        struct vcs_proof_sync_report rep;
+        const uint8_t *delta[] = {pass};
+        ASSERT(ptl_sync_wires(cp_a, delta, 1, &rep));
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "pageconflict");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(64) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, pass, sizeof(pass),
+                                          pass_root));
+        ASSERT(vcs_proof_ticket_store_put(store, fail, sizeof(fail),
+                                          fail_root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp_a, sizeof(cp_a), root));
+        ASSERT(vcs_proof_ticket_store_put(store, cp_b, sizeof(cp_b), root));
+        struct vcs_package_store_summary rows[VCS_PACKAGE_STORE_PAGE_MAX];
+        struct vcs_package_store_page page;
+        const uint8_t *late_root = memcmp(pass_root, fail_root, 32) > 0
+                                 ? pass_root : fail_root;
+        uint32_t filler = 0;
+        struct ptl_cost_sample cost = ptl_cost_begin();
+        for (uint32_t candidate = 0;
+             candidate < 65536u && filler < VCS_PACKAGE_STORE_PAGE_MAX;
+             candidate++) {
+            uint8_t blob[4] = {(uint8_t)candidate,
+                               (uint8_t)(candidate >> 8),
+                               (uint8_t)(candidate >> 16),
+                               (uint8_t)(candidate >> 24)};
+            uint8_t candidate_root[32];
+            ASSERT(vcs_blob_root(blob, sizeof(blob), candidate_root));
+            if (memcmp(candidate_root, late_root, 32) >= 0) continue;
+            ASSERT(vcs_proof_ticket_store_put(store, blob,
+                                               sizeof(blob), root));
+            ASSERT_EQ(memcmp(root, candidate_root, 32), 0);
+            filler++;
+        }
+        ASSERT_EQ(filler, (uint32_t)VCS_PACKAGE_STORE_PAGE_MAX);
+        ptl_cost_print("page_conflict_populate", (size_t)filler + 4u,
+                       true, &cost);
+        ASSERT_EQ(vcs_package_store_page_summaries(
+                      store, NULL, VCS_PACKAGE_STORE_PAGE_MAX, 0,
+                      rows, &page), VCS_PACKAGE_STORE_PAGE_OK);
+        ASSERT_EQ(page.count, (size_t)VCS_PACKAGE_STORE_PAGE_MAX);
+        ASSERT(page.has_more);
+        ASSERT(memcmp(late_root, page.next_root, 32) > 0);
+        size_t tickets = 9, cps = 9, skipped = 9;
+        ASSERT(!vcs_proof_receiver_rebuild_bounded(g_l.rx, store,
+                    VCS_PACKAGE_STORE_PAGE_MAX, &tickets, &cps, &skipped));
+        ASSERT_EQ(tickets, (size_t)0);
+        ASSERT_EQ(cps, (size_t)0);
+        ASSERT_EQ(skipped, (size_t)0);
+        ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(64) * 1024 * 1024);
+        ASSERT(store != NULL);
+        vcs_proof_receiver_free(g_l.rx);
+        g_l.rx = vcs_proof_receiver_new();
+        ASSERT(g_l.rx != NULL);
+        cost = ptl_cost_begin();
+        bool rebuilt = vcs_proof_receiver_rebuild_bounded(g_l.rx, store,
+                    (size_t)filler + 4u, &tickets, &cps, &skipped);
+        ptl_cost_print("page_conflict_rebuild", (size_t)filler + 4u,
+                       rebuilt, &cost);
+        ASSERT(rebuilt);
+        ASSERT_EQ(tickets, (size_t)2);
+        ASSERT_EQ(cps, (size_t)2);
+        ASSERT_EQ(skipped, (size_t)filler);
+        struct vcs_proof_ticket_class cls[PTL_CAP];
+        struct vcs_proof_reuse_decision decision;
+        ASSERT(ptf_decide(&g_l, &g_l.base, VCS_PROOF_ACTION_CHECK, NULL,
+                          cls, PTL_CAP, &decision));
+        ASSERT_EQ(decision.outcome, VCS_PROOF_REUSE_REFUSE);
+        ASSERT_STR_EQ(decision.reason, VCS_PROOF_OBSERVATION_CONFLICT);
+        ASSERT_EQ(decision.eligible_pass, (uint32_t)1);
+        ASSERT_EQ(decision.eligible_fail, (uint32_t)1);
         vcs_package_store_close(store);
         test_rm_rf(dir);
     } TEST_END
@@ -1964,6 +2066,7 @@ int ptf_log_cases(void)
     failures += ptl_case_store_issuer_restore();
     failures += ptl_case_store_issuer_missing_cas();
     failures += ptl_case_catalog_budget();
+    failures += ptl_case_page_budget_conflict();
     failures += ptl_case_same_count();
     failures += ptl_case_same_size_ancestry();
     failures += ptl_case_late_same_size_fork();
