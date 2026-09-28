@@ -38,6 +38,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #endif
 #include <pthread.h>
 #include <stdatomic.h>
@@ -2081,9 +2082,71 @@ static int test_directory_discovery(void)
     return failures;
 }
 
+/* Two cases spend nearly all of this group's wall clock waiting out real,
+ * production-sized budgets that are themselves part of what they prove:
+ *
+ *   - test_verified_real_interrupt_resume: after the cut, the stopped
+ *     seeder's workers keep their idle sessions until the file service's
+ *     30 s per-connection deadline, and the interrupted call then fails
+ *     closed only after ROM_FETCH_CHUNK_RETRIES backoff rounds against the
+ *     now-dead port (~67 s measured);
+ *   - test_bundle_handler_no_seeder_blocker: the operator command spends the
+ *     same 25 x ROM_FETCH_CHUNK_RETRY_MS retry budget against a port nothing
+ *     listens on before it names its typed blocker (~28 s measured).
+ *
+ * Neither budget may be shortened here. Both cases already own everything
+ * they touch (their own mkdtemp directories, an OS-assigned or dead port,
+ * and their own rom_seed / peer-scoring resets), so each runs in a forked
+ * child alongside the rest of the group instead of after it: the group pays
+ * for its slowest case rather than the sum of all of them. The fork happens
+ * before any case here starts a server or thread, so each child begins from
+ * the same pristine state the case always started from, and reports its
+ * failure count through its exit status. If fork fails, the case runs inline
+ * after every other case instead: test_loopback_e2e asserts the process-wide
+ * rom_fetch status counters of a process that has attempted nothing else, so
+ * neither case may ever run ahead of it in this process. */
+struct rf_forked_case {
+    int (*run)(void);
+    pid_t pid; /* < 0: fork failed, run inline at reap time */
+};
+
+static struct rf_forked_case rf_spawn_case(int (*run)(void))
+{
+    struct rf_forked_case c = {.run = run, .pid = -1};
+    (void)fflush(NULL); /* never duplicate buffered output into the child */
+    c.pid = fork();
+    if (c.pid == 0) {
+        int rc = run();
+        (void)fflush(NULL);
+        _exit(rc < 0 ? 1 : (rc > 125 ? 125 : rc));
+    }
+    return c;
+}
+
+static int rf_reap_case(const struct rf_forked_case *c)
+{
+    if (c->pid < 0)
+        return c->run();
+    int status = 0;
+    pid_t got;
+    do {
+        got = waitpid(c->pid, &status, 0);
+    } while (got < 0 && errno == EINTR);
+    if (got != c->pid || !WIFEXITED(status)) {
+        printf("rom_fetch: forked case pid %ld did not exit cleanly "
+               "(status 0x%x)\n", (long)c->pid, (unsigned)status);
+        return 1;
+    }
+    return WEXITSTATUS(status);
+}
+
 static int test_rom_fetch_platform_arm(void)
 {
     int failures = 0;
+    struct rf_forked_case cut_case =
+        rf_spawn_case(test_verified_real_interrupt_resume);
+    struct rf_forked_case no_seeder_case =
+        rf_spawn_case(test_bundle_handler_no_seeder_blocker);
     failures += test_manifest_sane();
     failures += test_parse_directory();
     failures += test_parse_directory_height();
@@ -2093,14 +2156,14 @@ static int test_rom_fetch_platform_arm(void)
     failures += test_rate_cap_retry();
     failures += test_parallel_download();
     failures += test_verified_multi_seeder();
-    failures += test_verified_real_interrupt_resume();
     failures += test_verified_multi_seeder_hang_failover();
     failures += test_refusal_frame_decode();
     failures += test_default_caps_parallel_multichunk();
     failures += test_dial_cost_of_a_download();
     failures += test_dead_seed_is_dialled_once_per_job();
-    failures += test_bundle_handler_no_seeder_blocker();
     failures += test_bundle_handler_corrupted_refused();
+    failures += rf_reap_case(&cut_case);
+    failures += rf_reap_case(&no_seeder_case);
     return failures;
 }
 #else /* _WIN32 */
