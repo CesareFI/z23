@@ -667,7 +667,9 @@ request at a time). The cold CPU column is user plus system time from
   emit less the extraction) to about 10.7 ms.
   Extraction and the post-checks (about 15.6 ms) do not change. The
   pre-checks cost about 3.7 ms per TU, most of it reading the search dirs
-  for the shadow candidates.
+  for the shadow candidates. These runs predate binding a reparse's own
+  manifest after it (file SHA3s, unbound lookups, shadow candidates), which
+  repeats about that pre-check cost once more per qualified reparse.
 - A new or recreated TU costs about 101 ms per request: a warm emit whose
   parse builds the preamble (about 57 ms, 42 ms of it parsing) plus the
   mandatory cold check (about 38 ms). That is about 41 ms more than a cold

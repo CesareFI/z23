@@ -343,13 +343,24 @@ static bool cm_literal_at(const char *s, size_t i, size_t n, uint8_t *form,
     return true;
 }
 
+/* The form of an unbound occurrence s[i, end): angled when its operand's
+ * first quote or angle is '<', else quoted. */
+static uint8_t cm_cond_form(const char *s, size_t i, size_t end)
+{
+    size_t open = i;
+    while (open < end && s[open] != '"' && s[open] != '<')
+        open++;
+    return open < end && s[open] == '<' ? VCS_SEMANTIC_FORM_V1_ANGLED
+                                        : VCS_SEMANTIC_FORM_V1_QUOTED;
+}
+
 /* An unbound occurrence's spelled name: from s[i] through the first ')' of
  * its line, else to the line's end, trailing blanks dropped, with prefix in
- * front; and its form, from the operand's first character. */
+ * front; and its form. */
 static void cm_cond_name(const char *prefix, const char *s, size_t i,
                          size_t n, char name[PATH_MAX], uint8_t *form)
 {
-    size_t end = i, open;
+    size_t end = i;
     while (end < n && s[end] != '\n' && s[end] != ')')
         end++;
     if (end < n && s[end] == ')')
@@ -360,10 +371,7 @@ static void cm_cond_name(const char *prefix, const char *s, size_t i,
     if (end - i > CM_COND_NAME_MAX)
         end = i + CM_COND_NAME_MAX;
     (void)snprintf(name, PATH_MAX, "%s%.*s", prefix, (int)(end - i), s + i);
-    for (open = i; open < end && s[open] != '"' && s[open] != '<'; open++)
-        ;
-    *form = open < end && s[open] == '<' ? VCS_SEMANTIC_FORM_V1_ANGLED
-                                         : VCS_SEMANTIC_FORM_V1_QUOTED;
+    *form = cm_cond_form(s, i, end);
 }
 
 /* A lookup the scan found and cannot replay: no hit, no negative claim. */
