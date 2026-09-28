@@ -1441,7 +1441,7 @@ static int sbit_t_guarded_include(void)
          false},
         {"filter_out_all", SBI_GUARD("", "ifeq ($(filter-out a,a),)", ""), NULL,
          false},
-        {"glob_created", SBI_GUARD("X := $(shell mkdir -p d && : > d/flag)\n",
+        {"glob_created", SBI_GUARD("X := $(shell mkdir -p d && touch d/flag)\n",
                                    "ifneq ($(wildcard d/flag),)", ""), NULL, false},
         {"glob_other", SBI_GUARD("X := $(shell mkdir -p e)\n",
                                  "ifneq ($(wildcard d/flag),)", ""), NULL, true},
