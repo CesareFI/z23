@@ -50,7 +50,7 @@ static bool price_push(struct prices *p, const char *tu, double cpu)
         p->v = v;
         p->cap = cap;
     }
-    p->v[p->n] = (struct price_row){.tu = strdup(tu), .cpu = cpu, .n = 1};
+    p->v[p->n] = (struct price_row){.tu = zcl_strdup(tu, "sem_replay_price_tu"), .cpu = cpu, .n = 1};
     return p->v[p->n++].tu != NULL;
 }
 
@@ -194,7 +194,7 @@ static bool table_add(struct table *t, char *text)
         return false;
     *nl = '\0';
     if (t->head_line == NULL) {
-        t->head_line = strdup(text);
+        t->head_line = zcl_strdup(text, "sem_replay_table_head");
         if (t->head_line == NULL)
             return false;
         t->nh = split_tabs(t->head_line, t->h);
@@ -208,7 +208,7 @@ static bool table_add(struct table *t, char *text)
         t->cap = cap;
     }
     struct row *r = &t->rows[t->n];
-    r->line = strdup(nl + 1);
+    r->line = zcl_strdup(nl + 1, "sem_replay_table_row");
     if (r->line == NULL)
         return false;
     r->n = split_tabs(r->line, r->f);

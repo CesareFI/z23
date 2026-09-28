@@ -241,7 +241,7 @@ static bool snap_line(struct sr_snap *s, char *line)
     if (sscanf(line, "%4095s\t%llu\t%lld\t%lld\t%64s", tu, &ino, &mt, &sz, hex) != 5)
         return false;
     struct sr_obj o = {.ino = ino, .mtime_ns = mt, .size = sz};
-    o.tu = strdup(tu);
+    o.tu = zcl_strdup(tu, "sem_replay_snap_tu");
     if (o.tu == NULL || !unhex(hex, o.hash) || !snap_push(s, &o)) {
         free(o.tu);
         return false;

@@ -217,7 +217,7 @@ static bool batch_add(struct batch *b, const char *tu, char **argv,
     }
     b->t[b->n] = (struct sr_task){.tu = tu, .argv = argv, .log = log, .rc = -1};
     b->side[b->n] = (char *)side;
-    b->obj[b->n] = obj ? strdup(obj) : NULL;
+    b->obj[b->n] = obj ? zcl_strdup(obj, "sem_replay_batch_obj_name") : NULL;
     b->n++;
     return true;
 }
@@ -373,7 +373,7 @@ static bool cost_push(struct cost_table *t, const char *tu, double cpu)
         t->v = v;
         t->cap = cap;
     }
-    t->v[t->n].tu = strdup(tu);
+    t->v[t->n].tu = zcl_strdup(tu, "sem_replay_cost_tu");
     t->v[t->n].cpu = cpu;
     return t->v[t->n++].tu != NULL;
 }
