@@ -4,6 +4,7 @@
 #define ZCL_TOOLS_DEV_DEVLOOP_EARLY_H
 
 #include "devloop.h"
+#include "devloop_early_skip.h"
 
 struct json_value;
 
@@ -19,7 +20,11 @@ struct json_value;
  *   - A red early stage is reported at once on stderr; the full plan still
  *     runs exactly as it would have without the stage.
  *   - Without usable facts it is skipped and says why. It never guesses a
- *     narrower set: missing, stale or non-narrowing evidence skips it. */
+ *     narrower set: missing, stale or non-narrowing evidence skips it.
+ *   - Within the selection, a group whose input closure is unchanged since
+ *     its last early PASS is not re-executed (devloop_early_skip.h); every
+ *     group it cannot vouch for runs. When every selected group is
+ *     skipped that way the stage is skipped as closure_unchanged. */
 
 #define ZCL_DEVLOOP_EARLY_SCHEMA "zcl.dev_early_feedback.v1"
 /* Repo-relative facts directory the resident restart path reads
@@ -50,7 +55,8 @@ struct zcl_devloop_early_receipt {
     char groups[4096];
     char groups_sha256[65];
     char artifact_sha256[65];
-    uint32_t group_count;
+    uint32_t group_count; /* selected */
+    uint32_t run_count;   /* selected and handed to the runner */
     uint32_t groups_ran;
     uint32_t groups_cached;
     uint32_t groups_failed;
@@ -65,6 +71,9 @@ struct zcl_devloop_early_receipt {
     /* The same measures for the full plan that followed (0: it never ran). */
     int64_t full_first_exec_us;
     int64_t full_wall_us;
+    /* Which selected groups ran, which were skipped as closure-unchanged,
+     * and why. */
+    struct zcl_devloop_early_skip skip;
 };
 
 /* Resolve `facts_dir` (repo-relative, confined) into a narrowed plan for
@@ -101,6 +110,18 @@ void zcl_devloop_early_run(const char *root, const char *artifact,
                            const struct zcl_devloop_early_plan *plan,
                            const char *full_groups, int64_t fallback_origin_us,
                            struct zcl_devloop_early_receipt *r);
+
+/* The same stage with closure-unchanged skipping keyed to `tc`, what the
+ * candidate was built from. zcl_devloop_early_run() is this with a NULL
+ * `tc`: an unknown identity, so every selected group runs and nothing is
+ * recorded. */
+void zcl_devloop_early_run_keyed(const char *root, const char *artifact,
+                                 const char *artifact_sha256,
+                                 const struct zcl_devloop_early_plan *plan,
+                                 const char *full_groups,
+                                 int64_t fallback_origin_us,
+                                 const struct zcl_devloop_early_toolchain *tc,
+                                 struct zcl_devloop_early_receipt *r);
 
 /* Push the "early_feedback" object onto `doc`. */
 void zcl_devloop_early_json(const struct zcl_devloop_early_receipt *r,

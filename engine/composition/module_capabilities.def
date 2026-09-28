@@ -1297,6 +1297,7 @@ ZCL_MODULE_CAPABILITY("tools/dev/devloop_baseline.c", CAP_FS_WRITE|CAP_PROCESS|C
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_cli.c", CAP_FS_WRITE|CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_cycle.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_early.c", CAP_FS_READ|CAP_FS_WRITE, "stats the facts directory, reads its manifest and source evidence only through devloop_facts_json.c, and runs the early feedback groups on the restart candidate only through devloop_process.c; writes only the early feedback line to stderr")
+ZCL_MODULE_CAPABILITY("tools/dev/devloop_early_skip.c", CAP_FS_READ|CAP_FS_WRITE, "reads and stats the early groups' test files, their attributed restart sources and the headers they include under the checkout or its -I roots; reads and replaces only build/dev-loop/early-skip.v1.tsv through a temporary file and a rename")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts.c", CAP_FS_WRITE, "decides over caller-supplied manifest and source bytes and walks the code index read-only through codeindex_open; writes only allocation-failure lines to stderr")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_bind.c", CAP_FS_READ, "hashes the files an after manifest read and stats the include slots it saw absent, under the plan root or at their @sys host paths; every fopen passes \"rb\"")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_codegen.c", CAP_FS_WRITE, "bounds the functions a compile may re-emit over a facts index the caller already holds; writes only allocation-failure lines to stderr")

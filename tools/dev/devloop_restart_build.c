@@ -2975,10 +2975,23 @@ static bool rr_prove_run_tests(struct rr_prove_ctx *ctx,
  * the full plan runs exactly as it would without it. */
 static void rr_prove_run_early(struct rr_prove_ctx *ctx)
 {
-    if (ctx->early)
-        zcl_devloop_early_run(ctx->root, ctx->receipt->artifact_path,
-                              ctx->receipt->artifact_sha256, ctx->early_plan,
-                              ctx->receipt->groups, ctx->started, ctx->early);
+    if (!ctx->early)
+        return;
+    /* What the candidate was built from keys the stage's closure-unchanged
+     * skipping; it reads nothing the full plan reads afterwards. */
+    const struct zcl_devloop_early_toolchain tc = {
+        .compiler_id = ctx->plan.compiler_id,
+        .base_generation = ctx->plan.base_generation,
+        .cflags = ctx->plan.cflags,
+        .ldflags = ctx->plan.ldflags,
+        .libs = ctx->plan.libs,
+        .sources = ctx->source_tus,
+        .source_count = ctx->source_count,
+    };
+    zcl_devloop_early_run_keyed(ctx->root, ctx->receipt->artifact_path,
+                                ctx->receipt->artifact_sha256,
+                                ctx->early_plan, ctx->receipt->groups,
+                                ctx->started, &tc, ctx->early);
 }
 
 /* The full plan's measures beside the early stage's, from the same

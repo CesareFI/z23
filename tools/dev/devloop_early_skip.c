@@ -1,0 +1,1226 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: Closure-unchanged skipping for the early feedback stage: key each early group over its working-tree input closure, skip a group whose key and toolchain identity match its last recorded PASS, and keep those records in a local dev-only store written by temporary file and rename. */
+#include "devloop_early_skip.h"
+
+#include "test_group_host_need.h"
+
+#include "base/hex.h"
+#include "base/safe_alloc.h"
+#include "json/json.h"
+#include "platform/directory_compat.h"
+#include "platform/file_sync.h"
+#include "platform/path_replace.h"
+#include "sha3/sha3.h"
+#include "util/spawn.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define ES_PATH_MAX 1024
+#define ES_FILE_MAX (16u * 1024u * 1024u)
+#define ES_NODE_MAX 16384u
+#define ES_DIRS_MAX 1024u
+#define ES_ARGV_MAX 4096u
+#define ES_NONE UINT32_MAX
+#define ES_STORE_HEADER "zcl.dev_early_skip_store.v1"
+#define ES_STORE_MAX_BYTES (1u << 20)
+#define ES_STORE_MAX_RECS 4096u
+
+_Static_assert(ZCL_DEVLOOP_EARLY_SKIP_SOURCE_MAX <= 64,
+               "a row's attributed sources are one 64-bit mask");
+
+/* ── a string -> index map (open addressing, owned keys) ──────────────── */
+
+struct es_map {
+    char **keys;
+    uint32_t *vals;
+    size_t cap; /* a power of two, or 0 */
+    size_t n;
+};
+
+static uint64_t es_fnv(const char *s)
+{
+    uint64_t h = 1469598103934665603ull;
+    while (*s)
+        h = (h ^ (unsigned char)*s++) * 1099511628211ull;
+    return h;
+}
+
+static size_t es_map_slot(char *const *keys, size_t cap, const char *key)
+{
+    size_t i = (size_t)es_fnv(key) & (cap - 1);
+    while (keys[i] && strcmp(keys[i], key) != 0)
+        i = (i + 1) & (cap - 1);
+    return i;
+}
+
+static bool es_map_grow(struct es_map *m)
+{
+    size_t cap = m->cap ? m->cap * 2 : 256;
+    char **keys = zcl_calloc(cap, sizeof(*keys), "early_skip.map");
+    uint32_t *vals = zcl_calloc(cap, sizeof(*vals), "early_skip.map");
+    if (!keys || !vals) {
+        free(keys);
+        free(vals);
+        return false;
+    }
+    for (size_t i = 0; i < m->cap; i++) {
+        if (!m->keys[i])
+            continue;
+        size_t at = es_map_slot(keys, cap, m->keys[i]);
+        keys[at] = m->keys[i];
+        vals[at] = m->vals[i];
+    }
+    free(m->keys);
+    free(m->vals);
+    m->keys = keys;
+    m->vals = vals;
+    m->cap = cap;
+    return true;
+}
+
+static bool es_map_get(const struct es_map *m, const char *key, uint32_t *out)
+{
+    if (!m->cap)
+        return false;
+    size_t i = es_map_slot(m->keys, m->cap, key);
+    if (!m->keys[i])
+        return false;
+    *out = m->vals[i];
+    return true;
+}
+
+static bool es_map_put(struct es_map *m, const char *key, uint32_t val)
+{
+    if ((m->n + 1) * 2 > m->cap && !es_map_grow(m))
+        return false;
+    size_t i = es_map_slot(m->keys, m->cap, key);
+    if (!m->keys[i]) {
+        m->keys[i] = zcl_strdup(key, "early_skip.map");
+        if (!m->keys[i])
+            return false;
+        m->n++;
+    }
+    m->vals[i] = val;
+    return true;
+}
+
+static void es_map_free(struct es_map *m)
+{
+    for (size_t i = 0; i < m->cap; i++)
+        free(m->keys[i]);
+    free(m->keys);
+    free(m->vals);
+    memset(m, 0, sizeof(*m));
+}
+
+/* ── files ─────────────────────────────────────────────────────────────── */
+
+static bool es_read(const char *path, size_t cap, char **out, size_t *len)
+{
+    *out = NULL;
+    *len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    size_t size = 0, alloc = 0;
+    char *buf = NULL;
+    bool ok = true;
+    for (;;) {
+        if (size + 4096 + 1 > alloc) {
+            size_t next = alloc ? alloc * 2 : 16384;
+            char *grown = next <= cap + 4096 + 1
+                ? zcl_realloc(buf, next, "early_skip.read") : NULL;
+            if (!grown) {
+                ok = false;
+                break;
+            }
+            buf = grown;
+            alloc = next;
+        }
+        size_t got = fread(buf + size, 1, 4096, f);
+        size += got;
+        if (got < 4096)
+            break;
+    }
+    ok = ok && !ferror(f) && size <= cap;
+    (void)fclose(f);
+    if (!ok) {
+        free(buf);
+        return false;
+    }
+    buf[size] = '\0';
+    *out = buf;
+    *len = size;
+    return true;
+}
+
+static void es_sha3_hex(const void *data, size_t len, char out[65])
+{
+    struct sha3_256_ctx ctx;
+    unsigned char digest[32];
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const unsigned char *)data, len);
+    sha3_256_finalize(&ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+}
+
+static void es_sha3_line(struct sha3_256_ctx *ctx, const char *label,
+                         const char *value)
+{
+    sha3_256_write(ctx, (const unsigned char *)label, strlen(label));
+    sha3_256_write(ctx, (const unsigned char *)":", 1);
+    if (value)
+        sha3_256_write(ctx, (const unsigned char *)value, strlen(value));
+    sha3_256_write(ctx, (const unsigned char *)"\n", 1);
+}
+
+/* `dir`/`name` with "." and ".." folded. False when it would climb above
+ * its start, is empty, or does not fit. */
+static bool es_path_fold(const char *in, char out[ES_PATH_MAX])
+{
+    size_t base = in[0] == '/' ? 1 : 0, o = base;
+    out[0] = '/';
+    for (const char *p = in; *p;) {
+        while (*p == '/')
+            p++;
+        size_t len = strcspn(p, "/");
+        bool dot = len == 1 && p[0] == '.';
+        bool up = len == 2 && p[0] == '.' && p[1] == '.';
+        if (up && o <= base)
+            return false;
+        while (up && o > base && out[o - 1] != '/')
+            o--;
+        if (up && o > base)
+            o--;
+        if (len && !dot && !up) {
+            if (o + len + 2 >= ES_PATH_MAX)
+                return false;
+            if (o > base)
+                out[o++] = '/';
+            memcpy(out + o, p, len);
+            o += len;
+        }
+        p += len;
+    }
+    out[o] = '\0';
+    return o > base;
+}
+
+static bool es_path_join(const char *dir, const char *name,
+                         char out[ES_PATH_MAX])
+{
+    char joined[ES_PATH_MAX * 2];
+    bool bare = name[0] == '/' || !dir || !dir[0];
+    int n = bare ? snprintf(joined, sizeof(joined), "%s", name)
+                 : snprintf(joined, sizeof(joined), "%s/%s", dir, name);
+    return n > 0 && (size_t)n < sizeof(joined) && es_path_fold(joined, out);
+}
+
+/* ── the include graph, shared by every group of one decision ─────────── */
+
+struct es_node {
+    char *path; /* root-relative, or absolute outside the checkout */
+    char digest[65];
+    uint32_t *deps;
+    size_t ndeps, capdeps;
+    const char *bad; /* literal; NULL while the node is vouched */
+    char bad_detail[96];
+    bool loaded;
+    uint32_t stamp;
+};
+
+struct es_graph {
+    const char *root;
+    char *flags;
+    const char **dirs; /* [0, nquote) -iquote, then -I, in flag order */
+    size_t ndirs, nquote;
+    struct es_node *nodes;
+    size_t n, cap;
+    struct es_map paths;    /* path -> node */
+    struct es_map searched; /* "q:name" or "a:name" -> node or ES_NONE */
+};
+
+static bool es_full(const struct es_graph *g, const char *path,
+                    char out[ES_PATH_MAX * 2])
+{
+    int n = path[0] == '/'
+        ? snprintf(out, ES_PATH_MAX * 2, "%s", path)
+        : snprintf(out, ES_PATH_MAX * 2, "%s/%s", g->root, path);
+    return n > 0 && n < ES_PATH_MAX * 2;
+}
+
+static bool es_regular(const struct es_graph *g, const char *path)
+{
+    char full[ES_PATH_MAX * 2];
+    struct stat st;
+    return es_full(g, path, full) && stat(full, &st) == 0 &&
+           S_ISREG(st.st_mode);
+}
+
+/* One flag's directory: "-Xdir" or "-X dir". */
+static const char *es_flag_dir(const char *const *argv, size_t argc,
+                               size_t *i, const char *flag)
+{
+    size_t len = strlen(flag);
+    if (strncmp(argv[*i], flag, len) != 0)
+        return NULL;
+    if (argv[*i][len])
+        return argv[*i] + len;
+    return *i + 1 < argc ? argv[++*i] : NULL;
+}
+
+static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
+                               size_t argc, const char *flag)
+{
+    for (size_t i = 0; i < argc && g->ndirs < ES_DIRS_MAX; i++) {
+        const char *dir = es_flag_dir(argv, argc, &i, flag);
+        if (dir && dir[0])
+            g->dirs[g->ndirs++] = dir;
+    }
+}
+
+static bool es_graph_init(struct es_graph *g, const char *root,
+                          const char *cflags)
+{
+    memset(g, 0, sizeof(*g));
+    g->root = root;
+    g->flags = zcl_strdup(cflags ? cflags : "", "early_skip.flags");
+    const char **argv = zcl_calloc(ES_ARGV_MAX, sizeof(*argv),
+                                   "early_skip.argv");
+    g->dirs = zcl_calloc(ES_DIRS_MAX, sizeof(*g->dirs), "early_skip.dirs");
+    if (!g->flags || !argv || !g->dirs) {
+        free(argv);
+        return false;
+    }
+    size_t argc = zcl_argv_split(g->flags, argv, ES_ARGV_MAX);
+    es_graph_dirs_pass(g, argv, argc, "-iquote");
+    g->nquote = g->ndirs;
+    es_graph_dirs_pass(g, argv, argc, "-I");
+    free(argv);
+    return true;
+}
+
+static void es_graph_free(struct es_graph *g)
+{
+    for (size_t i = 0; i < g->n; i++) {
+        free(g->nodes[i].path);
+        free(g->nodes[i].deps);
+    }
+    free(g->nodes);
+    free(g->dirs);
+    free(g->flags);
+    es_map_free(&g->paths);
+    es_map_free(&g->searched);
+    memset(g, 0, sizeof(*g));
+}
+
+static bool es_node_of(struct es_graph *g, const char *path, uint32_t *out)
+{
+    if (es_map_get(&g->paths, path, out))
+        return true;
+    if (g->n >= ES_NODE_MAX)
+        return false;
+    if (g->n == g->cap) {
+        size_t cap = g->cap ? g->cap * 2 : 256;
+        struct es_node *grown = zcl_realloc(g->nodes, cap * sizeof(*grown),
+                                            "early_skip.nodes");
+        if (!grown)
+            return false;
+        g->nodes = grown;
+        g->cap = cap;
+    }
+    struct es_node *node = &g->nodes[g->n];
+    memset(node, 0, sizeof(*node));
+    node->path = zcl_strdup(path, "early_skip.node");
+    if (!node->path || !es_map_put(&g->paths, path, (uint32_t)g->n)) {
+        free(node->path);
+        return false;
+    }
+    *out = (uint32_t)g->n++;
+    return true;
+}
+
+static void es_node_bad(struct es_graph *g, uint32_t idx, const char *why,
+                        const char *what)
+{
+    if (g->nodes[idx].bad)
+        return;
+    g->nodes[idx].bad = why;
+    (void)snprintf(g->nodes[idx].bad_detail,
+                   sizeof(g->nodes[idx].bad_detail), "%s", what ? what : "");
+}
+
+static bool es_node_dep(struct es_graph *g, uint32_t idx, uint32_t dep)
+{
+    struct es_node *node = &g->nodes[idx];
+    if (node->ndeps == node->capdeps) {
+        size_t cap = node->capdeps ? node->capdeps * 2 : 8;
+        uint32_t *grown = zcl_realloc(node->deps, cap * sizeof(*grown),
+                                      "early_skip.deps");
+        if (!grown)
+            return false;
+        node->deps = grown;
+        node->capdeps = cap;
+    }
+    node->deps[node->ndeps++] = dep;
+    return true;
+}
+
+enum es_inc { ES_INC_NONE, ES_INC_QUOTE, ES_INC_ANGLE, ES_INC_COMPUTED };
+
+static const char *es_skip_blank(const char *p, const char *end)
+{
+    while (p < end && (*p == ' ' || *p == '\t'))
+        p++;
+    return p;
+}
+
+/* Length of the include-like directive keyword at `p`, or 0. */
+static size_t es_keyword(const char *p, const char *end)
+{
+    static const char *const words[] = { "include_next", "include",
+                                         "embed" };
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+        size_t len = strlen(words[i]);
+        if ((size_t)(end - p) > len && strncmp(p, words[i], len) == 0 &&
+            p[len] &&
+            strchr(" \t\"<", p[len]))
+            return len;
+    }
+    return 0;
+}
+
+/* The directive on one line: none, a quoted or angle name, or a computed
+ * operand (a macro) that no text scan can resolve. */
+static enum es_inc es_directive(const char *p, const char *end, char *name,
+                                size_t cap)
+{
+    p = es_skip_blank(p, end);
+    if (p >= end || *p != '#')
+        return ES_INC_NONE;
+    p = es_skip_blank(p + 1, end);
+    size_t kw = es_keyword(p, end);
+    if (!kw)
+        return ES_INC_NONE;
+    p = es_skip_blank(p + kw, end);
+    char close = p < end && *p == '"' ? '"' : p < end && *p == '<' ? '>' : 0;
+    const char *q = close ? memchr(p + 1, close, (size_t)(end - p - 1)) : NULL;
+    if (!q || q == p + 1 || (size_t)(q - p - 1) >= cap)
+        return ES_INC_COMPUTED;
+    memcpy(name, p + 1, (size_t)(q - p - 1));
+    name[q - p - 1] = '\0';
+    return close == '"' ? ES_INC_QUOTE : ES_INC_ANGLE;
+}
+
+/* The -iquote/-I search for `name`, cached per spelling. */
+static bool es_search(struct es_graph *g, enum es_inc kind, const char *name,
+                      uint32_t *out)
+{
+    char cache_key[ES_PATH_MAX + 3];
+    (void)snprintf(cache_key, sizeof(cache_key), "%c:%s",
+                   kind == ES_INC_QUOTE ? 'q' : 'a', name);
+    if (es_map_get(&g->searched, cache_key, out))
+        return true;
+    *out = ES_NONE;
+    char path[ES_PATH_MAX];
+    for (size_t i = kind == ES_INC_QUOTE ? 0 : g->nquote; i < g->ndirs; i++) {
+        if (es_path_join(g->dirs[i], name, path) && es_regular(g, path))
+            return es_node_of(g, path, out) &&
+                   es_map_put(&g->searched, cache_key, *out);
+    }
+    return es_map_put(&g->searched, cache_key, ES_NONE);
+}
+
+/* Resolve one include of node `idx` as the compiler would. *out is ES_NONE
+ * when nothing matched. False only when a bound or memory ran out. */
+static bool es_resolve(struct es_graph *g, uint32_t idx, enum es_inc kind,
+                       const char *name, uint32_t *out)
+{
+    *out = ES_NONE;
+    if (kind == ES_INC_QUOTE) {
+        char dir[ES_PATH_MAX], path[ES_PATH_MAX];
+        (void)snprintf(dir, sizeof(dir), "%s", g->nodes[idx].path);
+        char *slash = strrchr(dir, '/');
+        if (slash)
+            *slash = '\0';
+        else
+            dir[0] = '\0';
+        if (es_path_join(dir, name, path) && es_regular(g, path))
+            return es_node_of(g, path, out);
+    }
+    return es_search(g, kind, name, out);
+}
+
+static bool es_scannable(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+    return dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
+                   strcmp(dot, ".inc") == 0 || strcmp(dot, ".def") == 0);
+}
+
+/* One directive of node `idx`: join its resolved file, or mark the node
+ * unvouched. False only when a bound or memory ran out. */
+static bool es_scan_directive(struct es_graph *g, uint32_t idx,
+                              enum es_inc kind, const char *name)
+{
+    uint32_t dep = ES_NONE;
+    if (kind == ES_INC_COMPUTED) {
+        es_node_bad(g, idx, "include-computed", g->nodes[idx].path);
+        return true;
+    }
+    if (!es_resolve(g, idx, kind, name, &dep))
+        return false;
+    if (dep != ES_NONE)
+        return es_node_dep(g, idx, dep);
+    if (kind == ES_INC_QUOTE)
+        es_node_bad(g, idx, "include-unresolved", name);
+    return true;
+}
+
+static bool es_scan(struct es_graph *g, uint32_t idx, const char *text,
+                    size_t len)
+{
+    const char *end = text + len;
+    char name[ES_PATH_MAX];
+    for (const char *p = text; p < end;) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        const char *line_end = nl ? nl : end;
+        enum es_inc kind = es_directive(p, line_end, name, sizeof(name));
+        if (kind != ES_INC_NONE && !es_scan_directive(g, idx, kind, name))
+            return false;
+        p = nl ? nl + 1 : end;
+    }
+    return true;
+}
+
+static void es_node_load(struct es_graph *g, uint32_t idx)
+{
+    char full[ES_PATH_MAX * 2];
+    char *text = NULL;
+    size_t len = 0;
+    g->nodes[idx].loaded = true;
+    if (!es_full(g, g->nodes[idx].path, full) ||
+        !es_read(full, ES_FILE_MAX, &text, &len)) {
+        es_node_bad(g, idx, "unreadable", g->nodes[idx].path);
+        return;
+    }
+    es_sha3_hex(text, len, g->nodes[idx].digest);
+    if (es_scannable(g->nodes[idx].path) && !es_scan(g, idx, text, len))
+        es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
+    free(text);
+}
+
+/* ── one group's closure ───────────────────────────────────────────────── */
+
+struct es_walk {
+    uint32_t *list; /* visit order; doubles as the queue */
+    size_t n, cap;
+    uint32_t stamp;
+    const char *bad;
+    char detail[128];
+};
+
+static bool es_walk_visit(struct es_graph *g, struct es_walk *w,
+                          uint32_t idx)
+{
+    if (g->nodes[idx].stamp == w->stamp)
+        return true;
+    if (w->n == w->cap) {
+        size_t cap = w->cap ? w->cap * 2 : 64;
+        uint32_t *grown = zcl_realloc(w->list, cap * sizeof(*grown),
+                                      "early_skip.walk");
+        if (!grown)
+            return false;
+        w->list = grown;
+        w->cap = cap;
+    }
+    g->nodes[idx].stamp = w->stamp;
+    w->list[w->n++] = idx;
+    return true;
+}
+
+static bool es_walk_root(struct es_graph *g, struct es_walk *w,
+                         const char *path)
+{
+    char folded[ES_PATH_MAX];
+    uint32_t idx = ES_NONE;
+    return es_path_fold(path, folded) && es_node_of(g, folded, &idx) &&
+           es_walk_visit(g, w, idx);
+}
+
+static void es_walk_run(struct es_graph *g, struct es_walk *w)
+{
+    for (size_t i = 0; i < w->n && !w->bad; i++) {
+        uint32_t idx = w->list[i];
+        if (!g->nodes[idx].loaded)
+            es_node_load(g, idx);
+        if (g->nodes[idx].bad) {
+            w->bad = g->nodes[idx].bad;
+            (void)snprintf(w->detail, sizeof(w->detail), "%s",
+                           g->nodes[idx].bad_detail);
+            return;
+        }
+        for (size_t d = 0; d < g->nodes[idx].ndeps; d++) {
+            if (!es_walk_visit(g, w, g->nodes[idx].deps[d])) {
+                w->bad = "closure-bound";
+                return;
+            }
+        }
+    }
+}
+
+struct es_line {
+    const char *path;
+    const char *digest;
+};
+
+static int es_line_cmp(const void *a, const void *b)
+{
+    return strcmp(((const struct es_line *)a)->path,
+                  ((const struct es_line *)b)->path);
+}
+
+static bool es_walk_key(const struct es_graph *g, const struct es_walk *w,
+                        const char *identity, const char *group,
+                        char out[65])
+{
+    struct es_line *lines = zcl_calloc(w->n ? w->n : 1, sizeof(*lines),
+                                       "early_skip.lines");
+    if (!lines)
+        return false;
+    for (size_t i = 0; i < w->n; i++) {
+        lines[i].path = g->nodes[w->list[i]].path;
+        lines[i].digest = g->nodes[w->list[i]].digest;
+    }
+    qsort(lines, w->n, sizeof(*lines), es_line_cmp);
+    struct sha3_256_ctx ctx;
+    unsigned char digest[32];
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, (const unsigned char *)"zcl.dev_early_skip.key.v1\n",
+                   strlen("zcl.dev_early_skip.key.v1\n"));
+    es_sha3_line(&ctx, "identity", identity);
+    es_sha3_line(&ctx, "group", group);
+    for (size_t i = 0; i < w->n; i++)
+        es_sha3_line(&ctx, lines[i].path, lines[i].digest);
+    sha3_256_finalize(&ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+    free(lines);
+    return true;
+}
+
+/* ── the record store ─────────────────────────────────────────────────── */
+
+struct es_rec {
+    char group[ZCL_TEST_GROUP_FULL_MAX];
+    char key[65];
+    char identity[65];
+    char candidate[65];
+    long long run_us;
+};
+
+struct es_store {
+    struct es_rec *recs;
+    size_t n;
+    const char *state;
+};
+
+static bool es_hex64(const char *s)
+{
+    return strlen(s) == 64 && strspn(s, "0123456789abcdef") == 64;
+}
+
+static bool es_store_line(const char *line, struct es_rec *rec)
+{
+    char extra;
+    int got = sscanf(line, "%95[^\t]\t%64[^\t]\t%64[^\t]\t%64[^\t]\t%lld%c",
+                     rec->group, rec->key, rec->identity, rec->candidate,
+                     &rec->run_us, &extra);
+    return got == 5 && es_hex64(rec->key) && es_hex64(rec->identity) &&
+           (es_hex64(rec->candidate) || strcmp(rec->candidate, "-") == 0) &&
+           rec->run_us >= 0;
+}
+
+static bool es_store_parse(char *text, struct es_store *st)
+{
+    char *save = NULL;
+    char *line = strtok_r(text, "\n", &save);
+    if (!line || strcmp(line, ES_STORE_HEADER) != 0)
+        return false;
+    while ((line = strtok_r(NULL, "\n", &save)) != NULL) {
+        if (st->n >= ES_STORE_MAX_RECS || strlen(line) >= 512 ||
+            !es_store_line(line, &st->recs[st->n]))
+            return false;
+        st->n++;
+    }
+    return true;
+}
+
+static bool es_store_path(const char *root, char out[ES_PATH_MAX * 2])
+{
+    int n = snprintf(out, ES_PATH_MAX * 2, "%s/%s", root,
+                     ZCL_DEVLOOP_EARLY_SKIP_STORE);
+    return n > 0 && n < ES_PATH_MAX * 2;
+}
+
+static bool es_store_load(const char *root, struct es_store *st)
+{
+    char path[ES_PATH_MAX * 2];
+    char *text = NULL;
+    size_t len = 0;
+    memset(st, 0, sizeof(*st));
+    st->state = "absent";
+    st->recs = zcl_calloc(ES_STORE_MAX_RECS, sizeof(*st->recs),
+                          "early_skip.store");
+    if (!st->recs)
+        return false;
+    if (!es_store_path(root, path) ||
+        !es_read(path, ES_STORE_MAX_BYTES, &text, &len))
+        return true;
+    st->state = "loaded";
+    if (!es_store_parse(text, st)) {
+        st->state = "malformed";
+        st->n = 0;
+    }
+    free(text);
+    return true;
+}
+
+static struct es_rec *es_store_find(struct es_store *st, const char *group)
+{
+    for (size_t i = 0; i < st->n; i++)
+        if (strcmp(st->recs[i].group, group) == 0)
+            return &st->recs[i];
+    return NULL;
+}
+
+static bool es_store_write(FILE *f, const struct es_store *st)
+{
+    bool ok = fprintf(f, "%s\n", ES_STORE_HEADER) > 0;
+    for (size_t i = 0; ok && i < st->n; i++) {
+        const struct es_rec *r = &st->recs[i];
+        ok = fprintf(f, "%s\t%s\t%s\t%s\t%lld\n", r->group, r->key,
+                     r->identity, r->candidate, r->run_us) > 0;
+    }
+    return ok && fflush(f) == 0 && platform_file_sync(fileno(f)) == 0;
+}
+
+static bool es_store_dir(const char *root)
+{
+    char dir[ES_PATH_MAX * 2];
+    int n = snprintf(dir, sizeof(dir), "%s/build", root);
+    if (n <= 0 || (size_t)n >= sizeof(dir) ||
+        !platform_directory_ensure(dir, 0755))
+        return false;
+    n = snprintf(dir, sizeof(dir), "%s/build/dev-loop", root);
+    return n > 0 && (size_t)n < sizeof(dir) &&
+           platform_directory_ensure(dir, 0755);
+}
+
+/* The whole store replaced at once: a temporary file beside it, then a
+ * rename, so a reader sees the old image or the new one. */
+static bool es_store_save(const char *root, const struct es_store *st)
+{
+    char path[ES_PATH_MAX * 2], temp[ES_PATH_MAX * 2 + 32];
+    if (!es_store_dir(root) || !es_store_path(root, path))
+        return false;
+    int n = snprintf(temp, sizeof(temp), "%s.%ld.tmp", path, (long)getpid());
+    if (n <= 0 || (size_t)n >= sizeof(temp))
+        return false;
+    FILE *f = fopen(temp, "wb");
+    if (!f)
+        return false;
+    bool ok = es_store_write(f, st);
+    ok = fclose(f) == 0 && ok;
+    ok = ok && platform_path_replace(temp, path) == 0;
+    if (!ok)
+        (void)unlink(temp);
+    return ok;
+}
+
+/* ── vouching ─────────────────────────────────────────────────────────── */
+
+struct es_tops {
+    struct platform_directory_list dirs;
+    struct platform_directory_list files;
+    bool listed;
+};
+
+struct es_ctx {
+    const char *root;
+    const struct zcl_devloop_early_toolchain *tc;
+    struct zcl_devloop_early_skip *s;
+    struct es_graph g;
+    struct es_tops tops;
+    struct es_store store;
+    struct es_walk walk;
+};
+
+static bool es_test_file(const char *group, char *out, size_t cap)
+{
+    const char *dir = strncmp(group, "test_", 5) == 0 ? "tests/harness/src"
+                    : strncmp(group, "spec_", 5) == 0 ? "tests/harness/spec"
+                    : NULL;
+    if (!dir)
+        return false;
+    int n = snprintf(out, cap, "%s/%s.c", dir, group);
+    return n > 0 && (size_t)n < cap;
+}
+
+static const char *es_host_need(const char *group, char *detail, size_t cap)
+{
+    struct zcl_test_group_host_need need = {0};
+    if (!zcl_test_group_host_need(group, &need))
+        return "group-unregistered";
+    if (need.kind == ZCL_HOST_NEED_NONE)
+        return NULL;
+    const char *kind = zcl_test_group_host_need_kind_name(need.kind);
+    (void)snprintf(detail, cap, "%s %s", kind ? kind : "unknown",
+                   need.value ? need.value : "");
+    return "host-need";
+}
+
+static const char *es_marker(const char *text, const char *const *markers)
+{
+    for (size_t i = 0; markers[i]; i++)
+        if (strstr(text, markers[i]))
+            return markers[i];
+    return NULL;
+}
+
+/* A string literal naming a top-level entry of the checkout: `name` then
+ * '/' or the closing quote. test-tmp is a test's own scratch. */
+static const char *es_top_literal(const char *text,
+                                  const struct platform_directory_list *l)
+{
+    for (const char *q = strchr(text, '"'); q; q = strchr(q + 1, '"')) {
+        for (size_t i = 0; i < l->count; i++) {
+            const char *name = l->entries[i].name;
+            size_t len = strlen(name);
+            if (strcmp(name, "test-tmp") != 0 &&
+                strncmp(q + 1, name, len) == 0 &&
+                (q[1 + len] == '/' || q[1 + len] == '"'))
+                return name;
+        }
+    }
+    return NULL;
+}
+
+/* Runtime inputs a test file can reach that no key names: the environment,
+ * another process, and checkout data it names by path. */
+static const char *es_text_unvouched(struct es_ctx *c, const char *text,
+                                     char *detail, size_t cap)
+{
+    static const char *const env[] = { "getenv(", "environment_get", NULL };
+    static const char *const proc[] = { "execv", "execl", "posix_spawn",
+                                        "zcl_spawn", "popen(", "system(",
+                                        "process_run", NULL };
+    const char *hit = es_marker(text, env);
+    const char *why = hit ? "reads-environment" : NULL;
+    if (!why && (hit = es_marker(text, proc)) != NULL)
+        why = "starts-process";
+    if (!why && (hit = es_top_literal(text, &c->tops.dirs)) != NULL)
+        why = "names-checkout-path";
+    if (!why && (hit = es_top_literal(text, &c->tops.files)) != NULL)
+        why = "names-checkout-path";
+    if (why)
+        (void)snprintf(detail, cap, "%s", hit);
+    return why;
+}
+
+static const char *es_file_unvouched(struct es_ctx *c, const char *rel,
+                                     char *detail, size_t cap)
+{
+    char full[ES_PATH_MAX * 2];
+    char *text = NULL;
+    size_t len = 0;
+    if (!es_full(&c->g, rel, full) ||
+        !es_read(full, ES_FILE_MAX, &text, &len)) {
+        (void)snprintf(detail, cap, "%s", rel);
+        return "no-test-file";
+    }
+    const char *why = es_text_unvouched(c, text, detail, cap);
+    free(text);
+    return why;
+}
+
+static void es_row_unvouched(struct zcl_devloop_early_skip_row *row,
+                             const char *why, const char *what)
+{
+    row->vouched = false;
+    row->key[0] = '\0';
+    row->reason = "unvouched";
+    (void)snprintf(row->detail, sizeof(row->detail), "%s%s%s", why,
+                   what && what[0] ? ": " : "", what ? what : "");
+}
+
+/* Walk the test file and every attributed source; key the closure. */
+static bool es_row_key(struct es_ctx *c, struct zcl_devloop_early_skip_row *row,
+                       const char *test_file)
+{
+    struct es_walk *w = &c->walk;
+    w->n = 0;
+    w->stamp++;
+    w->bad = NULL;
+    w->detail[0] = '\0';
+    bool ok = es_walk_root(&c->g, w, test_file);
+    for (size_t j = 0; ok && j < c->tc->source_count; j++)
+        if (row->sources & (UINT64_C(1) << j))
+            ok = es_walk_root(&c->g, w, c->tc->sources[j]);
+    if (!ok)
+        w->bad = "closure-bound";
+    if (!w->bad)
+        es_walk_run(&c->g, w);
+    if (!w->bad && !es_walk_key(&c->g, w, c->s->identity, row->group,
+                                row->key))
+        w->bad = "closure-bound";
+    if (w->bad) {
+        es_row_unvouched(row, w->bad, w->detail);
+        return false;
+    }
+    row->vouched = true;
+    return true;
+}
+
+static bool es_row_vouch(struct es_ctx *c,
+                         struct zcl_devloop_early_skip_row *row)
+{
+    char test_file[256], detail[128] = "";
+    if (!es_test_file(row->group, test_file, sizeof(test_file))) {
+        es_row_unvouched(row, "no-test-file", row->group);
+        return false;
+    }
+    const char *why = es_host_need(row->group, detail, sizeof(detail));
+    if (!why)
+        why = es_file_unvouched(c, test_file, detail, sizeof(detail));
+    if (!why && row->sources == 0)
+        why = "unattributed";
+    if (why) {
+        es_row_unvouched(row, why, detail);
+        return false;
+    }
+    return es_row_key(c, row, test_file);
+}
+
+static void es_row_compare(struct es_ctx *c,
+                           struct zcl_devloop_early_skip_row *row)
+{
+    const struct es_rec *rec = es_store_find(&c->store, row->group);
+    if (!rec)
+        row->reason = "no-record";
+    else if (strcmp(rec->identity, c->s->identity) != 0)
+        row->reason = "identity-changed";
+    else if (strcmp(rec->key, row->key) != 0)
+        row->reason = "key-changed";
+    else {
+        row->last_run_us = rec->run_us;
+        row->skip = c->s->mode != ZCL_DEVLOOP_EARLY_SKIP_OFF;
+        row->reason = row->skip ? "closure-unchanged" : "skip-off";
+    }
+}
+
+/* ── the decision ─────────────────────────────────────────────────────── */
+
+enum zcl_devloop_early_skip_mode zcl_devloop_early_skip_mode_env(void)
+{
+    const char *v = getenv(ZCL_DEVLOOP_EARLY_SKIP_ENV);
+    if (!v || !v[0] || strcmp(v, "on") == 0 || strcmp(v, "1") == 0)
+        return ZCL_DEVLOOP_EARLY_SKIP_ON;
+    if (strcmp(v, "verify") == 0)
+        return ZCL_DEVLOOP_EARLY_SKIP_VERIFY;
+    return ZCL_DEVLOOP_EARLY_SKIP_OFF;
+}
+
+const char *zcl_devloop_early_skip_mode_name(
+    enum zcl_devloop_early_skip_mode mode)
+{
+    return mode == ZCL_DEVLOOP_EARLY_SKIP_ON ? "on"
+         : mode == ZCL_DEVLOOP_EARLY_SKIP_VERIFY ? "verify" : "off";
+}
+
+static bool es_identity(const struct zcl_devloop_early_toolchain *tc,
+                        char out[65])
+{
+    out[0] = '\0';
+    if (!tc || !tc->compiler_id || !tc->compiler_id[0] ||
+        !tc->base_generation || !tc->base_generation[0])
+        return false;
+    struct sha3_256_ctx ctx;
+    unsigned char digest[32];
+    sha3_256_init(&ctx);
+    es_sha3_line(&ctx, "harness", ZCL_DEVLOOP_EARLY_SKIP_HARNESS);
+    es_sha3_line(&ctx, "compiler", tc->compiler_id);
+    es_sha3_line(&ctx, "base", tc->base_generation);
+    es_sha3_line(&ctx, "cflags", tc->cflags);
+    es_sha3_line(&ctx, "ldflags", tc->ldflags);
+    es_sha3_line(&ctx, "libs", tc->libs);
+    sha3_256_finalize(&ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+    return true;
+}
+
+/* Why no row can be vouched at all, or NULL. */
+static const char *es_ctx_open(struct es_ctx *c, const char *root,
+                               const struct zcl_devloop_early_toolchain *tc)
+{
+    c->root = root;
+    c->tc = tc;
+    if (!root || !es_identity(tc, c->s->identity))
+        return "identity-unknown";
+    if (tc->source_count > ZCL_DEVLOOP_EARLY_SKIP_SOURCE_MAX ||
+        (tc->source_count && !tc->sources))
+        return "source-set-exceeds-bound";
+    if (!es_graph_init(&c->g, root, tc->cflags) ||
+        !es_store_load(root, &c->store))
+        return "out-of-memory";
+    c->tops.listed = platform_directory_list_children_sorted(
+        root, &c->tops.dirs, &c->tops.files);
+    return c->tops.listed ? NULL : "checkout-unlisted";
+}
+
+static void es_ctx_close(struct es_ctx *c)
+{
+    if (c->tops.listed) {
+        platform_directory_list_free(&c->tops.dirs);
+        platform_directory_list_free(&c->tops.files);
+    }
+    es_graph_free(&c->g);
+    free(c->store.recs);
+    free(c->walk.list);
+}
+
+static void es_count(struct zcl_devloop_early_skip *s)
+{
+    for (size_t i = 0; i < s->n; i++) {
+        const struct zcl_devloop_early_skip_row *row = &s->rows[i];
+        s->groups_run += !row->skip;
+        s->groups_skipped += row->skip;
+        s->groups_unvouched += strcmp(row->reason, "unvouched") == 0;
+        s->groups_skip_disabled += strcmp(row->reason, "skip-off") == 0;
+        s->saved_us += row->skip ? row->last_run_us : 0;
+    }
+}
+
+static void es_decide_rows(struct es_ctx *c, const char *blocked)
+{
+    struct zcl_devloop_early_skip *s = c->s;
+    for (size_t i = 0; i < s->n; i++) {
+        struct zcl_devloop_early_skip_row *row = &s->rows[i];
+        row->key[0] = '\0';
+        row->detail[0] = '\0';
+        row->skip = false;
+        row->vouched = false;
+        row->last_run_us = 0;
+        if (strcmp(blocked, "identity-unknown") == 0)
+            row->reason = blocked;
+        else if (blocked[0])
+            es_row_unvouched(row, blocked, "");
+        else if (es_row_vouch(c, row))
+            es_row_compare(c, row);
+    }
+}
+
+/* Every output of a decision cleared; rows keep their group and sources. */
+static void es_reset(struct zcl_devloop_early_skip *s)
+{
+    if (s->n > ZCL_DEVLOOP_EARLY_SKIP_GROUP_MAX)
+        s->n = ZCL_DEVLOOP_EARLY_SKIP_GROUP_MAX;
+    s->mode = zcl_devloop_early_skip_mode_env();
+    s->mode_name = zcl_devloop_early_skip_mode_name(s->mode);
+    s->store_state = "absent";
+    s->identity[0] = '\0';
+    s->groups_selected = (uint32_t)s->n;
+    s->groups_run = s->groups_skipped = s->groups_unvouched = 0;
+    s->groups_skip_disabled = 0;
+    s->saved_us = 0;
+    s->record_state = "none";
+    s->records_written = s->records_forgotten = 0;
+    s->verify_ran = false;
+    s->verify_status = "";
+    s->verify_groups = s->false_narrows = 0;
+    s->verify_wall_us = 0;
+}
+
+void zcl_devloop_early_skip_decide(const char *root,
+                                   const struct zcl_devloop_early_toolchain *tc,
+                                   struct zcl_devloop_early_skip *s)
+{
+    if (!s)
+        return;
+    es_reset(s);
+    struct es_ctx *c = zcl_calloc(1, sizeof(*c), "early_skip.ctx");
+    if (!c) {
+        for (size_t i = 0; i < s->n; i++)
+            es_row_unvouched(&s->rows[i], "out-of-memory", "");
+        es_count(s);
+        return;
+    }
+    c->s = s;
+    const char *blocked = es_ctx_open(c, root, tc);
+    s->store_state = c->store.state ? c->store.state : "absent";
+    es_decide_rows(c, blocked ? blocked : "");
+    es_count(s);
+    es_ctx_close(c);
+    free(c);
+}
+
+/* ── recording ────────────────────────────────────────────────────────── */
+
+static bool es_store_upsert(struct es_store *st,
+                            const struct zcl_devloop_early_skip_row *row,
+                            const char *identity, const char *candidate,
+                            int64_t run_us)
+{
+    struct es_rec *rec = es_store_find(st, row->group);
+    if (!rec && st->n >= ES_STORE_MAX_RECS)
+        return false;
+    if (!rec)
+        rec = &st->recs[st->n++];
+    memset(rec, 0, sizeof(*rec));
+    (void)snprintf(rec->group, sizeof(rec->group), "%s", row->group);
+    (void)snprintf(rec->key, sizeof(rec->key), "%s", row->key);
+    (void)snprintf(rec->identity, sizeof(rec->identity), "%s", identity);
+    (void)snprintf(rec->candidate, sizeof(rec->candidate), "%s",
+                   es_hex64(candidate) ? candidate : "-");
+    rec->run_us = run_us;
+    return true;
+}
+
+static bool es_record_finish(const char *root, struct zcl_devloop_early_skip *s,
+                             const struct es_store *st, uint32_t changed)
+{
+    bool ok = changed == 0 || es_store_save(root, st);
+    s->record_state = changed == 0 ? "none" : ok ? "written" : "failed";
+    return ok;
+}
+
+bool zcl_devloop_early_skip_record(const char *root,
+                                   struct zcl_devloop_early_skip *s,
+                                   const char *candidate_sha256,
+                                   int64_t run_wall_us)
+{
+    if (!root || !s || !s->identity[0] || s->groups_run == 0)
+        return true;
+    struct es_store st;
+    if (!es_store_load(root, &st)) {
+        s->record_state = "failed";
+        return false;
+    }
+    int64_t share = run_wall_us > 0 ? run_wall_us / s->groups_run : 0;
+    uint32_t written = 0;
+    bool ok = true;
+    for (size_t i = 0; ok && i < s->n; i++) {
+        const struct zcl_devloop_early_skip_row *row = &s->rows[i];
+        if (row->skip || !row->vouched || !es_hex64(row->key))
+            continue;
+        ok = es_store_upsert(&st, row, s->identity,
+                             candidate_sha256 ? candidate_sha256 : "", share);
+        written += ok;
+    }
+    ok = ok && es_record_finish(root, s, &st, written);
+    s->records_written = ok ? written : 0;
+    free(st.recs);
+    return ok;
+}
+
+bool zcl_devloop_early_skip_forget(const char *root,
+                                   struct zcl_devloop_early_skip *s)
+{
+    if (!root || !s)
+        return false;
+    struct es_store st;
+    if (!es_store_load(root, &st))
+        return false;
+    uint32_t dropped = 0;
+    for (size_t i = 0; i < s->n; i++) {
+        struct es_rec *rec = s->rows[i].skip
+            ? es_store_find(&st, s->rows[i].group) : NULL;
+        if (!rec)
+            continue;
+        *rec = st.recs[--st.n];
+        dropped++;
+    }
+    bool ok = dropped == 0 || es_store_save(root, &st);
+    s->records_forgotten = ok ? dropped : 0;
+    free(st.recs);
+    return ok;
+}
+
+/* ── the receipt ──────────────────────────────────────────────────────── */
+
+static void es_json_rows(const struct zcl_devloop_early_skip *s,
+                         struct json_value *o)
+{
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    for (size_t i = 0; i < s->n; i++) {
+        const struct zcl_devloop_early_skip_row *row = &s->rows[i];
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        (void)json_push_kv_str(&item, "group", row->group);
+        (void)json_push_kv_str(&item, "decision",
+                               row->skip ? "skipped" : "run");
+        (void)json_push_kv_str(&item, "reason", row->reason ? row->reason : "");
+        (void)json_push_kv_str(&item, "key", row->key);
+        (void)json_push_kv_bool(&item, "vouched", row->vouched);
+        (void)json_push_kv_str(&item, "detail", row->detail);
+        (void)json_push_kv_int(&item, "last_run_us", row->last_run_us);
+        (void)json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    (void)json_push_kv(o, "groups", &arr);
+    json_free(&arr);
+}
+
+static void es_json_verify(const struct zcl_devloop_early_skip *s,
+                           struct json_value *o)
+{
+    struct json_value v;
+    json_init(&v);
+    json_set_object(&v);
+    (void)json_push_kv_bool(&v, "ran", s->verify_ran);
+    (void)json_push_kv_str(&v, "status",
+                           s->verify_status ? s->verify_status : "");
+    (void)json_push_kv_int(&v, "groups", s->verify_groups);
+    (void)json_push_kv_int(&v, "false_narrows", s->false_narrows);
+    (void)json_push_kv_int(&v, "wall_us", s->verify_wall_us);
+    (void)json_push_kv(o, "verify", &v);
+    json_free(&v);
+}
+
+void zcl_devloop_early_skip_json(const struct zcl_devloop_early_skip *s,
+                                 struct json_value *doc)
+{
+    if (!s || !doc || !s->mode_name)
+        return;
+    struct json_value o;
+    json_init(&o);
+    json_set_object(&o);
+    (void)json_push_kv_str(&o, "mode", s->mode_name);
+    (void)json_push_kv_str(&o, "store", ZCL_DEVLOOP_EARLY_SKIP_STORE);
+    (void)json_push_kv_str(&o, "store_state",
+                           s->store_state ? s->store_state : "");
+    (void)json_push_kv_str(&o, "identity", s->identity);
+    (void)json_push_kv_int(&o, "groups_selected", s->groups_selected);
+    (void)json_push_kv_int(&o, "groups_run", s->groups_run);
+    (void)json_push_kv_int(&o, "groups_skipped_closure_unchanged",
+                           s->groups_skipped);
+    (void)json_push_kv_int(&o, "groups_unvouched", s->groups_unvouched);
+    (void)json_push_kv_int(&o, "groups_skip_disabled",
+                           s->groups_skip_disabled);
+    (void)json_push_kv_int(&o, "estimated_wall_saved_us", s->saved_us);
+    (void)json_push_kv_str(&o, "record_state",
+                           s->record_state ? s->record_state : "");
+    (void)json_push_kv_int(&o, "records_written", s->records_written);
+    (void)json_push_kv_int(&o, "records_forgotten", s->records_forgotten);
+    es_json_verify(s, &o);
+    es_json_rows(s, &o);
+    (void)json_push_kv(doc, "closure_skip", &o);
+    json_free(&o);
+}

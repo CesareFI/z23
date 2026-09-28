@@ -25,6 +25,9 @@
  * event wire is bounded and its digest always names the set. */
 #define EARLY_GROUPS_INLINE_MAX 512u
 
+_Static_assert(ZCL_DEVLOOP_EARLY_GROUP_MAX == ZCL_DEVLOOP_EARLY_SKIP_GROUP_MAX,
+               "every selected early group has one skip row");
+
 static atomic_int_fast64_t g_early_edit_seen_us;
 
 void zcl_devloop_early_note_edit(int64_t seen_us)
@@ -310,7 +313,7 @@ static void early_judge(const struct zcl_devloop_process_result *p, bool ran,
     }
     bool green = summary && !p->timed_out && !p->term_signal &&
         p->exit_code == 0 && r->groups_failed == 0 && r->self_skips == 0 &&
-        r->groups_ran + r->groups_cached == r->group_count;
+        r->groups_ran + r->groups_cached == r->run_count;
     r->status = green ? "green" : "red";
     r->reason = green ? "" : early_red_reason(p, ran, summary, r);
 }
@@ -320,19 +323,33 @@ static void early_report(const struct zcl_devloop_early_receipt *r)
 {
     fprintf(stderr,
             "[devloop] early feedback (not proof) %s: %u facts groups on "
-            "candidate %.12s, %u failed, first new-bytes execution %lld ms "
+            "candidate %.12s, %u run, %u skipped as closure-unchanged "
+            "(~%lld ms saved), %u failed, first new-bytes execution %lld ms "
             "after the edit, %lld ms wall%s%s; the full plan still runs\n",
-            r->status, r->group_count, r->artifact_sha256, r->groups_failed,
-            (long long)(r->first_exec_us / 1000),
+            r->status, r->group_count, r->artifact_sha256, r->run_count,
+            r->skip.groups_skipped, (long long)(r->skip.saved_us / 1000),
+            r->groups_failed, (long long)(r->first_exec_us / 1000),
             (long long)(r->wall_us / 1000), r->reason[0] ? ": " : "",
             r->reason);
 }
 
+/* One line per skipped group, naming the key it matched. */
+static void early_report_skips(const struct zcl_devloop_early_skip *s)
+{
+    for (size_t i = 0; i < s->n; i++)
+        if (s->rows[i].skip)
+            fprintf(stderr,
+                    "[devloop] early feedback %s skipped: closure-unchanged "
+                    "key=%s\n",
+                    s->rows[i].group, s->rows[i].key);
+}
+
 static void early_execute(const char *root, const char *artifact,
+                          const char *groups,
                           struct zcl_devloop_early_receipt *r)
 {
     char exact[sizeof(r->groups) + 16];
-    (void)snprintf(exact, sizeof(exact), "--exact=%s", r->groups);
+    (void)snprintf(exact, sizeof(exact), "--exact=%s", groups);
     const char *argv[] = { artifact, exact, "--no-cache", NULL };
     struct zcl_devloop_process_result *p = zcl_calloc(1, sizeof(*p),
                                                       "early.process");
@@ -349,11 +366,175 @@ static void early_execute(const char *root, const char *artifact,
     free(p);
 }
 
+/* `group` is one comma-separated token of `list`. */
+static bool early_listed(const char *list, const char *group)
+{
+    size_t len = strlen(group);
+    for (const char *p = list; p && *p;) {
+        if (strncmp(p, group, len) == 0 && (p[len] == ',' || !p[len]))
+            return true;
+        p = strchr(p, ',');
+        p = p ? p + 1 : NULL;
+    }
+    return false;
+}
+
+/* The rows of the skip decision: one per selected group, in order. */
+static void early_split(const char *list, struct zcl_devloop_early_skip *s)
+{
+    s->n = 0;
+    for (const char *p = list; *p && s->n < ZCL_DEVLOOP_EARLY_SKIP_GROUP_MAX;) {
+        size_t len = strcspn(p, ",");
+        struct zcl_devloop_early_skip_row *row = &s->rows[s->n++];
+        memset(row, 0, sizeof(*row));
+        (void)snprintf(row->group, sizeof(row->group), "%.*s", (int)len, p);
+        p += len + (p[len] == ',');
+    }
+}
+
+/* Attribute restart source `source` (bit `bit`) to every row its own facts
+ * plan names; to every row when that plan cannot narrow or when it is the
+ * only source (it alone selected the set). */
+static void early_attribute_one(const char *root,
+                                const struct zcl_devloop_early_plan *plan,
+                                const char *source, bool only, uint64_t bit,
+                                struct zcl_devloop_early_skip *s)
+{
+    const char *sources[] = { source };
+    struct zcl_devloop_early_plan *one = only ? NULL
+        : zcl_malloc(sizeof(*one), "early.attr.plan");
+    struct zcl_devloop_early_receipt *scratch = only ? NULL
+        : zcl_calloc(1, sizeof(*scratch), "early.attr.receipt");
+    bool narrowed = one && scratch &&
+        zcl_devloop_early_plan_facts(root, sources, 1, plan->facts_dir, 0,
+                                     one) &&
+        one->ready && early_select(&one->plan, scratch)[0] == '\0';
+    for (size_t i = 0; i < s->n; i++)
+        if (!narrowed || early_listed(scratch->groups, s->rows[i].group))
+            s->rows[i].sources |= bit;
+    free(one);
+    free(scratch);
+}
+
+static void early_skip_prepare(const char *root,
+                               const struct zcl_devloop_early_plan *plan,
+                               const struct zcl_devloop_early_toolchain *tc,
+                               struct zcl_devloop_early_receipt *r)
+{
+    struct zcl_devloop_early_skip *s = &r->skip;
+    early_split(r->groups, s);
+    size_t count = tc ? tc->source_count : 0;
+    for (size_t j = 0; tc && tc->sources &&
+                       count <= ZCL_DEVLOOP_EARLY_SKIP_SOURCE_MAX &&
+                       j < count; j++)
+        early_attribute_one(root, plan, tc->sources[j], count == 1,
+                            UINT64_C(1) << j, s);
+    zcl_devloop_early_skip_decide(root, tc, s);
+}
+
+/* The rows whose skip flag is `skipped`, comma-joined; their count. */
+static uint32_t early_join_rows(const struct zcl_devloop_early_skip *s,
+                                bool skipped, char *out, size_t cap)
+{
+    uint32_t count = 0;
+    out[0] = '\0';
+    for (size_t i = 0; i < s->n; i++) {
+        size_t used = strlen(out);
+        if (s->rows[i].skip != skipped)
+            continue;
+        int wrote = snprintf(out + used, cap - used, "%s%s",
+                             used ? "," : "", s->rows[i].group);
+        count += wrote > 0 && (size_t)wrote < cap - used;
+    }
+    return count;
+}
+
+/* Verify mode: the skipped groups run anyway, uncached, in their own
+ * process. Every failure there is a false narrow: a skip that would have
+ * hidden it. Their records are dropped. */
+static void early_verify_judge(const struct zcl_devloop_process_result *p,
+                               bool ran, struct zcl_devloop_early_skip *s)
+{
+    uint32_t failed = 0, groups_ran = 0;
+    bool summary = ran && early_summary(p->output, "groups_failed=", &failed) &&
+                   early_summary(p->output, "groups_ran=", &groups_ran);
+    bool clean = summary && failed == 0 && p->exit_code == 0 &&
+                 !p->timed_out && !p->term_signal &&
+                 groups_ran == s->verify_groups;
+    s->verify_status = p->cancelled ? "cancelled" : clean ? "green"
+                     : summary && failed == 0 ? "incomplete" : "red";
+    /* A runner that died without a summary attributes nothing: every
+     * group it was handed is suspect. */
+    s->false_narrows = p->cancelled || clean ? 0
+                     : failed ? failed
+                     : summary ? 0 : s->verify_groups;
+}
+
+static void early_verify(const char *root, const char *artifact,
+                         struct zcl_devloop_early_receipt *r)
+{
+    struct zcl_devloop_early_skip *s = &r->skip;
+    if (s->mode != ZCL_DEVLOOP_EARLY_SKIP_VERIFY || s->groups_skipped == 0)
+        return;
+    char list[sizeof(r->groups)], exact[sizeof(r->groups) + 16];
+    s->verify_groups = early_join_rows(s, true, list, sizeof(list));
+    (void)snprintf(exact, sizeof(exact), "--exact=%s", list);
+    const char *argv[] = { artifact, exact, "--no-cache", NULL };
+    struct zcl_devloop_process_result *p = zcl_calloc(1, sizeof(*p),
+                                                      "early.verify");
+    int64_t started = platform_time_monotonic_us();
+    s->verify_ran = p &&
+        zcl_devloop_process_run_test(root, argv, EARLY_TIMEOUT_MS, p);
+    s->verify_wall_us = platform_time_monotonic_us() - started;
+    if (p)
+        early_verify_judge(p, s->verify_ran, s);
+    if (s->false_narrows)
+        (void)zcl_devloop_early_skip_forget(root, s);
+    fprintf(stderr,
+            "[devloop] early feedback verify (not proof) %s: %u skipped "
+            "groups rerun, %u false narrow(s)\n",
+            s->verify_status, s->verify_groups, s->false_narrows);
+    free(p);
+}
+
+static void early_execute_selected(const char *root, const char *artifact,
+                                   struct zcl_devloop_early_receipt *r)
+{
+    char run[sizeof(r->groups)];
+    r->run_count = early_join_rows(&r->skip, false, run, sizeof(run));
+    early_report_skips(&r->skip);
+    if (r->run_count == 0) {
+        zcl_devloop_early_skip(r, "closure_unchanged",
+                               "every selected group's input closure is "
+                               "unchanged since its last early PASS");
+        early_report(r);
+    } else {
+        early_execute(root, artifact, run, r);
+        if (strcmp(r->status, "green") == 0)
+            (void)zcl_devloop_early_skip_record(root, &r->skip,
+                                                r->artifact_sha256,
+                                                r->wall_us);
+    }
+    early_verify(root, artifact, r);
+}
+
 void zcl_devloop_early_run(const char *root, const char *artifact,
                            const char *artifact_sha256,
                            const struct zcl_devloop_early_plan *plan,
                            const char *full_groups, int64_t fallback_origin_us,
                            struct zcl_devloop_early_receipt *r)
+{
+    zcl_devloop_early_run_keyed(root, artifact, artifact_sha256, plan,
+                                full_groups, fallback_origin_us, NULL, r);
+}
+
+void zcl_devloop_early_run_keyed(const char *root, const char *artifact,
+                                 const char *artifact_sha256,
+                                 const struct zcl_devloop_early_plan *plan,
+                                 const char *full_groups,
+                                 int64_t fallback_origin_us,
+                                 const struct zcl_devloop_early_toolchain *tc,
+                                 struct zcl_devloop_early_receipt *r)
 {
     memset(r, 0, sizeof(*r));
     r->origin_is_edit = plan && plan->origin_us > 0 &&
@@ -379,7 +560,8 @@ void zcl_devloop_early_run(const char *root, const char *artifact,
                                plan->detail);
         return;
     }
-    early_execute(root, artifact, r);
+    early_skip_prepare(root, plan, tc, r);
+    early_execute_selected(root, artifact, r);
 }
 
 static void early_json_selection(const struct zcl_devloop_early_receipt *r,
@@ -406,6 +588,11 @@ static void early_json_result(const struct zcl_devloop_early_receipt *r,
     struct json_value o;
     json_init(&o);
     json_set_object(&o);
+    (void)json_push_kv_int(&o, "groups_selected", r->group_count);
+    (void)json_push_kv_int(&o, "groups_run", r->run_count);
+    (void)json_push_kv_int(&o, "groups_skipped_closure_unchanged",
+                           r->skip.groups_skipped);
+    (void)json_push_kv_int(&o, "false_narrows", r->skip.false_narrows);
     (void)json_push_kv_int(&o, "groups_ran", r->groups_ran);
     (void)json_push_kv_int(&o, "groups_cached", r->groups_cached);
     (void)json_push_kv_int(&o, "groups_failed", r->groups_failed);
@@ -426,6 +613,7 @@ static void early_json_timing(const struct zcl_devloop_early_receipt *r,
     (void)json_push_kv_int(&o, "facts_plan_us", r->facts_plan_us);
     (void)json_push_kv_int(&o, "time_to_first_exec_us", r->first_exec_us);
     (void)json_push_kv_int(&o, "early_wall_us", r->wall_us);
+    (void)json_push_kv_int(&o, "estimated_wall_saved_us", r->skip.saved_us);
     (void)json_push_kv_int(&o, "full_plan_time_to_first_exec_us",
                            r->full_first_exec_us);
     (void)json_push_kv_int(&o, "full_plan_wall_us", r->full_wall_us);
@@ -453,6 +641,7 @@ void zcl_devloop_early_json(const struct zcl_devloop_early_receipt *r,
     early_json_selection(r, &o);
     early_json_result(r, &o);
     early_json_timing(r, &o);
+    zcl_devloop_early_skip_json(&r->skip, &o);
     (void)json_push_kv(doc, "early_feedback", &o);
     json_free(&o);
 }
