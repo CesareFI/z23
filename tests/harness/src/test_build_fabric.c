@@ -644,6 +644,9 @@ static int test_bf_proof_pending_replay_quota(void)
             &had_pending, next_head).ok);
         ASSERT(!had_pending);
         ASSERT_EQ(next_head[0], '\0');
+        uint8_t resumed_root[32];
+        ASSERT(!vcs_proof_ticket_store_put_no_evict(
+            store, second_cp, sizeof(second_cp), resumed_root));
         uint8_t retained[VCS_PROOF_TICKET_WIRE_BYTES];
         size_t retained_len = 0;
         ASSERT(vcs_blob_get_from(store, first_root, retained,
@@ -718,24 +721,35 @@ static int test_bf_proof_pending_replay(void)
             &had_pending, next_head).ok);
         ASSERT(!had_pending);
         ASSERT_EQ(next_head[0], '\0');
-        ASSERT(!build_fabric_proof_pending_replay(
-            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 1, 1,
-            &had_pending, next_head).ok);
-        ASSERT(!had_pending);
-        ASSERT_EQ(next_head[0], '\0');
-        ASSERT(!build_fabric_proof_pending_replay(
+        uint8_t checkpoint_root[32];
+        uint8_t checkpoint_read[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        size_t checkpoint_len = 0;
+        ASSERT(vcs_blob_root(checkpoint, sizeof(checkpoint),
+                             checkpoint_root));
+        ASSERT(vcs_blob_get_from(store, checkpoint_root, checkpoint_read,
+                                 sizeof(checkpoint_read), &checkpoint_len) !=
+               VCS_BLOB_OK);
+        ASSERT(build_fabric_proof_pending_replay(
             &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1,
             &had_pending, next_head).ok);
-        ASSERT(!had_pending);
-        ASSERT_EQ(next_head[0], '\0');
+        ASSERT(had_pending);
+        ASSERT(vcs_blob_get_from(store, checkpoint_root, checkpoint_read,
+                                 sizeof(checkpoint_read), &checkpoint_len) ==
+               VCS_BLOB_OK);
+        ASSERT_EQ(checkpoint_len, sizeof(checkpoint));
+        ASSERT_EQ(memcmp(checkpoint_read, checkpoint,
+                         sizeof(checkpoint)), 0);
         uint8_t retained[VCS_PROOF_TICKET_WIRE_BYTES];
         size_t retained_len = 0;
         ASSERT(vcs_blob_get_from(store, root, retained, sizeof(retained),
                                  &retained_len) == VCS_BLOB_OK);
         ASSERT_EQ(retained_len, sizeof(ticket));
         ASSERT_EQ(memcmp(retained, ticket, sizeof(ticket)), 0);
-        ASSERT(vcs_proof_ticket_store_put(store, checkpoint,
-                                          sizeof(checkpoint), root));
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 1, 1,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
         ASSERT(build_fabric_proof_pending_replay(
             &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1,
             &had_pending, next_head).ok);

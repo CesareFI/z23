@@ -15,9 +15,9 @@ struct vcs_package_store;
 
 /* Re-read the exact staged ticket/checkpoint wires, verify the local signer,
  * sequence and checkpoint parent against the still-current worker head, then
- * require both exact wires already present in CAS and reconstruct the complete
- * issuer log at the proposed next head. An incomplete transfer stays pending
- * until the existing transfer path resumes it. On refusal,
+ * resume missing exact wires into CAS without evicting another package, and
+ * reconstruct the complete issuer log at the proposed next head. A transfer
+ * that cannot fit or replay stays pending. On refusal,
  * outputs clear and the worker's durable head/pending bytes are untouched.
  * This does NOT finalize the database head, authorize reuse, or pin objects.
  * The caller must fence the local issuer writer and store mutation across

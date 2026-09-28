@@ -276,6 +276,11 @@ const char *vcs_proof_reuse_outcome_name(enum vcs_proof_reuse_outcome o);
 bool vcs_proof_ticket_store_put(struct vcs_package_store *store,
                                 const uint8_t *wire, size_t len,
                                 uint8_t blob_root[VCS_PROOF_ROOT_BYTES]);
+/* Resume an interrupted local transfer without evicting older proof history.
+ * A quota refusal keeps the pending head unpublished for later retry. */
+bool vcs_proof_ticket_store_put_no_evict(
+    struct vcs_package_store *store, const uint8_t *wire, size_t len,
+    uint8_t blob_root[VCS_PROOF_ROOT_BYTES]);
 /* Resolve a durable content.v2 checkpoint blob head directly. Verify its
  * exact blob root, signed wire and issuer, then return the protocol checkpoint
  * root expected by issuer-log restore. Outputs change only on success. */

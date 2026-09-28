@@ -114,6 +114,19 @@ bool store_cas_insert(struct vcs_package_store *store,
                       const uint8_t hash[32]);
 void store_cas_remove(struct vcs_package_store *store,
                       const uint8_t hash[32]);
+bool store_chunk_write_verified(struct vcs_package_store *store,
+                                const uint8_t hash[32],
+                                const uint8_t *chunk, size_t chunk_len);
+bool store_manifest_identity(const uint8_t *wire, size_t wire_len,
+                             uint8_t root[32], uint64_t *total_bytes);
+bool store_chunk_inputs_valid(struct vcs_package_store *store,
+                              const uint8_t package_root[32],
+                              const char *path, const uint8_t *chunk);
+const struct vcs_package_file *store_resolve_file(
+    const struct store_package *pkg, const char *path);
+enum vcs_package_store_result store_chunk_hash_checked(
+    const struct store_package *pkg, const char *path, uint32_t chunk_index,
+    const uint8_t *chunk, size_t chunk_len, uint8_t hash[32]);
 
 /* Create the layout, sweep temps, reload manifests (committed + staged),
  * GC unreferenced CAS objects, and commit CAS-complete staged packages.

@@ -104,9 +104,10 @@ bool vcs_blob_root(const uint8_t *bytes, size_t len, uint8_t out_root[32])
     return vcs_blob_root_of(bytes, len, out_root) == VCS_BLOB_OK;
 }
 
-enum vcs_blob_result vcs_blob_put_to(struct vcs_package_store *store,
-                                     const uint8_t *bytes, size_t len,
-                                     uint8_t out_root[32])
+static enum vcs_blob_result blob_put_to_mode(struct vcs_package_store *store,
+                                              const uint8_t *bytes, size_t len,
+                                              uint8_t out_root[32],
+                                              bool no_evict)
 {
     if (!store)
         return VCS_BLOB_ERR_NO_STORE;
@@ -132,8 +133,10 @@ enum vcs_blob_result vcs_blob_put_to(struct vcs_package_store *store,
     }
 
     uint8_t admitted[32];
-    enum vcs_package_store_result sr =
-        vcs_package_store_put_manifest(store, wire, wire_len, admitted);
+    enum vcs_package_store_result sr = no_evict
+        ? vcs_package_store_put_manifest_no_evict(
+              store, wire, wire_len, admitted)
+        : vcs_package_store_put_manifest(store, wire, wire_len, admitted);
     free(wire);
     if (sr != VCS_PACKAGE_STORE_OK)
         LOG_RETURN(VCS_BLOB_ERR_STORE, BLOB_LOG,
@@ -143,8 +146,11 @@ enum vcs_blob_result vcs_blob_put_to(struct vcs_package_store *store,
         LOG_RETURN(VCS_BLOB_ERR_CORRUPT, BLOB_LOG,
                    "admitted root != computed blob root");
 
-    sr = vcs_package_store_put_chunk(store, root, VCS_BLOB_PATH, 0u, bytes,
-                                     len);
+    sr = no_evict
+        ? vcs_package_store_put_chunk_no_evict(
+              store, root, VCS_BLOB_PATH, 0u, bytes, len)
+        : vcs_package_store_put_chunk(
+              store, root, VCS_BLOB_PATH, 0u, bytes, len);
     if (sr != VCS_PACKAGE_STORE_OK)
         LOG_RETURN(VCS_BLOB_ERR_STORE, BLOB_LOG, "blob chunk refused: %s",
                    vcs_package_store_result_string(sr));
@@ -152,6 +158,20 @@ enum vcs_blob_result vcs_blob_put_to(struct vcs_package_store *store,
     if (out_root)
         memcpy(out_root, root, 32);
     return VCS_BLOB_OK;
+}
+
+enum vcs_blob_result vcs_blob_put_to(struct vcs_package_store *store,
+                                     const uint8_t *bytes, size_t len,
+                                     uint8_t out_root[32])
+{
+    return blob_put_to_mode(store, bytes, len, out_root, false);
+}
+
+enum vcs_blob_result vcs_blob_put_to_no_evict(struct vcs_package_store *store,
+                                               const uint8_t *bytes, size_t len,
+                                               uint8_t out_root[32])
+{
+    return blob_put_to_mode(store, bytes, len, out_root, true);
 }
 
 bool vcs_blob_put(const uint8_t *bytes, size_t len, uint8_t out_root[32])

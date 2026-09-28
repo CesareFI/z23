@@ -251,6 +251,13 @@ void vcs_package_store_close_global(void);
 enum vcs_package_store_result vcs_package_store_put_manifest(
     struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
     uint8_t root_out[32]);
+/* Recovery admission for exact local proof blobs: same validation and quota
+ * pools, but returns QUOTA before selecting any HOT/RARE eviction victim.
+ * A refused or interrupted manifest/chunk may remain staged; callers must
+ * still require a complete CAS read before publishing reconstructed state. */
+enum vcs_package_store_result vcs_package_store_put_manifest_no_evict(
+    struct vcs_package_store *store, const uint8_t *wire, size_t wire_len,
+    uint8_t root_out[32]);
 /* Long-lived receiver variant: refresh a changed derived catalog from disk
  * before admission. A failed or racing refresh returns IO without admission. */
 enum vcs_package_store_result vcs_package_store_put_manifest_resync(
@@ -263,6 +270,10 @@ enum vcs_package_store_result vcs_package_store_put_manifest_resync(
  * quota (with eviction) before accepting new bytes and runs the
  * completion commit sweep afterwards. */
 enum vcs_package_store_result vcs_package_store_put_chunk(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const char *path, uint32_t chunk_index, const uint8_t *chunk,
+    size_t chunk_len);
+enum vcs_package_store_result vcs_package_store_put_chunk_no_evict(
     struct vcs_package_store *store, const uint8_t package_root[32],
     const char *path, uint32_t chunk_index, const uint8_t *chunk,
     size_t chunk_len);

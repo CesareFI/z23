@@ -30,6 +30,20 @@ bool vcs_proof_ticket_store_put(struct vcs_package_store *store,
     return true;
 }
 
+bool vcs_proof_ticket_store_put_no_evict(
+    struct vcs_package_store *store, const uint8_t *wire, size_t len,
+    uint8_t blob_root[VCS_PROOF_ROOT_BYTES])
+{
+    if (!store || !wire || !blob_root)
+        LOG_RETURN(false, PTS_LOG, "no-evict store put: null argument");
+    enum vcs_blob_result r = vcs_blob_put_to_no_evict(
+        store, wire, len, blob_root);
+    if (r != VCS_BLOB_OK)
+        LOG_RETURN(false, PTS_LOG, "no-evict store put (%zu bytes): %s", len,
+                   vcs_blob_result_string(r));
+    return true;
+}
+
 bool vcs_proof_checkpoint_store_load(
     struct vcs_package_store *store,
     const uint8_t blob_root[VCS_PROOF_ROOT_BYTES],

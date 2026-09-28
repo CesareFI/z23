@@ -106,6 +106,41 @@ static enum bfpr_transfer_state bfpr_transfer_complete(
     return BFPR_TRANSFER_COMPLETE;
 }
 
+/* The pending row carries signed, exact wires. Resume only their immutable
+ * CAS transfer; quota refusal leaves the published DB head unchanged. */
+static bool bfpr_resume_transfer(
+    struct vcs_package_store *store,
+    const struct db_build_worker_proof_pending *pending,
+    const uint8_t expected_head[32])
+{
+    uint8_t expected_ticket[32], stored_ticket[32], stored_head[32];
+    if (!vcs_blob_root(pending->ticket_wire, sizeof(pending->ticket_wire),
+                       expected_ticket) ||
+        !vcs_proof_ticket_store_put_no_evict(
+            store, pending->ticket_wire, sizeof(pending->ticket_wire),
+            stored_ticket) ||
+        memcmp(stored_ticket, expected_ticket, 32) != 0 ||
+        !vcs_proof_ticket_store_put_no_evict(
+            store, pending->checkpoint_wire, sizeof(pending->checkpoint_wire),
+            stored_head) ||
+        memcmp(stored_head, expected_head, 32) != 0)
+        return false;
+    return true;
+}
+
+static enum bfpr_transfer_state bfpr_transfer_ready(
+    struct vcs_package_store *store,
+    const struct db_build_worker_proof_pending *pending,
+    uint8_t expected_head[32])
+{
+    enum bfpr_transfer_state state =
+        bfpr_transfer_complete(store, pending, expected_head);
+    if (state != BFPR_TRANSFER_INCOMPLETE) return state;
+    if (!bfpr_resume_transfer(store, pending, expected_head))
+        return BFPR_TRANSFER_INCOMPLETE;
+    return bfpr_transfer_complete(store, pending, expected_head);
+}
+
 static bool bfpr_replay_selects_staged(
     const struct vcs_proof_issuer_log *restored,
     const struct db_build_worker_proof_pending *pending,
@@ -168,7 +203,7 @@ struct zcl_result build_fabric_proof_pending_replay(
 
     uint8_t expected_head[32];
     enum bfpr_transfer_state transfer =
-        bfpr_transfer_complete(store, &pending, expected_head);
+        bfpr_transfer_ready(store, &pending, expected_head);
     if (transfer == BFPR_TRANSFER_ROOT_INVALID)
         return ZCL_ERR(-1, "proof-pending-replay-root-invalid");
     if (transfer != BFPR_TRANSFER_COMPLETE)

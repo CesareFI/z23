@@ -15,6 +15,52 @@
 
 #define STORE_LOG "vcs.store"
 
+bool store_chunk_inputs_valid(struct vcs_package_store *store,
+                              const uint8_t package_root[32],
+                              const char *path, const uint8_t *chunk)
+{
+    return store && package_root && path && chunk;
+}
+
+bool store_manifest_identity(const uint8_t *wire, size_t wire_len,
+                             uint8_t root[32], uint64_t *total_bytes)
+{
+    struct vcs_package_manifest manifest;
+    if (!vcs_package_manifest_parse(wire, wire_len, &manifest))
+        return false;
+    if (!vcs_package_manifest_root(&manifest, root)) {
+        vcs_package_manifest_free(&manifest);
+        return false;
+    }
+    *total_bytes = 0;
+    for (size_t i = 0; i < manifest.count; i++)
+        *total_bytes += manifest.files[i].size;
+    vcs_package_manifest_free(&manifest);
+    return true;
+}
+
+const struct vcs_package_file *store_resolve_file(
+    const struct store_package *pkg, const char *path)
+{
+    for (size_t i = 0; i < pkg->manifest.count; i++)
+        if (strcmp(pkg->manifest.files[i].path, path) == 0)
+            return &pkg->manifest.files[i];
+    return NULL;
+}
+
+enum vcs_package_store_result store_chunk_hash_checked(
+    const struct store_package *pkg, const char *path, uint32_t chunk_index,
+    const uint8_t *chunk, size_t chunk_len, uint8_t hash[32])
+{
+    const struct vcs_package_file *file = store_resolve_file(pkg, path);
+    if (!file || chunk_index >= file->chunk_count)
+        return VCS_PACKAGE_STORE_ERR_CHUNK_COORD;
+    if (!vcs_package_verify_chunk(file, chunk_index, chunk, chunk_len))
+        return VCS_PACKAGE_STORE_ERR_CHUNK_HASH;
+    memcpy(hash, file->chunk_hashes + (size_t)chunk_index * 32u, 32);
+    return VCS_PACKAGE_STORE_OK;
+}
+
 uint8_t *store_read_file(const char *path, size_t *out_len)
 {
     *out_len = 0;

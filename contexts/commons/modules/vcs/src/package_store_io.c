@@ -575,6 +575,25 @@ void store_cas_remove(struct vcs_package_store *store,
     store->cas_count--;
 }
 
+bool store_chunk_write_verified(struct vcs_package_store *store,
+                                const uint8_t hash[32],
+                                const uint8_t *chunk, size_t chunk_len)
+{
+    char cas_path[STORE_PATH_MAX];
+    store_cas_path(store, hash, cas_path, sizeof(cas_path));
+    char cas_dir[STORE_PATH_MAX];
+    snprintf(cas_dir, sizeof(cas_dir), "%s", cas_path);
+    char *slash = strrchr(cas_dir, '/');
+    if (!slash)
+        LOG_RETURN(false, STORE_LOG, "malformed CAS path %s", cas_path);
+    *slash = '\0';
+    if (!store_mkdir_p(cas_dir) ||
+        !store_atomic_write(cas_path, chunk, chunk_len) ||
+        !store_cas_insert(store, hash))
+        LOG_RETURN(false, STORE_LOG, "write verified CAS chunk");
+    return true;
+}
+
 void store_package_touch(struct vcs_package_store *store,
                          struct store_package *pkg)
 {

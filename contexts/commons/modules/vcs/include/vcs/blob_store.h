@@ -86,6 +86,11 @@ bool vcs_blob_root(const uint8_t *bytes, size_t len, uint8_t out_root[32]);
 enum vcs_blob_result vcs_blob_put_to(struct vcs_package_store *store,
                                      const uint8_t *bytes, size_t len,
                                      uint8_t out_root[32]);
+/* Local recovery transfer with the same blob bytes/root, but no quota
+ * eviction. QUOTA refusal leaves existing complete packages intact. */
+enum vcs_blob_result vcs_blob_put_to_no_evict(
+    struct vcs_package_store *store, const uint8_t *bytes, size_t len,
+    uint8_t out_root[32]);
 
 /* Read the blob back, re-verified against `root`. Writes at most
  * out_cap bytes and reports the exact length in *out_len (may be NULL
