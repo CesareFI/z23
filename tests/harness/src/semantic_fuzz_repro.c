@@ -980,6 +980,52 @@ static const struct sfz_file k_has_embed_header_deleted[] = {
     SFZ_T1_ALONE,
 };
 
+/* A probe word in a comment or a string literal is no lookup: creating the
+ * path it names leaves note.h's reader alone. */
+static const struct sfz_file k_probe_word_in_comment[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"docs/notes.txt", NULL, "N\n"},
+    {"inc1/note.h",
+     "#ifndef NOTE_H\n"
+     "#define NOTE_H\n"
+     "/* __has_embed(\"../docs/notes.txt\") and #embed <notes.txt> */\n"
+     "// __has_include_next(<notes.txt>)\n"
+     "static const char note_word[] = \"__has_embed(x)\";\n"
+     "#define NOTE_V 3\n"
+     "#endif\n",
+     SFZ_SAME},
+    {"src/t0.c",
+     "#include \"note.h\"\n"
+     "int t0_note(int x)\n"
+     "{\n"
+     "    return x + NOTE_V + (int)sizeof(note_word);\n"
+     "}\n",
+     SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* The real __has_embed follows a line whose C23 digit separator a lexer
+ * that took it for a quote would pair with the string's quote, and then
+ * read the string's comment opener as a comment covering the probe. */
+static const struct sfz_file k_probe_after_separator[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"docs/banner.txt", "Z23\n", NULL},
+    {"src/t0.c",
+     "static const int t0_big = 1'0; static const char t0_s[] = \"'/*\";\n"
+     "static const unsigned char t0_blob[] = {\n"
+     "#if __has_embed(\"../docs/banner.txt\")\n"
+     "#embed \"../docs/banner.txt\"\n"
+     ",\n"
+     "#endif\n"
+     "0};\n"
+     "int t0_blob_len(int x)\n"
+     "{\n"
+     "    return x + t0_big + (int)sizeof(t0_s) + (int)sizeof(t0_blob);\n"
+     "}\n",
+     SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
 /* The macro-operand probe resolves to inc2/cfg_local.h; the edit creates
  * a path no search of it can reach. A replayed probe bounds the change:
  * t0 stays unaffected (an unbound one would widen it on any created path). */
@@ -1347,6 +1393,14 @@ const struct sfz_repro k_sfz_repros[] = {
     {"pass_embed_created", "hasembed",
      "docs/blob.txt, which t0 #embeds behind __has_embed, is created", false,
      NULL, SFZ_FILES(k_embed_created), NULL, true, 0},
+    {"pass_probe_word_in_comment", "hasembed",
+     "docs/notes.txt, which only a comment and a string in note.h name, is "
+     "created: no TU is affected",
+     false, NULL, SFZ_FILES(k_probe_word_in_comment), NULL, true, 0},
+    {"pass_probe_after_separator", "hasembed",
+     "docs/banner.txt, which t0 probes after a digit separator and a string "
+     "holding a comment opener, is deleted",
+     false, NULL, SFZ_FILES(k_probe_after_separator), NULL, true, 0},
     {"F14_has_include_macro", "hasinc_macro",
      "inc2/cfg_local.h, which cfg.h probes as __has_include(CFG_LOCAL), is "
      "deleted (fixed: the sensor replays the expanded operand)",

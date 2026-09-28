@@ -128,9 +128,12 @@ were established:
   `__has_include_next__` spellings, an `#embed` (or `%:embed`) directive,
   and any of these that a line continuation runs through. Its spelled name
   is the occurrence's text (for example `__has_include(OPT_HDR)` or
-  `#embed "blob.bin"`). The scan reads the file's text after line
-  splicing, not tokens, so a word in a comment or a skipped group is
-  recorded too: that costs warm reuse and narrowing, never truth. The facts
+  `#embed "blob.bin"`). The scan lexes the file's text after line
+  splicing as translation phase 3 does, so a word in a comment or in a
+  character or string literal is no lookup (a header name after an
+  include-like directive or a probe word is lexed as one and never opens a
+  comment); a word in a skipped group is recorded too: that costs warm
+  reuse and narrowing, never truth. The facts
   consumer treats a `none` record as reachable by every created or deleted
   path, and one whose name starts `#embed` or `__has_embed` by every changed
   path (see the universe below).

@@ -203,9 +203,11 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * line continuation runs through - is recorded with no negative claim
  * (MISS_V1_NONE), as include_next is: a warm session then recreates the TU,
  * and the facts consumer treats it as reachable by every created or deleted
- * path (and #embed or __has_embed by every changed path). The scan reads
- * text, not tokens, so a word in a comment or a skipped group counts too:
- * that costs warm reuse and precision, never truth.
+ * path (and #embed or __has_embed by every changed path). The scan lexes
+ * the spliced text as translation phase 3 does (cm_code_mask): a word in a
+ * comment or a character or string literal is no lookup, but one in a
+ * skipped group counts too, which costs warm reuse and precision, never
+ * truth.
  * Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
 
 /* The longest spelled name an unbound record keeps. */
@@ -659,22 +661,168 @@ static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
     return cm_cond_unbound(c, f, name, form);
 }
 
+/* ---- where a conditional lookup can start: code, not comments or literals -- */
+
+/* A word after which '<' opens a header name: an include-like directive's,
+ * or a conditional-lookup word's (past its '('). */
+static bool cm_hdr_word(const char *s, size_t a, size_t b)
+{
+    static const char *const words[] = {
+        "include",       "include_next",       "import",
+        "embed",         "__has_include",      "__has_include_next",
+        "__has_include__", "__has_include_next__", "__has_embed",
+    };
+    for (size_t k = 0; k < sizeof(words) / sizeof(words[0]); k++)
+        if (strlen(words[k]) == b - a && memcmp(s + a, words[k], b - a) == 0)
+            return true;
+    return false;
+}
+
+static bool cm_blank(char ch)
+{
+    return ch == ' ' || ch == '\t';
+}
+
+/* The end of the header name the '<' at s[i] opens: just past its '>'; 0
+ * when no such word precedes it, or a '"' or the line's end comes before
+ * the '>' (then it is a punctuator and lexing goes on after it). */
+static size_t cm_hdr_end(const char *s, size_t i, size_t n)
+{
+    size_t j = i, w;
+    while (j > 0 && cm_blank(s[j - 1]))
+        j--;
+    if (j > 0 && s[j - 1] == '(')
+        for (j--; j > 0 && cm_blank(s[j - 1]);)
+            j--;
+    for (w = j; w > 0 && cm_ident_char(s[w - 1]); w--)
+        ;
+    if (w == j || !cm_hdr_word(s, w, j))
+        return 0;
+    for (j = i + 1; j < n && s[j] != '\n' && s[j] != '"'; j++)
+        if (s[j] == '>')
+            return j + 1;
+    return 0;
+}
+
+/* The end of the line or block comment at s[i]: a line comment leaves its
+ * newline; an unterminated block comment runs to the end. */
+static size_t cm_comment_end(const char *s, size_t i, size_t n)
+{
+    const char *end;
+    if (s[i + 1] == '/') {
+        end = memchr(s + i, '\n', n - i);
+        return end == NULL ? n : (size_t)(end - s);
+    }
+    for (size_t j = i + 2; j + 1 < n; j++)
+        if (s[j] == '*' && s[j + 1] == '/')
+            return j + 2;
+    return n;
+}
+
+/* The end of the character or string literal at s[i]: past its closing
+ * quote, or at the raw newline that leaves it unterminated. */
+static size_t cm_literal_end(const char *s, size_t i, size_t n)
+{
+    size_t j = i + 1;
+    while (j < n && s[j] != s[i] && s[j] != '\n')
+        j += s[j] == '\\' && j + 1 < n ? 2 : 1;
+    return j < n && s[j] == s[i] ? j + 1 : j;
+}
+
+static bool cm_digit(char ch)
+{
+    return ch >= '0' && ch <= '9';
+}
+
+/* The end of the pp-number at s[i]: digits, letters, '_', '.', an exponent
+ * sign, and a C23 digit separator followed by a digit or nondigit. */
+static size_t cm_ppnum_end(const char *s, size_t i, size_t n)
+{
+    size_t j = i + 1;
+    while (j < n) {
+        char c = s[j], p = s[j - 1];
+        if ((c == '+' || c == '-') &&
+            (p == 'e' || p == 'E' || p == 'p' || p == 'P'))
+            j++;
+        else if (c == '\'' && j + 1 < n && cm_ident_char(s[j + 1]))
+            j += 2;
+        else if (cm_ident_char(c) || c == '.')
+            j++;
+        else
+            break;
+    }
+    return j;
+}
+
+/* The end of the token or gap at s[i], as translation phase 3 lexes the
+ * spliced text; *code false for a comment or a literal. An identifier ends
+ * at its last identifier byte, so an encoding prefix's literal (u8"x") is
+ * the next token. */
+static size_t cm_lex_one(const char *s, size_t i, size_t n, bool *code)
+{
+    char ch = s[i], nx = i + 1 < n ? s[i + 1] : '\0';
+    size_t j;
+    *code = true;
+    if (ch == '/' && (nx == '/' || nx == '*')) {
+        *code = false;
+        return cm_comment_end(s, i, n);
+    }
+    if (ch == '"' || ch == '\'') {
+        *code = false;
+        return cm_literal_end(s, i, n);
+    }
+    if (cm_digit(ch) || (ch == '.' && cm_digit(nx)))
+        return cm_ppnum_end(s, i, n);
+    if (cm_ident_char(ch)) {
+        for (j = i + 1; j < n && cm_ident_char(s[j]); j++)
+            ;
+        return j;
+    }
+    if (ch == '<' && (j = cm_hdr_end(s, i, n)) != 0)
+        return j;
+    return i + 1;
+}
+
+/* code[i]: s[i] lies outside every comment and character or string
+ * literal. A conditional-lookup word or directive can only start there; a
+ * word in a comment or a literal is none (a header name's text is code, and
+ * never opens a comment). The lexer is phase 3's over the spliced text,
+ * with a header name recognized after an include-like directive word or a
+ * conditional-lookup word. */
+static uint8_t *cm_code_mask(const struct cm_spliced *t)
+{
+    uint8_t *code = zcl_malloc(t->n + 1, "clang_manifest.code_mask");
+    if (code == NULL)
+        return NULL;
+    for (size_t i = 0; i < t->n;) {
+        bool is_code;
+        size_t end = cm_lex_one(t->s, i, t->n, &is_code);
+        memset(code + i, is_code ? 1 : 0, end - i);
+        i = end;
+    }
+    return code;
+}
+
 bool cm_scan_has_include(struct cm_core *c)
 {
     for (size_t k = 0; k < c->nfiles; k++) {
         const struct cm_file *f = &c->files[k];
         struct cm_spliced t;
+        uint8_t *code = NULL;
         bool ok;
         if (f->origin == VCS_SEMANTIC_ORIGIN_V1_SYSTEM)
             continue;
         ok = cm_splice(f->contents, f->size, &t);
         if (!ok)
             (void)cm_fail(c, "cannot splice %s", f->path);
+        else if ((code = cm_code_mask(&t)) == NULL)
+            ok = cm_fail(c, "out of memory");
         for (size_t i = 0; ok && i < t.n; i++) {
             char ch = t.s[i];
-            if (ch == '_' || ch == '#' || ch == '%')
+            if ((ch == '_' || ch == '#' || ch == '%') && code[i] != 0)
                 ok = cm_cond_at(c, f, &t, i);
         }
+        free(code);
         cm_spliced_free(&t);
         if (!ok)
             return false;

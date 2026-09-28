@@ -19,11 +19,12 @@
  *   - the attribute call refs (cleanup(f)) and alias address refs (alias,
  *     asm label, including one declared in a preamble header) of a reparse
  *     equal a cold parse's, verified and qualified;
- *   - a conditional lookup the text scan cannot replay (a macro-operand
- *     __has_include, __has_include_next, __has_embed, #embed, one a line
- *     continuation runs through) recreates and verifies its TU on every
- *     emit, even while the header it asks about appears and goes; a literal
- *     __has_include stays warm;
+ *   - a conditional lookup the text scan cannot replay (a macro operand
+ *     that is no string literal, the GNU spellings, __has_embed, #embed,
+ *     one a line continuation runs through) recreates and verifies its TU
+ *     on every emit, even while the header it asks about appears and goes;
+ *     a literal or string-literal-macro __has_include, a __has_include_next
+ *     and a probe word in a comment or a string stay warm;
  *   - a reparse whose own manifest has a shadow candidate the TU's baseline
  *     lacks (a header only that reparse read), or a lookup with no negative
  *     claim (a computed include below the preamble), is retried as a fresh
@@ -866,12 +867,13 @@ static int sss_t_attrs(struct sss_ctx *c, bool verify)
 /* ── lookups the scan cannot replay ─────────────────────────────────────── */
 
 /* A repo header whose answer depends on a __has_include the scan cannot
- * replay (a macro operand): nothing binds that answer, so no emit of the TU
- * may be a qualified reparse. opt.h sits in the search path, then goes. */
+ * replay (a macro operand that expands to a header name, not a string
+ * literal): nothing binds that answer, so no emit of the TU may be a
+ * qualified reparse. opt.h sits in the search path, then goes. */
 static const char k_sss_gate[] =
     "#ifndef GATE_H\n"
     "#define GATE_H\n"
-    "#define OPT_HDR \"opt.h\"\n"
+    "#define OPT_HDR <opt.h>\n"
     "#if __has_include(OPT_HDR)\n"
     "typedef long fx_opt_t;\n"
     "#else\n"
@@ -921,8 +923,8 @@ struct sss_unbound {
 };
 
 static const struct sss_unbound k_sss_unbound[] = {
-    {"next", "#if 0\n#if __has_include_next(<opt.h>)\n#endif\n#endif\n",
-     "lookup-unbound __has_include_next(<opt.h>)"},
+    {"gnu-next", "#if 0\n#if __has_include_next__(<opt.h>)\n#endif\n#endif\n",
+     "lookup-unbound __has_include_next__(<opt.h>)"},
     {"has-embed", "#if 0\n#if __has_embed(\"opt.h\")\n#endif\n#endif\n",
      "lookup-unbound __has_embed("},
     {"embed", "#if 0\nstatic const char b[] = {\n#embed \"opt.h\"\n};\n#endif\n",
@@ -937,6 +939,21 @@ static const struct sss_unbound k_sss_unbound[] = {
      "lookup-unbound __has_include__(<opt.h>)"},
 };
 #define SSS_UNBOUND (sizeof(k_sss_unbound) / sizeof(k_sss_unbound[0]))
+
+/* The spellings the scan replays, or that are no lookup at all: each keeps
+ * its TU warm. */
+static const struct sss_unbound k_sss_warm[] = {
+    {"literal", "#if __has_include(\"opt.h\")\n#endif\n", ""},
+    {"macro-literal",
+     "#define OPT_NAME \"opt.h\"\n#if __has_include(OPT_NAME)\n#endif\n", ""},
+    {"next-literal", "#if __has_include_next(<opt.h>)\n#endif\n", ""},
+    {"comment-words",
+     "/* __has_embed(\"opt.h\") __has_include_next(<opt.h>) */\n"
+     "// #embed <opt.h>\n"
+     "const char *const fx_word = \"__has_include(OPT_HDR)\";\n",
+     ""},
+};
+#define SSS_WARM (sizeof(k_sss_warm) / sizeof(k_sss_warm[0]))
 
 static const char *g_sss_gate_body;
 
@@ -991,11 +1008,15 @@ static int sss_t_unbound(struct sss_ctx *c)
                                     sizeof(reply)));
             ASSERT(sss_is(reply, "verify", "equal"));
         }
-        /* A literal operand is replayed: its TU stays warm. */
-        ASSERT(sss_unbound_pair(c, &p, "literal",
-                                "#if __has_include(\"opt.h\")\n#endif\n", "",
-                                reply, sizeof(reply)));
-        ASSERT(sss_is(reply, "written", "warm"));
+        /* A literal or string-literal-macro operand and a __has_include_next
+         * are replayed, and a word in a comment or a string is no lookup:
+         * each TU stays warm. */
+        for (size_t k = 0; k < SSS_WARM; k++) {
+            const struct sss_unbound *u = &k_sss_warm[k];
+            ASSERT(sss_unbound_pair(c, &p, u->name, u->body, u->why, reply,
+                                    sizeof(reply)));
+            ASSERT(sss_is(reply, "written", "warm"));
+        }
         started = false;
         ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 0);
         ASSERT(strstr(reply, "\"mismatches\":0,") != NULL);
