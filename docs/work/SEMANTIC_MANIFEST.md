@@ -1461,9 +1461,13 @@ must miss exactly `t0.c` and `t0_banner`. The fixed shapes
 `pass_embed_created` (an `#embed` of a created file),
 `pass_has_include_shadow_gcc_deps` (a literal `__has_include` shadowed
 by a file created in an earlier `-I` dir), `pass_has_embed_header_deleted`
-(the probe sits in a header) and `pass_has_include_macro_elsewhere` (a
+(the probe sits in a header), `pass_has_include_macro_elsewhere` (a
 created path the macro operand's replayed search never visits, which must
-leave the plan with no TU) pin over-selection 0.
+leave the plan with no TU), `pass_probe_word_in_comment` (a path only a
+comment and a string literal name is created: no TU) and
+`pass_probe_after_separator` (a real `__has_embed` after a C23 digit
+separator and a string holding a comment opener, which a lexer that took
+the separator for a quote would hide) pin over-selection 0.
 
 The one known-RED reproducer is a toolchain case (no text edit the
 consumer misreads):
@@ -1531,11 +1535,17 @@ by its target text, so an edit to the file a link names changes only
 that file's path. The sensor records the path a link resolves to, so a
 TU that reads a header through a link is a reader of its target; a
 changed link is no regular file to the include graph, so a retarget
-falls back (`include-graph-truncated`). In 64 no-ctr-line seeds of each,
-only `hasembed` (26) and `hasinc_macro` (10) missed, every miss the
-deletion of a file only a probe names (F13, F14); with gcc depfiles
-(48 gcc-deps seeds) `hasinc_macro` also missed 12 creations, under
-narrowed plans (F15). 48 gcc-deps seeds each of `symlink_retarget`,
+falls back (`include-graph-truncated`). Before the probe fix above, in 64
+no-ctr-line seeds of each, only `hasembed` (26) and `hasinc_macro` (10)
+missed, every miss the deletion of a file only a probe names (F13, F14);
+with gcc depfiles (48 gcc-deps seeds) `hasinc_macro` also missed 12
+creations, under narrowed plans (F15). With it, seeds 1 to 64 of
+`hasembed` and `hasinc_macro` (no-ctr-line), and seeds 1 to 48 of
+`hasinc_macro` and `shadow` (gcc-deps) and of `hasinc` (no-ctr-line),
+find no miss; under mutant `NO_UNBOUND` the `hasembed` seeds miss in 29
+of 64 and the `hasinc_macro` seeds in 9 of 64 (no-ctr-line) and 7 of 48
+(gcc-deps), and every range measures the same over-selection with the
+rule as without it. 48 gcc-deps seeds each of `symlink_retarget`,
 `pragma_alias`, `macro_include` and `file_macro`, and 48 all-profile
 seeds each of `pragma_alias` and `embed_data`, found no miss. The
 `#embed` kinds need a compiler with `#embed` for the depfiles, so they
