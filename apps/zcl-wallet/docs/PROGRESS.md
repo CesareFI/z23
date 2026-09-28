@@ -7746,3 +7746,61 @@ Evidence is in `.cache/minified-api35-16k-20260928/`. This adds current minified
 x86_64 emulator runtime evidence; physical optics, arm64 hardware and successful
 hardware-authenticated custody remain open. Publication of preceding work is
 still refused by the installed development-ref policy; no bypass was used.
+
+## Retire an idle executor after shutdown fails — 2026-09-28
+
+An idle platform owner could become closed with its pool already in SHUTDOWN,
+but retain session cleanup and one of the two process admissions indefinitely
+if shutdown threw before waking the worker. Controlled public thread-factory
+faults reproduced this on API30/36 with CheckJNI enabled. Separate bounded
+32 MiB JVM heap-exhaustion probes reproduced the retained marker/session with
+both Serial and G1 collectors, including a previously exercised queue.
+
+The pool now tracks task execution under the existing owner monitor. After a
+failed shutdown, an already-shut-down idle worker is awakened so normal pool
+termination can clear session data and return admission. An active operation,
+including one waiting for its provider, remains uninterrupted and owns its
+input until its finally block completes. The original failure is preserved.
+Termination clears the worker reference without taking the owner monitor,
+avoiding inversion with ThreadPoolExecutor's internal lock. The queue, worker
+and admission bounds remain unchanged; two references and one boolean are
+added per pool, with no extra queue, service or worker allocation.
+
+Two new JVM and two new Android regressions cover idle cleanup and active
+operation retention. A mutation that interrupted active work fails the latter
+test. All four bounded JVM pressure probes now observe termination, marker
+erasure and session cleanup before fixture recovery while preserving the
+original out-of-memory error. Total Android heap exhaustion remains a narrower
+limitation: the API36 exploratory probe aborts in FinalizerDaemon's System.log
+JNI call with a pending OOME; a cold API30 queue also exposed a framework
+worker exception. These retained failures are not device-wide OOM-survival
+evidence, and CheckJNI was never disabled. The committed Android regression
+uses a controlled shutdown fault without exhausting the platform heap.
+
+Full Gradle build/test/lint/isolation/alignment passes in 39 seconds: 54 app
+JVM cases reran and 97 unchanged core cases remained up-to-date. All 114 selected
+layout, secret-view, authentication, executor, storage, key-vector and read-only
+lifecycle cases pass with CheckJNI and no skips on API30/36 in 30.906/75.492
+seconds. Balance, history and full-source review also pass actual process
+termination and empty replacement on both APIs. The first broad selector
+accidentally included a screen-lock-dependent Keystore case; the result checker
+refused that run. The corrected selector retains the existing unauthenticated
+key refusal test and leaves hardware qualification separate.
+
+The 25 relevant native custody/storage/record/retirement groups pass Clang/GCC
+ASan/UBSan in 5.35/7.22 seconds. Record fuzzing completes 991567 executions in
+31 seconds with no finding, under 1024-byte, five-second-case and 512 MiB RSS
+bounds (208 MiB observed). Architecture, whitespace and native complexity caps
+10/15 pass. No C or consensus source changes. The temporary pressure-probe
+classes are absent from the normal Android test APK.
+
+Release DEX grows from 91932 to 92448 bytes; both native libraries remain
+byte-identical and the unsigned APK remains 641659 bytes, SHA256
+`895ed6d75ed48f0cabaef86a94504320552a7f128e8ba5e6ae3bb69395bc03bf`.
+Source-only tree `53cb5256dd2cb2f4cb124e5b37d8248524f9af7a`, containing final
+implementation/tests and preceding notes, reproduces the complete APK with
+57 uncached tasks in 49 seconds. No heap or latency improvement is claimed.
+Evidence is in `.cache/executor-shutdown-20260928/`, with exploratory pressure
+failures in `.cache/executor-pressure-20260928/`. Continue with permitted
+platform lifecycle/error-path work; hardware custody and the development-ref
+publication policy remain separate open gates.

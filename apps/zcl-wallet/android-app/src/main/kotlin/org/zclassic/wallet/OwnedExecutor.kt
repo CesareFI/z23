@@ -21,11 +21,33 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Cleanup callbacks must only clear owned data and must not throw or block.
  */
 internal class OwnedExecutor {
-    private class SessionExecutor : ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(4),
+    private class SessionExecutor(private val control: Any) : ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(4),
         { task -> Thread(task, "WalletPlatform") }, AbortPolicy()) {
         @Volatile var clearSession: (() -> Unit)? = null
+        @Volatile private var worker: Thread? = null
+        private var executing = false // Guarded by the owner's control monitor.
+
+        override fun beforeExecute(thread: Thread, task: Runnable) {
+            super.beforeExecute(thread, task)
+            synchronized(control) { worker = thread; executing = true }
+        }
+
+        override fun afterExecute(task: Runnable, problem: Throwable?) {
+            try { super.afterExecute(task, problem) }
+            finally { synchronized(control) { executing = false } }
+        }
+
+        fun wakeIdleAfterFailedShutdown() = synchronized(control) {
+            // shutdown() can enter SHUTDOWN and fail before waking its idle
+            // worker. Active operations (even waiting ones) must finish safely.
+            // A task still before beforeExecute will observe the closed owner.
+            if (isShutdown && !executing) worker?.interrupt()
+        }
 
         override fun terminated() {
+            // ThreadPoolExecutor holds its main lock here. Never take control:
+            // close() holds control while acquiring that internal lock.
+            worker = null
             val cleanup = clearSession
             clearSession = null
             try { cleanup?.invoke() }
@@ -36,11 +58,11 @@ internal class OwnedExecutor {
     private companion object {
         val owners = Semaphore(2) // Foreground work plus one retiring operation.
 
-        fun reserveExecutor(): SessionExecutor? {
+        fun reserveExecutor(control: Any): SessionExecutor? {
             if (!owners.tryAcquire()) return null
             var transferred = false
             try {
-                val executor = SessionExecutor()
+                val executor = SessionExecutor(control)
                 transferred = true
                 return executor
             } finally { if (!transferred) owners.release() }
@@ -66,7 +88,7 @@ internal class OwnedExecutor {
         }
         var current: ThreadPoolExecutor? = null
         try {
-            current = executor ?: reserveExecutor()?.also { executor = it }
+            current = executor ?: reserveExecutor(control)?.also { executor = it }
             if (current == null) { task.discard(); return false }
             current.execute(task)
             true
@@ -100,7 +122,11 @@ internal class OwnedExecutor {
         // pool. Preserve the first failure without allocating suppressed data.
         current.clearSession = clearSession
         try { current.shutdown() }
-        catch (problem: Throwable) { if (failure == null) failure = problem }
+        catch (problem: Throwable) {
+            if (failure == null) failure = problem
+            try { current.wakeIdleAfterFailedShutdown() }
+            catch (_: Throwable) { /* Preserve the first failure. */ }
+        }
         if (failure != null) throw failure
     }
 

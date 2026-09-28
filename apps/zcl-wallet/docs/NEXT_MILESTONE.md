@@ -54,8 +54,10 @@ inspection cannot establish consensus validity or authorize signing.
 The current permitted continuation covers wallet/platform lifecycle reliability,
 read-only processing measurement and release quality while physical custody
 qualification remains open. Executor draining now survives a queued cleanup
-failure, authentication failure notification survives cancellation errors, and
-a bounded public-fixture sync benchmark is available. The current unsigned
+failure, and shutdown failure after the pool enters SHUTDOWN now wakes an idle
+worker without interrupting active platform work. Authentication failure
+notification survives cancellation errors, and a bounded public-fixture sync
+benchmark is available. The current unsigned
 release has been reproduced from a fresh source-only directory on the same
 host/toolchain. Exact evidence and the next concrete task are in `PROGRESS.md`.
 TLS quarantine remains untouched; do not resume its review as an implicit next

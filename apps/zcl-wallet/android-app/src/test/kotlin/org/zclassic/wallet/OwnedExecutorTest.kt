@@ -5,6 +5,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
@@ -34,6 +35,77 @@ class OwnedExecutorTest {
         val field = OwnedExecutor::class.java.getDeclaredField("executor").apply { isAccessible = true }
         val backend = field.get(owner) as ThreadPoolExecutor?
         if (backend != null) assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+    }
+
+    @Test fun shutdownFailureRetiresAnIdleWorker() {
+        verifyShutdownFailure(active = false)
+    }
+
+    @Test fun shutdownFailureDoesNotInterruptAnActiveOperation() {
+        verifyShutdownFailure(active = true)
+    }
+
+    private fun verifyShutdownFailure(active: Boolean) {
+        val owner = OwnedExecutor()
+        val backend = idleBackend(owner, 1)
+        val originalFactory = backend.threadFactory
+        val problem = OutOfMemoryError("Public shutdown-state allocation failure")
+        val armed = AtomicBoolean(false)
+        val interrupted = AtomicBoolean(false)
+        val workerFailure = AtomicReference<Throwable?>()
+        val worker = AtomicReference<Thread>()
+        val ready = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val finalized = CountDownLatch(1)
+        val words = charArrayOf('a', 'b', 'c')
+        backend.threadFactory = ThreadFactory { task ->
+            object : Thread(task, "WalletPublicShutdownFixture") {
+                override fun isInterrupted(): Boolean {
+                    if (armed.compareAndSet(true, false)) throw problem
+                    return super.isInterrupted()
+                }
+            }.also { worker.set(it) }
+        }
+        try {
+            assertTrue(owner.submit {
+                ready.countDown()
+                if (active) try { check(release.await(10, TimeUnit.SECONDS)) }
+                catch (failure: Throwable) {
+                    interrupted.set(failure is InterruptedException)
+                    workerFailure.set(failure)
+                }
+            })
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            val waiting = if (active) Thread.State.TIMED_WAITING else Thread.State.WAITING
+            val limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (worker.get().state != waiting && System.nanoTime() < limit) Thread.yield()
+            assertEquals(waiting, worker.get().state)
+            armed.set(true)
+            assertSame(problem, assertFailsWith<OutOfMemoryError> {
+                owner.close { words.fill('\u0000'); finalized.countDown() }
+            })
+            assertTrue(owner.isClosed)
+            assertTrue(backend.isShutdown)
+            if (active) {
+                assertEquals(1L, finalized.count)
+                assertTrue(words.contentEquals(charArrayOf('a', 'b', 'c')))
+                release.countDown()
+            }
+            assertTrue(finalized.await(2, TimeUnit.SECONDS), "Shutdown failure stranded session cleanup")
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            assertTrue(words.all { it == '\u0000' })
+            assertFalse(interrupted.get())
+            workerFailure.get()?.let { throw it }
+        } finally {
+            armed.set(false)
+            backend.threadFactory = originalFactory
+            release.countDown()
+            backend.shutdown()
+            assertTrue(backend.awaitTermination(5, TimeUnit.SECONDS))
+            owner.close()
+            words.fill('\u0000')
+        }
+        assertBothAdmissionsAvailable()
     }
 
     @Test fun closingWorkersRetainTheProcessBudgetUntilTheirTasksFinish() {
