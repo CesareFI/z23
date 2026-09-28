@@ -993,8 +993,27 @@ static bool fxm_names_target(const char *t, const char *path)
  * (fxm_gen_recipe). A rule a define holds is made by an $(eval) no line
  * spells: UNKNOWN. A target-specific value makes nothing. A rule's
  * targets (a define's too) are expanded a many-word value as its words. */
+static bool fxm_makes_anything(const char *t)
+{
+    while (*t != '\0') {
+        size_t n = 0;
+        while (fxm_space(*t))
+            t++;
+        while (t[n] != '\0' && !fxm_space(t[n]))
+            n++;
+        if ((n == 1 && t[0] == '%') || (n == 8 && strncmp(t, ".DEFAULT", 8) == 0))
+            return true;
+        t += n;
+    }
+    return false;
+}
+
 static void fxm_missing_made(struct fxm *m)
 {
+    /* A match-anything rule (%:) or .DEFAULT makes any file: every
+     * missing optional include is made from a recipe no rule names it in. */
+    for (size_t r = 0; m->missing.n > 0 && r < m->nrules; r++)
+        m->unknown |= fxm_makes_anything(m->rules[r].targets);
     for (size_t k = 0; !m->unknown && m->missing.n > 0 && k < m->nlines; k++) {
         const struct fxm_line *l = &m->lines[k];
         size_t n = l->from > 0 ? l->from - 1 : 0;
@@ -1278,6 +1297,7 @@ static uint8_t fxm_rule(struct fxm *m, struct fxm_place *st, const char *s,
         t++;
     r->reached = !st->goal && fxm_goal_target(t);
     r->gen = false;
+    r->writes = 0;
     st->goal |= r->reached;
     if ((r->targets = zcl_strdup(t, "facts_consumer.mktgt")) == NULL) {
         m->unknown = true;

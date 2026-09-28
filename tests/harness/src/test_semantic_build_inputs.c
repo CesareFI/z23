@@ -1055,6 +1055,7 @@ static int sbit_t_generated_comment(void)
                            "-include build/ready.mk\nbuild/ready.mk:\n"
                            "\t@set -eu; tmp=\"$$(mktemp \"$@.XXXXXX\")\"; "
                            "trap 'rm -f \"$$tmp\"' EXIT; "
+                           "SID='$(SID)' tools/dev/sid.sh drop; "
                            "printf '%s\\n' '# ready' > \"$$tmp\"; "
                            "mv -f -- \"$$tmp\" \"$@\"\n"
                            SBI_OBJ_RULE SBI_GEN_RULE,
@@ -1062,6 +1063,60 @@ static int sbit_t_generated_comment(void)
         ASSERT(sbi_narrowed(&r));
     } TEST_END
     zcl_devloop_facts_report_free(&r.rep);
+    return failures;
+}
+
+/* The re-review's generated-include cases: an optional include
+ * build/gen.mk a rule makes, whose recipe (r) writes text that names gen
+ * only once the shell has run it. */
+#define SBI_GEN_INCLUDE(r)                                                     \
+    "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\nbuild/gen.mk:\n" \
+    r SBI_GEN_RULE
+
+static int sbit_t_generated_joins(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"g02", SBI_GEN_INCLUDE("\tprintf 'build/a.o: | g%sn\\n' e > $@\n"),
+         NULL, NULL},
+        {"g03b", SBI_GEN_INCLUDE("\tprintf 'build/a.o: | ge%c\\n' n > $@\n"),
+         NULL, NULL},
+        {"g13", SBI_GEN_INCLUDE("\tprintf 'build/a.o: | %s%s\\n' ge n > $@\n"),
+         NULL, NULL},
+        {"g04", SBI_GEN_INCLUDE("\tprintf 'build/a.o: | g' > $@; "
+                                "printf 'en\\n' >> $@\n"), NULL, NULL},
+        {"g05", SBI_GEN_INCLUDE("\techo -n 'build/a.o: | ge' > $@ && "
+                                "echo n >> $@\n"), NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a generated include's text joined by "
+             "a printf conversion or by two writes reaches the goal it "
+             "joins") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+static int sbit_t_generated_unreadable(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"g10", SBI_GEN_INCLUDE("\ttrue $(shell printf 'build/a.o: | gen\\n' "
+                                "> $@)\n"), NULL, NULL},
+        {"g12", SBI_GEN_INCLUDE("\ttools/genmk.sh $@\n"), "tools/genmk.sh",
+         "#!/bin/sh\nprintf 'build/a.o: | gen\\n' > \"$1\"\n"},
+        {"g15", "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                "%:\n\tprintf 'build/a.o: | gen\\n' > $@\n" SBI_GEN_RULE,
+         NULL, NULL},
+        {"g15_default", "all: build/a.o\n" SBI_OBJ_RULE
+                        "-include build/gen.mk\n.DEFAULT:\n"
+                        "\tprintf 'build/a.o: | gen\\n' > $@\n" SBI_GEN_RULE,
+         NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a generated include written by "
+             "$(shell), by a program handed its name, or by a match-anything "
+             "or .DEFAULT rule widens") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
     return failures;
 }
 
@@ -1081,5 +1136,6 @@ int test_semantic_build_inputs(void)
           sbit_t_computed_prerequisite() | sbit_t_computed_goal_word() |
           sbit_t_grouped_echo_pipe() | sbit_t_submake_goals() |
           sbit_t_unreadable_text() | sbit_t_optional_include() |
-          sbit_t_generated_include() | sbit_t_generated_comment();
+          sbit_t_generated_include() | sbit_t_generated_comment() |
+          sbit_t_generated_joins() | sbit_t_generated_unreadable();
 }

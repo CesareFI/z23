@@ -92,6 +92,7 @@ struct fxm_line {
 struct fxm_rule {
     char *targets; /* expanded; its .PHONY words NUL-ended once paired */
     bool gen;      /* makes an optional include that does not exist yet */
+    uint8_t writes; /* gen: its recipe's commands that write to a file */
     bool reached;  /* can build, or run while building, an object: a
                     * file target, or a makefile's first rule (a bare make
                     * runs it) */
@@ -110,6 +111,7 @@ struct fxm_vname {
     bool shelly; /* a definition may carry shell syntax into a recipe */
     bool goal;   /* its value may be a goal or a prerequisite */
     bool cmd;    /* its value may hold the make command */
+    bool runs;   /* a recipe that expands it runs $(shell), $(file) or $(eval) */
 };
 
 /* The rule a line belongs to as the text is read. */
@@ -134,6 +136,7 @@ struct fxm {
     bool second; /* .SECONDEXPANSION: a prerequisite list is expanded twice */
     bool body;   /* the placed line is one a define holds */
     bool shelly_any; /* any variable may carry shell syntax */
+    bool runs_any;   /* any variable may run something as a recipe expands it */
     bool lists;      /* an include line: a many-word value is its words */
     bool pending;    /* a goal position waits on a variable not yet read in one */
     bool probe;      /* goal words are only tested for a file goal... */
@@ -218,6 +221,9 @@ bool fxm_token_phony(struct fxm *m, const char *t);
 char *fxm_command_end(char *p);
 char *fxm_command_word(char *p, const char *e);
 char *fxm_word_end(char *p);
+/* Call fn on every reference in s (with twice, '$$(' too): whether one did. */
+bool fxm_each_ref(struct fxm *m, const char *s, bool twice,
+                  bool (*fn)(struct fxm *, const char *, size_t));
 
 /* make_goal.c: the .PHONY goals a line names through a value no text
  * spells. */
@@ -227,5 +233,7 @@ bool fxm_goal_words(struct fxm *m, const char *raw, bool twice, bool shell);
  * words it writes into that makefile reach what they name; a command
  * whose output or copy can be makefile text no line holds is UNKNOWN. */
 bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l);
+/* Mark every variable a recipe runs something by expanding (vname.runs). */
+void fxm_gen_runs(struct fxm *m);
 
 #endif

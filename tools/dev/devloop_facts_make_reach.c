@@ -76,8 +76,8 @@ size_t fxm_ref_name(const char *d, const char **name)
 /* fn over every variable s references; whether it held for any. With
  * twice, '$$(X)' references X too (text a later $(eval) or $(call) expands
  * again); without it '$$' is an escaped '$' (a recipe's shell text). */
-static bool fxm_each_ref(struct fxm *m, const char *s, bool twice,
-                         bool (*fn)(struct fxm *, const char *, size_t))
+bool fxm_each_ref(struct fxm *m, const char *s, bool twice,
+                  bool (*fn)(struct fxm *, const char *, size_t))
 {
     bool any = false;
     for (const char *d = strchr(s, '$'); d != NULL; d = strchr(d + 1, '$')) {
@@ -1434,6 +1434,7 @@ void fxm_reach(struct fxm *m)
     fxm_strs_seal(&m->phony);
     fxm_pairs(m);
     fxm_cmds(m);
+    fxm_gen_runs(m);
     while (grew && !m->unknown) {
         grew = false;
         for (size_t k = 0; k < m->nlines; k++) {

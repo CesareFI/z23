@@ -220,8 +220,9 @@ bool fxm_goal_words(struct fxm *m, const char *raw, bool twice,
 /* A recipe line of a rule that makes a missing optional include is read
  * as a small shell: each command is one fxm_gen_plain allows or a program
  * the tree holds; the words a printf or echo writes to a file are makefile
- * text (fxm_gen_printed); mv moves only a temporary file mktemp named. Any
- * other command, a redirection of anything else, or a line too long to
+ * text (fxm_gen_printf, fxm_gen_echo); mv moves only a temporary file
+ * mktemp named. Any other command, a redirection of anything else, a
+ * $(shell), $(file) or $(eval) the recipe expands, or a line too long to
  * hold is UNKNOWN. */
 #define FXM_GEN_MAX 4096
 
@@ -372,34 +373,119 @@ static bool fxm_gen_words(char *p, struct fxm_gen_cmd *c)
     return !next;
 }
 
-/* One word a printf or echo writes to a file: the makefile text it spells.
- * Quotes are no text; a written newline (\n) or tab (\t) separates; in a
- * printf format (format) a conversion is no text; from a '#' to a written
- * newline is a comment. A shell value ($$x, a command substitution) is
- * text no line holds: every .PHONY name it can be. */
-static bool fxm_gen_printed(struct fxm *m, const char *w, bool format)
+/* Every .PHONY name is reached: the makefile holds text no line spells. */
+static bool fxm_gen_open(struct fxm *m)
 {
     static const char open[] = {FXM_OPEN, '\0'};
-    char b[ZCL_DEVLOOP_PATH_MAX];
-    size_t k = 0, n = strlen(w);
-    bool comment = false;
-    if (n >= sizeof(b) || strstr(w, "$$") != NULL || strchr(w, '`') != NULL)
-        return fxm_open_phony(m, open);
-    for (size_t i = 0; i < n; i++) {
-        bool esc = w[i] == '\\' && (w[i + 1] == 'n' || w[i + 1] == 't');
-        if (w[i] == '"' || w[i] == '\'')
-            continue;
-        if (esc || (format && w[i] == '%' && w[i + 1] != '\0')) {
-            comment &= !(esc && w[i + 1] == 'n');
-            b[k++] = ' ';
-            i++;
-            continue;
-        }
-        comment |= w[i] == '#';
-        b[k++] = comment ? ' ' : w[i];
+    return fxm_open_phony(m, open);
+}
+
+/* The written makefile text b (NUL-ended): from a '#' to a newline is a
+ * comment but on a line a tab leads (a recipe line: the shell reads its
+ * '#'), and newlines and tabs separate. Its words reach what they name, as
+ * a goal position's (a backslash left in it: every rule). */
+static bool fxm_gen_text(struct fxm *m, char *b)
+{
+    bool comment = false, recipe = *b == '\t';
+    for (char *c = b; *c != '\0'; c++) {
+        comment = *c != '\n' && (comment || (*c == '#' && !recipe));
+        recipe = *c == '\n' ? c[1] == '\t' : recipe;
+        if (comment || *c == '\n' || *c == '\t')
+            *c = ' ';
     }
-    b[k] = '\0';
     return fxm_goal_words(m, b, false, true);
+}
+
+/* Append ch to b at *k (cap bytes); false when it does not fit. */
+static bool fxm_gen_put(char *b, size_t *k, size_t cap, char ch)
+{
+    if (*k + 1 >= cap)
+        return false;
+    b[(*k)++] = ch;
+    return true;
+}
+
+/* Append the shell word w, its quotes removed. */
+static bool fxm_gen_put_word(char *b, size_t *k, size_t cap, const char *w)
+{
+    for (; *w != '\0'; w++)
+        if (*w != '"' && *w != '\'' && !fxm_gen_put(b, k, cap, *w))
+            return false;
+    return true;
+}
+
+/* A word whose text only the shell knows: a shell value ($$x) or a
+ * command substitution. */
+static bool fxm_gen_shelled(const struct fxm_gen_cmd *c)
+{
+    for (size_t k = 0; k < c->n; k++)
+        if (strstr(c->w[k], "$$") != NULL || strchr(c->w[k], '`') != NULL)
+            return true;
+    return false;
+}
+
+/* One pass of a printf format f over its arguments from *arg: \n and \t
+ * written, %% one '%', %s the next argument (none left: nothing); any
+ * other escape stays a backslash. False for any other conversion (%c, %b,
+ * %d, a width) or text too long to hold. */
+static bool fxm_gen_format(const char *f, const struct fxm_gen_cmd *c,
+                           size_t *arg, char *b, size_t *k)
+{
+    for (; *f != '\0'; f++) {
+        char ch = *f;
+        bool conv = false;
+        if (ch == '"' || ch == '\'')
+            continue;
+        if (ch == '\\' && (f[1] == 'n' || f[1] == 't'))
+            ch = *++f == 'n' ? '\n' : '\t';
+        else if (ch == '%' && f[1] == '%')
+            ch = *++f;
+        else if (ch == '%' && f[1] == 's')
+            conv = *++f == 's';
+        else if (ch == '%')
+            return false;
+        if (conv ? *arg < c->n && !fxm_gen_put_word(b, k, FXM_GEN_MAX, c->w[(*arg)++])
+                 : !fxm_gen_put(b, k, FXM_GEN_MAX, ch))
+            return false;
+    }
+    return true;
+}
+
+/* What a printf writes: its format applied to its arguments, again while
+ * arguments remain, as printf does. A shell value, an option (-v) or a
+ * conversion other than %s is text no line holds: every .PHONY name. */
+static bool fxm_gen_printf(struct fxm *m, const struct fxm_gen_cmd *c)
+{
+    char b[FXM_GEN_MAX];
+    size_t k = 0, arg = 1, before;
+    if (c->n == 0)
+        return false;
+    if (c->w[0][0] == '-' || fxm_gen_shelled(c))
+        return fxm_gen_open(m);
+    do {
+        before = arg;
+        if (!fxm_gen_format(c->w[0], c, &arg, b, &k))
+            return fxm_gen_open(m);
+    } while (arg < c->n && arg > before);
+    b[k] = '\0';
+    return fxm_gen_text(m, b);
+}
+
+/* What an echo writes: its words, one space apart. A shell value or a
+ * backslash (echo -e, and dash's echo, read escapes) is text no line
+ * holds: every .PHONY name. */
+static bool fxm_gen_echo(struct fxm *m, const struct fxm_gen_cmd *c)
+{
+    char b[FXM_GEN_MAX];
+    size_t k = 0;
+    if (fxm_gen_shelled(c))
+        return fxm_gen_open(m);
+    for (size_t i = 0; i < c->n; i++)
+        if (strchr(c->w[i], '\\') != NULL || !fxm_gen_put_word(b, &k, sizeof(b), c->w[i]) ||
+            !fxm_gen_put(b, &k, sizeof(b), ' '))
+            return fxm_gen_open(m);
+    b[k] = '\0';
+    return fxm_gen_text(m, b);
 }
 
 /* mv moves a temporary file (a shell value, $$tmp): every word but its
@@ -446,26 +532,147 @@ static bool fxm_gen_allowed(const char *name, size_t n,
     return !fxm_gen_is(name, n, "trap") || fxm_gen_trap(c);
 }
 
-/* One command of a generated makefile's recipe line (NUL-ended s). */
-static bool fxm_gen_command(struct fxm *m, char *s)
+/* s[0..n) holds w[0..wn). */
+static bool fxm_gen_has(const char *s, size_t n, const char *w, size_t wn)
+{
+    for (size_t k = 0; wn > 0 && k + wn <= n; k++)
+        if (memcmp(s + k, w, wn) == 0)
+            return true;
+    return false;
+}
+
+/* s[0..n) names the file a rule makes: an automatic variable ($@, $(@D),
+ * $*), a shell value ($$tmp), or the last path part of one of its targets
+ * (targets). */
+static bool fxm_gen_names_target(const char *s, size_t n, const char *targets)
+{
+    static const char *const autos[] = {"$@", "$(@", "${@", "$*", "$(*", "${*", "$$"};
+    for (size_t k = 0; k < sizeof(autos) / sizeof(autos[0]); k++)
+        if (fxm_gen_has(s, n, autos[k], strlen(autos[k])))
+            return true;
+    while (*targets != '\0') {
+        const char *t, *base;
+        size_t len = 0;
+        while (fxm_space(*targets))
+            targets++;
+        for (t = targets; t[len] != '\0' && !fxm_space(t[len]); len++)
+            ;
+        targets = t + len;
+        base = t + len;
+        while (base > t && base[-1] != '/')
+            base--;
+        if (base < t + len && fxm_gen_has(s, n, base, (size_t)(t + len - base)))
+            return true;
+    }
+    return false;
+}
+
+/* A program the tree holds may write the makefile through a name it is
+ * given (an argument or an environment value, before or after its
+ * command word at name[0..n) in s): then what it writes no line holds. */
+static bool fxm_gen_hands_target(const char *s, const char *name, size_t n,
+                                 const char *targets)
+{
+    return fxm_gen_names_target(s, (size_t)(name - s), targets) ||
+           fxm_gen_names_target(name + n, strlen(name + n), targets);
+}
+
+/* What one command that writes to a file puts in the makefile (only
+ * printf and echo may). A second write of the rule's (r) recipe can join
+ * the first's text (> then >>, echo -n): every .PHONY name. */
+static bool fxm_gen_writes(struct fxm *m, struct fxm_rule *r,
+                           const struct fxm_gen_cmd *c, bool printf_)
+{
+    if (!c->file)
+        return false;
+    if (r->writes > 0)
+        return fxm_gen_open(m);
+    r->writes = 1;
+    return printf_ ? fxm_gen_printf(m, c) : fxm_gen_echo(m, c);
+}
+
+/* One command of a generated makefile's recipe line (NUL-ended s) of rule
+ * r. */
+static bool fxm_gen_command(struct fxm *m, struct fxm_rule *r, char *s)
 {
     struct fxm_gen_cmd c = {.n = 0};
-    bool bare_ok = true, grew = false, printf_;
+    bool bare_ok = true;
     size_t n;
     char *name = fxm_gen_name(s, &n, &bare_ok);
     if (name != NULL && n == 0) {
         m->unknown |= !bare_ok;
         return false;
     }
-    if (name == NULL || !fxm_gen_words(name + n, &c) ||
-        !fxm_gen_allowed(name, n, &c)) {
+    if (name == NULL ||
+        (fxm_gen_script(name, n) && fxm_gen_hands_target(s, name, n, r->targets)) ||
+        !fxm_gen_words(name + n, &c) || !fxm_gen_allowed(name, n, &c)) {
         m->unknown = true;
         return false;
     }
-    printf_ = fxm_gen_is(name, n, "printf");
-    for (size_t k = 0; c.file && k < c.n; k++)
-        grew |= fxm_gen_printed(m, c.w[k], printf_ && k == 0);
-    return grew;
+    return fxm_gen_writes(m, r, &c, fxm_gen_is(name, n, "printf"));
+}
+
+/* Text that runs something as make expands it: a $(shell), $(file) or
+ * $(eval) call (its output or its file is text no line holds). */
+static bool fxm_runs_text(const char *s)
+{
+    static const char *const fns[] = {"shell", "file", "eval"};
+    for (const char *d = strchr(s, '$'); d != NULL; d = strchr(d + 1, '$'))
+        for (size_t k = 0; k < sizeof(fns) / sizeof(fns[0]); k++)
+            if ((d[1] == '(' || d[1] == '{') && fxm_starts_word(d + 2, fns[k]))
+                return true;
+    return false;
+}
+
+/* A reference whose expansion may run something: a computed name, or a
+ * variable fxm_gen_runs marked. */
+static bool fxm_ref_runs(struct fxm *m, const char *name, size_t n)
+{
+    struct fxm_vname *v;
+    return *name == '$' || m->runs_any ||
+           ((v = fxm_vname(m, name, n)) != NULL && v->runs);
+}
+
+/* The value text of a definition line that make expands each time it is
+ * referenced (=, ?=, +=, a define's body; not :=, ::= or !=, expanded as
+ * the line is read); NULL for any other line. */
+static const char *fxm_deferred_value(const struct fxm_line *l)
+{
+    size_t colon = 0;
+    enum fxm_kind kind;
+    const char *at, *eq;
+    if (l->body)
+        return l->raw;
+    kind = fxm_kind_of(l->raw, &colon);
+    if (kind != FXM_K_DEF && kind != FXM_K_TSV)
+        return NULL;
+    at = fxm_skip_prefixes(l->raw + (kind == FXM_K_TSV ? colon + 1 : 0));
+    eq = fxm_top(at, "=");
+    if (eq == NULL || eq == at || eq[-1] == ':' || eq[-1] == '!')
+        return NULL;
+    return eq + 1;
+}
+
+void fxm_gen_runs(struct fxm *m)
+{
+    for (bool grew = true; grew && !m->runs_any;) {
+        grew = false;
+        for (size_t k = 0; k < m->nlines && !m->runs_any; k++) {
+            const struct fxm_line *l = &m->lines[k];
+            struct fxm_vname *v;
+            const char *text = l->ctx == FXM_DEF ? fxm_deferred_value(l) : NULL;
+            if (text == NULL ||
+                (!fxm_runs_text(text) && !fxm_each_ref(m, text, true, fxm_ref_runs)))
+                continue;
+            if (l->name[0] == '\0') {
+                m->runs_any = grew = true;
+                continue;
+            }
+            v = fxm_vname(m, l->name, strlen(l->name));
+            if (v != NULL && !v->runs)
+                v->runs = grew = true;
+        }
+    }
 }
 
 bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l)
@@ -473,7 +680,8 @@ bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l)
     char buf[FXM_GEN_MAX];
     bool grew = false;
     char *p = buf, *e;
-    if (strlen(l->raw) >= sizeof(buf) || !fxm_gen_substs_ok(l->raw)) {
+    if (strlen(l->raw) >= sizeof(buf) || !fxm_gen_substs_ok(l->raw) ||
+        fxm_runs_text(l->raw) || fxm_each_ref(m, l->raw, false, fxm_ref_runs)) {
         m->unknown = true;
         return false;
     }
@@ -485,7 +693,7 @@ bool fxm_gen_recipe(struct fxm *m, const struct fxm_line *l)
         }
         bool last = *e == '\0';
         *e = '\0';
-        grew |= fxm_gen_command(m, p);
+        grew |= fxm_gen_command(m, &m->rules[l->rule], p);
         for (p = last ? e : e + 1; *p == ';' || *p == '&' || *p == '|'; p++)
             ;
     }
