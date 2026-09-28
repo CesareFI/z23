@@ -463,12 +463,13 @@ static bool fxm_shrink_call(struct fxm *m, int kind, const char *a, size_t n,
  * FXM_OPEN. Words that never stand alone in the value (those a join or a
  * '%' $(patsubst) pattern rewrites) sit between FXM_HIDE_ON and
  * FXM_HIDE_OFF. */
+static bool fxm_args_call(const char *s, size_t k, size_t n, size_t arg,
+                          struct fxm_buf *out);
+
 static bool fxm_call(struct fxm *m, const char *s, size_t k, size_t n,
                      struct fxm_buf *out)
 {
-    size_t arg = fxm_arg_to(s, k + 1, n), to = n, at;
-    char open = FXM_OPEN;
-    bool pattern = k == 8 && strncmp(s, "patsubst", 8) == 0;
+    size_t arg = fxm_arg_to(s, k + 1, n);
     if (!fxm_put(out, " ", 1))
         return false;
     if (k == 4 && strncmp(s, "file", 4) == 0)
@@ -477,9 +478,19 @@ static bool fxm_call(struct fxm *m, const char *s, size_t k, size_t n,
         return fxm_shrink_call(m, fxm_shrink_kind(s, k), s + k + 1, n - k - 1, out);
     if (k == 9 && (strncmp(s, "addprefix", 9) == 0 || strncmp(s, "addsuffix", 9) == 0))
         return fxm_join_call(s, k, arg, n, s[3] == 'p', out);
+    return fxm_args_call(s, k, n, arg, out);
+}
+
+/* fxm_call for a call whose value is read from its argument text as it
+ * stands (arg: the end of its first argument). */
+static bool fxm_args_call(const char *s, size_t k, size_t n, size_t arg,
+                          struct fxm_buf *out)
+{
+    size_t to = n, at = out->n;
+    char open = FXM_OPEN;
+    bool pattern = k == 8 && strncmp(s, "patsubst", 8) == 0;
     if (pattern && fxm_trimmed_is(s + k + 1, arg - k - 1, "%"))
         to = fxm_arg_to(s, arg + 1, n);
-    at = out->n;
     if (!fxm_put(out, s + k + 1, to - k - 1))
         return false;
     if (k == 5 && strncmp(s, "shell", 5) == 0)
@@ -582,30 +593,42 @@ static bool fxm_glued(const char *s, size_t n)
 
 /* The reference at d ('$'): where the text resumes; NULL when out cannot
  * hold it or it does not close (then the text is UNKNOWN). */
+/* Past the bracket that closes the bracketed reference at d; NULL when it
+ * does not close. */
+static const char *fxm_ref_past(const char *d)
+{
+    char open = d[1], close = open == '(' ? ')' : '}';
+    const char *q = d + 2;
+    int depth = 1;
+    for (; *q != '\0' && depth > 0; q++)
+        depth += *q == open ? 1 : *q == close ? -1 : 0;
+    return depth > 0 ? NULL : q;
+}
+
+/* FXM_ANY into out when glue: a call's value joined to word text. */
+static bool fxm_glue(struct fxm_buf *out, bool glue)
+{
+    char any = FXM_ANY;
+    return !glue || fxm_put(out, &any, 1);
+}
+
 static const char *fxm_ref(struct fxm *m, const char *d,
                            struct fxm_buf *out)
 {
-    char open = d[1], close = open == '(' ? ')' : '}', any = FXM_ANY;
-    const char *q = d + 2;
-    int depth = 1;
+    const char *q;
     bool call;
     size_t n;
-    if (open == '\0')
+    if (d[1] == '\0')
         return d + 1;
-    if (open != '(' && open != '{')
+    if (d[1] != '(' && d[1] != '{')
         return fxm_inner(m, d + 1, 1, out) ? d + 2 : NULL;
-    for (; *q != '\0' && depth > 0; q++)
-        depth += *q == open ? 1 : *q == close ? -1 : 0;
-    if (depth > 0)
+    if ((q = fxm_ref_past(d)) == NULL)
         return NULL;
     n = (size_t)(q - 1 - (d + 2));
     call = fxm_glued(d + 2, n);
-    if (call && out->n > 0 && !fxm_sep(out->p[out->n - 1]) &&
-        !fxm_put(out, &any, 1))
-        return NULL;
-    if (!fxm_inner(m, d + 2, n, out))
-        return NULL;
-    if (call && *q != '\0' && !fxm_sep(*q) && !fxm_put(out, &any, 1))
+    if (!fxm_glue(out, call && out->n > 0 && !fxm_sep(out->p[out->n - 1])) ||
+        !fxm_inner(m, d + 2, n, out) ||
+        !fxm_glue(out, call && *q != '\0' && !fxm_sep(*q)))
         return NULL;
     return q;
 }
@@ -829,25 +852,34 @@ static bool fxm_exists(const char *root, const char *rel)
            stat(full, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+/* The shape of $(X:.o=.d) or $(X:%.o=%.d). */
+static bool fxm_depfile_ref(const char *w, size_t n)
+{
+    return n >= 8 && w[0] == '$' && (w[1] == '(' || w[1] == '{') &&
+           strncmp(w + n - 3, ".d", 2) == 0 && (w[n - 4] == '=' || w[n - 4] == '%');
+}
+
+/* w[0..n) (a bracketed reference's '$') is that one reference whole. */
+static bool fxm_whole_bracket(const char *w, size_t n)
+{
+    char close = w[1] == '(' ? ')' : '}';
+    int depth = 1;
+    size_t k = 2;
+    for (; k < n && depth > 0; k++)
+        depth += w[k] == w[1] ? 1 : w[k] == close ? -1 : 0;
+    return depth == 0 && k == n;
+}
+
 /* A depfile an include line names: $(X:.o=.d), $(X:%.o=%.d), or a
  * literal name ending in .d. Its text is a compiler's -MD output, whose
  * prerequisite lines name only what that compile read: the depfiles
  * themselves answer for it (docs/work/SEMANTIC_MANIFEST.md). */
 static bool fxm_depfile_word(const char *w, size_t n)
 {
-    char close;
-    int depth = 1;
-    size_t k = 2;
-    if (n >= 2 && w[n - 2] == '.' && w[n - 1] == 'd')
-        if (memchr(w, '$', n) == NULL)
-            return true;
-    if (n < 8 || w[0] != '$' || (w[1] != '(' && w[1] != '{') ||
-        strncmp(w + n - 3, ".d", 2) != 0 || (w[n - 4] != '=' && w[n - 4] != '%'))
-        return false;
-    close = w[1] == '(' ? ')' : '}';
-    for (; k < n && depth > 0; k++)
-        depth += w[k] == w[1] ? 1 : w[k] == close ? -1 : 0;
-    return depth == 0 && k == n && fxm_subst_colon(w + 2, n - 3) < n - 3;
+    if (n >= 2 && w[n - 2] == '.' && w[n - 1] == 'd' && memchr(w, '$', n) == NULL)
+        return true;
+    return fxm_depfile_ref(w, n) && fxm_whole_bracket(w, n) &&
+           fxm_subst_colon(w + 2, n - 3) < n - 3;
 }
 
 /* One word of an include line: a literal repo file is read; a missing one

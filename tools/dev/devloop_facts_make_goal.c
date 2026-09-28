@@ -86,31 +86,39 @@ static bool fxm_goal_unit(struct fxm *m, const char *d, const char *e,
     return grew;
 }
 
+/* The reference the word w..s is as a whole, past a leading '@', '-' or
+ * '+' (with twice, '$$(' is a reference too: text a later $(eval) expands
+ * again): its '$'; NULL when the word is not one reference. */
+static const char *fxm_whole_ref(const char *w, const char *s, bool twice)
+{
+    const char *d, *e = NULL;
+    while (w < s && (*w == '@' || *w == '-' || *w == '+'))
+        w++;
+    d = twice && w + 1 < s && w[0] == '$' && w[1] == '$' ? w + 1 : w;
+    if (s - d < 2 || d[0] != '$')
+        return NULL;
+    if (d[1] == '(' || d[1] == '{')
+        e = fxm_ref_end((char *)d);
+    else if (s - d == 2)
+        e = d + 1;
+    return e == s - 1 ? d : NULL;
+}
+
 /* Every word of s..end (a goal position's text) that is one reference
- * (fxm_goal_unit); with twice, '$$(' is a reference too (text a later
- * $(eval) expands again). */
+ * (fxm_whole_ref), read by fxm_goal_unit. */
 static bool fxm_goal_refs(struct fxm *m, const char *s, const char *end,
                           bool twice, int depth)
 {
     bool grew = false;
     while (s < end) {
-        const char *w, *d, *e = NULL;
+        const char *w, *d;
         int nest = 0;
         while (s < end && fxm_sep(*s))
             s++;
         for (w = s; s < end && (nest > 0 || !fxm_sep(*s)); s++)
             nest += (*s == '(' || *s == '{') - (*s == ')' || *s == '}');
-        while (w < s && (*w == '@' || *w == '-' || *w == '+'))
-            w++;
-        d = twice && w + 1 < s && w[0] == '$' && w[1] == '$' ? w + 1 : w;
-        if (s - d < 2 || d[0] != '$')
-            continue;
-        if (d[1] == '(' || d[1] == '{')
-            e = fxm_ref_end((char *)d);
-        else if (s - d == 2)
-            e = d + 1;
-        if (e == s - 1)
-            grew |= fxm_goal_unit(m, d, e, twice, depth);
+        if ((d = fxm_whole_ref(w, s, twice)) != NULL)
+            grew |= fxm_goal_unit(m, d, s - 1, twice, depth);
     }
     return grew;
 }
