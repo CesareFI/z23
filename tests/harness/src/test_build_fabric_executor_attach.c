@@ -553,12 +553,24 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         char denied_receipts[] = "build_receipts";
         ASSERT_EQ(sqlite3_set_authorizer(ndb.db, att_deny_table_reads,
                                          denied_receipts), SQLITE_OK);
+#if defined(__linux__)
+        uint64_t launches_before_incomplete = zcl_spawn_thread_launch_count();
+#endif
         attached = build_fabric_attach(
             &ndb, dir, NULL, &job_e, &action_e, secret, pubkey, &receipt_e,
             &report);
         ASSERT(!attached.ok);
         ASSERT_STR_EQ(report.refusal, "attach-refused-history-incomplete");
+#if defined(__linux__)
+        /* Qualified donors receive four ldd identity probes before the
+         * unreadable history is discovered; no executor is launched. */
+        ASSERT_EQ(zcl_spawn_thread_launch_count() - launches_before_incomplete,
+                  4u);
+#endif
         ASSERT_EQ(sqlite3_set_authorizer(ndb.db, NULL, NULL), SQLITE_OK);
+#if defined(__linux__)
+        uint64_t launches_before_conflict = zcl_spawn_thread_launch_count();
+#endif
         attached = build_fabric_attach(
             &ndb, dir, NULL, &job_e, &action_e, secret, pubkey, &receipt_e,
             &report);
@@ -566,6 +578,10 @@ static int test_bf_attach_conflicting_physical_outputs(void)
         ASSERT_EQ(report.disposition, BUILD_FABRIC_ATTACH_REFUSED);
         ASSERT_STR_EQ(report.refusal, "attach-refused-observation-conflict");
         ASSERT_EQ(report.compiler_processes, 0);
+#if defined(__linux__)
+        ASSERT_EQ(zcl_spawn_thread_launch_count() - launches_before_conflict,
+                  4u);
+#endif
         struct db_build_action durable_e;
         ASSERT(db_build_action_find(&ndb, action_e.action_id, &durable_e));
         ASSERT_STR_EQ(durable_e.state, "QUEUED");
@@ -992,6 +1008,9 @@ static int test_bf_attach_avoids_second_compile(void)
         build_fabric_attach_test_after_scan(att_revoke_donor_after_scan,
                                             &race);
         struct db_build_receipt race_receipt; struct build_fabric_attach_report race_report;
+#if defined(__linux__)
+        uint64_t launches_before_revocation = zcl_spawn_thread_launch_count();
+#endif
         struct zcl_result raced = build_fabric_attach(
             &ndb, dir, NULL, &race_job, &race_action, secret, pubkey,
             &race_receipt, &race_report);
@@ -999,6 +1018,12 @@ static int test_bf_attach_avoids_second_compile(void)
         ASSERT(race.called && race.saved);
         ASSERT(!raced.ok);
         ASSERT_STR_EQ(race_report.refusal, "attach-refused-history-stale");
+#if defined(__linux__)
+        /* Donor identity may be probed, but the revoked action never starts
+         * a compiler. The four launches are the existing ldd probes. */
+        ASSERT_EQ(zcl_spawn_thread_launch_count() - launches_before_revocation,
+                  4u);
+#endif
         struct db_build_action race_durable;
         ASSERT(db_build_action_find(&ndb, race_action.action_id,
                                     &race_durable));
@@ -1330,12 +1355,18 @@ static int test_bf_attach_input_cas_refusals(void)
         struct build_fabric_attach_report report;
 
         ASSERT(remove(object_path) == 0);
+#if defined(__linux__)
+        uint64_t launches_before_cas = zcl_spawn_thread_launch_count();
+#endif
         struct zcl_result missing = build_fabric_attach(
             &ndb, dir, NULL, &job, &action, secret, pubkey, &receipt, &report);
         ASSERT(!missing.ok);
         ASSERT_STR_EQ(report.refusal, "input-cas-miss");
         ASSERT_EQ(report.compiler_processes, 0);
         ASSERT_EQ(att_build_work_entries(dir), 0);
+#if defined(__linux__)
+        ASSERT_EQ(zcl_spawn_thread_launch_count() - launches_before_cas, 0u);
+#endif
 
         ASSERT(vcs_object_put_addressed(dir, input_root, att_unit,
                                         sizeof(att_unit) - 1u));
@@ -1346,11 +1377,17 @@ static int test_bf_attach_input_cas_refusals(void)
         ASSERT(fseek(f, 0, SEEK_SET) == 0);
         ASSERT(fputc(first ^ 1, f) != EOF);
         ASSERT(fclose(f) == 0);
+#if defined(__linux__)
+        launches_before_cas = zcl_spawn_thread_launch_count();
+#endif
         struct zcl_result corrupt = build_fabric_attach(
             &ndb, dir, NULL, &job, &action, secret, pubkey, &receipt, &report);
         ASSERT(!corrupt.ok);
         ASSERT_STR_EQ(report.refusal, "input-cas-corrupt");
         ASSERT_EQ(att_build_work_entries(dir), 0);
+#if defined(__linux__)
+        ASSERT_EQ(zcl_spawn_thread_launch_count() - launches_before_cas, 0u);
+#endif
         struct db_build_action durable;
         ASSERT(db_build_action_find(&ndb, action.action_id, &durable));
         ASSERT_STR_EQ(durable.state, "QUEUED");
