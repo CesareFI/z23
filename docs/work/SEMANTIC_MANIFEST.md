@@ -143,6 +143,19 @@ stronger equivalence check.
 - **Identity argv.** The identity argv drops output-only controls (`-c`,
   `-o X`, `-MD`, `-MMD`, `-MP`, `-MF/-MT/-MQ X`, `-fsyntax-only`) and the
   source path. Any front-end error refuses the manifest.
+- **Object compiler.** The front end that parses is not the compiler that
+  builds the object. `emit --cc CC` names the object's compiler (a path, or
+  a name looked up on `PATH` as `execvp` would), and the identity's
+  `compiler` text becomes `<front end version>; object-cc <path> sha3-256
+  <hex>`: the compiler's realpath, spelled like any other path (a compiler
+  under `$HOME` outside the checkout is refused), and the SHA3-256 of its
+  bytes. Without `--cc` the text ends `; object-cc unknown`; a `--cc` that
+  resolves to no executable file refuses the manifest. The byte format is
+  unchanged (the field was always free text), so v1 readers and the
+  checked-in fixtures, which carry the front end version alone, still
+  decode. A compiler upgrade, or a switch between compilers, changes the
+  IDENTITY record and so is identity drift to every consumer. Two
+  manifests that both say `object-cc unknown` still compare equal.
 - **Stripped comments.** `clang_tokenize` keeps comments as tokens. The sensor
   drops them from function token hashes and from macro bodies. The
   `comment_only` seed puts a comment inside a function body and inside a
@@ -434,8 +447,17 @@ libclang startup dominate. It never replaces the compile, so every manifest
 adds that latency. It never changes an object either, because it writes none.
 
 `make clang-facts` runs the sensor over every TU of one component
-(`CLANG_FACTS_COMPONENT`, default `engine/modules/hotswap`) with the real dev
-compile argv (`$(DEV_COMPILE_CFLAGS)`), writing `build/clang-facts/<src>.zsm`.
+(`CLANG_FACTS_COMPONENT`, default `engine/modules/hotswap`) with each TU's
+own dev object compile, writing `build/clang-facts/<src>.zsm`: `--cc` is the
+object's compiler (`$(CC)` without its compile-cache wrapper), and the argv
+after `--` is the object's `$(DEV_COMPILE_CFLAGS)` as its target sees it,
+plus `$(ZCL_TU_RANDOM_SEED)`. The hot directories' `-O2` reaches the object
+and the manifest from one assignment (`DEV_HOT_SRC_DIRS`); the
+`semantic_sensor` group dry-runs both rules for hot and ordinary sources and
+requires equal compiler and argv. The identity TU
+(`platform/modules/util/src/clientversion.c`) is refused: its object also
+bakes a host-local build receipt that only its own object rule may name, so
+a plan that reads it has no manifest and falls back.
 `CLANG_FACTS_TREE=<hex>` names the ZVCS tree the namespace probes are proved
 against. The target is opt-in: nothing else depends on it, and the sensor
 never enters z23, z23-dev, the test harness link or core. A manifest is
@@ -898,9 +920,10 @@ this by the optimizer the IDENTITY record names
 The component model covers inlining and callee summaries flowing up, and
 constant propagation, dead-argument elimination and coldness flowing down
 into internal callees, as gcc and clang do at `-O1`. It is an assumption
-about the compiler, not a fact the manifest records: the facts do not name
-the code generator's version, so a compiler whose `-O1` does more
-interprocedural work must be added to the unbounded list. The dev build is
+about the compiler, not a fact the manifest records: IDENTITY names the
+object compiler's bytes (so a change of compiler is drift), not how much
+interprocedural work its `-O1` does, so a compiler whose `-O1` does more
+must be added to the unbounded list. The dev build is
 `-Og` without `-ffunction-sections`.
 
 ### Declaration-identity consumer

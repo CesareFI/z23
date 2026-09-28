@@ -7332,29 +7332,50 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 # make clang-facts: the semantic manifest, with the facts extension, of every
 # TU of ONE component (default engine/modules/hotswap), written by the libclang
 # sensor above to build/clang-facts/<src>.zsm. The sensor is the only producer:
-# it parses each TU a second time with the real dev compile argv
-# ($(DEV_COMPILE_CFLAGS)), at 1.2-1.6x the cost of `clang -fsyntax-only`, and
-# never compiles an object. The manifests feed the impact planner's optional
-# "facts" input (tools/dev/devloop_facts.c). Opt-in only: nothing else depends
-# on this target, so no default build, test link or proof ever reaches it. A
+# it parses each TU a second time with its dev object's own compile: --cc
+# names the compiler that builds the object ($(ZCL_OBJECT_CC), recorded in
+# IDENTITY by path and content hash), and after `--` come the object's own
+# flags, $(DEV_COMPILE_CFLAGS) as the object's target sees it plus
+# $(ZCL_TU_RANDOM_SEED). The hot directories' optimizer reaches both targets
+# from one assignment (DEV_HOT_SRC_DIRS, at the dev object rule), and the
+# semantic_sensor group dry-runs both rules and requires equal argv. It costs
+# 1.2-1.6x `clang -fsyntax-only` and never compiles an object. The manifests
+# feed the impact planner's optional "facts" input
+# (tools/dev/devloop_facts.c). Opt-in only: nothing else depends on this
+# target, so no default build, test link or proof ever reaches it. A
 # manifest is rewritten when its source, any header of the component or the
 # sensor changes; the planner still binds every after manifest to the tree it
 # plans against (devloop_facts_bind.c) and refuses a stale one, so a missed
 # dependency cannot narrow a plan. CLANG_FACTS_TREE=<hex> names the ZVCS tree
 # the namespace probes are proved against.
+#
+# CLANG_FACTS_REFUSED lists TUs no facts rule may sense: the identity TU's
+# dev object also bakes the host-local build receipt, which the
+# mutation-receipt confinement gate lets only that object's own rule name, so
+# its facts could not describe its object. It is left out of every component
+# run and refused when named; a plan reading it has no manifest and falls
+# back.
 .PHONY: clang-facts
 CLANG_FACTS_COMPONENT ?= engine/modules/hotswap
-CLANG_FACTS_SRCS = $(sort $(wildcard $(CLANG_FACTS_COMPONENT)/src/*.c))
+CLANG_FACTS_REFUSED := platform/modules/util/src/clientversion.c
+CLANG_FACTS_SRCS = $(filter-out $(CLANG_FACTS_REFUSED),\
+	$(sort $(wildcard $(CLANG_FACTS_COMPONENT)/src/*.c)))
 CLANG_FACTS_HDRS = $(wildcard $(CLANG_FACTS_COMPONENT)/include/*/*.h \
 	$(CLANG_FACTS_COMPONENT)/src/*.h)
 CLANG_FACTS_OUT_DIR := build/clang-facts
 CLANG_FACTS_ZSMS = $(patsubst %.c,$(CLANG_FACTS_OUT_DIR)/%.zsm,$(CLANG_FACTS_SRCS))
+# The compiler command of every dev object: $(CC) without the compile-cache
+# wrapper word (ZCL_CCACHE_BIN above), which only runs it.
+ZCL_OBJECT_CC = $(if $(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),$(wordlist 2,$(words $(CC)),$(CC)),$(CC))
 clang-facts: $(CLANG_FACTS_ZSMS)
 $(CLANG_FACTS_OUT_DIR)/%.zsm: %.c $(CLANG_FACTS_HDRS) $(BIN_DIR)/z23-clang-manifest
+	$(if $(filter $(CLANG_FACTS_REFUSED),$<),@echo "clang-facts: refused: $@: its object bakes a build receipt no facts rule may name" >&2; exit 1)
 	@mkdir -p $(dir $@)
 	$(BIN_DIR)/z23-clang-manifest emit --root . --source $< --out $@ --facts \
 	    $(if $(CLANG_FACTS_TREE),--tree $(CLANG_FACTS_TREE)) \
-	    -- $(DEV_COMPILE_CFLAGS)
+	    --cc $(firstword $(ZCL_OBJECT_CC)) \
+	    -- $(wordlist 2,$(words $(ZCL_OBJECT_CC)),$(ZCL_OBJECT_CC)) \
+	    $(DEV_COMPILE_CFLAGS) $(ZCL_TU_RANDOM_SEED)
 
 # The raylib 6.0 stub must keep compiling against the window TU on every
 # host, raylib installed or not: hosts WITH raylib build the linked window
@@ -10240,16 +10261,15 @@ $(NODE_C23_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(
 # Dev-bin keeps most TUs at -Og for quick debug compiles, but leaves the
 # consensus/crypto/script/validation hot paths at a configurable optimized
 # level. This catches more optimizer-sensitive behavior without paying global
-# LTO or making every unrelated edit slow.
+# LTO or making every unrelated edit slow. One assignment covers each hot
+# directory's dev objects AND its clang-facts manifests, so the sensor parses
+# a hot TU with the optimizer its object compiles with.
+DEV_HOT_SRC_DIRS := core/modules/chain/src core/chainparams/src \
+	core/params/src core/modules/crypto/src core/modules/primitives/src \
+	core/modules/sapling/src core/modules/script/src \
+	core/modules/validation/src
 DEV_COMPILE_CFLAGS = $(DEV_RESTART_CFLAGS)
-$(DEV_OBJ_DIR)/core/modules/chain/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/chainparams/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/params/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/modules/crypto/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/modules/primitives/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/modules/sapling/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/modules/script/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/core/modules/validation/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(foreach d,$(DEV_HOT_SRC_DIRS),$(DEV_OBJ_DIR)/$(d)/%.o $(CLANG_FACTS_OUT_DIR)/$(d)/%.zsm): DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 
 $(DEV_OBJ_DIR)/platform/modules/util/src/clientversion.o: DEV_COMPILE_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)
 $(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_FAST_EPOCH_OBJECT_PREREQ) $(BUILD_EPOCH_OBJECT_FORCE) | $(DEV_LEASE)

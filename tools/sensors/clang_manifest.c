@@ -9,13 +9,19 @@
  * only facts producer; it hands every observation to the compiler-API-free
  * core, clang_manifest_core.h.
  *
- *   z23-clang-manifest emit --root DIR --source FILE --out FILE
+ *   z23-clang-manifest emit --root DIR --source FILE --out FILE [--cc CC]
  *                           [--facts] [--tree HEX] [--max-records N]
  *                           [--max-section-bytes N] -- ARGV...
  *   z23-clang-manifest session [--verify-cold] [--no-warm] [--max-tus N]
  *   z23-clang-manifest root FILE
  *   z23-clang-manifest dump FILE
  *   z23-clang-manifest diff OLD NEW
+ *
+ * --cc names the compiler that builds the TU's object (a path, or a name
+ * looked up on PATH). IDENTITY records it by realpath and content hash, so
+ * a compiler change is identity drift; without it IDENTITY says
+ * "object-cc unknown". ARGV is the object's own compile argv after the
+ * compiler word.
  */
 /* realpath() is declared only under _DEFAULT_SOURCE on glibc without the
  * fortify inline; set it before the first header pulls in <features.h>. */
@@ -511,6 +517,7 @@ bool cm_emit_bytes(const struct cm_opts *o, const struct cm_front *front,
     struct cm_state *st = zcl_calloc(1, sizeof(*st), "clang_manifest.state");
     struct cm_args args = {0};
     char *main_path = NULL, *report = NULL, capture[PATH_MAX + 16];
+    char cc_real[PATH_MAX];
     bool ok;
     *bytes = NULL;
     *len = 0;
@@ -519,6 +526,15 @@ bool cm_emit_bytes(const struct cm_opts *o, const struct cm_front *front,
         return false;
     }
     (void)snprintf(capture, sizeof(capture), "%s.clang-v", o->out);
+    /* Resolved before cm_core_init enters the root: a relative --cc names
+     * a file under the caller's directory, as the compile would run it. */
+    if (o->cc != NULL && !cm_resolve_cc(o->cc, cc_real)) {
+        (void)snprintf(why, why_len, "object compiler %s is not an "
+                       "executable file (as given, or on PATH)", o->cc);
+        free(st);
+        return false;
+    }
+    st->core.object_cc = o->cc != NULL ? cc_real : NULL;
     ok = cm_core_init(&st->core, o->root) &&
          cm_norm_path(&st->core, o->source, &main_path);
     if (ok && (main_path[0] == '@' || strcmp(main_path, ".") == 0))
@@ -639,12 +655,13 @@ static int cm_cmd_diff(const char *a_path, const char *b_path)
 static int cm_usage(void)
 {
     fprintf(stderr,
-            "usage: z23-clang-manifest emit --root DIR --source FILE --out FILE\n"
+            "usage: z23-clang-manifest emit --root DIR --source FILE --out FILE [--cc CC]\n"
             "           [--facts] [--tree HEX] [--max-records N]\n"
             "           [--max-section-bytes N] -- ARGV...\n"
             "       z23-clang-manifest session [--verify-cold] [--no-warm]\n"
             "           [--max-tus N]\n"
             "           (one TAB-separated emit request per stdin line)\n"
+            "       (--cc: the object's compiler, recorded in IDENTITY)\n"
             "       z23-clang-manifest root FILE\n"
             "       z23-clang-manifest dump FILE\n"
             "       z23-clang-manifest diff OLD NEW\n");
@@ -661,6 +678,8 @@ static bool cm_opt_value(struct cm_opts *o, const char *key, const char *v)
         o->out = v;
     else if (strcmp(key, "--tree") == 0)
         o->tree = v;
+    else if (strcmp(key, "--cc") == 0)
+        o->cc = v;
     else if (strcmp(key, "--max-records") == 0)
         o->max_records = (uint32_t)strtoul(v, NULL, 10);
     else if (strcmp(key, "--max-section-bytes") == 0)

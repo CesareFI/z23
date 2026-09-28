@@ -122,11 +122,15 @@ struct cm_core {
     bool ns_bound;  /* every repo file read is the snapshot's exact bytes */
     struct cm_occurrence *occ;
     size_t nocc, capocc;
+    /* The absolute realpath of the compiler that builds the object
+     * (cm_resolve_cc), or NULL when the caller named none. */
+    const char *object_cc;
     bool failed;
     char why[512];
 };
 
-/* The identity record's inputs. */
+/* The identity record's inputs. `compiler` names the front end that parsed;
+ * cm_emit_identity appends the object compiler to it. */
 struct cm_identity {
     const char *compiler;
     const char *triple;
@@ -175,6 +179,14 @@ bool cm_emit_files(struct cm_core *c);
 
 /* Output-only argv controls: 1 drop this, 2 drop this and the next. */
 int cm_output_arg(const char *a);
+/* The absolute realpath of the compiler command `cc`: as given (relative to
+ * the current directory) when it holds a '/', else the first executable
+ * regular file of that name on PATH, as execvp() would run it. Call before
+ * cm_core_init, which enters the root. False when nothing resolves. */
+bool cm_resolve_cc(const char *cc, char out[PATH_MAX]);
+/* IDENTITY's compiler text is "<front end>; object-cc <path> sha3-256 <hex>"
+ * (the spelled realpath of c->object_cc and the SHA3-256 of its bytes), or
+ * "<front end>; object-cc unknown" without one. */
 bool cm_emit_identity(struct cm_core *c, const struct cm_identity *id);
 
 /* ---- lookups (clang_manifest_lookup.c) ------------------------------------ */
