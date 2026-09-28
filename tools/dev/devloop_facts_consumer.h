@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Internal state of the declaration-identity consumer shared by its universe (consumer.c), per-TU decision (tu.c) and obligations (obligations.c). */
+ * purpose: Internal state of the declaration-identity consumer shared by its universe (consumer.c), per-TU decision (tu.c), obligations (obligations.c) and make reader (make.c, make_reach.c). */
 #ifndef ZCL_TOOLS_DEV_DEVLOOP_FACTS_CONSUMER_H
 #define ZCL_TOOLS_DEV_DEVLOOP_FACTS_CONSUMER_H
 
@@ -123,5 +123,10 @@ bool fxc_fallback(struct fxc *c, const struct zcl_devloop_plan *given,
                   struct zcl_devloop_facts_verdict *v);
 /* report->plain_groups: the groups of the file-seeded plan. */
 bool fxc_plain_count(struct fxc *c, const struct zcl_devloop_plan *given);
+
+/* make.c: for each path asked about (want), whether a makefile names it
+ * where make can change an object with it (make), or cannot be read. */
+void fxm_classify(const char *root, const char *const *paths, const bool *want,
+                  bool *make, size_t n);
 
 #endif /* ZCL_TOOLS_DEV_DEVLOOP_FACTS_CONSUMER_H */

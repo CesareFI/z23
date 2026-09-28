@@ -1478,11 +1478,12 @@ ZCL_TEST_GROUP(semantic_consumer_live)
 ZCL_TEST_GROUP(devloop_early)
 /* fxc_build_inputs()'s non-C/H build-input rule in isolation, with hand-built
  * identity+files manifests (no libclang, no checked-in fixture): a changed
- * path no TU reads and no Makefile names narrows the compile but keeps the
- * plain plan's own path groups as a test obligation; a path the Makefile
- * text names, or the include graph cannot answer for, still widens to the
- * whole catalog; a path some TU's manifest lists as read goes through the
- * existing header path instead. */
+ * path no TU reads and no Makefile names where make can change an object
+ * (only a .PHONY-only recipe, an echo, an $(if) condition) narrows the
+ * compile but keeps the plain plan's own path groups as a test obligation;
+ * a path the Makefile text names there, or the include graph cannot answer
+ * for, still widens to the whole catalog; a path some TU's manifest lists
+ * as read goes through the existing header path instead. */
 ZCL_TEST_GROUP(semantic_build_inputs)
 /* The facts-narrowed closure against a cold compiler, as a differential
  * fuzzer: random multi-TU C23 projects from a fixed seed list (and every

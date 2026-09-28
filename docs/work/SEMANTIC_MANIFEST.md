@@ -1254,8 +1254,10 @@ resolution, file set or unrequested file read, or a missing before side,
 affects it whole and makes the universe incomplete. A changed file that is
 neither C text (`.c`, `.h`) nor prose (`.md`, `docs/`) and that no
 manifest read, such as a makefile or a flag file, affects every candidate
-(`build-input-changed`). An unreadable candidate manifest leaves the
-universe incomplete (`facts-invalid`).
+(`build-input-changed`) when make can change an object with it (see
+"Build inputs make reads" below); otherwise it compiles nothing. An
+unreadable candidate manifest leaves the universe incomplete
+(`facts-invalid`).
 
 **Search-dir deltas** (`tools/dev/devloop_facts_sdir.c`). When a pair's
 IDENTITY records differ only in the `-I`, `-iquote`, `-isystem` and
@@ -1359,6 +1361,79 @@ each with its path, the four identities (`source`, `fact`, `interface`,
 `implementation`; `action` and `artifact` null with a reason when their
 evidence is absent), `affected`, `broadened`, `compile_only` (affected for
 its object bytes only: no obligation), `reason` and `detail`.
+
+### Build inputs make reads
+
+A changed file that is neither C text nor prose, that no manifest read and
+that the depfile graph lists no reader for, widens the compile set to every
+candidate (`build-input-changed`) only when make can change an object with
+it. `tools/dev/devloop_facts_make.c` reads the makefiles (`Makefile`, the
+`*.mk` files and every file they `include`) and
+`tools/dev/devloop_facts_make_reach.c` decides which of their lines run
+while an object is built. The path widens when:
+
+- it is a makefile, or a directory a sub-make is pointed at: it can change
+  flags or recipes;
+- a line that counts names it. Every definition, directive and conditional
+  counts (make reads them as it parses: flags, `$(shell cat f.args)`,
+  `$(wildcard ...)` source lists), and so do the rule line and recipe of a
+  reached rule and a recipe line that can run make;
+- the makefile text cannot be read (too large, a missing include, an
+  unbalanced reference): UNKNOWN widens every path.
+
+Otherwise its compile set is empty. Its test groups stay selected: the
+plain plan's path groups, the impact rules and the runtime-input handling
+decide those, not this rule.
+
+A line names a path by its literal path or basename, a directory it lives
+under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
+and `%` in make's own text; in a recipe or a `$(shell)` argument `%` is
+shell text, as in `printf '%s'`). A glob also names a path under a root the
+text cannot expand, so `$(CURDIR)/tools/x.sh` names `tools/x.sh`. A
+variable with one path-like definition is expanded; any other reference
+matches anything.
+
+**Reached rules.** A rule is reached when a target is not a literal
+`.PHONY` name (it builds a file: an object, a generated source or header, a
+link), when it is a makefile's first rule (a bare `make` runs it), or when
+a line that reaches spells one of its `.PHONY` names. A line reaches when
+it is a directive, the prerequisites of a reached rule, a recipe line of a
+reached rule that can run make, or the definition of a live variable. A
+variable is live when a line that reaches references or spells it; make's
+hooks (`.DEFAULT_GOAL`, `.EXTRA_PREREQS`, `VPATH`, `GPATH`, `MAKEFILES`,
+`.LIBPATTERNS`) always are, and a computed name makes live every variable
+its glob matches. A line can run make when it holds the command `make` in
+any case (`$(MAKE)`, `gmake`), `$(eval)` or `$(file)`, or references or
+spells a variable whose value can, closed over references.
+
+Text whose value is only tested or printed reaches nothing: `$(if)`'s
+condition, `$(filter)`'s and `$(filter-out)`'s patterns, `$(foreach)`'s
+variable name, and `$(error)`, `$(info)`, `$(warning)`, `$(origin)` and
+`$(flavor)`. A reference there to a variable that can run make, and a call
+that runs something (`$(shell)`, `$(eval)`, `$(file)`, `$(call)`,
+`$(value)`), still reach. A recipe command that only prints reaches
+nothing either: an `echo` or `printf` with no command substitution, not
+piped into another command, redirected only to a descriptor or
+`/dev/null`, and referencing only automatic variables or variables every
+definition of which is plain text (no quote, separator, redirection,
+command substitution, `make`, or `$(shell)`, `$(file)`, `$(eval)`,
+`$(wildcard)` or `$(realpath)` call). A word led by `-`, `@` or `+`
+names only a target spelled that way.
+
+What stays conservative: a recipe line after a conditional whose branches
+change the rule counts; `.ONESHELL` and `.RECIPEPREFIX` make every recipe
+line count; under `.SECONDEXPANSION` a prerequisite list's escaped
+references reach.
+
+**The premise.** A `.PHONY` rule nothing reaches runs only when someone
+names it as a goal, and then in full: make never treats a phony target as
+up to date. What it reads is a prerequisite of no object, and what it does
+through make (a recipe line that runs make, a prerequisite another rule
+shares) is followed. Its other commands are opaque programs, the same
+premise the text scan makes for any script a recipe runs. A hand-run goal
+that rewrites a file an object reads (a `make regen` that rewrites a
+generated header) changes that object when it runs, not when its script is
+edited; the planner plans the edit.
 
 ### Falsification
 

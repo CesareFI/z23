@@ -1,13 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: ACCEPTANCE BAR for fxc_build_inputs() (tools/dev/devloop_facts_consumer.c),
  * the non-C/H build-input rule: (a) a TU-included path routes through the
- * existing header path; (b) a path the Makefile text names (by name,
- * pattern or sub-make) widens to the whole catalog; (c) a path no TU reads
- * and no Makefile names narrows the compile, but the plain plan's own path
- * groups for it are still selected as a test obligation; (d) a path the
- * include graph cannot answer for (here: deleted/never-created) widens too;
- * (e) a TU whose manifests predate facts revision 3 is affected by a created
- * path.
+ * existing header path; (b) a path the Makefile text names where make can
+ * change an object with it (by name, pattern or sub-make, in a definition,
+ * directive, file rule, the default goal, a .PHONY rule an object rule
+ * reaches or a recipe line that runs make; tools/dev/devloop_facts_make*.c)
+ * widens to the whole catalog; (c) a path no TU reads and no such position
+ * names (a .PHONY-only recipe, an echo, an $(if) condition, a doc)
+ * narrows the compile, but the plain plan's own path groups for it are
+ * still selected as a test obligation; (d) a path the include graph cannot
+ * answer for (here: deleted/never-created) widens too; (e) a TU whose
+ * manifests predate facts revision 3 is affected by a created path.
  *
  * Each test hand-builds a minimal identity+files manifest (no libclang) for
  * one candidate TU and drives zcl_devloop_facts_consume() directly against a
@@ -541,18 +544,27 @@ static bool sbi_widened(const struct sbi_run *r)
 
 /* The shape of the real Makefile's false widenings: printf's '%s' in a
  * $(shell) definition and in a file rule's recipe (shell text, not a make
- * pattern), and a coverage and a lint recipe of .PHONY rules no object rule
- * reaches naming tools/ and tools/verify/<glob>. */
+ * pattern); goal names an object rule only tests or prints (an $(if)
+ * condition, a $(filter) pattern, an $(error) message, an echo, a
+ * --coverage flag); and a coverage and a lint recipe of .PHONY rules no
+ * object rule reaches naming tools/ and tools/verify/<glob>. */
 #define SBI_INERT_MAKEFILE                                                     \
     "TOOLCHAIN_RC := $(shell printf '%s' 0)\n"                                 \
+    "PROFILES := coverage\n"                                                   \
+    "LEASES = $(if $(filter coverage,$(PROFILES)),-DLEASE)\n"                  \
+    "COV_CFLAGS = --coverage -O1\n"                                            \
     "ifneq ($(TOOLCHAIN_RC),0)\n"                                              \
-    "$(error toolchain)\n"                                                     \
+    "$(error toolchain: run make coverage)\n"                                  \
     "endif\n"                                                                  \
     "build/a.o: " SBI_TU "\n"                                                  \
+    "\t@command -v cc >/dev/null || { echo \"no cc: run make ci\" >&2; "      \
+    "exit 2; }\n"                                                              \
     "\t@printf '%s %s\\n' cc a > build/a.cmd\n"                                \
-    "\t$(CC) -c $< -o $@\n"                                                    \
+    "\t$(CC) $(LEASES) $(if $(COV),$(COV_CFLAGS)) -c $< -o $@\n"               \
     "\n"                                                                       \
-    ".PHONY: coverage lint\n"                                                  \
+    ".PHONY: ci coverage lint\n"                                               \
+    "ci:\n"                                                                    \
+    "\t$(MAKE) coverage lint\n"                                                \
     "coverage:\n"                                                              \
     "\t@echo \"== coverage ==\"\n"                                             \
     "\tgcovr --root . --filter 'tools/' --print-summary\n"                     \
@@ -755,6 +767,70 @@ static int sbit_t_conditional_recipe(void)
     return failures;
 }
 
+/* The first rule of a makefile is what a bare make builds: a .PHONY rule
+ * there is reached, and so are its recipe's inputs. */
+static int sbit_t_default_goal(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a .PHONY default goal keeps its "
+             "recipe's inputs") {
+        static const char *const changed[] = {"tools/gen/h.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_goal",
+                           ".PHONY: headers\n"
+                           "headers:\n"
+                           "\tsh tools/gen/h.sh > build/gen.h\n"
+                           "build/a.o: " SBI_TU "\n"
+                           "\t$(CC) -c $< -o $@\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A prerequisite spelled under a root the makefile does not define
+ * ($(CURDIR)/...) still names the repo path. */
+static int sbit_t_rooted_prerequisite(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a $(CURDIR)/ prerequisite of a "
+             "generated header widens") {
+        static const char *const changed[] = {"tools/gen/h.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_rooted",
+                           "build/gen.h: $(CURDIR)/tools/gen/h.sh\n"
+                           "\tsh $< > $@\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* An echo only prints, but one piped into a shell runs what it prints: a
+ * goal it names is reached. */
+static int sbit_t_echo_into_shell(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: an echo piped into sh reaches the goal "
+             "it names") {
+        static const char *const changed[] = {"tools/gen/h.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_echo_sh",
+                           "build/a.o: " SBI_TU "\n"
+                           "\techo \"make headers\" | sh\n"
+                           "\t$(CC) -c $< -o $@\n"
+                           ".PHONY: headers\n"
+                           "headers:\n"
+                           "\tsh tools/gen/h.sh > build/gen.h\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
@@ -765,5 +841,6 @@ int test_semantic_build_inputs(void)
           sbit_t_generated_header() | sbit_t_args_cflags() |
           sbit_t_wildcard_sources() | sbit_t_phony_prerequisite() |
           sbit_t_phony_via_variable() | sbit_t_phony_submake() |
-          sbit_t_conditional_recipe();
+          sbit_t_conditional_recipe() | sbit_t_default_goal() |
+          sbit_t_rooted_prerequisite() | sbit_t_echo_into_shell();
 }
