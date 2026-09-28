@@ -1145,7 +1145,8 @@ static bool zv_fixture_write_release(const char *store,
     rel.has_parent = false;
     memcpy(rel.publisher_pubkey, pk.vch, COMPRESSED_PUBLIC_KEY_SIZE);
     rel.publisher_sequence = 1;
-    snprintf(rel.reward_address, sizeof(rel.reward_address), "t1fixture");
+    /* Empty reward is valid for this attestation fixture. A made-up t1
+     * address would be rejected when the persisted release is replayed. */
     snprintf(rel.license, sizeof(rel.license), "MIT");
     memcpy(rel.recipe_root, recipe_root, 32);
     rel.has_znam = false;

@@ -132,6 +132,10 @@ enum vcs_package_store_result store_chunk_hash_checked(
  * GC unreferenced CAS objects, and commit CAS-complete staged packages.
  * Fills store->{pkgs,cas,gc_orphans_total}; false on hard I/O failure. */
 bool store_open_recover(struct vcs_package_store *store);
+/* Rebuild release acceptance from every present immutable envelope. The
+ * caller owns the returned unpublished projection, or receives NULL on any
+ * incomplete/corrupt history or resource failure. */
+struct vcs_package_accept *store_replay_releases(const char *root);
 bool store_process_lock(struct vcs_package_store *store);
 void store_process_unlock(struct vcs_package_store *store);
 bool store_generation_check(struct vcs_package_store *store);

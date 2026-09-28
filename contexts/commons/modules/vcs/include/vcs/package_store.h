@@ -75,11 +75,13 @@
  * v1 per-package cap: 64 MiB (VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES).
  *
  * Release envelopes (slice 1) are admitted through the node-bound
- * acceptance layer: the store owns one in-memory vcs_package_accept
+ * acceptance layer: the store owns one derived in-memory vcs_package_accept
  * context; an envelope is persisted only when acceptance returns OK or
- * DUPLICATE (idempotent redelivery). Acceptance cursors are in-memory by
- * design, so they replay fresh across restarts; stored envelopes are
- * keyed by release id and writes are idempotent.
+ * DUPLICATE (idempotent redelivery). On open and refresh, the complete
+ * present immutable releases/ directory is checked and replayed into a fresh
+ * context before publication. Unreadable, malformed, or contradictory entries
+ * refuse recovery; a failed refresh retains the previous context. Deletion of
+ * an unreferenced release cannot be inferred from the remaining files alone.
  *
  * Package file paths are validated by the manifest grammar itself
  * (vcs_package_path_valid rejects dot/dot-dot segments, backslashes,
@@ -321,8 +323,8 @@ struct vcs_package_store_summary {
 
 /* A page is ordered by immutable manifest root. Pass NULL for after_root and
  * zero for expected_generation on the first call; then pass next_root and
- * generation unchanged. A package-catalog mutation invalidates continuation.
- * Release and recipe files do not change these package summaries. A complete
+ * generation unchanged. A package-catalog or release-admission mutation
+ * invalidates continuation. Recipe files do not change these summaries. A complete
  * scan ends only when has_more is false, including an exact full last page. */
 enum vcs_package_store_page_result {
     VCS_PACKAGE_STORE_PAGE_OK = 0,

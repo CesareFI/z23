@@ -39,7 +39,6 @@
 #endif
 
 #define STORE_LOG "vcs.store"
-
 /* See vcs/package_store.h: OFF by default, so every store_atomic_write
  * fsyncs/FlushFileBuffers before its atomic rename exactly as the
  * crash-recovery contract requires. */
@@ -1375,7 +1374,8 @@ static bool store_existing_layout_safe(const struct vcs_package_store *store)
 {
     if (store->preexisting_root) {
         static const char *const required[] = {
-            "/manifests", "/staging", "/cas", "/cas/sha3", "/pins",
+            "/manifests", "/releases", "/staging", "/cas",
+            "/cas/sha3", "/pins",
         };
         bool missing = false;
         for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
@@ -1437,9 +1437,14 @@ bool store_open_recover(struct vcs_package_store *store)
     if (store->catalog_incomplete)
         LOG_FAIL(STORE_LOG, "committed manifest history incomplete under %s",
                  store->root);
-    if (!store_gc_cas(store))
-        LOG_FAIL(STORE_LOG, "CAS GC under %s", store->root);
-    if (!store_commit_sweep(store))
-        LOG_FAIL(STORE_LOG, "commit sweep under %s", store->root);
+    struct vcs_package_accept *replayed = store_replay_releases(store->root);
+    if (!replayed)
+        LOG_FAIL(STORE_LOG, "release history recovery under %s", store->root);
+    if (!store_gc_cas(store) || !store_commit_sweep(store)) {
+        vcs_package_accept_free(replayed);
+        LOG_FAIL(STORE_LOG, "CAS recovery under %s", store->root);
+    }
+    vcs_package_accept_free(store->accept);
+    store->accept = replayed;
     return true;
 }

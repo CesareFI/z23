@@ -979,6 +979,101 @@ int t_store_possession_scheduler(void)
 }
 
 /* ── 11: release envelopes ────────────────────────────────────────── */
+static int store_case_release_history_boundary(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *s =
+        zs_open(dd, sizeof(dd), "releaseboundary", 1000000u);
+    ZS_CHECK("release boundary: store opens", s != NULL);
+    if (!s) return failures;
+    enum vcs_package_accept_result ar = VCS_PACKAGE_ACCEPT_ERR_NULL;
+    struct vcs_package_release release;
+    bool admitted = true;
+    vcs_package_store_set_deferred_sync(true);
+    for (uint64_t sequence = 1; sequence <= 4097u; sequence++) {
+        if (!zs_release(&release, 0x42, sequence, "acme/replay-scale") ||
+            vcs_package_store_put_release(s, &release, &ar) !=
+                VCS_PACKAGE_STORE_OK || ar != VCS_PACKAGE_ACCEPT_OK) {
+            admitted = false;
+            break;
+        }
+        if (sequence < 4095u) continue;
+        vcs_package_store_close(s);
+        s = vcs_package_store_open(dd, 1000000u);
+        if (!s || vcs_package_store_put_release(s, &release, &ar) !=
+                      VCS_PACKAGE_STORE_OK ||
+            ar != VCS_PACKAGE_ACCEPT_DUPLICATE) {
+            admitted = false;
+            break;
+        }
+    }
+    vcs_package_store_set_deferred_sync(false);
+    ZS_CHECK("release boundary: 4095/4096/4097 persisted and replayed",
+             admitted);
+    vcs_package_store_close(s);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+static int store_case_release_corrupt_history(
+    const char *dd, const char *fork_path, const char *original_path,
+    const struct vcs_package_release *forked)
+{
+    int failures = 0;
+    ZS_CHECK("releases: unreadable history fixture creates directory",
+             mkdir(fork_path, 0700) == 0);
+    struct vcs_package_store *s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: nonregular history refuses open", s == NULL);
+    if (s) vcs_package_store_close(s);
+    ZS_CHECK("releases: remove unreadable fixture", rmdir(fork_path) == 0);
+
+    uint8_t *fork_wire = NULL;
+    size_t fork_len = 0;
+    ZS_CHECK("releases: signed fork serializes",
+             vcs_package_release_serialize(forked, &fork_wire,
+                                           &fork_len) ==
+                 VCS_PACKAGE_RELEASE_OK);
+    FILE *f = fopen(fork_path, "wb");
+    bool wrote = f && fork_wire &&
+        fwrite(fork_wire, 1, fork_len, f) == fork_len;
+    if (f && fclose(f) != 0) wrote = false;
+    ZS_CHECK("releases: conflicting history fixture writes", wrote);
+    free(fork_wire);
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: persisted equivocation refuses open", s == NULL);
+    if (s) vcs_package_store_close(s);
+    ZS_CHECK("releases: remove conflicting fixture", unlink(fork_path) == 0);
+
+    char backup[512];
+    snprintf(backup, sizeof(backup), "%s.saved", original_path);
+    ZS_CHECK("releases: save original wire", rename(original_path, backup) == 0);
+    f = fopen(original_path, "wb");
+    wrote = f && fputc(0, f) != EOF;
+    if (f && fclose(f) != 0) wrote = false;
+    ZS_CHECK("releases: truncated history fixture writes", wrote);
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: truncated history refuses open", s == NULL);
+    if (s) vcs_package_store_close(s);
+    ZS_CHECK("releases: remove truncated fixture", unlink(original_path) == 0);
+    ZS_CHECK("releases: restore original wire",
+             rename(backup, original_path) == 0);
+
+    char release_dir[512];
+    char hidden_dir[512];
+    zs_store_path(release_dir, sizeof(release_dir), dd, "releases");
+    zs_store_path(hidden_dir, sizeof(hidden_dir), dd,
+                  "recipes/release-history.saved");
+    ZS_CHECK("releases: hide history directory",
+             rename(release_dir, hidden_dir) == 0);
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: missing history directory refuses open", s == NULL);
+    if (s) vcs_package_store_close(s);
+    ZS_CHECK("releases: restore history directory",
+             rename(hidden_dir, release_dir) == 0);
+    return failures;
+}
+
 int t_store_releases(void)
 {
     int failures = 0;
@@ -1003,9 +1098,11 @@ int t_store_releases(void)
     char hex[65];
     zs_hex32(id, hex);
     char path[512];
+    char original_path[512];
     char suffix[160];
     snprintf(suffix, sizeof(suffix), "releases/%s", hex);
     zs_store_path(path, sizeof(path), dd, suffix);
+    snprintf(original_path, sizeof(original_path), "%s", path);
     ZS_CHECK("releases: envelope persisted under its id",
              zs_path_exists(path));
 
@@ -1030,6 +1127,64 @@ int t_store_releases(void)
     ZS_CHECK("releases: equivocated envelope not persisted",
              !zs_path_exists(path));
 
+    vcs_package_store_close(s);
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: restart opens", s != NULL);
+    if (!s) {
+        test_rm_rf_recursive(dd);
+        return failures;
+    }
+    ZS_CHECK("releases: fork remains equivocation after restart",
+             vcs_package_store_put_release(s, &forked, &ar) ==
+                 VCS_PACKAGE_STORE_ERR_ACCEPT &&
+             ar == VCS_PACKAGE_ACCEPT_EQUIVOCATION);
+    ZS_CHECK("releases: fork remains absent after restart",
+             !zs_path_exists(path));
+    ZS_CHECK("releases: original remains duplicate after restart",
+             vcs_package_store_put_release(s, &r, &ar) ==
+                 VCS_PACKAGE_STORE_OK && ar == VCS_PACKAGE_ACCEPT_DUPLICATE);
+
+    vcs_package_store_close(s);
+    failures += store_case_release_corrupt_history(dd, path,
+                                                   original_path, &forked);
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: repaired history reopens", s != NULL);
+    if (!s) {
+        test_rm_rf_recursive(dd);
+        return failures;
+    }
+
+    struct vcs_package_release later;
+    ZS_CHECK("releases: next sequence fixture signs",
+             zs_release(&later, 0x11, 2u, "acme/ring-buffer"));
+    uint8_t later_id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    ZS_CHECK("releases: next sequence id computes",
+             vcs_package_release_id(&later, later_id) ==
+                 VCS_PACKAGE_RELEASE_OK);
+    zs_hex32(later_id, hex);
+    snprintf(suffix, sizeof(suffix), "releases/%s", hex);
+    zs_store_path(path, sizeof(path), dd, suffix);
+    ZS_CHECK("releases: blocked write fixture creates directory",
+             mkdir(path, 0700) == 0);
+    ZS_CHECK("releases: failed durable write refuses",
+             vcs_package_store_put_release(s, &later, &ar) ==
+                 VCS_PACKAGE_STORE_ERR_IO);
+    ZS_CHECK("releases: remove blocked write fixture", rmdir(path) == 0);
+    ZS_CHECK("releases: failed write did not advance cursor",
+             vcs_package_store_put_release(s, &later, &ar) ==
+                 VCS_PACKAGE_STORE_OK && ar == VCS_PACKAGE_ACCEPT_OK);
+    vcs_package_store_close(s);
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("releases: later sequence recovers", s != NULL);
+    if (!s) {
+        test_rm_rf_recursive(dd);
+        return failures;
+    }
+    ZS_CHECK("releases: old sequence remains stale after restart",
+             vcs_package_store_put_release(s, &r, &ar) ==
+                 VCS_PACKAGE_STORE_ERR_ACCEPT &&
+             ar == VCS_PACKAGE_ACCEPT_STALE);
+
     ZS_CHECK("releases: null args rejected",
              vcs_package_store_put_release(NULL, &r, &ar) ==
                  VCS_PACKAGE_STORE_ERR_NULL &&
@@ -1038,5 +1193,6 @@ int t_store_releases(void)
 
     vcs_package_store_close(s);
     test_rm_rf_recursive(dd);
+    failures += store_case_release_history_boundary();
     return failures;
 }

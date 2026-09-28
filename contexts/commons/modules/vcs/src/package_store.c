@@ -1019,67 +1019,6 @@ enum vcs_package_store_result vcs_package_store_put_chunk_no_evict(
                                 chunk, chunk_len, true);
 }
 
-/* ── admission: releases (slice 1 consumption) ────────────────────── */
-
-enum vcs_package_store_result vcs_package_store_put_release(
-    struct vcs_package_store *store,
-    const struct vcs_package_release *release,
-    enum vcs_package_accept_result *accept_out)
-{
-    if (!store || !release)
-        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
-                   "null store/release");
-    pthread_mutex_lock(&store->lock);
-    enum vcs_package_accept_result ar =
-        vcs_package_accept(store->accept, release);
-    if (accept_out)
-        *accept_out = ar;
-    /* Slice 3 diagnostics: record the last acceptance outcome even when it
-     * rejects (the id is best-effort — an invalid envelope may have none). */
-    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
-    bool have_id =
-        vcs_package_release_id(release, id) == VCS_PACKAGE_RELEASE_OK;
-    store->last_accept_set = true;
-    store->last_accept = ar;
-    if (have_id)
-        memcpy(store->last_accept_id, id, 32);
-    if (ar != VCS_PACKAGE_ACCEPT_OK && ar != VCS_PACKAGE_ACCEPT_DUPLICATE) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_ACCEPT;
-    }
-    if (!have_id) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_ALLOC;
-    }
-    uint8_t *wire = NULL;
-    size_t wire_len = 0;
-    if (vcs_package_release_serialize(release, &wire, &wire_len) !=
-            VCS_PACKAGE_RELEASE_OK) {
-        pthread_mutex_unlock(&store->lock);
-        return VCS_PACKAGE_STORE_ERR_ALLOC;
-    }
-    char id_hex[65];
-    zcl_hex_encode(id, 32, id_hex);
-    char path[STORE_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/releases/%s", store->root, id_hex);
-    bool ok = store_atomic_write(path, wire, wire_len);
-    free(wire);
-    /* An accepted envelope changes what the package IS to the outside
-     * world: an unsigned root nobody may host becomes a signed, licensed
-     * one that may be announced and served. Observers key their public-
-     * hosting decision on the mutation generation, so a release landing
-     * after its manifest must advance it — otherwise the package stays
-     * privately hostable-in-name-only until some unrelated byte arrives. */
-    if (ok) {
-        struct store_package *pkg =
-            store_find(store, release->package_root, NULL);
-        if (pkg)
-            store_package_touch(store, pkg);
-    }
-    pthread_mutex_unlock(&store->lock);
-    return ok ? VCS_PACKAGE_STORE_OK : VCS_PACKAGE_STORE_ERR_IO;
-}
-
 /* ── admission: recipes (slice 5) ───────────────────────────────────── */
 
 enum vcs_package_store_result vcs_package_store_put_recipe(

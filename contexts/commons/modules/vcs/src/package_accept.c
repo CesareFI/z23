@@ -79,6 +79,40 @@ struct vcs_package_accept *vcs_package_accept_new(void)
     return accept;
 }
 
+struct vcs_package_accept *vcs_package_accept_clone(
+    const struct vcs_package_accept *accept)
+{
+    if (!accept)
+        LOG_NULL("vcs.accept", "clone null acceptance context");
+    struct vcs_package_accept *copy = vcs_package_accept_new();
+    if (!copy)
+        return NULL;
+    if (accept->pubs_count) {
+        copy->pubs = zcl_malloc(accept->pubs_count * sizeof(*copy->pubs),
+                                "vcs_accept_clone_pubs");
+        if (!copy->pubs) {
+            vcs_package_accept_free(copy);
+            LOG_NULL("vcs.accept", "clone publisher cursors");
+        }
+        memcpy(copy->pubs, accept->pubs,
+               accept->pubs_count * sizeof(*copy->pubs));
+        copy->pubs_count = copy->pubs_cap = accept->pubs_count;
+    }
+    if (accept->ns_count) {
+        copy->namespaces = zcl_malloc(
+            accept->ns_count * sizeof(*copy->namespaces),
+            "vcs_accept_clone_namespaces");
+        if (!copy->namespaces) {
+            vcs_package_accept_free(copy);
+            LOG_NULL("vcs.accept", "clone namespace bindings");
+        }
+        memcpy(copy->namespaces, accept->namespaces,
+               accept->ns_count * sizeof(*copy->namespaces));
+        copy->ns_count = copy->ns_cap = accept->ns_count;
+    }
+    return copy;
+}
+
 void vcs_package_accept_free(struct vcs_package_accept *accept)
 {
     if (!accept)

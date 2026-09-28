@@ -73,6 +73,10 @@ const char *vcs_package_accept_result_string(
 bool vcs_package_accept_chain_id(char *out, size_t out_capacity);
 
 struct vcs_package_accept *vcs_package_accept_new(void);
+/* Deep-copy the bounded derived cursor set for conditional durable admission.
+ * A failed proposal can be discarded without changing the published view. */
+struct vcs_package_accept *vcs_package_accept_clone(
+    const struct vcs_package_accept *accept);
 void vcs_package_accept_free(struct vcs_package_accept *accept);
 
 /* Classify one signed release against the node rules and the recorded

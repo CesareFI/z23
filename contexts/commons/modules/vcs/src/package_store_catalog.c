@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Package-store catalog validation, bounded paging, and policy mutation. */
 #include "package_store_priv.h"
+#include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "platform/positioned_file.h"
@@ -9,11 +10,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <wchar.h>
+#include <windows.h>
+#else
 #include <dirent.h>
 #endif
 
 #define STORE_LOG "vcs.store"
+
+#if defined(_WIN32)
+static bool store_release_wide_path(const char *path,
+                                    wchar_t out[STORE_PATH_MAX])
+{
+    int count = path ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                           path, -1, NULL, 0) : 0;
+    return count > 0 && count <= (int)STORE_PATH_MAX &&
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, out,
+                            count) == count;
+}
+#endif
 
 bool store_chunk_inputs_valid(struct vcs_package_store *store,
                               const uint8_t package_root[32],
@@ -425,6 +441,7 @@ bool vcs_package_store_refresh(struct vcs_package_store *store)
         store_catalog_validate_disk(&rebuilt) == VCS_PACKAGE_STORE_PAGE_OK;
     if (!ready) {
         store_partial_catalog_free(&rebuilt);
+        vcs_package_accept_free(rebuilt.accept);
         store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         LOG_RETURN(false, STORE_LOG, "rebuild stale package catalog");
@@ -437,6 +454,7 @@ bool vcs_package_store_refresh(struct vcs_package_store *store)
             store_catalog_find_metadata(&rebuilt, old->root);
         if (!same) {
             store_partial_catalog_free(&rebuilt);
+            vcs_package_accept_free(rebuilt.accept);
             store_process_unlock(store);
             pthread_mutex_unlock(&store->lock);
             LOG_RETURN(false, STORE_LOG,
@@ -451,6 +469,7 @@ bool vcs_package_store_refresh(struct vcs_package_store *store)
     struct vcs_package_store retired = {
         .pkgs = store->pkgs, .pkg_count = store->pkg_count,
         .root_order = store->root_order, .cas = store->cas,
+        .accept = store->accept,
     };
     store->pkgs = rebuilt.pkgs;
     store->pkg_count = rebuilt.pkg_count;
@@ -462,12 +481,14 @@ bool vcs_package_store_refresh(struct vcs_package_store *store)
     store->cas = rebuilt.cas;
     store->cas_count = rebuilt.cas_count;
     store->cas_cap = rebuilt.cas_cap;
+    store->accept = rebuilt.accept;
     store->manifest_bytes_total = rebuilt.manifest_bytes_total;
     store->logical_clock = rebuilt.logical_clock;
     store->next_mutation_generation = rebuilt.next_mutation_generation;
     store->shared_generation = rebuilt.shared_generation;
     store->gc_orphans_total += rebuilt.gc_orphans_total;
     store_partial_catalog_free(&retired);
+    vcs_package_accept_free(retired.accept);
     store_process_unlock(store);
     pthread_mutex_unlock(&store->lock);
     return true;
@@ -849,3 +870,288 @@ enum vcs_package_store_result vcs_package_store_set_class(
 }
 
 /* ── status + introspection ───────────────────────────────────────── */
+#define STORE_RELEASE_REPLAY_BUDGET_BYTES (64u * 1024u * 1024u)
+
+struct store_release_row {
+    struct vcs_package_release release;
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+};
+
+static int store_release_row_cmp(const void *left, const void *right)
+{
+    const struct store_release_row *a = left;
+    const struct store_release_row *b = right;
+    int order = memcmp(a->release.publisher_pubkey,
+                       b->release.publisher_pubkey,
+                       VCS_PACKAGE_RELEASE_PUBKEY_BYTES);
+    if (order) return order;
+    if (a->release.publisher_sequence != b->release.publisher_sequence)
+        return a->release.publisher_sequence < b->release.publisher_sequence
+                   ? -1 : 1;
+    return memcmp(a->id, b->id, sizeof(a->id));
+}
+
+static bool store_release_row_add(const char *dir, const char *name,
+                                  struct store_release_row **rows,
+                                  size_t *count, size_t *capacity)
+{
+    if (!store_name_is_hex64(name))
+        LOG_FAIL(STORE_LOG, "invalid persisted release filename %s", name);
+    char path[STORE_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        LOG_FAIL(STORE_LOG, "persisted release path too long");
+    size_t wire_len = 0;
+    uint8_t *wire = store_read_file(path, &wire_len);
+    if (!wire)
+        LOG_FAIL(STORE_LOG, "unreadable persisted release %s", name);
+    struct store_release_row row = {0};
+    bool valid = wire_len <= VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES &&
+        vcs_package_release_parse(wire, wire_len, &row.release) ==
+            VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_id(&row.release, row.id) ==
+            VCS_PACKAGE_RELEASE_OK;
+    free(wire);
+    char id_hex[65];
+    if (valid) {
+        zcl_hex_encode(row.id, sizeof(row.id), id_hex);
+        valid = strcmp(id_hex, name) == 0;
+    }
+    if (!valid)
+        LOG_FAIL(STORE_LOG, "invalid persisted release identity %s", name);
+    if (*count == *capacity) {
+        size_t maximum = STORE_RELEASE_REPLAY_BUDGET_BYTES / sizeof(**rows);
+        if (*count >= maximum)
+            LOG_FAIL(STORE_LOG, "persisted release replay memory bound");
+        size_t next = *capacity ? *capacity * 2u : 64u;
+        if (next > maximum) next = maximum;
+        struct store_release_row *grown = zcl_realloc(
+            *rows, next * sizeof(**rows), "store_release_replay");
+        if (!grown)
+            LOG_FAIL(STORE_LOG, "allocate persisted release replay");
+        *rows = grown;
+        *capacity = next;
+    }
+    (*rows)[(*count)++] = row;
+    return true;
+}
+
+#if defined(_WIN32)
+static bool store_release_collect(const char *dir,
+                                  struct store_release_row **rows,
+                                  size_t *count, size_t *capacity)
+{
+    bool complete = true;
+    wchar_t wide_dir[STORE_PATH_MAX];
+    wchar_t pattern[STORE_PATH_MAX];
+    complete = store_release_wide_path(dir, wide_dir);
+    int pattern_len = complete
+        ? swprintf(pattern, STORE_PATH_MAX, L"%ls\\*", wide_dir) : -1;
+    complete = complete && pattern_len > 0 &&
+        (size_t)pattern_len < STORE_PATH_MAX;
+    if (complete) {
+        WIN32_FIND_DATAW entry;
+        HANDLE find = FindFirstFileW(pattern, &entry);
+        if (find == INVALID_HANDLE_VALUE)
+            complete = GetLastError() == ERROR_FILE_NOT_FOUND;
+        else {
+            do {
+                if (wcscmp(entry.cFileName, L".") == 0 ||
+                    wcscmp(entry.cFileName, L"..") == 0)
+                    continue;
+                if ((entry.dwFileAttributes &
+                     (FILE_ATTRIBUTE_DIRECTORY |
+                      FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+                    complete = false;
+                    break;
+                }
+                int bytes = WideCharToMultiByte(
+                    CP_UTF8, WC_ERR_INVALID_CHARS, entry.cFileName, -1,
+                    NULL, 0, NULL, NULL);
+                char name[65];
+                if (bytes != 65 ||
+                    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                        entry.cFileName, -1, name, bytes,
+                                        NULL, NULL) != bytes ||
+                    !store_release_row_add(dir, name, rows, count,
+                                           capacity)) {
+                    complete = false;
+                    break;
+                }
+            } while (FindNextFileW(find, &entry));
+            if (complete && GetLastError() != ERROR_NO_MORE_FILES)
+                complete = false;
+            FindClose(find);
+        }
+    }
+    return complete;
+}
+#else
+static bool store_release_collect(const char *dir,
+                                  struct store_release_row **rows,
+                                  size_t *count, size_t *capacity)
+{
+    bool complete = true;
+    DIR *d = opendir(dir);
+    if (!d) {
+        LOG_ERROR(STORE_LOG, "open persisted releases under %s: %s", dir,
+                  strerror(errno));
+        return false;
+    }
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(d);
+        if (!entry) {
+            if (errno != 0) complete = false;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0)
+            continue;
+        if (!store_release_row_add(dir, entry->d_name,
+                                   rows, count, capacity)) {
+            complete = false;
+            break;
+        }
+    }
+    if (closedir(d) != 0) complete = false;
+    return complete;
+}
+#endif
+
+struct vcs_package_accept *store_replay_releases(const char *root)
+{
+    char dir[STORE_PATH_MAX];
+    int n = snprintf(dir, sizeof(dir), "%s/releases", root);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) {
+        LOG_ERROR(STORE_LOG, "persisted release directory path too long");
+        return NULL;
+    }
+    struct store_release_row *rows = NULL;
+    size_t count = 0, capacity = 0;
+    bool complete = store_release_collect(dir, &rows, &count, &capacity);
+    struct vcs_package_accept *projection =
+        complete ? vcs_package_accept_new() : NULL;
+    if (projection) {
+        if (count > 1)
+            qsort(rows, count, sizeof(*rows), store_release_row_cmp);
+        for (size_t i = 0; i < count; i++) {
+            enum vcs_package_accept_result result =
+                vcs_package_accept(projection, &rows[i].release);
+            if (result != VCS_PACKAGE_ACCEPT_OK) {
+                LOG_ERROR(STORE_LOG, "persisted release %zu refuses replay: %s",
+                          i, vcs_package_accept_result_string(result));
+                vcs_package_accept_free(projection);
+                projection = NULL;
+                break;
+            }
+        }
+    }
+    free(rows);
+    if (!projection)
+        LOG_ERROR(STORE_LOG, "persisted release history incomplete under %s",
+                  dir);
+    return projection;
+}
+
+/* ── admission: releases (slice 1 consumption) ────────────────────── */
+
+static enum vcs_package_store_result store_release_persist(
+    struct vcs_package_store *store,
+    const struct vcs_package_release *release,
+    const uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES])
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_package_release_serialize(release, &wire, &wire_len) !=
+            VCS_PACKAGE_RELEASE_OK) {
+        LOG_ERROR(STORE_LOG, "serialize accepted release");
+        return VCS_PACKAGE_STORE_ERR_ALLOC;
+    }
+    char id_hex[65];
+    zcl_hex_encode(id, 32, id_hex);
+    char path[STORE_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/releases/%s", store->root,
+                     id_hex);
+    bool persisted = n > 0 && (size_t)n < sizeof(path) &&
+        store_generation_advance(store) &&
+        store_atomic_write(path, wire, wire_len);
+    free(wire);
+    if (!persisted) {
+        LOG_ERROR(STORE_LOG, "persist accepted release %s", id_hex);
+        return VCS_PACKAGE_STORE_ERR_IO;
+    }
+    return VCS_PACKAGE_STORE_OK;
+}
+
+enum vcs_package_store_result vcs_package_store_put_release(
+    struct vcs_package_store *store,
+    const struct vcs_package_release *release,
+    enum vcs_package_accept_result *accept_out)
+{
+    if (!store || !release)
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_NULL, STORE_LOG,
+                   "null store/release");
+    pthread_mutex_lock(&store->lock);
+    enum vcs_package_store_result result = VCS_PACKAGE_STORE_ERR_IO;
+    struct vcs_package_accept *proposal = NULL;
+    bool process_locked = store_process_lock(store);
+    if (!process_locked || !store_generation_check(store)) {
+        LOG_ERROR(STORE_LOG, "release admission needs current store generation");
+        goto release_done;
+    }
+    proposal = vcs_package_accept_clone(store->accept);
+    if (!proposal) {
+        result = VCS_PACKAGE_STORE_ERR_ALLOC;
+        LOG_ERROR(STORE_LOG, "release admission proposal allocation");
+        goto release_done;
+    }
+    enum vcs_package_accept_result ar =
+        vcs_package_accept(proposal, release);
+    if (accept_out)
+        *accept_out = ar;
+    /* Slice 3 diagnostics: record the last acceptance outcome even when it
+     * rejects (the id is best-effort — an invalid envelope may have none). */
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    bool have_id =
+        vcs_package_release_id(release, id) == VCS_PACKAGE_RELEASE_OK;
+    store->last_accept_set = true;
+    store->last_accept = ar;
+    if (have_id)
+        memcpy(store->last_accept_id, id, 32);
+    if (ar != VCS_PACKAGE_ACCEPT_OK && ar != VCS_PACKAGE_ACCEPT_DUPLICATE) {
+        result = VCS_PACKAGE_STORE_ERR_ACCEPT;
+        LOG_ERROR(STORE_LOG, "release admission refused: %s",
+                  vcs_package_accept_result_string(ar));
+        goto release_done;
+    }
+    if (!have_id) {
+        result = VCS_PACKAGE_STORE_ERR_ALLOC;
+        LOG_ERROR(STORE_LOG, "accepted release has no id");
+        goto release_done;
+    }
+    result = store_release_persist(store, release, id);
+    if (result != VCS_PACKAGE_STORE_OK)
+        goto release_done;
+    struct vcs_package_accept *retired = store->accept;
+    store->accept = proposal;
+    proposal = NULL;
+    vcs_package_accept_free(retired);
+    /* An accepted envelope changes what the package IS to the outside
+     * world: an unsigned root nobody may host becomes a signed, licensed
+     * one that may be announced and served. Observers key their public-
+     * hosting decision on the mutation generation, so a release landing
+     * after its manifest must advance it — otherwise the package stays
+     * privately hostable-in-name-only until some unrelated byte arrives. */
+    struct store_package *pkg =
+        store_find(store, release->package_root, NULL);
+    if (pkg)
+        store_package_touch(store, pkg);
+    result = VCS_PACKAGE_STORE_OK;
+release_done:
+    vcs_package_accept_free(proposal);
+    if (process_locked)
+        store_process_unlock(store);
+    pthread_mutex_unlock(&store->lock);
+    return result;
+}
