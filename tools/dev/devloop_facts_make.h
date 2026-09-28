@@ -244,7 +244,9 @@ void fxm_include(struct fxm *m, const char *line);
  * provably skips is dropped from m->missing, and the reading (the
  * directive, the premises, the paths globbed) is recorded in m->report.
  * The reading only ever skips what make cannot read: what it cannot
- * decide is taken (docs/work/SEMANTIC_MANIFEST.md, "Guarded includes"). */
+ * decide is taken (docs/work/SEMANTIC_MANIFEST.md, "Guarded includes").
+ * A missing include left that a command make runs as it reads may create
+ * (fxm_commands_name of its path or basename) is UNKNOWN. */
 void fxm_guards(struct fxm *m);
 
 /* make_goal.c: the .PHONY goals a line names through a value no text
@@ -257,6 +259,11 @@ bool fxm_goal_words(struct fxm *m, const char *raw, bool twice, bool shell);
  * descriptor or /dev/null, or a tee), or a $(file) that is not a read:
  * what make then includes may be text no line holds. */
 bool fxm_parse_writes(const struct fxm *m);
+/* A command make runs as it reads the makefiles (a $(shell) body or a !=
+ * value, outside recipes) may name `name`: its text holds it, or the
+ * definition of a variable the text holds does, transitively; an $(eval)
+ * line or a computed name holding it may set any variable, and counts. */
+bool fxm_commands_name(const struct fxm *m, const char *name);
 /* A match-anything rule (%:) or .DEFAULT exists while an optional include
  * is missing: it makes that include by a recipe no rule names it in. */
 bool fxm_anything_made(const struct fxm *m);

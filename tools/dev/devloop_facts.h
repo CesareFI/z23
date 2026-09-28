@@ -99,11 +99,18 @@ struct zcl_devloop_facts_tu_verdict {
 };
 
 /* The premises a guard reading may rest on (docs/work/SEMANTIC_MANIFEST.md,
- * "Guarded includes"): make runs for objects (MAKECMDGOALS holds no
- * vendor-ready, deploy or install goal), and the compile epoch a $(shell)
- * computes is one path component. */
-#define ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS 1u
+ * "Guarded includes"). Every skip rests on the last two:
+ * - no-repair-goal: no command-line goal is vendor-ready, deploy or install;
+ * - epoch-one-component: the compile epoch a $(shell) computes is one path
+ *   component, or none;
+ * - build-reads-planned-tree: the build reads the tree the plan globbed, and
+ *   an include that exists under build/ is current;
+ * - no-command-line-override: no command-line or make -e environment value
+ *   overrides a variable the makefile sets with = or :=. */
+#define ZCL_DEVLOOP_PREMISE_NO_REPAIR_GOAL 1u
 #define ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT 2u
+#define ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE 4u
+#define ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE 8u
 #define ZCL_DEVLOOP_GUARD_GLOBS 48
 #define ZCL_DEVLOOP_GUARD_TEXT 192
 

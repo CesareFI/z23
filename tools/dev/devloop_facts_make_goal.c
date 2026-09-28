@@ -317,6 +317,81 @@ bool fxm_parse_writes(const struct fxm *m)
     return false;
 }
 
+/* s[0..n) holds one of names (the empty name is in any text). */
+static bool fxm_holds(const char *s, size_t n, const struct fxc_strs *names)
+{
+    for (size_t k = 0; k < names->n; k++) {
+        size_t w = strlen(names->v[k]);
+        for (size_t i = 0; i + w <= n; i++)
+            if (memcmp(s + i, names->v[k], w) == 0)
+                return true;
+    }
+    return false;
+}
+
+/* A line make expands as it reads is not a recipe line (a define's too). */
+static bool fxm_parse_line(const struct fxm_line *l)
+{
+    return l->ctx != FXM_RECIPE && !(l->body && l->raw[0] == '\t');
+}
+
+/* Add to names each variable a definition holding one of them sets, until
+ * none is new; false when an $(eval) line or a computed name holds one (it
+ * may set any variable) or the list cannot grow. */
+static bool fxm_taint(const struct fxm *m, struct fxc_strs *names)
+{
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (size_t k = 0; k < m->nlines; k++) {
+            const struct fxm_line *l = &m->lines[k];
+            if (!fxm_holds(l->raw, strlen(l->raw), names))
+                continue;
+            if (l->ctx != FXM_DEF) {
+                if (strstr(l->raw, "eval") != NULL)
+                    return false;
+                continue;
+            }
+            if (fxc_strs_has(names, l->name))
+                continue;
+            if (l->name[0] == '\0' || !fxc_strs_add(names, l->name))
+                return false;
+            grew = true;
+        }
+    }
+    return true;
+}
+
+/* The commands of line l make runs as it reads it (each $(shell) body, a
+ * != value) hold one of names; true too for a $(shell) with no end. */
+static bool fxm_line_runs(const struct fxm_line *l, const struct fxc_strs *names)
+{
+    const char *v = fxm_bang_value(l);
+    if (v != NULL && fxm_holds(v, strlen(v), names))
+        return true;
+    for (const char *d = strchr(l->raw, '$'); d != NULL; d = strchr(d + 1, '$')) {
+        const char *o = d + 1, *e;
+        if ((*o != '(' && *o != '{') || !fxm_starts_word(o + 1, "shell"))
+            continue;
+        if ((e = fxm_ref_end((char *)d)) == NULL)
+            return true;
+        if (e > o + 6 && fxm_holds(o + 6, (size_t)(e - o - 6), names))
+            return true;
+    }
+    return false;
+}
+
+bool fxm_commands_name(const struct fxm *m, const char *name)
+{
+    struct fxc_strs names = {0};
+    bool named = !fxc_strs_add(&names, name) || !fxm_taint(m, &names);
+    for (size_t k = 0; !named && k < m->nlines; k++)
+        named = fxm_parse_line(&m->lines[k]) &&
+                fxm_line_runs(&m->lines[k], &names);
+    fxc_strs_free(&names);
+    return named;
+}
+
 /* A target word that makes any file: match-anything (%) or .DEFAULT. */
 static bool fxm_makes_anything(const char *t)
 {

@@ -1227,9 +1227,14 @@ static int sbit_t_generated_reviewed(void)
     return failures;
 }
 
+/* A missing optional include no rule makes, read after a parse-time command. */
+#define SBI_P_TAIL "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n" SBI_GEN_RULE
+
 /* D: a line make expands as it reads the makefiles runs a command that
  * writes a file (a $(shell) or != redirection or tee, a $(file >)), which
- * may be an include make reads next, missing or not. */
+ * may be an include make reads next, missing or not; or one that names a
+ * missing optional include (its path or basename, or a variable whose
+ * value names it), which may create it. */
 static int sbit_t_parse_time_writers(void)
 {
     int failures = 0;
@@ -1262,6 +1267,12 @@ static int sbit_t_parse_time_writers(void)
                      "endef\nX := $(W)\n"
                      "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
                      SBI_GEN_RULE, "build/gen.mk", "# old\n"},
+        {"p01", "X := $(shell cp tools/t.txt build/gen.mk)\n" SBI_P_TAIL, NULL,
+         NULL},
+        {"p03", "X != ln -sf ../tools/t.txt build/gen.mk\n" SBI_P_TAIL, NULL,
+         NULL},
+        {"p01_var", "GEN := build/gen.mk\nCMD = cp tools/t.txt $(GEN)\n"
+                    "X := $(shell $(CMD))\n" SBI_P_TAIL, NULL, NULL},
     };
     TEST_CASE("semantic_build_inputs: a $(shell), != or $(file) that writes "
              "a file as make reads the makefiles widens") {
@@ -1345,6 +1356,11 @@ static const char *const k_sbi_unverified[] = {
     "build/obj/epochs/abc/.unverified", "", NULL};
 static const char *const k_sbi_zero[] = {"build/obj/epochs/0000/.unverified",
                                          "", NULL};
+static const char *const k_sbi_dot[] = {"d/.hidden", "", NULL};
+static const char *const k_sbi_dotdir[] = {"d/.h/m", "", NULL};
+static const char *const k_sbi_ds[] = {"d/s/f", "", NULL};
+static const char *const k_sbi_dx[] = {"d/x", "", NULL};
+static const char *const k_sbi_dab[] = {"d/b", "", "d/a", "", NULL};
 
 /* Each case narrows or widens as it says; each that does not is named. */
 static bool sbi_guard_cases(const struct sbi_gcase *cases, size_t n)
@@ -1414,6 +1430,21 @@ static int sbit_t_guarded_include(void)
         {"target_specific", SBI_GUARD(SBI_MISSING(SBI_LIBA "build/a.o: LIBS := z\n"),
                                       SBI_MISSING_COND, ""), k_sbi_liba, false},
         {"environment", SBI_GUARD("", "ifneq ($(FOO),)", ""), NULL, false},
+        {"q20", SBI_GUARD("", "ifeq ($(wildcard d/*),)", ""), k_sbi_dot, false},
+        {"q84", SBI_GUARD("", "ifeq ($(wildcard d/*/m),)", ""), k_sbi_dotdir,
+         false},
+        {"q51", SBI_GUARD("L := a%\n", "ifeq ($(filter a\\%,$(L)),)\nelse", ""),
+         NULL, false},
+        {"q80", SBI_GUARD("", "ifeq ($(wildcard d/s/),d/s/)", ""), k_sbi_ds, false},
+        {"q82", SBI_GUARD("", "ifeq ($(wildcard d//x),d//x)", ""), k_sbi_dx, false},
+        {"q83", SBI_GUARD("", "ifeq ($(wildcard d/*),d/a d/b)", ""), k_sbi_dab,
+         false},
+        {"filter_out_all", SBI_GUARD("", "ifeq ($(filter-out a,a),)", ""), NULL,
+         false},
+        {"glob_created", SBI_GUARD("X := $(shell mkdir -p d && : > d/flag)\n",
+                                   "ifneq ($(wildcard d/flag),)", ""), NULL, false},
+        {"glob_other", SBI_GUARD("X := $(shell mkdir -p e)\n",
+                                 "ifneq ($(wildcard d/flag),)", ""), NULL, true},
     };
     TEST_CASE("semantic_build_inputs: a missing include a conditional "
              "provably skips narrows, and any input that may take the branch "
@@ -1422,6 +1453,11 @@ static int sbit_t_guarded_include(void)
     } TEST_END
     return failures;
 }
+
+/* The premises every skip rests on. */
+#define SBI_EVERY_SKIP                                                         \
+    (ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE |                            \
+     ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE)
 
 /* A skipped include is recorded with the directive, its premises and the
  * paths it globbed, so a reviewer can falsify the narrow. */
@@ -1438,7 +1474,8 @@ static int sbit_t_guard_record(void)
         g = &e.rep.guards[0];
         ASSERT(strcmp(g->include, "build/ready.mk") == 0);
         ASSERT(strcmp(g->guard, "ifneq ($(strip $(LEASES)),)") == 0);
-        ASSERT(g->premises == ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT);
+        ASSERT(g->premises ==
+               (ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT | SBI_EVERY_SKIP));
         ASSERT(g->nglobs == 2 && g->found[0][0] == '\0' && g->found[1][0] == '\0');
         ASSERT(strcmp(g->glob[0], "build/obj/epochs/{epoch}/.unverified") == 0);
         ASSERT(strcmp(g->glob[1], "build/obj/epochs/0000/.unverified") == 0);
@@ -1448,7 +1485,7 @@ static int sbit_t_guard_record(void)
                                  k_sbi_liba, changed, 1, &v));
         ASSERT(v.rep.nguards == 1);
         g = &v.rep.guards[0];
-        ASSERT(g->premises == ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS);
+        ASSERT(g->premises == (ZCL_DEVLOOP_PREMISE_NO_REPAIR_GOAL | SBI_EVERY_SKIP));
         ASSERT(g->nglobs == 1 && strcmp(g->glob[0], "vendor/lib/liba.a") == 0 &&
                strcmp(g->found[0], "vendor/lib/liba.a") == 0);
     } TEST_END

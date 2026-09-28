@@ -644,6 +644,8 @@ static bool fxg_try(struct fxg *g, uint32_t k, int want)
         (void)snprintf(g->rec.guard, sizeof(g->rec.guard), "%.*s", (int)n,
                        l->raw);
         fxg_where(g->m, 0, l->at, g->rec.guard_at, sizeof(g->rec.guard_at));
+        g->rec.premises |= ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE |
+                            ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE;
         g->used = mark;
         return true;
     }
@@ -741,6 +743,44 @@ static bool fxg_inc_skipped(struct fxg *g, const struct fxm_inc *inc)
     return false;
 }
 
+static bool fxg_literal(const char *s, size_t n)
+{
+    for (size_t k = 0; k < n; k++)
+        if (strchr("*?[{\\", s[k]) != NULL)
+            return false;
+    return true;
+}
+
+/* The last component of a globbed path with no pattern in it, into out;
+ * "" when each holds one. */
+static void fxg_glob_name(const char *glob, char *out, size_t cap)
+{
+    const char *end = glob + strlen(glob), *s;
+    out[0] = '\0';
+    for (; end > glob; end = s > glob ? s - 1 : glob) {
+        for (s = end; s > glob && s[-1] != '/'; s--)
+            ;
+        if (end > s && fxg_literal(s, (size_t)(end - s))) {
+            (void)snprintf(out, cap, "%.*s", (int)(end - s), s);
+            return;
+        }
+    }
+}
+
+/* A command make runs as it reads may create a path the reading in g->rec
+ * globbed (it names that path's last literal component): the reading
+ * cannot stand. */
+static bool fxg_rec_named(struct fxg *g)
+{
+    char name[ZCL_DEVLOOP_GUARD_TEXT];
+    for (size_t k = 0; k < g->rec.nglobs; k++) {
+        fxg_glob_name(g->rec.glob[k], name, sizeof(name));
+        if (fxm_commands_name(g->m, name))
+            return true;
+    }
+    return false;
+}
+
 /* Drop path from m->missing when every include line naming it is
  * skipped, recording each reading. */
 static void fxg_path(struct fxg *g, const char *path)
@@ -751,7 +791,7 @@ static void fxg_path(struct fxg *g, const char *path)
     bool all = true;
     for (size_t k = 0; all && k < m->nincs; k++)
         if (strcmp(m->incs[k].path, path) == 0)
-            all = fxg_inc_skipped(g, &m->incs[k]) &&
+            all = fxg_inc_skipped(g, &m->incs[k]) && !fxg_rec_named(g) &&
                   fxg_report_add(g, &m->incs[k]);
     if (!all) {
         if (r != NULL)
@@ -778,13 +818,11 @@ static void fxg_free(struct fxg *g)
     free(g);
 }
 
-void fxm_guards(struct fxm *m)
+/* Drop each missing include a conditional provably skips. */
+static void fxg_skip_all(struct fxm *m)
 {
-    struct fxg *g;
+    struct fxg *g = zcl_calloc(1, sizeof(*g), "facts_consumer.mkguards");
     size_t k = 0;
-    if (m->unknown || m->missing.n == 0)
-        return;
-    g = zcl_calloc(1, sizeof(*g), "facts_consumer.mkguards");
     if (g == NULL)
         return;
     g->m = m;
@@ -802,4 +840,18 @@ void fxm_guards(struct fxm *m)
             }
     }
     fxg_free(g);
+}
+
+void fxm_guards(struct fxm *m)
+{
+    if (m->unknown || m->missing.n == 0)
+        return;
+    fxg_skip_all(m);
+    /* An include make reads that a command it runs as it reads may create
+     * (the command names its path or basename) is text no line holds. */
+    for (size_t k = 0; !m->unknown && k < m->missing.n; k++) {
+        const char *p = m->missing.v[k], *base = strrchr(p, '/');
+        m->unknown = fxm_commands_name(m, p) ||
+                     fxm_commands_name(m, base != NULL ? base + 1 : p);
+    }
 }

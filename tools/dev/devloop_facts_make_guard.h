@@ -16,9 +16,11 @@
  * undefine can set, one no line assigns (the environment's), one that no
  * branch before the directive surely assigned, or a $(shell) other than
  * the compile epoch's. A variable several branches assign holds the union
- * of their values. $(wildcard) globs the tree the plan reads. What the
- * reading rests on beyond the text is one of two named premises
- * (ZCL_DEVLOOP_PREMISE_*), recorded with the paths it globbed. */
+ * of their values. $(wildcard) globs the tree the plan reads (empty, or
+ * any text). What the reading rests on beyond the text is a named premise
+ * (ZCL_DEVLOOP_PREMISE_*): two on every skip, the goals' or the epoch's
+ * where it reads them, recorded with the paths it globbed. A reading whose
+ * globbed path a command make runs as it reads names is not used. */
 #define FXG_ALTS 64
 #define FXG_TEXT 4096
 #define FXG_DEPTH 24

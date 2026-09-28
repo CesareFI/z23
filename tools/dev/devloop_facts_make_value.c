@@ -318,6 +318,16 @@ static bool fxg_join(char *path, size_t len, const char *c, size_t n)
     return true;
 }
 
+/* make's glob: a name that starts with '.' (".", ".." too) matches only a
+ * component spelled with a leading '.'; the epoch stands for any name but
+ * "." and "..". */
+static bool fxg_hidden_skip(const char *c, const char *name)
+{
+    if (c[0] == FXG_EPOCH)
+        return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+    return name[0] == '.' && c[0] != '.';
+}
+
 /* Every entry of the directory path[0..len) the component c matches. */
 static void fxg_list(const char *root, char *path, size_t len, const char *c,
                      const char *next, struct fxg_found *f)
@@ -332,8 +342,7 @@ static void fxg_list(const char *root, char *path, size_t len, const char *c,
         return;
     while (!f->full && (de = readdir(d)) != NULL) {
         size_t n = strlen(de->d_name);
-        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0 ||
-            !fxg_match(c, de->d_name))
+        if (fxg_hidden_skip(c, de->d_name) || !fxg_match(c, de->d_name))
             continue;
         if (!fxg_join(path, len, de->d_name, n))
             f->full = true;
@@ -434,29 +443,27 @@ static const char *fxg_word(const char **s, size_t *n)
     return *n > 0 ? w : NULL;
 }
 
+/* $(wildcard): the empty text when no word finds anything; otherwise any
+ * text, since what make spells for a match (its order, a trailing '/', a
+ * doubled '/') is not read here. */
 static void fxg_wildcard(struct fxg *g, struct fxg_val *v)
 {
     struct fxg_val r = {.n = 0};
     struct fxg_found *f = zcl_malloc(sizeof(*f), "facts_consumer.mkgfound");
-    char buf[FXG_TEXT], w[ZCL_DEVLOOP_PATH_MAX];
+    char w[ZCL_DEVLOOP_PATH_MAX];
     if (f == NULL || v->any)
         r.any = true;
     for (size_t a = 0; !r.any && a < v->n; a++) {
         const char *s = v->alt[a], *p;
-        size_t n, out = 0;
+        size_t n;
         while (!r.any && (p = fxg_word(&s, &n)) != NULL) {
             memcpy(w, p, n < sizeof(w) ? n : 0);
             w[n < sizeof(w) ? n : 0] = '\0';
-            r.any = n >= sizeof(w) || !fxg_glob_word(g, w, f) ||
-                    out + f->n + 2 > sizeof(buf);
-            if (!r.any && f->n > 0) {
-                out += (size_t)snprintf(buf + out, sizeof(buf) - out, "%s%s",
-                                        out ? " " : "", f->words);
-            }
+            r.any = n >= sizeof(w) || !fxg_glob_word(g, w, f) || f->n > 0;
         }
-        if (!r.any)
-            fxg_push(g, &r, buf, out);
     }
+    if (!r.any)
+        fxg_push(g, &r, "", 0);
     free(f);
     *v = r;
 }
@@ -525,7 +532,7 @@ static bool fxg_pattern(const char *p, size_t pn, const char *w, size_t n)
 }
 
 /* The goals word may match patterns: not when each is a goal the premise
- * goal-builds-objects rules out. */
+ * no-repair-goal rules out. */
 static bool fxg_goal_may(struct fxg *g, const char *pats)
 {
     const char *s = pats, *p;
@@ -539,46 +546,77 @@ static bool fxg_goal_may(struct fxg *g, const char *pats)
         may = !repair;
     }
     if (!may)
-        g->rec.premises |= ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS;
+        g->rec.premises |= ZCL_DEVLOOP_PREMISE_NO_REPAIR_GOAL;
     return may;
 }
 
-/* A word of the filtered text the patterns may keep. */
-static bool fxg_kept(struct fxg *g, const char *pats, const char *w, size_t n)
+/* w[0..n) holds the goals or the epoch: a word no text spells. */
+static bool fxg_marked(const char *w, size_t n)
+{
+    return memchr(w, FXG_GOAL, n) != NULL || memchr(w, FXG_EPOCH, n) != NULL;
+}
+
+enum { FXG_MISS, FXG_MATCH, FXG_UNSURE };
+
+/* What the patterns provably do to the word w[0..n): match it, miss it, or
+ * neither (a marker on either side, a '\' escape the reading does not
+ * follow). */
+static int fxg_matches(struct fxg *g, const char *pats, const char *w, size_t n)
 {
     const char *s = pats, *p;
     size_t pn;
     if (n == 1 && *w == FXG_GOAL)
-        return fxg_goal_may(g, pats);
-    if (memchr(w, FXG_EPOCH, n) != NULL || strpbrk(pats, "\x06\x07") != NULL)
-        return true;
+        return fxg_goal_may(g, pats) ? FXG_UNSURE : FXG_MISS;
+    if (fxg_marked(w, n) ||
+        strpbrk(pats, "\\\x06\x07") != NULL)
+        return FXG_UNSURE;
     while ((p = fxg_word(&s, &pn)) != NULL)
         if (fxg_pattern(p, pn, w, n))
-            return true;
-    return false;
+            return FXG_MATCH;
+    return FXG_MISS;
 }
 
-/* $(filter P,T): the words of T some pattern keeps. */
-static void fxg_filter(struct fxg *g, const struct fxg_val *pats,
+/* The words of s that $(filter) (out false) or $(filter-out) (out true)
+ * keeps, into buf; false when one is neither provably kept nor dropped. A
+ * word holding a marker is kept as the word it stands for. */
+static bool fxg_filter_words(struct fxg *g, const char *pats, const char *s,
+                             bool out, char *buf, size_t *len)
+{
+    const char *w;
+    size_t n;
+    *len = 0;
+    while ((w = fxg_word(&s, &n)) != NULL) {
+        int m = fxg_matches(g, pats, w, n);
+        bool marked = fxg_marked(w, n);
+        if (m == FXG_UNSURE && !marked)
+            return false;
+        if (m != FXG_UNSURE && (m == FXG_MATCH) == out)
+            continue;
+        if (*len > 0)
+            buf[(*len)++] = ' ';
+        memcpy(buf + *len, w, n);
+        *len += n;
+    }
+    return true;
+}
+
+/* $(filter P,T) or $(filter-out P,T) of v, with P's alternatives pats. */
+static void fxg_filter(struct fxg *g, const struct fxg_val *pats, bool out,
                        struct fxg_val *v)
 {
     struct fxg_val r = {.n = 0};
     char buf[FXG_TEXT];
-    if (v->any || pats->any)
-        return; /* at most T's words */
+    size_t len;
+    if (v->any || pats->any) {
+        fxg_any(v);
+        return;
+    }
     for (size_t a = 0; a < pats->n && !r.any; a++)
-        for (size_t b = 0; b < v->n && !r.any; b++) {
-            const char *s = v->alt[b], *w;
-            size_t n, out = 0;
-            while ((w = fxg_word(&s, &n)) != NULL)
-                if (fxg_kept(g, pats->alt[a], w, n)) {
-                    if (out > 0)
-                        buf[out++] = ' ';
-                    memcpy(buf + out, w, n);
-                    out += n;
-                }
-            fxg_push(g, &r, buf, out);
-        }
+        for (size_t b = 0; b < v->n && !r.any; b++)
+            if (fxg_filter_words(g, pats->alt[a], v->alt[b], out, buf, &len))
+                fxg_push(g, &r, buf, len);
+            else
+                fxg_any(&r);
     *v = r;
 }
 
@@ -743,24 +781,29 @@ static void fxg_and_or(struct fxg *g, bool is_and, const char **arg, size_t *len
 }
 
 /* $(filter-out A,B): A is $(wildcard X) of B's own text X (the missing-
- * files idiom), or B's words bound it. */
+ * files idiom), or the words of B no pattern of A provably matches. */
 static void fxg_filter_out(struct fxg *g, const char **arg, size_t *len,
                            uint32_t t, int depth, struct fxg_val *out)
 {
     const char *a = arg[0], *b = arg[1];
     size_t an = len[0], bn = len[1];
+    struct fxg_val p;
     fxg_trim(&a, &an);
     fxg_trim(&b, &bn);
     fxg_arg(g, b, bn, t, depth, out);
     if (an > 11 && (strncmp(a, "$(wildcard", 10) == 0 ||
                     strncmp(a, "${wildcard", 10) == 0) &&
         fxg_close(a, 1, an) == an - 1) {
-        a += 11;
-        an -= 12;
-        fxg_trim(&a, &an);
-        if (an == bn && memcmp(a, b, bn) == 0)
+        const char *x = a + 11;
+        size_t xn = an - 12;
+        fxg_trim(&x, &xn);
+        if (xn == bn && memcmp(x, b, bn) == 0) {
             fxg_missing(g, out);
+            return;
+        }
     }
+    fxg_arg(g, a, an, t, depth, &p);
+    fxg_filter(g, &p, true, out);
 }
 
 /* $(call zcl_compile_epoch,...): the premise epoch-one-component. Any
@@ -807,7 +850,7 @@ static void fxg_pair(struct fxg *g, int fn, const char **arg, size_t *len,
     fxg_arg(g, arg[0], len[0], t, depth, &a);
     fxg_arg(g, arg[1], len[1], t, depth, out);
     if (fn == FXG_F_FILTER)
-        fxg_filter(g, &a, out);
+        fxg_filter(g, &a, false, out);
     else if (fn == FXG_F_FINDSTRING && !fxg_empty(out)) {
         *out = a;
         fxg_push(g, out, "", 0);

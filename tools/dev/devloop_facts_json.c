@@ -349,12 +349,17 @@ static const struct {
     unsigned bit;
     const char *name, *reads;
 } fx_premises[] = {
-    {ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS, "goal-builds-objects",
-     "make runs to build objects: MAKECMDGOALS holds no vendor-ready, deploy "
-     "or install goal"},
+    {ZCL_DEVLOOP_PREMISE_NO_REPAIR_GOAL, "no-repair-goal",
+     "no goal on the make command line is vendor-ready, deploy or install"},
     {ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT, "epoch-one-component",
      "the compile epoch $(call zcl_compile_epoch,...) computes with $(shell) "
      "is one path component, or none"},
+    {ZCL_DEVLOOP_PREMISE_BUILD_READS_PLANNED_TREE, "build-reads-planned-tree",
+     "the build reads the tree the plan globbed, and an include that exists "
+     "under build/ is current"},
+    {ZCL_DEVLOOP_PREMISE_NO_COMMAND_LINE_OVERRIDE, "no-command-line-override",
+     "no command-line or make -e environment value overrides a variable the "
+     "makefile sets with = or :="},
 };
 
 static void fx_premise_names(unsigned bits, struct fxw *w)
