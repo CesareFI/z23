@@ -77,6 +77,10 @@ enum scx_variant {
     SCX_HINL0,      /* hinl at -O0: cx_b.c emits cx_inl out of line */
     SCX_P_HINL_ADDR, /* p_hinl, and cx_d.c returns &cx_inl */
     SCX_HINL_ADDR,  /* cx_inl's body: a pointer escapes to its copy */
+    SCX_P_GLINE,    /* cx_e.c names struct cx_small only; compiled -g */
+    SCX_GLINE,      /* a line above every declaration: cx_e.c's -g type lines move */
+    SCX_P_GLINE0,   /* p_gline at -g0 */
+    SCX_GLINE0,     /* gline at -g0: no debug position, nothing moves in cx_e.c */
     SCX_VARIANT_COUNT
 };
 
@@ -89,6 +93,7 @@ struct scx_edit {
     const char *add_body;     /* its bytes; NULL: the base header (a shadow) */
     const char *extra_flag;   /* a flag put before k_scx_flags, or NULL */
     const char *opt;          /* replaces -O1 in k_scx_flags, or NULL */
+    const char *debug;        /* replaces -g1 in k_scx_flags, or NULL */
     const char *truncate;     /* a TU sensed with a one-record cap, or NULL */
     const char *withhold;     /* a TU whose manifests the facts leave out */
     bool withhold_before;     /* ...its before manifest only */
@@ -121,7 +126,8 @@ extern const size_t k_scx_nflags;
 #define SCX_OBJECT_CC "cc"
 #define SCX_TOOLCHAIN_ID \
     "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
-/* k_scx_flags[i] as variant v compiles it: its optimizer replaces -O1. */
+/* k_scx_flags[i] as variant v compiles it: its optimizer replaces -O1 and
+ * its debug level -g1. */
 const char *scx_flag(enum scx_variant v, size_t i);
 
 /* The bytes of `path` in variant v (heap, NUL-terminated), NULL when the

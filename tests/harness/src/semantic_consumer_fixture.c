@@ -142,6 +142,9 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
 #define SCX_ALL_IFACE {"interface", "interface", "interface", "interface", \
                        "interface"}
 #define SCX_ALL {true, true, true, true, true}
+#define SCX_SMALL_E SCX_E_END "int cx_small_e(void);\n" \
+                    "int cx_small_e(void) { struct cx_small s = {0}; " \
+                    "return s.n; }\n"
 #define SCX_ALL_POS {"position-dependent", "position-dependent", \
                      "position-dependent", "position-dependent", \
                      "position-dependent"}
@@ -528,13 +531,42 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                        .changed = {SCX_HEADER}, .affected = SCX_ALL,
                        .reason = SCX_ALL_IFACE,
                        .obligations = "address-taken"},
+    /* Replay of 45fb85e113: lines inserted above a header struct moved its
+     * DW_AT_decl_line in a reader whose code names nothing else there. At
+     * -g the reader joins the compile set with no test obligation; at -g0
+     * nothing records the line and the verdict is the old one. */
+    [SCX_P_GLINE] = {.name = "p_gline", .pre = true, .debug = "-g",
+                     .file = SCX_E, .from = SCX_E_END, .to = SCX_SMALL_E},
+    [SCX_GLINE] = {.name = "gline", .before = SCX_P_GLINE, .debug = "-g",
+                   .file = SCX_HEADER, .from = "#define CX_H\n",
+                   .to = "#define CX_H\n/* top */\n", .file2 = SCX_E,
+                   .from2 = SCX_E_END, .to2 = SCX_SMALL_E,
+                   .changed = {SCX_HEADER},
+                   .affected = SCX_ALL,
+                   .reason = {"position", "position", "position", "position",
+                              "debug-position"},
+                   .obligations = ""},
+    [SCX_P_GLINE0] = {.name = "p_gline0", .pre = true, .debug = "-g0",
+                      .file = SCX_E, .from = SCX_E_END, .to = SCX_SMALL_E},
+    [SCX_GLINE0] = {.name = "gline0", .before = SCX_P_GLINE0, .debug = "-g0",
+                    .file = SCX_HEADER, .from = "#define CX_H\n",
+                    .to = "#define CX_H\n/* top */\n", .file2 = SCX_E,
+                    .from2 = SCX_E_END, .to2 = SCX_SMALL_E,
+                    .changed = {SCX_HEADER},
+                    .affected = {true, true, true, true, false},
+                    .reason = {"position", "position", "position", "position",
+                               "unaffected"},
+                    .obligations = ""},
 };
 
 const char *scx_flag(enum scx_variant v, size_t i)
 {
-    const char *opt = k_scx_edits[v].opt;
-    return opt != NULL && strcmp(k_scx_flags[i], "-O1") == 0 ? opt
-                                                              : k_scx_flags[i];
+    const struct scx_edit *e = &k_scx_edits[v];
+    if (e->opt != NULL && strcmp(k_scx_flags[i], "-O1") == 0)
+        return e->opt;
+    if (e->debug != NULL && strcmp(k_scx_flags[i], "-g1") == 0)
+        return e->debug;
+    return k_scx_flags[i];
 }
 
 static char *scx_replace(const char *body, const char *from, const char *to,
