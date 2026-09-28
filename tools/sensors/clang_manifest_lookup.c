@@ -794,6 +794,18 @@ static size_t cm_ppnum_end(const struct cm_lexer *L, size_t i)
     return j;
 }
 
+/* The end of the comment or the character or string literal at s[i], or 0
+ * when none starts there. */
+static size_t cm_lex_hidden(const char *s, size_t i, size_t n)
+{
+    char ch = s[i], nx = i + 1 < n ? s[i + 1] : '\0';
+    if (ch == '/' && (nx == '/' || nx == '*'))
+        return cm_comment_end(s, i, n);
+    if (ch == '"' || ch == '\'')
+        return cm_literal_end(s, i, n);
+    return 0;
+}
+
 /* The end of the token or gap at s[i], as translation phase 3 lexes the
  * spliced text; *code false for a comment or a literal. An identifier ends
  * at its last identifier byte, so an encoding prefix's literal (u8"x") is
@@ -801,17 +813,11 @@ static size_t cm_ppnum_end(const struct cm_lexer *L, size_t i)
 static size_t cm_lex_one(const struct cm_lexer *L, size_t i, bool *code)
 {
     const char *s = L->s;
-    size_t n = L->n, j;
+    size_t n = L->n, j = cm_lex_hidden(L->s, i, L->n);
     char ch = s[i], nx = i + 1 < n ? s[i + 1] : '\0';
-    *code = true;
-    if (ch == '/' && (nx == '/' || nx == '*')) {
-        *code = false;
-        return cm_comment_end(s, i, n);
-    }
-    if (ch == '"' || ch == '\'') {
-        *code = false;
-        return cm_literal_end(s, i, n);
-    }
+    *code = j == 0;
+    if (j != 0)
+        return j;
     if (cm_digit(ch) || (ch == '.' && cm_digit(nx)))
         return cm_ppnum_end(L, i);
     if (cm_ident_char(ch)) {

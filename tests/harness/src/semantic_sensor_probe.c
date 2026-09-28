@@ -121,8 +121,8 @@ static bool ssp_absent_cb(void *ctx, const char *dir, size_t dir_len,
     return true;
 }
 
-/* A case's tree: base/home/root holds main.c, base/sys an -isystem dir.
- * The sensor runs with HOME=base/home, so base/sys is outside both the
+/* A case's tree: base/fakehome/root holds main.c, base/sys an -isystem dir.
+ * The sensor runs with HOME=base/fakehome, so base/sys is outside both the
  * checkout and the home and spells as @sys, as a real system dir does. */
 struct ssp_tree {
     char base[PATH_MAX];
@@ -136,7 +136,7 @@ static bool ssp_layout(struct ssp_tree *t)
 {
     if (test_mkdtemp(t->base, sizeof(t->base), "semsensor_probe") == NULL)
         return false;
-    (void)snprintf(t->home, sizeof(t->home), "%s/home", t->base);
+    (void)snprintf(t->home, sizeof(t->home), "%s/fakehome", t->base);
     (void)snprintf(t->root, sizeof(t->root), "%s/root", t->home);
     (void)snprintf(t->sys, sizeof(t->sys), "%s/sys", t->base);
     (void)snprintf(t->env_home, sizeof(t->env_home), "HOME=%s", t->home);

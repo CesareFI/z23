@@ -1490,8 +1490,8 @@ comment and a string literal name is created: no TU) and
 `pass_probe_after_separator` (a real `__has_embed` after a C23 digit
 separator and a string holding a comment opener, which a lexer that took
 the separator for a quote would hide) pin over-selection 0. Four more
-create `inc1/opt.h` under gcc depfiles, each probed where the scan once
-could not see it: through a `-D` value's macro
+create the header inc1/opt.h under gcc depfiles, each probed where the
+scan once could not see it: through a `-D` value's macro
 (`pass_probe_dash_d_gcc_deps`; t1 compiles with the same `-D`, so its
 pin is 1), after a `-std=c17` character literal `'a/*'` that a C23 lexer
 reads as a digit separator and a comment (`pass_probe_c17_apostrophe_gcc_deps`),
