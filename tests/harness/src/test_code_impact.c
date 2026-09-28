@@ -52,6 +52,7 @@
 
 #define CI_IMPACT_FIX "test-tmp/code_impact_fix"
 #define CI_CONTEXT_PAGE_EDGES 257
+#define CI_CONTEXT_WARM_FIX "test-tmp/code_context_warm_fix"
 
 static bool ci_impact_mk_write(const char *dir, const char *rel,
                                const char *content)
@@ -541,6 +542,91 @@ static int test_code_context_map_shape_overflow(void)
         ASSERT(reply.error.message[0]);
         zcl_command_reply_free(&reply);
         system("rm -rf " CI_IMPACT_FIX);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int ci_context_count(const struct zcl_command_reply *reply,
+                            const char *context)
+{
+    const struct json_value *rows = json_get(&reply->data, "contexts");
+    if (!rows || rows->type != JSON_ARR) return -1;
+    for (size_t i = 0; i < rows->num_children; i++) {
+        const char *name =
+            json_get_str(json_get(&rows->children[i], "context"));
+        if (name && strcmp(name, context) == 0)
+            return (int)json_get_int(json_get(&rows->children[i],
+                                              "file_count"));
+    }
+    return -1;
+}
+
+/* The warm map is derived data. A second dispatch may reuse it only while
+ * the index generation it was derived from is the one just opened: a
+ * depfile-only edit (same sources, same file count) or a rename across
+ * contexts (same file count) republishes the index, and the map must follow
+ * that generation rather than the file count. */
+static int test_code_context_map_warm_follows_generation(void)
+{
+    int failures = 0;
+    TEST("code_context_map: a warm map follows a depfile-only edit and a "
+         "same-count rename instead of serving the previous generation") {
+        system("rm -rf " CI_CONTEXT_WARM_FIX);
+        ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX,
+            "contexts/commons/modules/vcs/src/warm_a.c",
+            "int warm_a(void) { return 1; }\n"));
+        ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX,
+            "core/modules/net/include/net/warm_b.h",
+            "int warm_b(void);\n"));
+        ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX, "build/obj/warm_a.d",
+            "build/obj/warm_a.o: contexts/commons/modules/vcs/src/warm_a.c\n"));
+
+        struct zcl_command_reply reply;
+        ci_context_map_call(CI_CONTEXT_WARM_FIX, &reply);
+        ASSERT(reply.status != ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "cross_context_include_edges")) == 0);
+        int files = (int)json_get_int(json_get(&reply.data,
+                                               "indexed_files"));
+        ASSERT(files > 0);
+        zcl_command_reply_free(&reply);
+
+        /* Depfile-only: the compiler now reports the core header. */
+        ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX, "build/obj/warm_a.d",
+            "build/obj/warm_a.o: contexts/commons/modules/vcs/src/warm_a.c "
+            "core/modules/net/include/net/warm_b.h\n"));
+        ci_context_map_call(CI_CONTEXT_WARM_FIX, &reply);
+        ASSERT(reply.status != ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(json_get_int(json_get(&reply.data, "indexed_files")) == files);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "cross_context_include_edges")) == 1);
+        zcl_command_reply_free(&reply);
+
+        /* Same-count rename across contexts: commons -> wallet. */
+        ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX,
+            "contexts/wallet/modules/wallet/src/warm_a.c",
+            "int warm_a(void) { return 1; }\n"));
+        ASSERT(remove(CI_CONTEXT_WARM_FIX
+                      "/contexts/commons/modules/vcs/src/warm_a.c") == 0);
+        ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX, "build/obj/warm_a.d",
+            "build/obj/warm_a.o: contexts/wallet/modules/wallet/src/warm_a.c "
+            "core/modules/net/include/net/warm_b.h\n"));
+        ci_context_map_call(CI_CONTEXT_WARM_FIX, &reply);
+        ASSERT(reply.status != ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(json_get_int(json_get(&reply.data, "indexed_files")) == files);
+        ASSERT(ci_context_count(&reply, "wallet") == 1);
+        ASSERT(ci_context_count(&reply, "commons") == 0);
+        zcl_command_reply_free(&reply);
+
+        /* Unchanged generation: the warm answer is the same answer. */
+        ci_context_map_call(CI_CONTEXT_WARM_FIX, &reply);
+        ASSERT(reply.status != ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(ci_context_count(&reply, "wallet") == 1);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "cross_context_include_edges")) == 1);
+        zcl_command_reply_free(&reply);
+        system("rm -rf " CI_CONTEXT_WARM_FIX);
         PASS();
     } _test_next:;
     return failures;
@@ -1421,6 +1507,7 @@ int test_code_impact(void)
     failures += test_code_context_map();
     failures += test_code_context_map_complete_pages();
     failures += test_code_context_map_shape_overflow();
+    failures += test_code_context_map_warm_follows_generation();
     failures += test_code_guide();
     failures += test_code_impact_conditional_include_edge();
     failures += test_code_impact_conditional_hazards();
