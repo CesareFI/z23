@@ -183,6 +183,9 @@ bool cm_emit_identity(struct cm_core *c, const struct cm_identity *id);
 bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
                          const char *spelled, uint8_t form, uint8_t kind,
                          bool computed, const struct cm_file *hit);
+/* Every conditional lookup (__has_include and its relatives, #embed) in a
+ * repo file: replayed when its operand is a literal, else recorded with no
+ * negative claim. */
 bool cm_scan_has_include(struct cm_core *c);
 
 /* ---- records (clang_manifest_records.c) ----------------------------------- */

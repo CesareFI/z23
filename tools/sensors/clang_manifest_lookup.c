@@ -148,7 +148,23 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
     return cm_emit_lookup(c, includer, &p, kind, hit->path, evidence);
 }
 
-/* ---- __has_include: text scan + search replay -------------------------------- */
+/* ---- conditional lookups: text scan + search replay --------------------------- */
+
+/* __has_include and its relatives ask whether a name resolves, and #embed
+ * reads a resource, without an include directive the front end reports. The
+ * scan finds every one in a repo file. A __has_include whose operand is a
+ * literal "x" or <x> is replayed: the producer runs the search itself and
+ * stat-confirms every probe (REPLAYED_STAT). Every other spelling - a macro
+ * operand, __has_include_next, __has_embed, the GNU __has_include__ words,
+ * #embed, or an occurrence a line continuation runs through - is recorded
+ * with no negative claim (MISS_V1_NONE), as include_next is: nothing then
+ * binds its answer, so a warm session recreates the TU and a facts closure
+ * refuses to narrow on it. The scan reads text, not tokens, so a word in a
+ * comment or a skipped group counts too: that costs warm reuse, never truth.
+ * Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
+
+/* The longest spelled name an unbound record keeps. */
+#define CM_COND_NAME_MAX 200
 
 static bool cm_ident_char(char ch)
 {
@@ -163,40 +179,202 @@ static size_t cm_skip_space(const char *s, size_t i, size_t n)
     return i;
 }
 
-/* The quoted or angled operand starting at s[j]; copied to name. */
-static bool cm_include_operand(const char *s, size_t j, size_t n,
-                               uint8_t *form, char name[PATH_MAX])
+/* A file's text as translation phase 2 leaves it: every backslash-newline
+ * (clang also takes spaces between the two) removed. splices holds, strictly
+ * increasing, each offset of the spliced text that one was removed before. */
+struct cm_spliced {
+    const char *s;
+    size_t n;
+    char *owned;
+    size_t *splices;
+    size_t nsplices, cap;
+};
+
+/* The end of a continuation starting at the backslash s[i], or 0. */
+static size_t cm_continuation_end(const char *s, size_t i, size_t n)
 {
-    size_t end;
-    char close;
-    if (j >= n || (s[j] != '"' && s[j] != '<'))
+    size_t j = cm_skip_space(s, i + 1, n);
+    if (j < n && s[j] == '\n')
+        return j + 1;
+    if (j + 1 < n && s[j] == '\r' && s[j + 1] == '\n')
+        return j + 2;
+    return 0;
+}
+
+static bool cm_splice(const char *s, size_t n, struct cm_spliced *t)
+{
+    size_t w = 0;
+    memset(t, 0, sizeof(*t));
+    t->s = s;
+    t->n = n;
+    if (memchr(s, '\\', n) == NULL)
+        return true;
+    t->owned = zcl_malloc(n + 1, "clang_manifest.spliced");
+    if (t->owned == NULL)
         return false;
-    close = s[j] == '"' ? '"' : '>';
-    *form = s[j] == '"' ? VCS_SEMANTIC_FORM_V1_QUOTED : VCS_SEMANTIC_FORM_V1_ANGLED;
-    for (end = j + 1; end < n && s[end] != close && s[end] != '\n'; end++)
-        ;
-    if (end >= n || s[end] != close || end - j - 1 == 0 || end - j - 1 >= PATH_MAX)
-        return false;
-    memcpy(name, s + j + 1, end - j - 1);
-    name[end - j - 1] = '\0';
+    for (size_t i = 0; i < n;) {
+        size_t end = s[i] == '\\' ? cm_continuation_end(s, i, n) : 0;
+        if (end == 0) {
+            t->owned[w++] = s[i++];
+            continue;
+        }
+        if (!cm_grow((void **)&t->splices, &t->cap, t->nsplices,
+                     sizeof(*t->splices)))
+            return false;
+        if (t->nsplices == 0 || t->splices[t->nsplices - 1] != w)
+            t->splices[t->nsplices++] = w;
+        i = end;
+    }
+    t->owned[w] = '\0';
+    t->s = t->owned;
+    t->n = w;
     return true;
 }
 
-/* Parse `__has_include ( "x" )` or `( <x> )` at s[i]; the operand is copied
- * to name. Returns false for anything else (a macro operand, _next). */
-static bool cm_has_include_at(const char *s, size_t i, size_t n, uint8_t *form,
-                              char name[PATH_MAX])
+static void cm_spliced_free(struct cm_spliced *t)
 {
-    static const char kw[] = "__has_include";
-    size_t kl = sizeof(kw) - 1, j;
-    if (n - i < kl || memcmp(s + i, kw, kl) != 0)
+    free(t->owned);
+    free(t->splices);
+}
+
+/* Did a continuation run through the occurrence [start, end)? */
+static bool cm_spliced_inside(const struct cm_spliced *t, size_t start,
+                              size_t end)
+{
+    for (size_t k = 0; k < t->nsplices; k++) {
+        if (t->splices[k] > start && t->splices[k] < end)
+            return true;
+    }
+    return false;
+}
+
+/* The quoted or angled operand starting at s[j]; copied to name. *close is
+ * the offset of its closing character. */
+static bool cm_include_operand(const char *s, size_t j, size_t n,
+                               uint8_t *form, char name[PATH_MAX],
+                               size_t *close)
+{
+    size_t end;
+    char want;
+    if (j >= n || (s[j] != '"' && s[j] != '<'))
         return false;
-    if ((i > 0 && cm_ident_char(s[i - 1])) || (i + kl < n && cm_ident_char(s[i + kl])))
+    want = s[j] == '"' ? '"' : '>';
+    *form = s[j] == '"' ? VCS_SEMANTIC_FORM_V1_QUOTED : VCS_SEMANTIC_FORM_V1_ANGLED;
+    for (end = j + 1; end < n && s[end] != want && s[end] != '\n'; end++)
+        ;
+    if (end >= n || s[end] != want || end - j - 1 == 0 || end - j - 1 >= PATH_MAX)
         return false;
-    j = cm_skip_space(s, i + kl, n);
+    memcpy(name, s + j + 1, end - j - 1);
+    name[end - j - 1] = '\0';
+    *close = end;
+    return true;
+}
+
+/* The length of the conditional-lookup word at s[i], else 0. *literal: it is
+ * __has_include, the only word the scan replays. */
+static size_t cm_cond_word(const char *s, size_t i, size_t n, bool *literal)
+{
+    static const char *const words[] = {
+        "__has_include_next__", "__has_include_next", "__has_include__",
+        "__has_include", "__has_embed",
+    };
+    if (s[i] != '_' || (i > 0 && cm_ident_char(s[i - 1])))
+        return 0;
+    for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); w++) {
+        size_t len = strlen(words[w]);
+        if (n - i >= len && memcmp(s + i, words[w], len) == 0 &&
+            (i + len == n || !cm_ident_char(s[i + len]))) {
+            *literal = strcmp(words[w], "__has_include") == 0;
+            return len;
+        }
+    }
+    return 0;
+}
+
+/* Skip spaces, tabs and block comments: what may sit between a directive's
+ * '#' and its name. */
+static size_t cm_skip_directive_space(const char *s, size_t i, size_t n)
+{
+    for (;;) {
+        i = cm_skip_space(s, i, n);
+        if (n - i < 2 || s[i] != '/' || s[i + 1] != '*')
+            return i;
+        for (i += 2; n - i >= 2 && (s[i] != '*' || s[i + 1] != '/'); i++)
+            ;
+        if (n - i < 2)
+            return n;
+        i += 2;
+    }
+}
+
+/* An #embed (or %:embed) directive's name at s[i]: the offset just past
+ * "embed", else 0. */
+static size_t cm_embed_at(const char *s, size_t i, size_t n)
+{
+    size_t j;
+    if (s[i] == '#')
+        j = i + 1;
+    else if (s[i] == '%' && n - i >= 2 && s[i + 1] == ':')
+        j = i + 2;
+    else
+        return 0;
+    j = cm_skip_directive_space(s, j, n);
+    if (n - j < 5 || memcmp(s + j, "embed", 5) != 0 ||
+        (j + 5 < n && cm_ident_char(s[j + 5])))
+        return 0;
+    return j + 5;
+}
+
+/* A __has_include(...) with a literal operand, closed on its own spelling:
+ * form and name; *end is just past the ')'. */
+static bool cm_literal_at(const char *s, size_t i, size_t n, uint8_t *form,
+                          char name[PATH_MAX], size_t *end)
+{
+    size_t j = cm_skip_space(s, i, n), close;
     if (j >= n || s[j] != '(')
         return false;
-    return cm_include_operand(s, cm_skip_space(s, j + 1, n), n, form, name);
+    if (!cm_include_operand(s, cm_skip_space(s, j + 1, n), n, form, name,
+                            &close))
+        return false;
+    j = cm_skip_space(s, close + 1, n);
+    if (j >= n || s[j] != ')')
+        return false;
+    *end = j + 1;
+    return true;
+}
+
+/* An unbound occurrence's spelled name: from s[i] through the first ')' of
+ * its line, else to the line's end, trailing blanks dropped, with prefix in
+ * front; and its form, from the operand's first character. */
+static void cm_cond_name(const char *prefix, const char *s, size_t i,
+                         size_t n, char name[PATH_MAX], uint8_t *form)
+{
+    size_t end = i, open;
+    while (end < n && s[end] != '\n' && s[end] != ')')
+        end++;
+    if (end < n && s[end] == ')')
+        end++;
+    while (end > i && (s[end - 1] == ' ' || s[end - 1] == '\t' ||
+                       s[end - 1] == '\r'))
+        end--;
+    if (end - i > CM_COND_NAME_MAX)
+        end = i + CM_COND_NAME_MAX;
+    (void)snprintf(name, PATH_MAX, "%s%.*s", prefix, (int)(end - i), s + i);
+    for (open = i; open < end && s[open] != '"' && s[open] != '<'; open++)
+        ;
+    *form = open < end && s[open] == '<' ? VCS_SEMANTIC_FORM_V1_ANGLED
+                                         : VCS_SEMANTIC_FORM_V1_QUOTED;
+}
+
+/* A lookup the scan found and cannot replay: no hit, no negative claim. */
+static bool cm_cond_unbound(struct cm_core *c, const struct cm_file *f,
+                            const char *name, uint8_t form)
+{
+    struct cm_probe p = {.form = form, .name = name};
+    cm_dir_of(f->opened, p.includer_dir);
+    p.hit_slot = cm_slot_count(c, form);
+    return cm_emit_lookup(c, f, &p, VCS_SEMANTIC_LOOKUP_V1_HAS_INCLUDE, "",
+                          VCS_SEMANTIC_MISS_V1_NONE);
 }
 
 static bool cm_has_include_one(struct cm_core *c, const struct cm_file *f,
@@ -216,21 +394,49 @@ static bool cm_has_include_one(struct cm_core *c, const struct cm_file *f,
     return ok;
 }
 
+/* The conditional lookup at t[i], if any: replayed or recorded unbound. */
+static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
+                       const struct cm_spliced *t, size_t i)
+{
+    char name[PATH_MAX];
+    uint8_t form;
+    bool literal = false;
+    size_t len = cm_cond_word(t->s, i, t->n, &literal), end;
+    if (len != 0 && literal &&
+        cm_literal_at(t->s, i + len, t->n, &form, name, &end) &&
+        !cm_spliced_inside(t, i, end))
+        return cm_has_include_one(c, f, form, name);
+    if (len != 0) {
+        cm_cond_name("", t->s, i, t->n, name, &form);
+        return cm_cond_unbound(c, f, name, form);
+    }
+    end = cm_embed_at(t->s, i, t->n);
+    if (end == 0)
+        return true;
+    cm_cond_name("#embed ", t->s, cm_skip_space(t->s, end, t->n), t->n, name,
+                 &form);
+    return cm_cond_unbound(c, f, name, form);
+}
+
 bool cm_scan_has_include(struct cm_core *c)
 {
     for (size_t k = 0; k < c->nfiles; k++) {
         const struct cm_file *f = &c->files[k];
-        const char *s = f->contents;
+        struct cm_spliced t;
+        bool ok;
         if (f->origin == VCS_SEMANTIC_ORIGIN_V1_SYSTEM)
             continue;
-        for (size_t i = 0; i + 13 <= f->size; i++) {
-            char name[PATH_MAX];
-            uint8_t form;
-            if (s[i] != '_' || !cm_has_include_at(s, i, f->size, &form, name))
-                continue;
-            if (!cm_has_include_one(c, f, form, name))
-                return false;
+        ok = cm_splice(f->contents, f->size, &t);
+        if (!ok)
+            (void)cm_fail(c, "cannot splice %s", f->path);
+        for (size_t i = 0; ok && i < t.n; i++) {
+            char ch = t.s[i];
+            if (ch == '_' || ch == '#' || ch == '%')
+                ok = cm_cond_at(c, f, &t, i);
         }
+        cm_spliced_free(&t);
+        if (!ok)
+            return false;
     }
     return true;
 }

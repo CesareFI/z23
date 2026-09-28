@@ -111,7 +111,17 @@ were established:
 - `2 replayed_stat`: a `__has_include` found by a text scan, resolved by
   replaying that search list, with every probe confirmed by `stat`.
 - `0 none`: `include_next`, a computed include, or an absolute include. No
-  negative claim is made for these.
+  negative claim is made for these. The text scan also writes a `none`
+  record (kind `has_include`, no hit) for every conditional lookup it finds
+  in a repo file and cannot replay: a `__has_include` whose operand is not a
+  literal `"x"` or `<x>` (a macro, say), `__has_include_next`,
+  `__has_embed`, the GNU `__has_include__` and `__has_include_next__`
+  spellings, an `#embed` (or `%:embed`) directive, and any of these that a
+  line continuation runs through. Its spelled name is the occurrence's text
+  (for example `__has_include(OPT_HDR)` or `#embed "blob.bin"`). The scan
+  reads the file's text after line splicing, not tokens, so a word in a
+  comment or a skipped group is recorded too: that costs warm reuse and
+  narrowing, never truth.
 
 The compiler never reports probes directly, so no miss here is compiler-exact.
 Each miss is derived from exact inputs and is stat-confirmed at sensor time.
@@ -511,7 +521,7 @@ the reply carries:
 | `argv-changed` | the request's argv, and so flags, C mode, target, sysroot or resource dir, differs |
 | `producer-changed`, `producer-unnamed` | the producer digest (sensor bytes, libclang build ids, type grammar), recomputed on every emit, moved or cannot be named |
 | `file-changed <path>` | a non-main file the accepted manifest read no longer has its SHA3; this also catches an edit that keeps size and mtime, which libclang's own preamble check misses |
-| `lookup-unbound <name>` | the accepted manifest has a lookup with no negative claim (`include_next`, computed, absolute), which cannot be re-checked |
+| `lookup-unbound <name>` | the accepted manifest has a lookup with no negative claim (`include_next`, computed, absolute, or a conditional lookup the text scan cannot replay: a macro-operand `__has_include`, `__has_include_next`, `__has_embed`, `#embed`), which cannot be re-checked |
 | `include-shadow-appeared <dir>/<name>`, `include-shadow-vanished ...` | the shadow candidates changed (below) |
 | `warm-unusable: <why>` | a reparse failed a post-check: `main file bytes differ`, `preamble-file-differs <path>`, `identity-moved`, `lookup-moved <name>`; the reparse is discarded and retried once as a fresh parse |
 
