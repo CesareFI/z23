@@ -1031,14 +1031,7 @@ int test_boot_phase(void)
  * monitor, connman and the reducer, so the process probe would grade it
  * SLOW in every window and buy an hour of start budget every 30 s while a
  * real wedge sat inside it — the module's own warning, made real. These
- * fixtures pin the difference between the two probes on the SAME I/O.
- *
- * WHY THIS SITS AFTER test_boot_phase() instead of beside the other
- * fixtures: engine/composition/flags.def pins ZCL_TEST_FORK_ROLE's
- * first-use pointer at this file's line 459, and check-flag-registry
- * proves that pointer still reads the flag. Anything inserted ABOVE that
- * line moves it. Hence the one-line forward declaration in the blank line
- * just before test_boot_phase(), and the definitions down here. */
+ * fixtures pin the difference between the two probes on the SAME I/O. */
 struct bp_io_burner {
     size_t bytes;
     bool   ok;

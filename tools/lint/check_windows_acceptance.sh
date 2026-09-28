@@ -547,9 +547,7 @@ main() {
 # Half the host, clamped to [4, 16], the same share
 # check_standalone_tools_link.sh takes for its own nested make beside the
 # other lint workers. ZCL_HOST_JOBS is the Makefile's affinity-mask count;
-# getconf answers the same question portably for a run outside make. These
-# live below main() so the flag first-use lines recorded in flags.def do not
-# move.
+# getconf answers the same question portably for a run outside make.
 cross_link_jobs() {
     local host_jobs jobs
     host_jobs="${ZCL_HOST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
