@@ -6,9 +6,112 @@
 #include "base/hex.h"
 #include "models/build_fabric.h"
 #include "vcs/blob_store.h"
+#include "vcs/package_store.h"
 #include "vcs/proof_reuse.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef ZCL_TESTING
+static void (*bfpr_before_finalize_hook)(void *);
+static void *bfpr_before_finalize_context;
+void build_fabric_proof_test_before_finalize(void (*hook)(void *),
+                                              void *context)
+{
+    bfpr_before_finalize_hook = hook;
+    bfpr_before_finalize_context = context;
+}
+#endif
+
+static bool bfpr_catalog_roots(struct vcs_package_store *store,
+                               size_t max_rows, uint8_t (**roots)[32],
+                               size_t *count)
+{
+    *roots = NULL;
+    *count = 0;
+    if (!max_rows || max_rows > SIZE_MAX / sizeof(**roots)) return false;
+    uint8_t (*all)[32] = malloc(max_rows * sizeof(*all));
+    if (!all) return false;
+    struct vcs_package_store_summary page_rows[VCS_PACKAGE_STORE_PAGE_MAX];
+    struct vcs_package_store_page page;
+    uint8_t cursor[32];
+    uint64_t generation = 0;
+    bool resume = false;
+    bool complete = false;
+    while (!complete) {
+        size_t remaining = max_rows - *count;
+        if (!remaining) break;
+        size_t limit = remaining < VCS_PACKAGE_STORE_PAGE_MAX
+                         ? remaining : VCS_PACKAGE_STORE_PAGE_MAX;
+        enum vcs_package_store_page_result result =
+            vcs_package_store_page_summaries(
+                store, resume ? cursor : NULL, limit,
+                resume ? generation : 0, page_rows, &page);
+        if (result != VCS_PACKAGE_STORE_PAGE_OK || page.count > remaining ||
+            (page.has_more && page.count == 0)) break;
+        generation = page.generation;
+        for (size_t i = 0; i < page.count; i++)
+            memcpy(all[*count + i], page_rows[i].root, 32);
+        *count += page.count;
+        memcpy(cursor, page.next_root, sizeof(cursor));
+        resume = true;
+        complete = !page.has_more;
+    }
+    if (!complete) {
+        free(all);
+        *count = 0;
+        return false;
+    }
+    *roots = all;
+    return true;
+}
+
+static bool bfpr_issuer_wire(const uint8_t *wire, size_t len,
+                             const uint8_t issuer[32])
+{
+    if (len == VCS_PROOF_TICKET_WIRE_BYTES) {
+        struct vcs_proof_ticket_v1 ticket;
+        return vcs_proof_ticket_decode(wire, len, &ticket) &&
+               vcs_proof_ticket_signature_valid(&ticket) &&
+               memcmp(ticket.producer_pubkey, issuer, 32) == 0;
+    }
+    if (len == VCS_PROOF_CHECKPOINT_WIRE_BYTES) {
+        struct vcs_proof_checkpoint_v1 checkpoint;
+        return vcs_proof_checkpoint_decode(wire, len, &checkpoint) &&
+               vcs_proof_checkpoint_signature_valid(&checkpoint) &&
+               memcmp(checkpoint.issuer_pubkey, issuer, 32) == 0;
+    }
+    return false;
+}
+
+static bool bfpr_pin_issuer_history(struct vcs_package_store *store,
+                                    const uint8_t issuer[32],
+                                    size_t max_catalog_rows)
+{
+    uint8_t (*roots)[32] = NULL;
+    size_t count = 0;
+    if (!bfpr_catalog_roots(store, max_catalog_rows, &roots, &count))
+        return false;
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; i++) {
+        uint8_t wire[VCS_BLOB_MAX_BYTES + 1u];
+        size_t len = 0;
+        enum vcs_blob_result got = vcs_blob_get_from(
+            store, roots[i], wire, sizeof(wire), &len);
+        if (got == VCS_BLOB_ERR_SHAPE || got == VCS_BLOB_ERR_CAPACITY)
+            continue;
+        if (got != VCS_BLOB_OK) {
+            ok = false;
+            break;
+        }
+        if (bfpr_issuer_wire(wire, len, issuer) &&
+            vcs_package_store_pin(store, roots[i], true) !=
+                VCS_PACKAGE_STORE_OK)
+            ok = false;
+    }
+    free(roots);
+    return ok;
+}
 
 static bool bfpr_signed_pair(
     const struct db_build_worker_proof_pending *pending,
@@ -221,5 +324,62 @@ struct zcl_result build_fabric_proof_pending_replay(
         return ZCL_ERR(-1, "proof-pending-replay-ticket-not-selected");
     zcl_hex_encode(expected_head, sizeof(expected_head), next_head_hex);
     *had_pending = true;
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_proof_pending_publish(
+    struct node_db *ndb, struct vcs_package_store *store,
+    const char *worker_id, const uint8_t signer_seed[32],
+    size_t max_catalog_rows, size_t max_tickets)
+{
+    if (!ndb || !store || !worker_id || !signer_seed)
+        return ZCL_ERR(-1, "proof-pending-publish-invalid-input");
+    struct db_build_worker_proof_pending pending;
+    int found = db_build_worker_proof_pending_find_checked(
+        ndb, worker_id, &pending);
+    if (found < 0)
+        return ZCL_ERR(-1, "proof-pending-publish-missing-or-corrupt-row");
+    if (found == 0) return ZCL_OK;
+
+    bool had_pending = false;
+    char next_head[65];
+    ZCL_CHECK(build_fabric_proof_pending_replay(
+        ndb, store, worker_id, signer_seed, max_catalog_rows,
+        max_tickets, &had_pending, next_head));
+    if (!had_pending)
+        return ZCL_ERR(-1, "proof-pending-publish-staged-row-changed");
+
+    uint8_t checkpoint_root[32], issuer[32];
+    if (!zcl_hex_decode_lower(pending.signer_pubkey, issuer,
+                              sizeof(issuer)) ||
+        !vcs_blob_root(pending.checkpoint_wire,
+                       sizeof(pending.checkpoint_wire), checkpoint_root))
+        return ZCL_ERR(-1, "proof-pending-publish-root-invalid");
+    char checkpoint_hex[65];
+    zcl_hex_encode(checkpoint_root, sizeof(checkpoint_root), checkpoint_hex);
+    if (strcmp(checkpoint_hex, next_head) != 0)
+        return ZCL_ERR(-1, "proof-pending-publish-head-changed");
+    if (!bfpr_pin_issuer_history(store, issuer, max_catalog_rows))
+        return ZCL_ERR(-1, "proof-pending-publish-history-pin-refused");
+
+    /* Pinning changes store generation. Replay again against the fully
+     * pinned issuer closure before the conditional DB publication. */
+    had_pending = false;
+    ZCL_CHECK(build_fabric_proof_pending_replay(
+        ndb, store, worker_id, signer_seed, max_catalog_rows,
+        max_tickets, &had_pending, next_head));
+    if (!had_pending || strcmp(checkpoint_hex, next_head) != 0)
+        return ZCL_ERR(-1, "proof-pending-publish-replay-changed");
+#ifdef ZCL_TESTING
+    if (bfpr_before_finalize_hook) {
+        void (*hook)(void *) = bfpr_before_finalize_hook;
+        void *context = bfpr_before_finalize_context;
+        bfpr_before_finalize_hook = NULL;
+        bfpr_before_finalize_context = NULL;
+        hook(context);
+    }
+#endif
+    if (!db_build_worker_proof_pending_finalize(ndb, &pending, next_head))
+        return ZCL_ERR(-1, "proof-pending-publish-conditional-head-refused");
     return ZCL_OK;
 }

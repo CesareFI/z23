@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <openssl/crypto.h>
 #if !defined(_WIN32)
 #include <errno.h>
 #include <fcntl.h>
@@ -75,15 +76,17 @@ struct zcl_result build_fabric_worker_capabilities_for_test(
 }
 #endif
 
-struct zcl_result build_fabric_worker_identity_load(
+static struct zcl_result build_fabric_worker_identity_load_impl(
     const char *datadir, struct db_build_worker *worker,
-    uint8_t signer_secret[32], uint8_t signer_pubkey[32])
+    uint8_t signer_secret[32], uint8_t signer_pubkey[32],
+    uint8_t seed_out[32])
 {
 #if defined(_WIN32)
     (void)datadir;
     (void)worker;
     (void)signer_secret;
     (void)signer_pubkey;
+    (void)seed_out;
     return ZCL_ERR(
         -1,
         "Windows build-worker identity is disabled until restricted-token, "
@@ -108,24 +111,29 @@ struct zcl_result build_fabric_worker_identity_load(
         if (!zcl_random_secret_bytes(seed, sizeof(seed), "zbuild_worker_key"))
             return ZCL_ERR(-1, "worker key CSPRNG failed");
         fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (fd < 0)
+        if (fd < 0) {
+            OPENSSL_cleanse(seed, sizeof(seed));
             return ZCL_ERR(-1, "create worker key: %s", strerror(errno));
+        }
         ssize_t wrote = write(fd, seed, sizeof(seed));
         bool synced = wrote == (ssize_t)sizeof(seed) && fsync(fd) == 0;
         bool ok = close(fd) == 0 && synced;
         if (!ok) {
             (void)unlink(path);
-            memset(seed, 0, sizeof(seed));
+            OPENSSL_cleanse(seed, sizeof(seed));
             return ZCL_ERR(-1, "durable worker key write failed");
         }
         fd = open(path, O_RDONLY | O_CLOEXEC);
     }
-    if (fd < 0)
+    if (fd < 0) {
+        OPENSSL_cleanse(seed, sizeof(seed));
         return ZCL_ERR(-1, "open worker key: %s", strerror(errno));
+    }
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
         (st.st_mode & 077) != 0 || st.st_size != (off_t)sizeof(seed)) {
         close(fd);
+        OPENSSL_cleanse(seed, sizeof(seed));
         return ZCL_ERR(-1, "worker key must be a private 32-byte regular file");
     }
     size_t off = 0;
@@ -139,11 +147,10 @@ struct zcl_result build_fabric_worker_identity_load(
     }
     close(fd);
     if (off != sizeof(seed)) {
-        memset(seed, 0, sizeof(seed));
+        OPENSSL_cleanse(seed, sizeof(seed));
         return ZCL_ERR(-1, "worker key read was truncated");
     }
     ed25519_keypair(signer_pubkey, signer_secret, seed);
-    memset(seed, 0, sizeof(seed));
     static const char domain[] = "zcl.build_worker.v1";
     struct sha3_256_ctx sha;
     uint8_t worker_id[32];
@@ -156,7 +163,30 @@ struct zcl_result build_fabric_worker_identity_load(
     zcl_hex_encode(signer_pubkey, 32, worker->signer_pubkey);
     struct vcs_toolchain_capsule_v1 capsule;
     bool have_toolchain = vcs_toolchain_capsule_v1_capture(&capsule);
-    return build_fabric_worker_capabilities(
+    struct zcl_result capability = build_fabric_worker_capabilities(
         have_toolchain, worker->capabilities, sizeof(worker->capabilities));
+    if (capability.ok && seed_out) memcpy(seed_out, seed, sizeof(seed));
+    OPENSSL_cleanse(seed, sizeof(seed));
+    return capability;
 #endif
+}
+
+struct zcl_result build_fabric_worker_identity_load(
+    const char *datadir, struct db_build_worker *worker,
+    uint8_t signer_secret[32], uint8_t signer_pubkey[32])
+{
+    return build_fabric_worker_identity_load_impl(
+        datadir, worker, signer_secret, signer_pubkey, NULL);
+}
+
+struct zcl_result build_fabric_worker_identity_load_with_seed(
+    const char *datadir, struct db_build_worker *worker,
+    uint8_t signer_secret[32], uint8_t signer_pubkey[32],
+    uint8_t seed_out[32])
+{
+    if (!seed_out)
+        return ZCL_ERR(-1, "worker recovery seed output is required");
+    OPENSSL_cleanse(seed_out, 32);
+    return build_fabric_worker_identity_load_impl(
+        datadir, worker, signer_secret, signer_pubkey, seed_out);
 }

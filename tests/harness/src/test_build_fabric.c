@@ -761,10 +761,16 @@ static int test_bf_proof_pending_replay(void)
                       &ndb, worker.worker_id, &observed), 1);
         struct db_build_worker_proof_head heads[1];
         ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 1), -1);
-        ASSERT(db_build_worker_proof_pending_finalize(&ndb, &observed,
-                                                       next_head));
+        ASSERT(build_fabric_proof_pending_publish(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1).ok);
         ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 1), 1);
         ASSERT_STR_EQ(heads[0].checkpoint_blob_root, next_head);
+        struct vcs_package_store_status ticket_status, checkpoint_status;
+        ASSERT(vcs_package_store_package_status(store, root, &ticket_status));
+        ASSERT(vcs_package_store_package_status(store, checkpoint_root,
+                                               &checkpoint_status));
+        ASSERT(ticket_status.pinned);
+        ASSERT(checkpoint_status.pinned);
         had_pending = true;
         ASSERT(build_fabric_proof_pending_replay(
             &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1,
@@ -800,12 +806,175 @@ static int test_bf_proof_pending_replay(void)
             &had_pending, next_head).ok);
         ASSERT(!had_pending);
         ASSERT_EQ(next_head[0], '\0');
+        ASSERT(!build_fabric_proof_pending_publish(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 4, 2).ok);
         struct db_build_worker checked;
         ASSERT_EQ(db_build_worker_find_checked(
                       &ndb, worker.worker_id, &checked), 1);
         ASSERT_STR_EQ(checked.proof_checkpoint_head_sha3, first_head);
         ASSERT_EQ(db_build_worker_proof_pending_find_checked(
                       &ndb, worker.worker_id, &observed), 1);
+        vcs_package_store_close(store);
+        node_db_close(&ndb);
+        ptf_free(&fixture);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_proof_pending_publish_ancestor(void)
+{
+    int failures = 0;
+    TEST("build_fabric: publication pins unpinned predecessor history") {
+        struct ptf fixture;
+        ASSERT(ptf_init(&fixture));
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "proof_publish_ancestor"));
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(fixture.pub[PTF_A], 32, worker.signer_pubkey);
+        ASSERT(db_build_worker_save(&ndb, &worker));
+
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t first_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t first_root[32], first_cp_root[32];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 21,
+                                                first_cp));
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first),
+                                          first_root));
+        ASSERT(vcs_proof_ticket_store_put(store, first_cp, sizeof(first_cp),
+                                          first_cp_root));
+        struct db_build_worker_proof_pending pending = {0};
+        (void)snprintf(pending.worker_id, sizeof(pending.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(pending.signer_pubkey,
+                       sizeof(pending.signer_pubkey), "%s",
+                       worker.signer_pubkey);
+        memcpy(pending.ticket_wire, first, sizeof(first));
+        memcpy(pending.checkpoint_wire, first_cp, sizeof(first_cp));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &pending));
+        char first_head[65];
+        zcl_hex_encode(first_cp_root, sizeof(first_cp_root), first_head);
+        ASSERT(db_build_worker_proof_pending_finalize(&ndb, &pending,
+                                                       first_head));
+        struct vcs_package_store_status status;
+        ASSERT(vcs_package_store_package_status(store, first_root, &status));
+        ASSERT(!status.pinned);
+
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 22,
+                                                second_cp));
+        memset(&pending, 0, sizeof(pending));
+        (void)snprintf(pending.worker_id, sizeof(pending.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(pending.signer_pubkey,
+                       sizeof(pending.signer_pubkey), "%s",
+                       worker.signer_pubkey);
+        (void)snprintf(pending.expected_head,
+                       sizeof(pending.expected_head), "%s", first_head);
+        memcpy(pending.ticket_wire, second, sizeof(second));
+        memcpy(pending.checkpoint_wire, second_cp, sizeof(second_cp));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &pending));
+        ASSERT(build_fabric_proof_pending_publish(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 4, 2).ok);
+        ASSERT(vcs_package_store_package_status(store, first_root, &status));
+        ASSERT(status.pinned);
+        ASSERT(vcs_package_store_package_status(store, first_cp_root,
+                                               &status));
+        ASSERT(status.pinned);
+        struct db_build_worker_proof_head heads[1];
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 1), 1);
+        ASSERT(strcmp(heads[0].checkpoint_blob_root, first_head) != 0);
+        vcs_package_store_close(store);
+        node_db_close(&ndb);
+        ptf_free(&fixture);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+struct bfpr_race_fixture {
+    struct vcs_package_store *writer;
+    uint8_t fork[VCS_PROOF_TICKET_WIRE_BYTES];
+    bool wrote;
+};
+
+static void bfpr_insert_fork_before_finalize(void *context)
+{
+    struct bfpr_race_fixture *race = context;
+    uint8_t root[32];
+    race->wrote = vcs_package_store_refresh(race->writer) &&
+        vcs_proof_ticket_store_put(
+        race->writer, race->fork, sizeof(race->fork), root);
+}
+
+static int test_bf_proof_pending_publish_race(void)
+{
+    int failures = 0;
+    TEST("build_fabric: concurrent signed fork refuses pending publication") {
+        struct ptf fixture;
+        ASSERT(ptf_init(&fixture));
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "proof_publish_race"));
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        struct vcs_package_store *writer =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store && writer);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(fixture.pub[PTF_A], 32, worker.signer_pubkey);
+        ASSERT(db_build_worker_save(&ndb, &worker));
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t checkpoint[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 23,
+                                                checkpoint));
+        struct db_build_worker_proof_pending pending = {0};
+        (void)snprintf(pending.worker_id, sizeof(pending.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(pending.signer_pubkey,
+                       sizeof(pending.signer_pubkey), "%s",
+                       worker.signer_pubkey);
+        memcpy(pending.ticket_wire, ticket, sizeof(ticket));
+        memcpy(pending.checkpoint_wire, checkpoint, sizeof(checkpoint));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &pending));
+        struct vcs_proof_ticket_v1 fork;
+        ASSERT(vcs_proof_ticket_decode(ticket, sizeof(ticket), &fork));
+        fork.verdict = VCS_PROOF_VERDICT_FAIL;
+        fork.checks_passed = fork.checks_run - 1u;
+        memset(fork.artifact_root, 0, sizeof(fork.artifact_root));
+        ASSERT(vcs_proof_ticket_sign(&fork, fixture.seed[PTF_A]));
+        struct bfpr_race_fixture race = {.writer = writer};
+        ASSERT(vcs_proof_ticket_encode(&fork, race.fork));
+        build_fabric_proof_test_before_finalize(
+            bfpr_insert_fork_before_finalize, &race);
+        ASSERT(!build_fabric_proof_pending_publish(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 3, 1).ok);
+        ASSERT(race.wrote);
+        struct db_build_worker checked;
+        ASSERT_EQ(db_build_worker_find_checked(
+                      &ndb, worker.worker_id, &checked), 1);
+        ASSERT_EQ(checked.proof_checkpoint_head_sha3[0], '\0');
+        struct db_build_worker_proof_pending still_pending;
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &ndb, worker.worker_id, &still_pending), 1);
+        vcs_package_store_close(writer);
         vcs_package_store_close(store);
         node_db_close(&ndb);
         ptf_free(&fixture);
@@ -4600,6 +4769,8 @@ int test_build_fabric(void)
     failures += test_bf_proof_pending();
     failures += test_bf_proof_pending_replay_quota();
     failures += test_bf_proof_pending_replay();
+    failures += test_bf_proof_pending_publish_ancestor();
+    failures += test_bf_proof_pending_publish_race();
     failures += test_bf_async_proof_events();
     failures += test_bf_async_timing_samples();
     failures += test_bf_async_timing_capacity();

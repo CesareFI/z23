@@ -28,4 +28,18 @@ struct zcl_result build_fabric_proof_pending_replay(
     size_t max_catalog_rows, size_t max_tickets,
     bool *had_pending, char next_head_hex[65]);
 
+/* Startup-only publication: replay the complete staged history, pin its
+ * exact CAS objects, then conditionally advance the durable worker head.
+ * Refusal leaves the old head and pending wires in place. */
+struct zcl_result build_fabric_proof_pending_publish(
+    struct node_db *ndb, struct vcs_package_store *store,
+    const char *worker_id, const uint8_t signer_seed[32],
+    size_t max_catalog_rows, size_t max_tickets);
+
+#ifdef ZCL_TESTING
+/* Inject a second store writer at the final publication boundary. */
+void build_fabric_proof_test_before_finalize(void (*hook)(void *),
+                                              void *context);
+#endif
+
 #endif /* ZCL_SERVICES_BUILD_FABRIC_PROOF_RECOVERY_H */

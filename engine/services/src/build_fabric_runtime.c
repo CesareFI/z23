@@ -5,6 +5,7 @@
 
 #include "base/hex.h"
 #include "services/build_fabric_attach.h"
+#include "services/build_fabric_proof_recovery.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "services/subordinate_work_admission.h"
@@ -22,8 +23,10 @@
 #include "util/thread_qos.h"
 #include "util/thread_registry.h"
 #include "vcs/build_action.h"
+#include "vcs/package_store.h"
 
 #include <pthread.h>
+#include <openssl/crypto.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -416,6 +419,26 @@ static supervisor_child_id bf_runtime_child(
     return supervisor_register_in_domain(g_op_sup, contract);
 }
 
+static struct zcl_result bf_runtime_recover_pending(
+    struct node_db *ndb, const char *datadir, const char *worker_id,
+    const uint8_t seed[32])
+{
+    struct db_build_worker_proof_pending pending;
+    int found = db_build_worker_proof_pending_find_checked(
+        ndb, worker_id, &pending);
+    if (found < 0)
+        return ZCL_ERR(-1, "build worker proof-pending read refused");
+    if (found == 0) return ZCL_OK;
+    struct vcs_package_store *store = vcs_package_store_open(
+        datadir, vcs_package_store_quota_bytes());
+    if (!store)
+        return ZCL_ERR(-1, "build worker proof store unavailable");
+    struct zcl_result recovered = build_fabric_proof_pending_publish(
+        ndb, store, worker_id, seed, 65536u, 65536u);
+    vcs_package_store_close(store);
+    return recovered;
+}
+
 struct zcl_result build_fabric_runtime_register(bool worker_enabled,
                                                 const char *datadir)
 {
@@ -429,15 +452,28 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
                            "%s", datadir);
         if (ddn <= 0 || (size_t)ddn >= sizeof(g_worker_datadir))
             return ZCL_ERR(-1, "build worker datadir is too long");
-        ZCL_CHECK(build_fabric_worker_identity_load(
-            datadir, &g_local_worker, g_local_secret, g_local_pubkey));
+        uint8_t issuer_seed[32] = {0};
+        ZCL_CHECK(build_fabric_worker_identity_load_with_seed(
+            datadir, &g_local_worker, g_local_secret, g_local_pubkey,
+            issuer_seed));
         struct node_db *ndb = app_runtime_node_db();
-        if (!ndb || !ndb->open)
+        if (!ndb || !ndb->open) {
+            OPENSSL_cleanse(issuer_seed, sizeof(issuer_seed));
             return ZCL_ERR(-1, "build worker database is unavailable");
+        }
         int64_t now = (int64_t)platform_time_wall_unix();
         g_local_worker.approved_at = now;
         g_local_worker.last_seen_at = now;
-        ZCL_CHECK(build_fabric_worker_enroll_local(ndb, &g_local_worker, now));
+        struct zcl_result enrolled = build_fabric_worker_enroll_local(
+            ndb, &g_local_worker, now);
+        if (!enrolled.ok) {
+            OPENSSL_cleanse(issuer_seed, sizeof(issuer_seed));
+            return enrolled;
+        }
+        struct zcl_result recovered = bf_runtime_recover_pending(
+            ndb, datadir, g_local_worker.worker_id, issuer_seed);
+        OPENSSL_cleanse(issuer_seed, sizeof(issuer_seed));
+        if (!recovered.ok) return recovered;
     }
     if (atomic_load(&g_requester_id) == SUPERVISOR_INVALID_ID) {
         supervisor_child_id id = bf_runtime_child(

@@ -65,6 +65,13 @@ struct zcl_result build_fabric_worker_identity_load(
     const char *datadir, struct db_build_worker *worker,
     uint8_t signer_secret[32], uint8_t signer_pubkey[32]);
 
+/* Startup recovery needs the original Ed25519 seed to reconstruct the
+ * issuer log. The caller must erase seed_out after replay. */
+struct zcl_result build_fabric_worker_identity_load_with_seed(
+    const char *datadir, struct db_build_worker *worker,
+    uint8_t signer_secret[32], uint8_t signer_pubkey[32],
+    uint8_t seed_out[32]);
+
 #ifdef ZCL_TESTING
 /* Test seam: the honest capabilities-or-refusal decision, driven by a
  * caller-supplied outcome rather than the real toolchain probe, so tests
