@@ -899,6 +899,118 @@ static const struct sfz_file k_f10_opt_spelling[] = {
          "}\n"},
 };
 
+/* t0_a passes 8, not 7, to an external noinline function t0_b also calls.
+ * gcc at -O3 (and -O5, which it reads as -O3) clones the callee for each
+ * constant (t0_w.constprop.N); the consumer reads -O5 as the -O1
+ * component model, which never seeds an external callee. */
+static const struct sfz_file k_f10_extern_clone[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t0_w(int x);\n"
+         "int t0_a(void);\n"
+         "int t0_b(void);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "__attribute__((noinline)) int t0_w(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x;\n"
+         "    return r;\n"
+         "}\n"
+         "int t0_a(void)\n"
+         "{\n"
+         "    return t0_w(7);\n"
+         "}\n"
+         "int t0_b(void)\n"
+         "{\n"
+         "    return t0_w(7);\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "__attribute__((noinline)) int t0_w(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x;\n"
+         "    return r;\n"
+         "}\n"
+         "int t0_a(void)\n"
+         "{\n"
+         "    return t0_w(8);\n"
+         "}\n"
+         "int t0_b(void)\n"
+         "{\n"
+         "    return t0_w(7);\n"
+         "}\n"},
+};
+
+/* t0_p's body becomes t0_q's. At -O2 gcc folds the identical statics
+ * (ipa-icf), so t0_q now names t0_p's bytes; the manifest says -Og, as
+ * the facts rule's argv does for the dev build's -O2 hot objects, and the
+ * component model never relates t0_q to t0_p. */
+static const struct sfz_file k_f11_hot_icf[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t0_ep(int x);\n"
+         "int t0_eq(int x);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "static __attribute__((noinline)) int t0_p(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x + 3;\n"
+         "    return r;\n"
+         "}\n"
+         "static __attribute__((noinline)) int t0_q(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x + 5;\n"
+         "    return r;\n"
+         "}\n"
+         "int t0_ep(int x)\n"
+         "{\n"
+         "    return t0_p(x) + 1;\n"
+         "}\n"
+         "int t0_eq(int x)\n"
+         "{\n"
+         "    return t0_q(x) + 2;\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "static __attribute__((noinline)) int t0_p(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x + 5;\n"
+         "    return r;\n"
+         "}\n"
+         "static __attribute__((noinline)) int t0_q(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x + 5;\n"
+         "    return r;\n"
+         "}\n"
+         "int t0_ep(int x)\n"
+         "{\n"
+         "    return t0_p(x) + 1;\n"
+         "}\n"
+         "int t0_eq(int x)\n"
+         "{\n"
+         "    return t0_q(x) + 2;\n"
+         "}\n"},
+};
+
+
 const struct sfz_tool_repro k_sfz_tool_repros[] = {
     {.r = {.name = "F9_cc_drift", .kind = "comment_ws",
            .detail = "a comment in t0_a; the object compiler changes from "
@@ -927,6 +1039,30 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
     {.r = {.name = "pass_opt_O2_gcc", .kind = "body_extern",
            .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O2",
            .files = SFZ_FILES(k_f10_opt_spelling)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
+    {.r = {.name = "F10_opt_spelling_O5", .kind = "body_extern",
+           .detail = "t0_a passes 8, not 7, to an external noinline t0_w; "
+                     "gcc at -O5",
+           .known_red = "opt-spelling",
+           .files = SFZ_FILES(k_f10_extern_clone),
+           .known_red_why = "?"},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O5"},
+    {.r = {.name = "pass_extern_clone_O3", .kind = "body_extern",
+           .detail = "t0_a passes 8, not 7, to an external noinline t0_w; "
+                     "gcc at -O3",
+           .files = SFZ_FILES(k_f10_extern_clone)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O3"},
+    {.r = {.name = "F11_hot_icf", .kind = "body_static",
+           .detail = "t0_p's body becomes t0_q's; objects at gcc -O2, the "
+                     "sensor told -Og",
+           .known_red = "hot-identity",
+           .files = SFZ_FILES(k_f11_hot_icf),
+           .known_red_why = "?"},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2/-Og"},
+    {.r = {.name = "pass_hot_icf_O2", .kind = "body_static",
+           .detail = "t0_p's body becomes t0_q's; objects and sensor at gcc "
+                     "-O2",
+           .files = SFZ_FILES(k_f11_hot_icf)},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
 };
 const size_t k_sfz_ntool_repros =

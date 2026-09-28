@@ -70,9 +70,10 @@ extern const size_t k_sfz_nrepros;
 /* A reproducer that also sets the toolchain: the object compiler of each
  * side (NULL or "clang": the sensor's clang; "gcc", or any other name, is
  * looked up on PATH, and a case whose compiler is absent is a visible
- * SKIP) and the optimizer flags that replace -O1 in the argv both the
- * compile and the sensor get (NULL: -O1; several flags comma-separated).
- * The sensor never sees which compiler builds the object: only the argv. */
+ * SKIP) and the optimizer flags that replace -O1 in the argv (NULL: -O1;
+ * several flags comma-separated; COMPILE/SENSOR when the sensor is handed
+ * other flags than the compile). The sensor never sees which compiler
+ * builds the object: only the argv. */
 struct sfz_tool_repro {
     struct sfz_repro r;
     const char *cc_before, *cc_after;
@@ -149,8 +150,10 @@ struct sfz_case {
     /* The object compiler of the before [0] and after [1] side, absolute;
      * "" is env->clang. */
     char cc[2][PATH_MAX];
-    /* Comma-separated flags in place of -O1, in the compile's and the
-     * sensor's argv alike; "" is -O1. */
+    /* Comma-separated flags in place of -O1 in the compile's and the
+     * sensor's argv alike, or COMPILE/SENSOR when the sensor is handed
+     * other flags than the compile it describes; "" (or an empty half) is
+     * -O1. */
     char opt[128];
 };
 

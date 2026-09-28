@@ -325,7 +325,12 @@ static bool add_tokens(struct sfz_flags *f, char *s, const char *sep,
     return true;
 }
 
-static bool read_flags(const struct sfz_run *r, struct sfz_flags *f)
+/* The argv of a compile (sensor false) or of a sensor run. The case's
+ * optimizer flags are COMPILE or COMPILE/SENSOR: a sensor handed other
+ * flags than the compile it describes, as a build whose per-object flags
+ * never reach the sensor's rule does. */
+static bool read_flags(const struct sfz_run *r, bool sensor,
+                       struct sfz_flags *f)
 {
     static const char *const fixed[] = {"-g0", "-w", "-ffunction-sections",
                                         "-fdata-sections"};
@@ -340,7 +345,16 @@ static bool read_flags(const struct sfz_run *r, struct sfz_flags *f)
     free(mk);
     /* -std=c23, then the case's optimizer flags (-O1 unless it names others) */
     f->v[f->n++] = "-std=c23";
-    (void)snprintf(f->opt, sizeof(f->opt), "%s", r->c->opt[0] ? r->c->opt : "-O1");
+    const char *slash = strchr(r->c->opt, '/');
+    if (slash == NULL)
+        (void)snprintf(f->opt, sizeof(f->opt), "%s", r->c->opt);
+    else if (sensor)
+        (void)snprintf(f->opt, sizeof(f->opt), "%s", slash + 1);
+    else
+        (void)snprintf(f->opt, sizeof(f->opt), "%.*s",
+                       (int)(slash - r->c->opt), r->c->opt);
+    if (f->opt[0] == '\0')
+        (void)snprintf(f->opt, sizeof(f->opt), "-O1");
     if (!add_tokens(f, f->opt, ",", "the case's optimizer flags"))
         return false;
     for (size_t k = 0; k < sizeof(fixed) / sizeof(fixed[0]); k++)
@@ -440,7 +454,7 @@ static size_t gcc_depfiles(struct sfz_run *r, const char *ph,
 static bool phase(struct sfz_run *r, const char *ph, const char *objdir)
 {
     size_t n = r->tus.n, bad;
-    struct sfz_flags f;
+    struct sfz_flags f, fs;
     struct sfz_job *jobs = zcl_calloc(2 * n + 1, sizeof(*jobs), "sfz.jobs");
     char obj[PATH_MAX];
     char facts[PATH_MAX + 16];
@@ -449,13 +463,14 @@ static bool phase(struct sfz_run *r, const char *ph, const char *objdir)
     /* the side's object compiler: the sensor never sees which one */
     const char *cc = r->c->cc[objdir == r->oa][0] ? r->c->cc[objdir == r->oa]
                                                    : r->env->clang;
-    ok = jobs != NULL && read_flags(r, &f) && sfz_mkdirs(facts);
+    ok = jobs != NULL && read_flags(r, false, &f) && read_flags(r, true, &fs) &&
+         sfz_mkdirs(facts);
     for (size_t k = 0; ok && k < n; k++) {
         const char *tu = r->tus.v[k];
         sfz_object(obj, sizeof(obj), objdir, tu);
         compile_job(&jobs[2 * k], cc, "-c", &f, tu, obj);
         job_log(&jobs[2 * k], r, tu, "cc", ph);
-        sensor_job(&jobs[2 * k + 1], r->env->sensor, r->env->clang, ph, &f,
+        sensor_job(&jobs[2 * k + 1], r->env->sensor, r->env->clang, ph, &fs,
                   tu);
         job_log(&jobs[2 * k + 1], r, tu, "sensor", ph);
     }

@@ -611,7 +611,8 @@ static void prep_seed(struct sfz_group *g, struct sfz_seed s,
  * drawn). CC is the object compiler of both sides ("clang", the sensor's,
  * by default; "gcc", or any name on PATH), or BEFORE>AFTER for a compiler
  * that changes between the sides; OPT replaces -O1 with comma-separated
- * flags (-O0, -O2, -Og,-fno-inline, ...). */
+ * flags (-O0, -O2, -Og,-fno-inline, ...), or COMPILE/SENSOR when the
+ * sensor is handed other flags than the compile (-O2/-Og). */
 struct sfz_range {
     uint64_t first;
     size_t count;
