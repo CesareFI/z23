@@ -4622,6 +4622,152 @@ static int test_pw_pressure_evicts_oldest_until_satisfied(void)
     return failures;
 }
 
+/* Fixed 32-lowercase-hex tag for the orphan fixtures below: distinct from
+ * ic_pool_generation()'s a/b/c fills so the two families of fixture never
+ * collide in one temp dir. */
+static void ic_orphan_tag(char *out, char fill)
+{
+    memset(out, fill, 32);
+    out[32] = 0;
+}
+
+static int test_pw_orphan_shapes_reaped(void)
+{
+    int failures = 0;
+    TEST("proof generation pool: a dead lint sandbox and a half-deleted "
+        "generation with a pruned gitdir are reaped; a live sandbox, a "
+        "recent one, a resolvable gitdir, and a non-matching name are not") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char root[4096], pool[4096];
+        ASSERT(test_mkdtemp(root, sizeof(root), "proof_pool_orphan") !=
+              NULL);
+        ASSERT(snprintf(pool, sizeof(pool), "%s/.z23p", root) > 0);
+        ASSERT(mkdir(pool, 0700) == 0);
+
+        /* A dead process to stand in for a lint shard SIGKILLed mid-run. */
+        pid_t dead_child = fork();
+        ASSERT(dead_child >= 0);
+        if (dead_child == 0) _exit(0);
+        int dead_status = 0;
+        ASSERT(waitpid(dead_child, &dead_status, 0) == dead_child);
+
+        char tag_dead[33], tag_live[33], tag_pruned_old[33];
+        char tag_pruned_recent[33], tag_resolvable[33];
+        ic_orphan_tag(tag_dead, 'a');
+        ic_orphan_tag(tag_live, 'b');
+        ic_orphan_tag(tag_pruned_old, 'c');
+        ic_orphan_tag(tag_pruned_recent, 'd');
+        ic_orphan_tag(tag_resolvable, 'e');
+
+        /* Cases 1/2/6: lint-sandbox-shaped directories, planted straight
+         * into the pool the way test_make_lint_gates.c leaves them. */
+        char path_dead[4096], path_live[4096], path_other[4096];
+        ASSERT(snprintf(path_dead, sizeof(path_dead), "%s/%s.lint_sb_%ld",
+                        pool, tag_dead, (long)dead_child) > 0);
+        ASSERT(snprintf(path_live, sizeof(path_live), "%s/%s.lint_sb_%ld",
+                        pool, tag_live, (long)getpid()) > 0);
+        ASSERT(snprintf(path_other, sizeof(path_other), "%s/notes.lint_sb_x",
+                        pool) > 0);
+        ASSERT(mkdir(path_dead, 0700) == 0);
+        ASSERT(mkdir(path_live, 0700) == 0);
+        ASSERT(mkdir(path_other, 0700) == 0);
+
+        /* Cases 3/4/5: a `.git` file naming a gitdir, with a read-only
+         * fixture directory inside standing in for what a proof test left
+         * behind. Cases 3 and 4 name a gitdir git already deleted (its
+         * basename is the tag); case 5 names one that still exists. */
+        char path_pruned_old[4096], path_pruned_recent[4096];
+        char path_resolvable[4096];
+        ASSERT(snprintf(path_pruned_old, sizeof(path_pruned_old), "%s/%s",
+                        pool, tag_pruned_old) > 0);
+        ASSERT(snprintf(path_pruned_recent, sizeof(path_pruned_recent),
+                        "%s/%s", pool, tag_pruned_recent) > 0);
+        ASSERT(snprintf(path_resolvable, sizeof(path_resolvable), "%s/%s",
+                        pool, tag_resolvable) > 0);
+
+        char gitdir_missing_old[4096], gitdir_missing_recent[4096];
+        char gitdir_present[4096];
+        ASSERT(snprintf(gitdir_missing_old, sizeof(gitdir_missing_old),
+                        "%s/gone/.git/worktrees/%s", root, tag_pruned_old) >
+              0);
+        ASSERT(snprintf(gitdir_missing_recent, sizeof(gitdir_missing_recent),
+                        "%s/gone/.git/worktrees/%s", root,
+                        tag_pruned_recent) > 0);
+        ASSERT(snprintf(gitdir_present, sizeof(gitdir_present),
+                        "%s/real_admin", root) > 0);
+        ASSERT(mkdir(gitdir_present, 0755) == 0);
+
+        char body_old[4160], body_recent[4160], body_present[4160];
+        ASSERT(snprintf(body_old, sizeof(body_old), "gitdir: %s\n",
+                        gitdir_missing_old) > 0);
+        ASSERT(snprintf(body_recent, sizeof(body_recent), "gitdir: %s\n",
+                        gitdir_missing_recent) > 0);
+        ASSERT(snprintf(body_present, sizeof(body_present), "gitdir: %s\n",
+                        gitdir_present) > 0);
+
+        ASSERT(mkdir(path_pruned_old, 0700) == 0);
+        ASSERT(mkdir(path_pruned_recent, 0700) == 0);
+        ASSERT(mkdir(path_resolvable, 0700) == 0);
+        ASSERT(ic_write(path_pruned_old, ".git", body_old));
+        ASSERT(ic_write(path_pruned_recent, ".git", body_recent));
+        ASSERT(ic_write(path_resolvable, ".git", body_present));
+        ASSERT(ic_write(path_pruned_old, "sub/f", "x"));
+        ASSERT(ic_write(path_pruned_recent, "sub/f", "x"));
+
+        char sub_dir_old[4096], sub_dir_recent[4096];
+        ASSERT(snprintf(sub_dir_old, sizeof(sub_dir_old), "%s/sub",
+                        path_pruned_old) > 0);
+        ASSERT(snprintf(sub_dir_recent, sizeof(sub_dir_recent), "%s/sub",
+                        path_pruned_recent) > 0);
+        ASSERT(chmod(sub_dir_old, 0555) == 0);
+        ASSERT(chmod(sub_dir_recent, 0555) == 0);
+
+        int64_t old_when = platform_time_wall_unix() - 2 * 60 * 60;
+        int64_t recent_when = platform_time_wall_unix() - 5 * 60;
+        const struct timespec stamp_old[2] = {
+            { .tv_sec = (time_t)old_when, .tv_nsec = 0 },
+            { .tv_sec = (time_t)old_when, .tv_nsec = 0 },
+        };
+        const struct timespec stamp_recent[2] = {
+            { .tv_sec = (time_t)recent_when, .tv_nsec = 0 },
+            { .tv_sec = (time_t)recent_when, .tv_nsec = 0 },
+        };
+        ASSERT(utimensat(AT_FDCWD, path_dead, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, path_live, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, path_other, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, path_pruned_old, stamp_old, 0) == 0);
+        ASSERT(utimensat(AT_FDCWD, path_pruned_recent, stamp_recent, 0) ==
+              0);
+        ASSERT(utimensat(AT_FDCWD, path_resolvable, stamp_old, 0) == 0);
+
+        size_t removed = 0;
+        uint64_t bytes = 0;
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+        zcl_dev_proof_test_generation_pool_reap(root, pool, "", &removed,
+                                                &bytes);
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+
+        struct stat probe;
+        ASSERT(stat(path_dead, &probe) != 0);
+        ASSERT(stat(path_live, &probe) == 0);
+        ASSERT(stat(path_other, &probe) == 0);
+        ASSERT(stat(path_pruned_old, &probe) != 0);
+        ASSERT(stat(path_pruned_recent, &probe) == 0);
+        ASSERT(stat(path_resolvable, &probe) == 0);
+        ASSERT(removed >= 2);
+        /* path_pruned_recent survives on purpose; put its read-only
+         * fixture dir back to writable so cleanup (which does not chmod)
+         * can remove it. */
+        (void)chmod(sub_dir_recent, 0755);
+        ASSERT(test_rm_rf_recursive(root) == 0);
+#endif
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_pw_marker_identity_invalidates_stale_donor(void)
 {
     int failures = 0;
@@ -8849,6 +8995,7 @@ int test_impact_composition(void)
     failures += test_pw_generation_pool_sweep();
     failures += test_pw_abandoned_generation_reaped_by_age();
     failures += test_pw_pressure_evicts_oldest_until_satisfied();
+    failures += test_pw_orphan_shapes_reaped();
     failures += test_pw_marker_identity_invalidates_stale_donor();
     failures += test_pw_identity_survives_a_second_checkout_path();
     failures += test_pw_identity_keeps_its_four_roots_apart();

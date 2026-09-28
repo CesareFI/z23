@@ -5,6 +5,12 @@
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE
 #endif
+/* nftw()/FTW_DEPTH/FTW_PHYS (the orphan-generation recursive delete) are an
+ * XSI extension glibc's <ftw.h> gates on this; _DEFAULT_SOURCE above puts
+ * every GNU/BSD extension back regardless, so this widens nothing else. */
+#if !defined(_WIN32) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
 
 #include "dev_proof.h"
 #include "dependency_links.h"
@@ -32,6 +38,9 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#if !defined(_WIN32)
+#include <ftw.h>
+#endif
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -4184,6 +4193,58 @@ static bool dp_reap_superseded(const struct warm_reap_entry *entries,
     return reap;
 }
 
+/* One entry of dp_generation_unlock's walk: a directory (never a symlink,
+ * never followed through one) gets owner rwx added and, unless the stack
+ * is already full, is queued so its own children are reached too. */
+static void dp_unlock_entry(const char *dir_path, const char *name,
+                            char **stack, size_t stack_cap, size_t *depth)
+{
+    char child[PATH_MAX];
+    struct stat st;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0 ||
+        snprintf(child, sizeof(child), "%s/%s", dir_path, name) >=
+            (int)sizeof(child) ||
+        lstat(child, &st) != 0 || !S_ISDIR(st.st_mode))
+        return;
+    (void)chmod(child, (st.st_mode & 07777) | S_IRUSR | S_IWUSR | S_IXUSR);
+    if (*depth >= stack_cap) return;
+    char *held = zcl_strdup(child, "proof_pool_unlock");
+    if (held) stack[(*depth)++] = held;
+}
+
+/* Grant the owner read+write+execute on every directory under `path`
+ * (path included) that is reached without following a symlink. Proof test
+ * fixtures leave read-only (0555) directories inside a generation, which
+ * stops git's own recursive worktree delete partway through; this runs
+ * first so the delete that follows can finish. Iterative and bounded like
+ * dp_touch_subtree: a directory nested deeper than the stack holds is left
+ * unlocked, and the delete that follows then fails on it exactly as it
+ * would without this helper -- advisory, never fatal. */
+static void dp_generation_unlock(const char *path)
+{
+    char *stack[64];
+    size_t depth = 0;
+    char top[PATH_MAX];
+    struct stat top_st;
+    if (!path || lstat(path, &top_st) != 0 || !S_ISDIR(top_st.st_mode) ||
+        snprintf(top, sizeof(top), "%s", path) >= (int)sizeof(top))
+        return;
+    (void)chmod(top, (top_st.st_mode & 07777) | S_IRUSR | S_IWUSR | S_IXUSR);
+    stack[depth++] = top;
+    while (depth > 0) {
+        char *dir_path = stack[--depth];
+        DIR *dir = opendir(dir_path);
+        if (dir) {
+            for (struct dirent *entry = readdir(dir); entry;
+                 entry = readdir(dir))
+                dp_unlock_entry(dir_path, entry->d_name, stack,
+                                sizeof(stack) / sizeof(stack[0]), &depth);
+            (void)closedir(dir);
+        }
+        if (dir_path != top) free(dir_path);
+    }
+}
+
 /* Delete one superseded generation, re-proving it is still idle first. */
 static void dp_reap_remove(const struct proof_paths *paths,
                            const struct warm_reap_entry *entry,
@@ -4203,6 +4264,11 @@ static void dp_reap_remove(const struct proof_paths *paths,
      * just makes the log line approximate, never wrong enough to act
      * on -- nothing downstream reads these numbers back. */
     uint64_t freed = directory_bytes_sum(entry->path);
+    /* Read-only fixture directories a proof test left behind stop git's
+     * own recursive delete partway through, leaving a half-deleted
+     * generation warm_reapable() can never approve again. Grant owner
+     * write first so the delete below can finish. */
+    dp_generation_unlock(entry->path);
     /* --force is safe only because detached and clean were just
      * proven. What it overrides is git's refusal to delete a tree
      * that still holds untracked files, and a generation's untracked
@@ -4234,6 +4300,178 @@ static bool dp_reap_eligible(const struct warm_reap_entry *entries,
     return dp_reap_superseded(entries, count, i);
 }
 
+/* Is `s` (exactly `len` bytes of it) 32 lowercase hex characters? Shared by
+ * both orphan shapes below: warm_tag_name() itself demands a NUL right at
+ * that length, which the lint-sandbox shape never has (its tag is a
+ * prefix, not the whole name). */
+static bool dp_hex32(const char *s, size_t len)
+{
+    if (len != PROOF_WARM_TAG_LEN) return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+/* `<32hex>.lint_sb_<digits>` or `<32hex>.lint_meta_<digits>` -- exactly
+ * what test_make_lint_gates.c plants beside a generation it sandboxes.
+ * On a match, the pid substring is parsed into `*pid_out`. */
+static bool dp_orphan_lint_shape(const char *name, long *pid_out)
+{
+    static const char *const suffixes[] = {".lint_sb_", ".lint_meta_"};
+    size_t nlen = name ? strlen(name) : 0;
+    if (nlen <= PROOF_WARM_TAG_LEN || !dp_hex32(name, PROOF_WARM_TAG_LEN))
+        return false;
+    const char *rest = name + PROOF_WARM_TAG_LEN;
+    for (size_t i = 0; i < 2; i++) {
+        size_t slen = strlen(suffixes[i]);
+        if (strncmp(rest, suffixes[i], slen) != 0) continue;
+        char *end = NULL;
+        long pid = strtol(rest + slen, &end, 10);
+        if (!end || *end != 0 || end == rest + slen || pid <= 0) continue;
+        if (pid_out) *pid_out = pid;
+        return true;
+    }
+    return false;
+}
+
+/* Is this sandbox's owner gone? Dead (kill fails ESRCH) is the only
+ * eligible answer -- alive, or owned by someone else (EPERM), is left be,
+ * exactly lint_purge_stale_sandboxes()'s own rule for the current root's
+ * siblings. */
+static bool dp_orphan_lint_dead(long pid)
+{
+    errno = 0;
+    return kill((pid_t)pid, 0) != 0 && errno == ESRCH;
+}
+
+/* `entry/.git` is a regular file reading `gitdir: <path>` where `<path>`
+ * does not exist and its basename is this entry's own tag: git's worktree
+ * remove deleted the admin dir but not the tree, so warm_reapable()'s own
+ * `git rev-parse` can never approve this generation again. A `.git` that
+ * is a directory, missing, unreadable, whose target still exists, or
+ * whose basename differs is not this shape. */
+static bool dp_orphan_gitdir_pruned(const char *entry_path, const char *tag)
+{
+    char gitfile[PATH_MAX];
+    struct stat st;
+    if (snprintf(gitfile, sizeof(gitfile), "%s/.git", entry_path) >=
+            (int)sizeof(gitfile) ||
+        lstat(gitfile, &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    FILE *f = fopen(gitfile, "r");
+    if (!f) return false;
+    char line[PATH_MAX + 16];
+    bool got = fgets(line, sizeof(line), f) != NULL;
+    (void)fclose(f);
+    if (!got) return false;
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        line[--len] = 0;
+    static const char prefix[] = "gitdir: ";
+    if (strncmp(line, prefix, sizeof(prefix) - 1) != 0) return false;
+    const char *target = line + sizeof(prefix) - 1;
+    struct stat target_st;
+    if (!target[0] || lstat(target, &target_st) == 0 || errno != ENOENT)
+        return false;
+    const char *base = strrchr(target, '/');
+    base = base ? base + 1 : target;
+    return strcmp(base, tag) == 0;
+}
+
+/* One phases.txt row for an orphan the survey above never reaches: name,
+ * why, and what it gave back. Display only, like every other note. */
+static void dp_orphan_note(const struct proof_paths *paths, const char *name,
+                           const char *reason, uint64_t bytes)
+{
+    if (!paths || !paths->phases[0]) return;
+    char note[PATH_MAX + 96];
+    (void)snprintf(note, sizeof(note), "name=%s reason=%s bytes=%llu", name,
+                   reason, (unsigned long long)bytes);
+    (void)zcl_dev_proof_phase_note(paths->phases,
+                                   "generation_pool_orphan_reaped", note);
+}
+
+static int dp_orphan_unlink_cb(const char *path, const struct stat *st,
+                               int type, struct FTW *ftwbuf)
+{
+    (void)ftwbuf;
+    if (type == FTW_NS || type == FTW_DNR) return -1;
+    if (st && S_ISDIR(st->st_mode)) return rmdir(path);
+    return unlink(path);
+}
+
+/* Recursively remove one eligible orphan. FTW_PHYS means a symlink inside
+ * is unlinked itself and never followed, so the walk cannot leave the
+ * entry's own tree. */
+static bool dp_orphan_remove_tree(const char *path)
+{
+    dp_generation_unlock(path);
+    return nftw(path, dp_orphan_unlink_cb, 32, FTW_DEPTH | FTW_PHYS) == 0;
+}
+
+/* Does this pool entry match one of the two orphan shapes, and has it aged
+ * past PROOF_WARM_IDLE_ACTIVE_SECONDS? Never the caller's own `in_use`
+ * generation. Returns the reason string on a match, else NULL. */
+static const char *dp_orphan_reason(const char *in_use, const char *name,
+                                    const char *path, int64_t now)
+{
+    if (strcmp(path, in_use) == 0) return NULL;
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return NULL;
+    long pid = 0;
+    const char *reason = NULL;
+    if (dp_orphan_lint_shape(name, &pid)) {
+        if (!dp_orphan_lint_dead(pid)) return NULL;
+        reason = "dead_sandbox";
+    } else if (warm_tag_name(name) && dp_orphan_gitdir_pruned(path, name)) {
+        reason = "pruned_gitdir";
+    } else {
+        return NULL;
+    }
+    int64_t touched = (int64_t)st.st_mtime;
+    (void)warm_generation_touched(path, &touched);
+    return now - touched > PROOF_WARM_IDLE_ACTIVE_SECONDS ? reason : NULL;
+}
+
+/* Reap two shapes of leftover dp_reap_survey() will never see, because
+ * neither is warm_tag_name()'s bare 32-hex shape: a killed lint shard's
+ * sandbox base (test_make_lint_gates.c's own purge only ever reaches
+ * siblings of the CURRENT run's root, so one left under an old generation
+ * tag is never seen again), and a generation whose `.git` worktree admin
+ * dir git already deleted while a read-only fixture inside it (planted by
+ * a proof test) blocked the rest of the recursive delete -- without this,
+ * warm_reapable()'s `git rev-parse` can never approve it again and it
+ * leaks forever. Advisory throughout: any read, stat, or delete failure
+ * just skips that entry. */
+static void dp_reap_orphans(const struct proof_paths *paths,
+                            const char *parent, const char *in_use,
+                            size_t *removed_out, uint64_t *bytes_out)
+{
+    DIR *dir = opendir(parent);
+    if (!dir) return;
+    int64_t now = platform_time_wall_unix();
+    for (struct dirent *entry = readdir(dir); entry; entry = readdir(dir)) {
+        char path[PATH_MAX];
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0 ||
+            snprintf(path, sizeof(path), "%s/%s", parent,
+                     entry->d_name) >= (int)sizeof(path))
+            continue;
+        const char *reason = dp_orphan_reason(in_use, entry->d_name, path,
+                                              now);
+        if (!reason) continue;
+        uint64_t freed = directory_bytes_sum(path);
+        if (!dp_orphan_remove_tree(path)) continue;
+        if (removed_out) (*removed_out)++;
+        if (bytes_out) *bytes_out += freed;
+        dp_orphan_note(paths, entry->d_name, reason, freed);
+    }
+    (void)closedir(dir);
+}
+
 static void generation_pool_reap_ex(const struct proof_paths *paths,
                                     const char *parent, const char *in_use,
                                     size_t max_attempts, size_t *removed_out,
@@ -4244,6 +4482,7 @@ static void generation_pool_reap_ex(const struct proof_paths *paths,
         if (dir) (void)closedir(dir);
         return;
     }
+    dp_reap_orphans(paths, parent, in_use, removed_out, bytes_out);
     int64_t now = platform_time_wall_unix();
     struct warm_reap_entry *entries = NULL;
     size_t count = 0;
@@ -4332,6 +4571,17 @@ static void dp_pool_pressure_reap(const struct proof_paths *paths,
                                   uint64_t free_bytes, uint64_t need_bytes,
                                   size_t *removed_out, uint64_t *bytes_out)
 {
+    if (free_bytes >= need_bytes) return;
+    /* Orphans the survey below will never see (dead lint sandboxes, half-
+     * deleted generations with a pruned gitdir) are free bytes nobody is
+     * using; reclaiming them first may satisfy the reservation without
+     * evicting a donor anything might still want tomorrow. */
+    size_t orphan_removed = 0;
+    uint64_t orphan_bytes = 0;
+    dp_reap_orphans(paths, parent, in_use, &orphan_removed, &orphan_bytes);
+    if (removed_out) *removed_out += orphan_removed;
+    if (bytes_out) *bytes_out += orphan_bytes;
+    free_bytes += orphan_bytes;
     if (free_bytes >= need_bytes) return;
     DIR *dir = opendir(parent);
     if (!dir) return;
