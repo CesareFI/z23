@@ -3244,9 +3244,10 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
      * same process reads back and rm -rf's when done, never a power cycle.
      * That made this the group's wall-time sink (300s+ of no output under a
      * loaded box, killed as WEDGED-NO-OUTPUT). Defer the sync for the
-     * duration of this one case; restored at _test_next: below on every
-     * exit path (ASSERT's goto included), so it never leaks into sibling
-     * cases in this group or other groups. */
+     * duration of this case even when it is called outside zwn_run_rows
+     * (which now defers it for every row); the prior mode is restored at
+     * _test_next: below on every exit path (ASSERT's goto included), so it
+     * never leaks into other groups. */
     bool zwn_prior_store_sync = vcs_package_store_deferred_sync_enabled();
     vcs_package_store_set_deferred_sync(true);
     TEST("parameterized signed C23 package graph: A publishes, B discovers, "
@@ -7237,11 +7238,27 @@ static int zwn_partition_check(void)
     return failures;
 }
 
-/* The rows `shard` owns, in table order; ZWN_ALL_SHARDS runs every row. */
+/* The rows `shard` owns, in table order; ZWN_ALL_SHARDS runs every row.
+ *
+ * Every row's node stores live in per-pid test-tmp datadirs that this same
+ * process writes, reads back and removes; no row cuts power or kills a
+ * writer mid-write, so a package store's per-write fsync barrier protects
+ * nothing here. Measured, it was most of each row's wall: the redundant
+ * hosting rows spent ~80% of their time in package-store fsyncs (service
+ * events, store generation, CAS chunks, manifests), and the whole group ran
+ * 3-5x slower whenever a proof's scratch landed on a busy disk instead of
+ * RAM. The rows therefore run with the package store's documented
+ * deferred-sync mode on (package_lifecycle already did so for itself). It
+ * drops only each store_atomic_write's own fsync; content addressing,
+ * verification and the temp+rename discipline are unchanged, so every
+ * assertion reads the same bytes it did before. The prior mode is restored
+ * before returning, so nothing outside these rows sees it. */
 static int zwn_run_rows(unsigned shard)
 {
     int failures = 0;
     size_t ran = 0;
+    bool zwn_prior_rows_sync = vcs_package_store_deferred_sync_enabled();
+    vcs_package_store_set_deferred_sync(true);
     memset(&g_zwn_sovereign_receipt, 0, sizeof(g_zwn_sovereign_receipt));
     chain_params_select(CHAIN_MAIN);
     const struct chain_params *params = chain_params_get();
@@ -7258,6 +7275,7 @@ static int zwn_run_rows(unsigned shard)
                g_zwn_cases[i].name, zwn_elapsed_ms(&zwn_row_started),
                added);
     }
+    vcs_package_store_set_deferred_sync(zwn_prior_rows_sync);
     if (failures == 0 && g_zwn_sovereign_receipt.ready)
         zwn_print_sovereign_receipt();
     printf("zcode_swarm_net: ran %zu of %zu sub-suites (%s), %d failed\n",
