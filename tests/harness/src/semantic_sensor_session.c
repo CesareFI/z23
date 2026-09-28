@@ -45,6 +45,8 @@
 
 #include "test/semantic_sensor_session.h"
 
+#include "base/hex.h"
+#include "sha3/sha3.h"
 #include "test/test_core.h"
 #include "util/spawn.h"
 #include "vcs/semantic_manifest.h"
@@ -400,6 +402,36 @@ static bool sss_cold(const char *sensor, const char *root, const char *out,
     return rc == 0;
 }
 
+/* Cold `emit` with an explicit --cc / --toolchain-id (either may be NULL).
+ * message carries stdout+stderr; the caller checks rc itself, so a refused
+ * emit (a bad --cc or --toolchain-id) is not itself a FAIL here. */
+static int sss_cold_cc(const char *sensor, const char *root, const char *out,
+                       const char *cc, const char *tc,
+                       const struct sss_argv *a, char *message, size_t cap)
+{
+    const char *argv[28];
+    bool timed_out = false;
+    size_t k = 0;
+    const char *head[] = {sensor, "emit", "--root", root, "--source",
+                          "src/main.c", "--out", out, "--facts"};
+    for (size_t i = 0; i < sizeof(head) / sizeof(head[0]); i++)
+        argv[k++] = head[i];
+    if (cc != NULL) {
+        argv[k++] = "--cc";
+        argv[k++] = cc;
+    }
+    if (tc != NULL) {
+        argv[k++] = "--toolchain-id";
+        argv[k++] = tc;
+    }
+    argv[k++] = "--";
+    for (size_t i = 0; i < a->n; i++)
+        argv[k++] = a->items[i];
+    argv[k] = NULL;
+    return zcl_spawn_capture_merged_observed(argv, message, cap, 60000,
+                                             &timed_out);
+}
+
 struct sss_proc {
     pid_t pid;
     int to, from;
@@ -517,6 +549,26 @@ static size_t sss_request_text(const char *root, const char *source,
     int w = snprintf(line, cap,
                      "emit\t--root\t%s\t--source\t%s\t--out\t%s\t--facts\t--",
                      root, source, out);
+    for (size_t k = 0; k < a->n && w > 0 && (size_t)w < cap; k++)
+        w += snprintf(line + w, cap - (size_t)w, "\t%s", a->items[k]);
+    return w <= 0 || (size_t)w + 2 > cap ? 0 : (size_t)w;
+}
+
+/* Like sss_request_text, with --cc / --toolchain-id inserted before `--`
+ * (either may be NULL). */
+static size_t sss_request_text_cc(const char *root, const char *source,
+                                  const char *out, const char *cc,
+                                  const char *tc, const struct sss_argv *a,
+                                  char *line, size_t cap)
+{
+    int w = snprintf(line, cap, "emit\t--root\t%s\t--source\t%s\t--out\t%s"
+                                "\t--facts", root, source, out);
+    if (w > 0 && cc != NULL)
+        w += snprintf(line + w, cap - (size_t)w, "\t--cc\t%s", cc);
+    if (w > 0 && tc != NULL)
+        w += snprintf(line + w, cap - (size_t)w, "\t--toolchain-id\t%s", tc);
+    if (w > 0)
+        w += snprintf(line + w, cap - (size_t)w, "\t--");
     for (size_t k = 0; k < a->n && w > 0 && (size_t)w < cap; k++)
         w += snprintf(line + w, cap - (size_t)w, "\t%s", a->items[k]);
     return w <= 0 || (size_t)w + 2 > cap ? 0 : (size_t)w;
@@ -1209,6 +1261,257 @@ static int sss_t_protocol(struct sss_ctx *c)
     return failures;
 }
 
+/* ── the session's --cc / --toolchain-id (docs/work/SEMANTIC_MANIFEST.md,
+ * "Warm session"; IDENTITY drift is object-compiler drift) ───────────────── */
+
+#define SSS_TC_A "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+#define SSS_TC_B "b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6"
+#define SSS_TC_ZERO                                                            \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+#define SSS_TC_NOTHEX                                                          \
+    "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+
+/* A stand-in compiler under root, never run, only hashed; its "object-cc
+ * <path> sha3-256 <hex>" IDENTITY text, spelled root-relative as IDENTITY
+ * itself spells it (cm_spell_real), not by its filesystem path. */
+static bool sss_write_cc(const char *root, const char *rel, const char *body,
+                         char *text, size_t cap)
+{
+    char path[PATH_MAX];
+    uint8_t d[32];
+    char hex[65];
+    if (!sss_write(root, rel, body))
+        return false;
+    (void)snprintf(path, sizeof(path), "%s/%s", root, rel);
+    if (chmod(path, 0755) != 0)
+        return false;
+    zcl_sha3_256((const unsigned char *)body, strlen(body), d);
+    zcl_hex_encode(d, 32, hex);
+    return (size_t)snprintf(text, cap, "object-cc %s sha3-256 %s", rel,
+                            hex) < cap;
+}
+
+static bool sss_bytes_scan(const char *path, const char *needle)
+{
+    char *m = NULL;
+    size_t n = 0, len = strlen(needle);
+    bool hit = false;
+    if (sss_read(path, &m, &n))
+        for (size_t k = 0; !hit && k + len <= n; k++)
+            hit = memcmp(m + k, needle, len) == 0;
+    free(m);
+    return hit;
+}
+
+static bool sss_bytes_has(const char *path, const char *needle)
+{
+    bool hit = sss_bytes_scan(path, needle);
+    if (!hit)
+        printf("FAIL %s does not carry \"%s\"\n", path, needle);
+    return hit;
+}
+
+static bool sss_bytes_lacks(const char *path, const char *needle)
+{
+    bool hit = sss_bytes_scan(path, needle);
+    if (hit)
+        printf("FAIL %s carries \"%s\" (a stale compiler identity)\n", path,
+               needle);
+    return !hit;
+}
+
+/* One request with --cc/--toolchain-id, its cold twin, and the equality and
+ * IDENTITY-text checks every accepted case here needs. */
+static bool sss_cc_step(struct sss_ctx *c, struct sss_proc *p,
+                        const char *name, const char *cc, const char *tc,
+                        const char *identity_text, char *reply, size_t cap)
+{
+    char warm[PATH_MAX], cold[PATH_MAX], line[8192], message[4096];
+    struct sss_argv a;
+    size_t w;
+    int rc;
+    sss_argv(&a, false);
+    (void)snprintf(warm, sizeof(warm), "%s/%s.session.bin", c->root, name);
+    (void)snprintf(cold, sizeof(cold), "%s/%s.cold.bin", c->root, name);
+    w = sss_request_text_cc(c->root, "src/main.c", warm, cc, tc, &a, line,
+                            sizeof(line));
+    if (w == 0)
+        return false;
+    line[w++] = '\n';
+    if (!sss_send(p, line, w, reply, cap)) {
+        printf("FAIL step %s: no session reply\n", name);
+        return false;
+    }
+    if (strstr(reply, "\"ok\":true") == NULL) {
+        printf("FAIL step %s: refused: %s\n", name, reply);
+        return false;
+    }
+    rc = sss_cold_cc(c->sensor, c->root, cold, cc, tc, &a, message,
+                     sizeof(message));
+    if (rc != 0) {
+        printf("FAIL step %s: cold emit exited %d: %s\n", name, rc, message);
+        return false;
+    }
+    return sss_same(warm, cold) &&
+           (identity_text == NULL || (sss_bytes_has(warm, identity_text) &&
+                                      sss_bytes_has(cold, identity_text)));
+}
+
+/* Case 1: a session request with --cc/--toolchain-id equals a cold emit of
+ * the same options, and its IDENTITY names the same object compiler. Case 2:
+ * changing --toolchain-id or --cc for the same TU never reuses the old warm
+ * bytes, the new manifest's IDENTITY reflects the new compiler, and the
+ * reply is never trusted "verified" without a cold check of the new
+ * options (every step here is checked byte-for-byte against a fresh cold
+ * emit of its own options, so a stale reuse would fail sss_same). */
+static int sss_t_object_cc(struct sss_ctx *c)
+{
+    int failures = 0;
+    struct sss_proc p = {0};
+    char reply[SSS_REPLY_MAX], log[PATH_MAX];
+    char cc_a[PATH_MAX], cc_b[PATH_MAX], text_a[160], text_b[160];
+    char path[PATH_MAX];
+    bool started = false;
+    TEST_CASE("semantic_sensor: session --cc/--toolchain-id equal cold, and "
+              "changing either never reuses the old warm bytes") {
+        ASSERT(sss_fresh(c, "object-cc"));
+        ASSERT(sss_write_cc(c->root, "bin-a/cc", "#!/bin/sh\nexit 0 # a\n",
+                            text_a, sizeof(text_a)));
+        ASSERT(sss_write_cc(c->root, "bin-b/cc", "#!/bin/sh\nexit 0 # b\n",
+                            text_b, sizeof(text_b)));
+        (void)snprintf(cc_a, sizeof(cc_a), "%s/bin-a/cc", c->root);
+        (void)snprintf(cc_b, sizeof(cc_b), "%s/bin-b/cc", c->root);
+        (void)snprintf(log, sizeof(log), "%s/object-cc.err", c->dir);
+        ASSERT(sss_start(&p, c->sensor, false, false, log));
+        started = true;
+        /* Case 1: base request, --cc A / toolchain A. */
+        ASSERT(sss_cc_step(c, &p, "cc-base", cc_a, SSS_TC_A, text_a, reply,
+                           sizeof(reply)));
+        ASSERT(sss_is(reply, "trust", "verified"));
+        /* Case 2a: same TU, same --cc, a new --toolchain-id: the manifest
+         * changes (IDENTITY carries the toolchain) and must equal a fresh
+         * cold emit under the new id, never the old warm bytes. */
+        ASSERT(sss_cc_step(c, &p, "cc-new-toolchain", cc_a, SSS_TC_B, text_a,
+                           reply, sizeof(reply)));
+        ASSERT(strstr(reply, "\"trust\":\"qualified\"") == NULL);
+        /* Case 2b: same TU, a different --cc (same toolchain id): IDENTITY
+         * must name the new compiler, not the old one. */
+        ASSERT(sss_cc_step(c, &p, "cc-new-compiler", cc_b, SSS_TC_B, text_b,
+                           reply, sizeof(reply)));
+        ASSERT(strstr(reply, "\"trust\":\"qualified\"") == NULL);
+        (void)snprintf(path, sizeof(path), "%s/cc-new-compiler.session.bin",
+                      c->root);
+        ASSERT(sss_bytes_lacks(path, text_a));
+        /* Back to the first compiler and toolchain: still equal to cold,
+         * still not a stale "qualified" reuse of the intervening TUs. */
+        ASSERT(sss_cc_step(c, &p, "cc-back-to-a", cc_a, SSS_TC_A, text_a,
+                           reply, sizeof(reply)));
+        started = false;
+        ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 0);
+        ASSERT(strstr(reply, "\"mismatches\":0,") != NULL);
+    } TEST_END
+    if (started)
+        (void)sss_finish(&p, reply, sizeof(reply));
+    return failures;
+}
+
+/* Case 5: a --cc that resolves only to a compile-cache wrapper (a masquerade
+ * link with no real compiler behind it) gives "object-cc unknown", the same
+ * as cold. */
+static int sss_t_object_cc_wrapper(struct sss_ctx *c)
+{
+    int failures = 0;
+    struct sss_proc p = {0};
+    char reply[SSS_REPLY_MAX], log[PATH_MAX], cc[PATH_MAX];
+    bool started = false;
+    TEST_CASE("semantic_sensor: a --cc naming only a compile-cache wrapper "
+              "is object-cc unknown, the same as cold") {
+        ASSERT(sss_fresh(c, "object-cc-wrapper"));
+        ASSERT(sss_write_cc(c->root, "bin-w/ccache",
+                            "#!/bin/sh\nexit 0 # compile cache\n", reply,
+                            sizeof(reply)));
+        (void)snprintf(cc, sizeof(cc), "%s/bin-w/ccache", c->root);
+        (void)snprintf(log, sizeof(log), "%s/object-cc-wrapper.err", c->dir);
+        ASSERT(sss_start(&p, c->sensor, false, false, log));
+        started = true;
+        ASSERT(sss_cc_step(c, &p, "wrapper", cc, SSS_TC_A,
+                           "; object-cc unknown", reply, sizeof(reply)));
+        started = false;
+        ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 0);
+    } TEST_END
+    if (started)
+        (void)sss_finish(&p, reply, sizeof(reply));
+    return failures;
+}
+
+/* A refused --cc/--toolchain-id request: ok:false, no output file, and the
+ * session exits 3 (refused) once its stdin ends. */
+static bool sss_cc_refused(struct sss_ctx *c, struct sss_proc *p,
+                           const char *name, const char *cc, const char *tc,
+                           char *reply, size_t cap)
+{
+    char out[PATH_MAX], line[8192];
+    struct sss_argv a;
+    size_t w;
+    sss_argv(&a, false);
+    (void)snprintf(out, sizeof(out), "%s/%s.session.bin", c->root, name);
+    w = sss_request_text_cc(c->root, "src/main.c", out, cc, tc, &a, line,
+                            sizeof(line));
+    if (w == 0)
+        return false;
+    line[w++] = '\n';
+    if (!sss_send(p, line, w, reply, cap))
+        return false;
+    if (strstr(reply, "\"ok\":false") == NULL) {
+        printf("FAIL step %s is not refused: %s\n", name, reply);
+        return false;
+    }
+    if (access(out, F_OK) == 0) {
+        printf("FAIL a refused request wrote %s\n", out);
+        return false;
+    }
+    return true;
+}
+
+/* Case 3: an invalid --toolchain-id (all zeros, or not hex) is refused.
+ * Case 4: a --cc naming a missing executable is refused the same way. */
+static int sss_t_object_cc_invalid(struct sss_ctx *c)
+{
+    int failures = 0;
+    struct sss_proc p = {0};
+    char reply[SSS_REPLY_MAX], log[PATH_MAX], cc[PATH_MAX], missing[PATH_MAX];
+    bool started = false;
+    TEST_CASE("semantic_sensor: session refuses an invalid --toolchain-id "
+              "and a --cc naming no executable, writing nothing") {
+        ASSERT(sss_fresh(c, "object-cc-invalid"));
+        ASSERT(sss_write_cc(c->root, "bin-a/cc", "#!/bin/sh\nexit 0 # a\n",
+                            reply, sizeof(reply)));
+        (void)snprintf(cc, sizeof(cc), "%s/bin-a/cc", c->root);
+        (void)snprintf(missing, sizeof(missing), "%s/no-such-cc", c->root);
+        (void)snprintf(log, sizeof(log), "%s/object-cc-invalid.err", c->dir);
+        ASSERT(sss_start(&p, c->sensor, false, false, log));
+        started = true;
+        ASSERT(sss_cc_refused(c, &p, "zero-toolchain", cc, SSS_TC_ZERO, reply,
+                              sizeof(reply)));
+        ASSERT(sss_refused(reply, "--toolchain-id"));
+        ASSERT(sss_cc_refused(c, &p, "nothex-toolchain", cc, SSS_TC_NOTHEX,
+                              reply, sizeof(reply)));
+        ASSERT(sss_refused(reply, "--toolchain-id"));
+        ASSERT(sss_cc_refused(c, &p, "missing-cc", missing, SSS_TC_A, reply,
+                              sizeof(reply)));
+        ASSERT(sss_refused(reply, "object compiler"));
+        /* The session still serves a good request afterward. */
+        ASSERT(sss_cc_step(c, &p, "after-invalid", cc, SSS_TC_A, NULL, reply,
+                           sizeof(reply)));
+        started = false;
+        ASSERT_EQ(sss_finish(&p, reply, sizeof(reply)), 3);
+        ASSERT(strstr(reply, "\"refused\":3,") != NULL);
+    } TEST_END
+    if (started)
+        (void)sss_finish(&p, reply, sizeof(reply));
+    return failures;
+}
+
 int semantic_sensor_session_cases(void)
 {
     int failures = 0;
@@ -1226,6 +1529,9 @@ int semantic_sensor_session_cases(void)
     failures += sss_t_unbound(&c);
     failures += sss_t_post(&c);
     failures += sss_t_untrackable(&c);
+    failures += sss_t_object_cc(&c);
+    failures += sss_t_object_cc_wrapper(&c);
+    failures += sss_t_object_cc_invalid(&c);
     failures += sss_t_bad_opts(&c);
     failures += sss_t_protocol(&c);
     (void)test_rm_rf_recursive(c.dir);
