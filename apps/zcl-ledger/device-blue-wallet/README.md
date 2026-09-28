@@ -44,8 +44,10 @@ stubs. Its stack watermark is 976 bytes in the tested path; it does not run
 BOLOS or the linked Wallet image.
 The [Cortex-M0 EXIT packet test](../../../docs/experiments/2026-09-27-ledger-blue-wallet-m0-touch.md)
 checks an outside touch and a center-button release while the ARM harness
-waits for another APDU. Its 992-byte stack watermark applies only to that
-test route.
+waits for another APDU. It also checks that USB reset and suspend abort two
+stubbed payment displays and restore the receive screen after their replies.
+Its 992-byte stack watermark applies only to those test routes; the payment
+parser and signer are stubbed.
 
 Version 0.3.5 shares RAM between mutually exclusive boot derivation and
 payment state, and between output text and previous-transaction parsing.

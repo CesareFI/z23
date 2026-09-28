@@ -31,7 +31,10 @@ static wallet_boot_material boot_material;
 static const bagl_element_t *shown;
 static size_t shown_count;
 static bool account_ready, exited, failed, outside_rejected;
+static bool reset_restored, suspend_restored, payment_visible;
 static unsigned request_step, replies_valid, derivations, wipes;
+static unsigned payment_displays, payment_aborts;
+static const bagl_element_t payment_ui[1];
 
 static void test_text(const char *message) {
     (void)write(1, message, strlen(message));
@@ -121,16 +124,28 @@ void wallet_payment_set_account_hashes(const uint8_t external[20],
     account_ready = true;
 }
 
-void wallet_payment_abort(void) {}
-void wallet_payment_display(void) { failed = true; }
-bool wallet_payment_visible(void) { return false; }
+void wallet_payment_abort(void) {
+    if (payment_visible) ++payment_aborts;
+    payment_visible = false;
+}
+void wallet_payment_display(void) {
+    if (!payment_visible) failed = true;
+    shown = payment_ui;
+    shown_count = 1;
+    ++payment_displays;
+}
+bool wallet_payment_visible(void) { return payment_visible; }
 bool wallet_payment_timeout(void) { return false; }
 uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     uint8_t *reply, size_t capacity, size_t *reply_length) {
-    (void)apdu; (void)length; (void)reply; (void)capacity;
+    (void)reply; (void)capacity;
     *reply_length = 0;
-    failed = true;
-    return 0x6985;
+    if (!apdu || length != 5 || apdu[1] != 0x20 || payment_visible) {
+        failed = true;
+        return 0x6985;
+    }
+    payment_visible = true;
+    return 0x9000;
 }
 void blue_wallet_signer_wipe(void) { ++wipes; }
 
@@ -189,20 +204,19 @@ void io_seproxyhal_init(void) {}
 void USB_power(int enabled) { if (enabled != 0 && enabled != 1) failed = true; }
 void os_sched_exit(unsigned code) { if (code != 0) failed = true; exited = true; }
 
-unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
-    if (tx_length) {
-        if (channel != (CHANNEL_APDU | IO_RETURN_AFTER_TX)) failed = true;
-        if (request_step == 1 && tx_length == 7 &&
-            blue_wallet_identity_matches(G_io_apdu_buffer, tx_length))
-            ++replies_valid;
-        else if (request_step == 2 && tx_length == 35 &&
+static bool reply_matches(unsigned short length) {
+    if (request_step == 1)
+        return length == 7 &&
+            blue_wallet_identity_matches(G_io_apdu_buffer, length);
+    if (request_step == 2)
+        return length == 35 &&
             memcmp(G_io_apdu_buffer, wallet_state.public_key, 33) == 0 &&
-            G_io_apdu_buffer[33] == 0x90 && G_io_apdu_buffer[34] == 0)
-            ++replies_valid;
-        else failed = true;
-        return 0;
-    }
-    if (channel != CHANNEL_APDU) failed = true;
+            G_io_apdu_buffer[33] == 0x90 && G_io_apdu_buffer[34] == 0;
+    return (request_step == 3 || request_step == 4) && length == 2 &&
+        G_io_apdu_buffer[0] == 0x90 && G_io_apdu_buffer[1] == 0;
+}
+
+static unsigned short receive_request(void) {
     if (request_step++ == 0) {
         const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
         memcpy(G_io_apdu_buffer, identity, sizeof identity);
@@ -213,10 +227,36 @@ unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
         memcpy(G_io_apdu_buffer, address, sizeof address);
         return sizeof address;
     }
+    if (request_step == 3 || request_step == 4) {
+        if (request_step == 4) {
+            G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_USB_EVENT;
+            G_io_seproxyhal_spi_buffer[3] = SEPROXYHAL_TAG_USB_EVENT_RESET;
+            (void)io_event(CHANNEL_SPI);
+            reset_restored = !payment_visible && shown == receive_ui;
+        }
+        const uint8_t payment[] = {0xa5, 0x20, 0, 0, 0};
+        memcpy(G_io_apdu_buffer, payment, sizeof payment);
+        return sizeof payment;
+    }
+    G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_USB_EVENT;
+    G_io_seproxyhal_spi_buffer[3] = SEPROXYHAL_TAG_USB_EVENT_SUSPENDED;
+    (void)io_event(CHANNEL_SPI);
+    suspend_restored = !payment_visible && shown == receive_ui;
     finger_release(0, 0);
     outside_rejected = !exited;
     finger_release(160, ZCL_WALLET_EXIT_Y + 24);
     blue_throw(0x6812);
+}
+
+unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
+    if (tx_length) {
+        if (channel != (CHANNEL_APDU | IO_RETURN_AFTER_TX) ||
+            !reply_matches(tx_length)) failed = true;
+        else ++replies_valid;
+        return 0;
+    }
+    if (channel != CHANNEL_APDU) failed = true;
+    return receive_request();
 }
 
 void io_seproxyhal_spi_send(const unsigned char *bytes,
@@ -268,11 +308,16 @@ static bool boot_material_clear(void) {
     return true;
 }
 
+static bool wallet_flow_valid(void) {
+    return replies_valid == 4 && account_ready && outside_rejected &&
+        reset_restored && suspend_restored && payment_aborts == 2 &&
+        payment_displays == 2 && derivations == 2 && wipes >= 2;
+}
+
 static bool wallet_run_valid(int result, unsigned used) {
     return result == 0 && !failed && !active_try && exited &&
-        replies_valid == 2 && account_ready && outside_rejected &&
-        derivations == 2 &&
-        wipes >= 2 && shown == receive_ui && wallet_state.address_ready &&
+        wallet_flow_valid() && shown == receive_ui &&
+        wallet_state.address_ready &&
         strlen(receive_address) == ZCL_WALLET_ADDRESS_CHARS &&
         address_lines_match() && boot_material_clear() && used <= 1536;
 }
