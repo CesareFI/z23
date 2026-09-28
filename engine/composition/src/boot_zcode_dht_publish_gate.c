@@ -60,6 +60,30 @@ static bool gate_read_object(const char *path, size_t cap, uint8_t **out,
   return true;
 }
 
+static struct vcs_package_store *gate_fresh_package_store(
+    struct json_value *result) {
+  struct vcs_package_store *store = vcs_package_store_global();
+  if (!store) {
+    gate_error(result, "NO_PACKAGE_STORE",
+               "package hosting is disabled on this node; run z23 join"
+               " and install the package with zcode use before publishing its"
+               " pointer");
+    return NULL;
+  }
+  /* One-shot package commands may have advanced this datadir's store after
+   * the resident node opened its handle. Rebuild the derived catalog from
+   * authoritative disk objects before publication judges the carrier. */
+  if (!vcs_package_store_refresh(store)) {
+    LOG_ERROR("net.zcode_dht", "publish gate: package store refresh refused");
+    gate_error(result, "TRANSPORT_IMPORT_REFUSED",
+               "the local package store changed and its complete catalog"
+               " could not be reconstructed; repair the store before"
+               " publishing this package pointer");
+    return NULL;
+  }
+  return store;
+}
+
 /* Package-pointer reproduction gate. A zclassic23.package POINTER record
  * claims "this exact package_root is discoverable and fetchable from me".
  * That claim is only honest when this node's own store holds a committed
@@ -72,14 +96,8 @@ static bool gate_read_object(const char *path, size_t cap, uint8_t **out,
 bool boot_zcode_dht_package_pointer_publish_gate(
     const struct vcs_zcode_dht_publish_spec *spec,
     struct json_value *result) {
-  struct vcs_package_store *store = vcs_package_store_global();
-  if (!store) {
-    gate_error(result, "NO_PACKAGE_STORE",
-               "package hosting is disabled on this node; run z23 join"
-               " and install the package with zcode use before publishing its"
-               " pointer");
-    return false;
-  }
+  struct vcs_package_store *store = gate_fresh_package_store(result);
+  if (!store) return false;
   const char *zcode_dir = vcs_package_store_root_dir(store);
   struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
   if (!index) {
