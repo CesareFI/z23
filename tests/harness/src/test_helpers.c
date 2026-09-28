@@ -649,3 +649,16 @@ void test_projection_paths(const char *dir, const char *name,
     snprintf(elog, elog_n, "%s/event_log.dat", dir);
     snprintf(proj, proj_n, "%s/%s_projection.db", dir, name);
 }
+
+long long test_forked_exec_data_mb(long long budget_mb)
+{
+    long long data_kb = 0;
+    char line[256];
+    FILE *f = fopen("/proc/self/status", "r");
+    while (f && fgets(line, sizeof(line), f))
+        if (sscanf(line, "VmData: %lld kB", &data_kb) == 1)
+            break;
+    if (f)
+        (void)fclose(f);
+    return budget_mb + (data_kb > 0 ? (data_kb + 1023) / 1024 : 0);
+}

@@ -155,6 +155,13 @@ void test_make_tmpdir(char *buf, size_t n, const char *prefix,
 /* Absolutize a fixture path against the process cwd — for paths that
  * cross the absolute-only platform_private_* destination seam. */
 bool test_abs_path(const char *path, char *abs, size_t n);
+/* RLIMIT_DATA, in MiB, for an executor child that is a fork of this test
+ * image: `budget_mb` ABOVE the data the image has already committed
+ * (VmData — the test binary's own .bss is ~900 MiB). A bare cap below that
+ * leaves the child unable to map a single new page, so whether its
+ * allocations succeed depends on the free heap it inherited through fork,
+ * which varies with load. Without /proc the result is the bare budget. */
+long long test_forked_exec_data_mb(long long budget_mb);
 
 /* Build the smallest exact bounded replay fixture (genesis only) and publish
  * shielded completeness through the production atomic completion API. */

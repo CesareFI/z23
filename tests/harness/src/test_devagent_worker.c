@@ -794,20 +794,8 @@ static bool wtx_fixture(const struct wkr_job *job, struct wkr_result *res)
  * wakes the drive took, i.e. with host load. Give every drive the 512 MiB
  * executor budget ABOVE what this image has already committed, as the
  * production worker's image (a far smaller .bss under a 1024 MiB default)
- * has. Without /proc the ceiling is the bare budget. */
+ * has. See test_forked_exec_data_mb. */
 #define WTX_EXEC_BUDGET_MB 512
-static long long wtx_exec_mem_mb(void)
-{
-    long long data_kb = 0;
-    char line[256];
-    FILE *f = fopen("/proc/self/status", "r");
-    while (f && fgets(line, sizeof(line), f))
-        if (sscanf(line, "VmData: %lld kB", &data_kb) == 1)
-            break;
-    if (f)
-        (void)fclose(f);
-    return WTX_EXEC_BUDGET_MB + (data_kb > 0 ? (data_kb + 1023) / 1024 : 0);
-}
 
 static void wtx_opts(struct wkr_drive_opts *o, const char *worker,
                      const char *session)
@@ -821,7 +809,7 @@ static void wtx_opts(struct wkr_drive_opts *o, const char *worker,
     o->max_jobs = 1;
     o->time_cap_s = 30;
     o->cpu_s = 30;
-    o->mem_mb = wtx_exec_mem_mb();
+    o->mem_mb = test_forked_exec_data_mb(WTX_EXEC_BUDGET_MB);
     o->token_cap = 32000;
 }
 

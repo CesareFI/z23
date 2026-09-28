@@ -218,15 +218,24 @@ static void liv_authority(const char *name)
 }
 
 #if !defined(_WIN32)
+/* The executor runs in the worker's forked child under the drive's caps.
+ * Besides naming its job it records "alloc-ok" when a fresh 64 MiB
+ * allocation (past glibc's largest mmap threshold, so always new pages)
+ * succeeds under those caps: the drive case asserts the executor had real
+ * memory to work with, not just whatever heap it inherited through fork. */
 static bool liv_executor(const struct wkr_job *job, struct wkr_result *res)
 {
     FILE *f;
     char path[4096 + 32];
+    void *fresh = malloc((size_t)64 << 20);
     f = fopen(g_liv_seen, "ab");
     if (f) {
         (void)fprintf(f, "%s\n", job->name);
+        if (fresh)
+            (void)fputs("alloc-ok\n", f);
         (void)fclose(f);
     }
+    free(fresh);
     if (snprintf(path, sizeof(path), "%s/cand.diff", job->rundir) <
         (int)sizeof(path)) {
         f = fopen(path, "wb");
@@ -450,13 +459,16 @@ static int liv_case_drive(void)
         o.max_jobs = 1;
         o.time_cap_s = 30;
         o.cpu_s = 30;
-        o.mem_mb = 256;
+        /* 256 MiB of executor budget above what this image has already
+         * committed: see test_forked_exec_data_mb. */
+        o.mem_mb = test_forked_exec_data_mb(256);
         o.token_cap = 1000;
         o.timed_idle_only = true;
         jobs = zcl_devagent_worker_drive(&o, liv_executor);
         ASSERT_EQ(jobs, 1);
         ASSERT(liv_file_has(g_liv_seen, "task-c"));
         ASSERT(!liv_file_has(g_liv_seen, "task-a"));
+        ASSERT(liv_file_has(g_liv_seen, "alloc-ok"));
         (void)snprintf(qpath, sizeof(qpath), "%s/z23/dev/queue/queue.jsonl",
                        g_liv_state);
         ASSERT(liv_file_has(qpath, "WAITING_EXTERNAL"));
