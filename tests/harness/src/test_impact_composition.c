@@ -7409,6 +7409,46 @@ static int test_ic_foreground_selected_pair(void)
     return failures;
 }
 
+/* The proof worker must not hand the operator's credentials to candidate
+ * code: API keys, tokens and the ssh-agent socket are unset, while Z23's own
+ * registered knobs and ordinary variables survive. */
+static int test_ic_proof_env_scrubs_credentials(void)
+{
+    int failures = 0;
+    TEST("proof step: worker environment drops operator credentials") {
+        static const char *const gone[] = {
+            "IC_FAKE_API_KEY", "IC_FAKE_TOKEN", "IC_FAKE_SECRET",
+            "IC_FAKE_PASSWORD", "SSH_AUTH_SOCK",
+        };
+        static const char *const kept[] = {
+            "ZCL_PROCESS_START_TOKEN", "IC_FAKE_TOKENIZER", "IC_PLAIN_VALUE",
+        };
+        char *saved_sock = getenv("SSH_AUTH_SOCK")
+            ? strdup(getenv("SSH_AUTH_SOCK")) : NULL;
+        char *saved_start = getenv("ZCL_PROCESS_START_TOKEN")
+            ? strdup(getenv("ZCL_PROCESS_START_TOKEN")) : NULL;
+        for (size_t i = 0; i < sizeof(gone) / sizeof(gone[0]); i++)
+            ASSERT_EQ(setenv(gone[i], "secret", 1), 0);
+        for (size_t i = 0; i < sizeof(kept) / sizeof(kept[0]); i++)
+            ASSERT_EQ(setenv(kept[i], "keep", 1), 0);
+        ASSERT(zcl_dev_proof_test_prepare_environment());
+        for (size_t i = 0; i < sizeof(gone) / sizeof(gone[0]); i++)
+            ASSERT(getenv(gone[i]) == NULL);
+        for (size_t i = 0; i < sizeof(kept) / sizeof(kept[0]); i++)
+            ASSERT(getenv(kept[i]) != NULL);
+        ASSERT_STR_EQ(getenv("ZCL_LINT_CACHE"), "0");
+        (void)unsetenv("IC_FAKE_TOKENIZER");
+        (void)unsetenv("IC_PLAIN_VALUE");
+        (void)unsetenv("ZCL_LINT_CACHE");
+        if (saved_start) (void)setenv("ZCL_PROCESS_START_TOKEN", saved_start, 1);
+        else (void)unsetenv("ZCL_PROCESS_START_TOKEN");
+        if (saved_sock) (void)setenv("SSH_AUTH_SOCK", saved_sock, 1);
+        free(saved_start);
+        free(saved_sock);
+    }
+    return failures;
+}
+
 static int test_ic_foreground_execution_busy(void)
 {
     int failures = 0;
@@ -8760,6 +8800,7 @@ int test_impact_composition(void)
     failures += test_ic_foreground_proof_command();
 #if !defined(_WIN32)
     failures += test_ic_foreground_selected_pair();
+    failures += test_ic_proof_env_scrubs_credentials();
     failures += test_ic_foreground_execution_busy();
     failures += test_ic_proof_enqueue_requires_commit_objects();
     failures += test_ic_foreground_refuses_watcher();

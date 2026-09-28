@@ -5506,6 +5506,56 @@ static bool proof_lint_targets_are_full(const char *targets)
            (targets[4] == '\0' || targets[4] == ' ');
 }
 
+/* Credentials the invoking session exported: an agent's API keys, a forge
+ * token, an ssh-agent socket. The proof worker's environment is what every
+ * build, lint gate and test of the candidate inherits, and candidate code
+ * must never be able to read or use the operator's credentials. Z23's own
+ * knobs (ZCL_*) are registered in engine/composition/flags.def and are the
+ * harness's to set, so they are left alone. */
+static bool proof_env_name_is_credential(const char *name, size_t len)
+{
+    static const char *const exact[] = {
+        "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "CLAUDE_CODE_MESSAGING_SOCKET",
+    };
+    static const char *const suffixes[] = {
+        "_API_KEY", "_TOKEN", "_SECRET", "_SECRET_KEY", "_PASSWORD",
+        "_PASSPHRASE", "_ACCESS_KEY", "_PRIVATE_KEY",
+    };
+    if (len >= 4 && memcmp(name, "ZCL_", 4) == 0) return false;
+    for (size_t i = 0; i < sizeof(exact) / sizeof(exact[0]); i++)
+        if (strlen(exact[i]) == len && memcmp(name, exact[i], len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
+        size_t n = strlen(suffixes[i]);
+        if (len > n && memcmp(name + len - n, suffixes[i], n) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Unset every credential-named variable. unsetenv() rewrites environ, so
+ * each removal restarts the scan; every pass removes one, so it ends. */
+static bool proof_scrub_credentials(void)
+{
+    extern char **environ;
+    for (;;) {
+        char name[256];
+        bool found = false;
+        for (char **e = environ; e && *e && !found; e++) {
+            const char *eq = strchr(*e, '=');
+            size_t len = eq ? (size_t)(eq - *e) : 0;
+            if (len == 0 || len >= sizeof(name) ||
+                !proof_env_name_is_credential(*e, len))
+                continue;
+            memcpy(name, *e, len);
+            name[len] = 0;
+            found = true;
+        }
+        if (!found) return true;
+        if (unsetenv(name) != 0) return false;
+    }
+}
+
 /* This runs in the isolated proof worker before any generation build. An
  * interactive Make dry run, replacement gate list, diagnostic dump, or
  * unsigned lint or test cache must never become a signed publication
@@ -5525,8 +5575,15 @@ static bool proof_prepare_environment(void)
     };
     for (size_t i = 0; i < sizeof(unset_names) / sizeof(unset_names[0]); i++)
         if (unsetenv(unset_names[i]) != 0) return false;
-    return setenv("ZCL_LINT_CACHE", "0", 1) == 0;
+    return proof_scrub_credentials() && setenv("ZCL_LINT_CACHE", "0", 1) == 0;
 }
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_prepare_environment(void)
+{
+    return proof_prepare_environment();
+}
+#endif
 
 /* The compile cache a proof builds through. zcc's shared store
  * (~/.cache/zcc, or wherever ZCC_DIR points) is keyed with the build root
