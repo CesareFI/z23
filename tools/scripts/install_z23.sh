@@ -849,9 +849,26 @@ macos_switch_current() {
     atomic_relative_link "$target" "$root/current"
 }
 
+# lsof's txt pathname is only a locator: Darwin retains the old mapped vnode
+# after an atomic replacement at that name. Bind the process to an open file's
+# device and inode before comparing bytes. The first txt record is the main
+# executable; later txt records include dyld and loaded libraries.
+macos_lsof_first_vnode() {
+    lsof -a -p "$1" -d "$2" -FDi 2>/dev/null |
+        awk '
+            /^f/ { if (seen) exit; seen = 1; next }
+            seen && /^D0x[0-9A-Fa-f]+$/ { device = substr($0, 2); next }
+            seen && /^i[1-9][0-9]*$/ { inode = substr($0, 2); next }
+            END {
+                if (device != "" && inode != "") print device ":" inode
+                else exit 1
+            }'
+}
+
 macos_launchd_start_and_qualify() {
-    local prefix="$1" datadir="$2" domain service pid running_path
-    local expected_digest running_digest timeout_ms heartbeat_ms
+    local prefix="$1" datadir="$2" domain service pid confirmed_pid
+    local pinned_digest expected_vnode mapped_vnode
+    local timeout_ms heartbeat_ms
     domain="$MACOS_LAUNCHD_DOMAIN"
     [ -n "$domain" ] || return 1
     service="$domain/org.z23.zclassic"
@@ -871,12 +888,28 @@ macos_launchd_start_and_qualify() {
     pid="$(launchctl print "$service" 2>/dev/null |
         awk '$1 == "pid" && $2 == "=" {print $3; exit}')"
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-    running_path="$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null |
-        sed -n 's/^n//p' | head -1)"
-    [ -n "$running_path" ] && [ -f "$running_path" ] || return 1
-    expected_digest="$(sha256_file "$MACOS_GENERATION/z23")"
-    running_digest="$(sha256_file "$running_path")"
-    [ "$running_digest" = "$expected_digest" ] || return 1
+    attest_is_sha256 "$MACOS_GENERATION_ID" || return 1
+    # Reserved fd 9 pins this generation's vnode across lsof and hashing.
+    # /dev/fd/9 shares its offset, so hash it exactly once before closing.
+    exec 9<"$MACOS_GENERATION/z23" || return 1
+    expected_vnode="$(macos_lsof_first_vnode "$$" 9)" || {
+        exec 9<&-
+        return 1
+    }
+    mapped_vnode="$(macos_lsof_first_vnode "$pid" txt)" || {
+        exec 9<&-
+        return 1
+    }
+    pinned_digest="$(sha256_file /dev/fd/9)" || {
+        exec 9<&-
+        return 1
+    }
+    exec 9<&-
+    [ "$mapped_vnode" = "$expected_vnode" ] || return 1
+    [ "$pinned_digest" = "$MACOS_GENERATION_ID" ] || return 1
+    confirmed_pid="$(launchctl print "$service" 2>/dev/null |
+        awk '$1 == "pid" && $2 == "=" {print $3; exit}')"
+    [ "$confirmed_pid" = "$pid" ]
 }
 
 macos_restore_previous() {
@@ -2000,12 +2033,31 @@ EOF
     cat >"$mock/lsof" <<'EOF'
 #!/usr/bin/env bash
 root="$Z23_INSTALL_PREFIX/lib/z23"
+fd=''
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -d ] && [ "$#" -gt 1 ]; then
+        fd="$2"
+        shift 2
+    else
+        shift
+    fi
+done
+if [ "$fd" != txt ]; then
+    printf 'p4242\nf%s\nD0x1\ni4242\n' "$fd"
+    exit 0
+fi
+inode=4242
 if [ "${Z23_INSTALL_TEST_WRONG_IMAGE:-0}" = 1 ]; then
     target="$(readlink "$root/last-good")"
+    inode=4243
 else
     target="$(readlink "$root/current")"
+    if [ "${Z23_INSTALL_TEST_REPLACED_IMAGE:-0}" = 1 ]; then
+        # The pathname now names v2, but launchd mapped the old v1 vnode.
+        inode=4243
+    fi
 fi
-printf 'p4242\nn%s/%s/z23\n' "$root" "$target"
+printf 'p4242\nftxt\nD0x1\ni%s\nn%s/%s/z23\n' "$inode" "$root" "$target"
 EOF
     chmod 755 "$mock/plutil" "$mock/launchctl" "$mock/lsof"
     : >"$mac/launchctl.log"
@@ -2070,6 +2122,40 @@ EOF
         || die "selftest: wrong running Mac image did not name rollback: $(tr '\n' ';' <"$mac/wrong-image.err")"
     [ "$(readlink "$prefix/lib/z23/current")" = "generations/$v1_id" ] \
         || die "selftest: wrong running Mac image did not restore v1"
+
+    # lsof's txt pathname can be reused for new bytes while the old vnode
+    # remains mapped. A pathname digest of v2 would pass this case falsely.
+    rc=0
+    PATH="$mock:$PATH" Z23_INSTALL_TEST_PLATFORM=Darwin \
+        Z23_SKIP_SYSTEMD=0 Z23_INSTALL_PREFIX="$prefix" \
+        Z23_LAUNCHD_DIR="$launchd" Z23_DATADIR="$datadir" \
+        Z23_INSTALL_TEST_REPLACED_IMAGE=1 \
+        Z23_INSTALL_TEST_LAUNCHCTL_LOG="$mac/launchctl.log" \
+        Z23_INSTALL_TEST_LAUNCHD_STATE="$mac/launchd.state" \
+        "$SCRIPT_DIR/install_z23.sh" --source="$mac/v2" \
+        >/dev/null 2>"$mac/replaced-image.err" || rc=$?
+    [ "$rc" -eq 1 ] || die "selftest: replaced mapped Mac image must refuse"
+    grep -q 'was rolled back' "$mac/replaced-image.err" \
+        || die "selftest: replaced mapped Mac image did not name rollback"
+    [ "$(readlink "$prefix/lib/z23/current")" = "generations/$v1_id" ] \
+        || die "selftest: replaced mapped Mac image did not restore v1"
+
+    # The mapped vnode may match the reopened generation after replacement,
+    # yet those bytes may differ from the release digest already verified.
+    # Calling the qualifier with the v1 manifest identity and v2 file makes
+    # pathname-to-pinned hashing agree falsely unless the manifest is bound.
+    rc=0
+    (
+        MACOS_GENERATION="$prefix/lib/z23/generations/$v2_id"
+        MACOS_GENERATION_ID="$v1_id"
+        MACOS_LAUNCHD_DOMAIN="gui/$(id -u)"
+        MACOS_PLIST="$launchd/org.z23.zclassic.plist"
+        PATH="$mock:$PATH"
+        export Z23_INSTALL_TEST_LAUNCHCTL_LOG="$mac/launchctl.log"
+        export Z23_INSTALL_TEST_LAUNCHD_STATE="$mac/launchd.state"
+        macos_launchd_start_and_qualify "$prefix" "$datadir"
+    ) >/dev/null 2>"$mac/outside-manifest.err" || rc=$?
+    [ "$rc" -eq 1 ] || die "selftest: mapped Mac image outside manifest must refuse"
 
     # A typed bootwait failure is the other rollback edge.
     rc=0
