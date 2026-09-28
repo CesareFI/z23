@@ -7490,7 +7490,10 @@ static int test_hotfork_shape_image_cache(void)
         ASSERT(zcl_hotfork_shape_test_image_defines(fixture, "zcl_fixture_symbok", false, &p) == -1);
 #endif
         PASS();
-    } _test_next:;
+    }
+#if defined(__linux__)
+    _test_next:;
+#endif
     return failures;
 }
 
@@ -7525,6 +7528,7 @@ static int test_hotfork_story_file_green_and_red(void)
     return failures;
 }
 
+#if defined(__linux__)
 /* A HOT_FORK story that reaches RESIDENT model code. The shop-want capsule
  * compiles only shop_native_want.c; its story builds and verifies a signed
  * want through shop_want_seal/shop_want_verify, which live in the model TU
@@ -7771,6 +7775,8 @@ static bool dp_hc_cycle(const char *model)
     return refused;
 }
 
+#endif
+
 static int test_hotfork_resident_model_closure(void)
 {
     int failures = 0;
@@ -7796,7 +7802,10 @@ static int test_hotfork_resident_model_closure(void)
         ASSERT(ok);
 #endif
         PASS();
-    } _test_next:;
+    }
+#if defined(__linux__)
+    _test_next:;
+#endif
     return failures;
 }
 

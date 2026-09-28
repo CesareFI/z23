@@ -481,7 +481,8 @@ static double st_stage_range_plan_load(int *failures)
     double us_each = (double)elapsed / (double)iters;
     printf("  S5 hrs_partition: %llu plans (%zu anchors) in %lluus = %.1f us/plan (%zu spans)\n",
            (unsigned long long)iters, n_anchors,
-           (unsigned long long)elapsed, us_each, total_spans / iters);
+           (unsigned long long)elapsed, us_each,
+           total_spans / (size_t)iters);
     free(anchors);
     free(out);
     /* Worst-case leg: the same anchors descending. Bounds the adversarial
@@ -505,7 +506,8 @@ static double st_stage_range_plan_load(int *failures)
             double dus_each = (double)delapsed / (double)diters;
             printf("  S5c hrs_partition descending: %llu plans in %lluus = %.1f us/plan (%zu spans)\n",
                    (unsigned long long)diters,
-                   (unsigned long long)delapsed, dus_each, dtotal / diters);
+                   (unsigned long long)delapsed, dus_each,
+                   dtotal / (size_t)diters);
             st_check_ceiling_us("S5c descending us/plan ceiling",
                                 (uint64_t)(dus_each + 0.5),
                                 250000u, failures);

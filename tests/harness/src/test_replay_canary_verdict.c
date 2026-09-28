@@ -643,7 +643,9 @@ static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
         snprintf(stamp, sizeof(stamp), "%s/.run_started_anchor", vd);
         unlink(stamp);
 
+#if defined(__linux__)
         pid_t parent_pid = getpid();
+#endif
         pid_t pid = fork();
         if (pid == 0) {
             /* Child in its own group: the real harness clears the stale

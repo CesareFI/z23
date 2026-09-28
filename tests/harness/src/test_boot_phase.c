@@ -1032,6 +1032,7 @@ int test_boot_phase(void)
  * SLOW in every window and buy an hour of start budget every 30 s while a
  * real wedge sat inside it — the module's own warning, made real. These
  * fixtures pin the difference between the two probes on the SAME I/O. */
+#if defined(__linux__)
 struct bp_io_burner {
     size_t bytes;
     bool   ok;
@@ -1043,6 +1044,7 @@ static void *bp_io_burner_entry(void *arg)
     b->ok = bp_burn_block_io(b->bytes);
     return NULL;
 }
+#endif
 
 static int bp_test_thread_io_evidence(void)
 {
@@ -1097,4 +1099,3 @@ static int bp_test_thread_io_evidence(void)
 #endif
     return failures;
 }
-
