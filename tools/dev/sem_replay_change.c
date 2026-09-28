@@ -150,32 +150,47 @@ static bool directive_line(const char *p, size_t len)
     return i < len && p[i] == '#';
 }
 
+/* argv of `git diff -U0 parent commit -- <changed header text>...`, NULL
+ * terminated; false when the change has no header text. */
+static bool header_diff_cmd(const char *parent, const char *commit,
+                            const struct sr_change *c, struct sr_strv *cmd)
+{
+    bool ok = sr_strv_push(cmd, "git") && sr_strv_push(cmd, "diff") &&
+              sr_strv_push(cmd, "-U0") && sr_strv_push(cmd, parent) &&
+              sr_strv_push(cmd, commit) && sr_strv_push(cmd, "--");
+    size_t headers = 0;
+    for (size_t i = 0; ok && i < c->files.n; i++)
+        if (is_header_text(c->files.v[i]) && ++headers)
+            ok = sr_strv_push(cmd, c->files.v[i]);
+    ok = ok && headers > 0 && sr_strv_pushn(cmd, "", 0);
+    if (ok) {
+        free(cmd->v[cmd->n - 1]);
+        cmd->v[cmd->n - 1] = NULL;
+    }
+    return ok;
+}
+
+static bool any_directive(const char *text, size_t len)
+{
+    for (const char *p = text; p && p < text + len;) {
+        const char *nl = memchr(p, '\n', (size_t)(text + len - p));
+        size_t ll = nl ? (size_t)(nl - p) : (size_t)(text + len - p);
+        if (directive_line(p, ll))
+            return true;
+        p += ll + 1;
+    }
+    return false;
+}
+
 static bool macro_changed(const char *repo, const char *parent,
                           const char *commit, const struct sr_change *c)
 {
     struct sr_strv cmd = {0};
-    bool ok = sr_strv_push(&cmd, "git") && sr_strv_push(&cmd, "diff") &&
-              sr_strv_push(&cmd, "-U0") && sr_strv_push(&cmd, parent) &&
-              sr_strv_push(&cmd, commit) && sr_strv_push(&cmd, "--");
-    size_t headers = 0;
-    for (size_t i = 0; ok && i < c->files.n; i++)
-        if (is_header_text(c->files.v[i]) && ++headers)
-            ok = sr_strv_push(&cmd, c->files.v[i]);
-    ok = ok && headers > 0 && sr_strv_pushn(&cmd, "", 0);
     char *text = NULL;
     size_t len = 0;
-    bool hit = false;
-    if (ok) {
-        free(cmd.v[cmd.n - 1]);
-        cmd.v[cmd.n - 1] = NULL;
-        ok = git_text(repo, cmd.v, &text, &len);
-    }
-    for (char *p = text; ok && !hit && p && p < text + len;) {
-        char *nl = memchr(p, '\n', (size_t)(text + len - p));
-        size_t ll = nl ? (size_t)(nl - p) : (size_t)(text + len - p);
-        hit = directive_line(p, ll);
-        p += ll + 1;
-    }
+    bool hit = header_diff_cmd(parent, commit, c, &cmd) &&
+               git_text(repo, cmd.v, &text, &len) && text != NULL &&
+               any_directive(text, len);
     free(text);
     sr_strv_free(&cmd);
     return hit;

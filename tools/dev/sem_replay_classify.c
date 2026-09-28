@@ -111,24 +111,38 @@ static bool ends_with(const char *s, const char *suffix)
     return n >= m && strcmp(s + n - m, suffix) == 0;
 }
 
-const char *sr_input_class(const char *path)
+/* Suffix classes, in order; the first match wins. */
+static const struct {
+    const char *suffix, *cls;
+} k_suffix_class[] = {
+    {"/Makefile", "makefile"}, {".mk", "makefile"}, {".def", "def"},   {".inc", "def"},
+    {".md", "doc"},            {".sh", "script"},   {".txt", "data"},  {".json", "data"},
+    {".jsonl", "data"},        {".tsv", "data"},    {".csv", "data"},
+};
+
+static bool generated_name(const char *path)
 {
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
-    if (strcmp(base, "Makefile") == 0 || ends_with(path, ".mk"))
+    return strstr(base, "_gen.") != NULL || strstr(path, "INVENTORY") != NULL ||
+           strstr(path, "generated") != NULL;
+}
+
+const char *sr_input_class(const char *path)
+{
+    size_t n = sizeof(k_suffix_class) / sizeof(k_suffix_class[0]);
+    if (strcmp(path, "Makefile") == 0)
         return "makefile";
-    if (ends_with(path, ".def") || ends_with(path, ".inc"))
-        return "def";
-    if (strstr(base, "_gen.") != NULL || strstr(path, "INVENTORY") != NULL ||
-        strstr(path, "generated") != NULL)
+    for (size_t i = 0; i < 4; i++)
+        if (ends_with(path, k_suffix_class[i].suffix))
+            return k_suffix_class[i].cls;
+    if (generated_name(path))
         return "generated";
-    if (ends_with(path, ".md") || strncmp(path, "docs/", 5) == 0)
+    if (strncmp(path, "docs/", 5) == 0)
         return "doc";
-    if (ends_with(path, ".sh"))
-        return "script";
-    if (ends_with(path, ".txt") || ends_with(path, ".json") || ends_with(path, ".jsonl") ||
-        ends_with(path, ".tsv") || ends_with(path, ".csv"))
-        return "data";
+    for (size_t i = 4; i < n; i++)
+        if (ends_with(path, k_suffix_class[i].suffix))
+            return k_suffix_class[i].cls;
     return "other";
 }
 

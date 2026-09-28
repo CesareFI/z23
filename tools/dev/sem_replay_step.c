@@ -514,10 +514,12 @@ static bool keep_before(const struct sr_cfg *cfg, const struct commit_run *r)
     return sr_keep_objects(cfg->repo, &r->snap_p, keep);
 }
 
-static bool before_side(const struct sr_cfg *cfg, struct commit_run *r)
+/* Check out P, make, snapshot, and compare the objects the previous step
+ * left at P (when it ended at P) as a reproducibility check. */
+static bool build_before(const struct sr_cfg *cfg, struct commit_run *r)
 {
     char last_snap[SR_PATH], last_commit[SR_PATH], *lc = NULL;
-    size_t lcn = 0, missing = 0;
+    size_t lcn = 0;
     struct sr_snap prev = {0};
     path_in(last_snap, sizeof(last_snap), cfg, "last.snap");
     path_in(last_commit, sizeof(last_commit), cfg, "last.commit");
@@ -529,12 +531,18 @@ static bool before_side(const struct sr_cfg *cfg, struct commit_run *r)
         repro_compare(&prev, &r->snap_p, &r->repro_rebuilt, &r->repro_mismatch, stderr);
     free(lc);
     sr_snap_free(&prev);
-    ok = ok && sr_deps_hits(cfg->repo, &r->snap_p, &r->ch.files, &r->bound_p, &missing) &&
-         sr_deps_pairs(cfg->repo, &r->snap_p, &r->ch.files, &r->pairs) &&
-         keep_before(cfg, r) &&
-         argv_all(cfg, r, &r->snap_p, &r->argv_p) && reset_facts(cfg) &&
-         sense_side(cfg, r, &r->bound_p, &r->argv_p, "before") &&
-         save_before_sources(cfg, r);
+    return ok;
+}
+
+static bool before_side(const struct sr_cfg *cfg, struct commit_run *r)
+{
+    size_t missing = 0;
+    bool ok = build_before(cfg, r) &&
+              sr_deps_hits(cfg->repo, &r->snap_p, &r->ch.files, &r->bound_p, &missing) &&
+              sr_deps_pairs(cfg->repo, &r->snap_p, &r->ch.files, &r->pairs) &&
+              keep_before(cfg, r) && argv_all(cfg, r, &r->snap_p, &r->argv_p) &&
+              reset_facts(cfg) && sense_side(cfg, r, &r->bound_p, &r->argv_p, "before") &&
+              save_before_sources(cfg, r);
     if (missing)
         fprintf(stderr, "sem-replay: %zu objects at %s have no depfile\n", missing, r->parent);
     return ok;
@@ -644,11 +652,12 @@ static bool find_drift(struct commit_run *r)
     return ok;
 }
 
-static bool after_side(const struct sr_cfg *cfg, struct commit_run *r,
-                       const struct cost_table *costs)
+/* Check out C, make (timed), snapshot, and derive make's set, the changed
+ * objects, the argv drift and the plain bound. */
+static bool build_after(const struct sr_cfg *cfg, struct commit_run *r)
 {
     size_t missing = 0;
-    struct sr_strv bounds = {0}, want = {0}, timed = {0};
+    struct sr_strv bounds = {0};
     bool ok = sr_git_checkout(cfg->repo, cfg->commit, r->log);
     r->build_failed = ok && !sr_make_objects(cfg, r->log, NULL, &r->build_c);
     ok = ok && sr_snap_take(cfg->repo, &r->snap_p, &r->snap_c) &&
@@ -657,13 +666,20 @@ static bool after_side(const struct sr_cfg *cfg, struct commit_run *r,
          sr_deps_pairs(cfg->repo, &r->snap_c, &r->ch.files, &r->pairs) &&
          compare_snaps(r) && argv_all(cfg, r, &r->snap_c, &r->argv_c) && find_drift(r) &&
          set_union(&r->bound_p, &r->bound_c, &bounds) &&
-         set_filter(&bounds, &r->tus_c, false, &r->plain) &&
-         set_union(&r->make_set, &r->plain, &want);
+         set_filter(&bounds, &r->tus_c, false, &r->plain);
+    sr_strv_free(&bounds);
+    return ok;
+}
+
+static bool after_side(const struct sr_cfg *cfg, struct commit_run *r,
+                       const struct cost_table *costs)
+{
+    struct sr_strv want = {0}, timed = {0};
+    bool ok = build_after(cfg, r) && set_union(&r->make_set, &r->plain, &want);
     for (size_t i = 0; ok && i < want.n; i++)
         if (cost_find(costs, want.v[i]) == NULL)
             ok = sr_strv_push(&timed, want.v[i]);
     ok = ok && after_batch(cfg, r, &timed) && extra_before(cfg, r);
-    sr_strv_free(&bounds);
     sr_strv_free(&want);
     sr_strv_free(&timed);
     return ok;
@@ -1044,22 +1060,29 @@ static bool step_dirs(const struct sr_cfg *cfg, struct commit_run *r)
     return sr_mkdirs(r->dir);
 }
 
-int sr_step(const struct sr_cfg *cfg)
+/* Build, sense, plan, compare and write one step; false on a failure. */
+static bool step_body(const struct sr_cfg *cfg, struct commit_run *r)
 {
-    struct commit_run r = {0};
     struct cost_table costs = {0};
     char cost_path[SR_PATH];
     path_in(cost_path, sizeof(cost_path), cfg, "compile_cost.tsv");
-    bool ok = step_dirs(cfg, &r) && sr_git_parent(cfg->repo, cfg->commit, r.parent) &&
-              sr_change_load(cfg->repo, r.parent, cfg->commit, &r.ch) &&
-              cost_load(&costs, cost_path) && before_side(cfg, &r) &&
-              after_side(cfg, &r, &costs);
+    bool ok = step_dirs(cfg, r) && sr_git_parent(cfg->repo, cfg->commit, r->parent) &&
+              sr_change_load(cfg->repo, r->parent, cfg->commit, &r->ch) &&
+              cost_load(&costs, cost_path) && before_side(cfg, r) &&
+              after_side(cfg, r, &costs);
     cost_free(&costs); /* after_side appended the TUs it timed */
-    ok = ok && cost_load(&costs, cost_path) && plan_all(cfg, &r) &&
-         compare_sets(&costs, &r) && classify_misses(cfg, &r) && split_sensing(cfg, &r);
-    r.inputs_n = count_unread(&r, &r.inputs_read);
-    ok = ok && write_sets(&r) && write_inputs(cfg, &r) && write_result(cfg, &r) &&
-         save_last(cfg, &r);
+    ok = ok && cost_load(&costs, cost_path) && plan_all(cfg, r) &&
+         compare_sets(&costs, r) && classify_misses(cfg, r) && split_sensing(cfg, r);
+    cost_free(&costs);
+    r->inputs_n = count_unread(r, &r->inputs_read);
+    return ok && write_sets(r) && write_inputs(cfg, r) && write_result(cfg, r) &&
+           save_last(cfg, r);
+}
+
+int sr_step(const struct sr_cfg *cfg)
+{
+    struct commit_run r = {0};
+    bool ok = step_body(cfg, &r);
     int rc = ok ? SR_STEP_OK : SR_STEP_FAILED;
     if (ok && r.fn_source.n + r.cv.fn_source.n > 0)
         report_misses(cfg, &r);
@@ -1070,7 +1093,6 @@ int sr_step(const struct sr_cfg *cfg)
             cfg->index, cfg->commit, ok ? r.ch.kind : "FAILED", r.make_set.n, r.changed.n,
             r.kinds.code.n, r.kinds.debug.n, r.kinds.unknown.n, r.plain.n, r.facts.n,
             r.facts_mode ? r.facts_mode : "-", r.fn_code.n, r.fn_debug.n, r.fn_flags.n);
-    cost_free(&costs);
     commit_run_free(&r);
     return rc;
 }

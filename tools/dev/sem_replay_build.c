@@ -262,6 +262,34 @@ static char *dep_rule_end(char *p)
     return p;
 }
 
+/* Does out[0..n) end in a ".." component (which a later ".." must keep)? */
+static bool ends_in_up(const char *out, size_t n)
+{
+    return n >= 2 && out[n - 1] == '.' && out[n - 2] == '.';
+}
+
+/* Apply one path component of length len to out[0..*n): "." is dropped,
+ * ".." removes the previous component unless out is empty or ends in "..",
+ * anything else is appended. */
+static void path_component(const char *c, size_t len, char *out, size_t *n, size_t cap)
+{
+    bool up = len == 2 && c[0] == '.' && c[1] == '.';
+    if (len == 0 || (len == 1 && c[0] == '.'))
+        return;
+    if (up && *n > 0 && !ends_in_up(out, *n)) {
+        while (*n > 0 && out[*n - 1] != '/')
+            (*n)--;
+        *n = *n > 0 ? *n - 1 : 0;
+        return;
+    }
+    if (*n + len + 2 >= cap)
+        return;
+    if (*n > 0)
+        out[(*n)++] = '/';
+    memcpy(out + *n, c, len);
+    *n += len;
+}
+
 /* Lexically resolve "." and ".." components: a depfile spells a prerequisite
  * the way the include named it ("tools/dev/../../engine/x.def"). */
 static void normalize_path(const char *in, char *out, size_t cap)
@@ -269,19 +297,7 @@ static void normalize_path(const char *in, char *out, size_t cap)
     size_t n = 0;
     while (*in && n + 1 < cap) {
         size_t len = strcspn(in, "/");
-        if (len == 1 && in[0] == '.') {
-            /* skip */
-        } else if (len == 2 && in[0] == '.' && in[1] == '.' && n > 0 &&
-                   !(n >= 2 && out[n - 1] == '.' && out[n - 2] == '.')) {
-            while (n > 0 && out[n - 1] != '/')
-                n--;
-            n = n > 0 ? n - 1 : 0;
-        } else if (len > 0 && n + len + 2 < cap) {
-            if (n > 0)
-                out[n++] = '/';
-            memcpy(out + n, in, len);
-            n += len;
-        }
+        path_component(in, len, out, &n, cap);
         in += len;
         in += *in == '/';
     }
@@ -463,49 +479,77 @@ static bool has_dep_word(const char *p, size_t len)
     return false;
 }
 
-static bool argv_collect(char *out, size_t len, struct sr_argv_map *m)
+/* make -n prints a recipe as written: sh removes backslash-newline pairs,
+ * so one logical command spans several printed lines. */
+static void join_continuations(char *out, size_t len)
 {
-    struct sr_strv tus = {0};
-    struct sr_strv **fl = NULL;
-    size_t cap = 0;
-    bool ok = true;
-    /* make -n prints a recipe as written: sh removes backslash-newline
-     * pairs, so one logical command spans several printed lines. */
     for (size_t i = 0; i + 1 < len; i++)
         if (out[i] == '\\' && out[i + 1] == '\n')
             out[i] = out[i + 1] = ' ';
-    for (char *p = out; ok && p < out + len;) {
-        char *nl = memchr(p, '\n', (size_t)(out + len - p));
+}
+
+/* Store f as the flags of the TU argv_line just pushed (tus->n - 1). */
+static bool store_flags(struct sr_strv ***fl, size_t *cap, size_t n, struct sr_strv *f)
+{
+    if (n > *cap) {
+        size_t want = n * 2;
+        struct sr_strv **nf = realloc(*fl, want * sizeof(*nf));
+        if (nf == NULL)
+            return false;
+        *fl = nf;
+        *cap = want;
+    }
+    (*fl)[n - 1] = f;
+    return true;
+}
+
+/* Every epoch-object recipe line: its TU in tus, its flags in fl[i]. */
+static bool collect_lines(const char *out, size_t len, struct sr_strv *tus,
+                          struct sr_strv ***fl)
+{
+    size_t cap = 0;
+    bool ok = true;
+    for (const char *p = out; ok && p < out + len;) {
+        const char *nl = memchr(p, '\n', (size_t)(out + len - p));
         size_t ll = nl ? (size_t)(nl - p) : (size_t)(out + len - p);
         struct sr_strv *f = NULL;
         if (has_dep_word(p, ll))
-            ok = argv_line(p, ll, &tus, &f);
-        if (ok && f != NULL) {
-            if (tus.n > cap) {
-                cap = tus.n * 2;
-                struct sr_strv **nf = realloc(fl, cap * sizeof(*nf));
-                ok = nf != NULL;
-                fl = ok ? nf : fl;
-            }
-            if (ok)
-                fl[tus.n - 1] = f;
-        }
+            ok = argv_line(p, ll, tus, &f);
+        if (ok && f != NULL)
+            ok = store_flags(fl, &cap, tus->n, f);
         p += ll + 1;
     }
-    struct argv_pair *pairs = ok && tus.n ? calloc(tus.n, sizeof(*pairs)) : NULL;
-    ok = ok && (tus.n == 0 || pairs != NULL);
-    for (size_t i = 0; ok && i < tus.n; i++)
-        pairs[i] = (struct argv_pair){tus.v[i], fl[i]};
-    if (ok && tus.n)
-        qsort(pairs, tus.n, sizeof(*pairs), cmp_pair);
-    m->flags = ok && tus.n ? calloc(tus.n, sizeof(*m->flags)) : NULL;
-    ok = ok && (tus.n == 0 || m->flags != NULL);
-    for (size_t i = 0; ok && i < tus.n; i++) {
+    return ok;
+}
+
+/* Move (tus, fl) into m sorted by TU; fl's rows are consumed. */
+static bool sort_into(const struct sr_strv *tus, struct sr_strv **fl, struct sr_argv_map *m)
+{
+    size_t n = tus->n;
+    if (n == 0)
+        return true;
+    struct argv_pair *pairs = calloc(n, sizeof(*pairs));
+    m->flags = calloc(n, sizeof(*m->flags));
+    bool ok = pairs != NULL && m->flags != NULL;
+    for (size_t i = 0; ok && i < n; i++)
+        pairs[i] = (struct argv_pair){tus->v[i], fl[i]};
+    if (ok)
+        qsort(pairs, n, sizeof(*pairs), cmp_pair);
+    for (size_t i = 0; ok && i < n; i++) {
         ok = sr_strv_push(&m->tus, pairs[i].tu);
         m->flags[i] = *pairs[i].flags;
         free(pairs[i].flags);
     }
     free(pairs);
+    return ok;
+}
+
+static bool argv_collect(char *out, size_t len, struct sr_argv_map *m)
+{
+    struct sr_strv tus = {0};
+    struct sr_strv **fl = NULL;
+    join_continuations(out, len);
+    bool ok = collect_lines(out, len, &tus, &fl) && sort_into(&tus, fl, m);
     free(fl);
     sr_strv_free(&tus);
     return ok;

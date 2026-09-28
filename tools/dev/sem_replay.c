@@ -17,7 +17,8 @@
  * its own step, through `devbuild --wait` when --devbuild names it, so the
  * host scheduler admits each commit's builds and parses separately. A
  * finished step leaves run/<NN>_<commit>/result.tsv and is skipped when the
- * run resumes. A false negative stops the run (exit 3). R is a dedicated
+ * run resumes. A left-out object whose code changed stops the run (exit 3;
+ * debug-only misses are counted, not stopped on). R is a dedicated
  * worktree the replay checks out; it must hold no other work.
  *
  * catalog compiles every TU of R cold with make's argv, records its compile
@@ -150,7 +151,7 @@ static int run_all(const struct opts *o)
     }
     free(text);
     if (rc == SR_STEP_FALSE_NEGATIVE)
-        fprintf(stderr, "sem-replay: stopped at a FALSE NEGATIVE (see FALSE_NEGATIVES.tsv)\n");
+        fprintf(stderr, "sem-replay: stopped at a code false negative (see MISSES.tsv)\n");
     return rc;
 }
 
@@ -178,20 +179,29 @@ static bool need_tools(const struct sr_cfg *c)
     return ok;
 }
 
+/* The commands that need only the repo and state; -1 when cmd is none. */
+static int run_offline(const char *cmd, struct opts *o)
+{
+    if (strcmp(cmd, "report") == 0)
+        return sr_report(&o->cfg);
+    if (strcmp(cmd, "argv") == 0)
+        return o->cfg.repo[0] && o->cfg.commit[0] ? print_argv(&o->cfg) : usage();
+    if (strcmp(cmd, "catalog") == 0)
+        return o->cfg.repo[0] ? sr_catalog(&o->cfg) : usage();
+    if (strcmp(cmd, "repro") == 0)
+        return o->cfg.repo[0] ? sr_repro(&o->cfg, o->label) : usage();
+    return -1;
+}
+
 int main(int argc, char **argv)
 {
     struct opts o;
     if (argc < 2 || !parse_opts(argc, argv, &o))
         return usage();
     const char *cmd = argv[1];
-    if (strcmp(cmd, "report") == 0)
-        return sr_report(&o.cfg);
-    if (strcmp(cmd, "argv") == 0)
-        return o.cfg.repo[0] && o.cfg.commit[0] ? print_argv(&o.cfg) : usage();
-    if (strcmp(cmd, "catalog") == 0)
-        return o.cfg.repo[0] ? sr_catalog(&o.cfg) : usage();
-    if (strcmp(cmd, "repro") == 0)
-        return o.cfg.repo[0] ? sr_repro(&o.cfg, o.label) : usage();
+    int rc = run_offline(cmd, &o);
+    if (rc >= 0)
+        return rc;
     if (!need_tools(&o.cfg))
         return usage();
     if (strcmp(cmd, "run") == 0)
