@@ -89,15 +89,34 @@ static bool context_digest_row(
     return true;
 }
 
-/* Warm reads reuse the last derived map while the opened index is current.
- * The first dispatch still walks every production file and include edge;
+/* Warm reads reuse the last derived map while it was derived from the index
+ * generation just opened. codeindex_open() has already refreshed the store
+ * against the live sources and depfiles, so the store's own source and
+ * depfile content roots name exactly what the map would be derived from.
+ * A file count cannot: a depfile-only edit or a rename across contexts keeps
+ * it. The first dispatch still walks every production file and include edge;
  * the latency contract is the second. */
 static struct {
     char root[1024];
-    int file_count;
+    uint8_t generation[64];
     struct json_value data;
     bool valid;
 } g_map_warm;
+
+static bool context_map_generation(struct codeindex *index,
+                                   uint8_t generation[64])
+{
+    return codeindex_source_root_sha3(index, generation) &&
+           codeindex_dep_root_sha3(index, generation + 32);
+}
+
+static bool context_map_warm_hit(const char *root,
+                                 const uint8_t generation[64])
+{
+    return g_map_warm.valid && strlen(root) < sizeof g_map_warm.root &&
+           strcmp(g_map_warm.root, root) == 0 &&
+           memcmp(g_map_warm.generation, generation, 64) == 0;
+}
 
 void zcl_native_handle_code_context_map(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
@@ -124,12 +143,9 @@ void zcl_native_handle_code_context_map(
                                "the code index contains no source files", root);
         return;
     }
-    bool current = false;
-    if (g_map_warm.valid &&
-        g_map_warm.file_count == total &&
-        strlen(root) < sizeof g_map_warm.root &&
-        strcmp(g_map_warm.root, root) == 0 &&
-        codeindex_source_view_is_current(index, &current) && current) {
+    uint8_t generation[64];
+    bool have_generation = context_map_generation(index, generation);
+    if (have_generation && context_map_warm_hit(root, generation)) {
         json_copy(&reply->data, &g_map_warm.data);
         codeindex_close(index);
         return;
@@ -391,13 +407,13 @@ void zcl_native_handle_code_context_map(
                    orphans, overlaps, cross_edges);
     (void)json_push_kv_str(&reply->data, "summary", summary);
 
-    if (strlen(root) < sizeof g_map_warm.root) {
+    if (have_generation && strlen(root) < sizeof g_map_warm.root) {
         if (g_map_warm.valid)
             json_free(&g_map_warm.data);
         json_init(&g_map_warm.data);
         json_copy(&g_map_warm.data, &reply->data);
         (void)snprintf(g_map_warm.root, sizeof g_map_warm.root, "%s", root);
-        g_map_warm.file_count = total;
+        memcpy(g_map_warm.generation, generation, sizeof generation);
         g_map_warm.valid = true;
     }
 

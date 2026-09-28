@@ -188,6 +188,19 @@ bool codeindex_source_root_sha3(struct codeindex *ci, uint8_t out[32])
     return true;
 }
 
+bool codeindex_dep_root_sha3(struct codeindex *ci, uint8_t out[32])
+{
+    if (!ci || !ci->store || !out)
+        LOG_FAIL("codeindex", "null arg to dep_root_sha3");
+    size_t len = 0;
+    bool found = false;
+    if (!ci_store_meta_get(ci->store, "dep_root_sha3", out, 32, &len, &found))
+        LOG_FAIL("codeindex", "read dep_root_sha3");
+    if (!found || len != 32)
+        LOG_FAIL("codeindex", "invalid dep_root_sha3 metadata");
+    return true;
+}
+
 bool codeindex_build_cold_ms(struct codeindex *ci, long long *ms_out,
                              long long *files_out)
 {

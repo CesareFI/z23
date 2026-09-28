@@ -226,6 +226,13 @@ void codeindex_close(struct codeindex *ci);
  * malformed; it never fabricates an all-zero generation. */
 bool codeindex_source_root_sha3(struct codeindex *ci, uint8_t out[32]);
 
+/* Exact content root of the compiler depfiles this verified handle's include
+ * edges were read from. codeindex_open() has already matched the store's
+ * depfile stat root to the checkout, so together with
+ * codeindex_source_root_sha3() it keys in-process caches derived from both
+ * the file set and the observed include graph. Same failure contract. */
+bool codeindex_dep_root_sha3(struct codeindex *ci, uint8_t out[32]);
+
 /* The cold-build self-receipt: wall-clock milliseconds and indexed file count
  * of the last FULL deterministic build, sealed by the store itself
  * (meta.build_cold_ms / meta.build_cold_files). Incremental refreshes never
