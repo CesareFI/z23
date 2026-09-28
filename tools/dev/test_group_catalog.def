@@ -1472,6 +1472,14 @@ ZCL_TEST_GROUP(semantic_consumer_live)
  * red early stage leaves the full plan unchanged; and missing, outside,
  * absent or empty facts skip the stage and name why. */
 ZCL_TEST_GROUP(devloop_early)
+/* fxc_build_inputs()'s non-C/H build-input rule in isolation, with hand-built
+ * identity+files manifests (no libclang, no checked-in fixture): a changed
+ * path no TU reads and no Makefile names narrows the compile but keeps the
+ * plain plan's own path groups as a test obligation; a path the Makefile
+ * text names, or the include graph cannot answer for, still widens to the
+ * whole catalog; a path some TU's manifest lists as read goes through the
+ * existing header path instead. */
+ZCL_TEST_GROUP(semantic_build_inputs)
 ZCL_SPEC_GROUP(wallet_dashboard)
 ZCL_SPEC_GROUP(wallet_send)
 ZCL_SPEC_GROUP(wallet_receive)
