@@ -16,6 +16,8 @@
  *     producer digest changed, when any non-main file its last accepted
  *     manifest read changed bytes, when an include slot that manifest saw
  *     absent now exists, or when it made a lookup that cannot be re-checked.
+ *   - A reparse's own manifest must have the shadow candidates of the TU's
+ *     baseline, or the reparse is retried once as a fresh parse.
  *   - The first emit after a TU is created or recreated is always verified:
  *     a cold parse in this process must produce the byte-identical manifest.
  *     --verify-cold verifies every emit.
@@ -333,9 +335,10 @@ static bool cm_warm_parse(struct cm_state *st, const struct cm_opts *o,
 /* ---- deciding how one emit may use its TU ------------------------------------ */
 
 /* Does the tree still hold the shadow candidates w's preamble was built
- * against? */
-static bool cm_tu_shadows_same(const struct cm_warm_tu *w, char *why,
-                               size_t why_len)
+ * against, for the files manifest m read? m is the accepted manifest before
+ * a reparse, and the reparse's own manifest after it. */
+static bool cm_tu_shadows_same(const struct cm_warm_tu *w, const uint8_t *m,
+                               size_t n, char *why, size_t why_len)
 {
     char *now = NULL;
     size_t now_len = 0;
@@ -344,8 +347,7 @@ static bool cm_tu_shadows_same(const struct cm_warm_tu *w, char *why,
         (void)snprintf(why, why_len, "no-shadow-baseline");
         return false;
     }
-    if (!cm_warm_shadows(w->root, w->accepted, w->accepted_len, &now,
-                         &now_len)) {
+    if (!cm_warm_shadows(w->root, m, n, &now, &now_len)) {
         (void)snprintf(why, why_len, "shadow-candidates-unreadable");
         return false;
     }
@@ -387,7 +389,7 @@ static const char *cm_tu_stale(struct cm_warm_tu *w, const struct cm_opts *o,
         return "nothing-accepted";
     if (!cm_warm_bound(w->root, w->accepted, w->accepted_len, why, why_len))
         return why;
-    if (!cm_tu_shadows_same(w, why, why_len))
+    if (!cm_tu_shadows_same(w, w->accepted, w->accepted_len, why, why_len))
         return why;
     return NULL;
 }
@@ -435,6 +437,25 @@ static bool cm_tu_prepare(struct cm_session *ss, struct cm_warm_tu *w,
 
 /* ---- one request ---------------------------------------------------------------- */
 
+/* The post-checks of a reparse's manifest m. Against the accepted manifest:
+ * every non-main file both read has the same digest, IDENTITY is equal, and
+ * every lookup the accepted one also made is byte-identical. Then m's own
+ * shadow candidates must be the TU's baseline, because no cold parse checks
+ * a reparse: that catches a shadow that appeared after the pre-checks, and
+ * one of a file only this reparse read. A fresh parse is checked by the cold
+ * oracle instead. */
+static bool cm_reparse_post(const struct cm_warm_tu *w, const uint8_t *m,
+                            size_t n, char *why, size_t why_len)
+{
+    if (w->accepted != NULL &&
+        (!cm_warm_files_agree(w->accepted, w->accepted_len, m, n, why,
+                              why_len) ||
+         !cm_warm_lookups_agree(w->accepted, w->accepted_len, m, n, why,
+                                why_len)))
+        return false;
+    return cm_tu_shadows_same(w, m, n, why, why_len);
+}
+
 /* The warm manifest, checked against what this emit handed the front end and
  * what the last accepted manifest read; NULL (with reason) when unusable. */
 static uint8_t *cm_warm_emit(struct cm_warm_tu *w, const struct cm_opts *o,
@@ -454,11 +475,8 @@ static uint8_t *cm_warm_emit(struct cm_warm_tu *w, const struct cm_opts *o,
     }
     if (ok && !reparse)
         ok = cm_tu_baseline(w, m, *len, why, sizeof(why));
-    if (ok && reparse && w->accepted != NULL)
-        ok = cm_warm_files_agree(w->accepted, w->accepted_len, m, *len, why,
-                                 sizeof(why)) &&
-             cm_warm_lookups_agree(w->accepted, w->accepted_len, m, *len, why,
-                                   sizeof(why));
+    if (ok && reparse)
+        ok = cm_reparse_post(w, m, *len, why, sizeof(why));
     if (ok)
         return m;
     (void)snprintf(r->reason, sizeof(r->reason), "warm-unusable: %s", why);
