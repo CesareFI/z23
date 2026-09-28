@@ -398,6 +398,39 @@ bool db_build_worker_save(struct node_db *ndb,
         AR_BIND_INT(st, 8, row->last_seen_at));
 }
 
+bool db_build_worker_insert_if_absent(struct node_db *ndb,
+    const struct db_build_worker *row, bool *already_exists)
+{
+    if (already_exists) *already_exists = false;
+    if (!ndb || !ndb->open || !row || !already_exists)
+        LOG_FAIL("model", "db_build_worker_insert_if_absent: bad args");
+    sqlite3_stmt *st = NULL;
+    AR_BEGIN_SAVE(build_worker_callbacks_ready(), "build_worker", row,
+                  db_build_worker_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "INSERT INTO build_workers "
+        "(worker_id,signer_pubkey,capabilities,approved,revoked,approved_at,"
+        "expires_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(worker_id) DO NOTHING");
+    AR_BIND_TEXT(st, 1, row->worker_id);
+    AR_BIND_TEXT(st, 2, row->signer_pubkey);
+    AR_BIND_TEXT(st, 3, row->capabilities);
+    AR_BIND_INT(st, 4, row->approved);
+    AR_BIND_INT(st, 5, row->revoked);
+    AR_BIND_INT(st, 6, row->approved_at);
+    AR_BIND_INT(st, 7, row->expires_at);
+    AR_BIND_INT(st, 8, row->last_seen_at);
+    bool stepped = AR_STEP_DONE(st);
+    int changed = stepped ? sqlite3_changes(ndb->db) : 0;
+    if (!stepped)
+        LOG_ERROR("model", "local worker insert failed: %s",
+                  sqlite3_errmsg(ndb->db));
+    AR_FINALIZE(st);
+    *already_exists = stepped && changed == 0;
+    AR_FINISH_SAVE(build_worker_callbacks_ready(), row,
+                   stepped && changed == 1);
+}
+
 static bool build_worker_proof_head_inputs_valid(
     struct node_db *ndb, const char *worker_id, const char *expected_signer,
     const char *expected_head, const char *next_head)
@@ -626,6 +659,36 @@ bool db_build_worker_find(struct node_db *ndb, const char *worker_id,
     AR_QUERY_ONE_BOOL(ndb, st,
         "SELECT " BUILD_WORKER_COLS " FROM build_workers WHERE worker_id=?",
         AR_BIND_TEXT(st, 1, worker_id), build_worker_read(out, st));
+}
+
+int db_build_worker_find_checked(struct node_db *ndb, const char *worker_id,
+                                 struct db_build_worker *out)
+{
+    if (!ndb || !ndb->open || !worker_id || !out) {
+        LOG_ERROR("model", "checked worker lookup requires db, id, and output");
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    AR_PREPARE_RET(ndb, st,
+        "SELECT " BUILD_WORKER_COLS " FROM build_workers WHERE worker_id=?",
+        -1);
+    if (AR_BIND_TEXT(st, 1, worker_id) != SQLITE_OK) {
+        LOG_ERROR("model", "checked worker lookup bind failed: %s",
+                  sqlite3_errmsg(ndb->db));
+        AR_FINALIZE(st);
+        return -1;
+    }
+    int step = sqlite3_step(st); // raw-sql-ok:worker-complete-read
+    if (step == SQLITE_ROW) {
+        build_worker_read(out, st);
+        AR_FINALIZE(st);
+        return 1;
+    }
+    if (step != SQLITE_DONE)
+        LOG_ERROR("model", "checked worker lookup failed: %s",
+                  sqlite3_errmsg(ndb->db));
+    AR_FINALIZE(st);
+    return step == SQLITE_DONE ? 0 : -1;
 }
 
 bool db_build_receipt_find(struct node_db *ndb, const char *receipt_id,

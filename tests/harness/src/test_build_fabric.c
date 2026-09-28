@@ -918,6 +918,22 @@ static int test_bf_reproduction_plan(void)
  * person on that node could never accept their own work. Enrollment is
  * first-use only: it must never resurrect an identity the operator already
  * ruled on. */
+static int bf_deny_worker_select(void *context, int operation,
+                               const char *table, const char *column,
+                               const char *database, const char *trigger)
+{
+    int *remaining = context;
+    (void)table;
+    (void)column;
+    (void)database;
+    (void)trigger;
+    if (operation == SQLITE_SELECT && remaining && *remaining > 0) {
+        --*remaining;
+        return SQLITE_DENY;
+    }
+    return SQLITE_OK;
+}
+
 static int test_bf_local_enrollment(void)
 {
     int failures = 0;
@@ -944,6 +960,28 @@ static int test_bf_local_enrollment(void)
          * call and MUST leave the refusal standing. */
         ASSERT(build_fabric_worker_revoke(&ndb, worker.worker_id, 132).ok);
         ASSERT(build_fabric_worker_enroll_local(&ndb, &worker, 133).ok);
+        ASSERT(db_build_worker_find(&ndb, worker.worker_id, &stored));
+        ASSERT_EQ(stored.revoked, 1);
+
+        /* A concurrent first-use winner must remain authoritative. */
+        bool already_exists = false;
+        ASSERT(!db_build_worker_insert_if_absent(&ndb, &worker,
+                                                  &already_exists));
+        ASSERT(already_exists);
+        ASSERT(db_build_worker_find(&ndb, worker.worker_id, &stored));
+        ASSERT_EQ(stored.revoked, 1);
+
+        /* An unreadable existing row must not be treated as a new identity.
+         * Restart enrollment may never clear an operator revocation. */
+        int denied_selects = 1;
+        ASSERT_EQ(sqlite3_set_authorizer(ndb.db, bf_deny_worker_select,
+                                         &denied_selects),
+                  SQLITE_OK);
+        struct zcl_result unreadable = build_fabric_worker_enroll_local(
+            &ndb, &worker, 134);
+        ASSERT_EQ(sqlite3_set_authorizer(ndb.db, NULL, NULL), SQLITE_OK);
+        ASSERT_EQ(denied_selects, 0);
+        ASSERT(!unreadable.ok);
         ASSERT(db_build_worker_find(&ndb, worker.worker_id, &stored));
         ASSERT_EQ(stored.revoked, 1);
 

@@ -689,9 +689,21 @@ struct zcl_result build_fabric_worker_enroll_local(
     if (!ndb || !ndb->open || !worker || !worker->worker_id[0])
         return ZCL_ERR(-1, "local enrollment requires an open db and worker");
     struct db_build_worker existing;
-    if (db_build_worker_find(ndb, worker->worker_id, &existing))
+    int found = db_build_worker_find_checked(ndb, worker->worker_id,
+                                             &existing);
+    if (found < 0)
+        return ZCL_ERR(-1, "local enrollment cannot read worker trust state");
+    if (found > 0)
         return ZCL_OK;
-    return build_fabric_worker_approve(ndb, worker, now);
+    struct db_build_worker next = *worker;
+    next.approved = 1;
+    next.revoked = 0;
+    if (next.approved_at == 0) next.approved_at = now;
+    bool already_exists = false;
+    if (!db_build_worker_insert_if_absent(ndb, &next, &already_exists) &&
+        !already_exists)
+        return ZCL_ERR(-1, "local worker enrollment could not be persisted");
+    return ZCL_OK;
 }
 
 struct zcl_result build_fabric_worker_revoke(

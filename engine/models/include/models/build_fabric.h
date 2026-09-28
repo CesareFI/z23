@@ -125,6 +125,10 @@ bool db_build_action_save(struct node_db *ndb,
                           const struct db_build_action *row);
 bool db_build_worker_save(struct node_db *ndb,
                           const struct db_build_worker *row);
+/* First-use enrollment only. A conflicting identity is left untouched and
+ * reported through already_exists; hooks fire only for an inserted row. */
+bool db_build_worker_insert_if_absent(struct node_db *ndb,
+    const struct db_build_worker *row, bool *already_exists);
 /* Conditional content.v2 checkpoint-blob pointer update. Caller prepares the
  * exact signed ticket and checkpoint wire, handles their crash-safe CAS
  * publication, and never treats a missing anchored blob as empty history.
@@ -142,6 +146,10 @@ bool db_build_action_find(struct node_db *ndb, const char *action_id,
                           struct db_build_action *out);
 bool db_build_worker_find(struct node_db *ndb, const char *worker_id,
                           struct db_build_worker *out);
+/* Enrollment needs to distinguish absence from an unreadable trust row.
+ * Returns 1 when found, 0 when absent, and -1 on any database failure. */
+int db_build_worker_find_checked(struct node_db *ndb, const char *worker_id,
+                                 struct db_build_worker *out);
 bool db_build_receipt_find(struct node_db *ndb, const char *receipt_id,
                            struct db_build_receipt *out);
 
