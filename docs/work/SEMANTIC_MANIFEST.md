@@ -1369,7 +1369,8 @@ that the depfile graph lists no reader for, widens the compile set to every
 candidate (`build-input-changed`) only when make can change an object with
 it. `tools/dev/devloop_facts_make.c` reads the makefiles (`Makefile`, the
 `*.mk` files and every file they `include`) and
-`tools/dev/devloop_facts_make_reach.c` decides which of their lines run
+`tools/dev/devloop_facts_make_reach.c` and
+`tools/dev/devloop_facts_make_goal.c` decide which of their lines run
 while an object is built. The path widens when:
 
 - it is a makefile, or a directory a sub-make is pointed at: it can change
@@ -1378,8 +1379,15 @@ while an object is built. The path widens when:
   counts (make reads them as it parses: flags, `$(shell cat f.args)`,
   `$(wildcard ...)` source lists), and so do the rule line and recipe of a
   reached rule and a recipe line that can run make;
-- the makefile text cannot be read (too large, a missing include, an
-  unbalanced reference): UNKNOWN widens every path.
+- the makefile text cannot be read to its end, and UNKNOWN widens every
+  path: a makefile too large to read; a reference with no closing bracket
+  anywhere in the text; a conditional or `define` still open at the end of
+  a file; an `include`, `-include` or `sinclude` word that is not one
+  literal file (a glob, a `$(wildcard)`, a reference no single definition
+  gives); a missing file a mandatory `include` names; and a missing file
+  an optional include names when a rule target could make it. A missing
+  optional file no rule makes is read by nobody, and a depfile an include
+  names (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile graph.
 
 Otherwise its compile set is empty. Its test groups stay selected: the
 plain plan's path groups, the impact rules and the runtime-input handling
@@ -1395,16 +1403,31 @@ any other reference matches anything.
 
 **Reached rules.** A rule is reached when a target is not a literal
 `.PHONY` name (it builds a file: an object, a generated source or header, a
-link), when it is a makefile's first rule (a bare `make` runs it), or when
-a line that reaches spells one of its `.PHONY` names. A line reaches when
-it is a directive, the prerequisites of a reached rule, a recipe line of a
-reached rule that can run make, or the definition of a live variable. A
+link), when it is the default goal (the first rule with a target that is
+neither a pattern nor led by `.` without a `/`, as GNU make picks it), or
+when a line that reaches spells one of its `.PHONY` names. A line reaches
+when it is a directive, the prerequisites of a reached rule, a recipe line
+of a reached rule that can run make, a recipe line of any rule whose make
+command can also build a file goal (a sub-make builds the goals it names
+whether or not its own rule runs), or the definition of a live variable. A
 variable is live when a line that reaches references or spells it; make's
 hooks (`.DEFAULT_GOAL`, `.EXTRA_PREREQS`, `VPATH`, `GPATH`, `MAKEFILES`,
 `.LIBPATTERNS`) always are, and a computed name makes live every variable
 its glob matches. A line can run make when it holds the command `make` in
-any case (`$(MAKE)`, `gmake`), `$(eval)` or `$(file)`, or references or
-spells a variable whose value can, closed over references.
+any case (`$(MAKE)`, `$(MAKE_COMMAND)`, `gmake`), `$(eval)` or `$(file)`,
+or references or spells a variable whose value can, closed over
+references.
+
+**Goals no text spells.** A goal word or prerequisite whose value the text
+does not hold reaches every `.PHONY` name it can glob: a word computed by
+a transforming call (`$(patsubst)`, `$(addprefix)`, `$(subst)`,
+`$(basename)`, any call but the ones that pass their argument words
+through), an automatic variable (`$@`, `$*`, `$<`, `$(@F)`) or a
+substitution reference on one (`$(@:build/%.o=gen-%)`). A goal word with a
+backslash or other shell escape (`gen\-a`, `printf "make gen\n" | sh`)
+reaches every rule. Text piped into `sh`, `bash`, `xargs` or `eval` is a
+goal position; so is a `{ ... }` or `( ... )` group whose closer is
+followed by `|`, and an `echo` inside it is not quiet.
 
 Text whose value is only tested or printed reaches nothing: `$(if)`'s
 condition, `$(filter)`'s and `$(filter-out)`'s patterns, `$(foreach)`'s
@@ -1434,6 +1457,26 @@ premise the text scan makes for any script a recipe runs. A hand-run goal
 that rewrites a file an object reads (a `make regen` that rewrites a
 generated header) changes that object when it runs, not when its script is
 edited; the planner plans the edit.
+
+**Accepted, because the editing commit is what triggers.** These can make
+GNU make read a changed path for an object while the scan narrows; each is
+accepted because the plan answers for the commit that edits the path, and
+none of them runs as part of building that commit's objects:
+
+- a script or program that runs make internally (a recipe runs a script
+  that calls `make gen` itself): the script is an opaque program, the
+  same premise the text scan makes for any script a recipe runs;
+- a hand-run goal (`make core-seal`, a `.PHONY` rule whose sub-make names
+  only other `.PHONY` goals): it runs when someone names it, and what it
+  rewrites changes objects then;
+- a goal a recipe reads at run time (`$$target` from a shell loop over
+  words the shell computes): its words exist only when the recipe runs;
+- a variable set only on the command line or in the environment
+  (`make GOAL=gen`): the text holds no definition of it;
+- a depfile an include names: its prerequisite lines name only what its
+  compile read, which the depfile graph answers for;
+- a target spelled `$(1)` inside a `define` that `$(call)` or `$(eval)`
+  instantiates with arguments no line spells.
 
 ### Falsification
 

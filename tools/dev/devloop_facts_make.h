@@ -200,5 +200,20 @@ void fxm_makers(struct fxm *m);
 void fxm_reach(struct fxm *m);
 /* A line whose mentions count (see the rule above). */
 bool fxm_live(const struct fxm *m, const struct fxm_line *l);
+/* The name of the reference at d ($(NAME...), ${NAME...} or $X); its end. */
+size_t fxm_ref_name(const char *d, const char **name);
+char *fxm_ref_end(char *d);
+/* A computed name as a glob over the names it can spell. */
+bool fxm_name_glob(const char *name, char *pat);
+struct fxm_vname *fxm_vname(struct fxm *m, const char *name, size_t n);
+/* Reach every rule the .PHONY name name[0..len) belongs to. */
+bool fxm_reach_name(struct fxm *m, const char *name, size_t len);
+/* Reach the .PHONY rule a word names, or every one a glob word matches. */
+bool fxm_token_phony(struct fxm *m, const char *t);
+
+/* make_goal.c: the .PHONY goals a line names through a value no text
+ * spells. */
+bool fxm_goal_ref(struct fxm *m, const char *name, size_t n);
+bool fxm_goal_words(struct fxm *m, const char *raw, bool twice, bool shell);
 
 #endif
