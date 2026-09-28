@@ -25,6 +25,9 @@ The host shell does not run BOLOS or physical USB and touch. This image has
 not been installed and is not admitted by the installer.
 The [startup experiment](../../../docs/experiments/2026-09-27-ledger-blue-wallet-036-startup.md)
 records the test coverage and limits.
+The [stack-path audit](../../../docs/experiments/2026-09-27-ledger-blue-wallet-036-stack-audit.md)
+corrects the named-frame gate to include `main` on payment and signing calls.
+The largest measured named path is 1,056 bytes; BOLOS frames remain excluded.
 
 Version 0.3.5 shares RAM between mutually exclusive boot derivation and
 payment state, and between output text and previous-transaction parsing.

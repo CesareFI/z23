@@ -10,8 +10,8 @@
 #error "The Blue stack check requires ISO C23"
 #endif
 
-enum { FRAME_COUNT = 53, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
-       PATH_COUNT = 21 };
+enum { FRAME_COUNT = 61, REVIEW_FRAME_COUNT = 10, STACK_MARGIN = 512,
+       PATH_COUNT = 22 };
 
 static const char *const frame_names[FRAME_COUNT] = {
     "answer_command", "blue_review_app_command", "blue_review_handle",
@@ -36,7 +36,10 @@ static const char *const frame_names[FRAME_COUNT] = {
     "blue_payment_apdu_touch_approve", "blue_payment_sign_next",
     "blue_wallet_sign_digest", "blue_payment_apdu_take_digest",
     "blue_ecdsa_der_low_s", "blue_wallet_public_hash160",
-    "blue_payment_sign_command"
+    "blue_payment_sign_command", "derive_public_key", "io_exchange",
+    "cx_hash", "os_perso_derive_node_bip32",
+    "cx_ecfp_generate_pair", "cx_hash_sha256",
+    "cx_ecfp_init_private_key", "cx_ripemd160_init"
 };
 
 typedef struct {
@@ -105,16 +108,26 @@ static unsigned sum_frames(const stack_frames *frames,
     return sum;
 }
 
+static unsigned largest_frame(const stack_frames *frames,
+                              const unsigned *indices, size_t count) {
+    unsigned largest = 0;
+    for (size_t i = 0; i < count; ++i)
+        if (frames->bytes[indices[i]] > largest)
+            largest = frames->bytes[indices[i]];
+    return largest;
+}
+
 static void report_signing_candidate(const stack_frames *frames,
                                      unsigned paths[PATH_COUNT]) {
-    static const unsigned prefix[] = {0, 14, 52, 47};
-    const unsigned base = sum_frames(frames, prefix, 4);
-    paths[17] = base + frames->bytes[48];
-    paths[18] = base + frames->bytes[49];
-    paths[19] = base + frames->bytes[50];
-    paths[20] = base + frames->bytes[51];
+    static const unsigned prefix[] = {10, 0, 14, 52, 47};
+    const unsigned base = sum_frames(frames, prefix,
+        sizeof prefix / sizeof *prefix);
+    paths[18] = base + frames->bytes[48];
+    paths[19] = base + frames->bytes[49];
+    paths[20] = base + frames->bytes[50];
+    paths[21] = base + frames->bytes[51];
     printf("Signing paths: derive %u; digest %u; DER %u; public hash %u; BOLOS frames excluded\n",
-           paths[17], paths[18], paths[19], paths[20]);
+           paths[18], paths[19], paths[20], paths[21]);
 }
 
 static bool collect_frames(int argc, char **argv, int script_arg,
@@ -153,32 +166,43 @@ static void report_paths(const stack_frames *frames, bool wallet,
                          unsigned reserve, unsigned paths[PATH_COUNT]) {
     static const unsigned apdu[] = {0, 1, 2, 3, 4};
     static const unsigned ui[] = {0, 5, 6, 7, 8, 9, 4};
-    static const unsigned wallet_derive[] = {10, 13};
-    static const unsigned wallet_layout[] = {10, 12};
-    static const unsigned wallet_apdu[] = {0, 11};
-    static const unsigned wallet_event[] = {5};
-    static const unsigned wallet_upload[] = {0, 14, 15, 16, 17, 18,
+    static const unsigned wallet_derive[] = {10, 53};
+    static const unsigned derive_wrappers[] = {56, 57, 59};
+    static const unsigned layout_helpers[] = {12, 13};
+    static const unsigned wallet_apdu[] = {10, 0, 11};
+    static const unsigned wallet_event[] = {10, 0, 54, 5};
+    static const unsigned wallet_upload[] = {10, 0, 14, 15, 16, 17, 18,
         19, 20, 21, 38};
-    static const unsigned wallet_format[] = {0, 14, 15, 16, 22, 23, 13};
-    static const unsigned wallet_finish[] = {0, 14, 15, 16, 24, 25, 26};
-    static const unsigned wallet_next[] = {0, 14, 15, 16, 31, 32};
-    static const unsigned wallet_touch[] = {5, 27, 28, 43, 29, 30, 42};
-    static const unsigned wallet_previous_begin[] = {0, 14, 15, 16, 33};
-    static const unsigned wallet_previous_feed[] = {0, 14, 15, 16,
+    static const unsigned wallet_format[] = {10, 0, 14, 15, 16, 22, 23, 13};
+    static const unsigned wallet_finish[] = {10, 0, 14, 15, 16, 24, 25, 26};
+    static const unsigned wallet_next[] = {10, 0, 14, 15, 16, 31, 32};
+    static const unsigned wallet_touch[] = {10, 0, 54, 5, 27, 28, 43, 29,
+        30, 42};
+    static const unsigned wallet_previous_begin[] = {10, 0, 14, 15, 16, 33};
+    static const unsigned wallet_previous_feed[] = {10, 0, 14, 15, 16,
         34, 36, 37};
-    static const unsigned wallet_previous_finish[] = {0, 14, 15, 16, 35,
+    static const unsigned wallet_previous_finish[] = {10, 0, 14, 15, 16, 35,
         39, 26};
-    static const unsigned wallet_post_reply_fee[] = {0, 30, 42};
-    static const unsigned wallet_output_display[] = {0, 30, 44, 43};
-    static const unsigned wallet_totals_touch[] = {5, 40, 30, 42};
-    static const unsigned wallet_fee_touch[] = {5, 41, 30, 42};
-    static const unsigned wallet_confirm_touch[] = {5, 45, 46, 30, 42};
+    static const unsigned wallet_post_reply_fee[] = {10, 0, 30, 42};
+    static const unsigned wallet_output_display[] = {10, 0, 30, 44, 43};
+    static const unsigned wallet_totals_touch[] = {10, 0, 54, 5, 40, 30, 42};
+    static const unsigned wallet_fee_touch[] = {10, 0, 54, 5, 41, 30, 42};
+    static const unsigned wallet_confirm_touch[] = {10, 0, 54, 5, 45, 46,
+        30, 42};
+    static const unsigned wallet_startup_hash[] = {10, 51};
+    static const unsigned hash_wrappers[] = {55, 58, 60};
     memset(paths, 0, sizeof(unsigned) * PATH_COUNT);
     if (wallet) {
-        paths[0] = sum_frames(frames, wallet_derive, 2);
-        paths[1] = sum_frames(frames, wallet_layout, 2);
-        paths[2] = sum_frames(frames, wallet_apdu, 2);
-        paths[3] = sum_frames(frames, wallet_event, 1);
+        paths[0] = sum_frames(frames, wallet_derive,
+            sizeof wallet_derive / sizeof *wallet_derive) +
+            largest_frame(frames, derive_wrappers,
+                sizeof derive_wrappers / sizeof *derive_wrappers);
+        paths[1] = frames->bytes[10] + largest_frame(frames,
+            layout_helpers, sizeof layout_helpers / sizeof *layout_helpers);
+        paths[2] = sum_frames(frames, wallet_apdu,
+            sizeof wallet_apdu / sizeof *wallet_apdu);
+        paths[3] = sum_frames(frames, wallet_event,
+            sizeof wallet_event / sizeof *wallet_event);
         paths[4] = sum_frames(frames, wallet_upload,
             sizeof wallet_upload / sizeof *wallet_upload);
         paths[5] = sum_frames(frames, wallet_format,
@@ -205,11 +229,15 @@ static void report_paths(const stack_frames *frames, bool wallet,
             sizeof wallet_fee_touch / sizeof *wallet_fee_touch);
         paths[16] = sum_frames(frames, wallet_confirm_touch,
             sizeof wallet_confirm_touch / sizeof *wallet_confirm_touch);
-        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; post-reply fee %u; output display %u; totals touch %u; fee touch %u; confirm touch %u; margin %u\n",
+        paths[17] = sum_frames(frames, wallet_startup_hash,
+            sizeof wallet_startup_hash / sizeof *wallet_startup_hash) +
+            largest_frame(frames, hash_wrappers,
+                sizeof hash_wrappers / sizeof *hash_wrappers);
+        printf("Blue stack reserve %u; derive %u; layout %u; receive APDU %u; event %u; payment upload %u; format %u; finish %u; next %u; touch %u; previous begin %u; feed %u; finish %u; post-reply fee %u; output display %u; totals touch %u; fee touch %u; confirm touch %u; startup hash %u; margin %u\n",
                reserve, paths[0], paths[1], paths[2], paths[3], paths[4],
                paths[5], paths[6], paths[7], paths[8], paths[9], paths[10],
                paths[11], paths[12], paths[13], paths[14], paths[15],
-               paths[16],
+               paths[16], paths[17],
                STACK_MARGIN);
     } else {
         paths[0] = sum_frames(frames, apdu, sizeof apdu / sizeof *apdu);
