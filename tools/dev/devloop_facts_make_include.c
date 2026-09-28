@@ -381,6 +381,8 @@ static bool fxg_line(struct fxg *g, size_t k)
     uint32_t at = k < g->m->root_lines ? (uint32_t)k : FXG_NO;
     if (l->ctx == FXM_RECIPE)
         return true;
+    /* Text holding the reading's own markers cannot be read by it. */
+    g->open_all |= strpbrk(l->raw, "\x06\x07") != NULL;
     if (l->ctx == FXM_DEF && l->body)
         return true; /* read when an $(eval) reads it */
     if (l->ctx == FXM_DEF && l->from > 0)

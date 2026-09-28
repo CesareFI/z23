@@ -501,17 +501,18 @@ struct sbi_run {
     struct zcl_devloop_facts_report rep;
 };
 
-/* sbi_consume with one more file in the root (an included makefile), when
- * `extra` is not NULL: `extra` is its path and `body` its text. */
-static bool sbi_consume_with(const char *tag, const char *makefile,
-                             const char *extra, const char *body,
-                             const char *const *changed, size_t nchanged,
-                             struct sbi_run *r)
+/* sbi_consume with more files in the root: files[] holds path, text pairs
+ * up to a NULL path. */
+static bool sbi_consume_files(const char *tag, const char *makefile,
+                              const char *const *files,
+                              const char *const *changed, size_t nchanged,
+                              struct sbi_run *r)
 {
     char root[4096];
     bool ok = test_mkdtemp(root, sizeof(root), tag) != NULL &&
-              sbi_write_tu(root, NULL) && sbi_write(root, "Makefile", makefile) &&
-              (extra == NULL || sbi_write(root, extra, body));
+              sbi_write_tu(root, NULL) && sbi_write(root, "Makefile", makefile);
+    for (size_t k = 0; ok && files != NULL && files[k] != NULL; k += 2)
+        ok = sbi_write(root, files[k], files[k + 1]);
     for (size_t k = 0; ok && k < nchanged; k++)
         ok = sbi_write(root, changed[k], "#!/bin/sh\n");
     ok = ok && zcl_devloop_plan_files(changed, nchanged, &r->plain);
@@ -519,6 +520,18 @@ static bool sbi_consume_with(const char *tag, const char *makefile,
         memcpy(&r->plan, &r->plain, sizeof(r->plan));
     return ok && zcl_devloop_facts_consume(root, changed, nchanged, "facts",
                                            NULL, &r->plan, &r->v, &r->rep);
+}
+
+/* sbi_consume with one more file in the root (an included makefile), when
+ * `extra` is not NULL: `extra` is its path and `body` its text. */
+static bool sbi_consume_with(const char *tag, const char *makefile,
+                             const char *extra, const char *body,
+                             const char *const *changed, size_t nchanged,
+                             struct sbi_run *r)
+{
+    const char *const files[] = {extra, body, NULL};
+    return sbi_consume_files(tag, makefile, extra != NULL ? files : NULL,
+                             changed, nchanged, r);
 }
 
 static bool sbi_consume(const char *tag, const char *makefile,
@@ -1282,6 +1295,168 @@ static int sbit_t_parse_time_quiet(void)
     return failures;
 }
 
+/* ---- a conditional that provably skips a missing include ---------------------- */
+
+/* The real Makefile's markers sit in conditionals: build/ready.mk, which
+ * a rule makes, is included only in the branch `cond` opens (`post`
+ * closes what `pre` opened). Skipped, it narrows; read, it widens. */
+#define SBI_GUARD(pre, cond, post)                                             \
+    pre cond "\n-include build/ready.mk\nendif\n" post                         \
+    "build/ready.mk:\n\t@printf '%s\\n' '# ready' > $@\n" SBI_OBJ_RULE          \
+    SBI_GEN_RULE
+/* The epoch marker: leases only where an epoch holds .unverified. */
+#define SBI_EPOCH                                                              \
+    SBI_GUARD("BUILD_DIR = build\nOBJ_ROOT = $(BUILD_DIR)/obj\nZERO := 0000\n" \
+              "define zcl_compile_epoch\n$(strip $(shell tools/key.sh $(1) "   \
+              "2>/dev/null))\nendef\nPROFILES := build-only\n"                 \
+              "ifneq ($(filter build-only,$(PROFILES)),)\n"                    \
+              "EPOCH := $(call zcl_compile_epoch,b)\nelse\n"                   \
+              "EPOCH := $(ZERO)\nendif\nOBJ_DIR = $(OBJ_ROOT)/epochs/$(EPOCH)\n" \
+              "LEASES = \\\n\t$(if $(and $(filter build-only,$(PROFILES)),"     \
+              "$(wildcard $(OBJ_DIR)/.unverified)),$(LEASE))\n"                 \
+              "ifeq ($(strip $(MAKE_RESTARTS)),)\n",                           \
+              "ifneq ($(strip $(LEASES)),)", "endif\n")
+/* The tor and vendor markers: an archive the tree lacks, or a repair goal. */
+#define SBI_MISSING(libs)                                                      \
+    libs "MISSING := $(filter-out $(wildcard $(LIBS)),$(LIBS))\n"
+#define SBI_TOR SBI_MISSING("TREE := vendor/tor\nLIBS := $(TREE)/libtor.a \\\n" \
+                            "\t$(TREE)/libx.a\n")
+#define SBI_VENDOR                                                             \
+    "REPAIR_GOALS := vendor-ready deploy install\n"                            \
+    "REPAIR := $(filter $(REPAIR_GOALS),$(MAKECMDGOALS))\n"                    \
+    SBI_MISSING("LIBS := $(addprefix vendor/lib/,liba.a)\n")
+#define SBI_LIBA "LIBS := vendor/lib/liba.a\n"
+#define SBI_IF_UNAME "ifeq ($(shell uname),Linux)\n"
+#define SBI_MISSING_COND "ifneq ($(strip $(MISSING)),)"
+
+struct sbi_gcase {
+    const char *id, *makefile;
+    const char *const *files;
+    bool narrow;
+};
+
+static const char *const k_sbi_tor[] = {"vendor/tor/libtor.a", "!\n",
+                                        "vendor/tor/libx.a", "!\n", NULL};
+static const char *const k_sbi_tor_one[] = {"vendor/tor/libtor.a", "!\n", NULL};
+static const char *const k_sbi_liba[] = {"vendor/lib/liba.a", "!\n", NULL};
+static const char *const k_sbi_libs[] = {"vendor/lib/liba.a", "!\n",
+                                         "vendor/lib/libb.a", "!\n", NULL};
+static const char *const k_sbi_unverified[] = {
+    "build/obj/epochs/abc/.unverified", "", NULL};
+static const char *const k_sbi_zero[] = {"build/obj/epochs/0000/.unverified",
+                                         "", NULL};
+
+/* Each case narrows or widens as it says; each that does not is named. */
+static bool sbi_guard_cases(const struct sbi_gcase *cases, size_t n)
+{
+    static const char *const changed[] = {"tools/x.sh"};
+    bool all = true;
+    for (size_t k = 0; k < n; k++) {
+        struct sbi_run r = {0};
+        char tag[64];
+        bool ok;
+        (void)snprintf(tag, sizeof(tag), "sbi_guard_%s", cases[k].id);
+        ok = sbi_consume_files(tag, cases[k].makefile, cases[k].files, changed,
+                               1, &r) &&
+             (cases[k].narrow ? sbi_narrowed(&r) : sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+        if (!ok) {
+            printf("[guard %s did not %s] ", cases[k].id,
+                   cases[k].narrow ? "narrow" : "widen");
+            all = false;
+        }
+    }
+    return all;
+}
+
+static int sbit_t_guarded_include(void)
+{
+    int failures = 0;
+    static const struct sbi_gcase cases[] = {
+        {"epoch", SBI_EPOCH, NULL, true},
+        {"epoch_unverified", SBI_EPOCH, k_sbi_unverified, false},
+        {"epoch_zero", SBI_EPOCH, k_sbi_zero, false},
+        {"tor", SBI_GUARD(SBI_TOR, SBI_MISSING_COND, ""), k_sbi_tor, true},
+        {"tor_missing", SBI_GUARD(SBI_TOR, SBI_MISSING_COND, ""), k_sbi_tor_one,
+         false},
+        {"tor_default", SBI_GUARD("ZCL_TOR ?= full\n", "ifneq ($(ZCL_TOR),full)",
+                                  ""), NULL, false},
+        {"vendor", SBI_GUARD(SBI_VENDOR, "ifneq ($(strip $(MISSING) $(REPAIR)),)",
+                             ""), k_sbi_liba, true},
+        {"vendor_missing", SBI_GUARD(SBI_VENDOR, "ifneq ($(strip $(MISSING) "
+                                     "$(REPAIR)),)", ""), NULL, false},
+        {"vendor_ready_goal", SBI_GUARD("", "ifeq ($(MAKECMDGOALS),vendor-ready)",
+                                        ""), NULL, false},
+        {"vendor_other_goal", SBI_GUARD("", "ifneq ($(filter vendor-ready all,"
+                                        "$(MAKECMDGOALS)),)", ""), NULL, false},
+        {"view", SBI_GUARD("CLEAN := 1\n", "ifneq ($(CLEAN),1)", ""), NULL, true},
+        {"view_goal", SBI_GUARD("CLEAN := $(if $(filter clean,$(MAKECMDGOALS)),1)\n",
+                                "ifneq ($(CLEAN),1)", ""), NULL, false},
+        {"unmodelled", SBI_GUARD("", "ifneq ($(sort $(wildcard build/x)),)", ""),
+         NULL, false},
+        {"else", SBI_GUARD("X := a\n", "ifeq ($(X),a)\nY := 1\nelse", ""), NULL,
+         true},
+        {"else_open", SBI_GUARD("", "ifeq ($(shell uname),a)\nY := 1\nelse", ""),
+         NULL, false},
+        {"union", SBI_GUARD(SBI_MISSING(SBI_IF_UNAME SBI_LIBA "else\n"
+                                        "LIBS := vendor/lib/libb.a\nendif\n"),
+                            SBI_MISSING_COND, ""), k_sbi_libs, true},
+        {"union_missing", SBI_GUARD(SBI_MISSING(SBI_IF_UNAME SBI_LIBA "else\n"
+                                                "LIBS := vendor/lib/libb.a\n"
+                                                "endif\n"),
+                                    SBI_MISSING_COND, ""), k_sbi_liba, false},
+        {"one_branch", SBI_GUARD(SBI_MISSING(SBI_IF_UNAME SBI_LIBA "endif\n"),
+                                 SBI_MISSING_COND, ""), k_sbi_liba, false},
+        {"appended", SBI_GUARD(SBI_MISSING(SBI_LIBA "LIBS += vendor/lib/liba.a\n"),
+                               SBI_MISSING_COND, ""), k_sbi_liba, false},
+        {"eval", SBI_GUARD(SBI_MISSING(SBI_LIBA "$(eval LIBS := vendor/lib/z.a)\n"),
+                           SBI_MISSING_COND, ""), k_sbi_liba, false},
+        {"target_specific", SBI_GUARD(SBI_MISSING(SBI_LIBA "build/a.o: LIBS := z\n"),
+                                      SBI_MISSING_COND, ""), k_sbi_liba, false},
+        {"environment", SBI_GUARD("", "ifneq ($(FOO),)", ""), NULL, false},
+    };
+    TEST_CASE("semantic_build_inputs: a missing include a conditional "
+             "provably skips narrows, and any input that may take the branch "
+             "widens") {
+        ASSERT(sbi_guard_cases(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* A skipped include is recorded with the directive, its premises and the
+ * paths it globbed, so a reviewer can falsify the narrow. */
+static int sbit_t_guard_record(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    struct sbi_run e = {0}, v = {0};
+    const struct zcl_devloop_facts_guard *g;
+    TEST_CASE("semantic_build_inputs: a skipped include records its reading") {
+        ASSERT(sbi_consume_files("sbi_guard_rec_e", SBI_EPOCH, NULL, changed, 1,
+                                 &e));
+        ASSERT(e.rep.nguards == 1);
+        g = &e.rep.guards[0];
+        ASSERT(strcmp(g->include, "build/ready.mk") == 0);
+        ASSERT(strcmp(g->guard, "ifneq ($(strip $(LEASES)),)") == 0);
+        ASSERT(g->premises == ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT);
+        ASSERT(g->nglobs == 2 && g->found[0][0] == '\0' && g->found[1][0] == '\0');
+        ASSERT(strcmp(g->glob[0], "build/obj/epochs/{epoch}/.unverified") == 0);
+        ASSERT(strcmp(g->glob[1], "build/obj/epochs/0000/.unverified") == 0);
+        ASSERT(sbi_consume_files("sbi_guard_rec_v",
+                                 SBI_GUARD(SBI_VENDOR, "ifneq ($(strip $(MISSING) "
+                                           "$(REPAIR)),)", ""),
+                                 k_sbi_liba, changed, 1, &v));
+        ASSERT(v.rep.nguards == 1);
+        g = &v.rep.guards[0];
+        ASSERT(g->premises == ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS);
+        ASSERT(g->nglobs == 1 && strcmp(g->glob[0], "vendor/lib/liba.a") == 0 &&
+               strcmp(g->found[0], "vendor/lib/liba.a") == 0);
+    } TEST_END
+    zcl_devloop_facts_report_free(&e.rep);
+    zcl_devloop_facts_report_free(&v.rep);
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
@@ -1303,5 +1478,6 @@ int test_semantic_build_inputs(void)
           sbit_t_generated_comment() |
           sbit_t_generated_joins() | sbit_t_generated_unreadable() |
           sbit_t_generated_reviewed() | sbit_t_parse_time_writers() |
-          sbit_t_parse_time_quiet();
+          sbit_t_parse_time_quiet() | sbit_t_guarded_include() |
+          sbit_t_guard_record();
 }
