@@ -60,15 +60,18 @@ ZCL_TEST_GROUP_NEED("test_self_folded_anchor_heavy", ZCL_HOST_NEED_ENV,
                     "ZCL_SELF_FOLD_ANCHOR_FIXTURE")
 
 /* tests/harness/src/test_semantic_manifest.c (group semantic_sensor),
- * test_semantic_facts_live.c and test_semantic_consumer_live.c exec the
- * optional libclang sensor build/bin/z23-clang-manifest and self-skip where it
- * is absent. It links libclang, so no default target builds it; a proof that
- * selects any of the three builds `make clang-manifest` in its generation. */
+ * test_semantic_facts_live.c, test_semantic_consumer_live.c and
+ * test_semantic_facts_fuzz.c exec the optional libclang sensor
+ * build/bin/z23-clang-manifest and self-skip where it is absent. It links
+ * libclang, so no default target builds it; a proof that selects any of the
+ * four builds `make clang-manifest` in its generation. */
 ZCL_TEST_GROUP_BUILD_NEED("test_semantic_sensor",
                           "build/bin/z23-clang-manifest", "clang-manifest")
 ZCL_TEST_GROUP_BUILD_NEED("test_semantic_facts_live",
                           "build/bin/z23-clang-manifest", "clang-manifest")
 ZCL_TEST_GROUP_BUILD_NEED("test_semantic_consumer_live",
+                          "build/bin/z23-clang-manifest", "clang-manifest")
+ZCL_TEST_GROUP_BUILD_NEED("test_semantic_facts_fuzz",
                           "build/bin/z23-clang-manifest", "clang-manifest")
 
 /* tests/harness/src/test_fleet_gateway.c: every shard spawns the gateway

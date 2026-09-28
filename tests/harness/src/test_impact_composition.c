@@ -6670,6 +6670,16 @@ static int test_ic_local_selection_build_needs(void)
                              "build/bin/z23-clang-manifest"));
         ASSERT(ic_needs_have(needs, n, "fbsh", "build/bin/fbsh"));
 
+        /* The fuzz group's own sensor use is the same libclang tool, named
+         * once for this group alone: the stale-sensor trap the three live
+         * groups already closed. */
+        n = 99;
+        ASSERT(zcl_test_selection_build_needs("test_semantic_facts_fuzz",
+                                              true, NULL, needs, 16, &n));
+        ASSERT(n == 1);
+        ASSERT(ic_needs_have(needs, n, "clang-manifest",
+                             "build/bin/z23-clang-manifest"));
+
         /* Ordinary selections: nothing to build. */
         n = 99;
         ASSERT(zcl_test_selection_build_needs("test_impact_composition", true,
