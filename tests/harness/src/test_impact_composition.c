@@ -6350,8 +6350,12 @@ static bool ic_candidate_zcc_stale_behavior_child(const char *root)
                "stale=<zcl_result: missing format> "
                "fresh=<zcl_result: missing format v2>") != NULL &&
            strstr(run.output,
+               "RED transient link swap: final_object=fresh "
+               "executed=<zcl_result: missing format> "
+               "fresh=<zcl_result: missing format v2>") != NULL &&
+           strstr(run.output,
                "baseline_compile=1 stale_compile=0 fresh_compile=1 "
-               "links=3 executions=3") != NULL;
+               "links=4 executions=4") != NULL;
 }
 
 static int test_ic_candidate_zcc_stale_behavior_red(void)

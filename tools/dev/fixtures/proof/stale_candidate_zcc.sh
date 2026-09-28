@@ -64,14 +64,31 @@ cc -std=c23 -I"$include" "$fixture/driver.c" "$fixture/fresh.o" \
     -o "$fixture/fresh-run"
 fresh=$("$fixture/fresh-run")
 
+# A later object-byte check can also see fresh bytes even though the link
+# already consumed stale bytes. Only link-time provenance connects the object
+# to the image that actually ran.
+cp "$fixture/stale.o" "$fixture/current.o"
+cc -std=c23 -I"$include" "$fixture/driver.c" "$fixture/current.o" \
+    -o "$fixture/transient-run"
+cp "$fixture/fresh.o" "$fixture/current.o"
+transient=$("$fixture/transient-run")
+
 test "$baseline" = '<zcl_result: missing format>'
 test "$stale" = "$baseline"
 test "$fresh" = '<zcl_result: missing format v2>'
+test "$transient" = "$baseline"
 cmp -s "$fixture/baseline.o" "$fixture/stale.o"
+cmp -s "$fixture/current.o" "$fixture/fresh.o"
 if cmp -s "$fixture/stale.o" "$fixture/fresh.o"; then
     printf 'stale_candidate_zcc: changed source built identical object\n' >&2
     exit 1
 fi
+if cmp -s "$fixture/transient-run" "$fixture/fresh-run"; then
+    printf 'stale_candidate_zcc: transient stale link matched fresh image\n' >&2
+    exit 1
+fi
 printf 'RED stale candidate wrapper: baseline=%s stale=%s fresh=%s\n' \
     "$baseline" "$stale" "$fresh"
-printf 'launches baseline_compile=1 stale_compile=0 fresh_compile=1 links=3 executions=3\n'
+printf 'RED transient link swap: final_object=fresh executed=%s fresh=%s\n' \
+    "$transient" "$fresh"
+printf 'launches baseline_compile=1 stale_compile=0 fresh_compile=1 links=4 executions=4\n'
