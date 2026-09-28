@@ -172,8 +172,13 @@ stronger equivalence check.
   format is unchanged (the field was always free text), so v1 readers and
   older manifests, which carry the front end version alone, still decode.
   A compiler upgrade, or a switch between compilers, changes the IDENTITY
-  record and so is identity drift to every consumer. Two manifests that
-  both say `object-cc unknown` still compare equal.
+  record and so is identity drift to every consumer. A manifest whose
+  IDENTITY says `object-cc unknown`, or names no `object-cc` at all (one
+  written before the field existed), cannot show that the object's compiler
+  did not change: both consumers fall back for it even when both sides
+  carry the same text. The TU consumer calls it `identity-drift`; the
+  function-level consumer finds its code generation unbounded
+  (`inline-closure-unknown`, `no known object compiler`).
 - **Stripped comments.** `clang_tokenize` keeps comments as tokens. The sensor
   drops them from function token hashes and from macro bodies. The
   `comment_only` seed puts a comment inside a function body and inside a
@@ -991,7 +996,7 @@ universe incomplete (`facts-invalid`).
 | reason | affected | broadened | what fired |
 |---|---|---|---|
 | `truncated`, `producer-unknown`, `producer-mismatch` | yes | yes | the evidence cannot be trusted |
-| `identity-drift` | yes | yes | compiler, target, flags or environment changed |
+| `identity-drift` | yes | yes | compiler, target, flags or environment changed, or either side's IDENTITY names no known object compiler (`object-cc unknown`, or no `object-cc` at all) |
 | `include-resolution-change` | yes | yes | LOOKUPS, PROBES or the file set changed |
 | `source-changed` | yes | yes | the TU's own main file changed |
 | `position-dependent` | yes | yes | the TU expands `__COUNTER__` on either side: its values count every expansion before them in the TU, so any edit above one may renumber it |

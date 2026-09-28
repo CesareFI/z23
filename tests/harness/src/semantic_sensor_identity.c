@@ -665,6 +665,38 @@ static int ssi_t_widen(void)
     return failures;
 }
 
+/* Both sides say "object-cc unknown": equal IDENTITY records that cannot
+ * show the object's compiler unchanged, so the plan widens as it does
+ * across two known compilers. */
+static int ssi_t_unknown(void)
+{
+    int failures = 0;
+    char out[1024] = {0}, root[1100];
+    uint8_t *base[SCX_TU_COUNT] = {0}, *after[SCX_TU_COUNT] = {0};
+    size_t bn[SCX_TU_COUNT] = {0}, an[SCX_TU_COUNT] = {0};
+    static const enum scx_variant variants[] = {SCX_TAIL, SCX_BODY};
+    TEST_CASE("semantic_sensor: two sides that both say object-cc unknown widen the plan") {
+        ASSERT(test_mkdtemp(out, sizeof(out), "semsensor_ccunknown") != NULL);
+        (void)snprintf(root, sizeof(root), "%s/tree", out);
+        ASSERT(scx_mkdir(root));
+        ASSERT(ssi_sense(root, out, "base", SCX_BASE, NULL, base, bn));
+        for (size_t k = 0; k < sizeof(variants) / sizeof(variants[0]); k++) {
+            enum scx_variant v = variants[k];
+            ASSERT(ssi_sense(root, out, k_scx_edits[v].name, v, NULL, after,
+                             an));
+            ASSERT(ssi_has(after[0], an[0], "; object-cc unknown"));
+            ASSERT(ssi_plan(v, base, bn, after, an, true));
+            ssi_free(after);
+            memset(after, 0, sizeof(after));
+        }
+    } TEST_END
+    ssi_free(base);
+    ssi_free(after);
+    if (out[0] != '\0' && failures == 0)
+        (void)test_rm_rf_recursive(out);
+    return failures;
+}
+
 int semantic_sensor_identity_tests(void)
 {
     int failures = 0;
@@ -672,5 +704,6 @@ int semantic_sensor_identity_tests(void)
     failures += ssi_t_identity();
     failures += ssi_t_resolution();
     failures += ssi_t_widen();
+    failures += ssi_t_unknown();
     return failures;
 }

@@ -16,6 +16,13 @@
 #define SFT_SHADOW_PATH "engine/modules/fxn/src/fx.h"
 #define SFT_FIXTURES "tests/fixtures/semantic_facts"
 #define SFT_FILE_COUNT 4
+/* The fixture compiles name the host `cc` as their object compiler and
+ * this stand-in for Make's $(BUILD_COMPILER_ID) as its toolchain identity:
+ * the tests run no Make parse, and the value only has to be one known,
+ * fixed identity on both sides of a pair. */
+#define SFT_OBJECT_CC "cc"
+#define SFT_TOOLCHAIN_ID \
+    "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 
 /* base is the tree as written; every other variant is base plus one edit,
  * and its manifest is the "after" of a (base, variant) pair. */

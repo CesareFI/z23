@@ -69,8 +69,26 @@ enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
                                         : FXI_CODEGEN_CALLERS;
 }
 
+bool fxi_object_cc_known(const struct fxi *x)
+{
+    static const char key[] = "; object-cc ", unknown[] = "unknown";
+    const size_t kn = sizeof(key) - 1, un = sizeof(unknown) - 1;
+    for (size_t k = 0; x->compiler != NULL && k + kn <= x->compiler_len; k++) {
+        if (memcmp(x->compiler + k, key, kn) != 0)
+            continue;
+        k += kn;
+        return !(x->compiler_len - k >= un &&
+                 memcmp(x->compiler + k, unknown, un) == 0);
+    }
+    return false;
+}
+
 enum fxi_codegen fxi_codegen_model(const struct fxi *x, const char **token)
 {
+    if (!fxi_object_cc_known(x)) {
+        *token = "no known object compiler";
+        return FXI_CODEGEN_UNBOUNDED;
+    }
     return fxi_codegen_model_of(x->identity, x->identity_len, token);
 }
 

@@ -62,6 +62,8 @@ struct fxi {
     uint8_t revision;
     const uint8_t *identity; /* the IDENTITY record body, into m */
     size_t identity_len;
+    const char *compiler;    /* its compiler text, into m; not NUL-terminated */
+    size_t compiler_len;
     const char *target;      /* its target text, into m; not NUL-terminated */
     size_t target_len;
     uint8_t producer[32];

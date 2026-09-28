@@ -67,7 +67,7 @@
  * Linux-native run (test_semantic_manifest.c smt_t_ledger) must produce the
  * identical digest over the identical fixture files read from disk. */
 #define SMWA_LEDGER_DIGEST \
-    "8110e0014c7dd16010476592638588f572c40d3ab7c4a64f879a13069f6e41a1"
+    "410a13f3370324250f7320d10113c87c75ce15d72289aa3e39340ea6222ba231"
 
 static int g_failures;
 

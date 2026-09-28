@@ -126,6 +126,10 @@ static bool sfl_sensor(const struct sfl_run *r, const char *name,
     argv[k++] = "--out";
     argv[k++] = out;
     argv[k++] = "--facts";
+    argv[k++] = "--cc";
+    argv[k++] = SFT_OBJECT_CC;
+    argv[k++] = "--toolchain-id";
+    argv[k++] = SFT_TOOLCHAIN_ID;
     if (max_records > 0) {
         argv[k++] = "--max-records";
         argv[k++] = cap;

@@ -449,6 +449,8 @@ static bool fxi_on_record(void *ctx, enum vcs_semantic_section_v1 section,
     if (section == VCS_SEMANTIC_SECTION_V1_IDENTITY) {
         L->x->identity = raw;
         L->x->identity_len = raw_len;
+        L->x->compiler = f->ntext > 0 ? f->text[0] : NULL;
+        L->x->compiler_len = f->ntext > 0 ? f->text_len[0] : 0;
         L->x->target = f->ntext > 2 ? f->text[2] : NULL;
         L->x->target_len = f->ntext > 2 ? f->text_len[2] : 0;
         return true;

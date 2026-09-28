@@ -120,7 +120,12 @@ enum fxi_codegen {
      * flow into every function naming it. */
     FXI_CODEGEN_COMPONENT,
 };
-/* The model for x; *token names the flag that makes it unbounded. */
+/* Whether x's IDENTITY names the compiler that builds the object
+ * ("; object-cc <path> ..."), not "object-cc unknown" or nothing: without
+ * it an unchanged IDENTITY does not show the object's compiler unchanged. */
+bool fxi_object_cc_known(const struct fxi *x);
+/* The model for x (unbounded when fxi_object_cc_known fails); *token names
+ * what makes it unbounded. */
 enum fxi_codegen fxi_codegen_model(const struct fxi *x, const char **token);
 /* Same, over raw identity bytes (the test seam). */
 enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,

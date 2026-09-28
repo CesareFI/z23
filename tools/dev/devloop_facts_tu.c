@@ -246,9 +246,11 @@ static bool fxc_coarse_evidence(struct fxc *c, const struct fxc_pair *p,
     if ((why = fxc_producer_check(c, p)) != NULL)
         return fxc_set(t, true, true, why, "FACTS producer digests");
     if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY) ||
+        !fxi_object_cc_known(p->xa) || !fxi_object_cc_known(p->xb) ||
         strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
         return fxc_set(t, true, true, "identity-drift",
-                       "compiler, target, flags or environment changed");
+                       "compiler unknown, or it, target, flags or "
+                       "environment changed");
     if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||
         !fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_PROBES) ||
         !fxc_same_file_set(p))
@@ -769,6 +771,7 @@ static const char *fxc_outsider_reason(const struct fxc *c,
     if (p->xb == NULL)
         return "facts-missing";
     if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_IDENTITY) ||
+        !fxi_object_cc_known(p->xa) || !fxi_object_cc_known(p->xb) ||
         strcmp(fxi_main(p->xa), fxi_main(p->xb)) != 0)
         return "identity-drift";
     if (!fxc_same_section(p, VCS_SEMANTIC_SECTION_V1_LOOKUPS) ||

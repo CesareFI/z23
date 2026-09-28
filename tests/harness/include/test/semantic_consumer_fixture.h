@@ -109,6 +109,11 @@ extern const char *const k_scx_paths[SCX_FILE_COUNT]; /* header first */
 extern const char *const k_scx_tus[SCX_TU_COUNT];
 extern const char *const k_scx_flags[];
 extern const size_t k_scx_nflags;
+/* The object compiler and stand-in toolchain identity every fixture
+ * manifest names (see SFT_TOOLCHAIN_ID). */
+#define SCX_OBJECT_CC "cc"
+#define SCX_TOOLCHAIN_ID \
+    "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 
 /* The bytes of `path` in variant v (heap, NUL-terminated), NULL when the
  * variant has no such file. */
