@@ -71,6 +71,12 @@ enum scx_variant {
     SCX_UNITY_NOBEFORE, /* unity, the includer's before manifest withheld */
     SCX_UNITY_NOFACTS, /* unity_ab, cx_a.c's static changes, the includer has no manifest */
     SCX_UNITY_ADD,  /* cx_sum's body, and cx_e.c starts including cx_c.c */
+    SCX_P_HINL,     /* cx.h defines static inline cx_inl; cx_b.c calls it */
+    SCX_HINL,       /* cx_inl's body: every reader's own copy may change */
+    SCX_P_HINL0,    /* p_hinl, compiled and sensed at -O0 */
+    SCX_HINL0,      /* hinl at -O0: cx_b.c emits cx_inl out of line */
+    SCX_P_HINL_ADDR, /* p_hinl, and cx_d.c returns &cx_inl */
+    SCX_HINL_ADDR,  /* cx_inl's body: a pointer escapes to its copy */
     SCX_VARIANT_COUNT
 };
 
@@ -82,6 +88,7 @@ struct scx_edit {
     const char *add_path;     /* a file this variant adds, or NULL */
     const char *add_body;     /* its bytes; NULL: the base header (a shadow) */
     const char *extra_flag;   /* a flag put before k_scx_flags, or NULL */
+    const char *opt;          /* replaces -O1 in k_scx_flags, or NULL */
     const char *truncate;     /* a TU sensed with a one-record cap, or NULL */
     const char *withhold;     /* a TU whose manifests the facts leave out */
     bool withhold_before;     /* ...its before manifest only */
@@ -114,6 +121,8 @@ extern const size_t k_scx_nflags;
 #define SCX_OBJECT_CC "cc"
 #define SCX_TOOLCHAIN_ID \
     "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+/* k_scx_flags[i] as variant v compiles it: its optimizer replaces -O1. */
+const char *scx_flag(enum scx_variant v, size_t i);
 
 /* The bytes of `path` in variant v (heap, NUL-terminated), NULL when the
  * variant has no such file. */

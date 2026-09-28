@@ -113,7 +113,7 @@ static bool scl_sensor(const struct scl_run *r, enum scx_variant v, size_t tu)
     if (k_scx_edits[v].extra_flag != NULL)
         argv[k++] = k_scx_edits[v].extra_flag;
     for (size_t i = 0; i < k_scx_nflags; i++)
-        argv[k++] = k_scx_flags[i];
+        argv[k++] = scx_flag(v, i);
     argv[k] = NULL;
     return scl_spawn(argv, log) == 0;
 }
@@ -135,7 +135,7 @@ static bool scl_compile(const struct scl_run *r, enum scx_variant v, size_t tu)
     if (k_scx_edits[v].extra_flag != NULL)
         argv[k++] = k_scx_edits[v].extra_flag;
     for (size_t i = 0; i + 1 < k_scx_nflags; i++) /* all but the -I */
-        argv[k++] = k_scx_flags[i];
+        argv[k++] = scx_flag(v, i);
     argv[k++] = inc;
     argv[k++] = map;
     argv[k++] = "-c";

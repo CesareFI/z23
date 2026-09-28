@@ -131,6 +131,17 @@ const size_t k_scx_nflags = sizeof(k_scx_flags) / sizeof(k_scx_flags[0]);
 #define SCX_TOP_A "int cx_top_a(void) { return cx_twice(cx_sum(1)); }"
 #define SCX_HOOKREF_D SCX_D_END "int cx_e_hook(int v);\n" \
                       "int (*const cx_e_hook_ref)(int) = cx_e_hook;\n"
+#define SCX_INL_H(body) "int cx_hook(int v);\nstatic inline int cx_inl(int v)" \
+                        " { return " body "; }\n#endif"
+#define SCX_INL_B SCX_B_END "int cx_inl_b(int v);\n" \
+                  "int cx_inl_b(int v) { return cx_inl(v) + 9; }\n"
+#define SCX_INL_D SCX_D_END "int (*cx_inl_get(void))(int);\n" \
+                  "int (*cx_inl_get(void))(int) { return cx_inl; }\n"
+/* Every reader defines its own copy of the header's static: each is
+ * affected and seeds it, whether or not its own code calls it. */
+#define SCX_ALL_IFACE {"interface", "interface", "interface", "interface", \
+                       "interface"}
+#define SCX_ALL {true, true, true, true, true}
 #define SCX_ALL_POS {"position-dependent", "position-dependent", \
                      "position-dependent", "position-dependent", \
                      "position-dependent"}
@@ -479,7 +490,52 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                        .reason = {NULL, NULL, "source-changed", NULL,
                                   "include-resolution-change"},
                        .obligations = "include-resolution-changed"},
+    /* F12: a header static inline's body. Each reader compiles its own
+     * copy under the header's id: the caller that inlines it is not the
+     * only code that changes (-O0 emits it out of line; so does any level
+     * where it is not inlined everywhere). */
+    [SCX_P_HINL] = {.name = "p_hinl", .pre = true, .file = SCX_HEADER,
+                    .from = SCX_HOOK_END, .to = SCX_INL_H("v * 3"),
+                    .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_INL_B},
+    [SCX_HINL] = {.name = "hinl", .before = SCX_P_HINL, .file = SCX_HEADER,
+                  .from = SCX_HOOK_END, .to = SCX_INL_H("v * 3 + 1"),
+                  .file2 = SCX_B, .from2 = SCX_B_END, .to2 = SCX_INL_B,
+                  .changed = {SCX_HEADER}, .affected = SCX_ALL,
+                  .reason = SCX_ALL_IFACE, .obligations = "",
+                  .seeds = {"cx_inl", "cx_inl_b"}},
+    [SCX_P_HINL0] = {.name = "p_hinl0", .pre = true, .opt = "-O0",
+                     .file = SCX_HEADER, .from = SCX_HOOK_END,
+                     .to = SCX_INL_H("v * 3"), .file2 = SCX_B,
+                     .from2 = SCX_B_END, .to2 = SCX_INL_B},
+    [SCX_HINL0] = {.name = "hinl0", .before = SCX_P_HINL0, .opt = "-O0",
+                   .file = SCX_HEADER, .from = SCX_HOOK_END,
+                   .to = SCX_INL_H("v * 3 + 1"), .file2 = SCX_B,
+                   .from2 = SCX_B_END, .to2 = SCX_INL_B,
+                   .changed = {SCX_HEADER}, .affected = SCX_ALL,
+                   .reason = SCX_ALL_IFACE, .obligations = "",
+                   .seeds = {"cx_inl", "cx_inl_b"}},
+    [SCX_P_HINL_ADDR] = {.name = "p_hinl_addr", .pre = true,
+                         .file = SCX_HEADER, .from = SCX_HOOK_END,
+                         .to = SCX_INL_H("v * 3"), .file2 = SCX_B,
+                         .from2 = SCX_B_END, .to2 = SCX_INL_B,
+                         .file3 = SCX_D, .from3 = SCX_D_END,
+                         .to3 = SCX_INL_D},
+    [SCX_HINL_ADDR] = {.name = "hinl_addr", .before = SCX_P_HINL_ADDR,
+                       .file = SCX_HEADER, .from = SCX_HOOK_END,
+                       .to = SCX_INL_H("v * 3 + 1"), .file2 = SCX_B,
+                       .from2 = SCX_B_END, .to2 = SCX_INL_B, .file3 = SCX_D,
+                       .from3 = SCX_D_END, .to3 = SCX_INL_D,
+                       .changed = {SCX_HEADER}, .affected = SCX_ALL,
+                       .reason = SCX_ALL_IFACE,
+                       .obligations = "address-taken"},
 };
+
+const char *scx_flag(enum scx_variant v, size_t i)
+{
+    const char *opt = k_scx_edits[v].opt;
+    return opt != NULL && strcmp(k_scx_flags[i], "-O1") == 0 ? opt
+                                                              : k_scx_flags[i];
+}
 
 static char *scx_replace(const char *body, const char *from, const char *to,
                          size_t *len)
