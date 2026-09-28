@@ -21,6 +21,51 @@ not an installed signer or an assertion that a compiler used only that tree.
 Its local test mode permits ancestors owned by the testing UID; installed
 trust requires root-owned ancestors and read-only mounts instead.
 
+The tree helper now emits two domain-separated SHA3-256 roots from one checked
+walk. `tree_sha3` includes each entry's UID and is a local owner-bound
+snapshot identity. `content_sha3` covers the same sorted path, type, mode,
+symlink target and regular-file bytes but omits UID, so a receiver-owned
+generation tree and a signer-owned copied snapshot can have the same content
+root. Both modes still enforce the caller's expected UID and refuse unsafe
+ancestors. A `tree_sha3` from a developer-owned tree therefore cannot be used
+as the signer's owner root. The local probe proves this mismatch refuses.
+
+`tools/verify/fixed_result_closure.c` defines the narrow, unqualified closure
+format for this one TU. Its six 32-byte inputs, in order, are tool content
+root, source content root, root-owned tool tree root, signer-owned source tree
+root, installed jail-policy root **claim**, and preprocessed stream root. It
+then hashes the canonical physical cwd, the exact direct-source argv encoding,
+the fixed environment identity and the relative source spelling. SHA3-256
+uses domain `z23.verify.fixed_result.closure.v1`, fixed-width roots in that
+order, and 64-bit little-endian length prefixes for text fields. The fixed
+environment is exactly `LC_ALL=C`, `TZ=UTC`, `TMPDIR=/work`,
+`PATH=/usr/bin:/bin` in that order, each length-prefixed under domain
+`z23.verify.fixed_result.env.v1`. `argv_norm` is a concatenation of decimal
+byte-length, colon and bytes for each argument, beginning with
+`/usr/bin/gcc`, `-std=c2x`; it includes the physical-cwd file-prefix map,
+all flags from the direct-source profile, `/work/result.d`, target `result.o`,
+the real `.c` source and `/work/result.o`. The CLI prints the complete value.
+Its `toolchain_id` is `z23.gcc13.x86_64.fixed_result.v1:` followed by the
+tool content root. This argv is the `real_tu_probe.sh` profile. It does not
+match the production epoch-object recipe in `Makefile`: that recipe expands
+additional CFLAGS and uses its own `-MT`, `-MF`, and `-o` paths. The receiver
+must refuse a record from this format for a production compile. Before any
+HIT, an installed producer and receiver must bind the observed exact epoch
+argv and physical cwd; this probe-only command cannot be normalized into
+production equivalence by assertion.
+
+The combiner does **not** validate its six supplied roots against a jail or
+the compiler's actual I/O. Its policy input is a claim, not evidence of an
+installed mount; even all-zero owner, policy and preprocessed claims are
+accepted only as ineligible format fixtures. Cross-UID content equality is
+structural until two real accounts can create and compare separate trees.
+Every result says `attest_eligible=0` with
+`probe_profile_and_jail_unverified`. An eligible producer must obtain owner and
+policy roots from a root-owned pinned manifest and verify the mount namespace
+and separate UIDs at execution. The receiver must construct the expected
+source content root from its own exact generation tree and read the installed
+tool and policy pins independently; it cannot copy a candidate's six claims.
+
 The administrator must run the following staging commands as root on a host
 where UIDs/GIDs 60092 and 60093 are free. These commands create no key, socket
 or running service. A pre-existing user or group with either ID is a hard
@@ -77,6 +122,12 @@ snapshot, change a DSO/spec file, inject an escaping symlink, and change an
 input during compilation. Each must alter the closure or refuse before any
 eligible record. The receiver must reject a wrong key, wrong argv/cwd,
 tampered object/dep/stderr, and conflicting signed PASS/FAIL observations.
+The signer must hold a trusted per-key exclusive lock while publishing each
+immutable observation; the receiver must hold the matching shared lock from
+the complete observation scan through verified artifact materialization.
+Store and lock paths require trusted ownership and descriptor-based,
+no-symlink traversal. A directory scan alone cannot rule out a signed FAIL
+published after the scan and before a PASS object is used.
 Until this run succeeds under the real accounts and root-owned image, proof
 reuse remains cold and `attest_eligible=0`.
 

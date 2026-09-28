@@ -27,6 +27,7 @@
 
 struct walker {
     struct sha3_256_ctx hash;
+    struct sha3_256_ctx content;
     const char *root;
     uid_t owner;
     uint64_t bytes;
@@ -45,6 +46,24 @@ static void put_bytes(struct sha3_256_ctx *h, const void *p, size_t n)
 {
     put_u64(h, n);
     sha3_256_write(h, p, n);
+}
+
+static void both_write(struct walker *w, const void *p, size_t n)
+{
+    sha3_256_write(&w->hash, p, n);
+    sha3_256_write(&w->content, p, n);
+}
+
+static void both_u64(struct walker *w, uint64_t n)
+{
+    put_u64(&w->hash, n);
+    put_u64(&w->content, n);
+}
+
+static void both_bytes(struct walker *w, const void *p, size_t n)
+{
+    put_bytes(&w->hash, p, n);
+    put_bytes(&w->content, p, n);
 }
 
 static int name_order(const void *a, const void *b)
@@ -207,7 +226,7 @@ static int visit_link(struct walker *w, int parent, const char *name,
         w->error = "entry_changed";
         return 0;
     }
-    put_bytes(&w->hash, target, (size_t)n);
+    both_bytes(w, target, (size_t)n);
     return 1;
 }
 
@@ -217,7 +236,7 @@ static int visit_file(struct walker *w, int fd, const struct stat *st)
         w->error = "byte_limit";
         return 0;
     }
-    put_u64(&w->hash, (uint64_t)st->st_size);
+    both_u64(w, (uint64_t)st->st_size);
     unsigned char buf[16384];
     uint64_t got = 0;
     for (;;) {
@@ -225,7 +244,7 @@ static int visit_file(struct walker *w, int fd, const struct stat *st)
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) { w->error = "entry_read_failed"; return 0; }
         if (n == 0) break;
-        sha3_256_write(&w->hash, buf, (size_t)n);
+        both_write(w, buf, (size_t)n);
         got += (uint64_t)n;
         if (got > (uint64_t)st->st_size) {
             w->error = "entry_changed";
@@ -283,9 +302,9 @@ static int visit(struct walker *w, int parent, const char *name,
     if (!safe_owner(w, &st, is_link)) return 0;
     w->entries++;
     unsigned char type = (unsigned char)(is_dir ? 'D' : is_file ? 'F' : 'L');
-    sha3_256_write(&w->hash, &type, 1);
-    put_bytes(&w->hash, rel, strlen(rel));
-    put_u64(&w->hash, (uint64_t)(st.st_mode & 07777));
+    both_write(w, &type, 1);
+    both_bytes(w, rel, strlen(rel));
+    both_u64(w, (uint64_t)(st.st_mode & 07777));
     put_u64(&w->hash, (uint64_t)st.st_uid);
     if (is_link) return visit_link(w, parent, name, rel, &st);
     return visit_opened(w, parent, name, rel, depth, &st, is_dir);
@@ -332,9 +351,9 @@ static int hash_root(struct walker *w, int rootfd)
              safe_owner(w, &before, 0);
     if (ok) {
         unsigned char type = 'D';
-        sha3_256_write(&w->hash, &type, 1);
-        put_bytes(&w->hash, "", 0);
-        put_u64(&w->hash, (uint64_t)(before.st_mode & 07777));
+        both_write(w, &type, 1);
+        both_bytes(w, "", 0);
+        both_u64(w, (uint64_t)(before.st_mode & 07777));
         put_u64(&w->hash, (uint64_t)before.st_uid);
         w->entries++;
     }
@@ -357,8 +376,11 @@ int main(int argc, char **argv)
     }
     struct walker w = { .root = argv[2], .owner = owner };
     sha3_256_init(&w.hash);
+    sha3_256_init(&w.content);
     static const char domain[] = "z23.verify.tree.v1";
+    static const char content_domain[] = "z23.verify.tree.content.v1";
     put_bytes(&w.hash, domain, sizeof(domain) - 1);
+    put_bytes(&w.content, content_domain, sizeof(content_domain) - 1);
     int rootfd = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (rootfd < 0) {
         fprintf(stderr, "tree_closure_refuse=root_open_failed\n");
@@ -370,11 +392,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "tree_closure_refuse=%s\n", w.error);
         return 2;
     }
-    unsigned char digest[32];
-    char hex[65];
+    unsigned char digest[32], content_digest[32];
+    char hex[65], content_hex[65];
     sha3_256_finalize(&w.hash, digest);
+    sha3_256_finalize(&w.content, content_digest);
     zcl_hex_encode(digest, sizeof(digest), hex);
-    printf("tree_sha3=%s entries=%u bytes=%llu attest_eligible=0\n",
-           hex, w.entries, (unsigned long long)w.bytes);
+    zcl_hex_encode(content_digest, sizeof(content_digest), content_hex);
+    printf("tree_sha3=%s content_sha3=%s entries=%u bytes=%llu "
+           "attest_eligible=0\n", hex, content_hex, w.entries,
+           (unsigned long long)w.bytes);
     return 0;
 }
