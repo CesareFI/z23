@@ -10,6 +10,7 @@
  *                         [--max-steps N]
  *   z23-sem-replay step   ... --index I --commit C
  *   z23-sem-replay repro  --repo R --state S [--label L] [--jobs N]
+ *   z23-sem-replay catalog --repo R --state S [--jobs N]
  *   z23-sem-replay report --state S
  *
  * run replays each commit of FILE (one full SHA per line, oldest first) in
@@ -17,7 +18,11 @@
  * host scheduler admits each commit's builds and parses separately. A
  * finished step leaves run/<NN>_<commit>/result.tsv and is skipped when the
  * run resumes. A false negative stops the run (exit 3). R is a dedicated
- * worktree the replay checks out; it must hold no other work. */
+ * worktree the replay checks out; it must hold no other work.
+ *
+ * catalog compiles every TU of R cold with make's argv, records its compile
+ * CPU in S/catalog_cost.tsv (the report prices uncosted TUs with it), and
+ * fails when any cold object differs from the incremental one. */
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -32,7 +37,7 @@
 static int usage(void)
 {
     fprintf(stderr,
-            "usage: z23-sem-replay run|step|repro|report --repo DIR --state DIR\n"
+            "usage: z23-sem-replay run|step|repro|catalog|report --repo DIR --state DIR\n"
             "       [--sensor BIN] [--planner BIN] [--commits FILE] [--jobs N]\n"
             "       [--devbuild BIN] [--index N] [--commit SHA] [--label NAME]\n"
             "       [--max-steps N]\n");
@@ -183,6 +188,8 @@ int main(int argc, char **argv)
         return sr_report(&o.cfg);
     if (strcmp(cmd, "argv") == 0)
         return o.cfg.repo[0] && o.cfg.commit[0] ? print_argv(&o.cfg) : usage();
+    if (strcmp(cmd, "catalog") == 0)
+        return o.cfg.repo[0] ? sr_catalog(&o.cfg) : usage();
     if (strcmp(cmd, "repro") == 0)
         return o.cfg.repo[0] ? sr_repro(&o.cfg, o.label) : usage();
     if (!need_tools(&o.cfg))

@@ -28,6 +28,9 @@ enum {
 
 int sr_step(const struct sr_cfg *cfg);
 int sr_repro(const struct sr_cfg *cfg, const char *label);
+/* Compile every TU of the current tree cold with make's argv, time it, and
+ * compare its bytes with the incremental object: catalog_cost.tsv. */
+int sr_catalog(const struct sr_cfg *cfg);
 int sr_report(const struct sr_cfg *cfg);
 
 /* The make build of the test-fast binary at the checked-out tree, with the

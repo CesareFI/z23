@@ -940,3 +940,53 @@ int sr_repro(const struct sr_cfg *cfg, const char *label)
         return SR_STEP_FAILED;
     return mismatch == 0 && rebuilt == b.n ? SR_STEP_OK : SR_STEP_FAILED;
 }
+
+/* ── catalog: every TU compiled cold, timed, against make's object ────── */
+
+static size_t catalog_write(const struct sr_snap *s, const struct batch *b, FILE *fp)
+{
+    size_t differ = 0;
+    for (size_t i = 0; i < b->n; i++) {
+        uint8_t h[32];
+        const struct sr_obj *o = sr_snap_find(s, b->t[i].tu);
+        bool same = b->t[i].rc == 0 && o && sr_hash_file(b->obj[i], h) &&
+                    memcmp(h, o->hash, 32) == 0;
+        differ += !same;
+        if (!same)
+            fprintf(stderr, "sem-replay: cold compile differs from the incremental object: %s\n",
+                    b->t[i].tu);
+        if (fp)
+            fprintf(fp, "%s\t%.4f\t%.4f\t%d\n", b->t[i].tu, b->t[i].cpu_s, b->t[i].wall_s,
+                    same ? 1 : 0);
+        (void)unlink(b->obj[i]);
+    }
+    return differ;
+}
+
+int sr_catalog(const struct sr_cfg *cfg)
+{
+    struct sr_snap s = {0};
+    struct sr_strv tus = {0};
+    struct sr_argv_map m = {0};
+    struct batch b = {0};
+    char log[SR_PATH], tmp[SR_PATH], out[SR_PATH];
+    snprintf(log, sizeof(log), "%s/catalog.log", cfg->state);
+    snprintf(tmp, sizeof(tmp), "%s/tmp-obj", cfg->state);
+    snprintf(out, sizeof(out), "%s/catalog_cost.tsv", cfg->state);
+    bool ok = sr_snap_take(cfg->repo, NULL, &s) && snap_tus(&s, &tus) &&
+              sr_make_argv(cfg->repo, s.epoch, &tus, log, &m) && sr_mkdirs(tmp) &&
+              add_compiles(&b, &tus, &m, tmp, log) &&
+              sr_pool_run(b.t, b.n, cfg->jobs, cfg->repo);
+    FILE *fp = ok ? fopen(out, "w") : NULL;
+    size_t differ = ok ? catalog_write(&s, &b, fp) : 0;
+    if (fp)
+        fclose(fp);
+    fprintf(stderr, "sem-replay: catalog: %zu objects, %zu compiled cold, %zu differ\n", s.n, b.n,
+            differ);
+    ok = ok && b.n == s.n && differ == 0;
+    batch_free(&b);
+    sr_argv_free(&m);
+    sr_strv_free(&tus);
+    sr_snap_free(&s);
+    return ok ? SR_STEP_OK : SR_STEP_FAILED;
+}
