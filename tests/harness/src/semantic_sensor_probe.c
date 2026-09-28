@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates (one a -D value or a system header's macro body writes, one after a pre-C23 apostrophe, one a trigraph splices, one after a comment before a header name, and a system header's own probes) and that the sensor refuses the options it cannot read (-Wp, and MSVC compatibility).
+ * purpose: semantic_sensor checks that the conditional-lookup scan sees every probe the front end evaluates, a system header's own included, and that the sensor refuses the options it cannot read (-Wp, and MSVC compatibility).
  *
  * Each case emits one TU whose __has_include the scan could miss and
  * reads its LOOKUPS back: the probe must be there, replayed against its
