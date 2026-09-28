@@ -1307,6 +1307,7 @@ ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_hdr.c", CAP_FS_WRITE, "splits hea
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_index.c", CAP_FS_WRITE, "indexes one decoded manifest the caller already holds and derives its per-TU roots; writes only allocation-failure lines to stderr")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_json.c", CAP_FS_READ|CAP_FS_WRITE, "reads the before/after manifest and source evidence named by the dev.change.plan facts directory with fopen \"rb\"; writes only allocation-failure lines to stderr")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_obligations.c", CAP_FS_WRITE, "turns changed functions into test-group obligations over the read-only code index handle the consumer opened; writes only allocation-failure lines to stderr")
+ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_sdir.c", CAP_FS_WRITE, "replays the include lookups of two manifests the caller already holds under their search lists; writes only allocation-failure lines to stderr")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_text.c", CAP_NONE, "pure digest of a source buffer the caller already holds")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_tu.c", CAP_FS_WRITE, "compares one TU's before and after facts index in memory, reading manifests only through devloop_facts_json.c; writes only allocation-failure lines to stderr")
 ZCL_MODULE_CAPABILITY("tools/dev/devloop_facts_walk.c", CAP_FS_WRITE, "walks callers through the read-only code index handle the consumer opened, filtered by declaration identity; writes only allocation-failure lines to stderr")
