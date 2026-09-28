@@ -306,14 +306,29 @@ static size_t run_jobs(struct sfz_run *r, struct sfz_job *jobs, size_t n)
 struct sfz_flags {
     char map[PATH_MAX + 32];
     char extra[512];
+    char opt[128];
     const char *v[SFZ_ARGV_MAX / 2];
     size_t n;
 };
 
+/* Append each `sep`-separated token of s (edited in place) to f->v. */
+static bool add_tokens(struct sfz_flags *f, char *s, const char *sep,
+                       const char *what)
+{
+    char *save = NULL;
+    for (char *t = strtok_r(s, sep, &save); t != NULL;
+         t = strtok_r(NULL, sep, &save)) {
+        if (f->n + 1 >= sizeof(f->v) / sizeof(f->v[0]))
+            LOG_FAIL("sfz", "too many flags in %s", what);
+        f->v[f->n++] = t;
+    }
+    return true;
+}
+
 static bool read_flags(const struct sfz_run *r, struct sfz_flags *f)
 {
-    static const char *const fixed[] = {"-std=c23", "-O1", "-g0", "-w",
-                                        "-ffunction-sections", "-fdata-sections"};
+    static const char *const fixed[] = {"-g0", "-w", "-ffunction-sections",
+                                        "-fdata-sections"};
     char path[PATH_MAX * 2];
     uint8_t *mk = NULL;
     size_t n = 0;
@@ -323,6 +338,11 @@ static bool read_flags(const struct sfz_run *r, struct sfz_flags *f)
     if (sfz_slurp(path, &mk, &n) && (line = strstr((char *)mk, "CFLAGS_EXTRA =")))
         (void)sscanf(line + strlen("CFLAGS_EXTRA ="), "%511[^\n]", f->extra);
     free(mk);
+    /* -std=c23, then the case's optimizer flags (-O1 unless it names others) */
+    f->v[f->n++] = "-std=c23";
+    (void)snprintf(f->opt, sizeof(f->opt), "%s", r->c->opt[0] ? r->c->opt : "-O1");
+    if (!add_tokens(f, f->opt, ",", "the case's optimizer flags"))
+        return false;
     for (size_t k = 0; k < sizeof(fixed) / sizeof(fixed[0]); k++)
         f->v[f->n++] = fixed[k];
     (void)snprintf(f->map, sizeof(f->map), "-ffile-prefix-map=%s=/zclassic23",
@@ -330,14 +350,7 @@ static bool read_flags(const struct sfz_run *r, struct sfz_flags *f)
     f->v[f->n++] = f->map;
     f->v[f->n++] = "-Iinc1";
     f->v[f->n++] = "-Iinc2";
-    char *save = NULL;
-    for (char *t = strtok_r(f->extra, " \t", &save); t != NULL;
-         t = strtok_r(NULL, " \t", &save)) {
-        if (f->n + 1 >= sizeof(f->v) / sizeof(f->v[0]))
-            LOG_FAIL("sfz", "too many extra flags in %s", path);
-        f->v[f->n++] = t;
-    }
-    return true;
+    return add_tokens(f, f->extra, " \t", path);
 }
 
 static size_t put_flags(struct sfz_job *j, size_t k, const struct sfz_flags *f)
@@ -433,11 +446,14 @@ static bool phase(struct sfz_run *r, const char *ph, const char *objdir)
     char facts[PATH_MAX + 16];
     bool ok;
     (void)snprintf(facts, sizeof(facts), "%s/facts/src", r->tree);
+    /* the side's object compiler: the sensor never sees which one */
+    const char *cc = r->c->cc[objdir == r->oa][0] ? r->c->cc[objdir == r->oa]
+                                                   : r->env->clang;
     ok = jobs != NULL && read_flags(r, &f) && sfz_mkdirs(facts);
     for (size_t k = 0; ok && k < n; k++) {
         const char *tu = r->tus.v[k];
         sfz_object(obj, sizeof(obj), objdir, tu);
-        compile_job(&jobs[2 * k], r->env->clang, "-c", &f, tu, obj);
+        compile_job(&jobs[2 * k], cc, "-c", &f, tu, obj);
         job_log(&jobs[2 * k], r, tu, "cc", ph);
         sensor_job(&jobs[2 * k + 1], r->env->sensor, r->env->clang, ph, &f,
                   tu);

@@ -33,9 +33,12 @@
  *             kind and every profile;
  *   full      ZCL_STRESS_TESTS=1 (this repo's existing opt-in-to-the-slow-
  *             path convention): the full fixed list of 44 seeds;
- *   custom    ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]] runs a
- *             long range instead (PROFILE all, no-ctr-line or gcc-deps;
- *             KIND forces one mutation kind), and wins over ZCL_STRESS_TESTS.
+ *   custom    ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]
+ *             runs a long range instead (PROFILE all, no-ctr-line or
+ *             gcc-deps; KIND forces one mutation kind, any draws it; CC
+ *             names the object compiler, BEFORE>AFTER one that drifts
+ *             between the sides; OPT replaces -O1), and wins over
+ *             ZCL_STRESS_TESTS.
  * Both the default and full seed lists must yield narrowed plans that seed
  * a changed function, so the group cannot pass on fallbacks alone; a
  * custom range is not held to that (it may deliberately probe a
@@ -292,6 +295,32 @@ static bool gcc_missing(struct sfz_group *g, const char *label)
     return true;
 }
 
+/* The absolute path of object compiler `name` into out: NULL, "" or
+ * "clang" is the sensor's clang (out ""), anything else is looked up on
+ * PATH. False, with a visible SKIP, when it is absent. */
+static bool resolve_cc(struct sfz_group *g, const char *label, const char *name,
+                       char *out, size_t n)
+{
+    out[0] = '\0';
+    if (name == NULL || name[0] == '\0' || strcmp(name, "clang") == 0)
+        return true;
+    if (find_on_path(name, out, n))
+        return true;
+    printf("semantic_facts_fuzz: %s SKIP (needs %s on PATH)\n", label, name);
+    g->t.skipped++;
+    return false;
+}
+
+/* Set c's toolchain: before and after object compilers and optimizer
+ * flags. False (skipped) when a compiler is absent. */
+static bool set_tools(struct sfz_group *g, struct sfz_case *c, const char *before,
+                      const char *after, const char *opt)
+{
+    (void)snprintf(c->opt, sizeof(c->opt), "%s", opt != NULL ? opt : "");
+    return resolve_cc(g, c->label, before, c->cc[0], sizeof(c->cc[0])) &&
+           resolve_cc(g, c->label, after, c->cc[1], sizeof(c->cc[1]));
+}
+
 /* ---- the case pool: SFZ_CASES_AT_ONCE cases, each in its own process ---------- */
 
 /* One case, prepared in the group's process and run in a child that hands
@@ -483,8 +512,9 @@ static size_t run_items(struct sfz_group *g, struct sfz_item *v, size_t n)
 
 /* ---- the fixed reproducers ------------------------------------------------------ */
 
+/* Reproducer r, with toolchain t (NULL: the sensor's clang at -O1). */
 static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
-                       struct sfz_item *it)
+                       const struct sfz_tool_repro *t, struct sfz_item *it)
 {
     struct sfz_case *c = &it->c;
     c->gcc_deps = r->gcc_deps;
@@ -497,6 +527,8 @@ static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
     it->ok = true;
     if (r->gcc_deps && gcc_missing(g, r->name))
         return;
+    if (t != NULL && !set_tools(g, c, t->cc_before, t->cc_after, t->opt))
+        return;
     it->ok = sfz_write_repro(r, c->dir);
     it->run = it->ok;
     if (!it->ok)
@@ -507,12 +539,16 @@ static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
 static int sfz_t_repros(struct sfz_group *g)
 {
     int failures = 0;
-    struct sfz_item *v = zcl_calloc(k_sfz_nrepros, sizeof(*v), "sfz.repros");
+    size_t n = k_sfz_nrepros + k_sfz_ntool_repros;
+    struct sfz_item *v = zcl_calloc(n, sizeof(*v), "sfz.repros");
     TEST_CASE("semantic_facts_fuzz: every fixed reproducer plans safely") {
         ASSERT(v != NULL);
         for (size_t k = 0; k < k_sfz_nrepros; k++)
-            prep_repro(g, &k_sfz_repros[k], &v[k]);
-        ASSERT_EQ(run_items(g, v, k_sfz_nrepros), (size_t)0);
+            prep_repro(g, &k_sfz_repros[k], NULL, &v[k]);
+        for (size_t k = 0; k < k_sfz_ntool_repros; k++)
+            prep_repro(g, &k_sfz_tool_repros[k].r, &k_sfz_tool_repros[k],
+                       &v[k_sfz_nrepros + k]);
+        ASSERT_EQ(run_items(g, v, n), (size_t)0);
     } TEST_END
     free(v);
     return failures;
@@ -525,7 +561,28 @@ static unsigned profile_bits(enum sfz_profile p)
     return p == PROF_NO_CTR_LINE ? SFZ_NO_CTR | SFZ_NO_LINE : 0u;
 }
 
-static void prep_seed(struct sfz_group *g, struct sfz_seed s, struct sfz_item *it)
+/* The toolchain of a range run: "CC" for both sides or "BEFORE>AFTER"
+ * (a compiler that drifts between the sides), and optimizer flags. */
+struct sfz_tools {
+    char cc[64];
+    char opt[128];
+};
+
+static bool seed_tools(struct sfz_group *g, struct sfz_case *c,
+                       const struct sfz_tools *t)
+{
+    char before[64];
+    const char *gt;
+    if (t == NULL)
+        return true;
+    gt = strchr(t->cc, '>');
+    (void)snprintf(before, sizeof(before), "%.*s",
+                   gt != NULL ? (int)(gt - t->cc) : (int)strlen(t->cc), t->cc);
+    return set_tools(g, c, before, gt != NULL ? gt + 1 : t->cc, t->opt);
+}
+
+static void prep_seed(struct sfz_group *g, struct sfz_seed s,
+                      const struct sfz_tools *t, struct sfz_item *it)
 {
     struct sfz_case *c = &it->c;
     struct sfz_meta meta;
@@ -537,6 +594,8 @@ static void prep_seed(struct sfz_group *g, struct sfz_seed s, struct sfz_item *i
     it->ok = true;
     if (c->gcc_deps && gcc_missing(g, c->label))
         return;
+    if (!seed_tools(g, c, t))
+        return;
     it->ok = sfz_generate(s.seed, profile_bits(s.profile), s.kind, c->dir, &meta);
     it->run = it->ok;
     if (!it->ok) {
@@ -547,13 +606,18 @@ static void prep_seed(struct sfz_group *g, struct sfz_seed s, struct sfz_item *i
     (void)snprintf(c->detail, sizeof(c->detail), "%s", meta.detail);
 }
 
-/* ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]: COUNT consecutive
- * seeds from FIRST, the kind drawn unless KIND names one. */
+/* ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]: COUNT
+ * consecutive seeds from FIRST, the kind drawn unless KIND names one (any:
+ * drawn). CC is the object compiler of both sides ("clang", the sensor's,
+ * by default; "gcc", or any name on PATH), or BEFORE>AFTER for a compiler
+ * that changes between the sides; OPT replaces -O1 with comma-separated
+ * flags (-O0, -O2, -Og,-fno-inline, ...). */
 struct sfz_range {
     uint64_t first;
     size_t count;
     enum sfz_profile profile;
     char kind[32];
+    struct sfz_tools tools;
 };
 
 /* False when unset; *bad when set but malformed. */
@@ -567,15 +631,18 @@ static bool seeds_override(struct sfz_range *r, bool *bad)
     *bad = false;
     if (v == NULL || v[0] == '\0')
         return false;
-    got = sscanf(v, "%llu:%llu:%31[^:]:%31s", &f, &n, prof, r->kind);
+    got = sscanf(v, "%llu:%llu:%31[^:]:%31[^:]:%63[^:]:%127s", &f, &n, prof,
+                 r->kind, r->tools.cc, r->tools.opt);
     r->first = f;
     r->count = (size_t)n;
     r->profile = PROF_COUNT;
     for (int p = 0; p < PROF_COUNT; p++)
         if (strcmp(prof, k_profile_names[p]) == 0)
             r->profile = (enum sfz_profile)p;
+    if (strcmp(r->kind, "any") == 0)
+        r->kind[0] = '\0';
     *bad = got < 2 || n == 0 || r->profile == PROF_COUNT ||
-           (got == 4 && !sfz_kind_known(r->kind));
+           (r->kind[0] != '\0' && !sfz_kind_known(r->kind));
     return true;
 }
 
@@ -598,7 +665,7 @@ static int sfz_t_seeds(struct sfz_group *g)
     struct sfz_item *v = NULL;
     g->seed_mode = custom ? "custom" : stress ? "full" : "default";
     TEST_CASE("semantic_facts_fuzz: generated seeds plan safely") {
-        /* FIRST:COUNT[:all|no-ctr-line|gcc-deps[:KIND]] */
+        /* FIRST:COUNT[:all|no-ctr-line|gcc-deps[:KIND[:CC[:OPT]]]] */
         ASSERT(!bad_env);
         g->noop_ok = custom;
         v = zcl_calloc(n, sizeof(*v), "sfz.seeds");
@@ -607,7 +674,7 @@ static int sfz_t_seeds(struct sfz_group *g)
             prep_seed(g, custom ? (struct sfz_seed){r.first + k, r.profile,
                                                     r.kind[0] ? r.kind : NULL}
                                 : dseeds[k],
-                      &v[k]);
+                      custom ? &r.tools : NULL, &v[k]);
         ASSERT_EQ(run_items(g, v, n), (size_t)0);
         /* the default and full seed lists must exercise narrowed plans
          * that seed a changed function, not only fallbacks; a custom
@@ -642,7 +709,8 @@ int test_semantic_facts_fuzz(void)
            "TUs, %zu predicted, %zu changed; %zu changed functions, %zu changed "
            "data objects, %zu seeded, "
            "%zu relocation-only; planning %.1f s\n",
-           g->seed_mode != NULL ? g->seed_mode : "unknown", g->t.cases, k_sfz_nrepros,
+           g->seed_mode != NULL ? g->seed_mode : "unknown", g->t.cases,
+           k_sfz_nrepros + k_sfz_ntool_repros,
            (double)(clock_now_monotonic_ns() - t0) / 1e9, g->t.pass, g->t.fail,
            g->t.noop, g->t.error, g->t.skipped, g->t.narrowed, g->t.tus,
            g->t.predicted, g->t.changed, g->t.cfun, g->t.cobj, g->t.covered_seed,

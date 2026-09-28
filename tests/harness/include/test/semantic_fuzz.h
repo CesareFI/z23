@@ -67,6 +67,21 @@ struct sfz_repro {
 extern const struct sfz_repro k_sfz_repros[];
 extern const size_t k_sfz_nrepros;
 
+/* A reproducer that also sets the toolchain: the object compiler of each
+ * side (NULL or "clang": the sensor's clang; "gcc", or any other name, is
+ * looked up on PATH, and a case whose compiler is absent is a visible
+ * SKIP) and the optimizer flags that replace -O1 in the argv both the
+ * compile and the sensor get (NULL: -O1; several flags comma-separated).
+ * The sensor never sees which compiler builds the object: only the argv. */
+struct sfz_tool_repro {
+    struct sfz_repro r;
+    const char *cc_before, *cc_after;
+    const char *opt;
+};
+
+extern const struct sfz_tool_repro k_sfz_tool_repros[];
+extern const size_t k_sfz_ntool_repros;
+
 /* Write <dir>/before/ and <dir>/after/ of reproducer r. */
 bool sfz_write_repro(const struct sfz_repro *r, const char *dir);
 
@@ -131,6 +146,12 @@ struct sfz_case {
     char dir[PATH_MAX];    /* holds before/ and after/ */
     char kind[32], detail[256];
     bool gcc_deps;
+    /* The object compiler of the before [0] and after [1] side, absolute;
+     * "" is env->clang. */
+    char cc[2][PATH_MAX];
+    /* Comma-separated flags in place of -O1, in the compile's and the
+     * sensor's argv alike; "" is -O1. */
+    char opt[128];
 };
 
 enum sfz_status { SFZ_PASS, SFZ_FAIL, SFZ_NOOP, SFZ_ERROR };
@@ -148,8 +169,9 @@ struct sfz_outcome {
     char why[2048];        /* the first false-negative lines, or the error */
 };
 
-/* Compile every TU before and after (clang -std=c23 -O1 with the
- * project's flags), sense each, plan the change set in process with the
+/* Compile every TU before and after (each side's compiler, -std=c23 and
+ * the case's optimizer flags, -O1 by default, with the project's flags),
+ * sense each, plan the change set in process with the
  * facts, and judge: (1) every TU the plan leaves unaffected has a
  * byte-identical object; (2) every function and data object with new bytes
  * or new addressed content (an addend alone that resolves to the same

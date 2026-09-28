@@ -824,6 +824,114 @@ const struct sfz_repro k_sfz_repros[] = {
 };
 const size_t k_sfz_nrepros = sizeof(k_sfz_repros) / sizeof(k_sfz_repros[0]);
 
+/* ---- toolchain reproducers: the compiler or its optimizer, not the text ---- */
+
+/* A comment inside t0_a; t1.c is untouched. Built with another compiler
+ * after the edit, every object changes while every manifest stays the
+ * same: the sensor records its own libclang version and the argv, never
+ * the compiler that builds the object. */
+static const struct sfz_file k_f9_cc_drift[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t0_a(int x);\n"
+         "int t1_a(int x);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "int t0_a(int x)\n"
+         "{\n"
+         "    return x * 3 + 1;\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "int t0_a(int x)\n"
+         "{\n"
+         "    /* scaled */\n"
+         "    return x * 3 + 1;\n"
+         "}\n"},
+    {"src/t1.c",
+         "#include \"h.h\"\n"
+         "int t1_a(int x)\n"
+         "{\n"
+         "    return x * 5 + 2;\n"
+         "}\n",
+         SFZ_SAME},
+};
+
+/* t0_f passes 8, not 7, to a noinline static. gcc reads "-O02" and
+ * "--optimize=2" as -O2 and specializes the static for its one caller
+ * (t0_s.constprop.0); the consumer reads -O02 as -O0 and --optimize=2 as
+ * no optimizer, and seeds only t0_f and its callers. */
+static const struct sfz_file k_f10_opt_spelling[] = {
+    {"inc2/h.h",
+         "#ifndef H_H\n"
+         "#define H_H\n"
+         "int t0_f(void);\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"src/t0.c",
+         "#include \"h.h\"\n"
+         "static __attribute__((noinline)) int t0_s(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x;\n"
+         "    return r;\n"
+         "}\n"
+         "int t0_f(void)\n"
+         "{\n"
+         "    return t0_s(7);\n"
+         "}\n",
+         "#include \"h.h\"\n"
+         "static __attribute__((noinline)) int t0_s(int x)\n"
+         "{\n"
+         "    int r = 0;\n"
+         "    for (int i = 0; i < x; i++)\n"
+         "        r += i * x;\n"
+         "    return r;\n"
+         "}\n"
+         "int t0_f(void)\n"
+         "{\n"
+         "    return t0_s(8);\n"
+         "}\n"},
+};
+
+const struct sfz_tool_repro k_sfz_tool_repros[] = {
+    {.r = {.name = "F9_cc_drift", .kind = "comment_ws",
+           .detail = "a comment in t0_a; the object compiler changes from "
+                     "clang to gcc between the sides, the argv does not",
+           .known_red = "tool-drift",
+           .files = SFZ_FILES(k_f9_cc_drift),
+           .known_red_why = "?"},
+     .cc_before = "clang", .cc_after = "gcc"},
+    {.r = {.name = "F10_opt_spelling_O02", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O02",
+           .known_red = "opt-spelling",
+           .files = SFZ_FILES(k_f10_opt_spelling),
+           .known_red_why = "?"},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O02"},
+    {.r = {.name = "F10_opt_spelling_long", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
+                     "--optimize=2",
+           .known_red = "opt-spelling",
+           .files = SFZ_FILES(k_f10_opt_spelling),
+           .known_red_why = "?"},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "--optimize=2"},
+    {.r = {.name = "pass_opt_O1_gcc", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O1",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
+     .cc_before = "gcc", .cc_after = "gcc"},
+    {.r = {.name = "pass_opt_O2_gcc", .kind = "body_extern",
+           .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O2",
+           .files = SFZ_FILES(k_f10_opt_spelling)},
+     .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2"},
+};
+const size_t k_sfz_ntool_repros =
+    sizeof(k_sfz_tool_repros) / sizeof(k_sfz_tool_repros[0]);
+
 static bool write_side(const struct sfz_repro *r, const char *dir, bool after)
 {
     for (size_t k = 0; k < r->nfiles; k++) {
