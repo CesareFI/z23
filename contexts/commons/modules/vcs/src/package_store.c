@@ -890,7 +890,7 @@ static enum vcs_package_store_result store_chunk_room(
         pool = pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
                : pkg->class_ == VCS_PACKAGE_STORE_CLASS_HOT
                      ? VCS_PACKAGE_STORE_POOL_HOT : VCS_PACKAGE_STORE_POOL_RARE;
-        incoming = bytes_before + chunk_len;
+        incoming = pkg->pinned ? chunk_len : bytes_before + chunk_len;
     } else {
         pool = pkg->pinned ? VCS_PACKAGE_STORE_POOL_PINS
                            : VCS_PACKAGE_STORE_POOL_STAGING;

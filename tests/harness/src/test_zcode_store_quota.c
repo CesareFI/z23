@@ -595,9 +595,66 @@ static int store_case_pins_possession_fails_after_missing_byte(
     return failures;
 }
 
+static int store_case_pinned_final_chunk_boundary(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *s =
+        zs_open(dd, sizeof(dd), "pinnedfinal", 10000u);
+    ZS_CHECK("pins final: store opens", s != NULL);
+    if (!s) return failures;
+    const char *paths[] = { "a.bin", "b.bin" };
+    const size_t lens[] = { 500, 500 };
+    struct zs_pkg filler, pending;
+    bool ready = zs_make_package(&filler, 2, paths, lens, 0xa1) &&
+                 zs_make_package(&pending, 2, paths, lens, 0xb2);
+    ZS_CHECK("pins final: fixtures build", ready);
+    if (ready) {
+        ZS_CHECK("pins final: filler pins 1000 of 2000 bytes",
+                 vcs_package_store_put_manifest(s, filler.wire,
+                                                filler.wire_len, NULL) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 zs_put_all(s, &filler) == VCS_PACKAGE_STORE_OK &&
+                 vcs_package_store_pin(s, filler.root, true) ==
+                     VCS_PACKAGE_STORE_OK);
+        char marker[512], suffix[160];
+        snprintf(suffix, sizeof(suffix), "pins/%s", pending.root_hex);
+        zs_store_path(marker, sizeof(marker), dd, suffix);
+        FILE *f = fopen(marker, "wb");
+        ZS_CHECK("pins final: pending marker planted", f != NULL);
+        if (f) fclose(f);
+        ZS_CHECK("pins final: pending manifest admitted",
+                 vcs_package_store_put_manifest(s, pending.wire,
+                                                pending.wire_len, NULL) ==
+                     VCS_PACKAGE_STORE_OK);
+        ZS_CHECK("pins final: first chunk charges 500 pinned bytes",
+                 vcs_package_store_put_chunk(s, pending.root, "a.bin", 0,
+                                             pending.contents[0], 500) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 vcs_package_store_pool_usage(
+                     s, VCS_PACKAGE_STORE_POOL_PINS) == 1500);
+        ZS_CHECK("pins final: second chunk exactly fills pins budget",
+                 vcs_package_store_put_chunk(s, pending.root, "b.bin", 0,
+                                             pending.contents[1], 500) ==
+                     VCS_PACKAGE_STORE_OK);
+        struct vcs_package_store_status st;
+        ZS_CHECK("pins final: complete package remains pinned at budget",
+                 vcs_package_store_package_status(s, pending.root, &st) &&
+                 st.complete && st.pinned &&
+                 vcs_package_store_pool_usage(
+                     s, VCS_PACKAGE_STORE_POOL_PINS) == 2000);
+        zs_free_package(&pending);
+        zs_free_package(&filler);
+    }
+    vcs_package_store_close(s);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 int t_store_pins(void)
 {
     int failures = 0;
+    failures += store_case_pinned_final_chunk_boundary();
     /* quota 10000: pins 2000, rare 3000, staging 1000. */
     char dd[256];
     struct vcs_package_store *s = zs_open(dd, sizeof(dd), "pins", 10000u);
@@ -937,4 +994,3 @@ int t_store_releases(void)
     test_rm_rf_recursive(dd);
     return failures;
 }
-
