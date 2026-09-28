@@ -805,19 +805,25 @@ static const struct sfz_file k_has_embed_data_deleted[] = {
      "}\n",                                                                  \
      SFZ_SAME}
 
+#define SFZ_CFG_H(probe)                                                     \
+    {"inc1/cfg.h",                                                           \
+     "#ifndef CFG_H\n"                                                       \
+     "#define CFG_H\n"                                                       \
+     probe                                                                   \
+     "#define CFG_HAVE_LOCAL 1\n"                                            \
+     "#else\n"                                                               \
+     "#define CFG_HAVE_LOCAL 0\n"                                            \
+     "#endif\n"                                                              \
+     "#endif\n",                                                             \
+     SFZ_SAME}
+#define SFZ_CFG_MACRO                                                        \
+    SFZ_CFG_H("#define CFG_LOCAL \"cfg_local.h\"\n"                          \
+              "#if __has_include(CFG_LOCAL)\n")
+#define SFZ_CFG_NEXT SFZ_CFG_H("#if __has_include_next(<cfg_local.h>)\n")
+
 static const struct sfz_file k_f14_has_include_macro[] = {
     {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
-    {"inc1/cfg.h",
-         "#ifndef CFG_H\n"
-         "#define CFG_H\n"
-         "#define CFG_LOCAL \"cfg_local.h\"\n"
-         "#if __has_include(CFG_LOCAL)\n"
-         "#define CFG_HAVE_LOCAL 1\n"
-         "#else\n"
-         "#define CFG_HAVE_LOCAL 0\n"
-         "#endif\n"
-         "#endif\n",
-         SFZ_SAME},
+    SFZ_CFG_MACRO,
     {"inc2/cfg_local.h", "/* site overrides */\n", NULL},
     SFZ_CFG_T0,
     SFZ_T1_ALONE,
@@ -825,17 +831,25 @@ static const struct sfz_file k_f14_has_include_macro[] = {
 
 static const struct sfz_file k_f14_has_include_next[] = {
     {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
-    {"inc1/cfg.h",
-         "#ifndef CFG_H\n"
-         "#define CFG_H\n"
-         "#if __has_include_next(<cfg_local.h>)\n"
-         "#define CFG_HAVE_LOCAL 1\n"
-         "#else\n"
-         "#define CFG_HAVE_LOCAL 0\n"
-         "#endif\n"
-         "#endif\n",
-         SFZ_SAME},
+    SFZ_CFG_NEXT,
     {"inc2/cfg_local.h", "/* site overrides */\n", NULL},
+    SFZ_CFG_T0,
+    SFZ_T1_ALONE,
+};
+
+/* F15: the same probes when the file is created, with gcc's depfiles */
+static const struct sfz_file k_f15_has_include_macro[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    SFZ_CFG_MACRO,
+    {"inc2/cfg_local.h", NULL, "/* site overrides */\n"},
+    SFZ_CFG_T0,
+    SFZ_T1_ALONE,
+};
+
+static const struct sfz_file k_f15_has_include_next[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    SFZ_CFG_NEXT,
+    {"inc2/cfg_local.h", NULL, "/* site overrides */\n"},
     SFZ_CFG_T0,
     SFZ_T1_ALONE,
 };
@@ -900,6 +914,19 @@ static const struct sfz_file k_link_target_edit[] = {
     "include graph cannot name a deleted path's readers"
 #define SFZ_KR_PROBE_WHY                                                     \
     "src/t0.c object changed, planned unaffected (not in the universe)\n"
+
+/* F15: the file such a probe names is created, and the depfiles are gcc's,
+ * as the dev compile's are. gcc's depfile omits __has_include probes, so
+ * with no lookup record either (as F14) the created path has no reader;
+ * it is a regular file, so the include graph answers "no readers" as
+ * complete, and the plan narrows with t0 out of its universe. */
+#define SFZ_KR_PROBE_CREATED(what)                                           \
+    "the sensor recording each " what " probe as a lookup of the probed "     \
+    "path: gcc's depfile omits probes, so nothing names a created file only "  \
+    "such a probe finds"
+#define SFZ_KR_CREATED_WHY                                                   \
+    "src/t0.c object changed, planned unaffected (not in the universe)\n"     \
+    "src/t0.c t0_local tu-missed\n"
 
 const struct sfz_repro k_sfz_repros[] = {
     {"F1_flag", "flag", "Makefile CFLAGS_EXTRA gains -DPROJ_MODE=1", false,
@@ -993,6 +1020,16 @@ const struct sfz_repro k_sfz_repros[] = {
      "deleted",
      false, SFZ_KR_PROBE_ONLY("__has_include_next"),
      SFZ_FILES(k_f14_has_include_next), SFZ_KR_PROBE_WHY},
+    {"F15_has_include_macro_gcc_deps", "hasinc_macro",
+     "inc2/cfg_local.h, which cfg.h probes as __has_include(CFG_LOCAL), is "
+     "created; gcc writes the depfiles",
+     true, SFZ_KR_PROBE_CREATED("macro-operand __has_include"),
+     SFZ_FILES(k_f15_has_include_macro), SFZ_KR_CREATED_WHY},
+    {"F15_has_include_next_gcc_deps", "hasinc_macro",
+     "inc2/cfg_local.h, which cfg.h probes with __has_include_next, is "
+     "created; gcc writes the depfiles",
+     true, SFZ_KR_PROBE_CREATED("__has_include_next"),
+     SFZ_FILES(k_f15_has_include_next), SFZ_KR_CREATED_WHY},
     {"pass_link_retarget", "symlink_retarget",
      "inc1/h.h, a link t0 includes, names hdr/b.h instead of hdr/a.h", false,
      NULL, SFZ_FILES(k_link_retarget), NULL},
