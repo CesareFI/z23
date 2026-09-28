@@ -4521,12 +4521,23 @@ static int test_pw_generation_pool_sweep(void)
         ASSERT(stat(gen_done, &probe) == 0);
         ASSERT(stat(gen_live, &probe) == 0);
 
+        /* The sweep also walks this host's RAM pool. Point it at a
+         * private, empty one: the host's own pool holds other checkouts'
+         * idle donors and orphans, which the sweep is entitled to reap and
+         * count, and which this fixture must neither delete nor count. */
+        char ram[4200];
+        ASSERT(snprintf(ram, sizeof(ram), "%s/ram", root) > 0);
+        ASSERT(mkdir(ram, 0700) == 0);
+        ASSERT(setenv("ZCL_RAM_SCRATCH_ROOT", ram, 1) == 0);
         size_t removed = 0;
         uint64_t bytes = 0;
         ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
-        ASSERT(zcl_dev_proof_generation_pool_sweep(repo, &removed, &bytes,
-                                                    why, sizeof(why)));
+        bool swept = zcl_dev_proof_generation_pool_sweep(repo, &removed,
+                                                         &bytes, why,
+                                                         sizeof(why));
         (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+        (void)unsetenv("ZCL_RAM_SCRATCH_ROOT");
+        ASSERT(swept);
         ASSERT(removed == 1);
         ASSERT(stat(gen_done, &probe) != 0 && errno == ENOENT);
         ASSERT(stat(gen_live, &probe) == 0);
