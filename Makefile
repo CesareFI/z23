@@ -4397,7 +4397,8 @@ $(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
 		contexts/commons/packages/zjsonp/src/zjsonp.c \
 		contexts/commons/packages/zutf8/src/zutf8.c \
 		platform/modules/sha3/src/sha3.c \
-		platform/modules/platform/src/clock.c
+		platform/modules/platform/src/clock.c \
+		platform/modules/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(ZCL_WARN_FORMAT_TRUNCATION) \
 	    $(ZCL_PLATFORM_CPPFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
