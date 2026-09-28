@@ -833,6 +833,7 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             COMMAND ${BLUE_ARM_GCC} -std=c23 -mcpu=cortex-m3 -mthumb
                 -O2 -ffunction-sections -fdata-sections
                 -Wall -Wextra -Werror -pedantic
+                -DHAVE_BOLOS_APP_STACK_CANARY
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/blue_wallet_startup_stub"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/include"
                 -I "${CMAKE_CURRENT_SOURCE_DIR}/device-blue-wallet/src"
@@ -953,7 +954,7 @@ target_include_directories(test-blue-wallet-startup PRIVATE
 target_link_libraries(test-blue-wallet-startup PRIVATE
     blue_wallet_protocol blue_wallet_receive zcl_address zcl_sha256)
 target_compile_options(test-blue-wallet-startup PRIVATE
-    -Wall -Wextra -Werror -pedantic)
+    -Wall -Wextra -Werror -pedantic -DHAVE_BOLOS_APP_STACK_CANARY)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(test-blue-wallet-startup PRIVATE
         -fsanitize=address,undefined -fno-omit-frame-pointer)

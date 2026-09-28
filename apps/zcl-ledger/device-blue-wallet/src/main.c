@@ -22,6 +22,10 @@
 #error "The Ledger Blue wallet requires ISO C23"
 #endif
 
+#ifndef HAVE_BOLOS_APP_STACK_CANARY
+#error "The Ledger Blue wallet requires the SDK stack canary"
+#endif
+
 unsigned char G_io_seproxyhal_spi_buffer[IO_SEPROXYHAL_BUFFER_SIZE_B];
 ux_state_t ux;
 

@@ -2,6 +2,14 @@
 
 # ZCL Wallet candidate for Ledger Blue
 
+Version 0.3.7 enables the pinned Blue SDK's stack canary and requires that
+flag at compile time. Two clean builds from independent pinned SDK trees
+produced the same 41,216-byte `.text` image, SHA-256
+`64839dd399415af205fcf0c02a9ca4f5283c45d0e6103df3747759847c4bc0fd`.
+The [canary experiment](../../../docs/experiments/2026-09-27-ledger-blue-wallet-037-canary.md)
+records the linked instruction check and its limits. This image is not
+admitted by the installer and has not run on a physical Blue.
+
 The isolated `candidate/blue_zip32_seed_device.c` adapter checks PIN state
 and requests a hardened BOLOS BIP32 node for a Ledger-specific Sapling root.
 It is compiled with the pinned Blue SDK and tested with a host syscall shim,
