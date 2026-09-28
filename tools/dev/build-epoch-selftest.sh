@@ -600,6 +600,27 @@ printf '%s\n' "$@" > "$Z23_HOT_HARNESS_ARGS"
 HOT_HARNESS_EOF
 chmod +x "$HOT_MAKE" "$HOT_HARNESS"
 
+# Prime vendor-ready with the REAL make before either t-hotswap call below
+# runs with MAKE hijacked to the fake recursion probe. On a cold checkout,
+# reaching ANY goal first runs the unconditional `-include
+# $(VENDOR_BOOTSTRAP_MK)` bootstrap (tools/scripts/build_vendor.sh), which
+# shells out to a REAL recursive `make build_libs` to build OpenSSL from
+# source. That nested build inherits whatever MAKE= this fixture exports --
+# GNU Make always exports $(MAKE) into every recipe's environment, not just
+# the recipe that set it -- so with the fake MAKE override active, OpenSSL's
+# own internal submake calls (`$(MAKE) _build_libs`) silently hijack
+# $HOT_MAKE and corrupt the very recursion-probe file this fixture reads
+# afterward. That corruption has nothing to do with t-hotswap's own recipe;
+# it previously produced a false "t-hotswap invoked recursive Make before
+# refusing a missing harness" verdict on every cold worktree. Priming here
+# with the real, unhijacked $(MAKE) makes vendor-ready a no-op for both
+# calls below on any tree, cold or warm; a priming failure fails this
+# selftest loudly instead of silently proceeding into a contaminated probe.
+if ! make --no-print-directory vendor-ready > "$HOT_FIX/vendor-prime.log" 2>&1; then
+    sed 's/^/build-epoch-selftest: vendor-ready priming: /' "$HOT_FIX/vendor-prime.log" >&2
+    fail 't-hotswap fixture priming failed: vendor-ready did not succeed with the real make'
+fi
+
 run_hot_fixture()
 {
     BUILD_SOURCE_RECORD="$AMBIENT_RECORD" \
