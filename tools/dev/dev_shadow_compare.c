@@ -5,6 +5,8 @@
 
 #include "dev_shadow_select.h"
 
+#include "test_group_catalog.h"
+
 #include "base/safe_alloc.h"
 
 #include <stdarg.h>
@@ -302,11 +304,33 @@ bool zcl_shadow_obligation_required(const struct zcl_shadow_observation *o)
     return o->base != ZCL_SHADOW_VERDICT_NOT_RUN && o->base != o->patched;
 }
 
+struct shadow_umbrella_ctx {
+    const char *names;
+};
+
+static bool shadow_umbrella_shard_named(const char *full_id, void *ctx)
+{
+    const struct shadow_umbrella_ctx *c = ctx;
+    return zcl_shadow_names_contain(c->names, full_id);
+}
+
+/* `group` is an obligation named the way the frozen corpus names it: the
+ * historic umbrella id for a group later split into shards. A selector or
+ * rule that names every one of that umbrella's shards has named the same
+ * obligation under its post-split identity, so it covers `group` too. */
+static bool shadow_covers_umbrella(const char *names, const char *group)
+{
+    struct shadow_umbrella_ctx ctx = {names};
+    return zcl_test_group_umbrella_subsumed(group, shadow_umbrella_shard_named,
+                                            &ctx);
+}
+
 static bool shadow_covers(enum zcl_shadow_predict_mode mode,
                           const char *names, const char *group)
 {
     return mode == ZCL_SHADOW_PREDICT_ALL ||
-           zcl_shadow_names_contain(names, group);
+           zcl_shadow_names_contain(names, group) ||
+           shadow_covers_umbrella(names, group);
 }
 
 static void shadow_red(uint32_t *count, char *first, const char *group)
