@@ -7368,6 +7368,23 @@ static int test_ic_generation_docs_fresh_refuses_stale(void)
         ASSERT_STR_EQ(why, "proof_generated_docs_stale:"
                       "docs/CAPABILITY_INVENTORY.jsonl "
                       "(make docs-capability-inventory)");
+        /* The checkers run together as steps; the join still names the
+         * earliest refusal in list order when a later one fails first,
+         * and removes every step log it judged. */
+        ASSERT(ic_write(generation, stubs[0],
+                        "#!/bin/sh\nsleep 1\necho FAIL >&2\nexit 1\n"));
+        memset(why, 0, sizeof(why));
+        ASSERT(!zcl_dev_proof_test_generation_docs_fresh(generation, why,
+                                                         sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_generated_docs_stale:"
+                      "docs/CAPABILITY_INVENTORY.jsonl "
+                      "(make docs-capability-inventory)");
+        for (size_t i = 0; i < sizeof(stubs) / sizeof(stubs[0]); i++) {
+            ASSERT(snprintf(script, sizeof(script),
+                            "%s/.generation-docs-fresh-%zu.log", generation,
+                            i) < (int)sizeof(script));
+            ASSERT(access(script, F_OK) != 0);
+        }
         /* A generation without the checkers is a distinct refusal,
          * never a pass. */
         memset(why, 0, sizeof(why));
@@ -7380,6 +7397,105 @@ static int test_ic_generation_docs_fresh_refuses_stale(void)
         ASSERT(system(cmd) == 0);
         PASS();
 #endif
+    } _test_next:;
+    return failures;
+}
+
+/* A generation carrying the four docs-fresh checker scripts (each `exit 0`
+ * unless overwritten) and the three provisioned checker binaries. */
+static bool ic_docs_fresh_fixture(char *generation, size_t len,
+                                  const char *name)
+{
+    static const char *const stubs[] = {
+        "tools/lint/check_capability_inventory_generated.sh",
+        "tools/lint/check_fleet_facts.sh",
+        "tools/lint/check_fleet_observations.sh",
+        "tools/scripts/check_doc_counts.sh",
+        "build/bin/z23-lint",
+        "build/bin/z23-fleet-observe",
+        "build/bin/gen_capability_inventory",
+    };
+    char path[4352];
+    test_make_tmpdir(generation, len, "impact_composition", name);
+    for (size_t i = 0; i < sizeof(stubs) / sizeof(stubs[0]); i++) {
+        if (!ic_write(generation, stubs[i], "#!/bin/sh\nexit 0\n") ||
+            snprintf(path, sizeof(path), "%s/%s", generation, stubs[i]) >=
+                (int)sizeof(path) ||
+            chmod(path, 0755) != 0)
+            return false;
+    }
+    return true;
+}
+
+static int test_ic_generation_docs_fresh_overlapped(void)
+{
+    int failures = 0;
+    TEST("proof generation: overlapped docs checks keep the serial deadline, "
+         "cancel name and precedence") {
+#if defined(_WIN32)
+        ASSERT(true);
+#else
+        char generation[4096], why[256], cmd[4200];
+        ASSERT(ic_docs_fresh_fixture(generation, sizeof(generation),
+                                     "docs-fresh-overlap"));
+        /* Clean and within the deadline: the later verdict stands. */
+        ASSERT(zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 20000, 0, true, NULL, why, sizeof(why)));
+        ASSERT(why[0] == '\0');
+        ASSERT(!zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 20000, 0, false, "impact_plan_incomplete", why,
+            sizeof(why)));
+        ASSERT_STR_EQ(why, "impact_plan_incomplete");
+
+        /* A checker that outlives its deadline and then exits 0 before
+         * the join refuses as a timeout, exactly as the serial capture's
+         * deadline refused it -- never as a pass. */
+        ASSERT(ic_write(generation,
+                        "tools/lint/check_capability_inventory_generated.sh",
+                        "#!/bin/sh\nsleep 1\nexit 0\n"));
+        int64_t begun = platform_time_monotonic_us();
+        ASSERT(!zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 300, 2500, true, NULL, why, sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_generated_docs_check_timeout:"
+                      "docs/CAPABILITY_INVENTORY.jsonl");
+        ASSERT(platform_time_monotonic_us() - begun >= 2500 * 1000);
+        /* Joined at once instead, it is the same refusal. */
+        ASSERT(!zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 300, 0, true, NULL, why, sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_generated_docs_check_timeout:"
+                      "docs/CAPABILITY_INVENTORY.jsonl");
+
+        /* Stale docs outrank a refusal a later proof step took while the
+         * checkers ran, the order the serial check imposed. */
+        ASSERT(ic_write(generation,
+                        "tools/lint/check_capability_inventory_generated.sh",
+                        "#!/bin/sh\necho FAIL >&2\nexit 1\n"));
+        ASSERT(!zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 20000, 200, false, "impact_plan_incomplete", why,
+            sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_generated_docs_stale:"
+                      "docs/CAPABILITY_INVENTORY.jsonl "
+                      "(make docs-capability-inventory)");
+        ASSERT(!zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 20000, 0, true, NULL, why, sizeof(why)));
+        ASSERT_STR_EQ(why, "proof_generated_docs_stale:"
+                      "docs/CAPABILITY_INVENTORY.jsonl "
+                      "(make docs-capability-inventory)");
+
+        /* A cancel that lands before the first checker starts is named a
+         * cancellation, never a missing checker. */
+        zcl_devloop_process_cancel_request();
+        bool cancelled_ok = zcl_dev_proof_test_docs_fresh_overlapped(
+            generation, 20000, 0, true, NULL, why, sizeof(why));
+        zcl_devloop_process_cancel_clear();
+        ASSERT(!cancelled_ok);
+        ASSERT_STR_EQ(why, "proof_generated_docs_check_cancelled:"
+                      "docs/CAPABILITY_INVENTORY.jsonl");
+        ASSERT((size_t)snprintf(cmd, sizeof(cmd), "rm -rf '%s'",
+                                generation) < sizeof(cmd));
+        ASSERT(system(cmd) == 0);
+#endif
+        PASS();
     } _test_next:;
     return failures;
 }
@@ -9301,6 +9417,7 @@ int test_impact_composition(void)
     failures += test_ic_generation_hooks_configure_points_at_its_own_copy();
 #if !defined(_WIN32)
     failures += test_ic_generation_docs_fresh_refuses_stale();
+    failures += test_ic_generation_docs_fresh_overlapped();
     failures += test_ic_generation_docs_fresh_refuses_missing_tools();
     failures += test_ic_generation_dependencies_survive_vendor_cleanup();
     failures += test_ic_generation_refuses_forged_verdict();

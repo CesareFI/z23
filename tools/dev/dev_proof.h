@@ -491,6 +491,17 @@ bool zcl_dev_proof_test_generation_dependencies(const char *root,
  * full proof cycle. */
 bool zcl_dev_proof_test_generation_docs_fresh(const char *generation,
                                               char *why, size_t why_len);
+/* Seam for the overlapped form proof_worker() runs: start the same checkers
+ * with a `timeout_ms` deadline, spend `overlap_ms` as the proof's own steps
+ * would, then settle them against the verdict those steps reached
+ * (`later_ok`, or the refusal `later_why`) exactly as proof_worker() does.
+ * Returns the final verdict with its reason in `why`. */
+bool zcl_dev_proof_test_docs_fresh_overlapped(const char *generation,
+                                              int64_t timeout_ms,
+                                              int64_t overlap_ms,
+                                              bool later_ok,
+                                              const char *later_why,
+                                              char *why, size_t why_len);
 /* Seam for the retirement proof_worker() runs on `generation` (a worktree
  * of `repo_root`) once its proof settles: `passed` is the proof's verdict,
  * and `donor_eligible` stands in an eligible donor verdict for the real

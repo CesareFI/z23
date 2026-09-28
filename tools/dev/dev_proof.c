@@ -42,6 +42,7 @@
 #include <ftw.h>
 #endif
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -5436,77 +5437,269 @@ static bool dp_docs_tools_present(const char *generation,
     return true;
 }
 
-static bool dp_docs_fresh_run_checker(
-    const char *generation, const struct dp_docs_fresh_artifact *artifact,
-    char *why, size_t why_len)
+/* The checkers read only the sealed generation and write only their own
+ * temporaries, so they need not hold the proof's serial path. They start
+ * together as proof steps at the very end of generation_prepare(), after
+ * the last write it makes into the generation, and are joined before the
+ * first step that builds in it (the closure refresh build, or the
+ * dimensions). Between those points the proof writes into the generation
+ * only untracked files no checker reads: the native source snapshot under
+ * .codeindex/ (a directory the inventory scanner prunes) and the
+ * source-identity batch tool under build/bin/; every other checker reads
+ * tracked files or named docs. Nothing about the verdict moves:
+ *   - a watcher thread polls the steps from the moment they start, so a
+ *     checker still running at its deadline is killed then and refused as
+ *     a timeout, exactly as the serial capture's own deadline did, even
+ *     when the join comes later; if no watcher can be started the checkers
+ *     are waited for at once, which is the serial order;
+ *   - the join judges the checkers in list order, so the first checker
+ *     that is not clean names the refusal;
+ *   - a checker whose script is absent refuses at its own position, and
+ *     none after it is started, because no later result could change that
+ *     answer. */
+enum dp_docs_fresh_slot {
+    DP_DOCS_FRESH_UNSTARTED = 0,
+    DP_DOCS_FRESH_PATH_INVALID,
+    DP_DOCS_FRESH_SCRIPT_MISSING,
+    DP_DOCS_FRESH_START_FAILED,
+    DP_DOCS_FRESH_STARTED,
+};
+
+struct dp_docs_fresh_run {
+    struct zcl_dev_proof_step steps[DP_DOCS_FRESH_N];
+    enum dp_docs_fresh_slot slots[DP_DOCS_FRESH_N];
+    char log_dir[PATH_MAX];
+    int64_t started_us;
+    int64_t timeout_ms;
+    bool active;
+    /* While set, the watcher owns `steps`; nothing else touches them until
+     * dp_docs_fresh_join() has joined it. */
+    bool watching;
+    pthread_t watcher;
+};
+
+/* The step log that stands in for the serial capture buffer. Dot-named and
+ * removed by the join, so an attempt's log directory keeps its file set. */
+static bool dp_docs_fresh_log_path(const struct dp_docs_fresh_run *run,
+                                   size_t index, char *out, size_t out_len)
 {
-    char script[PATH_MAX];
-    if (!generation || !generation[0] ||
-        snprintf(script, sizeof(script), "%s/%s", generation,
-                 artifact->check) >= (int)sizeof(script)) {
-        proof_why(why, why_len, "proof_generated_docs_path_invalid");
-        return false;
+    return snprintf(out, out_len, "%s/.generation-docs-fresh-%zu.log",
+                    run->log_dir, index) < (int)out_len;
+}
+
+/* The same bytes the serial capture judged: the head of the merged
+ * stdout+stderr, NUL-terminated. */
+static bool dp_docs_fresh_log_head(const char *path, char *out,
+                                   size_t out_len)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    size_t used = 0;
+    while (used + 1 < out_len) {
+        ssize_t n = read(fd, out + used, out_len - 1 - used);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) {
+            (void)close(fd);
+            return false;
+        }
+        if (n == 0) break;
+        used += (size_t)n;
     }
+    out[used] = '\0';
+    return close(fd) == 0;
+}
+
+static enum dp_docs_fresh_slot dp_docs_fresh_start_one(
+    struct dp_docs_fresh_run *run, const char *generation, size_t index)
+{
+    const struct dp_docs_fresh_artifact *artifact = &DP_DOCS_FRESH[index];
+    char script[PATH_MAX], log_path[PROOF_LOG_PATH_MAX];
+    if (snprintf(script, sizeof(script), "%s/%s", generation,
+                 artifact->check) >= (int)sizeof(script) ||
+        !dp_docs_fresh_log_path(run, index, log_path, sizeof(log_path)))
+        return DP_DOCS_FRESH_PATH_INVALID;
     /* The generation's own copy: the check script resolves its tree
      * from its own location, so this binds the verdict to the sealed
      * bytes rather than the submitting checkout. */
     struct stat st;
-    if (stat(script, &st) != 0 || !S_ISREG(st.st_mode)) {
-        proof_whyf(why, why_len, "proof_generated_docs_checker_missing:%s",
-                   artifact->check);
+    if (stat(script, &st) != 0 || !S_ISREG(st.st_mode))
+        return DP_DOCS_FRESH_SCRIPT_MISSING;
+    const char *argv[] = { script, artifact->tool_arg, NULL };
+    /* The serial capture's wall deadline, exactly: killed at `timeout_ms`
+     * whatever it prints, with no host ceiling to shorten it. */
+    const struct zcl_dev_proof_budget budget = {
+        .budget_ms = run->timeout_ms,
+        .ceiling_ms = 0,
+        .no_progress_ms = 0,
+    };
+    return zcl_dev_proof_step_start(&run->steps[index], generation, log_path,
+                                    argv, &budget)
+               ? DP_DOCS_FRESH_STARTED
+               : DP_DOCS_FRESH_START_FAILED;
+}
+
+/* Poll every started checker until all have finished, killing each at its
+ * deadline. Touches only the steps (waitpid, stat, kill, sleep), never the
+ * allocator or stdio, so the proof may fork its own children meanwhile. */
+static void *dp_docs_fresh_watch(void *opaque)
+{
+    struct dp_docs_fresh_run *run = opaque;
+    (void)zcl_dev_proof_steps_wait(run->steps, DP_DOCS_FRESH_N);
+    return NULL;
+}
+
+static bool dp_docs_fresh_start(struct dp_docs_fresh_run *run,
+                                const char *generation, const char *log_dir,
+                                int64_t timeout_ms, char *why, size_t why_len)
+{
+    memset(run, 0, sizeof(*run));
+    if (!dp_docs_tools_present(generation, why, why_len)) return false;
+    if (!log_dir || !log_dir[0] || timeout_ms <= 0 ||
+        snprintf(run->log_dir, sizeof(run->log_dir), "%s", log_dir) >=
+            (int)sizeof(run->log_dir)) {
+        proof_why(why, why_len, "proof_generated_docs_path_invalid");
         return false;
     }
-    const char *argv[] = { script, artifact->tool_arg, NULL };
-    char out[4096];
-    bool timed_out = false;
-    int rc = zcl_spawn_capture_merged_observed(argv, out, sizeof(out),
-                                               DP_DOCS_FRESH_TIMEOUT_MS,
-                                               &timed_out);
-    if (timed_out) {
+    run->timeout_ms = timeout_ms;
+    run->started_us = platform_time_monotonic_us();
+    run->active = true;
+    for (size_t i = 0; i < DP_DOCS_FRESH_N; i++) {
+        run->slots[i] = dp_docs_fresh_start_one(run, generation, i);
+        if (run->slots[i] != DP_DOCS_FRESH_STARTED) break;
+    }
+    // raw-pthread-ok:bounded watcher, always joined by dp_docs_fresh_join()
+    run->watching = pthread_create(&run->watcher, NULL, dp_docs_fresh_watch,
+                                   run) == 0;
+    /* No watcher, no overlap: wait for the checkers here, the serial order,
+     * so no deadline is ever left unenforced. */
+    if (!run->watching)
+        (void)zcl_dev_proof_steps_wait(run->steps, DP_DOCS_FRESH_N);
+    return true;
+}
+
+/* One started checker's verdict, worded exactly as the serial capture
+ * worded it. */
+static bool dp_docs_fresh_step_verdict(const struct dp_docs_fresh_run *run,
+                                       size_t index, char *why,
+                                       size_t why_len)
+{
+    const struct dp_docs_fresh_artifact *artifact = &DP_DOCS_FRESH[index];
+    const struct zcl_dev_proof_step_report *report =
+        &run->steps[index].report;
+    if (report->cause == ZCL_DEV_PROOF_KILL_CANCELLED) {
+        proof_whyf(why, why_len, "proof_generated_docs_check_cancelled:%s",
+                   artifact->rel);
+        return false;
+    }
+    if (report->cause != ZCL_DEV_PROOF_KILL_NONE) {
         proof_whyf(why, why_len, "proof_generated_docs_check_timeout:%s",
                    artifact->rel);
         return false;
     }
-    if (rc < 0) {
+    if (report->rc < 0) {
         proof_whyf(why, why_len, "proof_generated_docs_checker_missing:%s",
                    artifact->check);
         return false;
     }
-    if (rc != 0) {
-        /* A checker that dies on its toolchain (exec-failure rc, the
-         * shell's ENOENT text, or a FATAL over a missing input) keeps
-         * its rc and check identity in a typed tool failure. Only a
-         * checker that ran and reported drift refuses as stale. */
-        if (dp_docs_output_signals_tool_failure(out, rc)) {
-            proof_whyf(why, why_len,
-                       "proof_generated_docs_checker_tool_failure:%s:rc_%d",
-                       artifact->check, rc);
-            return false;
-        }
-        proof_whyf(why, why_len, "proof_generated_docs_stale:%s (%s)",
-                   artifact->rel, artifact->regen);
+    if (report->rc == 0) return true;
+    char log_path[PROOF_LOG_PATH_MAX], out[4096];
+    if (!dp_docs_fresh_log_path(run, index, log_path, sizeof(log_path)) ||
+        !dp_docs_fresh_log_head(log_path, out, sizeof(out))) {
+        proof_whyf(why, why_len,
+                   "proof_generated_docs_checker_log_unreadable:%s",
+                   artifact->check);
         return false;
     }
-    return true;
+    /* A checker that dies on its toolchain (exec-failure rc, the
+     * shell's ENOENT text, or a FATAL over a missing input) keeps
+     * its rc and check identity in a typed tool failure. Only a
+     * checker that ran and reported drift refuses as stale. */
+    if (dp_docs_output_signals_tool_failure(out, report->rc)) {
+        proof_whyf(why, why_len,
+                   "proof_generated_docs_checker_tool_failure:%s:rc_%d",
+                   artifact->check, report->rc);
+        return false;
+    }
+    proof_whyf(why, why_len, "proof_generated_docs_stale:%s (%s)",
+               artifact->rel, artifact->regen);
+    return false;
 }
 
-static bool dp_generation_docs_fresh(const char *generation,
-                                     char *why, size_t why_len)
+static bool dp_docs_fresh_slot_verdict(const struct dp_docs_fresh_run *run,
+                                       size_t index, char *why,
+                                       size_t why_len)
 {
-    if (!dp_docs_tools_present(generation, why, why_len)) return false;
-    for (size_t i = 0; i < DP_DOCS_FRESH_N; i++) {
-        if (!dp_docs_fresh_run_checker(generation, &DP_DOCS_FRESH[i], why,
-                                       why_len))
+    switch (run->slots[index]) {
+    case DP_DOCS_FRESH_STARTED:
+        return dp_docs_fresh_step_verdict(run, index, why, why_len);
+    case DP_DOCS_FRESH_PATH_INVALID:
+        proof_why(why, why_len, "proof_generated_docs_path_invalid");
+        return false;
+    case DP_DOCS_FRESH_START_FAILED:
+        /* A cancel that lands before the checker could start is still a
+         * cancellation, named as one, never a missing checker. */
+        if (run->steps[index].report.cause == ZCL_DEV_PROOF_KILL_CANCELLED) {
+            proof_whyf(why, why_len,
+                       "proof_generated_docs_check_cancelled:%s",
+                       DP_DOCS_FRESH[index].rel);
             return false;
+        }
+        proof_whyf(why, why_len, "proof_generated_docs_checker_missing:%s",
+                   DP_DOCS_FRESH[index].check);
+        return false;
+    case DP_DOCS_FRESH_SCRIPT_MISSING:
+        proof_whyf(why, why_len, "proof_generated_docs_checker_missing:%s",
+                   DP_DOCS_FRESH[index].check);
+        return false;
+    case DP_DOCS_FRESH_UNSTARTED:
+        break;
     }
-    return true;
+    /* Unreachable: the start loop stops only after a refusing slot. */
+    proof_why(why, why_len, "proof_generated_docs_path_invalid");
+    return false;
+}
+
+/* Wait for every started checker, then judge them in list order. Always
+ * reaps and always removes the step logs, whatever the verdict. */
+static bool dp_docs_fresh_join(struct dp_docs_fresh_run *run,
+                               char *why, size_t why_len)
+{
+    if (!run->active) return true;
+    run->active = false;
+    bool joined = true;
+    if (run->watching) {
+        joined = pthread_join(run->watcher, NULL) == 0;
+        run->watching = false;
+    }
+    if (!joined) {
+        /* The watcher may still own the steps; judge nothing from them. */
+        proof_why(why, why_len, "proof_generated_docs_check_join_failed");
+        return false;
+    }
+    (void)zcl_dev_proof_steps_wait(run->steps, DP_DOCS_FRESH_N);
+    bool ok = true;
+    for (size_t i = 0; i < DP_DOCS_FRESH_N && ok; i++)
+        ok = dp_docs_fresh_slot_verdict(run, i, why, why_len);
+    for (size_t i = 0; i < DP_DOCS_FRESH_N; i++) {
+        char log_path[PROOF_LOG_PATH_MAX];
+        if (run->slots[i] == DP_DOCS_FRESH_STARTED &&
+            dp_docs_fresh_log_path(run, i, log_path, sizeof(log_path)))
+            (void)unlink(log_path);
+    }
+    return ok;
 }
 
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+/* The whole gate in one call, start then join, with the checker logs in
+ * the generation itself: what generation_prepare() and the proof's join
+ * points do together, without a proof around them. */
 bool zcl_dev_proof_test_generation_docs_fresh(const char *generation,
                                               char *why, size_t why_len)
 {
-    return dp_generation_docs_fresh(generation, why, why_len);
+    struct dp_docs_fresh_run run;
+    return dp_docs_fresh_start(&run, generation, generation,
+                               DP_DOCS_FRESH_TIMEOUT_MS, why, why_len) &&
+           dp_docs_fresh_join(&run, why, why_len);
 }
 #endif
 
@@ -5558,6 +5751,65 @@ static void dp_generation_stage_note(const struct proof_paths *paths,
     if (n > 0 && (size_t)n < sizeof(value))
         (void)zcl_dev_proof_phase_note(paths->phases, stage, value);
 }
+
+/* Join the docs-fresh checkers generation_prepare() started, noting in
+ * phases.txt how long they ran and how much of that the proof waited on.
+ * A run that never started, or was already joined, passes through. */
+static bool dp_docs_fresh_settle(struct dp_docs_fresh_run *run,
+                                 const struct proof_paths *paths,
+                                 char *why, size_t why_len)
+{
+    if (!run || !run->active) return true;
+    int64_t wait_started_us = platform_time_monotonic_us();
+    bool ok = dp_docs_fresh_join(run, why, why_len);
+    if (paths && paths->phases[0]) {
+        dp_generation_stage_note(paths, "generation_docs_fresh_us",
+                                 run->started_us);
+        dp_generation_stage_note(paths, "generation_docs_fresh_wait_us",
+                                 wait_started_us);
+    }
+    return ok;
+}
+
+/* proof_worker()'s last word on the checkers, on every path after
+ * generation_prepare(): serially they finished before any later step
+ * began, so a refusal a later step took while they ran is reported only
+ * when they are clean, and theirs replaces it otherwise. `ok` and `why`
+ * are the worker's verdict so far. */
+static bool dp_worker_docs_verdict(struct dp_docs_fresh_run *docs,
+                                   const struct proof_paths *paths, bool ok,
+                                   char *why, size_t why_len)
+{
+    char docs_why[512] = {0};
+    if (dp_docs_fresh_settle(docs, paths, docs_why, sizeof(docs_why)))
+        return ok;
+    proof_why(why, why_len, docs_why);
+    return false;
+}
+
+#if defined(ZCL_TESTING)
+bool zcl_dev_proof_test_docs_fresh_overlapped(const char *generation,
+                                              int64_t timeout_ms,
+                                              int64_t overlap_ms,
+                                              bool later_ok,
+                                              const char *later_why,
+                                              char *why, size_t why_len)
+{
+    if (!why || why_len == 0) return false;
+    why[0] = '\0';
+    struct proof_paths paths;
+    memset(&paths, 0, sizeof(paths));
+    struct dp_docs_fresh_run run;
+    if (!dp_docs_fresh_start(&run, generation, generation, timeout_ms, why,
+                             why_len))
+        return false;
+    /* The proof's own steps between the start and the join. */
+    if (overlap_ms > 0) platform_sleep_ms((int)overlap_ms);
+    if (!later_ok)
+        (void)snprintf(why, why_len, "%s", later_why ? later_why : "");
+    return dp_worker_docs_verdict(&run, &paths, later_ok, why, why_len);
+}
+#endif
 
 /* After its own proof, a generation that passed has nothing left to give.
  * Its exact pair is never proven again (a passed pair's receipt is reused,
@@ -5651,6 +5903,7 @@ static bool generation_prepare(const struct proof_paths *paths,
                                const char *local,
                                struct platform_ram_scratch_lease *ram_lease,
                                struct proof_warmstart *warm,
+                               struct dp_docs_fresh_run *docs,
                                char generation[PATH_MAX],
                                char *why, size_t why_len)
 {
@@ -5706,16 +5959,16 @@ static bool generation_prepare(const struct proof_paths *paths,
      * checker binaries no fresh generation carries (binaries are never
      * warm-seeded), so provision exactly those two tools first; without
      * them every script exec-fails and every proof refuses as stale docs.
-     * Only untracked build outputs are written, never the sealed bytes. */
+     * Only untracked build outputs are written, never the sealed bytes.
+     * The checkers themselves start at the end of this function, after
+     * its last write into the generation, and run beside the proof steps
+     * that follow until dp_docs_fresh_settle() joins them (see the
+     * dp_docs_fresh_run comment); their refusal outranks any refusal taken
+     * meanwhile, the order this serial check used to impose. */
     stage_started_us = platform_time_monotonic_us();
     if (!dp_generation_docs_tools(paths, generation, why, why_len))
         return false;
     dp_generation_stage_note(paths, "generation_docs_tools_us",
-                             stage_started_us);
-    stage_started_us = platform_time_monotonic_us();
-    if (!dp_generation_docs_fresh(generation, why, why_len))
-        return false;
-    dp_generation_stage_note(paths, "generation_docs_fresh_us",
                              stage_started_us);
     /* Close the lazy-bootstrap race before any dimension's `make` process
      * exists for this generation (see generation_zcc_bootstrap). */
@@ -5738,12 +5991,17 @@ static bool generation_prepare(const struct proof_paths *paths,
     dp_generation_warm(paths, parent, generation, local, warm);
     /* Last, so it can only ever run against a generation that is stamped
      * and therefore cannot be the thing reclaimed, and so it sits after
-     * every statement that can set `why`. Placed here it has no reachable
-     * way to change what this function returns or reports. */
+     * every statement that can set `why` but the read-only checker start
+     * after it. Placed here it has no reachable way to change what this
+     * function returns or reports. */
     generation_pool_reap(paths, parent, generation);
     dp_generation_stage_note(paths, "generation_warm_and_reap_us",
                              stage_started_us);
-    return true;
+    /* Only now, after the last write this function makes into the
+     * generation (the zcc bootstrap, the taken stamp, any warm seed), do
+     * the docs-fresh checkers start; dp_docs_fresh_settle() joins them. */
+    return dp_docs_fresh_start(docs, generation, paths->logs,
+                               DP_DOCS_FRESH_TIMEOUT_MS, why, why_len);
 }
 
 /* Every proof step runs under a budget it earned, watched by its own log.
@@ -7663,6 +7921,8 @@ struct dp_worker {
     struct proof_phase_clock *phases;
     const struct proof_warmstart *warm;
     const struct zcl_dev_proof_changed_set *changed;
+    /* The docs-fresh checkers still running beside the read-only steps. */
+    struct dp_docs_fresh_run *docs;
     bool inventory_only;
     bool structure_widened;
     struct zcl_devloop_plan plan;
@@ -7698,6 +7958,8 @@ struct dp_worker {
 static bool dp_worker_refresh_include_graph(struct dp_worker *w,
                                             char *why, size_t why_len)
 {
+    /* This build writes into the generation the checkers are reading. */
+    if (!dp_docs_fresh_settle(w->docs, w->paths, why, why_len)) return false;
     char jobs[16];
     if (!proof_make_jobs_arg(jobs)) {
         proof_why(why, why_len, "proof_job_count_unavailable");
@@ -8822,6 +9084,7 @@ static bool proof_worker_body(const struct proof_paths *paths,
                               struct proof_phase_clock *phases,
                               const struct proof_warmstart *warm,
                               const struct zcl_dev_proof_changed_set *changed,
+                              struct dp_docs_fresh_run *docs,
                               char *why, size_t why_len)
 {
     struct dp_worker w = {0};
@@ -8835,6 +9098,7 @@ static bool proof_worker_body(const struct proof_paths *paths,
     w.phases = phases;
     w.warm = warm;
     w.changed = changed;
+    w.docs = docs;
     w.inventory_only = inventory_output_only(changed->files, changed->count);
     w.warm_compile_mode = "skipped";
     if (!dp_worker_plan(&w, changed->files, changed->count, why, why_len))
@@ -8843,6 +9107,9 @@ static bool proof_worker_body(const struct proof_paths *paths,
     if (!dp_worker_receipt_identity(&w, why, why_len)) return false;
     if (!dp_worker_build_identity(&w, why, why_len)) return false;
     if (!dp_worker_select(&w, why, why_len)) return false;
+    /* Every step above only read the generation; the dimensions write it. */
+    if (!dp_docs_fresh_settle(docs, paths, why, why_len)) return false;
+    proof_phase_mark(phases, "docs_fresh_join");
     bool cycle_reused =
         !w.receipt.dimensions[ZCL_DEV_PROOF_GENERATED].selected &&
         cycle_proof_reuse(paths, w.source_before.cas_root_sha3,
@@ -9082,6 +9349,15 @@ static bool proof_clang_runtime_check(char *why, size_t why_len)
     return true;
 }
 
+static bool proof_worker_generation(const struct proof_paths *paths,
+                                    const char *local, const char *base,
+                                    const char *generation,
+                                    int64_t started_us,
+                                    struct proof_phase_clock *phases,
+                                    const struct proof_warmstart *warm,
+                                    struct dp_docs_fresh_run *docs,
+                                    char *why, size_t why_len);
+
 static bool proof_worker(const struct proof_paths *paths,
                          const char *local, const char *base,
                          struct platform_ram_scratch_lease *ram_lease,
@@ -9117,10 +9393,36 @@ static bool proof_worker(const struct proof_paths *paths,
     proof_phase_mark(&phases, "original_plan_prepare");
     char generation[PATH_MAX];
     struct proof_warmstart warm = {0};
-    if (!generation_prepare(paths, local, ram_lease, &warm, generation, why,
-                            why_len))
-        return false;
-    proof_phase_mark(&phases, "generation_prepare");
+    struct dp_docs_fresh_run docs = {0};
+    bool generation_ready = generation_prepare(paths, local, ram_lease,
+                                               &warm, &docs, generation,
+                                               why, why_len);
+    bool ok = generation_ready;
+    if (ok) {
+        proof_phase_mark(&phases, "generation_prepare");
+        ok = proof_worker_generation(paths, local, base, generation,
+                                     started_us, &phases, &warm, &docs, why,
+                                     why_len);
+    }
+    ok = dp_worker_docs_verdict(&docs, paths, ok, why, why_len);
+    /* Only a published PASS retires the generation; every refusal keeps
+     * it for the exact retry (dp_generation_retire_with()). */
+    if (generation_ready) dp_generation_retire(paths, generation, ok);
+    return ok;
+}
+
+/* The generation-bound half of the worker: the changed set, then the body.
+ * Split out so proof_worker() has one place that joins the docs-fresh
+ * checkers on every refusal below. */
+static bool proof_worker_generation(const struct proof_paths *paths,
+                                    const char *local, const char *base,
+                                    const char *generation,
+                                    int64_t started_us,
+                                    struct proof_phase_clock *phases,
+                                    const struct proof_warmstart *warm,
+                                    struct dp_docs_fresh_run *docs,
+                                    char *why, size_t why_len)
+{
     char scratch[PATH_MAX];
     if (snprintf(scratch, sizeof(scratch), "%s.capture", paths->changed) >=
         (int)sizeof(scratch)) {
@@ -9142,13 +9444,10 @@ static bool proof_worker(const struct proof_paths *paths,
                                            paths->changed, &changed, why,
                                            why_len))
         return false;
-    proof_phase_mark(&phases, "changed_files_capture");
+    proof_phase_mark(phases, "changed_files_capture");
     bool ok = proof_worker_body(paths, local, base, generation, started_us,
-                                &phases, &warm, &changed, why, why_len);
+                                phases, warm, &changed, docs, why, why_len);
     zcl_dev_proof_changed_set_release(&changed);
-    /* Only a published PASS retires the generation; every refusal keeps
-     * it for the exact retry (dp_generation_retire_with()). */
-    dp_generation_retire(paths, generation, ok);
     return ok;
 }
 
