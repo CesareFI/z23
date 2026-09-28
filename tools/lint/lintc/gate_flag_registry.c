@@ -35,7 +35,7 @@
 
 enum {
     FR_MAX = 4096,   /* headroom over the ~1154 rows the first sweep found */
-    FR_WHY = 512,
+    FR_WHY = 2048,   /* a why_ joined from adjacent literals */
     FR_DEF_BUF = 512 * 1024,
 };
 
@@ -86,6 +86,25 @@ static int fr_skip_close(const char **cur)
     return 1;
 }
 
+/* A why_ written as adjacent string literals ("a " "b") is one C string;
+ * appends every literal that follows the first (only blanks between) to
+ * why, so a "first use" clause in a later literal is parsed and proved —
+ * before this, such a pointer was never checked at all. */
+static void fr_join_adjacent(const char **cur, char *why, size_t cap)
+{
+    const char *p = *cur;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+            p++;
+        if (*p != '"')
+            return;
+        size_t used = strlen(why);
+        if (!fr_next_quoted(&p, why + used, cap - used))
+            return;
+        *cur = p;
+    }
+}
+
 static int fr_parse_one(const char **cur, struct fr_row *row)
 {
     char why[FR_WHY];
@@ -100,6 +119,7 @@ static int fr_parse_one(const char **cur, struct fr_row *row)
         return 0;
     if (!fr_next_quoted(cur, why, sizeof why))
         return 0;
+    fr_join_adjacent(cur, why, sizeof why);
     row->fu_present = fru_parse_pointer(why, row->fu_path, sizeof row->fu_path,
                                         &row->fu_line);
     return fr_skip_close(cur);
@@ -324,9 +344,10 @@ static int fr_report_unreg(struct fr_ctx *ctx, const char *path, int lineno,
 }
 
 /* grp is the capture group holding the flag name: 2 for the C regex (whose
- * first group is the reader — getenv, env_or or env_int_or), 1 for shell. */
+ * first group is the reader — getenv, env_or or env_int_or), 1 for shell.
+ * *at is where the whole match (the reader token, or the '$') starts. */
 static int fr_cap_one(const regex_t *re, const char *cursor, char *name, size_t cap,
-                      size_t *adv, int base, int grp)
+                      size_t *adv, size_t *at, int base, int grp)
 {
     regmatch_t m[3];
     int eflags = base ? REG_NOTBOL : 0;
@@ -338,38 +359,43 @@ static int fr_cap_one(const regex_t *re, const char *cursor, char *name, size_t 
     memcpy(name, cursor + m[grp].rm_so, ln);
     name[ln] = '\0';
     *adv = (size_t)m[0].rm_eo;
+    *at = (size_t)m[0].rm_so;
     return 1;
 }
 
-static int fr_scan_line(struct fr_ctx *ctx, const regex_t *re, int grp,
-                        const char *path, int lineno, const char *line)
+/* A registered read: the row is live, and — when it is a real read in the
+ * very file the row's first-use pointer names — that pointer's file is
+ * proved to read it (what ":auto" checks and --auto-pointers rebinds to). */
+static void fr_note_read(struct fr_row *row, const struct fr_line *ln,
+                         size_t off, const char *name)
 {
-    const char *cursor = line;
+    row->used = 1;
+    if (row->fu_present && !row->fu_read_seen
+        && strcmp(row->fu_path, ln->path) == 0
+        && frl_read_is_real(ln, off, name))
+        row->fu_read_seen = 1;
+}
+
+static int fr_scan_line(struct fr_ctx *ctx, const regex_t *re, int grp,
+                        const struct fr_line *ln)
+{
+    const char *cursor = ln->text;
     int base = 0;
     for (;;) {
         char name[FR_NAME];
-        size_t adv = 0;
-        if (!fr_cap_one(re, cursor, name, sizeof name, &adv, base, grp))
+        size_t adv = 0, at = 0;
+        if (!fr_cap_one(re, cursor, name, sizeof name, &adv, &at, base, grp))
             return 0;
         ctx->reads++;
         int idx = fr_find(ctx->rows, ctx->n, name);
-        int rc;
-        if (idx < 0)
-            rc = fr_report_unreg(ctx, path, lineno, name);
+        if (idx >= 0)
+            fr_note_read(&ctx->rows[idx], ln,
+                         (size_t)(cursor - ln->text) + at, name);
         else {
-            ctx->rows[idx].used = 1;
-            if (ctx->rows[idx].fu_present && ctx->rows[idx].fu_line == -1
-                && strcmp(ctx->rows[idx].fu_path, path) == 0
-                && !fr_is_c_path(path)) {
-                const char *hash = strchr(line, '#');
-                const char *name_at = strstr(cursor, name);
-                if (name_at && (!hash || hash > name_at))
-                    ctx->rows[idx].fu_auto_seen = 1;
-            }
-            rc = 0;
+            int rc = fr_report_unreg(ctx, ln->path, ln->lineno, name);
+            if (rc)
+                return rc;
         }
-        if (rc)
-            return rc;
         cursor += adv;
         base = 1;
         if (*cursor == '\0')
@@ -380,22 +406,27 @@ static int fr_scan_line(struct fr_ctx *ctx, const regex_t *re, int grp,
 static int fr_scan_file(const char *path, void *vctx)
 {
     struct fr_ctx *ctx = vctx;
-    int is_c = fr_is_c_path(path);
-    const regex_t *re = is_c ? &g_fr_c_re : &g_fr_sh_re;
-    int grp = is_c ? 2 : 1;
+    struct fr_line ln = { .path = path, .is_c = fr_is_c_path(path),
+                          .c_state = FR_CODE };
+    const regex_t *re = ln.is_c ? &g_fr_c_re : &g_fr_sh_re;
+    int grp = ln.is_c ? 2 : 1;
     FILE *f = fopen(path, "r");
     if (!f)
         return die("z23-lint: cannot open %s\n", path);
     ctx->files++;
     char *line = NULL;
     size_t cap = 0;
-    ssize_t nread;
-    int lineno = 0, rc = 0;
-    while ((nread = getline(&line, &cap, f)) >= 0) {
-        lineno++;
-        rc = fr_scan_line(ctx, re, grp, path, lineno, line);
+    int rc = 0;
+    while (getline(&line, &cap, f) >= 0) {
+        ln.lineno++;
+        ln.text = line;
+        if (ln.is_c && ln.c_state == FR_CODE)
+            ln.if0 = frl_c_if0(line, ln.if0);
+        rc = fr_scan_line(ctx, re, grp, &ln);
         if (rc)
             break;
+        if (ln.is_c)
+            ln.c_state = frl_c_state_after(line, ln.c_state);
     }
     return fin(f, line, path, rc);
 }
@@ -495,46 +526,57 @@ static int fr_run_impl(const char *def_path, const char *ls_cmd,
     return fr_reconcile(rows, n, head_date, ctx.reads, out);
 }
 
-/* ── --fix-pointers ──────────────────────────────────────────────────── */
+/* ── --fix-pointers / --auto-pointers ────────────────────────────────── */
 
-/* Rewrites the single "first use <path>:<old_line>" token for one drifted
- * row to "first use <path>:<new_line>", in place inside buf (capacity
- * bufcap, NUL-terminated). Only the digits after the token's final colon
- * move; every other byte — including the path, the quotes around it, and
- * everything outside this one token — is untouched. Returns 0 on success,
- * -1 when the exact old token can't be found (a parser/state mismatch the
- * caller treats as fatal, never a silent no-op) or the rewrite would not
- * fit in bufcap. */
-static int fr_fix_apply(char *buf, size_t bufcap, const char *path,
-                        int old_line, int new_line)
+/* Finds row name's own "first use <path>:<old_line>" token inside that
+ * row's Z23_FLAG(...) text in buf — never another row's, because two flags
+ * read on one line cite the same <path>:<line> — and returns where its
+ * digits start (*len: how many), or NULL. ":31" never matches the prefix
+ * of ":314". */
+static char *fr_row_token_digits(char *buf, const char *name, const char *path,
+                                 int old_line, size_t *len)
 {
+    char head[FR_NAME + 16];
     char needle[FR_FU_PATH + 48];
+    int hlen = snprintf(head, sizeof head, "Z23_FLAG(\"%s\"", name);
     int nlen = snprintf(needle, sizeof needle, "first use %s:%d", path,
                         old_line);
-    if (nlen <= 0 || (size_t)nlen >= sizeof needle)
+    int dlen = snprintf(NULL, 0, "%d", old_line);
+    if (hlen <= 0 || (size_t)hlen >= sizeof head || nlen <= 0
+        || (size_t)nlen >= sizeof needle || dlen <= 0)
+        return NULL;
+    char *row = strstr(buf, head);
+    if (!row)
+        return NULL;
+    char *next = strstr(row + hlen, "Z23_FLAG(");
+    for (char *hit = strstr(row, needle); hit && (!next || hit < next);
+         hit = strstr(hit + 1, needle))
+        if (hit[nlen] < '0' || hit[nlen] > '9') {
+            *len = (size_t)dlen;
+            return hit + nlen - dlen;
+        }
+    return NULL;
+}
+
+/* Rewrites the text after the colon of row name's single first-use token
+ * ("<old_line>") to repl — a new line number, or "auto" — in place inside
+ * buf (capacity bufcap, NUL-terminated). Every other byte, including the
+ * path and every other row, is untouched. Returns 0 on success, -1 when
+ * the row's own old token can't be found (a parser/state mismatch the
+ * caller treats as fatal, never a silent no-op) or the rewrite would not
+ * fit in bufcap. */
+static int fr_fix_apply(char *buf, size_t bufcap, const char *name,
+                        const char *path, int old_line, const char *repl)
+{
+    size_t old_len = 0;
+    char *at = fr_row_token_digits(buf, name, path, old_line, &old_len);
+    if (!at)
         return -1;
-    /* ":31" must not match the prefix of another row's ":314". */
-    char *hit = strstr(buf, needle);
-    while (hit && hit[nlen] >= '0' && hit[nlen] <= '9')
-        hit = strstr(hit + 1, needle);
-    if (!hit)
+    size_t rlen = strlen(repl);
+    if (strlen(buf) - old_len + rlen + 1 > bufcap)
         return -1;
-    const char *colon = strrchr(needle, ':');
-    size_t prefix_len = (size_t)(colon - needle) + 1;
-    char *digits_at = hit + prefix_len;
-    size_t old_digits_len = (size_t)nlen - prefix_len;
-    char newdigits[16];
-    int dlen = snprintf(newdigits, sizeof newdigits, "%d", new_line);
-    if (dlen <= 0 || (size_t)dlen >= (int)sizeof newdigits)
-        return -1;
-    size_t buflen = strlen(buf);
-    size_t tail_at = (size_t)(digits_at - buf) + old_digits_len;
-    size_t tail_len = buflen - tail_at + 1; /* +1 carries the NUL along */
-    size_t new_buflen = buflen - old_digits_len + (size_t)dlen;
-    if (new_buflen + 1 > bufcap)
-        return -1;
-    memmove(digits_at + dlen, buf + tail_at, tail_len);
-    memcpy(digits_at, newdigits, (size_t)dlen);
+    memmove(at + rlen, at + old_len, strlen(at + old_len) + 1);
+    memcpy(at, repl, rlen);
     return 0;
 }
 
@@ -585,7 +627,10 @@ static int fr_fix_one(struct fr_row *row, char *defbuf, size_t defcap,
                       row->fu_path, row->fu_line, row->name) < 0
             ? die("z23-lint: write failed\n", "") : 0;
     }
-    if (fr_fix_apply(defbuf, defcap, row->fu_path, row->fu_line, near))
+    char digits[16];
+    snprintf(digits, sizeof digits, "%d", near);
+    if (fr_fix_apply(defbuf, defcap, row->name, row->fu_path, row->fu_line,
+                     digits))
         return die("z23-lint: flag_registry: --fix-pointers: could not "
                    "locate %s's own first-use token to rewrite\n", row->name);
     (*fixed)++;
@@ -629,30 +674,96 @@ static int fr_run_fix(const char *def_path, FILE *out)
     return unfixed > 0 ? 1 : 0;
 }
 
+/* One numeric row's --auto-pointers decision: rebound to "<path>:auto"
+ * when the scan saw a real read of the flag in that very file (the check
+ * the gate will then make), otherwise kept numeric and reported. */
+static int fr_auto_one(const struct fr_row *row, char *defbuf, size_t defcap,
+                       FILE *out, int *rebound, int *kept)
+{
+    if (!row->fu_present || row->fu_line == -1)
+        return 0;
+    if (!row->fu_read_seen) {
+        (*kept)++;
+        return fprintf(out, "flag_registry: kept %s first use %s:%d — no"
+                       " scanner-recognized real read of it in that tracked"
+                       " file\n", row->name, row->fu_path, row->fu_line) < 0
+            ? die("z23-lint: write failed\n", "") : 0;
+    }
+    if (fr_fix_apply(defbuf, defcap, row->name, row->fu_path, row->fu_line,
+                     "auto"))
+        return die("z23-lint: flag_registry: --auto-pointers: could not "
+                   "locate %s's own first-use token to rewrite\n", row->name);
+    (*rebound)++;
+    return 0;
+}
+
+/* Rebinds every numeric first-use pointer whose file really reads its
+ * flag to "<path>:auto", so inserting or deleting lines in that file never
+ * again forces an edit to the shared catalog. Same scan as the gate (so a
+ * rebound row is exactly one the gate proves), one atomic rewrite (none
+ * for zero rebinds, so a second run is a byte-identical no-op). Rows kept
+ * numeric stay under the exact line check. Returns 0, or 2 on a hard
+ * error; kept rows are reported, not a failure. */
+static int fr_run_auto(const char *def_path, const char *ls_cmd, FILE *out)
+{
+    static char defbuf[FR_DEF_BUF];
+    static struct fr_row rows[FR_MAX];
+    int n = 0;
+    if (fr_ensure_re() || fr_read_file(def_path, defbuf, sizeof defbuf)
+        || fr_parse_def_buf(defbuf, rows, FR_MAX, &n))
+        return 2;
+    struct fr_ctx ctx = { .rows = rows, .n = n, .out = out };
+    int rc = each_zpath(ls_cmd, fr_scan_file, &ctx);
+    if (rc)
+        return rc;
+    rc = gate_require_scanned(ctx.files, 1, "check-flag-registry",
+            "--auto-pointers: the tracked-file scan returned no files.");
+    if (rc)
+        return rc;
+    int rebound = 0, kept = 0;
+    for (int i = 0; i < n && rc == 0; i++)
+        rc = fr_auto_one(&rows[i], defbuf, sizeof defbuf, out, &rebound,
+                         &kept);
+    if (rc == 0 && rebound > 0)
+        rc = fr_fix_write_atomic(def_path, defbuf);
+    if (rc)
+        return rc;
+    return fprintf(out, "flag_registry: --auto-pointers: %d rebound to :auto,"
+                   " %d left numeric\n", rebound, kept) < 0
+        ? die("z23-lint: write failed\n", "") : 0;
+}
+
+/* --key-inputs: the optional action cache must hash every first-use
+ * pointer target (":auto" ones included — the gate reads those files too),
+ * including a future target outside the tracked scan pathspec. Emits the
+ * parser's actual paths, NUL-delimited; failure refuses reuse. */
+static int fr_run_key_inputs(void)
+{
+    static char defbuf[FR_DEF_BUF];
+    static struct fr_row rows[FR_MAX];
+    int n = 0;
+    if (fr_read_file(k_def_path, defbuf, sizeof defbuf) ||
+        fr_parse_def_buf(defbuf, rows, FR_MAX, &n))
+        return 2;
+    for (int i = 0; i < n; i++) {
+        if (!rows[i].fu_present)
+            continue;
+        size_t len = strlen(rows[i].fu_path) + 1;
+        if (fwrite(rows[i].fu_path, 1, len, stdout) != len)
+            return die("z23-lint: key input write failed\n", "");
+    }
+    return fflush(stdout) == 0 ? 0 :
+        die("z23-lint: key input flush failed\n", "");
+}
+
 int check_flag_registry_run(int argc, char **argv)
 {
     if (argc == 1 && strcmp(argv[0], "--fix-pointers") == 0)
         return fr_run_fix(k_def_path, stdout);
-    if (argc == 1 && strcmp(argv[0], "--key-inputs") == 0) {
-        /* The optional action cache must hash every first-use pointer target,
-         * including a future target outside the tracked scan pathspec. Emit
-         * the parser's actual paths, NUL-delimited; failure refuses reuse. */
-        static char defbuf[FR_DEF_BUF];
-        static struct fr_row rows[FR_MAX];
-        int n = 0;
-        if (fr_read_file(k_def_path, defbuf, sizeof defbuf) ||
-            fr_parse_def_buf(defbuf, rows, FR_MAX, &n))
-            return 2;
-        for (int i = 0; i < n; i++) {
-            if (!rows[i].fu_present)
-                continue;
-            size_t len = strlen(rows[i].fu_path) + 1;
-            if (fwrite(rows[i].fu_path, 1, len, stdout) != len)
-                return die("z23-lint: key input write failed\n", "");
-        }
-        return fflush(stdout) == 0 ? 0 :
-            die("z23-lint: key input flush failed\n", "");
-    }
+    if (argc == 1 && strcmp(argv[0], "--auto-pointers") == 0)
+        return fr_run_auto(k_def_path, k_ls_scan, stdout);
+    if (argc == 1 && strcmp(argv[0], "--key-inputs") == 0)
+        return fr_run_key_inputs();
     if (argc != 0)
         return die("z23-lint: check-flag-registry: unknown argument\n", "");
     char head[32];
@@ -846,6 +957,20 @@ static int fr_st_first_use_cases(FILE *out, char *ob, size_t obcap)
     bad |= rc != 1
         || strstr(ob, "ZCL_FU_ZERO first use ./fu_zero.c:0 does not read it") == NULL;
 
+    /* A why_ split across adjacent literals is one string: its pointer in
+     * the second literal is parsed and proved, not skipped. */
+    bad |= fr_st_case(
+            "Z23_FLAG(\"ZCL_FU_SPLIT\", \"env_runtime\", \"-\", \"-\",\n"
+            " \"set by a test; \"\n \"first use ./fu_split.c:9\")\n",
+            "./fu_split.c",
+            "int f(void){ return getenv(\"ZCL_FU_SPLIT\") != 0; }\n",
+            "2026-01-01", "printf '%s\\0' fu_split.c", out, ob,
+            obcap, &rc);
+    bad |= rc != 1
+        || strstr(ob, "ZCL_FU_SPLIT first use ./fu_split.c:9 does not read it"
+                      " (line past end; nearest read now at ./fu_split.c:1)")
+           == NULL;
+
     if (csr_write("./fu_secret.c",
                 "int f(void){ return getenv(\"ZCL_FU_UNREADABLE\") != 0; }\n"))
         return 1;
@@ -896,6 +1021,156 @@ static int fr_st_auto_component_cases(FILE *out, char *ob, size_t obcap)
     bad |= rc != 1
         || strstr(ob, "ZCL_AUTO_A first use fu_auto_a.sh:auto has no ") == NULL;
     bad |= psp_st_reset(out);
+    return bad;
+}
+
+/* Runs the gate over one fixture and returns 0 when its verdict and output
+ * match: want_rc, and want_text somewhere in what it printed. */
+static int fr_st_auto_expect(const char *src, const char *text, const char *ls,
+                             int want_rc, const char *want_text, FILE *out,
+                             char *ob, size_t obcap)
+{
+    int rc = 0;
+    int bad = fr_st_case(
+            "Z23_FLAG(\"ZCL_AUTO_C\", \"env_runtime\", \"-\", \"-\",\n"
+            " \"first use fu_auto_c.c:auto\")\n",
+            src, text, "2026-01-01", ls, out, ob, obcap, &rc);
+    return bad || rc != want_rc || strstr(ob, want_text) == NULL;
+}
+
+/* C :auto: a real getenv() read binds the row wherever the read moves, but
+ * a mention the C scanner's regex would also match inside a comment (line,
+ * block, a block spanning lines, a line comment continued by a backslash)
+ * or a string literal never does. Those fixtures still mark the row read
+ * (a separate question), so the only verdict under test is the :auto
+ * pointer's. */
+static int fr_st_auto_c_cases(FILE *out, char *ob, size_t obcap)
+{
+    static const char ls[] = "printf '%s\\0' fu_auto_c.c";
+    static const char ok[] = "1 first-use pointers verified";
+    static const char no_read[] =
+        "ZCL_AUTO_C first use fu_auto_c.c:auto has no scanner-recognized "
+        "read in that tracked file";
+    static const char *const real[] = {
+        "int f(void){ return getenv(\"ZCL_AUTO_C\") != 0; }\n",
+        "/* a */\n\n\nint f(void){ return getenv(\"ZCL_AUTO_C\") != 0; }\n",
+        "/* \"quoted */ int f(void){ return getenv(\"ZCL_AUTO_C\"); }\n",
+        "const char *s = \"//\"; int q = '\\''; int g = getenv(\"ZCL_AUTO_C\");\n",
+        "#define R getenv(\"ZCL_AUTO_C\")\n",
+        "int x = 1'000; int y = getenv(\"ZCL_AUTO_C\") != 0;\n",
+        "#if 0\n#ifdef X\n#endif\n#else\nint g = getenv(\"ZCL_AUTO_C\");\n#endif\n",
+    };
+    static const char *const fake[] = {
+        "// return getenv(\"ZCL_AUTO_C\") != 0;\n",
+        "int x; /* getenv(\"ZCL_AUTO_C\") */\n",
+        "/* first line\n * getenv(\"ZCL_AUTO_C\")\n */\n",
+        "static const char *s = \"x getenv(\"ZCL_AUTO_C\") y\";\n",
+        "int q = '\"'; // getenv(\"ZCL_AUTO_C\")\n",
+        "// continued \\\n getenv(\"ZCL_AUTO_C\");\n",
+        "int x = 1'000; /* opens\n getenv(\"ZCL_AUTO_C\")\n */\n",
+        "#if 0\nint g = getenv(\"ZCL_AUTO_C\");\n#endif\n",
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof real / sizeof real[0]; i++)
+        bad |= fr_st_auto_expect("./fu_auto_c.c", real[i], ls, 0, ok, out,
+                                 ob, obcap);
+    for (size_t i = 0; i < sizeof fake / sizeof fake[0]; i++)
+        bad |= fr_st_auto_expect("./fu_auto_c.c", fake[i], ls, 1, no_read,
+                                 out, ob, obcap);
+    /* The cited file is scanned but has no read at all; a real read in a
+     * DIFFERENT file keeps the row live but never proves the pointer. */
+    bad |= csr_write("./fu_auto_fill.c",
+            "int f(void){ return getenv(\"ZCL_AUTO_C\") != 0; }\n");
+    bad |= fr_st_auto_expect("./fu_auto_c.c", "int f(void){ return 0; }\n",
+                             "printf '%s\\0' fu_auto_c.c fu_auto_fill.c", 1,
+                             no_read, out, ob, obcap);
+    bad |= strstr(ob, "(file missing)") != NULL;
+    /* ... nor at a file that does not exist. */
+    unlink("./fu_auto_c.c");
+    bad |= fr_st_auto_expect("./fu_auto_fill.c",
+            "int f(void){ return getenv(\"ZCL_AUTO_C\") != 0; }\n",
+            "printf '%s\\0' fu_auto_fill.c", 1,
+            "ZCL_AUTO_C first use fu_auto_c.c:auto has no scanner-recognized"
+            " read in that tracked file (file missing)", out, ob, obcap);
+    return bad;
+}
+
+/* Shell and Makefile :auto: a '#' that cannot open a shell comment
+ * (${#arr[@]}, "$#") no longer hides a real read after it; one that can
+ * (word start, or right after a quote) still does, and in a Makefile any
+ * '#' does. Each fixture holds exactly one mention of the flag. */
+static int fr_st_auto_sh_cases(FILE *out, char *ob, size_t obcap)
+{
+    static const struct { const char *file, *text; int want_rc; } k[] = {
+        { "fu_auto_s.sh", "n=${#a[@]} f=${ZCL_AUTO_S:-1}\n", 0 },
+        { "fu_auto_s.sh", "[ \"$#\" -eq 0 ] && x=\"${ZCL_AUTO_S}\"\n", 0 },
+        { "fu_auto_s.sh", "x=1 # ${ZCL_AUTO_S}\n", 1 },
+        { "fu_auto_s.sh", "printf '#  ${ZCL_AUTO_S}'\n", 1 },
+        { "Makefile", "X := a#$(Y) ${ZCL_AUTO_S}\n", 1 },
+        { "Makefile", "X := ${ZCL_AUTO_S}\n", 0 },
+    };
+    char def[256], ls[64], src[64];
+    int bad = 0;
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+        int rc = 0;
+        snprintf(def, sizeof def,
+                 "Z23_FLAG(\"ZCL_AUTO_S\", \"env_build\", \"-\", \"-\",\n"
+                 " \"first use %s:auto\")\n", k[i].file);
+        snprintf(ls, sizeof ls, "printf '%%s\\0' %s", k[i].file);
+        snprintf(src, sizeof src, "./%s", k[i].file);
+        bad |= fr_st_case(def, src, k[i].text, "2026-01-01", ls, out, ob,
+                          obcap, &rc);
+        bad |= rc != k[i].want_rc;
+        unlink(src);
+    }
+    return bad;
+}
+
+/* --auto-pointers: a numeric row whose file really reads the flag — even
+ * one whose line already drifted — is rebound to :auto; a row whose only
+ * mention in its cited file is a comment stays numeric, even though it
+ * shares that <path>:<line> with a row that is rebound (the rewrite is
+ * anchored to each row's own text); the result passes the gate; and a
+ * second run is a byte-identical no-op. */
+static int fr_st_auto_rebind_cases(FILE *out, char *ob, size_t obcap)
+{
+    static char defbuf[FR_DEF_BUF];
+    static char before[FR_DEF_BUF];
+    static const char ls[] = "printf '%s\\0' ap.c ap_drift.c ap_note.c";
+    int bad = csr_write("./ap.c",
+            "int f(void){ return getenv(\"ZCL_AP_REAL\") != 0; }"
+            " /* getenv(\"ZCL_AP_NOTE\") */\n")
+        || csr_write("./ap_note.c",
+            "int g(void){ return getenv(\"ZCL_AP_NOTE\") != 0; }\n")
+        || csr_write("./ap_drift.c",
+            "\n\nint f(void){ return getenv(\"ZCL_AP_DRIFT\") != 0; }\n")
+        || csr_write("./f.def",
+            "Z23_FLAG(\"ZCL_AP_DRIFT\", \"env_runtime\", \"-\", \"-\",\n"
+            " \"first use ap_drift.c:1\")\n"
+            "Z23_FLAG(\"ZCL_AP_NOTE\", \"env_runtime\", \"-\", \"-\",\n"
+            " \"first use ap.c:1\")\n"
+            "Z23_FLAG(\"ZCL_AP_REAL\", \"env_runtime\", \"-\", \"-\",\n"
+            " \"first use ap.c:1; kept prose\")\n");
+    if (bad)
+        return 1;
+    int rc = fr_run_auto("./f.def", ls, out);
+    bad |= csr_slurp(out, ob, obcap) || psp_st_reset(out);
+    bad |= rc != 0
+        || strstr(ob, "kept ZCL_AP_NOTE first use ap.c:1 — no") == NULL
+        || strstr(ob, "2 rebound to :auto, 1 left numeric") == NULL;
+    bad |= fr_read_file("./f.def", defbuf, sizeof defbuf) != 0;
+    bad |= strstr(defbuf, "\"first use ap_drift.c:auto\"") == NULL
+        || strstr(defbuf, "\"first use ap.c:1\")") == NULL
+        || strstr(defbuf, "\"first use ap.c:auto; kept prose\"") == NULL;
+    rc = fr_run_impl("./f.def", ls, "2026-01-01", out);
+    bad |= csr_slurp(out, ob, obcap) || psp_st_reset(out);
+    bad |= rc != 0 || strstr(ob, "3 first-use pointers verified") == NULL;
+    memcpy(before, defbuf, sizeof before);
+    rc = fr_run_auto("./f.def", ls, out);
+    bad |= csr_slurp(out, ob, obcap) || psp_st_reset(out);
+    bad |= rc != 0 || strstr(ob, "0 rebound to :auto, 1 left numeric") == NULL;
+    bad |= fr_read_file("./f.def", defbuf, sizeof defbuf) != 0
+        || strcmp(before, defbuf) != 0;
     return bad;
 }
 
@@ -975,9 +1250,15 @@ static void fr_st_cleanup(void)
     unlink("./fu_bound.c");
     unlink("./fu_short.c");
     unlink("./fu_zero.c");
+    unlink("./fu_split.c");
     unlink("./fu_secret.c");
     unlink("./fu_auto_a.sh");
     unlink("./fu_auto_b.sh");
+    unlink("./fu_auto_c.c");
+    unlink("./fu_auto_fill.c");
+    unlink("./ap.c");
+    unlink("./ap_note.c");
+    unlink("./ap_drift.c");
     unlink("./fix_filler.c");
     unlink("./fix_ok.c");
     unlink("./fix_gone.c");
@@ -1007,6 +1288,9 @@ int check_flag_registry_selftest(void)
     int bad = fr_st_core_cases(out, ob, sizeof ob);
     bad |= fr_st_first_use_cases(out, ob, sizeof ob);
     bad |= fr_st_auto_component_cases(out, ob, sizeof ob);
+    bad |= fr_st_auto_c_cases(out, ob, sizeof ob);
+    bad |= fr_st_auto_sh_cases(out, ob, sizeof ob);
+    bad |= fr_st_auto_rebind_cases(out, ob, sizeof ob);
     bad |= fr_st_fix_cases(out, ob, sizeof ob);
     fflush(stdout);
     fflush(stderr);

@@ -21,9 +21,11 @@
 #include "gate_flag_registry_priv.h"
 #include "lintc.h"
 
-/* True when tok parses as "<path>:<line>" or "<shell-path>:auto". The auto
- * form binds a component file to a scanner-recognized read, so moving lines
- * in that component cannot force an edit to the shared registry. A nonempty
+/* True when tok parses as "<path>:<line>" or "<path>:auto". The auto form
+ * binds the row to a scanner-recognized real read in that exact tracked
+ * file (C, shell or Makefile — gate_flag_registry.c's fr_read_is_real says
+ * what "real" means per kind), so moving lines in that file cannot force an
+ * edit to the shared registry. A nonempty
  * path and colon are required. "Makefile deploy:" (no
  * digits after its colon) and a bare "Makefile" (no colon at all) both
  * return 0 here, which is how a prose why_ clause that merely contains
@@ -184,11 +186,14 @@ int fru_pointer_status(const char *path, int line, const char *name, int *near)
 static int fru_check_one(const struct fr_row *row, FILE *out)
 {
     if (row->fu_line == -1) {
-        if (row->fu_auto_seen)
+        if (row->fu_read_seen)
             return 0;
+        struct stat st;
+        int missing = stat(row->fu_path, &st) != 0;
         return fprintf(out, "flag_registry: %s first use %s:auto has no "
-                       "scanner-recognized read in that tracked shell file\n",
-                       row->name, row->fu_path) < 0
+                       "scanner-recognized read in that tracked file%s\n",
+                       row->name, row->fu_path,
+                       missing ? " (file missing)" : "") < 0
             ? die("z23-lint: write failed\n", "") : 1;
     }
     char reason[400];
@@ -232,6 +237,9 @@ int fru_check_rows(const struct fr_row *rows, int n, FILE *out, int *verified)
                    " --fix-pointers` to repair a drifted pointer to the"
                    " flag's nearest current read in the same file (a row"
                    " whose flag is no longer read there at all is left for"
-                   " a human)\n", violations) < 0
+                   " a human), or `--auto-pointers` to rebind every"
+                   " numeric pointer whose file really reads its flag to"
+                   " <path>:auto so line moves stop touching flags.def\n",
+                   violations) < 0
         ? die("z23-lint: write failed\n", "") : 1;
 }

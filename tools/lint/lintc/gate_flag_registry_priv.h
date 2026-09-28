@@ -3,7 +3,8 @@
  * gate_flag_registry_priv — the seam between gate_flag_registry.c (the
  * flags.def parser, read-site scanner, and check-flag-registry gate body)
  * and gate_flag_registry_first_use.c (the first-use pointer check: does
- * the <path>:<line> a row cites actually read that flag's name).
+ * the <path>:<line> a row cites actually read that flag's name) and
+ * gate_flag_registry_lex.c (is a recognized read real code, not a mention).
  * NOT a public header: nothing outside tools/lint/lintc/ includes this.
  */
 
@@ -25,7 +26,11 @@ struct fr_row {
     char fu_path[FR_FU_PATH];
     int fu_line;
     int fu_present;
-    int fu_auto_seen;
+    /* The scan saw a scanner-recognized REAL read of name (C: outside
+     * every comment, literal and #if 0 region; shell/Makefile: before any
+     * comment-opening '#') in fu_path itself. Proves a ":auto" pointer; decides whether
+     * --auto-pointers may rebind a numeric one. */
+    int fu_read_seen;
     int used;
 };
 
@@ -47,5 +52,28 @@ int fru_check_rows(const struct fr_row *rows, int n, FILE *out, int *verified);
  * left at 0 — not fixable, still a human's problem), or -1 when the cited
  * file exists but can't be opened (die-worthy, same as fru_check_rows). */
 int fru_pointer_status(const char *path, int line, const char *name, int *near);
+
+/* gate_flag_registry_lex.c: is a regex-recognized read a REAL read? The
+ * scanner feeds each line with the C lexer state it entered in (FR_CODE at
+ * a file's start) and its `#if 0` depth, and advances both per line. */
+enum { FR_CODE, FR_BLOCK, FR_LINE, FR_STR, FR_CHR };
+
+struct fr_line {
+    const char *path;
+    const char *text;
+    int lineno;
+    int is_c;
+    int c_state;   /* C lexer state at the line's first byte */
+    int if0;       /* `#if 0` nesting depth; nonzero = dead code */
+};
+
+/* The C lexer state the line after `line` starts in. */
+int frl_c_state_after(const char *line, int st);
+/* The `#if 0` depth after a line that begins in code (0 = live code). */
+int frl_c_if0(const char *line, int depth);
+/* True when the match starting at ln->text[off] is code: for C, outside
+ * every comment, literal and #if 0 region; for shell and Makefile text,
+ * before any comment-opening '#'. name is the flag the match captured. */
+int frl_read_is_real(const struct fr_line *ln, size_t off, const char *name);
 
 #endif

@@ -5798,6 +5798,7 @@ LINTC_SRCS = tools/lint/lintc/lib.c tools/lint/lintc/gate_boot_wiring.c tools/li
     tools/lint/lintc/gate_route_command_parity.c \
     tools/lint/lintc/gate_flag_registry.c \
     tools/lint/lintc/gate_flag_registry_first_use.c \
+    tools/lint/lintc/gate_flag_registry_lex.c \
     tools/lint/lintc/gate_pattern_guard.c \
     tools/lint/lintc/gate_describe_budget.c \
     tools/lint/lintc/gate_state_hygiene_fences.c \

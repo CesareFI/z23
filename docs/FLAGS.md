@@ -72,9 +72,26 @@ drifted (the cited flag still reads somewhere else in the same file) can be
 repaired automatically with `z23-lint check-flag-registry --fix-pointers`,
 which rewrites each drifted pointer's line number to that nearest read and
 leaves a row whose flag no longer reads anywhere in that file for a human.
+
+Most rows cite `first use <path>:auto` instead of a line number. That form
+binds the row to the file, not a line: the gate passes it only when its own
+scan finds a real read of the flag in that exact tracked file. In C, "real"
+means the `getenv(`/`env_or(`/`env_int_or(` token sits outside every
+comment, string literal, character constant, and `#if 0` region; in shell
+and Makefile text, no comment-opening `#` (a word-initial one in shell, any
+one in a Makefile) precedes the name on its line. A comment that
+merely mentions the read, a read in a different file, or a missing file
+still fails. Because nothing in the row names a line, inserting or
+deleting lines in the cited file never forces an edit to `flags.def`.
+`z23-lint check-flag-registry --auto-pointers` rebinds every numeric
+pointer whose file has such a read to `:auto`, and lists each row it kept
+numeric (its cited file has no read the scanner accepts as real, for
+example a name inside single-quoted generated-script text, or a flag only
+mentioned in a comment there).
 See
-`tools/lint/lintc/gate_flag_registry.c` and
-`tools/lint/lintc/gate_flag_registry_first_use.c` for the implementation
+`tools/lint/lintc/gate_flag_registry.c`,
+`tools/lint/lintc/gate_flag_registry_first_use.c`, and
+`tools/lint/lintc/gate_flag_registry_lex.c` for the implementation
 and `tools/lint/check_lint_gate_wiring.sh` for how every lint gate,
 including this one, stays wired into both `Makefile` and
 `tools/lint/run_lint.sh`.

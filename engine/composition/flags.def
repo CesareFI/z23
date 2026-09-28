@@ -42,6 +42,19 @@
  *              inventing a reason — that string is the debt marker; grep
  *              it to find what still needs a real sentence.
  *
+ * First-use pointers. A "first use <path>:auto" clause binds the row to a
+ * file, not a line: check-flag-registry passes it only when its own scan
+ * finds a real read of the flag in that exact tracked file (C: the
+ * getenv(/env_or(/env_int_or( call outside every comment, string literal,
+ * character constant and #if 0 region; shell/Makefile: no comment-opening
+ * '#' before the name), so inserting or deleting lines in that file never
+ * forces an edit here. A "first use <path>:<line>" clause is proved
+ * line-exact instead; it remains only where the scanner does not
+ * recognize the read (e.g. a helper that takes the name as an argument,
+ * or a name inside generated-script text). `z23-lint
+ * check-flag-registry --auto-pointers` rebinds every numeric pointer that
+ * qualifies; `--fix-pointers` repairs a drifted numeric one.
+ *
  * Sorted alphabetically by name_. Order carries no meaning beyond that;
  * unlike fleet_vitals.def nothing indexes a flag by its position, so
  * inserting or removing a row is always safe.
@@ -107,9 +120,9 @@ Z23_FLAG("ZCL_AGENT_JSONQ", "env_build", "build/bin/jsonq", "-",
 Z23_FLAG("ZCL_AGENT_LIVE_BIN", "env_build", "-", "-",
           "undocumented; first use tools/dev/agent-doctor.sh:153")
 Z23_FLAG("ZCL_AGENT_LOOP_BIN", "make_var", "0", "-",
-          "first use Makefile:6026; documented at docs/AGENT_API.md:1145: cache-aware make fast-ci checks; set ZCL_AGENT_LOOP_BIN=1 to also link")
+          "first use Makefile:6027; documented at docs/AGENT_API.md:1145: cache-aware make fast-ci checks; set ZCL_AGENT_LOOP_BIN=1 to also link")
 Z23_FLAG("ZCL_AGENT_LOOP_DEPLOY", "make_var", "-", "-",
-          "first use Makefile:6027; documented at docs/AGENT_API.md:1146: build/bin/z23-dev. ZCL_AGENT_LOOP_DEPLOY=stage|dev cannot bypass")
+          "first use Makefile:6028; documented at docs/AGENT_API.md:1146: build/bin/z23-dev. ZCL_AGENT_LOOP_DEPLOY=stage|dev cannot bypass")
 Z23_FLAG("ZCL_AGENT_RELEASE_BIN", "env_build", "build/bin/zclassic23", "-",
           "undocumented; first use tools/dev/agent-doctor.sh:158")
 Z23_FLAG("ZCL_AGENT_SESSION", "env_runtime", "-", "-",
@@ -298,7 +311,7 @@ Z23_FLAG("ZCL_C3_RUN_ID", "env_build", "-", "-",
 Z23_FLAG("ZCL_C3_SNAPSHOT", "env_build", "-", "-",
           "undocumented; first use tools/scripts/cold_start_to_tip_probe.sh:50")
 Z23_FLAG("ZCL_C3_STOPWATCH_HISTORY", "make_var", "-", "-",
-          "undocumented; first use Makefile:9026")
+          "undocumented; first use Makefile:9027")
 Z23_FLAG("ZCL_C3_TIP_DATADIR", "env_build", "-", "-",
           "undocumented; first use tools/scripts/cold_start_to_tip_probe.sh:77")
 Z23_FLAG("ZCL_C6_EXE_SHA_CMD", "env_build", "-", "-",
@@ -494,7 +507,7 @@ Z23_FLAG("ZCL_DATADIR", "env_runtime", "-", "-",
           "first use engine/entry/main_cli_modes.c:2421; documented at docs/BENCHMARKS_LOG.md:34: | 2026-06-04 | 671fd79e3 | #6 soak-ci proxy (make soak-ci, 180s --ci-proxy) | machinery...")
 Z23_FLAG("ZCL_DB_BACKUP_BEFORE_MIGRATE", "env_runtime", "-", "-",
           "set by -db-backup-before-migrate (engine/composition/src/args.c:746); "
-          "first use engine/models/src/database_backup.c:63; when set, copies "
+          "first use engine/models/src/database_backup.c:157; when set, copies "
           "node.db to node.db.schema<N>.bak via SQLite's online backup API "
           "before a BREAKING migration step touches the live file")
 Z23_FLAG("ZCL_DB_LIFETIME_TRACE", "env_runtime", "-", "-",
@@ -510,7 +523,7 @@ Z23_FLAG("ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256", "env_build", "-", "-",
 Z23_FLAG("ZCL_DEPLOY_EXPECT_SOURCE_ID", "env_build", "-", "-",
           "undocumented; first use tools/deploy_verify.sh:576")
 Z23_FLAG("ZCL_DEPLOY_FROZEN_CANDIDATE", "make_var", "-", "-",
-          "undocumented; first use Makefile:10681")
+          "undocumented; first use Makefile:10682")
 Z23_FLAG("ZCL_DEPLOY_GUARD_NATIVE_JSON", "env_build", "-", "-",
           "undocumented; first use tools/deploy_guard.sh:124")
 Z23_FLAG("ZCL_DEPLOY_GUARD_RPC_TIMEOUT", "env_build", "5", "-",
@@ -740,7 +753,7 @@ Z23_FLAG("ZCL_DEV_WATCH_DEPLOY_COMMAND", "env_build", "-", "-",
 Z23_FLAG("ZCL_DEV_WATCH_INITIAL", "env_build", "0", "-",
           "undocumented; first use tools/dev/watch-dev-lane.sh:21")
 Z23_FLAG("ZCL_DEV_WATCH_MODE", "make_var", "verify", "-",
-          "undocumented; first use Makefile:6052")
+          "undocumented; first use Makefile:6053")
 Z23_FLAG("ZCL_DEV_WATCH_ONCE", "env_build", "0", "-",
           "undocumented; first use tools/dev/watch-dev-lane.sh:20")
 Z23_FLAG("ZCL_DEV_WATCH_ONCE_FILES", "env_build", "-", "-",
@@ -1275,7 +1288,7 @@ Z23_FLAG("ZCL_LAND_DEPS_TEST_FORCE", "env_runtime", "-", "-",
 Z23_FLAG("ZCL_LAND_DRAIN_IDLE_SEC", "env_runtime", "900", "-",
           "how long a queued land request with no beat may sit before "
           "status raises drain_absent; a missing land timer raises it "
-          "immediately; tests set 0; first use tools/command/native_dev_land.c:2555")
+          "immediately; tests set 0; first use tools/command/native_dev_land.c:2608")
 Z23_FLAG("ZCL_LAND_GATE_CMD", "env_build", "-", "-",
           "undocumented; first use tools/dev/land_lander.sh:123")
 Z23_FLAG("ZCL_LAND_GATE_TIMEOUT_S", "env_build", "2700", "-",
@@ -1286,7 +1299,7 @@ Z23_FLAG("ZCL_LAND_HOOK_QUIET", "env_runtime", "-", "-",
           "set by a dev.land step for its own one-shot lifetime so the armed "
           "post-* hooks do not schedule proofs for the transient checkouts "
           "and rebases of the landing worktree; a developer checkout never "
-          "sets it; first use tools/dev/z23_git_hook.c:716")
+          "sets it; first use tools/dev/z23_git_hook.c:731")
 Z23_FLAG("ZCL_LAND_INTERVAL_S", "env_build", "30", "-",
           "undocumented; first use tools/dev/land_lander.sh:109")
 Z23_FLAG("ZCL_LAND_MAX_ATTEMPTS", "env_build", "2", "-",
@@ -1596,7 +1609,7 @@ Z23_FLAG("ZCL_NETCRAWL_ONION_PER_ROUND", "env_runtime", "-", "-",
 Z23_FLAG("ZCL_NETCRAWL_ONION_TIMEOUT_MS", "env_runtime", "-", "-",
           "undocumented; first use engine/services/src/network_crawler.c:198")
 Z23_FLAG("ZCL_NETDISRUPT_STOPWATCH_HISTORY", "make_var", "-", "-",
-          "undocumented; first use Makefile:9127")
+          "undocumented; first use Makefile:9128")
 Z23_FLAG("ZCL_NETMON_INTERVAL_SECS", "env_runtime", "-", "-",
           "undocumented; first use engine/services/src/network_monitor.c:127")
 Z23_FLAG("ZCL_NETMON_RETAIN_ROWS", "env_runtime", "-", "-",
@@ -1937,9 +1950,9 @@ Z23_FLAG("ZCL_REMOTE_DRY_RUN", "env_build", "1", "-",
 Z23_FLAG("ZCL_REMOTE_GUARD_ACTION", "env_build", "-", "-",
           "undocumented; first use tools/scripts/remote_node_update.sh:125")
 Z23_FLAG("ZCL_REMOTE_HOST", "make_var", "-", "-",
-          "first use Makefile:6095; documented at docs/AGENT_API.md:1338: make remote-node-plan ZCL_REMOTE_HOST=<ssh-host> to compare a remote node's")
+          "first use Makefile:6096; documented at docs/AGENT_API.md:1338: make remote-node-plan ZCL_REMOTE_HOST=<ssh-host> to compare a remote node's")
 Z23_FLAG("ZCL_REMOTE_HOSTS", "make_var", "-", "-",
-          "undocumented; first use Makefile:6098")
+          "undocumented; first use Makefile:6099")
 Z23_FLAG("ZCL_REMOTE_INSTALL_ARTIFACT", "env_build", "-", "-",
           "undocumented; first use tools/scripts/remote_node_update.sh:117")
 Z23_FLAG("ZCL_REMOTE_INSTALL_BIN", "env_build", "-", "-",
@@ -2237,7 +2250,7 @@ Z23_FLAG("ZCL_SOAK_EVIDENCE_DIR", "env_build", "-", "-",
 Z23_FLAG("ZCL_SOAK_EXE_SHA_CMD", "env_build", "-", "-",
           "Collector test seam for running-image digest; first use tools/scripts/soak_evidence.sh:233")
 Z23_FLAG("ZCL_SOAK_JUDGE_ARGS", "make_var", "-", "-",
-          "undocumented; first use Makefile:8992")
+          "undocumented; first use Makefile:8993")
 Z23_FLAG("ZCL_SOAK_LAG_WARN", "env_build", "-", "-",
           "undocumented; first use tools/scripts/lane_health.sh:46")
 Z23_FLAG("ZCL_SOAK_NOW", "env_build", "-", "-",
@@ -2311,11 +2324,11 @@ Z23_FLAG("ZCL_STATUS_REASON_GATE_SCAN_GLOB", "env_build", "-", "-",
 Z23_FLAG("ZCL_STICKY_REQUIRE_ALL", "env_build", "0", "-",
           "undocumented; first use tools/scripts/sticky_matrix.sh:36")
 Z23_FLAG("ZCL_STICKY_VERDICT_DIR", "make_var", "-", "-",
-          "undocumented; first use Makefile:8781")
+          "undocumented; first use Makefile:8782")
 Z23_FLAG("ZCL_STOPWATCH_CHECKPOINT_HEIGHT", "env_build", "3056758", "-",
           "undocumented; first use tools/scripts/stopwatch_evidence_judge.sh:135")
 Z23_FLAG("ZCL_STOPWATCH_JUDGE_ARGS", "make_var", "-", "-",
-          "undocumented; first use Makefile:9027")
+          "undocumented; first use Makefile:9028")
 Z23_FLAG("ZCL_STOPWATCH_JUDGE_NOW", "env_build", "-", "-",
           "undocumented; first use tools/scripts/stopwatch_evidence_judge.sh:489")
 Z23_FLAG("ZCL_STOPWATCH_ORACLE_LAG_BUDGET", "env_build", "2000", "-",
