@@ -1494,6 +1494,26 @@ static bool group_excluded_from_rerun(const struct group_result *r,
            (r->signaled && !r->wedged);
 }
 
+/* The ".first" capture lives in the run's scratch root, which a proof
+ * generation deletes with everything else — so the failing assertion of a
+ * LOAD-FLAKY first attempt must be copied into the runner's own output or it
+ * is lost. Bounded: at most LOAD_FLAKY_EXCERPT_MARKS early failure lines plus
+ * the last LOAD_FLAKY_EXCERPT_TAIL lines, each line length-capped. */
+#define LOAD_FLAKY_EXCERPT_MARKS 20
+#define LOAD_FLAKY_EXCERPT_TAIL 40
+static void print_load_flaky_first_excerpt(const char *name,
+                                           const char *preserved_log)
+{
+    if (!preserved_log[0]) return;
+    printf("LOAD-FLAKY-FIRST %s: failure lines and last %d lines of the "
+           "contended attempt:\n", name, LOAD_FLAKY_EXCERPT_TAIL);
+    size_t shown = testcache_print_log_excerpt(stdout, preserved_log,
+                                               "  first| ",
+                                               LOAD_FLAKY_EXCERPT_MARKS,
+                                               LOAD_FLAKY_EXCERPT_TAIL);
+    if (shown == 0) printf("  first| (empty or unreadable)\n");
+}
+
 static void rerun_load_flaky_groups(struct group_result *results,
                                     pid_t parent_pid, int timeout_secs,
                                     bool verbose, bool activate_proof_contracts)
@@ -1569,6 +1589,7 @@ static void rerun_load_flaky_groups(struct group_result *results,
                   g_groups[i].name, first_wedged ? "WEDGED" : "FAIL",
                   results[i].flaky_first_log,
                   results[i].out_path[0] ? results[i].out_path : "(none)");
+            print_load_flaky_first_excerpt(g_groups[i].name, preserved_log);
             fflush(stdout);
         } else {
             /* Still a hard failure alone too: record whether the first

@@ -2281,6 +2281,81 @@ static int tca_env_allowlist(void)
     return failures;
 }
 
+/* Phase LX: a LOAD-FLAKY group's first-attempt excerpt. The ".first" log
+ * dies with a proof's scratch root, so the runner copies a bounded excerpt
+ * into its own output. Drive the real helper on a synthetic 200-line log:
+ * the earliest failure lines are kept (capped), the tail is kept, an
+ * over-long line is truncated without skewing line numbers, and a missing
+ * file prints nothing. */
+static bool tc_excerpt_write_log(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    for (int n = 1; n <= 200; n++) {
+        if (n == 5) fputs("FAIL at shard.c:12 (ready == 1)\n", f);
+        else if (n == 7) fputs("Assertion `seen' failed.\n", f);
+        else if (n >= 10 && n < 40) fprintf(f, "noise FAIL %d\n", n);
+        else if (n == 195) {
+            for (int k = 0; k < 5000; k++) fputc('x', f);
+            fputc('\n', f);
+        } else if (n == 200) fputs("last line\n", f);
+        else fprintf(f, "ok line %d\n", n);
+    }
+    return fclose(f) == 0;
+}
+
+static int tc_load_flaky_excerpt(void)
+{
+    int failures = 0;
+    char log[96], cap[96];
+    (void)snprintf(log, sizeof(log), "test-tmp/tc_excerpt.%ld.log",
+                   (long)getpid());
+    (void)snprintf(cap, sizeof(cap), "test-tmp/tc_excerpt.%ld.out",
+                   (long)getpid());
+    (void)mkdir("test-tmp", 0755);
+    TC_CHECK("excerpt fixture log writes", tc_excerpt_write_log(log));
+    FILE *out = fopen(cap, "w");
+    size_t shown = out ? testcache_print_log_excerpt(out, log, "  first| ",
+                                                     5, 10) : 0;
+    if (out) fclose(out);
+    TC_CHECK("excerpt prints exactly max_marks failure lines + max_tail "
+             "tail lines", shown == 15);
+    TC_CHECK("the earliest failing assertion is named with its line number",
+             file_contains(cap, "  first| L5: FAIL at shard.c:12 "
+                                "(ready == 1)\n") &&
+             file_contains(cap, "  first| L7: Assertion `seen' failed.\n"));
+    TC_CHECK("failure lines past the max_marks cap are dropped",
+             file_contains(cap, "  first| L12: noise FAIL 12\n") &&
+             !file_contains(cap, "L13:") && !file_contains(cap, "L39:"));
+    TC_CHECK("non-failure lines before the tail window are dropped",
+             !file_contains(cap, "ok line 8\n") &&
+             !file_contains(cap, "L190:"));
+    TC_CHECK("the tail window is the last max_tail lines, numbered",
+             file_contains(cap, "  first| L191: ok line 191\n") &&
+             file_contains(cap, "  first| L200: last line\n"));
+    char want[TESTCACHE_EXCERPT_LINE_MAX + 64];
+    int w = snprintf(want, sizeof(want), "  first| L195: ");
+    memset(want + w, 'x', TESTCACHE_EXCERPT_LINE_MAX);
+    (void)snprintf(want + w + TESTCACHE_EXCERPT_LINE_MAX,
+                   sizeof(want) - (size_t)w - TESTCACHE_EXCERPT_LINE_MAX,
+                   " [truncated]\n");
+    TC_CHECK("an over-long line is truncated and does not skew numbering",
+             file_contains(cap, want));
+    out = fopen(cap, "w");
+    size_t none = out ? testcache_print_log_excerpt(out, "test-tmp/"
+                                                    "tc_excerpt_missing.log",
+                                                    "", 5, 10) : 1;
+    if (out) fclose(out);
+    TC_CHECK("a missing first-attempt log prints nothing", none == 0);
+    TC_CHECK("the runner prints the excerpt on every LOAD-FLAKY line",
+             file_contains("tests/harness/src/test_parallel.c",
+                           "print_load_flaky_first_excerpt(g_groups[i].name, "
+                           "preserved_log);"));
+    (void)unlink(log);
+    (void)unlink(cap);
+    return failures;
+}
+
 static int tc_action_inputs_phase(void)
 {
     int failures = 0;
@@ -3146,6 +3221,7 @@ int test_testcache(void)
     failures += tc_batch_perf();
     failures += tc_observation_roundtrip();
     failures += tc_action_inputs_phase();
+    failures += tc_load_flaky_excerpt();
 
     (void)tc_shell("rm -rf %s %s %s %s %s", TC_FIX, TC_STORE,
                    TC_FIX2, TC_CAP, TC_CAP2);

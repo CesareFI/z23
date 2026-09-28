@@ -2077,3 +2077,62 @@ void testcache_dump_group(struct testcache *tc, const char *group_name)
             printf("    %s\n", tc->closure[i]);
     }
 }
+
+/* ── load-flaky first-attempt excerpt (see testcache.h) ─────────────────── */
+
+static bool tc_excerpt_is_mark(const char *text)
+{
+    return strstr(text, "FAIL") || strstr(text, "assert") ||
+           strstr(text, "Assertion");
+}
+
+/* Reads the next logical line of fp into buf (its first chunk only; any
+ * over-long remainder is consumed and dropped) with the newline stripped.
+ * False at end of file. */
+static bool tc_excerpt_next_line(FILE *fp, char *buf, size_t cap)
+{
+    if (!fgets(buf, (int)cap, fp)) return false;
+    size_t len = strlen(buf);
+    bool complete = len > 0 && buf[len - 1] == '\n';
+    if (complete) buf[--len] = '\0';
+    char spill[512];
+    while (!complete && fgets(spill, sizeof(spill), fp)) {
+        size_t sl = strlen(spill);
+        complete = sl > 0 && spill[sl - 1] == '\n';
+    }
+    return true;
+}
+
+static void tc_excerpt_print(FILE *out, const char *prefix, size_t lineno,
+                             const char *text)
+{
+    fprintf(out, "%sL%zu: %.*s%s\n", prefix, lineno,
+            (int)TESTCACHE_EXCERPT_LINE_MAX, text,
+            strlen(text) > TESTCACHE_EXCERPT_LINE_MAX ? " [truncated]" : "");
+}
+
+size_t testcache_print_log_excerpt(FILE *out, const char *path,
+                                   const char *prefix, size_t max_marks,
+                                   size_t max_tail)
+{
+    if (!out || !path || !path[0]) return 0;
+    if (!prefix) prefix = "";
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    char line[4096];
+    size_t total = 0;
+    while (tc_excerpt_next_line(fp, line, sizeof(line))) total++;
+    size_t tail_start = total > max_tail ? total - max_tail + 1 : 1;
+    rewind(fp);
+    size_t printed = 0, marks = 0;
+    for (size_t n = 1; tc_excerpt_next_line(fp, line, sizeof(line)); n++) {
+        bool in_tail = n >= tail_start;
+        if (!in_tail && (marks >= max_marks || !tc_excerpt_is_mark(line)))
+            continue;
+        if (!in_tail) marks++;
+        tc_excerpt_print(out, prefix, n, line);
+        printed++;
+    }
+    fclose(fp);
+    return printed;
+}

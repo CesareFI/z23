@@ -46,6 +46,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "test_group_catalog.h"
 
@@ -398,5 +399,25 @@ void testcache_toolkey_digest12(char out[13]);
  * absent (a fresh clone / after `make clean`), which is NOT "a closure with no
  * headers" — it is no closure at all, and every group reports uncacheable. */
 size_t testcache_depfile_count(const struct testcache *tc);
+
+/* ── load-flaky first-attempt excerpt ────────────────────────────────────
+ *
+ * A LOAD-FLAKY group's contended first attempt is preserved as
+ * "<log>.first", but that file lives in the run's scratch root and is gone
+ * once a proof generation is reclaimed. This prints the evidence into the
+ * runner's own output instead, bounded so a noisy log cannot flood it:
+ *
+ *   - up to max_marks of the EARLIEST lines naming a failure ("FAIL",
+ *     "assert", "Assertion") that fall before the tail window, then
+ *   - the last max_tail lines of the log.
+ *
+ * Every printed line is "<prefix>L<n>: <text>", text truncated to
+ * TESTCACHE_EXCERPT_LINE_MAX bytes. Returns the number of log lines printed
+ * (0 when path cannot be opened or is empty). The runner calls this for a
+ * LOAD-FLAKY group; the contract test drives it on a synthetic log. */
+#define TESTCACHE_EXCERPT_LINE_MAX 400
+size_t testcache_print_log_excerpt(FILE *out, const char *path,
+                                   const char *prefix, size_t max_marks,
+                                   size_t max_tail);
 
 #endif /* ZCL_TEST_TESTCACHE_H */
