@@ -591,6 +591,12 @@ static int test_code_context_map_warm_follows_generation(void)
                                                "indexed_files"));
         ASSERT(files > 0);
         zcl_command_reply_free(&reply);
+        uint8_t source_before[32], dep_before[32];
+        struct codeindex *index = codeindex_open(CI_CONTEXT_WARM_FIX);
+        ASSERT(index != NULL);
+        ASSERT(codeindex_source_root_sha3(index, source_before));
+        ASSERT(codeindex_dep_root_sha3(index, dep_before));
+        codeindex_close(index);
 
         /* Depfile-only: the compiler now reports the core header. */
         ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX, "build/obj/warm_a.d",
@@ -602,6 +608,14 @@ static int test_code_context_map_warm_follows_generation(void)
         ASSERT(json_get_int(json_get(&reply.data,
                                      "cross_context_include_edges")) == 1);
         zcl_command_reply_free(&reply);
+        uint8_t source_after[32], dep_after[32];
+        index = codeindex_open(CI_CONTEXT_WARM_FIX);
+        ASSERT(index != NULL);
+        ASSERT(codeindex_source_root_sha3(index, source_after));
+        ASSERT(codeindex_dep_root_sha3(index, dep_after));
+        codeindex_close(index);
+        ASSERT(memcmp(source_before, source_after, 32) == 0);
+        ASSERT(memcmp(dep_before, dep_after, 32) != 0);
 
         /* Same-count rename across contexts: commons -> wallet. */
         ASSERT(ci_impact_mk_write(CI_CONTEXT_WARM_FIX,
