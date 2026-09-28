@@ -190,14 +190,6 @@ bool fs_test_resolved_connect_lifecycle(void) { return false; }
 #define FS_WORKER_CONNECT_BUDGET_MS 10000LL
 #define FS_WORKER_CONNECT_POLL_MS 100
 
-static void fs_join_deadline_from_now(struct timespec *ts, int timeout_sec)
-{
-    platform_time_realtime_timespec(ts);
-    if (timeout_sec < 0)
-        timeout_sec = 0;
-    ts->tv_sec += timeout_sec;
-}
-
 static void fs_join_thread_bounded(pthread_t thread,
                                    const char *name,
                                    int timeout_sec)
@@ -205,7 +197,8 @@ static void fs_join_thread_bounded(pthread_t thread,
     struct timespec deadline;
     int rc;
 
-    fs_join_deadline_from_now(&deadline, timeout_sec);
+    platform_time_realtime_timespec(&deadline);
+    deadline.tv_sec += timeout_sec > 0 ? timeout_sec : 0;
     rc = platform_thread_join_until(thread, NULL, &deadline);
     if (rc == 0)
         return;
@@ -225,6 +218,8 @@ static void fs_join_thread_bounded(pthread_t thread,
 /* ── Server ────────────────────────────────────────────────────── */
 
 static _Atomic bool g_fs_running = false;
+static _Atomic bool g_fs_stopping = false;
+static pthread_cond_t g_fs_stop_cv = PTHREAD_COND_INITIALIZER;
 static pthread_t g_fs_thread;
 static bool g_fs_thread_started = false;
 static pthread_t g_fs_manifest_thread;
@@ -242,6 +237,9 @@ struct fs_client_slot {
 };
 static pthread_t g_fs_worker_threads[FS_SERVER_WORKERS];
 static unsigned g_fs_worker_threads_started = 0;
+/* Workers own close(); this mutex prevents shutdown of a reused descriptor. */
+static int g_fs_active_fds[FS_SERVER_WORKERS];
+static pthread_mutex_t g_fs_active_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct fs_client_slot g_fs_client_queue[FS_CLIENT_QUEUE_CAP];
 static unsigned g_fs_client_queue_head = 0;
 static unsigned g_fs_client_queue_tail = 0;
@@ -585,7 +583,7 @@ static bool fs_client_queue_push(int client_fd, const uint8_t ip[16])
     bool ok = false;
 
     pthread_mutex_lock(&g_fs_client_queue_mutex);
-    if (g_fs_client_queue_len < FS_CLIENT_QUEUE_CAP) {
+    if (atomic_load(&g_fs_running) && g_fs_client_queue_len < FS_CLIENT_QUEUE_CAP) {
         g_fs_client_queue[g_fs_client_queue_tail].fd = client_fd;
         memcpy(g_fs_client_queue[g_fs_client_queue_tail].ip, ip, 16);
         g_fs_client_queue_tail =
@@ -604,11 +602,7 @@ static bool fs_client_queue_pop(struct fs_client_slot *slot_out)
         LOG_FAIL("filesvc", "client_queue_pop: slot_out is NULL");
 
     pthread_mutex_lock(&g_fs_client_queue_mutex);
-    /* Timed wait so a worker never blocks past shutdown if the cond
-     * broadcast in fs_server_stop is skipped (e.g., abort path). 2 s
-     * wake is invisible under load — every queue push signals the
-     * cond — but bounded under shutdown. Mirror of the httpserver
-     * dequeue_client treatment. */
+    /* Timed wait bounds shutdown even if its broadcast is skipped. */
     while (g_fs_client_queue_len == 0 && atomic_load(&g_fs_running)) {
         struct timespec deadline;
         platform_time_realtime_timespec(&deadline);
@@ -619,12 +613,11 @@ static bool fs_client_queue_pop(struct fs_client_slot *slot_out)
 
     if (g_fs_client_queue_len == 0) {
         pthread_mutex_unlock(&g_fs_client_queue_mutex);
-        LOG_FAIL("filesvc", "client_queue_pop: queue empty and server stopping");
+        return false; /* normal shutdown */
     }
 
     *slot_out = g_fs_client_queue[g_fs_client_queue_head];
-    g_fs_client_queue_head =
-        (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
+    g_fs_client_queue_head = (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
     g_fs_client_queue_len--;
     pthread_mutex_unlock(&g_fs_client_queue_mutex);
     return true;
@@ -635,8 +628,7 @@ static void fs_client_queue_close_all(void)
     pthread_mutex_lock(&g_fs_client_queue_mutex);
     while (g_fs_client_queue_len > 0) {
         int client_fd = g_fs_client_queue[g_fs_client_queue_head].fd;
-        g_fs_client_queue_head =
-            (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
+        g_fs_client_queue_head = (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
         g_fs_client_queue_len--;
         close(client_fd);
     }
@@ -898,7 +890,6 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
     memset(ur, 0, 32);
     if (!fs_handshake(&session, ur, false)) {
         fs_session_cleanup(&session);
-        close(client_fd);
         return;
     }
     /* After the handshake session.peer_nonce is the 32-byte token the client
@@ -909,7 +900,6 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
     if (!fs_conn_deadline_ms(&session, &connection_deadline_ms)) {
         fs_gate_log_throttled("connection_deadline_unavailable", 0);
         fs_session_cleanup(&session);
-        close(client_fd);
         return;
     }
 
@@ -1053,21 +1043,29 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
            fs_session_mbps(&session),
            (unsigned long long)(session.bytes_sent + session.bytes_received));
     fs_session_cleanup(&session);
-    close(client_fd);
 }
 
 static void *fs_client_worker_thread(void *arg)
 {
-    (void)arg;
+    int *active_fd = arg;
 
     while (true) {
         struct fs_client_slot slot = { .fd = -1 };
-
         if (!fs_client_queue_pop(&slot))
             break;
         thread_liveness_beat(&g_fs_wkr_liveness, -1);
-        if (slot.fd >= 0)
+        pthread_mutex_lock(&g_fs_active_mutex);
+        bool serve = atomic_load(&g_fs_running);
+        if (serve)
+            *active_fd = slot.fd;
+        pthread_mutex_unlock(&g_fs_active_mutex);
+        if (serve && slot.fd >= 0)
             fs_handle_client_fd(slot.fd, slot.ip);
+        pthread_mutex_lock(&g_fs_active_mutex);
+        *active_fd = -1;
+        if (slot.fd >= 0)
+            close(slot.fd);
+        pthread_mutex_unlock(&g_fs_active_mutex);
     }
 
     return NULL;
@@ -1097,10 +1095,7 @@ static void *fs_server_thread(void *arg)
         LOG_NULL("filesvc", "server_thread: bind port %d failed: %s", g_fs_port, strerror(errno));
     }
 
-    /* Port 0 = OS-assigned (test fixtures; concurrent checkouts must never
-     * collide on a fixed port). Resolve the real port before announcing;
-     * published under the state mutex so fs_server_bound_port() readers
-     * never see a torn/stale value. */
+    /* Resolve an OS-assigned port before publishing it under the state mutex. */
     uint16_t resolved_port = g_fs_port;
     if (resolved_port == 0) {
         struct sockaddr_in6 bound;
@@ -1109,7 +1104,11 @@ static void *fs_server_thread(void *arg)
             resolved_port = ntohs(bound.sin6_port);
     }
 
-    listen(listen_fd, 32);
+    if (listen(listen_fd, 32) < 0 ||
+        fcntl(listen_fd, F_SETFL, O_NONBLOCK) < 0) {
+        close(listen_fd);
+        LOG_NULL("filesvc", "server_thread: nonblocking listen failed: %s", strerror(errno));
+    }
     log_jsonf(LOG_JSON_INFO, "file_service_listening",
               "\"port\":%d,\"transport\":\"x25519_hkdf_sha3\"",
               resolved_port);
@@ -1119,7 +1118,6 @@ static void *fs_server_thread(void *arg)
     g_fs_listen_fd = listen_fd;
     pthread_mutex_unlock(&g_fs_state_mutex);
 
-    /* Get UTXO root for key derivation */
     uint8_t utxo_root[32];
     memset(utxo_root, 0, 32);
 
@@ -1129,29 +1127,26 @@ static void *fs_server_thread(void *arg)
         struct sockaddr_in6 client_addr;
         socklen_t client_len = sizeof(client_addr);
 
-        /* Use accept with a timeout so we can check g_fs_running */
-        struct timeval tv;
-        tv.tv_sec = 2;
-        tv.tv_usec = 0;
-        setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
+        /* Darwin accept ignores SO_RCVTIMEO; poll and nonblocking fd bound stop. */
+        struct pollfd ready = { .fd = listen_fd, .events = POLLIN };
+        if (poll(&ready, 1, 200) <= 0 || !(ready.revents & POLLIN))
+            continue;
         int client_fd = accept(listen_fd,
                                 (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) continue;
+        int client_flags = fcntl(client_fd, F_GETFL, 0);
+        if (client_flags < 0 ||
+            fcntl(client_fd, F_SETFL, client_flags & ~O_NONBLOCK) < 0) {
+            close(client_fd);
+            continue;
+        }
 
-        /* Defense against a peer that opens a connection and then goes
-         * silent mid-frame. recv_all() / recv() on this fd would block
-         * indefinitely without a per-socket deadline. 30 s is generous
-         * for a file-service handshake or frame — anything longer is a
-         * misbehaving peer and we'd rather drop the connection than
-         * hold a worker hostage. The watchdog catches the hang
-         * post-hoc; this prevents it. */
+        /* Bound a peer that goes silent mid-frame. */
         struct timeval ctv = { .tv_sec = 30, .tv_usec = 0 };
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &ctv, sizeof(ctv));
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &ctv, sizeof(ctv));
 
-        /* Capture the peer address (v6 or v4-mapped v6) for the per-IP
-         * resource caps applied downstream. */
+        /* Capture the peer for per-IP caps. */
         uint8_t client_ip[16];
         memcpy(client_ip, &client_addr.sin6_addr, 16);
 
@@ -1190,15 +1185,7 @@ uint16_t fs_server_get_port(void)
     return port;
 }
 
-/* ── Diagnostics: `ops state --subsystem=file_service` ───────────────
- *
- * See CLAUDE.md "Adding state introspection". Surfaces the file-market
- * server's live serving state without grepping node.log + ss: whether the
- * listener is up, the served-data manifest is built, how many client
- * connections are queued for the worker pool, and the per-IP admission
- * table's active occupancy / concurrent-serve load. Atomic reads for the
- * bg-thread flags; brief acquires of the queue/manifest/IP mutexes for a
- * consistent snapshot. */
+/* Diagnostics for the live file-service state. */
 bool file_service_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -1259,8 +1246,9 @@ bool file_service_dump_state_json(struct json_value *out, const char *key)
 void fs_server_start(const char *datadir, uint16_t port)
 {
     unsigned started_workers = 0;
-
     pthread_mutex_lock(&g_fs_state_mutex);
+    while (atomic_load(&g_fs_stopping))
+        pthread_cond_wait(&g_fs_stop_cv, &g_fs_state_mutex);
     if (atomic_load(&g_fs_running) || g_fs_thread_started) {
         pthread_mutex_unlock(&g_fs_state_mutex);
         return;
@@ -1274,10 +1262,11 @@ void fs_server_start(const char *datadir, uint16_t port)
     g_fs_client_queue_head = 0;
     g_fs_client_queue_tail = 0;
     g_fs_client_queue_len = 0;
-
     for (unsigned i = 0; i < FS_SERVER_WORKERS; i++) {
+        g_fs_active_fds[i] = -1;
         if (thread_registry_spawn("zcl_fs_wkr", fs_client_worker_thread,
-                                      NULL, &g_fs_worker_threads[i]) != 0) {
+                                      &g_fs_active_fds[i],
+                                      &g_fs_worker_threads[i]) != 0) {
             fprintf(stderr,  // obs-ok:file-service-startup-failure
                     "file_service: failed to start worker %u\n", i);
             break;
@@ -1287,10 +1276,10 @@ void fs_server_start(const char *datadir, uint16_t port)
     g_fs_worker_threads_started = started_workers;
     if (started_workers > 0)
         thread_liveness_register(&g_fs_wkr_liveness, "zcl_fs_wkr", 0, 0);
-
     if (thread_registry_spawn("zcl_fs_server", fs_server_thread, NULL,
                                   &g_fs_thread) != 0) {
         atomic_store(&g_fs_running, false);
+        atomic_store(&g_fs_stopping, true);
         pthread_cond_broadcast(&g_fs_client_queue_cv);
         pthread_mutex_unlock(&g_fs_state_mutex);
         fprintf(stderr,  // obs-ok:file-service-startup-failure
@@ -1299,6 +1288,10 @@ void fs_server_start(const char *datadir, uint16_t port)
             pthread_join(g_fs_worker_threads[i], NULL);
         g_fs_worker_threads_started = 0;
         thread_liveness_retire(&g_fs_wkr_liveness);
+        pthread_mutex_lock(&g_fs_state_mutex);
+        atomic_store(&g_fs_stopping, false);
+        pthread_cond_broadcast(&g_fs_stop_cv);
+        pthread_mutex_unlock(&g_fs_state_mutex);
         return;
     }
     g_fs_thread_started = true;
@@ -1325,34 +1318,37 @@ void fs_server_stop(void)
     bool have_manifest = false;
     unsigned worker_threads_started = 0;
     int listen_fd = -1;
-
     pthread_mutex_lock(&g_fs_state_mutex);
+    if (atomic_load(&g_fs_stopping)) {
+        while (atomic_load(&g_fs_stopping))
+            pthread_cond_wait(&g_fs_stop_cv, &g_fs_state_mutex);
+        pthread_mutex_unlock(&g_fs_state_mutex);
+        return;
+    }
+    atomic_store(&g_fs_stopping, true);
     atomic_store(&g_fs_running, false);
     listen_fd = g_fs_listen_fd;
     g_fs_listen_fd = -1;
-    if (g_fs_thread_started) {
-        server_thread = g_fs_thread;
-        g_fs_thread_started = false;
-        have_server = true;
-    }
-    if (g_fs_manifest_thread_started) {
-        manifest_thread = g_fs_manifest_thread;
-        g_fs_manifest_thread_started = false;
-        have_manifest = true;
-    }
+    if (listen_fd >= 0)
+        (void)shutdown(listen_fd, SHUT_RDWR);
+    have_server = g_fs_thread_started;
+    server_thread = g_fs_thread;
+    g_fs_thread_started = false;
+    have_manifest = g_fs_manifest_thread_started;
+    manifest_thread = g_fs_manifest_thread;
+    g_fs_manifest_thread_started = false;
     worker_threads_started = g_fs_worker_threads_started;
     for (unsigned i = 0; i < worker_threads_started; i++)
         worker_threads[i] = g_fs_worker_threads[i];
     g_fs_worker_threads_started = 0;
     pthread_mutex_unlock(&g_fs_state_mutex);
-
-    if (listen_fd >= 0) {
-        shutdown(listen_fd, SHUT_RDWR);
-        close(listen_fd);
-    }
     pthread_cond_broadcast(&g_fs_client_queue_cv);
     fs_client_queue_close_all();
-
+    pthread_mutex_lock(&g_fs_active_mutex);
+    for (unsigned i = 0; i < worker_threads_started; i++)
+        if (g_fs_active_fds[i] >= 0)
+            (void)shutdown(g_fs_active_fds[i], SHUT_RDWR);
+    pthread_mutex_unlock(&g_fs_active_mutex);
     if (have_server) {
         fs_join_thread_bounded(server_thread, "server", 5);
         thread_liveness_retire(&g_fs_server_liveness);
@@ -1365,6 +1361,10 @@ void fs_server_stop(void)
         fs_join_thread_bounded(worker_threads[i], "worker", 5);
     if (worker_threads_started > 0)
         thread_liveness_retire(&g_fs_wkr_liveness);
+    pthread_mutex_lock(&g_fs_state_mutex);
+    atomic_store(&g_fs_stopping, false);
+    pthread_cond_broadcast(&g_fs_stop_cv);
+    pthread_mutex_unlock(&g_fs_state_mutex);
 }
 
 struct fs_connect_ops {

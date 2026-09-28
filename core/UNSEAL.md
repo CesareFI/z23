@@ -164,3 +164,15 @@ later lane flips it HARD.
 - 2026-09-28T03:17:26Z — REASON: Owner-authorized repair of Blue Sapling core drift landed in 3b22d6564: preserve existing scalar and signer behavior after differential parity review, then reseal the two changed sources and hot-swap mirrors
   old ROOT: c43d389c6cccac48942d3ad3ccc61575738377d155d4dee1d1435f9ba8aaf35f
   by: owner unseal ritual (make core-unseal)
+
+- 2026-09-28T15:02:15Z — REASON: Owner-authorized Darwin file-service shutdown repair: promptly sever active ROM transfers while preserving worker-owned closes; no consensus predicate or validity table change; exact Darwin rom_fetch and consensus_parity passed on 4bdefb32dfaa5754d51c0d11147704fc5a0e5424
+  old ROOT: 1dec53ee652d5947bd3961c1d97e6d4b48b710d57f49ab4ff840f7301e79147a
+  by: owner unseal ritual (make core-unseal)
+
+- 2026-09-28T15:45:19Z — REASON: Independent review follow-through for Darwin file-service stop: single listener close owner and serialize worker cleanup after server spawn failure; no consensus predicate change
+  old ROOT: 730341af543447204de33edf85ec60fa51d704a8daaf5aa71680557053cad7d3
+  by: owner unseal ritual (make core-unseal)
+
+- 2026-09-28T15:54:17Z — REASON: Darwin RED follow-through: shutdown on listener does not wake accept; poll-gate accept with bounded stop latency, preserve sole listener close ownership and synchronous stop callers
+  old ROOT: 8a30385fd545923d5fb508635e9826f0eea52c72d9837a94c374efc27bd3c2ce
+  by: owner unseal ritual (make core-unseal)

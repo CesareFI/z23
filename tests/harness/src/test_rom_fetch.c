@@ -1221,6 +1221,7 @@ static int test_verified_real_interrupt_resume(void)
         pthread_t tid;
         int spawn_rc = pthread_create(&tid, NULL, rf_cut_thread, c);
         bool reached = false;
+        int64_t stop_elapsed_ms = -1;
         if (spawn_rc == 0) {
             pthread_mutex_lock(&c->mu);
             while (!c->reached && !c->finished)
@@ -1228,8 +1229,11 @@ static int test_verified_real_interrupt_resume(void)
             reached = c->reached;
             pthread_mutex_unlock(&c->mu);
 
-            if (reached)
+            if (reached) {
+                int64_t stop_start_ms = platform_time_monotonic_ms();
                 fs_server_stop(); /* the real cut: every live fd severed */
+                stop_elapsed_ms = platform_time_monotonic_ms() - stop_start_ms;
+            }
 
             pthread_mutex_lock(&c->mu);
             c->server_stopped = true;
@@ -1240,6 +1244,7 @@ static int test_verified_real_interrupt_resume(void)
         /* Nothing above may ASSERT: the download thread reads this frame. */
         ASSERT(spawn_rc == 0);
         ASSERT(reached);
+        ASSERT(stop_elapsed_ms >= 0 && stop_elapsed_ms < 15000);
         ASSERT(!c->ok);              /* the interrupted call fails closed   */
 
         struct stat st;
