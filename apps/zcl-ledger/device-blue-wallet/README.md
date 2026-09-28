@@ -6,8 +6,21 @@ The isolated `candidate/blue_zip32_seed_device.c` adapter checks PIN state
 and requests a hardened BOLOS BIP32 node for a Ledger-specific Sapling root.
 It is compiled with the pinned Blue SDK and tested with a host syscall shim,
 but is not linked into the Wallet image. No Sapling key or signing APDU is
-available in Wallet 0.3.5. This mapping is not the standard ZIP32 root of a
+available in Wallet 0.3.6. This mapping is not the standard ZIP32 root of a
 wallet seed; recovery software would need the same documented mapping.
+
+Version 0.3.6 runs the real app startup and EXIT controller in a C23 host
+SDK shell. The shell checks the receive address, derivation failure screens,
+secret-workspace wiping, USB reset and suspend, approval timeout, and EXIT
+event. It found that a failed internal derivation left formatted address
+lines in RAM; the app now clears them before showing the error screen.
+Two separately patched SDK builds produced identical 40,960-byte `.text`
+images, SHA-256
+`435b6f03a62e99daa668b85c71e895f7b64ad7a056b575367c5bf2af460e09c3`.
+The host shell does not run BOLOS or physical USB and touch. This image has
+not been installed and is not admitted by the installer.
+The [startup experiment](../../../docs/experiments/2026-09-27-ledger-blue-wallet-036-startup.md)
+records the test coverage and limits.
 
 Version 0.3.5 shares RAM between mutually exclusive boot derivation and
 payment state, and between output text and previous-transaction parsing.

@@ -904,6 +904,22 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 add_test(NAME blue-wallet-device-ui COMMAND test-blue-wallet-device-ui)
 
+add_executable(test-blue-wallet-startup tests/test_blue_wallet_startup.c)
+target_include_directories(test-blue-wallet-startup PRIVATE
+    tests/blue_wallet_startup_stub include device-blue-wallet/src
+    ../../contexts/commons/packages/zripemd/include)
+target_link_libraries(test-blue-wallet-startup PRIVATE
+    blue_wallet_protocol blue_wallet_receive zcl_address zcl_sha256)
+target_compile_options(test-blue-wallet-startup PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(test-blue-wallet-startup PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test-blue-wallet-startup PRIVATE
+        -fsanitize=address,undefined)
+endif()
+add_test(NAME blue-wallet-startup COMMAND test-blue-wallet-startup)
+
 add_executable(test-blue-wallet-review-cli tests/test_blue_wallet_review_cli.c)
 target_link_libraries(test-blue-wallet-review-cli PRIVATE zcl_sha256 blue_utxo)
 target_compile_options(test-blue-wallet-review-cli PRIVATE

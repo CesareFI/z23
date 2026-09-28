@@ -261,7 +261,7 @@ reported zero apps. Version 0.2.17 is built and simulated offline but is not
 installed or hardware-verified. Probe, Fixture, Review, and Sign Test remain
 development images, not payment signers.
 
-The Wallet 0.3.5 offline candidate includes a separate final touchscreen
+The Wallet 0.3.6 offline candidate includes a separate final touchscreen
 `SIGN ZCL` approval and ordered transparent P2PKH signing. A synthetic
 fixture command prepares a previous transaction and unsigned v4 spend from
 a compressed public key without needing a chain UTXO:
@@ -271,7 +271,7 @@ zcl-blue-wallet-fixture --prepare 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce
 ```
 
 The exact 0.3.4 image froze the Blue on opening and was deleted. The C23
-installer now blocks it. Version 0.3.5 passes the stricter RAM gate and
+installer now blocks it. Version 0.3.6 passes the stricter RAM gate and
 host tests but has not passed BOLOS startup on the device. Its image must pass
 physical open, exit, and USB checks before this fixture is used on the Blue.
 With a qualified image installed and its identity verified,

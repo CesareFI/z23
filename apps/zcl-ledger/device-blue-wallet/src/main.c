@@ -344,6 +344,7 @@ __attribute__((section(".boot"))) int main(void) {
             if (!wallet_state.address_ready) {
                 wipe(wallet_state.public_key, sizeof wallet_state.public_key);
                 wipe(receive_address, sizeof receive_address);
+                wipe(address_lines, sizeof address_lines);
             }
             if (wallet_state.address_ready) {
                 UX_DISPLAY(receive_ui, NULL);
