@@ -5818,6 +5818,14 @@ static bool ic_private_empty_store(const char *store, const char *state)
 
 /* One proof's compile store, opened, checked and closed. Returns 0, or the
  * step that failed so the parent can name it. */
+static bool ic_proof_compile_env_ok(void)
+{
+    const char *ccache = getenv("CCACHE_DISABLE");
+    const char *verified = getenv("ZCC_VERIFIED");
+    return ccache && strcmp(ccache, "1") == 0 && verified &&
+           strcmp(verified, "1") == 0;
+}
+
 static int ic_compile_store_round(const char *state, const char *key,
                                   const char *shared, int step)
 {
@@ -5827,8 +5835,7 @@ static int ic_compile_store_round(const char *state, const char *key,
         return step + 1;
     if (strcmp(store, shared) == 0) return step + 2;
     if (!ic_private_empty_store(store, state)) return step + 3;
-    const char *ccache = getenv("CCACHE_DISABLE");
-    if (!ccache || strcmp(ccache, "1") != 0) return step + 4;
+    if (!ic_proof_compile_env_ok()) return step + 4;
     /* A retry of the same pair (a crashed worker's leftovers, or anything
      * this uid wrote there since) must start from nothing again. */
     if (!ic_write(store, "obj/ab/abcd.bin", "PLANTED") ||
@@ -5836,7 +5843,8 @@ static int ic_compile_store_round(const char *state, const char *key,
         !ic_private_empty_store(store, state))
         return step + 5;
     if (!zcl_dev_proof_test_compile_store_close(state, key) ||
-        access(store, F_OK) == 0 || getenv("ZCC_DIR") != NULL)
+        access(store, F_OK) == 0 || getenv("ZCC_DIR") != NULL ||
+        getenv("ZCC_VERIFIED") != NULL)
         return step + 6;
     return 0;
 }
@@ -5850,7 +5858,8 @@ static bool ic_compile_store_fixture(const char *root, const char *home,
            ic_write(root, "home/.cache/zcc/obj/ab/abcd.bin", "PLANTED") &&
            ic_write(root, "shared-zcc/obj/ab/abcd.bin", "PLANTED") &&
            setenv("HOME", home, 1) == 0 && unsetenv("XDG_CACHE_HOME") == 0 &&
-           unsetenv("ZCC_DIR") == 0 && unsetenv("CCACHE_DISABLE") == 0;
+           unsetenv("ZCC_DIR") == 0 && unsetenv("ZCC_VERIFIED") == 0 &&
+           unsetenv("CCACHE_DISABLE") == 0;
 }
 
 /* The shared stores are someone else's to manage: left exactly as found. */

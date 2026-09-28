@@ -3231,6 +3231,27 @@ static bool manifest_store(const struct cache *c, const char *pkey,
     return have_pkey && have_deps && manifest_write(c, pkey, ckey, deps);
 }
 
+static int zcc_command_dispatch(int argc, char **argv)
+{
+    struct cache c;
+    if (!cache_open(&c)) {
+        fprintf(stderr, "zcc: no usable cache directory\n");
+        return 1;
+    }
+    if (strcmp(argv[1], "--zcc-stats") == 0)
+        return cmd_stats(&c);
+    if (strcmp(argv[1], "--zcc-clear") == 0) {
+        rm_tree(c.root);
+        printf("zcc: cleared %s\n", c.root);
+        return 0;
+    }
+    if (strcmp(argv[1], "--zcc-trim") == 0)
+        return cmd_trim(&c, argc > 2 ? strtoll(argv[2], NULL, 10)
+                                     : ceiling_mb());
+    fprintf(stderr, "zcc: unknown option %s\n", argv[1]);
+    return 2;
+}
+
 static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
 {
     if (argc < 2) {
@@ -3244,25 +3265,10 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
     if (strcmp(argv[1], "--epoch-object") == 0)
         return cmd_epoch_object(argc, argv);
 
+    if (strncmp(argv[1], "--zcc-", 6) == 0)
+        return zcc_command_dispatch(argc, argv);
+
     struct cache c;
-    if (strncmp(argv[1], "--zcc-", 6) == 0) {
-        if (!cache_open(&c)) {
-            fprintf(stderr, "zcc: no usable cache directory\n");
-            return 1;
-        }
-        if (strcmp(argv[1], "--zcc-stats") == 0)
-            return cmd_stats(&c);
-        if (strcmp(argv[1], "--zcc-clear") == 0) {
-            rm_tree(c.root);
-            printf("zcc: cleared %s\n", c.root);
-            return 0;
-        }
-        if (strcmp(argv[1], "--zcc-trim") == 0)
-            return cmd_trim(&c, argc > 2 ? strtoll(argv[2], NULL, 10)
-                                         : ceiling_mb());
-        fprintf(stderr, "zcc: unknown option %s\n", argv[1]);
-        return 2;
-    }
 
     char **cc_argv = argv + 1;
     int cc_argc = argc - 1;
@@ -3270,6 +3276,18 @@ static int zcc_dispatch(int argc, char **argv, bool replace_on_bypass)
     struct plan pl = { 0 };
     plan_build(&pl, cc_argc, cc_argv);
     bool disabled = getenv("ZCC_DISABLE") != NULL;
+
+    /* A proof may not consume this account's cache, even through the stat
+     * manifest: candidate code can write both. Until a separately owned
+     * verifier supplies an admitted object, compile from the real inputs.
+     * This branch precedes cache_open and both cache-hit paths. The epoch
+     * publisher reaches it through its nested zcc_dispatch call. */
+    if (getenv("ZCC_VERIFIED") != NULL) {
+        logline("MISS", "verified:no_verifier_key", &pl);
+        plan_free(&pl);
+        return replace_on_bypass ? exec_direct(cc_argv)
+                                 : run_argv(cc_argv, NULL, NULL);
+    }
 
     if (disabled || pl.bypass || !cache_open(&c)) {
         if (!disabled && pl.bypass && cache_open(&c)) {

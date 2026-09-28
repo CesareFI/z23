@@ -115,6 +115,20 @@ d="$(build header)" || exit 1
 [ "$a" != "$d" ] || fail "a changed header produced the same object bytes"
 [ "$("$WORK/prog")" = 100 ] || fail "the build after a header edit used stale code"
 
+# A proof is hostile to this account's cache. Give the cache an unchanged
+# size/inode/mtime header with changed behavior: its fast manifest may still
+# name the old object. Verified mode must launch the compiler and never serve
+# that object, even on its second invocation.
+cp -p "$WORK/dep.h" "$WORK/dep.saved"
+printf '#define ZCL_GATE_VALUE 200\n' > "$WORK/dep.h"
+touch -r "$WORK/dep.saved" "$WORK/dep.h"
+v1="$(ZCC_VERIFIED=1 build verified_first)" || exit 1
+[ "$(last_disposition)" = MISS ] || fail "verified compile used the same-account cache"
+[ "$("$WORK/prog")" = 200 ] || fail "verified compile executed stale cached behavior"
+v2="$(ZCC_VERIFIED=1 build verified_second)" || exit 1
+[ "$(last_disposition)" = MISS ] || fail "verified rebuild reused a same-account object"
+[ "$v1" = "$v2" ] || fail "verified rebuild changed identical output bytes"
+
 
 # 6. THE SECOND REGRESSION: the node compiles every object into a FRESH
 #    mktemp staging directory and publishes atomically, so `-o` and `-MF`

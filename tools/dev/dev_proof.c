@@ -5599,6 +5599,7 @@ static bool proof_zcc_private_open(const char *state, const char *key)
            proof_zcc_store_remove(state, store) &&
            platform_private_directory_create(store) &&
            setenv("ZCC_DIR", store, 1) == 0 &&
+           setenv("ZCC_VERIFIED", "1", 1) == 0 &&
            setenv("CCACHE_DISABLE", "1", 1) == 0;
 }
 
@@ -5609,7 +5610,8 @@ static bool proof_zcc_private_close(const char *state, const char *key)
     char store[PATH_MAX];
     bool removed = proof_zcc_store_path(state, key, store) &&
                    proof_zcc_store_remove(state, store);
-    return unsetenv("ZCC_DIR") == 0 && removed;
+    return unsetenv("ZCC_VERIFIED") == 0 &&
+           unsetenv("ZCC_DIR") == 0 && removed;
 }
 
 /* Fill the pre-fork make argv: everything EITHER dimension can build, built

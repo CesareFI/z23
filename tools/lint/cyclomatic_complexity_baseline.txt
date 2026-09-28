@@ -4095,7 +4095,7 @@ tools/zcc.c:manifest_verify:18
 tools/zcc.c:plan_build:46
 tools/zcc.c:preprocess:26
 tools/zcc.c:scan_entries:27
-tools/zcc.c:zcc_dispatch:41
+tools/zcc.c:zcc_dispatch:38
 tools/zcc_epoch_batch.c:batch_manifest_size:23
 tools/zcc_epoch_batch.c:batch_manifest_validate:38
 tools/zcc_epoch_batch.c:batch_path_is_relative:17

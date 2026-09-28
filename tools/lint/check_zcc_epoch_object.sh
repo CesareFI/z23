@@ -338,6 +338,20 @@ compile dep "$OBJECT" "$COUNTING_COMPILER" \
 [ "$(file_stamp "$UNVERIFIED")" = "$UNVERIFIED_STAMP" ] ||
     fail 'same-authority publication rewrote the durable unverified marker'
 
+# The proof's verified mode must also bypass the epoch object's cache hit.
+# Count the actual compiler child, not merely the wrapper invocation.
+VERIFIED_LAUNCHES="$(wc -l < "$COMPILER_LAUNCHES")"
+rm -f -- "$OBJECT" "${OBJECT%.o}.d"
+ZCC_VERIFIED=1 COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
+compile dep "$OBJECT" "$COUNTING_COMPILER" \
+    -std=c23 -O2 -Wall -Wextra -Werror "-frandom-seed=$SOURCE"
+[ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = MISS ] ||
+    fail 'verified epoch compile served a same-account cache entry'
+[ "$(wc -l < "$COMPILER_LAUNCHES")" = "$((VERIFIED_LAUNCHES + 1))" ] ||
+    fail 'verified epoch compile skipped the real compiler'
+[ -s "$OBJECT" ] && [ -s "${OBJECT%.o}.d" ] ||
+    fail 'verified epoch compile did not publish complete fresh artifacts'
+
 # Make passes its selected compiler as `zcc COMPILER ...`. The epoch command
 # must unwrap that exact admitted self-wrapper in-process: one coordinator on
 # both cold and warm attempts, and no compiler child on the warm hit.
