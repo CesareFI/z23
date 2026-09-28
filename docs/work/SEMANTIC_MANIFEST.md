@@ -1515,7 +1515,13 @@ none of them runs as part of building that commit's objects:
   instead widens the real Makefile's `tools/verify` and fixture paths
   (a `coverage` recipe runs `gcovr --filter 'tools/'`): on the tail-10
   replay (7f85a654d1..3d7be82098) compiles go from 3712 to 11087 and
-  facts groups from 1702 to 4108, three of ten commits universal;
+  facts groups from 1702 to 4108, three of ten commits universal.
+  Following a sub-make's goals when a `.PHONY` goal's prerequisites reach
+  a file rule (`$(MAKE) gen all` with `all: build/a.o`) keeps that replay
+  at 3712, but it widens a `ci` rule's `$(MAKE) coverage lint` when `lint`
+  has a file prerequisite, and 15 of the real tree's scripts that only
+  such goals run. A recipe after the rule line's `;` is a recipe line,
+  so `ci: ; $(MAKE) gen build/a.o` reaches `gen` as the tab-led form does;
 - a goal a recipe reads at run time (`$$target` from a shell loop over
   words the shell computes): its words exist only when the recipe runs;
 - a variable set only on the command line or in the environment
