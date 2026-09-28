@@ -1042,24 +1042,38 @@ static int sbit_t_generated_include(void)
     return failures;
 }
 
-/* A generated optional include whose recipe writes only a comment (the
- * real Makefile's identity markers) reaches nothing. */
+/* The real Makefile's identity markers: a rule that writes only a comment
+ * into an optional include. Missing, make writes it before it reads the
+ * rest: UNKNOWN. Present, it is read as it stands and names nothing. */
+#define SBI_MARKER_RULE                                                        \
+    "-include build/ready.mk\nbuild/ready.mk:\n"                              \
+    "\t@set -eu; tmp=\"$$(mktemp \"$@.XXXXXX\")\"; "                          \
+    "trap 'rm -f \"$$tmp\"' EXIT; SID='$(SID)' tools/dev/sid.sh drop; "       \
+    "printf '%s\\n' '# ready' > \"$$tmp\"; mv -f -- \"$$tmp\" \"$@\"\n"
+
+static int sbit_t_generated_marker(void)
+{
+    int failures = 0;
+    static const struct sbi_case missing[] = {
+        {"marker_missing", SBI_MARKER_RULE SBI_OBJ_RULE SBI_GEN_RULE, NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a missing optional include a rule "
+             "makes widens, even one that writes only a comment") {
+        ASSERT(sbi_cases_widen(missing, SBI_COUNT(missing)));
+    } TEST_END
+    return failures;
+}
+
 static int sbit_t_generated_comment(void)
 {
     int failures = 0;
     static const char *const changed[] = {"tools/x.sh"};
     struct sbi_run r = {0};
-    TEST_CASE("semantic_build_inputs: a generated optional include whose "
-             "recipe writes only a comment narrows") {
-        ASSERT(sbi_consume("sbi_gen_comment",
-                           "-include build/ready.mk\nbuild/ready.mk:\n"
-                           "\t@set -eu; tmp=\"$$(mktemp \"$@.XXXXXX\")\"; "
-                           "trap 'rm -f \"$$tmp\"' EXIT; "
-                           "SID='$(SID)' tools/dev/sid.sh drop; "
-                           "printf '%s\\n' '# ready' > \"$$tmp\"; "
-                           "mv -f -- \"$$tmp\" \"$@\"\n"
-                           SBI_OBJ_RULE SBI_GEN_RULE,
-                           changed, 1, &r));
+    TEST_CASE("semantic_build_inputs: an optional include that exists is "
+             "read as it stands, and a comment in it narrows") {
+        ASSERT(sbi_consume_with("sbi_gen_comment",
+                                SBI_MARKER_RULE SBI_OBJ_RULE SBI_GEN_RULE,
+                                "build/ready.mk", "# ready\n", changed, 1, &r));
         ASSERT(sbi_narrowed(&r));
     } TEST_END
     zcl_devloop_facts_report_free(&r.rep);
@@ -1120,6 +1134,133 @@ static int sbit_t_generated_unreadable(void)
     return failures;
 }
 
+/* The third review's cases (A: a make reference expanded into what
+ * printf or echo writes; B: '%' in the written text; C: another rule's
+ * recipe writing the include; E: the target handed to a program through
+ * a variable): each makes a missing optional include, so each widens
+ * whatever its recipe writes. */
+#define SBI_GENMK "tools/genmk.sh"
+static int sbit_t_generated_reviewed(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"h01", "GN := ge n\n" SBI_GEN_INCLUDE("\tprintf 'build/a.o: | %s%s\\n' "
+                                              "$(GN) > $@\n"), NULL, NULL},
+        {"h02", "FMT := 'build/a.o: | %s\\n'\n"
+                SBI_GEN_INCLUDE("\tprintf $(FMT) gen > $@\n"), NULL, NULL},
+        {"h03", "CONV := %s\n" SBI_GEN_INCLUDE("\tprintf 'build/a.o: | "
+                                              "$(CONV)\\n' gen > $@\n"),
+         NULL, NULL},
+        {"h04", "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                "build/gen.mk:\n\tprintf 'build/a.o: build/%%.o: | gen-%%\\n' "
+                "> $@\n" SBI_GEN_A_RULE, NULL, NULL},
+        {"h04_pct", SBI_GEN_INCLUDE("\tprintf 'build/a.o: build/%%.o: | g%%\\n' "
+                                    "> $@\n"), NULL, NULL},
+        {"h05", "OCT := ge\\\\0156\n" SBI_GEN_INCLUDE("\techo \"build/a.o: | "
+                                                     "$(OCT)\" > $@\n"),
+         NULL, NULL},
+        {"h06", "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                "build/gen.mk:: " SBI_TU "\n\tprintf 'build/a.o: | g' > $@\n"
+                "build/gen.mk:: " SBI_TU "\n\tprintf 'en\\n' >> $@\n" SBI_GEN_RULE,
+         NULL, NULL},
+        {"h07", "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                "build/gen.mk: build/part.txt\n\tprintf 'en\\n' >> $@\n"
+                "build/part.txt:\n\tprintf 'build/a.o: | g' > build/gen.mk; "
+                "touch $@\n" SBI_GEN_RULE, NULL, NULL},
+        {"h08", "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                "build/gen.mk: build/stamp\n\ttouch $@\nbuild/stamp:\n"
+                "\tprintf 'build/a.o: | gen\\n' > build/gen.mk; touch $@\n"
+                SBI_GEN_RULE, NULL, NULL},
+        {"h10", "GEN_MK := build/gen.mk\nall: build/a.o\n" SBI_OBJ_RULE
+                "-include $(GEN_MK)\n$(GEN_MK):\n\t" SBI_GENMK " $(GEN_MK)\n"
+                SBI_GEN_RULE, SBI_GENMK,
+         "#!/bin/sh\nprintf \"build/a.o: | gen\\n\" > \"$1\"\n"},
+        {"h11", "OUT := build/gen.mk\n"
+                SBI_GEN_INCLUDE("\tZOUT=$(OUT) " SBI_GENMK "\n"), SBI_GENMK,
+         "#!/bin/sh\nprintf \"build/a.o: | gen\\n\" > \"$ZOUT\"\n"},
+        {"h14", SBI_GEN_INCLUDE("\t/usr/bin/printf 'build/a.o: | %s\\n' gen "
+                                "> $@\n"), NULL, NULL},
+        {"h15", "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                "build/gen.mk:\n\tprintf '%s\\n' 'build/a.o: build/%.o: | "
+                "gen-%' > $@\n" SBI_GEN_A_RULE, NULL, NULL},
+        {"h16", SBI_GEN_INCLUDE("\tprintf 'build/a.o: | %s%s\\n' g e n > $@\n"),
+         NULL, NULL},
+    };
+    TEST_CASE("semantic_build_inputs: a missing optional include a rule "
+             "makes widens whatever its recipe writes") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* D: a line make expands as it reads the makefiles runs a command that
+ * writes a file (a $(shell) or != redirection or tee, a $(file >)), which
+ * may be an include make reads next, missing or not. */
+static int sbit_t_parse_time_writers(void)
+{
+    int failures = 0;
+    static const struct sbi_case cases[] = {
+        {"h09", "X := $(shell printf 'build/a.o: | gen\\n' > build/gen.mk)\n"
+                "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                SBI_GEN_RULE, NULL, NULL},
+        {"h12", "LATE = $(shell printf 'build/a.o: | gen\\n' > build/gen.mk)\n"
+                "NOW := $(LATE)\n" SBI_GEN_INCLUDE("\t@: $(NOW)\n"), NULL, NULL},
+        {"h13", "X != printf 'build/a.o: | gen\\n' > build/gen.mk\n"
+                "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                SBI_GEN_RULE, NULL, NULL},
+        {"h09_present", "X := $(shell printf 'build/a.o: | gen\\n' > build/gen.mk)\n"
+                        "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                        SBI_GEN_RULE, "build/gen.mk", "# old\n"},
+        {"h13_present", "X != printf 'build/a.o: | gen\\n' > build/gen.mk\n"
+                        "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                        SBI_GEN_RULE, "build/gen.mk", "# old\n"},
+        {"d_tee", "X := $(shell printf 'build/a.o: | gen\\n' | tee build/gen.mk)\n"
+                  "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                  SBI_GEN_RULE, "build/gen.mk", "# old\n"},
+        {"d_file", "$(file >build/gen.mk,build/a.o: | gen)\n"
+                   "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                   SBI_GEN_RULE, "build/gen.mk", "# old\n"},
+        {"d_subst_in_quotes", "X := $(shell printf '%s' \"$$(printf a)\" "
+                              "> build/gen.mk)\nall: build/a.o\n" SBI_OBJ_RULE
+                              "-include build/gen.mk\n" SBI_GEN_RULE,
+         "build/gen.mk", "# old\n"},
+        {"d_define", "define W\n$(shell printf 'build/a.o: | gen\\n' > build/gen.mk)\n"
+                     "endef\nX := $(W)\n"
+                     "all: build/a.o\n" SBI_OBJ_RULE "-include build/gen.mk\n"
+                     SBI_GEN_RULE, "build/gen.mk", "# old\n"},
+    };
+    TEST_CASE("semantic_build_inputs: a $(shell), != or $(file) that writes "
+             "a file as make reads the makefiles widens") {
+        ASSERT(sbi_cases_widen(cases, SBI_COUNT(cases)));
+    } TEST_END
+    return failures;
+}
+
+/* A parse-time command that writes nothing (output to a descriptor or
+ * /dev/null, a $(file <) read) leaves the build inputs as they were. */
+static int sbit_t_parse_time_quiet(void)
+{
+    int failures = 0;
+    static const char *const changed[] = {"tools/x.sh"};
+    struct sbi_run r = {0};
+    TEST_CASE("semantic_build_inputs: a parse-time command that writes no "
+             "file narrows") {
+        ASSERT(sbi_consume_with("sbi_parse_quiet",
+                                "REV := $(shell git rev-parse HEAD 2>/dev/null)\n"
+                                "N != git log -1 --oneline 2>&1 >&2\n"
+                                "V := $(file <build/gen.mk)\n"
+                                "K := $(shell printf '%s' '<root>' \"a>b\")\n"
+                                "define LINK\nbuild/l.rsp:\n"
+                                "\t@$$(file >$$@,x) test -s \"$$@\"\nendef\n"
+                                "all: build/a.o\n" SBI_OBJ_RULE
+                                "-include build/gen.mk\n" SBI_GEN_RULE,
+                                "build/gen.mk", "# old\n", changed, 1, &r));
+        ASSERT(sbi_narrowed(&r));
+    } TEST_END
+    zcl_devloop_facts_report_free(&r.rep);
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
@@ -1136,6 +1277,9 @@ int test_semantic_build_inputs(void)
           sbit_t_computed_prerequisite() | sbit_t_computed_goal_word() |
           sbit_t_grouped_echo_pipe() | sbit_t_submake_goals() |
           sbit_t_unreadable_text() | sbit_t_optional_include() |
-          sbit_t_generated_include() | sbit_t_generated_comment() |
-          sbit_t_generated_joins() | sbit_t_generated_unreadable();
+          sbit_t_generated_include() | sbit_t_generated_marker() |
+          sbit_t_generated_comment() |
+          sbit_t_generated_joins() | sbit_t_generated_unreadable() |
+          sbit_t_generated_reviewed() | sbit_t_parse_time_writers() |
+          sbit_t_parse_time_quiet();
 }

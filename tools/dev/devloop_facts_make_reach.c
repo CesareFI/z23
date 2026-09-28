@@ -423,7 +423,7 @@ static bool fxm_separator(const char *s, const char *p)
 
 /* The end of the shell command at p: the first separator outside quotes
  * and references; NULL when one does not close. */
-char *fxm_command_end(char *p)
+static char *fxm_command_end(char *p)
 {
     char quote = '\0';
     for (const char *s = p; *p != '\0'; p++) {
@@ -443,7 +443,7 @@ char *fxm_command_end(char *p)
 }
 
 /* After '>': a redirection that feeds no command and names no file. */
-static bool fxm_quiet_redirect(const char *p)
+bool fxm_quiet_redirect(const char *p)
 {
     while (fxm_space(*p))
         p++;
@@ -452,7 +452,7 @@ static bool fxm_quiet_redirect(const char *p)
 }
 
 /* Past the @, -, +, (, {, !, then, else, do and elif that lead a command. */
-char *fxm_command_word(char *p, const char *e)
+static char *fxm_command_word(char *p, const char *e)
 {
     static const char *const kw[] = {"then", "else", "do", "elif"};
     for (bool more = true; more;) {
@@ -1092,7 +1092,7 @@ static bool fxm_runs_make(struct fxm *m, char *p)
 
 /* The end of the shell word at p: an unquoted space outside make
  * references; NULL when a quote or reference does not close. */
-char *fxm_word_end(char *p)
+static char *fxm_word_end(char *p)
 {
     char quote = '\0';
     for (; *p != '\0'; p++) {
@@ -1380,9 +1380,7 @@ static bool fxm_recipe_reaches(struct fxm *m, struct fxm_line *l)
 
 /* A line in a goal position: what it spells may be a goal a make takes or
  * a prerequisite of a rule that runs: a reached rule's prerequisites, a
- * recipe line's commands that run make, a recipe line of a rule that makes
- * a missing optional include (what it writes is makefile text), an
- * $(eval) directive (the rules it makes), and a definition of a variable
+ * recipe line's commands that run make, an $(eval) directive (the rules it makes), and a definition of a variable
  * those read, or a computed one. */
 static bool fxm_goal_line(struct fxm *m, struct fxm_line *l)
 {
@@ -1396,7 +1394,7 @@ static bool fxm_goal_line(struct fxm *m, struct fxm_line *l)
     case FXM_RULE:
         return m->whole || m->rules[l->rule].reached;
     case FXM_RECIPE:
-        return m->rules[l->rule].gen || fxm_recipe_reaches(m, l);
+        return fxm_recipe_reaches(m, l);
     default:
         return false;
     }
@@ -1409,12 +1407,8 @@ static bool fxm_goal_follow(struct fxm *m, const struct fxm_line *l)
     char *eq;
     if (fxm_said(m, l) == NULL)
         return false;
-    if (l->ctx == FXM_RECIPE) {
-        bool grew = fxm_goal_recipe(m, m->line.p, 0);
-        if (m->rules[l->rule].gen)
-            grew |= fxm_gen_recipe(m, l);
-        return grew;
-    }
+    if (l->ctx == FXM_RECIPE)
+        return fxm_goal_recipe(m, m->line.p, 0);
     /* A recipe line a define holds, and a variable whose value holds make,
      * are recipe text: their own commands that run make take its goals. */
     if (l->ctx == FXM_DEF && l->body && l->raw[0] == '\t')
@@ -1434,7 +1428,7 @@ void fxm_reach(struct fxm *m)
     fxm_strs_seal(&m->phony);
     fxm_pairs(m);
     fxm_cmds(m);
-    fxm_gen_runs(m);
+    m->unknown |= fxm_parse_writes(m);
     while (grew && !m->unknown) {
         grew = false;
         for (size_t k = 0; k < m->nlines; k++) {
