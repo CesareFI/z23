@@ -1,6 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * z23-sem-replay build side; see sem_replay_build.h. */
+#define _GNU_SOURCE /* wait4 */
+
 #include "sem_replay_build.h"
 
 #include <dirent.h>

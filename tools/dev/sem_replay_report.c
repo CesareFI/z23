@@ -299,7 +299,7 @@ struct agg {
     char name[128];
     size_t commits, narrowed, precise;
     double make, changed, code, debug, plain, facts, fn_code, fn_debug, fn_flags;
-    double gplain, gfacts, obl, sense;
+    double gplain, gfacts, obl, sense, fw_facts, fw_plain;
     double p[P_N];
 };
 
@@ -308,10 +308,10 @@ static void agg_add(struct agg *a, const struct table *t, const struct row *r)
     static const char *const cols[] = {"make", "changed", "code_changed", "debug_changed",
                                        "plain", "facts", "fn_code", "fn_debug", "fn_flags",
                                        "groups_plain", "groups_facts", "obl_facts",
-                                       "sense_cpu"};
+                                       "sense_cpu", "fw_facts", "fw_plain"};
     double *dst[] = {&a->make, &a->changed, &a->code, &a->debug, &a->plain, &a->facts,
                      &a->fn_code, &a->fn_debug, &a->fn_flags, &a->gplain, &a->gfacts,
-                     &a->obl, &a->sense};
+                     &a->obl, &a->sense, &a->fw_facts, &a->fw_plain};
     a->commits++;
     a->narrowed += is_one(t, r, "narrowed");
     a->precise += strcmp(col(t, r, "facts_mode"), "precise") == 0;
@@ -357,6 +357,12 @@ static void print_headline(const struct table *t)
            "%.0f).\n\n", total.make - total.facts, total.make, total.facts);
     printf("Test-group executions avoided vs plain: %.0f (plain selected %.0f groups, the facts "
            "plan %.0f).\n\n", total.gplain - total.gfacts, total.gplain, total.gfacts);
+    printf("False-narrow (a changed object the facts plan left out; must be 0, fails the "
+           "run): %.0f.\n\n", total.fn_code);
+    printf("False-wide vs facts (a TU the facts plan compiled whose object bytes did not "
+           "change): %.0f.\n\n", total.fw_facts);
+    printf("False-wide vs plain (a TU the plain plan compiled whose object bytes did not "
+           "change): %.0f.\n\n", total.fw_plain);
 }
 
 static void print_groups(const struct table *t, const char *key, const char *title)

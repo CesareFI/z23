@@ -9,8 +9,12 @@
  * `t-fast-exact`, the land path or the proof path reads its output, spawns
  * it, or is gated on its exit code; its only registered caller is its own
  * self-test (group sem_replay). It exits nonzero on a code false negative
- * (an object make rebuilt that the facts plan left out) so a human running
- * it notices; that exit never reaches any other gate.
+ * (too narrow: an object make rebuilt that the facts plan left out) so a
+ * human running it notices; that exit never reaches any other gate. It
+ * also reports, per commit and in the headline total, every false-wide TU
+ * (too wide: one a plan selected whose object bytes did not move against
+ * the parent's build) for both the facts plan and the plain plan; an
+ * over-selection is never fatal to the run.
  *
  *   z23-sem-replay run    --repo R --state S --sensor X --planner Y
  *                         --commits FILE [--jobs N] [--devbuild PATH]

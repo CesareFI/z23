@@ -5,11 +5,14 @@
  * The replay is a reporting tool: it replays real commits through make's
  * test-fast object build, the semantic sensor and dev.change.plan, and
  * compares what make recompiled with what the facts plan would have
- * compiled. Its one hard verdict is exit 3 on a code false negative, an
- * object whose code changed that the facts plan left out. A replay that
- * missed that case, or that miscounted, would report savings that are not
- * there. So this group runs the REAL built binary (build/bin/z23-sem-replay)
- * as a subprocess against a throwaway git repository it builds itself:
+ * compiled. Its one hard verdict is exit 3 on a code false negative (too
+ * narrow), an object whose code changed that the facts plan left out; it
+ * also counts false-wide TUs a plan selected whose object bytes did not
+ * move, which is an over-selection, not a build-breaking miss, so it never
+ * stops the run. A replay that missed a false negative, or that miscounted
+ * either direction, would report savings that are not there. So this group
+ * runs the REAL built binary (build/bin/z23-sem-replay) as a subprocess
+ * against a throwaway git repository it builds itself:
  *
  *   P   src/a.c, src/b.c (both include src/common.h) and src/c.c (main)
  *   C1  changes the body of src/a.c
@@ -35,7 +38,13 @@
  *   step C2 with a facts reply that narrows to src/a.c: make rebuilds a.o and
  *   b.o, only a.o's bytes change, the plain plan selects both TUs and two
  *   groups, the facts plan one TU and one group. Every count is exact, and
- *   the report headline says 1 compile and 1 group avoided.
+ *   the report headline says 1 compile and 1 group avoided, with false-wide
+ *   vs plain 1 (b.o was recompiled byte-identical, so the plain set's b.c
+ *   is a natural over-selection) and false-wide vs facts 0.
+ *
+ *   step C2 again with a facts reply that over-selects src/b.c (the planted
+ *   false-wide): the step still exits 0 (over-selection never stops a run),
+ *   and its false-wide counts are exact: facts 1, plain 1.
  *
  * Everything runs under test-tmp/. git and the replay run under `env -u`
  * for the make and git variables a surrounding `make` or hook exports, so
@@ -212,6 +221,21 @@ static const char k_facts_narrows[] =
     "\"reason\":\"implementation-changed\",\"detail\":\"\"},"
     "{\"path\":\"src/b.c\",\"affected\":false,\"broadened\":false,"
     "\"reason\":\"unchanged\",\"detail\":\"\"}]}}}\n";
+
+/* A complete universe that over-selects: both TUs affected, though only
+ * src/a.c's object bytes actually change (the planted false-wide). */
+static const char k_facts_overselects[] =
+    SRT_FACTS_HEAD
+    "\"reason\":\"fixture-overselects\",\"detail\":\"\",\"seeds\":[\"fx_a_value\"],"
+    "\"seeds_total\":1,\"reached_files\":1,\"consumer\":\"fixture\","
+    SRT_OBLIGATIONS
+    "\"universe\":{\"applied\":true,\"complete\":true,\"reason\":\"\","
+    "\"detail\":\"\",\"total\":2,\"affected\":2,\"offset\":0,\"listed\":2,"
+    "\"next_offset\":null},\"tus\":["
+    "{\"path\":\"src/a.c\",\"affected\":true,\"broadened\":false,"
+    "\"reason\":\"implementation-changed\",\"detail\":\"\"},"
+    "{\"path\":\"src/b.c\",\"affected\":true,\"broadened\":false,"
+    "\"reason\":\"fixture-overselect\",\"detail\":\"\"}]}}}\n";
 
 /* ── the fixture tree ────────────────────────────────────────────────── */
 
@@ -390,7 +414,8 @@ static bool srt_tools(struct srt_fx *fx)
 {
     return srt_cc(fx, "fx-epoch-object", k_epoch_object) && srt_cc(fx, "fx-sensor", k_sensor) &&
            srt_planner(fx, "fx-planner-omits", k_facts_omits) &&
-           srt_planner(fx, "fx-planner-narrows", k_facts_narrows);
+           srt_planner(fx, "fx-planner-narrows", k_facts_narrows) &&
+           srt_planner(fx, "fx-planner-overselects", k_facts_overselects);
 }
 
 /* Stage everything under the repo and commit it; out gets the commit. */
@@ -565,13 +590,15 @@ int test_sem_replay(void)
 #else
     int failures = 0;
     struct srt_fx fx = {0};
-    char state_a[PATH_MAX] = "", state_b[PATH_MAX] = "", dir_a[32], dir_b[32];
+    char state_a[PATH_MAX] = "", state_b[PATH_MAX] = "", state_c[PATH_MAX] = "";
+    char dir_a[32], dir_b[32], dir_c[32];
     char path[PATH_MAX + 64], want[512];
 
     TEST("the fixture history builds: P, C1 (a.c body), C2 (common.h)") {
         ASSERT(srt_setup(&fx));
         srt_run_dir(dir_a, 1, fx.c1);
         srt_run_dir(dir_b, 2, fx.c2);
+        srt_run_dir(dir_c, 3, fx.c2);
         PASS();
     }
 
@@ -671,13 +698,39 @@ int test_sem_replay(void)
         PASS();
     }
 
-    TEST("the report headline counts 1 compile and 1 test group avoided") {
+    TEST("the report headline counts 1 compile and 1 test group avoided, "
+        "false-narrow 0, false-wide facts 0, false-wide plain 1") {
         const char *argv[] = {fx.tool, "report", "--state", state_b, NULL};
         ASSERT_EQ(srt_run(argv), 0);
         ASSERT(strstr(g_srt_out, "Compiler executions avoided vs make: 1 (make compiled 2 "
                                  "TUs, the facts plan 1).\n") != NULL);
         ASSERT(strstr(g_srt_out, "Test-group executions avoided vs plain: 1 (plain "
                                  "selected 2 groups, the facts plan 1).\n") != NULL);
+        ASSERT(strstr(g_srt_out, "False-narrow (a changed object the facts plan left out; "
+                                 "must be 0, fails the run): 0.\n") != NULL);
+        ASSERT(strstr(g_srt_out, "False-wide vs facts (a TU the facts plan compiled whose "
+                                 "object bytes did not change): 0.\n") != NULL);
+        ASSERT(strstr(g_srt_out, "False-wide vs plain (a TU the plain plan compiled whose "
+                                 "object bytes did not change): 1.\n") != NULL);
+        PASS();
+    }
+
+    TEST("a facts plan that over-selects the unaffected TU exits 0 (not a false negative)") {
+        int rc = srt_step(&fx, "fx-planner-overselects", fx.c2, "3", state_c);
+        if (rc != 0)
+            printf("(step output: %s) ", g_srt_out);
+        ASSERT_EQ(rc, 0);
+        PASS();
+    }
+
+    TEST("the over-selecting step's counts are exact: false-narrow 0, false-wide facts 1, "
+        "false-wide plain 1") {
+        ASSERT(srt_col_is(state_c, dir_c, "fn_code", "0"));
+        ASSERT(srt_col_is(state_c, dir_c, "fw_facts", "1"));
+        ASSERT(srt_col_is(state_c, dir_c, "fw_plain", "1"));
+        snprintf(path, sizeof path, "%s/run/%s/sets.tsv", state_c, dir_c);
+        ASSERT(srt_file_has(path, "\nfw_facts\tsrc/b.c\n"));
+        ASSERT(srt_file_has(path, "\nfw_plain\tsrc/b.c\n"));
         PASS();
     }
 

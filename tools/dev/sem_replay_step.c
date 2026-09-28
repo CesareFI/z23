@@ -276,6 +276,11 @@ struct commit_run {
     struct sr_snap snap_p, snap_c;
     struct sr_strv tus_c, bound_p, bound_c;
     struct sr_strv make_set, changed, removed, plain, facts, fn, plain_fn;
+    /* Selected but unchanged: TUs a plan picked whose object bytes did not
+     * move against the parent's build (make skipped them, or recompiled
+     * them byte-identical). fw_facts is facts \ changed, fw_plain is
+     * plain \ changed; an over-selection, not a build-breaking miss. */
+    struct sr_strv fw_facts, fw_plain;
     /* TUs whose compile argv differs between P and C (a build input such
      * as the source-identity stamp), and the false negatives split by it:
      * fn_flags changed through their argv, fn_source through their source. */
@@ -319,7 +324,7 @@ static void commit_run_free(struct commit_run *r)
     sr_snap_free(&r->snap_c);
     struct sr_strv *sets[] = {&r->tus_c, &r->bound_p, &r->bound_c, &r->make_set,
                               &r->changed, &r->removed, &r->plain, &r->facts,
-                              &r->fn, &r->plain_fn, &r->drift,
+                              &r->fn, &r->plain_fn, &r->drift, &r->fw_facts, &r->fw_plain,
                               &r->fn_flags, &r->fn_source, &r->pairs, &r->fn_code,
                               &r->fn_debug, &r->cv.fn_code, &r->cv.fn_debug};
     for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
@@ -778,6 +783,8 @@ static bool compare_sets(const struct cost_table *costs, struct commit_run *r)
     bool ok = compile_set_of(&r->facts_plan, r, &r->facts, &r->facts_mode) &&
               set_filter(&r->changed, &r->facts, true, &r->fn) &&
               set_filter(&r->changed, &r->plain, true, &r->plain_fn) &&
+              set_filter(&r->facts, &r->changed, true, &r->fw_facts) &&
+              set_filter(&r->plain, &r->changed, true, &r->fw_plain) &&
               set_filter(&r->make_set, &r->facts, true, &make_minus) &&
               set_filter(&r->plain, &r->facts, true, &plain_minus) &&
               set_filter(&r->fn, &r->drift, false, &r->fn_flags) &&
@@ -835,6 +842,8 @@ static bool write_sets(const struct commit_run *r)
     write_set(fp, "fn_debug", &r->fn_debug);
     write_set(fp, "c_fn_code", &r->cv.fn_code);
     write_set(fp, "c_fn_debug", &r->cv.fn_debug);
+    write_set(fp, "fw_facts", &r->fw_facts);
+    write_set(fp, "fw_plain", &r->fw_plain);
     return fclose(fp) == 0;
 }
 
@@ -849,7 +858,7 @@ const char *const sr_result_header =
     "c_obl_facts\tc_narrowed\tc_reason\tc_uni_reason\tc_cpu_facts\tc_saved_make\tc_fn_source\t"
     "code_changed\tdebug_changed\tunknown_changed\tfn_code\tfn_debug\tc_fn_code\tc_fn_debug\t"
     "sense_after_n\tsense_after_cpu\tsense_make_n\tsense_make_cpu\tsense_aff_n\tsense_aff_cpu\t"
-    "sense_zsm_n\tsense_zsm_cpu\tinputs_n\tinputs_read\n";
+    "sense_zsm_n\tsense_zsm_cpu\tinputs_n\tinputs_read\tfw_facts\tfw_plain\n";
 
 /* The compiled-inputs variant's columns (without a separate plan they
  * repeat the whole commit's), then the object kinds, the sensor split and
@@ -868,10 +877,10 @@ static void write_tail(FILE *fp, const struct commit_run *r)
     fprintf(fp, "%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t%zu\t", r->kinds.code.n, r->kinds.debug.n,
             r->kinds.unknown.n, r->fn_code.n, r->fn_debug.n, run ? r->cv.fn_code.n : r->fn_code.n,
             run ? r->cv.fn_debug.n : r->fn_debug.n);
-    fprintf(fp, "%zu\t%.3f\t%zu\t%.3f\t%zu\t%.3f\t%zu\t%.3f\t%zu\t%zu\n", r->sense.after_n,
+    fprintf(fp, "%zu\t%.3f\t%zu\t%.3f\t%zu\t%.3f\t%zu\t%.3f\t%zu\t%zu\t%zu\t%zu\n", r->sense.after_n,
             r->sense.after_cpu, r->sense.make_n, r->sense.make_cpu, r->sense.affected_n,
             r->sense.affected_cpu, r->sense.manifest_n, r->sense.manifest_cpu, r->inputs_n,
-            r->inputs_read);
+            r->inputs_read, r->fw_facts.n, r->fw_plain.n);
 }
 
 static bool write_result(const struct sr_cfg *cfg, const struct commit_run *r)

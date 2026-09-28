@@ -1601,27 +1601,36 @@ in a dedicated worktree:
    keeps the facts directory for the reproduction. Debug-only and argv
    misses are counted and do not stop the run. When either build failed,
    misses are recorded and the run continues.
+6. Also compare the other direction: a TU a plan selected (facts or plain)
+   whose object bytes did not move (`facts \ changed`, `plain \ changed`) is
+   false-wide, an over-selection. It is counted, never fatal, and never
+   stops the run.
 
 Each step writes `run/<NN>_<commit>/result.tsv` and the sets behind it.
 `report` prints a headline (compiler executions the facts plan avoided
-against make, and test-group executions it avoided against the plain plan),
-the per-commit table, totals by change kind and by facts compile-set mode,
-the fallback reasons ranked by the compile CPU and the test groups precision
-could drop, and the sensor's CPU against each set's compile CPU. `repro`
-rebuilds every object and checks the bytes are reproducible. `catalog`
-compiles every TU cold with make's argv to price TUs make never rebuilt.
+against make, test-group executions it avoided against the plain plan, the
+false-narrow total, which must be 0, and the false-wide totals for facts and
+for plain), the per-commit table, totals by change kind and by facts
+compile-set mode, the fallback reasons ranked by the compile CPU and the
+test groups precision could drop, and the sensor's CPU against each set's
+compile CPU. `repro` rebuilds every object and checks the bytes are
+reproducible. `catalog` compiles every TU cold with make's argv to price
+TUs make never rebuilt.
 
 The replay is bounded by the history it is given. A commit that touches no
-compiled input measures nothing. The miss check is only as strong as make's
-dependency tracking: a TU make did not rebuild and whose bytes did not change
-cannot be a miss.
+compiled input measures nothing. The false-narrow check is only as strong as
+make's dependency tracking: a TU make did not rebuild and whose bytes did
+not change cannot be a false negative.
 
 **This is a reporting tool, not a gate.** Nothing in `make ff`, `t-fast`,
 `t-fast-exact`, landing or proof runs a replay or reads its output. Its
 self-test, the `sem_replay` test group, runs the built binary on a
 three-commit fixture repository with stand-in sensor and planner programs.
-The test checks two things: a facts reply that omits the changed TU exits 3
-and names that TU, and a correct narrowing reports exact counts.
+The test checks: a facts reply that omits the changed TU exits 3 and names
+that TU; a correct narrowing reports exact counts, including a false-wide
+vs plain that occurs naturally (a recompiled, byte-identical TU); and a
+planted over-selection reports the exact false-wide count for facts without
+stopping the run.
 
 ## A future native C23 compiler
 

@@ -2,6 +2,8 @@
  *
  * z23-sem-replay helpers: string lists, child processes with their
  * resource use, files, hashing, sh word splitting and JSON flattening. */
+#define _GNU_SOURCE /* wait4, putenv */
+
 #include "sem_replay.h"
 
 #include <dirent.h>
