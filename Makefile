@@ -7298,6 +7298,16 @@ CLANG_MANIFEST_LLVM_DIR ?= $(patsubst %/include/clang-c/Index.h,%,$(firstword \
 	           /usr/lib/llvm-21/include/clang-c/Index.h \
 	           /usr/lib/llvm-19/include/clang-c/Index.h \
 	           /usr/lib/llvm-18/include/clang-c/Index.h)))
+# A user-owned header prefix may pair with an explicitly named system libclang
+# of the same version. Link that exact file, with no writable-prefix RUNPATH;
+# the proof worker checks and hashes the selected system library before tests.
+ifneq ($(CLANG_MANIFEST_SYSTEM_LIB),)
+CLANG_MANIFEST_LIB_ARG = $(CLANG_MANIFEST_SYSTEM_LIB)
+CLANG_MANIFEST_RPATH_ARG :=
+else
+CLANG_MANIFEST_LIB_ARG = -L$(CLANG_MANIFEST_LLVM_DIR)/lib -lclang
+CLANG_MANIFEST_RPATH_ARG = -Wl,-rpath,$(CLANG_MANIFEST_LLVM_DIR)/lib
+endif
 CLANG_MANIFEST_CORE_SRCS := tools/sensors/clang_manifest_core.c \
 	tools/sensors/clang_manifest_cc.c \
 	tools/sensors/clang_manifest_paths.c \
@@ -7340,7 +7350,7 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 	@probe=$@.probe; \
 	printf '#include <clang-c/Index.h>\nint main(void) { CXType t = {0}; clang_disposeString(clang_getTypePrettyPrinted(t, 0)); return 0; }\n' > $$probe.c; \
 	if $(CC) -std=c23 -I$(CLANG_MANIFEST_LLVM_DIR)/include -o $$probe $$probe.c \
-	    -L$(CLANG_MANIFEST_LLVM_DIR)/lib -lclang >/dev/null 2>&1; then pretty=1; else pretty=0; fi; \
+	    $(CLANG_MANIFEST_LIB_ARG) >/dev/null 2>&1; then pretty=1; else pretty=0; fi; \
 	rm -f $$probe $$probe.c; \
 	echo "clang-manifest: clang_getTypePrettyPrinted exported: $$pretty"; \
 	echo "$(CC) -DCM_TYPE_PRETTY_PRINTED=$$pretty ... -o $@"; \
@@ -7353,7 +7363,7 @@ $(BIN_DIR)/z23-clang-manifest: $(CLANG_MANIFEST_SRCS) tools/sensors/clang_manife
 	    -Iplatform/modules/base/include -Iplatform/modules/util/include \
 	    -Iplatform/modules/sha3/include -Iplatform/modules/support/include -Ivendor/include \
 	    -o $@ $(CLANG_MANIFEST_SRCS) \
-	    -L$(CLANG_MANIFEST_LLVM_DIR)/lib -lclang -Wl,-rpath,$(CLANG_MANIFEST_LLVM_DIR)/lib
+	    $(CLANG_MANIFEST_LIB_ARG) $(CLANG_MANIFEST_RPATH_ARG)
 
 # make clang-facts: the semantic manifest, with the facts extension, of every
 # TU of ONE component (default engine/modules/hotswap), written by the libclang

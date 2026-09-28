@@ -7878,6 +7878,20 @@ static bool dp_test_needs_bind(const struct dp_worker *w,
         }
         sha3_256_write(&sha, (const uint8_t *)argv[i], strlen(argv[i]) + 1);
         sha3_256_write(&sha, root, sizeof(root));
+#if defined(__linux__) && defined(__x86_64__)
+        if (strcmp(argv[i], "clang-manifest") == 0) {
+            const char *lib = getenv("CLANG_MANIFEST_SYSTEM_LIB");
+            if (lib) {
+                if (!hash_file("zcl.dev_proof_clang_runtime.v1", lib, root)) {
+                    proof_why(why, why_len, "proof_clang_runtime_hash_failed");
+                    return false;
+                }
+                sha3_256_write(&sha, (const uint8_t *)lib,
+                               strlen(lib) + 1);
+                sha3_256_write(&sha, root, sizeof(root));
+            }
+        }
+#endif
     }
     sha3_256_finalize(&sha, helper_root);
     return true;
@@ -7984,7 +7998,7 @@ size_t zcl_dev_proof_test_dimension_argv(const char *binary, const char *only,
  * runner. Neither feeds the other, so both children are launched
  * before either is waited on and the proof pays for the longer of the
  * two rather than their sum. */
-static bool dp_worker_dimensions_run(struct dp_worker *w,
+static bool dp_worker_dimensions_run_clean(struct dp_worker *w,
                                      struct zcl_dev_proof_dimension *lint,
                                      struct zcl_dev_proof_dimension *test,
                                      char *why, size_t why_len)
@@ -8036,6 +8050,50 @@ static bool dp_worker_dimensions_run(struct dp_worker *w,
     if (!dimensions_ok) return false;
     if (test->selected) test_receipt_bind_helpers(test, w->helper_root);
     return true;
+}
+
+/* These settings select how a BUILD need is linked in dp_worker_test_needs(),
+ * which has finished before these children launch. They must not become test
+ * or lint inputs: action roots correctly refuse an unbound compiler or loader
+ * environment, while a resident worker needs the settings restored for its
+ * next generation. The built helper's exact executable bytes are included
+ * in the test receipt by dp_test_needs_bind(). */
+static bool dp_worker_dimensions_run(struct dp_worker *w,
+                                     struct zcl_dev_proof_dimension *lint,
+                                     struct zcl_dev_proof_dimension *test,
+                                     char *why, size_t why_len)
+{
+    static const char *const names[] = {
+        "CLANG_MANIFEST_LLVM_DIR", "CLANG_MANIFEST_SYSTEM_LIB"
+    };
+    char saved[2][PATH_MAX];
+    bool present[2] = {false, false};
+    for (size_t i = 0; i < 2; i++) {
+        const char *value = getenv(names[i]);
+        if (!value) continue;
+        size_t n = strlen(value);
+        if (n >= sizeof(saved[i])) {
+            proof_why(why, why_len, "clang_manifest_setting_too_long");
+            return false;
+        }
+        memcpy(saved[i], value, n + 1);
+        present[i] = true;
+    }
+    for (size_t i = 0; i < 2; i++) {
+        if (!present[i]) continue;
+        if (unsetenv(names[i]) == 0) continue;
+        for (size_t j = 0; j < i; j++)
+            if (present[j]) (void)setenv(names[j], saved[j], 1);
+        proof_why(why, why_len, "clang_manifest_setting_unset_failed");
+        return false;
+    }
+    bool ok = dp_worker_dimensions_run_clean(w, lint, test, why, why_len);
+    for (size_t i = 0; i < 2; i++)
+        if (present[i] && setenv(names[i], saved[i], 1) != 0) {
+            proof_why(why, why_len, "clang_manifest_setting_restore_failed");
+            ok = false;
+        }
+    return ok;
 }
 
 /* Bounded log read for the preflight account: the runner's probe-only
@@ -8388,12 +8446,68 @@ static void proof_cpu_note(const struct proof_paths *paths,
                                        "proof_cpu_children_ms", value);
 }
 
+static bool proof_loader_environment_check(char *why, size_t why_len)
+{
+#if defined(__linux__)
+    /* A loader redirect could replace a test helper's runtime library after
+     * its executable bytes were hashed. It is not a proof input closure. */
+    if (getenv("LD_LIBRARY_PATH") != NULL ||
+        getenv("LD_PRELOAD") != NULL || getenv("LD_AUDIT") != NULL ||
+        getenv("LD_RUN_PATH") != NULL) {
+        proof_why(why, why_len, "proof_loader_environment_unbound");
+        return false;
+    }
+#elif defined(__APPLE__)
+    extern char **environ;
+    for (char **entry = environ; entry && *entry; entry++) {
+        if (strncmp(*entry, "DYLD_", 5) == 0) {
+            proof_why(why, why_len, "proof_loader_environment_unbound");
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
+static bool proof_clang_runtime_check(char *why, size_t why_len)
+{
+#if defined(__linux__) && defined(__x86_64__)
+    const char *clang_prefix = getenv("CLANG_MANIFEST_LLVM_DIR");
+    const char *clang_lib = getenv("CLANG_MANIFEST_SYSTEM_LIB");
+    if (clang_prefix && !clang_lib) {
+        proof_why(why, why_len, "proof_clang_runtime_unpinned");
+        return false;
+    }
+    if (clang_lib) {
+        struct stat sb;
+        if (!clang_prefix || strcmp(clang_lib,
+                "/lib/x86_64-linux-gnu/libclang-18.so.18") != 0 ||
+            stat(clang_lib, &sb) != 0 || !S_ISREG(sb.st_mode) ||
+            sb.st_uid != 0 || (sb.st_mode & 022) != 0) {
+            proof_why(why, why_len, "proof_clang_system_lib_untrusted");
+            return false;
+        }
+    }
+#elif defined(__linux__) || defined(__APPLE__)
+    /* Unsupported custom prefixes may load same-user runtime libraries.
+     * The Mach-O helper binding also lacks its loaded dylib bytes. */
+    if (getenv("CLANG_MANIFEST_LLVM_DIR") != NULL ||
+        getenv("CLANG_MANIFEST_SYSTEM_LIB") != NULL) {
+        proof_why(why, why_len, "proof_clang_runtime_unpinned");
+        return false;
+    }
+#endif
+    return true;
+}
+
 static bool proof_worker(const struct proof_paths *paths,
                          const char *local, const char *base,
                          struct platform_ram_scratch_lease *ram_lease,
                          int64_t queue_lock_wait_ms,
                          char *why, size_t why_len)
 {
+    if (!proof_loader_environment_check(why, why_len) ||
+        !proof_clang_runtime_check(why, why_len)) return false;
     if (!proof_prepare_environment()) {
         proof_why(why, why_len, "proof_execution_environment_unavailable");
         return false;
