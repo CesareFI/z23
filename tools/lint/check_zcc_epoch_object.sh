@@ -163,8 +163,13 @@ backend_compile()
 }
 
 printf '%s\n' \
+    '#if __has_include("epoch-choice.h")' \
+    '#include "epoch-choice.h"' \
+    '#else' \
+    '#define EPOCH_LABEL "native-epoch"' \
+    '#endif' \
     '#include <stdio.h>' \
-    'int main(void) { puts("native-epoch"); return 0; }' > "$SOURCE"
+    'int main(void) { puts(EPOCH_LABEL); return 0; }' > "$SOURCE"
 write_session
 write_expected_unverified
 
@@ -173,17 +178,28 @@ COMPILER_LAUNCHES="$WORK/compiler-launches"
 cat > "$COUNTING_COMPILER" <<'COUNTING'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'launch\n' >> "$COMPILER_LAUNCHES"
+kind=other
 is_compile=0
 for argument in "$@"; do
-    [ "$argument" != -c ] || is_compile=1
+    if [ "$argument" = -c ]; then
+        is_compile=1
+        kind=compile
+    elif [ "$argument" = -E ]; then
+        kind=preprocess
+    fi
 done
+printf '%s\n' "$kind" >> "$COMPILER_LAUNCHES"
 cc "$@"
 if [ "$is_compile" = 1 ] && [ -n "${COMPILER_COMPLETED:-}" ]; then
     : > "$COMPILER_COMPLETED"
 fi
 COUNTING
 chmod +x "$COUNTING_COMPILER"
+
+launch_count()
+{
+    grep -cx -- "$1" "$COMPILER_LAUNCHES" || true
+}
 
 # A PE loader failure can terminate cc1 without writing a GCC-style
 # diagnostic. The legacy epoch compiler must still name the source and exit
@@ -327,7 +343,8 @@ legacy_compile dep "$LEGACY_MARKER_REUSE" cc \
 
 # A fresh staging directory for identical inputs must be served from zcc's
 # in-process cache and still restore both artifacts.
-COLD_LAUNCHES="$(wc -l < "$COMPILER_LAUNCHES")"
+COLD_PREPROCESS="$(launch_count preprocess)"
+COLD_COMPILE="$(launch_count compile)"
 rm -f -- "$OBJECT" "${OBJECT%.o}.d"
 COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
 compile dep "$OBJECT" "$COUNTING_COMPILER" \
@@ -335,8 +352,10 @@ compile dep "$OBJECT" "$COUNTING_COMPILER" \
     "-frandom-seed=$SOURCE"
 [ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = HIT ] ||
     fail 'identical epoch compile did not use the in-process cache'
-[ "$(wc -l < "$COMPILER_LAUNCHES")" = "$COLD_LAUNCHES" ] ||
-    fail 'cache hit launched a compiler or preprocessor child'
+[ "$(launch_count preprocess)" = "$((COLD_PREPROCESS + 1))" ] ||
+    fail 'source cache hit did not recheck the include search'
+[ "$(launch_count compile)" = "$COLD_COMPILE" ] ||
+    fail 'unchanged source cache hit launched an object compiler'
 [ -s "$OBJECT" ] && [ -s "${OBJECT%.o}.d" ] ||
     fail 'cache hit did not restore both epoch artifacts'
 [ "$(file_stamp "$UNVERIFIED")" = "$UNVERIFIED_STAMP" ] ||
@@ -372,6 +391,8 @@ compile dep "$MAKE_STYLE" "$ZCC" "$COUNTING_COMPILER" \
 MAKE_COLD_LAUNCHES="$(wc -l < "$COMPILER_LAUNCHES")"
 [ "$MAKE_COLD_LAUNCHES" -gt "$LAUNCHES_BEFORE" ] ||
     fail 'Make-style cold compile launched no compiler child'
+MAKE_COLD_PREPROCESS="$(launch_count preprocess)"
+MAKE_COLD_COMPILE="$(launch_count compile)"
 rm -f -- "$MAKE_STYLE" "${MAKE_STYLE%.o}.d"
 COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
 compile dep "$MAKE_STYLE" "$ZCC" "$COUNTING_COMPILER" \
@@ -380,8 +401,10 @@ compile dep "$MAKE_STYLE" "$ZCC" "$COUNTING_COMPILER" \
 [ "$(wc -l < "$ZCC_LOG")" = "$((LOG_BEFORE + 2))" ] &&
 [ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = HIT ] ||
     fail 'Make-style warm compile used more than one zcc coordinator'
-[ "$(wc -l < "$COMPILER_LAUNCHES")" = "$MAKE_COLD_LAUNCHES" ] ||
-    fail 'Make-style warm hit launched a compiler child'
+[ "$(launch_count preprocess)" = "$((MAKE_COLD_PREPROCESS + 1))" ] ||
+    fail 'Make-style warm hit did not recheck includes'
+[ "$(launch_count compile)" = "$MAKE_COLD_COMPILE" ] ||
+    fail 'Make-style warm hit launched an object compiler'
 
 # The legacy shell oracle and the native path must publish identical object
 # bytes for the same compiler inputs.
@@ -655,4 +678,22 @@ compile coverage "$COVERAGE" cc --coverage -std=c23 -O0
 read -r REPAIRED_NOTE < "${COVERAGE%.o}.gcno-path"
 [ -s "$REPAIRED_NOTE" ] || fail 'coverage compile did not repair its note'
 
-printf 'check_zcc_epoch_object: PASS cache=hit mmd_dep_parity=exact system_authority=closed path_swap=closed admission_lock=serialized unverified=durable coverage_record=last\n'
+# A previously absent local header is a real input lookup. Its appearance
+# must leave the old cached object behind and change executable behavior.
+cat > "$WORK/epoch-choice.h" <<'HDR'
+#define EPOCH_LABEL "native-epoch-shadow"
+HDR
+SHADOW_OBJECT="$OBJECT_ROOT/shadow.o"
+SHADOW_COMPILE_BEFORE="$(launch_count compile)"
+COMPILER_LAUNCHES="$COMPILER_LAUNCHES" \
+compile dep "$SHADOW_OBJECT" "$COUNTING_COMPILER" \
+    -std=c23 -O2 -Wall -Wextra -Werror "-frandom-seed=$SOURCE"
+[ "$(tail -1 "$ZCC_LOG" | awk '{print $1}')" = MISS ] ||
+    fail 'new local header was served from the old source cache key'
+[ "$(launch_count compile)" = "$((SHADOW_COMPILE_BEFORE + 1))" ] ||
+    fail 'new local header did not launch a fresh object compile'
+cc -o "$WORK/shadow-program" "$SHADOW_OBJECT"
+[ "$("$WORK/shadow-program")" = native-epoch-shadow ] ||
+    fail 'new local header did not change executed behavior'
+
+printf 'check_zcc_epoch_object: PASS cache=content_hit fresh_preprocess=observed object_compile_avoided=observed shadow_behavior=executed mmd_dep_parity=exact system_authority=closed path_swap=closed admission_lock=serialized unverified=durable coverage_record=last\n'
