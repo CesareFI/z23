@@ -105,7 +105,7 @@ static bool fast_target(const struct sr_cfg *cfg, const char *log, char out[SR_P
     const char *hit = text ? strstr(text, "ZSR_TARGET=") : NULL;
     bool ok = rc == 0 && hit != NULL;
     if (ok) {
-        snprintf(out, SR_PATH, "%s", hit + 8);
+        snprintf(out, SR_PATH, "%s", hit + strlen("ZSR_TARGET="));
         out[strcspn(out, "\r\n")] = '\0';
         ok = out[0] != '\0';
     }

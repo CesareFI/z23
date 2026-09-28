@@ -166,6 +166,11 @@ bool sr_snap_take(const char *repo, const struct sr_snap *prev,
     };
     if (!walk_dir(&w, ""))
         return false;
+    if (out->n == 0) {
+        fprintf(stderr, "sem-replay: %s holds no objects; the build did not run\n",
+                out->epoch);
+        return false;
+    }
     qsort(out->v, out->n, sizeof(*out->v), cmp_obj);
     return true;
 }
