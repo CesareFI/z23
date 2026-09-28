@@ -135,15 +135,19 @@ scx_tu_of(const struct scx_result *r, const char *path)
 
 /* The verdict agrees with the row: absent when the row has no reason, else
  * the same affected flag and reason, and compile-only exactly when the
- * reason is debug-position. */
+ * reason is debug-position or the row's own compile_only[k] says so (a
+ * "position" row whose moved id is a bare prototype). */
 static bool scx_tu_same(const struct scx_edit *e, size_t k,
                         const struct zcl_devloop_facts_tu_verdict *t)
 {
+    bool want_co;
     if (e->reason[k] == NULL)
         return t == NULL;
+    want_co = strcmp(e->reason[k], "debug-position") == 0 ||
+             e->compile_only[k];
     return t != NULL && t->affected == e->affected[k] &&
            strcmp(t->reason, e->reason[k]) == 0 &&
-           t->compile_only == (strcmp(t->reason, "debug-position") == 0);
+           t->compile_only == want_co;
 }
 
 /* Unsafe: a TU the row affects left out of the compile set, or one whose
@@ -152,7 +156,8 @@ static bool scx_tu_unsafe(const struct scx_edit *e, size_t k, bool got_aff,
                           const struct zcl_devloop_facts_tu_verdict *t)
 {
     bool want_tests = e->affected[k] && e->reason[k] != NULL &&
-                      strcmp(e->reason[k], "debug-position") != 0;
+                      strcmp(e->reason[k], "debug-position") != 0 &&
+                      !e->compile_only[k];
     return (e->affected[k] && !got_aff) ||
            (want_tests && (!got_aff || t->compile_only));
 }

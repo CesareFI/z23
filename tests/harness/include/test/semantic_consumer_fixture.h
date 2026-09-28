@@ -81,6 +81,8 @@ enum scx_variant {
     SCX_GLINE,      /* a line above every declaration: cx_e.c's -g type lines move */
     SCX_P_GLINE0,   /* p_gline at -g0 */
     SCX_GLINE0,     /* gline at -g0: no debug position, nothing moves in cx_e.c */
+    SCX_P_LINEINL,  /* cx.h defines static inline cx_lineinl, using __LINE__; cx_b.c calls it */
+    SCX_LINEINL,    /* a line above cx_lineinl moves it: every reader's own copy's span moves (code-moved) */
     SCX_VARIANT_COUNT
 };
 
@@ -105,6 +107,10 @@ struct scx_edit {
     bool affected[SCX_TU_COUNT];
     const char *reason[SCX_TU_COUNT];
     const char *obligations; /* "" narrowed, else the fallback reason */
+    /* Set on a "position" row whose moved id is a bare prototype: the
+     * consumer must mark it compile-only although its reason is not
+     * "debug-position". Unused (false) for every other reason. */
+    bool compile_only[SCX_TU_COUNT];
     const char *incomplete;  /* NULL: the universe is complete, else why not */
     bool universal;          /* nothing bounds the change: every group */
     /* Functions the verdict's seeds must include: the compile may re-emit

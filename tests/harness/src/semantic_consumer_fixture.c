@@ -203,12 +203,18 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                   .to = "int cx_hook(int v);\n/* tail */\n#endif",
                   .changed = {SCX_HEADER}, .affected = SCX_ALL,
                   .reason = SCX_ALL_DBG, .obligations = ""},
+    /* A-D each reach only a bare header prototype (cx.h defines none of
+     * cx_fill/cx_count_of/cx_sum/cx_hook): their moved declaration cannot
+     * itself carry code, so they join the compile set with no test
+     * obligation (fxc_position_safe, devloop_facts_tu.c). E reaches none of
+     * them by name and stays on the debug-position fallback. */
     [SCX_TOP] = {.name = "top", .file = SCX_HEADER,
                  .from = "#define CX_H\n", .to = "#define CX_H\n/* top */\n",
                  .changed = {SCX_HEADER},
                  .affected = SCX_ALL,
                  .reason = {"position", "position", "position", "position",
                             SCX_DBG},
+                 .compile_only = {true, true, true, true, false},
                  .obligations = ""},
     [SCX_SIGNATURE] = {.name = "signature", .file = SCX_HEADER,
                        .from = "int cx_sum(int v);",
@@ -549,6 +555,7 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                    .affected = SCX_ALL,
                    .reason = {"position", "position", "position", "position",
                               "debug-position"},
+                   .compile_only = {true, true, true, true, false},
                    .obligations = ""},
     [SCX_P_GLINE0] = {.name = "p_gline0", .pre = true, .debug = "-g0",
                       .file = SCX_E, .from = SCX_E_END, .to = SCX_SMALL_E},
@@ -560,7 +567,41 @@ const struct scx_edit k_scx_edits[SCX_VARIANT_COUNT] = {
                     .affected = {true, true, true, true, false},
                     .reason = {"position", "position", "position", "position",
                                "unaffected"},
+                    .compile_only = {true, true, true, true, false},
                     .obligations = ""},
+    /* Adversary: a header static inline that expands __LINE__ moves. Every
+     * reader defines its own copy (F12, as SCX_HINL) with a span recorded
+     * at the header's own path, and that span now overlaps the moved
+     * region (fxc_mark_positions, devloop_facts_tu.c): its FUNCTIONS token
+     * hash is not what catches this (it hashes token spelling, so a bare
+     * "__LINE__" token reads the same before and after a pure move), but
+     * fxc_semantic folds every reader in as "code-moved" (FXI_DIRTY_SPAN)
+     * before fxc_position ever runs, on the conservative assumption that a
+     * moved span's code, not only its debug lines, may differ. It must
+     * stay fully affected with a test obligation, never compile-only,
+     * however this file's position rule evolves. */
+    [SCX_P_LINEINL] = {.name = "p_lineinl", .pre = true, .file = SCX_HEADER,
+                       .from = SCX_HOOK_END,
+                       .to = "int cx_hook(int v);\nstatic inline int "
+                             "cx_lineinl(int v) { return v + __LINE__; }\n"
+                             "#endif",
+                       .file2 = SCX_B, .from2 = SCX_B_END,
+                       .to2 = SCX_B_END "int cx_lineinl_b(void);\n"
+                             "int cx_lineinl_b(void) { return cx_lineinl(2); }\n"},
+    [SCX_LINEINL] = {.name = "lineinl", .before = SCX_P_LINEINL,
+                     .file = SCX_HEADER, .from = SCX_HOOK_END,
+                     .to = "int cx_hook(int v);\n/* shift */\nstatic inline "
+                           "int cx_lineinl(int v) { return v + __LINE__; }\n"
+                           "#endif",
+                     .file2 = SCX_B, .from2 = SCX_B_END,
+                     .to2 = SCX_B_END "int cx_lineinl_b(void);\n"
+                           "int cx_lineinl_b(void) { return cx_lineinl(2); }\n",
+                     .changed = {SCX_HEADER},
+                     .affected = SCX_ALL,
+                     .reason = {"code-moved", "code-moved", "code-moved",
+                                "code-moved", "code-moved"},
+                     .obligations = "",
+                     .seeds = {"cx_lineinl", "cx_lineinl_b"}},
 };
 
 const char *scx_flag(enum scx_variant v, size_t i)
