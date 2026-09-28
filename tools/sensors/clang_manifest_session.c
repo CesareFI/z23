@@ -29,7 +29,9 @@
  *     a cold parse in this process must produce the byte-identical manifest.
  *     --verify-cold verifies every emit.
  *   - On a mismatch the cold bytes are written, never the warm ones, and
- *     warm reuse is disabled for that TU for the rest of the session.
+ *     warm reuse is disabled for that TU while it holds its table slot. An
+ *     evicted TU that is requested again starts over as a new one, whose
+ *     first emit is verified again.
  *   - Any warm failure, post-check failure or unqualified case writes the
  *     cold bytes.
  *   - The reply's "trust" says which case wrote the bytes: "verified" or
@@ -87,7 +89,7 @@ struct cm_warm_tu {
     char *shadows;
     size_t shadows_len;
     bool verified;  /* a cold-equal emit since the TU was (re)created */
-    bool disabled;  /* a mismatch: cold only for the rest of the session */
+    bool disabled;  /* a mismatch: cold while this slot lives */
     double parse_ms; /* the front end's share of the last warm emit */
     uint64_t last_use;
 };

@@ -600,8 +600,14 @@ alone does not say how it was produced.
 
 On a mismatch the cold bytes are written, never the warm ones. The reply
 reports `"verify":"mismatch"` and the changed sections, stderr says so, and
-warm reuse stays off for that TU for the rest of the session (`"tu":"none"`,
-`"reason":"warm-disabled"`). `--no-warm` makes every emit cold.
+warm reuse stays off for that TU (`"tu":"none"`, `"reason":"warm-disabled"`)
+while the TU keeps its table slot. The disabled flag lives in that slot. When
+the table is full, the least recently used slot is evicted, a disabled one
+included; a later request for the same source then creates a new TU with
+warm reuse on, and like every new TU its first emit is verified against the
+cold oracle again. So a disabled TU stays cold for the rest of the session
+only while the session serves no more distinct TUs than `--max-tus`.
+`--no-warm` makes every emit cold.
 
 **Fault flag.** `ZCL_CLANG_MANIFEST_INJECT_WARM_MISMATCH=1` flips the last
 byte of every warm manifest before it is used. It is registered in

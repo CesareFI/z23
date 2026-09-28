@@ -15,7 +15,7 @@
  *     each recreate it;
  *   - with ZCL_CLANG_MANIFEST_INJECT_WARM_MISMATCH=1 the warm bytes are
  *     corrupted, the oracle reports the mismatch, the cold bytes are written
- *     and warm reuse stays off for that TU for the rest of the session;
+ *     and warm reuse stays off for that TU while it holds its slot;
  *   - the attribute call refs (cleanup(f)) and alias address refs (alias,
  *     asm label, including one declared in a preamble header) of a reparse
  *     equal a cold parse's, verified and qualified;
