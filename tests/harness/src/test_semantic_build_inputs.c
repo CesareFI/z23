@@ -485,10 +485,285 @@ static int sbit_t_header_path(void)
     return failures;
 }
 
+
+/* ---- which Makefile positions can change an object -------------------------------- */
+
+/* One consume run over `nchanged` paths (each written with `body`, except
+ * a doc path, written the same) against a root holding `makefile`. The
+ * plain plan's path groups are kept in *plain so a caller can check none
+ * was dropped. */
+struct sbi_run {
+    struct zcl_devloop_plan plain, plan;
+    struct zcl_devloop_facts_verdict v;
+    struct zcl_devloop_facts_report rep;
+};
+
+static bool sbi_consume(const char *tag, const char *makefile,
+                        const char *const *changed, size_t nchanged,
+                        struct sbi_run *r)
+{
+    char root[4096];
+    bool ok = test_mkdtemp(root, sizeof(root), tag) != NULL &&
+              sbi_write_tu(root, NULL) && sbi_write(root, "Makefile", makefile);
+    for (size_t k = 0; ok && k < nchanged; k++)
+        ok = sbi_write(root, changed[k], "#!/bin/sh\n");
+    ok = ok && zcl_devloop_plan_files(changed, nchanged, &r->plain);
+    if (ok)
+        memcpy(&r->plan, &r->plain, sizeof(r->plan));
+    return ok && zcl_devloop_facts_consume(root, changed, nchanged, "facts",
+                                           NULL, &r->plan, &r->v, &r->rep);
+}
+
+/* Every path group the plain plan selected is still selected. */
+static bool sbi_kept_groups(const struct sbi_run *r)
+{
+    for (size_t k = 0; k < r->plain.path_groups_len; k++)
+        if (!sbi_has_group(&r->plan, r->plain.path_groups[k]))
+            return false;
+    return true;
+}
+
+/* The narrow verdict: the universe is complete, the TU is not widened, the
+ * closure is not universal, and the changed paths keep their test groups. */
+static bool sbi_narrowed(const struct sbi_run *r)
+{
+    return r->rep.complete && !sbi_tu_affected(&r->rep, NULL) &&
+           !r->plan.closure_universal && sbi_kept_groups(r);
+}
+
+static bool sbi_widened(const struct sbi_run *r)
+{
+    return !r->rep.complete &&
+           strcmp(r->rep.reason, "build-input-changed") == 0 &&
+           sbi_tu_affected(&r->rep, "build-input-changed") &&
+           r->plan.closure_universal;
+}
+
+/* The shape of the real Makefile's false widenings: printf's '%s' in a
+ * $(shell) definition and in a file rule's recipe (shell text, not a make
+ * pattern), and a coverage and a lint recipe of .PHONY rules no object rule
+ * reaches naming tools/ and tools/verify/<glob>. */
+#define SBI_INERT_MAKEFILE                                                     \
+    "TOOLCHAIN_RC := $(shell printf '%s' 0)\n"                                 \
+    "ifneq ($(TOOLCHAIN_RC),0)\n"                                              \
+    "$(error toolchain)\n"                                                     \
+    "endif\n"                                                                  \
+    "build/a.o: " SBI_TU "\n"                                                  \
+    "\t@printf '%s %s\\n' cc a > build/a.cmd\n"                                \
+    "\t$(CC) -c $< -o $@\n"                                                    \
+    "\n"                                                                       \
+    ".PHONY: coverage lint\n"                                                  \
+    "coverage:\n"                                                              \
+    "\t@echo \"== coverage ==\"\n"                                             \
+    "\tgcovr --root . --filter 'tools/' --print-summary\n"                     \
+    "lint: build/a.o\n"                                                        \
+    "\tfor s in tools/verify/*_probe.sh; do sh \"$$s\" tools/verify/*.args; done\n"
+
+/* A changed script and .args file no compile reads, named only by those
+ * recipes and patterns: the compile set is empty and precise, and the
+ * paths' own test groups stay selected. */
+static int sbit_t_inert_positions(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a script and an .args file named only "
+             "by .PHONY recipes and shell '%s' narrow to an empty compile "
+             "set") {
+        static const char *const changed[] = {
+            "tools/verify/fixed_result_x_probe.sh",
+            "tools/verify/fixed_result_x.args"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_inert", SBI_INERT_MAKEFILE, changed, 2, &r));
+        ASSERT(sbi_narrowed(&r));
+        ASSERT(r.rep.naffected == 0);
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* Docs: a .md (never a build input) and a prose .txt under a directory a
+ * .PHONY coverage recipe names. Neither can change an object. */
+static int sbit_t_doc(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a changed doc narrows to an empty "
+             "compile set") {
+        static const char *const changed[] = {
+            "tools/verify/README.fixed-result.txt", "docs/work/verifier.md"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_doc", SBI_INERT_MAKEFILE, changed, 2, &r));
+        ASSERT(sbi_narrowed(&r));
+        ASSERT(r.rep.naffected == 0);
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A script that is a prerequisite of a generated header a TU reads: the
+ * header's readers must compile (the whole catalog does). */
+static int sbit_t_generated_header(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a script a generated header depends on "
+             "compiles the header's readers") {
+        static const char *const changed[] = {"tools/gen_a.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_genhdr",
+                           "build/a.o: " SBI_TU " src/a.h\n"
+                           "\t$(CC) -c $< -o $@\n"
+                           "src/a.h: tools/gen_a.sh\n"
+                           "\tsh tools/gen_a.sh > $@\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* An .args file read by $(shell cat ...) into CFLAGS changes every compile
+ * that uses CFLAGS. */
+static int sbit_t_args_cflags(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: an .args file $(shell cat)'d into "
+             "CFLAGS widens to the whole catalog") {
+        static const char *const changed[] = {"cfg/strict.args"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_cflags",
+                           "CFLAGS += $(shell cat cfg/strict.args)\n"
+                           "build/a.o: " SBI_TU "\n"
+                           "\t$(CC) $(CFLAGS) -c $< -o $@\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A file only a $(wildcard) in a compile source list names, compiled by a
+ * static pattern rule: covered. */
+static int sbit_t_wildcard_sources(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a file a compile source list's "
+             "$(wildcard) matches widens") {
+        static const char *const changed[] = {"cfg/tpl/x.inc"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_wildsrc",
+                           "SRCS := " SBI_TU " $(wildcard cfg/tpl/*.inc)\n"
+                           "OBJS := $(SRCS:%=build/%.o)\n"
+                           "$(OBJS): build/%.o: %\n"
+                           "\t$(CC) -c $< -o $@\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A .PHONY rule an object rule depends on (order-only) runs as part of
+ * building the object: its recipe's inputs widen. */
+static int sbit_t_phony_prerequisite(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a .PHONY prerequisite of an object "
+             "rule keeps its recipe's inputs") {
+        static const char *const changed[] = {"tools/gen/headers.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_phonypre",
+                           "build/a.o: " SBI_TU " | gen-headers\n"
+                           "\t$(CC) -c $< -o $@\n"
+                           ".PHONY: gen-headers\n"
+                           "gen-headers:\n"
+                           "\tsh tools/gen/headers.sh\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A .PHONY name listed in a variable an object rule expands: the name's
+ * rule is reached, and so are its recipe's inputs. */
+static int sbit_t_phony_via_variable(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a .PHONY name in a variable an object "
+             "rule uses keeps its recipe's inputs") {
+        static const char *const changed[] = {"tools/gen/a.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_phonyvar",
+                           "PRE := gen-a gen-b\n"
+                           "build/a.o: " SBI_TU " $(PRE)\n"
+                           "\t$(CC) -c $< -o $@\n"
+                           ".PHONY: gen-a gen-b\n"
+                           "gen-a:\n"
+                           "\tsh tools/gen/a.sh\n"
+                           "gen-b:\n"
+                           "\t@true\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A .PHONY recipe line that runs make builds objects with whatever it
+ * passes: its inputs widen. */
+static int sbit_t_phony_submake(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a .PHONY recipe line that runs make "
+             "keeps its inputs") {
+        static const char *const changed[] = {"cfg/strict.args"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_submake",
+                           "build/a.o: " SBI_TU "\n"
+                           "\t$(CC) $(EXTRA) -c $< -o $@\n"
+                           ".PHONY: strict\n"
+                           "strict:\n"
+                           "\t$(MAKE) EXTRA=\"$$(cat cfg/strict.args)\" "
+                           "build/a.o\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
+/* A recipe after a conditional whose branches declare different rules
+ * belongs to whichever branch make took: it cannot be placed, so it
+ * widens. */
+static int sbit_t_conditional_recipe(void)
+{
+    int failures = 0;
+    TEST_CASE("semantic_build_inputs: a recipe a conditional leaves between "
+             "an object rule and a .PHONY rule widens") {
+        static const char *const changed[] = {"tools/v/x.sh"};
+        struct sbi_run r = {0};
+        ASSERT(sbi_consume("sbi_cond",
+                           "ifeq ($(MODE),obj)\n"
+                           "build/a.o: " SBI_TU "\n"
+                           "else\n"
+                           ".PHONY: lint\n"
+                           "lint:\n"
+                           "endif\n"
+                           "\tsh tools/v/x.sh\n",
+                           changed, 1, &r));
+        ASSERT(sbi_widened(&r));
+        zcl_devloop_facts_report_free(&r.rep);
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_build_inputs(void)
 {
     return sbit_t_narrow() | sbit_t_makefile_mention() | sbit_t_bare_dir() |
           sbit_t_wildcard_var() | sbit_t_shell_find() | sbit_t_pattern_rule() |
           sbit_t_truncated() | sbit_t_old_revision_created() |
-          sbit_t_header_path();
+          sbit_t_header_path() |
+          sbit_t_inert_positions() | sbit_t_doc() |
+          sbit_t_generated_header() | sbit_t_args_cflags() |
+          sbit_t_wildcard_sources() | sbit_t_phony_prerequisite() |
+          sbit_t_phony_via_variable() | sbit_t_phony_submake() |
+          sbit_t_conditional_recipe();
 }
