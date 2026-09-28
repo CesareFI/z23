@@ -493,11 +493,26 @@ exactly as `emit` would, and prints one JSON line on stdout:
  "sections","warm_ms","warm_parse_ms","cold_ms","bind_ms"}
 ```
 
-A refused request prints `{"seq","ok":false,"source","why"}`. An empty line
-or EOF ends the session with one summary line (`requests`, `refused`,
-`warm_written`, `cold_written`, `verified_equal`, `mismatches`, `evicted`,
-`created`, `reparsed`, `recreated`). The exit status is 3 if any request was
-refused, else 0. There is no daemon, socket or service: the warm state lives
+A refused request prints `{"seq","ok":false,"source","why"}`.
+
+**Protocol.** A line ends at LF, and trailing CRs are dropped. An empty line
+ends the session: nothing after it is read. End of input ends it too, after
+a last line without an LF is served as a request. Either way the session
+prints one summary line (`requests`, `refused`, `warm_written`,
+`cold_written`, `verified_equal`, `mismatches`, `evicted`, `created`,
+`reparsed`, `recreated`). A request line is refused whole, never truncated
+or partly served, when it holds a NUL byte (`request line has a NUL byte`),
+is not valid UTF-8 (`request line is not UTF-8`), or is longer than
+256 × `PATH_MAX` bytes, 1 MiB on Linux (`request line too long`; the reader
+holds one buffer of that size and reads an overlong line to its end without
+keeping it). Every reply string is ASCII: quote, backslash, control bytes
+and DEL are escaped, and every code point past ASCII is written as a `\uXXXX`
+escape (a surrogate pair past U+FFFF), so a JSON decoder returns a source or
+out path's exact UTF-8. A byte of a reason that is not UTF-8 (a path the tree
+spells so) is written as U+FFFD. `--max-tus` takes digits only, 1 to 256; a
+sign, space or trailing byte (`64x`) is a usage error (exit 2). The exit
+status is 3 if any request was refused, else 0. There is no daemon, socket
+or service: the warm state lives
 only as long as the process. The source is
 `tools/sensors/clang_manifest_session.c`; the compiler-API-free checks are
 in `tools/sensors/clang_manifest_warm.c`.

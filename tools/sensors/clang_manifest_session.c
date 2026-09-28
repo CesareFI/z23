@@ -4,10 +4,15 @@
  *   z23-clang-manifest session [--verify-cold] [--no-warm] [--max-tus N]
  *
  * stdin carries one request per line: the arguments `emit` takes, separated
- * by TAB (an optional leading "emit" field is ignored). An empty line or EOF
- * ends the session. Each request writes its manifest to its --out, exactly
- * as `emit` would, and prints one JSON line on stdout. No daemon, socket or
- * service: the warm state lives only as long as this process.
+ * by TAB (an optional leading "emit" field is ignored). A line ends at LF;
+ * trailing CRs are dropped. An empty line ends the session and nothing after
+ * it is read; so does end of input, after serving a last line that has no
+ * LF. A line longer than CM_SESSION_LINE_MAX bytes, holding a NUL byte, or
+ * not valid UTF-8 is refused whole, never truncated. Each request writes its
+ * manifest to its --out, exactly as `emit` would, and prints one JSON line on
+ * stdout, whose strings are ASCII (JSON escapes carry everything else). No
+ * daemon, socket or service: the warm state lives only as long as this
+ * process.
  *
  * Truth rules (docs/work/SEMANTIC_MANIFEST.md, "Warm session"):
  *   - Every extraction is fresh: no cursor, location or file handle survives
@@ -36,13 +41,18 @@
 #include "base/safe_alloc.h"
 #include "sha3/sha3.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
-#define CM_SESSION_LINE_MAX (1u << 20)
+/* The longest request line: 256 full-length paths (a root, a source, an out
+ * and the rest for flags; the widest dev compile argv has about 150 -I dirs,
+ * most far shorter than PATH_MAX). 1 MiB where PATH_MAX is 4096. The reader
+ * holds one buffer of this size and never grows it. */
+#define CM_SESSION_LINE_MAX (256u * PATH_MAX)
 /* The TU table. A table smaller than the caller's working set evicts every TU
  * before its next request, and each request then pays a warm parse plus the
  * cold verification of a first emit: about twice a cold emit (measured in
@@ -115,16 +125,98 @@ static double cm_now_ms(void)
 
 /* ---- JSON out ------------------------------------------------------------------ */
 
+/* The length of a UTF-8 lead byte's sequence and its payload bits, else 0. */
+static size_t cm_utf8_lead(unsigned char b, uint32_t *cp, uint32_t *min)
+{
+    if ((b & 0xe0) == 0xc0) {
+        *cp = b & 0x1f;
+        *min = 0x80;
+        return 2;
+    }
+    if ((b & 0xf0) == 0xe0) {
+        *cp = b & 0x0f;
+        *min = 0x800;
+        return 3;
+    }
+    if ((b & 0xf8) == 0xf0) {
+        *cp = b & 0x07;
+        *min = 0x10000;
+        return 4;
+    }
+    return 0;
+}
+
+/* The length of the well-formed UTF-8 sequence at s (n bytes left) and its
+ * code point, else 0: no stray continuation, overlong form, surrogate, or
+ * code point past U+10FFFF. */
+static size_t cm_utf8_at(const unsigned char *s, size_t n, uint32_t *cp)
+{
+    uint32_t min = 0;
+    size_t len;
+    if (s[0] < 0x80) {
+        *cp = s[0];
+        return 1;
+    }
+    len = cm_utf8_lead(s[0], cp, &min);
+    if (len == 0 || n < len)
+        return 0;
+    for (size_t k = 1; k < len; k++) {
+        if ((s[k] & 0xc0) != 0x80)
+            return 0;
+        *cp = (*cp << 6) | (s[k] & 0x3f);
+    }
+    if (*cp < min || *cp > 0x10ffff || (*cp >= 0xd800 && *cp <= 0xdfff))
+        return 0;
+    return len;
+}
+
+static bool cm_utf8_valid(const char *s, size_t n)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    uint32_t cp;
+    for (size_t i = 0, len; i < n; i += len) {
+        len = cm_utf8_at(p + i, n - i, &cp);
+        if (len == 0)
+            return false;
+    }
+    return true;
+}
+
+/* One code point as a JSON escape: \uXXXX, or a surrogate pair past the BMP. */
+static void cm_json_escape(uint32_t cp)
+{
+    if (cp < 0x10000) {
+        printf("\\u%04x", (unsigned)cp);
+        return;
+    }
+    cp -= 0x10000;
+    printf("\\u%04x\\u%04x", (unsigned)(0xd800 + (cp >> 10)),
+           (unsigned)(0xdc00 + (cp & 0x3ff)));
+}
+
+/* A JSON string of ASCII bytes only: quote, backslash, controls and DEL are
+ * escaped, and so is every code point past ASCII, so a decoder gets the
+ * source's exact UTF-8 back. A request is refused unless it is UTF-8; a
+ * byte of a diagnostic that is not (a path the tree spells so, a reason cut
+ * mid-sequence) becomes U+FFFD. */
 static void cm_json_str(const char *key, const char *s)
 {
+    const unsigned char *p = (const unsigned char *)s;
+    size_t n = strlen(s);
     printf("\"%s\":\"", key);
-    for (const unsigned char *p = (const unsigned char *)s; *p != '\0'; p++) {
-        if (*p == '"' || *p == '\\')
-            printf("\\%c", *p);
-        else if (*p < 0x20)
-            printf("\\u%04x", *p);
+    for (size_t i = 0, len; i < n; i += len) {
+        uint32_t cp = 0xfffd;
+        len = cm_utf8_at(p + i, n - i, &cp);
+        if (len == 0) {
+            len = 1;
+            cp = 0xfffd;
+        }
+        if (cp == '"' || cp == '\\')
+            printf("\\%c", (int)cp);
+        else if (cp < 0x20 || cp >= 0x7f)
+            cm_json_escape(cp);
         else
-            putchar(*p);
+            putchar((int)cp);
     }
     putchar('"');
 }
@@ -726,6 +818,21 @@ static void cm_session_line(struct cm_session *ss, char *line)
     free(f);
 }
 
+/* --max-tus: digits only, 1 to 256; no sign, space or trailing byte. */
+static bool cm_parse_tus(const char *s, size_t *out)
+{
+    char *end = NULL;
+    unsigned long v;
+    if (s[0] < '0' || s[0] > '9')
+        return false;
+    errno = 0;
+    v = strtoul(s, &end, 10);
+    if (errno != 0 || end == NULL || *end != '\0' || v == 0 || v > 256)
+        return false;
+    *out = (size_t)v;
+    return true;
+}
+
 static bool cm_session_opts(struct cm_session *ss, int argc, char **argv)
 {
     ss->max_tus = CM_SESSION_TUS_DEFAULT;
@@ -734,21 +841,77 @@ static bool cm_session_opts(struct cm_session *ss, int argc, char **argv)
             ss->verify_cold = true;
         else if (strcmp(argv[k], "--no-warm") == 0)
             ss->no_warm = true;
-        else if (strcmp(argv[k], "--max-tus") == 0 && k + 1 < argc)
-            ss->max_tus = strtoul(argv[++k], NULL, 10);
-        else
+        else if (strcmp(argv[k], "--max-tus") != 0 || k + 1 >= argc ||
+                 !cm_parse_tus(argv[++k], &ss->max_tus))
             return false;
     }
-    return ss->max_tus > 0 && ss->max_tus <= 256;
+    return true;
+}
+
+/* What reading one request line found. */
+enum cm_line_state {
+    CM_LINE_OK,
+    CM_LINE_END,  /* an empty line, or end of input with nothing read */
+    CM_LINE_LONG, /* past CM_SESSION_LINE_MAX: read to its end, dropped */
+    CM_LINE_NUL,  /* a NUL byte before the line's end */
+};
+
+/* One line of stdin into buf (CM_SESSION_LINE_MAX + 1 bytes), without its LF
+ * or trailing CRs. The buffer never grows; an overlong line is consumed to
+ * its LF so the next request starts clean. */
+static enum cm_line_state cm_read_line(char *buf, size_t *len)
+{
+    size_t n = 0;
+    bool nul = false, over = false;
+    int ch;
+    while ((ch = getc(stdin)) != EOF && ch != '\n') {
+        nul = nul || ch == '\0';
+        if (n < CM_SESSION_LINE_MAX)
+            buf[n++] = (char)ch;
+        else
+            over = true;
+    }
+    while (!over && n > 0 && buf[n - 1] == '\r')
+        n--;
+    buf[n] = '\0';
+    *len = n;
+    if (over)
+        return CM_LINE_LONG;
+    if (nul)
+        return CM_LINE_NUL;
+    return n == 0 ? CM_LINE_END : CM_LINE_OK;
+}
+
+static void cm_session_refuse(struct cm_session *ss, const char *why)
+{
+    ss->s.refused++;
+    cm_reply_refused(++ss->s.requests, NULL, why);
+}
+
+/* Serve stdin until an empty line or its end. */
+static void cm_session_loop(struct cm_session *ss, char *buf)
+{
+    size_t len = 0;
+    for (;;) {
+        enum cm_line_state st = cm_read_line(buf, &len);
+        if (st == CM_LINE_END)
+            return;
+        if (st == CM_LINE_LONG)
+            cm_session_refuse(ss, "request line too long");
+        else if (st == CM_LINE_NUL)
+            cm_session_refuse(ss, "request line has a NUL byte");
+        else if (!cm_utf8_valid(buf, len))
+            cm_session_refuse(ss, "request line is not UTF-8");
+        else
+            cm_session_line(ss, buf);
+    }
 }
 
 int cm_session_main(int argc, char **argv)
 {
     struct cm_session ss = {0};
     const char *inject = getenv("ZCL_CLANG_MANIFEST_INJECT_WARM_MISMATCH");
-    char *line = NULL;
-    size_t cap = 0;
-    ssize_t got;
+    char *buf;
     if (!cm_session_opts(&ss, argc, argv)) {
         fprintf(stderr, "usage: z23-clang-manifest session [--verify-cold] "
                         "[--no-warm] [--max-tus 1..256]\n");
@@ -758,20 +921,14 @@ int cm_session_main(int argc, char **argv)
         fprintf(stderr, "clang-manifest: session: no current directory\n");
         return 2;
     }
-    ss.inject_mismatch = inject != NULL && strcmp(inject, "1") == 0;
-    while ((got = getline(&line, &cap, stdin)) > 0) {
-        while (got > 0 && (line[got - 1] == '\n' || line[got - 1] == '\r'))
-            line[--got] = '\0';
-        if (got == 0)
-            break;
-        if ((size_t)got > CM_SESSION_LINE_MAX) {
-            ss.s.refused++;
-            cm_reply_refused(++ss.s.requests, NULL, "request line too long");
-            continue;
-        }
-        cm_session_line(&ss, line);
+    buf = zcl_malloc(CM_SESSION_LINE_MAX + 1, "clang_manifest.session_line");
+    if (buf == NULL) {
+        fprintf(stderr, "clang-manifest: session: no memory for a request\n");
+        return 2;
     }
-    free(line);
+    ss.inject_mismatch = inject != NULL && strcmp(inject, "1") == 0;
+    cm_session_loop(&ss, buf);
+    free(buf);
     for (size_t k = 0; k < ss.ntus; k++)
         cm_tu_free(&ss.tus[k]);
     free(ss.tus);
