@@ -35,6 +35,11 @@ CA key returned `App image is blocked after a physical device freeze` before
 opening either. This is a regression gate for that image, not proof that a
 future image will work on the Blue.
 
+At 2026-09-27T21:39:23-04:00 (2026-09-28T01:39:23Z), the full Ledger C23
+project built with Clang 22.1.6 in Debug mode and all 49 local CTest cases
+passed. These tests include the installer gate and host wallet UI controller;
+they still do not execute BOLOS startup on the physical device.
+
 The next physical candidate requires an offline BOLOS startup exercise or
 equivalent device-level evidence, a measured SRAM margin, and a staged
 open/exit/USB interruption test before payment commands. A new image must
