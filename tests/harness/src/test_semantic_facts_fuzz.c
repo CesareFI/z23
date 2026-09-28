@@ -587,18 +587,19 @@ static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
                r->name);
 }
 
-/* True when the negative-lookup or ordering families' kind names family. */
+/* True when kind names a negative-lookup, ordering or search-dir family. */
 static bool is_new_family_kind(const char *kind)
 {
-    static const char *const prefixes[] = {"neg_", "xmacro_", "order_"};
+    static const char *const prefixes[] = {"neg_", "xmacro_", "order_",
+                                           "sdir_"};
     for (size_t k = 0; k < sizeof(prefixes) / sizeof(prefixes[0]); k++)
         if (strncmp(kind, prefixes[k], strlen(prefixes[k])) == 0)
             return true;
     return false;
 }
 
-/* Per-family (kind) over-selection totals for the negative-lookup and
- * ordering families, one line per family in the run summary. */
+/* Per-family (kind) over-selection totals for the negative-lookup,
+ * ordering and search-dir families, one line per family in the run summary. */
 static void report_over_by_family(const struct sfz_item *v, size_t n)
 {
     char seen[16][32];

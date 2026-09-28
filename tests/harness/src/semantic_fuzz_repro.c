@@ -1504,6 +1504,155 @@ static const struct sfz_file k_f12_header_static_inline[] = {
          SFZ_SAME},
 };
 
+/* ---- search-dir deltas: -I/-iquote/-isystem/-idirafter only --------------- */
+
+/* The argv adds, drops or reorders search dirs between the sides (the
+ * case's optimizer flags carry them, so no Makefile edit makes every TU a
+ * build-input change); one .c is edited so the change set is not empty.
+ * The consumer replays each TU's recorded lookups under both search lists:
+ * a TU whose every lookup hits the same file through the same dir, whose
+ * probes answer the same and whose file set is the same is not affected;
+ * any other is, alone (exact over-selection pins). */
+#define SFZ_SD_Q1 {"inc1/q1.h", "#define Q1_V 3\n", SFZ_SAME}
+#define SFZ_SD_T1                                                            \
+    {"src/t1.c",                                                             \
+     "#include <q1.h>\n"                                                     \
+     "int t1_q(void)\n"                                                      \
+     "{\n"                                                                   \
+     "    return Q1_V;\n"                                                    \
+     "}\n",                                                                  \
+     SFZ_SAME}
+#define SFZ_SD_T2_EDIT                                                       \
+    {"src/t2.c",                                                             \
+     "int t2_a(void)\n"                                                      \
+     "{\n"                                                                   \
+     "    return 1;\n"                                                       \
+     "}\n",                                                                  \
+     "int t2_a(void)\n"                                                      \
+     "{\n"                                                                   \
+     "    return 2;\n"                                                       \
+     "}\n"}
+
+/* SD1: -isystem sysx is added; sysx holds no name any TU looks up. Only
+ * the edited t0 is affected. */
+static const struct sfz_file k_sd1_isystem_inert[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"sysx/other.h", "#define OTHER_V 1\n", SFZ_SAME},
+    SFZ_SD_Q1,
+    {"src/t0.c",
+         "#include \"q1.h\"\n"
+         "int t0_a(void)\n"
+         "{\n"
+         "    return Q1_V + 1;\n"
+         "}\n",
+         "#include \"q1.h\"\n"
+         "int t0_a(void)\n"
+         "{\n"
+         "    return Q1_V + 2;\n"
+         "}\n"},
+    SFZ_SD_T1,
+};
+
+/* SD2: -Ishad is added ahead of inc1; shad/qx.h shadows inc1/qx.h for
+ * t0's quoted include (src/ holds no qx.h). */
+static const struct sfz_file k_sd2_shadow_quoted[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"shad/qx.h", "#define QX_V 9\n", SFZ_SAME},
+    {"inc1/qx.h", "#define QX_V 5\n", SFZ_SAME},
+    SFZ_SD_Q1,
+    {"src/t0.c",
+         "#include \"qx.h\"\n"
+         "int t0_qx(void)\n"
+         "{\n"
+         "    return QX_V;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_SD_T1,
+    SFZ_SD_T2_EDIT,
+};
+
+/* SD3: -Iextra is added; extra/px.h turns t0's __has_include(<px.h>) from
+ * false to true, and t0 reads no new file. */
+static const struct sfz_file k_sd3_probe_satisfied[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"extra/px.h", "#define PX_V 7\n", SFZ_SAME},
+    SFZ_SD_Q1,
+    {"src/t0.c",
+         "#if __has_include(<px.h>)\n"
+         "#define T0_PX 1\n"
+         "#else\n"
+         "#define T0_PX 0\n"
+         "#endif\n"
+         "int t0_px(void)\n"
+         "{\n"
+         "    return T0_PX;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_SD_T1,
+    SFZ_SD_T2_EDIT,
+};
+
+/* SD4: -Ira -Irb becomes -Irb -Ira; both hold rh.h, with other values. */
+static const struct sfz_file k_sd4_pair_reordered[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"ra/rh.h", "#define RH_V 1\n", SFZ_SAME},
+    {"rb/rh.h", "#define RH_V 2\n", SFZ_SAME},
+    SFZ_SD_Q1,
+    {"src/t0.c",
+         "#include <rh.h>\n"
+         "int t0_rh(void)\n"
+         "{\n"
+         "    return RH_V;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_SD_T1,
+    SFZ_SD_T2_EDIT,
+};
+
+/* SD5: -Iold is dropped; t0's <rm.h> now falls through to inc2/rm.h. */
+static const struct sfz_file k_sd5_dir_removed[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"old/rm.h", "#define RM_V 4\n", SFZ_SAME},
+    {"inc2/rm.h", "#define RM_V 6\n", SFZ_SAME},
+    SFZ_SD_Q1,
+    {"src/t0.c",
+         "#include <rm.h>\n"
+         "int t0_rm(void)\n"
+         "{\n"
+         "    return RM_V;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_SD_T1,
+    SFZ_SD_T2_EDIT,
+};
+
+/* SD6: as SD1, but t1 reads a system header. The sensor records no lookup
+ * a system header makes (its includes, its __has_include probes), so
+ * nothing proves an added dir shadows none of them: t1 widens. */
+static const struct sfz_file k_sd6_system_header[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"sysx/other.h", "#define OTHER_V 1\n", SFZ_SAME},
+    SFZ_SD_Q1,
+    {"src/t0.c",
+         "#include \"q1.h\"\n"
+         "int t0_a(void)\n"
+         "{\n"
+         "    return Q1_V + 1;\n"
+         "}\n",
+         "#include \"q1.h\"\n"
+         "int t0_a(void)\n"
+         "{\n"
+         "    return Q1_V + 2;\n"
+         "}\n"},
+    {"src/t1.c",
+         "#include <stddef.h>\n"
+         "int t1_s(void)\n"
+         "{\n"
+         "    return (int)sizeof(size_t);\n"
+         "}\n",
+         SFZ_SAME},
+};
+
 const struct sfz_tool_repro k_sfz_tool_repros[] = {
     {.r = {.name = "F9_cc_drift", .kind = "comment_ws",
            .detail = "a comment in t0_a; the object compiler changes from "
@@ -1632,6 +1781,45 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
                      "before, -O0 after, CFLAGS_EXTRA -DLVL=-O0 last",
            .files = SFZ_FILES(k_decoy_define_last)},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2>-O0"},
+    /* search-dir deltas: the argv's search dirs alone drift */
+    {.r = {.name = "SD1_isystem_inert", .kind = "sdir_inert",
+           .detail = "-isystem sysx is added and shadows nothing; t0's body "
+                     "changes: only t0 is affected",
+           .files = SFZ_FILES(k_sd1_isystem_inert), .over_pinned = true,
+           .over_want = 0},
+     .opt = "-O1>-O1,-isystem,sysx"},
+    {.r = {.name = "SD2_I_shadows_quoted", .kind = "sdir_shadow",
+           .detail = "-Ishad is added and shadows inc1/qx.h for t0's quoted "
+                     "include; t2 is edited: t0 and t2 are affected",
+           .files = SFZ_FILES(k_sd2_shadow_quoted), .over_pinned = true,
+           .over_want = 0},
+     .opt = "-O1>-O1,-Ishad"},
+    {.r = {.name = "SD3_dir_satisfies_probe", .kind = "sdir_shadow",
+           .detail = "-Iextra is added and satisfies t0's false "
+                     "__has_include(<px.h>); t2 is edited: t0 and t2 are "
+                     "affected",
+           .files = SFZ_FILES(k_sd3_probe_satisfied), .over_pinned = true,
+           .over_want = 0},
+     .opt = "-O1>-O1,-Iextra"},
+    {.r = {.name = "SD4_I_pair_reordered", .kind = "sdir_shadow",
+           .detail = "-Ira -Irb becomes -Irb -Ira, both holding t0's rh.h; "
+                     "t2 is edited: t0 and t2 are affected",
+           .files = SFZ_FILES(k_sd4_pair_reordered), .over_pinned = true,
+           .over_want = 0},
+     .opt = "-O1,-Ira,-Irb>-O1,-Irb,-Ira"},
+    {.r = {.name = "SD5_dir_removed", .kind = "sdir_shadow",
+           .detail = "-Iold, which t0's <rm.h> resolved through, is dropped; "
+                     "t2 is edited: t0 and t2 are affected",
+           .files = SFZ_FILES(k_sd5_dir_removed), .over_pinned = true,
+           .over_want = 0},
+     .opt = "-O1,-Iold>-O1"},
+    {.r = {.name = "SD6_system_header_widens", .kind = "sdir_inert",
+           .detail = "-isystem sysx is added; t1 reads <stddef.h>, whose own "
+                     "lookups no manifest records, so t1 widens (pinned "
+                     "over-selection 1)",
+           .files = SFZ_FILES(k_sd6_system_header), .over_pinned = true,
+           .over_want = 1},
+     .opt = "-O1>-O1,-isystem,sysx"},
 };
 const size_t k_sfz_ntool_repros =
     sizeof(k_sfz_tool_repros) / sizeof(k_sfz_tool_repros[0]);
