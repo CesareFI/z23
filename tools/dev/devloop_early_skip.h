@@ -30,26 +30,45 @@ struct json_value;
  * CLOSURE of an early group G:
  *   - its test file: tests/harness/src/<G>.c for a test_ id, and
  *     tests/harness/spec/<G>.c for a spec_ id;
- *   - every restart source attributed to G: the per-source facts plan names
- *     G, or that source's plan could not narrow (then it counts for every
- *     group);
+ *   - every restart source, whatever G is: all of them are linked into the
+ *     one candidate whose test binary runs every group (its link list);
  *   - every file those include, transitively: a quoted name in the
  *     includer's directory, then each -iquote directory, then each -I
  *     directory of the candidate's compile flags; an angle name in the -I
  *     directories only (not found there: a system header, outside the key).
+ * Which groups run early at all rides on facts narrowing (devloop_early.h),
+ * which is feedback-only: the full plan always reruns every group it
+ * selects. The closure never rides on it. A source whose own facts name no
+ * early group still links into G's binary, and an earlier per-source facts
+ * attribution left such a source out of G's key: editing it kept the key
+ * and skipped G (test_devloop_early "holes").
  *
  * IDENTITY is SHA3-256 over the harness version, the compiler id, the base
  * generation, and the test compile flags, link flags and libraries. Any of
- * them changing reruns every group.
+ * them changing reruns every group. Base objects outside the restart set
+ * reach the key through the base generation only.
  *
  * UNVOUCHED. A group whose inputs this key cannot see is never skipped and
- * never recorded: no conventional test file; an unregistered group or one
- * that declares a host need (tools/dev/test_group_host_needs.def); a test
- * file that reads the environment, starts a process, or names a checkout
- * path in a string literal (runtime data and fixtures); a quoted include
- * that resolves nowhere, a computed include, or an unreadable file; no
- * attributed source; a closure or source set past its bound. Without a
- * toolchain identity nothing is skipped or recorded.
+ * never recorded:
+ *   - no conventional test file; an unregistered group or one that
+ *     declares a host need (tools/dev/test_group_host_needs.def);
+ *   - ANY closure file (the test file, a restart source, a header either
+ *     reaches) that reads the environment, starts a process, opens a file
+ *     through fopen/open/openat/creat/dlopen or a platform_ *open* helper
+ *     with a first argument that is not a string literal, or names a
+ *     checkout path in a string literal (runtime data and fixtures). This
+ *     is a text scan: comments count, a prototype (first parameter starts
+ *     with a type keyword) does not, and a file read through a helper
+ *     whose name holds none of these is not seen;
+ *   - a quoted include that resolves nowhere, a computed include, an
+ *     #include_next (the search it continues is not modelled), or an
+ *     unreadable file;
+ *   - compile flags that move include resolution in a way the resolver
+ *     does not model: any -i flag but -iquote (-isystem, -idirafter,
+ *     -include, -imacros, -isysroot, ...), -I-, --sysroot, an @response
+ *     file, or more flags than the split holds (cflags-unmodeled);
+ *   - no restart source; a closure or source set past its bound.
+ * Without a toolchain identity nothing is skipped or recorded.
  *
  * MODES (ZCL_DEVLOOP_EARLY_SKIP_ENV): unset or "on" skips; "off" skips
  * nothing, for A/B measurement, and still records passes; "verify" decides
@@ -88,8 +107,6 @@ struct zcl_devloop_early_toolchain {
 
 struct zcl_devloop_early_skip_row {
     char group[ZCL_TEST_GROUP_FULL_MAX];
-    /* Input: bit j set when restart source j is attributed to the group. */
-    uint64_t sources;
     char key[65];    /* "" when not computable */
     bool skip;       /* closure-unchanged in mode on or verify */
     bool vouched;    /* the key covers every input it can name */
@@ -128,7 +145,7 @@ enum zcl_devloop_early_skip_mode zcl_devloop_early_skip_mode_env(void);
 const char *zcl_devloop_early_skip_mode_name(
     enum zcl_devloop_early_skip_mode mode);
 
-/* Decide every row of `s` (rows[0..n) with group and sources filled) for
+/* Decide every row of `s` (rows[0..n) with their group filled) for
  * the checkout at `root`. Always fills the counters; a NULL `tc` is an
  * unknown identity and runs everything. */
 void zcl_devloop_early_skip_decide(const char *root,

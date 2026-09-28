@@ -366,19 +366,6 @@ static void early_execute(const char *root, const char *artifact,
     free(p);
 }
 
-/* `group` is one comma-separated token of `list`. */
-static bool early_listed(const char *list, const char *group)
-{
-    size_t len = strlen(group);
-    for (const char *p = list; p && *p;) {
-        if (strncmp(p, group, len) == 0 && (p[len] == ',' || !p[len]))
-            return true;
-        p = strchr(p, ',');
-        p = p ? p + 1 : NULL;
-    }
-    return false;
-}
-
 /* The rows of the skip decision: one per selected group, in order. */
 static void early_split(const char *list, struct zcl_devloop_early_skip *s)
 {
@@ -392,44 +379,16 @@ static void early_split(const char *list, struct zcl_devloop_early_skip *s)
     }
 }
 
-/* Attribute restart source `source` (bit `bit`) to every row its own facts
- * plan names; to every row when that plan cannot narrow or when it is the
- * only source (it alone selected the set). */
-static void early_attribute_one(const char *root,
-                                const struct zcl_devloop_early_plan *plan,
-                                const char *source, bool only, uint64_t bit,
-                                struct zcl_devloop_early_skip *s)
-{
-    const char *sources[] = { source };
-    struct zcl_devloop_early_plan *one = only ? NULL
-        : zcl_malloc(sizeof(*one), "early.attr.plan");
-    struct zcl_devloop_early_receipt *scratch = only ? NULL
-        : zcl_calloc(1, sizeof(*scratch), "early.attr.receipt");
-    bool narrowed = one && scratch &&
-        zcl_devloop_early_plan_facts(root, sources, 1, plan->facts_dir, 0,
-                                     one) &&
-        one->ready && early_select(&one->plan, scratch)[0] == '\0';
-    for (size_t i = 0; i < s->n; i++)
-        if (!narrowed || early_listed(scratch->groups, s->rows[i].group))
-            s->rows[i].sources |= bit;
-    free(one);
-    free(scratch);
-}
-
+/* Every restart source is linked into the one candidate whose test binary
+ * runs every early group, so the decision keys each group over all of them
+ * (tc->sources), never only the sources its facts name: the facts choose
+ * which groups run early, not what a group reads. */
 static void early_skip_prepare(const char *root,
-                               const struct zcl_devloop_early_plan *plan,
                                const struct zcl_devloop_early_toolchain *tc,
                                struct zcl_devloop_early_receipt *r)
 {
-    struct zcl_devloop_early_skip *s = &r->skip;
-    early_split(r->groups, s);
-    size_t count = tc ? tc->source_count : 0;
-    for (size_t j = 0; tc && tc->sources &&
-                       count <= ZCL_DEVLOOP_EARLY_SKIP_SOURCE_MAX &&
-                       j < count; j++)
-        early_attribute_one(root, plan, tc->sources[j], count == 1,
-                            UINT64_C(1) << j, s);
-    zcl_devloop_early_skip_decide(root, tc, s);
+    early_split(r->groups, &r->skip);
+    zcl_devloop_early_skip_decide(root, tc, &r->skip);
 }
 
 /* The rows whose skip flag is `skipped`, comma-joined; their count. */
@@ -567,7 +526,7 @@ void zcl_devloop_early_run_keyed(const char *root, const char *artifact,
                                plan->detail);
         return;
     }
-    early_skip_prepare(root, plan, tc, r);
+    early_skip_prepare(root, tc, r);
     early_execute_selected(root, artifact, r);
 }
 

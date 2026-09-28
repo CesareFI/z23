@@ -30,9 +30,6 @@
 #define ES_STORE_MAX_BYTES (1u << 20)
 #define ES_STORE_MAX_RECS 4096u
 
-_Static_assert(ZCL_DEVLOOP_EARLY_SKIP_SOURCE_MAX <= 64,
-               "a row's attributed sources are one 64-bit mask");
-
 /* ── a string -> index map (open addressing, owned keys) ──────────────── */
 
 struct es_map {
@@ -248,11 +245,19 @@ struct es_node {
     uint32_t stamp;
 };
 
+/* Why a loaded file's text leaves every group it reaches unvouched, with
+ * what it saw in `detail`; NULL when nothing does. */
+typedef const char *(*es_vet_fn)(void *arg, const char *text, char *detail,
+                                 size_t cap);
+
 struct es_graph {
     const char *root;
     char *flags;
     const char **dirs; /* [0, nquote) -iquote, then -I, in flag order */
     size_t ndirs, nquote;
+    const char *unmodeled; /* the first flag es_resolve does not model */
+    es_vet_fn vet;
+    void *vet_arg;
     struct es_node *nodes;
     size_t n, cap;
     struct es_map paths;    /* path -> node */
@@ -298,6 +303,18 @@ static void es_graph_dirs_pass(struct es_graph *g, const char *const *argv,
     }
 }
 
+/* A flag that moves include resolution in a way es_resolve does not model:
+ * every -i flag but -iquote (-isystem, -idirafter, -include, -imacros,
+ * -isysroot, -iprefix, ...), -I-, --sysroot, and a response file that could
+ * hold any of them. */
+static bool es_flag_unmodeled(const char *arg)
+{
+    if (strncmp(arg, "-iquote", 7) == 0)
+        return false;
+    return strncmp(arg, "-i", 2) == 0 || strcmp(arg, "-I-") == 0 ||
+           strncmp(arg, "--sysroot", 9) == 0 || arg[0] == '@';
+}
+
 static bool es_graph_init(struct es_graph *g, const char *root,
                           const char *cflags)
 {
@@ -312,6 +329,12 @@ static bool es_graph_init(struct es_graph *g, const char *root,
         return false;
     }
     size_t argc = zcl_argv_split(g->flags, argv, ES_ARGV_MAX);
+    /* A split that filled argv may have dropped flags it never saw. */
+    if (argc >= ES_ARGV_MAX - 1)
+        g->unmodeled = "(flags past their bound)";
+    for (size_t i = 0; i < argc && !g->unmodeled; i++)
+        if (es_flag_unmodeled(argv[i]))
+            g->unmodeled = argv[i];
     es_graph_dirs_pass(g, argv, argc, "-iquote");
     g->nquote = g->ndirs;
     es_graph_dirs_pass(g, argv, argc, "-I");
@@ -385,7 +408,11 @@ static bool es_node_dep(struct es_graph *g, uint32_t idx, uint32_t dep)
     return true;
 }
 
-enum es_inc { ES_INC_NONE, ES_INC_QUOTE, ES_INC_ANGLE, ES_INC_COMPUTED };
+/* #include_next continues the search after the directory that found the
+ * includer, which es_resolve does not track: it is never resolved. */
+enum es_inc {
+    ES_INC_NONE, ES_INC_QUOTE, ES_INC_ANGLE, ES_INC_COMPUTED, ES_INC_NEXT
+};
 
 static const char *es_skip_blank(const char *p, const char *end)
 {
@@ -421,6 +448,8 @@ static enum es_inc es_directive(const char *p, const char *end, char *name,
     size_t kw = es_keyword(p, end);
     if (!kw)
         return ES_INC_NONE;
+    if (kw == strlen("include_next"))
+        return ES_INC_NEXT;
     p = es_skip_blank(p + kw, end);
     char close = p < end && *p == '"' ? '"' : p < end && *p == '<' ? '>' : 0;
     const char *q = close ? memchr(p + 1, close, (size_t)(end - p - 1)) : NULL;
@@ -483,8 +512,10 @@ static bool es_scan_directive(struct es_graph *g, uint32_t idx,
                               enum es_inc kind, const char *name)
 {
     uint32_t dep = ES_NONE;
-    if (kind == ES_INC_COMPUTED) {
-        es_node_bad(g, idx, "include-computed", g->nodes[idx].path);
+    if (kind == ES_INC_COMPUTED || kind == ES_INC_NEXT) {
+        es_node_bad(g, idx, kind == ES_INC_NEXT ? "include-next"
+                                                : "include-computed",
+                    g->nodes[idx].path);
         return true;
     }
     if (!es_resolve(g, idx, kind, name, &dep))
@@ -524,6 +555,15 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
         return;
     }
     es_sha3_hex(text, len, g->nodes[idx].digest);
+    char seen[64] = "";
+    const char *why = g->vet ? g->vet(g->vet_arg, text, seen, sizeof(seen))
+                             : NULL;
+    if (why) {
+        char what[sizeof(g->nodes[idx].bad_detail)];
+        (void)snprintf(what, sizeof(what), "%s in %s", seen,
+                       g->nodes[idx].path);
+        es_node_bad(g, idx, why, what);
+    }
     if (es_scannable(g->nodes[idx].path) && !es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     free(text);
@@ -772,6 +812,7 @@ struct es_ctx {
     struct es_tops tops;
     struct es_store store;
     struct es_walk walk;
+    const char *blocked_detail; /* what blocked every row, when any */
 };
 
 static bool es_test_file(const char *group, char *out, size_t cap)
@@ -824,8 +865,96 @@ static const char *es_top_literal(const char *text,
     return NULL;
 }
 
-/* Runtime inputs a test file can reach that no key names: the environment,
- * another process, and checkout data it names by path. */
+static bool es_ident_char(char ch)
+{
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') || ch == '_';
+}
+
+/* A function that opens a file by the path its first argument names: the
+ * C and POSIX openers, and every platform_ helper with "open" in its
+ * name. */
+static bool es_opener(const char *name, size_t len)
+{
+    static const char *const exact[] = {
+        "fopen", "fopen64", "freopen", "open", "open64", "openat",
+        "openat64", "openat2", "creat", "creat64", "dlopen", NULL,
+    };
+    for (size_t i = 0; exact[i]; i++)
+        if (strlen(exact[i]) == len && strncmp(name, exact[i], len) == 0)
+            return true;
+    if (len <= 9 || strncmp(name, "platform_", 9) != 0)
+        return false;
+    for (size_t i = 9; i + 4 <= len; i++)
+        if (strncmp(name + i, "open", 4) == 0)
+            return true;
+    return false;
+}
+
+/* A first argument that starts with a type keyword: a prototype, which no
+ * call can spell. */
+static bool es_type_word(const char *p)
+{
+    static const char *const words[] = {
+        "const", "volatile", "restrict", "char", "int", "unsigned",
+        "signed", "short", "long", "void", "struct", "union", "enum",
+        "bool", "_Bool", "float", "double", NULL,
+    };
+    for (size_t i = 0; words[i]; i++) {
+        size_t len = strlen(words[i]);
+        if (strncmp(p, words[i], len) == 0 && !es_ident_char(p[len]))
+            return true;
+    }
+    return false;
+}
+
+static const char *es_skip_space(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+        p++;
+    return p;
+}
+
+/* The opener named by the identifier holding `at`, when it is called with
+ * a first argument that is not a string literal; its length, or 0. */
+static size_t es_open_call_at(const char *text, const char *at,
+                              const char **name)
+{
+    const char *start = at, *end = at;
+    while (start > text && es_ident_char(start[-1]))
+        start--;
+    while (es_ident_char(*end))
+        end++;
+    if (!es_opener(start, (size_t)(end - start)))
+        return 0;
+    const char *arg = es_skip_space(end);
+    if (*arg != '(')
+        return 0;
+    arg = es_skip_space(arg + 1);
+    if (*arg == '"' || es_type_word(arg))
+        return 0;
+    *name = start;
+    return (size_t)(end - start);
+}
+
+/* A file opened by a computed path: an input no key names. A literal path
+ * is left to es_top_literal. */
+static const char *es_open_call(const char *text, char *detail, size_t cap)
+{
+    for (const char *p = strstr(text, "open"); p; p = strstr(p + 4, "open")) {
+        const char *name = NULL;
+        size_t len = es_open_call_at(text, p, &name);
+        if (len) {
+            (void)snprintf(detail, cap, "%.*s(", (int)len, name);
+            return "opens-file";
+        }
+    }
+    return NULL;
+}
+
+/* Runtime inputs a closure file can reach that no key names: the
+ * environment, another process, a file opened by a computed path, and
+ * checkout data it names by path. */
 static const char *es_text_unvouched(struct es_ctx *c, const char *text,
                                      char *detail, size_t cap)
 {
@@ -841,25 +970,19 @@ static const char *es_text_unvouched(struct es_ctx *c, const char *text,
         why = "names-checkout-path";
     if (!why && (hit = es_top_literal(text, &c->tops.files)) != NULL)
         why = "names-checkout-path";
-    if (why)
+    if (why) {
         (void)snprintf(detail, cap, "%s", hit);
-    return why;
+        return why;
+    }
+    return es_open_call(text, detail, cap);
 }
 
-static const char *es_file_unvouched(struct es_ctx *c, const char *rel,
-                                     char *detail, size_t cap)
+/* The graph's vet: every file of every closure is read through it, the
+ * test file, the restart sources and every header they reach alike. */
+static const char *es_vet(void *arg, const char *text, char *detail,
+                          size_t cap)
 {
-    char full[ES_PATH_MAX * 2];
-    char *text = NULL;
-    size_t len = 0;
-    if (!es_full(&c->g, rel, full) ||
-        !es_read(full, ES_FILE_MAX, &text, &len)) {
-        (void)snprintf(detail, cap, "%s", rel);
-        return "no-test-file";
-    }
-    const char *why = es_text_unvouched(c, text, detail, cap);
-    free(text);
-    return why;
+    return es_text_unvouched(arg, text, detail, cap);
 }
 
 static void es_row_unvouched(struct zcl_devloop_early_skip_row *row,
@@ -872,7 +995,8 @@ static void es_row_unvouched(struct zcl_devloop_early_skip_row *row,
                    what && what[0] ? ": " : "", what ? what : "");
 }
 
-/* Walk the test file and every attributed source; key the closure. */
+/* Walk the test file and every restart source linked into the candidate;
+ * key the closure. */
 static bool es_row_key(struct es_ctx *c, struct zcl_devloop_early_skip_row *row,
                        const char *test_file)
 {
@@ -883,8 +1007,7 @@ static bool es_row_key(struct es_ctx *c, struct zcl_devloop_early_skip_row *row,
     w->detail[0] = '\0';
     bool ok = es_walk_root(&c->g, w, test_file);
     for (size_t j = 0; ok && j < c->tc->source_count; j++)
-        if (row->sources & (UINT64_C(1) << j))
-            ok = es_walk_root(&c->g, w, c->tc->sources[j]);
+        ok = es_walk_root(&c->g, w, c->tc->sources[j]);
     if (!ok)
         w->bad = "closure-bound";
     if (!w->bad)
@@ -909,10 +1032,12 @@ static bool es_row_vouch(struct es_ctx *c,
         return false;
     }
     const char *why = es_host_need(row->group, detail, sizeof(detail));
-    if (!why)
-        why = es_file_unvouched(c, test_file, detail, sizeof(detail));
-    if (!why && row->sources == 0)
-        why = "unattributed";
+    if (!why && !es_regular(&c->g, test_file)) {
+        why = "no-test-file";
+        (void)snprintf(detail, sizeof(detail), "%s", test_file);
+    }
+    if (!why && c->tc->source_count == 0)
+        why = "no-restart-source";
     if (why) {
         es_row_unvouched(row, why, detail);
         return false;
@@ -991,6 +1116,12 @@ static const char *es_ctx_open(struct es_ctx *c, const char *root,
     if (!es_graph_init(&c->g, root, tc->cflags) ||
         !es_store_load(root, &c->store))
         return "out-of-memory";
+    c->g.vet = es_vet;
+    c->g.vet_arg = c;
+    if (c->g.unmodeled) {
+        c->blocked_detail = c->g.unmodeled;
+        return "cflags-unmodeled";
+    }
     c->tops.listed = platform_directory_list_children_sorted(
         root, &c->tops.dirs, &c->tops.files);
     return c->tops.listed ? NULL : "checkout-unlisted";
@@ -1032,7 +1163,7 @@ static void es_decide_rows(struct es_ctx *c, const char *blocked)
         if (strcmp(blocked, "identity-unknown") == 0)
             row->reason = blocked;
         else if (blocked[0])
-            es_row_unvouched(row, blocked, "");
+            es_row_unvouched(row, blocked, c->blocked_detail);
         else if (es_row_vouch(c, row))
             es_row_compare(c, row);
     }
