@@ -659,77 +659,70 @@ int run_gate_script_with_env2(const char *script_rel,
     return -1;
 }
 
-/* Like run_gate_script_with_env2 but exports THREE env vars. Used by the
- * git-hooks-installed self-tests, which need to point the gate at a hermetic
- * fixture root (ZCL_GIT_HOOK_ROOT) in ADDITION to the pre-existing
- * hooks-path/file-content override each check already carries — otherwise
- * the gate falls back to resolving this checkout's own real installed
- * state, which makes the self-test's verdict depend on whether an operator
- * happened to already run `make install-hooks` here. Mirrors the same
- * fork/exec/redirect plumbing as its siblings. */
-int run_gate_script_with_env3(const char *script_rel,
-                                     const char *env_name1,
-                                     const char *env_value1,
-                                     const char *env_name2,
-                                     const char *env_value2,
-                                     const char *env_name3,
-                                     const char *env_value3)
+/* Child side of run_gate_script_envv: redirect output, export the
+ * overrides, exec the gate. Never returns. */
+static void gate_envv_child(const char *script, const char *out_path,
+                            const char *const *names,
+                            const char *const *values, size_t n)
 {
-    char script[PATH_MAX];
-    if (repo_path(script, sizeof(script), script_rel) != 0)
-        return -1;
+    int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd >= 0) {
+        (void)dup2(fd, STDOUT_FILENO);
+        (void)dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
+    for (size_t i = 0; i < n; i++)
+        if (names[i] && values[i])
+            (void)setenv(names[i], values[i], 1);
+    execl(script, script, (char *)NULL);
+    _exit(127);
+}
 
-    char out_path[PATH_MAX];
-    if (lint_gate_out_path(out_path, sizeof(out_path)) != 0)
+/* Runs a gate script with `n` exported env overrides and returns its exit
+ * status, or -1. SIGCHLD is held at SIG_DFL for the wait, as its siblings
+ * do. */
+static int run_gate_script_envv(const char *script_rel,
+                                const char *const *names,
+                                const char *const *values, size_t n)
+{
+    char script[PATH_MAX], out_path[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0 ||
+        lint_gate_out_path(out_path, sizeof(out_path)) != 0)
         return -1;
-
-    struct sigaction old_chld;
-    struct sigaction dfl_chld;
-    int restore_chld = 0;
+    struct sigaction old_chld, dfl_chld;
     memset(&old_chld, 0, sizeof(old_chld));
     memset(&dfl_chld, 0, sizeof(dfl_chld));
     dfl_chld.sa_handler = SIG_DFL;
     sigemptyset(&dfl_chld.sa_mask);
-    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
-        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
-        restore_chld = 1;
-    }
-
+    int restore_chld = sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+                       sigaction(SIGCHLD, &dfl_chld, NULL) == 0;
     pid_t pid = fork_with_retry();
-    if (pid < 0) {
-        if (restore_chld)
-            (void)sigaction(SIGCHLD, &old_chld, NULL);
-        return -1;
-    }
-    if (pid == 0) {
-        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
-        if (fd >= 0) {
-            (void)dup2(fd, STDOUT_FILENO);
-            (void)dup2(fd, STDERR_FILENO);
-            close(fd);
-        }
-        if (env_name1 && env_value1)
-            (void)setenv(env_name1, env_value1, 1);
-        if (env_name2 && env_value2)
-            (void)setenv(env_name2, env_value2, 1);
-        if (env_name3 && env_value3)
-            (void)setenv(env_name3, env_value3, 1);
-        execl(script, script, (char *)NULL);
-        _exit(127);
-    }
-
+    if (pid == 0)
+        gate_envv_child(script, out_path, names, values, n);
     int rc = 0;
-    while (waitpid(pid, &rc, 0) < 0) {
-        if (errno == EINTR)
-            continue;
-        if (restore_chld)
-            (void)sigaction(SIGCHLD, &old_chld, NULL);
-        return -1;
-    }
+    pid_t waited = -1;
+    if (pid > 0)
+        while ((waited = waitpid(pid, &rc, 0)) < 0 && errno == EINTR)
+            ;
     if (restore_chld)
         (void)sigaction(SIGCHLD, &old_chld, NULL);
-    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
-    return -1;
+    return waited == pid && WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+}
+
+/* Like run_gate_script_with_env2 but exports THREE env vars. Used by the
+ * git-hooks-installed self-tests, which point the gate at a hermetic
+ * fixture root (ZCL_GIT_HOOK_ROOT) in ADDITION to the hooks-path/file
+ * override each check already carries; without it the gate resolves this
+ * checkout's own installed hooks, and the verdict depends on whether an
+ * operator ran `make install-hooks` here. */
+int run_gate_script_with_env3(const char *script_rel,
+                              const char *env_name1, const char *env_value1,
+                              const char *env_name2, const char *env_value2,
+                              const char *env_name3, const char *env_value3)
+{
+    const char *const names[] = {env_name1, env_name2, env_name3};
+    const char *const values[] = {env_value1, env_value2, env_value3};
+    return run_gate_script_envv(script_rel, names, values, 3);
 }
 
 /* Snapshot the 1/5/15-minute load average into `out`. Best effort: a machine
