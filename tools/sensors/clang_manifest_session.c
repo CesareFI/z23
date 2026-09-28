@@ -15,7 +15,8 @@
  *   - A TU is recreated (disposed, parsed again) when its argv, root or the
  *     producer digest changed, when any non-main file its last accepted
  *     manifest read changed bytes, when an include slot that manifest saw
- *     absent now exists, or when it made a lookup that cannot be re-checked.
+ *     absent now exists, when it made a lookup that cannot be re-checked, or
+ *     on every emit whose argv holds a response file or a modules flag.
  *   - A reparse's own manifest passes the same binding checks (file SHA3s,
  *     no unbound lookup, the TU's baseline shadow candidates) before it is
  *     used, or the reparse is retried once as a fresh parse.
@@ -373,6 +374,27 @@ static bool cm_tu_baseline(struct cm_warm_tu *w, const uint8_t *m, size_t n,
     return false;
 }
 
+/* An argv whose meaning lies outside every file a manifest hashes: a
+ * response file (@file) or a config file, whose contents nothing binds, or
+ * modules, where an implicit module map can pull in headers the file set
+ * never names. Checked on every emit, not only when argv changed. */
+static bool cm_argv_untrackable(char *const *argv, int argc)
+{
+    static const char *const prefixes[] = {
+        "-fmodule", "-fimplicit-module-maps", "-fbuiltin-module-map",
+        "-fcxx-modules", "--config",
+    };
+    for (int k = 0; k < argc; k++) {
+        if (argv[k][0] == '@')
+            return true;
+        for (size_t p = 0; p < sizeof(prefixes) / sizeof(prefixes[0]); p++) {
+            if (strncmp(argv[k], prefixes[p], strlen(prefixes[p])) == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
 /* Why the TU must be (re)created, or NULL when a reparse may be tried. */
 static const char *cm_tu_stale(struct cm_warm_tu *w, const struct cm_opts *o,
                                const uint8_t producer[32], bool named,
@@ -380,6 +402,8 @@ static const char *cm_tu_stale(struct cm_warm_tu *w, const struct cm_opts *o,
 {
     if (w->tu == NULL)
         return w->accepted == NULL ? "first-parse" : "no-live-tu";
+    if (cm_argv_untrackable(o->argv, o->argc))
+        return "argv-untrackable";
     if (!cm_tu_same_argv(w, o->argv, o->argc))
         return "argv-changed";
     if (!named || !w->producer_named)

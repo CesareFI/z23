@@ -518,6 +518,7 @@ the reply carries:
 | Reason | Trigger |
 |---|---|
 | `first-parse`, `no-live-tu` | no TU yet, or the last one was dropped |
+| `argv-untrackable` | checked on every emit, even with argv unchanged: an argument starts with `@` (a response file) or `-fmodule`, or starts `--config`, `-fimplicit-module-maps`, `-fbuiltin-module-map` or `-fcxx-modules`. No manifest hashes a response or config file, and an implicit module map can pull in headers the file set never names, so such a TU is never reparsed |
 | `argv-changed` | the request's argv, and so flags, C mode, target, sysroot or resource dir, differs |
 | `producer-changed`, `producer-unnamed` | the producer digest (sensor bytes, libclang build ids, type grammar), recomputed on every emit, moved or cannot be named |
 | `file-changed <path>` | a non-main file the accepted manifest read no longer has its SHA3; this also catches an edit that keeps size and mtime, which libclang's own preamble check misses |
