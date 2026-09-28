@@ -1014,27 +1014,36 @@ static const struct sfz_file k_f11_hot_icf[] = {
          "}\n"},
 };
 
-
 const struct sfz_tool_repro k_sfz_tool_repros[] = {
     {.r = {.name = "F9_cc_drift", .kind = "comment_ws",
            .detail = "a comment in t0_a; the object compiler changes from "
                      "clang to gcc between the sides, the argv does not",
-           .known_red = "tool-drift",
+           .known_red = "an object-compiler identity in the manifest: the"
+                        " sensor records its own libclang version and the"
+                        " flags, never the compiler that builds the object,"
+                        " so a compiler change is no identity drift",
            .files = SFZ_FILES(k_f9_cc_drift),
-           .known_red_why = "?"},
+           .known_red_why = "src/t0.c t0_a NOT-COVERED\n"
+                            "src/t1.c object changed, planned unaffected "
+                            "(not in the universe)\n"
+                            "src/t1.c t1_a tu-missed\n"},
      .cc_before = "clang", .cc_after = "gcc"},
     {.r = {.name = "F10_opt_spelling_O02", .kind = "body_extern",
            .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O02",
-           .known_red = "opt-spelling",
+           .known_red = "an optimizer parse that fails closed: the codegen"
+                        " model reads -O02 as -O0, --optimize=2 as no "
+                        "optimizer and -O5 as the -O1 component model",
            .files = SFZ_FILES(k_f10_opt_spelling),
-           .known_red_why = "?"},
+           .known_red_why = "src/t0.c t0_s.constprop.0 NOT-COVERED\n"},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O02"},
     {.r = {.name = "F10_opt_spelling_long", .kind = "body_extern",
            .detail = "t0_f passes 8, not 7, to a noinline static; gcc at "
                      "--optimize=2",
-           .known_red = "opt-spelling",
+           .known_red = "an optimizer parse that fails closed: the codegen"
+                        " model reads -O02 as -O0, --optimize=2 as no "
+                        "optimizer and -O5 as the -O1 component model",
            .files = SFZ_FILES(k_f10_opt_spelling),
-           .known_red_why = "?"},
+           .known_red_why = "src/t0.c t0_s.constprop.0 NOT-COVERED\n"},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "--optimize=2"},
     {.r = {.name = "pass_opt_O1_gcc", .kind = "body_extern",
            .detail = "t0_f passes 8, not 7, to a noinline static; gcc at -O1",
@@ -1047,9 +1056,11 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
     {.r = {.name = "F10_opt_spelling_O5", .kind = "body_extern",
            .detail = "t0_a passes 8, not 7, to an external noinline t0_w; "
                      "gcc at -O5",
-           .known_red = "opt-spelling",
+           .known_red = "an optimizer parse that fails closed: the codegen"
+                        " model reads -O02 as -O0, --optimize=2 as no "
+                        "optimizer and -O5 as the -O1 component model",
            .files = SFZ_FILES(k_f10_extern_clone),
-           .known_red_why = "?"},
+           .known_red_why = "src/t0.c t0_w.constprop.1 NOT-COVERED\n"},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O5"},
     {.r = {.name = "pass_extern_clone_O3", .kind = "body_extern",
            .detail = "t0_a passes 8, not 7, to an external noinline t0_w; "
@@ -1059,9 +1070,12 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
     {.r = {.name = "F11_hot_icf", .kind = "body_static",
            .detail = "t0_p's body becomes t0_q's; objects at gcc -O2, the "
                      "sensor told -Og",
-           .known_red = "hot-identity",
+           .known_red = "a facts rule that senses each TU with its object's"
+                        " own argv: the dev build compiles its hot dirs at"
+                        " -O2 while the clang-facts rule tells the sensor -Og",
            .files = SFZ_FILES(k_f11_hot_icf),
-           .known_red_why = "?"},
+           .known_red_why = "src/t0.c t0_q alias-of-t0_p ALIAS-NOT-COVERED\n"
+                            "src/t0.c t0_eq NOT-COVERED\n"},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2/-Og"},
     {.r = {.name = "pass_hot_icf_O2", .kind = "body_static",
            .detail = "t0_p's body becomes t0_q's; objects and sensor at gcc "
