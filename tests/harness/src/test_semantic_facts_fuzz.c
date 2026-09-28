@@ -28,11 +28,11 @@
  * known-RED and pass guards alike) runs every time regardless of mode:
  * they are the regressions this group exists to catch. On top of those,
  * three seed modes, printed in the summary line as `mode=...`:
- *   default   a fixed list of 16 seeds (~60s standalone with the fixed
+ *   default   a fixed list of 6 seeds (~60s standalone with the fixed
  *             reproducers on an unloaded host) covering every mutation
  *             kind and every profile;
  *   full      ZCL_STRESS_TESTS=1 (this repo's existing opt-in-to-the-slow-
- *             path convention): the full fixed list of 44 seeds;
+ *             path convention): the full fixed list of 51 seeds;
  *   custom    ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]
  *             runs a long range instead (PROFILE all, no-ctr-line or
  *             gcc-deps; KIND forces one mutation kind, any draws it; CC
@@ -99,13 +99,16 @@ struct sfz_seed {
     const char *kind; /* the mutation kind, NULL: drawn from the seed */
 };
 
-/* The full run (ZCL_STRESS_TESTS=1): 44 (seed, profile, kind) cases
+/* The full run (ZCL_STRESS_TESTS=1): 51 (seed, profile, kind) cases
  * covering every mutation kind, most in the no-ctr-line profile where
  * plans narrow, some whose plans must fall back (flag, counter_c), and
  * gcc depfiles for the probed paths gcc omits. Chosen from a 4,900-case
  * run at this rule set; each passed there and most narrowed with seeds.
  * The four data-kind cases come from 150-case runs of each kind with the
- * symbol oracle. */
+ * symbol oracle; the seven path kinds (links, __FILE__, #pragma once
+ * aliases, macro-named includes, #embed, __has_embed, macro and _next
+ * __has_include probes), which a range draws only when forced, from
+ * 64-case no-ctr-line runs. */
 static const struct sfz_seed k_default_seeds_full[] = {
     {20007, PROF_ALL, "hasinc"},
     {20015, PROF_ALL, "shadow"},
@@ -152,6 +155,17 @@ static const struct sfz_seed k_default_seeds_full[] = {
     {32000, PROF_NO_CTR_LINE, "data_table"},
     {33000, PROF_NO_CTR_LINE, "data_hconst"},
     {34000, PROF_NO_CTR_LINE, "data_index"},
+    /* the path kinds, each from a 64-seed no-ctr-line range: symlink_retarget
+     * falls back (include-graph-truncated: a changed link is no regular
+     * file); a hasembed or hasinc_macro seed that deletes a file only a
+     * probe names misses (F13, F14), these two narrow and pass */
+    {41001, PROF_NO_CTR_LINE, "symlink_retarget"},
+    {42000, PROF_NO_CTR_LINE, "file_macro"},
+    {43002, PROF_NO_CTR_LINE, "pragma_alias"},
+    {44000, PROF_NO_CTR_LINE, "macro_include"},
+    {45002, PROF_NO_CTR_LINE, "embed_data"},
+    {46000, PROF_NO_CTR_LINE, "hasembed"},
+    {47000, PROF_NO_CTR_LINE, "hasinc_macro"},
 };
 
 /* The default run: 6 of the 44 above, a subset of k_default_seeds_full
@@ -654,8 +668,8 @@ static int sfz_t_seeds(struct sfz_group *g)
     bool bad_env = false, custom = seeds_override(&r, &bad_env);
     /* ZCL_SEMANTIC_FUZZ_SEEDS wins over ZCL_STRESS_TESTS; otherwise
      * ZCL_STRESS_TESTS=1 (the repo's existing opt-in-to-the-slow-path
-     * convention) runs the full 44-seed list, and a plain run stays to
-     * the fast 16-seed default. */
+     * convention) runs the full 51-seed list, and a plain run stays to
+     * the fast 6-seed default. */
     bool stress = !custom && getenv("ZCL_STRESS_TESTS") != NULL;
     const struct sfz_seed *dseeds = stress ? k_default_seeds_full
                                             : k_default_seeds_fast;

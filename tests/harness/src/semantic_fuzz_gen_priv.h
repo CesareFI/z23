@@ -74,6 +74,53 @@ struct sfz_tu {
     /* the data layer (rendered only for the data_* kinds) */
     int str_n, str_pad;     /* tN_str: "sN-<str_n>" then str_pad x characters */
     int dt[4];              /* the static const table tN_dt */
+    /* the path layer (rendered only for the path kinds) */
+    int pz;                 /* 0 none; includes 1 "pz.h", 2 "pa.h", 3 both,
+                               4 both, pa.h first */
+    int sel;                /* includes "sel.h" and then #include SEL_HDR */
+    int emb;                /* 0 none, else embeds data file emb-1 */
+    int hemb;               /* 0 none, 1 probes the __has_embed file, 2 probes
+                               and embeds it */
+    int hm;                 /* includes "hm_cfg.h", which probes hm_opt.h */
+};
+
+#define SFZ_EMB_MAX 16
+
+/* The path layer: include resolution by file-system path rather than text.
+ * Each field is drawn only for its kind, so every other kind's project
+ * stays byte-identical for a seed. */
+struct sfz_paths_layer {
+    int link_k;             /* -1 none: inc<d>/h<k>.h is a symbolic link to
+                               hdr/h<k>_a.h (h[k]) or hdr/h<k>_b.h (link_alt) */
+    int link_to;            /* 0 the _a body, 1 the _b body */
+    struct sfz_hdr link_alt;
+    int where_k;            /* -1 none: header k returns __FILE__ and
+                               __FILE_NAME__, and its readers call them */
+    int where_v;            /* its edit: 0 moves the file to the other
+                               include dir, 1 moves its link there, 2 copies
+                               it where it shadows the original */
+    bool pz;                /* #pragma once reached by two paths */
+    int pz_v, pz_alias;     /* PZ_V; inc2/pa.h: 0 a link to pz.h, 1 a byte-
+                               identical file, 2 a link to pz2.h (a copy) */
+    int pz_v2;              /* pz2.h's PZ_V: pz.h's before the edit */
+    int pz_mut;             /* the edit: 0 the link becomes a copy, 1 it
+                               names pz2.h, 2 pz.h's PZ_V, 3 a copy becomes
+                               the link */
+    bool sel;               /* a macro-named include */
+    int sel_to, sel_style;  /* sel_a.h/sel_b.h; spelled 0 quoted, 1 by
+                               stringizing, 2 angled */
+    bool emb;               /* #embed of data files */
+    int emb_place;          /* 0 data/eN.bin, 1 docs/eN.txt, 2 res/eN.md */
+    int emb_len[2];
+    unsigned char emb_bytes[2][SFZ_EMB_MAX];
+    bool hemb;              /* a __has_embed probe of one data file */
+    int hemb_place;         /* as emb_place */
+    int hemb_present;
+    bool hm;                /* a __has_include spelled via a macro or _next */
+    int hm_style;           /* 0 a quoted macro operand, 1 an angled one,
+                               2 __has_include_next */
+    int hm_inc;             /* ...and includes hm_opt.h when present */
+    int hm_present;         /* inc2/hm_opt.h exists */
 };
 
 struct sfz_model {
@@ -87,6 +134,7 @@ struct sfz_model {
     int util_owner;
     bool noctr, noline;     /* the profile drops __COUNTER__ / __LINE__ */
     bool data;              /* render the data layer */
+    struct sfz_paths_layer p;
 };
 
 enum {
@@ -102,5 +150,9 @@ extern const char *const k_sfz_types[6];
 void sfz_render_header(const struct sfz_model *m, int k, const struct sfz_hdr *h,
                        struct sfz_buf *b);
 void sfz_render_tu(const struct sfz_model *m, int i, struct sfz_buf *b);
+
+/* The path layer's data file names: data/eN.bin, docs/eN.txt, res/eN.md
+ * (place 0, 1, 2), and the __has_embed file's (hN). */
+void sfz_emb_path(char *out, size_t cap, int place, const char *stem);
 
 #endif /* ZCL_TEST_SEMANTIC_FUZZ_GEN_PRIV_H */

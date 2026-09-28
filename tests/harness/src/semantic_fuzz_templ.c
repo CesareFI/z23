@@ -141,6 +141,91 @@ static void tu_data(const struct sfz_model *m, int i, struct sfz_buf *b)
     sfz_bp(b, "\n");
 }
 
+/* ---- the path layer (the path kinds) ----------------------------------------- */
+
+void sfz_emb_path(char *out, size_t cap, int place, const char *stem)
+{
+    static const char *const fmt[3] = {"data/%s.bin", "docs/%s.txt", "res/%s.md"};
+    (void)snprintf(out, cap, fmt[place % 3], stem);
+}
+
+/* The spelled path of header k's text as its readers see it. */
+static void hdr_where(int k, struct sfz_buf *b)
+{
+    sfz_bp(b, "static inline const char *h%d_where(void)\n{\n    return __FILE__;\n}\n"
+              "static inline const char *h%d_base(void)\n{\n"
+              "    return __FILE_NAME__;\n}\n",
+           k, k);
+}
+
+static void tu_path_includes(const struct sfz_tu *t, struct sfz_buf *b)
+{
+    static const char *const order[5][2] = {
+        {NULL, NULL}, {"pz.h", NULL}, {"pa.h", NULL}, {"pz.h", "pa.h"},
+        {"pa.h", "pz.h"}};
+    for (int q = 0; q < 2; q++)
+        if (t->pz > 0 && t->pz < 5 && order[t->pz][q] != NULL)
+            sfz_bp(b, "#include \"%s\"\n", order[t->pz][q]);
+    if (t->sel)
+        sfz_bp(b, "#include \"sel.h\"\n#include SEL_HDR\n");
+    if (t->hm)
+        sfz_bp(b, "#include \"hm_cfg.h\"\n");
+}
+
+static void tu_embed(const struct sfz_model *m, int i, struct sfz_buf *b)
+{
+    char stem[16], path[64];
+    (void)snprintf(stem, sizeof(stem), "e%d", m->t[i].emb - 1);
+    sfz_emb_path(path, sizeof(path), m->p.emb_place, stem);
+    sfz_bp(b, "static const unsigned char t%d_emb[] = {\n#embed \"../%s\"\n};\n"
+              "int t%d_embv(int x)\n{\n"
+              "    return t%d_emb[(unsigned)x %% sizeof t%d_emb] + "
+              "(int)sizeof t%d_emb;\n}\n",
+           i, path, i, i, i, i);
+}
+
+static void tu_has_embed(const struct sfz_model *m, int i, struct sfz_buf *b)
+{
+    char path[64];
+    sfz_emb_path(path, sizeof(path), m->p.hemb_place, "probe");
+    if (m->t[i].hemb == 1) {
+        sfz_bp(b, "#if __has_embed(\"../%s\")\n#define T%d_HE 1\n#else\n"
+                  "#define T%d_HE 0\n#endif\n"
+                  "int t%d_hev(int x)\n{\n    return x + T%d_HE * 7;\n}\n",
+               path, i, i, i, i);
+        return;
+    }
+    sfz_bp(b, "#if __has_embed(\"../%s\")\n"
+              "static const unsigned char t%d_he[] = {\n#embed \"../%s\"\n};\n"
+              "int t%d_hev(int x)\n{\n    return x + t%d_he[0];\n}\n#else\n"
+              "int t%d_hev(int x)\n{\n    return x + 1;\n}\n#endif\n",
+           path, i, path, i, i, i);
+}
+
+/* TU i's path-layer functions: each reads what its paths resolve to. */
+static void tu_path_code(const struct sfz_model *m, int i, struct sfz_buf *b)
+{
+    const struct sfz_tu *t = &m->t[i];
+    int w = m->p.where_k;
+    if (w >= 0 && t->inc[w])
+        sfz_bp(b, "const char *t%d_where(int b)\n{\n"
+                  "    return b ? h%d_base() : h%d_where();\n}\n",
+               i, w, w);
+    if (t->pz)
+        sfz_bp(b, "int t%d_pz(void)\n{\n#ifdef PZ_TWICE\n    return PZ_V * 10 + 1;\n"
+                  "#else\n    return PZ_V * 10;\n#endif\n}\n",
+               i);
+    if (t->sel)
+        sfz_bp(b, "int t%d_sel(int x)\n{\n    return sel_f(x) + SEL_V;\n}\n", i);
+    if (t->emb)
+        tu_embed(m, i, b);
+    if (t->hemb)
+        tu_has_embed(m, i, b);
+    if (t->hm)
+        sfz_bp(b, "int t%d_hm(int x)\n{\n    return x + HM_HAVE * 5 + HM_OPT_V;\n}\n",
+               i);
+}
+
 void sfz_render_header(const struct sfz_model *m, int k, const struct sfz_hdr *h,
                        struct sfz_buf *b)
 {
@@ -155,6 +240,8 @@ void sfz_render_header(const struct sfz_model *m, int k, const struct sfz_hdr *h
     hdr_tail(m, k, h, b);
     if (m->data)
         hdr_data(k, h, b);
+    if (m->p.where_k == k)
+        hdr_where(k, b);
     sfz_bp(b, "#endif\n");
 }
 
@@ -537,6 +624,7 @@ void sfz_render_tu(const struct sfz_model *m, int i, struct sfz_buf *b)
         else if (t->inc[k] == 2)
             sfz_bp(b, "#include <h%d.h>\n", k);
     }
+    tu_path_includes(t, b);
     sfz_bp(b, "\n");
     for (int j = 0; j < SFZ_NTEMPL; j++)
         if (t->on[j])
@@ -545,4 +633,5 @@ void sfz_render_tu(const struct sfz_model *m, int i, struct sfz_buf *b)
     tu_owned(m, i, b);
     if (m->data)
         tu_data(m, i, b);
+    tu_path_code(m, i, b);
 }

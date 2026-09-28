@@ -162,6 +162,7 @@ static void gen_model(struct sfz_gen *g, struct sfz_model *m)
     m->nh = ri(g, 1, SFZ_MAXH);
     m->nt = ri(g, 3, SFZ_MAXT);
     m->shadow_k = -1;
+    m->p.link_k = m->p.where_k = -1;
     m->util_owner = ri(g, 0, m->nt - 1);
     (void)snprintf(m->flags, sizeof(m->flags), "%s",
                    rp(g, 30) ? "-DPROJ_MODE=1" : "");
@@ -271,12 +272,140 @@ static bool render_opt_and_shadow(const struct sfz_model *m, const char *dir,
     return put_buf(dir, rel, b);
 }
 
+/* Header k as a link: both bodies under hdr/ on every side, and
+ * inc<d>/h<k>.h naming the one link_to picks. */
+static bool render_link(const struct sfz_model *m, const char *dir,
+                        struct sfz_buf *b)
+{
+    const struct sfz_paths_layer *p = &m->p;
+    int k = p->link_k;
+    char rel[256], target[64];
+    bool ok;
+    b->n = 0;
+    sfz_render_header(m, k, &m->h[k], b);
+    (void)snprintf(rel, sizeof(rel), "hdr/h%d_a.h", k);
+    ok = put_buf(dir, rel, b);
+    b->n = 0;
+    sfz_render_header(m, k, &p->link_alt, b);
+    (void)snprintf(rel, sizeof(rel), "hdr/h%d_b.h", k);
+    ok = ok && put_buf(dir, rel, b);
+    (void)snprintf(rel, sizeof(rel), "inc%d/h%d.h", m->h[k].dir, k);
+    (void)snprintf(target, sizeof(target), "../hdr/h%d_%c.h", k,
+                   p->link_to ? 'b' : 'a');
+    return ok && sfz_symlink(dir, rel, target);
+}
+
+/* inc1/pz.h and its copy pz2.h, each #pragma once, and inc2/pa.h: a
+ * link to one of them or a byte-identical file. */
+static bool render_pz(const struct sfz_model *m, const char *dir,
+                      struct sfz_buf *b)
+{
+    static const char *const once =
+        "#pragma once\n#ifdef PZ_SEEN\n#define PZ_TWICE 1\n#else\n"
+        "#define PZ_SEEN 1\n#endif\n";
+    const struct sfz_paths_layer *p = &m->p;
+    bool ok;
+    b->n = 0;
+    sfz_bp(b, "%s#define PZ_V %d\n", once, p->pz_v2);
+    ok = put_buf(dir, "inc1/pz2.h", b);
+    b->n = 0;
+    sfz_bp(b, "%s#define PZ_V %d\n", once, p->pz_v);
+    ok = ok && put_buf(dir, "inc1/pz.h", b);
+    if (p->pz_alias == 1)
+        return ok && put_buf(dir, "inc2/pa.h", b);
+    return ok && sfz_symlink(dir, "inc2/pa.h",
+                             p->pz_alias == 2 ? "../inc1/pz2.h" : "../inc1/pz.h");
+}
+
+/* inc1/sel.h names sel_a.h or sel_b.h in SEL_HDR, spelled sel_style's way. */
+static bool render_sel(const struct sfz_model *m, const char *dir,
+                       struct sfz_buf *b)
+{
+    const struct sfz_paths_layer *p = &m->p;
+    char c = p->sel_to ? 'b' : 'a';
+    bool ok = true;
+    for (int q = 0; ok && q < 2; q++) {
+        char rel[32];
+        b->n = 0;
+        sfz_bp(b, "#ifndef SEL_%c_H\n#define SEL_%c_H\n#define SEL_V %d\n"
+                  "static inline int sel_f(int x)\n{\n    return x * %d + %d;\n}\n"
+                  "#endif\n",
+               'A' + q, 'A' + q, 3 + 2 * q, 3 + 2 * q, 1 + q);
+        (void)snprintf(rel, sizeof(rel), "inc1/sel_%c.h", 'a' + q);
+        ok = put_buf(dir, rel, b);
+    }
+    b->n = 0;
+    if (p->sel_style == 1)
+        sfz_bp(b, "#define SEL_STR_(x) #x\n#define SEL_STR(x) SEL_STR_(x)\n"
+                  "#define SEL_NAME sel_%c.h\n#define SEL_HDR SEL_STR(SEL_NAME)\n",
+               c);
+    else if (p->sel_style == 2)
+        sfz_bp(b, "#define SEL_HDR <sel_%c.h>\n", c);
+    else
+        sfz_bp(b, "#define SEL_HDR \"sel_%c.h\"\n", c);
+    return ok && put_buf(dir, "inc1/sel.h", b);
+}
+
+/* The data files #embed and __has_embed read. */
+static bool render_embeds(const struct sfz_model *m, const char *dir)
+{
+    const struct sfz_paths_layer *p = &m->p;
+    char rel[64];
+    bool ok = true;
+    for (int f = 0; ok && p->emb && f < 2; f++) {
+        char stem[8];
+        (void)snprintf(stem, sizeof(stem), "e%d", f);
+        sfz_emb_path(rel, sizeof(rel), p->emb_place, stem);
+        ok = sfz_put(dir, rel, (const char *)p->emb_bytes[f],
+                     (size_t)p->emb_len[f]);
+    }
+    if (!ok || !p->hemb || !p->hemb_present)
+        return ok;
+    sfz_emb_path(rel, sizeof(rel), p->hemb_place, "probe");
+    return sfz_put(dir, rel, "Z23\n", 4);
+}
+
+/* inc1/hm_cfg.h probes inc2/hm_opt.h through a macro operand or
+ * __has_include_next, and may include it when present. */
+static bool render_hm(const struct sfz_model *m, const char *dir,
+                      struct sfz_buf *b)
+{
+    static const char *const probe[3] = {
+        "#define HM_OPT_HDR \"hm_opt.h\"\n#if __has_include(HM_OPT_HDR)\n",
+        "#define HM_OPT_HDR <hm_opt.h>\n#if __has_include(HM_OPT_HDR)\n",
+        "#if __has_include_next(<hm_opt.h>)\n"};
+    static const char *const inc[3] = {"#include HM_OPT_HDR\n",
+                                       "#include HM_OPT_HDR\n",
+                                       "#include_next <hm_opt.h>\n"};
+    const struct sfz_paths_layer *p = &m->p;
+    int s = p->hm_style % 3;
+    b->n = 0;
+    sfz_bp(b, "#ifndef HM_CFG_H\n#define HM_CFG_H\n%s#define HM_HAVE 1\n%s#else\n"
+              "#define HM_HAVE 0\n#endif\n#ifndef HM_OPT_V\n#define HM_OPT_V 0\n"
+              "#endif\n#endif\n",
+           probe[s], p->hm_inc ? inc[s] : "");
+    if (!put_buf(dir, "inc1/hm_cfg.h", b))
+        return false;
+    return !p->hm_present || sfz_put(dir, "inc2/hm_opt.h", "#define HM_OPT_V 3\n", 19);
+}
+
+static bool render_paths(const struct sfz_model *m, const char *dir,
+                         struct sfz_buf *b)
+{
+    const struct sfz_paths_layer *p = &m->p;
+    return (p->link_k < 0 || render_link(m, dir, b)) &&
+           (!p->pz || render_pz(m, dir, b)) && (!p->sel || render_sel(m, dir, b)) &&
+           render_embeds(m, dir) && (!p->hm || render_hm(m, dir, b));
+}
+
 static bool render_files(const struct sfz_model *m, const char *dir,
                          struct sfz_buf *b)
 {
     char rel[256];
-    bool ok = true;
+    bool ok = render_paths(m, dir, b);
     for (int k = 0; ok && k < m->nh; k++) {
+        if (k == m->p.link_k)
+            continue;
         b->n = 0;
         sfz_render_header(m, k, &m->h[k], b);
         (void)snprintf(rel, sizeof(rel), "inc%d/h%d.h", m->h[k].dir, k);
@@ -314,12 +443,16 @@ static const char *const k_kinds[] = {
     "hasinc",        "multi",
     /* the data layer: after "multi", so a seed draws its kind as before */
     "data_string",   "data_table",  "data_hconst", "data_index",
+    /* the path layer: forced only, never drawn */
+    "symlink_retarget", "file_macro", "pragma_alias", "macro_include",
+    "embed_data",    "hasembed",    "hasinc_macro",
 };
 #define NKINDS (sizeof(k_kinds) / sizeof(k_kinds[0]))
 #define KIND_FLAG 8
 #define KIND_COUNTER_C 14
 #define KIND_MULTI 16
 #define KIND_DATA 17 /* the first data_* kind */
+#define KIND_PATH 21 /* the first path kind */
 
 /* One mutation of header k / TU i (both drawn before the kind's own draws). */
 struct mut {
@@ -644,6 +777,207 @@ static void mut_data_index(struct mut *u)
     (void)snprintf(u->detail, u->cap, "H%d_IDX -> %d", u->k, h->idx);
 }
 
+/* ---- the path layer ------------------------------------------------------------ */
+
+/* Each path kind draws its layer only when forced, after the kind: every
+ * other kind's projects stay byte-identical for a seed. */
+
+/* the TU a layer is sure to have among its readers */
+static int any_tu(struct sfz_gen *g, const struct sfz_model *m)
+{
+    return ri(g, 0, m->nt - 1);
+}
+
+static void gen_link(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->p.link_k = ri(g, 0, m->nh - 1);
+    m->p.link_alt = m->h[m->p.link_k];
+}
+
+static void gen_where(struct sfz_gen *g, struct sfz_model *m)
+{
+    int k = ri(g, 0, m->nh - 1);
+    m->p.where_k = k;
+    m->p.where_v = ri(g, 0, 2);
+    if (m->p.where_v == 1) {
+        m->p.link_k = k;
+        m->p.link_alt = m->h[k];
+    }
+}
+
+static void gen_pz(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->p.pz = true;
+    m->p.pz_v = m->p.pz_v2 = ri(g, 1, 9);
+    m->p.pz_mut = ri(g, 0, 3);
+    m->p.pz_alias = m->p.pz_mut == 3 ? 1 : 0;
+    for (int i = 0; i < m->nt; i++)
+        m->t[i].pz = ri(g, 0, 4);
+    m->t[any_tu(g, m)].pz = ri(g, 3, 4);
+}
+
+static void gen_sel(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->p.sel = true;
+    m->p.sel_to = ri(g, 0, 1);
+    m->p.sel_style = ri(g, 0, 2);
+    for (int i = 0; i < m->nt; i++)
+        m->t[i].sel = rp(g, 50);
+    m->t[any_tu(g, m)].sel = 1;
+}
+
+static void gen_emb(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->p.emb = true;
+    m->p.emb_place = ri(g, 0, 2);
+    for (int f = 0; f < 2; f++) {
+        m->p.emb_len[f] = ri(g, 1, SFZ_EMB_MAX / 2);
+        for (int q = 0; q < SFZ_EMB_MAX; q++)
+            m->p.emb_bytes[f][q] = (unsigned char)ri(g, 0, 255);
+    }
+    for (int i = 0; i < m->nt; i++)
+        m->t[i].emb = rp(g, 60) ? ri(g, 1, 2) : 0;
+    m->t[any_tu(g, m)].emb = ri(g, 1, 2);
+}
+
+static void gen_hemb(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->p.hemb = true;
+    m->p.hemb_place = ri(g, 0, 2);
+    m->p.hemb_present = ri(g, 0, 1);
+    for (int i = 0; i < m->nt; i++)
+        m->t[i].hemb = rp(g, 60) ? ri(g, 1, 2) : 0;
+    m->t[any_tu(g, m)].hemb = ri(g, 1, 2);
+}
+
+/* The link names another body: header k's under one header edit (none
+ * that its owner's definitions must agree with). The link's path and every
+ * includer's text stay the same. */
+static void mut_symlink_retarget(struct mut *u)
+{
+    static void (*const edits[])(struct mut *u) = {
+        mut_macro_value, mut_opt_toggle, mut_header_inline, mut_layout,
+        mut_enum_value, mut_header_const, mut_typedef, mut_macro_new};
+    struct sfz_model *m = u->m;
+    int k = m->p.link_k, e = ri(u->g, 0, 7);
+    struct sfz_hdr save = m->h[k];
+    char inner[160] = "";
+    struct mut v = {.g = u->g, .m = m, .k = k, .i = u->i, .detail = inner,
+                    .cap = sizeof(inner)};
+    edits[e](&v);
+    m->p.link_alt = m->h[k];
+    m->h[k] = save;
+    m->p.link_to = 1;
+    (void)snprintf(u->detail, u->cap, "inc%d/h%d.h -> ../hdr/h%d_b.h (%s)",
+                   m->h[k].dir, k, k, inner);
+}
+
+/* Header k's text stays; the path its readers reach it by changes, and
+ * with it every __FILE__ expansion in it. */
+static void mut_file_macro(struct mut *u)
+{
+    struct sfz_model *m = u->m;
+    int k = m->p.where_k, from = m->h[k].dir;
+    if (m->p.where_v == 2) {
+        m->shadow_k = k;
+        m->shadow_where = from == 1 ? 1 : 0;
+        m->shadow_variant = 0;
+        (void)snprintf(u->detail, u->cap, "copy of inc%d/h%d.h in %s", from, k,
+                       m->shadow_where ? "src" : "inc1");
+        return;
+    }
+    m->h[k].dir = 3 - from;
+    (void)snprintf(u->detail, u->cap, "%s inc%d/h%d.h -> inc%d/h%d.h",
+                   m->p.where_v ? "link" : "file", from, k, 3 - from, k);
+}
+
+static void mut_pragma_alias(struct mut *u)
+{
+    static const char *const what[4] = {
+        "inc2/pa.h: link to pz.h -> identical file",
+        "inc2/pa.h: link to pz.h -> link to pz2.h (identical)",
+        "inc1/pz.h PZ_V (inc2/pa.h links to it)",
+        "inc2/pa.h: identical file -> link to pz.h"};
+    struct sfz_paths_layer *p = &u->m->p;
+    switch (p->pz_mut) {
+    case 0: p->pz_alias = 1; break;
+    case 1: p->pz_alias = 2; break;
+    case 2: p->pz_v += ri(u->g, 1, 3); break;
+    default: p->pz_alias = 0; break;
+    }
+    (void)snprintf(u->detail, u->cap, "%s", what[p->pz_mut]);
+}
+
+static void mut_macro_include(struct mut *u)
+{
+    static const char *const style[3] = {"quoted", "stringized", "angled"};
+    struct sfz_paths_layer *p = &u->m->p;
+    p->sel_to ^= 1;
+    (void)snprintf(u->detail, u->cap, "inc1/sel.h SEL_HDR (%s) -> sel_%c.h",
+                   style[p->sel_style], p->sel_to ? 'b' : 'a');
+}
+
+/* One embedded file's bytes: one byte, or its length. */
+static void mut_embed_data(struct mut *u)
+{
+    struct sfz_paths_layer *p = &u->m->p;
+    int f = u->m->t[u->i].emb ? u->m->t[u->i].emb - 1 : ri(u->g, 0, 1);
+    int q = ri(u->g, 0, p->emb_len[f] - 1);
+    char path[64], stem[8];
+    (void)snprintf(stem, sizeof(stem), "e%d", f);
+    sfz_emb_path(path, sizeof(path), p->emb_place, stem);
+    switch (ri(u->g, 0, 2)) {
+    case 0:
+        p->emb_bytes[f][q] = (unsigned char)(p->emb_bytes[f][q] + ri(u->g, 1, 9));
+        (void)snprintf(u->detail, u->cap, "%s byte %d", path, q);
+        return;
+    case 1:
+        p->emb_len[f] += p->emb_len[f] < SFZ_EMB_MAX ? 1 : -1;
+        break;
+    default:
+        p->emb_len[f] += p->emb_len[f] > 1 ? -1 : 1;
+        break;
+    }
+    (void)snprintf(u->detail, u->cap, "%s length -> %d", path, p->emb_len[f]);
+}
+
+static void mut_hasembed(struct mut *u)
+{
+    struct sfz_paths_layer *p = &u->m->p;
+    char path[64];
+    p->hemb_present ^= 1;
+    sfz_emb_path(path, sizeof(path), p->hemb_place, "probe");
+    (void)snprintf(u->detail, u->cap, "%s %s", path,
+                   p->hemb_present ? "created" : "deleted");
+}
+
+static void gen_hm(struct sfz_gen *g, struct sfz_model *m)
+{
+    m->p.hm = true;
+    m->p.hm_style = ri(g, 0, 2);
+    m->p.hm_inc = ri(g, 0, 1);
+    m->p.hm_present = ri(g, 0, 1);
+    for (int i = 0; i < m->nt; i++)
+        m->t[i].hm = rp(g, 50);
+    m->t[any_tu(g, m)].hm = 1;
+}
+
+static void mut_hasinc_macro(struct mut *u)
+{
+    static const char *const style[3] = {"quoted macro operand",
+                                         "angled macro operand",
+                                         "__has_include_next"};
+    struct sfz_paths_layer *p = &u->m->p;
+    p->hm_present ^= 1;
+    (void)snprintf(u->detail, u->cap, "inc2/hm_opt.h %s (probed by %s, %s)",
+                   p->hm_present ? "created" : "deleted", style[p->hm_style],
+                   p->hm_inc ? "included when present" : "probe only");
+}
+
+static void (*const k_gen_path[])(struct sfz_gen *g, struct sfz_model *m) = {
+    gen_link, gen_where, gen_pz, gen_sel, gen_emb, gen_hemb, gen_hm,
+};
+
 static void (*const k_mut[NKINDS])(struct mut *u) = {
     mut_body_static,   mut_body_extern, mut_typedef,     mut_layout,
     mut_macro_value,   mut_macro_cond,  mut_signature,   mut_shadow,
@@ -651,7 +985,11 @@ static void (*const k_mut[NKINDS])(struct mut *u) = {
     mut_macro_new,     mut_header_const, mut_counter_c,  mut_hasinc,
     [KIND_DATA] = mut_data_string, mut_data_table, mut_data_hconst,
     mut_data_index,
+    [KIND_PATH] = mut_symlink_retarget, mut_file_macro, mut_pragma_alias,
+    mut_macro_include, mut_embed_data, mut_hasembed, mut_hasinc_macro,
 };
+static_assert(sizeof(k_gen_path) / sizeof(k_gen_path[0]) == NKINDS - KIND_PATH,
+              "one layer draw per path kind");
 
 static void mutate(struct sfz_gen *g, struct sfz_model *m, int kind,
                    char *detail, size_t cap)
@@ -681,7 +1019,8 @@ static void mutate_multi(struct sfz_gen *g, struct sfz_model *m, char *detail,
 
 /* The kind: drawn over the kinds before the data layer exactly as before
  * it existed, so a forced kind leaves the draws that follow unchanged; an
- * unforced draw then takes a data_* kind one time in five. */
+ * unforced draw then takes a data_* kind one time in five. A path kind is
+ * never drawn: only a forced one runs. */
 static int pick_kind(struct sfz_gen *g, const char *want)
 {
     int kind;
@@ -690,7 +1029,7 @@ static int pick_kind(struct sfz_gen *g, const char *want)
     while ((g->noflag && kind == KIND_FLAG) ||
            (g->noctr && kind == KIND_COUNTER_C));
     if (want == NULL && rp(g, 20))
-        kind = ri(g, KIND_DATA, (int)NKINDS - 1);
+        kind = ri(g, KIND_DATA, KIND_PATH - 1);
     for (size_t q = 0; want != NULL && q < NKINDS; q++)
         if (strcmp(want, k_kinds[q]) == 0)
             kind = (int)q;
@@ -726,7 +1065,9 @@ bool sfz_generate(uint64_t seed, unsigned profile, const char *kind_name,
     if (ok) {
         gen_model(&g, m);
         kind = pick_kind(&g, kind_name);
-        if (kind >= KIND_DATA)
+        if (kind >= KIND_PATH)
+            k_gen_path[kind - KIND_PATH](&g, m);
+        else if (kind >= KIND_DATA)
             gen_data(&g, m);
         (void)snprintf(path, sizeof(path), "%s/before", dir);
         ok = render(m, path);
