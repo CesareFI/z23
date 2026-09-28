@@ -56,6 +56,7 @@
 
 #include "devloop.h"
 #include "devloop_facts_index.h"
+#include "vcs/semantic_manifest.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -350,10 +351,57 @@ static int sct_t_command(const struct sct_fixtures *f, struct scx_result *res)
     return failures;
 }
 
+/* Builds the exact IDENTITY-record encoding cm_emit_identity in
+ * tools/sensors/clang_manifest_core.c writes -- the schema
+ * k_sm_schema[VCS_SEMANTIC_SECTION_V1_IDENTITY] == "TQTP[A[D[D[D[e" in
+ * contexts/commons/modules/vcs/src/semantic_manifest.c: compiler,
+ * resource-dir, triple and main-path texts, a u32 argc and that many argv
+ * texts, then three empty directory lists and an empty env list -- from
+ * `flags`, a space-separated convenience notation for the argv list (a
+ * real command line never glues two flags into one argument, so splitting
+ * on spaces here is just test input syntax; each split piece becomes its
+ * own length-prefixed argv element, exactly as the real encoder would
+ * write it). Calls fxi_codegen_model_of on the built record and frees it,
+ * so the model tests below exercise the real wire format -- not a bare,
+ * un-length-prefixed string -- including whether "-O"/"--optimize" text
+ * glued inside another flag's own argv element (as in -DMODE=-O0,
+ * -I/opt/x-O0dir or -Wl,-O1) is correctly ignored as that flag's own text,
+ * never as a second, later optimizer flag. */
+static enum fxi_codegen sct_codegen_model_of_flags(const char *flags,
+                                                   const char **token)
+{
+    struct vcs_semantic_record_v1 rec = {0};
+    char buf[256];
+    char *toks[8];
+    size_t ntok = 0, n = strlen(flags);
+    char *save = NULL, *t;
+    enum fxi_codegen got;
+    if (n >= sizeof(buf))
+        abort(); /* every fixture string below is well under this */
+    memcpy(buf, flags, n + 1);
+    for (t = strtok_r(buf, " ", &save); t != NULL && ntok < 8;
+         t = strtok_r(NULL, " ", &save))
+        toks[ntok++] = t;
+    vcs_semantic_record_v1_cstr(&rec, "cc");                 /* T: compiler */
+    vcs_semantic_record_v1_cstr(&rec, "");                   /* Q: resource_dir */
+    vcs_semantic_record_v1_cstr(&rec, "x86_64-pc-linux-gnu"); /* T: triple */
+    vcs_semantic_record_v1_cstr(&rec, "a.c");                /* P: main_path */
+    vcs_semantic_record_v1_u32(&rec, (uint32_t)ntok);         /* [A: argv */
+    for (size_t i = 0; i < ntok; i++)
+        vcs_semantic_record_v1_cstr(&rec, toks[i]);
+    vcs_semantic_record_v1_u32(&rec, 0); /* [D: quote dirs, empty */
+    vcs_semantic_record_v1_u32(&rec, 0); /* [D: angled dirs, empty */
+    vcs_semantic_record_v1_u32(&rec, 0); /* [D: ignored dirs, empty */
+    vcs_semantic_record_v1_u32(&rec, 0); /* [e: env entries, empty */
+    got = fxi_codegen_model_of(rec.bytes, rec.len, token);
+    vcs_semantic_record_v1_free(&rec);
+    return got;
+}
+
 static int sct_t_codegen_model(void)
 {
     static const struct {
-        const char *identity;
+        const char *flags;
         enum fxi_codegen want;
     } k[] = {
         {"-std=c23 -Wall", FXI_CODEGEN_CALLERS},
@@ -373,10 +421,9 @@ static int sct_t_codegen_model(void)
     TEST_CASE("semantic_consumer: the optimizer model bounds -O0, -O1 and -Og and refuses -O2 and above, LTO, IPA clones and profile feedback") {
         for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
             const char *token = NULL;
-            enum fxi_codegen got = fxi_codegen_model_of(
-                (const uint8_t *)k[i].identity, strlen(k[i].identity), &token);
+            enum fxi_codegen got = sct_codegen_model_of_flags(k[i].flags, &token);
             if (got != k[i].want)
-                printf("[%s: model %d, want %d] ", k[i].identity, (int)got,
+                printf("[%s: model %d, want %d] ", k[i].flags, (int)got,
                        (int)k[i].want);
             ASSERT_EQ((int)got, (int)k[i].want);
             ASSERT(token != NULL);
@@ -454,15 +501,22 @@ static int sct_t_debug_level(void)
 /* F10: fxg_optimizes read "-O" as a prefix (any non-'0' following char
  * counted, so "-O02" modeled as -O0) and k_fxg_unbounded only named -O2
  * through -O4 literally (so "-O5" fell through to the -O1 model, and
- * "--optimize=N" was never recognized as an -O flag at all). The parser
- * must read digits numerically (leading zeros included), recognize
- * "--optimize"/"--optimize=N", let the LAST -O/--optimize spelling win,
- * and widen an unrecognized "-O..." or "--optimize..." spelling instead
- * of narrowing it. */
+ * "--optimize=N" was never recognized as an -O flag at all). A first fix
+ * for that (digits read numerically, --optimize recognized, an
+ * unrecognized spelling widening) still applied "last -O/--optimize wins"
+ * to the raw identity bytes at any position, not to whole argv tokens, so
+ * an "-O0"/"-O1" spelled inside another flag's own text -- -DMODE=-O0,
+ * -I/opt/x-O0dir, -Wl,-O1 -- could be mistaken for a later, real optimizer
+ * flag and narrow the model when the actual last -O flag was higher. The
+ * parser must read digits numerically (leading zeros included), recognize
+ * "--optimize"/"--optimize=N", apply the LAST-spelling-wins rule only to
+ * whole argv tokens (never to a raw byte position), and widen an
+ * unrecognized "-O..." or "--optimize..." spelling instead of narrowing
+ * it. */
 static int sct_t_codegen_model_optparse(void)
 {
     static const struct {
-        const char *identity;
+        const char *flags;
         enum fxi_codegen want;
     } k[] = {
         /* Every plain -O<digits> spelling, old model -> new model:
@@ -521,17 +575,29 @@ static int sct_t_codegen_model_optparse(void)
         {"-fauto-profile", FXI_CODEGEN_UNBOUNDED},
         {"-fipa-cp-clone -O0", FXI_CODEGEN_UNBOUNDED},
         {"-O1 -fipa-cp-clone", FXI_CODEGEN_UNBOUNDED},
+        /* A false positive for "last -O wins": text that merely spells an
+         * -O flag inside another argv element's OWN value must not be
+         * mistaken for a later, real -O flag. The real last flag in each
+         * of these three is not an optimizer flag at all, so the model
+         * must still reflect the earlier real "-O2" (UNBOUNDED), not the
+         * "-O0"/"-O1" glued inside a -D/-I/-Wl value. Each row is built as
+         * two separate argv elements (see sct_codegen_model_of_flags): a
+         * whole-token match cannot confuse the second element's own text
+         * for a spelling, where a raw byte scan across the whole record
+         * could. */
+        {"-O2 -DMODE=-O0", FXI_CODEGEN_UNBOUNDED},
+        {"-O2 -I/opt/x-O0dir", FXI_CODEGEN_UNBOUNDED},
+        {"-O2 -Wl,-O1", FXI_CODEGEN_UNBOUNDED},
     };
     int failures = 0;
     TEST_CASE("semantic_consumer: F10 optimizer parsing reads -O/--optimize "
-              "digits numerically, lets the last spelling win, and widens "
-              "an unrecognized spelling") {
+              "digits numerically, applies the last-spelling-wins rule to "
+              "whole argv tokens, and widens an unrecognized spelling") {
         for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
             const char *token = NULL;
-            enum fxi_codegen got = fxi_codegen_model_of(
-                (const uint8_t *)k[i].identity, strlen(k[i].identity), &token);
+            enum fxi_codegen got = sct_codegen_model_of_flags(k[i].flags, &token);
             if (got != k[i].want)
-                printf("[%s: model %d, want %d] ", k[i].identity, (int)got,
+                printf("[%s: model %d, want %d] ", k[i].flags, (int)got,
                        (int)k[i].want);
             ASSERT_EQ((int)got, (int)k[i].want);
             ASSERT(token != NULL);
