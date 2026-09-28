@@ -185,8 +185,11 @@ static int sct_t_missing(const struct sct_fixtures *f, struct scx_result *res)
         ASSERT(t != NULL);
         ASSERT(t->affected && t->broadened);
         ASSERT(strcmp(t->reason, "facts-missing") == 0);
+        /* another reader keeps its own verdict: at -g1 the compile set
+         * only, never broadened by cx_e.c's missing facts */
         t = scx_tu_of(res, SCX_B);
-        ASSERT(t != NULL && !t->affected);
+        ASSERT(t != NULL && t->compile_only && !t->broadened);
+        ASSERT(strcmp(t->reason, "debug-position") == 0);
     } TEST_END
     scx_result_free(res);
     return failures;
@@ -421,12 +424,20 @@ static int sct_t_debug_level(void)
         {"-gdwarf-4", 2},
         {"-g0 -g", 2},
         {"-g3", 3},
+        {"-g3 -g", 3},
+        {"-ggdb3 -ggdb", 3},
+        {"-g1 -g", 2},
+        {"-g3 -g -g2", 2},
         {"-g -fdebug-macro", 3},
-        {"-gweird-future-flag", 3},
+        {"-g -gembed-source", 4},
+        {"-gembed-source -g1", 4},
+        {"-g -gembed-source -gno-embed-source", 2},
+        {"-gembed-source -g0", 0},
+        {"-gweird-future-flag", 4},
     };
     uint8_t buf[512];
     int failures = 0;
-    TEST_CASE("semantic_consumer: the debug level is the last -g option's, 3 for one it does not know") {
+    TEST_CASE("semantic_consumer: the debug level is the last -g option's, 4 with -gembed-source or for one it does not know") {
         for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
             size_t n = sct_identity(k[i].argv, buf, sizeof(buf));
             int got = fxi_debug_level_of(buf, n);
@@ -435,7 +446,7 @@ static int sct_t_debug_level(void)
             ASSERT(n > 0);
             ASSERT_EQ(got, k[i].want);
         }
-        ASSERT_EQ(fxi_debug_level_of(buf, 7), 3); /* cut: unreadable */
+        ASSERT_EQ(fxi_debug_level_of(buf, 7), 4); /* cut: unreadable */
     } TEST_END
     return failures;
 }

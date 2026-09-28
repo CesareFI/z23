@@ -656,29 +656,68 @@ static bool fxc_roots_differ(const struct fxc_pair *p,
     return false;
 }
 
-/* No changed id reaches the TU's code, but a changed file it read moved
- * text that may hold a declaration: at -g2 and above the debug information
- * records the line (and column) of every type, function and variable the
- * TU uses, and at -g3 of every #define, so its object bytes change although
- * its code does not. It joins the compile set and adds no test obligation.
- * -g1 and line tables record only functions and external variables, which
- * the position rule names. The first such file names the reason. */
+/* The bytes of `path` differ between the sides that read it, or only one
+ * side read it. */
+static bool fxc_read_changed(const struct fxc_pair *p, const char *path)
+{
+    const uint8_t *a = fxi_file_digest(p->xa, path);
+    const uint8_t *b = p->xb != NULL ? fxi_file_digest(p->xb, path) : NULL;
+    if (a == NULL && b == NULL)
+        return false;
+    return a == NULL || b == NULL || memcmp(a, b, 32) != 0;
+}
+
+/* The debug level either side compiles at. */
+static int fxc_debug_level(const struct fxc_pair *p)
+{
+    int a = fxi_debug_level(p->xa);
+    int b = p->xb != NULL ? fxi_debug_level(p->xb) : a;
+    return a > b ? a : b;
+}
+
+/* The object compiler is known to write no checksum and no text of a file
+ * the TU read into its debug information. gcc's line tables carry no
+ * checksum; clang's DWARF 5 line tables (its default since clang 14) carry
+ * each file's MD5, and -gembed-source (FXI_DEBUG_SOURCE) the text itself.
+ * The identity's compiler is the sensor's own clang, not the object
+ * compiler, and nothing else names it yet, so it is never known here and
+ * every changed file a -g TU read fires fxc_debug_position. */
+static bool fxc_debug_unsummed(const struct fxc_pair *p, int level)
+{
+    bool object_cc_gcc = false; /* unknown until the identity names it */
+    (void)p;
+    return object_cc_gcc && level < FXI_DEBUG_SOURCE;
+}
+
+/* No changed id reaches the TU's code, but it read a changed file and its
+ * compile writes debug information (-g1 and above), so its object bytes may
+ * change although its code does not: clang's DWARF 5 line tables record the
+ * MD5 of every file in the TU's file table, which a comment that keeps the
+ * line count changes too; -g2 and above record the line and column of every
+ * type, function and variable the TU uses, -g3 of every #define, and
+ * -gembed-source every byte. It joins the compile set and adds no test
+ * obligation. Only a compile known to write no checksum
+ * (fxc_debug_unsummed) may clear a file whose changed region holds no token
+ * outside comments, at -g2 and above (-g1 and line tables record only the
+ * functions and external variables the position rule names); a text it
+ * cannot read never clears. The first file names the reason. */
 static bool fxc_debug_position(struct fxc *c, const struct fxc_pair *p,
                                struct zcl_devloop_facts_tu_verdict *t)
 {
-    int level = fxi_debug_level(p->xa);
-    if (level < 2)
+    int level = fxc_debug_level(p);
+    bool unsummed = fxc_debug_unsummed(p, level);
+    const struct fxc_hdr *h;
+    if (level < FXI_DEBUG_LINES || (unsummed && level < FXI_DEBUG_DECLS))
         return false;
     for (size_t k = 0; k < c->nfiles; k++) {
-        const uint8_t *b = fxi_file_digest(p->xb, c->files[k]);
-        const uint8_t *a = fxi_file_digest(p->xa, c->files[k]);
-        const struct fxc_hdr *h;
-        if (a == NULL || b == NULL || memcmp(a, b, 32) == 0 ||
-            (h = fxc_hdr_load(c, c->files[k])) == NULL ||
-            (h->reason == NULL && !fxh_region_has_code(&h->diff, level >= 3)))
+        if (!fxc_read_changed(p, c->files[k]))
+            continue;
+        if (unsummed && (h = fxc_hdr_load(c, c->files[k])) != NULL &&
+            h->reason == NULL &&
+            !fxh_region_has_code(&h->diff, level >= FXI_DEBUG_MACROS))
             continue;
         fxc_set(t, true, false, "debug-position",
-                "-g%d records a declaration position %s may have moved",
+                "-g%d debug information records %s, whose bytes changed",
                 level, c->files[k]);
         t->compile_only = true;
         return true;
@@ -715,11 +754,8 @@ static bool fxc_included_c_side(struct fxc *c, const struct fxi *x,
 static bool fxc_changed_c_read(const struct fxc_pair *p, const char *path)
 {
     size_t n = strlen(path);
-    const uint8_t *a = fxi_file_digest(p->xa, path);
-    const uint8_t *b = p->xb != NULL ? fxi_file_digest(p->xb, path) : NULL;
-    if (n <= 2 || strcmp(path + n - 2, ".c") != 0 || (a == NULL && b == NULL))
-        return false;
-    return a == NULL || b == NULL || memcmp(a, b, 32) != 0;
+    return n > 2 && strcmp(path + n - 2, ".c") == 0 &&
+           fxc_read_changed(p, path);
 }
 
 /* A broadened TU that includes changed .c files (a unity build, a test that

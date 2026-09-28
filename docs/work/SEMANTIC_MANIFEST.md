@@ -1023,7 +1023,7 @@ universe incomplete (`facts-invalid`).
 | `macro-conditional`, `header-unattributed`, `position-unknown` | yes | yes | a conditional or other directive of a changed header changed, a changed text names no id the header declares, or the header's positions could not be read |
 | `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU, except a function another file defines with internal linkage (a header's `static inline`), which is the TU's own copy and seeds instead |
 | `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
-| `debug-position` | yes, compile only | no | none of the above, and the compile records declaration positions (`-g`, `-g2`, `-ggdb`, `-gdwarf-N`, or any `-g` spelling it does not know; the last `-g` option decides) while a changed file it read has a token outside comments on a moved or changed line (a `#define` too at `-g3` or with `-fdebug-macro`): the debug information records the line and column of every type, function and variable the TU uses, so its object changes. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. `-g1` and line tables record only functions and external variables, which `position` names; `-g0` or no `-g` never fires it |
+| `debug-position` | yes, compile only | no | none of the above, while the compile writes debug information (`-g1` and above, or any `-g` spelling it does not know; the last `-g` option decides, but a bare `-g`, `-ggdb` or `-gdwarf-N` keeps a higher level already set) and a file it read changed: clang's DWARF 5 line tables (its default since clang 14) record the MD5 of every file in the TU's file table, so any byte of such a file changes the object, a comment that keeps the line count too; `-g2` and above also record the line and column of every type, function and variable the TU uses, and `-g3` (or `-fdebug-macro`) every `#define`, and `-gembed-source` (with any level, unless `-gno-embed-source` follows) every byte of the file itself. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. Only a compile whose object compiler is known to write no checksum (gcc) and that embeds no source may narrow this, at `-g2` and above, to a changed file with a token outside comments on a moved or changed line; the identity does not name the object compiler yet, so nothing narrows it. `-g0` or no `-g` never fires it |
 | `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
 | `name-collision` | yes | yes | an id shares its name with a new or removed external id |
 | `unaffected` | no | no | no changed id reaches its code |
@@ -1138,7 +1138,9 @@ variant names the affected TUs, each TU's reason, the obligations verdict,
 the universe's completeness, whether the whole catalog is in scope, and the
 seeds the compile may re-emit. `semantic_consumer_live` compiles every
 variant (`-std=c23 -Og -g1`) and fails on any TU whose object changed that
-the consumer left unaffected.
+the consumer left unaffected. At the fixture's `-g1` every reader of a changed
+header that no other rule reaches is affected compile only
+(`debug-position`); the table names the TUs with a test obligation.
 
 | variant | edit | affected TUs | obligations |
 |---|---|---|---|
@@ -1147,7 +1149,7 @@ the consumer left unaffected.
 | cond | `CX_MODE`, tested in one TU's `#if` | that TU (`macro-conditional`) | narrowed |
 | nested | `CX_BASE`, used only in `CX_SCALE`'s body | the TU expanding `CX_SCALE` | narrowed |
 | typedef | `cx_count` becomes `long` | the TU naming it | narrowed |
-| tail | a comment after every declaration | none | narrowed |
+| tail | a comment after every declaration | none with a test obligation; all five compile only (`debug-position`: each line table records the header's MD5) | narrowed |
 | top | a comment before every declaration | the four TUs whose debug positions move (`position`) | narrowed |
 | signature | `cx_sum`'s parameter type, header and definer | the definer and its callers | narrowed |
 | static | a static's body; another TU has a same-name static | its TU; seeds the static and its caller | narrowed |
@@ -1194,8 +1196,8 @@ unaffected, and `hinl_addr` narrowed with no obligation. `gline` is the
 replay of 45fb85e113, where two lines above a header struct moved its
 `DW_AT_decl_line` in a reader the consumer called unaffected. A narrowed
 plan must reach every changed file and every affected TU but a
-compile-only one, which it must not reach through the fold, checked as a set through a test hook on
-the files the fold reached. A count check would not do: with a fold that
+compile-only one, which the fold must not name (the walk may still reach it from a seed another TU adds), checked as sets through test hooks on the files the fold named and
+the files the walk reached. A count check would not do: with a fold that
 drops the affected TUs, `unity2` reaches 3 files where 2 are needed and
 `unity_ab` 3 where 3 are needed, yet both miss `cx_e.c`, and the set check
 fails them. Each is planned against its own before tree, a `p_` variant the

@@ -287,6 +287,10 @@ extern enum zcl_devloop_consumer_mutant zcl_devloop_test_consumer_mutant;
 /* Test-only: whether the last facts-narrowed walk folded `path` into its
  * plan (the reached-file set, not its size); reset forgets every walk. */
 bool zcl_devloop_test_reached_has(const char *path);
+/* Test-only: whether the last facts-narrowed walk started from `path`
+ * (the fold the obligations handed it: changed files and the TUs whose
+ * tests they obligate), whatever the walk reached from there. */
+bool zcl_devloop_test_folded_has(const char *path);
 void zcl_devloop_test_reached_reset(void);
 /* Watcher stop fixture: a stop requested before the proof fork starts no
  * worker, and a SIGTERM sent the instant fork() returns must reach the

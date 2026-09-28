@@ -130,12 +130,25 @@ enum fxi_codegen fxi_codegen_model(const struct fxi *x, const char **token);
 /* Same, over raw identity bytes (the test seam). */
 enum fxi_codegen fxi_codegen_model_of(const uint8_t *identity, size_t len,
                                       const char **token);
+/* Debug information levels, each recording more of the source than the
+ * last: none; line tables and function descriptions; types and
+ * declarations with their lines; macro definitions too; the text of every
+ * file the TU read too. */
+enum {
+    FXI_DEBUG_NONE = 0,
+    FXI_DEBUG_LINES = 1,
+    FXI_DEBUG_DECLS = 2,
+    FXI_DEBUG_MACROS = 3,
+    FXI_DEBUG_SOURCE = 4,
+};
 /* The debug information level the IDENTITY argv asks for, the last -g
  * option deciding: 0 none (no -g, or -g0 last), 1 line tables and function
  * descriptions (-g1, -gline-tables-only, -gmlt), 2 types and declarations
- * with their lines (-g, -g2, -ggdb, -gdwarf-N), 3 macro definitions too
- * (-g3, or -fdebug-macro with any level). A -g spelling it does not know,
- * or an identity it cannot read, is 3. */
+ * with their lines (-g2; a bare -g, -ggdb or -gdwarf-N keeps a higher
+ * level already set), 3 macro definitions too
+ * (-g3, or -fdebug-macro with any level), 4 the source text itself
+ * (-gembed-source with any level, unless -gno-embed-source follows). A -g
+ * spelling it does not know, or an identity it cannot read, is 4. */
 int fxi_debug_level(const struct fxi *x);
 /* Same, over raw identity bytes (the test seam). */
 int fxi_debug_level_of(const uint8_t *identity, size_t len);

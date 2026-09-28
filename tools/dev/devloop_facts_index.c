@@ -522,24 +522,26 @@ static void fxi_digests(struct fxi *x)
 
 /* ---- debug information level ---------------------------------------------- */
 
-/* -g spellings with a fixed level; any other -g option that does not only
- * modify the format (below) is taken at 3. */
+/* -g spellings with a fixed level; a bare -g or -ggdb and a format option
+ * raise the level to 2 at least (fxi_g_raises); any other -g option that
+ * does not only modify the format (below) is taken at FXI_DEBUG_SOURCE. */
 static const struct {
     const char *flag;
     int level;
 } k_fxi_g_levels[] = {
     {"-g0", 0},    {"-ggdb0", 0},       {"-g1", 1},
     {"-ggdb1", 1}, {"-gline-tables-only", 1}, {"-gmlt", 1},
-    {"-gline-directives-only", 1}, {"-g", 2}, {"-g2", 2},
-    {"-ggdb", 2},  {"-ggdb2", 2},       {"-g3", 3},
-    {"-ggdb3", 3},
+    {"-gline-directives-only", 1}, {"-g2", 2},
+    {"-ggdb2", 2}, {"-g3", 3},      {"-ggdb3", 3},
 };
 
-/* Options that change how debug information is written, not whether. */
+/* Options that change how debug information is written, not whether nor
+ * what it records of the source (-gembed-source copies the text in: see
+ * fxi_debug_arg). */
 static const char *const k_fxi_g_modifiers[] = {
     "-gno-",          "-gz",            "-gcolumn-info",
     "-gstrict-dwarf", "-grecord-",      "-gpubnames",
-    "-ggnu-pubnames", "-gembed-source", "-gsimple-template-names",
+    "-ggnu-pubnames", "-gsimple-template-names",
     "-gstatement-frontiers", "-gvariable-location-views",
     "-ginline-points", "-gdescribe-dies", "-gas-loc",
     "-ginternal-reset-location-views",
@@ -565,6 +567,17 @@ static bool fxi_prefix_in(const uint8_t *t, size_t n, const char *const *v,
     return false;
 }
 
+/* A bare -g or -ggdb, or a format option: at least types and declarations,
+ * but a level already higher stays (-g3 -g is still -g3 to gcc; clang's
+ * last -g wins, and the higher level is the conservative one). */
+static bool fxi_g_raises(const uint8_t *t, size_t n)
+{
+    return fxi_path_is((const char *)t, n, "-g") ||
+           fxi_path_is((const char *)t, n, "-ggdb") ||
+           fxi_prefix_in(t, n, k_fxi_g_formats,
+                         sizeof(k_fxi_g_formats) / sizeof(k_fxi_g_formats[0]));
+}
+
 /* The level after one -g option, given the level before it. */
 static int fxi_g_option(const uint8_t *t, size_t n, int level)
 {
@@ -575,10 +588,9 @@ static int fxi_g_option(const uint8_t *t, size_t n, int level)
     if (fxi_prefix_in(t, n, k_fxi_g_modifiers,
                       sizeof(k_fxi_g_modifiers) / sizeof(k_fxi_g_modifiers[0])))
         return level;
-    if (fxi_prefix_in(t, n, k_fxi_g_formats,
-                      sizeof(k_fxi_g_formats) / sizeof(k_fxi_g_formats[0])))
-        return level > 2 ? level : 2;
-    return 3;
+    if (fxi_g_raises(t, n))
+        return level > FXI_DEBUG_DECLS ? level : FXI_DEBUG_DECLS;
+    return FXI_DEBUG_SOURCE;
 }
 
 /* One text field of a record body at *at: its bytes and length. */
@@ -596,30 +608,49 @@ static bool fxi_text_at(const uint8_t *s, size_t n, size_t *at,
     return true;
 }
 
+/* What the argv asks the debug information to hold, option by option. */
+struct fxi_dbg {
+    int level;
+    bool macro; /* -fdebug-macro: #defines at any level */
+    bool embed; /* -gembed-source: every file's text */
+};
+
+static void fxi_debug_arg(const uint8_t *t, size_t n, struct fxi_dbg *d)
+{
+    if (fxi_path_is((const char *)t, n, "-fdebug-macro"))
+        d->macro = true;
+    else if (fxi_path_is((const char *)t, n, "-gembed-source"))
+        d->embed = true;
+    else if (fxi_path_is((const char *)t, n, "-gno-embed-source"))
+        d->embed = false;
+    else if (fxi_has_prefix(t, n, "-g"))
+        d->level = fxi_g_option(t, n, d->level);
+}
+
 int fxi_debug_level_of(const uint8_t *identity, size_t len)
 {
     size_t at = 0, n = 0;
     const uint8_t *t = NULL;
     uint32_t argc;
-    int level = 0;
-    bool macro = false;
+    struct fxi_dbg d = {0};
     /* compiler, resource dir, target and main file come before argv */
     for (int k = 0; k < 4; k++)
         if (identity == NULL || !fxi_text_at(identity, len, &at, &t, &n))
-            return 3;
+            return FXI_DEBUG_SOURCE;
     if (len - at < 4)
-        return 3;
+        return FXI_DEBUG_SOURCE;
     argc = zcl_read_u32_le(identity + at);
     at += 4;
     for (uint32_t k = 0; k < argc; k++) {
         if (!fxi_text_at(identity, len, &at, &t, &n))
-            return 3;
-        if (fxi_path_is((const char *)t, n, "-fdebug-macro"))
-            macro = true;
-        else if (fxi_has_prefix(t, n, "-g"))
-            level = fxi_g_option(t, n, level);
+            return FXI_DEBUG_SOURCE;
+        fxi_debug_arg(t, n, &d);
     }
-    return macro && level > 0 ? 3 : level;
+    if (d.level > 0 && d.embed)
+        return FXI_DEBUG_SOURCE;
+    return d.level > 0 && d.macro && d.level < FXI_DEBUG_MACROS
+               ? FXI_DEBUG_MACROS
+               : d.level;
 }
 
 int fxi_debug_level(const struct fxi *x)

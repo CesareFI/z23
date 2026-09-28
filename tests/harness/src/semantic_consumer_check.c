@@ -154,7 +154,12 @@ static size_t scx_compare_tu(const struct scx_edit *e, size_t k,
     const struct zcl_devloop_facts_tu_verdict *t = scx_tu_of(r, k_scx_tus[k]);
     bool got_aff = t != NULL && t->affected;
     const char *got = t != NULL ? t->reason : NULL;
-    if (e->affected[k] && !got_aff)
+    bool want_tests = e->affected[k] && e->reason[k] != NULL &&
+                      strcmp(e->reason[k], "debug-position") != 0;
+    /* unsafe: a TU the row affects left out of the compile set, or one
+     * whose tests the row obligates held to the compile set only */
+    if ((e->affected[k] && !got_aff) ||
+        (want_tests && (!got_aff || t->compile_only)))
         (*unsafe)++;
     if (scx_tu_same(e, k, t))
         return 0;
@@ -240,19 +245,20 @@ static size_t scx_unreached(const char *path, size_t *unsafe, FILE *why,
     return 1;
 }
 
-/* A TU in the compile set only (its debug positions moved) that the walk
- * folded into the test obligations anyway. */
+/* A TU in the compile set only (its debug information changed) that the
+ * obligations folded into the walk as a test obligation anyway. */
 static size_t scx_obligated(const char *path, FILE *why,
                             const struct scx_edit *e)
 {
     if (why != NULL)
-        fprintf(why, "  %s reached: %s is compile-only, yet the plan folds "
+        fprintf(why, "  %s folded: %s is compile-only, yet the plan folds "
                 "its tests\n", e->name, path);
     return 1;
 }
 
 /* Each affected TU not already in need[0..*n) joins it, except a
- * compile-only one, which the walk must not reach. Returns the
+ * compile-only one, which the fold must not name (the walk may still
+ * reach it from a seed another TU adds). Returns the
  * disagreements. */
 static size_t scx_need_tus(const struct scx_edit *e,
                            const struct scx_result *r, const char **need,
@@ -268,7 +274,7 @@ static size_t scx_need_tus(const struct scx_edit *e,
             continue;
         if (!t->compile_only)
             need[(*n)++] = k_scx_tus[k];
-        else if (zcl_devloop_test_reached_has(k_scx_tus[k]))
+        else if (zcl_devloop_test_folded_has(k_scx_tus[k]))
             bad += scx_obligated(k_scx_tus[k], why, e);
     }
     return bad;
@@ -277,8 +283,8 @@ static size_t scx_need_tus(const struct scx_edit *e,
 /* A narrowed plan reaches every changed file and every affected TU (it
  * compiles them): each must be in the walk's reached set, not merely as
  * many files as there are of them. A missing one is unsafe. A TU the
- * consumer marks compile-only must not be reached unless another rule
- * needs it: it adds no test obligation. */
+ * consumer marks compile-only must not be in the fold the walk starts
+ * from: it adds no test obligation. */
 static size_t scx_compare_reached(const struct scx_edit *e,
                                   const struct scx_result *r, size_t *unsafe,
                                   FILE *why)

@@ -277,12 +277,20 @@ static bool fx_fold(struct zcl_devloop_plan *plan, struct fx_set *files)
 /* The reached set of the last walk that folded, for the fixture's check. */
 static char *g_fx_test_reached;
 static size_t g_fx_test_reached_len, g_fx_test_reached_width;
+/* The fold the last walk started from. */
+static char **g_fx_test_fold;
+static size_t g_fx_test_nfold;
 
 void zcl_devloop_test_reached_reset(void)
 {
     free(g_fx_test_reached);
     g_fx_test_reached = NULL;
     g_fx_test_reached_len = g_fx_test_reached_width = 0;
+    for (size_t k = 0; k < g_fx_test_nfold; k++)
+        free(g_fx_test_fold[k]);
+    free(g_fx_test_fold);
+    g_fx_test_fold = NULL;
+    g_fx_test_nfold = 0;
 }
 
 bool zcl_devloop_test_reached_has(const char *path)
@@ -293,15 +301,39 @@ bool zcl_devloop_test_reached_has(const char *path)
     return false;
 }
 
+bool zcl_devloop_test_folded_has(const char *path)
+{
+    for (size_t k = 0; k < g_fx_test_nfold; k++)
+        if (strcmp(g_fx_test_fold[k], path) == 0)
+            return true;
+    return false;
+}
+
 static void fx_test_keep_reached(const struct fx_set *s)
 {
-    zcl_devloop_test_reached_reset();
+    free(g_fx_test_reached);
     g_fx_test_reached = zcl_malloc(s->len * s->width + 1, "facts.test_reached");
+    g_fx_test_reached_len = g_fx_test_reached_width = 0;
     if (g_fx_test_reached == NULL)
         return;
     memcpy(g_fx_test_reached, s->items, s->len * s->width);
     g_fx_test_reached_len = s->len;
     g_fx_test_reached_width = s->width;
+}
+
+static void fx_test_keep_fold(const char *const *fold, size_t nfold)
+{
+    zcl_devloop_test_reached_reset();
+    g_fx_test_fold = zcl_calloc(nfold + 1, sizeof(*g_fx_test_fold),
+                                "facts.test_fold");
+    for (size_t k = 0; g_fx_test_fold != NULL && k < nfold; k++) {
+        size_t n = strlen(fold[k]) + 1;
+        char *copy = zcl_malloc(n, "facts.test_fold_path");
+        if (copy == NULL)
+            return;
+        memcpy(copy, fold[k], n);
+        g_fx_test_fold[g_fx_test_nfold++] = copy;
+    }
 }
 #endif
 
@@ -355,6 +387,9 @@ bool zcl_devloop_facts_narrow(const char *root, const char *facts_dir,
         fx_walk_free(&w);
         return false;
     }
+#if defined(ZCL_TESTING)
+    fx_test_keep_fold(fold, nfold);
+#endif
     if (fx_walk_seed(&w, fold, nfold, seeds, nseeds))
         rc = fx_walk_run(&w);
     codeindex_close(w.ci);
