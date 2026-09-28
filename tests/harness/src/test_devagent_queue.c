@@ -286,7 +286,9 @@ static bool dvx_file_absent(const char *path)
 #if !defined(_WIN32)
 /* A fake zclassic23-engine-unit: parses --state-dir, writes a receipt.json
  * there, and prints lines the reap step reads (rc= plus, in rate-limit
- * mode, a vendor refusal). It runs detached, exactly like the real one. */
+ * mode, a vendor refusal). It runs detached, exactly like the real one.
+ * With DVX_HOLD naming a file, it keeps running (and so keeps holding its
+ * worktree lock, as a real multi-minute run does) until that file is gone. */
 static const char k_dvx_fake[] =
     "#!/bin/sh\n"
     "st=\"\"\n"
@@ -315,6 +317,9 @@ static const char k_dvx_fake[] =
     "  mv \"$st/receipt.tmp\" \"$st/receipt.json\"\n"
     "  echo \"dispatching $st\"\n"
     "  echo \"rc=0\"\n"
+    "fi\n"
+    "if [ -n \"${DVX_HOLD:-}\" ]; then\n"
+    "  while [ -e \"$DVX_HOLD\" ]; do sleep 0.05; done\n"
     "fi\n"
     "exit 0\n";
 
@@ -381,18 +386,31 @@ static bool dvx_pool(const char *tag, char *wt, size_t cap)
     return fclose(f) == 0;
 }
 
-/* The TEST waiting for an async fake: bounded, local, no model involved. */
-static bool dvx_poll(const char *path, int tries)
+/* Block until the dispatched harness holding `wt`'s .eu-lock (inherited
+ * from `next`) has exited: a blocking flock on it returns exactly when that
+ * run ends — no wall-clock guess that a loaded host can outlast (the group
+ * watchdog still bounds a harness that never exits). */
+static bool dvx_wait_worktree_free(const char *wt)
 {
-    for (int i = 0; i < tries; i++) {
-        struct timespec req;
-        if (access(path, R_OK) == 0)
-            return true;
-        req.tv_sec = 0;
-        req.tv_nsec = 100000000L;
-        (void)nanosleep(&req, NULL);
-    }
-    return access(path, R_OK) == 0;
+    char lockp[1100];
+    if (snprintf(lockp, sizeof(lockp), "%s/.eu-lock", wt) >= (int)sizeof(lockp))
+        return false;
+    int fd = open(lockp, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    int rc;
+    while ((rc = flock(fd, LOCK_EX)) != 0 && errno == EINTR)
+        ;
+    (void)close(fd);
+    return rc == 0;
+}
+
+/* The TEST waiting for an async fake: only once its run has exited is the
+ * receipt judged. It must exist, and the worktree is free again for the
+ * next dispatch. */
+static bool dvx_await_run(const char *wt, const char *receipt)
+{
+    return dvx_wait_worktree_free(wt) && access(receipt, R_OK) == 0;
 }
 #endif /* !defined(_WIN32) */
 
@@ -401,6 +419,7 @@ static bool dvx_poll(const char *path, int tries)
 static int dvx_pool_cases(void)
 {
     int failures = 0;
+    char hold[1200] = ""; /* the race case's run gate; see below */
     /* ── the five states a pool can be in, and one reason each ────────────
      *
      * "no free worktree" used to be one word for five different facts, and
@@ -580,7 +599,11 @@ static int dvx_pool_cases(void)
      * OUTCOME PAIR — one running, one no_free_worktree — and on the queue
      * holding exactly one row per name afterwards. Two winners would be
      * duplicate ownership of one worktree; two losers would be a lost
-     * dispatch. */
+     * dispatch. The winner's run is held open (DVX_HOLD) until both calls
+     * have answered, as a real run of minutes would be: the fake otherwise
+     * exits in milliseconds, and on a loaded host the second call could
+     * start after the first run had already released the worktree — two
+     * sequential winners, not a race. */
     TEST("queue: two concurrent next calls consume one warm entry once") {
         struct dvx_call c;
         char bindir[512], wt[600];
@@ -602,6 +625,9 @@ static int dvx_pool_cases(void)
         ASSERT(dvx_run(&c));
         ASSERT(dvx_ok(&c));
         dvx_end(&c);
+        (void)snprintf(hold, sizeof(hold), "%s/../race.hold", g_dvx_state);
+        ASSERT(dvx_write(hold, "hold\n"));
+        setenv("DVX_HOLD", hold, 1);
         ASSERT(pipe(fds) == 0);
         /* 'r' = this child took the worktree, 'n' = it was refused. */
         a = fork();
@@ -632,6 +658,7 @@ static int dvx_pool_cases(void)
             (void)write(fds[1], &v, 1);
             _exit(dvx_ok(&k) ? 0 : 1);
         }
+        unsetenv("DVX_HOLD");
         (void)close(fds[1]);
         while (waitpid(a, &sa, 0) < 0)
             ;
@@ -640,6 +667,10 @@ static int dvx_pool_cases(void)
         ASSERT(read(fds[0], &verdicts[0], 1) == 1);
         ASSERT(read(fds[0], &verdicts[1], 1) == 1);
         (void)close(fds[0]);
+        /* Both answered: release the winner's run and let it exit. */
+        (void)unlink(hold);
+        hold[0] = '\0';
+        ASSERT(dvx_wait_worktree_free(wt));
         /* Both calls must SUCCEED as commands; refusal is a state, not an
          * error, so a crash cannot be mistaken for losing the race. */
         ASSERT(WIFEXITED(sa) && WEXITSTATUS(sa) == 0);
@@ -653,6 +684,10 @@ static int dvx_pool_cases(void)
         PASS();
     }
 _test_next:;
+    /* A failed case must not leave a held run spinning. */
+    unsetenv("DVX_HOLD");
+    if (hold[0])
+        (void)unlink(hold);
     return failures;
 }
 
@@ -744,7 +779,7 @@ static int dvx_receipt_root_cases(void)
             dvx_end(&c);
             (void)snprintf(receipt, sizeof(receipt),
                            "%s/../engine/%s/a1/receipt.json", qd, names[i]);
-            ASSERT(dvx_poll(receipt, 150));
+            ASSERT(dvx_await_run(wt, receipt));
             ASSERT(dvx_write(receipt, bodies[i]));
             dvx_verb(&r, "reap", false);
             ASSERT(dvx_run(&r));
@@ -781,7 +816,7 @@ static int dvx_receipt_root_cases(void)
         dvx_queuedir(qd, sizeof(qd));
         (void)snprintf(receipt, sizeof(receipt),
                        "%s/../engine/provenance/a1/receipt.json", qd);
-        ASSERT(dvx_poll(receipt, 150));
+        ASSERT(dvx_await_run(wt, receipt));
         ASSERT(dvx_write(receipt,
                          "{\"verdict\":\"PASS\",\"candidate\":\"candidate.diff\","
                          "\"tokens\":17,\"wall_ms\":23,"
@@ -826,7 +861,7 @@ static int dvx_receipt_root_cases(void)
         (void)snprintf(moved, sizeof(moved),
                        "%s/../engine/linked/a1-moved", qd);
         (void)snprintf(receipt, sizeof(receipt), "%s/receipt.json", attempt);
-        ASSERT(dvx_poll(receipt, 150));
+        ASSERT(dvx_await_run(wt, receipt));
         ASSERT(rename(attempt, moved) == 0);
         ASSERT(symlink("a1-moved", attempt) == 0);
         dvx_verb(&r, "reap", false);
@@ -868,7 +903,7 @@ static int dvx_unresolved_candidate_root_case(void)
         dvx_queuedir(qd, sizeof(qd));
         (void)snprintf(receipt, sizeof(receipt),
                        "%s/../engine/escapecand/a1/receipt.json", qd);
-        ASSERT(dvx_poll(receipt, 150));
+        ASSERT(dvx_await_run(wt, receipt));
         ASSERT(dvx_write(receipt,
                          "{\"verdict\":\"PASS\",\"candidate\":"
                          "\"candidate\\u002ediff\",\"tokens\":17}\n"));
@@ -923,7 +958,7 @@ static int dvx_receipt_cost_cases(void)
         (void)snprintf(receipt, sizeof(receipt), "%s/../engine/launched/a1/"
                                                  "receipt.json",
                        qd);
-        ASSERT(dvx_poll(receipt, 150));
+        ASSERT(dvx_await_run(wt, receipt));
         /* The dispatch pins the shell's argv: group, territory, consent,
          * and a composed task file the run can read. */
         {
@@ -1029,7 +1064,7 @@ static int dvx_receipt_cost_cases(void)
         (void)snprintf(receipt, sizeof(receipt), "%s/../engine/throttled/a1/"
                                                  "receipt.json",
                        qd);
-        ASSERT(dvx_poll(receipt, 150));
+        ASSERT(dvx_await_run(wt, receipt));
         dvx_verb(&r, "reap", false);
         ASSERT(dvx_run(&r));
         ASSERT(dvx_ok(&r));
