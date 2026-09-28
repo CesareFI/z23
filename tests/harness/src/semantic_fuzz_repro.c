@@ -751,7 +751,155 @@ static const struct sfz_file k_d6_function_static_table[] = {
          "}\n"},
 };
 
+/* ---- the path kinds: a file only a probe names, and links ------------------ */
+
+/* An unrelated TU, so the universe has a TU the edit leaves alone. */
+#define SFZ_T1_ALONE                                                         \
+    {"src/t1.c",                                                             \
+     "int t1_a(int x)\n"                                                     \
+     "{\n"                                                                   \
+     "    return x + 1;\n"                                                   \
+     "}\n",                                                                  \
+     SFZ_SAME}
+
+#define SFZ_HAS_EMBED_T0(path)                                               \
+    {"src/t0.c",                                                             \
+     "#if __has_embed(\"../" path "\")\n"                                    \
+     "#define T0_BANNER 1\n"                                                 \
+     "#else\n"                                                               \
+     "#define T0_BANNER 0\n"                                                 \
+     "#endif\n"                                                              \
+     "int t0_banner(int x)\n"                                                \
+     "{\n"                                                                   \
+     "    return x + T0_BANNER * 7;\n"                                       \
+     "}\n",                                                                  \
+     SFZ_SAME}
+
+static const struct sfz_file k_f13_has_embed_deleted[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"docs/banner.txt", "Z23\n", NULL},
+    SFZ_HAS_EMBED_T0("docs/banner.txt"),
+    SFZ_T1_ALONE,
+};
+
+static const struct sfz_file k_has_embed_created[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"docs/banner.txt", NULL, "Z23\n"},
+    SFZ_HAS_EMBED_T0("docs/banner.txt"),
+    SFZ_T1_ALONE,
+};
+
+static const struct sfz_file k_has_embed_data_deleted[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"data/banner.bin", "Z23\n", NULL},
+    SFZ_HAS_EMBED_T0("data/banner.bin"),
+    SFZ_T1_ALONE,
+};
+
+#define SFZ_CFG_T0                                                           \
+    {"src/t0.c",                                                             \
+     "#include \"cfg.h\"\n"                                                  \
+     "int t0_local(int x)\n"                                                 \
+     "{\n"                                                                   \
+     "    return x + CFG_HAVE_LOCAL * 5;\n"                                  \
+     "}\n",                                                                  \
+     SFZ_SAME}
+
+static const struct sfz_file k_f14_has_include_macro[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc1/cfg.h",
+         "#ifndef CFG_H\n"
+         "#define CFG_H\n"
+         "#define CFG_LOCAL \"cfg_local.h\"\n"
+         "#if __has_include(CFG_LOCAL)\n"
+         "#define CFG_HAVE_LOCAL 1\n"
+         "#else\n"
+         "#define CFG_HAVE_LOCAL 0\n"
+         "#endif\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"inc2/cfg_local.h", "/* site overrides */\n", NULL},
+    SFZ_CFG_T0,
+    SFZ_T1_ALONE,
+};
+
+static const struct sfz_file k_f14_has_include_next[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc1/cfg.h",
+         "#ifndef CFG_H\n"
+         "#define CFG_H\n"
+         "#if __has_include_next(<cfg_local.h>)\n"
+         "#define CFG_HAVE_LOCAL 1\n"
+         "#else\n"
+         "#define CFG_HAVE_LOCAL 0\n"
+         "#endif\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"inc2/cfg_local.h", "/* site overrides */\n", NULL},
+    SFZ_CFG_T0,
+    SFZ_T1_ALONE,
+};
+
+#define SFZ_LINKED_HDR(v)                                                    \
+    "#ifndef H_H\n"                                                          \
+    "#define H_H\n"                                                          \
+    "#define H_V " v "\n"                                                    \
+    "static inline int h_v(int x)\n"                                         \
+    "{\n"                                                                    \
+    "    return x * H_V;\n"                                                  \
+    "}\n"                                                                    \
+    "#endif\n"
+
+#define SFZ_LINK_T0                                                          \
+    {"src/t0.c",                                                             \
+     "#include \"h.h\"\n"                                                    \
+     "int t0_a(int x)\n"                                                     \
+     "{\n"                                                                   \
+     "    return h_v(x) + 1;\n"                                              \
+     "}\n",                                                                  \
+     SFZ_SAME}
+
+/* inc1/h.h names hdr/b.h instead of hdr/a.h; neither file changes */
+static const struct sfz_file k_link_retarget[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"hdr/a.h", SFZ_LINKED_HDR("3"), SFZ_SAME},
+    {"hdr/b.h", SFZ_LINKED_HDR("4"), SFZ_SAME},
+    {"inc1/h.h", SFZ_LINK("../hdr/a.h"), SFZ_LINK("../hdr/b.h")},
+    SFZ_LINK_T0,
+    SFZ_T1_ALONE,
+};
+
+/* hdr/a.h changes; t0 reads it only through the link inc1/h.h */
+static const struct sfz_file k_link_target_edit[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"hdr/a.h", SFZ_LINKED_HDR("3"), SFZ_LINKED_HDR("5")},
+    {"inc1/h.h", SFZ_LINK("../hdr/a.h"), SFZ_SAME},
+    SFZ_LINK_T0,
+    SFZ_T1_ALONE,
+};
 #define SFZ_FILES(a) a, sizeof(a) / sizeof((a)[0])
+
+/* F13, F14: a file that only a probe names is deleted, and the TU that
+ * probed it compiles the other branch. The sensor records no lookup for
+ * the probe: cm_scan_has_include (tools/sensors/clang_manifest_lookup.c)
+ * text-scans only `__has_include` with a literal operand, skipping a macro
+ * operand and __has_include_next, and nothing scans __has_embed. So no
+ * manifest names the path, and clang's depfile names a probed file only
+ * while it exists. The deleted path has no reader anywhere: the include
+ * graph refuses it (include_input_missing,
+ * cognition/modules/codeindex/src/codeindex_impact.c), fxc_cross_check
+ * (tools/dev/devloop_facts_consumer.c) marks the plan incomplete
+ * (include-graph-truncated) but, unlike fxc_build_inputs for a build
+ * input, puts no candidate in scope, and the file-seeded fallback has no TU
+ * for a .h, docs/ or .md path. Creating the file passes: the after
+ * depfile lists what the probe found (pass_has_embed_created), and a
+ * data/ path is a build input (pass_has_embed_build_input). */
+#define SFZ_KR_PROBE_ONLY(what)                                              \
+    "the sensor recording each " what " probe as a lookup of the probed "     \
+    "path, or the consumer putting every candidate in scope when the "        \
+    "include graph cannot name a deleted path's readers"
+#define SFZ_KR_PROBE_WHY                                                     \
+    "src/t0.c object changed, planned unaffected (not in the universe)\n"
 
 const struct sfz_repro k_sfz_repros[] = {
     {"F1_flag", "flag", "Makefile CFLAGS_EXTRA gains -DPROJ_MODE=1", false,
@@ -825,6 +973,32 @@ const struct sfz_repro k_sfz_repros[] = {
     {"D6_function_static_table", "data_table",
      "one entry of a static const table inside t0_pick", false, NULL,
      SFZ_FILES(k_d6_function_static_table), NULL},
+    {"F13_has_embed_deleted", "hasembed",
+     "docs/banner.txt, which only t0's __has_embed probes, is deleted", false,
+     SFZ_KR_PROBE_ONLY("__has_embed"), SFZ_FILES(k_f13_has_embed_deleted),
+     SFZ_KR_PROBE_WHY},
+    {"pass_has_embed_created", "hasembed",
+     "docs/banner.txt, which only t0's __has_embed probes, is created", false,
+     NULL, SFZ_FILES(k_has_embed_created), NULL},
+    {"pass_has_embed_build_input", "hasembed",
+     "data/banner.bin, which only t0's __has_embed probes, is deleted", false,
+     NULL, SFZ_FILES(k_has_embed_data_deleted), NULL},
+    {"F14_has_include_macro", "hasinc_macro",
+     "inc2/cfg_local.h, which cfg.h probes as __has_include(CFG_LOCAL), is "
+     "deleted",
+     false, SFZ_KR_PROBE_ONLY("macro-operand __has_include"),
+     SFZ_FILES(k_f14_has_include_macro), SFZ_KR_PROBE_WHY},
+    {"F14_has_include_next", "hasinc_macro",
+     "inc2/cfg_local.h, which cfg.h probes with __has_include_next, is "
+     "deleted",
+     false, SFZ_KR_PROBE_ONLY("__has_include_next"),
+     SFZ_FILES(k_f14_has_include_next), SFZ_KR_PROBE_WHY},
+    {"pass_link_retarget", "symlink_retarget",
+     "inc1/h.h, a link t0 includes, names hdr/b.h instead of hdr/a.h", false,
+     NULL, SFZ_FILES(k_link_retarget), NULL},
+    {"pass_link_target_edit", "symlink_retarget",
+     "hdr/a.h changes; t0 reads it only through the link inc1/h.h", false,
+     NULL, SFZ_FILES(k_link_target_edit), NULL},
 };
 const size_t k_sfz_nrepros = sizeof(k_sfz_repros) / sizeof(k_sfz_repros[0]);
 
