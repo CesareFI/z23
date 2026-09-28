@@ -808,6 +808,22 @@ names and report the revision (`vcs_semantic_facts_v1_info`).
 encoded bytes, so a reader can digest records without re-encoding them. No
 v1 byte changes.
 
+### Facts revision 3
+
+Facts revision 3 (`zcl.semantic_facts.v3`) adds the `@assert:<path>`
+pseudo-site. The sensor walks each `static_assert` written in `<path>`
+outside every function definition, at file scope and in a struct or
+union's member list (an unnamed member record's included), as that site:
+each entity its condition names (types, `sizeof` and `offsetof` operands,
+enumerators, functions, variables) is a ref of it, and each macro expanded
+inside it is a MACRO ref to `m:<defpath>:<name>`. When a macro writes the
+assertion (`CHECK(x)`), the site covers that invocation's arguments too. A
+block-scope assertion stays part of its function's refs. An assertion emits
+no bytes, but when what it reads changes it can stop holding, and every
+reader of `<path>` then stops compiling. A revision-2 manifest makes no
+such claim, so the consumer cannot tell from one that no assertion reads a
+change. Readers accept all three extension names.
+
 ### Darwin producer identity
 
 The Mac lane's commits 12892e0ca1 and cf39ed1765 give the sensor a producer
@@ -983,7 +999,9 @@ name group `m:<name>`, LAYOUTS to `s:`/`u:<path>:<name>`, ENUMS to the
 enumerator and its enum, DECLS and FUNCTIONS to `f:`/`v:<name>` or the
 path-qualified id, REFS and UNKNOWNS to their site, including the revision-2
 pseudo-sites `@scope:<path>` (a macro expanded outside any function) and
-`@cond:<path>` (an identifier a conditional directive tests). Edges are
+`@cond:<path>` (an identifier a conditional directive tests), and the
+revision-3 `@assert:<path>` (what a `static_assert` outside a function
+reads), which is never a root. Edges are
 every REFS record, a tag named in a record's canonical type text, a typedef
 to its tag, a macro to the name group of every identifier in its body, and
 a bare tag id `s:N` (how REFS and SYMBOLS name a tag the sensor gives
@@ -1048,8 +1066,10 @@ probes the sensor does not record.
 | `macro-conditional`, `header-unattributed`, `position-unknown` | yes | yes | a conditional or other directive of a changed header changed, a changed text names no id the header declares, or the header's positions could not be read |
 | `interface`, `macro-conditional`, `header-text` | yes | no | a dirty id (by digest, by `@cond` site, by a changed text chunk naming it) reaches a root: a main-file entity, an `@scope`/`@cond` site, a function or variable a header defines; a root that is not a main-file function broadens the TU, except a function another file defines with internal linkage (a header's `static inline`), which is the TU's own copy and seeds instead |
 | `code-moved`, `position` | yes | no | a header function's code moved (a `__LINE__` it expands moves too); a header declaration the debug info records moved |
-| `debug-position` | yes, compile only | no | none of the above, while the compile writes debug information (`-g1` and above, or any `-g` spelling it does not know; the last `-g` option decides, but a bare `-g`, `-ggdb` or `-gdwarf-N` keeps a higher level already set) and a file it read changed: clang's DWARF 5 line tables (its default since clang 14) record the MD5 of every file in the TU's file table, so any byte of such a file changes the object, a comment that keeps the line count too; `-g2` and above also record the line and column of every type, function and variable the TU uses, and `-g3` (or `-fdebug-macro`) every `#define`, and `-gembed-source` (with any level, unless `-gno-embed-source` follows) every byte of the file itself. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. Only a compile whose object compiler is known to write no checksum (gcc) and that embeds no source may narrow this, at `-g2` and above, to a changed file with a token outside comments on a moved or changed line; the identity does not name the object compiler yet, so nothing narrows it. `-g0` or no `-g` never fires it |
 | `interface-changed`, `implementation-changed` | yes | yes | the TU's interface or implementation root differs although no reached id is dirty |
+| `static-assert` | yes, compile only | no | none of the above, while an `@assert:<path>` site of the TU (a `static_assert` of its own file scope, or of a header it reads) reaches a dirty id, or expands `__LINE__` while `<path>` changed: the assertion may stop holding and the TU stop compiling, though its object cannot change. The TU is in the compile set with no seed and no test obligation |
+| `static-assert-unattributed` | yes, compile only | no | none of the above, while either side is a manifest before facts revision 3, which records no `static_assert`: nothing rules out an assertion that reads the change |
+| `debug-position` | yes, compile only | no | none of the above, while the compile writes debug information (`-g1` and above, or any `-g` spelling it does not know; the last `-g` option decides, but a bare `-g`, `-ggdb` or `-gdwarf-N` keeps a higher level already set) and a file it read changed: clang's DWARF 5 line tables (its default since clang 14) record the MD5 of every file in the TU's file table, so any byte of such a file changes the object, a comment that keeps the line count too; `-g2` and above also record the line and column of every type, function and variable the TU uses, and `-g3` (or `-fdebug-macro`) every `#define`, and `-gembed-source` (with any level, unless `-gno-embed-source` follows) every byte of the file itself. The TU is in the compile set (`compile_only`) and adds no seed and no test obligation. Only a compile whose object compiler is known to write no checksum (gcc) and that embeds no source may narrow this, at `-g2` and above, to a changed file with a token outside comments on a moved or changed line; the identity does not name the object compiler yet, so nothing narrows it. `-g0` or no `-g` never fires it |
 | `name-collision` | yes | yes | an id shares its name with a new or removed external id |
 | `unaffected` | no | no | no changed id reaches its code |
 
@@ -1169,6 +1189,9 @@ a reader that reaches only a bare prototype whose declaration moved is
 compile only too (`position`; a moved declaration with a body still folds
 in as `code-moved`, fully affected, since its own span carries the code).
 The table names the TUs with a test obligation.
+Read as facts revision 2 on either side, the gline0 reader the table leaves
+unaffected compiles instead (`static-assert-unattributed`), with no test
+obligation.
 
 | variant | edit | affected TUs | obligations |
 |---|---|---|---|
