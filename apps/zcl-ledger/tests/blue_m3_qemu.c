@@ -2,6 +2,7 @@
 #include "blue_jubjub_lowmem.h"
 #include "blue_jubjub_arithmetic.h"
 #include "blue_jubjub_encode.h"
+#include "blue_jubjub_decode.h"
 #include "blue_redjubjub_challenge.h"
 #include "blue_redjubjub_nonce.h"
 #include "blue_redjubjub_response.h"
@@ -371,7 +372,31 @@ static bool check_entropy_signature(void) {
     return same_point(&response_point, &expected);
 }
 
-static uint8_t signing_seed[80], signing_signature[64];
+static union {
+    struct {
+        uint8_t entropy[80], signature[64];
+        union {
+            blue_zip32_workspace fvk;
+            blue_zip32_seed_workspace node;
+        } scratch;
+        union {
+            struct zip32_xsk master;
+            blue_sapling_spend_workspace auth;
+        } parent;
+        struct zip32_xsk child;
+        uint8_t seed[32];
+    } review;
+    blue_jubjub_decode_workspace point;
+} fixture_memory;
+
+/* QEMU cases run sequentially and reuse the same bounded test RAM. */
+#define signing_seed fixture_memory.review.entropy
+#define signing_signature fixture_memory.review.signature
+#define checked_workspace fixture_memory.review.scratch
+#define checked_parent fixture_memory.review.parent
+#define checked_child fixture_memory.review.child
+#define checked_seed fixture_memory.review.seed
+#define point_workspace fixture_memory.point
 
 static bool check_isolated_signature(void) {
     uint8_t secret[32] = {23}, message[32];
@@ -467,16 +492,18 @@ static bool check_fr_sqrt(void) {
     return true;
 }
 
-static union {
-    blue_zip32_workspace fvk;
-    blue_zip32_seed_workspace node;
-} checked_workspace;
-static union {
-    struct zip32_xsk master;
-    blue_sapling_spend_workspace auth;
-} checked_parent;
-static struct zip32_xsk checked_child;
-static uint8_t checked_seed[32];
+static bool check_point_decode(void) {
+    uint8_t encoded[32], identity[32] = {1};
+    struct jub_point decoded;
+    if (!blue_jubjub_encode(encoded, &generator) ||
+        !blue_jubjub_decode_public(&decoded, &point_workspace, encoded) ||
+        !same_point(&decoded, &generator)) return false;
+    if (blue_jubjub_decode_public(&decoded, &point_workspace, identity))
+        return false;
+    const struct jub_point zero = {0};
+    return memcmp(&decoded, &zero, sizeof zero) == 0;
+}
+
 static bool bridge_ready;
 
 static bool fixture_bip32_node(void *context, const uint32_t path[3],
@@ -671,6 +698,7 @@ static const struct {
     {"FIELD", check_fs_boundary},
     {"FRCODEC", check_fr_codec},
     {"FRSQRT", check_fr_sqrt},
+    {"POINT", check_point_decode},
     {"REDUCE", check_reduction},
     {"OUTOPEN", check_outgoing_open},
     {"NOTEOPEN", check_note_open},

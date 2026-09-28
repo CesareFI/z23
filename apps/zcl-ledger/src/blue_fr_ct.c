@@ -15,6 +15,16 @@ static const struct fr montgomery_r2 = {.d = {
     0x05d314967254398fULL, 0x0748d9d99f59ff11ULL
 }};
 
+static const struct fr montgomery_one = {.d = {
+    0x00000001fffffffeULL, 0x5884b7fa00034802ULL,
+    0x998c4fefecbc4ff5ULL, 0x1824b159acc5056fULL
+}};
+
+static const uint64_t modulus_minus_two[4] = {
+    0xfffffffeffffffffULL, 0x53bda402fffe5bfeULL,
+    0x3339d80809a1d805ULL, 0x73eda753299d7d48ULL
+};
+
 bool blue_fr_from_bytes_canonical(struct fr *result,
     const uint8_t bytes[32]) {
     if (!result) return false;
@@ -44,6 +54,32 @@ void blue_fr_to_bytes(uint8_t bytes[32], const struct fr *value) {
     for (unsigned i = 0; i < 32; ++i)
         bytes[i] = (uint8_t)(raw.d[i / 8] >> (8u * (i % 8)));
     blue_mod256_wipe(&raw, sizeof raw);
+}
+
+bool blue_fr_inverse_fixed(struct fr *result, const struct fr *value) {
+    if (!result) return false;
+    if (!value) {
+        *result = (struct fr){0};
+        return false;
+    }
+    struct fr input = *value;
+    *result = (struct fr){0};
+    uint64_t nonzero = 0;
+    for (unsigned i = 0; i < 4; ++i) nonzero |= input.d[i];
+    if (!nonzero) {
+        blue_mod256_wipe(&input, sizeof input);
+        return false;
+    }
+    struct fr inverse = montgomery_one;
+    for (int bit = 255; bit >= 0; --bit) {
+        blue_fr_mul_ct(&inverse, &inverse, &inverse);
+        if ((modulus_minus_two[bit / 64] >> (bit % 64)) & 1u)
+            blue_fr_mul_ct(&inverse, &inverse, &input);
+    }
+    *result = inverse;
+    blue_mod256_wipe(&inverse, sizeof inverse);
+    blue_mod256_wipe(&input, sizeof input);
+    return true;
 }
 
 void blue_fr_add_ct(struct fr *result, const struct fr *a,

@@ -71,6 +71,15 @@ static void check_sqrt(const struct fr *value) {
     assert(memcmp(&squared, value, sizeof squared) == 0);
 }
 
+static void check_inverse(const struct fr *value) {
+    struct fr expected, actual, aliased = *value;
+    fr_inv(&expected, value);
+    assert(blue_fr_inverse_fixed(&actual, value));
+    assert(memcmp(&actual, &expected, sizeof actual) == 0);
+    assert(blue_fr_inverse_fixed(&aliased, &aliased));
+    assert(memcmp(&aliased, &expected, sizeof aliased) == 0);
+}
+
 int main(void) {
     struct fr zero, one, minus_one;
     fr_zero(&zero);
@@ -98,6 +107,12 @@ int main(void) {
     assert(!blue_fr_from_bytes_canonical(NULL, boundary));
     check_sqrt(&zero);
     check_sqrt(&one);
+    check_inverse(&one);
+    cleared = minus_one;
+    assert(!blue_fr_inverse_fixed(&cleared, &zero));
+    assert(memcmp(&cleared, &zero, sizeof zero) == 0);
+    assert(!blue_fr_inverse_fixed(&cleared, NULL));
+    assert(!blue_fr_inverse_fixed(NULL, &one));
     const uint8_t five_bytes[32] = {5};
     struct fr five, nonsquare = one;
     assert(fr_from_bytes(&five, five_bytes));
@@ -122,6 +137,7 @@ int main(void) {
             fr_mul(&square, &a, &a);
             check_sqrt(&square);
         }
+        if (sample < 32) check_inverse(&a);
     }
     return 0;
 }

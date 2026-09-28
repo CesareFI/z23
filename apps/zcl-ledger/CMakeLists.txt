@@ -605,7 +605,8 @@ add_test(NAME blue-payment-host-ownership
 
 add_executable(test-blue-jubjub-lowmem
     src/blue_jubjub_lowmem.c src/blue_jubjub_arithmetic.c src/blue_fr_ct.c
-    src/blue_mod256.c
+    src/blue_fr_sqrt.c src/blue_jubjub_encode.c
+    src/blue_jubjub_decode.c src/blue_mod256.c
     tests/test_blue_jubjub_lowmem.c
     ../../core/modules/sapling/src/fr.c
     ../../core/modules/sapling/src/fr_avx512.c
@@ -794,6 +795,7 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_arithmetic.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_lowmem.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_encode.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/blue_jubjub_decode.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/sapling/src/jubjub.c"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../core/modules/crypto/src/blake2b.c")
         set(BLUE_SAPLING_ARM_DEPENDS
@@ -803,6 +805,7 @@ if(BLUE_ARM_GCC AND BLUE_QEMU)
             include/blue_fr_sqrt.h include/blue_fs_ct.h
             include/blue_jubjub_arithmetic.h include/blue_jubjub_lowmem.h
             include/blue_jubjub_encode.h
+            include/blue_jubjub_decode.h
             include/blue_redjubjub_challenge.h
             include/blue_redjubjub_nonce.h
             include/blue_redjubjub_response.h

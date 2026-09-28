@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton. Licensed under Apache-2.0. */
 #include "blue_jubjub_lowmem.h"
+#include "blue_jubjub_decode.h"
+#include "blue_jubjub_encode.h"
 #include "blue_spend_generator_fixture.h"
 
 #undef NDEBUG
@@ -95,6 +97,55 @@ static void check_spend_auth_vector(void) {
     assert(memcmp(actual, expected, sizeof actual) == 0);
 }
 
+static void check_decode(const struct jub_point *base) {
+    const struct jub_point zero = {0};
+    const blue_jubjub_decode_workspace empty = {0};
+    blue_jubjub_decode_workspace workspace;
+    for (unsigned scalar = 1; scalar <= 32; ++scalar) {
+        uint8_t factor[32] = {(uint8_t)scalar};
+        uint8_t encoded[32], repeated[32];
+        struct jub_point point, decoded, reference;
+        jub_scalar_mul(&point, base, factor);
+        jub_to_bytes(encoded, &point);
+        assert(jub_from_bytes(&reference, encoded));
+        assert(blue_jubjub_decode_public(&decoded, &workspace, encoded));
+        assert(memcmp(&workspace, &empty, sizeof empty) == 0);
+        jub_to_bytes(repeated, &decoded);
+        assert(memcmp(repeated, encoded, sizeof encoded) == 0);
+        assert(memcmp(&decoded, &reference, sizeof decoded) == 0);
+        assert(blue_jubjub_encode(repeated, &decoded));
+        assert(memcmp(repeated, encoded, sizeof encoded) == 0);
+    }
+    uint8_t identity[32] = {1};
+    struct jub_point rejected;
+    assert(!blue_jubjub_decode_public(&rejected, &workspace, identity));
+    assert(memcmp(&rejected, &zero, sizeof zero) == 0);
+    identity[31] = 0x80;
+    assert(!blue_jubjub_decode_public(&rejected, &workspace, identity));
+    uint8_t modulus[32] = {
+        0x01,0x00,0x00,0x00,0xff,0xff,0xff,0xff,
+        0xfe,0x5b,0xfe,0xff,0x02,0xa4,0xbd,0x53,
+        0x05,0xd8,0xa1,0x09,0x08,0xd8,0x39,0x33,
+        0x48,0x7d,0x9d,0x29,0x53,0xa7,0xed,0x73
+    };
+    assert(!blue_jubjub_decode_public(&rejected, &workspace, modulus));
+    assert(memcmp(&rejected, &zero, sizeof zero) == 0);
+    assert(memcmp(&workspace, &empty, sizeof empty) == 0);
+    --modulus[0];
+    assert(!blue_jubjub_decode_public(&rejected, &workspace, modulus));
+    assert(memcmp(&rejected, &zero, sizeof zero) == 0);
+    ++modulus[0];
+    uint8_t off_curve[32] = {2};
+    assert(!jub_from_bytes(&rejected, off_curve));
+    assert(!blue_jubjub_decode_public(&rejected, &workspace, off_curve));
+    assert(memcmp(&rejected, &zero, sizeof zero) == 0);
+    memset(&workspace, 0xa5, sizeof workspace);
+    assert(!blue_jubjub_decode_public(&rejected, &workspace, NULL));
+    assert(!blue_jubjub_decode_public(&rejected, NULL, modulus));
+    assert(!blue_jubjub_decode_public(NULL, &workspace, modulus));
+    assert(memcmp(&workspace, &empty, sizeof empty) == 0);
+}
+
 int main(void) {
     struct jub_point point = test_point(), doubled, negated;
     uint8_t scalar[32];
@@ -104,5 +155,6 @@ int main(void) {
     check_random(&point, &doubled, &negated, scalar);
     check_alias_and_null(&point, scalar);
     check_spend_auth_vector();
+    check_decode(&point);
     return 0;
 }
