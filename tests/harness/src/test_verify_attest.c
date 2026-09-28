@@ -44,6 +44,8 @@
 #define VA_ARGV "-std=c2x -O2 -Iinclude -c src/a.c -o build/a.o"
 #define VA_CWD "/src"
 #define VA_OBJ "\x7f" "ELF-object-bytes"
+#define VA_DEP "build/a.o: src/a.c include/a.h\n"
+#define VA_STDERR ""
 
 static char g_va_state[PATH_MAX];
 static char g_va_saved_xdg[PATH_MAX];
@@ -106,8 +108,10 @@ static struct zcl_verify_attest_record va_record(void)
     memset(r.pp_sha3, 0x01, sizeof(r.pp_sha3));
     memset(r.closure_sha3, 0x02, sizeof(r.closure_sha3));
     va_obj_hash(r.obj_sha3);
-    memset(r.dep_sha3, 0x03, sizeof(r.dep_sha3));
-    memset(r.stderr_sha3, 0x04, sizeof(r.stderr_sha3));
+    zcl_sha3_256((const unsigned char *)VA_DEP, sizeof(VA_DEP) - 1u,
+                 r.dep_sha3);
+    zcl_sha3_256((const unsigned char *)VA_STDERR, sizeof(VA_STDERR) - 1u,
+                 r.stderr_sha3);
     r.exit_code = 0;
     return r;
 }
@@ -150,7 +154,11 @@ static struct zcl_verify_attest_decision va_admit(
     const struct zcl_verify_attest_trust_root *root)
 {
     return zcl_verify_attest_admit(rec, len, (const uint8_t *)VA_OBJ,
-                                   sizeof(VA_OBJ) - 1u, e, root);
+                                   sizeof(VA_OBJ) - 1u,
+                                   (const uint8_t *)VA_DEP,
+                                   sizeof(VA_DEP) - 1u,
+                                   (const uint8_t *)VA_STDERR,
+                                   sizeof(VA_STDERR) - 1u, e, root);
 }
 
 static bool va_refused(struct zcl_verify_attest_decision d, const char *why)
@@ -227,8 +235,14 @@ static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
         if (fill == 3) {
             va_obj_hash(obj);
             memcpy(out + n, obj, 32);
+        } else if (fill == 4) {
+            zcl_sha3_256((const unsigned char *)VA_DEP,
+                         sizeof(VA_DEP) - 1u, out + n);
+        } else if (fill == 5) {
+            zcl_sha3_256((const unsigned char *)VA_STDERR,
+                         sizeof(VA_STDERR) - 1u, out + n);
         } else {
-            memset(out + n, fill < 3 ? fill : fill - 1, 32);
+            memset(out + n, fill, 32);
         }
         n += 32u;
     }
@@ -244,7 +258,7 @@ static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
  * u64le length and bytes, then pp_sha3 and closure_sha3. Recomputing
  * either is a format change and needs an explicit domain review. */
 #define VA_BODY_SHA3 \
-    "4f587c7eb83e548084deed2806d472936e19d5b3e31063bdfd4a6a417f631828"
+    "d4198ad7efc4d8695ad8c0722f1b8e21018404226593aab7ac858a1eef55c930"
 #define VA_STORE_KEY \
     "eaca9745ca787a48dc08fffc09635c222404417dbec8ac02ea91639ba8c68cf2"
 
@@ -451,6 +465,14 @@ static int test_va_refuse_fields(void)
                                "attested bytes refuses attest_obj_hash_mismatch",
                                r, e, SIZE_MAX,
                                ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH);
+    r = va_record();
+    r.dep_sha3[5] ^= 0x10u;
+    failures += va_refuse_case("verify attest: substituted depfile refuses",
+                               r, e, SIZE_MAX, "attest_dep_hash_mismatch");
+    r = va_record();
+    r.stderr_sha3[5] ^= 0x10u;
+    failures += va_refuse_case("verify attest: substituted stderr refuses",
+                               r, e, SIZE_MAX, "attest_stderr_hash_mismatch");
     /* Byte 21 is the schema's last character: "v1" becomes "v0". */
     failures += va_refuse_case("verify attest: another schema refuses "
                                "attest_schema_unknown",
@@ -473,26 +495,31 @@ static int test_va_signed_failure_blocks(void)
         ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
                                       &why));
         struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
-            rec, len, NULL, 0, &e, &root);
+            rec, len, NULL, 0, NULL, 1, NULL, 1, &e, &root);
         ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
         ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
-        d = zcl_verify_attest_admit(rec, len, NULL, 1, &e, &root);
+        d = zcl_verify_attest_admit(rec, len, NULL, 1, NULL, 1,
+                                    NULL, 1, &e, &root);
         ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
         ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
         e.toolchain_id = va_text("different-toolchain");
-        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
+                                    NULL, 0, &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH));
         e = va_expected();
         e.closure_sha3[0] ^= 1u;
-        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
+                                    NULL, 0, &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH));
         e = va_expected();
         e.pp_sha3[0] ^= 1u;
-        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
+                                    NULL, 0, &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH));
         e.pp_sha3[0] ^= 1u;
         rec[len - 1u] ^= 1u;
-        d = zcl_verify_attest_admit(rec, len, NULL, 0, &e, &root);
+        d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
+                                    NULL, 0, &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID));
         PASS();
     } _test_next:;
@@ -514,8 +541,42 @@ static int test_va_empty_object(void)
         ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
                                       &why));
         struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
-            rec, len, NULL, 0u, &e, &root);
+            rec, len, NULL, 0u, (const uint8_t *)VA_DEP,
+            sizeof(VA_DEP) - 1u, NULL, 0u, &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY));
+        PASS();
+    } _test_next:;
+    free(rec);
+    return failures;
+}
+
+static int test_va_artifact_substitution(void)
+{
+    int failures = 0;
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    TEST("verify attest: fetched depfile and stderr bytes are exact") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
+                                      &why));
+        struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
+            rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
+            (const uint8_t *)"other", 5u, NULL, 0u, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_DEP_MISMATCH));
+        d = zcl_verify_attest_admit(
+            rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
+            (const uint8_t *)VA_DEP, sizeof(VA_DEP) - 1u,
+            (const uint8_t *)"warning", 7u, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH));
+        d = zcl_verify_attest_admit(
+            rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
+            NULL, 0u, NULL, 0u, &e, &root);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_DEP_EMPTY));
+        d = va_admit(rec, len, &e, &root);
+        ASSERT(d.verdict == ZCL_VERIFY_ATTEST_ADMIT);
         PASS();
     } _test_next:;
     free(rec);
@@ -920,6 +981,7 @@ int test_verify_attest(void)
     failures += test_va_refuse_fields();
     failures += test_va_signed_failure_blocks();
     failures += test_va_empty_object();
+    failures += test_va_artifact_substitution();
     failures += test_va_refuse_signers();
     failures += test_va_path_policy();
     failures += test_va_pubkey_parse();

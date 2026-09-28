@@ -78,6 +78,9 @@
 #define ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISSING "attest_closure_missing"
 #define ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY "attest_obj_empty"
 #define ZCL_VERIFY_ATTEST_WHY_OBJ_MISMATCH "attest_obj_hash_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_DEP_EMPTY "attest_dep_empty"
+#define ZCL_VERIFY_ATTEST_WHY_DEP_MISMATCH "attest_dep_hash_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH "attest_stderr_hash_mismatch"
 
 /* A borrowed byte string. Never NUL-terminated by contract; `len` is the
  * whole value. Embedded NUL bytes are malformed in every text field. */
@@ -239,15 +242,18 @@ struct zcl_verify_attest_decision {
     const char *reason; /* NULL on admit, a refusal token otherwise */
 };
 
-/* Decide whether `obj_bytes` may be reused on the strength of
+/* Decide whether the fetched object and its compiler artifacts may be reused on the strength of
  * `record_bytes`. A valid verifier signature over the exact expected inputs
  * with a nonzero compiler exit returns FAIL, which blocks cold fallback;
  * an unrelated or malformed record returns REFUSE. A successful record
- * admits only after the exact fetched object bytes match. `trust_root` NULL
+ * admits only after the exact fetched object, depfile, and stderr bytes match.
+ * An empty stderr is valid; an empty object or depfile is not. `trust_root` NULL
  * or not loaded refuses no_verifier_key. */
 struct zcl_verify_attest_decision zcl_verify_attest_admit(
     const uint8_t *record_bytes, size_t record_len,
     const uint8_t *obj_bytes, size_t obj_len,
+    const uint8_t *dep_bytes, size_t dep_len,
+    const uint8_t *stderr_bytes, size_t stderr_len,
     const struct zcl_verify_attest_expected *expected,
     const struct zcl_verify_attest_trust_root *trust_root);
 

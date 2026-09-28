@@ -738,9 +738,35 @@ static const char *va_object_check(const struct zcl_verify_attest_record *r,
     return NULL;
 }
 
+static const char *va_artifacts_check(const struct zcl_verify_attest_record *r,
+                                      const uint8_t *obj, size_t obj_len,
+                                      const uint8_t *dep, size_t dep_len,
+                                      const uint8_t *stderr, size_t stderr_len)
+{
+    const char *why = NULL;
+    uint8_t hash[VA_HASH];
+    if ((!obj && obj_len) || (!dep && dep_len) ||
+        (!stderr && stderr_len))
+        return ZCL_VERIFY_ATTEST_WHY_ARGUMENTS;
+    why = va_object_check(r, obj, obj_len);
+    if (why)
+        return why;
+    if (dep_len == 0u)
+        return ZCL_VERIFY_ATTEST_WHY_DEP_EMPTY;
+    zcl_sha3_256(dep, dep_len, hash);
+    if (memcmp(hash, r->dep_sha3, VA_HASH) != 0)
+        return ZCL_VERIFY_ATTEST_WHY_DEP_MISMATCH;
+    zcl_sha3_256(stderr, stderr_len, hash);
+    if (memcmp(hash, r->stderr_sha3, VA_HASH) != 0)
+        return ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH;
+    return NULL;
+}
+
 struct zcl_verify_attest_decision zcl_verify_attest_admit(
     const uint8_t *record_bytes, size_t record_len,
     const uint8_t *obj_bytes, size_t obj_len,
+    const uint8_t *dep_bytes, size_t dep_len,
+    const uint8_t *stderr_bytes, size_t stderr_len,
     const struct zcl_verify_attest_expected *expected,
     const struct zcl_verify_attest_trust_root *trust_root)
 {
@@ -758,9 +784,8 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
         why = va_input_check(&parsed.record, expected);
     if (!why && parsed.record.exit_code != 0)
         return va_signed_failure();
-    if (!why && !obj_bytes && obj_len)
-        return va_decide(ZCL_VERIFY_ATTEST_WHY_ARGUMENTS);
     if (!why)
-        why = va_object_check(&parsed.record, obj_bytes, obj_len);
+        why = va_artifacts_check(&parsed.record, obj_bytes, obj_len,
+                                 dep_bytes, dep_len, stderr_bytes, stderr_len);
     return va_decide(why);
 }
