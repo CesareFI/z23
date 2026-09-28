@@ -208,6 +208,26 @@ static int os_proc_preserved_report_fd_checks(void)
 #endif
 }
 
+static int os_proc_open_fd_count_checks(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    size_t before = 0, open_count = 0, after = 0;
+    bool counted = os_proc_open_fd_count(&before);
+    int source = open("/dev/null", O_RDONLY);
+    int high = source >= 0 ? fcntl(source, F_DUPFD, 200) : -1;
+    if (source >= 0) (void)close(source);
+    bool counted_open = high >= 0 && os_proc_open_fd_count(&open_count);
+    if (high >= 0) (void)close(high);
+    bool counted_after = os_proc_open_fd_count(&after);
+    OSPROC_CHECK("high descriptor contributes exactly one live fd",
+                 counted && counted_open && open_count == before + 1);
+    OSPROC_CHECK("closing high descriptor restores live fd count",
+                 counted && counted_after && after == before);
+#endif
+    return failures;
+}
+
 /* Seccomp_filters status-text parser: a truncated read must fail closed,
  * never return the digit prefix it happened to have in the buffer. */
 static int os_proc_seccomp_filters_parse_checks(void)
@@ -308,6 +328,7 @@ int test_os_proc(void)
     printf("\n=== platform os_proc tests ===\n");
     int failures = 0;
 
+    failures += os_proc_open_fd_count_checks();
     failures += os_proc_cgroup_stat_fixture_checks();
     failures += os_proc_preserved_report_fd_checks();
     failures += os_proc_seccomp_filters_parse_checks();

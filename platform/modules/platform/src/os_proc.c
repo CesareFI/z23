@@ -852,10 +852,20 @@ bool os_proc_open_fd_count(size_t *out)
     *out = (size_t)handles;
     return true;
 #elif defined(__APPLE__)
+    /* A NULL buffer returns fd-table capacity plus slack, not live FDs. */
     int bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
     if (bytes <= 0)
         return false; // raw-return-ok:platform-cannot-answer
-    *out = (size_t)bytes / sizeof(struct proc_fdinfo);
+    struct proc_fdinfo *fds = malloc((size_t)bytes); // raw-alloc-ok:standalone-platform-package
+    if (!fds)
+        return false; // raw-return-ok:platform-cannot-answer
+    int used = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, fds, bytes);
+    free(fds);
+    /* A full buffer could have truncated a concurrent fd-table growth. */
+    if (used <= 0 || used >= bytes ||
+        (size_t)used % sizeof(struct proc_fdinfo) != 0)
+        return false; // raw-return-ok:platform-cannot-answer
+    *out = (size_t)used / sizeof(struct proc_fdinfo);
     return true;
 #else
     /* The shim for this read lives here precisely so no caller outside
