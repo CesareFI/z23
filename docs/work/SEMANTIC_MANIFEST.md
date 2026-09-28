@@ -121,7 +121,8 @@ were established:
 - `0 none`: `include_next`, a computed include, or an absolute include. No
   negative claim is made for these. The text scan also writes a `none`
   record (kind `has_include`, no hit) for every conditional lookup it finds
-  in a repo file and cannot replay: any other macro operand (a predefined
+  in any file, a system header's too, and cannot replay: any other macro
+  operand (a predefined
   or command-line macro, a function-like one, a body that is not one plain
   string literal), a `__has_include_next` whose file was entered in a way
   no slot names, `__has_embed`, the GNU `__has_include__` and
@@ -141,8 +142,15 @@ were established:
   (a header name after an include-like directive or a probe word, across
   blanks and comments, is lexed as one and never opens a comment); a word
   in a skipped group is recorded too: that costs warm reuse and narrowing,
-  never truth. A system header's own conditionals are not scanned: they
-  search the system dirs. The facts
+  never truth. A system header's own conditionals are scanned too: an
+  angled search starts at the repo's `-I` dirs, so a repo dir gaining the
+  name flips it. A `__has_include_next` there is replayed from the start
+  and from the slot after each search dir that could hold the header
+  (other system headers include it with no LOOKUPS record), and is `none`
+  when no search dir holds it. A probe word only tested by `defined` or
+  `#ifdef` is no lookup. The sensor refuses `-Wp,` (a `-D` or `-std` there
+  is one the scan cannot read) and `-fms-compatibility` or an MSVC target
+  (either turns trigraphs off). The facts
   consumer treats a `none` record as reachable by every created or deleted
   path, and one whose name starts `#embed` or `__has_embed` by every changed
   path (see the universe below).
@@ -806,8 +814,8 @@ request at a time). The cold CPU column is user plus system time from
 **Known limits** (`--verify-cold` covers each):
 
 - Includes that a system header makes by a name no manifest file carries
-  are not listed, for example a `__has_include` in a system header that
-  found nothing. A quoted include from a system header's own directory is
+  are not listed (a system header's `__has_include` is: see the miss
+  evidence above). A quoted include from a system header's own directory is
   not listed either. Both need a write into a system directory or an
   unrelated new name in a search dir.
 - A header edited between the pre-check and the reparse, with its size and
@@ -867,7 +875,13 @@ the macro is evaluated where it expands); one after a pre-C23 `'`, which
 opens a character literal rather than a digit separator; one a trigraph
 `??/` splices in an ISO mode before C23; and one after a comment between
 a probe word and a header name. `tests/harness/src/semantic_sensor_probe.c`
-checks each record; before the fix each case recorded nothing.
+checks each record; before the fix each case recorded nothing. It also
+records a system header's own conditionals, which it skipped before (a
+plain angled search there starts at the repo's `-I` dirs), and treats a
+probe word only tested by `defined` or `#ifdef` as no lookup. The sensor
+now refuses `-Wp,`, `-fms-compatibility` and an MSVC target instead of
+scanning under rules it cannot read; the same test file checks each
+refusal, and each emitted a manifest before.
 
 ### Darwin producer identity
 
@@ -1112,8 +1126,8 @@ as its canonical list entry (a symlink, `./` or `..` changes the opened
 names `__FILE__` expands to); when a lookup makes no claim
 (`include_next`, a computed or unbound spelling, `#embed`) or its replay
 saw another file first; when a file is read that no claimed lookup
-reached; or when the TU reads a system header, whose own includes and
-probes the sensor does not record.
+reached; or when the TU reads a system header, whose own includes the
+sensor does not record.
 
 **Each member**, in order; the first rule that fires is its reason:
 

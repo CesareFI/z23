@@ -189,15 +189,20 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
 
 /* __has_include and its relatives ask whether a name resolves, and #embed
  * reads a resource, without an include directive the front end reports. The
- * scan finds every one in a repo file and records each as a lookup. A
+ * scan finds every one in every file the TU reads, a system header's too
+ * (its angled searches start at the repo's -I dirs), and records each as a
+ * lookup; a word only tested by defined or #ifdef is none. A
  * __has_include whose operand is a literal "x" or <x>, or an object-like
  * repo macro every definition of which is one plain string literal (the
  * front end's recorded expansion at that offset names the definition;
  * facts manifests only, since only they keep expansions), is
  * replayed: the producer runs the search itself and stat-confirms every
  * probe (REPLAYED_STAT). A __has_include_next is replayed the same way from
- * the slot after each one its file was entered through (cm_entry_add); the
- * slots before that start are recorded present, with no claim. Every other
+ * the slot after each one its file was entered through (cm_entry_add), or,
+ * in a system header, from the start and after each search dir that could
+ * hold it (cm_cond_next_system); the slots before that start are recorded
+ * present, with no claim. The sensor refuses -Wp, and MSVC compatibility,
+ * whose -D, -std or trigraph rules the scan cannot read. Every other
  * spelling - another macro operand, __has_embed, the GNU __has_include__
  * words, #embed, an include_next start no slot names, an occurrence a
  * line continuation or trigraph runs through, an operand holding a
@@ -529,6 +534,47 @@ static bool cm_next_entry(struct cm_core *c, const struct cm_file *f,
     return ok && (fits || cm_cond_unbound(c, f, raw, raw_form));
 }
 
+/* Could f have been found in the search dir `raw`: its raw spelling opens
+ * f's opened name, or its realpath holds f's realpath? */
+static bool cm_dir_holds(const char *raw, const struct cm_file *f)
+{
+    char real[PATH_MAX];
+    size_t n = strlen(raw);
+    while (n > 1 && raw[n - 1] == '/')
+        n--;
+    if (strncmp(f->opened, raw, n) == 0 && f->opened[n] == '/')
+        return true;
+    if (realpath(raw, real) == NULL)
+        return false;
+    n = strlen(real);
+    return n > 1 && strncmp(f->real, real, n) == 0 && f->real[n] == '/';
+}
+
+/* __has_include_next(name) in a system file. Its entries come from other
+ * system files too, which record no lookups, so every way it could have
+ * been entered is replayed: found relative or by absolute path (searches
+ * as __has_include does), and found in each search dir that could hold it
+ * (searches the dirs after it). Unbound when no search dir holds it. */
+static bool cm_cond_next_system(struct cm_core *c, const struct cm_file *f,
+                                uint8_t form, const char *name,
+                                const char *raw, uint8_t raw_form)
+{
+    size_t nq = c->quote.n, all = nq + c->angled.n;
+    bool any = false, ok = cm_has_include_one(c, f, form, name);
+    for (size_t e = 0; ok && e < all; e++) {
+        const char *dir = e < nq ? c->quote.items[e].raw
+                                 : c->angled.items[e - nq].raw;
+        bool fits = false;
+        if (!cm_dir_holds(dir, f))
+            continue;
+        any = true;
+        ok = cm_has_include_from(c, f, VCS_SEMANTIC_FORM_V1_QUOTED, name,
+                                 (uint32_t)e + 2, &fits) &&
+             (fits || cm_cond_unbound(c, f, raw, raw_form));
+    }
+    return ok && (any || cm_cond_unbound(c, f, raw, raw_form));
+}
+
 /* __has_include_next(name) in f, once per way f was entered; unbound when
  * f was entered in a way that names no search slot. */
 static bool cm_cond_next(struct cm_core *c, const struct cm_file *f,
@@ -538,6 +584,8 @@ static bool cm_cond_next(struct cm_core *c, const struct cm_file *f,
     bool any = false, ok = true;
     if (f->origin == VCS_SEMANTIC_ORIGIN_V1_MAIN)
         return cm_has_include_one(c, f, form, name);
+    if (f->origin == VCS_SEMANTIC_ORIGIN_V1_SYSTEM)
+        return cm_cond_next_system(c, f, form, name, raw, raw_form);
     for (size_t k = 0; ok && k < c->nentries; k++) {
         if (c->entries[k].file != f)
             continue;
@@ -674,6 +722,31 @@ static bool cm_cond_resolve(struct cm_core *c, const struct cm_file *f,
     return ok;
 }
 
+/* Is the word at s[i] only tested for being defined: "defined W",
+ * "defined ( W", or an #ifdef-like directive's operand? Blanks only between
+ * (a comment there leaves it a lookup). The glibc headers guard each
+ * __has_include with #ifdef __has_include. */
+static bool cm_defined_operand(const char *s, size_t i)
+{
+    static const char *const words[] = {"defined", "ifdef", "ifndef",
+                                        "elifdef", "elifndef"};
+    size_t b = i, a;
+    bool paren = false;
+    while (b > 0 && (s[b - 1] == ' ' || s[b - 1] == '\t'))
+        b--;
+    if (b > 0 && s[b - 1] == '(') {
+        paren = true;
+        for (b--; b > 0 && (s[b - 1] == ' ' || s[b - 1] == '\t'); b--)
+            ;
+    }
+    for (a = b; a > 0 && cm_ident_char(s[a - 1]); a--)
+        ;
+    for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); w++)
+        if (b - a == strlen(words[w]) && memcmp(s + a, words[w], b - a) == 0)
+            return !paren || strcmp(words[w], "defined") == 0;
+    return false;
+}
+
 /* The conditional lookup at t[i], if any: replayed or recorded unbound. */
 static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
                        const struct cm_spliced *t, size_t i)
@@ -683,6 +756,8 @@ static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
     enum cm_cond_kind kind = CM_COND_OTHER;
     bool done = false;
     size_t len = cm_cond_word(t->s, i, t->n, &kind), end;
+    if (len != 0 && cm_defined_operand(t->s, i))
+        return true;
     if (len != 0 && kind != CM_COND_OTHER &&
         !cm_cond_resolve(c, f, t, i, len, kind, &done))
         return false;
@@ -997,13 +1072,13 @@ static bool cm_scan_argv(struct cm_core *c, const char *const *argv,
     return true;
 }
 
-/* One file: in a repo file every conditional lookup, and in a system file
- * each one a #define's body holds (a system header's own conditionals
- * search system dirs). */
+/* One file, repo or system: a system header's own conditionals search the
+ * -I dirs too (an angled search starts there), so a repo dir gaining a
+ * name can flip them. */
 static bool cm_scan_file(struct cm_core *c, const struct cm_file *f,
                          struct cm_lang lang)
 {
-    bool sys = f->origin == VCS_SEMANTIC_ORIGIN_V1_SYSTEM, ok;
+    bool ok;
     struct cm_spliced t;
     uint8_t *code = NULL;
     ok = cm_splice(f->contents, f->size, lang.trigraphs, &t);
@@ -1017,7 +1092,7 @@ static bool cm_scan_file(struct cm_core *c, const struct cm_file *f,
             continue;
         if (code[i] == 2)
             ok = cm_body_at(c, f, t.s, i, t.n);
-        else if (code[i] == 1 && !sys)
+        else if (code[i] == 1)
             ok = cm_cond_at(c, f, &t, i);
     }
     free(code);

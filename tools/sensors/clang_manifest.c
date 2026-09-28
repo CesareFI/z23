@@ -67,7 +67,8 @@ char *cm_take_string(CXString s)
 /* A plain declaration reports CXLanguage_C under C++ and Objective-C too, so
  * the argv check is the language guard. Driver aliases of -x and -std, the
  * Objective-C switches and a driver mode (clang++ parses .c as C++) are
- * refused with the escapes rather than modeled. */
+ * refused with the escapes rather than modeled, as is -Wp, (it passes -D or
+ * -std= to the preprocessor where the lookup scan cannot read them). */
 static bool cm_indirect_mode_arg(const char *a)
 {
     static const char *const exact[] = {"-Xclang", "-Xpreprocessor", "-cc1",
@@ -75,7 +76,7 @@ static bool cm_indirect_mode_arg(const char *a)
                                         "-ObjC++"};
     static const char *const prefix[] = {"@", "--config=", "-config=",
                                          "--language", "--std",
-                                         "--driver-mode"};
+                                         "--driver-mode", "-Wp,"};
     for (size_t k = 0; k < sizeof(exact) / sizeof(exact[0]); k++)
         if (strcmp(a, exact[k]) == 0)
             return true;
@@ -93,6 +94,8 @@ static bool cm_scan_language_flags(struct cm_core *c,
         const char *a = argv[k];
         if (cm_indirect_mode_arg(a))
             return cm_fail(c, "unsupported translation-unit language: indirect compiler options");
+        if (strncmp(a, "-fms-compatibility", 18) == 0)
+            return cm_fail(c, "unsupported translation-unit language: MSVC compatibility");
         if (strcmp(a, "-ansi") == 0)
             *standard = "c89";
         else if (strncmp(a, "-std=", 5) == 0)
@@ -435,6 +438,20 @@ static bool cm_emit_identity_libclang(struct cm_state *st, const char *main_path
     return ok;
 }
 
+/* An MSVC target turns MSVC compatibility on, which turns trigraphs off;
+ * the lookup scan splices ??/ by the C rules, so such a TU is refused. */
+static bool cm_refuse_msvc_target(struct cm_state *st)
+{
+    CXTargetInfo ti = clang_getTranslationUnitTargetInfo(st->tu);
+    char *triple = cm_take_string(clang_TargetInfo_getTriple(ti));
+    bool msvc = triple == NULL || strstr(triple, "msvc") != NULL;
+    clang_TargetInfo_dispose(ti);
+    free(triple);
+    if (msvc)
+        return cm_fail(&st->core, "unsupported translation-unit language: MSVC target");
+    return true;
+}
+
 static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
                        const char *main_path, const struct cm_args *args,
                        const char *report)
@@ -446,7 +463,7 @@ static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
     clang_PrintingPolicy_setProperty(st->policy,
                                      CXPrintingPolicy_AnonymousTagLocations, 0);
 #endif
-    if (!cm_check_diagnostics(st))
+    if (!cm_refuse_msvc_target(st) || !cm_check_diagnostics(st))
         return false;
     st->main_file = clang_getFile(st->tu, o->source);
     if (st->main_file == NULL)
