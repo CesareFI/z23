@@ -98,6 +98,29 @@ struct zcl_devloop_facts_tu_verdict {
     char detail[192];
 };
 
+/* The premises a guard reading may rest on (docs/work/SEMANTIC_MANIFEST.md,
+ * "Guarded includes"): make runs for objects (MAKECMDGOALS holds no
+ * vendor-ready, deploy or install goal), and the compile epoch a $(shell)
+ * computes is one path component. */
+#define ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS 1u
+#define ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT 2u
+#define ZCL_DEVLOOP_GUARD_GLOBS 48
+#define ZCL_DEVLOOP_GUARD_TEXT 192
+
+/* A missing optional include the root makefile provably skips: the
+ * directive read not taken, the premises that reading used and every path
+ * or pattern it globbed with what that found, so a reviewer can falsify it. */
+struct zcl_devloop_facts_guard {
+    char include[ZCL_DEVLOOP_PATH_MAX];
+    char include_at[ZCL_DEVLOOP_GUARD_TEXT]; /* file:line */
+    char guard[ZCL_DEVLOOP_GUARD_TEXT];      /* the directive, as written */
+    char guard_at[ZCL_DEVLOOP_GUARD_TEXT];
+    unsigned premises; /* ZCL_DEVLOOP_PREMISE_* */
+    size_t nglobs;
+    char glob[ZCL_DEVLOOP_GUARD_GLOBS][ZCL_DEVLOOP_GUARD_TEXT];
+    char found[ZCL_DEVLOOP_GUARD_GLOBS][ZCL_DEVLOOP_GUARD_TEXT]; /* space-separated */
+};
+
 struct zcl_devloop_facts_report {
     bool applied;       /* a universe was computed */
     bool complete;      /* every TU that reads a changed file is accounted */
@@ -111,6 +134,8 @@ struct zcl_devloop_facts_report {
     const char *obligations_reason; /* "" when narrowed, else the fallback */
     const char *group_reason[ZCL_DEVLOOP_MAX_PLAN_GROUPS];
     const char *path_reason;        /* reason of every path group */
+    struct zcl_devloop_facts_guard *guards; /* includes read skipped */
+    size_t nguards;
 };
 
 /* Plan `files` (plan already holds zcl_devloop_plan_files) with the

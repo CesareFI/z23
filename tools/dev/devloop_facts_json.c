@@ -21,6 +21,7 @@
  * "facts_offset". */
 #define FX_TUS_PAGE 3584u
 #define FX_GROUPS_PAGE 1536u
+#define FX_GUARDS_PAGE 6144u
 #define FX_ENTRY_MAX (ZCL_DEVLOOP_PATH_MAX * 2u + 1024u)
 #define FX_CONSUMER_SCHEMA "zcl.semantic_consumer.v1"
 
@@ -344,9 +345,122 @@ static void fx_obligations_json(const struct zcl_devloop_facts_report *r,
     fw_raw(w, "}");
 }
 
-/* ,"facts":{verdict,"consumer":S,obligations,universe,tus}} closing the
- * plan document. The universe summary names how many entries follow, so
- * the entries render aside first against what remains of the page. */
+static const struct {
+    unsigned bit;
+    const char *name, *reads;
+} fx_premises[] = {
+    {ZCL_DEVLOOP_PREMISE_GOAL_BUILDS_OBJECTS, "goal-builds-objects",
+     "make runs to build objects: MAKECMDGOALS holds no vendor-ready, deploy "
+     "or install goal"},
+    {ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT, "epoch-one-component",
+     "the compile epoch $(call zcl_compile_epoch,...) computes with $(shell) "
+     "is one path component, or none"},
+};
+
+static void fx_premise_names(unsigned bits, struct fxw *w)
+{
+    bool first = true;
+    fw_raw(w, "[");
+    for (size_t k = 0; k < sizeof(fx_premises) / sizeof(fx_premises[0]); k++)
+        if (bits & fx_premises[k].bit) {
+            fw_raw(w, first ? "" : ",");
+            fw_str(w, fx_premises[k].name);
+            first = false;
+        }
+    fw_raw(w, "]");
+}
+
+/* A space-separated list as a JSON array of its words. */
+static void fx_words_json(const char *s, struct fxw *w)
+{
+    char word[ZCL_DEVLOOP_GUARD_TEXT];
+    bool first = true;
+    fw_raw(w, "[");
+    while (*s != '\0') {
+        size_t n = strcspn(s, " ");
+        if (n > 0 && n < sizeof(word)) {
+            memcpy(word, s, n);
+            word[n] = '\0';
+            fw_raw(w, first ? "" : ",");
+            fw_str(w, word);
+            first = false;
+        }
+        s += n + (s[n] == ' ');
+    }
+    fw_raw(w, "]");
+}
+
+/* A bound on one guard's rendering. */
+static size_t fx_guard_size(const struct zcl_devloop_facts_guard *g)
+{
+    size_t n = strlen(g->include) + strlen(g->include_at) +
+               2 * strlen(g->guard) + strlen(g->guard_at) + 256;
+    for (size_t k = 0; k < g->nglobs; k++)
+        n += strlen(g->glob[k]) + strlen(g->found[k]) + 48;
+    return n;
+}
+
+static void fx_guard_json(const struct zcl_devloop_facts_guard *g,
+                          struct fxw *w)
+{
+    fw_raw(w, "{");
+    fw_kstr(w, "include", g->include);
+    fw_kstr(w, "include_at", g->include_at);
+    fw_kstr(w, "guard", g->guard);
+    fw_kstr(w, "guard_at", g->guard_at);
+    fw_key(w, "premises");
+    fx_premise_names(g->premises, w);
+    fw_key(w, "globbed");
+    fw_raw(w, "[");
+    for (size_t k = 0; k < g->nglobs; k++) {
+        fw_raw(w, k > 0 ? ",{" : "{");
+        fw_kstr(w, "path", g->glob[k]);
+        fw_key(w, "found");
+        fx_words_json(g->found[k], w);
+        fw_raw(w, "}");
+    }
+    fw_raw(w, "]}");
+}
+
+/* "make_guards":{"premises":[{"name","reads"}...],"skipped":[...],
+ * "skipped_total":N,"skipped_listed":N}: the named premises a guard reading
+ * may rest on, and each missing include the root makefile provably skips
+ * with the directive read not taken, the premises it used and every path
+ * it globbed, as many as fit FX_GUARDS_PAGE. */
+static void fx_guards_json(const struct zcl_devloop_facts_report *r,
+                           struct fxw *w)
+{
+    size_t start, listed = 0;
+    fw_key(w, "make_guards");
+    fw_raw(w, "{");
+    fw_key(w, "premises");
+    fw_raw(w, "[");
+    for (size_t k = 0; k < sizeof(fx_premises) / sizeof(fx_premises[0]); k++) {
+        fw_raw(w, k > 0 ? ",{" : "{");
+        fw_kstr(w, "name", fx_premises[k].name);
+        fw_kstr(w, "reads", fx_premises[k].reads);
+        fw_raw(w, "}");
+    }
+    fw_raw(w, "]");
+    fw_key(w, "skipped");
+    fw_raw(w, "[");
+    start = w->at;
+    for (; listed < r->nguards &&
+           w->at - start + fx_guard_size(&r->guards[listed]) <= FX_GUARDS_PAGE;
+         listed++) {
+        fw_raw(w, listed > 0 ? "," : "");
+        fx_guard_json(&r->guards[listed], w);
+    }
+    fw_raw(w, "]");
+    fw_knum(w, "skipped_total", r->nguards);
+    fw_knum(w, "skipped_listed", listed);
+    fw_raw(w, "}");
+}
+
+/* ,"facts":{verdict,"consumer":S,obligations,universe,make_guards,tus}}
+ * closing the plan document. The universe summary names how many entries
+ * follow, so the entries render aside first against what remains of the
+ * page. */
 static bool fx_facts_json(const struct zcl_devloop_facts_verdict *v,
                           const struct zcl_devloop_facts_report *r,
                           const struct zcl_devloop_plan *p, size_t offset,
@@ -365,6 +479,7 @@ static bool fx_facts_json(const struct zcl_devloop_facts_verdict *v,
     else
         fw_raw(&t, ",\"tus\":[]");
     fx_universe_json(r, offset, listed, w);
+    fx_guards_json(r, w);
     fw_raw(w, t.ok ? t.out : "");
     w->ok = w->ok && t.ok;
     fw_raw(w, "}}");

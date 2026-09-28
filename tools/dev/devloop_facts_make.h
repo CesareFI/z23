@@ -87,6 +87,7 @@ struct fxm_line {
     uint8_t file_goal;  /* FXM_RECIPE: 0 not yet known, 1 its makes name only
                          * .PHONY goals, 2 one may name a file */
     bool body;      /* FXM_DEF: a line a define holds */
+    uint32_t at;    /* the line of its file it starts on */
 };
 
 struct fxm_rule {
@@ -109,6 +110,13 @@ struct fxm_vname {
     bool shelly; /* a definition may carry shell syntax into a recipe */
     bool goal;   /* its value may be a goal or a prerequisite */
     bool cmd;    /* its value may hold the make command */
+};
+
+/* A word of an optional include line that names a file that does not
+ * exist: where it was read. */
+struct fxm_inc {
+    char *path;
+    uint32_t file, at;
 };
 
 /* The rule a line belongs to as the text is read. */
@@ -156,6 +164,12 @@ struct fxm {
     size_t npairs;
     struct fxm_vname *vnames; /* every defined variable, sorted */
     size_t nvnames;
+    uint32_t pos[2];   /* lines read of the file being read; this one's */
+    uint32_t cur_file; /* ...and that file */
+    struct fxm_inc *incs; /* each include line word that names a missing file */
+    size_t nincs, capincs;
+    size_t root_lines; /* the root makefile's lines come first */
+    struct zcl_devloop_facts_report *report; /* guards read not taken */
 };
 
 /* make.c: the text scanner. */
@@ -177,6 +191,14 @@ bool fxm_sep(char ch);
 bool fxm_tokens(struct fxm *m, char *s, bool (*fn)(struct fxm *, const char *));
 /* s[0..n) with its path-like variables expanded; NULL when it cannot be. */
 const char *fxm_expand(struct fxm *m, const char *s, size_t n);
+/* One expansion round of in into out; *left: a reference remains. */
+bool fxm_round(struct fxm *m, const char *in, struct fxm_buf *out, bool *left);
+/* The ':' of a substitution reference s[0..n) ($(X:a=b)); n for none. */
+size_t fxm_subst_colon(const char *s, size_t n);
+/* Read a repo makefile once; false when it cannot be held. */
+bool fxm_load(struct fxm *m, const char *rel);
+/* rel is a regular file under root. */
+bool fxm_exists(const char *root, const char *rel);
 
 enum fxm_kind { FXM_K_OTHER, FXM_K_DEF, FXM_K_RULE, FXM_K_TSV };
 /* A definition (its operator first), a rule (*colon at its ':'), a
@@ -215,6 +237,15 @@ bool fxm_each_ref(struct fxm *m, const char *s, bool twice,
                   bool (*fn)(struct fxm *, const char *, size_t));
 /* After '>': a redirection that feeds no command and names no file. */
 bool fxm_quiet_redirect(const char *p);
+
+/* make_include.c: an include line's words, read or recorded missing. */
+void fxm_include(struct fxm *m, const char *line);
+/* A missing optional include that a conditional of the root makefile
+ * provably skips is dropped from m->missing, and the reading (the
+ * directive, the premises, the paths globbed) is recorded in m->report.
+ * The reading only ever skips what make cannot read: what it cannot
+ * decide is taken (docs/work/SEMANTIC_MANIFEST.md, "Guarded includes"). */
+void fxm_guards(struct fxm *m);
 
 /* make_goal.c: the .PHONY goals a line names through a value no text
  * spells. */

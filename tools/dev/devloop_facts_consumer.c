@@ -298,7 +298,7 @@ static bool fxc_make_hit(struct fxc *c, const char **hit)
     for (size_t k = 0; k < c->nfiles; k++)
         any |= want[k];
     if (*hit == NULL && any)
-        fxm_classify(c->root, c->files, want, make, c->nfiles);
+        fxm_classify(c->root, c->files, want, make, c->nfiles, c->report);
     for (size_t k = 0; *hit == NULL && any && k < c->nfiles; k++)
         if (make[k])
             *hit = c->files[k];
@@ -500,6 +500,9 @@ void zcl_devloop_facts_report_free(struct zcl_devloop_facts_report *report)
     if (report == NULL)
         return;
     free(report->tus);
+    free(report->guards);
+    report->guards = NULL;
+    report->nguards = 0;
     report->tus = NULL;
     report->ntus = 0;
 }

@@ -127,6 +127,7 @@ bool fxc_plain_count(struct fxc *c, const struct zcl_devloop_plan *given);
 /* make.c: for each path asked about (want), whether a makefile names it
  * where make can change an object with it (make), or cannot be read. */
 void fxm_classify(const char *root, const char *const *paths, const bool *want,
-                  bool *make, size_t n);
+                  bool *make, size_t n,
+                  struct zcl_devloop_facts_report *report);
 
 #endif /* ZCL_TOOLS_DEV_DEVLOOP_FACTS_CONSUMER_H */

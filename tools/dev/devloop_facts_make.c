@@ -40,15 +40,17 @@ bool fxm_space(char ch)
 }
 
 /* The next logical line at *at, continuations joined by a space: 0 at the
- * end, -1 when it cannot be held. */
+ * end, -1 when it cannot be held. pos[0] counts the lines read; pos[1] is
+ * the first line of this one. */
 static int fxm_next_line(struct fxm_buf *line, const char **at, bool *recipe,
-                         bool *comment)
+                         bool *comment, uint32_t pos[2])
 {
     const char *p = *at, *q = p;
     bool more = true;
     if (*p == '\0')
         return 0;
     line->n = 0;
+    pos[1] = pos[0] + 1;
     *recipe = *p == '\t';
     while (fxm_space(*q))
         q++;
@@ -62,6 +64,7 @@ static int fxm_next_line(struct fxm_buf *line, const char **at, bool *recipe,
         if (!fxm_put(line, p, more ? n - 1 : n) || !fxm_put(line, " ", 1))
             return -1;
         p = e != NULL ? e + 1 : p + n;
+        pos[0]++;
     }
     *at = p;
     return 1;
@@ -278,9 +281,6 @@ static bool fxm_join_call(const char *s, size_t k, size_t arg, size_t n,
            (!prefix || fxm_put(out, &open, 1)) && fxm_put(out, " ", 1) &&
            fxm_hidden(out, s + arg, n - arg);
 }
-
-static bool fxm_round(struct fxm *m, const char *in, struct fxm_buf *out,
-                      bool *left);
 
 /* s[0..n) expanded FXM_ROUNDS deep into x (y scratch), its surrounding
  * spaces dropped; false when it cannot be, or a reference remains. */
@@ -536,7 +536,7 @@ static bool fxm_subst_ref(struct fxm *m, const char *s, size_t colon,
 
 /* The ':' of a substitution reference s[0..n) ($(X:a=b)): outside any
  * reference, an '=' after it; n for none. */
-static size_t fxm_subst_colon(const char *s, size_t n)
+size_t fxm_subst_colon(const char *s, size_t n)
 {
     int depth = 0;
     for (size_t k = 0; k < n; k++) {
@@ -634,8 +634,8 @@ static const char *fxm_ref(struct fxm *m, const char *d,
 }
 
 /* One expansion round of in into out; *left: a reference remains. */
-static bool fxm_round(struct fxm *m, const char *in, struct fxm_buf *out,
-                      bool *left)
+bool fxm_round(struct fxm *m, const char *in, struct fxm_buf *out,
+               bool *left)
 {
     const char *p = in;
     out->n = 0;
@@ -827,7 +827,7 @@ const char *fxm_expand(struct fxm *m, const char *s, size_t n)
 
 /* ---- make inputs: reading the makefiles ---------------------------------------- */
 
-static bool fxm_load(struct fxm *m, const char *rel)
+bool fxm_load(struct fxm *m, const char *rel)
 {
     uint8_t *b = NULL;
     size_t n = 0;
@@ -844,124 +844,12 @@ static bool fxm_load(struct fxm *m, const char *rel)
     return true;
 }
 
-static bool fxm_exists(const char *root, const char *rel)
+bool fxm_exists(const char *root, const char *rel)
 {
     char full[ZCL_DEVLOOP_PATH_MAX * 2];
     struct stat st;
     return snprintf(full, sizeof(full), "%s/%s", root, rel) < (int)sizeof(full) &&
            stat(full, &st) == 0 && S_ISREG(st.st_mode);
-}
-
-/* The shape of $(X:.o=.d) or $(X:%.o=%.d). */
-static bool fxm_depfile_ref(const char *w, size_t n)
-{
-    return n >= 8 && w[0] == '$' && (w[1] == '(' || w[1] == '{') &&
-           strncmp(w + n - 3, ".d", 2) == 0 && (w[n - 4] == '=' || w[n - 4] == '%');
-}
-
-/* w[0..n) (a bracketed reference's '$') is that one reference whole. */
-static bool fxm_whole_bracket(const char *w, size_t n)
-{
-    char close = w[1] == '(' ? ')' : '}';
-    int depth = 1;
-    size_t k = 2;
-    for (; k < n && depth > 0; k++)
-        depth += w[k] == w[1] ? 1 : w[k] == close ? -1 : 0;
-    return depth == 0 && k == n;
-}
-
-/* A depfile an include line names: $(X:.o=.d), $(X:%.o=%.d), or a
- * literal name ending in .d. Its text is a compiler's -MD output, whose
- * prerequisite lines name only what that compile read: the depfiles
- * themselves answer for it (docs/work/SEMANTIC_MANIFEST.md). */
-static bool fxm_depfile_word(const char *w, size_t n)
-{
-    if (n >= 2 && w[n - 2] == '.' && w[n - 1] == 'd' && memchr(w, '$', n) == NULL)
-        return true;
-    return fxm_depfile_ref(w, n) && fxm_whole_bracket(w, n) &&
-           fxm_subst_colon(w + 2, n - 3) < n - 3;
-}
-
-/* One word of an include line: a literal repo file is read; a missing one
- * is made by a rule the text holds (UNKNOWN, checked once every rule is
- * read) or read by nobody; a word that is not one literal file (a
- * reference no single definition gives, a glob) is UNKNOWN, optional or
- * not: what it reads can reach any goal. */
-static void fxm_include_word(struct fxm *m, const char *w, bool optional)
-{
-    if (strpbrk(w, FXM_WILDS) != NULL) {
-        m->unknown = true;
-        return;
-    }
-    if (w[0] == '/' || strstr(w, "..") != NULL)
-        return; /* outside the tree: not a tracked input */
-    if (fxm_exists(m->root, w)) {
-        m->unknown |= !fxm_load(m, w);
-        return;
-    }
-    if (fxm_depfile_word(w, strlen(w)))
-        return;
-    m->unknown |= !optional || !fxc_strs_add(&m->missing, w);
-}
-
-/* Every whitespace-separated word of an expanded include line's argument
- * text (already macro-expanded by fxm_include). */
-static void fxm_include_words(struct fxm *m, char *s, bool optional)
-{
-    for (; !m->unknown && s != NULL && *s != '\0';) {
-        char *w;
-        while (fxm_space(*s))
-            s++;
-        for (w = s; *s != '\0' && !fxm_space(*s); s++)
-            ;
-        if (*s != '\0')
-            *s++ = '\0';
-        if (*w != '\0')
-            fxm_include_word(m, w, optional);
-    }
-}
-
-/* The include line's argument text p, less its depfile words, into in. */
-static bool fxm_include_text(const char *p, struct fxm_buf *in)
-{
-    in->n = 0;
-    if (!fxm_put(in, "", 0))
-        return false;
-    while (*p != '\0') {
-        const char *w;
-        int depth = 0;
-        while (fxm_space(*p))
-            p++;
-        for (w = p; *p != '\0' && (depth > 0 || !fxm_space(*p)); p++)
-            depth += (*p == '(' || *p == '{') - (*p == ')' || *p == '}');
-        if (p > w && !fxm_depfile_word(w, (size_t)(p - w)) &&
-            (!fxm_put(in, w, (size_t)(p - w)) || !fxm_put(in, " ", 1)))
-            return false;
-    }
-    return true;
-}
-
-/* An include line: its words expanded (a many-word value as its words). */
-static void fxm_include(struct fxm *m, const char *line)
-{
-    const char *p = line;
-    bool optional = *p == '-' || *p == 's';
-    bool left = true;
-    struct fxm_buf *in = &m->a, *out = &m->b;
-    while (*p != '\0' && !fxm_space(*p))
-        p++;
-    m->unknown |= !fxm_include_text(p, in);
-    m->lists = true;
-    for (int r = 0; !m->unknown && left && r < FXM_ROUNDS; r++) {
-        struct fxm_buf *t = in;
-        m->unknown |= !fxm_round(m, in->p, out, &left);
-        in = out;
-        out = t;
-    }
-    m->lists = false;
-    m->unknown |= left;
-    if (!m->unknown)
-        fxm_include_words(m, in->p, optional);
 }
 
 /* A target word of a rule's expanded targets names path: one that spells
@@ -1024,8 +912,10 @@ static void fxm_defs(struct fxm *m, size_t f, bool includes)
     const char *at = m->text[f];
     bool recipe, comment, in_define = false;
     int r = 0;
-    while (!m->unknown &&
-           (r = fxm_next_line(&m->line, &at, &recipe, &comment)) > 0) {
+    m->pos[0] = 0;
+    m->cur_file = (uint32_t)f;
+    while (!m->unknown && (r = fxm_next_line(&m->line, &at, &recipe,
+                                             &comment, m->pos)) > 0) {
         const char *p = fxm_skip_prefixes(m->line.p);
         if (comment || recipe)
             continue;
@@ -1343,6 +1233,7 @@ static void fxm_keep_line(struct fxm *m, uint8_t ctx, uint32_t rule)
     l->rule = rule;
     l->from = m->from < FXM_LINE_MAX ? (uint32_t)m->from : 0;
     l->body = m->body && ctx == FXM_DEF;
+    l->at = m->pos[1];
     l->text = zcl_strdup(t, "facts_consumer.mkline");
     l->raw = zcl_strdup(m->line.p, "facts_consumer.mkraw");
     l->name = zcl_strdup(ctx == FXM_DEF ? m->name : "", "facts_consumer.mkname");
@@ -1386,8 +1277,10 @@ static void fxm_lines_of(struct fxm *m, size_t f)
     const char *at = m->text[f];
     bool recipe, comment;
     int r = 0;
-    while (!m->unknown &&
-           (r = fxm_next_line(&m->line, &at, &recipe, &comment)) > 0) {
+    m->pos[0] = 0;
+    m->cur_file = (uint32_t)f;
+    while (!m->unknown && (r = fxm_next_line(&m->line, &at, &recipe,
+                                             &comment, m->pos)) > 0) {
         uint8_t ctx;
         if (comment)
             continue;
@@ -1401,6 +1294,8 @@ static void fxm_lines_of(struct fxm *m, size_t f)
     }
     /* A conditional or a define the file leaves open: make stops. */
     m->unknown |= r < 0 || st.depth != 0 || st.in_define;
+    if (f == 0)
+        m->root_lines = m->nlines;
 }
 
 /* ---- make inputs: variable references ------------------------------------------- */
@@ -1430,6 +1325,9 @@ static void fxm_free(struct fxm *m)
     fxc_strs_free(&m->missing);
     fxc_strs_free(&m->goal_names);
     fxc_strs_free(&m->makers);
+    for (size_t k = 0; k < m->nincs; k++)
+        free(m->incs[k].path);
+    free(m->incs);
     free(m->line.p);
     free(m->a.p);
     free(m->b.p);
@@ -1474,6 +1372,7 @@ void fxm_analyse(struct fxm *m)
     fxm_read_all(m);
     for (size_t f = 0; !m->unknown && f < m->files.n; f++)
         fxm_lines_of(m, f);
+    fxm_guards(m);
     fxm_missing_made(m);
     if (!m->unknown)
         fxm_makers(m);
@@ -1482,10 +1381,11 @@ void fxm_analyse(struct fxm *m)
 }
 
 void fxm_classify(const char *root, const char *const *paths, const bool *want,
-                  bool *make, size_t n)
+                  bool *make, size_t n,
+                  struct zcl_devloop_facts_report *report)
 {
     struct fxm m = {.root = root, .paths = paths, .want = want, .make = make,
-                    .npaths = n};
+                    .npaths = n, .report = report};
     for (size_t k = 0; k < n; k++)
         make[k] = want[k] && (fxm_makefile_name(paths[k]) ||
                               fxm_submake(root, paths[k]));
