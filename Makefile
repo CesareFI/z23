@@ -4374,12 +4374,15 @@ action-root-reuse-study: $(ACTION_ROOT_STUDY_BIN) \
 # z23-sem-replay: replay real commits through the incremental test-fast
 # object build, the semantic sensor and dev.change.plan, and compare what
 # make recompiled, which object bytes changed, the plain plan and the facts
-# plan (docs/work/SEMANTIC_MANIFEST.md, "Replay on real history"). Its
-# sources carry the only main() and stay out of every node, dev and test
-# link via DEV_STANDALONE_SRCS. The run itself drives git, make, the sensor
-# (make clang-manifest) and a z23-dev planner in a dedicated worktree. It is
-# POSIX-only (fork, wait4, objcopy), so the name carries no host executable
-# suffix and check-standalone-tools-link derives and builds it.
+# plan (docs/work/SEMANTIC_MANIFEST.md, "Replay on real history"; docs
+# on this Makefile wiring and the reporting-tool boundary in
+# docs/DEVELOPING.md). Its sources carry the only main() and stay out of
+# every node, dev and test link via DEV_STANDALONE_SRCS. The run itself
+# drives git, make, the sensor (make clang-manifest) and a z23-dev planner
+# in a dedicated worktree. It is POSIX-only (fork, wait4, objcopy), so the
+# name carries no host executable suffix and check-standalone-tools-link
+# derives and builds it. Reporting tool only: no default target (ff,
+# t-fast, t-fast-exact, land, proof) invokes it or reads build/sem-replay/.
 SEM_REPLAY_BIN = $(BIN_DIR)/z23-sem-replay
 SEM_REPLAY_SRCS = tools/dev/sem_replay.c tools/dev/sem_replay_util.c \
 	tools/dev/sem_replay_build.c tools/dev/sem_replay_change.c \

@@ -342,6 +342,23 @@ static void print_agg_row(const struct agg *a)
            a->sense, a->p[P_MAKE], a->p[P_PLAIN], a->p[P_FACTS], a->p[P_CHANGED]);
 }
 
+/* The headline: what the facts plan avoided running, in total, against the
+ * two baselines that matter — make's actual compile set and dev.change.plan
+ * without the facts. Per-commit counts are in print_commits; this is the
+ * one total worth reading first. */
+static void print_headline(const struct table *t)
+{
+    struct agg total = {0};
+    snprintf(total.name, sizeof(total.name), "**total**");
+    for (size_t i = 0; i < t->n; i++)
+        agg_add(&total, t, &t->rows[i]);
+    printf("## Headline\n\n");
+    printf("Compiler executions avoided vs make: %.0f (make compiled %.0f TUs, the facts plan "
+           "%.0f).\n\n", total.make - total.facts, total.make, total.facts);
+    printf("Test-group executions avoided vs plain: %.0f (plain selected %.0f groups, the facts "
+           "plan %.0f).\n\n", total.gplain - total.gfacts, total.gplain, total.gfacts);
+}
+
 static void print_groups(const struct table *t, const char *key, const char *title)
 {
     struct agg v[64];
@@ -688,6 +705,7 @@ int sr_report(const struct sr_cfg *cfg)
     if (!pricing_load(&pr, cfg->state) || !load_runs(cfg->state, &pr, &t, &dirs))
         return 1;
     printf("# Semantic facts replay\n\n%zu commits replayed.\n\n", t.n);
+    print_headline(&t);
     print_commits(&t);
     print_groups(&t, "kind", "By change kind");
     print_groups(&t, "facts_mode", "By facts compile-set mode");
