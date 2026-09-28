@@ -677,6 +677,23 @@ static void fxm_include_word(struct fxm *m, const char *w, bool optional)
         m->unknown = true;
 }
 
+/* Every whitespace-separated word of an expanded include line's argument
+ * text (already macro-expanded by fxm_include). */
+static void fxm_include_words(struct fxm *m, char *s, bool optional)
+{
+    for (; !m->unknown && s != NULL && *s != '\0';) {
+        char *w;
+        while (fxm_space(*s))
+            s++;
+        for (w = s; *s != '\0' && !fxm_space(*s); s++)
+            ;
+        if (*s != '\0')
+            *s++ = '\0';
+        if (*w != '\0')
+            fxm_include_word(m, w, optional);
+    }
+}
+
 static void fxm_include(struct fxm *m, const char *line)
 {
     const char *p = line;
@@ -694,17 +711,8 @@ static void fxm_include(struct fxm *m, const char *line)
         in = out;
         out = t;
     }
-    for (char *s = in->p; !m->unknown && s != NULL && *s != '\0';) {
-        char *w;
-        while (fxm_space(*s))
-            s++;
-        for (w = s; *s != '\0' && !fxm_space(*s); s++)
-            ;
-        if (*s != '\0')
-            *s++ = '\0';
-        if (*w != '\0')
-            fxm_include_word(m, w, optional);
-    }
+    if (!m->unknown)
+        fxm_include_words(m, in->p, optional);
 }
 
 static bool fxm_is_include(const char *p)
