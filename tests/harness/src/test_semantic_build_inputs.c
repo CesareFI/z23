@@ -851,11 +851,11 @@ struct sbi_case {
     const char *id, *makefile, *extra, *body;
 };
 
-/* Every case widens a changed tools/x.sh; the first that does not is
- * named. */
+/* Every case widens a changed tools/x.sh; each that does not is named. */
 static bool sbi_cases_widen(const struct sbi_case *cases, size_t n)
 {
     static const char *const changed[] = {"tools/x.sh"};
+    bool all = true;
     for (size_t k = 0; k < n; k++) {
         struct sbi_run r = {0};
         char tag[64];
@@ -867,10 +867,10 @@ static bool sbi_cases_widen(const struct sbi_case *cases, size_t n)
         zcl_devloop_facts_report_free(&r.rep);
         if (!ok) {
             printf("[case %s narrowed] ", cases[k].id);
-            return false;
+            all = false;
         }
     }
-    return true;
+    return all;
 }
 
 #define SBI_GEN_RULE ".PHONY: gen\ngen:\n\tsh tools/x.sh > gen.h\n"
