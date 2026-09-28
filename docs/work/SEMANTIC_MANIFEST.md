@@ -1385,8 +1385,9 @@ while an object is built. The path widens when:
   a file; an `include`, `-include` or `sinclude` word that is not one
   literal file (a glob, a `$(wildcard)`, a reference no single definition
   gives); a missing file a mandatory `include` names; a missing file an
-  optional include names when a rule a `define` holds could make it; and
-  a generated include whose recipe writes text no line holds (below). A
+  optional include names when a rule a `define` holds, a match-anything
+  rule (`%:`) or `.DEFAULT` could make it; and a generated include whose
+  recipe writes text no line holds (below). A
   missing optional file no rule makes is read by nobody, and a depfile an
   include names (`$(OBJS:.o=.d)`, a literal `.d`) is left to the depfile
   graph.
@@ -1402,13 +1403,25 @@ command must be `set`, `mkdir`, `trap` (no action, or an `rm`), `mktemp`,
 `true`, `:`, `exit`, `test`, `[`, `rm`, `touch`, `chmod`, `printf`,
 `echo`, `mv` (of a temporary file a shell variable names, which a bare
 assignment may set only from `$$(mktemp ...)`), or a program the tree
-holds by a relative path; a command substitution may run only `mktemp`,
-`dirname`, `basename` or `pwd`. Only `printf` and `echo` may write to a
-file, and the words they write are goal positions: a rule they print
-reaches its prerequisites, a printed shell value (`$$x`) reaches every
-`.PHONY` name, and text from a `#` to a printed newline is a comment. Any
-other command, a group or `exec` redirection, a copy (`cp`, `cat`), or a
-program's output redirected to a file is UNKNOWN.
+holds by a relative path that is not handed the file (no argument or
+environment value holds `$@`, `$*`, a shell value `$$x`, or the target's
+last path part); a command substitution may run only `mktemp`,
+`dirname`, `basename` or `pwd`; the recipe may not expand a `$(shell)`,
+`$(file)` or `$(eval)`, itself or through a variable whose deferred value
+(`=`, `?=`, `+=`, a `define`) does. Only `printf` and `echo` may write to
+a file, and only once in the recipe: a second write can join the first's
+text (`>` then `>>`, `echo -n`), so it reaches every `.PHONY` name. What
+the one write puts in the makefile is computed: a `printf` format is
+applied to its arguments (`%s`, `%%`, `\n`, `\t`; again while arguments
+remain), and any other conversion (`%c`, `%b`, a width), an option, a
+shell value, or an `echo` backslash (`echo -e`, and dash reads escapes)
+reaches every `.PHONY` name. The written words are goal positions: a
+rule they print reaches its prerequisites, and text from a `#` to a
+newline is a comment except on a line a tab leads. Anything else (another
+command, a group or `exec` redirection, a copy such as `cp` or `cat`, a
+program's output redirected to a file, any rule above broken) is UNKNOWN.
+A match-anything rule (`%:`) or a `.DEFAULT` rule can make any file, so
+with one present every missing optional include is UNKNOWN.
 
 A line names a path by its literal path or basename, a directory it lives
 under (with or without the trailing `/`), or a glob (`*`, `?`, `[...]`,
@@ -1489,6 +1502,14 @@ none of them runs as part of building that commit's objects:
 - a hand-run goal (`make core-seal`, a `.PHONY` rule whose sub-make names
   only other `.PHONY` goals): it runs when someone names it, and what it
   rewrites changes objects then;
+- a sub-make in a rule nothing reaches that names a `.PHONY` generator
+  beside the goals that build objects, on one line (`ci: ; $(MAKE) gen
+  all`) or on two (`$(MAKE) gen`, then `$(MAKE) build/a.o`): that rule is
+  itself a hand-run goal. Reaching every goal of every line that runs make
+  instead widens the real Makefile's `tools/verify` and fixture paths
+  (a `coverage` recipe runs `gcovr --filter 'tools/'`): on the tail-10
+  replay (7f85a654d1..3d7be82098) compiles go from 3712 to 11087 and
+  facts groups from 1702 to 4108, three of ten commits universal;
 - a goal a recipe reads at run time (`$$target` from a shell loop over
   words the shell computes): its words exist only when the recipe runs;
 - a variable set only on the command line or in the environment
