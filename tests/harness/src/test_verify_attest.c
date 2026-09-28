@@ -167,6 +167,12 @@ static bool va_refused(struct zcl_verify_attest_decision d, const char *why)
            strcmp(d.reason, why) == 0;
 }
 
+static bool va_blocked(struct zcl_verify_attest_decision d, const char *why)
+{
+    return d.verdict == ZCL_VERIFY_ATTEST_FAIL && d.reason &&
+           strcmp(d.reason, why) == 0;
+}
+
 /* Replace the trailer of a sealed record with `pub` and a signature over
  * the body made by `sign`, exactly as a hostile producer would. */
 static void va_resign(uint8_t *rec, size_t len, const uint8_t seed[32],
@@ -583,6 +589,118 @@ static int test_va_artifact_substitution(void)
     return failures;
 }
 
+static struct zcl_verify_attest_observation va_observation(const uint8_t *rec,
+                                                            size_t len)
+{
+    return (struct zcl_verify_attest_observation) {
+        .record_bytes = rec, .record_len = len,
+        .obj_bytes = (const uint8_t *)VA_OBJ, .obj_len = sizeof(VA_OBJ) - 1u,
+        .dep_bytes = (const uint8_t *)VA_DEP, .dep_len = sizeof(VA_DEP) - 1u,
+        .stderr_bytes = (const uint8_t *)VA_STDERR,
+        .stderr_len = sizeof(VA_STDERR) - 1u};
+}
+
+static int test_va_observation_set(void)
+{
+    int failures = 0;
+    uint8_t *pass = NULL, *fail = NULL;
+    size_t pass_len = 0, fail_len = 0;
+    const char *why = NULL;
+    TEST("verify attest: whole-key scan blocks a signed failure and "
+         "contradiction regardless of observation order") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed,
+                                      &pass, &pass_len, &why));
+        r.exit_code = 1;
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed,
+                                      &fail, &fail_len, &why));
+        struct zcl_verify_attest_observation entries[2] = {
+            va_observation(pass, pass_len), va_observation(fail, fail_len)};
+        size_t selected = SIZE_MAX;
+        struct zcl_verify_attest_decision d = zcl_verify_attest_admit_set(
+            entries, 2u, &e, &root, &selected);
+        ASSERT(va_blocked(d, ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT));
+        ASSERT(selected == SIZE_MAX);
+        entries[0] = va_observation(fail, fail_len);
+        entries[1] = va_observation(pass, pass_len);
+        d = zcl_verify_attest_admit_set(entries, 2u, &e, &root, &selected);
+        ASSERT(va_blocked(d, ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT));
+        entries[1].obj_bytes = NULL;
+        entries[1].obj_len = 0u;
+        d = zcl_verify_attest_admit_set(entries, 2u, &e, &root, &selected);
+        ASSERT(va_blocked(d, ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT));
+        d = zcl_verify_attest_admit_set(entries, 1u, &e, &root, &selected);
+        ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
+        ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
+        PASS();
+    } _test_next:;
+    free(pass); free(fail);
+    return failures;
+}
+
+static int test_va_observation_set_refusals(void)
+{
+    int failures = 0;
+    uint8_t *pass = NULL, *other = NULL;
+    size_t pass_len = 0, other_len = 0;
+    const char *why = NULL;
+    TEST("verify attest: forged, changed, missing and conflicting PASS "
+         "observations never become a HIT") {
+        struct zcl_verify_attest_record r = va_record();
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed,
+                                      &pass, &pass_len, &why));
+        struct zcl_verify_attest_observation entries[2] = {
+            va_observation(pass, pass_len), va_observation(pass, pass_len)};
+        size_t selected = SIZE_MAX;
+        struct zcl_verify_attest_decision d = zcl_verify_attest_admit_set(
+            entries, 2u, &e, &root, &selected);
+        ASSERT(d.verdict == ZCL_VERIFY_ATTEST_ADMIT && selected == 0u);
+        entries[1].obj_bytes = NULL;
+        entries[1].obj_len = 0u;
+        d = zcl_verify_attest_admit_set(entries, 2u, &e, &root, &selected);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY));
+        ASSERT(selected == SIZE_MAX);
+        entries[1] = va_observation(pass, pass_len);
+        entries[1].record_bytes = other = zcl_malloc(pass_len, "va-forged");
+        ASSERT(other);
+        memcpy(other, pass, pass_len);
+        other_len = pass_len;
+        other[other_len - 1u] ^= 1u;
+        d = zcl_verify_attest_admit_set(entries, 2u, &e, &root, &selected);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID));
+        free(other);
+        other = NULL;
+        r.obj_sha3[0] ^= 1u;
+        ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed,
+                                      &other, &other_len, &why));
+        entries[1] = va_observation(other, other_len);
+        d = zcl_verify_attest_admit_set(entries, 2u, &e, &root, &selected);
+        ASSERT(va_blocked(d, ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT));
+        entries[1].obj_bytes = NULL;
+        entries[1].obj_len = 0u;
+        d = zcl_verify_attest_admit_set(entries, 2u, &e, &root, &selected);
+        ASSERT(va_blocked(d, ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT));
+        e.closure_sha3[0] ^= 1u;
+        d = zcl_verify_attest_admit_set(entries, 1u, &e, &root, &selected);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH));
+        e = va_expected();
+        root.loaded = false;
+        d = zcl_verify_attest_admit_set(entries, 1u, &e, &root, &selected);
+        ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_NO_VERIFIER_KEY));
+        root = va_root(NULL);
+        ASSERT(va_refused(zcl_verify_attest_admit_set(entries, 0u, &e,
+                         &root, &selected),
+                         ZCL_VERIFY_ATTEST_WHY_NO_OBSERVATION));
+        PASS();
+    } _test_next:;
+    free(pass); free(other);
+    return failures;
+}
+
 static int test_va_refuse_signers(void)
 {
     int failures = 0;
@@ -982,6 +1100,8 @@ int test_verify_attest(void)
     failures += test_va_signed_failure_blocks();
     failures += test_va_empty_object();
     failures += test_va_artifact_substitution();
+    failures += test_va_observation_set();
+    failures += test_va_observation_set_refusals();
     failures += test_va_refuse_signers();
     failures += test_va_path_policy();
     failures += test_va_pubkey_parse();

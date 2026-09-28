@@ -642,6 +642,13 @@ static struct zcl_verify_attest_decision va_signed_failure(void)
     return d;
 }
 
+static struct zcl_verify_attest_decision va_signed_conflict(void)
+{
+    struct zcl_verify_attest_decision d = {
+        ZCL_VERIFY_ATTEST_FAIL, ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT};
+    return d;
+}
+
 static const char *va_root_check(const struct zcl_verify_attest_trust_root *r)
 {
     if (!r || !r->loaded)
@@ -789,4 +796,102 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
         why = va_artifacts_check(&parsed.record, obj_bytes, obj_len,
                                  dep_bytes, dep_len, stderr_bytes, stderr_len);
     return va_decide(why);
+}
+
+struct va_set_state {
+    const char *first_refusal;
+    size_t pass_index;
+    uint8_t obj_sha3[VA_HASH];
+    uint8_t dep_sha3[VA_HASH];
+    uint8_t stderr_sha3[VA_HASH];
+    bool saw_pass;
+    bool saw_fail;
+    bool pass_conflict;
+    bool have_pass_hash;
+};
+
+static void va_set_refuse(struct va_set_state *s, const char *why)
+{
+    if (!s->first_refusal)
+        s->first_refusal = why;
+}
+
+static void va_set_inspect(const struct zcl_verify_attest_observation *all,
+                           size_t i,
+                           const struct zcl_verify_attest_expected *expected,
+                           const struct zcl_verify_attest_trust_root *root,
+                           struct va_set_state *state)
+{
+    const struct zcl_verify_attest_observation *o = &all[i];
+    struct zcl_verify_attest_signed parsed;
+    const char *why = NULL;
+    if (!zcl_verify_attest_parse(o->record_bytes, o->record_len,
+                                 &parsed, &why)) {
+        va_set_refuse(state, why);
+        return;
+    }
+    why = va_signer_check(o->record_bytes, &parsed, root);
+    if (!why) why = va_input_check(&parsed.record, expected);
+    if (why) {
+        va_set_refuse(state, why);
+        return;
+    }
+    if (parsed.record.exit_code != 0) {
+        state->saw_fail = true;
+        return;
+    }
+    state->saw_pass = true;
+    if (!state->have_pass_hash) {
+        memcpy(state->obj_sha3, parsed.record.obj_sha3, VA_HASH);
+        memcpy(state->dep_sha3, parsed.record.dep_sha3, VA_HASH);
+        memcpy(state->stderr_sha3, parsed.record.stderr_sha3, VA_HASH);
+        state->have_pass_hash = true;
+    } else if (memcmp(state->obj_sha3, parsed.record.obj_sha3, VA_HASH) ||
+               memcmp(state->dep_sha3, parsed.record.dep_sha3, VA_HASH) ||
+               memcmp(state->stderr_sha3, parsed.record.stderr_sha3,
+                      VA_HASH)) {
+        state->pass_conflict = true;
+    }
+    struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
+        o->record_bytes, o->record_len, o->obj_bytes, o->obj_len,
+        o->dep_bytes, o->dep_len, o->stderr_bytes, o->stderr_len,
+        expected, root);
+    if (d.verdict != ZCL_VERIFY_ATTEST_ADMIT) {
+        va_set_refuse(state, d.reason);
+        return;
+    }
+    if (state->pass_index == SIZE_MAX)
+        state->pass_index = i;
+}
+
+struct zcl_verify_attest_decision zcl_verify_attest_admit_set(
+    const struct zcl_verify_attest_observation *observations, size_t count,
+    const struct zcl_verify_attest_expected *expected,
+    const struct zcl_verify_attest_trust_root *trust_root,
+    size_t *selected_index)
+{
+    struct va_set_state state = {.pass_index = SIZE_MAX};
+    if (selected_index)
+        *selected_index = SIZE_MAX;
+    if (!expected || (!observations && count != 0u))
+        return va_decide(ZCL_VERIFY_ATTEST_WHY_ARGUMENTS);
+    const char *root_why = va_root_check(trust_root);
+    if (root_why)
+        return va_decide(root_why);
+    if (count == 0u)
+        return va_decide(ZCL_VERIFY_ATTEST_WHY_NO_OBSERVATION);
+
+    for (size_t i = 0; i < count; ++i)
+        va_set_inspect(observations, i, expected, trust_root, &state);
+    if ((state.saw_pass && state.saw_fail) || state.pass_conflict)
+        return va_signed_conflict();
+    if (state.saw_fail)
+        return va_signed_failure();
+    if (state.first_refusal)
+        return va_decide(state.first_refusal);
+    if (state.pass_index == SIZE_MAX)
+        return va_decide(ZCL_VERIFY_ATTEST_WHY_NO_OBSERVATION);
+    if (selected_index)
+        *selected_index = state.pass_index;
+    return va_decide(NULL);
 }

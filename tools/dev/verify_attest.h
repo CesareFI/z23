@@ -81,6 +81,8 @@
 #define ZCL_VERIFY_ATTEST_WHY_DEP_EMPTY "attest_dep_empty"
 #define ZCL_VERIFY_ATTEST_WHY_DEP_MISMATCH "attest_dep_hash_mismatch"
 #define ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH "attest_stderr_hash_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_NO_OBSERVATION "attest_no_observation"
+#define ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT "attest_eligible_conflict"
 
 /* A borrowed byte string. Never NUL-terminated by contract; `len` is the
  * whole value. Embedded NUL bytes are malformed in every text field. */
@@ -232,8 +234,8 @@ struct zcl_verify_attest_expected {
 enum zcl_verify_attest_verdict {
     ZCL_VERIFY_ATTEST_REFUSE = 0,
     ZCL_VERIFY_ATTEST_ADMIT = 1,
-    /* Exact, signed compile failure: the caller must fail, not compile past
-     * it as though the verifier had no matching observation. */
+    /* Exact signed compile failure or eligible observation conflict: the
+     * caller must fail, never compile past it as a cold miss. */
     ZCL_VERIFY_ATTEST_FAIL = 2,
 };
 
@@ -256,5 +258,31 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
     const uint8_t *stderr_bytes, size_t stderr_len,
     const struct zcl_verify_attest_expected *expected,
     const struct zcl_verify_attest_trust_root *trust_root);
+
+/* An immutable store key may have several observations. The caller must
+ * enumerate the whole key under its publication lock and fetch every named
+ * artifact before calling this function. A signed, exact-input failure
+ * blocks fallback, including when a later PASS exists. Two exact-input PASS
+ * records with different output hashes also block. Any unadmitted member
+ * makes the set cold; an untrusted member never suppresses a signed failure.
+ * On ADMIT, selected_index names an observation whose artifact bytes were
+ * checked by zcl_verify_attest_admit. No record is selected on other verdicts.
+ * Reload the current root-pinned key before each call. */
+struct zcl_verify_attest_observation {
+    const uint8_t *record_bytes;
+    size_t record_len;
+    const uint8_t *obj_bytes;
+    size_t obj_len;
+    const uint8_t *dep_bytes;
+    size_t dep_len;
+    const uint8_t *stderr_bytes;
+    size_t stderr_len;
+};
+
+struct zcl_verify_attest_decision zcl_verify_attest_admit_set(
+    const struct zcl_verify_attest_observation *observations, size_t count,
+    const struct zcl_verify_attest_expected *expected,
+    const struct zcl_verify_attest_trust_root *trust_root,
+    size_t *selected_index);
 
 #endif
