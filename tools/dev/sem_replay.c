@@ -104,7 +104,9 @@ static bool parse_opts(int argc, char **argv, struct opts *o)
     memset(o, 0, sizeof(*o));
     o->cfg.jobs = 8;
     snprintf(o->label, sizeof(o->label), "check");
-    if (!abs_path("/proc/self/exe", o->cfg.self))
+    /* run re-executes this binary per step. /proc/self/exe names it on
+     * Linux; a host without /proc (macOS) falls back to argv[0]. */
+    if (!abs_path(sr_exists("/proc/self/exe") ? "/proc/self/exe" : argv[0], o->cfg.self))
         return false;
     for (int i = 2; i + 1 < argc; i += 2)
         if (!opt_value(o, argv[i], argv[i + 1]))

@@ -4404,6 +4404,15 @@ $(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
 	    -Icontexts/commons/packages/zutf8/include \
 	    -Iplatform/modules/sha3/include -Iplatform/modules/base/include \
 	    -o $@ $(filter %.c,$^)
+# The sem_replay group runs this binary as a subprocess against a throwaway
+# git fixture (the same reason test_acme_worker runs zclassic23-acme).
+# Order-only, so the test build guarantees it exists without relinking the
+# suite when the tool changes. Building it is all the default path does; no
+# default target runs a replay.
+ifneq ($(ZCL_HOST_WINDOWS),1)
+$(TEST_PARALLEL_REL_CANDIDATE): | $(SEM_REPLAY_BIN)
+$(TEST_PARALLEL_FAST_CANDIDATE): | $(SEM_REPLAY_BIN)
+endif
 
 .PHONY: check-capability-closure
 # Make already captured this exact record before dispatching lint. Pass it to

@@ -837,6 +837,10 @@ ZCL_TEST_GROUP(zcode_benchmark_exec)
 ZCL_TEST_GROUP(zcode_discovery_projection)
 ZCL_TEST_GROUP(vcs_devloop)
 ZCL_TEST_GROUP(action_root)
+/* z23-sem-replay, proved on a throwaway git fixture: a planted facts
+ * omission exits 3 and names the TU, and a narrowing plan's counts are
+ * exact. The replay itself is a reporting tool no gate runs. */
+ZCL_TEST_GROUP(sem_replay)
 ZCL_TEST_GROUP(codeindex)
 ZCL_TEST_GROUP(codeindex_scale)
 ZCL_TEST_GROUP(codeindex_projection_integrity)
