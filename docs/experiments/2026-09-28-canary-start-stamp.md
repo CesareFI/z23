@@ -30,3 +30,28 @@ zero skips and a 2.6 second test body. The GREEN log SHA-256 is
 
 The change is confined to the test. The production canary's reset, stamp,
 sentinel, and refusal behavior are unchanged.
+
+## Native macOS reproduction
+
+On 2026-09-27T22:02:45-07:00 (2026-09-28T05:02:45Z), the isolated
+`Mac-mini-von-rentamac.local` host reported `Mac16,10`, arm64 macOS 26.0.1,
+and Apple Clang 17.0.0. The Linux host sent a Git bundle whose SHA-256 was
+`48793182e89cf5c7fa20cdd550c232bed62d8f734b8b0ac3b421afceca739660`.
+The Mac verified the bundle prerequisite and checked out exact signed Linux
+head `cbb50c8018ff97d42afd06fae59b4aedcef04860` in its isolated clone.
+
+The Mac first ran `nice -n 10 make -j1 t-fast
+ONLY=test_replay_canary_verdict` on that head: 1/1 groups passed cold, zero
+skips, 7.9 second test body. For native RED, the test source was temporarily
+replaced with the pre-fix source plus the same 750 ms child-start delay.
+The same registered command failed 1/1 groups cold, zero skips, at the stale
+PASS assertion in 7.7 seconds. RED log SHA-256:
+`59df4fabf30b055450565ac8d63896e23014da0a44699802ba63105764b99d8f`.
+
+The Mac then restored the file from head `cbb50c8018ff97d42afd06fae59b4aedcef04860`;
+the restored file SHA-256 was
+`fc71c52033c31ba8d0a4ab434480be4774ddf79f8a7f888f4e5fb50d2fbc5cc2`,
+and `git status --short` was empty. The same group passed cold, 1/1 with zero
+skips and an 8.2 second test body. GREEN log SHA-256:
+`8c6f1b722ae1d50345e8cf57f6df6ded364e9c88e5e46f9933c1683503231238`.
+The native test used no production node or canonical datadir.
