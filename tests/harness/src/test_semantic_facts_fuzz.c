@@ -151,28 +151,19 @@ static const struct sfz_seed k_default_seeds_full[] = {
     {34000, PROF_NO_CTR_LINE, "data_index"},
 };
 
-/* The default run: 16 of the 44 above, a subset of k_default_seeds_full
- * chosen to keep every profile, most mutation kinds and every data kind
- * represented, plus enough seeds that are known (from a run of the full
- * list) to produce a seeded verdict that the invariant below holds with
- * margin. Standalone this is well under a minute on an unloaded host;
- * ZCL_STRESS_TESTS=1 runs the full list instead. */
+/* The default run: 6 of the 44 above, a subset of k_default_seeds_full
+ * chosen to keep every profile and a data kind represented; the fixed
+ * reproducers alone already cost most of a fast gate's budget, so this
+ * list is deliberately small, and every one of the 6 is known (from a
+ * run of the full list) to produce a seeded verdict, so the invariant
+ * below holds with margin. Standalone (with the fixed reproducers) this
+ * is about a minute; ZCL_STRESS_TESTS=1 runs the full list instead. */
 static const struct sfz_seed k_default_seeds_fast[] = {
-    {20007, PROF_ALL, "hasinc"},
     {20055, PROF_ALL, "header_inline"},
-    {20122, PROF_ALL, "multi"},
-    {22402, PROF_GCC_DEPS, "shadow"},
     {22414, PROF_GCC_DEPS, "typedef"},
-    {22449, PROF_GCC_DEPS, "layout"},
-    {23000, PROF_NO_CTR_LINE, "header_const"},
     {23005, PROF_NO_CTR_LINE, "body_static"},
-    {23022, PROF_NO_CTR_LINE, "body_extern"},
     {23037, PROF_NO_CTR_LINE, "enum_value"},
-    {23058, PROF_NO_CTR_LINE, "flag"},
-    {23059, PROF_NO_CTR_LINE, "body_static"},
-    {23149, PROF_NO_CTR_LINE, "macro_cond"},
     {31000, PROF_NO_CTR_LINE, "data_string"},
-    {32000, PROF_NO_CTR_LINE, "data_table"},
     {34000, PROF_NO_CTR_LINE, "data_index"},
 };
 

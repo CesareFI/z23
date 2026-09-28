@@ -1278,8 +1278,8 @@ on both sides. The change set is planned in process exactly as
 
 A false negative prints the seed, profile, mutation, TU and function and
 fails the group. Every fixed reproducer always runs. On top of those, the
-default run adds a fixed list of 16 (seed, profile, kind) cases (about a
-minute standalone), and must yield narrowed verdicts that seed a changed
+default run adds a fixed list of 6 (seed, profile, kind) cases (about a
+minute standalone with the fixed reproducers), and must yield narrowed verdicts that seed a changed
 function, so the group cannot pass on fallbacks alone; `ZCL_STRESS_TESTS=1`
 runs the full 44-case list instead, held to the same invariant.
 `ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND]]` runs a long range
