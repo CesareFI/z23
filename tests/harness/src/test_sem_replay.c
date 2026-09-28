@@ -49,6 +49,9 @@
  * Everything runs under test-tmp/. git and the replay run under `env -u`
  * for the make and git variables a surrounding `make` or hook exports, so
  * the fixture's make and git never see the outer build or checkout. */
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE /* realpath */
+#endif
 
 #include "test/test_core.h"
 

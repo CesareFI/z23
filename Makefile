@@ -4396,13 +4396,15 @@ $(SEM_REPLAY_BIN): $(SEM_REPLAY_SRCS) tools/dev/sem_replay.h \
 		tools/dev/sem_replay_classify.h \
 		contexts/commons/packages/zjsonp/src/zjsonp.c \
 		contexts/commons/packages/zutf8/src/zutf8.c \
-		platform/modules/sha3/src/sha3.c
+		platform/modules/sha3/src/sha3.c \
+		platform/modules/platform/src/clock.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(ZCL_WARN_FORMAT_TRUNCATION) \
 	    $(ZCL_PLATFORM_CPPFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
 	    -Itools/dev -Icontexts/commons/packages/zjsonp/include \
 	    -Icontexts/commons/packages/zutf8/include \
 	    -Iplatform/modules/sha3/include -Iplatform/modules/base/include \
+	    -Iplatform/modules/platform/include -Iplatform/modules/util/include \
 	    -o $@ $(filter %.c,$^)
 # The sem_replay group runs this binary as a subprocess against a throwaway
 # git fixture (the same reason test_acme_worker runs zclassic23-acme).

@@ -6,6 +6,9 @@
 
 #include "sem_replay.h"
 
+#include "base/safe_alloc.h"
+#include "platform/clock.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -30,7 +33,7 @@ bool sr_strv_pushn(struct sr_strv *s, const char *str, size_t len)
 {
     if (s->n == s->cap) {
         size_t cap = s->cap ? s->cap * 2 : 16;
-        char **v = realloc(s->v, cap * sizeof(*v));
+        char **v = zcl_realloc(s->v, cap * sizeof(*v), "sem_replay_strv");
         if (v == NULL) {
             fprintf(stderr, "sem-replay: out of memory growing a list\n");
             return false;
@@ -38,7 +41,7 @@ bool sr_strv_pushn(struct sr_strv *s, const char *str, size_t len)
         s->v = v;
         s->cap = cap;
     }
-    char *copy = malloc(len + 1);
+    char *copy = zcl_malloc(len + 1, "sem_replay_strv_item");
     if (copy == NULL) {
         fprintf(stderr, "sem-replay: out of memory copying a string\n");
         return false;
@@ -100,9 +103,7 @@ void sr_strv_free(struct sr_strv *s)
 
 double sr_now(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    return (double)clock_now_monotonic_ns() / 1e9;
 }
 
 static void child_setup(const char *cwd, int out_fd, int err_fd,
@@ -175,14 +176,14 @@ int sr_run(char *const argv[], const char *cwd, const char *log,
 static bool drain(int fd, char **out, size_t *len)
 {
     size_t cap = 65536, n = 0;
-    char *buf = malloc(cap);
+    char *buf = zcl_malloc(cap, "sem_replay_drain");
     if (buf == NULL) {
         fprintf(stderr, "sem-replay: out of memory reading a pipe\n");
         return false;
     }
     for (;;) {
         if (cap - n < 4096) {
-            char *nb = realloc(buf, cap * 2);
+            char *nb = zcl_realloc(buf, cap * 2, "sem_replay_drain");
             if (nb == NULL) {
                 fprintf(stderr, "sem-replay: out of memory reading a pipe\n");
                 free(buf);
@@ -360,7 +361,7 @@ static bool wb_put(struct wordbuf *w, char c)
 {
     if (w->n + 1 >= w->cap) {
         size_t cap = w->cap ? w->cap * 2 : 256;
-        char *nb = realloc(w->b, cap);
+        char *nb = zcl_realloc(w->b, cap, "sem_replay_wordbuf");
         if (nb == NULL) {
             fprintf(stderr, "sem-replay: out of memory splitting words\n");
             return false;
@@ -482,7 +483,7 @@ static const char *flat_decode(struct flat *f, const char *text,
     if (need == SIZE_MAX)
         return "";
     if (need + 1 > f->scratch_cap) {
-        char *nb = realloc(f->scratch, need + 1);
+        char *nb = zcl_realloc(f->scratch, need + 1, "sem_replay_json_scratch");
         if (nb == NULL)
             return "";
         f->scratch = nb;

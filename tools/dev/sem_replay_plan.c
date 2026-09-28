@@ -3,6 +3,8 @@
  * z23-sem-replay plan side; see sem_replay_plan.h. */
 #include "sem_replay_plan.h"
 
+#include "base/safe_alloc.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -161,7 +163,7 @@ static bool append(char **buf, size_t *n, size_t *cap, const char *s)
     size_t l = strlen(s);
     if (*n + l + 1 > *cap) {
         size_t nc = (*cap + l + 1) * 2;
-        char *nb = realloc(*buf, nc);
+        char *nb = zcl_realloc(*buf, nc, "sem_replay_plan_request");
         if (nb == NULL) {
             fprintf(stderr, "sem-replay: out of memory building a request\n");
             return false;

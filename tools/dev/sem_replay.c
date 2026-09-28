@@ -35,6 +35,10 @@
  * catalog compiles every TU of R cold with make's argv, records its compile
  * CPU in S/catalog_cost.tsv (the report prices uncosted TUs with it), and
  * fails when any cold object differs from the incremental one. */
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE /* realpath */
+#endif
+
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>

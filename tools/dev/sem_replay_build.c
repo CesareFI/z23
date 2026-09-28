@@ -5,6 +5,8 @@
 
 #include "sem_replay_build.h"
 
+#include "base/safe_alloc.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -65,7 +67,7 @@ static bool snap_push(struct sr_snap *s, const struct sr_obj *o)
 {
     if (s->n == s->cap) {
         size_t cap = s->cap ? s->cap * 2 : 1024;
-        struct sr_obj *v = realloc(s->v, cap * sizeof(*v));
+        struct sr_obj *v = zcl_realloc(s->v, cap * sizeof(*v), "sem_replay_snap");
         if (v == NULL) {
             fprintf(stderr, "sem-replay: out of memory in a snapshot\n");
             return false;
@@ -114,7 +116,7 @@ static bool object_tu(const struct walk *w, const char *child, char **tu)
 {
     char src[SR_PATH];
     size_t cl = strlen(child);
-    *tu = malloc(cl + 1);
+    *tu = zcl_malloc(cl + 1, "sem_replay_tu");
     if (*tu == NULL) {
         fprintf(stderr, "sem-replay: out of memory naming %s\n", child);
         return false;
@@ -449,7 +451,7 @@ static bool argv_line(const char *line, size_t len, struct sr_strv *tus,
         sr_strv_free(&w);
         return ok;
     }
-    struct sr_strv *f = calloc(1, sizeof(*f));
+    struct sr_strv *f = zcl_calloc(1, sizeof(*f), "sem_replay_argv_flags");
     ok = f != NULL && sr_strv_push(tus, w.v[dep + 2]);
     for (size_t i = (size_t)sep + 1; ok && i < w.n; i++)
         ok = sr_strv_push(f, w.v[i]);
@@ -520,7 +522,7 @@ static bool store_flags(struct sr_strv ***fl, size_t *cap, size_t n, struct sr_s
 {
     if (n > *cap) {
         size_t want = n * 2;
-        struct sr_strv **nf = realloc(*fl, want * sizeof(*nf));
+        struct sr_strv **nf = zcl_realloc(*fl, want * sizeof(*nf), "sem_replay_argv_flags_tbl");
         if (nf == NULL)
             return false;
         *fl = nf;
@@ -555,8 +557,8 @@ static bool sort_into(const struct sr_strv *tus, struct sr_strv **fl, struct sr_
     size_t n = tus->n;
     if (n == 0)
         return true;
-    struct argv_pair *pairs = calloc(n, sizeof(*pairs));
-    m->flags = calloc(n, sizeof(*m->flags));
+    struct argv_pair *pairs = zcl_calloc(n, sizeof(*pairs), "sem_replay_argv_pairs");
+    m->flags = zcl_calloc(n, sizeof(*m->flags), "sem_replay_argv_map_flags");
     bool ok = pairs != NULL && m->flags != NULL;
     for (size_t i = 0; ok && i < n; i++)
         pairs[i] = (struct argv_pair){tus->v[i], fl[i]};
@@ -676,8 +678,8 @@ static void pool_reap(struct sr_task *t, size_t n, pid_t *pids, double *t0,
 
 bool sr_pool_run(struct sr_task *t, size_t n, int jobs, const char *cwd)
 {
-    pid_t *pids = calloc(n ? n : 1, sizeof(*pids));
-    double *t0 = calloc(n ? n : 1, sizeof(*t0));
+    pid_t *pids = zcl_calloc(n ? n : 1, sizeof(*pids), "sem_replay_pool_pids");
+    double *t0 = zcl_calloc(n ? n : 1, sizeof(*t0), "sem_replay_pool_t0");
     bool ok = pids != NULL && t0 != NULL;
     size_t next = 0, running = 0;
     while (ok && (next < n || running > 0)) {

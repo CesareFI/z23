@@ -6,6 +6,8 @@
  * <state>/run/<NN>_<commit>/result.tsv, sets.tsv and tasks.tsv, and prices
  * each TU from catalog_cost.tsv, then compile_cost.tsv; writes Markdown to
  * stdout. */
+#include "base/safe_alloc.h"
+
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +44,7 @@ static bool price_push(struct prices *p, const char *tu, double cpu)
 {
     if (p->n == p->cap) {
         size_t cap = p->cap ? p->cap * 2 : 4096;
-        struct price_row *v = realloc(p->v, cap * sizeof(*v));
+        struct price_row *v = zcl_realloc(p->v, cap * sizeof(*v), "sem_replay_price_row");
         if (v == NULL)
             return false;
         p->v = v;
@@ -199,7 +201,7 @@ static bool table_add(struct table *t, char *text)
     }
     if (t->n == t->cap) {
         size_t cap = t->cap ? t->cap * 2 : 64;
-        struct row *v = realloc(t->rows, cap * sizeof(*v));
+        struct row *v = zcl_realloc(t->rows, cap * sizeof(*v), "sem_replay_report_row");
         if (v == NULL)
             return false;
         t->rows = v;
@@ -529,7 +531,7 @@ static void sample_push(struct samples *s, double x)
 {
     if (s->n == s->cap) {
         size_t cap = s->cap ? s->cap * 2 : 1024;
-        double *v = realloc(s->v, cap * sizeof(*v));
+        double *v = zcl_realloc(s->v, cap * sizeof(*v), "sem_replay_report_series");
         if (v == NULL)
             return;
         s->v = v;

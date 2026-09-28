@@ -18,6 +18,8 @@
  * The step writes run/<NN>_<C>/result.tsv and the sets behind it. */
 #include "sem_replay_step.h"
 
+#include "base/safe_alloc.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -201,9 +203,9 @@ static bool batch_add(struct batch *b, const char *tu, char **argv,
         return false;
     if (b->n == b->cap) {
         size_t cap = b->cap ? b->cap * 2 : 256;
-        struct sr_task *t = realloc(b->t, cap * sizeof(*t));
-        char **s = t ? realloc(b->side, cap * sizeof(*s)) : NULL;
-        char **o = s ? realloc(b->obj, cap * sizeof(*o)) : NULL;
+        struct sr_task *t = zcl_realloc(b->t, cap * sizeof(*t), "sem_replay_batch_t");
+        char **s = t ? zcl_realloc(b->side, cap * sizeof(*s), "sem_replay_batch_side") : NULL;
+        char **o = s ? zcl_realloc(b->obj, cap * sizeof(*o), "sem_replay_batch_obj") : NULL;
         b->t = t ? t : b->t;
         b->side = s ? s : b->side;
         b->obj = o ? o : b->obj;
@@ -363,7 +365,7 @@ static bool cost_push(struct cost_table *t, const char *tu, double cpu)
 {
     if (t->n == t->cap) {
         size_t cap = t->cap ? t->cap * 2 : 1024;
-        struct cost_row *v = realloc(t->v, cap * sizeof(*v));
+        struct cost_row *v = zcl_realloc(t->v, cap * sizeof(*v), "sem_replay_cost_row");
         if (v == NULL) {
             fprintf(stderr, "sem-replay: out of memory in the cost table\n");
             return false;
