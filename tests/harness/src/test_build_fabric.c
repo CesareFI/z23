@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 #include "test/accepted_work_fixture.h"
 #include "test/build_release_regression_fixture.h"
+#include "test/proof_ticket_fixture.h"
 
 #include "models/build_fabric.h"
 #include "models/build_proof_event.h"
@@ -11,6 +12,7 @@
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_async.h"
 #include "services/build_fabric_runtime.h"
+#include "services/build_fabric_proof_recovery.h"
 #include "services/subordinate_work_admission.h"
 #include "services/build_fabric_worker.h"
 #include "services/build_fabric_worker_evidence.h"
@@ -31,6 +33,8 @@
 #include "vcs/build_release_qualification.h"
 #include "vcs/build_release_regressions.h"
 #include "vcs/package_store.h"
+#include "vcs/package_manifest.h"
+#include "vcs/blob_store.h"
 #include "vcs/package_build.h"
 #include "vcs/proof_ticket.h"
 #include "vcs/vcs_object.h"
@@ -45,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static const char id_a[] =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -564,6 +569,232 @@ static int test_bf_proof_pending(void)
         ASSERT_EQ(db_build_worker_proof_heads_snapshot(&first, head, 1), 1);
         ASSERT_STR_EQ(head[0].checkpoint_blob_root, id_b);
         node_db_close(&first);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_proof_pending_replay_quota(void)
+{
+    int failures = 0;
+    TEST("build_fabric: incomplete transfer retains old history at quota") {
+        struct ptf fixture;
+        ASSERT(ptf_init(&fixture));
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "proof_replay_quota"));
+        struct vcs_package_store *store = vcs_package_store_open(dir, 3600);
+        ASSERT(store != NULL);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(fixture.pub[PTF_A], 32, worker.signer_pubkey);
+        ASSERT(db_build_worker_save(&ndb, &worker));
+        uint8_t first[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t first_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t first_root[32], cp_root[32];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        first, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 13,
+                                                first_cp));
+        ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first),
+                                          first_root));
+        ASSERT(vcs_proof_ticket_store_put(store, first_cp, sizeof(first_cp),
+                                          cp_root));
+        ASSERT(vcs_package_store_set_class(store, first_root,
+                    VCS_PACKAGE_STORE_CLASS_RARE, 1) == VCS_PACKAGE_STORE_OK);
+        char first_head[65];
+        zcl_hex_encode(cp_root, sizeof(cp_root), first_head);
+        struct db_build_worker_proof_pending pending = {0};
+        (void)snprintf(pending.worker_id, sizeof(pending.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(pending.signer_pubkey,
+                       sizeof(pending.signer_pubkey), "%s",
+                       worker.signer_pubkey);
+        memcpy(pending.ticket_wire, first, sizeof(first));
+        memcpy(pending.checkpoint_wire, first_cp, sizeof(first_cp));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &pending));
+        ASSERT(db_build_worker_proof_pending_finalize(&ndb, &pending,
+                                                       first_head));
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t second_root[32];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 14,
+                                                second_cp));
+        memset(&pending, 0, sizeof(pending));
+        (void)snprintf(pending.worker_id, sizeof(pending.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(pending.signer_pubkey,
+                       sizeof(pending.signer_pubkey), "%s",
+                       worker.signer_pubkey);
+        (void)snprintf(pending.expected_head,
+                       sizeof(pending.expected_head), "%s", first_head);
+        memcpy(pending.ticket_wire, second, sizeof(second));
+        memcpy(pending.checkpoint_wire, second_cp, sizeof(second_cp));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &pending));
+        ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second),
+                                          second_root));
+        bool had_pending = true;
+        char next_head[65] = "stale";
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 4, 2,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        uint8_t retained[VCS_PROOF_TICKET_WIRE_BYTES];
+        size_t retained_len = 0;
+        ASSERT(vcs_blob_get_from(store, first_root, retained,
+                                 sizeof(retained), &retained_len) ==
+               VCS_BLOB_OK);
+        ASSERT_EQ(retained_len, sizeof(first));
+        ASSERT_EQ(memcmp(retained, first, sizeof(first)), 0);
+        struct db_build_worker checked;
+        ASSERT_EQ(db_build_worker_find_checked(
+                      &ndb, worker.worker_id, &checked), 1);
+        ASSERT_STR_EQ(checked.proof_checkpoint_head_sha3, first_head);
+        struct db_build_worker_proof_pending still_pending;
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &ndb, worker.worker_id, &still_pending), 1);
+        vcs_package_store_close(store);
+        node_db_close(&ndb);
+        ptf_free(&fixture);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_proof_pending_replay(void)
+{
+    int failures = 0;
+    TEST("build_fabric: restart replays exact staged proof after ticket-only transfer") {
+        struct ptf fixture;
+        ASSERT(ptf_init(&fixture));
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "proof_replay"));
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        struct db_build_worker worker;
+        bf_worker(&worker);
+        zcl_hex_encode(fixture.pub[PTF_A], 32, worker.signer_pubkey);
+        ASSERT(db_build_worker_save(&ndb, &worker));
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t checkpoint[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t root[32];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 11,
+                                                checkpoint));
+        struct db_build_worker_proof_pending pending = {0};
+        (void)snprintf(pending.worker_id, sizeof(pending.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(pending.signer_pubkey,
+                       sizeof(pending.signer_pubkey), "%s",
+                       worker.signer_pubkey);
+        memcpy(pending.ticket_wire, ticket, sizeof(ticket));
+        memcpy(pending.checkpoint_wire, checkpoint, sizeof(checkpoint));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &pending));
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
+        vcs_package_store_close(store);
+        node_db_close(&ndb);
+        ASSERT(node_db_open(&ndb, path));
+        store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        bool had_pending = true;
+        char next_head[65] = "stale";
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, NULL, worker.worker_id, fixture.seed[PTF_A], 2, 1,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_B], 2, 1,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 1, 1,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        uint8_t retained[VCS_PROOF_TICKET_WIRE_BYTES];
+        size_t retained_len = 0;
+        ASSERT(vcs_blob_get_from(store, root, retained, sizeof(retained),
+                                 &retained_len) == VCS_BLOB_OK);
+        ASSERT_EQ(retained_len, sizeof(ticket));
+        ASSERT_EQ(memcmp(retained, ticket, sizeof(ticket)), 0);
+        ASSERT(vcs_proof_ticket_store_put(store, checkpoint,
+                                          sizeof(checkpoint), root));
+        ASSERT(build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1,
+            &had_pending, next_head).ok);
+        ASSERT(had_pending);
+        char first_head[65];
+        (void)snprintf(first_head, sizeof(first_head), "%s", next_head);
+        struct db_build_worker_proof_pending observed;
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &ndb, worker.worker_id, &observed), 1);
+        struct db_build_worker_proof_head heads[1];
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 1), -1);
+        ASSERT(db_build_worker_proof_pending_finalize(&ndb, &observed,
+                                                       next_head));
+        ASSERT_EQ(db_build_worker_proof_heads_snapshot(&ndb, heads, 1), 1);
+        ASSERT_STR_EQ(heads[0].checkpoint_blob_root, next_head);
+        had_pending = true;
+        ASSERT(build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 2, 1,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        uint8_t second[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t second_cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(ptf_emit(&fixture, PTF_A, &fixture.base, ptf_pass(),
+                        second, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(fixture.logs[PTF_A], 12,
+                                                second_cp));
+        struct db_build_worker_proof_pending later = {0};
+        (void)snprintf(later.worker_id, sizeof(later.worker_id),
+                       "%s", worker.worker_id);
+        (void)snprintf(later.signer_pubkey, sizeof(later.signer_pubkey),
+                       "%s", worker.signer_pubkey);
+        (void)snprintf(later.expected_head, sizeof(later.expected_head),
+                       "%s", first_head);
+        memcpy(later.ticket_wire, second, sizeof(second));
+        memcpy(later.checkpoint_wire, second_cp, sizeof(second_cp));
+        ASSERT(db_build_worker_proof_pending_stage(&ndb, &later));
+        uint8_t chunk[32];
+        ASSERT(vcs_package_chunk_hash(ticket, sizeof(ticket), chunk));
+        char chunk_hex[65], chunk_path[640];
+        zcl_hex_encode(chunk, sizeof(chunk), chunk_hex);
+        ASSERT(snprintf(chunk_path, sizeof(chunk_path),
+                        "%s/zcode/cas/sha3/%.2s/%s", dir,
+                        chunk_hex, chunk_hex) < (int)sizeof(chunk_path));
+        ASSERT(unlink(chunk_path) == 0);
+        ASSERT(!build_fabric_proof_pending_replay(
+            &ndb, store, worker.worker_id, fixture.seed[PTF_A], 4, 2,
+            &had_pending, next_head).ok);
+        ASSERT(!had_pending);
+        ASSERT_EQ(next_head[0], '\0');
+        struct db_build_worker checked;
+        ASSERT_EQ(db_build_worker_find_checked(
+                      &ndb, worker.worker_id, &checked), 1);
+        ASSERT_STR_EQ(checked.proof_checkpoint_head_sha3, first_head);
+        ASSERT_EQ(db_build_worker_proof_pending_find_checked(
+                      &ndb, worker.worker_id, &observed), 1);
+        vcs_package_store_close(store);
+        node_db_close(&ndb);
+        ptf_free(&fixture);
         test_rm_rf(dir);
         PASS();
     } _test_next:;
@@ -4353,6 +4584,8 @@ int test_build_fabric(void)
     failures += test_bf_proof_head_snapshot();
     failures += test_bf_proof_pending_migration();
     failures += test_bf_proof_pending();
+    failures += test_bf_proof_pending_replay_quota();
+    failures += test_bf_proof_pending_replay();
     failures += test_bf_async_proof_events();
     failures += test_bf_async_timing_samples();
     failures += test_bf_async_timing_capacity();
