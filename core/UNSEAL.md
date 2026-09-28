@@ -160,3 +160,7 @@ later lane flips it HARD.
 - 2026-09-19T00:28:09Z — REASON: zblkreq: cap block-swarm piece requests at each peer's own advertised manifest end; stops fresh nodes being banned for asking past a shorter manifest. Server scoring unchanged.
   old ROOT: c3090fae6b449bd80dc449c365caa0d452a626402d0deb8c8a77c66f6eafcdf7
   by: owner unseal ritual (make core-unseal)
+
+- 2026-09-28T03:17:26Z — REASON: Owner-authorized repair of Blue Sapling core drift landed in 3b22d6564: preserve existing scalar and signer behavior after differential parity review, then reseal the two changed sources and hot-swap mirrors
+  old ROOT: c43d389c6cccac48942d3ad3ccc61575738377d155d4dee1d1435f9ba8aaf35f
+  by: owner unseal ritual (make core-unseal)

@@ -10,7 +10,7 @@ application hash beside each name.
 
 The field layout was checked against LedgerHQ/blue-loader-python commit
 `a37ef7fe0a7ee7d01882c91afe87b58c03927317`,
-`ledgerblue/hexLoader.py`, `HexLoader.listApp`. The loader labels the fields
+`ledgerblue/hexLoader.py`, `HexLoader.listApp`. <!-- doc-path-ok: LedgerHQ/blue-loader-python upstream source path --> The loader labels the fields
 `hash_code_data` and `hash`. Its `hashApp.py` describes the application hash
 as a digest of target and creation parameters plus installed image bytes;
 therefore it cannot be compared with the code file's plain SHA-256 pin.
