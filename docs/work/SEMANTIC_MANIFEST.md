@@ -1310,7 +1310,6 @@ minute standalone with the fixed reproducers), and must yield narrowed
 verdicts that seed a changed function, so the group cannot pass on
 fallbacks alone; `ZCL_STRESS_TESTS=1` runs the full 51-case list instead,
 held to the same invariant.
-`ZCL_SEMANTIC_FUZZ_SEEDS=FIRST:COUNT[:PROFILE[:KIND[:CC[:OPT]]]]` runs a
 long range instead of either, and wins over `ZCL_STRESS_TESTS`; only such
 a range run may draw an edit that changes no file (NOOP), which fails a
 fixed reproducer or a default seed. `KIND` `any` draws the kind. `CC`
@@ -1335,10 +1334,13 @@ included file does not seed the includer's functions) were known-RED at
 now cover all four, and they run as ordinary fixed reproducers.
 F9 was known-RED until the consumer sensed each TU with its own object's
 compiler and flags (ff12233071): the IDENTITY record now names the object
-compiler's realpath and byte SHA3-256, and it now must pass. F11 stays
-known-RED: see below.
+compiler's realpath and byte SHA3-256, and it now must pass. F11 forces
+the sensor to a different optimizer level than the compile (OPT
+`COMPILE/SENSOR`) regardless of what the real Makefile rule passes, so
+ff12233071's fix to that rule's own drift (which F9 exercises) leaves F11
+red: measured, it still misses exactly `t0_q` and `t0_eq`.
 
-The known-RED reproducers are three families: one toolchain family (no
+The known-RED reproducers are four families: two toolchain families (no
 text edit the consumer misreads), one optimizer level, and one file
 that only a preprocessor probe names:
 
@@ -1346,6 +1348,7 @@ that only a preprocessor probe names:
 |---|---|---|---|
 | F10_opt_spelling_O02, _long | gcc at `-O02`, `--optimize=2` | `t0_s.constprop.0` | `fxg_optimizes` (`tools/dev/devloop_facts_codegen.c`) reads `-O0` as a prefix and needs `-O`: gcc's `-O2` is modeled as `-O0` or no optimizer (callers only) |
 | F10_opt_spelling_O5 | gcc at `-O5` (gcc's `-O3`) | `t0_w.constprop.1` | `k_fxg_unbounded` lists `-O2` to `-O4` only; `-O5` falls to the `-O1` component model, which never seeds an external callee gcc clones |
+| F11_hot_icf | gcc `-O2` objects, sensor told `-Og` | `t0_q` (an alias of `t0_p` after ipa-icf), `t0_eq` | a sensor deliberately handed other optimizer flags than the compile (`OPT` `COMPILE/SENSOR`) models the wrong codegen no matter what the real Makefile rule passes; `ff12233071` fixed the real rule's own drift (`F9_cc_drift`), not a sensor forced away from it |
 | F12_header_static_inline_O0, _gcc | clang or gcc at `-O0`; a header `static inline` body changes | `h_inl` (each reader's out-of-line copy) | `fxc_seed_marked` (`tools/dev/devloop_facts_tu.c`) seeds only main-file functions and broadens only on a root, and `fxi_on_function` (`tools/dev/devloop_facts_index.c`) makes a header definition a root only with external linkage; at `-O1` the call is inlined and the caller seed covers it, at `-O0` (the callers model) the reader's own copy changes unseeded |
 | F13_has_embed_deleted | sensor's clang; the case file docs/banner.txt, which only `__has_embed` probes, is deleted | `t0.c` (object changed, out of the universe) | `cm_scan_has_include` (`tools/sensors/clang_manifest_lookup.c`) scans only `__has_include` with a literal operand and nothing scans `__has_embed`, so no manifest names the probed path; clang's depfile names a probed file only while it exists; the include graph refuses the deleted path (`include_input_missing`, `codeindex_impact.c`), `fxc_cross_check` (`tools/dev/devloop_facts_consumer.c`) marks the plan incomplete but, unlike `fxc_build_inputs`, puts no candidate in scope, and the file-seeded fallback has no TU for a `.h`, `docs/` or `.md` path |
 | F14_has_include_macro, _next | sensor's clang; the case header inc2/cfg_local.h, probed as `__has_include(CFG_LOCAL)` or with `__has_include_next`, is deleted | `t0.c` (as F13) | as F13: the text scan skips a macro operand and `__has_include_next` |

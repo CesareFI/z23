@@ -1350,10 +1350,17 @@ const struct sfz_tool_repro k_sfz_tool_repros[] = {
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O3"},
     {.r = {.name = "F11_hot_icf", .kind = "body_static",
            .detail = "t0_p's body becomes t0_q's; objects at gcc -O2, the "
-                     "sensor told -Og (fixed by ff12233071: one assignment "
-                     "covers both the .zsm target's flags and the hot "
-                     "dirs' -O2)",
-           .files = SFZ_FILES(k_f11_hot_icf)},
+                     "sensor told -Og",
+           .known_red = "a facts rule that senses each TU with its object's"
+                        " own argv: a sensor deliberately handed other"
+                        " optimizer flags than the compile (OPT"
+                        " COMPILE/SENSOR) models the wrong codegen no matter"
+                        " what the real Makefile rule passes; ff12233071"
+                        " (F9) fixed the real rule's own drift, not a"
+                        " sensor forced away from it",
+           .files = SFZ_FILES(k_f11_hot_icf),
+           .known_red_why = "src/t0.c t0_q alias-of-t0_p ALIAS-NOT-COVERED\n"
+                            "src/t0.c t0_eq NOT-COVERED\n"},
      .cc_before = "gcc", .cc_after = "gcc", .opt = "-O2/-Og"},
     {.r = {.name = "pass_hot_icf_O2", .kind = "body_static",
            .detail = "t0_p's body becomes t0_q's; objects and sensor at gcc "
