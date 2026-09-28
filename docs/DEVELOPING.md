@@ -189,23 +189,26 @@ works and still names the checkout to arm; it is no longer a precaution.
 
 `make hooks-status` is the read-only question and never writes config.
 
-**An empty test log from `fleet_gateway` means a missing binary, not a
-failing test.** `tests/harness/src/test_fleet_gateway.c` opens with
-`gw_spawn(bin, node, state)` and, when that spawn fails, returns 1 without
-printing anything at all. That is the gateway binary or the node binary being
-absent, not an assertion. Measured on a cold checkout on 2026-09-19, with
-`build/bin/z23-fleet-gateway` not yet built:
-`test_body_ms=41`, exit code 1, and `test-tmp/test_parallel_22959_252.log` a
-file of exactly **0 bytes**. Build the prerequisite and the identical command
-passes in 25.9 s:
+**`make t`, `t-fast`, `t-fast-exact` and `test-parallel` build the tools
+their selected groups exec.** A few groups exec a binary no default test
+prerequisite builds: the fleet gateway shards need
+`build/bin/z23-fleet-gateway` and the node by its alias
+`build/bin/zclassic23`, the CLI groups need that alias, `freebsd_sh` needs
+`build/bin/fbsh`, and the semantic sensor groups need the libclang tool
+`build/bin/z23-clang-manifest`. Each is declared once, as a BUILD need, in
+`tools/dev/test_group_host_needs.def`. Before the run, the recipe asks the
+runner for exactly its own selection with `--list-build-needs`, which prints
+nothing for an ordinary selection, and runs `make <target>` for each line;
+a target that cannot be built stops the run with
+`FAIL test_need_unbuildable_<target>`. A landing proof builds the same rows
+in its generation, except the ones it already provides (the admitted node,
+the prefork-built `fbsh`). Running the runner binary directly builds
+nothing, so a fleet gateway shard started that way without its binaries
+fails with `missing binary <path>`.
 
 ```bash
-make -j"$(nproc)" z23 fleet-gateway
-make t-fast ONLY=fleet_gateway
+make t-fast ONLY=fleet_gateway_shard_01   # builds fleet-gateway and zclassic23 first
 ```
-
-A zero-length group log and a body time in the tens of milliseconds is the
-signature. Read it as "this group never started", not "this group failed".
 
 **An installed `z23-dev` on PATH is a content-addressed link, not your
 build.** `~/.local/bin/z23-dev` is a symlink into
