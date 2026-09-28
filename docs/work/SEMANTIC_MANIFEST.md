@@ -1355,7 +1355,11 @@ the verdict (`narrowed`, `reason`, `detail`, `seeds`, `seeds_total`,
 `reached_files`), `consumer` (`zcl.semantic_consumer.v1`), `obligations`
 (`reason`, `plain`, `plain_universal`, `facts`, and each group with its
 reason, up to a byte bound), `universe` (`applied`, `complete`, `reason`,
-`detail`, `total`, `affected`, `offset`, `listed`, `next_offset`) and
+`detail`, `total`, `affected`, `offset`, `listed`, `next_offset`),
+`make_guards` (`premises`, and each missing include the root makefile
+provably skips: `include`, `include_at`, `guard`, `guard_at`, `premises`,
+`globbed` with each path's `found`, up to a byte bound, with
+`skipped_total` and `skipped_listed`) and
 `tus`, one page of entries from `facts_offset` (at least one per page),
 each with its path, the four identities (`source`, `fact`, `interface`,
 `implementation`; `action` and `artifact` null with a reason when their
@@ -1386,7 +1390,8 @@ while an object is built. The path widens when:
   literal file (a glob, a `$(wildcard)`, a reference no single definition
   gives); a missing file a mandatory `include` names; a missing file an
   optional include names when any rule could make it (a rule a `define`
-  holds, a match-anything rule `%:` or `.DEFAULT` included); and a
+  holds, a match-anything rule `%:` or `.DEFAULT` included) unless a
+  conditional provably skips its include line (below); and a
   `$(shell)`, `!=` or `$(file)` that make runs while it reads the
   makefiles and that writes a file (below). A missing optional file no
   rule makes is read by nobody, and a depfile an include names
@@ -1404,11 +1409,53 @@ makefile, like any other. It is taken as current: its rule remakes it
 only when one of that rule's prerequisites changed, and a changed path
 that reaches that rule already widens. A rule in any file make reads can
 remake it this way; another rule's recipe that rewrites it as a side
-effect runs only when that rule runs, which the same premise covers. The
-Makefile's own includes of this kind (`build/identity/vendor-inputs-ready.mk`,
-`view-inputs-ready.mk`, `tor-inputs-ready.mk`, `epoch-recovery-ready.mk`)
-are identity markers that sit behind conditionals the scan reads as
-taken, so a tree that lacks any of the four widens every build input.
+effect runs only when that rule runs, which the same premise covers.
+
+**Guarded includes.** A missing optional include is made only when make
+reads its include line. `tools/dev/devloop_facts_make_include.c` reads the
+conditionals of the root makefile around each one, and
+`tools/dev/devloop_facts_make_value.c` what their sides expand to. The
+include is skipped, and no longer UNKNOWN, when a conditional around it is
+provably not taken: its `ifneq (A,B)` has both sides provably one text,
+its `ifeq (A,B)` has sides that provably differ, or an earlier branch of
+its `else` chain provably holds. A side expands to a bounded set of texts,
+or to any text. The reading only errs toward "taken": any text is what
+comes of a function it does not model (all but `strip`, `if`, `and`, `or`,
+`filter`, `filter-out`, `wildcard`, `addprefix`, `addsuffix`, `notdir`,
+`findstring`), a variable no line assigns (the environment's), one a line
+before the directive does not surely assign (at the top level, or in every
+branch of a chain that ends in a plain `else`), one with a `?=`, `+=`, `!=`,
+`:::=` or `define`, one another file, a target-specific value, an
+`undefine` or an `$(eval)` can set (the lines of a `define` an
+`$(eval $(call ...))` reads, the variable of a literal `$(eval X := ...)`;
+any other `$(eval)`, or a `load`, opens every variable), an automatic
+variable, a substitution reference, and a `$(shell)` other than the compile
+epoch's. A variable several branches assign is the union of the values of
+every assignment before the directive. `$(wildcard)` globs the tree the plan
+reads, and `$(filter-out $(wildcard X),X)` is the words of X that name no
+file. The planner reads one tree, the one the plan is for. Two named
+premises carry what the text does not hold:
+
+- `goal-builds-objects`: make runs to build objects, so `MAKECMDGOALS`
+  holds none of `vendor-ready`, `deploy`, `install`: a `$(filter)` of it
+  by those patterns alone is empty;
+- `epoch-one-component`: the compile epoch `$(call zcl_compile_epoch,...)`
+  computes with `$(shell)` is one path component, or none, so
+  `$(wildcard build/obj/epochs/$(EPOCH)/.unverified)` globs
+  `build/obj/epochs/*/.unverified` and `build/obj/epochs/.unverified`.
+
+Each skipped include is recorded in the plan's `facts.make_guards.skipped`
+with the directive read (`guard`, `guard_at`), the premises that reading
+used and every path it globbed with what that found, so a reviewer can
+falsify the narrow; `facts.make_guards.premises` names both premises.
+Of the Makefile's identity markers, `epoch-recovery-ready.mk` is skipped
+when no epoch object directory holds `.unverified` (under
+`epoch-one-component`). `vendor-inputs-ready.mk` and `tor-inputs-ready.mk`
+stay read: `ZCL_TARGET ?= host` and `ZCL_TOR ?= full` can come from the
+command line, so their cross-target archive paths are in the union and
+`$(ZCL_TOR)` is any text. `view-inputs-ready.mk` stays read: its guards
+test flags a goal may set. A tree that lacks one of those three widens
+every build input.
 
 **Makefile text that writes a file.** A `$(shell)` or `!=` command that
 make runs while it reads the makefiles can rewrite an include before make
@@ -1529,7 +1576,21 @@ none of them runs as part of building that commit's objects:
 - a depfile an include names: its prerequisite lines name only what its
   compile read, which the depfile graph answers for;
 - a target spelled `$(1)` inside a `define` that `$(call)` or `$(eval)`
-  instantiates with arguments no line spells.
+  instantiates with arguments no line spells;
+- a missing optional include a conditional provably skips, read under
+  the premise `goal-builds-objects` (make runs to build objects:
+  `MAKECMDGOALS` holds no `vendor-ready`, `deploy` or `install` goal) or
+  `epoch-one-component` (the compile epoch `zcl_compile_epoch` computes
+  with `$(shell)` is one path component, or none): the plan is for the
+  build of the edited commit's objects, and each such reading is recorded
+  with the paths it globbed (Guarded includes, above);
+- a variable the root makefile assigns with `=` or `:=`, read as the
+  makefile sets it by the guard reading: a command-line assignment or
+  `make -e` overrides it, as the rest of the scan already takes a
+  single definition as the value;
+- a define an `$(eval $(call NAME,...))` reads, read as its lines are
+  written: a call argument that spells an `=` or a newline into one of
+  them is not followed.
 
 ### Falsification
 
