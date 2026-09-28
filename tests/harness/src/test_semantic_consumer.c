@@ -451,6 +451,95 @@ static int sct_t_debug_level(void)
     return failures;
 }
 
+/* F10: fxg_optimizes read "-O" as a prefix (any non-'0' following char
+ * counted, so "-O02" modeled as -O0) and k_fxg_unbounded only named -O2
+ * through -O4 literally (so "-O5" fell through to the -O1 model, and
+ * "--optimize=N" was never recognized as an -O flag at all). The parser
+ * must read digits numerically (leading zeros included), recognize
+ * "--optimize"/"--optimize=N", let the LAST -O/--optimize spelling win,
+ * and widen an unrecognized "-O..." or "--optimize..." spelling instead
+ * of narrowing it. */
+static int sct_t_codegen_model_optparse(void)
+{
+    static const struct {
+        const char *identity;
+        enum fxi_codegen want;
+    } k[] = {
+        /* Every plain -O<digits> spelling, old model -> new model:
+         *   -O0  CALLERS  -> CALLERS  (unchanged)
+         *   -O   COMPONENT-> COMPONENT (unchanged: bare -O is -O1)
+         *   -O1  COMPONENT-> COMPONENT (unchanged)
+         *   -O2  UNBOUNDED-> UNBOUNDED (unchanged: literal in old list)
+         *   -O3  UNBOUNDED-> UNBOUNDED (unchanged: literal in old list)
+         *   -O4  UNBOUNDED-> UNBOUNDED (unchanged: literal in old list)
+         *   -O5  COMPONENT-> UNBOUNDED (F10: old list stopped at -O4, so
+         *        -O5 fell through to "-O not followed by 0" == COMPONENT)
+         *   -O02 CALLERS  -> UNBOUNDED (F10: old code read "-O" as a
+         *        prefix and only inspected the single next byte, so
+         *        "-O02"'s '0' made it look like -O0)
+         */
+        {"-O0", FXI_CODEGEN_CALLERS},
+        {"-O", FXI_CODEGEN_COMPONENT},
+        {"-O1", FXI_CODEGEN_COMPONENT},
+        {"-O2", FXI_CODEGEN_UNBOUNDED},
+        {"-O3", FXI_CODEGEN_UNBOUNDED},
+        {"-O4", FXI_CODEGEN_UNBOUNDED},
+        {"-O5", FXI_CODEGEN_UNBOUNDED},
+        {"-O10", FXI_CODEGEN_UNBOUNDED},
+        {"-O02", FXI_CODEGEN_UNBOUNDED},
+        {"-O00", FXI_CODEGEN_CALLERS},
+        /* -Og/-Os/-Oz/-Ofast keep their existing models (old and new
+         * agree: all four were named literally in the old unbounded
+         * list except -Og, which -O-not-'0' already put at COMPONENT). */
+        {"-Og", FXI_CODEGEN_COMPONENT},
+        {"-Os", FXI_CODEGEN_UNBOUNDED},
+        {"-Oz", FXI_CODEGEN_UNBOUNDED},
+        {"-Ofast", FXI_CODEGEN_UNBOUNDED},
+        /* --optimize spellings mirror -O; the old parser never recognized
+         * any of them (F10), so every one of these was COMPONENT/CALLERS
+         * (never optimizes) under the old code regardless of level. */
+        {"--optimize", FXI_CODEGEN_COMPONENT},
+        {"--optimize=0", FXI_CODEGEN_CALLERS},
+        {"--optimize=1", FXI_CODEGEN_COMPONENT},
+        {"--optimize=2", FXI_CODEGEN_UNBOUNDED},
+        /* The LAST -O/--optimize spelling wins, as in gcc and clang. */
+        {"-O2 -O0", FXI_CODEGEN_CALLERS},
+        {"-O0 -O2", FXI_CODEGEN_UNBOUNDED},
+        {"-O0 -O1", FXI_CODEGEN_COMPONENT},
+        {"-Os -O1", FXI_CODEGEN_COMPONENT},
+        {"--optimize=2 -O1", FXI_CODEGEN_COMPONENT},
+        /* An unrecognized -O/--optimize spelling widens, it never narrows. */
+        {"-Ofunky", FXI_CODEGEN_UNBOUNDED},
+        {"--optimize-plan", FXI_CODEGEN_UNBOUNDED},
+        {"--optimize=x", FXI_CODEGEN_UNBOUNDED},
+        /* The unbounded -f flags: unconditional, unbeaten by a later
+         * plain -O (order does not matter), and -fipa-cp-clone joins the
+         * other IPA clone spellings via the "-fipa-" prefix match. */
+        {"-flto", FXI_CODEGEN_UNBOUNDED},
+        {"-fwhole-program", FXI_CODEGEN_UNBOUNDED},
+        {"-fprofile-use", FXI_CODEGEN_UNBOUNDED},
+        {"-fauto-profile", FXI_CODEGEN_UNBOUNDED},
+        {"-fipa-cp-clone -O0", FXI_CODEGEN_UNBOUNDED},
+        {"-O1 -fipa-cp-clone", FXI_CODEGEN_UNBOUNDED},
+    };
+    int failures = 0;
+    TEST_CASE("semantic_consumer: F10 optimizer parsing reads -O/--optimize "
+              "digits numerically, lets the last spelling win, and widens "
+              "an unrecognized spelling") {
+        for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+            const char *token = NULL;
+            enum fxi_codegen got = fxi_codegen_model_of(
+                (const uint8_t *)k[i].identity, strlen(k[i].identity), &token);
+            if (got != k[i].want)
+                printf("[%s: model %d, want %d] ", k[i].identity, (int)got,
+                       (int)k[i].want);
+            ASSERT_EQ((int)got, (int)k[i].want);
+            ASSERT(token != NULL);
+        }
+    } TEST_END
+    return failures;
+}
+
 int test_semantic_consumer(void)
 {
     int failures = 0;
@@ -470,6 +559,7 @@ int test_semantic_consumer(void)
         failures += sct_t_command(f, res);
         failures += sct_t_codegen_model();
         failures += sct_t_debug_level();
+        failures += sct_t_codegen_model_optparse();
     }
     for (int v = 0; f != NULL && v < SCX_VARIANT_COUNT; v++)
         for (size_t tu = 0; tu < SCX_TU_COUNT; tu++)
