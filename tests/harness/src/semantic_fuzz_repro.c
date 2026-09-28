@@ -1149,7 +1149,11 @@ static bool write_side(const struct sfz_repro *r, const char *dir, bool after)
     for (size_t k = 0; k < r->nfiles; k++) {
         const struct sfz_file *f = &r->files[k];
         const char *text = after && f->after != SFZ_SAME ? f->after : f->before;
-        if (text != NULL && !sfz_put(dir, f->path, text, strlen(text)))
+        size_t mark = strlen(SFZ_LINK_MARK);
+        bool link = text != NULL && strncmp(text, SFZ_LINK_MARK, mark) == 0;
+        if (link && !sfz_symlink(dir, f->path, text + mark))
+            LOG_FAIL("sfz", "%s: cannot link %s/%s", r->name, dir, f->path);
+        if (text != NULL && !link && !sfz_put(dir, f->path, text, strlen(text)))
             LOG_FAIL("sfz", "%s: cannot write %s/%s", r->name, dir, f->path);
     }
     /* keep both -I dirs present, as the generator does */

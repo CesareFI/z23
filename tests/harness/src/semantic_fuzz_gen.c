@@ -1,5 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * purpose: The semantic-facts differential fuzz generator: from a seed, a random multi-TU C23 project before and after one mutation, deterministic from the seed and profile. */
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
+
 #include "test/semantic_fuzz.h"
 
 #include "semantic_fuzz_gen_priv.h"
@@ -13,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* ---- rng (splitmix64) -------------------------------------------------------- */
 
@@ -213,6 +218,22 @@ bool sfz_put(const char *dir, const char *rel, const char *text, size_t n)
     ok = fwrite(text, 1, n, f) == n;
     if (fclose(f) != 0 || !ok)
         LOG_FAIL("sfz", "write %s: %s", path, strerror(errno));
+    return true;
+}
+
+bool sfz_symlink(const char *dir, const char *rel, const char *target)
+{
+    char path[4096], d[4096];
+    if (snprintf(path, sizeof(path), "%s/%s", dir, rel) >= (int)sizeof(path))
+        LOG_FAIL("sfz", "path too long: %s/%s", dir, rel);
+    memcpy(d, path, sizeof(d));
+    *strrchr(d, '/') = 0;
+    if (!sfz_mkdirs(d))
+        return false;
+    if (unlink(path) != 0 && errno != ENOENT)
+        LOG_FAIL("sfz", "unlink %s: %s", path, strerror(errno));
+    if (symlink(target, path) != 0)
+        LOG_FAIL("sfz", "symlink %s -> %s: %s", path, target, strerror(errno));
     return true;
 }
 

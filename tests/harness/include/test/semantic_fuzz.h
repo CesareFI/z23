@@ -40,14 +40,25 @@ bool sfz_kind_known(const char *kind);
 bool sfz_mkdirs(const char *path);
 /* Write `n` bytes to <dir>/<rel>, creating its directories. */
 bool sfz_put(const char *dir, const char *rel, const char *text, size_t n);
+/* Make <dir>/<rel> a symbolic link to `target` (relative to the link's
+ * own directory), replacing whatever is there and creating its
+ * directories. A case lays a link out as a link and compares it by its
+ * target text, as git does: retargeting it changes the link's path, and
+ * editing the file it names changes only that file's path. */
+bool sfz_symlink(const char *dir, const char *rel, const char *target);
 
 /* ── the fixed reproducers (semantic_fuzz_repro.c) ──────────────────────── */
 
-/* One file of a reproducer; NULL text: absent on that side. */
+/* One file of a reproducer; NULL text: absent on that side. A text made
+ * with SFZ_LINK("../hdr/a.h") is no content: that side has a symbolic
+ * link at `path` to the target. */
 struct sfz_file {
     const char *path;
     const char *before, *after;
 };
+
+#define SFZ_LINK_MARK "\001" "symlink:"
+#define SFZ_LINK(target) SFZ_LINK_MARK target
 
 struct sfz_repro {
     const char *name;   /* F<n>_... a false negative found (fixed, or

@@ -138,40 +138,77 @@ static bool list_tree(const char *root, const char *rel, struct sfz_paths *out)
         (void)snprintf(sub, sizeof(sub), "%s%s%s", rel, rel[0] ? "/" : "",
                        e->d_name);
         (void)snprintf(full, sizeof(full), "%s/%s", root, sub);
-        if (stat(full, &st) != 0)
+        if (lstat(full, &st) != 0)
             ok = false;
         else if (S_ISDIR(st.st_mode))
             ok = list_tree(root, sub, out);
-        else if (S_ISREG(st.st_mode))
-            ok = sfz_paths_add(out, sub);
+        else if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode))
+            ok = sfz_paths_add(out, sub); /* a link is one path, not followed */
     }
     (void)closedir(d);
     return ok;
 }
 
+/* The target text of symbolic link `path` into buf; false when it is none. */
+static bool link_text(const char *path, char *buf, size_t cap)
+{
+    struct stat st;
+    ssize_t n;
+    if (lstat(path, &st) != 0 || !S_ISLNK(st.st_mode))
+        return false;
+    n = readlink(path, buf, cap - 1);
+    if (n < 0)
+        return false;
+    buf[n] = '\0';
+    return true;
+}
+
+/* The same path on both sides, as git compares it: two links with one
+ * target text, or two files with the same bytes. A link against a file
+ * differs even when the file it names has those bytes. */
 static bool same_file(const char *a, const char *b)
 {
+    char la[PATH_MAX], lb[PATH_MAX];
     uint8_t *x = NULL, *y = NULL;
     size_t xn = 0, yn = 0;
-    bool same = sfz_slurp(a, &x, &xn) && sfz_slurp(b, &y, &yn) && xn == yn &&
-                memcmp(x, y, xn) == 0;
+    bool al = link_text(a, la, sizeof(la)), bl = link_text(b, lb, sizeof(lb));
+    bool same;
+    if (al || bl)
+        return al && bl && strcmp(la, lb) == 0;
+    same = sfz_slurp(a, &x, &xn) && sfz_slurp(b, &y, &yn) && xn == yn &&
+           memcmp(x, y, xn) == 0;
     free(x);
     free(y);
     return same;
 }
 
-static bool copy_file(const char *from_root, const char *rel, const char *to_root,
-                      const char *suffix)
+/* Copy <from_root>/<rel> to <to_root>/<rel><suffix>. A link is laid out
+ * as the same link unless `follow`, which copies the bytes it names (the
+ * facts directory's .before texts); a file replaces a link at the
+ * destination rather than writing through it. */
+static bool unlink_link(const char *root, const char *rel)
 {
-    char src[PATH_MAX * 2], dst[PATH_MAX * 2];
+    char path[PATH_MAX * 3], target[PATH_MAX];
+    (void)snprintf(path, sizeof(path), "%s/%s", root, rel);
+    if (link_text(path, target, sizeof(target)) && unlink(path) != 0)
+        LOG_FAIL("sfz", "unlink %s: %s", path, strerror(errno));
+    return true;
+}
+
+static bool copy_file(const char *from_root, const char *rel, const char *to_root,
+                      const char *suffix, bool follow)
+{
+    char src[PATH_MAX * 2], dst[PATH_MAX * 2], target[PATH_MAX];
     uint8_t *b = NULL;
     size_t n = 0;
     bool ok;
     (void)snprintf(src, sizeof(src), "%s/%s", from_root, rel);
     (void)snprintf(dst, sizeof(dst), "%s%s", rel, suffix);
+    if (!follow && link_text(src, target, sizeof(target)))
+        return sfz_symlink(to_root, dst, target);
     if (!sfz_slurp(src, &b, &n))
         LOG_FAIL("sfz", "cannot read %s", src);
-    ok = sfz_put(to_root, dst, (const char *)b, n);
+    ok = unlink_link(to_root, dst) && sfz_put(to_root, dst, (const char *)b, n);
     free(b);
     return ok;
 }
@@ -537,9 +574,9 @@ static bool apply_after(struct sfz_run *r, const struct sfz_paths *before,
     (void)snprintf(facts, sizeof(facts), "%s/facts", r->tree);
     for (size_t k = 0; ok && k < r->changed.n; k++)
         if (sfz_paths_has(before, r->changed.v[k]))
-            ok = copy_file(bdir, r->changed.v[k], facts, ".before");
+            ok = copy_file(bdir, r->changed.v[k], facts, ".before", true);
     for (size_t k = 0; ok && k < after->n; k++)
-        ok = copy_file(adir, after->v[k], r->tree, "");
+        ok = copy_file(adir, after->v[k], r->tree, "", false);
     for (size_t k = 0; ok && k < before->n; k++) {
         if (sfz_paths_has(after, before->v[k]))
             continue;
@@ -561,7 +598,7 @@ static bool layout(struct sfz_run *r, const struct sfz_paths *before)
     envp_init(r);
     (void)snprintf(deps, sizeof(deps), "%s/build/deps", r->tree);
     for (size_t k = 0; ok && k < before->n; k++)
-        ok = copy_file(bdir, before->v[k], r->tree, "");
+        ok = copy_file(bdir, before->v[k], r->tree, "", false);
     return ok && sfz_mkdirs(deps) && sfz_mkdirs(r->ob) && sfz_mkdirs(r->oa) &&
            sfz_mkdirs(r->log);
 }
