@@ -36,6 +36,8 @@ struct cm_file {
     char *opened;     /* the name the front end opened it by */
     uint8_t origin;   /* VCS_SEMANTIC_ORIGIN_V1_* */
     const char *contents;
+    uint8_t *live;    /* per byte: 1 a live lookup word or '#', 2 one in a #define
+                       * body, by clang's lexing (clang_manifest_tokens.c) */
     size_t size;
 };
 
@@ -242,13 +244,13 @@ bool cm_emit_identity(struct cm_core *c, const struct cm_identity *id);
 bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
                          const char *spelled, uint8_t form, uint8_t kind,
                          bool computed, const struct cm_file *hit);
-/* How translation phases 1 and 3 read the TU's text: whether trigraphs are
- * replaced, and whether a pp-number takes a digit separator. The front end
- * measures both under the TU's own argv (clang_manifest.c,
- * cm_measure_lang), so no option spelling can mislead the scan. */
+/* How translation phases 1 and 2 read the TU's text: whether trigraphs are
+ * replaced. The front end measures it under the TU's own argv
+ * (clang_manifest.c, cm_measure_lang), so no option spelling can mislead
+ * the scan; comments and literals come from clang's own lexing
+ * (cm_file.live). */
 struct cm_lang {
     bool trigraphs;
-    bool separators;
 };
 
 /* Every conditional lookup (__has_include and its relatives, #embed) in

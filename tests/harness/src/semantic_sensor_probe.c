@@ -36,6 +36,12 @@ int semantic_sensor_probe_tests(void);
     "#endif\n"                                                                \
     "int f(void) { return T; }\n"
 
+/* A main.c whose raw string literal, spelled with `prefix`, holds a quote
+ * and a comment opener; the probe after it is live. */
+#define SSP_RAW(prefix)                                                       \
+    "static const void *s = " prefix "\"d( \" /* )d\";\n"                     \
+    "#if __has_include(<opt.h>)\n" SSP_TAIL "/* end */\n"
+
 /* What a matching record must be. */
 enum ssp_want {
     SSP_ANY,     /* replayed or unbound */
@@ -145,6 +151,45 @@ static const struct ssp_case k_ssp_cases[] = {
      "#if __has_include(\"opt.h\")\n" SSP_TAIL "/* end */\n",
      {"-std=c17", "-D__STDC_VERSION__=202311L", NULL}, NULL, NULL, false,
      "opt.h", SSP_ANY},
+    {"after a raw string holding \" /*, under -std=gnu23",
+     SSP_RAW("R"), {"-std=gnu23", NULL, NULL}, NULL, NULL, false, "opt.h",
+     SSP_ANY},
+    {"after a raw string holding \" /*, with no -std",
+     SSP_RAW("R"), {NULL, NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a raw string holding \" /*, under -std=c23 -fraw-string-literals",
+     SSP_RAW("R"), {"-std=c23", "-fraw-string-literals", NULL}, NULL, NULL,
+     false, "opt.h", SSP_ANY},
+    {"after a u8R raw string holding \" /*",
+     SSP_RAW("u8R"), {"-std=gnu23", NULL, NULL}, NULL, NULL, false, "opt.h",
+     SSP_ANY},
+    {"after an LR raw string holding \" /*",
+     SSP_RAW("LR"), {"-std=gnu23", NULL, NULL}, NULL, NULL, false, "opt.h",
+     SSP_ANY},
+    {"after uR and UR raw strings holding \" /*",
+     "static const void *u = uR\"d( \" /* )d\";\n"
+     "static const void *w = UR\"d( \" /* )d\";\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL "/* end */\n",
+     {"-std=gnu23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a raw string whose second line holds /* \"",
+     "static const char *s = R\"d(\n"
+     "/* \" )d\";\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL "/* end */\n",
+     {"-std=gnu23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a #warning line holding /*, which opens no comment",
+     "#warning note /* here\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL "/* end */\n",
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"after a line splice, as the first word of the next line",
+     "#define G(x) x \\\n"
+     "+ 1\n"
+     "#if G(0) || \\\n"
+     "__has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, NULL, NULL, false, "opt.h", SSP_ANY},
+    {"in a system header's macro body, its #define after a comment",
+     "#include <probe.h>\n"
+     "#if SYS_HAS\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, "/**/ #define SYS_HAS __has_include(\"opt.h\")\n",
+     NULL, false, "opt.h", SSP_UNBOUND},
     {"after a C23 digit separator, with __STDC_VERSION__ dropped by -U",
      "#if 0\n"
      "int k = 1'a'/*;\n"
@@ -234,6 +279,11 @@ static const struct ssp_refusal k_ssp_refusals[] = {
      "#if __has_include(<opt.h>)\n" SSP_TAIL,
      {"-std=c23", "-fplugin=/nonexistent/probe-plugin.so", NULL},
      "indirect compiler options"},
+    {"a #pragma '<' whose raw tokens open a comment inside it",
+     "#pragma probe <a/*b>\n"
+     "*/\n"
+     "#if __has_include(<opt.h>)\n" SSP_TAIL,
+     {"-std=c23", NULL, NULL}, "a #pragma header name could hide text"},
 };
 
 static bool ssp_write(const char *dir, const char *rel, const char *body)

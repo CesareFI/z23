@@ -58,6 +58,10 @@ const struct cm_file *cm_file_of(struct cm_state *st, CXFile f);
 const struct cm_file *cm_cursor_file(struct cm_state *st, CXCursor c,
                                      unsigned *line, unsigned *offset);
 
+/* clang_manifest_tokens.c: mark each file's live lookup words and '#' by
+ * clang's own lexing (cm_file.live); false when the TU is refused. */
+bool cm_tokenize_files(struct cm_state *st, bool trigraphs);
+
 /* clang_manifest_ast.c */
 bool cm_walk(struct cm_state *st);
 

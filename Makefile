@@ -7422,6 +7422,7 @@ CLANG_MANIFEST_CORE_HDRS := tools/sensors/clang_manifest_core.h \
 CLANG_MANIFEST_SRCS := tools/sensors/clang_manifest.c \
 	tools/sensors/clang_manifest_ast.c \
 	tools/sensors/clang_manifest_session.c \
+	tools/sensors/clang_manifest_tokens.c \
 	$(CLANG_MANIFEST_CORE_SRCS)
 clang-manifest: $(BIN_DIR)/z23-clang-manifest
 # The type spelling call is chosen by a LINK probe, not by CINDEX_VERSION:

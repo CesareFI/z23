@@ -212,12 +212,14 @@ bool cm_lookup_directive(struct cm_core *c, const struct cm_file *includer,
  * header's too) or in a -D value - is recorded with no negative claim
  * (MISS_V1_NONE), as include_next is: a warm session then recreates the TU,
  * and the facts consumer treats it as reachable by every created or deleted
- * path (and #embed or __has_embed by every changed path). The scan reads
- * the text as translation phases 1 to 3 do, with the trigraph and digit
- * separator rules the front end measured for the TU (cm_measure_lang,
- * cm_splice, cm_code_mask): a word in a comment or a
- * character or string literal is no lookup, but one in a skipped group
- * counts too, which costs warm reuse and precision, never truth.
+ * path (and #embed or __has_embed by every changed path). Which words are
+ * live is clang's own lexing of each file under the TU's language options
+ * (clang_tokenize, clang_manifest_tokens.c): a word in a comment or in a
+ * character, string or raw string literal is no lookup, but one in a
+ * skipped group counts too, which costs warm reuse and precision, never
+ * truth. The scan then reads each live word's operand in the text as
+ * translation phases 1 and 2 leave it (cm_splice, with the trigraph rule
+ * cm_measure_lang measured for the TU).
  * Contract: docs/work/SEMANTIC_MANIFEST.md, "Warm session". */
 
 /* The longest spelled name an unbound record keeps. */
@@ -247,6 +249,7 @@ struct cm_spliced {
     size_t n;
     char *owned;
     size_t *splices;
+    size_t *map; /* when owned: map[r] is the spliced offset of raw byte r */
     size_t nsplices, cap;
 };
 
@@ -301,7 +304,8 @@ static bool cm_splice(const char *s, size_t n, bool trigraphs,
     if (!trigraphs && memchr(s, '\\', n) == NULL)
         return true;
     t->owned = zcl_malloc(n + 1, "clang_manifest.spliced");
-    if (t->owned == NULL)
+    t->map = zcl_calloc(n + 1, sizeof(*t->map), "clang_manifest.splice_map");
+    if (t->owned == NULL || t->map == NULL)
         return false;
     for (size_t i = 0; i < n;) {
         char tri = trigraphs ? cm_trigraph(s, i, n) : 0;
@@ -310,6 +314,8 @@ static bool cm_splice(const char *s, size_t n, bool trigraphs,
         size_t end = ch == '\\' ? cm_continuation_end(s, i + width - 1, n) : 0;
         if ((end != 0 || tri != 0) && !cm_splice_mark(t, w))
             return false;
+        for (size_t k = i; k < (end != 0 ? end : i + width); k++)
+            t->map[k] = w;
         if (end != 0) {
             i = end;
             continue;
@@ -318,6 +324,7 @@ static bool cm_splice(const char *s, size_t n, bool trigraphs,
         i += width;
     }
     t->owned[w] = '\0';
+    t->map[n] = w;
     t->s = t->owned;
     t->n = w;
     return true;
@@ -327,6 +334,7 @@ static void cm_spliced_free(struct cm_spliced *t)
 {
     free(t->owned);
     free(t->splices);
+    free(t->map);
 }
 
 /* Did a continuation run through the occurrence [start, end)? */
@@ -872,211 +880,6 @@ static bool cm_cond_at(struct cm_core *c, const struct cm_file *f,
     return cm_cond_unbound(c, f, name, form);
 }
 
-/* ---- where a conditional lookup can start: code, not comments or literals -- */
-
-/* A word after which '<' opens a header name: an include-like directive's,
- * or a conditional-lookup word's (past its '('). */
-static bool cm_hdr_word(const char *s, size_t a, size_t b)
-{
-    static const char *const words[] = {
-        "include",       "include_next",       "import",
-        "embed",         "__has_include",      "__has_include_next",
-        "__has_include__", "__has_include_next__", "__has_embed",
-    };
-    for (size_t k = 0; k < sizeof(words) / sizeof(words[0]); k++)
-        if (strlen(words[k]) == b - a && memcmp(s + a, words[k], b - a) == 0)
-            return true;
-    return false;
-}
-
-static bool cm_blank(char ch)
-{
-    return ch == ' ' || ch == '\t';
-}
-
-/* The end of the header name the '<' at s[i] opens: just past its '>'; 0
- * when a '"' or the line's end comes before the '>' (then it is a
- * punctuator and lexing goes on after it). */
-static size_t cm_hdr_close(const char *s, size_t i, size_t n)
-{
-    for (size_t j = i + 1; j < n && s[j] != '\n' && s[j] != '"'; j++)
-        if (s[j] == '>')
-            return j + 1;
-    return 0;
-}
-
-/* The end of the line or block comment at s[i]: a line comment leaves its
- * newline; an unterminated block comment runs to the end. */
-static size_t cm_comment_end(const char *s, size_t i, size_t n)
-{
-    const char *end;
-    if (s[i + 1] == '/') {
-        end = memchr(s + i, '\n', n - i);
-        return end == NULL ? n : (size_t)(end - s);
-    }
-    for (size_t j = i + 2; j + 1 < n; j++)
-        if (s[j] == '*' && s[j + 1] == '/')
-            return j + 2;
-    return n;
-}
-
-/* The end of the character or string literal at s[i]: past its closing
- * quote, or at the raw newline that leaves it unterminated. */
-static size_t cm_literal_end(const char *s, size_t i, size_t n)
-{
-    size_t j = i + 1;
-    while (j < n && s[j] != s[i] && s[j] != '\n')
-        j += s[j] == '\\' && j + 1 < n ? 2 : 1;
-    return j < n && s[j] == s[i] ? j + 1 : j;
-}
-
-static bool cm_digit(char ch)
-{
-    return ch >= '0' && ch <= '9';
-}
-
-/* The phase-3 lexer over one file's spliced text. */
-struct cm_lexer {
-    const char *s;
-    size_t n;
-    bool separators; /* C23 on: a pp-number takes digit separators */
-    int hdr;         /* 1 after a header-name word, 2 after its '(' too */
-};
-
-/* The end of the pp-number at s[i]: digits, letters, '_', '.', an exponent
- * sign, and (C23 on) a digit separator followed by a digit or nondigit.
- * Before C23 a '\'' there opens a character literal. */
-static size_t cm_ppnum_end(const struct cm_lexer *L, size_t i)
-{
-    const char *s = L->s;
-    size_t j = i + 1, n = L->n;
-    while (j < n) {
-        char c = s[j], p = s[j - 1];
-        if ((c == '+' || c == '-') &&
-            (p == 'e' || p == 'E' || p == 'p' || p == 'P'))
-            j++;
-        else if (c == '\'' && L->separators && j + 1 < n &&
-                 cm_ident_char(s[j + 1]))
-            j += 2;
-        else if (cm_ident_char(c) || c == '.')
-            j++;
-        else
-            break;
-    }
-    return j;
-}
-
-/* The end of the comment or the character or string literal at s[i], or 0
- * when none starts there. */
-static size_t cm_lex_hidden(const char *s, size_t i, size_t n)
-{
-    char ch = s[i], nx = i + 1 < n ? s[i + 1] : '\0';
-    if (ch == '/' && (nx == '/' || nx == '*'))
-        return cm_comment_end(s, i, n);
-    if (ch == '"' || ch == '\'')
-        return cm_literal_end(s, i, n);
-    return 0;
-}
-
-/* The end of the token or gap at s[i], as translation phase 3 lexes the
- * spliced text; *code false for a comment or a literal. An identifier ends
- * at its last identifier byte, so an encoding prefix's literal (u8"x") is
- * the next token. A '<' is a header name's only where one may start. */
-static size_t cm_lex_one(const struct cm_lexer *L, size_t i, bool *code)
-{
-    const char *s = L->s;
-    size_t n = L->n, j = cm_lex_hidden(L->s, i, L->n);
-    char ch = s[i], nx = i + 1 < n ? s[i + 1] : '\0';
-    *code = j == 0;
-    if (j != 0)
-        return j;
-    if (cm_digit(ch) || (ch == '.' && cm_digit(nx)))
-        return cm_ppnum_end(L, i);
-    if (cm_ident_char(ch)) {
-        for (j = i + 1; j < n && cm_ident_char(s[j]); j++)
-            ;
-        return j;
-    }
-    if (ch == '<' && L->hdr != 0 && (j = cm_hdr_close(s, i, n)) != 0)
-        return j;
-    return i + 1;
-}
-
-/* Where a header name may start after the token [i, end): past a
- * header-name word and its '(', across blanks and comments (each only
- * whitespace to phase 4), and nowhere else. */
-static int cm_hdr_after(const struct cm_lexer *L, size_t i, size_t end,
-                        bool code)
-{
-    const char *s = L->s;
-    if (!code)
-        return s[i] == '/' ? L->hdr : 0;
-    if (end - i == 1 && cm_blank(s[i]))
-        return L->hdr;
-    if (cm_ident_char(s[i]) && !cm_digit(s[i]))
-        return cm_hdr_word(s, i, end) ? 1 : 0;
-    return L->hdr == 1 && end - i == 1 && s[i] == '(' ? 2 : 0;
-}
-
-/* An #define (or %:define) directive's '#' at s[i]. */
-static bool cm_define_at(const char *s, size_t i, size_t n)
-{
-    size_t j;
-    if (s[i] == '#')
-        j = i + 1;
-    else if (s[i] == '%' && n - i >= 2 && s[i + 1] == ':')
-        j = i + 2;
-    else
-        return false;
-    j = cm_skip_directive_space(s, j, n);
-    return n - j >= 6 && memcmp(s + j, "define", 6) == 0 &&
-           (j + 6 == n || !cm_ident_char(s[j + 6]));
-}
-
-/* code[i] 2 across each #define directive, from its '#' to the newline
- * that ends it (one inside a comment does not): a conditional-lookup word
- * there is evaluated where the macro expands. */
-static void cm_mark_defines(const struct cm_spliced *t, uint8_t *code)
-{
-    const char *s = t->s;
-    size_t n = t->n;
-    for (size_t i = 0; i < n;) {
-        size_t j = i, end;
-        while (j < n && s[j] != '\n' && (cm_blank(s[j]) || code[j] == 0))
-            j++;
-        for (end = j; end < n && (s[end] != '\n' || code[end] == 0); end++)
-            ;
-        if (j < n && cm_define_at(s, j, n))
-            for (size_t k = j; k < end; k++)
-                code[k] = code[k] != 0 ? 2 : 0;
-        i = end + 1;
-    }
-}
-
-/* code[i]: 0 when s[i] lies inside a comment or a character or string
- * literal, 2 inside a #define directive's code, else 1. A conditional-lookup
- * word or directive can only start in code; a word in a comment or a
- * literal is none (a header name's text is code, and never opens a
- * comment). The lexer is phase 3's over the spliced text, with a header
- * name recognized after an include-like directive word or a
- * conditional-lookup word. */
-static uint8_t *cm_code_mask(const struct cm_spliced *t, bool separators)
-{
-    struct cm_lexer L = {.s = t->s, .n = t->n, .separators = separators};
-    uint8_t *code = zcl_malloc(t->n + 1, "clang_manifest.code_mask");
-    if (code == NULL)
-        return NULL;
-    for (size_t i = 0; i < t->n;) {
-        bool is_code;
-        size_t end = cm_lex_one(&L, i, &is_code);
-        memset(code + i, is_code ? 1 : 0, end - i);
-        L.hdr = cm_hdr_after(&L, i, end, is_code);
-        i = end;
-    }
-    cm_mark_defines(t, code);
-    return code;
-}
-
 /* ---- what the scan reads: the TU's language, its files, its -D values ------ */
 
 /* A conditional-lookup word at s[i] in a macro's body (a #define's, or a
@@ -1130,6 +933,20 @@ static bool cm_scan_argv(struct cm_core *c, const char *const *argv,
     return true;
 }
 
+/* code[i]: 1 when a live conditional-lookup word or '#' starts at t[i], 2
+ * when it sits in a #define body, else 0: f->live (clang's lexing, by raw
+ * offset) carried through the splice to t's offsets. */
+static uint8_t *cm_code_of(const struct cm_file *f, const struct cm_spliced *t)
+{
+    uint8_t *code = zcl_calloc(t->n + 1, 1, "clang_manifest.code_mask");
+    if (code == NULL)
+        return NULL;
+    for (size_t r = 0; f->live != NULL && r < f->size; r++)
+        if (f->live[r] != 0)
+            code[t->map != NULL ? t->map[r] : r] = f->live[r];
+    return code;
+}
+
 /* One file, repo or system: a system header's own conditionals search the
  * -I dirs too (an angled search starts there), so a repo dir gaining a
  * name can flip them. */
@@ -1139,15 +956,14 @@ static bool cm_scan_file(struct cm_core *c, const struct cm_file *f,
     bool ok;
     struct cm_spliced t;
     uint8_t *code = NULL;
+    if (f->size != 0 && f->live == NULL)
+        return cm_fail(c, "%s was not tokenized", f->path);
     ok = cm_splice(f->contents, f->size, lang.trigraphs, &t);
     if (!ok)
         (void)cm_fail(c, "cannot splice %s", f->path);
-    else if ((code = cm_code_mask(&t, lang.separators)) == NULL)
+    else if ((code = cm_code_of(f, &t)) == NULL)
         ok = cm_fail(c, "out of memory");
     for (size_t i = 0; ok && i < t.n; i++) {
-        char ch = t.s[i];
-        if (ch != '_' && ch != '#' && ch != '%')
-            continue;
         if (code[i] == 2)
             ok = cm_body_at(c, f, t.s, i, t.n);
         else if (code[i] == 1)

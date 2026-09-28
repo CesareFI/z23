@@ -479,9 +479,9 @@ static bool cm_refuse_msvc_target(struct cm_state *st)
 /* A probe parsed under the TU's own argv: each array's size says one rule
  * the front end applies, measured by how it lexes or types the text, never
  * by a macro (-D, -U or an -include file can make any macro lie):
- * sizeof("??=") is 2 when trigraphs are replaced; CM_N counts 2 arguments
- * when 0'1 and 2'3 are pp-numbers with separators, and 1 when each ' opens
- * the character literal '1, 2'; sizeof('a') is 1 in C++ (a char), and more
+ * sizeof("??=") is 2 when trigraphs are replaced (the token walk and the
+ * scan's splice both need that; comments and literals are clang's own
+ * lexing, clang_manifest_tokens.c); sizeof('a') is 1 in C++ (a char), and more
  * in C (an int); in Objective-C "id" is a builtin type, so the typedef
  * fails and the probe with it. The #undef lines drop any macro the argv or
  * an -include file gave the probe's own words. Reading these rules from
@@ -489,19 +489,16 @@ static bool cm_refuse_msvc_target(struct cm_state *st)
  * or "-Xlinker -std=c17" names no -std at all. */
 #define CM_LANG_PROBE "clang-manifest-lang-probe.c"
 static const char k_cm_lang_probe[] =
-    "#undef CM_N\n#undef CM_N2\n#undef cm_lang_trigraphs\n"
-    "#undef cm_lang_separators\n#undef cm_lang_foreign\n#undef extern\n"
+    "#undef cm_lang_trigraphs\n"
+    "#undef cm_lang_foreign\n#undef extern\n"
     "#undef const\n#undef char\n#undef sizeof\n#undef typedef\n"
     "#undef int\n#undef id\n"
-    "#define CM_N2(a, b, n, ...) n\n"
-    "#define CM_N(...) CM_N2(__VA_ARGS__, 2, 1, 0)\n"
     "extern const char cm_lang_trigraphs[sizeof(\"?\?=\")];\n"
-    "extern const char cm_lang_separators[CM_N(0'1, 2'3)];\n"
     "extern const char cm_lang_foreign[sizeof('a')];\n"
     "typedef int id;\n";
 
 struct cm_lang_seen {
-    long long trigraphs, separators, foreign;
+    long long trigraphs, foreign;
 };
 
 static enum CXChildVisitResult cm_lang_visit(CXCursor cur, CXCursor parent,
@@ -519,8 +516,6 @@ static enum CXChildVisitResult cm_lang_visit(CXCursor cur, CXCursor parent,
     size = clang_getArraySize(clang_getCursorType(cur));
     if (name != NULL && strcmp(name, "cm_lang_trigraphs") == 0)
         s->trigraphs = size;
-    else if (name != NULL && strcmp(name, "cm_lang_separators") == 0)
-        s->separators = size;
     else if (name != NULL && strcmp(name, "cm_lang_foreign") == 0)
         s->foreign = size;
     clang_disposeString(n);
@@ -570,11 +565,9 @@ static bool cm_measure_lang(struct cm_state *st, const struct cm_args *args,
         clang_disposeTranslationUnit(tu);
     }
     if (errors != 0 || seen.foreign <= 1 ||
-        (seen.trigraphs != 2 && seen.trigraphs != 4) ||
-        (seen.separators != 1 && seen.separators != 2))
+        (seen.trigraphs != 2 && seen.trigraphs != 4))
         return cm_fail(c, "unsupported translation-unit language: the front end's lexing probe failed");
     lang->trigraphs = seen.trigraphs == 2;
-    lang->separators = seen.separators == 2;
     return true;
 }
 
@@ -602,7 +595,8 @@ static bool cm_extract(struct cm_state *st, const struct cm_opts *o,
         return false;
     if (o->facts && !cm_facts_begin(c, o->tree))
         return false;
-    return cm_measure_lang(st, args, &lang) && cm_walk(st) &&
+    return cm_measure_lang(st, args, &lang) &&
+           cm_tokenize_files(st, lang.trigraphs) && cm_walk(st) &&
            cm_scan_has_include(c, args->parse, args->nparse, lang) &&
            cm_emit_files(c) && cm_emit_deferred(c) &&
            cm_emit_identity_libclang(st, main_path, args) &&

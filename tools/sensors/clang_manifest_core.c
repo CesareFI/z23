@@ -133,6 +133,7 @@ void cm_core_free(struct cm_core *c)
         free(c->files[k].path);
         free(c->files[k].real);
         free(c->files[k].opened);
+        free(c->files[k].live);
     }
     free(c->files);
     cm_free_dirs(&c->quote);
