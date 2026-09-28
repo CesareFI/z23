@@ -66,11 +66,57 @@ static bool fxc_load_pair(struct fxc *c, const char *path, struct fxc_pair *p)
 }
 
 /* A lookup of one manifest that names a changed path: its hit, or a slot
- * it saw absent. */
+ * it saw absent; or a changed path a lookup with no negative claim may now
+ * resolve to (fxc_unbound_path). */
 struct fxc_probe {
     const struct fxc *c;
     bool hit;
+    const char *unbound;
 };
+
+static bool fxc_spelled_is(const char *s, size_t n, const char *prefix)
+{
+    size_t p = strlen(prefix);
+    return n >= p && memcmp(s, prefix, p) == 0;
+}
+
+/* The sensor spells a conditional lookup it cannot bound from its word on
+ * ("__has_embed(...)", "#embed <x>"); see cm_scan_has_include. */
+const char *fxc_unbound_path(const struct fxc *c, const char *spelled,
+                             size_t len)
+{
+    bool reads = fxc_spelled_is(spelled, len, "#embed") ||
+                 fxc_spelled_is(spelled, len, "__has_embed");
+#if defined(ZCL_TESTING)
+    if (zcl_devloop_test_consumer_mutant == ZCL_DEVLOOP_MUTANT_NO_UNBOUND)
+        return NULL;
+#endif
+    for (size_t k = 0; c->hdrs != NULL && k < c->nfiles; k++)
+        if (reads || c->hdrs[k].moved)
+            return c->files[k];
+    return NULL;
+}
+
+static bool fxc_unbound_cb(void *ctx, const char *dir, size_t dn,
+                           const char *name, size_t nn)
+{
+    struct fxc_probe *q = ctx;
+    (void)dn;
+    if (dir == NULL && name != NULL)
+        q->unbound = fxc_unbound_path(q->c, name, nn);
+    return q->unbound == NULL;
+}
+
+/* The changed path some lookup of m with no negative claim may now resolve
+ * to, or NULL: such a lookup names no slot to compare against the change,
+ * so nothing but the change's own shape bounds it. */
+static const char *fxc_unbound(const struct fxc *c, const uint8_t *m, size_t n)
+{
+    struct fxc_probe q = {.c = c};
+    if (m != NULL)
+        (void)vcs_semantic_absent_v1_each(m, n, fxc_unbound_cb, &q);
+    return q.unbound;
+}
 
 static bool fxc_probe_names(const struct fxc *c, const char *dir, size_t dn,
                             const char *name, size_t nn)
@@ -104,8 +150,10 @@ static bool fxc_hit_cb(void *ctx, const struct vcs_semantic_fields_v1 *f)
 }
 
 /* The TU's include resolution depends on a changed path it need not read:
- * a __has_include or include lookup hit it, or saw its slot empty. A file
- * created or deleted there changes the TU with no FILES record to say so. */
+ * a __has_include or include lookup hit it, or saw its slot empty, or makes
+ * no negative claim at all while a path was created or deleted (or, for an
+ * embed, any path changed). A file created or deleted there changes the TU
+ * with no FILES record to say so. */
 static bool fxc_probes(const struct fxc *c, const uint8_t *m, size_t n)
 {
     struct fxc_probe q = {.c = c};
@@ -119,7 +167,7 @@ static bool fxc_probes(const struct fxc *c, const uint8_t *m, size_t n)
                                        fxc_hit_cb, &q);
     if (!q.hit)
         (void)vcs_semantic_absent_v1_each(m, n, fxc_absent_cb, &q);
-    return q.hit;
+    return q.hit || fxc_unbound(c, m, n) != NULL;
 }
 
 /* Some side of the pair read a changed file or looked it up. */
@@ -1099,6 +1147,21 @@ static void fxc_note_reads(struct fxc *c, const struct fxc_pair *p)
             c->hdrs[k].read = true;
 }
 
+/* A lookup with no negative claim on either side may now resolve to a
+ * changed path: the TU is affected whole whatever its facts say, as the
+ * after-bind's "lookup-unbound" says of the after side alone. */
+static void fxc_unbound_verdict(const struct fxc *c, const struct fxc_pair *p,
+                                struct zcl_devloop_facts_tu_verdict *t)
+{
+    const char *path = fxc_unbound(c, p->a, p->alen);
+    if (path == NULL)
+        path = fxc_unbound(c, p->b, p->blen);
+    if (path != NULL)
+        fxc_set(t, true, true, "lookup-unbound",
+                "a lookup that makes no negative claim may now resolve to %s",
+                path);
+}
+
 bool fxc_tu_eval(struct fxc *c, const char *path)
 {
     struct fxc_pair p = {0};
@@ -1129,6 +1192,8 @@ bool fxc_tu_eval(struct fxc *c, const char *path)
         fxc_set(t, true, true, "facts-missing", "no valid before manifest");
     else if (ok && !fxc_coarse(c, &p, t))
         ok = fxc_fine(c, &p, t);
+    if (ok && (!t->affected || t->compile_only))
+        fxc_unbound_verdict(c, &p, t);
     if (ok && t->affected && t->broadened && !fxc_untrusted_includer(c, &p, t))
         ok = fxc_included_c_seeds(c, &p);
     fxc_pair_free(&p);

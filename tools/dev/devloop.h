@@ -284,6 +284,7 @@ enum zcl_devloop_consumer_mutant {
     ZCL_DEVLOOP_MUTANT_NO_OUTSIDER,      /* TUs reading no changed file never drift */
     ZCL_DEVLOOP_MUTANT_NO_SDIR_REPLAY,   /* a search-dir-only identity change never moves a lookup */
     ZCL_DEVLOOP_MUTANT_NO_ASSERT,        /* no static_assert site makes a TU compile */
+    ZCL_DEVLOOP_MUTANT_NO_UNBOUND,       /* a lookup with no negative claim never reaches a changed path */
 };
 extern enum zcl_devloop_consumer_mutant zcl_devloop_test_consumer_mutant;
 /* Test-only: whether the last facts-narrowed walk folded `path` into its

@@ -112,6 +112,60 @@ int fxc_readers(struct fxc *c, const char *path, char (*out)[256], int cap)
     return n < 0 || dim != CODEINDEX_INCLUDE_DIM_COMPLETE ? -1 : n;
 }
 
+/* ---- created and deleted paths ------------------------------------------------ */
+
+static bool fxc_exists(const char *root, const char *dir, const char *file,
+                       const char *suffix)
+{
+    char path[ZCL_DEVLOOP_PATH_MAX * 2 + 64];
+    struct stat st;
+    return snprintf(path, sizeof(path), "%s/%s%s%s%s", root, dir ? dir : "",
+                    dir ? "/" : "", file, suffix) < (int)sizeof(path) &&
+           lstat(path, &st) == 0;
+}
+
+/* A changed path is created or deleted when the tree has nothing there now
+ * or the facts directory holds no before text of it (a created path; or a
+ * producer that saved none, which can only widen). */
+static void fxc_note_moved(struct fxc *c)
+{
+    for (size_t k = 0; k < c->nfiles; k++)
+        c->hdrs[k].moved =
+            !fxc_exists(c->root, NULL, c->files[k], "") ||
+            !fxc_exists(c->root, c->facts_dir, c->files[k], ".before");
+}
+
+static bool fxc_before_attested(const struct fxc *c)
+{
+    uint8_t *text = NULL;
+    size_t len = 0;
+    bool ok = zcl_devloop_facts_read(c->root, c->facts_dir,
+                                     FXC_BEFORE_READERS_FILE, "", 256, &text,
+                                     &len) &&
+              len == strlen(FXC_BEFORE_READERS_TEXT) &&
+              memcmp(text, FXC_BEFORE_READERS_TEXT, len) == 0;
+    free(text);
+    return ok;
+}
+
+/* The TUs that read changed file k, for the universe. A path the tree no
+ * longer holds is refused by the depfile graph, whose depfiles may already
+ * be the after side's (fxc_readers). When the producer attests that every
+ * TU whose before-state depfile named a changed file has its before
+ * manifest here, those manifests are the before side's readers (each is a
+ * member, fxc_member): the graph adds only the readers it still lists. */
+static int fxc_change_readers(struct fxc *c, size_t k, char (*out)[256],
+                              int cap)
+{
+    enum codeindex_include_dim dim = CODEINDEX_INCLUDE_DIM_UNAVAILABLE;
+    int n = fxc_readers(c, c->files[k], out, cap);
+    if (n >= 0 || c->ci == NULL || !c->attested ||
+        fxc_exists(c->root, NULL, c->files[k], ""))
+        return n;
+    n = codeindex_reverse_includes(c->ci, c->files[k], out, cap, &dim);
+    return n < 0 || n >= cap ? -1 : n;
+}
+
 /* ---- candidates: every after manifest under facts_dir ------------------------ */
 
 static bool fxc_ends_with(const char *s, const char *suffix)
@@ -215,7 +269,7 @@ static bool fxc_cross_check(struct fxc *c)
     char(*readers)[256] = zcl_calloc(FXC_READERS_MAX, 256, "facts_consumer.rd");
     bool ok = readers != NULL;
     for (size_t k = 0; ok && k < c->nfiles; k++) {
-        int n = fxc_readers(c, c->files[k], readers, FXC_READERS_MAX);
+        int n = fxc_change_readers(c, k, readers, FXC_READERS_MAX);
         if (n < 0) {
             fxc_incomplete(c, fxc_graph_reason(c), c->files[k]);
             continue;
@@ -857,7 +911,7 @@ static bool fxc_unlisted(struct fxc *c, bool *want, const char **hit)
         int n;
         if (c->hdrs[k].read || !fxc_build_input(c->files[k]))
             continue;
-        n = fxc_readers(c, c->files[k], readers, FXC_READERS_MAX);
+        n = fxc_change_readers(c, k, readers, FXC_READERS_MAX);
         if (n < 0)
             *hit = c->files[k];
         want[k] = n == 0;
@@ -935,6 +989,8 @@ static bool fxc_universe(struct fxc *c)
     if (!ok || c->cand.n >= ZCL_DEVLOOP_FACTS_TU_MAX)
         fxc_incomplete(c, "facts-scan-bounded", c->facts_dir);
     qsort(c->cand.v, c->cand.n, sizeof(*c->cand.v), fxc_str_cmp);
+    fxc_note_moved(c);
+    c->attested = fxc_before_attested(c);
     ok = true;
     for (size_t k = 0; ok && k < c->cand.n; k++)
         ok = fxc_tu_eval(c, c->cand.v[k]);

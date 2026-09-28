@@ -14,6 +14,7 @@ struct fxc_hdr {
     const char *path;
     bool loaded;
     bool read;          /* some candidate manifest read it */
+    bool moved;         /* created or deleted: one side has no file there */
     const char *reason; /* NULL when both texts are bound */
     uint8_t *before, *after;
     size_t blen, alen;
@@ -50,7 +51,19 @@ struct fxc {
     char seed_detail[192];
     struct codeindex *ci;       /* NULL when the index cannot open */
     int graph;                  /* codeindex_include_dim of the last query */
+    bool attested;              /* the facts directory holds the before
+                                   manifest of every TU whose before-state
+                                   depfile names a changed file
+                                   (FXC_BEFORE_READERS) */
 };
+
+/* The marker a facts producer writes at <facts>/FXC_BEFORE_READERS_FILE,
+ * holding exactly FXC_BEFORE_READERS_TEXT, once it has sensed the before
+ * side of every TU whose before-state depfile names a changed file. It is
+ * the before-state evidence for a deleted path, whose old readers the
+ * depfile graph of the tree being planned may no longer list. */
+#define FXC_BEFORE_READERS_FILE ".zcl-before-readers"
+#define FXC_BEFORE_READERS_TEXT "zcl.facts.before_readers.v1\n"
 
 /* consumer.c */
 bool fxc_strs_add(struct fxc_strs *s, const char *v);
@@ -66,6 +79,14 @@ struct zcl_devloop_facts_tu_verdict *fxc_tu_new(struct fxc *c,
 int fxc_readers(struct fxc *c, const char *path, char (*out)[256], int cap);
 /* The universe is not known: the first reason and path win. */
 void fxc_incomplete(struct fxc *c, const char *reason, const char *path);
+
+/* tu.c: the changed path a lookup that makes no negative claim (a computed
+ * or include_next directive, or a conditional lookup the sensor could not
+ * bound) may now resolve differently because of, or NULL. A created or
+ * deleted path can change any such answer; a #embed or __has_embed reads
+ * or weighs the file it finds, so any changed path can change its answer. */
+const char *fxc_unbound_path(const struct fxc *c, const char *spelled,
+                             size_t len);
 
 /* sdir.c: a pair whose IDENTITY records differ. UNCHANGED and CHANGED
  * only when nothing but the -I/-iquote/-isystem/-idirafter dirs differ and
