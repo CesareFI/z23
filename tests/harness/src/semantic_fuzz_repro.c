@@ -928,6 +928,183 @@ static const struct sfz_file k_link_target_edit[] = {
     "src/t0.c object changed, planned unaffected (not in the universe)\n"     \
     "src/t0.c t0_local tu-missed\n"
 
+/* ---- negative-lookup and ordering families ---------------------------------- */
+
+/* N1a: a quoted #include falls through t0's own dir to -Iinc2's qx.h. The
+ * edit creates inc1/qx.h (searched before inc2) with a different value;
+ * inc2/qx.h, the file t0 read before, is untouched. */
+static const struct sfz_file k_n1a_quoted_shadow[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc2/qx.h", "#define QX_V 5\n", SFZ_SAME},
+    {"inc1/qx.h", NULL, "#define QX_V 9\n"},
+    {"src/t0.c",
+         "#include \"qx.h\"\n"
+         "int t0_qx(void)\n"
+         "{\n"
+         "    return QX_V;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* N1b: #if __has_include(<sx.h>) is false; the edit creates sx.h in an
+ * -isystem dir the probe searches. */
+static const struct sfz_file k_n1b_isystem_lookup[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = -isystem sys\n", SFZ_SAME},
+    {"sys/sx.h", NULL, "#define SX_V 1\n"},
+    {"src/t0.c",
+         "#if __has_include(<sx.h>)\n"
+         "#include <sx.h>\n"
+         "#define T0_HAS SX_V\n"
+         "#else\n"
+         "#define T0_HAS 0\n"
+         "#endif\n"
+         "int t0_sx(void)\n"
+         "{\n"
+         "    return T0_HAS;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* N1c: an #include_next chain (inc1/chain.h -> inc3/chain.h, reached via
+ * CFLAGS_EXTRA -Iinc3). The edit creates inc2/chain.h, a new step between
+ * the two search-path positions the chain used before: inc1's
+ * include_next now finds inc2's copy instead of jumping straight to
+ * inc3's. */
+static const struct sfz_file k_n1c_include_next_chain[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = -Iinc3\n", SFZ_SAME},
+    {"inc1/chain.h",
+         "#define CHAIN_STEP1 1\n"
+         "#include_next <chain.h>\n",
+         SFZ_SAME},
+    {"inc3/chain.h", "#define CHAIN_FINAL 100\n", SFZ_SAME},
+    {"inc2/chain.h", NULL, "#define CHAIN_MID 50\n"},
+    {"src/t0.c",
+         "#include <chain.h>\n"
+         "int t0_chain(void)\n"
+         "{\n"
+         "    int v = CHAIN_STEP1;\n"
+         "#ifdef CHAIN_MID\n"
+         "    v += CHAIN_MID;\n"
+         "#endif\n"
+         "#ifdef CHAIN_FINAL\n"
+         "    v += CHAIN_FINAL;\n"
+         "#endif\n"
+         "    return v;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* N2a: an X-macro header included twice in one TU with a different XM(...)
+ * defined between the two #includes. The edit changes one entry's value in
+ * the shared header, which both expansions (an enum and a value table)
+ * must reseed. */
+static const struct sfz_file k_n2a_xmacro_reinclude[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc1/xm.h",
+         "XM(A, 1)\n"
+         "XM(B, 2)\n"
+         "XM(C, 3)\n",
+         "XM(A, 1)\n"
+         "XM(B, 20)\n"
+         "XM(C, 3)\n"},
+    {"src/t0.c",
+         "#define XM(name, val) name = val,\n"
+         "enum { XM_BASE = 0,\n"
+         "#include \"xm.h\"\n"
+         "XM_END };\n"
+         "#undef XM\n"
+         "#define XM(name, val) val,\n"
+         "static const int xm_vals[] = {\n"
+         "#include \"xm.h\"\n"
+         "};\n"
+         "int t0_sum(void)\n"
+         "{\n"
+         "    int s = 0;\n"
+         "    for (unsigned i = 0; i < sizeof(xm_vals) / sizeof(xm_vals[0]); i++)\n"
+         "        s += xm_vals[i];\n"
+         "    return s + XM_END;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
+/* N2b: two headers each guard a typedef and a value macro behind
+ * #ifndef ORD_TYPE, so whichever includes first wins. The edit is inside
+ * t0.c itself: it swaps the #include order, with neither header changing a
+ * byte. */
+static const struct sfz_file k_n2b_order_typedef_swap[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc1/ord_a.h",
+         "#ifndef ORD_A_H\n"
+         "#define ORD_A_H\n"
+         "#ifndef ORD_TYPE\n"
+         "typedef int ord_t;\n"
+         "#define ORD_TYPE 1\n"
+         "#endif\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"inc2/ord_b.h",
+         "#ifndef ORD_B_H\n"
+         "#define ORD_B_H\n"
+         "#ifndef ORD_TYPE\n"
+         "typedef long ord_t;\n"
+         "#define ORD_TYPE 2\n"
+         "#endif\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"src/t0.c",
+         "#include \"ord_a.h\"\n"
+         "#include \"ord_b.h\"\n"
+         "int t0_ord(void)\n"
+         "{\n"
+         "    ord_t v = (ord_t)ORD_TYPE;\n"
+         "    return (int)v;\n"
+         "}\n",
+         "#include \"ord_b.h\"\n"
+         "#include \"ord_a.h\"\n"
+         "int t0_ord(void)\n"
+         "{\n"
+         "    ord_t v = (ord_t)ORD_TYPE;\n"
+         "    return (int)v;\n"
+         "}\n"},
+    SFZ_T1_ALONE,
+};
+
+/* N2c: inc2/undef_b.h #undefs the macro inc1/def_a.h defines, and
+ * redefines it. The edit adds that #undef/#define pair to inc2's own
+ * (previously no-op) guarded body: a header change, as D-family cases, but
+ * through #undef rather than a fresh #define. */
+static const struct sfz_file k_n2c_undef_between[] = {
+    {"Makefile", "# p\nCFLAGS_EXTRA = \n", SFZ_SAME},
+    {"inc1/def_a.h",
+         "#ifndef DEF_A_H\n"
+         "#define DEF_A_H\n"
+         "#define UNDF_V 7\n"
+         "#endif\n",
+         SFZ_SAME},
+    {"inc2/undef_b.h",
+         "#ifndef UNDF_B_H\n"
+         "#define UNDF_B_H\n"
+         "#endif\n",
+         "#ifndef UNDF_B_H\n"
+         "#define UNDF_B_H\n"
+         "#undef UNDF_V\n"
+         "#define UNDF_V 42\n"
+         "#endif\n"},
+    {"src/t0.c",
+         "#include \"def_a.h\"\n"
+         "#include \"undef_b.h\"\n"
+         "int t0_undef(void)\n"
+         "{\n"
+         "    return UNDF_V;\n"
+         "}\n",
+         SFZ_SAME},
+    SFZ_T1_ALONE,
+};
+
 const struct sfz_repro k_sfz_repros[] = {
     {"F1_flag", "flag", "Makefile CFLAGS_EXTRA gains -DPROJ_MODE=1", false,
      NULL, SFZ_FILES(k_f1_flag), NULL},
@@ -1036,6 +1213,32 @@ const struct sfz_repro k_sfz_repros[] = {
     {"pass_link_target_edit", "symlink_retarget",
      "hdr/a.h changes; t0 reads it only through the link inc1/h.h", false,
      NULL, SFZ_FILES(k_link_target_edit), NULL},
+    {"N1a_quoted_shadow", "neg_quoted_shadow",
+     "inc1/qx.h, searched before inc2/qx.h (unedited), is created with a "
+     "different QX_V",
+     false, NULL, SFZ_FILES(k_n1a_quoted_shadow), NULL, true, 0},
+    {"N1b_isystem_lookup", "neg_isystem_lookup",
+     "sys/sx.h, an -isystem dir __has_include(<sx.h>) probes, is created "
+     "(the -isystem path itself is an identity-drift fallback, so t1 is "
+     "predicted though unchanged: pinned over-selection 1)",
+     false, NULL, SFZ_FILES(k_n1b_isystem_lookup), NULL, true, 1},
+    {"N1c_include_next_chain", "neg_include_next_chain",
+     "inc2/chain.h, a new step between inc1's include_next and inc3's "
+     "final header, is created",
+     false, NULL, SFZ_FILES(k_n1c_include_next_chain), NULL, true, 0},
+    {"N2a_xmacro_reinclude", "xmacro_reinclude",
+     "inc1/xm.h's XM(B,2) becomes XM(B,20); xm.h is #included twice in "
+     "t0.c with a different XM(...) defined each time",
+     false, NULL, SFZ_FILES(k_n2a_xmacro_reinclude), NULL, true, 0},
+    {"N2b_order_typedef_swap", "order_typedef_swap",
+     "t0.c swaps the order it includes ord_a.h and ord_b.h, each guarding "
+     "a typedef and a value macro behind #ifndef ORD_TYPE; neither header "
+     "changes",
+     false, NULL, SFZ_FILES(k_n2b_order_typedef_swap), NULL, true, 0},
+    {"N2c_undef_between", "order_undef",
+     "inc2/undef_b.h, previously a no-op, gains an #undef and redefine of "
+     "UNDF_V, which inc1/def_a.h defines first",
+     false, NULL, SFZ_FILES(k_n2c_undef_between), NULL, true, 0},
 };
 const size_t k_sfz_nrepros = sizeof(k_sfz_repros) / sizeof(k_sfz_repros[0]);
 
