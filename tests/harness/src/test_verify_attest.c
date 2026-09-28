@@ -685,7 +685,7 @@ static int test_va_loader(void)
 {
     int failures = 0;
     char dir[PATH_MAX - 128] = {0}, key[PATH_MAX], sub[PATH_MAX],
-         subkey[PATH_MAX];
+         subkey[PATH_MAX], grp[PATH_MAX], grpkey[PATH_MAX];
     char temporary[PLATFORM_TEMP_PATH_MAX] = {0};
     bool fixture_dir_created = false;
     char hex[66];
@@ -746,6 +746,21 @@ static int test_va_loader(void)
         ASSERT(va_load_refuses(subkey, true, &none,
                                ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE));
         ASSERT(chmod(sub, 0700) == 0);
+        /* A 0775 directory this account owns, as a umask-002 login leaves
+         * ~/.local: refused as the key's parent and as any higher
+         * ancestor, even when the directory in between is 0700. */
+        (void)snprintf(grp, sizeof(grp), "%s/shared", dir);
+        ASSERT(mkdir(grp, 0700) == 0 && chmod(grp, 0775) == 0);
+        (void)snprintf(grpkey, sizeof(grpkey), "%s/verifier.pub", grp);
+        ASSERT(va_write(grpkey, hex, 0644));
+        ASSERT(va_load_refuses(grpkey, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE));
+        (void)snprintf(grpkey, sizeof(grpkey), "%s/inner", grp);
+        ASSERT(mkdir(grpkey, 0700) == 0);
+        (void)snprintf(grpkey, sizeof(grpkey), "%s/inner/verifier.pub", grp);
+        ASSERT(va_write(grpkey, hex, 0644));
+        ASSERT(va_load_refuses(grpkey, true, &none,
+                               ZCL_VERIFY_ATTEST_WHY_DIR_WRITABLE));
         ASSERT(va_write(subkey, "not a key\n", 0644));
         ASSERT(va_load_refuses(subkey, true, &none,
                                ZCL_VERIFY_ATTEST_WHY_KEY_MALFORMED));
