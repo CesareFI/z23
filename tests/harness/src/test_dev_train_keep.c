@@ -231,7 +231,16 @@ static bool dtkt_plan_has(const struct json_value *arr, const char *sha)
     return false;
 }
 
-/* Bare origin + a checkout wired to it, with signing that works offline. */
+/* Bare origin + a checkout wired to it, with signing that works offline.
+ *
+ * The stand-in gpg reads the whole payload before it answers, as real gpg
+ * does. git writes the commit to the signer's stdin and treats a failed write
+ * as a failed signature. A stand-in that exits without reading loses that
+ * race whenever the CPU is contended: it runs to completion before git
+ * writes, git gets EPIPE, and the keeper's `cherry-pick -S` fails with
+ * "gpg failed to sign the data". The keeper's assembly then refuses as
+ * ASSEMBLY_BLOCKED. That is correct keeper behaviour caused by a broken
+ * fixture. */
 static bool dtkt_fixture_repo(const char *root, const char *bare,
                               const char *parent)
 {
@@ -251,6 +260,7 @@ static bool dtkt_fixture_repo(const char *root, const char *bare,
                               "z23-test@example.invalid", NULL};
     if (!dtkt_write(parent, "fakegpg.sh",
                    "#!/bin/sh\n"
+                   "cat >/dev/null\n"
                    "printf '[GNUPG:] SIG_CREATED \\n' >&2\n"
                    "echo '-----BEGIN PGP SIGNATURE-----'\n"
                    "echo 'fixture'\n"
