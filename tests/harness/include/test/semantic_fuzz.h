@@ -73,6 +73,15 @@ struct sfz_repro {
      * each ending in '\n', in report order. The case holds only when it
      * FAILs with exactly these lines; a PASS means the mark is stale. */
     const char *known_red_why;
+    /* over_pinned: over_want is the exact count of TUs the plan selected
+     * (predicted affected) whose cold object bytes did not change
+     * (over-selection, a false-WIDE plan). The case holds only when its
+     * measured over-selection equals over_want exactly, independent of
+     * known_red: a rise is a precision regression and a fall means
+     * over_want is stale and must come down. false (the default, every
+     * reproducer this field predates): unchecked. */
+    bool over_pinned;
+    size_t over_want;
 };
 
 extern const struct sfz_repro k_sfz_repros[];

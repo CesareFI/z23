@@ -186,7 +186,7 @@ static const struct sfz_seed k_default_seeds_fast[] = {
 
 struct sfz_tally {
     size_t cases, pass, fail, noop, error, skipped, narrowed;
-    size_t tus, predicted, changed, cfun, cobj, covered_seed, reloc;
+    size_t tus, predicted, changed, cfun, cobj, covered_seed, reloc, over;
     double plan_s;
 };
 
@@ -278,6 +278,7 @@ static void tally(struct sfz_tally *t, const struct sfz_outcome *o)
     t->cobj += o->cobj;
     t->covered_seed += o->covered_seed;
     t->reloc += o->reloc;
+    t->over += o->over;
     t->plan_s += o->plan_s;
 }
 
@@ -290,12 +291,12 @@ static const char *status_name(enum sfz_status s)
 static void report(const struct sfz_case *c, const struct sfz_outcome *o)
 {
     printf("semantic_facts_fuzz: %s kind=%s %s narrowed=%s%s%s tus=%zu "
-           "pred=%zu changed=%zu missed=%zu cfun=%zu cobj=%zu seeded=%zu reloc=%zu "
-           "notcov=%zu seeds=%zu plan=%.2fs\n",
+           "pred=%zu changed=%zu missed=%zu over=%zu cfun=%zu cobj=%zu seeded=%zu "
+           "reloc=%zu notcov=%zu seeds=%zu plan=%.2fs\n",
            c->label, c->kind, status_name(o->status), o->narrowed ? "yes" : "no",
            o->narrowed ? "" : " reason=", o->vreason, o->tus, o->predicted,
-           o->changed, o->missed, o->cfun, o->cobj, o->covered_seed, o->reloc,
-           o->notcov, o->seeds, o->plan_s);
+           o->changed, o->missed, o->over, o->cfun, o->cobj, o->covered_seed,
+           o->reloc, o->notcov, o->seeds, o->plan_s);
     if (o->status != SFZ_PASS && o->status != SFZ_NOOP)
         printf("  detail: %s\n  case: %s\n%s", c->detail, c->dir, o->why);
 }
@@ -343,6 +344,8 @@ struct sfz_item {
     struct sfz_case c;
     const char *known_red; /* a reproducer's known-RED mark */
     const char *known_red_why; /* ...and the exact lines it must report */
+    bool over_pinned;      /* a reproducer's exact over-selection pin */
+    size_t over_want;
     bool run;              /* false: skipped, or failed before it could run */
     bool ok;               /* passed, or held as recorded (NOOP only in a
                               range run) */
@@ -454,8 +457,34 @@ static bool known_red_holds(const struct sfz_item *it)
     return holds;
 }
 
+/* A pinned reproducer holds only when its measured over-selection (TUs
+ * the plan predicted affected whose cold object did not change) is
+ * exactly the recorded count: a rise is a false-WIDE precision
+ * regression, a fall means the pin is stale and must come down. Checked
+ * whenever the case ran to a verdict (not an ERROR, which reports
+ * nothing reliable). */
+static bool over_holds(const struct sfz_item *it)
+{
+    bool ran = it->o.status == SFZ_PASS || it->o.status == SFZ_FAIL;
+    bool holds = !ran || it->o.over == it->over_want;
+    if (!it->over_pinned)
+        return true;
+    if (holds)
+        printf("semantic_facts_fuzz: %s over-selection %zu as pinned\n",
+               it->c.label, it->over_want);
+    else
+        printf("semantic_facts_fuzz: %s OVER-SELECTION MISMATCH: pinned %zu, "
+               "measured %zu (%s)\n",
+               it->c.label, it->over_want, it->o.over,
+               it->o.over > it->over_want
+                   ? "a precision regression"
+                   : "the pin is stale and must come down");
+    return holds;
+}
+
 /* Whether the finished item holds: a PASS, a known-RED reproducer failing
- * exactly as recorded, or a NOOP in a range run. */
+ * exactly as recorded, or a NOOP in a range run, and (when pinned) its
+ * over-selection count unchanged. */
 static void judge_item(struct sfz_group *g, struct sfz_item *it)
 {
     if (it->known_red != NULL)
@@ -463,6 +492,7 @@ static void judge_item(struct sfz_group *g, struct sfz_item *it)
     else
         it->ok = it->o.status == SFZ_PASS ||
                  (it->o.status == SFZ_NOOP && g->noop_ok);
+    it->ok = over_holds(it) && it->ok;
     if (it->o.status == SFZ_NOOP && !it->ok)
         printf("semantic_facts_fuzz: %s NOOP fails: a fixed reproducer or default "
                "seed must change a file; only a range run may draw a no-op\n",
@@ -538,6 +568,8 @@ static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
     (void)snprintf(c->detail, sizeof(c->detail), "%s", r->detail);
     it->known_red = r->known_red;
     it->known_red_why = r->known_red_why;
+    it->over_pinned = r->over_pinned;
+    it->over_want = r->over_want;
     it->ok = true;
     if (r->gcc_deps && gcc_missing(g, r->name))
         return;
@@ -548,6 +580,44 @@ static void prep_repro(struct sfz_group *g, const struct sfz_repro *r,
     if (!it->ok)
         printf("semantic_facts_fuzz: %s ERROR: cannot write the reproducer\n",
                r->name);
+}
+
+/* True when the negative-lookup or ordering families' kind names family. */
+static bool is_new_family_kind(const char *kind)
+{
+    static const char *const prefixes[] = {"neg_", "xmacro_", "order_"};
+    for (size_t k = 0; k < sizeof(prefixes) / sizeof(prefixes[0]); k++)
+        if (strncmp(kind, prefixes[k], strlen(prefixes[k])) == 0)
+            return true;
+    return false;
+}
+
+/* Per-family (kind) over-selection totals for the negative-lookup and
+ * ordering families, one line per family in the run summary. */
+static void report_over_by_family(const struct sfz_item *v, size_t n)
+{
+    char seen[16][32];
+    size_t nseen = 0;
+    for (size_t k = 0; k < n; k++) {
+        const char *kind = v[k].c.kind;
+        bool found = false;
+        if (!is_new_family_kind(kind))
+            continue;
+        for (size_t q = 0; q < nseen && !found; q++)
+            found = strcmp(seen[q], kind) == 0;
+        if (!found && nseen < sizeof(seen) / sizeof(seen[0]))
+            (void)snprintf(seen[nseen++], sizeof(seen[0]), "%s", kind);
+    }
+    for (size_t q = 0; q < nseen; q++) {
+        size_t total = 0, cases = 0;
+        for (size_t k = 0; k < n; k++)
+            if (strcmp(v[k].c.kind, seen[q]) == 0) {
+                total += v[k].o.over;
+                cases++;
+            }
+        printf("semantic_facts_fuzz: family kind=%s cases=%zu over-selected=%zu\n",
+               seen[q], cases, total);
+    }
 }
 
 static int sfz_t_repros(struct sfz_group *g)
@@ -564,6 +634,8 @@ static int sfz_t_repros(struct sfz_group *g)
                        &v[k_sfz_nrepros + k]);
         ASSERT_EQ(run_items(g, v, n), (size_t)0);
     } TEST_END
+    if (v != NULL)
+        report_over_by_family(v, n);
     free(v);
     return failures;
 }
@@ -722,15 +794,15 @@ int test_semantic_facts_fuzz(void)
     }
     printf("semantic_facts_fuzz: mode=%s %zu cases (%zu fixed) in %.1f s: %zu pass, "
            "%zu fail, %zu noop, %zu error, %zu skipped; %zu narrowed verdicts; %zu "
-           "TUs, %zu predicted, %zu changed; %zu changed functions, %zu changed "
-           "data objects, %zu seeded, "
+           "TUs, %zu predicted, %zu changed, %zu over-selected; %zu changed "
+           "functions, %zu changed data objects, %zu seeded, "
            "%zu relocation-only; planning %.1f s\n",
            g->seed_mode != NULL ? g->seed_mode : "unknown", g->t.cases,
            k_sfz_nrepros + k_sfz_ntool_repros,
            (double)(clock_now_monotonic_ns() - t0) / 1e9, g->t.pass, g->t.fail,
            g->t.noop, g->t.error, g->t.skipped, g->t.narrowed, g->t.tus,
-           g->t.predicted, g->t.changed, g->t.cfun, g->t.cobj, g->t.covered_seed,
-           g->t.reloc, g->t.plan_s);
+           g->t.predicted, g->t.changed, g->t.over, g->t.cfun, g->t.cobj,
+           g->t.covered_seed, g->t.reloc, g->t.plan_s);
     if (failures == 0 && !g->kept)
         (void)test_rm_rf_recursive(g->scratch);
     free(g);
