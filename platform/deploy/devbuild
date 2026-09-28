@@ -32,13 +32,16 @@
 # oversubscribe it. Treat it as host policy, not as a build dependency.
 #
 # WHAT IT ENFORCES, precisely, as the body below shows:
-#   * One project slot per project. QEDC's slot admits one heavy job at a
-#     time (an exclusive flock(2) on
-#     $HOME/.local/state/development/qedc.lock). Z23's slot admits up to
-#     DEVBUILD_Z23_LANES concurrent jobs (default 3, max 4), one per lane
-#     lock ($HOME/.local/state/development/z23.lock plus .lock.1/.lock.2/
-#     .lock.3); lane 0 is the historic z23.lock, so an older caller still
-#     waiting on it alone stays mutually exclusive with lane 0.
+#   * One project slot per project, each admitting up to N concurrent lanes,
+#     one per lane lock; lane 0 is the historic <project>.lock, so an older
+#     caller still waiting on it alone stays mutually exclusive with lane 0.
+#     Z23 admits up to DEVBUILD_Z23_LANES jobs (default 3, max 4), one per
+#     lane lock ($HOME/.local/state/development/z23.lock plus .lock.1/
+#     .lock.2/.lock.3). QEDC admits up to DEVBUILD_QEDC_LANES jobs (default
+#     2, max 4), one per lane lock ($HOME/.local/state/development/
+#     qedc.lock plus .lock.1/.lock.2/.lock.3); two QEDC units never share a
+#     worktree (QEDC enforces it) and heavy steps take QEDC's own locks, so
+#     the single slot was never their mutual exclusion.
 #   * A shared/exclusive reader-writer lock across BOTH projects at
 #     $HOME/.local/state/development/heavy.lock: normal project jobs take it
 #     shared, `--exclusive` takes it exclusively and locks the whole host.
@@ -59,9 +62,10 @@
 #   * The job runs inside `systemd-run --user --scope --slice=development.slice`
 #     with CPUQuota set to 100% per worker core, MemoryMax=24G (48G for
 #     --exclusive), MemorySwapMax=0, IOWeight=20, and a per-project
-#     CPUWeight: QEDC gets 20 * DEVBUILD_Z23_LANES (60 at the default of 3),
-#     matching the CPU share of all concurrent Z23 lanes combined; Z23 gets
-#     20 per job.
+#     CPUWeight: Z23 gets 20 per job; QEDC gets 20 * DEVBUILD_Z23_LANES /
+#     DEVBUILD_QEDC_LANES per job (30 at the defaults of 3 and 2), so
+#     QEDC's combined per-job weight across its lanes still equals the
+#     combined weight of all concurrent Z23 lanes.
 #   * taskset pins the job to worker CPUs only: the first two physical cores
 #     of every socket are LEFT OUT so the live node and interactive work keep
 #     dedicated silicon. On this host that is 28 of 32 CPUs, hence the
@@ -205,10 +209,18 @@ if [[ $project != exclusive ]]; then
     # Every job keeps its own 24 GiB scope and the shared development
     # slice still caps all jobs together; landing proofs run outside it.
     # Only the FIFO head (or a landing job) may take a free lane.
+    # QEDC runs up to DEVBUILD_QEDC_LANES (default 2). Measured 2026-09-28:
+    # QEDC gate units used ~1.8 cores for ~30 min yet queued up to 57 min
+    # behind one lane. Two units never share a worktree (QEDC enforces it);
+    # shared QEDC caches write via rename and heavy steps take QEDC's own
+    # locks, so the single slot was never their mutual exclusion.
     lanes=1
     if [[ $project == z23 ]]; then
         lanes=${DEVBUILD_Z23_LANES:-3}
         [[ $lanes =~ ^[1-4]$ ]] || lanes=3
+    elif [[ $project == qedc ]]; then
+        lanes=${DEVBUILD_QEDC_LANES:-2}
+        [[ $lanes =~ ^[1-4]$ ]] || lanes=2
     fi
     lane=0
     if (( lanes > 1 )); then
@@ -320,7 +332,11 @@ devbuild_account() {
 cpu_weight=20
 z23_lanes=${DEVBUILD_Z23_LANES:-3}
 [[ $z23_lanes =~ ^[1-4]$ ]] || z23_lanes=3
-[[ $project != qedc ]] || cpu_weight=$((20 * z23_lanes))
+# QEDC's project weight is split across its lanes so two QEDC jobs together
+# still weigh what Z23's lanes weigh together.
+qedc_lanes=${DEVBUILD_QEDC_LANES:-2}
+[[ $qedc_lanes =~ ^[1-4]$ ]] || qedc_lanes=2
+[[ $project != qedc ]] || cpu_weight=$((20 * z23_lanes / qedc_lanes))
 rc=0
 systemd-run --user --scope --quiet --unit="$unit" --slice=development.slice \
     --property="CPUQuota=$quota" --property="MemoryMax=$memory" \

@@ -30,22 +30,24 @@ you are new; this page is about operating a host, not about building.
   cutover scripts. Subdirectories `fleet-gateway/`, `devfleet/`, `examples/`,
   `systemd/` and `system/` carry their own READMEs or headers.
 - **[`devbuild`](devbuild)** — a reference copy, not an installed program, of
-  the shared host build scheduler. QEDC gets one heavy job at a time; Z23
-  gets up to `DEVBUILD_Z23_LANES` concurrent lanes (default 3, max 4), one
-  per lane lock. `--wait` waiters are served FIFO through enqueue-ordered
-  tickets so a long-queued job is never starved by newer ones; `dev land`
-  (or `DEVBUILD_PRIORITY=land`) takes the next free Z23 lane ahead of
-  ordinary waiters. Each job runs with a per-project CPUWeight: QEDC gets
-  `20 * DEVBUILD_Z23_LANES` (60 at the default of 3, matching all concurrent
-  Z23 lanes' combined share), Z23 gets 20. Each finished job appends one
+  the shared host build scheduler. Z23 gets up to `DEVBUILD_Z23_LANES`
+  concurrent lanes (default 3, max 4); QEDC gets up to `DEVBUILD_QEDC_LANES`
+  concurrent lanes (default 2, max 4); each is one per lane lock. `--wait`
+  waiters are served FIFO through enqueue-ordered tickets so a long-queued
+  job is never starved by newer ones; `dev land` (or
+  `DEVBUILD_PRIORITY=land`) takes the next free Z23 lane ahead of ordinary
+  waiters. Each job runs with a per-project CPUWeight: Z23 gets 20; QEDC
+  gets `20 * DEVBUILD_Z23_LANES / DEVBUILD_QEDC_LANES` (30 at the defaults
+  of 3 and 2), so QEDC's combined share across its lanes still matches all
+  concurrent Z23 lanes' combined share. Each finished job appends one
   JSON line — project, pid, cwd, queued/started/ended, wait_s, run_s, rc,
   lane, mem_peak_mib, cpu_s, tree (a 16-hex checkout fingerprint from HEAD,
   the working-tree diff and untracked file names), cmd — to
   `~/.local/state/development/devbuild.jobs.jsonl`. A repeat of the same
   cwd + cmd on the identical tree that previously exited 0 prints an
   advisory stderr note.
-  [`test-devbuild.sh`](test-devbuild.sh) exercises lane overlap, FIFO order,
-  landing priority, single-lane QEDC, the accounting file (including the
+  [`test-devbuild.sh`](test-devbuild.sh) exercises lane overlap (Z23 and
+  QEDC), FIFO order, landing priority, the accounting file (including the
   tree fingerprint and per-project CPUWeight), and the identical-checkout
   note against this mirror. See the script's own header for the full
   enforcement contract.

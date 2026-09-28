@@ -128,16 +128,19 @@ devbuild --plan                        # what a slot would grant; runs nothing
 ```
 
 `devbuild` is **not installed by any repository target.** It is a shared host
-program. Each project gets one slot: QEDC's slot admits one heavy job at a
-time; Z23's slot admits up to `DEVBUILD_Z23_LANES` concurrent jobs (default
-3, max 4), one per lane lock. `--wait` waiters are served FIFO through
+program. Each project gets a slot admitting several concurrent lanes: Z23's
+slot admits up to `DEVBUILD_Z23_LANES` concurrent jobs (default 3, max 4);
+QEDC's slot admits up to `DEVBUILD_QEDC_LANES` concurrent jobs (default 2,
+max 4); each is one per lane lock. `--wait` waiters are served FIFO through
 enqueue-ordered tickets, so a long-queued job is never passed over by a
 newer one; a `dev land` invocation, or `DEVBUILD_PRIORITY=land`, takes the
 next free Z23 lane ahead of ordinary waiters. It refuses admission when the
 host has under 24 GiB available, and runs commands inside a `systemd-run
 --user --scope` with a CPU quota, a memory ceiling, CPU pinning that leaves
 two physical cores outside the development slice, and a per-project
-CPUWeight (QEDC `20 * DEVBUILD_Z23_LANES`, Z23 20). Each finished job
+CPUWeight (Z23 20, QEDC `20 * DEVBUILD_Z23_LANES / DEVBUILD_QEDC_LANES`, so
+QEDC's combined share across its lanes matches all concurrent Z23 lanes'
+combined share). Each finished job
 appends one JSON line (project, pid, cwd, queue/run timings, rc, lane,
 mem/cpu use, tree — a 16-hex checkout fingerprint from HEAD, the
 working-tree diff and untracked file names) to
@@ -147,7 +150,7 @@ previously exited 0 prints an advisory stderr note.
 [`../platform/deploy/devbuild`](../platform/deploy/devbuild) is the reference
 mirror of the installed script, with the exact contract in its header;
 [`../platform/deploy/test-devbuild.sh`](../platform/deploy/test-devbuild.sh)
-exercises lane overlap, FIFO order, landing priority, single-lane QEDC, and
+exercises lane overlap (Z23 and QEDC), FIFO order, landing priority, and
 the accounting file against that mirror.
 [`../platform/deploy/devbuild-broker`](../platform/deploy/devbuild-broker) is
 a separate, not-yet-installed replacement candidate with a finer-grained

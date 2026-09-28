@@ -6,7 +6,8 @@
 # directory, so it never touches this host's real locks, queues or
 # accounting file. Covers: Z23 lane overlap up to DEVBUILD_Z23_LANES, FIFO
 # ordering of --wait waiters, landing priority jumping the queue, QEDC
-# staying single-lane, per-job JSON accounting, and ticket cleanup.
+# lane overlap up to DEVBUILD_QEDC_LANES, per-job JSON accounting, and
+# ticket cleanup.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")" && pwd)
@@ -115,28 +116,28 @@ g_ts=$(<"$scratch/prio-G")
 }
 printf 'devbuild mirror: landing priority jumps queue PASS\n'
 
-# --- 4. QEDC stays single-lane ----------------------------------------------
-# The 0.5s stagger before launching qedc2 gives qedc1 time to actually queue
-# (create its FIFO ticket) first; without it, both processes can race to
-# create their tickets close enough together that either may legitimately
-# win the (single) lane first, making the "qedc1 must run first" assertion
-# meaningless rather than a real single-lane check.
+# --- 4. QEDC runs DEVBUILD_QEDC_LANES concurrent lanes ----------------------
+# Two QEDC jobs launched together should overlap (up to the default 2
+# lanes), unlike Z23-style single-slot serialization from before this lane
+# count existed. A third job started after should wait for a lane.
 "$root/devbuild" --wait --project qedc \
     bash -c 'date +%s%N > "$1"; sleep 1; date +%s%N > "$1.end"' _ "$scratch/qedc1" \
     >"$scratch/qedc1.log" 2>&1 & pids+=("$!")
-sleep 0.5
 "$root/devbuild" --wait --project qedc \
-    bash -c 'date +%s%N > "$1"; sleep 0.1' _ "$scratch/qedc2" \
+    bash -c 'date +%s%N > "$1"; sleep 1; date +%s%N > "$1.end"' _ "$scratch/qedc2" \
     >"$scratch/qedc2.log" 2>&1 & pids+=("$!")
 wait "${pids[@]}"
 pids=()
-qe1=$(<"$scratch/qedc1.end")
+qs1=$(<"$scratch/qedc1")
 qs2=$(<"$scratch/qedc2")
-(( qs2 >= qe1 )) || {
-    printf 'qedc ran two jobs concurrently (end1=%d start2=%d)\n' "$qe1" "$qs2" >&2
+qe1=$(<"$scratch/qedc1.end")
+qe2=$(<"$scratch/qedc2.end")
+(( qs2 < qe1 && qs1 < qe2 )) || {
+    printf 'qedc jobs did not overlap (start1=%d end1=%d start2=%d end2=%d)\n' \
+        "$qs1" "$qe1" "$qs2" "$qe2" >&2
     exit 1
 }
-printf 'devbuild mirror: qedc single-lane serialization PASS\n'
+printf 'devbuild mirror: QEDC two-lane overlap PASS\n'
 
 # --- 5. Per-job JSON accounting, including rc propagation ------------------
 jobs_file="$state/devbuild.jobs.jsonl"
@@ -261,19 +262,20 @@ edited_tree=$(printf '%s' "$edited_line" | sed -n 's/.*"tree":"\([0-9a-f]*\)".*/
 }
 printf 'devbuild mirror: editing a tracked file changes the tree key, no stale note PASS\n'
 
-# --- 8c. Per-project CPUWeight: QEDC = 20 * DEVBUILD_Z23_LANES, Z23 = 20 ----
+# --- 8c. Per-project CPUWeight: QEDC = 20 * DEVBUILD_Z23_LANES / DEVBUILD_QEDC_LANES, Z23 = 20 ----
 weight_probe='cg=$(sed "s#.*/##" /proc/self/cgroup | tail -1); systemctl --user show -p CPUWeight "$cg"'
 export DEVBUILD_Z23_LANES=3
+export DEVBUILD_QEDC_LANES=2
 "$root/devbuild" --wait --project qedc bash -c "$weight_probe" >"$scratch/weight-qedc.log" 2>&1
 "$root/devbuild" --wait --project z23 bash -c "$weight_probe" >"$scratch/weight-z23.log" 2>&1
 qedc_weight=$(sed -n 's/^CPUWeight=\([0-9]*\)$/\1/p' "$scratch/weight-qedc.log")
 z23_weight=$(sed -n 's/^CPUWeight=\([0-9]*\)$/\1/p' "$scratch/weight-z23.log")
-[[ $qedc_weight == 60 ]] || {
-    printf 'qedc CPUWeight expected 60, got %s: %s\n' "$qedc_weight" "$(cat "$scratch/weight-qedc.log")" >&2
+[[ $qedc_weight == 30 ]] || {
+    printf 'qedc CPUWeight expected 30, got %s: %s\n' "$qedc_weight" "$(cat "$scratch/weight-qedc.log")" >&2
     exit 1
 }
 [[ $z23_weight == 20 ]] || {
     printf 'z23 CPUWeight expected 20, got %s: %s\n' "$z23_weight" "$(cat "$scratch/weight-z23.log")" >&2
     exit 1
 }
-printf 'devbuild mirror: per-project CPUWeight (qedc=60, z23=20) PASS\n'
+printf 'devbuild mirror: per-project CPUWeight (qedc=30, z23=20) PASS\n'
