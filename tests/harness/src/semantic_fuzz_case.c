@@ -370,9 +370,19 @@ static void compile_job(struct sfz_job *j, const char *tool, const char *mode,
     j->argv[k] = NULL;
 }
 
-/* sensor emit --root . --source <tu> --out facts/<tu>.<phase>.zsm --facts -- flags */
-static void sensor_job(struct sfz_job *j, const char *sensor, const char *phase,
-                       const struct sfz_flags *f, const char *tu)
+/* The fuzz case's --cc and --toolchain-id: the sensor's own clang, the
+ * compiler that produced the object, and a fixed toolchain identity. Both
+ * sides of every case run the same sensor, so a fixed identity is one
+ * known value shared by every pair; without --cc IDENTITY says
+ * "object-cc unknown" and the plan can never narrow past a TU. */
+#define SFZ_TOOLCHAIN_ID \
+    "6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f"
+
+/* sensor emit --root . --source <tu> --out facts/<tu>.<phase>.zsm --facts
+ * --cc <clang> --toolchain-id <id> -- flags */
+static void sensor_job(struct sfz_job *j, const char *sensor, const char *cc,
+                       const char *phase, const struct sfz_flags *f,
+                       const char *tu)
 {
     size_t k = 0;
     (void)snprintf(j->s[2], sizeof(j->s[2]), "facts/%s.%s.zsm", tu, phase);
@@ -385,6 +395,10 @@ static void sensor_job(struct sfz_job *j, const char *sensor, const char *phase,
     j->argv[k++] = "--out";
     j->argv[k++] = j->s[2];
     j->argv[k++] = "--facts";
+    j->argv[k++] = "--cc";
+    j->argv[k++] = cc;
+    j->argv[k++] = "--toolchain-id";
+    j->argv[k++] = SFZ_TOOLCHAIN_ID;
     j->argv[k++] = "--";
     k = put_flags(j, k, f);
     j->argv[k] = NULL;
@@ -425,7 +439,8 @@ static bool phase(struct sfz_run *r, const char *ph, const char *objdir)
         sfz_object(obj, sizeof(obj), objdir, tu);
         compile_job(&jobs[2 * k], r->env->clang, "-c", &f, tu, obj);
         job_log(&jobs[2 * k], r, tu, "cc", ph);
-        sensor_job(&jobs[2 * k + 1], r->env->sensor, ph, &f, tu);
+        sensor_job(&jobs[2 * k + 1], r->env->sensor, r->env->clang, ph, &f,
+                  tu);
         job_log(&jobs[2 * k + 1], r, tu, "sensor", ph);
     }
     bad = ok ? run_jobs(r, jobs, 2 * n) : 1;
