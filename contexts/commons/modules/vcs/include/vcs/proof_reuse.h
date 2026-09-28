@@ -279,19 +279,12 @@ bool vcs_proof_checkpoint_store_load(
 bool vcs_component_proof_key_load(struct vcs_package_store *store,
                                   const uint8_t preimage_root[32],
                                   struct vcs_component_proof_key_v1 *out);
-/* Rebuild a receiver from the ticket and checkpoint blobs in `store`: every
- * ticket is retained, then signed checkpoints are replayed in leaf-count and
- * ancestry order through vcs_proof_receiver_sync(). Missing delta tickets or
- * checkpoint ancestors refuse. Previously retained history must survive the
- * rebuild. The caller's prior receiver remains intact on any failure and
- * output counts are zero in that case. Unrelated blobs count as *skipped. */
-bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
-                                struct vcs_package_store *store,
-                                size_t *tickets, size_t *checkpoints,
-                                size_t *skipped);
-/* Same atomic rebuild, with a total catalog-row work budget in addition to
- * the store's per-page limit. Exhaustion refuses; it never publishes a view
- * that could omit a later ticket, checkpoint or contradiction. */
+/* Rebuild from ticket and checkpoint blobs in `store`, retaining every ticket
+ * and replaying signed checkpoints in leaf-count and ancestry order. Missing
+ * history refuses. The caller's receiver remains intact on failure and output
+ * counts are zero. Unrelated blobs count as *skipped. The caller supplies a
+ * total catalog-row budget in addition to the per-page limit. Exhaustion
+ * refuses; it never publishes a view missing a later contradiction. */
 bool vcs_proof_receiver_rebuild_bounded(
     struct vcs_proof_receiver *r, struct vcs_package_store *store,
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,

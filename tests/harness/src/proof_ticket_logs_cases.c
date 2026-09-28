@@ -25,6 +25,13 @@
 static struct ptf g_l;
 
 #define PTL_CAP 16u
+static bool ptl_rebuild(struct vcs_proof_receiver *r,
+                        struct vcs_package_store *store, size_t max_rows,
+                        size_t *tickets, size_t *checkpoints, size_t *skipped)
+{
+    return vcs_proof_receiver_rebuild_bounded(
+        r, store, max_rows, tickets, checkpoints, skipped);
+}
 
 struct ptl_cost_sample {
     int64_t wall_before;
@@ -544,7 +551,7 @@ static int ptl_case_same_size_ancestry(void)
         ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
         ASSERT(vcs_proof_ticket_store_put(store, first, sizeof(first), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 5, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(cps, (size_t)3);
         ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
@@ -787,7 +794,7 @@ static int ptl_case_rebuild(void)
         ASSERT(store != NULL);
         size_t tickets = 0, cps = 0, skipped = 0;
         bool ok = ptl_store_logs(store) &&
-                  vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+                  ptl_rebuild(g_l.rx, store, 5, &tickets, &cps,
                                              &skipped);
         vcs_package_store_close(store);
         test_rm_rf(dir);
@@ -824,7 +831,7 @@ static int ptl_case_empty_issuer_rebuild(void)
             vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
         ASSERT(store != NULL);
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 1, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)0);
         ASSERT_EQ(cps, (size_t)0);
@@ -854,7 +861,7 @@ static int ptl_case_rebuild_missing_ticket(void)
         ASSERT(store != NULL);
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 1, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_issuer_leaves(g_l.rx, g_l.pub[PTF_A]),
                   (uint64_t)1);
@@ -889,7 +896,7 @@ static int ptl_case_rebuild_missing_chunk(void)
                         dir, hex, hex) < (int)sizeof(path));
         ASSERT(unlink(path) == 0);
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 2, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
         vcs_package_store_close(store);
@@ -929,7 +936,7 @@ static int ptl_case_rebuild_mid_scan_resume(void)
                         dir, hex, hex) < (int)sizeof(path));
         ASSERT(unlink(path) == 0);
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(tickets, (size_t)0);
         ASSERT_EQ(cps, (size_t)0);
@@ -940,7 +947,7 @@ static int ptl_case_rebuild_mid_scan_resume(void)
         ASSERT(vcs_package_store_put_chunk(store, late_root, VCS_BLOB_PATH,
                                            0u, wires[2], sizeof(wires[2])) ==
                VCS_PACKAGE_STORE_OK);
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)3);
         ASSERT_EQ(cps, (size_t)1);
@@ -990,7 +997,7 @@ static int ptl_case_staged_ticket(void)
         free(wire);
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 2, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
         vcs_package_store_close(store);
@@ -999,7 +1006,7 @@ static int ptl_case_staged_ticket(void)
         ASSERT(vcs_package_store_put_chunk(store, ticket_root, VCS_BLOB_PATH,
                                            0u, ticket, sizeof(ticket)) ==
                VCS_PACKAGE_STORE_OK);
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 2, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)1);
         ASSERT_EQ(cps, (size_t)1);
@@ -1031,14 +1038,14 @@ static int ptl_case_deleted_history_resume(void)
         ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
         vcs_package_store_close(store);
         store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
         ASSERT(store != NULL);
         ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT_EQ(cps, (size_t)2);
@@ -1078,7 +1085,7 @@ static int ptl_case_late_replay_failure(void)
         ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(tickets, (size_t)0);
         ASSERT_EQ(cps, (size_t)0);
@@ -1089,7 +1096,7 @@ static int ptl_case_late_replay_failure(void)
         store = vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
         ASSERT(store != NULL);
         ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT_EQ(cps, (size_t)2);
@@ -1136,12 +1143,12 @@ static int ptl_case_deleted_head(void)
         ASSERT(vcs_proof_ticket_store_put(store, second, sizeof(second), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp1, sizeof(cp1), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx, g_l.pub[PTF_A]),
                   (size_t)2);
         ASSERT(vcs_proof_ticket_store_put(store, cp2, sizeof(cp2), root));
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(cps, (size_t)2);
         vcs_package_store_close(store);
@@ -1190,7 +1197,7 @@ static int ptl_case_rebuild_conflict(void)
         struct vcs_proof_receiver *recovered = vcs_proof_receiver_new();
         ASSERT(recovered != NULL);
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(recovered, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(recovered, store, 4, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT_EQ(cps, (size_t)2);
@@ -1284,7 +1291,7 @@ static int ptl_case_seq_reorder(void)
         ASSERT(vcs_proof_ticket_store_put(store, valid, sizeof(valid), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         uint8_t valid_root[32];
@@ -1323,7 +1330,7 @@ static int ptl_case_signed_seq_fork(void)
         ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT(vcs_proof_receiver_issuer_equivocating(g_l.rx, g_l.pub[PTF_A]));
@@ -1393,7 +1400,7 @@ static int ptl_case_rebuild_after_live_seq_fork(void)
         ASSERT(vcs_proof_ticket_store_put(store, original,
                                           sizeof(original), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT_EQ(cps, (size_t)1);
@@ -1461,7 +1468,7 @@ static int ptl_case_rebuild_fork_checkpoint_alloc(void)
                                                sizeof(cps_wire[i]), root));
         size_t tickets = 7, cps = 8, skipped = 9;
         zcl_alloc_fault_fail_nth("proof_checkpoints", 2u);
-        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+        bool rebuilt = ptl_rebuild(g_l.rx, store, 11, &tickets,
                                                    &cps, &skipped);
         bool consumed = zcl_alloc_fault_armed_label() == NULL;
         zcl_alloc_fault_clear();
@@ -1485,7 +1492,7 @@ static int ptl_case_rebuild_invalid_outputs(void)
     int failures = 0;
     TEST_CASE("proof_ticket: early rebuild refusal clears output counts") {
         size_t tickets = 7, cps = 8, skipped = 9;
-        ASSERT(!vcs_proof_receiver_rebuild(NULL, NULL, &tickets, &cps,
+        ASSERT(!ptl_rebuild(NULL, NULL, 0, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(tickets, (size_t)0);
         ASSERT_EQ(cps, (size_t)0);
@@ -1521,7 +1528,7 @@ static int ptl_case_rebuild_equivocation(void)
         ASSERT(vcs_proof_ticket_store_put(store, a, sizeof(a), root));
         ASSERT(vcs_proof_ticket_store_put(store, original, sizeof(original), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT_EQ(cps, (size_t)2);
@@ -1588,7 +1595,7 @@ static int ptl_case_rebuild_preserves_covered_branch(void)
         ASSERT(vcs_proof_ticket_store_put(store, cpa, sizeof(cpa), root));
         ASSERT(vcs_proof_ticket_store_put(store, cpb, sizeof(cpb), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 6, &tickets, &cps,
                                            &skipped));
         struct pr_entry *retained = pr_entry_find(g_l.rx, later_root);
         ASSERT(retained != NULL && retained->covered);
@@ -1642,7 +1649,7 @@ static int ptl_case_rebuild_preserves_checkpoint_head(void)
         ASSERT(vcs_proof_ticket_store_put(store, cpa, sizeof(cpa), root));
         ASSERT(vcs_proof_ticket_store_put(store, cpb, sizeof(cpb), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 4, &tickets, &cps,
                                            &skipped));
         uint8_t expected[32];
         ASSERT(vcs_proof_checkpoint_root(later, sizeof(cpa), expected));
@@ -1669,14 +1676,14 @@ static int ptl_case_rebuild_corrupt_index(void)
         ASSERT(store != NULL);
         ASSERT(ptl_store_logs(store));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 5, &tickets, &cps,
                                           &skipped));
         ASSERT(g_l.rx->index_cap > 0);
         memset(g_l.rx->keys, 0,
                g_l.rx->index_cap * sizeof(*g_l.rx->keys));
         memset(g_l.rx->seqs, 0,
                g_l.rx->index_cap * sizeof(*g_l.rx->seqs));
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 5, &tickets, &cps,
                                           &skipped));
         struct vcs_proof_ticket_class cls[PTL_CAP];
         struct vcs_proof_reuse_decision d;
@@ -1733,7 +1740,7 @@ static int ptl_case_changed_cas_during_rebuild(void)
         ASSERT(store != NULL);
         ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 1, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
         char hex[65];
@@ -1743,7 +1750,7 @@ static int ptl_case_changed_cas_during_rebuild(void)
                         "%s/zcode/cas/sha3/%.2s/%s", dir, hex, hex) <
                (int)sizeof(change.path));
         vcs_proof_receiver_test_before_recheck(ptl_change_cas, &change);
-        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+        bool rebuilt = ptl_rebuild(g_l.rx, store, 1, &tickets,
                                                    &cps, &skipped);
         vcs_proof_receiver_test_before_recheck(NULL, NULL);
         ASSERT(change.changed);
@@ -1772,7 +1779,7 @@ static int ptl_case_changed_cas_after_recheck(void)
         ASSERT(store != NULL);
         ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 1, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
         char hex[65];
@@ -1782,7 +1789,7 @@ static int ptl_case_changed_cas_after_recheck(void)
                         "%s/zcode/cas/sha3/%.2s/%s", dir, hex, hex) <
                (int)sizeof(change.path));
         vcs_proof_receiver_test_after_recheck(ptl_change_cas, &change);
-        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+        bool rebuilt = ptl_rebuild(g_l.rx, store, 1, &tickets,
                                                    &cps, &skipped);
         vcs_proof_receiver_test_after_recheck(NULL, NULL);
         ASSERT(change.changed);
@@ -1814,7 +1821,7 @@ static int ptl_case_deleted_catalog_manifest(void)
                                           ticket_root));
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), cp_root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, 2, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)1);
         ASSERT_EQ(cps, (size_t)1);
@@ -1833,7 +1840,7 @@ static int ptl_case_deleted_catalog_manifest(void)
                       store, page.generation, ptl_publish_marker,
                       &published), VCS_PACKAGE_STORE_PAGE_INCOMPLETE);
         ASSERT(!published);
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 2, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)1);
         ASSERT_EQ(vcs_proof_receiver_issuer_checkpoints(g_l.rx,
@@ -1867,7 +1874,7 @@ static int ptl_case_rebuild_boundary(void)
         ASSERT(ok);
         size_t tickets = 0, cps = 0, skipped = 0;
         cost = ptl_cost_begin();
-        bool rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+        bool rebuilt = ptl_rebuild(g_l.rx, store, 4095, &tickets,
                                                    &cps, &skipped);
         ptl_cost_print("rebuild", 4095u, rebuilt, &cost);
         ASSERT(rebuilt);
@@ -1875,7 +1882,7 @@ static int ptl_case_rebuild_boundary(void)
         const uint8_t last[4] = {0xff, 0x0f, 0, 0};
         ASSERT(vcs_proof_ticket_store_put(store, last, sizeof(last), root));
         cost = ptl_cost_begin();
-        rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        rebuilt = ptl_rebuild(g_l.rx, store, 4096, &tickets, &cps,
                                              &skipped);
         ptl_cost_print("rebuild", 4096u, rebuilt, &cost);
         ASSERT(rebuilt);
@@ -1902,7 +1909,7 @@ static int ptl_case_rebuild_boundary(void)
                       &published), VCS_PACKAGE_STORE_PAGE_STALE);
         ASSERT(!published);
         cost = ptl_cost_begin();
-        rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        rebuilt = ptl_rebuild(g_l.rx, store, 4097, &tickets, &cps,
                                              &skipped);
         ptl_cost_print("rebuild", 4097u, rebuilt, &cost);
         ASSERT(rebuilt);
@@ -1930,7 +1937,7 @@ static int ptl_case_rebuild_boundary(void)
         ptl_cost_print("reopen", 4097u, store != NULL, &cost);
         ASSERT(store != NULL);
         cost = ptl_cost_begin();
-        rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        rebuilt = ptl_rebuild(g_l.rx, store, 4097, &tickets, &cps,
                                              &skipped);
         ptl_cost_print("rebuild_after_reopen", 4097u, rebuilt, &cost);
         ASSERT(rebuilt);
@@ -1949,7 +1956,13 @@ static int ptl_case_rebuild_boundary(void)
         ASSERT(!vcs_proof_ticket_store_put(observer, stale_write,
                                             sizeof(stale_write), stale_root));
         vcs_package_store_close(observer);
+        /* The rejected stale writer may have staged an orphan CAS chunk before
+         * manifest admission refused. Reopen after that generation change. */
+        vcs_package_store_close(store);
+        store = vcs_package_store_open(dir, UINT64_C(128) * 1024 * 1024);
+        ASSERT(store != NULL);
         const char *large = getenv("Z23_PROOF_STORE_LARGE_CORPUS");
+        size_t corpus_rows = large && large[0] == '1' ? 8193u : 4097u;
         if (large && large[0] == '1') {
             cost = ptl_cost_begin();
             for (uint32_t i = 4097; i < 8193 && ok; i++) {
@@ -1961,7 +1974,7 @@ static int ptl_case_rebuild_boundary(void)
             ptl_cost_print("populate", 8193u, ok, &cost);
             ASSERT(ok);
             cost = ptl_cost_begin();
-            rebuilt = vcs_proof_receiver_rebuild(g_l.rx, store, &tickets,
+            rebuilt = ptl_rebuild(g_l.rx, store, 8193, &tickets,
                                                  &cps, &skipped);
             ptl_cost_print("rebuild", 8193u, rebuilt, &cost);
             ASSERT(rebuilt);
@@ -1988,7 +2001,7 @@ static int ptl_case_rebuild_boundary(void)
         ASSERT_EQ(page.count, (size_t)VCS_PACKAGE_STORE_PAGE_MAX);
         ASSERT(memcmp(pass_blob, page.next_root, 32) > 0 ||
                memcmp(fail_blob, page.next_root, 32) > 0);
-        ASSERT(vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(ptl_rebuild(g_l.rx, store, corpus_rows + 4u, &tickets, &cps,
                                           &skipped));
         ASSERT_EQ(tickets, (size_t)2);
         ASSERT_EQ(cps, (size_t)2);
@@ -2049,7 +2062,7 @@ static int ptl_case_missing_third_fork_checkpoint(void)
         ASSERT(vcs_proof_ticket_store_put(store, forked, sizeof(forked), root));
         ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), root));
         size_t tickets = 0, cps = 0, skipped = 0;
-        ASSERT(!vcs_proof_receiver_rebuild(g_l.rx, store, &tickets, &cps,
+        ASSERT(!ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                            &skipped));
         ASSERT_EQ(vcs_proof_receiver_ticket_count(g_l.rx), (size_t)0);
         vcs_package_store_close(store);

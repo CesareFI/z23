@@ -994,12 +994,3 @@ bool vcs_proof_receiver_rebuild_bounded(
     return pts_rebuild_bounded(r, store, max_catalog_rows, tickets,
                                checkpoints, skipped, NULL);
 }
-
-bool vcs_proof_receiver_rebuild(struct vcs_proof_receiver *r,
-                                struct vcs_package_store *store,
-                                size_t *tickets, size_t *checkpoints,
-                                size_t *skipped)
-{
-    return vcs_proof_receiver_rebuild_bounded(r, store, SIZE_MAX,
-                                              tickets, checkpoints, skipped);
-}

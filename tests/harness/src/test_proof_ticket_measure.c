@@ -456,8 +456,9 @@ static int ptm_case_rebuild_density(void)
             bool usage_started = getrusage(RUSAGE_SELF, &usage_before) == 0;
 #endif
             size_t tickets = 0, checkpoints = 0, skipped = 0;
-            bool rebuilt = vcs_proof_receiver_rebuild(
-                f->rx, store, &tickets, &checkpoints, &skipped);
+            bool rebuilt = vcs_proof_receiver_rebuild_bounded(
+                f->rx, store, sizes[k] + 1u, &tickets, &checkpoints,
+                &skipped);
             uint64_t wall_us = (uint64_t)(platform_time_monotonic_us() -
                                           wall_before);
             clock_t cpu_after = clock();
