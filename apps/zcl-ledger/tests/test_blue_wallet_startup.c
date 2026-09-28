@@ -34,6 +34,10 @@ enum { IO_FAULT_NONE, IO_FAULT_RECEIVE, IO_FAULT_SEND };
 static unsigned io_fault;
 static size_t fault_after;
 static bool fault_fired;
+static bool reply_owed, accept_payment_begin;
+static unsigned usb_event_on_reply;
+static size_t usb_event_reply_index;
+static bool usb_event_fired;
 static unsigned display_fault_at;
 static bool display_fault_fired;
 
@@ -99,6 +103,10 @@ uint16_t wallet_payment_command(const uint8_t *apdu, size_t length,
     assert(apdu && length >= 2 && apdu[1] >= 0x20);
     ++payment_commands;
     *reply_length = 0;
+    if (accept_payment_begin && apdu[1] == 0x20) {
+        payment_visible = true;
+        return 0x9000;
+    }
     return 0x6985;
 }
 void blue_wallet_signer_wipe(void) { ++signer_wipes; }
@@ -163,6 +171,7 @@ void os_sched_exit(unsigned code) { assert(code == 0); ++exits; }
 unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
     if (tx_length) {
         assert(channel == (CHANNEL_APDU | IO_RETURN_AFTER_TX));
+        assert(reply_owed);
         if (io_fault == IO_FAULT_SEND && !fault_fired &&
             reply_count == fault_after) {
             fault_fired = true;
@@ -172,9 +181,18 @@ unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
         assert(tx_length <= sizeof replies[0]);
         memcpy(replies[reply_count], G_io_apdu_buffer, tx_length);
         reply_lengths[reply_count++] = tx_length;
+        if (usb_event_on_reply && !usb_event_fired &&
+            reply_count == usb_event_reply_index) {
+            usb_event_fired = true;
+            G_io_seproxyhal_spi_buffer[0] = SEPROXYHAL_TAG_USB_EVENT;
+            G_io_seproxyhal_spi_buffer[3] = (uint8_t)usb_event_on_reply;
+            (void)io_event(CHANNEL_SPI);
+        }
+        reply_owed = false;
         return 0;
     }
     assert(channel == CHANNEL_APDU);
+    assert(!reply_owed);
     if (io_fault == IO_FAULT_RECEIVE && !fault_fired &&
         request_next == fault_after) {
         fault_fired = true;
@@ -184,6 +202,7 @@ unsigned short io_exchange(unsigned char channel, unsigned short tx_length) {
     const request_frame *request = &requests[request_next++];
     assert(request->length <= sizeof G_io_apdu_buffer);
     memcpy(G_io_apdu_buffer, request->bytes, request->length);
+    reply_owed = true;
     return (unsigned short)request->length;
 }
 void io_seproxyhal_spi_send(const unsigned char *bytes,
@@ -218,6 +237,7 @@ static void reset_start(void) {
     derivations = 0;
     request_next = 0;
     reply_count = 0;
+    reply_owed = false;
     hashes_ready = false;
     memset(external_hash, 0, sizeof external_hash);
     memset(internal_hash, 0, sizeof internal_hash);
@@ -269,7 +289,8 @@ static void test_apdu_sequence(void) {
     unsigned before_aborts = aborts, before_displays = displays;
     start_until_request();
     assert(shown == receive_ui && request_next == request_count);
-    assert(reply_count == request_count && payment_commands == 1);
+    assert(reply_count == request_count && !reply_owed);
+    assert(payment_commands == 1);
     assert(aborts == before_aborts + 1 && displays == before_displays + 3);
     assert(reply_lengths[0] == 7 && blue_wallet_identity_matches(
         replies[0], reply_lengths[0]));
@@ -295,6 +316,7 @@ static void test_unavailable_address_apdu(void) {
     start_until_request();
     assert(shown == error_ui && !wallet_state.address_ready);
     assert(reply_count == request_count && !hashes_ready);
+    assert(!reply_owed);
     expect_status(0, 0x6985);
     expect_status(1, 0x9000);
     assert(blue_wallet_identity_matches(replies[1], reply_lengths[1]));
@@ -351,6 +373,34 @@ static void test_post_reply_display_failure(void) {
     assert(blue_wallet_identity_matches(replies[0], reply_lengths[0]));
     assert(aborts >= before + 2);
     display_fault_at = 0;
+    requests = NULL;
+    request_count = 0;
+}
+
+static void test_usb_reset_during_reply(void) {
+    static const uint8_t begin[] = {0xa5, 0x20, 0, 0, 0};
+    static const uint8_t identity[] = {0xa5, 0x01, 0, 0, 0};
+    static const request_frame sequence[] = {
+        {begin, sizeof begin}, {identity, sizeof identity}
+    };
+    requests = sequence;
+    request_count = sizeof sequence / sizeof sequence[0];
+    accept_payment_begin = true;
+    usb_event_reply_index = 1;
+    for (unsigned event = SEPROXYHAL_TAG_USB_EVENT_RESET;
+         event <= SEPROXYHAL_TAG_USB_EVENT_SUSPENDED; ++event) {
+        usb_event_on_reply = event;
+        usb_event_fired = false;
+        unsigned before = aborts;
+        start_until_request();
+        assert(usb_event_fired && reply_count == 2 && !reply_owed);
+        assert(!payment_visible && aborts == before + 1);
+        assert(shown == receive_ui && blue_wallet_identity_matches(
+            replies[1], reply_lengths[1]));
+        expect_status(0, 0x9000);
+    }
+    usb_event_on_reply = 0;
+    accept_payment_begin = false;
     requests = NULL;
     request_count = 0;
 }
@@ -419,5 +469,6 @@ int main(void) {
     reject_pin = false;
     test_io_failures();
     test_post_reply_display_failure();
+    test_usb_reset_during_reply();
     return 0;
 }

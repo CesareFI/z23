@@ -13,9 +13,10 @@ Version 0.3.6 runs the real app startup and EXIT controller in a C23 host
 SDK shell. The shell checks the receive address, derivation failure screens,
 secret-workspace wiping, USB reset and suspend, approval timeout, and EXIT
 event. It scripts valid and malformed APDUs through the app main loop and
-injects receive, send, and post-reply display exceptions. The payment route
-uses a rejecting stub; this shell does not exercise signing. It found that
-a failed internal derivation left formatted address
+injects receive, send, and post-reply display exceptions. It enforces one
+reply per request and injects USB reset and suspend during a scripted visible
+payment reply. The payment route uses a stub; this shell does not exercise
+signing. It found that a failed internal derivation left formatted address
 lines in RAM; the app now clears them before showing the error screen.
 Two separately patched SDK builds produced identical 40,960-byte `.text`
 images, SHA-256

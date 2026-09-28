@@ -54,6 +54,15 @@ form; it tests this app's cleanup structure, not BOLOS exception behavior.
 The focused startup test and all 50 Ledger CTests passed under Clang 22.1.6
 Debug with ASan/UBSan and GCC 16.1.1 Release after this extension.
 
+The transport shell now requires one pending request for each reply and no
+pending reply before the next request. It injects USB reset and suspend events
+while the first scripted payment reply is in flight. In both cases, the app
+aborts the visible payment view, shows the receive screen, and answers the
+next identity request once. This payment route uses a test stub that creates
+a visible view; it is an event-order test, not transaction validation or a
+physical USB timing measurement. The focused test passed under the same two
+compiler configurations after this extension.
+
 Transaction upload, signing, power loss, USB descriptor recovery, firmware
 stack frames, and display timing still require other tests. Wallet 0.3.6
 remains an offline candidate and has not been installed on the physical Blue.
