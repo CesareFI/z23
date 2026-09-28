@@ -466,7 +466,7 @@ static bool srt_setup(struct srt_fx *fx)
 
 /* ── running the replay ──────────────────────────────────────────────── */
 
-/* z23-sem-replay step for commit at index into state/<name>. */
+/* z23-sem-replay step for commit at index; state becomes <root>/state-<index>. */
 static int srt_step(const struct srt_fx *fx, const char *planner, const char *commit,
                     const char *index, char state[PATH_MAX])
 {
