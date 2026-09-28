@@ -106,3 +106,12 @@ ZCL_TEST_GROUP_BUILD_NEED("test_importblockindex_cli_dispatch",
  * where it is absent. The proof's prefork step builds fbsh for every test
  * selection, so only a local run needs this row. */
 ZCL_TEST_GROUP_BUILD_NEED("test_freebsd_sh", "build/bin/fbsh", "fbsh")
+
+/* tests/harness/src/test_consensus_rule_sweep.c's "exec the standalone tool"
+ * arm execs build/bin/consensus_rule_sweep and reports that arm NOT RUN,
+ * not a group failure, where the tool is absent or stale (the other arms
+ * still run in-process). No default target builds it; a proof that selects
+ * this group builds it in its generation. */
+ZCL_TEST_GROUP_BUILD_NEED("test_consensus_rule_sweep",
+                          "build/bin/consensus_rule_sweep",
+                          "tools/consensus_rule_sweep")
