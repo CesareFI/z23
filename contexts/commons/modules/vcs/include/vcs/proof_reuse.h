@@ -56,6 +56,16 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
     const uint8_t seed[32], struct vcs_package_store *store,
     const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
     size_t max_catalog_rows, size_t max_tickets);
+/* Reconstruct and replace an in-memory issuer projection while the store
+ * generation, catalog, selected issuer ticket chunks and head chunk remain
+ * guarded. Failure leaves *live unchanged. The replaced log is freed after
+ * the guard releases. The caller fences readers of *live and the local issuer
+ * writer across this call; this does not advance any durable database head. */
+bool vcs_proof_issuer_log_restore_publish_from_store(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets,
+    struct vcs_proof_issuer_log **live);
 void vcs_proof_issuer_log_free(struct vcs_proof_issuer_log *log);
 void vcs_proof_issuer_log_pubkey(const struct vcs_proof_issuer_log *log,
                                  uint8_t out[VCS_PROOF_PUBKEY_BYTES]);

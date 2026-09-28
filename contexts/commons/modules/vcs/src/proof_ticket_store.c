@@ -192,9 +192,21 @@ static bool pts_valid_ticket(const struct pr_entry *e)
            vcs_proof_ticket_signature_valid(&t);
 }
 
+struct pts_publish {
+    struct vcs_proof_issuer_log **live;
+    struct vcs_proof_issuer_log *replacement;
+    struct vcs_proof_issuer_log *old;
+    bool approved;
+};
+
 static void pts_approve_restore(void *context)
 {
-    *(bool *)context = true;
+    struct pts_publish *publish = context;
+    if (publish->live) {
+        publish->old = *publish->live;
+        *publish->live = publish->replacement;
+    }
+    publish->approved = true;
 }
 
 struct pts_restore {
@@ -322,7 +334,9 @@ static bool pts_restore_head(struct pts_restore *s, const uint8_t seed[32],
     return s->result != NULL;
 }
 
-static bool pts_restore_recheck(struct pts_restore *s)
+static bool pts_restore_recheck(struct pts_restore *s,
+                                struct vcs_proof_issuer_log **live,
+                                struct vcs_proof_issuer_log **old)
 {
     if (s->count) {
         s->chunks = zcl_calloc(s->count + 1u, sizeof(*s->chunks),
@@ -336,20 +350,23 @@ static bool pts_restore_recheck(struct pts_restore *s)
                                     s->chunks[s->count]))
             return false;
     }
-    bool approved = false;
+    struct pts_publish guarded = {.live = live, .replacement = s->result};
     if (vcs_package_store_publish_checked(s->store, s->generation,
                                            (const uint8_t (*)[32])s->chunks,
                                            s->count ? s->count + 1u : 0u,
-                                           pts_approve_restore, &approved) !=
+                                           pts_approve_restore, &guarded) !=
         VCS_PACKAGE_STORE_PAGE_OK)
         return false;
-    return approved;
+    if (old) *old = guarded.old;
+    return guarded.approved;
 }
 
-struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
+static struct vcs_proof_issuer_log *pts_restore_from_store(
     const uint8_t seed[32], struct vcs_package_store *store,
     const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
-    size_t max_catalog_rows, size_t max_tickets)
+    size_t max_catalog_rows, size_t max_tickets,
+    struct vcs_proof_issuer_log **live,
+    struct vcs_proof_issuer_log **old)
 {
     if (!seed || !store)
         LOG_RETURN(NULL, PTS_LOG, "issuer store restore: null seed or store");
@@ -357,7 +374,8 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
     if (!pts_restore_begin(&s, seed, max_catalog_rows) ||
         !(expected_head_blob_root ?
           pts_restore_head(&s, seed, expected_head_blob_root, max_tickets) :
-          pts_restore_empty(&s)) || !pts_restore_recheck(&s)) {
+          pts_restore_empty(&s)) ||
+        !pts_restore_recheck(&s, live, old)) {
         LOG_ERROR(PTS_LOG,
                   "issuer store restore: incomplete, stale, or contradictory history");
         vcs_proof_issuer_log_free(s.result);
@@ -366,6 +384,33 @@ struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
     struct vcs_proof_issuer_log *result = s.result;
     pts_restore_free(&s);
     return result;
+}
+
+bool vcs_proof_issuer_log_restore_publish_from_store(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets,
+    struct vcs_proof_issuer_log **live)
+{
+    if (!live)
+        LOG_RETURN(false, PTS_LOG, "issuer publish: null live projection");
+    struct vcs_proof_issuer_log *old = NULL;
+    struct vcs_proof_issuer_log *fresh = pts_restore_from_store(
+        seed, store, expected_head_blob_root, max_catalog_rows,
+        max_tickets, live, &old);
+    if (!fresh) return false;
+    vcs_proof_issuer_log_free(old);
+    return true;
+}
+
+struct vcs_proof_issuer_log *vcs_proof_issuer_log_restore_from_store(
+    const uint8_t seed[32], struct vcs_package_store *store,
+    const uint8_t expected_head_blob_root[VCS_PROOF_ROOT_BYTES],
+    size_t max_catalog_rows, size_t max_tickets)
+{
+    return pts_restore_from_store(
+        seed, store, expected_head_blob_root, max_catalog_rows,
+        max_tickets, NULL, NULL);
 }
 
 /* Select the same signature-valid ticket at each sequence regardless of CAS

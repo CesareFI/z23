@@ -1702,6 +1702,58 @@ static void ptl_publish_marker(void *context)
     *(bool *)context = true;
 }
 
+static int ptl_case_checked_issuer_publish(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_ticket: in-memory issuer view swaps only after complete replay") {
+        ASSERT(ptl_fresh());
+        uint8_t ticket[VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t ticket_root[32], cp_root[32];
+        ASSERT(ptf_emit(&g_l, PTF_A, &g_l.base, ptf_pass(), ticket, NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_l.logs[PTF_A], 11, cp));
+        ASSERT(vcs_blob_root(cp, sizeof(cp), cp_root));
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "checkedpublish");
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(8) * 1024 * 1024);
+        ASSERT(store != NULL);
+        ASSERT(vcs_proof_ticket_store_put(store, ticket, sizeof(ticket),
+                                          ticket_root));
+        struct vcs_proof_issuer_log *live =
+            vcs_proof_issuer_log_new(g_l.seed[PTF_A]);
+        ASSERT(live != NULL);
+        struct vcs_proof_issuer_log *old = live;
+        ASSERT(!vcs_proof_issuer_log_restore_publish_from_store(
+            g_l.seed[PTF_A], store, cp_root, 2, 1, &live));
+        ASSERT(live == old);
+        ASSERT(vcs_proof_ticket_store_put(store, cp, sizeof(cp), cp_root));
+        ASSERT(!vcs_proof_issuer_log_restore_publish_from_store(
+            g_l.seed[PTF_A], store, cp_root, 1, 1, &live));
+        ASSERT(live == old);
+        ASSERT(vcs_proof_issuer_log_restore_publish_from_store(
+            g_l.seed[PTF_A], store, cp_root, 2, 1, &live));
+        ASSERT(live != old);
+        ASSERT_EQ(vcs_proof_issuer_log_count(live), UINT64_C(1));
+        struct vcs_proof_issuer_log *published = live;
+        uint8_t chunk[32];
+        ASSERT(vcs_package_chunk_hash(ticket, sizeof(ticket), chunk));
+        char hex[65], path[640];
+        zcl_hex_encode(chunk, sizeof(chunk), hex);
+        ASSERT(snprintf(path, sizeof(path), "%s/zcode/cas/sha3/%.2s/%s",
+                        dir, hex, hex) < (int)sizeof(path));
+        ASSERT(unlink(path) == 0);
+        ASSERT(!vcs_proof_issuer_log_restore_publish_from_store(
+            g_l.seed[PTF_A], store, cp_root, 2, 1, &live));
+        ASSERT(live == published);
+        ASSERT_EQ(vcs_proof_issuer_log_count(live), UINT64_C(1));
+        vcs_proof_issuer_log_free(live);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 /* Test-only seam: change the CAS leaf after scan/replay and before the
  * receiver's final verified read, without relying on scheduler timing. */
 void vcs_proof_receiver_test_before_recheck(void (*hook)(void *), void *context);
@@ -2258,6 +2310,7 @@ int ptf_log_cases(void)
     failures += ptl_case_stale_anchored_head();
     failures += ptl_case_changed_cas_during_rebuild();
     failures += ptl_case_changed_cas_after_recheck();
+    failures += ptl_case_checked_issuer_publish();
     if (getenv("Z23_PROOF_STORE_BOUNDARY_RED"))
         failures += ptl_case_rebuild_boundary();
     ptf_free(&g_l);
