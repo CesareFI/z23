@@ -257,6 +257,15 @@ static bool is_one(const struct table *t, const struct row *r, const char *name)
     return strcmp(col(t, r, name), "1") == 0;
 }
 
+/* A step whose build failed: its misses are reported but did not stop the run. */
+static const char *failed_note(const struct table *t, const struct row *r)
+{
+    static const char *const note[] = {"", " (after build failed)", " (parent build failed)",
+                                       " (both builds failed)"};
+    int f = atoi(col(t, r, "build_failed"));
+    return note[f >= 0 && f <= 3 ? f : 3];
+}
+
 static void print_commits(const struct table *t)
 {
     printf("## Per commit\n\n");
@@ -271,9 +280,9 @@ static void print_commits(const struct table *t)
     printf("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for (size_t i = 0; i < t->n; i++) {
         const struct row *r = &t->rows[i];
-        printf("| %s | %s | %s | %s/%s/%s | %s | %s (%s/%s) | %s | %s (%s) | %s/%s/%s | "
+        printf("| %s | %s | %s%s | %s/%s/%s | %s | %s (%s/%s) | %s | %s (%s) | %s/%s/%s | "
                "%s / %s / %s | %s | %.1f | %.1f / %.1f / %.1f / %.1f |\n",
-               col(t, r, "idx"), col(t, r, "commit"), col(t, r, "kind"), col(t, r, "c"),
+               col(t, r, "idx"), col(t, r, "commit"), col(t, r, "kind"), failed_note(t, r), col(t, r, "c"),
                col(t, r, "h"), col(t, r, "other"), col(t, r, "make"), col(t, r, "changed"),
                col(t, r, "code_changed"), col(t, r, "debug_changed"), col(t, r, "plain"),
                col(t, r, "facts"), col(t, r, "facts_mode"), col(t, r, "fn_code"),

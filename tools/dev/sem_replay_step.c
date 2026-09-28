@@ -295,7 +295,10 @@ struct commit_run {
     size_t repro_rebuilt, repro_mismatch, cold_checked, cold_mismatch;
     double cpu_make, cpu_facts, cpu_changed, saved_make, saved_plain;
     size_t cost_missing;
-    bool build_failed;
+    /* 1: the after build failed; 2: the before build failed (a commit that
+     * does not build its test-fast binary). Misses are then reported, not
+     * stopped on. */
+    int build_failed;
     /* The same commit planned with only the inputs a compile reads (.c and
      * .h files, and any other changed path some depfile names): what the
      * plan would be if it ignored changed files no compile reads. */
@@ -514,8 +517,9 @@ static bool keep_before(const struct sr_cfg *cfg, const struct commit_run *r)
     return sr_keep_objects(cfg->repo, &r->snap_p, keep);
 }
 
-/* Check out P, make, snapshot, and compare the objects the previous step
- * left at P (when it ended at P) as a reproducibility check. */
+/* Check out P, make (a parent that does not build is recorded in
+ * build_failed, not fatal), snapshot, and compare the objects the previous
+ * step left at P (when it ended at P) as a reproducibility check. */
 static bool build_before(const struct sr_cfg *cfg, struct commit_run *r)
 {
     char last_snap[SR_PATH], last_commit[SR_PATH], *lc = NULL;
@@ -524,9 +528,9 @@ static bool build_before(const struct sr_cfg *cfg, struct commit_run *r)
     path_in(last_snap, sizeof(last_snap), cfg, "last.snap");
     path_in(last_commit, sizeof(last_commit), cfg, "last.commit");
     bool have_prev = sr_snap_load(&prev, last_snap) && sr_read_file(last_commit, &lc, &lcn);
-    bool ok = sr_git_checkout(cfg->repo, r->parent, r->log) &&
-              sr_make_objects(cfg, r->log, NULL, NULL) &&
-              sr_snap_take(cfg->repo, have_prev ? &prev : NULL, &r->snap_p);
+    bool ok = sr_git_checkout(cfg->repo, r->parent, r->log);
+    r->build_failed |= ok && !sr_make_objects(cfg, r->log, NULL, NULL) ? 2 : 0;
+    ok = ok && sr_snap_take(cfg->repo, have_prev ? &prev : NULL, &r->snap_p);
     if (ok && have_prev && strncmp(lc, r->parent, strlen(r->parent)) == 0)
         repro_compare(&prev, &r->snap_p, &r->repro_rebuilt, &r->repro_mismatch, stderr);
     free(lc);
@@ -659,7 +663,7 @@ static bool build_after(const struct sr_cfg *cfg, struct commit_run *r)
     size_t missing = 0;
     struct sr_strv bounds = {0};
     bool ok = sr_git_checkout(cfg->repo, cfg->commit, r->log);
-    r->build_failed = ok && !sr_make_objects(cfg, r->log, NULL, &r->build_c);
+    r->build_failed |= ok && !sr_make_objects(cfg, r->log, NULL, &r->build_c) ? 1 : 0;
     ok = ok && sr_snap_take(cfg->repo, &r->snap_p, &r->snap_c) &&
          snap_tus(&r->snap_c, &r->tus_c) &&
          sr_deps_hits(cfg->repo, &r->snap_c, &r->ch.files, &r->bound_c, &missing) &&
