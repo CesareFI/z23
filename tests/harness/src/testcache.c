@@ -462,6 +462,9 @@ static bool group_reads_external_inputs(const char *name)
         /* fork/execs tools/scripts/onion_pair_watch.sh and the node binary. */
         "onion_pair_watch_live",
         "replay_canary_verdict",
+        /* package_lifecycle_commit spawns zclassic23-package-verify-dev.
+         * That verifier's link is outside this group's forward C closure. */
+        "resident_launch_contract",
         "secrets_hygiene",
         "self_folded_anchor",
         /* Re-hashes the snapshot named by ZCL_SELF_FOLD_ANCHOR_FIXTURE.

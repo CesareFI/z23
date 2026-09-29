@@ -1967,6 +1967,7 @@ static bool tc_external_exec_denied(void)
         "test_freebsd_sh",
         "test_onion_pair_watch_live",
         "onion_pair_watch_live",
+        "test_resident_launch_contract",
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
         "test_sem_replay",
