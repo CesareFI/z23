@@ -678,8 +678,9 @@ static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_inde
         struct p2p_node *n = cm->manager.nodes[ni];
         if (!n || n->disconnect)
             continue;
-        if (net_service_eq(&n->addr.svc,
-                           &cm->addnodes[addnode_index].svc)) {
+        const struct net_service *svc = &cm->addnodes[addnode_index].svc;
+        if (net_service_eq(&n->addr.svc, svc) ||
+            connman_mutual_dial_holds(cm, n, svc)) {
             connected = true;
             break;
         }
@@ -722,12 +723,10 @@ bool connman_addr_is_connected(struct connman *cm,
         return false;
 
     zcl_mutex_lock(&cm->manager.cs_nodes);
-    for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
+    for (size_t ni = 0; ni < cm->manager.num_nodes && !connected; ni++) {
         struct p2p_node *n = cm->manager.nodes[ni];
-        if (connman_node_conflicts_with_target(n, addr)) {
-            connected = true;
-            break;
-        }
+        connected = connman_node_conflicts_with_target(n, addr) ||
+                    connman_mutual_dial_holds(cm, n, &addr->svc);
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 
@@ -931,7 +930,7 @@ void connman_note_addnode_prehandshake_disconnect(
         return;
     if (!connman_find_addnode_index(cm, &node->addr, &addnode_index))
         return;
-
+    connman_mutual_dial_learn(cm, node);
     connman_record_addnode_failure(cm, addnode_index,
                                    CONNMAN_ADDNODE_FAILURE_PROTOCOL);
     printf("Addnode %s: protocol failure before handshake (%s, state=%s)\n",

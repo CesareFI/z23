@@ -93,6 +93,16 @@ int connman_outbound_onion_count(struct connman *cm);
 bool connman_addr_is_connected(struct connman *cm,
                                const struct net_address *addr);
 
+/* Mutual-dial tie-break (connman_zcl23_dial.c); callers hold cs_nodes.
+ * _learn records the key an outbound authenticated at its addnode target.
+ * _holds is true when `node` is the peer's inbound session that the
+ * tie-break keeps for `target`: it carries the learned key, below ours. */
+void connman_mutual_dial_learn(struct connman *cm,
+                               const struct p2p_node *outbound);
+bool connman_mutual_dial_holds(struct connman *cm,
+                               const struct p2p_node *node,
+                               const struct net_service *target);
+
 /* Shared failure-aware addrman policy. Discovered ZCL23 endpoints must pass
  * this same durable cooldown/diversity gate instead of owning a retry loop. */
 int connman_addrman_retry_cooldown_for_attempts(int attempts);

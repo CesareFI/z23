@@ -176,3 +176,7 @@ later lane flips it HARD.
 - 2026-09-28T15:54:17Z — REASON: Darwin RED follow-through: shutdown on listener does not wake accept; poll-gate accept with bounded stop latency, preserve sole listener close ownership and synchronous stop callers
   old ROOT: 8a30385fd545923d5fb508635e9826f0eea52c72d9837a94c374efc27bd3c2ce
   by: owner unseal ritual (make core-unseal)
+
+- 2026-09-29T15:06:00Z — REASON: Owner-authorized 2026-09-29 mutual-dial tie-break: both sides keep the dial of the lower Noise static key; the loser stops redialing; plaintext/unauthenticated behaviour, consensus, scoring and resource bounds unchanged
+  old ROOT: 5e0f367a0c46e3cc9df0fcb9ba095d3c8d0b70ccefee86040d51f33659473289
+  by: owner unseal ritual (make core-unseal)

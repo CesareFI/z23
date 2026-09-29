@@ -116,6 +116,13 @@ enum connman_outbound_target_source {
     CONNMAN_TARGET_ZCL23_DB, /* discovered peer, via the shared scheduler */
 };
 
+/* A Noise static key our own dial authenticated at an addnode target. */
+struct connman_target_static {
+    struct net_service svc;
+    uint8_t key[32];
+    bool known;
+};
+
 enum connman_addnode_failure_kind {
     CONNMAN_ADDNODE_FAILURE_TCP = 0,
     CONNMAN_ADDNODE_FAILURE_PROTOCOL,
@@ -235,6 +242,9 @@ struct connman {
     bool addnode_retired[MAX_ADDNODES];
     int64_t addnode_retired_at[MAX_ADDNODES];
     int64_t addnode_retirements_total;
+    /* Keys learned by dials to addnode targets, for the mutual-dial
+     * tie-break (connman_zcl23_dial.c). Guarded by manager.cs_nodes. */
+    struct connman_target_static addnode_statics[MAX_ADDNODES];
     /* HARVEST cadence: wall-clock seconds of the last census pull (0 =
      * none yet). Gates connman_harvest_census_candidates() calls from the
      * open-connections loop to ZCL_ADDNODE_HARVEST_INTERVAL_SECS apart. */
@@ -431,7 +441,10 @@ void    connman_note_first_handshaked_peer(void);
 /* After a completed handshake, drop inbound sockets from the same remote IP
  * when a handshaked outbound already owns that host. Operator-local and
  * feeler sockets are left alone. Mixed inbound+outbound to one host splits
- * getheaders and trips peer-stability attention. */
+ * getheaders and trips peer-stability attention. When the outbound and an
+ * inbound authenticated the same Noise static key, both nodes keep the
+ * session dialed by the lower key, so the higher-key node drops its outbound
+ * instead. */
 void connman_evict_same_ip_inbound_when_outbound(struct connman *cm,
                                                  struct p2p_node *node);
 
@@ -558,6 +571,8 @@ bool connman_outbound_rate_allowed_for_test(bool below_floor,
                                             bool interval_elapsed,
                                             bool dht_hint_pending);
 int connman_addrman_retry_cooldown_for_test(int attempts);
+/* Mutual-dial tie-break lines emitted after rate limiting, process-wide. */
+uint64_t connman_mutual_dial_log_lines_for_test(void);
 /* Pure form of the dial scheduler's per-pass admission decision. Until the
  * connection manager owns locked slot reservations, any positive decision is
  * limited to one attempt. */

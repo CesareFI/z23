@@ -5,8 +5,8 @@
  * carry that identity serve headers.
  *
  * WHY THIS EXISTS. Two routable nodes told to addnode each other end up with
- * one TCP connection: the sealed connection manager evicts a same-IP inbound
- * once its own outbound to that IP completes
+ * one TCP connection: the sealed connection manager keeps the session dialed
+ * by the lower Noise static key and evicts the other
  * (core/modules/net/src/connman_zcl23_dial.c, called from msg_version.c at
  * the inbound VERSION and the outbound VERACK). The node left holding only
  * the other's inbound connection never began header sync, because an inbound
