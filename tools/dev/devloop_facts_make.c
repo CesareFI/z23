@@ -904,6 +904,8 @@ static void fxm_missing_made(struct fxm *m)
         t = fxm_expand(m, l->raw, l->raw[n - 1] == '&' ? n - 1 : n);
         m->lists = false;
         m->unknown |= t == NULL;
+        if (t != NULL)
+            fxm_target_computed(m, l, n, t);
         for (size_t p = 0; t != NULL && !m->unknown && p < m->missing.n; p++)
             m->unknown = fxm_names_target(t, m->missing.v[p]);
     }

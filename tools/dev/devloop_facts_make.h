@@ -284,5 +284,11 @@ void fxm_parse_unproven(const struct fxm *m,
 /* A match-anything rule (%:) or .DEFAULT exists while an optional include
  * is missing: it makes that include by a recipe no rule names it in. */
 bool fxm_anything_made(const struct fxm *m);
+/* A rule whose targets (raw[0..n) as written, t expanded) hold a function
+ * call or a value no text spells: UNKNOWN while its text names a missing
+ * include's path or basename (fxm_commands_name's variable reading), else
+ * counted under computed-targets-not-includes in m->report->make_premise. */
+void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
+                         const char *t);
 
 #endif

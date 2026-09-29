@@ -116,6 +116,11 @@ struct zcl_devloop_facts_tu_verdict {
  * include make reads and no path a skip globbed. It is the plan's, not a
  * skip's. */
 #define ZCL_DEVLOOP_PREMISE_PARSE_COMMANDS_NO_INCLUDE_WRITES 16u
+/* computed-targets-not-includes: a rule whose targets a function or a value
+ * no text spells computes, and whose text names no missing optional
+ * include, makes none. It is the plan's, recorded whenever an optional
+ * include is missing. */
+#define ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES 32u
 #define ZCL_DEVLOOP_GUARD_GLOBS 48
 #define ZCL_DEVLOOP_GUARD_TEXT 192
 
@@ -139,7 +144,9 @@ struct zcl_devloop_facts_guard {
  * command make runs as it reads is not provably read-only. The first
  * include (missing, else skipped, else existing) and the first such
  * command are named, with how many there are, so a reviewer can falsify
- * it. */
+ * it. ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES: an optional
+ * include is missing while a rule computes its targets; the first such
+ * rule is named, with how many there are. */
 struct zcl_devloop_facts_plan_premise {
     unsigned premises; /* 0 when the plan rests on none */
     char include[ZCL_DEVLOOP_GUARD_TEXT];
@@ -149,6 +156,9 @@ struct zcl_devloop_facts_plan_premise {
     char command[ZCL_DEVLOOP_GUARD_TEXT];    /* as written */
     char command_at[ZCL_DEVLOOP_GUARD_TEXT]; /* file:line */
     size_t ncommands;
+    char target[ZCL_DEVLOOP_GUARD_TEXT];    /* first computed target, as written */
+    char target_at[ZCL_DEVLOOP_GUARD_TEXT]; /* file:line */
+    size_t ntargets;
 };
 
 struct zcl_devloop_facts_report {

@@ -365,6 +365,10 @@ static const struct {
      "a command make runs as it reads the makefiles that is not provably "
      "read-only (a script, a program, any shell text) creates or rewrites no "
      "include make reads and no path a skip globbed"},
+    {ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES,
+     "computed-targets-not-includes",
+     "a rule whose targets a function or a value no text spells computes, "
+     "and whose text names no missing optional include, makes none"},
 };
 
 static void fx_premise_names(unsigned bits, struct fxw *w)
@@ -433,7 +437,8 @@ static void fx_guard_json(const struct zcl_devloop_facts_guard *g,
 }
 
 /* "plan":{premises,include,includes,skips,existing,command,command_at,
- * commands}: what the whole make reading rests on, beyond each skip. */
+ * commands,target,target_at,targets}: what the whole make reading rests
+ * on, beyond each skip. */
 static void fx_plan_premise_json(const struct zcl_devloop_facts_plan_premise *p,
                                  struct fxw *w)
 {
@@ -448,6 +453,9 @@ static void fx_plan_premise_json(const struct zcl_devloop_facts_plan_premise *p,
     fw_kstr(w, "command", p->command);
     fw_kstr(w, "command_at", p->command_at);
     fw_knum(w, "commands", p->ncommands);
+    fw_kstr(w, "target", p->target);
+    fw_kstr(w, "target_at", p->target_at);
+    fw_knum(w, "targets", p->ntargets);
     fw_raw(w, "}");
 }
 

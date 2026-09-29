@@ -467,6 +467,74 @@ bool fxm_commands_name(const struct fxm *m, const char *name)
     return named;
 }
 
+/* s[0..n) holds name, or a variable whose definition does (transitively;
+ * an $(eval) line or a computed name holding it counts). */
+static bool fxm_text_names(const struct fxm *m, const char *s, size_t n,
+                           const char *name)
+{
+    struct fxc_strs names = {0};
+    bool named = !fxc_strs_add(&names, name) || !fxm_taint(m, &names) ||
+                 fxm_holds(s, n, &names);
+    fxc_strs_free(&names);
+    return named;
+}
+
+/* A rule's target text as written, s[0..n), holds a function call ($(f x),
+ * ${f,x}) or a reference whose name is computed or substituted: what make
+ * makes of it is text the expansion does not follow. */
+static bool fxm_calls_in(const char *s, size_t n)
+{
+    for (size_t k = 0; k + 1 < n; k++) {
+        size_t j = k + 2;
+        if (s[k] == '$' && s[k + 1] == '$') {
+            k++;
+            continue;
+        }
+        if (s[k] != '$' || (s[k + 1] != '(' && s[k + 1] != '{'))
+            continue;
+        while (j < n && fxm_ident(s[j]))
+            j++;
+        if (j < n && s[j] != ')' && s[j] != '}')
+            return true;
+    }
+    return false;
+}
+
+/* The expansion t of a rule's targets holds a value no text spells. */
+static bool fxm_marked(const char *t)
+{
+    return strpbrk(t, "\x01\x02\x03\x04\x05") != NULL;
+}
+
+void fxm_target_computed(struct fxm *m, const struct fxm_line *l, size_t n,
+                         const char *t)
+{
+    struct zcl_devloop_facts_plan_premise *p;
+    if (!fxm_calls_in(l->raw, n) && !fxm_marked(t))
+        return;
+    for (size_t k = 0; k < m->missing.n; k++) {
+        const char *path = m->missing.v[k], *base = strrchr(path, '/');
+        if (fxm_text_names(m, l->raw, n, path) ||
+            fxm_text_names(m, l->raw, n, base != NULL ? base + 1 : path)) {
+            m->unknown = true;
+            return;
+        }
+    }
+    if (m->report == NULL)
+        return;
+    p = &m->report->make_premise;
+    p->premises |= ZCL_DEVLOOP_PREMISE_COMPUTED_TARGETS_NOT_INCLUDES;
+    if (p->include[0] == '\0') {
+        (void)snprintf(p->include, sizeof(p->include), "%s", m->missing.v[0]);
+        p->nincludes = m->missing.n;
+    }
+    if (p->ntargets++ > 0)
+        return;
+    (void)snprintf(p->target, sizeof(p->target), "%.*s", (int)n, l->raw);
+    (void)snprintf(p->target_at, sizeof(p->target_at), "%s:%u",
+                   l->file < m->files.n ? m->files.v[l->file] : "?", l->at);
+}
+
 /* A target word that makes any file: match-anything (%) or .DEFAULT. */
 static bool fxm_makes_anything(const char *t)
 {
