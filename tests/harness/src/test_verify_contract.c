@@ -24,6 +24,7 @@
 #include "verify_attest.h"
 #if !defined(_WIN32)
 #include "verify_store.h"
+#include <limits.h>
 #include <unistd.h>
 #endif
 
@@ -782,12 +783,21 @@ static int test_vc_store_same_uid(void)
         static struct test_vc_fixture w;
         struct zcl_verify_store_result r;
         struct zcl_verify_attest_box_key box = {.known = true};
+        char root[PATH_MAX];
+        const unsigned me = (unsigned)geteuid();
         ASSERT(test_vc_fixture_make(&w, 'a'));
-        zcl_verify_store_lookup_fixture("build/verify-contract-absent", 0u,
-                                        (unsigned)geteuid(), false,
+        ASSERT(getcwd(root, sizeof(root) - 40u));
+        strcat(root, "/build/verify-contract-absent");
+        zcl_verify_store_lookup_fixture(root, me + 1u, me, false,
                                         &w.expected, &w.pins, &box, &r);
         ASSERT(r.verdict == ZCL_VERIFY_STORE_COLD &&
                vc_token(r.reason, "store_owner_same_uid"));
+        zcl_verify_store_result_release(&r);
+        /* Control: other uids get past custody to the (absent) root. */
+        zcl_verify_store_lookup_fixture(root, me + 1u, me + 2u, false,
+                                        &w.expected, &w.pins, &box, &r);
+        ASSERT(r.verdict == ZCL_VERIFY_STORE_COLD &&
+               vc_token(r.reason, "store_path_unsafe"));
         zcl_verify_store_result_release(&r);
         PASS();
 #endif

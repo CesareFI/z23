@@ -263,12 +263,21 @@ static int vs_test_receipts(struct vs_fixture *f)
          "launch receipt, and unpinned receivers never HIT") {
         struct zcl_verify_store_result r;
         /* The publisher alone being the developer uid is enough. */
-        zcl_verify_store_lookup_fixture(f->root, 0u, (unsigned)geteuid(),
+        zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid() + 1u,
+                                         (unsigned)geteuid(),
                                          false, &f->expected, &f->vc.pins,
                                          &f->box, &r);
         ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid"));
         zcl_verify_store_result_release(&r);
-        zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(), 0u,
+        /* Control: neither uid is the caller's, so it gets past custody. */
+        zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid() + 1u,
+                                         (unsigned)geteuid() + 2u,
+                                         false, &f->expected, &f->vc.pins,
+                                         &f->box, &r);
+        ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD, "store_path_unsafe"));
+        zcl_verify_store_result_release(&r);
+        zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(),
+                                         (unsigned)geteuid() + 2u,
                                          false, &f->expected, &f->vc.pins,
                                          &f->box, &r);
         ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid"));
