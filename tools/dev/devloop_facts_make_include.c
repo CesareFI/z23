@@ -910,17 +910,21 @@ static bool fxg_first_parse(struct fxg *g, uint32_t t)
  * its first parse (a later command runs after make read the directive):
  * make restarts on no makefile a rule may remake (g->remade), or only the
  * first parse takes the include's branch (fxg_first_parse). Otherwise a
- * restarted parse reads the directive after every command ran. */
+ * restarted parse reads the directive after every command ran and after
+ * the recipes that remade a makefile, which may create any path (their
+ * text, a variable a later line sets, a script): the reading cannot
+ * stand either. */
 static bool fxg_rec_named(struct fxg *g, const struct fxm_inc *inc)
 {
     char name[ZCL_DEVLOOP_GUARD_TEXT], dir[ZCL_DEVLOOP_GUARD_TEXT];
     uint32_t t = inc->file == 0 ? fxg_line_at(g->m, inc->at) : FXG_NO;
-    uint32_t by = !g->remade || fxg_first_parse(g, t) ? g->rec_at : FXM_NONE;
+    if (g->remade && !fxg_first_parse(g, t))
+        return true;
     for (size_t k = 0; k < g->rec.nglobs; k++) {
         fxg_glob_name(g->rec.glob[k], name, sizeof(name));
         fxg_glob_dir(g->rec.glob[k], dir, sizeof(dir));
-        if (fxm_commands_name_by(g->m, name, by) ||
-            fxm_commands_name_by(g->m, dir, by))
+        if (fxm_commands_name_by(g->m, name, g->rec_at) ||
+            fxm_commands_name_by(g->m, dir, g->rec_at))
             return true;
     }
     return false;

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 
 bool fxm_put(struct fxm_buf *b, const char *s, size_t n)
@@ -930,10 +931,124 @@ static bool fxm_depfile_target(const char *t)
     return false;
 }
 
+/* Pattern text b[0..n), before its %, may begin a built-in rule's source
+ * name for base, whose stem is its first sl bytes: RCS, SCCS, s. or the
+ * stem. */
+static bool fxm_builtin_head(const char *base, size_t sl, const char *b,
+                             size_t n)
+{
+    static const char *const heads[] = {"RCS", "SCCS", "s."};
+    for (size_t k = 0; k < sizeof(heads) / sizeof(*heads); k++) {
+        size_t h = strlen(heads[k]);
+        if (strncmp(b, heads[k], n < h ? n : h) == 0)
+            return true;
+    }
+    return strncmp(b, base, n < sl ? n : sl) == 0;
+}
+
+/* b[0..n) is a version-control source of base (bl bytes): s.base, or an
+ * RCS or SCCS directory. */
+static bool fxm_builtin_vcs(const char *base, size_t bl, const char *b,
+                            size_t n)
+{
+    return (n == bl + 2 && strncmp(b, "s.", 2) == 0 &&
+            strncmp(b + 2, base, bl) == 0) ||
+           (n == 3 && strncmp(b, "RCS", 3) == 0) ||
+           (n == 4 && strncmp(b, "SCCS", 4) == 0);
+}
+
+/* Name b[0..n), in makefile base name base's directory, may be a source
+ * a GNU make built-in rule remakes base from: the stem (base less its
+ * last suffix) alone or with any suffix (a suffix rule, %.out: %,
+ * %.c: %.w), base,v, or a version-control source (fxm_builtin_vcs). A
+ * pattern (pat) counts when its text before the % may begin one. */
+static bool fxm_builtin_name(const char *base, const char *b, size_t n,
+                             bool pat)
+{
+    const char *dot = strrchr(base, '.');
+    size_t bl = strlen(base);
+    size_t sl = dot != NULL && dot != base ? (size_t)(dot - base) : bl;
+    if (pat)
+        return fxm_builtin_head(base, sl, b, n);
+    if (n == bl && strncmp(b, base, n) == 0)
+        return false;
+    if (n >= sl && strncmp(b, base, sl) == 0 &&
+        (n == sl || b[sl] == '.' || (n > bl && b[bl] == ',')))
+        return true;
+    return fxm_builtin_vcs(base, bl, b, n);
+}
+
+/* Path p[0..n), a target word or a directory entry, may be what a
+ * built-in rule remakes makefile mk from (fxm_builtin_name): it sits in
+ * mk's directory, or is a pattern that may. */
+static bool fxm_builtin_path(const char *mk, const char *p, size_t n)
+{
+    const char *slash = strrchr(mk, '/');
+    const char *pct = memchr(p, '%', n);
+    size_t dl = slash != NULL ? (size_t)(slash - mk) + 1 : 0;
+    if (pct != NULL && (size_t)(pct - p) <= dl)
+        return strncmp(p, mk, (size_t)(pct - p)) == 0;
+    if (n <= dl || strncmp(p, mk, dl) != 0 ||
+        memchr(p + dl, '/', (pct != NULL ? (size_t)(pct - p) : n) - dl) != NULL)
+        return false;
+    return fxm_builtin_name(mk + dl, p + dl,
+                            (pct != NULL ? (size_t)(pct - p) : n) - dl,
+                            pct != NULL);
+}
+
+/* A target word of t may be a source a built-in rule remakes a makefile
+ * make reads from. */
+static bool fxm_builtin_target(const struct fxm *m, const char *t)
+{
+    while (*t != '\0') {
+        const char *w;
+        size_t n = 0;
+        while (fxm_space(*t))
+            t++;
+        while (t[n] != '\0' && !fxm_space(t[n]))
+            n++;
+        w = fxm_strip_dot(t);
+        if (w > t + n)
+            w = t + n;
+        for (size_t f = 0; n > 0 && f < m->files.n; f++)
+            if (fxm_builtin_path(m->files.v[f], w, (size_t)(t + n - w)))
+                return true;
+        t += n;
+    }
+    return false;
+}
+
+/* An entry of makefile mk's directory may be a source a built-in rule
+ * remakes mk from; a directory the scan cannot read counts too. */
+static bool fxm_builtin_source(const char *root, const char *mk)
+{
+    char dir[ZCL_DEVLOOP_PATH_MAX * 2], p[ZCL_DEVLOOP_PATH_MAX * 2];
+    const char *slash = strrchr(mk, '/');
+    int dl = slash != NULL ? (int)(slash - mk) : 0;
+    struct dirent *de;
+    bool found = false;
+    DIR *d;
+    if (snprintf(dir, sizeof(dir), "%s/%.*s", root, dl, mk) >= (int)sizeof(dir) ||
+        (d = opendir(dir)) == NULL)
+        return true;
+    while (!found && (de = readdir(d)) != NULL) {
+        int n;
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+        n = snprintf(p, sizeof(p), "%.*s%s%s", dl, mk, dl ? "/" : "",
+                     de->d_name);
+        found = n < 0 || n >= (int)sizeof(p) ||
+                fxm_builtin_path(mk, p, (size_t)n);
+    }
+    (void)closedir(d);
+    return found;
+}
+
 /* Rule line l may remake a makefile make reads: its expanded targets name
- * one (a pattern, match-anything or .DEFAULT too), or a depfile while an
- * include names depfiles, or it is computed and its text names one; a
- * line that may be a rule, the same. */
+ * one (a pattern, match-anything or .DEFAULT too), or a source a built-in
+ * rule remakes one from, or a depfile while an include names depfiles,
+ * or it is computed and its text names one; a line that may be a rule,
+ * the same. */
 static bool fxm_line_remakes(struct fxm *m, const struct fxm_line *l)
 {
     size_t n = l->from > 0 ? l->from - 1 : 0;
@@ -949,17 +1064,24 @@ static bool fxm_line_remakes(struct fxm *m, const struct fxm_line *l)
     for (size_t f = 0; f < m->files.n; f++)
         if (fxm_names_target(t, m->files.v[f]))
             return true;
+    if (fxm_builtin_target(m, t))
+        return true;
     return fxm_computed_names(m, l, n, t, &m->files);
 }
 
 /* GNU make remakes each makefile it read that a rule targets and, when
  * one changed, reads them all again (MAKE_RESTARTS set): what the first
- * parse ran is then done before any directive of the next. An include
+ * parse ran, and the recipes that remade it, are then done before any
+ * directive of the next. A built-in rule may remake one (a source it
+ * reads sits beside it or a rule targets one), and an include
  * outside the tree counts as remade. */
 bool fxm_makefiles_remade(struct fxm *m)
 {
     if (m->inc_outside)
         return true;
+    for (size_t f = 0; f < m->files.n; f++)
+        if (fxm_builtin_source(m->root, m->files.v[f]))
+            return true;
     for (size_t k = 0; k < m->nlines; k++)
         if (fxm_line_remakes(m, &m->lines[k]))
             return true;

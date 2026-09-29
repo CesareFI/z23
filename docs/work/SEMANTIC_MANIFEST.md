@@ -1461,8 +1461,13 @@ restarts when it remakes a makefile it read (the root one or an
 existing include that a rule targets, a pattern, match-anything or
 `.DEFAULT` rule too, or a computed rule whose text names it; a depfile a
 rule ending in `.d` or in a pattern may target; an include outside the
-tree): it reads every makefile again, after everything the first parse
-ran, so every command counts. Only a command no later than the deciding
+tree; one a built-in rule may remake, because a file beside it or a
+rule target spells its stem with a suffix, `base,v`, `s.base`, or an
+`RCS` or `SCCS` directory, or a pattern target may): it reads every
+makefile again, after everything the first parse ran and after the
+recipes that remade a makefile, which may create any path (their text, a
+variable a later line sets, a script). The reading is then not used at
+all. Only a command no later than the deciding
 directive counts (one on a line of the root makefile at or before it, or
 on any line of another makefile, its names followed through the
 definitions make has read by then) when make reads the include in its

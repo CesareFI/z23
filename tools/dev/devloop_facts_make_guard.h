@@ -25,7 +25,8 @@
  * them, recorded with the paths it globbed. A reading whose globbed path
  * a command make runs as it reads names is not used; only one no later
  * than the deciding directive counts when make reads the include in its
- * first parse alone (fxg_rec_named). */
+ * first parse alone, and a reading make may read again after a restart
+ * is not used at all (fxg_rec_named). */
 #define FXG_ALTS 64
 #define FXG_TEXT 4096
 #define FXG_DEPTH 24
