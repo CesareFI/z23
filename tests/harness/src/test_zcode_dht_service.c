@@ -423,6 +423,34 @@ static bool fixture_provider_record(
       dir, genesis, "science", transport_root, record);
 }
 
+/* One SOURCE_REPRODUCTION_ACK as one identity would sign it: the same
+ * transport stream, an asserted semantic_root, and a chosen sequence —
+ * the exact shape a compromised provider uses to equivocate. */
+static bool fixture_ack_record_seq(
+    const char *dir, const uint8_t genesis[32], uint8_t transport_byte,
+    uint8_t semantic_byte, uint64_t sequence,
+    struct vcs_zcode_dht_record *record) {
+  uint8_t seed[32], node_id[32];
+  memset(record, 0, sizeof(*record));
+  if (!fixture_material(dir, &record->delegation, seed, node_id))
+    return false;
+  record->kind = VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK;
+  (void)snprintf(record->namespace_name, sizeof(record->namespace_name),
+                 "science");
+  memcpy(record->network_genesis, genesis, 32);
+  memset(record->semantic_root, semantic_byte, 32);
+  memset(record->transport_root, transport_byte, 32);
+  memcpy(record->provider_node_id, node_id, 32);
+  memset(record->owner_group, 0x81, 32);
+  record->sequence = sequence;
+  record->not_before = 1000;
+  record->expiry = 4000;
+  enum vcs_zcode_dht_record_error result =
+      vcs_zcode_dht_record_sign(record, seed);
+  memory_cleanse(seed, sizeof(seed));
+  return result == VCS_ZCODE_DHT_RECORD_OK;
+}
+
 static bool board_prefix_policy(
     void *ctx, enum vcs_zcode_sovereignty_action action,
     const struct vcs_zcode_sovereignty_subject *subject)
@@ -3032,6 +3060,110 @@ _test_next:;
   return failures;
 }
 
+/* A compromised provider signs two SOURCE_REPRODUCTION_ACKs for one
+ * transport stream naming different re-derived sources. The wire must not
+ * pick a winner: the consumer's discovery carries BOTH rows, its store
+ * retains them in either arrival order, and neither is usable evidence —
+ * the refusal a receiver owes an unresolved equivocation. */
+static int test_record_ack_equivocation_wire(void) {
+  int failures = 0;
+  TEST("zcode dht service: equivocating acks cross the wire preserved "
+       "and refused") {
+    char adir[] = "test-tmp/zcode_dht_ack_wire_a_XXXXXX";
+    char bdir[] = "test-tmp/zcode_dht_ack_wire_b_XXXXXX";
+    ASSERT(mkdtemp(adir) != NULL && mkdtemp(bdir) != NULL);
+    uint8_t genesis[32], anoise[32], bnoise[32];
+    memset(genesis, 0x12, sizeof(genesis));
+    memset(anoise, 0x23, sizeof(anoise));
+    memset(bnoise, 0x34, sizeof(bnoise));
+    ASSERT(fixture_identity(adir, 0x71, genesis, anoise));
+    ASSERT(fixture_identity(bdir, 0x72, genesis, bnoise));
+    struct vcs_zcode_dht_service *a = fixture_service(adir, genesis, anoise);
+    struct vcs_zcode_dht_service *b = fixture_service(bdir, genesis, bnoise);
+    ASSERT(a != NULL && b != NULL);
+    struct vcs_zcode_dht_session as = {.established = true,
+                                       .generation = 71,
+                                       .connection_serial = 1};
+    struct vcs_zcode_dht_session bs = as;
+    bs.connection_serial = 2;
+    memcpy(as.remote_static, bnoise, 32);
+    memcpy(bs.remote_static, anoise, 32);
+    memset(as.transcript_hash, 0x45, 32);
+    memcpy(bs.transcript_hash, as.transcript_hash, 32);
+    ASSERT(vcs_zcode_dht_service_session_open(a, 2, &as, test_time(1001)));
+    ASSERT(vcs_zcode_dht_service_session_open(b, 1, &bs, test_time(1001)));
+    ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
+    ASSERT(pump(b, a, 1, 2, 1001, NULL, NULL));
+    ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
+
+    /* The lie: one provider, one transport stream, two sources. The
+     * provider's own store holds both — newer does not resolve older. */
+    struct vcs_zcode_dht_record truth, lie;
+    ASSERT(fixture_ack_record_seq(adir, genesis, 0x51, 0x61, 1, &truth));
+    ASSERT(fixture_ack_record_seq(adir, genesis, 0x51, 0x62, 2, &lie));
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  a, &truth, test_time(1002)),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  a, &lie, test_time(1002)),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+
+    /* The consumer discovers through the real authenticated query path
+     * and receives both sides of the contradiction. */
+    struct vcs_zcode_dht_record_selector selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK};
+    (void)snprintf(selector.namespace_name, sizeof(selector.namespace_name),
+                   "science");
+    memset(selector.root, 0x51, 32);
+    uint64_t discovery = 0;
+    ASSERT(vcs_zcode_dht_service_record_discovery_begin(
+        b, &selector, test_time(1002), &discovery));
+    ASSERT(pump(b, a, 1, 2, 1002, NULL, NULL)); /* the query leaves */
+    struct vcs_zcode_dht_record_discovery_result discovered;
+    discovered.state = VCS_ZCODE_DHT_RECORD_OPERATION_PENDING;
+    for (int i = 0; i < 6; i++) {
+      /* A pump with nothing outbound is idle, not failure; only the
+       * first query frame above must move. */
+      (void)pump(a, b, 2, 1, 1002, NULL, NULL);
+      ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+          b, discovery, test_time(1002), &discovered));
+      if (discovered.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE)
+        break;
+      (void)pump(b, a, 1, 2, 1002, NULL, NULL);
+    }
+    ASSERT_EQ(discovered.state, VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT_EQ(discovered.record_count, 2);
+    ASSERT(vcs_zcode_dht_record_conflicted_at(
+        discovered.records, discovered.record_count, 0));
+    ASSERT(vcs_zcode_dht_record_conflicted_at(
+        discovered.records, discovered.record_count, 1));
+
+    /* The merged rows landed in the consumer's own store, and restart
+     * keeps them exactly as unresolved as the wire delivered them. */
+    struct vcs_zcode_dht_record local[2];
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  b, 1002, &selector, local, 2),
+              2);
+    ASSERT(vcs_zcode_dht_record_conflicted_at(local, 2, 0));
+    ASSERT(vcs_zcode_dht_record_conflicted_at(local, 2, 1));
+    vcs_zcode_dht_service_free(b, test_time(1003));
+    b = fixture_service(bdir, genesis, bnoise);
+    ASSERT(b != NULL);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  b, 1003, &selector, local, 2),
+              2);
+    ASSERT(vcs_zcode_dht_record_conflicted_at(local, 2, 0));
+    ASSERT(vcs_zcode_dht_record_conflicted_at(local, 2, 1));
+    vcs_zcode_dht_service_free(b, test_time(1004));
+    vcs_zcode_dht_service_free(a, test_time(1004));
+    cleanup_fixture(adir);
+    cleanup_fixture(bdir);
+    PASS();
+  }
+_test_next:
+  return failures;
+}
+
 /* The operation table's eight slots are shared by every record stream the
  * node runs — publication drives, RPC discoveries, direct CLI operations.
  * A PENDING operation also holds one of only three query slots, so the cap
@@ -5412,6 +5544,7 @@ int test_zcode_dht_service(void) {
   failures += test_deep_ancestry();
   failures += test_peer_admission_order();
   failures += test_record_transport_and_restart();
+  failures += test_record_ack_equivocation_wire();
   failures += test_record_operation_table_cap();
   failures += test_agent_scope_dormant();
   failures += test_record_board_filters_before_limit();
