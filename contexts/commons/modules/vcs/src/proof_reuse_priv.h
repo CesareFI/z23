@@ -62,6 +62,7 @@ struct vcs_proof_receiver {
     struct pr_issuer *issuers;
     size_t issuer_count;
     size_t issuer_cap;
+    const char *rebuild_refusal;       /* last whole-rebuild refusal */
 };
 
 struct pr_entry *pr_entry_find(const struct vcs_proof_receiver *r,

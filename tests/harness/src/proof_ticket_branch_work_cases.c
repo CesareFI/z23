@@ -125,11 +125,14 @@ static bool pbw_stranger(struct vcs_package_store *store, uint32_t id,
     struct vcs_proof_ticket_v1 *a = calloc(total, sizeof(*a));
     struct vcs_proof_issuer_log *la = vcs_proof_issuer_log_new(seed);
     struct vcs_proof_issuer_log *lb = vcs_proof_issuer_log_new(seed);
+    bool durable = !vcs_package_store_deferred_sync_enabled();
+    vcs_package_store_set_deferred_sync(true); /* a fixture, discarded whole */
     bool ok = a && pbw_chain(store, id, a, total, la, lb) &&
               pbw_junk(store, vcs_proof_issuer_log_ticket(la, total - 1u),
                        shape->junk) &&
               pbw_siblings(store, seed, a, total, shape->cps);
     if (ok) vcs_proof_issuer_log_pubkey(la, pub);
+    vcs_package_store_set_deferred_sync(!durable);
     vcs_proof_issuer_log_free(la);
     vcs_proof_issuer_log_free(lb);
     free(a);
@@ -142,6 +145,7 @@ struct pbw_run {
     int replayed;     /* keys whose branches replayed: kept, not isolated */
     int forked;       /* keys still known to have signed a fork */
     uint64_t checks;  /* full Ed25519 verifications during the rebuild */
+    const char *why;  /* the typed reason a refused rebuild left */
     int64_t ms;
 };
 
@@ -179,6 +183,7 @@ static bool pbw_rebuild(struct vcs_package_store *store,
                                              &tickets, &cps, &skipped);
     run->ms = (platform_time_monotonic_us() - t0) / 1000;
     run->checks = pbw_checks() - checks;
+    run->why = vcs_proof_receiver_rebuild_refusal(rx);
     for (int k = 0; k < keys; k++) {
         bool forked = vcs_proof_receiver_issuer_equivocating(rx, pubs[k]);
         run->forked += forked ? 1 : 0;
@@ -235,6 +240,7 @@ static int pbw_case_keys_share_one_budget(void)
         ASSERT(pbw_rebuild(store, (const uint8_t (*)[32])pubs, 2, NULL, &two));
         pbw_print("two_keys", 2, &pbw_wide, &two);
         ASSERT(two.rebuilt);
+        ASSERT(two.why == NULL);
         ASSERT_EQ(two.replayed, 2);
         ASSERT(pbw_stranger(store, 2u, &pbw_wide, pubs[2]));
         struct pbw_run three = {0};
@@ -242,6 +248,8 @@ static int pbw_case_keys_share_one_budget(void)
                            &three));
         pbw_print("three_keys", PBW_KEYS, &pbw_wide, &three);
         ASSERT(!three.rebuilt);
+        ASSERT(three.why != NULL);
+        ASSERT_STR_EQ(three.why, VCS_PROOF_REBUILD_WHY_BRANCH_WORK);
         vcs_package_store_close(store);
         test_rm_rf(dir);
     } TEST_END
@@ -270,6 +278,7 @@ static int pbw_case_policy_skips_stranger_branches(void)
         pbw_print("policy", PBW_KEYS, &pbw_junky, &run);
         ASSERT(run.rebuilt);
         ASSERT_EQ(run.forked, PBW_KEYS);
+        ASSERT_EQ(run.replayed, 0);
         ASSERT(run.checks <= run.rows);
         vcs_package_store_close(store);
         test_rm_rf(dir);

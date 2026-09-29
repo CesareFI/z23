@@ -196,17 +196,27 @@ static int pts_cp_compare(const void *a, const void *b)
     return memcmp(x->wire, y->wire, sizeof(x->wire));
 }
 
-/* Branch search bounds, per issuer: one issuer's forks cannot spend the
- * budget every other issuer's replay needs. */
+/* Branch search bounds. States and matched memory are per checkpoint and
+ * per issuer; the step budget is shared by every issuer of one rebuild,
+ * because a key costs nothing to mint and must not buy a budget. */
 enum {
     PTS_FORK_STATES_MAX = 256,
-    PTS_FORK_WORK_MAX = 1000000,
     PTS_FORK_MATCHED_BYTES_MAX = 64 * 1024 * 1024,
 };
 
+static enum pts_verdict pts_work_exhausted(void)
+{
+    LOG_ERROR(PTP_LOG, "rebuild: checkpoint branch work exhausted (%u steps "
+                       "shared by every issuer)",
+              VCS_PROOF_REBUILD_BRANCH_WORK_MAX);
+    return PTS_EXHAUSTED;
+}
+
 /* Rebuild may retain an issuer's signed forks, but an equivocating receiver
  * does not verify a later checkpoint's delta. Prove that every retained
- * checkpoint names at least one complete ticket branch before publication. */
+ * checkpoint names at least one complete ticket branch before publication.
+ * The scan retained only signature-valid tickets, so every entry at a
+ * sequence is a real branch and none is re-verified per branch state. */
 static enum pts_verdict pts_match_checkpoint(
     const struct vcs_proof_receiver *r, const struct pts_cp *cp,
     const struct mmr *seed, struct mmr *matched,
@@ -223,10 +233,9 @@ static enum pts_verdict pts_match_checkpoint(
         for (size_t s = 0; s < count; s++) {
             for (size_t one = pr_entry_seq_first(r, c->issuer_pubkey, seq);
                  one; one = r->entries[one - 1u].next_seq) {
-                if (++*work > PTS_FORK_WORK_MAX)
-                    return pts_isolate_why("checkpoint branch work exhausted");
+                if (++*work > VCS_PROOF_REBUILD_BRANCH_WORK_MAX)
+                    return pts_work_exhausted();
                 const struct pr_entry *entry = &r->entries[one - 1u];
-                if (!pts_entry_signed(entry)) continue;
                 if (next_count == PTS_FORK_STATES_MAX)
                     return pts_isolate_why("checkpoint branch states exhausted");
                 next[next_count] = states[s];
@@ -258,7 +267,7 @@ struct pts_verify {
     struct mmr *next;
     size_t *stack;
     uint8_t *done;
-    uint64_t work;
+    uint64_t *work;            /* shared by every issuer */
 };
 
 static enum pts_verdict pts_verify_path(const struct vcs_proof_receiver *r,
@@ -274,7 +283,7 @@ static enum pts_verdict pts_verify_path(const struct vcs_proof_receiver *r,
                                                     : &v->matched[parent];
         enum pts_verdict got = pts_match_checkpoint(
             r, &cps->items[one], seed, &v->matched[one], v->states, v->next,
-            &v->work);
+            v->work);
         if (got != PTS_KEEP) return got;
         v->done[one] = 1;
     }
@@ -285,7 +294,8 @@ static enum pts_verdict pts_verify_path(const struct vcs_proof_receiver *r,
  * explicit path stack proves each parent before its child without recursion;
  * the later replay sort is free to move checkpoint records afterward. */
 static enum pts_verdict pts_verify_checkpoints(
-    const struct vcs_proof_receiver *r, const struct pts_cps *cps)
+    const struct vcs_proof_receiver *r, const struct pts_cps *cps,
+    uint64_t *work)
 {
     if (!cps->count) return PTS_KEEP;
     if (cps->count > PTS_FORK_MATCHED_BYTES_MAX / sizeof(struct mmr))
@@ -300,6 +310,7 @@ static enum pts_verdict pts_verify_checkpoints(
         .stack = zcl_calloc(cps->count, sizeof(size_t),
                             "proof_cp_verify_stack"),
         .done = zcl_calloc(cps->count, 1u, "proof_cp_verified"),
+        .work = work,
     };
     enum pts_verdict got = PTS_KEEP;
     if (!v.matched || !v.states || !v.next || !v.stack || !v.done) {
@@ -326,10 +337,10 @@ static enum pts_verdict pts_verify_checkpoints(
  * order. Issuers are independent: each owns its prefix and coverage. */
 static enum pts_verdict pts_replay_issuer(struct vcs_proof_receiver *r,
                                           struct pts_cps *own,
-                                          size_t *replayed)
+                                          size_t *replayed, uint64_t *work)
 {
     enum pts_verdict v = pts_index_ancestry(own);
-    if (v == PTS_KEEP) v = pts_verify_checkpoints(r, own);
+    if (v == PTS_KEEP) v = pts_verify_checkpoints(r, own, work);
     if (v != PTS_KEEP) return v;
     if (own->count > 1u)
         qsort(own->items, own->count, sizeof(*own->items), pts_cp_compare);
@@ -379,6 +390,48 @@ static bool pts_carry_add(struct pts_carry *carry, const uint8_t key[32])
     return true;
 }
 
+static bool pts_listed(const uint8_t (*keys)[VCS_PROOF_PUBKEY_BYTES],
+                       size_t count, const uint8_t key[32])
+{
+    for (size_t i = 0; keys && i < count; i++)
+        if (memcmp(keys[i], key, VCS_PROOF_PUBKEY_BYTES) == 0) return true;
+    return false;
+}
+
+/* Under a trust policy only its unrevoked verifiers and the anchored
+ * issuers have branches worth searching: no other key's ticket can ever be
+ * eligible, and anyone can mint such keys. Without a policy, every issuer
+ * replays. */
+static bool pts_replays(const struct pts_scope *scope, const uint8_t key[32])
+{
+    const struct vcs_proof_reuse_policy *trust = scope->evidence_trust;
+    if (!trust || pts_anchored(scope, key)) return true;
+    return pts_listed(trust->verifiers, trust->verifier_count, key) &&
+           !pts_listed(trust->revoked, trust->revoked_count, key);
+}
+
+/* Isolate an issuer whose history did not replay, or that was only
+ * scanned for forks; its contradictions are still marked. */
+static bool pts_isolate_range(const struct vcs_proof_receiver *prior,
+                              struct vcs_proof_receiver *r,
+                              struct pts_cp *items, size_t count,
+                              bool replayed, struct pts_counts *n,
+                              const struct pts_scope *scope,
+                              struct pts_carry *carry)
+{
+    uint8_t key[VCS_PROOF_PUBKEY_BYTES]; /* pii_isolate reorders items */
+    memcpy(key, items[0].decoded.issuer_pubkey, sizeof(key));
+    bool carried = false;
+    if (!pii_isolate(prior, r, items, count, !pts_anchored(scope, key),
+                     &carried))
+        return false;
+    if (replayed) n->isolated++;
+    else n->unreplayed++;
+    if (!carried) return true;
+    n->carried++;
+    return pts_carry_add(carry, key);
+}
+
 static bool pts_replay_range(const struct vcs_proof_receiver *prior,
                              struct vcs_proof_receiver *r,
                              struct pts_cp *items, size_t count,
@@ -388,22 +441,20 @@ static bool pts_replay_range(const struct vcs_proof_receiver *prior,
 {
     uint8_t key[VCS_PROOF_PUBKEY_BYTES];
     memcpy(key, items[0].decoded.issuer_pubkey, sizeof(key));
+    if (!pts_replays(scope, key))
+        return pts_isolate_range(prior, r, items, count, false, n, scope,
+                                 carry);
     struct pts_cps own = {items, count, count};
     size_t replayed = 0;
-    enum pts_verdict v = pts_replay_issuer(r, &own, &replayed);
-    if (v == PTS_FATAL) return false;
+    enum pts_verdict v = pts_replay_issuer(r, &own, &replayed,
+                                           &n->branch_work);
+    if (v == PTS_EXHAUSTED) n->refusal = VCS_PROOF_REBUILD_WHY_BRANCH_WORK;
+    if (v == PTS_FATAL || v == PTS_EXHAUSTED) return false;
     if (v == PTS_KEEP) {
         n->checkpoints += replayed;
         return true;
     }
-    bool carried = false;
-    if (!pii_isolate(prior, r, items, count, !pts_anchored(scope, key),
-                     &carried))
-        return false;
-    n->isolated++;
-    if (!carried) return true;
-    n->carried++;
-    return pts_carry_add(carry, key);
+    return pts_isolate_range(prior, r, items, count, true, n, scope, carry);
 }
 
 bool pts_replay(const struct vcs_proof_receiver *prior,
@@ -433,5 +484,9 @@ bool pts_replay(const struct vcs_proof_receiver *prior,
         LOG_WARN(PTP_LOG, "rebuild: isolated %zu issuers whose stored history "
                           "is incomplete; kept %zu as the live receiver had "
                           "verified them", n->isolated, n->carried);
+    if (ok && n->unreplayed)
+        LOG_INFO(PTP_LOG, "rebuild: scanned %zu untrusted issuers for forks "
+                          "only; their checkpoint branches were not replayed",
+                 n->unreplayed);
     return ok;
 }

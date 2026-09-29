@@ -318,6 +318,12 @@ bool vcs_proof_receiver_issuer_history_incomplete(
     return is && is->history_incomplete;
 }
 
+const char *vcs_proof_receiver_rebuild_refusal(
+    const struct vcs_proof_receiver *r)
+{
+    return r ? r->rebuild_refusal : NULL;
+}
+
 size_t vcs_proof_receiver_issuer_checkpoints(
     const struct vcs_proof_receiver *r,
     const uint8_t issuer[VCS_PROOF_PUBKEY_BYTES])

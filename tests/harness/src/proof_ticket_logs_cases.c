@@ -1329,7 +1329,13 @@ static int ptl_case_seq_reorder(void)
         size_t tickets = 0, cps = 0, skipped = 0;
         ASSERT(ptl_rebuild(g_l.rx, store, 3, &tickets, &cps,
                                           &skipped));
-        ASSERT_EQ(tickets, (size_t)2);
+        /* The forged copy is refused once at scan and never retained. */
+        ASSERT_EQ(tickets, (size_t)1);
+        ASSERT_EQ(skipped, (size_t)1);
+        uint8_t forged_root[32];
+        ASSERT(vcs_proof_ticket_observation_root(forged, sizeof(forged),
+                                                  forged_root));
+        ASSERT(pr_entry_find(g_l.rx, forged_root) == NULL);
         uint8_t valid_root[32];
         ASSERT(vcs_proof_ticket_observation_root(valid, sizeof(valid),
                                                   valid_root));

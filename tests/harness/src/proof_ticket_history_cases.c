@@ -1026,11 +1026,81 @@ static int phc_case_cp_pair_parent_evicted(void)
     return failures;
 }
 
+/* A revoked verifier's checkpoint-only fork (two first checkpoints under
+ * A's key) is still detected when its branches are not replayed, and pins
+ * nothing; neither does a verifier entry one bit away from A's key. */
+static int phc_case_untrusted_cp_fork_seen(void)
+{
+    int failures = 0;
+    TEST_CASE("proof_history: an untrusted checkpoint-only fork is still seen") {
+        ASSERT(phc_fresh());
+        struct vcs_component_proof_key_v1 second;
+        phc_key("unit/second", &second);
+        uint8_t a[2][VCS_PROOF_TICKET_WIRE_BYTES];
+        uint8_t cp_one[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        uint8_t cp_two[VCS_PROOF_CHECKPOINT_WIRE_BYTES];
+        ASSERT(ptf_emit(&g_h, PTF_A, &g_h.base, ptf_pass(), a[0], NULL));
+        ASSERT(vcs_proof_issuer_log_checkpoint(g_h.logs[PTF_A], 56, cp_one));
+        ASSERT(ptf_emit(&g_h, PTF_A, &second, ptf_pass(), a[1], NULL));
+        struct vcs_proof_issuer_log *again =
+            vcs_proof_issuer_log_new(g_h.seed[PTF_A]);
+        ASSERT(again != NULL);
+        bool same = true;
+        for (int i = 0; i < 2 && same; i++) {
+            struct vcs_proof_ticket_v1 t;
+            uint8_t wire[VCS_PROOF_TICKET_WIRE_BYTES];
+            same = vcs_proof_ticket_decode(a[i], sizeof(a[i]), &t) &&
+                   vcs_proof_issuer_log_append(again, &t, wire) &&
+                   memcmp(wire, a[i], sizeof(wire)) == 0;
+        }
+        same = same && vcs_proof_issuer_log_checkpoint(again, 57, cp_two);
+        vcs_proof_issuer_log_free(again);
+        ASSERT(same);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_history", "cpforkseen");
+        struct vcs_package_store *store = vcs_package_store_open(dir, PHC_QUOTA);
+        ASSERT(store != NULL);
+        ASSERT(phc_put(store, a[0], sizeof(a[0]), NULL));
+        ASSERT(phc_put(store, a[1], sizeof(a[1]), NULL));
+        ASSERT(phc_put(store, cp_one, sizeof(cp_one), NULL));
+        ASSERT(phc_put(store, cp_two, sizeof(cp_two), NULL));
+        struct vcs_proof_reuse_policy revoked = g_h.policy;
+        revoked.revoked = (const uint8_t (*)[32])&g_h.pub[PTF_A];
+        revoked.revoked_count = 1;
+        struct vcs_proof_receiver *rx = phc_rebuilt_under(store, 64u, &revoked);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        vcs_proof_receiver_free(rx);
+        ASSERT_EQ(phc_pins(store), (uint64_t)0);
+        uint8_t near[1][32];
+        memcpy(near[0], g_h.pub[PTF_A], 32);
+        near[0][31] ^= 0x01;
+        struct vcs_proof_reuse_policy near_policy = g_h.policy;
+        near_policy.verifiers = (const uint8_t (*)[32])near;
+        near_policy.verifier_count = 1;
+        rx = phc_rebuilt_under(store, 64u, &near_policy);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        vcs_proof_receiver_free(rx);
+        ASSERT_EQ(phc_pins(store), (uint64_t)0);
+        rx = phc_rebuilt(store, 64u);
+        ASSERT(rx != NULL);
+        ASSERT(vcs_proof_receiver_issuer_equivocating(rx, g_h.pub[PTF_A]));
+        vcs_proof_receiver_free(rx);
+        ASSERT_EQ(phc_pins(store),
+                  (uint64_t)(2u * VCS_PROOF_CHECKPOINT_WIRE_BYTES));
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 int ptf_history_cases(void)
 {
     int failures = 0;
     failures += phc_case_stranger_forks_unpinned();
     failures += phc_case_untrusted_fork_unpinned();
+    failures += phc_case_untrusted_cp_fork_seen();
     failures += phc_case_evicted_fork_kept();
     failures += phc_case_fork_evidence_bounded();
     failures += phc_case_checkpoint_fork_pinned();

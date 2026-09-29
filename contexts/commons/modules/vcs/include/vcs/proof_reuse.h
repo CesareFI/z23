@@ -329,9 +329,15 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
  * every other issuer is rebuilt and published. When the caller's receiver
  * already verified that issuer (and it is not an anchor), its verified
  * state is kept instead of forgotten. *checkpoints counts replayed
- * checkpoints of kept issuers. An unreadable listed blob, an incomplete
- * catalog scan or exhausted memory still refuses the whole rebuild. The
- * caller's receiver remains intact on failure and output
+ * checkpoints of kept issuers. A ticket whose signature does not verify
+ * is counted in *skipped and never retained, so it cannot widen a branch
+ * search. Checking that every retained checkpoint names a complete ticket
+ * branch shares one budget of VCS_PROOF_REBUILD_BRANCH_WORK_MAX steps
+ * across all issuers: keys cost nothing to mint, so no key earns a budget
+ * of its own. Exhausting it refuses the whole rebuild
+ * (VCS_PROOF_REBUILD_WHY_BRANCH_WORK). An unreadable listed blob, an
+ * incomplete catalog scan or exhausted memory also refuses the whole
+ * rebuild. The caller's receiver remains intact on failure and output
  * counts are zero, with one exception that only adds distrust: when a complete
  * scan proved that an issuer the receiver already holds signed a fork, the
  * receiver marks that issuer equivocating even though the rebuilt view is
@@ -343,6 +349,16 @@ bool vcs_proof_receiver_rebuild_bounded(
     struct vcs_proof_receiver *r, struct vcs_package_store *store,
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
     size_t *skipped);
+
+/* Branch-search steps one rebuild may spend across every issuer. */
+#define VCS_PROOF_REBUILD_BRANCH_WORK_MAX 1000000u
+/* Why the last rebuild into a receiver refused as a whole. */
+#define VCS_PROOF_REBUILD_WHY_BRANCH_WORK "rebuild_branch_work_exhausted"
+#define VCS_PROOF_REBUILD_WHY_REFUSED "rebuild_refused"
+/* The reason the last rebuild into `r` refused, or NULL when it published
+ * (or none ran). */
+const char *vcs_proof_receiver_rebuild_refusal(
+    const struct vcs_proof_receiver *r);
 
 /* The caller supplies each issuer's durable content.v2 checkpoint blob head.
  * A receiver verifies every supplied head as its issuer's latest signed
@@ -374,6 +390,12 @@ bool vcs_proof_receiver_rebuild_anchored_bounded(
  * the operator, and every pinned blob is signed by its trusted key.
  * A stranger's fork is never pinned: it can never make a ticket eligible,
  * so forgetting it can never cause a HIT. `trust` NULL pins nothing.
+ * With `trust`, only its unrevoked verifiers and the anchored issuers have
+ * their checkpoint branches searched and replayed. Every other issuer is
+ * still scanned for forks (two signed tickets at one sequence, or two of
+ * its listed checkpoints that contradict each other mark it equivocating)
+ * but is otherwise treated as isolated, so keys anyone can mint spend no
+ * branch work. `trust` NULL replays every issuer.
  * Compaction then cannot erase a trusted fork, and a restarted rebuild
  * re-derives it. A pin never evicts; a full pins pool is logged and leaves
  * that fork known only to this process.

@@ -163,9 +163,17 @@ static bool pts_take(struct vcs_proof_receiver *r, struct pts_cps *cps,
 {
     *retained = false;
     bool added = false;
+    struct vcs_proof_ticket_v1 t;
     if (len == VCS_PROOF_TICKET_WIRE_BYTES &&
         memcmp(blob, "Z23PTK1\0", 8) == 0 &&
-        vcs_proof_ticket_decode(blob, len, &(struct vcs_proof_ticket_v1){0})) {
+        vcs_proof_ticket_decode(blob, len, &t)) {
+        /* An unsigned copy proves nothing and never enters a branch
+         * search: counted, not retained, and checked here only once. */
+        if (!vcs_proof_ticket_signature_valid(&t)) {
+            n->skipped++;
+            n->unsigned_tickets++;
+            return true;
+        }
         if (!vcs_proof_receiver_add_ticket(r, blob, len, &added))
             return false;
         *retained = true;
@@ -828,6 +836,20 @@ static void pts_keep_evidence(const struct vcs_proof_receiver *published,
                                    scope->evidence_trust);
 }
 
+/* One line for the whole scan, however many unsigned copies it skipped,
+ * and the typed reason a refused rebuild leaves on the caller's receiver. */
+static void pts_note_outcome(struct vcs_proof_receiver *r, bool ok,
+                             const struct pts_counts *n)
+{
+    if (n->unsigned_tickets)
+        LOG_WARN(PTS_LOG, "rebuild: skipped %zu listed tickets whose "
+                          "signature does not verify", n->unsigned_tickets);
+    r->rebuild_refusal = NULL;
+    if (!ok)
+        r->rebuild_refusal =
+            n->refusal ? n->refusal : VCS_PROOF_REBUILD_WHY_REFUSED;
+}
+
 static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
                                 struct vcs_package_store *store,
                                 size_t max_catalog_rows, size_t *tickets,
@@ -860,6 +882,7 @@ static bool pts_rebuild_bounded(struct vcs_proof_receiver *r,
         pts_record_forks(r, staging, store, &chunks, generation);
     if (scanned) pts_keep_evidence(r, staging, store, ok, scope);
     if (ok && generation_out) *generation_out = generation;
+    pts_note_outcome(r, ok, &n);
     if (!ok)
         n = (struct pts_counts){0};
     vcs_proof_receiver_free(staging);
