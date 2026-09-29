@@ -1,13 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Purpose: deterministic regression for the two-node mutual-dial deadlock
- * and the configured-inbound header-sync rule (services/configured_sync_peers.h).
+ * Purpose: deterministic regression for the two-node mutual-dial deadlock,
+ * the core's lower-static-key tie-break, and the configured-inbound
+ * header-sync rule (services/configured_sync_peers.h).
  *
- * Each model node owns a real struct connman. A connection is a real
- * outbound p2p_node on the dialer and a real inbound p2p_node on the
- * listener, joined by a real in-memory Noise XX handshake with each node's
- * static key. The sealed eviction (connman_evict_same_ip_inbound_when_outbound)
- * runs at exactly the two points msg_version.c calls it: the listener's
- * inbound VERSION and the dialer's VERACK. The header-sync decision is the
+ * Each model node owns a real struct connman with its Noise identity and its
+ * -addnode targets. A connection is a real outbound p2p_node on the dialer
+ * and a real inbound p2p_node on the listener, joined by a real in-memory
+ * Noise XX handshake with each node's static key. The sealed eviction
+ * (connman_evict_same_ip_inbound_when_outbound) runs at exactly the two
+ * points msg_version.c calls it: the listener's inbound VERSION and the
+ * dialer's VERACK. A closed session reaches the other side as the socket
+ * reactor's remote close. A reconnect cycle asks the core's own addnode
+ * picker whether each node would dial again. The header-sync decision is the
  * product entry point syncsvc_begin_peer_sync. The identity prober and the
  * clocks are injected, so no model case depends on sockets or wall-clock
  * timing. The probe cases run the real prober against loopback listeners
@@ -34,7 +38,8 @@
 #include <time.h>
 
 #define MODEL_MAX_NODES 4
-#define MODEL_MAX_CONNS 8
+#define MODEL_MAX_CONNS 16
+#define MODEL_RECONNECT_CYCLES 4
 
 struct model_node {
     const char *name;
@@ -165,7 +170,34 @@ static bool model_node_init(struct model_node *m, const char *name,
     m->cm.manager.nodes_cap = MODEL_MAX_CONNS * 2;
     if (g_model_count < MODEL_MAX_NODES)
         g_model[g_model_count++] = m;
-    return m->cm.manager.nodes && model_public_key(m->priv, m->pub);
+    if (!m->cm.manager.nodes || !model_public_key(m->priv, m->pub))
+        return false;
+    memcpy(m->cm.manager.identity_priv, m->priv, 32);
+    memcpy(m->cm.manager.identity_pub, m->pub, 32);
+    m->cm.manager.noise_enabled = true;
+    return true;
+}
+
+static void model_swap_keys(struct model_node *x, struct model_node *y)
+{
+    uint8_t priv[32], pub[32];
+    memcpy(priv, x->priv, 32);
+    memcpy(pub, x->pub, 32);
+    memcpy(x->priv, y->priv, 32);
+    memcpy(x->pub, y->pub, 32);
+    memcpy(y->priv, priv, 32);
+    memcpy(y->pub, pub, 32);
+    memcpy(x->cm.manager.identity_priv, x->priv, 32);
+    memcpy(x->cm.manager.identity_pub, x->pub, 32);
+    memcpy(y->cm.manager.identity_priv, y->priv, 32);
+    memcpy(y->cm.manager.identity_pub, y->pub, 32);
+}
+
+/* Give `lo` the lower Noise static public key of the two. */
+static void model_order_keys(struct model_node *lo, struct model_node *hi)
+{
+    if (memcmp(lo->pub, hi->pub, 32) > 0)
+        model_swap_keys(lo, hi);
 }
 
 static void model_reset(void)
@@ -181,16 +213,23 @@ static void model_reset(void)
     model_key(g_probe_priv, 200);
 }
 
-/* `m` configures `target` as an operator-named sync peer. */
+/* `m` names `target` with -addnode: an addnode entry in m's connman and an
+ * operator-named sync peer. The sync-peer table is process-wide; each model
+ * node owns a distinct target set by construction in these scenarios. */
 static bool model_configure(struct model_node *m, const struct model_node *target)
 {
-    (void)m;  /* the table is process-wide; each model node owns a distinct
-               * target set by construction in these scenarios */
-    struct net_service svc;
-    memset(&svc, 0, sizeof(svc));
-    net_addr_set_ipv4(&svc.addr, target->ip);
-    svc.port = target->port;
-    return configured_sync_peer_note(&svc);
+    struct net_address addr;
+    net_address_init(&addr);
+    net_addr_set_ipv4(&addr.svc.addr, target->ip);
+    addr.svc.port = target->port;
+    bool listed = false;
+    for (int ai = 0; ai < m->cm.num_addnodes; ai++)
+        listed = listed || net_service_eq(&m->cm.addnodes[ai].svc, &addr.svc);
+    if (!listed && m->cm.num_addnodes >= MAX_ADDNODES)
+        return false;
+    if (!listed)
+        m->cm.addnodes[m->cm.num_addnodes++] = addr;
+    return configured_sync_peer_note(&addr.svc);
 }
 
 static struct p2p_node *model_attach(struct model_node *m,
@@ -202,8 +241,10 @@ static struct p2p_node *model_attach(struct model_node *m,
     net_address_init(&addr);
     net_addr_set_ipv4(&addr.svc.addr, ip);
     addr.svc.port = port;
-    struct p2p_node *n = p2p_node_create(&m->cm.manager, ZCL_INVALID_SOCKET,
-                                         &addr, m->name, inbound);
+    struct p2p_node *n = m->cm.manager.num_nodes < m->cm.manager.nodes_cap
+        ? p2p_node_create(&m->cm.manager, ZCL_INVALID_SOCKET, &addr, m->name,
+                          inbound)
+        : NULL;
     if (!n) {
         noise_transport_free(transport);
         return NULL;
@@ -259,12 +300,17 @@ static void ev_outbound_verack(struct model_conn *c)
 }
 
 /* A side that was disconnected closes the socket, so the other side sees a
- * remote close; msg_send_messages then promotes survivors to ACTIVE. */
+ * remote close (the socket reactor reports it for a pre-handshake addnode
+ * dial); msg_send_messages then promotes survivors to ACTIVE. */
 static void model_settle(struct model_conn *conns, size_t n)
 {
     for (size_t i = 0; i < n; i++) {
-        if (conns[i].in->disconnect || conns[i].out->disconnect ||
-            !conns[i].listener->up || !conns[i].dialer->up) {
+        bool in_gone = conns[i].in->disconnect || !conns[i].listener->up;
+        bool out_gone = conns[i].out->disconnect || !conns[i].dialer->up;
+        if (in_gone && !out_gone)
+            connman_note_addnode_prehandshake_disconnect(
+                &conns[i].dialer->cm, conns[i].out, "remote-close");
+        if (in_gone || out_gone) {
             conns[i].in->disconnect = true;
             conns[i].out->disconnect = true;
         }
@@ -314,6 +360,101 @@ static size_t model_live_sessions(const struct model_conn *conns, size_t n)
     return live;
 }
 
+/* Exactly one session is live, both of its halves are ACTIVE, and `dialer`
+ * dialed it. */
+static bool model_only_session_dialed_by(const struct model_conn *conns,
+                                         size_t n,
+                                         const struct model_node *dialer)
+{
+    size_t live = 0;
+    bool by_dialer = false;
+    for (size_t i = 0; i < n; i++) {
+        bool in_live = !conns[i].in->disconnect &&
+                       conns[i].in->state == PEER_ACTIVE;
+        bool out_live = !conns[i].out->disconnect &&
+                        conns[i].out->state == PEER_ACTIVE;
+        if (in_live != out_live)
+            return false;             /* the two sides disagree */
+        if (in_live) {
+            live++;
+            by_dialer = conns[i].dialer == dialer;
+        }
+    }
+    return live == 1 && by_dialer;
+}
+
+/* The target the core's addnode picker would dial next for `m` once every
+ * cooldown has elapsed, or NULL when every addnode target is connected. */
+static struct model_node *model_redial_target(struct model_node *m)
+{
+    for (int ai = 0; ai < m->cm.num_addnodes; ai++) {
+        m->cm.addnode_last_attempt[ai] = 0;
+        m->cm.addnode_backoff_sec[ai] = 0;
+        m->cm.addnode_retired[ai] = false;
+    }
+    size_t cursor = 0, index = SIZE_MAX;
+    struct addr_info info;
+    enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+    if (!connman_pick_next_outbound_target(&m->cm, &cursor, &info, &source,
+                                           &index) ||
+        source != CONNMAN_TARGET_ADDNODE)
+        return NULL;
+    for (size_t k = 0; k < g_model_count; k++) {
+        struct net_service svc;
+        memset(&svc, 0, sizeof(svc));
+        net_addr_set_ipv4(&svc.addr, g_model[k]->ip);
+        svc.port = g_model[k]->port;
+        if (net_service_eq(&svc, &info.addr.svc))
+            return g_model[k];
+    }
+    return NULL;
+}
+
+/* One reconnect cycle: every live node whose picker names a target dials it
+ * with its own key; the new connection runs VERSION, then VERACK unless the
+ * listener evicted the inbound and `lose` drops the reply. Returns the number
+ * of dials, or SIZE_MAX when the model runs out of room. */
+static size_t model_reconnect_cycle(struct model_conn *conns, size_t *n,
+                                    bool lose)
+{
+    size_t dials = 0;
+    for (size_t k = 0; k < g_model_count; k++) {
+        struct model_node *m = g_model[k];
+        struct model_node *t = m->up ? model_redial_target(m) : NULL;
+        if (!t)
+            continue;
+        dials++;
+        if (!t->up)
+            continue;                 /* the TCP connect fails */
+        if (*n >= MODEL_MAX_CONNS)
+            return SIZE_MAX;
+        struct model_conn *c = &conns[*n];
+        if (!model_connect(c, m, t, m->priv, true,
+                           (uint16_t)(41000 + *n)))
+            return SIZE_MAX;
+        (*n)++;
+        ev_inbound_version(c);
+        if (!(lose && c->in->disconnect))
+            ev_outbound_verack(c);
+        model_settle(conns, *n);
+    }
+    return dials;
+}
+
+/* Redials over MODEL_RECONNECT_CYCLES cycles; SIZE_MAX on model overflow. */
+static size_t model_reconnect_cycles(struct model_conn *conns, size_t *n,
+                                     bool lose)
+{
+    size_t total = 0;
+    for (int cycle = 0; cycle < MODEL_RECONNECT_CYCLES; cycle++) {
+        size_t dials = model_reconnect_cycle(conns, n, lose);
+        if (dials == SIZE_MAX)
+            return SIZE_MAX;
+        total += dials;
+    }
+    return total;
+}
+
 /* Apply the four handshake events in `order` (0=V1 1=K1 2=V2 3=K2). A
  * VERACK already on the wire when its inbound half was evicted is delivered
  * or lost per `lose` (bit i for connection i): TCP may hand it over before
@@ -331,106 +472,326 @@ static void apply_handshake_events(struct model_conn conns[2],
     }
 }
 
-/* Two nodes that addnode each other, one dial in each direction. */
-static int run_two_node_interleaving(const int order[4], unsigned lose,
-                                     size_t *zero_survivor_cases)
+static const int k_orders[][4] = {
+    {0, 1, 2, 3}, {0, 2, 1, 3}, {0, 2, 3, 1},
+    {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 3, 0, 1},
+};
+#define MODEL_ORDER_COUNT (sizeof(k_orders) / sizeof(k_orders[0]))
+
+struct interleaving_tally {
+    size_t runs;
+    size_t zero_survivors;   /* no session left after the handshakes */
+    size_t wrong_session;    /* a survivor other than the lower key's dial */
+    size_t no_source;        /* a node without a header source */
+    size_t redials;          /* picker dials over the reconnect cycles */
+    size_t unstable;         /* not exactly the lower key's dial afterwards */
+};
+
+/* Two nodes that addnode each other, one dial in each direction. `a_lower`
+ * gives A the lower static key. */
+static bool run_two_node_interleaving(const int order[4], unsigned lose,
+                                      bool a_lower,
+                                      struct interleaving_tally *t)
 {
     static struct model_node a, b;
-    struct model_conn conns[2];
+    struct model_conn conns[MODEL_MAX_CONNS];
+    size_t n = 2;
     model_reset();
     bool ok = model_node_init(&a, "A", 7, 18233, 1) &&
-              model_node_init(&b, "B", 8, 18234, 2) &&
-              model_configure(&a, &b) && model_configure(&b, &a) &&
-              model_connect(&conns[0], &a, &b, a.priv, true, 40001) &&
-              model_connect(&conns[1], &b, &a, b.priv, true, 40002);
+              model_node_init(&b, "B", 8, 18234, 2);
+    if (ok && a_lower)
+        model_order_keys(&a, &b);
+    else if (ok)
+        model_order_keys(&b, &a);
+    ok = ok && model_configure(&a, &b) && model_configure(&b, &a) &&
+         model_connect(&conns[0], &a, &b, a.priv, true, 40001) &&
+         model_connect(&conns[1], &b, &a, b.priv, true, 40002);
     if (!ok) {
         model_reset();
-        return 1;
+        return false;
     }
+    const struct model_node *lower = a_lower ? &a : &b;
+    t->runs++;
     apply_handshake_events(conns, order, lose);
     model_settle(conns, 2);
-    int failures = 0;
     if (model_live_sessions(conns, 2) == 0) {
-        (*zero_survivor_cases)++;
+        t->zero_survivors++;
     } else {
+        t->wrong_session += !model_only_session_dialed_by(conns, 2, lower);
         bool a_src = model_has_header_source(&a);
         bool b_src = model_has_header_source(&b);
         if (!a_src || !b_src) {
             printf("\n  order=%d%d%d%d lose=%u: A source=%d B source=%d",
                    order[0], order[1], order[2], order[3], lose, a_src, b_src);
-            failures++;
+            t->no_source++;
         }
     }
+    size_t redials = model_reconnect_cycles(conns, &n, lose & 1u);
+    ok = redials != SIZE_MAX;
+    t->redials += ok ? redials : 0;
+    t->unstable += !model_only_session_dialed_by(conns, n, lower);
     model_reset();
-    return failures;
+    return ok;
 }
-
 
 static int test_configured_inbound_every_interleaving(void)
 {
     int failures = 0;
-    TEST("configured inbound: every A/B dial interleaving leaves both nodes "
-         "a header source whenever one session survives (A first, B first, "
-         "simultaneous)") {
-        static const int orders[][4] = {
-            {0, 1, 2, 3}, {0, 2, 1, 3}, {0, 2, 3, 1},
-            {2, 0, 1, 3}, {2, 0, 3, 1}, {2, 3, 0, 1},
-        };
-        size_t zero = 0, runs = 0;
-        int bad = 0;
-        for (size_t o = 0; o < sizeof(orders) / sizeof(orders[0]); o++) {
-            for (unsigned lose = 0; lose < 4; lose++) {
-                bad += run_two_node_interleaving(orders[o], lose, &zero);
-                runs++;
-            }
-        }
-        if (bad)
-            printf("\n  %d of %zu interleavings left a node without a "
-                   "header source\n", bad, runs);
-        /* In a truly simultaneous dial both VERACKs can land before either
-         * close, and each side evicts the other's inbound: zero sessions
-         * survive and the addnode redial produces one of the serial orders
-         * below. Those cases carry no sync decision and are counted. */
-        printf("[%zu interleavings, %zu with no surviving session] ", runs,
-               zero);
-        ASSERT(bad == 0);
-        /* The A-first and B-first serial orders are in the set and each
-         * leaves exactly one surviving session. */
-        ASSERT(zero < runs);
+    TEST("mutual dial: every A/B handshake interleaving, with either node "
+         "holding the lower key, keeps exactly the lower key's dial on both "
+         "sides, gives both nodes a header source, and never redials over "
+         "the reconnect cycles") {
+        struct interleaving_tally t;
+        memset(&t, 0, sizeof(t));
+        for (int lower = 0; lower < 2; lower++)
+            for (size_t o = 0; o < MODEL_ORDER_COUNT; o++)
+                for (unsigned lose = 0; lose < 4; lose++)
+                    ASSERT(run_two_node_interleaving(k_orders[o], lose,
+                                                     lower == 0, &t));
+        printf("[%zu interleavings: %zu no session, %zu wrong session, "
+               "%zu without a source, %zu redials, %zu unstable] ",
+               t.runs, t.zero_survivors, t.wrong_session, t.no_source,
+               t.redials, t.unstable);
+        ASSERT(t.runs == 2 * MODEL_ORDER_COUNT * 4);
+        ASSERT(t.zero_survivors == 0);
+        ASSERT(t.wrong_session == 0);
+        ASSERT(t.no_source == 0);
+        ASSERT(t.redials == 0);
+        ASSERT(t.unstable == 0);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int test_mutual_dial_plaintext_unchanged(void)
+{
+    int failures = 0;
+    TEST("mutual dial: plaintext sessions keep the same-IP eviction exactly: "
+         "a handshaked outbound evicts every inbound from its IP, so 8 of "
+         "the 24 interleavings still leave no session") {
+        struct interleaving_tally t;
+        memset(&t, 0, sizeof(t));
+        for (size_t o = 0; o < MODEL_ORDER_COUNT; o++) {
+            for (unsigned lose = 0; lose < 4; lose++) {
+                static struct model_node a, b;
+                struct model_conn conns[2];
+                model_reset();
+                ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+                ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+                ASSERT(model_configure(&a, &b) && model_configure(&b, &a));
+                ASSERT(model_connect(&conns[0], &a, &b, a.priv, false, 40001));
+                ASSERT(model_connect(&conns[1], &b, &a, b.priv, false, 40002));
+                apply_handshake_events(conns, k_orders[o], lose);
+                /* Today's rule: a node holding a handshaked outbound keeps
+                 * no inbound from the same IP. */
+                for (int c = 0; c < 2; c++) {
+                    const struct p2p_node *listener_out = conns[1 - c].out;
+                    ASSERT(listener_out->disconnect ||
+                           listener_out->state < PEER_HANDSHAKE_COMPLETE ||
+                           conns[c].in->disconnect);
+                }
+                model_settle(conns, 2);
+                t.runs++;
+                t.zero_survivors += model_live_sessions(conns, 2) == 0;
+                model_reset();
+            }
+        }
+        printf("[%zu plaintext interleavings, %zu with no session] ", t.runs,
+               t.zero_survivors);
+        ASSERT(t.runs == 24);
+        ASSERT(t.zero_survivors == 8);
+        PASS();
+    } _test_next:;
+    model_reset();
     return failures;
 }
 
 static int test_configured_inbound_serial_orders_named(void)
 {
     int failures = 0;
-    TEST("configured inbound: A dials first, then B dials first — the "
-         "inbound-only side syncs from the proven identity") {
+    TEST("mutual dial: the lower-key node dials first, then the higher-key "
+         "node dials first — both keep the lower key's dial, the inbound-only "
+         "side syncs from the proven identity and never redials") {
         for (int first = 0; first < 2; first++) {
+            for (int lose = 0; lose < 2; lose++) {
+                static struct model_node a, b;
+                model_reset();
+                ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+                ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+                model_order_keys(&a, &b);          /* A holds the lower key */
+                ASSERT(model_configure(&a, &b) && model_configure(&b, &a));
+                struct model_node *d1 = first == 0 ? &a : &b;
+                struct model_node *d2 = first == 0 ? &b : &a;
+                struct model_conn conns[MODEL_MAX_CONNS];
+                size_t n = 2;
+                ASSERT(model_connect(&conns[0], d1, d2, d1->priv, true, 40001));
+                ev_inbound_version(&conns[0]);
+                ev_outbound_verack(&conns[0]);
+                model_settle(conns, 1);
+                ASSERT(model_connect(&conns[1], d2, d1, d2->priv, true, 40002));
+                ev_inbound_version(&conns[1]);
+                if (!(lose && conns[1].in->disconnect))
+                    ev_outbound_verack(&conns[1]);
+                model_settle(conns, 2);
+                ASSERT(model_only_session_dialed_by(conns, 2, &a));
+                struct p2p_node *kept_in = conns[first == 0 ? 0 : 1].in;
+                /* B holds only A's inbound session: the deadlock shape. */
+                ASSERT(model_has_header_source(&a));
+                ASSERT(model_has_header_source(&b));
+                ASSERT(g_probe_calls == 1);
+                ASSERT(syncsvc_peer_is_configured_inbound(kept_in));
+                ASSERT(model_reconnect_cycles(conns, &n, lose) == 0);
+                ASSERT(n == 2);
+                model_reset();
+            }
+        }
+        PASS();
+    } _test_next:;
+    model_reset();
+    return failures;
+}
+
+/* Two configured nodes, A with the lower key, settled on A's dial. */
+static bool model_converged_pair(struct model_node *a, struct model_node *b,
+                                 struct model_conn *conns, size_t *n)
+{
+    model_reset();
+    if (!model_node_init(a, "A", 7, 18233, 1) ||
+        !model_node_init(b, "B", 8, 18234, 2))
+        return false;
+    model_order_keys(a, b);
+    if (!model_configure(a, b) || !model_configure(b, a) ||
+        !model_connect(&conns[0], a, b, a->priv, true, 40001) ||
+        !model_connect(&conns[1], b, a, b->priv, true, 40002))
+        return false;
+    static const int simultaneous[4] = {0, 2, 1, 3};
+    apply_handshake_events(conns, simultaneous, 0);
+    model_settle(conns, 2);
+    *n = 2;
+    return model_only_session_dialed_by(conns, 2, a);
+}
+
+static int test_mutual_dial_reconnect_after_publisher_loss(void)
+{
+    int failures = 0;
+    TEST("mutual dial: after either node is lost and returns, the pair "
+         "settles on the lower key's dial again and then stops dialing") {
+        for (int lost = 0; lost < 2; lost++) {
             static struct model_node a, b;
-            model_reset();
-            ASSERT(model_node_init(&a, "A", 7, 18233, 1));
-            ASSERT(model_node_init(&b, "B", 8, 18234, 2));
-            ASSERT(model_configure(&a, &b) && model_configure(&b, &a));
-            struct model_node *d1 = first == 0 ? &a : &b;
-            struct model_node *d2 = first == 0 ? &b : &a;
-            struct model_conn conns[2];
-            ASSERT(model_connect(&conns[0], d1, d2, d1->priv, true, 40001));
-            ev_inbound_version(&conns[0]);
-            ev_outbound_verack(&conns[0]);
-            ASSERT(model_connect(&conns[1], d2, d1, d2->priv, true, 40002));
-            ev_inbound_version(&conns[1]);     /* d1 evicts d2's dial */
-            model_settle(conns, 2);
-            ASSERT(conns[1].in->disconnect && conns[1].out->disconnect);
-            ASSERT(!conns[0].in->disconnect);
-            /* d2 holds only d1's inbound session: the deadlock shape. */
-            ASSERT(model_has_header_source(d1));
-            ASSERT(model_has_header_source(d2));
-            ASSERT(g_probe_calls == 1);
-            ASSERT(syncsvc_peer_is_configured_inbound(conns[0].in));
+            struct model_conn conns[MODEL_MAX_CONNS];
+            size_t n = 0;
+            ASSERT(model_converged_pair(&a, &b, conns, &n));
+            struct model_node *gone = lost == 0 ? &a : &b;
+            gone->up = false;
+            model_settle(conns, n);
+            ASSERT(model_live_sessions(conns, n) == 0);
+            /* The survivor keeps asking for its target while it is away. */
+            struct model_node *survivor = lost == 0 ? &b : &a;
+            ASSERT(model_redial_target(survivor) == gone);
+            gone->up = true;
+            size_t first = model_reconnect_cycle(conns, &n, true);
+            ASSERT(first != SIZE_MAX && first >= 1);
+            size_t later = model_reconnect_cycles(conns, &n, true);
+            ASSERT(later != SIZE_MAX);
+            size_t settled = model_reconnect_cycles(conns, &n, true);
+            printf("[lost %s: %zu, %zu, then %zu dials] ", gone->name, first,
+                   later, settled);
+            ASSERT(settled == 0);
+            ASSERT(model_only_session_dialed_by(conns, n, &a));
+            ASSERT(model_has_header_source(&a));
+            ASSERT(model_has_header_source(&b));
             model_reset();
         }
+        PASS();
+    } _test_next:;
+    model_reset();
+    return failures;
+}
+
+static int test_mutual_dial_impostor_has_no_privilege(void)
+{
+    int failures = 0;
+    TEST("mutual dial: a lower key at the configured IP that is not the "
+         "target's key neither displaces the outbound nor holds the target") {
+        static struct model_node a, b, impostor;
+        model_reset();
+        ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+        ASSERT(model_node_init(&impostor, "X", 7, 18299, 9)); /* A's IP */
+        model_order_keys(&a, &b);
+        model_order_keys(&impostor, &b);      /* X's key is below B's */
+        ASSERT(memcmp(impostor.pub, b.pub, 32) < 0);
+        ASSERT(model_configure(&b, &a));
+        struct model_conn c[3];
+
+        /* B holds its own handshaked dial to A; X dials B from A's IP. */
+        ASSERT(model_connect(&c[0], &b, &a, b.priv, true, 40001));
+        ev_inbound_version(&c[0]);
+        ev_outbound_verack(&c[0]);
+        ASSERT(model_connect(&c[1], &a, &b, impostor.priv, true, 40002));
+        ev_inbound_version(&c[1]);
+        ASSERT(c[1].in->disconnect);              /* today's eviction */
+        ASSERT(!c[0].out->disconnect);
+        model_settle(c, 2);
+        ASSERT(model_redial_target(&b) == NULL);
+
+        /* B learned A's key when it yielded to A's dial. Once A's session is
+         * gone, X's session from A's IP does not stand in for the target. */
+        struct model_conn conns[MODEL_MAX_CONNS];
+        size_t n = 0;
+        ASSERT(model_converged_pair(&a, &b, conns, &n));
+        ASSERT(model_redial_target(&b) == NULL);
+        ASSERT(model_node_init(&impostor, "X", 7, 18299, 9));
+        for (uint8_t seed = 10;                 /* any key below B's */
+             memcmp(impostor.pub, b.pub, 32) >= 0 && seed < 64; seed++) {
+            model_key(impostor.priv, seed);
+            ASSERT(model_public_key(impostor.priv, impostor.pub));
+        }
+        ASSERT(memcmp(impostor.pub, b.pub, 32) < 0 &&
+               memcmp(impostor.pub, a.pub, 32) != 0);
+        conns[0].in->disconnect = conns[0].out->disconnect = true;
+        ASSERT(model_connect(&conns[n], &a, &b, impostor.priv, true, 40003));
+        ev_inbound_version(&conns[n]);
+        n++;
+        model_settle(conns, n);
+        ASSERT(!conns[n - 1].in->disconnect);
+        ASSERT(model_redial_target(&b) == &a);
+        PASS();
+    } _test_next:;
+    model_reset();
+    return failures;
+}
+
+static int test_mutual_dial_unconfigured_peer(void)
+{
+    int failures = 0;
+    TEST("mutual dial: between unconfigured peers the tie-break still keeps "
+         "one session, the configured-inbound rule stays off, and a "
+         "stranger's inbound is not evicted") {
+        static struct model_node a, b, stranger;
+        model_reset();
+        ASSERT(model_node_init(&a, "A", 7, 18233, 1));
+        ASSERT(model_node_init(&b, "B", 8, 18234, 2));
+        ASSERT(model_node_init(&stranger, "S", 66, 18236, 4));
+        model_order_keys(&a, &b);
+        struct model_conn c[3];
+        ASSERT(model_connect(&c[0], &a, &b, a.priv, true, 40001));
+        ASSERT(model_connect(&c[1], &b, &a, b.priv, true, 40002));
+        static const int simultaneous[4] = {2, 0, 3, 1};
+        apply_handshake_events(c, simultaneous, 0);
+        model_settle(c, 2);
+        ASSERT(model_only_session_dialed_by(c, 2, &a));
+        ASSERT(!syncsvc_peer_is_configured_inbound(c[0].in));
+        ASSERT(model_redial_target(&a) == NULL);
+        ASSERT(model_redial_target(&b) == NULL);
+
+        /* A stranger's authenticated inbound shares no IP with B's dials. */
+        ASSERT(model_connect(&c[2], &stranger, &b, stranger.priv, true, 40003));
+        ev_inbound_version(&c[2]);
+        ev_outbound_verack(&c[2]);
+        model_settle(c, 3);
+        ASSERT(!c[2].in->disconnect && c[2].in->state == PEER_ACTIVE);
+        ASSERT(model_live_sessions(c, 3) == 2);
         PASS();
     } _test_next:;
     model_reset();
@@ -503,10 +864,13 @@ static int test_configured_inbound_publisher_loss(void)
         ASSERT(model_node_init(&a, "A", 7, 18233, 1));
         ASSERT(model_node_init(&b, "B", 8, 18234, 2));
         ASSERT(model_node_init(&cnode, "C", 9, 18235, 3));
+        model_order_keys(&a, &b);
+        model_order_keys(&cnode, &b);            /* B holds the highest key */
         ASSERT(model_configure(&b, &a) && model_configure(&b, &cnode));
         ASSERT(model_configure(&cnode, &b));
         struct model_conn c[4];
-        /* A and C both win their races against B: B is inbound-only. */
+        /* A and C both win their races against B: B is inbound-only, and the
+         * tie-break keeps C's lower-key dial over B's. */
         ASSERT(model_connect(&c[0], &a, &b, a.priv, true, 40001));
         ev_inbound_version(&c[0]);
         ev_outbound_verack(&c[0]);
@@ -1173,7 +1537,11 @@ int check_sync_service_configured_inbound(void)
     int failures = 0;
     chain_params_select(CHAIN_REGTEST);
     failures += test_configured_inbound_every_interleaving();
+    failures += test_mutual_dial_plaintext_unchanged();
     failures += test_configured_inbound_serial_orders_named();
+    failures += test_mutual_dial_reconnect_after_publisher_loss();
+    failures += test_mutual_dial_impostor_has_no_privilege();
+    failures += test_mutual_dial_unconfigured_peer();
     failures += test_configured_inbound_reconnect_reproves();
     failures += test_configured_inbound_publisher_loss();
     failures += test_configured_inbound_refusals();
