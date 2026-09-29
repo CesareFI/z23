@@ -547,7 +547,9 @@ static bool de_skip_files(const struct de_fixture *fx, const char *dep)
 {
     return de_write(fx->root, "tests/harness/src/" DE_VOUCHED ".c",
                     "#include \"early_skip_dep.h\"\n"
-                    "int early_skip_fixture_group = EARLY_SKIP_DEP;\n") &&
+                    "int early_skip_fixture_group = EARLY_SKIP_DEP;\n"
+                    "const char *early_skip_inert_literal(void)\n"
+                    "{ return \"__DATE__\"; }\n") &&
            de_write(fx->root, DE_DEP_H, dep) &&
            de_write(fx->root, "tests/harness/src/" DE_UNVOUCHED ".c",
                     "#include <stdlib.h>\n"
@@ -651,8 +653,8 @@ static bool de_skip_setup(struct de_state *s)
 static int de_test_skip_unchanged(struct de_state *s)
 {
     int failures = 0;
-    TEST("devloop_early: an unchanged closure skips its group on the second "
-         "run and counts it; an unvouched group always runs") {
+    TEST("devloop_early: an unchanged closure with an inert volatile string "
+         "skips its group on the second run; an unvouched group runs") {
         ASSERT(de_skip_setup(s));
         ASSERT(de_prove(s, &s->early_plan));
         ASSERT_STR_EQ(s->early.status, "green");
