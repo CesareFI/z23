@@ -310,14 +310,8 @@ bool vcs_component_proof_key_load(struct vcs_package_store *store,
  * receiver marks that issuer equivocating even though the rebuilt view is
  * refused. Unrelated blobs count as *skipped. The caller supplies a
  * total catalog-row budget in addition to the per-page limit. Exhaustion
- * refuses; it never publishes a view missing a later contradiction.
- * After a complete scan, published or refused, each equivocating issuer's
- * minimal signed evidence (two of its tickets at one sequence, else two of
- * its checkpoints naming one parent) is pinned unless a pair already is:
- * at most two blobs per issuer key, each signed by it. Compaction then
- * cannot erase the fork, and a restarted rebuild re-derives it. A pin never
- * evicts; a pins pool that is full is logged and leaves the fork known only
- * to this process. Pinning moves the store generation after publication. */
+ * refuses; it never publishes a view missing a later contradiction. This
+ * variant writes nothing to the store; see _with_policy for evidence pins. */
 bool vcs_proof_receiver_rebuild_bounded(
     struct vcs_proof_receiver *r, struct vcs_package_store *store,
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
@@ -339,6 +333,30 @@ struct vcs_proof_receiver_anchor {
 
 bool vcs_proof_receiver_rebuild_anchored_bounded(
     struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    const struct vcs_proof_receiver_anchor *anchors, size_t anchor_count,
+    size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
+    size_t *skipped, uint64_t *generation_out);
+
+/* The rebuild above, optionally anchored (anchors may be NULL with a zero
+ * count), that also keeps trusted fork evidence. After a complete scan,
+ * published or refused, each equivocating issuer that is one of `trust`'s
+ * verifiers and not one of its revoked keys has one pair of its signed,
+ * conflicting blobs pinned (two tickets at one sequence, else two
+ * checkpoints naming one parent) unless such a pair already is. Pins are
+ * therefore bounded by 2 * trust->verifier_count fixed-size wires, set by
+ * the operator, and every pinned blob is signed by its trusted key.
+ * A stranger's fork is never pinned: it can never make a ticket eligible,
+ * so forgetting it can never cause a HIT. `trust` NULL pins nothing.
+ * Compaction then cannot erase a trusted fork, and a restarted rebuild
+ * re-derives it. A pin never evicts; a full pins pool is logged and leaves
+ * that fork known only to this process.
+ * Pinning happens after publication and moves the store generation, so
+ * *generation_out names the scanned catalog and a caller fencing it sees
+ * one stale retry. The retry finds the pair pinned and pins nothing, so
+ * it is idempotent. */
+bool vcs_proof_receiver_rebuild_with_policy(
+    struct vcs_proof_receiver *r, struct vcs_package_store *store,
+    const struct vcs_proof_reuse_policy *trust,
     const struct vcs_proof_receiver_anchor *anchors, size_t anchor_count,
     size_t max_catalog_rows, size_t *tickets, size_t *checkpoints,
     size_t *skipped, uint64_t *generation_out);

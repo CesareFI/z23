@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Pin each equivocating proof issuer's minimal signed evidence, so
- *          compaction can never make a restarted receiver trust it again. */
+ * purpose: Pin each equivocating trusted proof issuer's minimal signed
+ *          evidence, so compaction cannot make a restarted receiver trust it. */
 
 #include "proof_reuse_priv.h"
 
@@ -15,9 +15,11 @@
 
 #define PFE_LOG "vcs.proof_fork_evidence"
 
-/* Per equivocating issuer: its chosen pair, and whether some pair of its
- * signed conflicting blobs is already pinned (then nothing more is). */
+/* Per issuer: whether its evidence is wanted (equivocating and trusted),
+ * the pair chosen for it, and whether some pair of its signed conflicting
+ * blobs is already pinned (then nothing more is). */
 struct pfe_issuer {
+    bool wanted;
     bool durable;
     bool chosen;
     uint8_t pair[2][VCS_PROOF_ROOT_BYTES];
@@ -114,7 +116,7 @@ static bool pfe_ticket_chain(const struct vcs_proof_receiver *view,
 }
 
 /* Every (issuer, sequence) chain holding two signed tickets of an
- * equivocating issuer, visited once from its head. */
+ * equivocating trusted issuer, visited once from its head. */
 static bool pfe_scan_tickets(const struct vcs_proof_receiver *view,
                              struct vcs_package_store *store,
                              struct pfe_issuer *state)
@@ -128,7 +130,7 @@ static bool pfe_scan_tickets(const struct vcs_proof_receiver *view,
             pr_entry_seq_first(view, e->producer, e->issuer_seq) != i + 1u)
             continue;
         size_t k = pfe_issuer_index(view, e->producer);
-        if (k == SIZE_MAX || !view->issuers[k].equivocating ||
+        if (k == SIZE_MAX || !state[k].wanted ||
             state[k].durable)
             continue;
         ok = pfe_ticket_chain(view, store, i + 1u, &members, &cap, &count);
@@ -216,25 +218,49 @@ static size_t pfe_pin_chosen(const struct vcs_proof_receiver *view,
     return pinned;
 }
 
-size_t pr_fork_evidence_pin(const struct vcs_proof_receiver *view,
-                            struct vcs_package_store *store)
+static bool pfe_listed(const uint8_t (*keys)[VCS_PROOF_PUBKEY_BYTES],
+                       size_t count, const uint8_t key[VCS_PROOF_PUBKEY_BYTES])
 {
-    if (!view || !store || !view->issuer_count) return 0;
-    bool any = false;
-    for (size_t k = 0; !any && k < view->issuer_count; k++)
-        any = view->issuers[k].equivocating;
-    if (!any) return 0;
+    for (size_t i = 0; keys && i < count; i++)
+        if (memcmp(keys[i], key, VCS_PROOF_PUBKEY_BYTES) == 0) return true;
+    return false;
+}
+
+/* Only a trusted, unrevoked verifier's ticket can ever be eligible, so only
+ * its fork can ever matter to a HIT; a stranger cannot spend these pins. */
+static size_t pfe_mark_wanted(const struct vcs_proof_receiver *view,
+                              const struct vcs_proof_reuse_policy *trust,
+                              struct pfe_issuer *state)
+{
+    size_t wanted = 0;
+    for (size_t k = 0; k < view->issuer_count; k++) {
+        const struct pr_issuer *is = &view->issuers[k];
+        state[k].wanted =
+            is->equivocating &&
+            pfe_listed(trust->verifiers, trust->verifier_count, is->pubkey) &&
+            !pfe_listed(trust->revoked, trust->revoked_count, is->pubkey);
+        if (state[k].wanted) wanted++;
+    }
+    return wanted;
+}
+
+size_t pr_fork_evidence_pin(const struct vcs_proof_receiver *view,
+                            struct vcs_package_store *store,
+                            const struct vcs_proof_reuse_policy *trust)
+{
+    if (!view || !store || !trust || !view->issuer_count) return 0;
     struct pfe_issuer *state = zcl_calloc(view->issuer_count, sizeof(*state),
                                           "proof_fork_evidence");
     if (!state) LOG_RETURN(0, PFE_LOG, "evidence: out of memory");
-    bool ok = pfe_scan_tickets(view, store, state);
+    bool ok = pfe_mark_wanted(view, trust, state) > 0 &&
+              pfe_scan_tickets(view, store, state);
     for (size_t k = 0; ok && k < view->issuer_count; k++)
-        if (view->issuers[k].equivocating && !state[k].durable)
+        if (state[k].wanted && !state[k].durable)
             ok = pfe_scan_checkpoints(&view->issuers[k], store, &state[k]);
     size_t pinned = ok ? pfe_pin_chosen(view, store, state) : 0;
     free(state);
     if (pinned)
         LOG_WARN(PFE_LOG, "pinned signed equivocation evidence for %zu "
-                          "issuers", pinned);
+                          "trusted issuers", pinned);
     return pinned;
 }

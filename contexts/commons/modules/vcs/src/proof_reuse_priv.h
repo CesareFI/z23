@@ -79,13 +79,15 @@ const struct pr_issuer *pr_issuer_find(const struct vcs_proof_receiver *r,
                                        const uint8_t pubkey[32]);
 
 struct vcs_package_store;
-/* For each equivocating issuer in `view`, pin one pair of its signed,
- * mutually conflicting blobs (two tickets at one sequence, else two
- * checkpoints naming one parent) unless such a pair is already pinned.
- * At most two blobs per issuer key, every one signed by that key. A pin
- * never evicts; a refused pin is logged. Returns issuers newly made
- * durable. Pinning advances the store generation. */
+/* For each equivocating issuer in `view` that is one of `trust`'s verifiers
+ * and not revoked, pin one pair of its signed, mutually conflicting blobs
+ * (two tickets at one sequence, else two checkpoints naming one parent)
+ * unless such a pair is already pinned. At most two blobs per trusted key,
+ * every one signed by that key. A pin never evicts; a refused pin is
+ * logged. Returns issuers newly made durable. Pinning advances the store
+ * generation. */
 size_t pr_fork_evidence_pin(const struct vcs_proof_receiver *view,
-                            struct vcs_package_store *store);
+                            struct vcs_package_store *store,
+                            const struct vcs_proof_reuse_policy *trust);
 
 #endif
