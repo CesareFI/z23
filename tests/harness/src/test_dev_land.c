@@ -702,6 +702,53 @@ static bool dlx_queue_has_one(void)
     return ok;
 }
 
+static bool dlx_submit_expect(const struct dlx_rig *rig, const char *tip,
+                              long long seq, bool deduplicated)
+{
+    struct dlx_call c;
+    dlx_submit(&c, rig, tip);
+    bool ok = dlx_run(&c) && dlx_ok(&c) && dlx_int(&c, "seq") == seq &&
+              json_get_bool(json_get(&c.reply.data, "deduplicated")) ==
+                  deduplicated;
+    dlx_end(&c);
+    return ok;
+}
+
+static bool dlx_exact_submit_retry(void)
+{
+    struct dlx_rig rig;
+    struct dlx_call c;
+    char later[64];
+    bool ok = true;
+    dlx_isolate("submit_duplicate");
+    if (!dlx_rig_make(&rig, "submit_duplicate_rig")) {
+        ok = false;
+        goto done;
+    }
+    setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+    setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+    if (!dlx_submit_expect(&rig, rig.tip, 1, false) ||
+        !dlx_submit_expect(&rig, rig.tip, 1, true) ||
+        !dlx_queue_has_one()) {
+        ok = false;
+        goto done;
+    }
+    dlx_begin(&c, "step");
+    ok = dlx_run(&c) && dlx_ok(&c) && dlx_int(&c, "seq") == 1;
+    dlx_end(&c);
+    if (!ok)
+        goto done;
+    if (!dlx_submit_expect(&rig, rig.tip, 1, true) ||
+        !dlx_commit(rig.clone, "later.txt", "later\n", later)) {
+        ok = false;
+        goto done;
+    }
+    ok = dlx_submit_expect(&rig, later, 2, false);
+done:
+    dlx_restore();
+    return ok;
+}
+
 static bool dlx_failed_admission_visible(const char *expected_tip)
 {
     struct dlx_call c;
@@ -724,10 +771,13 @@ static bool dlx_missing_submitter(const struct dlx_rig *rig)
 {
     struct dlx_call c;
     char moved[4096];
+    char second_tip[64];
     /* An independent receiver must preserve the admission even when the
      * submitting checkout disappears. Cancelling another row rewrites the
      * queue and must not erase the unavailable request. */
-    dlx_submit(&c, rig, rig->tip);
+    if (!dlx_commit(rig->clone, "second.txt", "second\n", second_tip))
+        return false;
+    dlx_submit(&c, rig, second_tip);
     bool ok = dlx_run(&c) && dlx_ok(&c);
     long long second = dlx_int(&c, "seq");
     dlx_end(&c);
@@ -1977,6 +2027,12 @@ static int test_dev_land_terminal_replay(void)
         ASSERT_STR_EQ(remote, rig.tip);
         ASSERT(dlx_slurp(opath, before, sizeof(before), &before_len));
         ASSERT(before_len > 0);
+        ASSERT(dlx_slurp(qpath, queue, sizeof(queue), &queue_len));
+        ASSERT(queue_len > 0);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "TERMINAL_REPLAY_PENDING");
+        dlx_end(&c);
         ASSERT(dlx_slurp(qpath, queue, sizeof(queue), &queue_len));
         ASSERT(queue_len > 0);
         /* A terminal receipt for the same request but another proof base
@@ -6736,6 +6792,11 @@ int test_dev_land(void)
         PASS();
     }
 
+    TEST("land: retrying the exact tip in one checkout attaches to its live row") {
+        ASSERT(dlx_exact_submit_retry());
+        PASS();
+    }
+
     TEST("land: a step over an empty queue is a no-op that returns at once") {
         struct dlx_call c;
         time_t t0, t1;
@@ -7224,7 +7285,7 @@ int test_dev_land(void)
         PASS();
     }
 
-    TEST("land: two submitters at once never interleave a row") {
+    TEST("land: two concurrent exact submitters attach one complete row") {
         struct dlx_rig rig;
         char landdir[1200], qf[1400], line[8192];
         pid_t a, b;
@@ -7277,7 +7338,7 @@ int test_dev_land(void)
             }
             (void)fclose(f);
         }
-        ASSERT_EQ((long long)nlines, 2);
+        ASSERT_EQ((long long)nlines, 1);
         dlx_restore();
         PASS();
     }

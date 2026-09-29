@@ -2329,6 +2329,91 @@ static bool dl_submit_next_seq(const struct dl_dirs *d,
     return true;
 }
 
+/* Called with the queue lock held. A duplicate is either answered here or
+ * refused until a durable terminal outcome has been replayed. */
+static bool dl_submit_live_duplicate(const struct dl_dirs *d,
+                                     const struct dl_row *rows, size_t nrows,
+                                     const char *tip, const char *worktree,
+                                     struct zcl_command_reply *reply)
+{
+    for (size_t i = 0; i < nrows; ++i) {
+        if (strcmp(rows[i].tip, tip) != 0 ||
+            strcmp(rows[i].worktree, worktree) != 0)
+            continue;
+        struct dl_row terminal;
+        bool terminal_seen = false;
+        long long high_water = 0;
+        if (!dl_scan_outcomes(d, &rows[i], &terminal, &terminal_seen,
+                              &high_water)) {
+            dl_fail(reply, "QUEUE_READ_FAILED", "submit",
+                    "cannot compare the live row with terminal history",
+                    "outcomes.jsonl unreadable or malformed");
+            return true;
+        }
+        if (terminal_seen) {
+            dl_fail(reply, "TERMINAL_REPLAY_PENDING", "submit",
+                    "the matching row has a durable terminal outcome awaiting queue replay",
+                    "run dev land step, then resubmit if current-base work is still needed");
+            return true;
+        }
+        (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+        (void)json_push_kv_int(&reply->data, "seq", rows[i].seq);
+        (void)json_push_kv_str(&reply->data, "tip", rows[i].tip);
+        (void)json_push_kv_str(&reply->data, "state", rows[i].state);
+        (void)json_push_kv_str(&reply->data, "phase", rows[i].phase);
+        (void)json_push_kv_bool(&reply->data, "deduplicated", true);
+        reply->status = ZCL_COMMAND_STATUS_PASSED;
+        reply->exit_code = 0;
+        return true;
+    }
+    return false;
+}
+
+/* Finish admission under the same lock that loaded rows. Owns rows and lock
+ * on every path so duplicate retries cannot race sequence assignment. */
+static void dl_submit_loaded(const struct dl_dirs *d, struct dl_row *r,
+                             struct dl_row *rows, size_t nrows, int lock,
+                             const char *qpath, const char *tip,
+                             const char *worktree,
+                             struct zcl_command_reply *reply)
+{
+    char line[DL_LINE_CAP];
+    size_t len = 0;
+    long long seq = 1;
+    const char *seq_why = NULL;
+    if (dl_submit_live_duplicate(d, rows, nrows, tip, worktree, reply)) {
+        free(rows);
+        dl_unlock(lock);
+        return;
+    }
+    if (!dl_submit_next_seq(d, rows, nrows, &seq, &seq_why)) {
+        free(rows);
+        dl_unlock(lock);
+        dl_fail(reply, "QUEUE_READ_FAILED", "submit",
+                "cannot assign a unique sequence while outcomes are unreadable",
+                seq_why);
+        return;
+    }
+    free(rows);
+    r->seq = seq;
+    r->priority_seq = seq;
+    if (!dl_encode_row(r, line, sizeof(line), &len) ||
+        !dl_append_row(qpath, line, len)) {
+        dl_unlock(lock);
+        dl_fail(reply, "QUEUE_WRITE_FAILED", "submit",
+                "cannot append the request row", qpath);
+        return;
+    }
+    dl_unlock(lock);
+    dl_outbox(d, r, "queued");
+    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
+    (void)json_push_kv_int(&reply->data, "seq", r->seq);
+    (void)json_push_kv_str(&reply->data, "tip", r->tip);
+    (void)json_push_kv_str(&reply->data, "state", "queued");
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = 0;
+}
+
 static void dl_submit(const struct zcl_command_request *req,
                       struct zcl_command_reply *reply)
 {
@@ -2336,13 +2421,11 @@ static void dl_submit(const struct zcl_command_request *req,
     struct dl_row r;
     struct dl_row *rows = NULL;
     size_t nrows = 0;
-    char qpath[4096 + 32], line[DL_LINE_CAP];
+    char qpath[4096 + 32];
     char root[4096], sig[64], full[80], ts[64];
     const char *tip, *worktree, *note;
     const char *allow_unsigned = dl_allow_unsigned();
-    size_t len = 0;
     int lock = -1;
-    long long seq = 1;
 
     tip = dl_str(req, "tip");
     if (!tip || !dl_tipish_ok(tip)) {
@@ -2452,33 +2535,13 @@ static void dl_submit(const struct zcl_command_request *req,
                 dl_reason_or_path(queue_why, qpath));
         return;
     }
-    const char *seq_why = NULL;
-    if (!dl_submit_next_seq(&d, rows, nrows, &seq, &seq_why)) {
-        free(rows);
-        dl_unlock(lock);
-        dl_fail(reply, "QUEUE_READ_FAILED", "submit",
-                "cannot assign a unique sequence while outcomes are unreadable",
-                seq_why);
-        return;
-    }
-    free(rows);
-    r.seq = seq;
-    r.priority_seq = seq;
-    if (!dl_encode_row(&r, line, sizeof(line), &len) ||
-        !dl_append_row(qpath, line, len)) {
-        dl_unlock(lock);
-        dl_fail(reply, "QUEUE_WRITE_FAILED", "submit",
-                "cannot append the request row", qpath);
-        return;
-    }
-    dl_unlock(lock);
-    dl_outbox(&d, &r, "queued");
-    (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
-    (void)json_push_kv_int(&reply->data, "seq", r.seq);
-    (void)json_push_kv_str(&reply->data, "tip", r.tip);
-    (void)json_push_kv_str(&reply->data, "state", "queued");
-    reply->status = ZCL_COMMAND_STATUS_PASSED;
-    reply->exit_code = 0;
+    /* A retry of the same immutable tip from the same checkout attaches to
+     * its live queue row. Keep the original age and proof pair: appending a
+     * second row would schedule a second full proof of identical work. The
+     * checkout is part of this local lookup because a different locator may
+     * be needed to recover a vanished submitter. Terminal outcomes remain
+     * separate: a later submission may need a new current-base proof. */
+    dl_submit_loaded(&d, &r, rows, nrows, lock, qpath, full, root, reply);
 }
 
 /* ── cancel ────────────────────────────────────────────────────────────── */
