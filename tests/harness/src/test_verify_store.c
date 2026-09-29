@@ -83,6 +83,18 @@ static bool vs_write_pubkey(const char *path)
     return vs_write(path, hex, 65, 0644);
 }
 
+/* store/, locks/ and the publication lock under the fixture root. */
+static bool vs_layout(struct vs_fixture *f)
+{
+    char locks[PATH_MAX];
+    return vs_path(f->store, f->root, "store") &&
+           vs_path(locks, f->root, "locks") &&
+           vs_path(f->lock, locks, "fixed_result.lock") &&
+           vs_path(f->pubfile, f->key_root, "verifier.pub") &&
+           mkdir(f->store, 0755) == 0 && mkdir(locks, 0755) == 0 &&
+           vs_write(f->lock, "", 0, 0644);
+}
+
 static bool vs_fixture_make(struct vs_fixture *f)
 {
     memset(f, 0, sizeof(*f));
@@ -95,13 +107,7 @@ static bool vs_fixture_make(struct vs_fixture *f)
     char key_temporary[] = "/tmp/z23-verify-store-key.XXXXXX";
     if (!mkdtemp(key_temporary) || !realpath(key_temporary, f->key_root))
         return false;
-    char locks[PATH_MAX];
-    if (!vs_path(f->store, f->root, "store") ||
-        !vs_path(locks, f->root, "locks") ||
-        !vs_path(f->lock, locks, "fixed_result.lock") ||
-        !vs_path(f->pubfile, f->key_root, "verifier.pub") ||
-        mkdir(f->store, 0755) != 0 || mkdir(locks, 0755) != 0 ||
-        !vs_write(f->lock, "", 0, 0644)) return false;
+    if (!vs_layout(f)) return false;
     if (!test_vc_fixture_make(&f->vc, 'a')) return false;
     f->expected = f->vc.expected;
     char key[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
