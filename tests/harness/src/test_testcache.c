@@ -1970,6 +1970,7 @@ static bool tc_external_exec_denied(void)
         "test_self_folded_anchor_heavy",
         "self_folded_anchor_heavy",
         "test_sem_replay",
+        "test_terminal_worker_sandbox",
         "test_zcode_package_dev",
         "test_zcode_package_dev_shard_01",
     };

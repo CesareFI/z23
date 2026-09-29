@@ -491,6 +491,8 @@ static bool group_reads_external_inputs(const char *name)
          * edit to that reader. */
         "source_identity_authority",
         "syncdiag_rpc",
+        /* execve build/bin/fbsh; that shell's link is outside the closure. */
+        "terminal_worker_sandbox",
         "utxo_root_ladder",
         "verify_bench_selftest",
         "wallet_persistence_cycle",
