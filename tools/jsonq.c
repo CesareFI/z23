@@ -227,88 +227,98 @@ static int emit_raw_range(const char *text, size_t start, size_t end)
     return 0;
 }
 
+static bool is_close_event(const zjsonp *p, const zjsonp_event *ev,
+                           unsigned open_depth)
+{
+    return (ev->kind == ZJRP_OBJ_CLOSE || ev->kind == ZJRP_ARR_CLOSE) &&
+           p->depth < open_depth;
+}
+
+static bool is_scalar_event(const zjsonp_event *ev)
+{
+    return ev->kind == ZJRP_STR || ev->kind == ZJRP_NUM ||
+           ev->kind == ZJRP_BOOL || ev->kind == ZJRP_NULL;
+}
+
+/* Prints the element count of an array or the key count of an object. */
+static int count_container(zjsonp *p, const zjsonp_event *open,
+                           unsigned open_depth)
+{
+    int n = 0;
+    if (open->kind != ZJRP_ARR_OPEN && open->kind != ZJRP_OBJ_OPEN)
+        return 2;
+    for (;;) {
+        zjsonp_event ev;
+        zjsonp_status st = zjsonp_next(p, &ev);
+        if (st != ZJRP_OK)
+            return 2;
+        if (is_close_event(p, &ev, open_depth)) {
+            printf("%d\n", n);
+            return 0;
+        }
+        if (open->kind == ZJRP_OBJ_OPEN) {
+            if (ev.kind == ZJRP_KEY)
+                n++;
+        } else if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN) {
+            n++;
+            if (skip_container(p, p->depth) != 0)
+                return 2;
+        } else if (is_scalar_event(&ev)) {
+            n++;
+        }
+    }
+}
+
+/* Prints each key of an object, one per line. */
+static int keys_container(zjsonp *p, const char *text,
+                          const zjsonp_event *open, unsigned open_depth)
+{
+    if (open->kind != ZJRP_OBJ_OPEN)
+        return 1;
+    for (;;) {
+        zjsonp_event ev;
+        zjsonp_status st = zjsonp_next(p, &ev);
+        if (st != ZJRP_OK)
+            return 2;
+        if (is_close_event(p, &ev, open_depth))
+            return 0;
+        if (ev.kind == ZJRP_KEY) {
+            size_t kn = 0;
+            if (!decode_key(text, &ev, g_decode, sizeof g_decode, &kn))
+                return 2;
+            fwrite(g_decode, 1, kn, stdout);
+            fputc('\n', stdout);
+        }
+    }
+}
+
 static int finish_matched_container(zjsonp *p, const char *text,
                                     const zjsonp_event *open, cmd_kind cmd,
                                     const char *eq)
 {
     unsigned open_depth = p->depth;
     size_t start = open->off;
-    const char *typ = kind_type(open->kind);
-    if (cmd == CMD_HAS)
+    (void)eq;
+    switch (cmd) {
+    case CMD_HAS:
         return 0;
-    if (cmd == CMD_TYPE) {
-        puts(typ);
+    case CMD_TYPE:
+        puts(kind_type(open->kind));
         return 0;
-    }
-    if (cmd == CMD_EQ)
+    case CMD_EQ:
         return 1;
-    if (cmd == CMD_GET || cmd == CMD_RAW) {
+    case CMD_GET:
+    case CMD_RAW:
         if (skip_container(p, open_depth) != 0)
             return 2;
         return emit_raw_range(text, start, p->pos);
-    }
-    if (cmd == CMD_COUNT) {
-        int n = 0;
-        if (open->kind == ZJRP_ARR_OPEN) {
-            for (;;) {
-                zjsonp_event ev;
-                zjsonp_status st = zjsonp_next(p, &ev);
-                if (st != ZJRP_OK)
-                    return 2;
-                if ((ev.kind == ZJRP_OBJ_CLOSE || ev.kind == ZJRP_ARR_CLOSE) &&
-                    p->depth < open_depth) {
-                    printf("%d\n", n);
-                    return 0;
-                }
-                if (ev.kind == ZJRP_OBJ_OPEN || ev.kind == ZJRP_ARR_OPEN) {
-                    n++;
-                    if (skip_container(p, p->depth) != 0)
-                        return 2;
-                } else if (ev.kind == ZJRP_STR || ev.kind == ZJRP_NUM ||
-                           ev.kind == ZJRP_BOOL || ev.kind == ZJRP_NULL) {
-                    n++;
-                }
-            }
-        }
-        if (open->kind == ZJRP_OBJ_OPEN) {
-            for (;;) {
-                zjsonp_event ev;
-                zjsonp_status st = zjsonp_next(p, &ev);
-                if (st != ZJRP_OK)
-                    return 2;
-                if ((ev.kind == ZJRP_OBJ_CLOSE || ev.kind == ZJRP_ARR_CLOSE) &&
-                    p->depth < open_depth) {
-                    printf("%d\n", n);
-                    return 0;
-                }
-                if (ev.kind == ZJRP_KEY)
-                    n++;
-            }
-        }
+    case CMD_COUNT:
+        return count_container(p, open, open_depth);
+    case CMD_KEYS:
+        return keys_container(p, text, open, open_depth);
+    default:
         return 2;
     }
-    if (cmd == CMD_KEYS) {
-        if (open->kind != ZJRP_OBJ_OPEN)
-            return 1;
-        for (;;) {
-            zjsonp_event ev;
-            zjsonp_status st = zjsonp_next(p, &ev);
-            if (st != ZJRP_OK)
-                return 2;
-            if ((ev.kind == ZJRP_OBJ_CLOSE || ev.kind == ZJRP_ARR_CLOSE) &&
-                p->depth < open_depth)
-                return 0;
-            if (ev.kind == ZJRP_KEY) {
-                size_t kn = 0;
-                if (!decode_key(text, &ev, g_decode, sizeof g_decode, &kn))
-                    return 2;
-                fwrite(g_decode, 1, kn, stdout);
-                fputc('\n', stdout);
-            }
-        }
-    }
-    (void)eq;
-    return 2;
 }
 
 static int handle_matched_scalar(const char *text, const zjsonp_event *ev,

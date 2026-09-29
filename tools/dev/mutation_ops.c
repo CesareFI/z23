@@ -67,97 +67,135 @@ static bool mask_is_define(const char *t, size_t len, size_t hash)
     return i + n == len || !mask_ident_char(t[i + n]);
 }
 
+enum mask_state { MASK_NORMAL, MASK_LINE_COMMENT, MASK_BLOCK_COMMENT,
+                  MASK_STRING, MASK_CHARLIT, MASK_DIRECTIVE };
+
+struct mask_scan {
+    const char *t;
+    size_t len;
+    unsigned char *mask;
+    enum mask_state state;
+    enum mask_state resume; /* where a block comment returns to */
+    bool at_line_start;
+};
+
+static bool mask_next_is(const struct mask_scan *m, size_t i, char c)
+{
+    return i + 1 < m->len && m->t[i + 1] == c;
+}
+
+/* A '#' at line start. #define stays code from the keyword onward; the
+ * directive token itself is masked so `define` is never a site. */
+static size_t mask_directive_start(struct mask_scan *m, size_t i)
+{
+    if (!mask_is_define(m->t, m->len, i)) {
+        m->state = MASK_DIRECTIVE;
+        return i;
+    }
+    size_t j = i + 1;
+    while (j < m->len && (m->t[j] == ' ' || m->t[j] == '\t'))
+        j++;
+    m->at_line_start = false;
+    return j + 5; /* last byte of "define" */
+}
+
+/* Handles the byte at `i` in code; returns the last byte consumed. */
+static size_t mask_normal(struct mask_scan *m, size_t i)
+{
+    char c = m->t[i];
+    if (m->at_line_start && c == '#') {
+        return mask_directive_start(m, i);
+    } else if (c == '/' && mask_next_is(m, i, '/')) {
+        m->state = MASK_LINE_COMMENT;
+    } else if (c == '/' && mask_next_is(m, i, '*')) {
+        m->resume = MASK_NORMAL;
+        m->state = MASK_BLOCK_COMMENT;
+        return i + 1;
+    } else if (c == '"') {
+        m->state = MASK_STRING;
+    } else if (c == '\'') {
+        m->state = MASK_CHARLIT;
+    } else if (c == '\n') {
+        m->at_line_start = true;
+    } else {
+        if (c != ' ' && c != '\t' && c != '\r')
+            m->at_line_start = false;
+        m->mask[i] = 1;
+    }
+    return i;
+}
+
+static size_t mask_line_comment(struct mask_scan *m, size_t i)
+{
+    /* A `//` comment continued with a trailing backslash keeps going; C says
+     * so and a mutation past that point would be inside comment text. */
+    if (m->t[i] == '\n' && (i == 0 || m->t[i - 1] != '\\')) {
+        m->state = MASK_NORMAL;
+        m->at_line_start = true;
+    }
+    return i;
+}
+
+static size_t mask_block_comment(struct mask_scan *m, size_t i)
+{
+    if (m->t[i] == '*' && mask_next_is(m, i, '/')) {
+        m->state = m->resume;
+        return i + 1;
+    }
+    return i;
+}
+
+/* Skips a string or char literal body, honouring backslash escapes. */
+static size_t mask_literal(struct mask_scan *m, size_t i, char quote)
+{
+    if (m->t[i] == '\\' && i + 1 < m->len)
+        return i + 1;
+    if (m->t[i] == quote)
+        m->state = MASK_NORMAL;
+    return i;
+}
+
+static size_t mask_directive(struct mask_scan *m, size_t i)
+{
+    if (m->t[i] == '/' && mask_next_is(m, i, '*')) {
+        m->resume = MASK_DIRECTIVE;
+        m->state = MASK_BLOCK_COMMENT;
+        return i + 1;
+    }
+    if (m->t[i] == '\n' && (i == 0 || m->t[i - 1] != '\\')) {
+        m->state = MASK_NORMAL;
+        m->at_line_start = true;
+    }
+    return i;
+}
+
 static void mut_code_mask(const char *t, size_t len, unsigned char *mask)
 {
-    enum { NORMAL, LINE_COMMENT, BLOCK_COMMENT, STRING, CHARLIT, DIRECTIVE };
-    int state = NORMAL;
-    int resume = NORMAL; /* where a block comment returns to */
-    bool at_line_start = true;
+    struct mask_scan m = {.t = t, .len = len, .mask = mask,
+                          .state = MASK_NORMAL, .resume = MASK_NORMAL,
+                          .at_line_start = true};
     for (size_t i = 0; i < len; i++) {
-        char c = t[i];
         mask[i] = 0;
-        switch (state) {
-        case NORMAL:
-            if (at_line_start && c == '#') {
-                /* #define stays code from the keyword onward; the directive
-                 * token itself is masked so `define` is never a site. */
-                if (mask_is_define(t, len, i)) {
-                    size_t j = i + 1;
-                    while (j < len && (t[j] == ' ' || t[j] == '\t'))
-                        j++;
-                    i = j + 5; /* last byte of "define" */
-                    at_line_start = false;
-                    continue;
-                }
-                state = DIRECTIVE;
-                continue;
-            }
-            if (c == '/' && i + 1 < len && t[i + 1] == '/') {
-                state = LINE_COMMENT;
-                continue;
-            }
-            if (c == '/' && i + 1 < len && t[i + 1] == '*') {
-                resume = NORMAL;
-                state = BLOCK_COMMENT;
-                i++;
-                continue;
-            }
-            if (c == '"') {
-                state = STRING;
-                continue;
-            }
-            if (c == '\'') {
-                state = CHARLIT;
-                continue;
-            }
-            if (c == '\n') {
-                at_line_start = true;
-                continue;
-            }
-            if (c != ' ' && c != '\t' && c != '\r')
-                at_line_start = false;
-            mask[i] = 1;
-            continue;
-        case LINE_COMMENT:
-            if (c == '\n') {
-                /* A `//` comment continued with a trailing backslash keeps
-                 * going; C says so and a mutation past that point would be
-                 * inside comment text. */
-                if (i == 0 || t[i - 1] != '\\') {
-                    state = NORMAL;
-                    at_line_start = true;
-                }
-            }
-            continue;
-        case BLOCK_COMMENT:
-            if (c == '*' && i + 1 < len && t[i + 1] == '/') {
-                i++;
-                state = resume;
-            }
-            continue;
-        case STRING:
-            if (c == '\\' && i + 1 < len)
-                i++;
-            else if (c == '"')
-                state = NORMAL;
-            continue;
-        case CHARLIT:
-            if (c == '\\' && i + 1 < len)
-                i++;
-            else if (c == '\'')
-                state = NORMAL;
-            continue;
-        case DIRECTIVE:
+        switch (m.state) {
+        case MASK_NORMAL:
+            i = mask_normal(&m, i);
+            break;
+        case MASK_LINE_COMMENT:
+            i = mask_line_comment(&m, i);
+            break;
+        case MASK_BLOCK_COMMENT:
+            i = mask_block_comment(&m, i);
+            break;
+        case MASK_STRING:
+            i = mask_literal(&m, i, '"');
+            break;
+        case MASK_CHARLIT:
+            i = mask_literal(&m, i, '\'');
+            break;
+        case MASK_DIRECTIVE:
         default:
-            if (c == '/' && i + 1 < len && t[i + 1] == '*') {
-                resume = DIRECTIVE;
-                state = BLOCK_COMMENT;
-                i++;
-            } else if (c == '\n' && (i == 0 || t[i - 1] != '\\')) {
-                state = NORMAL;
-                at_line_start = true;
-            }
-            continue;
+            i = mask_directive(&m, i);
+            break;
         }
     }
 }
@@ -362,13 +400,8 @@ static const char *const g_stmt_keywords[] = {
     "default", "goto", "break", "continue", "typedef", "sizeof",
 };
 
-static bool mut_is_call_statement(const char *t, size_t len,
-                                  const unsigned char *mask, size_t start,
-                                  size_t *end_out)
+static bool mut_is_statement_keyword(const char *t, size_t start)
 {
-    (void)len;
-    if (!(mask_ident_char(t[start]) || t[start] == '('))
-        return false;
     size_t w = start;
     while (w < start + 16 && mask_ident_char(t[w]))
         w++;
@@ -376,45 +409,82 @@ static bool mut_is_call_statement(const char *t, size_t len,
     for (size_t k = 0; k < sizeof g_stmt_keywords / sizeof g_stmt_keywords[0]; k++) {
         const char *kw = g_stmt_keywords[k];
         if (wl == strlen(kw) && memcmp(t + start, kw, wl) == 0)
-            return false;
+            return true;
     }
-    /* A DECLARATION also ends in `);` — `bool f(int v);` — and deleting one
-     * only ever produces a syntax error, which costs a build and reports
-     * nothing. What separates the two is a second identifier before the
-     * open paren: a call has one name, a declaration has a type and a name.
-     */
+    return false;
+}
+
+/* A DECLARATION also ends in `);` — `bool f(int v);` — and deleting one
+ * only ever produces a syntax error, which costs a build and reports
+ * nothing. What separates the two is a second identifier before the
+ * open paren: a call has one name, a declaration has a type and a name. */
+static bool mut_looks_like_declaration(const char *t, size_t start)
+{
     for (size_t j = start; j + 1 < start + 512 && t[j] && t[j] != '('; j++) {
         if ((t[j] == ' ' || t[j] == '\t') && mask_ident_char(t[j + 1]))
-            return false;
+            return true;
         if (t[j] == ';' || t[j] == '\n')
             break;
     }
+    return false;
+}
 
+enum mut_scan_step { MUT_SCAN_MORE, MUT_SCAN_REJECT, MUT_SCAN_END };
+
+static enum mut_scan_step mut_scan_char(char c, int *depth, bool *saw_call)
+{
+    if (c == '(' || c == '[') {
+        (*depth)++;
+        *saw_call = *saw_call || c == '(';
+    } else if (c == ')' || c == ']') {
+        if (--*depth < 0)
+            return MUT_SCAN_REJECT;
+    } else if (c == '{' || c == '}') {
+        return MUT_SCAN_REJECT;
+    } else if (*depth == 0 && (c == '=' || c == ',' || c == '?')) {
+        return MUT_SCAN_REJECT;
+    } else if (*depth == 0 && c == ';') {
+        return MUT_SCAN_END;
+    }
+    return MUT_SCAN_MORE;
+}
+
+/* Finds the top-level `;` ending a single expression statement that contains
+ * a call; false for anything with braces, assignments or unbalanced
+ * brackets. */
+static bool mut_scan_statement_end(const char *t, const unsigned char *mask,
+                                   size_t start, size_t *end_out)
+{
     int depth = 0;
     bool saw_call = false;
-    size_t end = SIZE_MAX;
     size_t limit = start + 2048;
     for (size_t j = start; j < limit && t[j] != '\0'; j++) {
         if (!mask[j])
             continue;
-        char c = t[j];
-        if (c == '(' || c == '[') {
-            depth++;
-            saw_call = saw_call || c == '(';
-        } else if (c == ')' || c == ']') {
-            depth--;
-            if (depth < 0)
-                return false;
-        } else if (c == '{' || c == '}') {
+        enum mut_scan_step step = mut_scan_char(t[j], &depth, &saw_call);
+        if (step == MUT_SCAN_REJECT)
             return false;
-        } else if (depth == 0 && (c == '=' || c == ',' || c == '?')) {
-            return false;
-        } else if (depth == 0 && c == ';') {
-            end = j;
-            break;
+        if (step == MUT_SCAN_END) {
+            *end_out = j;
+            return saw_call;
         }
     }
-    if (end == SIZE_MAX || !saw_call)
+    return false;
+}
+
+static bool mut_is_call_statement(const char *t, size_t len,
+                                  const unsigned char *mask, size_t start,
+                                  size_t *end_out)
+{
+    (void)len;
+    if (!(mask_ident_char(t[start]) || t[start] == '('))
+        return false;
+    if (mut_is_statement_keyword(t, start) ||
+        mut_looks_like_declaration(t, start))
+        return false;
+
+    size_t end = SIZE_MAX;
+    if (!mut_scan_statement_end(t, mask, start, &end))
         return false;
     /* The statement must END in a call: `)` immediately before the `;`,
      * ignoring blanks. `x++;` and `p->n;` are not writes worth deleting. */
@@ -428,6 +498,125 @@ static bool mut_is_call_statement(const char *t, size_t len,
 }
 
 /* ── the scan ───────────────────────────────────────────────────────── */
+
+static bool mask_is_blank(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r';
+}
+
+static void mut_scan_statement(struct mut_scan *s, size_t i)
+{
+    size_t end = 0;
+    if (mut_is_call_statement(s->text, s->len, s->mask, i, &end))
+        mut_emit(s, i, end - i + 1, ZCL_MUT_CLASS_STATEMENT, "stmt_delete",
+                 "(void)0;");
+}
+
+/* Two-character comparison and connective flips. */
+static bool mut_scan_pair2(struct mut_scan *s, size_t i)
+{
+    const char *text = s->text;
+    for (size_t p = 0; p < sizeof g_pairs2 / sizeof g_pairs2[0]; p++) {
+        const struct mut_pair *r = &g_pairs2[p];
+        if (i + 1 >= s->len || !s->mask[i + 1])
+            break;
+        if (text[i] != r->from[0] || text[i + 1] != r->from[1])
+            continue;
+        if (!mut_pair2_ok(text, s->len, i, r->from))
+            continue;
+        mut_emit(s, i, 2, r->cls, r->rule, r->to);
+        return true;
+    }
+    return false;
+}
+
+/* One-character comparison widenings and unary-not removal. */
+static bool mut_scan_single(struct mut_scan *s, size_t i)
+{
+    const char *text = s->text;
+    char c = text[i];
+    char next = i + 1 < s->len ? text[i + 1] : '\0';
+    char prev = i > 0 ? text[i - 1] : '\0';
+    if (c == '<' && next != '<' && next != '=' && prev != '<') {
+        mut_emit(s, i, 1, ZCL_MUT_CLASS_RELATIONAL, "lt_to_le", "<=");
+        return true;
+    }
+    if (c == '>' && next != '>' && next != '=' && prev != '>' &&
+        prev != '-') {
+        mut_emit(s, i, 1, ZCL_MUT_CLASS_RELATIONAL, "gt_to_ge", ">=");
+        return true;
+    }
+    if (c == '!' && mut_not_is_unary(text, s->len, i)) {
+        mut_emit(s, i, 1, ZCL_MUT_CLASS_LOGICAL, "drop_not", "");
+        return true;
+    }
+    return false;
+}
+
+/* Does the word `word` of length `n` start at `i` as a whole identifier? */
+static bool mut_word_at(const struct mut_scan *s, size_t i, const char *word,
+                        size_t n)
+{
+    return i + n <= s->len && memcmp(s->text + i, word, n) == 0 &&
+           (i + n == s->len || !mask_ident_char(s->text[i + n]));
+}
+
+static void mut_scan_return(struct mut_scan *s, size_t i)
+{
+    size_t end = mut_return_end(s->text, s->len, s->mask, i);
+    if (end == SIZE_MAX || end <= i + 6)
+        return;
+    char expr[64];
+    mut_return_expr(s->text, i, end, expr, sizeof expr);
+    if (expr[0] == '\0')
+        return;
+    if (strcmp(expr, "true") != 0)
+        mut_emit(s, i, end - i + 1, ZCL_MUT_CLASS_RETURN, "ret_true",
+                 "return true;");
+    if (strcmp(expr, "0") != 0)
+        mut_emit(s, i, end - i + 1, ZCL_MUT_CLASS_RETURN, "ret_zero",
+                 "return 0;");
+}
+
+/* Keywords: true / false / return. Only `true` and `false` end the scan of
+ * this byte; the returned expression is still scanned, so `return a > b;`
+ * also yields gt_to_ge. */
+static bool mut_scan_keyword(struct mut_scan *s, size_t i)
+{
+    if (i > 0 && mask_ident_char(s->text[i - 1]))
+        return false;
+    if (mut_word_at(s, i, "true", 4)) {
+        mut_emit(s, i, 4, ZCL_MUT_CLASS_LOGICAL, "true_to_false", "false");
+        return true;
+    }
+    if (mut_word_at(s, i, "false", 5)) {
+        mut_emit(s, i, 5, ZCL_MUT_CLASS_LOGICAL, "false_to_true", "true");
+        return true;
+    }
+    if (mut_word_at(s, i, "return", 6))
+        mut_scan_return(s, i);
+    return false;
+}
+
+/* Integer boundary, both directions; returns the digits consumed. */
+static size_t mut_scan_integer(struct mut_scan *s, size_t i)
+{
+    size_t digits = mut_decimal_at(s->text, s->len, i);
+    if (digits == 0)
+        return 0;
+    char buf[32];
+    memcpy(buf, s->text + i, digits);
+    buf[digits] = '\0';
+    unsigned long long v = strtoull(buf, NULL, 10);
+    char after[32];
+    (void)snprintf(after, sizeof after, "%llu", v + 1ull);
+    mut_emit(s, i, digits, ZCL_MUT_CLASS_BOUNDARY, "int_inc", after);
+    if (v >= 1ull) {
+        (void)snprintf(after, sizeof after, "%llu", v - 1ull);
+        mut_emit(s, i, digits, ZCL_MUT_CLASS_BOUNDARY, "int_dec", after);
+    }
+    return digits;
+}
 
 size_t zcl_mut_enumerate(const char *text, size_t len,
                          struct zcl_mut_site *out, size_t cap)
@@ -456,106 +645,20 @@ size_t zcl_mut_enumerate(const char *text, size_t len,
         /* Blanks carry no site, and skipping them here is what makes
          * "the first code byte of this line" mean the first NON-BLANK one,
          * which is where a statement starts. */
-        if (text[i] == ' ' || text[i] == '\t' || text[i] == '\r')
+        if (mask_is_blank(text[i]))
             continue;
 
         /* statement deletion, at the first code byte of a line only */
-        if (!line_has_code) {
-            size_t end = 0;
-            if (mut_is_call_statement(text, len, mask, i, &end))
-                mut_emit(&s, i, end - i + 1, ZCL_MUT_CLASS_STATEMENT,
-                         "stmt_delete", "(void)0;");
-        }
+        if (!line_has_code)
+            mut_scan_statement(&s, i);
         line_has_code = true;
 
-        /* two-character comparison and connective flips */
-        bool matched = false;
-        for (size_t p = 0; p < sizeof g_pairs2 / sizeof g_pairs2[0]; p++) {
-            const struct mut_pair *r = &g_pairs2[p];
-            if (i + 1 >= len || !mask[i + 1])
-                break;
-            if (text[i] != r->from[0] || text[i + 1] != r->from[1])
-                continue;
-            if (!mut_pair2_ok(text, len, i, r->from))
-                continue;
-            mut_emit(&s, i, 2, r->cls, r->rule, r->to);
-            matched = true;
-            break;
-        }
-        if (matched)
+        if (mut_scan_pair2(&s, i) || mut_scan_single(&s, i) ||
+            mut_scan_keyword(&s, i))
             continue;
-
-        /* one-character comparison widenings */
-        char c = text[i];
-        char next = i + 1 < len ? text[i + 1] : '\0';
-        char prev = i > 0 ? text[i - 1] : '\0';
-        if (c == '<' && next != '<' && next != '=' && prev != '<') {
-            mut_emit(&s, i, 1, ZCL_MUT_CLASS_RELATIONAL, "lt_to_le", "<=");
-            continue;
-        }
-        if (c == '>' && next != '>' && next != '=' && prev != '>' &&
-            prev != '-') {
-            mut_emit(&s, i, 1, ZCL_MUT_CLASS_RELATIONAL, "gt_to_ge", ">=");
-            continue;
-        }
-        if (c == '!' && mut_not_is_unary(text, len, i)) {
-            mut_emit(&s, i, 1, ZCL_MUT_CLASS_LOGICAL, "drop_not", "");
-            continue;
-        }
-
-        /* keywords: return / true / false */
-        bool word_start = i == 0 || !mask_ident_char(prev);
-        if (word_start) {
-            if (i + 4 <= len && memcmp(text + i, "true", 4) == 0 &&
-                (i + 4 == len || !mask_ident_char(text[i + 4]))) {
-                mut_emit(&s, i, 4, ZCL_MUT_CLASS_LOGICAL, "true_to_false",
-                         "false");
-                continue;
-            }
-            if (i + 5 <= len && memcmp(text + i, "false", 5) == 0 &&
-                (i + 5 == len || !mask_ident_char(text[i + 5]))) {
-                mut_emit(&s, i, 5, ZCL_MUT_CLASS_LOGICAL, "false_to_true",
-                         "true");
-                continue;
-            }
-            if (i + 6 <= len && memcmp(text + i, "return", 6) == 0 &&
-                (i + 6 == len || !mask_ident_char(text[i + 6]))) {
-                size_t end = mut_return_end(text, len, mask, i);
-                if (end != SIZE_MAX && end > i + 6) {
-                    char expr[64];
-                    mut_return_expr(text, i, end, expr, sizeof expr);
-                    if (expr[0] != '\0') {
-                        if (strcmp(expr, "true") != 0)
-                            mut_emit(&s, i, end - i + 1, ZCL_MUT_CLASS_RETURN,
-                                     "ret_true", "return true;");
-                        if (strcmp(expr, "0") != 0)
-                            mut_emit(&s, i, end - i + 1, ZCL_MUT_CLASS_RETURN,
-                                     "ret_zero", "return 0;");
-                    }
-                }
-                /* deliberately no `continue`: the returned expression is
-                 * still scanned, so `return a > b;` also yields gt_to_ge */
-            }
-        }
-
-        /* integer boundary, both directions */
-        size_t digits = mut_decimal_at(text, len, i);
-        if (digits > 0) {
-            char buf[32];
-            memcpy(buf, text + i, digits);
-            buf[digits] = '\0';
-            unsigned long long v = strtoull(buf, NULL, 10);
-            char after[32];
-            (void)snprintf(after, sizeof after, "%llu", v + 1ull);
-            mut_emit(&s, i, digits, ZCL_MUT_CLASS_BOUNDARY, "int_inc", after);
-            if (v >= 1ull) {
-                (void)snprintf(after, sizeof after, "%llu", v - 1ull);
-                mut_emit(&s, i, digits, ZCL_MUT_CLASS_BOUNDARY, "int_dec",
-                         after);
-            }
+        size_t digits = mut_scan_integer(&s, i);
+        if (digits > 0)
             i += digits - 1;
-            continue;
-        }
     }
     free(mask);
     return s.found;

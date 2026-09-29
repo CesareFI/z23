@@ -3866,11 +3866,8 @@ tools/dev/fleet_observe.c:fo_parse_iso8601:23
 tools/dev/fleet_observe.c:fo_read_ledger:18
 tools/dev/fleet_observe_main.c:main:16
 tools/dev/mutation_campaign.c:mc_parse:20
-tools/dev/mutation_ops.c:mut_code_mask:44
 tools/dev/mutation_ops.c:mut_decimal_at:25
-tools/dev/mutation_ops.c:mut_is_call_statement:39
 tools/dev/mutation_ops.c:mut_pair2_ok:18
-tools/dev/mutation_ops.c:zcl_mut_enumerate:54
 tools/dev/mutation_run.c:mut_prepare:22
 tools/dev/mutation_run.c:zcl_mut_campaign_run:36
 tools/dev/mutation_run.c:zcl_mut_plan_from_dryrun:21
@@ -3931,7 +3928,6 @@ tools/gen_utxo_root_ladder.c:main:35
 tools/gen_utxo_root_ladder.c:parse_cli:22
 tools/install/z23_bootstrap.c:bootstrap_main#2:39
 tools/install/z23_bootstrap.c:dns_attestation:16
-tools/jsonq.c:finish_matched_container:37
 tools/jsonq.c:main:23
 tools/jsonq.c:parse_path:21
 tools/jsonq.c:walk:25
@@ -4010,12 +4006,10 @@ tools/zcc.c:preprocess:26
 tools/zcc.c:scan_entries:27
 tools/zcc.c:zcc_dispatch:37
 tools/zcc_epoch_batch.c:batch_manifest_size:23
-tools/zcc_epoch_batch.c:batch_manifest_validate:38
 tools/zcc_epoch_batch.c:batch_path_is_relative:17
 tools/zcc_epoch_batch.c:batch_read_bindings:25
 tools/zcc_epoch_batch.c:batch_read_job:19
 tools/zcc_epoch_batch.c:zcc_epoch_batch_manifest_decode:25
-tools/zcc_epoch_batch.c:zcc_epoch_batch_manifest_encode:34
 tools/zcl-nodectl.c:cmd_launch:30
 tools/zcl-nodectl.c:main:17
 tools/zcl-rpc.c:main:29

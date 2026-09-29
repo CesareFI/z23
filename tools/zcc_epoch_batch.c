@@ -400,7 +400,7 @@ static bool batch_root_valid(const struct zcc_epoch_batch_bytes *root)
     return root->data && root->length == ZCC_EPOCH_BATCH_ROOT_BYTES;
 }
 
-static enum zcc_epoch_batch_result batch_manifest_validate(
+static enum zcc_epoch_batch_result batch_manifest_validate_header(
     const struct zcc_epoch_batch_manifest *manifest,
     struct zcc_epoch_batch_error *error)
 {
@@ -417,6 +417,13 @@ static enum zcc_epoch_batch_result batch_manifest_validate(
         !batch_path_is_in_epoch(&manifest->session, &manifest->epoch))
         return batch_manifest_fail(error, ZCC_EPOCH_BATCH_AUTHORITY,
                                    UINT32_MAX);
+    return ZCC_EPOCH_BATCH_OK;
+}
+
+static enum zcc_epoch_batch_result batch_manifest_validate_common_args(
+    const struct zcc_epoch_batch_manifest *manifest,
+    struct zcc_epoch_batch_error *error)
+{
     if (manifest->common_argc == 0 || !manifest->common_argv)
         return batch_manifest_fail(error, ZCC_EPOCH_BATCH_FORMAT,
                                    UINT32_MAX);
@@ -431,6 +438,49 @@ static enum zcc_epoch_batch_result batch_manifest_validate(
             return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ARGV,
                                        UINT32_MAX);
     }
+    return ZCC_EPOCH_BATCH_OK;
+}
+
+static enum zcc_epoch_batch_result batch_manifest_validate_job(
+    const struct zcc_epoch_batch_manifest *manifest, uint32_t i,
+    uint32_t expected_offset, struct zcc_epoch_batch_error *error)
+{
+    const struct zcc_epoch_batch_job *job = &manifest->jobs[i];
+    if (!batch_path_is_relative(&job->source) ||
+        !batch_path_is_relative(&job->output) ||
+        !batch_path_is_relative(&job->depfile) ||
+        !batch_path_is_in_epoch(&job->output, &manifest->epoch) ||
+        !batch_path_is_in_epoch(&job->depfile, &manifest->epoch) ||
+        !batch_depfile_matches_output(&job->output, &job->depfile))
+        return batch_manifest_fail(error, ZCC_EPOCH_BATCH_PATH, i);
+    if (job->mode != ZCC_EPOCH_BATCH_DEP &&
+        job->mode != ZCC_EPOCH_BATCH_COVERAGE)
+        return batch_manifest_fail(error, ZCC_EPOCH_BATCH_FORMAT, i);
+    if (job->argv_offset != expected_offset ||
+        job->argv_count > manifest->job_argc - expected_offset)
+        return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ARGUMENT, i);
+    for (uint32_t j = 0; j < job->argv_count; ++j) {
+        const struct zcc_epoch_batch_bytes *arg =
+            &manifest->job_argv[expected_offset + j];
+        if (arg->length > ZCC_EPOCH_BATCH_MAX_FIELD)
+            return batch_manifest_fail(error, ZCC_EPOCH_BATCH_LIMIT, i);
+        if (!batch_compiler_arg_safe(arg, false))
+            return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ARGV, i);
+    }
+    return ZCC_EPOCH_BATCH_OK;
+}
+
+static enum zcc_epoch_batch_result batch_manifest_validate(
+    const struct zcc_epoch_batch_manifest *manifest,
+    struct zcc_epoch_batch_error *error)
+{
+    enum zcc_epoch_batch_result result =
+        batch_manifest_validate_header(manifest, error);
+    if (result != ZCC_EPOCH_BATCH_OK)
+        return result;
+    result = batch_manifest_validate_common_args(manifest, error);
+    if (result != ZCC_EPOCH_BATCH_OK)
+        return result;
     if (manifest->job_count == 0 ||
         manifest->job_count > ZCC_EPOCH_BATCH_MAX_JOBS || !manifest->jobs)
         return batch_manifest_fail(error, ZCC_EPOCH_BATCH_JOB_COUNT,
@@ -444,29 +494,11 @@ static enum zcc_epoch_batch_result batch_manifest_validate(
 
     uint32_t expected_offset = 0;
     for (uint32_t i = 0; i < manifest->job_count; ++i) {
-        const struct zcc_epoch_batch_job *job = &manifest->jobs[i];
-        if (!batch_path_is_relative(&job->source) ||
-            !batch_path_is_relative(&job->output) ||
-            !batch_path_is_relative(&job->depfile) ||
-            !batch_path_is_in_epoch(&job->output, &manifest->epoch) ||
-            !batch_path_is_in_epoch(&job->depfile, &manifest->epoch) ||
-            !batch_depfile_matches_output(&job->output, &job->depfile))
-            return batch_manifest_fail(error, ZCC_EPOCH_BATCH_PATH, i);
-        if (job->mode != ZCC_EPOCH_BATCH_DEP &&
-            job->mode != ZCC_EPOCH_BATCH_COVERAGE)
-            return batch_manifest_fail(error, ZCC_EPOCH_BATCH_FORMAT, i);
-        if (job->argv_offset != expected_offset ||
-            job->argv_count > manifest->job_argc - expected_offset)
-            return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ARGUMENT, i);
-        for (uint32_t j = 0; j < job->argv_count; ++j) {
-            const struct zcc_epoch_batch_bytes *arg =
-                &manifest->job_argv[expected_offset + j];
-            if (arg->length > ZCC_EPOCH_BATCH_MAX_FIELD)
-                return batch_manifest_fail(error, ZCC_EPOCH_BATCH_LIMIT, i);
-            if (!batch_compiler_arg_safe(arg, false))
-                return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ARGV, i);
-        }
-        expected_offset += job->argv_count;
+        result = batch_manifest_validate_job(manifest, i, expected_offset,
+                                             error);
+        if (result != ZCC_EPOCH_BATCH_OK)
+            return result;
+        expected_offset += manifest->jobs[i].argv_count;
     }
     if (expected_offset != manifest->job_argc)
         return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ARGUMENT,
@@ -608,6 +640,46 @@ enum zcc_epoch_batch_result zcc_epoch_batch_manifest_decode(
     return result;
 }
 
+static bool batch_write_header(struct batch_writer *writer,
+                               const struct zcc_epoch_batch_manifest *manifest)
+{
+    const struct zcc_epoch_batch_bytes magic = {
+        .data = batch_magic, .length = (uint32_t)(sizeof(batch_magic) - 1u)};
+    bool complete = batch_write_field(writer, &magic) &&
+                    batch_write_u32(writer, ZCC_EPOCH_BATCH_VERSION) &&
+                    batch_write_field(writer, &manifest->profile) &&
+                    batch_write_field(writer, &manifest->source_id) &&
+                    batch_write_u32(writer, manifest->source_complete) &&
+                    batch_write_field(writer, &manifest->mutation) &&
+                    batch_write_field(writer, &manifest->epoch) &&
+                    batch_write_field(writer, &manifest->compiler_id) &&
+                    batch_write_field(writer, &manifest->environment_root) &&
+                    batch_write_field(writer, &manifest->build_root) &&
+                    batch_write_field(writer, &manifest->session) &&
+                    batch_write_u32(writer, manifest->common_argc);
+    for (uint32_t i = 0; complete && i < manifest->common_argc; ++i)
+        complete = batch_write_field(writer, &manifest->common_argv[i]);
+    return complete;
+}
+
+static bool batch_write_jobs(struct batch_writer *writer,
+                             const struct zcc_epoch_batch_manifest *manifest)
+{
+    bool complete = batch_write_u32(writer, manifest->job_count);
+    for (uint32_t i = 0; complete && i < manifest->job_count; ++i) {
+        const struct zcc_epoch_batch_job *job = &manifest->jobs[i];
+        complete = batch_write_field(writer, &job->source) &&
+                   batch_write_field(writer, &job->output) &&
+                   batch_write_field(writer, &job->depfile) &&
+                   batch_write_u32(writer, (uint32_t)job->mode) &&
+                   batch_write_u32(writer, job->argv_count);
+        for (uint32_t j = 0; complete && j < job->argv_count; ++j)
+            complete = batch_write_field(
+                writer, &manifest->job_argv[job->argv_offset + j]);
+    }
+    return complete;
+}
+
 enum zcc_epoch_batch_result zcc_epoch_batch_manifest_encode(
     const struct zcc_epoch_batch_manifest *manifest,
     struct zcc_epoch_batch_wire *out,
@@ -631,34 +703,8 @@ enum zcc_epoch_batch_result zcc_epoch_batch_manifest_encode(
         return batch_manifest_fail(error, ZCC_EPOCH_BATCH_ALLOCATION,
                                    UINT32_MAX);
     struct batch_writer writer = {.wire = wire, .size = size};
-    const struct zcc_epoch_batch_bytes magic = {
-        .data = batch_magic, .length = (uint32_t)(sizeof(batch_magic) - 1u)};
-    bool complete = batch_write_field(&writer, &magic) &&
-                    batch_write_u32(&writer, ZCC_EPOCH_BATCH_VERSION) &&
-                    batch_write_field(&writer, &manifest->profile) &&
-                    batch_write_field(&writer, &manifest->source_id) &&
-                    batch_write_u32(&writer, manifest->source_complete) &&
-                    batch_write_field(&writer, &manifest->mutation) &&
-                    batch_write_field(&writer, &manifest->epoch) &&
-                    batch_write_field(&writer, &manifest->compiler_id) &&
-                    batch_write_field(&writer, &manifest->environment_root) &&
-                    batch_write_field(&writer, &manifest->build_root) &&
-                    batch_write_field(&writer, &manifest->session) &&
-                    batch_write_u32(&writer, manifest->common_argc);
-    for (uint32_t i = 0; complete && i < manifest->common_argc; ++i)
-        complete = batch_write_field(&writer, &manifest->common_argv[i]);
-    complete = complete && batch_write_u32(&writer, manifest->job_count);
-    for (uint32_t i = 0; complete && i < manifest->job_count; ++i) {
-        const struct zcc_epoch_batch_job *job = &manifest->jobs[i];
-        complete = batch_write_field(&writer, &job->source) &&
-                   batch_write_field(&writer, &job->output) &&
-                   batch_write_field(&writer, &job->depfile) &&
-                   batch_write_u32(&writer, (uint32_t)job->mode) &&
-                   batch_write_u32(&writer, job->argv_count);
-        for (uint32_t j = 0; complete && j < job->argv_count; ++j)
-            complete = batch_write_field(
-                &writer, &manifest->job_argv[job->argv_offset + j]);
-    }
+    bool complete = batch_write_header(&writer, manifest) &&
+                    batch_write_jobs(&writer, manifest);
     if (!complete || writer.offset != writer.size) {
         free(wire);
         return batch_manifest_fail(error, ZCC_EPOCH_BATCH_FORMAT,
