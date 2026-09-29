@@ -158,8 +158,21 @@ dht_assert_port() {
             ports-rebind "$p" ||
             dht_die "port $p unavailable or probe failed on ${DHT_REMOTE_HOST[$owner_rpc]}"
     else
-        "$DHT_ACCEPTANCE_C23" ports-rebind "$p" ||
-            dht_die "port $p unavailable or probe failed on this host"
+        if ! "$DHT_ACCEPTANCE_C23" ports-rebind "$p"; then
+            # Name the holder so an orphaned fixture from a dead session is
+            # a one-line reap instead of a forensic exercise. No listener
+            # means the probe failed for another reason; say that too.
+            local holder_pid holder_cmd
+            holder_pid="$(ss -ltnp 2>/dev/null |
+                sed -n "s/.*[:.]$p[[:space:]].*pid=\([0-9]*\).*/\1/p" |
+                head -1)"
+            if [ -n "$holder_pid" ]; then
+                holder_cmd="$(tr '\0' ' ' </proc/$holder_pid/cmdline 2>/dev/null |
+                    cut -c1-160)"
+                dht_die "port $p unavailable on this host: held by pid $holder_pid ${holder_cmd:-(cmdline unreadable)}"
+            fi
+            dht_die "port $p unavailable or probe failed on this host (no listener found)"
+        fi
     fi
     for owned in "${DHT_OWNED_PORTS[@]:-}"; do
         [ "$owned" = "$p" ] && return 0
