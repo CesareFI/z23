@@ -7985,7 +7985,7 @@ static bool dl_attach_resolve(const struct dl_dirs *d,
 /* An explicit seq is validated, never widened: a row that is not a live
  * exact pair refuses with its own state. */
 static bool dl_attach_pick(const struct dl_row *rows, size_t count,
-                           long long seq, struct dl_row *row,
+                           long long seq, bool publish, struct dl_row *row,
                            struct zcl_command_reply *reply)
 {
     const struct dl_row *hit = NULL;
@@ -7995,6 +7995,14 @@ static bool dl_attach_pick(const struct dl_row *rows, size_t count,
     if (hit && strcmp(hit->state, "inflight") == 0 &&
         dl_resume_phase_ready(hit->phase) &&
         dl_sha_ok(hit->base) && dl_sha_ok(hit->local)) {
+        /* A prior push may have reached the remote despite a lost reply.
+         * Only the ordinary step may reconcile that durable checkpoint. */
+        if (publish && strcmp(hit->phase, "push") == 0) {
+            dl_fail(reply, "PUSH_OUTCOME_UNKNOWN", "attach_publish",
+                    "a prior push checkpoint needs independent reconciliation",
+                    hit->proof_intent);
+            return false;
+        }
         *row = *hit;
         return true;
     }
@@ -8103,16 +8111,8 @@ static void dl_attach(const struct zcl_command_request *req,
     }
     if (!explicit_seq && !dl_attach_resolve(&d, rows, count, &seq, reply))
         goto done;
-    if (!dl_attach_pick(rows, count, seq, &row, reply))
+    if (!dl_attach_pick(rows, count, seq, publish, &row, reply))
         goto done;
-    /* A push checkpoint may have reached the remote despite a lost reply.
-     * The ordinary step reconciles it; never dispatch it through attach. */
-    if (publish && strcmp(row.phase, "push") == 0) {
-        dl_fail(reply, "PUSH_OUTCOME_UNKNOWN", "attach_publish",
-                "a prior push checkpoint needs independent reconciliation",
-                row.proof_intent);
-        goto done;
-    }
     dl_attach_seal(&d, &row, qpath, reply, publish);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED)
         (void)json_push_kv_str(&reply->data, "target",
