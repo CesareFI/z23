@@ -103,7 +103,7 @@
  * (the tip is already an ancestor of origin/main) and records it as landed
  * without re-proving, rather than pushing it a second time.
  *
- * PROCESS RULE. `git`, `make` (lint-fast, install-hooks), and the existing
+ * PROCESS RULE. `git`, `make` (lint-land, install-hooks), and the existing
  * Linux `devbuild` admission wrapper for watcher creation run through
  * util/spawn.h's zcl_spawn_capture(); popen(), system() and shell command
  * strings are forbidden and gated. The exact proof is requested through the
@@ -4526,11 +4526,12 @@ static int dl_rebase(const struct dl_dirs *d, struct dl_row *row,
     return 1;
 }
 
-/* make lint-fast in the landing worktree. Returns the child's status; the
- * transcript is appended to the attempt log either way. */
+/* make lint-land (lint-fast plus cheap gates that failed in proof lint) in the
+ * landing worktree. Returns the child status; the transcript is appended to
+ * the attempt log either way. */
 static int dl_lint_fast(const struct dl_dirs *d, struct dl_row *row)
 {
-    const char *argv[] = { "make", "-C", d->wt, "lint-fast", NULL };
+    const char *argv[] = { "make", "-C", d->wt, "lint-land", NULL };
     char *buf;
     int rc;
     buf = (char *)zcl_malloc(DL_LOG_CAP, "dev.land.lint");
@@ -5437,7 +5438,7 @@ scan_failed:
  * freshly built binary: a stale installed copy fails a whole proof cycle
  * at the lint dimension even though nothing in the candidate is wrong —
  * observed 2026-09-10, when a landing worktree created 2026-09-08 held a
- * hook binary two days older than the one its own `make lint-fast` just
+ * hook binary two days older than the one its own `make lint-land` just
  * linked. This is the same repair `make install-hooks` performs, scoped
  * to the one file that can drift between a worktree's creation and its
  * nth rebase, plus the four symlinks that name it. */

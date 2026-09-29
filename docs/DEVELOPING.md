@@ -1127,6 +1127,12 @@ its whole run and a second driver that finds it held gets `STEP_BUSY`
 (retryable) and steps again shortly rather than racing the first driver's
 rebase and lint against the shared landing worktree.
 
+Before it starts an exact proof, a landing step runs `make lint-land` in the
+landing worktree: `LINT_FAST_GATES` plus `LINT_LAND_EXTRA_GATES`, the cheap
+(p50 at or under ~2.5 s) gates that historically failed only in the proof's
+full lint. A doomed candidate therefore fails in seconds instead of after a
+~7-minute proof. `lint-fast` itself is unchanged for the edit loop.
+
 When a landing step queues an exact proof in an unarmed checkout, `dev land
 status` exposes `in_flight.proof_step` with the exact `root`, `local_commit`
 and `remote_base` inputs for `dev proof step`. Its short row detail names the
