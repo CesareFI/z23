@@ -464,83 +464,72 @@ static int smt_width_of(const char *root, int cpu)
 
 /* Full /sys scan. Returns false if the root itself is unusable (missing,
  * or yields zero present logical cpus) — caller falls back on false. */
-static bool scan_sysfs(const char *root, struct cpu_topology_state *st)
+struct sysfs_cores {
+    struct { int pkg; int core; } seen[CPU_TOPOLOGY_MAX_CPUS];
+    int count;
+    int max_smt_width;
+};
+
+/* Unique (package,core) pairs seen, for physical-core counting. */
+static void sysfs_note_core(struct sysfs_cores *cores, const char *root,
+                            int cpu, int pkg, int core)
 {
-    if (!sysfs_path_exists(root)) return false;
-
-    memset(st, 0, sizeof(*st));
-    for (int i = 0; i < CPU_TOPOLOGY_MAX_CPUS; i++) st->domain_of[i] = -1;
-
-    /* Unique (package,core) pairs seen, for physical-core counting. */
-    struct { int pkg; int core; } cores_seen[CPU_TOPOLOGY_MAX_CPUS];
-    int cores_seen_count = 0;
-    int max_smt_width = 0;
-
-    int present_count = 0;
-    for (int cpu = 0; cpu < CPU_TOPOLOGY_MAX_CPUS; cpu++) {
-        char cpu_dir[CPU_TOPOLOGY_ROOT_MAX + 32];
-        snprintf(cpu_dir, sizeof(cpu_dir), "%s/cpu%d", root, cpu);
-        if (!sysfs_path_exists(cpu_dir)) {
-            if (cpu == 0) continue; /* tolerate an absent cpu0 (unusual, but
-                                     * don't permanently bail on index 0) */
-            break; /* Linux numbers logical cpus contiguously from 0; a
-                    * gap means we've walked past the last present cpu. */
-        }
-        present_count = cpu + 1;
-
-        char pkg_path[sizeof(cpu_dir) + 40];
-        char core_path[sizeof(cpu_dir) + 40];
-        snprintf(pkg_path, sizeof(pkg_path),
-                 "%s/topology/physical_package_id", cpu_dir);
-        snprintf(core_path, sizeof(core_path), "%s/topology/core_id", cpu_dir);
-
-        int pkg = 0, core = 0;
-        bool have_topology = sysfs_read_int(pkg_path, &pkg) &&
-                             sysfs_read_int(core_path, &core);
-        if (have_topology) {
-            bool seen = false;
-            for (int i = 0; i < cores_seen_count; i++) {
-                if (cores_seen[i].pkg == pkg && cores_seen[i].core == core) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen && cores_seen_count < CPU_TOPOLOGY_MAX_CPUS) {
-                cores_seen[cores_seen_count].pkg = pkg;
-                cores_seen[cores_seen_count].core = core;
-                cores_seen_count++;
-            }
-            int w = smt_width_of(root, cpu);
-            if (w > max_smt_width) max_smt_width = w;
-        }
-
-        if (st->domain_of[cpu] != -1) continue; /* already assigned by a
-                                                    * sibling's shared_cpu_list */
-
-        int64_t l3_size = 0;
-        char shared_list[CPU_TOPOLOGY_LINE_MAX];
-        if (find_l3_cache(root, cpu, &l3_size, shared_list, sizeof(shared_list))) {
-            if (st->domain_count >= CPU_TOPOLOGY_MAX_DOMAINS) continue;
-            struct cpu_topology_domain *d = &st->domains[st->domain_count];
-            d->id = st->domain_count;
-            d->l3_size_bytes = l3_size;
-            d->cpu_count = 0;
-            expand_cpu_list(shared_list, d->cpus, CPU_TOPOLOGY_MAX_CPUS,
-                            &d->cpu_count);
-            for (int i = 0; i < d->cpu_count; i++) {
-                int c = d->cpus[i];
-                if (c >= 0 && c < CPU_TOPOLOGY_MAX_CPUS) st->domain_of[c] = d->id;
-            }
-            st->domain_count++;
+    bool seen = false;
+    for (int i = 0; i < cores->count; i++) {
+        if (cores->seen[i].pkg == pkg && cores->seen[i].core == core) {
+            seen = true;
+            break;
         }
     }
+    if (!seen && cores->count < CPU_TOPOLOGY_MAX_CPUS) {
+        cores->seen[cores->count].pkg = pkg;
+        cores->seen[cores->count].core = core;
+        cores->count++;
+    }
+    int w = smt_width_of(root, cpu);
+    if (w > cores->max_smt_width) cores->max_smt_width = w;
+}
 
-    if (present_count == 0) return false;
-    if (present_count > CPU_TOPOLOGY_MAX_CPUS) present_count = CPU_TOPOLOGY_MAX_CPUS;
-    st->logical_cpus = present_count;
-    st->physical_cores = cores_seen_count > 0 ? cores_seen_count : present_count;
-    st->smt_width = max_smt_width;
+static void sysfs_note_topology(struct sysfs_cores *cores, const char *root,
+                                const char *cpu_dir, int cpu)
+{
+    char pkg_path[CPU_TOPOLOGY_ROOT_MAX + 72];
+    char core_path[CPU_TOPOLOGY_ROOT_MAX + 72];
+    snprintf(pkg_path, sizeof(pkg_path),
+             "%s/topology/physical_package_id", cpu_dir);
+    snprintf(core_path, sizeof(core_path), "%s/topology/core_id", cpu_dir);
 
+    int pkg = 0, core = 0;
+    if (sysfs_read_int(pkg_path, &pkg) && sysfs_read_int(core_path, &core))
+        sysfs_note_core(cores, root, cpu, pkg, core);
+}
+
+/* Adds the L3 domain of `cpu` when one is described and capacity remains. */
+static void sysfs_add_l3_domain(struct cpu_topology_state *st,
+                                const char *root, int cpu)
+{
+    int64_t l3_size = 0;
+    char shared_list[CPU_TOPOLOGY_LINE_MAX];
+    if (!find_l3_cache(root, cpu, &l3_size, shared_list, sizeof(shared_list)))
+        return;
+    if (st->domain_count >= CPU_TOPOLOGY_MAX_DOMAINS)
+        return;
+    struct cpu_topology_domain *d = &st->domains[st->domain_count];
+    d->id = st->domain_count;
+    d->l3_size_bytes = l3_size;
+    d->cpu_count = 0;
+    expand_cpu_list(shared_list, d->cpus, CPU_TOPOLOGY_MAX_CPUS,
+                    &d->cpu_count);
+    for (int i = 0; i < d->cpu_count; i++) {
+        int c = d->cpus[i];
+        if (c >= 0 && c < CPU_TOPOLOGY_MAX_CPUS) st->domain_of[c] = d->id;
+    }
+    st->domain_count++;
+}
+
+static void sysfs_close_domains(struct cpu_topology_state *st,
+                                int present_count)
+{
     /* No cache info anywhere (containers with topology/ but no cache/) —
      * synthesize one domain covering every present cpu so every logical
      * cpu still resolves to a domain and the pin API stays usable. */
@@ -554,21 +543,54 @@ static bool scan_sysfs(const char *root, struct cpu_topology_state *st)
             st->domain_of[i] = 0;
         }
         st->domain_count = 1;
-    } else {
-        /* Any present cpu that found no L3 entry (heterogeneous /sys
-         * export) still needs a domain — fold it into domain 0 rather
-         * than leaving a -1 hole that domain_of()/pin_thread() cannot
-         * serve. */
-        for (int i = 0; i < present_count; i++) {
-            if (st->domain_of[i] == -1) {
-                struct cpu_topology_domain *d = &st->domains[0];
-                if (d->cpu_count < CPU_TOPOLOGY_MAX_CPUS) {
-                    d->cpus[d->cpu_count++] = i;
-                    st->domain_of[i] = d->id;
-                }
+        return;
+    }
+    /* Any present cpu that found no L3 entry (heterogeneous /sys
+     * export) still needs a domain — fold it into domain 0 rather
+     * than leaving a -1 hole that domain_of()/pin_thread() cannot
+     * serve. */
+    for (int i = 0; i < present_count; i++) {
+        if (st->domain_of[i] == -1) {
+            struct cpu_topology_domain *d = &st->domains[0];
+            if (d->cpu_count < CPU_TOPOLOGY_MAX_CPUS) {
+                d->cpus[d->cpu_count++] = i;
+                st->domain_of[i] = d->id;
             }
         }
     }
+}
+
+static bool scan_sysfs(const char *root, struct cpu_topology_state *st)
+{
+    if (!sysfs_path_exists(root)) return false;
+
+    memset(st, 0, sizeof(*st));
+    for (int i = 0; i < CPU_TOPOLOGY_MAX_CPUS; i++) st->domain_of[i] = -1;
+
+    struct sysfs_cores cores = {0};
+    int present_count = 0;
+    for (int cpu = 0; cpu < CPU_TOPOLOGY_MAX_CPUS; cpu++) {
+        char cpu_dir[CPU_TOPOLOGY_ROOT_MAX + 32];
+        snprintf(cpu_dir, sizeof(cpu_dir), "%s/cpu%d", root, cpu);
+        if (!sysfs_path_exists(cpu_dir)) {
+            if (cpu == 0) continue; /* tolerate an absent cpu0 (unusual, but
+                                     * don't permanently bail on index 0) */
+            break; /* Linux numbers logical cpus contiguously from 0; a
+                    * gap means we've walked past the last present cpu. */
+        }
+        present_count = cpu + 1;
+        sysfs_note_topology(&cores, root, cpu_dir, cpu);
+        if (st->domain_of[cpu] != -1) continue; /* already assigned by a
+                                                    * sibling's shared_cpu_list */
+        sysfs_add_l3_domain(st, root, cpu);
+    }
+
+    if (present_count == 0) return false;
+    if (present_count > CPU_TOPOLOGY_MAX_CPUS) present_count = CPU_TOPOLOGY_MAX_CPUS;
+    st->logical_cpus = present_count;
+    st->physical_cores = cores.count > 0 ? cores.count : present_count;
+    st->smt_width = cores.max_smt_width;
+    sysfs_close_domains(st, present_count);
 
     snprintf(st->source, sizeof(st->source), "sysfs");
     st->valid = true;

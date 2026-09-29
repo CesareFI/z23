@@ -156,6 +156,93 @@ static struct zcl_result copy_regular_at(int s_dfd, const char *sname,
 static struct zcl_result copy_dir(DIR *sd, int d_dfd, unsigned flags,
                                   zcl_tree_filter_fn filter, void *fctx,
                                   int depth, char *iobuf,
+                                  const char *src_disp, const char *dst_disp);
+
+/* Copies one subdirectory. Directory mode/times are set AFTER its children
+ * exist, since writing children bumps the directory's own mtime. */
+static struct zcl_result copy_subdir(int s_dfd, int d_dfd, const char *name,
+                                     const struct stat *st, unsigned flags,
+                                     zcl_tree_filter_fn filter, void *fctx,
+                                     int depth, char *iobuf, const char *cs,
+                                     const char *cd)
+{
+    mode_t mode = st->st_mode & 07777;
+    if (mkdirat(d_dfd, name, mode) != 0 && errno != EEXIST)
+        return ZCL_ERR(-1, "mkdir failed: %s: %s", cd, strerror(errno));
+
+    int child_s = openat(s_dfd, name,
+                         O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (child_s < 0)
+        return ZCL_ERR(-1, "open dir failed: %s: %s", cs, strerror(errno));
+    int child_d = openat(d_dfd, name,
+                         O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (child_d < 0) {
+        int e = errno;
+        close(child_s);
+        return ZCL_ERR(-1, "open dir failed: %s: %s", cd, strerror(e));
+    }
+    DIR *child_sd = fdopendir(child_s);
+    if (!child_sd) {
+        int e = errno;
+        close(child_s);
+        close(child_d);
+        return ZCL_ERR(-1, "fdopendir failed: %s: %s", cs, strerror(e));
+    }
+
+    struct zcl_result r = copy_dir(child_sd, child_d, flags, filter, fctx,
+                                   depth + 1, iobuf, cs, cd);
+    closedir(child_sd);   /* also closes child_s */
+
+    if (r.ok && fchmod(child_d, mode) != 0)
+        r = ZCL_ERR(-1, "fchmod failed: %s: %s", cd, strerror(errno));
+    if (r.ok && (flags & ZCL_COPY_PRESERVE_TIMES)) {
+        struct timespec ts[2] = { st->st_atim, st->st_mtim };
+        if (futimens(child_d, ts) != 0)
+            r = ZCL_ERR(-1, "futimens failed: %s: %s", cd, strerror(errno));
+    }
+    close(child_d);
+    return r;
+}
+
+/* Copies one directory entry; a filtered-out entry is skipped. */
+static struct zcl_result copy_entry(int s_dfd, int d_dfd, const char *name,
+                                    unsigned flags, zcl_tree_filter_fn filter,
+                                    void *fctx, int depth, char *iobuf,
+                                    const char *src_disp, const char *dst_disp)
+{
+    struct stat st;
+    if (fstatat(s_dfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+        return ZCL_ERR(-1, "stat failed: %s/%s: %s", src_disp, name,
+                       strerror(errno));
+
+    bool is_dir = S_ISDIR(st.st_mode);
+    if (filter && !filter(name, is_dir, fctx))
+        return ZCL_OK;
+
+    if (S_ISLNK(st.st_mode))
+        return ZCL_ERR(-1, "refusing to copy symlink entry: %s/%s",
+                       src_disp, name);
+
+    char cs[PATH_MAX], cd[PATH_MAX];
+    int ns = snprintf(cs, sizeof(cs), "%s/%s", src_disp, name);
+    int nd = snprintf(cd, sizeof(cd), "%s/%s", dst_disp, name);
+    if (ns <= 0 || (size_t)ns >= sizeof(cs) ||
+        nd <= 0 || (size_t)nd >= sizeof(cd))
+        return ZCL_ERR(-1, "path too long under: %s", src_disp);
+
+    if (is_dir)
+        return copy_subdir(s_dfd, d_dfd, name, &st, flags, filter, fctx,
+                           depth, iobuf, cs, cd);
+    if (S_ISREG(st.st_mode))
+        return copy_regular_at(s_dfd, name, d_dfd, name, &st, flags, iobuf,
+                               cs, cd);
+    return ZCL_ERR(-1, "refusing unsupported file type: %s/%s", src_disp,
+                   name);
+}
+
+static struct zcl_result copy_dir(DIR *sd, int d_dfd, unsigned flags,
+                                  zcl_tree_filter_fn filter, void *fctx,
+                                  int depth, char *iobuf,
                                   const char *src_disp, const char *dst_disp)
 {
     if (depth >= ZCL_TREE_MAX_DEPTH)
@@ -175,80 +262,11 @@ static struct zcl_result copy_dir(DIR *sd, int d_dfd, unsigned flags,
         const char *name = ent->d_name;
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
             continue;
-
-        struct stat st;
-        if (fstatat(s_dfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
-            return ZCL_ERR(-1, "stat failed: %s/%s: %s", src_disp, name,
-                           strerror(errno));
-
-        bool is_dir = S_ISDIR(st.st_mode);
-        if (filter && !filter(name, is_dir, fctx))
-            continue;
-
-        if (S_ISLNK(st.st_mode))
-            return ZCL_ERR(-1, "refusing to copy symlink entry: %s/%s",
-                           src_disp, name);
-
-        char cs[PATH_MAX], cd[PATH_MAX];
-        int ns = snprintf(cs, sizeof(cs), "%s/%s", src_disp, name);
-        int nd = snprintf(cd, sizeof(cd), "%s/%s", dst_disp, name);
-        if (ns <= 0 || (size_t)ns >= sizeof(cs) ||
-            nd <= 0 || (size_t)nd >= sizeof(cd))
-            return ZCL_ERR(-1, "path too long under: %s", src_disp);
-
-        if (is_dir) {
-            mode_t mode = st.st_mode & 07777;
-            if (mkdirat(d_dfd, name, mode) != 0 && errno != EEXIST)
-                return ZCL_ERR(-1, "mkdir failed: %s: %s", cd,
-                               strerror(errno));
-
-            int child_s = openat(s_dfd, name,
-                                 O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (child_s < 0)
-                return ZCL_ERR(-1, "open dir failed: %s: %s", cs,
-                               strerror(errno));
-            int child_d = openat(d_dfd, name,
-                                 O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (child_d < 0) {
-                int e = errno;
-                close(child_s);
-                return ZCL_ERR(-1, "open dir failed: %s: %s", cd, strerror(e));
-            }
-            DIR *child_sd = fdopendir(child_s);
-            if (!child_sd) {
-                int e = errno;
-                close(child_s);
-                close(child_d);
-                return ZCL_ERR(-1, "fdopendir failed: %s: %s", cs,
-                               strerror(e));
-            }
-
-            struct zcl_result r = copy_dir(child_sd, child_d, flags, filter,
-                                           fctx, depth + 1, iobuf, cs, cd);
-            closedir(child_sd);   /* also closes child_s */
-
-            /* Directory mode/times are set AFTER its children exist, since
-             * writing children bumps the directory's own mtime. */
-            if (r.ok && fchmod(child_d, st.st_mode & 07777) != 0)
-                r = ZCL_ERR(-1, "fchmod failed: %s: %s", cd, strerror(errno));
-            if (r.ok && (flags & ZCL_COPY_PRESERVE_TIMES)) {
-                struct timespec ts[2] = { st.st_atim, st.st_mtim };
-                if (futimens(child_d, ts) != 0)
-                    r = ZCL_ERR(-1, "futimens failed: %s: %s", cd,
-                                strerror(errno));
-            }
-            close(child_d);
-            if (!r.ok)
-                return r;
-        } else if (S_ISREG(st.st_mode)) {
-            struct zcl_result r = copy_regular_at(s_dfd, name, d_dfd, name,
-                                                  &st, flags, iobuf, cs, cd);
-            if (!r.ok)
-                return r;
-        } else {
-            return ZCL_ERR(-1, "refusing unsupported file type: %s/%s",
-                           src_disp, name);
-        }
+        struct zcl_result r = copy_entry(s_dfd, d_dfd, name, flags, filter,
+                                         fctx, depth, iobuf, src_disp,
+                                         dst_disp);
+        if (!r.ok)
+            return r;
     }
     return ZCL_OK;
 }

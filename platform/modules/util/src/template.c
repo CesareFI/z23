@@ -112,6 +112,99 @@ static const char *tmpl_lookup_partial(const char *name, size_t name_len)
 
 static size_t render_impl(const char *tmpl,
                           const struct template_var *vars, size_t num_vars,
+                          char *out, size_t out_max, int depth);
+
+/* Appends up to `len` bytes of `text`, leaving room for the terminator. */
+static void render_copy(char *out, size_t out_max, size_t *w, const char *text,
+                        size_t len)
+{
+    size_t avail = out_max - *w - 1;
+    size_t copy = len < avail ? len : avail;
+    memcpy(out + *w, text, copy);
+    *w += copy;
+}
+
+/* Triple-brace {{{key}}} — raw output. Returns the tag end, or NULL when the
+ * tag at `p` is not a complete triple-brace tag. */
+static const char *render_raw_tag(const char *p, const struct template_var *vars,
+                                  size_t num_vars, char *out, size_t out_max,
+                                  size_t *w)
+{
+    const char *key_start = p + 3;
+    const char *end = strstr(key_start, "}}}");
+    if (!end)
+        return NULL;
+    const char *val = tmpl_lookup(vars, num_vars, key_start,
+                                  (size_t)(end - key_start));
+    if (val)
+        render_copy(out, out_max, w, val, strlen(val));
+    else
+        render_copy(out, out_max, w, p, (size_t)(end + 3 - p));
+    return end + 3;
+}
+
+/* Partial {{> name}} — inline include. A missing partial is skipped without
+ * a placeholder. */
+static const char *render_partial_tag(const char *p,
+                                      const struct template_var *vars,
+                                      size_t num_vars, char *out,
+                                      size_t out_max, size_t *w, int depth)
+{
+    const char *name_start = p + 3;
+    while (*name_start == ' ') name_start++;
+    const char *end = strstr(name_start, "}}");
+    if (!end)
+        return NULL;
+    const char *name_end = end;
+    while (name_end > name_start && name_end[-1] == ' ')
+        name_end--;
+    const char *partial = tmpl_lookup_partial(
+        name_start, (size_t)(name_end - name_start));
+    if (partial)
+        *w += render_impl(partial, vars, num_vars, out + *w, out_max - *w,
+                          depth + 1);
+    return end + 2;
+}
+
+/* Double-brace {{key}} — escaped output. */
+static const char *render_escaped_tag(const char *p,
+                                      const struct template_var *vars,
+                                      size_t num_vars, char *out,
+                                      size_t out_max, size_t *w)
+{
+    const char *key_start = p + 2;
+    const char *end = strstr(key_start, "}}");
+    if (!end)
+        return NULL;
+    const char *val = tmpl_lookup(vars, num_vars, key_start,
+                                  (size_t)(end - key_start));
+    if (val)
+        *w += html_escape(out + *w, out_max - *w, val);
+    else
+        render_copy(out, out_max, w, p, (size_t)(end + 2 - p));
+    return end + 2;
+}
+
+/* Renders the tag at `p` when it is a complete one; returns the position
+ * after it, or NULL when `p` is plain text. */
+static const char *render_tag(const char *p, const struct template_var *vars,
+                              size_t num_vars, char *out, size_t out_max,
+                              size_t *w, int depth)
+{
+    const char *next = NULL;
+    if (p[0] != '{' || p[1] != '{')
+        return NULL;
+    if (p[2] == '{')
+        next = render_raw_tag(p, vars, num_vars, out, out_max, w);
+    if (!next && p[2] == '>')
+        next = render_partial_tag(p, vars, num_vars, out, out_max, w, depth);
+    if (!next)
+        next = render_escaped_tag(p, vars, num_vars, out, out_max, w);
+    return next;
+}
+
+static size_t render_impl(const char *tmpl,
+                          const struct template_var *vars, size_t num_vars,
                           char *out, size_t out_max, int depth)
 {
     if (!out || out_max == 0) return 0;
@@ -123,82 +216,12 @@ static size_t render_impl(const char *tmpl,
     const char *p = tmpl;
 
     while (*p && w + 1 < out_max) {
-        /* Triple-brace {{{key}}} — raw output */
-        if (p[0] == '{' && p[1] == '{' && p[2] == '{') {
-            const char *key_start = p + 3;
-            const char *end = strstr(key_start, "}}}");
-            if (end) {
-                size_t key_len = (size_t)(end - key_start);
-                const char *val = tmpl_lookup(vars, num_vars,
-                                              key_start, key_len);
-                if (val) {
-                    size_t vlen = strlen(val);
-                    size_t avail = out_max - w - 1;
-                    size_t copy = vlen < avail ? vlen : avail;
-                    memcpy(out + w, val, copy);
-                    w += copy;
-                } else {
-                    size_t span = (size_t)(end + 3 - p);
-                    size_t avail = out_max - w - 1;
-                    size_t copy = span < avail ? span : avail;
-                    memcpy(out + w, p, copy);
-                    w += copy;
-                }
-                p = end + 3;
-                continue;
-            }
-        }
-
-        /* Partial {{> name}} — inline include */
-        if (p[0] == '{' && p[1] == '{' && p[2] == '>') {
-            const char *name_start = p + 3;
-            /* Skip leading whitespace */
-            while (*name_start == ' ') name_start++;
-            const char *end = strstr(name_start, "}}");
-            if (end) {
-                /* Trim trailing whitespace */
-                const char *name_end = end;
-                while (name_end > name_start && name_end[-1] == ' ')
-                    name_end--;
-                size_t name_len = (size_t)(name_end - name_start);
-                const char *partial = tmpl_lookup_partial(
-                    name_start, name_len);
-                if (partial) {
-                    size_t added = render_impl(partial, vars, num_vars,
-                        out + w, out_max - w, depth + 1);
-                    w += added;
-                }
-                /* Missing partial: silently skip (no placeholder) */
-                p = end + 2;
-                continue;
-            }
-        }
-
-        /* Double-brace {{key}} — escaped output */
-        if (p[0] == '{' && p[1] == '{') {
-            const char *key_start = p + 2;
-            const char *end = strstr(key_start, "}}");
-            if (end) {
-                size_t key_len = (size_t)(end - key_start);
-                const char *val = tmpl_lookup(vars, num_vars,
-                                              key_start, key_len);
-                if (val) {
-                    size_t added = html_escape(out + w,
-                                              out_max - w, val);
-                    w += added;
-                } else {
-                    size_t span = (size_t)(end + 2 - p);
-                    size_t avail = out_max - w - 1;
-                    size_t copy = span < avail ? span : avail;
-                    memcpy(out + w, p, copy);
-                    w += copy;
-                }
-                p = end + 2;
-                continue;
-            }
-        }
-
-        out[w++] = *p++;
+        const char *next = render_tag(p, vars, num_vars, out, out_max, &w,
+                                      depth);
+        if (next)
+            p = next;
+        else
+            out[w++] = *p++;
     }
 
     out[w] = '\0';
