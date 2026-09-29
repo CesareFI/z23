@@ -147,7 +147,7 @@ static const char *const k_fr_v1_headers[] = {
 static const char *const k_fr_v2_domains[] = {
     ZCL_FR_DOMAIN_PINS, ZCL_FR_DOMAIN_REQUEST, ZCL_FR_DOMAIN_PACKET,
     ZCL_FR_DOMAIN_RECEIPT, ZCL_FR_DOMAIN_ENV, ZCL_FR_DOMAIN_EXEC_ARGV,
-    ZCL_FR_DOMAIN_CLOSURE,
+    ZCL_FR_DOMAIN_CLOSURE, ZCL_FR_DOMAIN_FAILURE,
 };
 
 static bool fr_v1_header(const uint8_t *p, size_t n)
@@ -757,22 +757,25 @@ static const struct fr_fixed_u64 k_fr_identity[] = {
 
 #define FR_U64(label) {label, ZCL_FR_KIND_U64, 8u}
 #define FR_TEXT(label) {label, ZCL_FR_KIND_TEXT, ZCL_FR_TEXT_MAX}
+/* Fields 1-37, shared by the launch receipt and the failure receipt. */
+#define FR_LAUNCH_HEAD_SPECS \
+    {"profile", ZCL_FR_KIND_TEXT, ZCL_FR_LABEL_MAX}, \
+    {"launch_id", ZCL_FR_KIND_TEXT, ZCL_FR_ID_LEN}, \
+    {"request_nonce", ZCL_FR_KIND_TEXT, ZCL_FR_ID_LEN}, \
+    FR_TEXT("recorded_cwd"), FR_TEXT("source"), FR_TEXT("target"), \
+    FR_TEXT("toolchain_id"), \
+    FR_ROOT_SPECS, \
+    FR_TEXT("scratch"), \
+    FR_ROOT("compile_argv_sha3"), FR_ROOT("preprocess_argv_sha3"), \
+    FR_U64("mount_namespace_dev"), FR_U64("mount_namespace_ino"), \
+    FR_U64("compiler_ruid"), FR_U64("compiler_euid"), \
+    FR_U64("compiler_suid"), FR_U64("compiler_rgid"), \
+    FR_U64("compiler_egid"), FR_U64("compiler_sgid"), \
+    FR_U64("supplementary_groups"), FR_U64("cap_effective"), \
+    FR_U64("cap_permitted"), FR_U64("cap_inheritable"), \
+    FR_U64("cap_ambient"), FR_U64("no_new_privs"), FR_U64("seccomp_mode")
 static const struct zcl_fr_spec k_fr_receipt_spec[] = {
-    {"profile", ZCL_FR_KIND_TEXT, ZCL_FR_LABEL_MAX},
-    {"launch_id", ZCL_FR_KIND_TEXT, ZCL_FR_ID_LEN},
-    {"request_nonce", ZCL_FR_KIND_TEXT, ZCL_FR_ID_LEN},
-    FR_TEXT("recorded_cwd"), FR_TEXT("source"), FR_TEXT("target"),
-    FR_TEXT("toolchain_id"),
-    FR_ROOT_SPECS,
-    FR_TEXT("scratch"),
-    FR_ROOT("compile_argv_sha3"), FR_ROOT("preprocess_argv_sha3"),
-    FR_U64("mount_namespace_dev"), FR_U64("mount_namespace_ino"),
-    FR_U64("compiler_ruid"), FR_U64("compiler_euid"),
-    FR_U64("compiler_suid"), FR_U64("compiler_rgid"),
-    FR_U64("compiler_egid"), FR_U64("compiler_sgid"),
-    FR_U64("supplementary_groups"), FR_U64("cap_effective"),
-    FR_U64("cap_permitted"), FR_U64("cap_inheritable"),
-    FR_U64("cap_ambient"), FR_U64("no_new_privs"), FR_U64("seccomp_mode"),
+    FR_LAUNCH_HEAD_SPECS,
     FR_U64("worker_exit"),
     FR_U64("object_size"), FR_ROOT("object_sha3"),
     FR_U64("deps_size"), FR_ROOT("deps_sha3"),
@@ -822,8 +825,8 @@ static const char *fr_receipt_sizes(const struct zcl_fr_receipt *r)
     return NULL;
 }
 
-/* Every check the struct alone can answer; shared by encode and parse. */
-static const char *fr_receipt_check(const struct zcl_fr_receipt *r)
+/* The checks fields 1-37 alone can answer, for either receipt kind. */
+static const char *fr_launch_head_check(const struct zcl_fr_receipt *r)
 {
     char toolchain[ZCL_FR_TOOLCHAIN_LEN + 1u];
     const char *why = fr_receipt_ids(r);
@@ -836,6 +839,13 @@ static const char *fr_receipt_check(const struct zcl_fr_receipt *r)
     if (!why && (fr_zero(r->compile_argv_sha3, 32u) ||
                  fr_zero(r->preprocess_argv_sha3, 32u)))
         why = ZCL_FR_WHY_HASH_ZERO;
+    return why;
+}
+
+/* Every check the struct alone can answer; shared by encode and parse. */
+static const char *fr_receipt_check(const struct zcl_fr_receipt *r)
+{
+    const char *why = fr_launch_head_check(r);
     if (!why) why = fr_receipt_sizes(r);
     return why;
 }
@@ -1028,5 +1038,95 @@ bool zcl_fr_receipt_bind(const uint8_t *receipt, size_t receipt_len,
     if (!reason) reason = fr_bind_inputs(&r, expected);
     if (!reason) reason = fr_bind_artifacts(&r, artifacts);
     if (!reason) fr_binding_fill(&r, pins, receipt, receipt_len, out);
+    return fr_finish(reason, 0u, NULL, why);
+}
+
+/* ── Failure receipt ──────────────────────────────────────────────────── */
+
+#define FR_F_EXIT (FR_R_IDENTITY + FR_IDENTITY_COUNT - 1u)
+#define FR_F_OUTPUTS (FR_F_EXIT + 1u)
+static const struct zcl_fr_spec k_fr_failure_spec[] = {
+    FR_LAUNCH_HEAD_SPECS,
+    FR_U64("compile_exit"),
+    FR_U64("stderr_size"), FR_ROOT("stderr_sha3"),
+    FR_U64("preprocessed_size"), FR_ROOT("preprocessed_sha3"),
+};
+#define FR_FAILURE_FIELDS \
+    (sizeof(k_fr_failure_spec) / sizeof(k_fr_failure_spec[0]))
+static_assert(FR_F_OUTPUTS + 4u == FR_FAILURE_FIELDS,
+              "failure field table and index map disagree");
+
+static const char *fr_failure_check(const struct zcl_fr_failure *f)
+{
+    const struct zcl_fr_artifact_digest *a = f->launch.artifacts;
+    const char *why = fr_launch_head_check(&f->launch);
+    if (!why && (a[0].size != 0u || !fr_zero(a[0].sha3, 32u) ||
+                 a[1].size != 0u || !fr_zero(a[1].sha3, 32u) ||
+                 a[2].size > FR_OUTPUT_MAX || a[3].size == 0u ||
+                 a[3].size > FR_OUTPUT_MAX))
+        why = ZCL_FR_WHY_FIELD_MALFORMED;
+    if (!why && (f->compile_exit == 0u || f->compile_exit > 255u))
+        why = ZCL_FR_WHY_FAILURE_EXIT;
+    return why;
+}
+
+/* A failure's fields laid out as a launch receipt with worker_exit 0 and
+ * an empty object and depfile, so the receipt's own checks and copies
+ * serve both kinds. */
+static void fr_failure_as_receipt(const struct zcl_fr_value *f,
+                                  struct zcl_fr_value *r)
+{
+    static const uint8_t zero[32] = {0};
+    for (size_t i = 0; i < FR_F_EXIT; i++) r[i] = f[i];
+    r[FR_F_EXIT] = fr_u64_value(0u);
+    for (size_t i = 0; i < 2u; i++) {
+        r[FR_R_ARTIFACTS + 2u * i] = fr_u64_value(0u);
+        r[FR_R_ARTIFACTS + 2u * i + 1u] = fr_hash_value(zero);
+    }
+    for (size_t i = 0; i < 4u; i++) r[FR_R_ARTIFACTS + 4u + i] = f[FR_F_OUTPUTS + i];
+}
+
+bool zcl_fr_failure_encode(const struct zcl_fr_failure *failure,
+                           uint8_t *out, size_t cap, size_t *len,
+                           const char **why)
+{
+    if (!len || !failure)
+        return fr_finish(ZCL_FR_WHY_ARGUMENTS, 0u, NULL, why);
+    const char *reason = fr_failure_check(failure);
+    struct zcl_fr_writer w;
+    zcl_fr_writer_buffer(&w, out, cap);
+    if (!reason) {
+        struct zcl_fr_value r[FR_RECEIPT_FIELDS], v[FR_FAILURE_FIELDS];
+        fr_receipt_values(&failure->launch, r);
+        for (size_t i = 0; i < FR_F_EXIT; i++) v[i] = r[i];
+        v[FR_F_EXIT] = fr_u64_value(failure->compile_exit);
+        for (size_t i = 0; i < 4u; i++)
+            v[FR_F_OUTPUTS + i] = r[FR_R_ARTIFACTS + 4u + i];
+        reason = zcl_fr_encode(&w, ZCL_FR_DOMAIN_FAILURE, k_fr_failure_spec,
+                               FR_FAILURE_FIELDS, v);
+    }
+    return fr_finish(reason, w.len, len, why);
+}
+
+bool zcl_fr_failure_parse(const uint8_t *bytes, size_t len,
+                          struct zcl_fr_failure *out, const char **why)
+{
+    if (!out) return fr_finish(ZCL_FR_WHY_ARGUMENTS, 0u, NULL, why);
+    memset(out, 0, sizeof(*out));
+    struct zcl_fr_value v[FR_FAILURE_FIELDS], r[FR_RECEIPT_FIELDS];
+    const char *reason = zcl_fr_decode(bytes, len, ZCL_FR_DOMAIN_FAILURE,
+                                       k_fr_failure_spec, FR_FAILURE_FIELDS,
+                                       v);
+    if (!reason) {
+        fr_failure_as_receipt(v, r);
+        reason = fr_receipt_fixed(r);
+    }
+    if (!reason) reason = fr_receipt_lengths(r);
+    if (!reason) {
+        fr_receipt_take(r, &out->launch);
+        out->compile_exit = v[FR_F_EXIT].u64;
+        reason = fr_failure_check(out);
+    }
+    if (reason) memset(out, 0, sizeof(*out));
     return fr_finish(reason, 0u, NULL, why);
 }

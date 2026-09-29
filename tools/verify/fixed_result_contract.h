@@ -279,4 +279,29 @@ bool zcl_fr_receipt_bind(const uint8_t *receipt, size_t receipt_len,
                          const struct zcl_fr_artifact_bytes *artifacts,
                          struct zcl_fr_binding *out, const char **why);
 
+/* ── Failure receipt v2 (root launcher, one per failed compile) ───────── */
+
+/* A launch receipt never carries a failure (worker_exit is fixed at 0), so
+ * a failed compile has its own root-written artifact. The launcher writes
+ * it instead of launch.bin when the worker's fresh -E succeeded and its -c
+ * then exited nonzero; the signer seals a FAIL record bound to its hash.
+ * Fields 1-37 are the launch receipt's, then compile_exit (1..255), and
+ * size plus SHA3 of stderr and of the preprocessed stream. It names no
+ * object and no depfile. */
+#define ZCL_FR_DOMAIN_FAILURE "z23verify.fixed_result.failure.v2"
+#define ZCL_FR_WHY_FAILURE_EXIT "contract_failure_exit_invalid"
+
+struct zcl_fr_failure {
+    /* artifacts[0] (object) and [1] (depfile) must be all zero; [2] is
+     * stderr and [3] the preprocessed stream. */
+    struct zcl_fr_receipt launch;
+    uint64_t compile_exit;
+};
+
+bool zcl_fr_failure_encode(const struct zcl_fr_failure *failure,
+                           uint8_t *out, size_t cap, size_t *len,
+                           const char **why);
+bool zcl_fr_failure_parse(const uint8_t *bytes, size_t len,
+                          struct zcl_fr_failure *out, const char **why);
+
 #endif

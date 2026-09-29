@@ -223,7 +223,37 @@ Receipt-specific refusals:
 - another source refuses `contract_source_mismatch`;
 - an invalid scratch refuses `contract_scratch_invalid`.
 
-A failed compile therefore has no receipt.
+A failed compile therefore has no launch receipt.
+
+## 6a. Failure receipt v2 — `launch.bin` for a failed compile
+
+A signed FAIL record must be bound to root-written evidence too, or any
+account could make the signer deny a key forever. When the worker's fresh
+`-E` succeeded and its `-c` then exited nonzero, the root launcher writes
+this artifact instead of a launch receipt, with the same custody (root,
+nlink 1, mode 0444). Fields 1–37 are exactly the launch receipt's fields
+1–37 (profile through `seccomp_mode`), with the same checks. Then:
+
+```text
+F("z23verify.fixed_result.failure.v2")
+ 1-37 as §6
+38 compile_exit       U64 1..255, the -c child's exit status
+39 stderr_size        U64 0..4 MiB    40 stderr_sha3        ROOT
+41 preprocessed_size  U64 1..4 MiB    42 preprocessed_sha3  ROOT
+```
+
+It names no object and no depfile. A `compile_exit` of 0 or above 255
+refuses `contract_failure_exit_invalid`. A launch receipt parser refuses a
+failure receipt with `contract_artifact_kind_mismatch`, and the reverse. A
+failed `-E` has no preprocessed stream, so it has no store key and no
+failure receipt; timeout, signal and cancellation produce neither artifact.
+
+The signer seals the FAIL record from it with `exit_code = compile_exit`,
+`receipt_sha3` = SHA3 of the failure receipt bytes, `stderr_sha3` from its
+field 40, and all-zero `obj_sha3` and `dep_sha3`. The FAIL observation is
+stored as `attest.bin`, `stderr.bin` and `launch.bin` (the failure
+receipt); its missing `object.o` and `deps.d` never let a PASS through,
+because a verified signed FAIL blocks first (§8, step 4).
 
 ## 7. Record-to-receipt binding
 
@@ -453,6 +483,7 @@ their output.
 - `contract_receipt_artifact_mismatch`
 - `contract_receipt_input_mismatch`
 - `contract_depfile_target_mismatch`
+- `contract_failure_exit_invalid`
 
 **Record admission, new in v2:**
 
