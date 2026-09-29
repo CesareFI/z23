@@ -45,7 +45,14 @@ cd "$ROOT"
 
 GATE="tools/lint/check_silent_bool_errors.sh"
 mkdir -p "$ROOT/.cache"
-SCAN_ROOT="$(mktemp -d "$ROOT/.cache/scanner-immunity-selftest.XXXXXX")" || {
+# The scan root stays REPO-RELATIVE on purpose: production gates walk
+# repo-relative paths, so the exclusion regexes (scan_exclusions.sh) never see
+# the checkout's absolute prefix. An earlier absolute mktemp path made every
+# production-mode assertion below vacuous whenever the checkout itself lived
+# under an excluded component (e.g. .claude/worktrees/*) — the ancestor
+# ".claude/" matched LINT_NOISE_REGEX and the "real violation still detected"
+# proof silently scanned nothing.
+SCAN_ROOT="$(mktemp -d .cache/scanner-immunity-selftest.XXXXXX)" || {
     echo "selftest_scanner_immunity: could not create isolated scan root" >&2
     exit 1
 }
