@@ -22,6 +22,7 @@
 #include "primitives/block.h"
 #include "util/boot_scan.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -98,12 +99,20 @@ static bool chain_restore_read_header_at_index(
     return true;
 }
 
+/* Shared argument guard for the two public disk-backed rebuild walks. */
+static bool chain_restore_disk_walk_args_ok(const struct main_state *ms,
+                                            const struct block_index *tip,
+                                            const char *datadir)
+{
+    return ms && tip && datadir && datadir[0];
+}
+
 int chain_restore_rebuild_active_chain_from_disk(
     struct main_state *ms,
     struct block_index *tip,
     const char *datadir)
 {
-    if (!ms || !tip || !datadir || !datadir[0])
+    if (!chain_restore_disk_walk_args_ok(ms, tip, datadir))
         return 0;
 
     struct active_chain *c = &ms->chain_active;
@@ -142,7 +151,11 @@ int chain_restore_rebuild_active_chain_from_disk(
      * Registered once; bumped per height read. */
     atomic_uint_least64_t *scan_ctr =
         boot_scan_counter("chain_restore.disk_rebuild_rows");
-    for (int h = tip->nHeight; h >= 0 && cur; h--) {
+    /* Shutdown poll on the loop condition: one atomic load per height is
+     * noise next to the per-height pread, and aborts immediately so the
+     * zcl_chain_fix join cannot hang on this O(chain) walk. */
+    for (int h = tip->nHeight;
+         h >= 0 && cur && !thread_registry_shutdown_requested(); h--) {
         boot_scan_bump(scan_ctr);
         if (cur->nHeight != h) {
             read_errors++;
@@ -230,6 +243,10 @@ int chain_restore_rebuild_active_chain_from_disk(
 
     if (cached)
         fclose(cached);
+
+    if (populated != tip->nHeight + 1 && thread_registry_shutdown_requested())
+        printf("[chain-restore] disk ancestry rebuild aborted on shutdown: "
+               "tip_h=%d populated=%d\n", tip->nHeight, populated);
 
     if (read_errors > 0)
         printf("[chain-restore] disk ancestry rebuild stopped early: "
@@ -342,18 +359,28 @@ chain_restore_disk_pos_map_find(
     return NULL;
 }
 
+static bool chain_restore_scan_args_ok(const char *datadir,
+                                       const struct chain_restore_disk_pos_map *map)
+{
+    return datadir && datadir[0] && map;
+}
+
 static bool chain_restore_scan_block_files(
     const char *datadir,
     struct chain_restore_disk_pos_map *map)
 {
-    if (!datadir || !datadir[0] || !map)
-        return false;
+    if (!chain_restore_scan_args_ok(datadir, map))
+        return false; // raw-return-ok:pure-arg-validation-predicate
     const struct chain_params *cp = chain_params_get();
     const unsigned char *magic = cp->pchMessageStart;
     int files = 0;
     int blocks = 0;
 
-    for (int file_num = 0; file_num < 9999; file_num++) {
+    /* Poll once per blk file: a full scan is O(all blocks on disk) and must
+     * not pin a shutdown behind the remaining files. */
+    for (int file_num = 0;
+         file_num < 9999 && !thread_registry_shutdown_requested();
+         file_num++) {
         char path[576];
         snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
                  datadir, file_num);
@@ -409,6 +436,10 @@ static bool chain_restore_scan_block_files(
         fclose(f);
     }
 
+    if (thread_registry_shutdown_requested())
+        printf("[chain-restore] block-file scan aborted on shutdown: "
+               "files=%d blocks=%d\n", files, blocks);
+
     printf("[chain-restore] scanned block files for canonical positions: "
            "files=%d blocks=%d indexed=%zu\n",
            files, blocks, map->size);
@@ -449,7 +480,8 @@ int chain_restore_rebuild_active_chain_from_block_files(
     struct block_index *tip,
     const char *datadir)
 {
-    if (!ms || !tip || !tip->phashBlock || !datadir || !datadir[0])
+    if (!chain_restore_disk_walk_args_ok(ms, tip, datadir) ||
+        !tip->phashBlock)
         return 0;
 
     struct chain_restore_disk_pos_map pos_map = {0};
@@ -475,7 +507,10 @@ int chain_restore_rebuild_active_chain_from_block_files(
      * not cold seeds only. */
     atomic_uint_least64_t *scan_ctr =
         boot_scan_counter("chain_restore.disk_rebuild_rows");
-    for (int h = tip->nHeight; h >= 0; h--) {
+    /* Same per-height shutdown poll as _from_disk: one atomic load is noise
+     * next to the per-height open/pread/close. */
+    for (int h = tip->nHeight;
+         h >= 0 && !thread_registry_shutdown_requested(); h--) {
         boot_scan_bump(scan_ctr);
         const struct chain_restore_disk_pos_entry *pos =
             chain_restore_disk_pos_map_find(&pos_map, &want);

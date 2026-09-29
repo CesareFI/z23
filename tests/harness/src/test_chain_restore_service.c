@@ -22,6 +22,7 @@
 #include "core/amount.h"
 #include "json/json.h"
 #include "util/boot_scan.h"
+#include "util/thread_registry.h"
 #include <sqlite3.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -1989,6 +1990,104 @@ static int test_unclean_restart_recovery_is_o_delta(void) {
     return failures;
 }
 
+/* Shutdown responsiveness: the O(chain) repair walks a zcl_chain_fix run
+ * can enter — the disk ancestry rebuild, the block-file scan + ancestry
+ * rebuild, the pprev fallback, and the nBits backfill — poll
+ * thread_registry_shutdown_requested() per step, so a SIGTERM landing
+ * mid-repair lets the worker exit and the registry join succeed instead
+ * of hanging shutdown behind an uninterruptible multi-minute walk.
+ * Witness: chain_restore.disk_rebuild_rows stays 0 with the flag set and
+ * reaches tip_h+1 with it clear. */
+static int test_chain_restore_walks_abort_on_shutdown(void) {
+    int failures = 0;
+    TEST("chain_restore: repair walks abort immediately on shutdown flag") {
+        mkdir("./test-tmp", 0755);
+        chain_restore_set_trust_index_fastpath(false);
+        const char *const CTR = "chain_restore.disk_rebuild_rows";
+        const int N = 8;
+
+        /* Flag set: no disk row is read (both O(chain) disk rungs and the
+         * pprev fallback abort at their first poll).  In-memory sweeps may
+         * still slot from the block map; only the disk witness is pinned. */
+        char dir[256];
+        snprintf(dir, sizeof(dir), "./test-tmp/%d_crabort", (int)getpid());
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *tip = ods_build_disk_chain(&ms, dir, N);
+        ASSERT(tip != NULL);
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
+        boot_scan_reset_for_testing();
+        thread_registry_request_shutdown();
+        (void)chain_restore_rebuild_active_chain(&ms, tip, dir);
+        uint64_t rows_flag = boot_scan_value(CTR);
+        thread_registry_reset_for_test();
+        ASSERT(rows_flag == 0);
+
+        /* Control, flag clear: the disk walk runs to completion. */
+        char dir2[256];
+        snprintf(dir2, sizeof(dir2), "./test-tmp/%d_crabort_ctl",
+                 (int)getpid());
+        struct main_state ms2;
+        main_state_init(&ms2);
+        struct block_index *tip2 = ods_build_disk_chain(&ms2, dir2, N);
+        ASSERT(tip2 != NULL);
+        ASSERT(active_chain_move_window_tip(&ms2.chain_active, tip2));
+        boot_scan_reset_for_testing();
+        int pop_ctl = chain_restore_rebuild_active_chain(&ms2, tip2, dir2);
+        uint64_t rows_ctl = boot_scan_value(CTR);
+        ASSERT(pop_ctl == N);
+        ASSERT(rows_ctl == (uint64_t)N);
+
+        /* nBits backfill: flag set -> nothing fixed; flag clear -> fixed. */
+        char dir3[256];
+        snprintf(dir3, sizeof(dir3), "./test-tmp/%d_crabort_nb",
+                 (int)getpid());
+        mkdir(dir3, 0755);
+        char blocksdir[320];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", dir3);
+        mkdir(blocksdir, 0755);
+        struct disk_block_pos pos = { .nFile = 0, .nPos = 0 };
+        const uint32_t expected_nbits = 0x1e14f400;
+        ASSERT(write_block_fixture(dir3, &pos, expected_nbits));
+        struct block b_check;
+        ASSERT(read_block_from_disk_pread(&b_check, &pos, dir3));
+        struct uint256 blk_hash;
+        block_get_hash(&b_check, &blk_hash);
+        block_free(&b_check);
+        struct main_state ms3;
+        main_state_init(&ms3);
+        struct block_index *pi = chainstate_insert_block_index(
+            (struct chainstate *)&ms3, &blk_hash);
+        ASSERT(pi != NULL);
+        pi->nHeight  = 500;
+        pi->nBits    = 0; /* shape the backfill repairs */
+        pi->nStatus  = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        pi->nFile    = pos.nFile;
+        pi->nDataPos = pos.nPos;
+
+        thread_registry_request_shutdown();
+        int fixed_flag = chain_restore_backfill_nbits_from_disk(&ms3, dir3);
+        thread_registry_reset_for_test();
+        ASSERT(fixed_flag == 0);
+        ASSERT(pi->nBits == 0);
+        int fixed_ctl = chain_restore_backfill_nbits_from_disk(&ms3, dir3);
+        ASSERT(fixed_ctl == 1);
+        ASSERT(pi->nBits == expected_nbits);
+
+        main_state_free(&ms);
+        main_state_free(&ms2);
+        block_map_free(&ms3.map_block_index);
+        active_chain_free(&ms3.chain_active);
+        boot_scan_reset_for_testing();
+        char rm_cmd[900];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s %s %s",
+                 dir, dir2, dir3);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_restore_service(void) {
@@ -2037,5 +2136,6 @@ int test_chain_restore_service(void) {
     failures += test_finalize_quarantine_preserves_served_floor();
     failures += test_rebuild_active_chain_is_o_chain_not_delta();
     failures += test_unclean_restart_recovery_is_o_delta();
+    failures += test_chain_restore_walks_abort_on_shutdown();
     return failures;
 }

@@ -30,6 +30,7 @@
 
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 #include <stdatomic.h>
 
@@ -184,6 +185,54 @@ static void chain_restore_publish_rebuilt_tip(struct active_chain *c,
     (void)active_chain_install_tip_slot(c, slot);
 }
 
+/* The tip must already be installed as the chain tip (so
+ * active_chain's capacity covers [0..tip_h]); if a caller hands us
+ * a tip that isn't installed, install it via the standard path
+ * first. Idempotent when already set.
+ *
+ * Compare RAW container state (c->height + the raw tip slot), NOT
+ * active_chain_tip()/active_chain_height(): those resolve through the
+ * tip_finalize AUTHORITY (durable cursor -> block-map hash lookup), so
+ * when the container lags the authority (a placeholder-tip rewind left
+ * c->height at tip_h-1) they echo the authority's answer, this guard
+ * reads "already installed" and never fires, the rebuilds below fill
+ * arr[0..tip_h] but nothing raises c->height, and every
+ * active_chain_at(tip_h) stays NULL (bounded by c->height) — the
+ * post-restore integrity check then fails with a phantom tip-window
+ * hole and the node boots DEGRADED until the NEXT process start.
+ *
+ * RAISE-ONLY: c->height > tip_h is the normal RUNTIME shape (the
+ * window is extended above the finalized tip for tip_finalize's
+ * lookahead, and this function also runs as the chain_integrity_failed
+ * remedy) — installing there would SHRINK the window and starve the
+ * lookahead. Only fire when the container is BEHIND the tip or the
+ * exact tip slot is wrong. */
+static bool chain_restore_rebuild_ensure_tip(struct main_state *ms,
+                                             struct active_chain *c,
+                                             struct block_index *tip)
+{
+    const int tip_h = tip->nHeight;
+    bool installed = c->height > tip_h ||
+        (c->height == tip_h && active_chain_cached_tip(c) == tip);
+    if (installed)
+        return true;
+    if (tip_h > 1000000) {
+        /* The grow must go through the chainstate retire-not-free
+         * helper — an in-place realloc here would free an array that
+         * lock-free readers (RPC is already serving) may still hold. */
+        if (!active_chain_install_tip_slot(c, tip))
+            LOG_RETURN(false, "chain_restore",
+                       "live tip install failed (tip_h=%d)", tip_h);
+        LOG_INFO("chain_restore",
+                 "[chain-restore] installed live tip without full "
+                 "active_chain walk: h=%d", tip_h);
+        return true;
+    }
+    struct zcl_result cr = chain_restore_commit_tip_via_csr(
+            ms, tip, false, "rebuild_active_chain_full");
+    return cr.ok;
+}
+
 int chain_restore_rebuild_active_chain(struct main_state *ms,
                                        struct block_index *tip,
                                        const char *datadir)
@@ -200,47 +249,8 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     struct active_chain *c = &ms->chain_active;
     const int tip_h = tip->nHeight;
 
-    /* The tip must already be installed as the chain tip (so
-     * active_chain's capacity covers [0..tip_h]); if a caller hands us
-     * a tip that isn't installed, install it via the standard path
-     * first. Idempotent when already set.
-     *
-     * Compare RAW container state (c->height + the raw tip slot), NOT
-     * active_chain_tip()/active_chain_height(): those resolve through the
-     * tip_finalize AUTHORITY (durable cursor -> block-map hash lookup), so
-     * when the container lags the authority (a placeholder-tip rewind left
-     * c->height at tip_h-1) they echo the authority's answer, this guard
-     * reads "already installed" and never fires, the rebuilds below fill
-     * arr[0..tip_h] but nothing raises c->height, and every
-     * active_chain_at(tip_h) stays NULL (bounded by c->height) — the
-     * post-restore integrity check then fails with a phantom tip-window
-     * hole and the node boots DEGRADED until the NEXT process start.
-     *
-     * RAISE-ONLY: c->height > tip_h is the normal RUNTIME shape (the
-     * window is extended above the finalized tip for tip_finalize's
-     * lookahead, and this function also runs as the chain_integrity_failed
-     * remedy) — installing there would SHRINK the window and starve the
-     * lookahead. Only fire when the container is BEHIND the tip or the
-     * exact tip slot is wrong. */
-    if (c->height < tip_h ||
-        (c->height == tip_h && active_chain_cached_tip(c) != tip)) {
-        if (tip_h > 1000000) {
-            /* The grow must go through the chainstate retire-not-free
-             * helper — an in-place realloc here would free an array that
-             * lock-free readers (RPC is already serving) may still hold. */
-            if (!active_chain_install_tip_slot(c, tip))
-                LOG_RETURN(0, "chain_restore",
-                           "live tip install failed (tip_h=%d)", tip_h);
-            LOG_INFO("chain_restore",
-                     "[chain-restore] installed live tip without full "
-                     "active_chain walk: h=%d", tip_h);
-        } else {
-            struct zcl_result cr = chain_restore_commit_tip_via_csr(
-                    ms, tip, false, "rebuild_active_chain_full");
-            if (!cr.ok)
-                return 0;
-        }
-    }
+    if (!chain_restore_rebuild_ensure_tip(ms, c, tip))
+        return 0;
 
     int populated = 0;
 
@@ -274,7 +284,11 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
      * the happy case (real chain, pprev intact) in O(tip_h). */
     int deepest = tip_h + 1;
     int pprev_walk_budget = tip_h + 1;
-    for (struct block_index *p = tip; p != NULL; p = p->pprev) {
+    /* Shutdown poll per ancestor: with a datadir this walk preads every
+     * chain block; an atomic load per step is noise against that and lets
+     * the zcl_chain_fix join complete instead of hanging shutdown. */
+    for (struct block_index *p = tip;
+         p != NULL && !thread_registry_shutdown_requested(); p = p->pprev) {
         if (--pprev_walk_budget < 0) {
             LOG_WARN("chain_restore",
                      "[chain-restore] stopped cyclic pprev walk during live boot: "
@@ -296,6 +310,11 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
         if (h < deepest) deepest = h;
         populated++;
     }
+
+    if (deepest != 0 && thread_registry_shutdown_requested())
+        LOG_WARN("chain_restore",
+                 "[chain-restore] pprev rebuild walk aborted on shutdown: "
+                 "tip_h=%d populated=%d", tip_h, populated);
 
     /* If the pprev walk reached genesis, no residual slot work remains,
      * but flat-file loads may still have left pskip empty. Rebuild
@@ -410,10 +429,16 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     return populated;
 }
 
+static bool chain_restore_backfill_args_ok(const struct main_state *ms,
+                                           const char *datadir)
+{
+    return ms && datadir && datadir[0];
+}
+
 int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
                                            const char *datadir)
 {
-    if (!ms || !datadir || !datadir[0])
+    if (!chain_restore_backfill_args_ok(ms, datadir))
         return 0;
 
     /* collect the active tip height once so we can
@@ -430,7 +455,11 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     size_t fixed_count = 0, fixed_cap = 0;
     size_t iter = 0;
     struct block_index *p;
-    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+    /* Shutdown poll per map entry: entries with nBits==0 cost a pread
+     * apiece; the atomic load is noise against that and keeps the
+     * zcl_chain_fix join from hanging on a heavily-corrupt index. */
+    while (!thread_registry_shutdown_requested() &&
+           block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
         if (!p) continue;
         if (p->nBits != 0) continue;
         if (p->nHeight <= 0) continue;   /* genesis nBits is set elsewhere */
@@ -485,6 +514,11 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
 
     chain_restore_recompute_chainwork_sorted(fixed_items, fixed_count);
     free(fixed_items);
+
+    if (thread_registry_shutdown_requested())
+        LOG_INFO("chain_restore",
+                 "[nbits-backfill] aborted on shutdown: fixed=%d so far",
+                 fixed);
 
     if (fixed > 0 || read_errors > 0 || invalidated_off_chain > 0)
         LOG_INFO("chain_restore",
