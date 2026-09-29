@@ -423,6 +423,28 @@ Every refusal leaves the lookup COLD. Only the `ZCL_TESTING` fixture lookup
 takes pins as an argument, and there a NULL pins argument refuses
 `store_pins_unqualified`.
 
+### Publishing a conflict
+
+A signed PASS and a signed FAIL for the same exact store key mean either a
+nondeterministic compile or a compromise. The publisher does not choose
+between them, and it never hides one:
+
+- The second observation, of either verdict, is published no-clobber as its
+  own `<record-sha3>/` directory in the same `store/<store-key>/`. This is
+  the directory every receiver scans for that key.
+- The receiver's `zcl_verify_attest_admit_set` sees both records. It returns
+  FAIL with `attest_eligible_conflict`, which the store reader reports as
+  BLOCK. The order does not matter: FAIL then PASS and PASS then FAIL both
+  block, and neither ever HITs.
+- The publisher's result names the conflict: `publisher_conflict_fail_exists`
+  when a FAIL was already stored, or `publisher_conflict_pass_exists` when a
+  PASS was.
+- It also writes a root-private audit copy of the new `attest.bin` to
+  `conflicts/<store-key>.<record-sha3>.attest`. That copy is for the
+  operator only. The record in the store is what blocks.
+- Only an identical `<record-sha3>` refuses, with `publisher_record_exists`.
+  Nothing under `store/` is ever unlinked or rewritten.
+
 ## 11. Retired v1 artifacts
 
 A v2 consumer refuses every retired artifact by name. Nothing parses a v1

@@ -99,7 +99,7 @@ What the rehearsal does:
 
 The object hash holds only for the pinned `result.c` and headers. The worker
 hardcodes their SHA3s, so editing them fails the group until they are
-re-pinned.
+re-pinned. The failure prints the worker's refusal and the exact re-pin steps.
 
 ## 2. Build from a signed commit and record hashes (no root)
 
@@ -313,9 +313,22 @@ stat -c '%n %U:%G %a %h' /etc/z23verify/*
 
 ## 8. Units, installed disabled (root)
 
-The signer gets an empty capability set. The publisher keeps only
-`CAP_DAC_READ_SEARCH`, so root can read the signer's mode-0700 staging. It
-writes only root-owned directories.
+The signer gets an empty capability set. The publisher's only capability is
+`CAP_DAC_READ_SEARCH`: read and search permission override, nothing else. It
+needs that to read the signer's mode-0700 staging, and it writes only
+root-owned directories.
+
+The alternative was group-readable staging (mode 0750/0440 with group root).
+That was rejected because it widens exposure:
+
+- every process in the staging group could read unpublished signed records;
+- the staging directory could no longer be signer-private (mode `& 0077 == 0`),
+  which is the check both the signer and the publisher make;
+- the signer's `umask 077` and its signer-private check on `key/` and
+  `staging/` would have to diverge.
+
+With the capability, the widening is confined to one short-lived root
+process that verifies every byte it reads.
 
 `ReadWritePaths=` covers all of `/var/lib/z23verify`. The publisher's
 `RENAME_NOREPLACE` from `publish-tmp/` to `store/` would cross bind mounts and
@@ -413,7 +426,8 @@ systemctl daemon-reload     # do not enable; each start below is explicit
   journalctl -u z23-fixed-result-sign@<id> -o cat
   #   -> fixed_result_signer_sealed=1 verdict=pass exit_code=0 store_key=K record_sha3=R
   systemctl start z23-fixed-result-publish@R.service
-  #   -> fixed_result_publisher_published=1 … store_key=K record_sha3=R
+  #   -> fixed_result_publisher_published=1 verdict=pass conflict=none
+  #      conflict_recorded=0 store_key=K record_sha3=R
   ls -l /var/lib/z23verify/store/K/R    # root 0644 files, root 0755 dir
   ```
 - **Q6. Receiver HIT (developer; blocked on B4).** The receiver's own cold
@@ -443,8 +457,8 @@ covers it under `ZCL_TESTING`.
 | staging owner not signer | `chown` staging to another UID | `publisher_staging_owner_mismatch` | B1 | staging owner |
 | symlinked staging entry | replace `object.o` with a symlink | `publisher_staging_entry_unsafe` | B1 | staging links |
 | record directory exists | publish R twice | `publisher_record_exists`; history kept | B1 | no-clobber |
-| FAIL then PASS | publish a signed FAIL, then the PASS | `publisher_conflict_fail_exists`; conflict recorded; receiver BLOCK | B1 | FAIL then PASS |
-| PASS then FAIL | the reverse | `publisher_conflict_pass_exists`; conflict recorded; PASS kept | B1 | PASS then FAIL |
+| FAIL then PASS | publish a signed FAIL, then the PASS | both published in `store/K/`; publisher reports `conflict=publisher_conflict_fail_exists` and writes an audit note; receiver BLOCK `attest_eligible_conflict` | B1 | FAIL then PASS |
+| PASS then FAIL | the reverse | both published; `conflict=publisher_conflict_pass_exists`; the earlier HIT becomes BLOCK `attest_eligible_conflict`, never HIT | B1 | PASS then FAIL |
 | lock held past deadline | `flock -x …/fixed_result.lock sleep 10` | `publisher_lock_deadline` (5 s) | B1 | lock |
 | tampered object, dep or stderr in store | edit a stored file | receiver `attest_*_mismatch` | B1 | — |
 | wrong argv or cwd | receiver key from another cwd or profile | receiver COLD, `attest_no_observation` | B1 | — |
