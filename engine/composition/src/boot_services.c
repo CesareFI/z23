@@ -567,6 +567,41 @@ bool boot_wallet_rebuild_probe(sqlite3 *db, bool *has_utxos, bool *has_keys)
     __attribute__((optimize("no-inline", "no-inline-functions",
                             "no-inline-small-functions")))
 #endif
+int boot_wallet_catch_up(struct wallet *w, const struct active_chain *chain,
+                         const char *datadir,
+                         struct wallet_rescan_report *report)
+{
+    struct block_index *chain_tip = active_chain_tip(chain);
+    int tip_height = active_chain_height(chain);
+    if (!chain_tip || w->best_block_height >= tip_height)
+        return -1;
+    int scan_from = w->best_block_height > 0 ? w->best_block_height + 1 : 0;
+    if (w->time_first_key > 0 && scan_from == 0) {
+        int64_t scan_time = w->time_first_key - 7200;
+        for (int h = tip_height; h >= 0; h--) {
+            struct block_index *bi = active_chain_at(chain, h);
+            if (bi && (int64_t)bi->nTime < scan_time) {
+                scan_from = h + 1;
+                break;
+            }
+        }
+    }
+    if (scan_from == 0 && w->best_block_height == 0 && tip_height > 1000) {
+        printf("Wallet scan height is 0 with %d blocks. "
+               "Use rescanblockchain RPC for targeted rescan.\n",
+               tip_height);
+        return -1;
+    }
+    if (tip_height - scan_from >= 50000) {
+        printf("Wallet needs rescan from %d to %d (%d blocks). "
+               "Deferring — use rescanblockchain RPC.\n",
+               scan_from, tip_height, tip_height - scan_from);
+        return -1;
+    }
+    return wallet_rescan_report(w, chain, scan_from, tip_height, datadir,
+                                report);
+}
+
 bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc)
@@ -623,38 +658,8 @@ bool app_init_services(struct app_context *ctx,
                                   svc->coins_tip, svc->state, svc->params);
 
     /* Rescan blockchain for wallet transactions if wallet is behind chain tip */
-    {
-        struct block_index *chain_tip = active_chain_tip(&svc->state->chain_active);
-        int tip_height = active_chain_height(&svc->state->chain_active);
-        if (chain_tip && svc->wallet->best_block_height < tip_height) {
-            int scan_from = svc->wallet->best_block_height > 0
-                ? svc->wallet->best_block_height + 1 : 0;
-            if (svc->wallet->time_first_key > 0 && scan_from == 0) {
-                int64_t scan_time = svc->wallet->time_first_key - 7200;
-                for (int h = tip_height; h >= 0; h--) {
-                    struct block_index *bi = active_chain_at(
-                        &svc->state->chain_active, h);
-                    if (bi && (int64_t)bi->nTime < scan_time) {
-                        scan_from = h + 1;
-                        break;
-                    }
-                }
-            }
-            if (scan_from == 0 && svc->wallet->best_block_height == 0 &&
-                tip_height > 1000) {
-                printf("Wallet scan height is 0 with %d blocks. "
-                       "Use rescanblockchain RPC for targeted rescan.\n",
-                       tip_height);
-            } else if (tip_height - scan_from < 50000) {
-                wallet_rescan(svc->wallet, &svc->state->chain_active,
-                              scan_from, tip_height, ctx->datadir);
-            } else {
-                printf("Wallet needs rescan from %d to %d (%d blocks). "
-                       "Deferring — use rescanblockchain RPC.\n",
-                       scan_from, tip_height, tip_height - scan_from);
-            }
-        }
-    }
+    (void)boot_wallet_catch_up(svc->wallet, &svc->state->chain_active,
+                               ctx->datadir, NULL);
 
     wallet_verify_utxos(svc->wallet, svc->coins_tip);
 

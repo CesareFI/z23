@@ -286,6 +286,16 @@ struct boot_svc_ctx {
 bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc);
+
+/* Boot catch-up: when the wallet loaded a scan height below the active tip
+ * (an unclean stop lost its last flush), rescan the missing heights so each
+ * transaction's depth is re-derived before the wallet serves spends.
+ * `datadir` is the node's base datadir. Returns the rescan's outputs plus
+ * notes found, or -1 when no rescan ran; `report` (optional) receives the
+ * coverage accounting. */
+int boot_wallet_catch_up(struct wallet *w, const struct active_chain *chain,
+                         const char *datadir,
+                         struct wallet_rescan_report *report);
 void boot_stop_db_service_kernel(void);
 
 /* K3 block-body read-ahead worker wiring (engine/composition/src/boot_block_prefetch.c).
