@@ -228,8 +228,6 @@ bool connman_mutual_dial_holds(struct connman *cm,
            memcmp(key, cm->manager.identity_pub, sizeof(key)) < 0;
 }
 
-/* True when `inbound` is the kept session of a mutual dial with `outbound`:
- * both authenticated the same key, and that key is below ours. */
 static struct log_throttle g_mutual_dial_log = LOG_THROTTLE_INIT;
 static _Atomic uint64_t g_mutual_dial_log_lines;
 

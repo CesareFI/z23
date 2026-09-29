@@ -871,6 +871,96 @@ static int test_mutual_dial_impostor_has_no_privilege(void)
     return failures;
 }
 
+static int test_mutual_dial_target_binds_the_dialed_key(void)
+{
+    int failures = 0;
+    TEST("mutual dial: only an inbound carrying the exact key this node "
+         "authenticated on its own dial to the target satisfies the target — "
+         "another key at the target's address, or that key from another "
+         "address, leaves the target to redial") {
+        static struct model_node a, b, foreign;
+        struct model_conn conns[MODEL_MAX_CONNS];
+        size_t n = 0;
+        /* B yields to A's dial and records the key it authenticated. */
+        ASSERT(model_converged_pair(&a, &b, conns, &n));
+        ASSERT(model_node_init(&foreign, "F", 66, 18237, 10));
+        uint8_t x_priv[32], x_pub[32];
+        for (uint8_t seed = 10;             /* a key below B's, not A's */
+             seed < 64; seed++) {
+            model_key(x_priv, seed);
+            ASSERT(model_public_key(x_priv, x_pub));
+            if (memcmp(x_pub, b.pub, 32) < 0 && memcmp(x_pub, a.pub, 32) != 0)
+                break;
+        }
+        ASSERT(memcmp(x_pub, b.pub, 32) < 0 && memcmp(x_pub, a.pub, 32) != 0);
+        conns[0].in->disconnect = conns[0].out->disconnect = true;
+        model_settle(conns, n);
+
+        /* Another key at the target's address does not hold the target. */
+        ASSERT(model_connect(&conns[n], &a, &b, x_priv, true, 40003));
+        ev_inbound_version(&conns[n]);
+        n++;
+        model_settle(conns, n);
+        ASSERT(!conns[n - 1].in->disconnect);
+        ASSERT(model_redial_target(&b) == &a);
+
+        /* The recorded key from another address does not hold it either. */
+        conns[n - 1].in->disconnect = conns[n - 1].out->disconnect = true;
+        model_settle(conns, n);
+        ASSERT(model_connect(&conns[n], &foreign, &b, a.priv, true, 40004));
+        ev_inbound_version(&conns[n]);
+        n++;
+        model_settle(conns, n);
+        ASSERT(!conns[n - 1].in->disconnect);
+        ASSERT(model_redial_target(&b) == &a);
+
+        /* The recorded key at the target's address does. */
+        conns[n - 1].in->disconnect = conns[n - 1].out->disconnect = true;
+        model_settle(conns, n);
+        ASSERT(model_connect(&conns[n], &a, &b, a.priv, true, 40005));
+        ev_inbound_version(&conns[n]);
+        n++;
+        model_settle(conns, n);
+        ASSERT(!conns[n - 1].in->disconnect);
+        ASSERT(model_redial_target(&b) == NULL);
+        PASS();
+    } _test_next:;
+    model_reset();
+    return failures;
+}
+
+static int test_mutual_dial_kept_side_stays_quiet(void)
+{
+    int failures = 0;
+    TEST("mutual dial: after the tie-break neither side redials, even with "
+         "every cooldown elapsed — the loser's target is satisfied by the "
+         "kept inbound and the winner's own outbound is the kept session") {
+        static struct model_node a, b;
+        struct model_conn conns[MODEL_MAX_CONNS];
+        size_t n = 0;
+        model_reset();
+        ASSERT(model_converged_pair(&a, &b, conns, &n));
+        ASSERT(model_only_session_dialed_by(conns, n, &a));
+        /* The winner keeps its own outbound, and that session holds the
+         * target. */
+        ASSERT(!conns[0].out->disconnect &&
+               conns[0].out->state == PEER_ACTIVE);
+        ASSERT(model_redial_target(&a) == NULL);
+        /* The loser's target is satisfied by the kept inbound. */
+        ASSERT(!conns[0].in->disconnect && conns[0].in->state == PEER_ACTIVE);
+        ASSERT(model_redial_target(&b) == NULL);
+        /* The quiet is the kept session itself: once it is gone, both sides
+         * name the target again. */
+        conns[0].in->disconnect = conns[0].out->disconnect = true;
+        model_settle(conns, n);
+        ASSERT(model_redial_target(&a) == &b);
+        ASSERT(model_redial_target(&b) == &a);
+        PASS();
+    } _test_next:;
+    model_reset();
+    return failures;
+}
+
 static int test_mutual_dial_unconfigured_peer(void)
 {
     int failures = 0;
@@ -1652,6 +1742,8 @@ int check_sync_service_configured_inbound(void)
     failures += test_mutual_dial_simultaneous();
     failures += test_mutual_dial_reconnect_after_publisher_loss();
     failures += test_mutual_dial_impostor_has_no_privilege();
+    failures += test_mutual_dial_target_binds_the_dialed_key();
+    failures += test_mutual_dial_kept_side_stays_quiet();
     failures += test_mutual_dial_unconfigured_peer();
     failures += test_mutual_dial_decision_log_rate_limited();
     failures += test_configured_inbound_reconnect_reproves();

@@ -180,3 +180,7 @@ later lane flips it HARD.
 - 2026-09-29T15:06:00Z — REASON: Owner-authorized 2026-09-29 mutual-dial tie-break: both sides keep the dial of the lower Noise static key; the loser stops redialing; plaintext/unauthenticated behaviour, consensus, scoring and resource bounds unchanged
   old ROOT: 5e0f367a0c46e3cc9df0fcb9ba095d3c8d0b70ccefee86040d51f33659473289
   by: owner unseal ritual (make core-unseal)
+
+- 2026-09-29T16:44:10Z — REASON: tie-break test gaps M7/M8 and comment placement in connman dial
+  old ROOT: 57176e528a23b4587fa91c568f633f98a0857ad6aa7d40810f09488f2f88ea3a
+  by: owner unseal ritual (make core-unseal)
