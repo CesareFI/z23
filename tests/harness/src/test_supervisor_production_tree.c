@@ -251,6 +251,64 @@ static struct p2p_node *spt_add_healthy_outbound(struct connman *cm,
     return node;
 }
 
+/* ── Small-chain catch-up durability (journey run1 regression): a fresh
+ * latecomer syncing a SHORT chain (124 regtest blocks, gap far below the
+ * 500-block accelerated-cadence threshold) must still drain inside the
+ * reducer's batched-durability scope. In the failing physical run every
+ * staged event append paid event_log_append's two per-append fsync
+ * barriers on this shared tick runner (~300 ms each on the HDD host;
+ * 227 barrier appends / 69.1 s of barrier wait in the captured debug
+ * bundle), so the staged.body_persist tick alone blocked ~10 s and the
+ * 90 s acceptance budget was blown while the real consensus work was
+ * ~55 ms. With the small-backlog gate open the drain defers the
+ * event-log sync; at tip (gap <= 1) the immediate per-op regime
+ * returns unchanged. */
+static int spt_case_small_chain_durability(struct main_state *staged_ms)
+{
+    int failures = 0;
+    atomic_store(&g_spt_drain_calls, 0);
+    atomic_store(&g_spt_drain_saw_deferred_sync, false);
+    bool esc = false;
+
+    struct connman sc_cm;
+    memset(&sc_cm, 0, sizeof(sc_cm));
+    net_manager_init(&sc_cm.manager);
+    struct p2p_node *sc_peer = spt_add_healthy_outbound(&sc_cm, 21);
+    if (sc_peer)
+        sc_peer->starting_height = 124;
+    sync_monitor_set_context(&sc_cm, NULL, NULL);
+    catchup_cadence_test_set_log_head_override(0); /* gap = 124 */
+
+    SPT_CHECK("small chain: accelerated cadence inert (gap 124 < 500)",
+              !catchup_cadence_active());
+    (void)staged_sync_supervisor_test_run_stage_tick(
+        "staged.spt_test_stage", "staged.spt_test_upstream",
+        spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+        staged_ms, &esc, NULL);
+    SPT_CHECK("small chain: staged drain runs inside batched durability",
+              atomic_load(&g_spt_drain_calls) == 1 &&
+                  atomic_load(&g_spt_drain_saw_deferred_sync));
+    SPT_CHECK("small chain: scope closes after the tick",
+              !disk_block_io_deferred_sync_enabled());
+
+    catchup_cadence_test_set_log_head_override(123); /* gap = 1 */
+    atomic_store(&g_spt_drain_calls, 0);
+    atomic_store(&g_spt_drain_saw_deferred_sync, false);
+    (void)staged_sync_supervisor_test_run_stage_tick(
+        "staged.spt_test_stage", "staged.spt_test_upstream",
+        spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+        staged_ms, &esc, NULL);
+    SPT_CHECK("at tip (gap 1): drain keeps immediate durability",
+              atomic_load(&g_spt_drain_calls) == 1 &&
+                  !atomic_load(&g_spt_drain_saw_deferred_sync) &&
+                  !disk_block_io_deferred_sync_enabled());
+
+    catchup_cadence_test_reset();
+    sync_monitor_set_context(NULL, NULL, NULL);
+    connman_free(&sc_cm);
+    return failures;
+}
+
 int test_supervisor_production_tree(void)
 {
     printf("\n=== supervisor_production_tree tests ===\n");
@@ -573,6 +631,9 @@ int test_supervisor_production_tree(void)
         sync_monitor_set_context(NULL, NULL, NULL);
         connman_free(&cc_cm);
     }
+
+    /* ── small-chain catch-up durability (journey run1 regression) ────── */
+    failures += spt_case_small_chain_durability(&staged_ms);
 
     blocker_reset_for_testing();
     main_state_free(&staged_ms);

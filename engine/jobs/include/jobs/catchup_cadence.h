@@ -88,6 +88,10 @@
 #define CATCHUP_CADENCE_DEFAULT_DRAIN_BATCH 2000
 #define CATCHUP_CADENCE_DEFAULT_GAP_THRESHOLD 500
 #define CATCHUP_CADENCE_DEFAULT_TICK_MS 1000
+/* Deferred-sync gate default (catchup_cadence_deferred_sync_active): any
+ * backlog past one block batches the staged drains' durability; a live
+ * at-tip node oscillates at gap 0..1 and never opens it. */
+#define CATCHUP_CADENCE_DEFER_SYNC_DEFAULT_GAP_THRESHOLD 2
 
 /* True iff the node has connected peers AND is at least
  * ZCL_CATCHUP_GAP_THRESHOLD blocks behind the max peer-reported height.
@@ -116,6 +120,31 @@ int catchup_cadence_drain_batch(int normal_batch);
  * See the TICK-PERIOD OVERRIDE section above for why this is safe without
  * touching the global supervisor min-tick. */
 int64_t catchup_cadence_tick_period_us(void);
+
+/* ── Small-backlog durability gate ─────────────────────────────────────
+ *
+ * The accelerated-cadence gate above (gap >= 500) also happens to arm the
+ * reducer's batched-durability scope around each staged drain, which moves
+ * the stages' event_log appends off the per-append two-fsync path. A fresh
+ * latecomer syncing a SHORT chain never reaches that threshold, so every
+ * staged event append paid event_log_append's two ext4 journal barriers on
+ * the shared supervisor tick runner — measured ~300 ms per append on an
+ * HDD host, ~69 s of pure barrier wait for a 124-block regtest chain whose
+ * consensus work is ~55 ms (commons journey run1). This gate opens on the
+ * SAME measurement at a far lower threshold (default 2: any backlog past
+ * one block), for the staged drains' durability scoping ONLY:
+ *
+ *   - drain batch and tick period stay keyed to catchup_cadence_active(),
+ *     so nothing about the accelerated cadence changes below 500 blocks;
+ *   - it does NOT publish the g_active_cache verdict, so the precommit
+ *     flush cadence (R1 in reducer_body_fsync.c) keeps flushing on EVERY
+ *     stage-batch commit — the strict regime, only batched per commit;
+ *   - at tip (gap <= 1, the live new-block oscillation) it stays closed and
+ *     per-op durability is byte-for-byte unchanged.
+ *
+ * TUNABLE (threshold only, same clamp shape as the cadence gate):
+ *   ZCL_CATCHUP_DEFER_GAP_THRESHOLD  blocks  default 2  clamp [1,100000000] */
+bool catchup_cadence_deferred_sync_active(void);
 
 #ifdef ZCL_TESTING
 /* Force the log_head (tip_finalize) cursor reader to return `v` instead of

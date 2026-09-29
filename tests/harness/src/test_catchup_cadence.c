@@ -42,6 +42,7 @@ static void cc_clear_env(void)
     unsetenv("ZCL_CATCHUP_DRAIN_BATCH");
     unsetenv("ZCL_CATCHUP_GAP_THRESHOLD");
     unsetenv("ZCL_CATCHUP_TICK_MS");
+    unsetenv("ZCL_CATCHUP_DEFER_GAP_THRESHOLD");
     unsetenv("ZCL_VH_CATCHUP_POOL_SIZE");
 }
 
@@ -336,6 +337,75 @@ static int case_fanout_capped_under_catchup(void)
     return failures;
 }
 
+/* (D) Small-backlog durability gate (catchup_cadence_deferred_sync_active):
+ * a fresh latecomer on a SHORT chain — gap far under the 500-block cadence
+ * threshold — still needs its staged drains inside the reducer's
+ * batched-durability scope, because event_log_append's per-append double
+ * fsync on the shared tick runner dominates a short sync on a slow disk
+ * (commons journey run1: 227 barrier appends, 69.1 s of barrier wait for a
+ * 124-block chain). The gate opens past one block of backlog, keeps the
+ * accelerated batch/tick knobs inert, and never leaks into a caught-up
+ * node. */
+static int case_small_backlog_defer_sync_gate(void)
+{
+    int failures = 0;
+    struct connman cm;
+    struct p2p_node peer;
+    cc_reset(&cm);
+
+    /* No peers: closed regardless of the implied gap. */
+    catchup_cadence_test_set_log_head_override(0);
+    CC_CHECK("defer gate: closed with no peers",
+             !catchup_cadence_deferred_sync_active());
+
+    /* The journey shape: one peer 124 blocks ahead of an empty log head. */
+    cc_add_peer(&cm, &peer, 124);
+    catchup_cadence_test_set_log_head_override(0); /* gap = 124 */
+    CC_CHECK("gap 124: accelerated cadence still inert",
+             !catchup_cadence_active());
+    CC_CHECK("gap 124: deferred-sync gate open",
+             catchup_cadence_deferred_sync_active());
+    CC_CHECK("gap 124: batch unchanged",
+             catchup_cadence_drain_batch(100) == 100);
+    CC_CHECK("gap 124: tick period unchanged",
+             catchup_cadence_tick_period_us() == 0);
+
+    /* One block behind — a live node receiving each new tip block: closed,
+     * so at-tip per-op durability is byte-for-byte unchanged. */
+    catchup_cadence_test_set_log_head_override(123); /* gap = 1 */
+    CC_CHECK("gap 1: deferred-sync gate closed",
+             !catchup_cadence_deferred_sync_active());
+
+    /* Exactly at the threshold opens (>=, not >). */
+    catchup_cadence_test_set_log_head_override(122); /* gap = 2 */
+    CC_CHECK("gap 2 (at threshold): deferred-sync gate open",
+             catchup_cadence_deferred_sync_active());
+
+    /* Backlog fully drains: closed again. */
+    catchup_cadence_test_set_log_head_override(124); /* gap = 0 */
+    CC_CHECK("gap 0: deferred-sync gate closed",
+             !catchup_cadence_deferred_sync_active());
+
+    /* Env override + clamp, same shape as the cadence knobs. */
+    catchup_cadence_test_set_log_head_override(123); /* gap = 1 */
+    setenv("ZCL_CATCHUP_DEFER_GAP_THRESHOLD", "1", 1);
+    CC_CHECK("defer threshold env 1: gap 1 opens",
+             catchup_cadence_deferred_sync_active());
+    setenv("ZCL_CATCHUP_DEFER_GAP_THRESHOLD", "0", 1); /* clamp to 1 */
+    CC_CHECK("defer threshold clamp low: gap 1 still opens",
+             catchup_cadence_deferred_sync_active());
+    cc_clear_env();
+
+    /* Peers disconnect mid-backlog: closed. */
+    catchup_cadence_test_set_log_head_override(0); /* gap = 124 */
+    cm.manager.num_nodes = 0;
+    CC_CHECK("defer gate: closed when peers disconnect",
+             !catchup_cadence_deferred_sync_active());
+
+    cc_cleanup();
+    return failures;
+}
+
 int test_catchup_cadence(void)
 {
     int failures = 0;
@@ -345,6 +415,7 @@ int test_catchup_cadence(void)
     failures += case_active_when_gap_exceeds_threshold();
     failures += case_active_then_restore();
     failures += case_fanout_capped_under_catchup();
+    failures += case_small_backlog_defer_sync_gate();
     if (failures == 0)
         printf("test_catchup_cadence: ALL PASSED\n");
     else
