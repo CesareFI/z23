@@ -61,6 +61,9 @@ void vcs_zcode_dht_record_store_free(
  * newer sequence cannot resolve: a SOURCE_REPRODUCTION_ACK stream asserting
  * a different semantic_root is retained beside the earlier claim (a
  * preserved contradiction, returned as CONFLICT) instead of superseding it.
+ * The same exception applies to an OLDER sequence contradicting the
+ * stream's live top claim — that is preserved evidence, not stale replay,
+ * in whatever order gossip or a wire-sorted reload delivers the rows.
  * Same-sequence conflicts and retained contradictions share the explicit
  * conflict cap. */
 enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(

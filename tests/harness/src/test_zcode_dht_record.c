@@ -885,6 +885,85 @@ static int test_record_store_ack_contradiction(void)
         saw_equivocation = true;
     }
     ASSERT(saw_renewal && saw_equivocation);
+
+    /* Arrival order cannot matter: a store that sees the newer lie first
+     * must still preserve the older truth, or the nodes gossip brought
+     * the rows to earliest would be the only ones holding the evidence. */
+    struct vcs_zcode_dht_record_store *reordered =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(reordered != NULL);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(reordered, &equivocation,
+                                             1500),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(reordered, &first, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(reordered), 2);
+
+    /* Equal-sequence re-assertion of the first root beside the live
+     * equivocation keeps one row per distinct asserted root: the older
+     * same-claim row it restates is reclaimed even though the sequence
+     * only equals the stream's live maximum. */
+    struct vcs_zcode_dht_record equal = first;
+    equal.sequence = equivocation.sequence;
+    equal.expiry = equivocation.expiry;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&equal, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(reordered, &equal, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(reordered), 2);
+    size_t distinct_roots = 0;
+    ASSERT_EQ(vcs_zcode_dht_record_store_query(
+                  reordered, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+                  first.namespace_name, first.transport_root, 1500,
+                  discovery.records, 2), 2);
+    for (size_t i = 0; i < 2; i++)
+      if (memcmp(discovery.records[i].semantic_root,
+                 first.semantic_root, 32) == 0)
+        distinct_roots++;
+    ASSERT_EQ(distinct_roots, 1);
+    vcs_zcode_dht_record_store_free(reordered);
+
+    /* The saved image is wire-sorted, so a pair whose higher sequence
+     * sorts first must replay through load() as the same preserved
+     * contradiction — not fail the whole store as corruption. */
+    struct vcs_zcode_dht_record truth = first, lie = equivocation;
+    truth.semantic_root[0] = 0xff; /* sorts after the lie's root */
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&truth, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    lie.semantic_root[0] = 0x01; /* the lie sorts first: reload sees it
+                                  * replay before the truth it beats on
+                                  * sequence */
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&lie, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    char roundtrip_dir[] = "/tmp/zcl_dht_ack_contra_XXXXXX";
+    ASSERT(mkdtemp(roundtrip_dir) != NULL);
+    struct vcs_zcode_dht_record_store *saved =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(saved != NULL);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(saved, &truth, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(saved, &lie, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    char save_error[192] = {0};
+    ASSERT_EQ(vcs_zcode_dht_record_store_save(saved, roundtrip_dir,
+                                              save_error, sizeof(save_error)),
+              VCS_ZCODE_DHT_RECORD_STORE_OK);
+    vcs_zcode_dht_record_store_free(saved);
+    struct vcs_zcode_dht_record_store *loaded =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(loaded != NULL);
+    char load_error[192] = {0};
+    ASSERT_EQ(vcs_zcode_dht_record_store_load(
+                  loaded, roundtrip_dir, &f.verify, load_error,
+                  sizeof(load_error)),
+              VCS_ZCODE_DHT_RECORD_STORE_OK);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(loaded), 2);
+    ASSERT_EQ(vcs_zcode_dht_record_store_query(
+                  loaded, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+                  first.namespace_name, first.transport_root, 1500,
+                  discovery.records, 2), 2);
+    vcs_zcode_dht_record_store_free(loaded);
+    rf_cleanup_store(roundtrip_dir);
     vcs_zcode_dht_record_store_free(store);
     PASS();
   }

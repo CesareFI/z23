@@ -168,22 +168,23 @@ size_t vcs_zcode_dht_record_store_collect(
   return removed;
 }
 
-/* Physical reclaim for one admission: expired rows go, and a newer
- * same-stream record removes only the older rows it legitimately
- * restates. Contradicted observations are preserved in place — a newer
- * sequence cannot resolve which semantic_root the transport bytes
- * re-derive to, so newest-first deletion would let one provider rewrite
- * evidence by publishing again. */
+/* Physical reclaim for one admission: expired rows go, and the incoming
+ * record removes exactly the older rows of its own claim — same stream,
+ * older sequence, same asserted semantic_root. Contradicted observations
+ * are preserved in place: a newer sequence cannot resolve which
+ * semantic_root the transport bytes re-derive to, so newest-first
+ * deletion would let one provider rewrite evidence by publishing again.
+ * The result is one retained row per distinct asserted root, whatever
+ * order the rows arrived in. */
 static void put_reclaim_rows(struct vcs_zcode_dht_record_store *store,
                              const struct vcs_zcode_dht_record *record,
-                             uint64_t now_unix, bool newer)
+                             uint64_t now_unix)
 {
   size_t write_index = 0;
   for (size_t i = 0; i < store->count; i++) {
     struct record_store_entry *entry = &store->entries[i];
     bool remove = now_unix >= entry->record.expiry ||
-                  (newer &&
-                   vcs_zcode_dht_record_stream_equal(&entry->record,
+                  (vcs_zcode_dht_record_stream_equal(&entry->record,
                                                      record) &&
                    entry->record.sequence < record->sequence &&
                    !vcs_zcode_dht_record_contradicts(&entry->record,
@@ -192,6 +193,27 @@ static void put_reclaim_rows(struct vcs_zcode_dht_record_store *store,
       store->entries[write_index++] = *entry;
   }
   store->count = write_index;
+}
+
+/* An older sequence is stale replay — EXCEPT when it contradicts the
+ * stream's live top-sequence claim. The transport bytes determine one
+ * source closure, so both assertions cannot stand; preserving the older
+ * side is the same evidence rule as forward arrival, and it is what
+ * keeps a wire-sorted save (which may order the higher sequence first)
+ * replaying through load() without failing as corruption. */
+static bool put_is_stale(const struct vcs_zcode_dht_record_store *store,
+                         const struct vcs_zcode_dht_record *record,
+                         uint64_t now_unix, uint64_t max_sequence)
+{
+  if (max_sequence <= record->sequence)
+    return false;
+  for (size_t i = 0; i < store->count; i++) {
+    const struct vcs_zcode_dht_record *existing = &store->entries[i].record;
+    if (now_unix < existing->expiry && existing->sequence == max_sequence &&
+        vcs_zcode_dht_record_contradicts(existing, record))
+      return false;
+  }
+  return true;
 }
 
 enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
@@ -262,11 +284,11 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
     if (superseded)
       glob_drop++;
   }
-  if (max_sequence > record->sequence)
+  if (put_is_stale(store, record, now_unix, max_sequence))
     return VCS_ZCODE_DHT_RECORD_STORE_STALE;
-  /* max_sequence <= record->sequence here, so every counted conflict is
-   * either a same-slot collision this admission retains or a preserved
-   * contradiction; both consume the same bounded conflict budget. */
+  /* Every counted conflict is a same-slot collision this admission
+   * retains or a preserved contradiction; both consume the same bounded
+   * conflict budget. */
   if (conflicts >= VCS_ZCODE_DHT_RECORD_STORE_MAX_CONFLICTS)
     return VCS_ZCODE_DHT_RECORD_STORE_CONFLICT_CAP;
   bool newer = max_sequence && record->sequence > max_sequence;
@@ -283,7 +305,7 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
   /* Physical reclaim mirrors the live-capacity view: expired rows go when
    * this admission lands, so a stored image after any successful put
    * matches what a reload would have produced. */
-  put_reclaim_rows(store, record, now_unix, newer);
+  put_reclaim_rows(store, record, now_unix);
   struct record_store_entry *entry = &store->entries[store->count++];
   entry->record = *record;
   memcpy(entry->wire, wire, sizeof(entry->wire));
