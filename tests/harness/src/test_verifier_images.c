@@ -35,6 +35,8 @@
 #include <sys/ptrace.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -599,21 +601,34 @@ enum {
 
 static bool vi_eperm(long rc) { return rc == -1 && errno == EPERM; }
 
+static int vi_clone_child(void *arg)
+{
+    (void)arg;
+    _exit(0);
+}
+
+/* Without a filter, socket, ptrace(TRACEME), setns(-1), the personality
+ * query and memfd_create succeed or fail with another errno, so their EPERM
+ * is the filter's. mount and the user-namespace calls can already be EPERM
+ * for an unprivileged user (Ubuntu restricts user namespaces); they are
+ * checked anyway, and discriminate when the test runs with privilege.
+ * The filter's handling of calls glibc does not wrap (bpf, io_uring,
+ * keyctl, userfaultfd, perf_event_open) is checked by the evaluator. */
 static int vi_sc_refusals(void)
 {
+    static char stack[16384] __attribute__((aligned(16)));
     int bad = 0;
     if (prctl(PR_GET_SECCOMP, 0, 0, 0, 0) != 2) bad |= VI_SC_MODE;
     if (!vi_eperm(socket(AF_INET, SOCK_STREAM, 0)) ||
         !vi_eperm(socket(AF_UNIX, SOCK_STREAM, 0))) bad |= VI_SC_SOCKET;
     if (!vi_eperm(ptrace(PTRACE_TRACEME, 0, NULL, NULL))) bad |= VI_SC_PTRACE;
-    if (!vi_eperm(syscall(SYS_unshare, CLONE_NEWUSER))) bad |= VI_SC_USERNS;
-    if (!vi_eperm(syscall(SYS_clone, CLONE_NEWUSER | SIGCHLD, 0, 0, 0, 0)))
+    if (!vi_eperm(unshare(CLONE_NEWUSER))) bad |= VI_SC_USERNS;
+    if (!vi_eperm(clone(vi_clone_child, stack + sizeof(stack),
+                        CLONE_NEWUSER | SIGCHLD, NULL)))
         bad |= VI_SC_CLONE_NS;
-    if (!vi_eperm(syscall(SYS_bpf, 0, 0, 0)) ||
-        !vi_eperm(syscall(SYS_io_uring_setup, 1, 0)) ||
-        !vi_eperm(syscall(SYS_keyctl, 0, 0, 0, 0, 0)) ||
-        !vi_eperm(syscall(SYS_userfaultfd, 0)) ||
-        !vi_eperm(syscall(SYS_perf_event_open, 0, 0, -1, -1, 0)) ||
+    if (!vi_eperm(setns(-1, CLONE_NEWNET)) ||
+        !vi_eperm(personality(0xffffffffUL)) ||
+        !vi_eperm(memfd_create("vi", 0)) ||
         !vi_eperm(mount("none", "/", "tmpfs", 0, NULL)))
         bad |= VI_SC_MISC;
     return bad;

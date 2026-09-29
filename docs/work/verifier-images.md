@@ -180,8 +180,14 @@ Tested without root:
 - The kernel installs the filter with `no_new_privs`, and
   `PR_GET_SECCOMP` reads 2.
 - These calls all return `EPERM`: `socket` (INET and UNIX), `ptrace`,
-  `unshare(CLONE_NEWUSER)`, `clone(CLONE_NEWUSER)`, `bpf`, `io_uring_setup`,
-  `keyctl`, `userfaultfd`, `perf_event_open` and `mount`.
+  `unshare(CLONE_NEWUSER)`, `clone(CLONE_NEWUSER)`, `setns`, `personality`,
+  `memfd_create` and `mount`. Without the filter, `socket`, `ptrace`,
+  `setns(-1)`, `personality` and `memfd_create` succeed or fail with another
+  errno, so their `EPERM` is the filter's. Unprivileged `mount` and user
+  namespaces can be `EPERM` anyway on this host.
+- The reference evaluator checks the calls glibc does not wrap (`bpf`,
+  `io_uring_*`, `keyctl`, `userfaultfd`, `perf_event_open` and others), plus
+  foreign-arch and x32 `KILL_PROCESS`, against the same bytes.
 - `gcc -c result.c` under the filter produces `268e7e07…`.
 
 ## Root commands

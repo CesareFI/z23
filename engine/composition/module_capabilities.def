@@ -993,7 +993,6 @@ ZCL_MODULE_CAPABILITY("cognition/modules/territory/src/territory_general.c", CAP
 ZCL_MODULE_CAPABILITY("cognition/modules/territory/src/territory_reach.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("cognition/modules/territory/src/territory_scorecard.c", CAP_FS_READ|CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("tests/harness/src/test_thread_qos.c", CAP_PRIVILEGE, "the ioprio_get(2) test probe: hand-rolls the same syscall() the production sched code hand-rolls ioprio_set through, so it reaches the kernel directly for a syscall glibc does not wrap")
-ZCL_MODULE_CAPABILITY("tests/harness/src/test_verifier_images.c", CAP_PRIVILEGE, "the seccomp enforcement probe: after installing the verifier filter, a forked child calls unshare, clone(CLONE_NEWUSER), bpf, io_uring_setup, keyctl, userfaultfd and perf_event_open through syscall() to prove each returns EPERM; glibc wraps none of the last five")
 ZCL_MODULE_CAPABILITY("platform/modules/util/src/async_safe_write.c", CAP_FS_WRITE, "")
 ZCL_MODULE_CAPABILITY("platform/modules/util/src/authority_receipt.c", CAP_FS_WRITE|CAP_FS_READ, "")
 ZCL_MODULE_CAPABILITY("platform/modules/util/src/blocker.c", CAP_FS_WRITE, "")
