@@ -52,6 +52,10 @@ bool vcs_zcode_work_node_peer_add(struct vcs_zcode_work_node *node,
                                   uint64_t peer);
 void vcs_zcode_work_node_peer_drop(struct vcs_zcode_work_node *node,
                                    uint64_t peer);
+/* True while this transport session is a live work peer. A session that
+ * dropped never returns: every reconnect is a new session id. */
+bool vcs_zcode_work_node_peer_present(struct vcs_zcode_work_node *node,
+                                      uint64_t peer);
 /* Expire unfinished signed requests and release their bounded headroom.
  * Their immutable binding remains as a bounded tombstone until a late local
  * result is explicitly refused as WORK_LEASE_EXPIRED (or the peer drops). */

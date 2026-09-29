@@ -175,6 +175,16 @@ void vcs_zcode_work_node_peer_drop(struct vcs_zcode_work_node *node,
     pthread_mutex_unlock(&node->lock);
 }
 
+bool vcs_zcode_work_node_peer_present(struct vcs_zcode_work_node *node,
+                                      uint64_t peer)
+{
+    if (!node || peer == 0) return false;
+    pthread_mutex_lock(&node->lock);
+    bool present = work_peer_slot(node, peer) >= 0;
+    pthread_mutex_unlock(&node->lock);
+    return present;
+}
+
 void vcs_zcode_work_node_tick(struct vcs_zcode_work_node *node, int64_t now)
 {
     if (!node || now < 0) return;
@@ -441,19 +451,50 @@ static struct work_track *work_add_track(
     return NULL;
 }
 
+/* An unfinished outbound binding whose transport session is gone. Session ids
+ * never return, so nothing can answer it there: a worker that finished while
+ * the session was down queued its RESULT to that dead session. */
+static bool work_outbound_session_lost(const struct vcs_zcode_work_node *node,
+                                       const struct work_track *track)
+{
+    return track->used && !track->inbound && !track->finished &&
+        !track->cancelled && !track->expired &&
+        work_peer_slot(node, track->peer) < 0;
+}
+
+/* The exact binding may move to another session only when the old one can
+ * no longer be answered: its signed lease is over, or its session is gone.
+ * The receiving worker still admits it itself (it attaches to the live run
+ * or replays the finished action under the same signed binding). */
 static bool work_has_expired_outbound_binding(
     const struct vcs_zcode_work_node *node,
     const struct vcs_zcode_work_request_v1 *request)
 {
     for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
         const struct work_track *track = &node->tracks[i];
-        if (track->used && !track->inbound && track->expired &&
-            !track->cancelled &&
+        if (track->used && !track->inbound &&
+            ((track->expired && !track->cancelled) ||
+             work_outbound_session_lost(node, track)) &&
             track->request.request_id == request->request_id &&
             vcs_zcode_work_same_action_binding(&track->request, request))
             return true;
     }
     return false;
+}
+
+/* The binding now lives on its new session. Its lost-session track can
+ * never be answered, so it stops holding requester-owned headroom. */
+static void work_supersede_lost_binding(
+    struct vcs_zcode_work_node *node,
+    const struct vcs_zcode_work_request_v1 *request)
+{
+    for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
+        struct work_track *track = &node->tracks[i];
+        if (work_outbound_session_lost(node, track) &&
+            track->request.request_id == request->request_id &&
+            vcs_zcode_work_same_action_binding(&track->request, request))
+            track->expired = true;
+    }
 }
 
 static void work_remove_queued_request(struct vcs_zcode_work_node *node,
@@ -498,10 +539,11 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
     if (result == VCS_ZCODE_WORK_NODE_OK && !existing) {
         bool allowed;
         if (expired_cross_peer_retry) {
-            /* The old peer's signed lease is over.  A different peer still
-             * enforces its own live capacity on receipt, so stale signed
-             * zero headroom must not prevent sending this exact immutable
-             * retry forever.  All other signed limits remain mandatory. */
+            /* The old peer's signed lease is over, or its session is gone.
+             * A different session still enforces its worker's live capacity
+             * on receipt, so stale signed or requester-projected zero
+             * headroom must not prevent sending this exact immutable retry
+             * forever.  All other signed limits remain mandatory. */
             allowed = vcs_zcode_work_capability_matches(
                 &node->peers[peer_at].capability, request, now);
         } else {
@@ -531,6 +573,8 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
         if (!work_queue_frame(node, peer, &message))
             result = VCS_ZCODE_WORK_NODE_FULL;
         else {
+            if (expired_cross_peer_retry)
+                work_supersede_lost_binding(node, request);
             memset(track, 0, sizeof(*track));
             track->used = true; track->peer = peer; track->request = *request;
             memcpy(track->worker_signer,

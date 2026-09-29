@@ -486,9 +486,14 @@ static void async_dispatch(
         requested_lease = capability.max_lease_seconds;
     bool active_discovery = strcmp(event->state, "PEER_DISCOVERED") == 0 &&
         event->peer_id == peer && event->deadline_at > now;
+    /* Only the transport changed: keep the live lease so the worker can
+     * attach this exact binding to the run it may still be executing. */
+    bool session_moved = event->deadline_at > now &&
+        boot_zcode_async_session_lost(work, event);
     int64_t lease_end = now + requested_lease;
-    int64_t deadline = active_discovery ? event->deadline_at :
-        (lease_end < task.expires_unix ? lease_end : task.expires_unix - 1);
+    int64_t deadline = active_discovery || session_moved
+        ? event->deadline_at
+        : (lease_end < task.expires_unix ? lease_end : task.expires_unix - 1);
     if (deadline <= now) return;
     struct vcs_zcode_work_request_v1 request = {
         .request_id = event->request_id,
@@ -738,7 +743,8 @@ void boot_zcode_async_proof_tick(
             strcmp(events[i].state, "PEER_DISCOVERED") == 0 ||
             ((strcmp(events[i].state, "CONTEXT_READY") == 0 ||
               strcmp(events[i].state, "RUNNING") == 0) &&
-             events[i].deadline_at > 0 && now >= events[i].deadline_at);
+             ((events[i].deadline_at > 0 && now >= events[i].deadline_at) ||
+              boot_zcode_async_session_lost(work, &events[i])));
         if (dispatchable)
             async_dispatch(svc, work, ndb, &events[i], now);
         else if (strcmp(events[i].state, "REMOTE_GREEN") == 0 ||

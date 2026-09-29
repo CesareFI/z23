@@ -27,6 +27,14 @@ static bool async_capability_allows(
         memcmp(capability->toolchain_capsule_root, toolchain, 32) == 0;
 }
 
+bool boot_zcode_async_session_lost(
+    struct vcs_zcode_work_node *work,
+    const struct db_build_proof_event *event)
+{
+    return work && event && event->peer_id != 0 &&
+        !vcs_zcode_work_node_peer_present(work, event->peer_id);
+}
+
 bool boot_zcode_async_select_peer(
     struct vcs_zcode_work_node *work,
     const struct db_build_proof_event *event,
@@ -35,7 +43,10 @@ bool boot_zcode_async_select_peer(
 {
     if (!work || !event || !job || !peer_out || !capability_out)
         return false;
-    bool retry = event->deadline_at > 0 && now >= event->deadline_at;
+    /* A request whose session dropped is retried like an expired one: its
+     * worker may have finished and queued the RESULT to the dead session. */
+    bool retry = (event->deadline_at > 0 && now >= event->deadline_at) ||
+        boot_zcode_async_session_lost(work, event);
     if (event->peer_id && !retry &&
         vcs_zcode_work_node_peer_capability(
             work, event->peer_id, now, capability_out)) {

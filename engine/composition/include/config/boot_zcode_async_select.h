@@ -12,6 +12,11 @@ struct db_build_proof_event;
 struct vcs_zcode_work_capability_v1;
 struct vcs_zcode_work_node;
 
+/* True when the event names a work session that is no longer live. Session
+ * ids never return, so nothing can answer the request there any more. */
+bool boot_zcode_async_session_lost(
+    struct vcs_zcode_work_node *work,
+    const struct db_build_proof_event *event);
 bool boot_zcode_async_select_peer(
     struct vcs_zcode_work_node *work,
     const struct db_build_proof_event *event,

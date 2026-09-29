@@ -16,6 +16,7 @@
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
+#include "models/build_proof_event.h"
 #include "models/database.h"
 #include "models/database_owner_lease.h"
 #include "models/zcode_lane.h"
@@ -1906,6 +1907,172 @@ static int test_zd_work_node_duplicate_sessions(void)
             requester, 12, &peer, frame, &frame_len));
         vcs_zcode_work_node_free(requester);
         vcs_zcode_work_node_free(worker);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Across two hosts the same-IP inbound eviction can replace the requester's
+ * session to its worker while the worker is executing. The worker then
+ * queues its RESULT to the dead session, and session ids never return, so
+ * nothing can redeliver it. The requester must move the exact binding to the
+ * worker's new session at once, not after the whole lease has lapsed, and
+ * without granting itself a second physical slot on that worker. */
+static int test_zd_work_node_session_moved(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: a dropped session moves the exact binding to the worker's new session") {
+        struct vcs_zcode_work_node *a = vcs_zcode_work_node_create();
+        struct vcs_zcode_work_node *b = vcs_zcode_work_node_create();
+        ASSERT(a && b);
+        ASSERT(vcs_zcode_work_node_peer_add(a, 11));
+        ASSERT(vcs_zcode_work_node_peer_add(b, 21));
+        uint8_t a_seed[32], a_secret[32], a_key[32];
+        uint8_t b_seed[32], b_secret[32], b_key[32];
+        zd_root(a_seed, 131); zd_root(b_seed, 130);
+        ed25519_keypair(a_key, a_secret, a_seed);
+        ed25519_keypair(b_key, b_secret, b_seed);
+        struct vcs_zcode_work_capability_v1 cap = {0};
+        memcpy(cap.signer_pubkey, b_key, 32);
+        zd_root(cap.toolchain_capsule_root, 132);
+        cap.work_kinds = UINT32_C(1) << VCS_ZCODE_WORK_BUILD;
+        cap.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+        cap.confinement = VCS_ZCODE_WORK_CONFINEMENT_V1_MASK;
+        cap.max_cpu_seconds = 60;
+        cap.max_memory_bytes = UINT64_C(512) * 1024 * 1024;
+        cap.max_output_bytes = UINT64_C(64) * 1024 * 1024;
+        cap.max_lease_seconds = 120;
+        cap.slots = cap.queue_headroom = 1;
+        cap.expires_unix = 2000;
+        ASSERT(vcs_zcode_work_capability_seal(&cap, b_secret, b_key));
+        ASSERT(vcs_zcode_work_node_set_local_signer(b, b_secret, b_key));
+        ASSERT(vcs_zcode_work_node_set_local_capability(b, &cap));
+        uint8_t frame[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+        size_t frame_len = 0;
+        uint64_t peer = 0;
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 21, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 11, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
+
+        struct vcs_zcode_work_request_v1 qa = {0};
+        qa.request_id = 950;
+        zd_root(qa.task_root, 133); zd_root(qa.candidate_root, 134);
+        zd_root(qa.action_root, 135); zd_root(qa.input_root, 136);
+        zd_root(qa.context_root, 137); zd_root(qa.proof_policy_root, 138);
+        memcpy(qa.toolchain_capsule_root, cap.toolchain_capsule_root, 32);
+        qa.work_kind = VCS_ZCODE_WORK_BUILD;
+        qa.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+        qa.max_cpu_seconds = 60;
+        qa.max_memory_bytes = UINT64_C(512) * 1024 * 1024;
+        qa.max_output_bytes = UINT64_C(64) * 1024 * 1024;
+        qa.deadline_unix = 1100;
+        ASSERT(vcs_zcode_work_request_seal(&qa, a_secret, a_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(a, 11, &qa, 1000),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            a, 11, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            b, 21, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
+        struct vcs_zcode_work_request_v1 physical;
+        ASSERT(vcs_zcode_work_node_next_request(b, &peer, &physical));
+        ASSERT_EQ(physical.request_id, qa.request_id);
+        ASSERT(vcs_zcode_work_node_mark_action_ready(
+            b, 21, qa.request_id, 1000, 4096));
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 21, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 11, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
+
+        /* The session drops mid-run, and the worker finishes while no
+         * session exists: its RESULT goes to the dead session and the
+         * worker's own requeue can never reach the requester again. */
+        vcs_zcode_work_node_peer_drop(a, 11);
+        vcs_zcode_work_node_peer_drop(b, 21);
+        ASSERT(!vcs_zcode_work_node_peer_present(a, 11));
+        struct vcs_zcode_work_result_v1 result;
+        zd_swarm_result(&result, &qa, 139, 130);
+        size_t queued = 0;
+        ASSERT_EQ(vcs_zcode_work_node_publish_result(
+                      b, 21, &result, &queued), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT_EQ(queued, 1u);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 21, &peer, frame, &frame_len)); /* lost with its session */
+        ASSERT_EQ(vcs_zcode_work_node_requeue_results(b, 1005), 0u);
+        ASSERT_EQ(vcs_zcode_work_node_requeue_results(b, 1011), 0u);
+
+        /* A new session to the same worker forms. */
+        ASSERT(vcs_zcode_work_node_peer_add(a, 12));
+        ASSERT(vcs_zcode_work_node_peer_add(b, 22));
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 22, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 12, frame, frame_len, 1006), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_peer_present(a, 12));
+
+        /* The durable proof event still names the dead session; selection
+         * treats that as a retry and chooses the worker's new session. */
+        struct db_build_proof_event event;
+        memset(&event, 0, sizeof(event));
+        (void)snprintf(event.state, sizeof(event.state), "RUNNING");
+        event.peer_id = 11;
+        event.request_id = qa.request_id;
+        event.deadline_at = qa.deadline_unix;
+        struct db_build_job job;
+        memset(&job, 0, sizeof(job));
+        zcl_hex_encode(cap.toolchain_capsule_root, 32, job.toolchain_sha3);
+        ASSERT(boot_zcode_async_session_lost(a, &event));
+        struct vcs_zcode_work_capability_v1 chosen;
+        uint64_t chosen_peer = 0;
+        ASSERT(boot_zcode_async_select_peer(
+            a, &event, &job, VCS_ZCODE_WORK_BUILD, 1006, &chosen_peer,
+            &chosen));
+        ASSERT_EQ(chosen_peer, 12u);
+        event.peer_id = 12;
+        ASSERT(!boot_zcode_async_session_lost(a, &event));
+
+        /* A different action still waits for the one physical slot. */
+        struct vcs_zcode_work_request_v1 other = qa;
+        other.request_id = 951;
+        zd_root(other.action_root, 140);
+        ASSERT(vcs_zcode_work_request_seal(&other, a_secret, a_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(a, 12, &other, 1006),
+                  VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH);
+        /* The exact binding moves to the new session... */
+        ASSERT_EQ(vcs_zcode_work_node_submit(a, 12, &qa, 1006),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT_EQ(vcs_zcode_work_node_submit(a, 12, &other, 1006),
+                  VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            a, 12, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            b, 22, frame, frame_len, 1006), VCS_ZCODE_WORK_NODE_OK);
+        /* ...and the worker admits and answers it there itself. */
+        ASSERT(vcs_zcode_work_node_next_request(b, &peer, &physical));
+        ASSERT_EQ(peer, 22u);
+        ASSERT_EQ(physical.request_id, qa.request_id);
+        ASSERT(vcs_zcode_work_node_mark_action_ready(
+            b, 22, qa.request_id, 1006, 4096));
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 22, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 12, frame, frame_len, 1006), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT_EQ(vcs_zcode_work_node_publish_result(
+                      b, 22, &result, &queued), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 22, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 12, frame, frame_len, 1007), VCS_ZCODE_WORK_NODE_OK);
+        struct vcs_zcode_work_result_v1 got;
+        ASSERT(vcs_zcode_work_node_next_result(a, &peer, &got));
+        ASSERT_EQ(peer, 12u);
+        ASSERT_EQ(got.request_id, qa.request_id);
+        struct vcs_zcode_work_request_v1 bound;
+        ASSERT(vcs_zcode_work_node_outbound_request(
+            a, 12, qa.request_id, &bound));
+        ASSERT(vcs_zcode_work_same_action_binding(&bound, &qa));
+        vcs_zcode_work_node_free(a);
+        vcs_zcode_work_node_free(b);
         PASS();
     } _test_next:;
     return failures;
@@ -10586,6 +10753,7 @@ int test_zcode_dev_objects(void)
     failures += test_zd_work_swarm();
     failures += test_zd_observation_mmr();
     failures += test_zd_work_node_duplicate_sessions();
+    failures += test_zd_work_node_session_moved();
     failures += test_zd_work_node_cancel_generation();
     failures += test_zd_work_node_atomic_admission();
     failures += test_zd_work_node_reclaims_expired_tracks();
