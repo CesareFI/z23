@@ -62,6 +62,7 @@
 #include "services/chain_state_service.h"
 
 #include "models/database.h"
+#include "models/db_txn.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 
@@ -254,6 +255,62 @@ static void cec_lift_boot_tip_divergence_freeze(
              CEC_BOOT_TIP_DIVERGENCE_PREFIX "' and resuming", height);
 }
 
+/* Persist the forward-evidence key set as ONE transaction. The previous
+ * &&-chain of per-key retry writes committed each key separately: a mid-chain
+ * busy failure left a torn tip (hash advanced, height stale) that snapshot
+ * readers could observe, and the next health tick restarted at key #1,
+ * rewriting already-written rows as fresh commits. promote_tip wraps its
+ * identical set the same way. Plain state_set calls, not the retry variants:
+ * the retry ladder's detached fallback opens a second connection that can
+ * never acquire the write lock this transaction holds. Outer-txn detection
+ * mirrors promote_tip — join a caller-owned transaction, else own the
+ * commit. Any failure rolls the whole set back; the caller's throttled
+ * persist-miss path retries on the next health tick. */
+static bool cec_persist_finalized_tip_evidence(
+    struct chain_evidence_controller *authority,
+    const struct block_index *finalized_tip, int coins_height,
+    const struct chain_evidence_record *forward)
+{
+    struct node_db_status txn_status = {0};
+    node_db_get_status(authority->ndb, &txn_status);
+    bool outer_txn_present = txn_status.tx_open;
+    __attribute__((cleanup(db_txn_auto_rollback)))
+    struct db_txn *txn = NULL;
+    if (!outer_txn_present)
+        txn = db_txn_begin(authority->ndb, "cec.record_finalized_tip");
+
+    bool persisted = false;
+    if (outer_txn_present || txn) {
+        persisted =
+            chain_evidence_controller_mark_block_evidence(
+                authority, finalized_tip->phashBlock, forward).ok &&
+            node_db_state_set(authority->ndb, "cec.active_tip_hash",
+                              finalized_tip->phashBlock->data, 32) &&
+            node_db_state_set_int(authority->ndb, "cec.active_tip_height",
+                                  finalized_tip->nHeight) &&
+            node_db_state_set_int(authority->ndb,
+                                  "cec.coins_best_block_height",
+                                  coins_height) &&
+            node_db_state_set_int(authority->ndb, "cec.utxo_max_height",
+                                  finalized_tip->nHeight) &&
+            node_db_state_set_int(authority->ndb, "cec.publish_state",
+                                  CEC_PUBLISH_LOCAL_EVIDENCE) &&
+            node_db_state_set_int(authority->ndb,
+                                  "cec.active_tip_source_class",
+                                  CEC_SOURCE_CLASS_LOCAL_IMPORT) &&
+            node_db_state_set_int(authority->ndb,
+                                  "cec.repaired_active_tip_evidence", 1) &&
+            chain_evidence_store_persist(authority,
+                                         "cec.block_index_evidence_state",
+                                         forward).ok &&
+            chain_evidence_store_persist(authority, "cec.active_tip_evidence",
+                                         forward).ok;
+    }
+    if (persisted && txn)
+        persisted = db_txn_commit(txn);
+    return persisted;
+}
+
 bool chain_evidence_controller_record_finalized_tip(
     struct chain_evidence_controller *authority,
     struct block_index *finalized_tip,
@@ -333,40 +390,8 @@ bool chain_evidence_controller_record_finalized_tip(
     int coins_height = chain_evidence_clamp_coins_height_to_frontier(
         authority, finalized_tip->nHeight);
 
-    bool persisted =
-        chain_evidence_controller_mark_block_evidence(
-            authority, finalized_tip->phashBlock, &forward).ok &&
-        chain_evidence_state_set_retry(
-            authority->ndb, "cec.active_tip_hash",
-            finalized_tip->phashBlock->data, 32,
-            "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_state_set_int_retry(
-            authority->ndb, "cec.active_tip_height",
-            finalized_tip->nHeight,
-            "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_state_set_int_retry(
-            authority->ndb, "cec.coins_best_block_height",
-            coins_height, "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_state_set_int_retry(
-            authority->ndb, "cec.utxo_max_height",
-            finalized_tip->nHeight,
-            "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_state_set_int_retry(
-            authority->ndb, "cec.publish_state",
-            CEC_PUBLISH_LOCAL_EVIDENCE,
-            "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_state_set_int_retry(
-            authority->ndb, "cec.active_tip_source_class",
-            CEC_SOURCE_CLASS_LOCAL_IMPORT,
-            "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_state_set_int_retry(
-            authority->ndb, "cec.repaired_active_tip_evidence", 1,
-            "chain_evidence_record_finalized_tip").ok &&
-        chain_evidence_store_persist(authority,
-                                     "cec.block_index_evidence_state",
-                                     &forward).ok &&
-        chain_evidence_store_persist(authority, "cec.active_tip_evidence",
-                                     &forward).ok;
+    bool persisted = cec_persist_finalized_tip_evidence(
+        authority, finalized_tip, coins_height, &forward);
 
     if (!persisted) {
         /* Transient (sqlite contention). Loud, but NOT a freeze and NOT a
