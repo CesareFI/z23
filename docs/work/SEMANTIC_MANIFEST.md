@@ -1406,7 +1406,10 @@ decide those, not this rule.
 **Generated includes.** An optional include that does not exist yet but
 a rule can make is made before anything else and then read, and what its
 recipe writes is text no line holds: UNKNOWN, whatever the recipe is. The
-recipe is not read as shell. An optional include that exists is read as a
+recipe is not read as shell. An include and a rule target name one file
+however each spells a leading `./` (`./build/gen.mk` is `build/gen.mk`,
+as make reads it; a doubled `/` stays, as make keeps it). An optional
+include that exists is read as a
 makefile, like any other. It is taken as current: its rule remakes it
 only when one of that rule's prerequisites changed, and a changed path
 that reaches that rule already widens. A rule in any file make reads can
@@ -1473,17 +1476,21 @@ include make reads, missing or existing, and no path a skip globbed,
 even through text no name check reads (a script it runs, `$(addsuffix)`,
 `$$n`, `cp tpl/* build/`). Such a command is a `$(shell)` body, the same
 through `$(call shell,...)`, a `!=` value, the arguments of a `$(call)`
-whose function name is computed (`$(call $(F),...)`, never read-only),
-or the text of an `$(eval)` that holds a reference or `$$(` (never
-read-only: make expands it into lines no check reads). A command is
+whose function name is computed in any part or is `call` itself
+(`$(call $(F),...)`, `$(call s$(H)ell,...)`, `$(call call,shell,...)`,
+never read-only), or the text of an `$(eval)` that holds a reference or
+`$$(` (never read-only: make expands it into lines no check reads). A
+command is
 provably read-only when it is one simple command of `printf`, `echo`,
 `cat`, `uname`, `nproc`, `pwd`, `true`, `false`, `test`, `basename`,
 `dirname` or `pkg-config` with no make reference, substitution, quote,
 redirection, separator, assignment or glob in its text, and no line
 assigns `SHELL`, `.SHELLFLAGS` or `PATH` (plain, `override`, `export`,
 `define` or target-specific; a computed name or an `$(eval)` naming one
-counts): with one reassigned, the named program is not the one that
-runs. When an optional include make reads (missing after the skips, or
+counts), and no variable is exported (`export X`, a bare `export`,
+`.EXPORT_ALL_VARIABLES`; make passes exported variables such as
+`LD_PRELOAD` to `$(shell)`): with one reassigned or exported, the named
+program may not be the one that runs. When an optional include make reads (missing after the skips, or
 existing), or a skip resting on a glob, is read while any other command
 runs, `facts.make_guards.plan` records the premise with the first such
 include (missing, else skipped, else existing; `includes` missing,
@@ -1504,8 +1511,9 @@ every build input.
 **Makefile text that writes a file.** A `$(shell)` or `!=` command that
 make runs while it reads the makefiles can rewrite an include before make
 reads it, missing or not. `$(call shell,...)` runs its arguments the same
-way, and a `$(call)` whose function name is computed (`$(call $(F),...)`)
-may run any function. Any line but a recipe line (a tab-led line a
+way, and a `$(call)` whose function name is computed in any part or is
+`call` itself (`$(call $(F),...)`, `$(call s$(H)ell,...)`,
+`$(call call,shell,...)`) may run any function. Any line but a recipe line (a tab-led line a
 `define` holds is one too) whose `$(shell)` (direct or through
 `$(call shell,...)`) or `!=` text, as written, writes a file is UNKNOWN:
 outside quotes, a redirection to anything but a descriptor (`2>&1`,
