@@ -118,16 +118,15 @@ static bool collect_nullifiers(struct sqlite3 *db, int64_t height,
 
     uint8_t *buf = NULL;
     size_t cap = 0, cnt = 0;
-    bool ok = true;
     int rc;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         const uint8_t *nf = (const uint8_t *)sqlite3_column_blob(s, 0);
         int nf_len = sqlite3_column_bytes(s, 0);
         if (!nf || nf_len != 32) {
+            sqlite3_finalize(s);
+            free(buf);
             LOG_FAIL("snap_shielded", "collect: bad nullifier blob (len=%d)",
                      nf_len);
-            ok = false;
-            break;
         }
         uint8_t pool = (uint8_t)sqlite3_column_int(s, 1);
         int64_t h = sqlite3_column_int64(s, 2);
@@ -136,10 +135,10 @@ static bool collect_nullifiers(struct sqlite3 *db, int64_t height,
             uint8_t *nb = zcl_realloc(buf, ncap * SNAPSHOT_NF_RECORD_BYTES,
                                       "snap_shielded_nf");
             if (!nb) {
+                sqlite3_finalize(s);
+                free(buf);
                 LOG_FAIL("snap_shielded", "collect: nullifier OOM (%zu recs)",
                          ncap);
-                ok = false;
-                break;
             }
             buf = nb;
             cap = ncap;
@@ -148,14 +147,10 @@ static bool collect_nullifiers(struct sqlite3 *db, int64_t height,
                                   pool, nf, h);
         cnt++;
     }
-    if (ok && rc != SQLITE_DONE && rc != SQLITE_ROW) {
-        LOG_FAIL("snap_shielded", "collect: nullifier scan failed (rc=%d)", rc);
-        ok = false;
-    }
     sqlite3_finalize(s);
-    if (!ok) {
+    if (rc != SQLITE_DONE) {
         free(buf);
-        return false;
+        LOG_FAIL("snap_shielded", "collect: nullifier scan failed (rc=%d)", rc);
     }
     *buf_out = buf;
     *count_out = (uint64_t)cnt;

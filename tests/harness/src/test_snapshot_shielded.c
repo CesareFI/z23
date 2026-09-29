@@ -90,6 +90,64 @@ static bool sv_meta_is(sqlite3 *db, const char *key, const char *want)
            found && len == want_len && memcmp(buf, want, want_len) == 0;
 }
 
+/* A nullifier row whose blob is not 32 bytes must fail the collect WITHOUT
+ * parking the scan cursor: an un-finalized SELECT keeps the connection's WAL
+ * read snapshot pinned and wedges every later writer on that connection with
+ * SQLITE_BUSY_SNAPSHOT — the 2026-09-29 node.db wedge class, on the
+ * progress.kv/snapshot-export handle. The production writer always binds
+ * exactly 32 bytes, so only a raw INSERT can stage the corrupt row; the
+ * observable is the connection holding zero live statements afterwards
+ * (the same sqlite3_next_stmt walk the db_service Shape B rail performs). */
+static int sv_collect_bad_row_releases_cursor(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    struct incremental_merkle_tree sap_tree;
+    struct uint256 sap_root;
+    struct uint256 leaf;
+    struct incremental_merkle_tree spr_tree;
+    sapling_tree_init(&sap_tree);
+    sv_u256(&leaf, 0x51);
+    incremental_tree_append(&sap_tree, &leaf);
+    incremental_tree_root(&sap_tree, &sap_root);
+    sprout_tree_init(&spr_tree);
+
+    bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK &&
+              anchor_kv_reset_mark_complete_in_tx(db) &&
+              anchor_kv_seed_frontier_row(db, ANCHOR_POOL_SAPLING,
+                                          &sap_tree, SEED_H, &sap_root) &&
+              anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &spr_tree, SEED_H) &&
+              nullifier_kv_ensure_schema(db);
+    SV_CHECK("bad-row fixture shielded state installs", ok);
+
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO nullifiers(nf,pool,height) VALUES(X'"
+             "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"
+             "',%d,1)", NULLIFIER_POOL_SAPLING);
+    bool staged = ok &&
+                  sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
+    SV_CHECK("31-byte nullifier row staged", staged);
+
+    struct snapshot_shielded col;
+    memset(&col, 0, sizeof(col));
+    bool cok = staged && snapshot_shielded_collect_from_db(db, SEED_H, &col);
+    SV_CHECK("collect fails closed on a bad nullifier blob", staged && !cok);
+    snapshot_shielded_free_collected(&col);
+
+    int leaked = 0;
+    for (sqlite3_stmt *p = sqlite3_next_stmt(db, NULL); p;
+         p = sqlite3_next_stmt(db, p)) {
+        printf("snapshot_shielded: LEAKED statement: %s\n", sqlite3_sql(p));
+        leaked++;
+    }
+    SV_CHECK("failed collect releases its scan cursor (no live statements)",
+             leaked == 0);
+    if (db)
+        sqlite3_close(db);
+    return failures;
+}
+
 int test_snapshot_shielded(void)
 {
     printf("\n=== snapshot_shielded ===\n");
@@ -554,6 +612,8 @@ int test_snapshot_shielded(void)
 
     stream_free(&sap_bs);
     stream_free(&spr_bs);
+
+    failures += sv_collect_bad_row_releases_cursor();
 
     printf("=== snapshot_shielded: %d failure(s) ===\n", failures);
     return failures;
