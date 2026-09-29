@@ -707,9 +707,8 @@ compiler-id)
             # ancestor. That ancestor is already fully inventoried, and the
             # link is bound below. Every other incomplete walk still fails.
             [ "${pipeline_rc[0]}" -eq 1 ] && [ -s "$find_error" ] &&
-                ! LC_ALL=C grep -v \
-                    '^find: File system loop detected;.*$' "$find_error" |
-                    grep -q . ||
+                [ -z "$(LC_ALL=C grep -v \
+                    '^find: File system loop detected;.*$' "$find_error")" ] ||
                 fail "could not inventory compiler search root: $resolved"
         fi
         # Resolve the same ordered, NUL-delimited links in bounded argv batches.

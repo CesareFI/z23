@@ -1492,16 +1492,11 @@ validate_agent_json() {
             fail "agent live probe did not report healthy serving status"
         fi
     else
-        printf '%s\n' "$json" |
-            grep -qE '"schema"[[:space:]]*:[[:space:]]*"zcl\.public_status\.v[23]"'
-        printf '%s\n' "$json" |
-            grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"'
-        printf '%s\n' "$json" |
-            grep -q '"healthy"[[:space:]]*:[[:space:]]*true'
-        printf '%s\n' "$json" |
-            grep -q '"serving"[[:space:]]*:[[:space:]]*true'
-        printf '%s\n' "$json" |
-            grep -q '"operator_needed"[[:space:]]*:[[:space:]]*false'
+        grep -qE '"schema"[[:space:]]*:[[:space:]]*"zcl\.public_status\.v[23]"' <<<"$json"
+        grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"' <<<"$json"
+        grep -q '"healthy"[[:space:]]*:[[:space:]]*true' <<<"$json"
+        grep -q '"serving"[[:space:]]*:[[:space:]]*true' <<<"$json"
+        grep -q '"operator_needed"[[:space:]]*:[[:space:]]*false' <<<"$json"
     fi
 }
 
@@ -1520,14 +1515,10 @@ validate_health_json() {
             fail "health live probe did not report healthy serving status"
         fi
     else
-        printf '%s\n' "$json" |
-            grep -q '"healthy"[[:space:]]*:[[:space:]]*true'
-        printf '%s\n' "$json" |
-            grep -q '"serving"[[:space:]]*:[[:space:]]*true'
-        printf '%s\n' "$json" |
-            grep -q '"has_peers"[[:space:]]*:[[:space:]]*true'
-        printf '%s\n' "$json" |
-            grep -q '"peer_count"[[:space:]]*:[[:space:]]*[1-9][0-9]*'
+        grep -q '"healthy"[[:space:]]*:[[:space:]]*true' <<<"$json"
+        grep -q '"serving"[[:space:]]*:[[:space:]]*true' <<<"$json"
+        grep -q '"has_peers"[[:space:]]*:[[:space:]]*true' <<<"$json"
+        grep -q '"peer_count"[[:space:]]*:[[:space:]]*[1-9][0-9]*' <<<"$json"
     fi
 }
 
@@ -1589,7 +1580,7 @@ first_error_line() {
         log "FIRST-ERROR[$label]: $line"
         return
     fi
-    if printf '%s\n' "$output" | grep -q 'Failed groups:'; then
+    if grep -q 'Failed groups:' <<<"$output"; then
         log_path="$(printf '%s\n' "$output" |
             grep -m1 -oE 'log=[^[:space:]]+' | sed 's/^log=//' || true)"
         if [ -n "$log_path" ] && [ -f "$log_path" ]; then
@@ -1651,7 +1642,7 @@ run_rung_quiet() {
 ensure_fresh_compdb() {
     local status
     status="$(bash tools/dev/generate-compdb.sh --status 2>/dev/null || true)"
-    if printf '%s' "$status" | grep -q '"fresh":true'; then
+    if grep -q '"fresh":true' <<<"$status"; then
         log "compile database fresh"
         return 0
     fi

@@ -101,7 +101,7 @@ HEIGHT_NUM_RE='([0-9]{1,3}(,[0-9]{3})+)|([0-9]{6,})'
 # per-line escape hatch
 STALE_OK_RE='<!--[[:space:]]*stale-ok:[[:space:]]*[^[:space:]].*-->'
 
-has_stale_ok() { printf '%s' "$1" | grep -qE "$STALE_OK_RE"; }
+has_stale_ok() { grep -qE "$STALE_OK_RE" <<<"$1"; }
 
 # Normalize a matched line into a line-number-independent baseline key so the
 # grandfather list survives edits/reflows elsewhere in the file.

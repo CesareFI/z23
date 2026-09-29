@@ -81,7 +81,7 @@ mk_filter="$(gate_grep -E '^DEVLOOP_SRCS[[:space:]]*=.*filter-out.*DEV_ONLY_SRCS
 scanned=0
 for f in devloop_cli.c devloop_cycle.c devloop_watch.c devloop_process.c; do
     scanned=$((scanned + 1))
-    if ! printf '%s' "$mk_dev_only" | gate_grep -q "tools/dev/$f" >/dev/null; then
+    if ! gate_grep -q "tools/dev/$f" <<<"$mk_dev_only" >/dev/null; then
         echo "FAIL: tools/dev/$f is not in the Makefile DEV_ONLY_SRCS group" >&2
         rc=1
     fi

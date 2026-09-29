@@ -104,7 +104,7 @@ source tools/lint/gate_lib.sh
 . tools/scripts/sh_str.sh || { echo "check_pipefail_status_pipe: cannot source tools/scripts/sh_str.sh" >&2; exit 2; }
 
 GATE=check_pipefail_status_pipe
-RATCHET_CEILING=137
+RATCHET_CEILING=104
 
 # ── the detector ─────────────────────────────────────────────────────────
 # Emits: path<TAB>count<TAB>first-line-number. See the header for why this is

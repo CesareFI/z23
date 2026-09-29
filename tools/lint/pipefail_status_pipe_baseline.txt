@@ -17,20 +17,14 @@
 # Regenerate: ZCL_LINT_MODE=UPDATE tools/lint/check_pipefail_status_pipe.sh
 platform/deploy/migrate-role-names-selftest.sh 3
 platform/deploy/zclassic23-bundle-export.sh 2
-tools/agent_fast_ci.sh 11
 tools/deploy_guard.sh 2
 tools/dev/agent-dev-status.sh 4
 tools/dev/agent-doctor.sh 1
-tools/dev/build-epoch-key.sh 1
 tools/dev/deploy-dev-lane.sh 12
 tools/dev/hotswap-module-fast.sh 2
 tools/dev/recover-dev-lane-selftest.sh 1
 tools/dev/zcode_adapter_benchmark.sh 1
 tools/dev/zcode_dht_acceptance.sh 1
-tools/lint/check_no_stale_pinned_facts.sh 1
-tools/lint/check_release_no_dev_symbols.sh 1
-tools/lint/gate_doc_no_false_deleted.sh 1
-tools/lint/selftest_scanner_immunity.sh 1
 tools/mvp_gate.sh 6
 tools/scripts/check_condition_cooldown.sh 1
 tools/scripts/check_reproducible_build.sh 1

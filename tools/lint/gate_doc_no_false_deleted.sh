@@ -68,7 +68,8 @@ for row in "${ROWS[@]}"; do
     hit_doc=""
     for d in $DOCS; do
         [ -f "$d" ] || continue
-        if tr '\n' ' ' < "$d" | grep -Eiq "$regex"; then
+        flat_doc="$(tr '\n' ' ' < "$d")"
+        if grep -Eiq "$regex" <<<"$flat_doc"; then
             # best-effort line hint: the single-line tail of the claim
             ln=$(grep -EniE 'block-connect engine|no longer exists|has been (deleted|removed)' "$d" 2>/dev/null | head -1 | cut -d: -f1 || true)
             hit_doc="$d${ln:+:$ln}"

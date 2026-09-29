@@ -205,7 +205,7 @@ stray_out=$(
 )
 stray_rc=$?
 assert_fail "check_no_stray_untracked_source.sh fails on the untracked file" "$stray_rc"
-if printf '%s\n' "$stray_out" | grep -q "$STRAY_FILE.*untracked stray file"; then
+if grep -q "$STRAY_FILE.*untracked stray file" <<<"$stray_out"; then
     note "PASS: output names '$STRAY_FILE' as an untracked stray file (not a code violation)"
 else
     note "FAIL: output does not distinctly name the stray file:"
