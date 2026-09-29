@@ -650,6 +650,10 @@ static void es_node_load(struct es_graph *g, uint32_t idx)
     es_sha3_hex(text, len, g->nodes[idx].digest);
     len = es_splice_lines(text, len);
     es_strip_comments(text, len);
+    /* A file's appearance can flip this predicate without any #include
+     * edge. The closure key cannot vouch for that search result. */
+    if (strstr(text, "__has_include"))
+        es_node_bad(g, idx, "has-include", g->nodes[idx].path);
     if (!es_scan(g, idx, text, len))
         es_node_bad(g, idx, "closure-bound", g->nodes[idx].path);
     char seen[64] = "";

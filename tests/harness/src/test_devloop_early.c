@@ -997,6 +997,42 @@ static int de_test_skip_spliced_directive(struct de_state *s)
     return failures;
 }
 
+static int de_test_skip_has_include(struct de_state *s)
+{
+    int failures = 0;
+    TEST("devloop_early: an include-presence probe cannot reuse PASS "
+         "after a file appears") {
+        ASSERT(de_hole_setup(s));
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_probe.h",
+                        "#if __has_include(\"early_skip_optional.h\")\n"
+                        "#define EARLY_SKIP_OUTER 2\n"
+                        "#else\n#define EARLY_SKIP_OUTER 1\n#endif\n"));
+        ASSERT(de_write(s->fx.root, "tests/harness/src/" DE_VOUCHED ".c",
+                        "#include \"early_skip_dep.h\"\n"
+                        "#include \"early_skip_probe.h\"\n"
+                        "int early_skip_fixture_group = "
+                        "EARLY_SKIP_DEP + EARLY_SKIP_OUTER;\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        bool vouched = s->hole.rows[0].vouched;
+        if (vouched) {
+            ASSERT(de_hole_is(s, "no-record", ""));
+            ASSERT(zcl_devloop_early_skip_record(s->fx.root, &s->hole,
+                                                  "", 1000));
+        } else {
+            ASSERT(de_hole_is(s, "unvouched", "has-include"));
+        }
+        ASSERT(de_write(s->fx.root,
+                        "tests/harness/src/early_skip_optional.h",
+                        "#define EARLY_SKIP_OPTIONAL 1\n"));
+        de_hole_decide(s, DE_HOLE_FLAGS);
+        ASSERT(de_hole_is(s, vouched ? "key-changed" : "unvouched",
+                          vouched ? "" : "has-include"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int de_test_skip_flags(struct de_state *s)
 {
     int failures = 0;
@@ -1085,6 +1121,7 @@ static int de_test_restart(void)
         failures += de_test_skip_helper(s);
         failures += de_test_skip_suffix(s);
         failures += de_test_skip_spliced_directive(s);
+        failures += de_test_skip_has_include(s);
         failures += de_test_skip_flags(s);
     }
     if (s)
