@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton; SPDX-License-Identifier: Apache-2.0.
  * Local key-format falsification. No authority or reusable artifact. */
 #include "verify/fixed_result_key_v2.h"
+#include "verify/fixed_result_contract.h"
 
 #include "base/hex.h"
 #include "platform/fd_path.h"
@@ -79,9 +80,7 @@ static bool setup(struct fixture *f)
     for (size_t i = 0; i < sizeof(f->roots); i++)
         fields[i] = (uint8_t)(1 + i / 32);
     hash(f->profile, f->profile_len, f->roots.profile_args);
-    static const char env[] = "z23verify.fixed_result.env.v1\n"
-        "LC_ALL=C\nTZ=UTC\nTMPDIR=/tmp\nPATH=/usr/bin:/bin\n";
-    hash((const uint8_t *)env, sizeof(env) - 1, f->roots.environment);
+    zcl_fr_env_fixed_root(f->roots.environment);
     f->envp[0] = "LC_ALL=C";
     f->envp[1] = "TZ=UTC";
     f->envp[2] = "TMPDIR=/tmp";

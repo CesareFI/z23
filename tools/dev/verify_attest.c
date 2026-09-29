@@ -12,6 +12,7 @@
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "sha3/sha3.h"
+#include "verify/fixed_result_contract.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -23,15 +24,14 @@
 #endif
 
 #define VA_LOG_DOMAIN "verify-attest"
-/* Both domain strings are hashed or signed including their NUL, so no
- * body can begin with bytes that extend the domain. */
-#define VA_SIGN_DOMAIN "zcl.verify_attest.sig.v1"
-#define VA_STORE_DOMAIN "zcl.verify_attest.store.v2"
-#define VA_SCHEMA_LEN (sizeof(ZCL_VERIFY_ATTEST_SCHEMA) - 1u)
+/* Every v2 domain is length-framed, so no body can extend it. */
+#define VA_SIGN_DOMAIN "z23verify.attest.signature.v2"
+#define VA_STORE_DOMAIN "z23verify.attest.store_key.v2"
+#define VA_V1_SCHEMA_LEN (sizeof(ZCL_VERIFY_ATTEST_SCHEMA_V1) - 1u)
 #define VA_HASH ZCL_VERIFY_ATTEST_HASH_BYTES
 #define VA_PUB ZCL_VERIFY_ATTEST_PUBKEY_BYTES
 #define VA_SIG ZCL_VERIFY_ATTEST_SIGNATURE_BYTES
-#define VA_TRAILER (VA_PUB + VA_SIG)
+#define VA_V1_TRAILER (VA_PUB + VA_SIG)
 #define VA_KEY_FILE_MAX 128u
 #define VA_CHAIN_MAX 64u
 #define VA_GROUP_OR_WORLD_WRITE 0022u
@@ -42,58 +42,81 @@ static void va_why(const char **why, const char *token)
     if (why) *why = token;
 }
 
-/* ── Canonical body ─────────────────────────────────────────────────────── */
+/* ── Canonical body (v2) ────────────────────────────────────────────────── */
 
-static bool va_text_ok(const struct zcl_verify_attest_text *t, size_t min,
-                       size_t max)
+#define VA_HASH_SPEC(label) {label, ZCL_FR_KIND_EXACT, VA_HASH}
+static const struct zcl_fr_spec k_va_body_spec[] = {
+    {"contract", ZCL_FR_KIND_BLOB, ZCL_VERIFY_ATTEST_CONTRACT_MAX},
+    {"toolchain_id", ZCL_FR_KIND_BLOB, ZCL_VERIFY_ATTEST_TOOLCHAIN_MAX},
+    {"argv_norm", ZCL_FR_KIND_BLOB, ZCL_VERIFY_ATTEST_ARGV_MAX},
+    {"recorded_cwd", ZCL_FR_KIND_BLOB, ZCL_VERIFY_ATTEST_CWD_MAX},
+    {"target", ZCL_FR_KIND_BLOB, ZCL_VERIFY_ATTEST_TARGET_MAX},
+    VA_HASH_SPEC("pp_sha3"), VA_HASH_SPEC("closure_sha3"),
+    VA_HASH_SPEC("profile_sha3"), VA_HASH_SPEC("receipt_sha3"),
+    VA_HASH_SPEC("obj_sha3"), VA_HASH_SPEC("dep_sha3"),
+    VA_HASH_SPEC("stderr_sha3"),
+    {"exit_code", ZCL_FR_KIND_U64, 8u},
+};
+#define VA_BODY_FIELDS (sizeof(k_va_body_spec) / sizeof(k_va_body_spec[0]))
+
+static const struct zcl_fr_spec k_va_trailer_spec[] = {
+    {"signer_pubkey", ZCL_FR_KIND_EXACT, VA_PUB},
+    {"signature", ZCL_FR_KIND_EXACT, VA_SIG},
+};
+#define VA_TRAILER_FIELDS 2u
+/* The trailer's exact framed size: two labels, two values, four prefixes. */
+#define VA_TRAILER (4u * 8u + sizeof("signer_pubkey") - 1u + \
+                    sizeof("signature") - 1u + VA_PUB + VA_SIG)
+
+static struct zcl_fr_value va_text_value(const struct zcl_verify_attest_text *t)
 {
-    if (t->len < min || t->len > max || (t->len && !t->bytes))
-        return false;
-    return t->len == 0 || memchr(t->bytes, 0, t->len) == NULL;
+    return (struct zcl_fr_value){(const uint8_t *)t->bytes, t->len, 0u};
+}
+
+static struct zcl_fr_value va_hash_value(const uint8_t hash[VA_HASH])
+{
+    return (struct zcl_fr_value){hash, VA_HASH, 0u};
+}
+
+static void va_body_values(const struct zcl_verify_attest_record *r,
+                           struct zcl_fr_value v[VA_BODY_FIELDS])
+{
+    v[0] = va_text_value(&r->binding.contract);
+    v[1] = va_text_value(&r->toolchain_id);
+    v[2] = va_text_value(&r->argv_norm);
+    v[3] = va_text_value(&r->recorded_cwd);
+    v[4] = va_text_value(&r->binding.target);
+    v[5] = va_hash_value(r->pp_sha3);
+    v[6] = va_hash_value(r->closure_sha3);
+    v[7] = va_hash_value(r->binding.profile_sha3);
+    v[8] = va_hash_value(r->binding.receipt_sha3);
+    v[9] = va_hash_value(r->obj_sha3);
+    v[10] = va_hash_value(r->dep_sha3);
+    v[11] = va_hash_value(r->stderr_sha3);
+    v[12] = (struct zcl_fr_value){NULL, 0u, (uint64_t)(int64_t)r->exit_code};
 }
 
 static bool va_record_ok(const struct zcl_verify_attest_record *r)
 {
-    return va_text_ok(&r->toolchain_id, 1u, ZCL_VERIFY_ATTEST_TOOLCHAIN_MAX) &&
-           va_text_ok(&r->argv_norm, 1u, ZCL_VERIFY_ATTEST_ARGV_MAX) &&
-           va_text_ok(&r->recorded_cwd, 0u, ZCL_VERIFY_ATTEST_CWD_MAX);
+    const struct zcl_verify_attest_text *texts[] = {
+        &r->binding.contract, &r->toolchain_id, &r->argv_norm,
+        &r->recorded_cwd, &r->binding.target};
+    for (size_t i = 0; i < sizeof(texts) / sizeof(texts[0]); i++)
+        if (texts[i]->len && !texts[i]->bytes) return false;
+    return r->binding.contract.len > 0 && r->toolchain_id.len > 0 &&
+           r->argv_norm.len > 0;
 }
 
-static size_t va_body_size(const struct zcl_verify_attest_record *r)
+static const char *va_body_write(const struct zcl_verify_attest_record *r,
+                                 struct zcl_fr_writer *w)
 {
-    return 2u + VA_SCHEMA_LEN + 3u * 4u + r->toolchain_id.len +
-           r->argv_norm.len + r->recorded_cwd.len + 5u * VA_HASH + 4u;
-}
-
-static uint8_t *va_put_text(uint8_t *p, const struct zcl_verify_attest_text *t)
-{
-    zcl_write_u32_le(p, (uint32_t)t->len);
-    if (t->len)
-        memcpy(p + 4, t->bytes, t->len);
-    return p + 4 + t->len;
-}
-
-static uint8_t *va_put_hash(uint8_t *p, const uint8_t hash[VA_HASH])
-{
-    memcpy(p, hash, VA_HASH);
-    return p + VA_HASH;
-}
-
-static void va_body_write(const struct zcl_verify_attest_record *r,
-                          uint8_t *p)
-{
-    zcl_write_u16_le(p, (uint16_t)VA_SCHEMA_LEN);
-    memcpy(p + 2, ZCL_VERIFY_ATTEST_SCHEMA, VA_SCHEMA_LEN);
-    p += 2u + VA_SCHEMA_LEN;
-    p = va_put_text(p, &r->toolchain_id);
-    p = va_put_text(p, &r->argv_norm);
-    p = va_put_text(p, &r->recorded_cwd);
-    p = va_put_hash(p, r->pp_sha3);
-    p = va_put_hash(p, r->closure_sha3);
-    p = va_put_hash(p, r->obj_sha3);
-    p = va_put_hash(p, r->dep_sha3);
-    p = va_put_hash(p, r->stderr_sha3);
-    zcl_write_i32_le(p, r->exit_code);
+    struct zcl_fr_value v[VA_BODY_FIELDS];
+    va_body_values(r, v);
+    const char *why = zcl_fr_encode(w, ZCL_VERIFY_ATTEST_SCHEMA,
+                                    k_va_body_spec, VA_BODY_FIELDS, v);
+    if (why && strcmp(why, ZCL_FR_WHY_BUFFER) == 0)
+        return ZCL_VERIFY_ATTEST_WHY_ARGUMENTS;
+    return why ? ZCL_VERIFY_ATTEST_WHY_MALFORMED : NULL;
 }
 
 /* Allocate `extra` spare bytes after the body so seal can append its
@@ -109,19 +132,26 @@ static bool va_body_alloc(const struct zcl_verify_attest_record *record,
     }
     *out = NULL;
     *body_len = 0;
-    if (!va_record_ok(record)) {
-        va_why(why, ZCL_VERIFY_ATTEST_WHY_MALFORMED);
+    struct zcl_fr_writer w;
+    zcl_fr_writer_buffer(&w, NULL, 0u);
+    struct sha3_256_ctx sizing;
+    sha3_256_init(&sizing);
+    zcl_fr_writer_hash(&w, &sizing);
+    const char *bad = va_record_ok(record) ? va_body_write(record, &w)
+                                           : ZCL_VERIFY_ATTEST_WHY_MALFORMED;
+    if (bad) {
+        va_why(why, bad);
         return false;
     }
-    size_t n = va_body_size(record);
-    uint8_t *buf = zcl_malloc(n + extra, "verify-attest-body");
+    uint8_t *buf = zcl_malloc(w.len + extra, "verify-attest-body");
     if (!buf) {
         va_why(why, ZCL_VERIFY_ATTEST_WHY_NO_MEMORY);
         return false;
     }
-    va_body_write(record, buf);
+    zcl_fr_writer_buffer(&w, buf, w.len + extra);
+    (void)va_body_write(record, &w);
     *out = buf;
-    *body_len = n;
+    *body_len = w.len;
     return true;
 }
 
@@ -132,18 +162,32 @@ bool zcl_verify_attest_body_encode(const struct zcl_verify_attest_record *record
     return va_body_alloc(record, 0u, out, out_len, why);
 }
 
-/* The signed message: the sign domain with its NUL, then the body. */
+/* The signed message: F(sign domain), then the body. */
 static uint8_t *va_sign_message(const uint8_t *body, size_t body_len,
                                 size_t *msg_len)
 {
-    size_t prefix = sizeof(VA_SIGN_DOMAIN);
+    size_t prefix = 8u + sizeof(VA_SIGN_DOMAIN) - 1u;
     uint8_t *msg = zcl_malloc(prefix + body_len, "verify-attest-message");
     if (!msg)
         return NULL;
-    memcpy(msg, VA_SIGN_DOMAIN, prefix);
-    memcpy(msg + prefix, body, body_len);
+    struct zcl_fr_writer w;
+    zcl_fr_writer_buffer(&w, msg, prefix + body_len);
+    zcl_fr_put(&w, VA_SIGN_DOMAIN, sizeof(VA_SIGN_DOMAIN) - 1u);
+    if (body_len)
+        memcpy(msg + prefix, body, body_len);
     *msg_len = prefix + body_len;
     return msg;
+}
+
+static void va_put_trailer(uint8_t *at, const uint8_t pub[VA_PUB],
+                           const uint8_t sig[VA_SIG])
+{
+    struct zcl_fr_writer w;
+    zcl_fr_writer_buffer(&w, at, VA_TRAILER);
+    zcl_fr_put(&w, "signer_pubkey", sizeof("signer_pubkey") - 1u);
+    zcl_fr_put(&w, pub, VA_PUB);
+    zcl_fr_put(&w, "signature", sizeof("signature") - 1u);
+    zcl_fr_put(&w, sig, VA_SIG);
 }
 
 bool zcl_verify_attest_seal(const struct zcl_verify_attest_record *record,
@@ -152,7 +196,7 @@ bool zcl_verify_attest_seal(const struct zcl_verify_attest_record *record,
 {
     uint8_t *buf = NULL;
     size_t body_len = 0, msg_len = 0;
-    uint8_t pub[VA_PUB], secret[ZCL_VERIFY_ATTEST_SEED_BYTES];
+    uint8_t pub[VA_PUB], secret[ZCL_VERIFY_ATTEST_SEED_BYTES], sig[VA_SIG];
     if (out) *out = NULL;
     if (out_len) *out_len = 0;
     if (!seed || !out || !out_len) {
@@ -169,9 +213,9 @@ bool zcl_verify_attest_seal(const struct zcl_verify_attest_record *record,
     }
     ed25519_keypair(pub, secret, seed);
     memory_cleanse(secret, sizeof(secret));
-    memcpy(buf + body_len, pub, VA_PUB);
-    ed25519_sign(buf + body_len + VA_PUB, msg, msg_len, seed, pub);
+    ed25519_sign(sig, msg, msg_len, seed, pub);
     free(msg);
+    va_put_trailer(buf + body_len, pub, sig);
     *out = buf;
     *out_len = body_len + VA_TRAILER;
     return true;
@@ -179,6 +223,8 @@ bool zcl_verify_attest_seal(const struct zcl_verify_attest_record *record,
 
 /* ── Strict parse ───────────────────────────────────────────────────────── */
 
+/* The retired v1 layout, parsed only so a well-formed v1 record is refused
+ * by name instead of as noise. */
 struct va_cursor {
     const uint8_t *bytes;
     size_t len;
@@ -225,8 +271,8 @@ static void va_take_hash(struct va_cursor *c, uint8_t out[VA_HASH])
         memcpy(out, hash, VA_HASH);
 }
 
-static void va_take_fields(struct va_cursor *c,
-                           struct zcl_verify_attest_record *r)
+static void va_take_v1_fields(struct va_cursor *c,
+                              struct zcl_verify_attest_record *r)
 {
     va_take_text(c, &r->toolchain_id, 1u, ZCL_VERIFY_ATTEST_TOOLCHAIN_MAX);
     va_take_text(c, &r->argv_norm, 1u, ZCL_VERIFY_ATTEST_ARGV_MAX);
@@ -241,20 +287,84 @@ static void va_take_fields(struct va_cursor *c,
         r->exit_code = zcl_read_i32_le(exit_bytes);
 }
 
-/* Schema first, so a record from a future format is named as such rather
- * than as a malformed one. */
-static const char *va_take_schema(struct va_cursor *c)
+static bool va_is_v1(const uint8_t *bytes, size_t len)
 {
-    const uint8_t *len_bytes = va_take(c, 2u);
-    if (!len_bytes)
+    return len >= 2u + VA_V1_SCHEMA_LEN &&
+           zcl_read_u16_le(bytes) == VA_V1_SCHEMA_LEN &&
+           memcmp(bytes + 2, ZCL_VERIFY_ATTEST_SCHEMA_V1, VA_V1_SCHEMA_LEN) == 0;
+}
+
+static const char *va_parse_v1(const uint8_t *bytes, size_t len,
+                               struct zcl_verify_attest_signed *out)
+{
+    struct va_cursor c = {bytes, len, 2u + VA_V1_SCHEMA_LEN, true};
+    va_take_v1_fields(&c, &out->record);
+    out->body_len = c.at;
+    const uint8_t *trailer = va_take(&c, VA_V1_TRAILER);
+    if (!c.ok || c.at != len)
         return ZCL_VERIFY_ATTEST_WHY_MALFORMED;
-    size_t n = zcl_read_u16_le(len_bytes);
-    const uint8_t *schema = va_take(c, n);
-    if (!schema)
+    memcpy(out->signer_pubkey, trailer, VA_PUB);
+    memcpy(out->signature, trailer + VA_PUB, VA_SIG);
+    out->record.schema_version = 1u;
+    return NULL;
+}
+
+/* Contract framing refusals, renamed for the record: an unknown or
+ * differently framed schema is attest_schema_unknown, every other framing
+ * fault is attest_record_malformed. */
+static const char *va_frame_refusal(const char *why)
+{
+    static const char *const schema[] = {
+        ZCL_FR_WHY_VERSION_UNKNOWN, ZCL_FR_WHY_WRONG_ARTIFACT,
+        ZCL_FR_WHY_DOMAIN_MALFORMED, ZCL_FR_WHY_V1_RETIRED,
+    };
+    for (size_t i = 0; i < sizeof(schema) / sizeof(schema[0]); i++)
+        if (strcmp(why, schema[i]) == 0)
+            return ZCL_VERIFY_ATTEST_WHY_SCHEMA_UNKNOWN;
+    return ZCL_VERIFY_ATTEST_WHY_MALFORMED;
+}
+
+static void va_take_body(const struct zcl_fr_value *v,
+                         struct zcl_verify_attest_record *r)
+{
+    struct zcl_verify_attest_text *texts[] = {
+        &r->binding.contract, &r->toolchain_id, &r->argv_norm,
+        &r->recorded_cwd, &r->binding.target};
+    for (size_t i = 0; i < sizeof(texts) / sizeof(texts[0]); i++)
+        *texts[i] = (struct zcl_verify_attest_text){
+            (const char *)v[i].bytes, v[i].len};
+    uint8_t *hashes[] = {
+        r->pp_sha3, r->closure_sha3, r->binding.profile_sha3,
+        r->binding.receipt_sha3, r->obj_sha3, r->dep_sha3, r->stderr_sha3};
+    for (size_t i = 0; i < sizeof(hashes) / sizeof(hashes[0]); i++)
+        memcpy(hashes[i], v[5u + i].bytes, VA_HASH);
+    r->exit_code = (int32_t)(int64_t)v[12].u64;
+    r->schema_version = 2u;
+}
+
+static const char *va_parse_v2(const uint8_t *bytes, size_t len,
+                               struct zcl_verify_attest_signed *out)
+{
+    struct zcl_fr_value body[VA_BODY_FIELDS], trailer[VA_TRAILER_FIELDS];
+    size_t used = 0;
+    const char *why = zcl_fr_decode_prefix(bytes, len, ZCL_VERIFY_ATTEST_SCHEMA,
+                                           k_va_body_spec, VA_BODY_FIELDS,
+                                           body, &used);
+    if (why)
+        return va_frame_refusal(why);
+    int64_t exit_code = (int64_t)body[12].u64;
+    if (exit_code < INT32_MIN || exit_code > INT32_MAX ||
+        body[0].len == 0 || body[1].len == 0 || body[2].len == 0)
         return ZCL_VERIFY_ATTEST_WHY_MALFORMED;
-    if (n != VA_SCHEMA_LEN ||
-        memcmp(schema, ZCL_VERIFY_ATTEST_SCHEMA, VA_SCHEMA_LEN) != 0)
-        return ZCL_VERIFY_ATTEST_WHY_SCHEMA_UNKNOWN;
+    out->body_len = used;
+    va_take_body(body, &out->record);
+    size_t trailer_used = 0;
+    why = zcl_fr_decode_fields(bytes + used, len - used, k_va_trailer_spec,
+                               VA_TRAILER_FIELDS, trailer, &trailer_used);
+    if (why || used + trailer_used != len)
+        return ZCL_VERIFY_ATTEST_WHY_MALFORMED;
+    memcpy(out->signer_pubkey, trailer[0].bytes, VA_PUB);
+    memcpy(out->signature, trailer[1].bytes, VA_SIG);
     return NULL;
 }
 
@@ -268,19 +378,13 @@ bool zcl_verify_attest_parse(const uint8_t *bytes, size_t len,
         return false;
     }
     memset(out, 0, sizeof(*out));
-    struct va_cursor c = {bytes, len, 0u, true};
-    const char *refusal = va_take_schema(&c);
-    if (!refusal) {
-        va_take_fields(&c, &out->record);
-        out->body_len = c.at;
-        const uint8_t *trailer = va_take(&c, VA_TRAILER);
-        if (!c.ok || c.at != len)
-            refusal = ZCL_VERIFY_ATTEST_WHY_MALFORMED;
-        else {
-            memcpy(out->signer_pubkey, trailer, VA_PUB);
-            memcpy(out->signature, trailer + VA_PUB, VA_SIG);
-        }
-    }
+    const char *refusal = NULL;
+    if (len < 8u)
+        refusal = ZCL_VERIFY_ATTEST_WHY_MALFORMED;
+    else if (va_is_v1(bytes, len))
+        refusal = va_parse_v1(bytes, len, out);
+    else
+        refusal = va_parse_v2(bytes, len, out);
     if (refusal) {
         memset(out, 0, sizeof(*out));
         va_why(why, refusal);
@@ -291,15 +395,12 @@ bool zcl_verify_attest_parse(const uint8_t *bytes, size_t len,
 
 /* ── Store key ──────────────────────────────────────────────────────────── */
 
-static void va_hash_text(struct sha3_256_ctx *ctx,
-                         const struct zcl_verify_attest_text *t)
+static void va_key_text(struct zcl_fr_writer *w, const char *label,
+                        const struct zcl_verify_attest_text *t)
 {
-    uint8_t len_bytes[8];
     size_t len = t && t->bytes ? t->len : 0u;
-    zcl_write_u64_le(len_bytes, (uint64_t)len);
-    sha3_256_write(ctx, len_bytes, sizeof(len_bytes));
-    if (len)
-        sha3_256_write(ctx, (const unsigned char *)t->bytes, len);
+    zcl_fr_put(w, label, strlen(label));
+    zcl_fr_put(w, len ? t->bytes : "", len);
 }
 
 void zcl_verify_attest_store_key(
@@ -312,14 +413,15 @@ void zcl_verify_attest_store_key(
 {
     static const uint8_t zero[VA_HASH] = {0};
     struct sha3_256_ctx ctx;
+    struct zcl_fr_writer w;
     sha3_256_init(&ctx);
-    sha3_256_write(&ctx, (const unsigned char *)VA_STORE_DOMAIN,
-                   sizeof(VA_STORE_DOMAIN));
-    va_hash_text(&ctx, toolchain_id);
-    va_hash_text(&ctx, argv_norm);
-    va_hash_text(&ctx, recorded_cwd);
-    sha3_256_write(&ctx, pp_sha3 ? pp_sha3 : zero, VA_HASH);
-    sha3_256_write(&ctx, closure_sha3 ? closure_sha3 : zero, VA_HASH);
+    zcl_fr_writer_hash(&w, &ctx);
+    zcl_fr_put(&w, VA_STORE_DOMAIN, sizeof(VA_STORE_DOMAIN) - 1u);
+    va_key_text(&w, "toolchain_id", toolchain_id);
+    va_key_text(&w, "argv_norm", argv_norm);
+    va_key_text(&w, "recorded_cwd", recorded_cwd);
+    zcl_fr_put_hash(&w, "pp_sha3", pp_sha3 ? pp_sha3 : zero);
+    zcl_fr_put_hash(&w, "closure_sha3", closure_sha3 ? closure_sha3 : zero);
     sha3_256_finalize(&ctx, out);
 }
 
@@ -770,11 +872,53 @@ static const char *va_artifacts_check(const struct zcl_verify_attest_record *r,
     return NULL;
 }
 
+static bool va_zero_hash(const uint8_t h[VA_HASH])
+{
+    static const uint8_t zero[VA_HASH] = {0};
+    return memcmp(h, zero, VA_HASH) == 0;
+}
+
+/* The record must repeat the receiver's own receipt expectation exactly;
+ * an empty or zero expectation is never a wildcard. */
+static const char *va_binding_check(const struct zcl_verify_attest_binding *have,
+                                    const struct zcl_verify_attest_binding *want)
+{
+    if (!want)
+        return ZCL_VERIFY_ATTEST_WHY_BINDING_MISSING;
+    if (want->contract.len == 0 ||
+        !va_text_eq(&have->contract, &want->contract))
+        return ZCL_VERIFY_ATTEST_WHY_CONTRACT_MISMATCH;
+    if (va_zero_hash(want->profile_sha3) ||
+        memcmp(have->profile_sha3, want->profile_sha3, VA_HASH) != 0)
+        return ZCL_VERIFY_ATTEST_WHY_PROFILE_MISMATCH;
+    if (want->target.len == 0 || !va_text_eq(&have->target, &want->target))
+        return ZCL_VERIFY_ATTEST_WHY_TARGET_MISMATCH;
+    if (va_zero_hash(want->receipt_sha3) ||
+        memcmp(have->receipt_sha3, want->receipt_sha3, VA_HASH) != 0)
+        return ZCL_VERIFY_ATTEST_WHY_RECEIPT_MISMATCH;
+    return NULL;
+}
+
+/* Everything a record must satisfy before its exit code means anything:
+ * the current schema, the pinned verifier's signature, and the exact
+ * expected inputs. */
+static const char *va_signed_inputs(
+    const uint8_t *record_bytes, const struct zcl_verify_attest_signed *s,
+    const struct zcl_verify_attest_expected *expected,
+    const struct zcl_verify_attest_trust_root *root)
+{
+    if (s->record.schema_version != 2u)
+        return ZCL_VERIFY_ATTEST_WHY_RECORD_V1_UNBOUND;
+    const char *why = va_signer_check(record_bytes, s, root);
+    return why ? why : va_input_check(&s->record, expected);
+}
+
 struct zcl_verify_attest_decision zcl_verify_attest_admit(
     const uint8_t *record_bytes, size_t record_len,
     const uint8_t *obj_bytes, size_t obj_len,
     const uint8_t *dep_bytes, size_t dep_len,
     const uint8_t *stderr_bytes, size_t stderr_len,
+    const struct zcl_verify_attest_binding *binding,
     const struct zcl_verify_attest_expected *expected,
     const struct zcl_verify_attest_trust_root *trust_root)
 {
@@ -787,11 +931,11 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
         return va_decide(why);
     if (!zcl_verify_attest_parse(record_bytes, record_len, &parsed, &why))
         return va_decide(why);
-    why = va_signer_check(record_bytes, &parsed, trust_root);
-    if (!why)
-        why = va_input_check(&parsed.record, expected);
+    why = va_signed_inputs(record_bytes, &parsed, expected, trust_root);
     if (!why && parsed.record.exit_code != 0)
         return va_signed_failure();
+    if (!why)
+        why = va_binding_check(&parsed.record.binding, binding);
     if (!why)
         why = va_artifacts_check(&parsed.record, obj_bytes, obj_len,
                                  dep_bytes, dep_len, stderr_bytes, stderr_len);
@@ -830,8 +974,7 @@ static void va_set_inspect(const struct zcl_verify_attest_observation *all,
         va_set_refuse(state, why);
         return;
     }
-    why = va_signer_check(o->record_bytes, &parsed, root);
-    if (!why) why = va_input_check(&parsed.record, expected);
+    why = va_signed_inputs(o->record_bytes, &parsed, expected, root);
     if (why) {
         va_set_refuse(state, why);
         return;
@@ -855,7 +998,7 @@ static void va_set_inspect(const struct zcl_verify_attest_observation *all,
     struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
         o->record_bytes, o->record_len, o->obj_bytes, o->obj_len,
         o->dep_bytes, o->dep_len, o->stderr_bytes, o->stderr_len,
-        expected, root);
+        o->binding, expected, root);
     if (d.verdict != ZCL_VERIFY_ATTEST_ADMIT) {
         va_set_refuse(state, d.reason);
         return;

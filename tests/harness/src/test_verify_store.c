@@ -12,6 +12,7 @@ int test_verify_store(void) { return 0; }
 #include "sha3/sha3.h"
 #include "verify_attest.h"
 #include "verify_store.h"
+#include "test/verify_contract_fixture.h"
 
 #include <fcntl.h>
 #include <errno.h>
@@ -28,17 +29,18 @@ int test_verify_store(void) { return 0; }
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define VS_OBJ "fixed-result-object"
-#define VS_DEP "result.o: result.c base/result.h\n"
+#define VS_OBJ TEST_VC_OBJ
 #define VS_KEY_ENV "ZCL_TEST_VERIFY_ATTEST_PUBKEY"
 
 static const uint8_t vs_seed[32] = {0x31};
 static const uint8_t vs_other_seed[32] = {0x42};
 
+/* Build in place and never copy: vc borrows from itself. */
 struct vs_fixture {
     char root[PATH_MAX], store[PATH_MAX], key_dir[PATH_MAX];
     char lock[PATH_MAX], key_root[PATH_MAX], pubfile[PATH_MAX];
     char pass_name[65], fail_name[65], forged_name[65];
+    struct test_vc_fixture vc;
     struct zcl_verify_attest_expected expected;
     struct zcl_verify_attest_box_key box;
 };
@@ -65,30 +67,10 @@ static bool vs_write(const char *path, const void *bytes, size_t len,
     return close(fd) == 0 && ok;
 }
 
-static struct zcl_verify_attest_text vs_text(const char *s)
-{
-    return (struct zcl_verify_attest_text){s, strlen(s)};
-}
-
 static void vs_pub(const uint8_t seed[32], uint8_t pub[32])
 {
     uint8_t secret[32];
     ed25519_keypair(pub, secret, seed);
-}
-
-static struct zcl_verify_attest_record vs_record(int exit_code)
-{
-    struct zcl_verify_attest_record r = {0};
-    r.toolchain_id = vs_text("gcc14:fixed-result");
-    r.argv_norm = vs_text("-std=c23 -c result.c -o <object>");
-    r.recorded_cwd = vs_text("/fixed/result");
-    memset(r.pp_sha3, 0x71, sizeof(r.pp_sha3));
-    memset(r.closure_sha3, 0x72, sizeof(r.closure_sha3));
-    zcl_sha3_256((const uint8_t *)VS_OBJ, sizeof(VS_OBJ) - 1u, r.obj_sha3);
-    zcl_sha3_256((const uint8_t *)VS_DEP, sizeof(VS_DEP) - 1u, r.dep_sha3);
-    zcl_sha3_256((const uint8_t *)"", 0, r.stderr_sha3);
-    r.exit_code = exit_code;
-    return r;
 }
 
 static bool vs_fixture_make(struct vs_fixture *f)
@@ -110,12 +92,8 @@ static bool vs_fixture_make(struct vs_fixture *f)
         !vs_path(f->pubfile, f->key_root, "verifier.pub") ||
         mkdir(f->store, 0755) != 0 || mkdir(locks, 0755) != 0 ||
         !vs_write(f->lock, "", 0, 0644)) return false;
-    struct zcl_verify_attest_record r = vs_record(0);
-    f->expected.toolchain_id = r.toolchain_id;
-    f->expected.argv_norm = r.argv_norm;
-    f->expected.recorded_cwd = r.recorded_cwd;
-    memcpy(f->expected.pp_sha3, r.pp_sha3, 32);
-    memcpy(f->expected.closure_sha3, r.closure_sha3, 32);
+    if (!test_vc_fixture_make(&f->vc, 'a')) return false;
+    f->expected = f->vc.expected;
     char key[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
     zcl_verify_attest_store_key_hex(&f->expected.toolchain_id,
                                     &f->expected.argv_norm,
@@ -137,7 +115,7 @@ static bool vs_fixture_make(struct vs_fixture *f)
 static bool vs_publish(const struct vs_fixture *f, const uint8_t seed[32],
                        int exit_code, char out_name[65])
 {
-    struct zcl_verify_attest_record record = vs_record(exit_code);
+    struct zcl_verify_attest_record record = test_vc_record(&f->vc, exit_code);
     uint8_t *bytes = NULL, hash[32];
     size_t len = 0;
     const char *why = NULL;
@@ -151,8 +129,10 @@ static bool vs_publish(const struct vs_fixture *f, const uint8_t seed[32],
               vs_path(path, dir, "object.o") &&
               vs_write(path, VS_OBJ, sizeof(VS_OBJ) - 1u, 0644) &&
               vs_path(path, dir, "deps.d") &&
-              vs_write(path, VS_DEP, sizeof(VS_DEP) - 1u, 0644) &&
-              vs_path(path, dir, "stderr.bin") && vs_write(path, "", 0, 0644);
+              vs_write(path, f->vc.dep, f->vc.dep_len, 0644) &&
+              vs_path(path, dir, "stderr.bin") && vs_write(path, "", 0, 0644) &&
+              vs_path(path, dir, "launch.bin") &&
+              vs_write(path, f->vc.receipt_bytes, f->vc.receipt_len, 0644);
     free(bytes);
     return ok;
 }
@@ -162,7 +142,8 @@ static bool vs_remove_observation(const struct vs_fixture *f,
 {
     char dir[PATH_MAX], path[PATH_MAX];
     if (!vs_path(dir, f->key_dir, name)) return false;
-    const char *files[] = {"attest.bin", "object.o", "deps.d", "stderr.bin"};
+    const char *files[] = {"attest.bin", "object.o", "deps.d", "stderr.bin",
+                           "launch.bin"};
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
         if (!vs_path(path, dir, files[i])) return false;
         if (unlink(path) != 0 && errno != ENOENT) return false;
@@ -184,6 +165,7 @@ static struct zcl_verify_store_result vs_lookup(const struct vs_fixture *f,
     zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(),
                                      (unsigned)geteuid(),
                                      allow_same_uid, &f->expected,
+                                     &f->vc.pins,
                                      &f->box, &r);
     return r;
 }
@@ -222,7 +204,8 @@ static int vs_test_artifacts(struct vs_fixture *f)
         ASSERT(vs_expect(f, false, ZCL_VERIFY_STORE_COLD,
                          "store_owner_same_uid"));
         zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(), 0,
-                                         true, &f->expected, &f->box, &r);
+                                         true, &f->expected, &f->vc.pins,
+                                         &f->box, &r);
         ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD, "store_path_unsafe"));
         zcl_verify_store_result_release(&r);
 
@@ -250,6 +233,76 @@ static int vs_test_artifacts(struct vs_fixture *f)
     return failures;
 }
 
+static bool vs_replace_receipt(const struct vs_fixture *f, const char *name,
+                               const uint8_t *bytes, size_t len)
+{
+    char dir[PATH_MAX], path[PATH_MAX];
+    return vs_path(dir, f->key_dir, name) &&
+           vs_path(path, dir, "launch.bin") &&
+           (unlink(path) == 0 || errno == ENOENT) &&
+           (!bytes || vs_write(path, bytes, len, 0644));
+}
+
+static bool vs_expect_pins(const struct vs_fixture *f,
+                           const struct zcl_fixed_result_v2_roots *pins,
+                           const char *reason)
+{
+    struct zcl_verify_store_result r;
+    zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(),
+                                    (unsigned)geteuid(), true, &f->expected,
+                                    pins, &f->box, &r);
+    bool ok = vs_reason(&r, ZCL_VERIFY_STORE_COLD, reason);
+    zcl_verify_store_result_release(&r);
+    return ok;
+}
+
+static int vs_test_receipts(struct vs_fixture *f)
+{
+    int failures = 0;
+    TEST("verify store: a developer-published entry, a missing or foreign "
+         "launch receipt, and unpinned receivers never HIT") {
+        struct zcl_verify_store_result r;
+        /* The publisher alone being the developer uid is enough. */
+        zcl_verify_store_lookup_fixture(f->root, 0u, (unsigned)geteuid(),
+                                         false, &f->expected, &f->vc.pins,
+                                         &f->box, &r);
+        ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid"));
+        zcl_verify_store_result_release(&r);
+        zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(), 0u,
+                                         false, &f->expected, &f->vc.pins,
+                                         &f->box, &r);
+        ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid"));
+        zcl_verify_store_result_release(&r);
+
+        ASSERT(vs_replace_receipt(f, f->pass_name, NULL, 0));
+        ASSERT(vs_expect(f, true, ZCL_VERIFY_STORE_COLD,
+                         "store_artifact_missing"));
+        /* A valid receipt for another launch: the record names the first. */
+        struct test_vc_fixture other;
+        ASSERT(test_vc_fixture_make(&other, 'a'));
+        other.receipt.mount_namespace_ino += 1u;
+        ASSERT(test_vc_receipt_reencode(&other, NULL));
+        ASSERT(vs_replace_receipt(f, f->pass_name, other.receipt_bytes,
+                                  other.receipt_len));
+        ASSERT(vs_expect(f, true, ZCL_VERIFY_STORE_COLD,
+                         ZCL_VERIFY_ATTEST_WHY_RECEIPT_MISMATCH));
+        ASSERT(vs_replace_receipt(f, f->pass_name, f->vc.receipt_bytes,
+                                  f->vc.receipt_len));
+        r = vs_lookup(f, true);
+        ASSERT(r.verdict == ZCL_VERIFY_STORE_HIT);
+        zcl_verify_store_result_release(&r);
+
+        struct zcl_fixed_result_v2_roots pins = f->vc.pins;
+        pins.tree_checker[0] ^= 1u;
+        ASSERT(vs_expect_pins(f, &pins, ZCL_FR_WHY_PIN_MISMATCH));
+        ASSERT(vs_expect_pins(f, NULL, "store_pins_unqualified"));
+        memset(pins.tree_checker, 0, sizeof(pins.tree_checker));
+        ASSERT(vs_expect_pins(f, &pins, ZCL_FR_WHY_HASH_ZERO));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int vs_test_bounds(struct vs_fixture *f)
 {
     int failures = 0;
@@ -259,7 +312,8 @@ static int vs_test_bounds(struct vs_fixture *f)
         struct zcl_verify_store_result r;
         zcl_verify_store_lookup_fixture(f->root, (unsigned)geteuid(),
                                          (unsigned)geteuid(), true,
-                                         &oversized, &f->box, &r);
+                                         &oversized, &f->vc.pins, &f->box,
+                                         &r);
         ASSERT(vs_reason(&r, ZCL_VERIFY_STORE_COLD,
                          "store_expected_unqualified"));
         zcl_verify_store_result_release(&r);
@@ -322,9 +376,10 @@ static int vs_test_signers(struct vs_fixture *f)
     return failures;
 }
 
-static bool vs_restore_pass_record(const char *path)
+static bool vs_restore_pass_record(const struct vs_fixture *f,
+                                   const char *path)
 {
-    struct zcl_verify_attest_record pass_record = vs_record(0);
+    struct zcl_verify_attest_record pass_record = test_vc_record(&f->vc, 0);
     uint8_t *bytes = NULL;
     size_t len = 0;
     const char *why = NULL;
@@ -360,7 +415,7 @@ static int vs_test_conflicts(struct vs_fixture *f)
         ASSERT(unlink(attest_path) == 0);
         ASSERT(vs_expect(f, true, ZCL_VERIFY_STORE_BLOCK,
                          "store_scan_incomplete"));
-        ASSERT(vs_restore_pass_record(attest_path));
+        ASSERT(vs_restore_pass_record(f, attest_path));
         ASSERT(vs_expect(f, true, ZCL_VERIFY_STORE_BLOCK,
                          "attest_eligible_conflict"));
         ASSERT(unlink(path) == 0);
@@ -385,6 +440,7 @@ int test_verify_store(void)
         PASS();
     } _test_next:;
     if (!failures) failures += vs_test_artifacts(&f);
+    if (!failures) failures += vs_test_receipts(&f);
     if (!failures) failures += vs_test_bounds(&f);
     if (!failures) failures += vs_test_signers(&f);
     if (!failures) failures += vs_test_conflicts(&f);

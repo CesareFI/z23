@@ -36,9 +36,22 @@
 
 /* Repeated verbatim from verify_attest.c on purpose: a test that asks the
  * subject for its own domain string cannot notice the string changing. */
-#define VA_SIGN_DOMAIN "zcl.verify_attest.sig.v1"
-#define VA_SIGN_DOMAIN_BYTES (sizeof(VA_SIGN_DOMAIN)) /* includes the NUL */
+#define VA_SIGN_DOMAIN "z23verify.attest.signature.v2"
+#define VA_SIGN_PREFIX (8u + sizeof(VA_SIGN_DOMAIN) - 1u) /* F(domain) */
+#define VA_V1_SIGN_DOMAIN "zcl.verify_attest.sig.v1"
+#define VA_V1_SIGN_BYTES (sizeof(VA_V1_SIGN_DOMAIN)) /* includes the NUL */
+/* F("signer_pubkey") F(pub32) F("signature") F(sig64), and where the two
+ * values start inside it. */
+#define VA_TRAILER 150u
+#define VA_TRAILER_PUB 29u
+#define VA_TRAILER_SIG 86u
+/* F(schema)=27, F("contract")=16, F(contract)=33, F("toolchain_id")=20,
+ * then the toolchain value's own 8-byte prefix. */
+#define VA_TOOLCHAIN_AT 104u
+#define VA_SCHEMA_LAST 26u
 #define VA_ENV "ZCL_TEST_VERIFY_ATTEST_PUBKEY"
+#define VA_CONTRACT "z23verify.fixed_result.v2"
+#define VA_TARGET "build/a.o"
 
 #define VA_TOOLCHAIN "gcc-13.2.0-x86_64-linux-gnu"
 #define VA_ARGV "-std=c2x -O2 -Iinclude -c src/a.c -o build/a.o"
@@ -98,10 +111,31 @@ static void va_obj_hash(uint8_t out[32])
     zcl_sha3_256((const unsigned char *)VA_OBJ, sizeof(VA_OBJ) - 1u, out);
 }
 
+/* The receipt binding every fixture record carries and every admission
+ * expects, unless a case changes one side on purpose. */
+static struct zcl_verify_attest_binding va_binding_value(void)
+{
+    struct zcl_verify_attest_binding b;
+    memset(&b, 0, sizeof(b));
+    b.contract = va_text(VA_CONTRACT);
+    memset(b.profile_sha3, 0x03, sizeof(b.profile_sha3));
+    b.target = va_text(VA_TARGET);
+    memset(b.receipt_sha3, 0x04, sizeof(b.receipt_sha3));
+    return b;
+}
+
+static const struct zcl_verify_attest_binding *va_bind(void)
+{
+    static struct zcl_verify_attest_binding b;
+    b = va_binding_value();
+    return &b;
+}
+
 static struct zcl_verify_attest_record va_record(void)
 {
     struct zcl_verify_attest_record r;
     memset(&r, 0, sizeof(r));
+    r.binding = va_binding_value();
     r.toolchain_id = va_text(VA_TOOLCHAIN);
     r.argv_norm = va_text(VA_ARGV);
     r.recorded_cwd = va_text(VA_CWD);
@@ -158,7 +192,8 @@ static struct zcl_verify_attest_decision va_admit(
                                    (const uint8_t *)VA_DEP,
                                    sizeof(VA_DEP) - 1u,
                                    (const uint8_t *)VA_STDERR,
-                                   sizeof(VA_STDERR) - 1u, e, root);
+                                   sizeof(VA_STDERR) - 1u, va_bind(), e,
+                                   root);
 }
 
 static bool va_refused(struct zcl_verify_attest_decision d, const char *why)
@@ -175,20 +210,33 @@ static bool va_blocked(struct zcl_verify_attest_decision d, const char *why)
 
 /* Replace the trailer of a sealed record with `pub` and a signature over
  * the body made by `sign`, exactly as a hostile producer would. */
+/* The v2 signed message, spelled by hand: u64le(len(domain)), the domain,
+ * then the body. `*msg_len` receives its length. */
+static uint8_t *va_sign_message(const uint8_t *rec, size_t body,
+                                size_t *msg_len)
+{
+    uint8_t *msg = zcl_malloc(VA_SIGN_PREFIX + body, "va-sign-message");
+    if (!msg)
+        return NULL;
+    memset(msg, 0, 8u);
+    msg[0] = (uint8_t)(sizeof(VA_SIGN_DOMAIN) - 1u);
+    memcpy(msg + 8u, VA_SIGN_DOMAIN, sizeof(VA_SIGN_DOMAIN) - 1u);
+    memcpy(msg + VA_SIGN_PREFIX, rec, body);
+    *msg_len = VA_SIGN_PREFIX + body;
+    return msg;
+}
+
 static void va_resign(uint8_t *rec, size_t len, const uint8_t seed[32],
                       const uint8_t claimed_pub[32])
 {
-    size_t body = len - 96u;
-    uint8_t *msg = zcl_malloc(VA_SIGN_DOMAIN_BYTES + body, "va-resign");
+    size_t body = len - VA_TRAILER, msg_len = 0;
+    uint8_t *msg = va_sign_message(rec, body, &msg_len);
     uint8_t pub[32], secret[32];
     if (!msg)
         return;
     ed25519_keypair(pub, secret, seed);
-    memcpy(msg, VA_SIGN_DOMAIN, VA_SIGN_DOMAIN_BYTES);
-    memcpy(msg + VA_SIGN_DOMAIN_BYTES, rec, body);
-    ed25519_sign(rec + body + 32u, msg, VA_SIGN_DOMAIN_BYTES + body, seed,
-                 pub);
-    memcpy(rec + body, claimed_pub ? claimed_pub : pub, 32);
+    ed25519_sign(rec + body + VA_TRAILER_SIG, msg, msg_len, seed, pub);
+    memcpy(rec + body + VA_TRAILER_PUB, claimed_pub ? claimed_pub : pub, 32);
     free(msg);
 }
 
@@ -214,9 +262,9 @@ static struct zcl_verify_attest_box_key va_no_box(void)
 
 /* ── 1. canonical encoding ─────────────────────────────────────────────── */
 
-/* The body of va_record(), spelled out by hand. Any change to field order,
- * width, endianness or the schema string changes these bytes. */
-static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
+/* The retired v1 body of va_record(), spelled out by hand: a record a v1
+ * signer could still hold. It parses, and admission refuses it by name. */
+static bool va_v1_body(uint8_t *out, size_t cap, size_t *len)
 {
     static const char schema[] = "zcl.verify_attest.v1";
     const char *texts[3] = {VA_TOOLCHAIN, VA_ARGV, VA_CWD};
@@ -258,20 +306,94 @@ static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
     return true;
 }
 
+/* One frame by hand: eight little-endian length bytes, then the bytes. */
+static void va_frame(uint8_t *out, size_t *n, const void *bytes, size_t len)
+{
+    for (size_t i = 0; i < 8u; i++)
+        out[(*n)++] = (uint8_t)((uint64_t)len >> (8u * i));
+    memcpy(out + *n, bytes, len);
+    *n += len;
+}
+
+static void va_frame_text(uint8_t *out, size_t *n, const char *s)
+{
+    va_frame(out, n, s, strlen(s));
+}
+
+/* The body of va_record(), spelled out by hand. Any change to field order,
+ * width, endianness, labels or the schema string changes these bytes. */
+static bool va_expected_body(uint8_t *out, size_t cap, size_t *len)
+{
+    static const char *const texts[5][2] = {
+        {"contract", VA_CONTRACT}, {"toolchain_id", VA_TOOLCHAIN},
+        {"argv_norm", VA_ARGV}, {"recorded_cwd", VA_CWD},
+        {"target", VA_TARGET}};
+    static const char *const hashes[7] = {
+        "pp_sha3", "closure_sha3", "profile_sha3", "receipt_sha3",
+        "obj_sha3", "dep_sha3", "stderr_sha3"};
+    uint8_t h[7][32], zero[8] = {0};
+    size_t n = 0;
+    if (cap < 1024u)
+        return false;
+    memset(h[0], 0x01, 32); memset(h[1], 0x02, 32);
+    memset(h[2], 0x03, 32); memset(h[3], 0x04, 32);
+    va_obj_hash(h[4]);
+    zcl_sha3_256((const unsigned char *)VA_DEP, sizeof(VA_DEP) - 1u, h[5]);
+    zcl_sha3_256((const unsigned char *)VA_STDERR, sizeof(VA_STDERR) - 1u,
+                 h[6]);
+    va_frame_text(out, &n, "z23verify.attest.v2");
+    for (size_t i = 0; i < 5; i++) {
+        va_frame_text(out, &n, texts[i][0]);
+        va_frame_text(out, &n, texts[i][1]);
+    }
+    for (size_t i = 0; i < 7; i++) {
+        va_frame_text(out, &n, hashes[i]);
+        va_frame(out, &n, h[i], 32u);
+    }
+    va_frame_text(out, &n, "exit_code");
+    va_frame(out, &n, zero, sizeof(zero));
+    *len = n;
+    return true;
+}
+
+/* The store key preimage spelled by hand, hashed here. */
+static void va_expected_store_key(char hex[65])
+{
+    static const char *const texts[3][2] = {
+        {"toolchain_id", VA_TOOLCHAIN}, {"argv_norm", VA_ARGV},
+        {"recorded_cwd", VA_CWD}};
+    uint8_t pre[512], pp[32], closure[32], digest[32];
+    size_t n = 0;
+    memset(pp, 0x01, 32);
+    memset(closure, 0x02, 32);
+    va_frame_text(pre, &n, "z23verify.attest.store_key.v2");
+    for (size_t i = 0; i < 3; i++) {
+        va_frame_text(pre, &n, texts[i][0]);
+        va_frame_text(pre, &n, texts[i][1]);
+    }
+    va_frame_text(pre, &n, "pp_sha3");
+    va_frame(pre, &n, pp, 32u);
+    va_frame_text(pre, &n, "closure_sha3");
+    va_frame(pre, &n, closure, 32u);
+    zcl_sha3_256(pre, n, digest);
+    zcl_hex_encode(digest, 32, hex);
+}
+
 /* Pinned SHA3-256 of the hand-built body above and of the store key for
  * (VA_TOOLCHAIN, VA_ARGV, VA_CWD, pp=0x01.., closure=0x02..). The store
- * key is SHA3-256 over "zcl.verify_attest.store.v2\0", each text as
- * u64le length and bytes, then pp_sha3 and closure_sha3. Recomputing
- * either is a format change and needs an explicit domain review. */
+ * key is SHA3-256 over F("z23verify.attest.store_key.v2") then F(label)
+ * F(value) for toolchain_id, argv_norm, recorded_cwd, pp_sha3 and
+ * closure_sha3. Recomputing either is a format change and needs an
+ * explicit domain review. */
 #define VA_BODY_SHA3 \
-    "d4198ad7efc4d8695ad8c0722f1b8e21018404226593aab7ac858a1eef55c930"
+    "7ec65557955d18286d40e2910c31f38fc6e42415a51964deb7eb3af5b355e11c"
 #define VA_STORE_KEY \
-    "eaca9745ca787a48dc08fffc09635c222404417dbec8ac02ea91639ba8c68cf2"
+    "a8704b91825ebdd07a93feccf66f0ab2c3d13e5abcf508da75bed619c6f4cbbb"
 
 static int test_va_encoding_vector(void)
 {
     int failures = 0;
-    uint8_t want[512];
+    uint8_t want[1024];
     size_t want_len = 0;
     uint8_t *body = NULL;
     size_t body_len = 0;
@@ -297,6 +419,9 @@ static int test_va_encoding_vector(void)
         if (strcmp(hex, VA_STORE_KEY) != 0)
             printf("store key = %s ", hex);
         ASSERT_STR_EQ(hex, VA_STORE_KEY);
+        char spelled[65];
+        va_expected_store_key(spelled);
+        ASSERT_STR_EQ(hex, spelled);
         /* The store key binds every input: one changed byte, new key. */
         char other[65];
         e.pp_sha3[31] ^= 1u;
@@ -334,7 +459,7 @@ static int test_va_parse_strict(void)
         ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
                                       &why));
         ASSERT(zcl_verify_attest_parse(rec, len, &parsed, &why));
-        ASSERT(parsed.body_len == len - 96u);
+        ASSERT(parsed.body_len == len - VA_TRAILER);
         ASSERT(zcl_verify_attest_body_encode(&parsed.record, &body,
                                              &body_len, &why));
         ASSERT(body_len == parsed.body_len);
@@ -420,7 +545,7 @@ static int test_va_refuse_fields(void)
                                ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID);
     failures += va_refuse_case("verify attest: an edited body under the "
                                "old signature refuses attest_signature_invalid",
-                               r, e, 30u,
+                               r, e, VA_TOOLCHAIN_AT + 2u,
                                ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID);
     e.toolchain_id = va_text("gcc-14.1.0-x86_64-linux-gnu");
     failures += va_refuse_case("verify attest: another compiler refuses "
@@ -479,13 +604,111 @@ static int test_va_refuse_fields(void)
     r.stderr_sha3[5] ^= 0x10u;
     failures += va_refuse_case("verify attest: substituted stderr refuses",
                                r, e, SIZE_MAX, "attest_stderr_hash_mismatch");
-    /* Byte 21 is the schema's last character: "v1" becomes "v0". */
+    /* The schema's last character: "v2" becomes "v3". */
     failures += va_refuse_case("verify attest: another schema refuses "
                                "attest_schema_unknown",
-                               va_record(), e, 21u,
+                               va_record(), e, VA_SCHEMA_LAST,
                                ZCL_VERIFY_ATTEST_WHY_SCHEMA_UNKNOWN);
     return failures;
 }
+
+/* One sealed record, admitted against a receiver binding that differs in
+ * exactly one field. */
+static bool va_binding_refuses(const struct zcl_verify_attest_binding *want,
+                               const char *token)
+{
+    struct zcl_verify_attest_record r = va_record();
+    struct zcl_verify_attest_expected e = va_expected();
+    struct zcl_verify_attest_trust_root root = va_root(NULL);
+    uint8_t *rec = NULL;
+    size_t len = 0;
+    const char *why = NULL;
+    if (!zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len, &why))
+        return false;
+    struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
+        rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
+        (const uint8_t *)VA_DEP, sizeof(VA_DEP) - 1u,
+        (const uint8_t *)VA_STDERR, sizeof(VA_STDERR) - 1u, want, &e, &root);
+    free(rec);
+    if (!va_refused(d, token)) {
+        printf("[binding -> %s, want %s] ", d.reason ? d.reason : "(admit)",
+               token);
+        return false;
+    }
+    return true;
+}
+
+static int test_va_refuse_binding(void)
+{
+    int failures = 0;
+    TEST("verify attest: a record bound to another receipt, target, profile "
+         "or contract is refused by name; no binding admits nothing") {
+        struct zcl_verify_attest_binding b = va_binding_value();
+        b.receipt_sha3[31] ^= 1u;
+        ASSERT(va_binding_refuses(&b, ZCL_VERIFY_ATTEST_WHY_RECEIPT_MISMATCH));
+        b = va_binding_value();
+        memset(b.receipt_sha3, 0, sizeof(b.receipt_sha3));
+        ASSERT(va_binding_refuses(&b, ZCL_VERIFY_ATTEST_WHY_RECEIPT_MISMATCH));
+        b = va_binding_value();
+        b.target = va_text("build/b.o");
+        ASSERT(va_binding_refuses(&b, ZCL_VERIFY_ATTEST_WHY_TARGET_MISMATCH));
+        b = va_binding_value();
+        b.target = va_text("");
+        ASSERT(va_binding_refuses(&b, ZCL_VERIFY_ATTEST_WHY_TARGET_MISMATCH));
+        b = va_binding_value();
+        b.profile_sha3[0] ^= 1u;
+        ASSERT(va_binding_refuses(&b, ZCL_VERIFY_ATTEST_WHY_PROFILE_MISMATCH));
+        b = va_binding_value();
+        b.contract = va_text("z23verify.fixed_result.v3");
+        ASSERT(va_binding_refuses(&b, ZCL_VERIFY_ATTEST_WHY_CONTRACT_MISMATCH));
+        ASSERT(va_binding_refuses(NULL, ZCL_VERIFY_ATTEST_WHY_BINDING_MISSING));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static struct zcl_verify_attest_observation va_observation(const uint8_t *rec,
+                                                            size_t len);
+
+/* A retired v1 record, correctly signed by the pinned verifier under the
+ * v1 signature domain, still parses so it can be named, and never admits:
+ * it carries no receipt binding. */
+static int test_va_refuse_v1_record(void)
+{
+    int failures = 0;
+    uint8_t rec[1024], pub[32], secret[32];
+    uint8_t msg[sizeof(rec) + VA_V1_SIGN_BYTES];
+    size_t body = 0;
+    struct zcl_verify_attest_signed parsed;
+    const char *why = NULL;
+    TEST("verify attest: a signed v1 record parses as version 1 and is "
+         "refused attest_record_v1_unbound") {
+        ASSERT(va_v1_body(rec, sizeof(rec) - 96u, &body));
+        ed25519_keypair(pub, secret, k_va_verifier_seed);
+        memcpy(msg, VA_V1_SIGN_DOMAIN, VA_V1_SIGN_BYTES);
+        memcpy(msg + VA_V1_SIGN_BYTES, rec, body);
+        memcpy(rec + body, pub, 32);
+        ed25519_sign(rec + body + 32u, msg, VA_V1_SIGN_BYTES + body,
+                     k_va_verifier_seed, pub);
+        ASSERT(zcl_verify_attest_parse(rec, body + 96u, &parsed, &why));
+        ASSERT(parsed.record.schema_version == 1u);
+        ASSERT(parsed.body_len == body);
+        struct zcl_verify_attest_expected e = va_expected();
+        struct zcl_verify_attest_trust_root root = va_root(NULL);
+        ASSERT(va_refused(va_admit(rec, body + 96u, &e, &root),
+                          ZCL_VERIFY_ATTEST_WHY_RECORD_V1_UNBOUND));
+        struct zcl_verify_attest_observation o[1] = {
+            va_observation(rec, body + 96u)};
+        size_t selected = SIZE_MAX;
+        ASSERT(va_refused(zcl_verify_attest_admit_set(o, 1u, &e, &root,
+                                                      &selected),
+                          ZCL_VERIFY_ATTEST_WHY_RECORD_V1_UNBOUND));
+        ASSERT(selected == SIZE_MAX);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 
 static int test_va_signed_failure_blocks(void)
 {
@@ -501,31 +724,31 @@ static int test_va_signed_failure_blocks(void)
         ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
                                       &why));
         struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
-            rec, len, NULL, 0, NULL, 1, NULL, 1, &e, &root);
+            rec, len, NULL, 0, NULL, 1, NULL, 1, va_bind(), &e, &root);
         ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
         ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
         d = zcl_verify_attest_admit(rec, len, NULL, 1, NULL, 1,
-                                    NULL, 1, &e, &root);
+                                    NULL, 1, va_bind(), &e, &root);
         ASSERT(d.verdict == ZCL_VERIFY_ATTEST_FAIL);
         ASSERT_STR_EQ(d.reason, ZCL_VERIFY_ATTEST_WHY_EXIT_NONZERO);
         e.toolchain_id = va_text("different-toolchain");
         d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
-                                    NULL, 0, &e, &root);
+                                    NULL, 0, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_TOOLCHAIN_MISMATCH));
         e = va_expected();
         e.closure_sha3[0] ^= 1u;
         d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
-                                    NULL, 0, &e, &root);
+                                    NULL, 0, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_CLOSURE_MISMATCH));
         e = va_expected();
         e.pp_sha3[0] ^= 1u;
         d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
-                                    NULL, 0, &e, &root);
+                                    NULL, 0, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_PP_MISMATCH));
         e.pp_sha3[0] ^= 1u;
         rec[len - 1u] ^= 1u;
         d = zcl_verify_attest_admit(rec, len, NULL, 0, NULL, 0,
-                                    NULL, 0, &e, &root);
+                                    NULL, 0, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_SIGNATURE_INVALID));
         PASS();
     } _test_next:;
@@ -548,7 +771,7 @@ static int test_va_empty_object(void)
                                       &why));
         struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
             rec, len, NULL, 0u, (const uint8_t *)VA_DEP,
-            sizeof(VA_DEP) - 1u, NULL, 0u, &e, &root);
+            sizeof(VA_DEP) - 1u, NULL, 0u, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_OBJ_EMPTY));
         PASS();
     } _test_next:;
@@ -570,16 +793,16 @@ static int test_va_artifact_substitution(void)
                                       &why));
         struct zcl_verify_attest_decision d = zcl_verify_attest_admit(
             rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
-            (const uint8_t *)"other", 5u, NULL, 0u, &e, &root);
+            (const uint8_t *)"other", 5u, NULL, 0u, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_DEP_MISMATCH));
         d = zcl_verify_attest_admit(
             rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
             (const uint8_t *)VA_DEP, sizeof(VA_DEP) - 1u,
-            (const uint8_t *)"warning", 7u, &e, &root);
+            (const uint8_t *)"warning", 7u, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH));
         d = zcl_verify_attest_admit(
             rec, len, (const uint8_t *)VA_OBJ, sizeof(VA_OBJ) - 1u,
-            NULL, 0u, NULL, 0u, &e, &root);
+            NULL, 0u, NULL, 0u, va_bind(), &e, &root);
         ASSERT(va_refused(d, ZCL_VERIFY_ATTEST_WHY_DEP_EMPTY));
         d = va_admit(rec, len, &e, &root);
         ASSERT(d.verdict == ZCL_VERIFY_ATTEST_ADMIT);
@@ -597,7 +820,7 @@ static struct zcl_verify_attest_observation va_observation(const uint8_t *rec,
         .obj_bytes = (const uint8_t *)VA_OBJ, .obj_len = sizeof(VA_OBJ) - 1u,
         .dep_bytes = (const uint8_t *)VA_DEP, .dep_len = sizeof(VA_DEP) - 1u,
         .stderr_bytes = (const uint8_t *)VA_STDERR,
-        .stderr_len = sizeof(VA_STDERR) - 1u};
+        .stderr_len = sizeof(VA_STDERR) - 1u, .binding = va_bind()};
 }
 
 static int test_va_observation_set(void)
@@ -716,23 +939,21 @@ static int test_va_refuse_signers(void)
         ASSERT(zcl_verify_attest_seal(&r, k_va_verifier_seed, &rec, &len,
                                       &why));
         /* The real per-box signer, the key the proof account can read. */
-        size_t body = len - 96u;
-        uint8_t *msg = zcl_malloc(VA_SIGN_DOMAIN_BYTES + body, "va-msg");
+        size_t body = len - VA_TRAILER, msg_len = 0;
+        uint8_t *msg = va_sign_message(rec, body, &msg_len);
         ASSERT(msg);
-        memcpy(msg, VA_SIGN_DOMAIN, VA_SIGN_DOMAIN_BYTES);
-        memcpy(msg + VA_SIGN_DOMAIN_BYTES, rec, body);
-        bool signed_ok = zcl_dev_proof_signer_sign(
-            msg, VA_SIGN_DOMAIN_BYTES + body, box_pub, box_sig, &why);
+        bool signed_ok = zcl_dev_proof_signer_sign(msg, msg_len, box_pub,
+                                                   box_sig, &why);
         free(msg);
         ASSERT(signed_ok);
         struct zcl_verify_attest_trust_root root = va_root(box_pub);
-        memcpy(rec + body, box_pub, 32);
-        memcpy(rec + body + 32u, box_sig, 64);
+        memcpy(rec + body + VA_TRAILER_PUB, box_pub, 32);
+        memcpy(rec + body + VA_TRAILER_SIG, box_sig, 64);
         ASSERT(va_refused(va_admit(rec, len, &e, &root),
                           ZCL_VERIFY_ATTEST_WHY_SIGNED_BY_BOX));
         /* Same box signature, trailer claiming the verifier's key. */
         va_pub(k_va_verifier_seed, verifier_pub);
-        memcpy(rec + body, verifier_pub, 32);
+        memcpy(rec + body + VA_TRAILER_PUB, verifier_pub, 32);
         ASSERT(va_refused(va_admit(rec, len, &e, &root),
                           ZCL_VERIFY_ATTEST_WHY_SIGNED_BY_BOX));
         /* A stranger's key is not the verifier. */
@@ -1097,6 +1318,8 @@ int test_verify_attest(void)
     failures += test_va_parse_strict();
     failures += test_va_admit();
     failures += test_va_refuse_fields();
+    failures += test_va_refuse_binding();
+    failures += test_va_refuse_v1_record();
     failures += test_va_signed_failure_blocks();
     failures += test_va_empty_object();
     failures += test_va_artifact_substitution();

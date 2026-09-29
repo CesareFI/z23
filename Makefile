@@ -955,8 +955,15 @@ DEV_STANDALONE_SRCS = tools/dev/hotswap_verify_so.c \
 # the dev binary and the test harness but kept out of the release node — a
 # tool that edits nothing in production has no business shipping there.
 MUTATION_LIB_SRCS = tools/dev/mutation_ops.c tools/dev/mutation_run.c
+# The fixed-result verifier contract (z23verify.fixed_result.v2) and its key
+# formatter are pure byte codecs. verify_attest.c encodes its v2 record with
+# the contract's framing, so they link wherever verify_attest links. The
+# root launcher and compiler worker in tools/verify compile them directly.
+VERIFY_CONTRACT_SRCS = tools/verify/fixed_result_contract.c \
+	tools/verify/fixed_result_key_v2.c
 DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
-	$(filter-out $(DEV_STANDALONE_SRCS),$(wildcard tools/dev/*.c)))
+	$(filter-out $(DEV_STANDALONE_SRCS),$(wildcard tools/dev/*.c))) \
+	$(VERIFY_CONTRACT_SRCS)
 # Shadow proof-obligation selection is report-only (see
 # docs/experiments/2026-09-25-shadow-obligation-selector.md): it links into
 # the dev binary and the test harness, never the release node.

@@ -3,22 +3,14 @@
 #include "verify/fixed_result_key_v2.h"
 
 #include "base/hex.h"
-#include "base/serialize_le.h"
 #include "platform/fd_path.h"
 #include "sha3/sha3.h"
+#include "verify/fixed_result_contract.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define SOURCE "platform/modules/base/src/result.c"
-#define PROFILE_SHA3 "5e8a1cafce7350ff3c335c6a714f59c75c1e646de82eb03d076f68bdad244e1c"
-
-static bool nonzero(const uint8_t root[32])
-{
-    uint8_t v = 0;
-    for (size_t i = 0; i < 32; i++) v |= root[i];
-    return v != 0;
-}
+#define SOURCE ZCL_FR_SOURCE
 
 static void sha3_bytes(const uint8_t *p, size_t n, uint8_t out[32])
 {
@@ -28,20 +20,15 @@ static void sha3_bytes(const uint8_t *p, size_t n, uint8_t out[32])
     sha3_256_finalize(&h, out);
 }
 
+static bool zero_hash(const uint8_t h[32])
+{
+    static const uint8_t zero[32] = {0};
+    return memcmp(h, zero, 32) == 0;
+}
+
 static bool target_ok(const char *target)
 {
-    static const char prefix[] = "build/test-obj/epochs/";
-    static const char suffix[] = "/platform/modules/base/src/result.o";
-    if (!target) return false;
-    size_t a = sizeof(prefix) - 1, b = sizeof(suffix) - 1;
-    if (strlen(target) != a + 64 + b ||
-        memcmp(target, prefix, a) != 0 ||
-        memcmp(target + a + 64, suffix, b) != 0) return false;
-    uint8_t digest[32];
-    char hex[65];
-    memcpy(hex, target + a, 64);
-    hex[64] = '\0';
-    return zcl_hex_decode_lower(hex, digest, sizeof(digest));
+    return target && zcl_fr_target_check(target, strlen(target)) == NULL;
 }
 
 static bool append_arg(char out[16384], size_t *used,
@@ -183,76 +170,33 @@ static bool build_argv(const uint8_t *profile, size_t len,
            tail_args_append(out, &used);
 }
 
-static void put_u64(struct sha3_256_ctx *h, uint64_t v)
-{
-    uint8_t bytes[8];
-    zcl_write_u64_le(bytes, v);
-    sha3_256_write(h, bytes, sizeof(bytes));
-}
-
-static void put_text(struct sha3_256_ctx *h, const char *p, size_t n)
-{
-    put_u64(h, n);
-    sha3_256_write(h, (const uint8_t *)p, n);
-}
-
-static void expected_roots(const struct zcl_fixed_result_v2_roots *r,
-                           const uint8_t *out[12])
-{
-    out[0] = r->source_content;
-    out[1] = r->profile_args;
-    out[2] = r->source_image;
-    out[3] = r->tool_image;
-    out[4] = r->worker;
-    out[5] = r->launcher;
-    out[6] = r->check_image;
-    out[7] = r->environment;
-    out[8] = r->policy;
-    out[9] = r->seccomp_filter;
-    out[10] = r->bwrap;
-    out[11] = r->tree_checker;
-}
-
 static bool fixed_roots_ok(const struct zcl_fixed_result_v2_roots *r)
 {
-    const uint8_t *values[12];
-    expected_roots(r, values);
-    for (size_t i = 0; i < 12; i++)
-        if (!nonzero(values[i])) return false;
-    static const char env[] = "z23verify.fixed_result.env.v1\n"
-        "LC_ALL=C\nTZ=UTC\nTMPDIR=/tmp\nPATH=/usr/bin:/bin\n";
-    uint8_t digest[32];
-    sha3_bytes((const uint8_t *)env, sizeof(env) - 1, digest);
-    return memcmp(digest, r->environment, 32) == 0;
+    return zcl_fr_roots_check(r) == NULL;
 }
 
 static bool actual_env_ok(const char *const *envp, size_t count)
 {
-    static const char *const exact[] = {
-        "LC_ALL=C", "TZ=UTC", "TMPDIR=/tmp", "PATH=/usr/bin:/bin"
-    };
-    if (!envp || count != sizeof(exact) / sizeof(exact[0])) return false;
-    for (size_t i = 0; i < count; i++)
-        if (!envp[i] || strcmp(envp[i], exact[i]) != 0) return false;
-    return true;
+    return zcl_fr_env_check(envp, count) == NULL;
 }
 
+/* SHA3-256 of F(closure domain), the twelve labeled roots in pins order,
+ * then recorded_cwd, source and argv_norm, each F(label) F(value). */
 static void closure_hash(const struct zcl_fixed_result_v2_roots *r,
                          const char *argv, uint8_t out[32])
 {
-    static const char domain[] = "z23verify.fixed_result.closure.v2";
-    const uint8_t *values[12];
-    expected_roots(r, values);
     struct sha3_256_ctx h;
+    struct zcl_fr_writer w;
     sha3_256_init(&h);
-    put_text(&h, domain, sizeof(domain) - 1);
-    for (size_t i = 0; i < 12; i++) sha3_256_write(&h, values[i], 32);
-    put_text(&h, "/zclassic23", sizeof("/zclassic23") - 1);
-    put_text(&h, SOURCE, sizeof(SOURCE) - 1);
-    put_text(&h, argv, strlen(argv));
+    zcl_fr_writer_hash(&w, &h);
+    zcl_fr_put(&w, ZCL_FR_DOMAIN_CLOSURE, sizeof(ZCL_FR_DOMAIN_CLOSURE) - 1);
+    for (size_t i = 0; i < ZCL_FR_ROOT_COUNT; i++)
+        zcl_fr_put_hash(&w, zcl_fr_root_label(i), zcl_fr_root_at(r, i));
+    zcl_fr_put_text(&w, "recorded_cwd", ZCL_FR_CWD);
+    zcl_fr_put_text(&w, "source", SOURCE);
+    zcl_fr_put_text(&w, "argv_norm", argv);
     sha3_256_finalize(&h, out);
 }
-
 static bool profile_and_argv_ok(
     const struct zcl_fixed_result_v2_roots *roots,
     const uint8_t *profile_bytes, size_t profile_len,
@@ -264,7 +208,7 @@ static bool profile_and_argv_ok(
     char profile_hex[65];
     sha3_bytes(profile_bytes, profile_len, profile_hash);
     zcl_hex_encode(profile_hash, 32, profile_hex);
-    return strcmp(profile_hex, PROFILE_SHA3) == 0 &&
+    return strcmp(profile_hex, ZCL_FR_PROFILE_SHA3) == 0 &&
            memcmp(profile_hash, roots->profile_args, 32) == 0 &&
            build_argv(profile_bytes, profile_len, actual_physical_cwd,
                       actual_argv, actual_argc, actual_epoch_target,
@@ -287,7 +231,7 @@ static bool fill_expected(const struct zcl_fixed_result_v2_roots *roots,
         out->argv_norm, strlen(out->argv_norm)
     };
     out->expected.recorded_cwd = (struct zcl_verify_attest_text){
-        "/zclassic23", sizeof("/zclassic23") - 1
+        ZCL_FR_CWD, sizeof(ZCL_FR_CWD) - 1
     };
     memcpy(out->expected.pp_sha3, fresh_pp_sha3, 32);
     closure_hash(roots, out->argv_norm, out->expected.closure_sha3);
@@ -313,7 +257,7 @@ static bool constructor_roots_ok(
     const uint8_t current_source_content[32],
     const uint8_t fresh_pp_sha3[32])
 {
-    return fixed_roots_ok(roots) && nonzero(fresh_pp_sha3) &&
+    return fixed_roots_ok(roots) && !zero_hash(fresh_pp_sha3) &&
            memcmp(current_source_content, roots->source_content, 32) == 0;
 }
 

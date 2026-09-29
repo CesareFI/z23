@@ -5,6 +5,7 @@
 #define ZCL_TOOLS_DEV_VERIFY_STORE_H
 
 #include "verify_attest.h"
+#include "verify/fixed_result_key_v2.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -34,21 +35,29 @@ struct zcl_verify_store_result {
 
 /* Production paths, signer UID, and root publisher custody come only from
  * root-owned policy. This function reloads that policy and the root-pinned
- * public key on every call.
+ * public key on every call, and refuses store_owner_same_uid when the
+ * receiver runs as the signer or the publisher.
  * The caller must independently construct `expected` from an eligible input
- * closure; this reader cannot make a probe-only closure eligible. */
+ * closure and pass the root-owned pins v2 it loaded itself; every
+ * observation's launch.bin receipt is bound against them
+ * (zcl_fr_receipt_bind) before its record can admit. This reader cannot
+ * make a probe-only closure eligible. */
 void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
+                             const struct zcl_fixed_result_v2_roots *pins,
                              const struct zcl_verify_attest_box_key *box,
                              struct zcl_verify_store_result *out);
 
 void zcl_verify_store_result_release(struct zcl_verify_store_result *result);
 
 #ifdef ZCL_TESTING
-/* Isolated fixture only. Production does not compile a path/UID override. */
+/* Isolated fixture only. Production does not compile a path/UID override.
+ * Without allow_same_uid, a signer or publisher UID equal to the caller's
+ * refuses store_owner_same_uid before any file is opened. */
 void zcl_verify_store_lookup_fixture(
     const char *root, unsigned signer_uid, unsigned publisher_uid,
     bool allow_same_uid,
     const struct zcl_verify_attest_expected *expected,
+    const struct zcl_fixed_result_v2_roots *pins,
     const struct zcl_verify_attest_box_key *box,
     struct zcl_verify_store_result *out);
 #endif

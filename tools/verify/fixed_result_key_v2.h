@@ -30,7 +30,8 @@ struct zcl_fixed_result_v2_roots {
  * independently measured by the receiver; `roots->source_content` is its
  * independently loaded root pin. The installed source image is a separate
  * UID-bound root and must never be compared to the developer-owned tree.
- * The eleven remaining roots match fixed_result.pins.v1 in its exact order.
+ * All twelve roots are the root-owned pins v2 (fixed_result_contract.h),
+ * in the same order.
  * `check_image` must cover the signer, publisher, receiver, key constructor,
  * and pinned proof executor implementation bytes. The caller must
  * authenticate every root, the signer/box key separately, actual tool/check

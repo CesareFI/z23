@@ -5,6 +5,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "verify_store.h"
 
+#include "verify/fixed_result_contract.h"
+
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "sha3/sha3.h"
@@ -29,6 +31,8 @@
 #define VS_MAX_OBJECT (8u * 1024u * 1024u)
 #define VS_MAX_DEP (4u * 1024u * 1024u)
 #define VS_MAX_STDERR (4u * 1024u * 1024u)
+#define VS_MAX_RECEIPT (64u * 1024u)
+#define VS_CHILDREN 5u
 #define VS_MAX_TOTAL (64u * 1024u * 1024u)
 #define VS_KEY_HEX 64u
 #define VS_POLICY "z23verify.store.v1\nsigner_uid="
@@ -41,7 +45,15 @@ struct vs_bytes {
 
 struct vs_member {
     struct zcl_verify_attest_observation view;
-    struct vs_bytes record, object, dep, stderr_bytes;
+    struct vs_bytes record, object, dep, stderr_bytes, receipt;
+    struct zcl_fr_binding binding; /* view.binding points here once bound */
+};
+
+/* What one lookup expects of every observation under its key. */
+struct vs_request {
+    const struct zcl_verify_attest_expected *expected;
+    const struct zcl_fixed_result_v2_roots *pins;
+    uid_t publisher;
 };
 
 static void vs_result_init(struct zcl_verify_store_result *out)
@@ -153,6 +165,7 @@ static void vs_member_free(struct vs_member *m)
     free(m->object.p);
     free(m->dep.p);
     free(m->stderr_bytes.p);
+    free(m->receipt.p);
 }
 
 static bool vs_hex_name(const char *name)
@@ -181,6 +194,19 @@ static bool vs_dot_name(const char *name)
     return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
+/* Store layout v2: the signed record, the three reused artifacts and the
+ * root launch receipt they were copied from. */
+static const char *const k_vs_children[VS_CHILDREN] = {
+    "attest.bin", "object.o", "deps.d", "stderr.bin", "launch.bin"
+};
+
+static bool vs_known_child(const char *name)
+{
+    for (size_t i = 0; i < VS_CHILDREN; ++i)
+        if (strcmp(name, k_vs_children[i]) == 0) return true;
+    return false;
+}
+
 static const char *vs_member_children(int fd)
 {
     const char *unknown = NULL;
@@ -200,17 +226,12 @@ static const char *vs_member_children(int fd)
         }
         if (vs_dot_name(e->d_name))
             continue;
-        if (strcmp(e->d_name, "attest.bin") == 0 ||
-            strcmp(e->d_name, "object.o") == 0 ||
-            strcmp(e->d_name, "deps.d") == 0 ||
-            strcmp(e->d_name, "stderr.bin") == 0)
-            { if (++seen > 4u) unknown = "store_observation_children_limit";
-              continue; }
-        if (++seen > 4u) {
+        if (++seen > VS_CHILDREN) {
             unknown = "store_observation_children_limit";
             break;
         }
-        unknown = "store_observation_child_unknown";
+        if (!vs_known_child(e->d_name))
+            unknown = "store_observation_child_unknown";
     }
     if (closedir(entries) != 0) unknown = "store_observation_unreadable";
     return unknown;
@@ -222,22 +243,45 @@ static bool vs_limit_failure(const char *why)
                    strcmp(why, "store_out_of_memory") == 0);
 }
 
+/* The receiver's own receipt expectation for this observation. A missing or
+ * refused receipt leaves view.binding NULL, so a PASS cannot admit. */
+static const char *vs_member_bind(struct vs_member *m,
+                                  const struct vs_request *req)
+{
+    if (!m->receipt.p || !m->record.p) return NULL;
+    const struct zcl_fr_artifact_bytes bytes = {
+        m->object.p, m->object.n, m->dep.p, m->dep.n,
+        m->stderr_bytes.p, m->stderr_bytes.n};
+    const char *why = NULL;
+    if (!zcl_fr_receipt_bind(m->receipt.p, m->receipt.n, req->pins,
+                             req->expected, &bytes, &m->binding, &why))
+        return why;
+    m->view.binding = &m->binding.binding;
+    return NULL;
+}
+
 static const char *vs_member_artifacts(int fd, const char *name,
-                                       uid_t signer, size_t *total,
+                                       const struct vs_request *req,
+                                       size_t *total,
                                        struct vs_member *m, bool *complete)
 {
-    const char *first = vs_read_file(fd, "attest.bin", signer,
+    uid_t owner = req->publisher;
+    const char *first = vs_read_file(fd, "attest.bin", owner,
                                      VS_MAX_RECORD, total, &m->record);
     bool record_read = first == NULL;
-    const char *why = vs_read_file(fd, "object.o", signer,
+    const char *why = vs_read_file(fd, "object.o", owner,
                                    VS_MAX_OBJECT, total, &m->object);
     bool bounded = vs_limit_failure(why);
     if (!first) first = why;
-    why = vs_read_file(fd, "deps.d", signer, VS_MAX_DEP, total, &m->dep);
+    why = vs_read_file(fd, "deps.d", owner, VS_MAX_DEP, total, &m->dep);
     bounded |= vs_limit_failure(why);
     if (!first) first = why;
-    why = vs_read_file(fd, "stderr.bin", signer,
+    why = vs_read_file(fd, "stderr.bin", owner,
                        VS_MAX_STDERR, total, &m->stderr_bytes);
+    bounded |= vs_limit_failure(why);
+    if (!first) first = why;
+    why = vs_read_file(fd, "launch.bin", owner,
+                       VS_MAX_RECEIPT, total, &m->receipt);
     bounded |= vs_limit_failure(why);
     if (!first) first = why;
     if (!first) first = vs_record_name_check(m, name);
@@ -246,26 +290,29 @@ static const char *vs_member_artifacts(int fd, const char *name,
         .obj_bytes = m->object.p, .obj_len = m->object.n,
         .dep_bytes = m->dep.p, .dep_len = m->dep.n,
         .stderr_bytes = m->stderr_bytes.p, .stderr_len = m->stderr_bytes.n,
+        .binding = NULL,
     };
+    why = vs_member_bind(m, req);
+    if (!first) first = why;
     *complete = record_read && !bounded;
     return first;
 }
 
-static const char *vs_member_read(int key_fd, const char *name, uid_t signer,
+static const char *vs_member_read(int key_fd, const char *name,
+                                  const struct vs_request *req,
                                   size_t *total, struct vs_member *m,
                                   bool *complete)
 {
     *complete = false;
-    int fd = vs_child_dir(key_fd, name, signer);
+    int fd = vs_child_dir(key_fd, name, req->publisher);
     if (fd < 0) return "store_observation_unsafe";
     const char *children_why = vs_member_children(fd);
-    const char *why = vs_member_artifacts(fd, name, signer, total, m,
-                                          complete);
+    const char *why = vs_member_artifacts(fd, name, req, total, m, complete);
     if (close(fd) != 0) *complete = false;
     return why ? why : children_why;
 }
 
-static bool vs_scan_entries(DIR *dir, int key_fd, uid_t signer,
+static bool vs_scan_entries(DIR *dir, int key_fd, const struct vs_request *req,
                              struct vs_member *members, size_t *count,
                              const char **scan_why)
 {
@@ -284,7 +331,7 @@ static bool vs_scan_entries(DIR *dir, int key_fd, uid_t signer,
         }
         if (*count == VS_MAX_OBSERVATIONS) { incomplete = true; break; }
         bool member_complete = false;
-        const char *why = vs_member_read(key_fd, e->d_name, signer,
+        const char *why = vs_member_read(key_fd, e->d_name, req,
                                          &total, &members[*count],
                                          &member_complete);
         if (why && !*scan_why) *scan_why = why;
@@ -335,8 +382,8 @@ static void vs_scan_decide(struct vs_member *members, size_t count,
 /* Full enumeration under LOCK_SH. A bounded overflow blocks rather than
  * compiling past an unseen signed failure. Other malformed children are
  * cold, but all readable records still reach admit_set first. */
-static void vs_scan(int key_fd, uid_t signer, const char *store_key,
-                    const struct zcl_verify_attest_expected *expected,
+static void vs_scan(int key_fd, const struct vs_request *req,
+                    const char *store_key,
                     const struct zcl_verify_attest_trust_root *root,
                     struct zcl_verify_store_result *out)
 {
@@ -354,13 +401,14 @@ static void vs_scan(int key_fd, uid_t signer, const char *store_key,
     }
     size_t count = 0;
     const char *scan_why = NULL;
-    bool complete = vs_scan_entries(dir, key_fd, signer, members, &count,
+    bool complete = vs_scan_entries(dir, key_fd, req, members, &count,
                                      &scan_why);
     if (closedir(dir) != 0) complete = false;
     if (!complete)
         vs_set(out, ZCL_VERIFY_STORE_BLOCK, "store_scan_incomplete");
     else
-        vs_scan_decide(members, count, scan_why, store_key, expected, root, out);
+        vs_scan_decide(members, count, scan_why, store_key, req->expected,
+                       root, out);
     for (size_t i = 0; i < count; ++i) vs_member_free(&members[i]);
     free(members);
 }
@@ -436,16 +484,23 @@ static void vs_refresh_hit(bool production, uid_t signer, uid_t publisher,
            (why ? why : "verifier_key_changed"));
 }
 
+static const char *vs_request_ready(const struct vs_request *req)
+{
+    if (!vs_expected_ready(req->expected)) return "store_expected_unqualified";
+    if (!req->pins) return "store_pins_unqualified";
+    return zcl_fr_roots_check(req->pins);
+}
+
 static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
-                         uid_t publisher,
-                         bool production,
-                         const struct zcl_verify_attest_expected *expected,
+                         bool production, const struct vs_request *req,
                          const struct zcl_verify_attest_box_key *box,
                          struct zcl_verify_store_result *out)
 {
     int store_fd = -1, lock_fd = -1, key_fd = -1;
-    if (!vs_expected_ready(expected)) {
-        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_expected_unqualified");
+    const struct zcl_verify_attest_expected *expected = req->expected;
+    const char *why = vs_request_ready(req);
+    if (why) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
         return;
     }
     if (!box || !box->known) {
@@ -453,12 +508,11 @@ static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
         return;
     }
     struct zcl_verify_attest_trust_root root;
-    const char *why = NULL;
     if (!zcl_verify_attest_trust_root_load(NULL, box, &root, &why)) {
         vs_set(out, ZCL_VERIFY_STORE_COLD, why);
         return;
     }
-    lock_fd = vs_open_store_lock(base_fd, anchor_owner, publisher,
+    lock_fd = vs_open_store_lock(base_fd, anchor_owner, req->publisher,
                                  &store_fd,
                                  out);
     if (lock_fd < 0) goto done;
@@ -468,15 +522,15 @@ static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
                                     &expected->recorded_cwd,
                                     expected->pp_sha3,
                                     expected->closure_sha3, key);
-    key_fd = vs_child_dir(store_fd, key, publisher);
+    key_fd = vs_child_dir(store_fd, key, req->publisher);
     if (key_fd < 0) {
         vs_set(out, ZCL_VERIFY_STORE_COLD,
                errno == ENOENT ? "attest_no_observation" : "store_key_unsafe");
         goto done;
     }
-    vs_scan(key_fd, publisher, key, expected, &root, out);
+    vs_scan(key_fd, req, key, &root, out);
     if (out->verdict == ZCL_VERIFY_STORE_HIT) {
-        vs_refresh_hit(production, signer, publisher, box, &root, out);
+        vs_refresh_hit(production, signer, req->publisher, box, &root, out);
         if (out->verdict == ZCL_VERIFY_STORE_HIT) {
             out->lock_fd = lock_fd;
             lock_fd = -1;
@@ -574,6 +628,7 @@ done:
 }
 
 void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
+                             const struct zcl_fixed_result_v2_roots *pins,
                              const struct zcl_verify_attest_box_key *box,
                              struct zcl_verify_store_result *out)
 {
@@ -583,6 +638,11 @@ void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
     const char *why = NULL;
     if (!vs_policy_uids(&signer, &publisher, &why)) {
         vs_set(out, ZCL_VERIFY_STORE_COLD, why);
+        return;
+    }
+    /* A receiver running as the publisher could have written the store. */
+    if (publisher == geteuid()) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid");
         return;
     }
     int root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
@@ -595,10 +655,11 @@ void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
     int var = vs_child_dir(root, "var", 0);
     int lib = var >= 0 ? vs_child_dir(var, "lib", 0) : -1;
     int base = lib >= 0 ? vs_child_dir(lib, "z23verify", 0) : -1;
+    const struct vs_request req = {expected, pins, publisher};
     if (base < 0)
         vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
     else
-        vs_lookup_at(base, 0, signer, publisher, true, expected, box, out);
+        vs_lookup_at(base, 0, signer, true, &req, box, out);
     if (base >= 0) (void)close(base);
     if (lib >= 0) (void)close(lib);
     if (var >= 0) (void)close(var);
@@ -610,13 +671,16 @@ void zcl_verify_store_lookup_fixture(
     const char *root_path, unsigned signer_uid, unsigned publisher_uid,
     bool allow_same_uid,
     const struct zcl_verify_attest_expected *expected,
+    const struct zcl_fixed_result_v2_roots *pins,
     const struct zcl_verify_attest_box_key *box,
     struct zcl_verify_store_result *out)
 {
     if (!out) return;
     vs_result_init(out);
+    bool same_uid = (uid_t)signer_uid == geteuid() ||
+                    (uid_t)publisher_uid == geteuid();
     if (!root_path || root_path[0] != '/' || signer_uid == 0 ||
-        (!allow_same_uid && (uid_t)signer_uid == geteuid())) {
+        (!allow_same_uid && same_uid)) {
         vs_set(out, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid");
         return;
     }
@@ -628,9 +692,9 @@ void zcl_verify_store_lookup_fixture(
         vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
         return;
     }
-    vs_lookup_at(root, (uid_t)signer_uid, (uid_t)signer_uid,
-                 (uid_t)publisher_uid, false,
-                 expected, box, out);
+    const struct vs_request req = {expected, pins, (uid_t)publisher_uid};
+    vs_lookup_at(root, (uid_t)signer_uid, (uid_t)signer_uid, false, &req,
+                 box, out);
     (void)close(root);
 }
 #endif

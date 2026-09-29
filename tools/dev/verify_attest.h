@@ -7,14 +7,18 @@
  * different account compiled that translation unit itself and signed a
  * record saying so. This module owns three pieces of that path:
  *
- *   - the record `zcl.verify_attest.v1`, one canonical little-endian byte
- *     encoding, signed with Ed25519 over a domain-separated message;
+ *   - the record `z23verify.attest.v2`, one canonical encoding in the
+ *     z23verify.fixed_result.v2 framing, signed with Ed25519 over a
+ *     domain-separated message, and bound to one root launch receipt;
+ *     a well-formed `zcl.verify_attest.v1` record still parses, and is
+ *     refused by name because it names no receipt;
  *   - the trust root: the verifier's public key, read from a file that
  *     root owns and nobody else can write, down a directory chain with the
  *     same property, and refused by name otherwise;
  *   - admission: an object is reused only when the record verifies under
  *     that key, names this compiler, these flags and this preprocessed
- *     input, reports exit 0, and hashes to the bytes actually in hand.
+ *     input, repeats the receiver's independently built receipt binding,
+ *     reports exit 0, and hashes to the bytes actually in hand.
  *
  * The per-box proof signer key (dev_proof_signer.h) is readable by the
  * account that runs candidate code, so a record signed by it is refused by
@@ -31,7 +35,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ZCL_VERIFY_ATTEST_SCHEMA "zcl.verify_attest.v1"
+#define ZCL_VERIFY_ATTEST_SCHEMA "z23verify.attest.v2"
+#define ZCL_VERIFY_ATTEST_SCHEMA_V1 "zcl.verify_attest.v1"
 #define ZCL_VERIFY_ATTEST_HASH_BYTES 32u
 #define ZCL_VERIFY_ATTEST_PUBKEY_BYTES 32u
 #define ZCL_VERIFY_ATTEST_SIGNATURE_BYTES 64u
@@ -42,6 +47,8 @@
 #define ZCL_VERIFY_ATTEST_ARGV_MAX 65536u
 #define ZCL_VERIFY_ATTEST_CWD_MAX 4096u
 #define ZCL_VERIFY_ATTEST_PATH_MAX 4096u
+#define ZCL_VERIFY_ATTEST_CONTRACT_MAX 64u
+#define ZCL_VERIFY_ATTEST_TARGET_MAX 4096u
 #define ZCL_VERIFY_ATTEST_DEFAULT_PUBKEY_PATH "/etc/z23verify/verifier.pub"
 
 /* Trust-root refusals. */
@@ -83,6 +90,13 @@
 #define ZCL_VERIFY_ATTEST_WHY_STDERR_MISMATCH "attest_stderr_hash_mismatch"
 #define ZCL_VERIFY_ATTEST_WHY_NO_OBSERVATION "attest_no_observation"
 #define ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT "attest_eligible_conflict"
+/* Receipt-binding refusals (record v2). */
+#define ZCL_VERIFY_ATTEST_WHY_RECORD_V1_UNBOUND "attest_record_v1_unbound"
+#define ZCL_VERIFY_ATTEST_WHY_BINDING_MISSING "attest_binding_missing"
+#define ZCL_VERIFY_ATTEST_WHY_CONTRACT_MISMATCH "attest_contract_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_PROFILE_MISMATCH "attest_profile_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_TARGET_MISMATCH "attest_target_mismatch"
+#define ZCL_VERIFY_ATTEST_WHY_RECEIPT_MISMATCH "attest_receipt_mismatch"
 
 /* A borrowed byte string. Never NUL-terminated by contract; `len` is the
  * whole value. Embedded NUL bytes are malformed in every text field. */
@@ -91,7 +105,22 @@ struct zcl_verify_attest_text {
     size_t len;
 };
 
+/* The launch a record was sealed for. The signer repeats it from the root
+ * launch receipt it authenticated; the receiver rebuilds it from the
+ * root-published receipt and its own pins (zcl_fr_receipt_bind) and
+ * admission requires the two to be equal, field by field. */
+struct zcl_verify_attest_binding {
+    struct zcl_verify_attest_text contract; /* "z23verify.fixed_result.v2" */
+    uint8_t profile_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES];
+    struct zcl_verify_attest_text target;   /* the receipt's -MT target */
+    uint8_t receipt_sha3[ZCL_VERIFY_ATTEST_HASH_BYTES];
+};
+
 struct zcl_verify_attest_record {
+    /* Set by parse: 2 for the current schema, 1 for a retired record.
+     * Encode ignores it and always writes the current schema. */
+    uint32_t schema_version;
+    struct zcl_verify_attest_binding binding;
     struct zcl_verify_attest_text toolchain_id;
     struct zcl_verify_attest_text argv_norm;
     struct zcl_verify_attest_text recorded_cwd;
@@ -112,17 +141,22 @@ struct zcl_verify_attest_signed {
     size_t body_len;
 };
 
-/* Canonical unsigned body. The one encoding, in field order:
+/* Canonical unsigned body, in the z23verify.fixed_result.v2 framing where
+ * F(x) is u64le(len(x)) followed by x:
  *
- *   u16le len | "zcl.verify_attest.v1"
- *   u32le len | toolchain_id   (1..TOOLCHAIN_MAX, no NUL)
- *   u32le len | argv_norm      (1..ARGV_MAX, no NUL)
- *   u32le len | recorded_cwd   (0..CWD_MAX, no NUL)
- *   pp_sha3 | closure_sha3 | obj_sha3 | dep_sha3 | stderr_sha3  (32 each)
- *   i32le exit_code
+ *   F("z23verify.attest.v2")
+ *   F("contract")     F(1..CONTRACT_MAX bytes, no NUL)
+ *   F("toolchain_id") F(1..TOOLCHAIN_MAX, no NUL)
+ *   F("argv_norm")    F(1..ARGV_MAX, no NUL)
+ *   F("recorded_cwd") F(0..CWD_MAX, no NUL)
+ *   F("target")       F(0..TARGET_MAX, no NUL)
+ *   F("pp_sha3") F(32)  F("closure_sha3") F(32)  F("profile_sha3") F(32)
+ *   F("receipt_sha3") F(32)  F("obj_sha3") F(32)  F("dep_sha3") F(32)
+ *   F("stderr_sha3") F(32)
+ *   F("exit_code")    F(u64le of the sign-extended 32-bit exit code)
  *
- * A signed record appends signer_pubkey (32) and signature (64); the
- * signature covers "zcl.verify_attest.sig.v1\0" followed by the body.
+ * A signed record appends F("signer_pubkey") F(32) F("signature") F(64);
+ * the signature covers F("z23verify.attest.signature.v2") then the body.
  * `*out` is allocated with zcl_malloc and owned by the caller. */
 bool zcl_verify_attest_body_encode(const struct zcl_verify_attest_record *record,
                                    uint8_t **out, size_t *out_len,
@@ -135,16 +169,19 @@ bool zcl_verify_attest_seal(const struct zcl_verify_attest_record *record,
                             uint8_t **out, size_t *out_len, const char **why);
 
 /* Strict parse: schema first (attest_schema_unknown), then every length
- * and bound (attest_record_malformed), with no trailing bytes. It does not
- * verify the signature; admission does. */
+ * and bound (attest_record_malformed), with no trailing bytes. A
+ * well-formed retired v1 record parses with schema_version 1 and an empty
+ * binding so admission can refuse it by name. It does not verify the
+ * signature; admission does. */
 bool zcl_verify_attest_parse(const uint8_t *bytes, size_t len,
                              struct zcl_verify_attest_signed *out,
                              const char **why);
 
-/* Store key H(toolchain_id, argv_norm, recorded_cwd, pp_sha3,
- * closure_sha3): SHA3-256 over a domain string and length-prefixed fields.
- * A matching preprocessed stream alone does not identify a direct-source
- * object under debug/LTO profiles. */
+/* Store key: SHA3-256 of F("z23verify.attest.store_key.v2") then the
+ * labeled fields toolchain_id, argv_norm, recorded_cwd, pp_sha3 and
+ * closure_sha3 in that order. The binding is per observation and is not
+ * part of the key. A matching preprocessed stream alone does not identify
+ * a direct-source object under debug/LTO profiles. */
 void zcl_verify_attest_store_key(
     const struct zcl_verify_attest_text *toolchain_id,
     const struct zcl_verify_attest_text *argv_norm,
@@ -248,7 +285,10 @@ struct zcl_verify_attest_decision {
  * `record_bytes`. A valid verifier signature over the exact expected inputs
  * with a nonzero compiler exit returns FAIL, which blocks cold fallback;
  * an unrelated or malformed record returns REFUSE. A successful record
- * admits only after the exact fetched object, depfile, and stderr bytes match.
+ * admits only after its binding equals `binding` (the receiver's own
+ * receipt expectation; NULL refuses attest_binding_missing) and the exact
+ * fetched object, depfile, and stderr bytes match. A retired v1 record
+ * refuses attest_record_v1_unbound.
  * An empty stderr is valid; an empty object or depfile is not. `trust_root` NULL
  * or not loaded refuses no_verifier_key. */
 struct zcl_verify_attest_decision zcl_verify_attest_admit(
@@ -256,6 +296,7 @@ struct zcl_verify_attest_decision zcl_verify_attest_admit(
     const uint8_t *obj_bytes, size_t obj_len,
     const uint8_t *dep_bytes, size_t dep_len,
     const uint8_t *stderr_bytes, size_t stderr_len,
+    const struct zcl_verify_attest_binding *binding,
     const struct zcl_verify_attest_expected *expected,
     const struct zcl_verify_attest_trust_root *trust_root);
 
@@ -277,6 +318,9 @@ struct zcl_verify_attest_observation {
     size_t dep_len;
     const uint8_t *stderr_bytes;
     size_t stderr_len;
+    /* This observation's receipt binding as the receiver rebuilt it, or
+     * NULL when its receipt was absent or refused. */
+    const struct zcl_verify_attest_binding *binding;
 };
 
 struct zcl_verify_attest_decision zcl_verify_attest_admit_set(
