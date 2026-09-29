@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Lane A1 — created_outputs retention prune, decoupled from the utxo_apply
+ * created_outputs retention prune, decoupled from the utxo_apply
  * kernel co-commit tx. See utxo_apply_created_outputs_prune.h.
  *
  * The prune is a retention sweep with NO consensus value: created_outputs is
@@ -30,9 +30,8 @@
 /* Keep a large margin over the IBD reorg allowance plus the block-download
  * lookahead. Cleanup is intentionally height-cadenced: the projection has no
  * consensus value and bounded reads ignore rows below their requested range,
- * while a DELETE transaction on a large Windows SQLite file has measured at
- * 2-4 seconds. Paying it after every one-block network batch serialized IBD.
- * One sweep per 1024 applied heights bounds the temporary excess to 1023
+ * while a DELETE transaction on a large Windows SQLite file takes seconds
+ * and would serialize IBD if paid after every one-block batch. One sweep per 1024 applied heights bounds the temporary excess to 1023
  * heights and deletes at most that same bounded span. */
 #define CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS \
     (MAX_IBD_REORG_LENGTH + BLOCK_DOWNLOAD_WINDOW + 1024)
@@ -66,8 +65,8 @@ static int utxo_apply_created_outputs_retain(void)
 }
 
 /* The prune is a retention sweep with NO consensus value, decoupled from the
- * kernel CO-COMMIT tx (a separate post-commit BEGIN IMMEDIATE). After the A3
- * flip created_outputs and stage_cursor both live in consensus.db (the kernel
+ * kernel CO-COMMIT tx (a separate post-commit BEGIN IMMEDIATE). created_outputs and
+ * stage_cursor both live in consensus.db (the kernel
  * store), so the prune runs on the kernel handle (progress_store) — the caller
  * has ALREADY released the kernel progress lock, so re-acquiring it here for a
  * bounded post-commit DELETE cannot stall an in-flight fold. The cursor it

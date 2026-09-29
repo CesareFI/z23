@@ -39,14 +39,11 @@ static _Atomic bool          g_over_last_pass;
 static _Atomic(const char *) g_lagging_name;      /* NULL until a firing pass */
 static _Atomic int64_t       g_cursor_at_detect;  /* offending cursor at detect */
 
-/* Progress tracker: the over-threshold index observed on the PREVIOUS pass and
- * its cursor then. A from-genesis backfill on a multi-million-block chain sits
- * far behind H* for a long time while it folds forward one bounded batch per
- * tick — that is healthy catch-up, not a stall, and must never raise a
- * dependency blocker that reads as "backfill wedged". Comparing the offending
- * index's cursor against its own previous-pass cursor distinguishes the two: an
- * ADVANCING cursor is normal progress (never fire); only a FROZEN cursor across
- * the poll interval is the genuine stall this condition names. */
+/* Progress tracker: the over-threshold index observed on the previous pass and
+ * its cursor then. A from-genesis backfill sits far behind H* while it folds
+ * forward one bounded batch per tick — healthy catch-up, not a stall. An
+ * ADVANCING cursor never fires; only a FROZEN cursor across the poll interval
+ * is the stall this condition names. */
 static _Atomic(const char *) g_armed_name;        /* over-threshold index, prev pass */
 static _Atomic int64_t       g_armed_cursor;      /* that index's cursor, prev pass */
 
@@ -100,9 +97,7 @@ static bool eval_over(const struct catalog_index_status *rows, size_t n)
      * STRUCTURAL floor ("<name>.below_snapshot_seed": bodies below the
      * snapshot seed were never downloaded, the forward-only fold can never
      * cross), "stalled and must resume" is a false claim. The structural
-     * blocker is the truthful naming; do not pile a misleading one on top.
-     * Observed live 2026-07-27: op_return_index frozen at -1 on the
-     * snapshot-seeded canonical datadir. */
+     * blocker is the truthful naming; do not pile a misleading one on top. */
     {
         char seed_id[BLOCKER_ID_MAX];
         snprintf(seed_id, sizeof(seed_id), "%s.below_snapshot_seed",
@@ -167,8 +162,8 @@ static enum condition_remedy_result remedy_catalog_lag_exceeded(void)
 
     /* Rearm-forever is the right posture for an external-progress dependency
      * (see the cooldown comment below), but it means this remedy re-raises the
-     * SAME blocker every cooldown for as long as the index stays frozen —
-     * 540 fires on the canonical node, 2026-07-27. Emit on first raise and on
+     * SAME blocker every cooldown for as long as the index stays frozen.
+     * Emit on first raise and on
      * any change of (index, cursor), then one keep-alive per hour carrying the
      * suppressed count, so the line never reads as new while the alarm stays
      * visible and counted. */
@@ -270,20 +265,9 @@ void register_catalog_lag_exceeded(void)
 
 /* ── `z23 dumpstate catalog_coverage` ───────────────────────────
  *
- * The one place to answer: "this index is empty — does that mean anything?"
- *
- * catalog_completeness.h has said since it landed that "a later lane wires
- * catalog_completeness_snapshot() into `z23 ops state`". That lane
- * never happened, so the only way to see this data was to infer it from a
- * blocker message, one index at a time. Measured on the canonical node
- * 2026-07-28: op_return_index, zslp_ledger and znam_names all read 0 rows,
- * and there was no surface that said whether any of those zeros was
- * evidence of anything.
- *
- * It lives HERE rather than in a new file because this condition already
- * composes exactly these two reads — the live catalog and H* — to decide
- * whether to fire. Exposing what it sees is a diagnostic OF this condition,
- * not a new concern; a separate owner would be a second reader of one fact.
+ * Answers "this index is empty — does that mean anything?" from the live
+ * catalog and H*, the same two reads this condition composes to decide
+ * whether to fire.
  *
  * Reentrant-safe, allocation-free, no store writes (catalog_completeness is
  * REPORT ONLY). See CLAUDE.md "Adding state introspection". */

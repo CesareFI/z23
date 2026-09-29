@@ -298,8 +298,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      * stages extend it UP the seed-region slot is left empty even though the
      * authority still names next_h finalized. active_chain_at then returns NULL
      * → tip_finalize idles on current_tip_missing forever and H* pins at the
-     * seed even though utxo_apply is folding ok=1 rows past it (observed:
-     * ua_cursor climbing, ua_ok=1, tf_blocked=current_tip_missing). Re-resolve
+     * seed even though utxo_apply is folding ok=1 rows past it. Re-resolve
      * the slot from the durable finalized-hash table + the block map (the SAME
      * authority active_chain_tip() uses), so finalize can proceed; a real
      * absence (no finalized row / not in map) still falls through to the
@@ -317,8 +316,8 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     /* HEADER-CHAIN SELF-HEAL (deadlock-cure step 3). The lookahead successor
      * N+1 (and, on a deeply-retracted window, even N) can be genuinely on the
      * canonical most-work chain yet ABSENT from BOTH the active-chain window
-     * (the have-data extender stalled at the body frontier a block below it —
-     * the live 3162166 wedge: new_tip=active_chain_at(N+1)=NULL) AND the
+     * (the have-data extender stalled at the body frontier a block below it,
+     * so active_chain_at(N+1)=NULL) AND the
      * finalized-hash table (N+1 is not finalized — enabling that is the whole
      * point). Resolve it from the best-header ancestry, the same slot-
      * independent authority validate_headers_stage's vh_resolve_bi uses. This is
@@ -375,7 +374,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      * window vs best-header ancestry vs block map via the self-heals above), so
      * a duplicate same-hash block_index object would make a pointer compare
      * false-detect a reorg and write an ok=0 row that caps H* a block below the
-     * truth — the exact class bde617a7e fixed in the window extender. Contiguity
+     * truth. Contiguity
      * is the consensus property child.hashPrevBlock == parent.GetBlockHash();
      * test THAT. A genuine fork (different parent hash, or a NULL/severed pprev)
      * still takes the reorg_detected ok=0 advance below — invariant 4 intact. */

@@ -2,9 +2,8 @@
  * purpose: the storesell_* node RPC surface — the in-node half of "a merchant
  * lists a product", so listing works while the node owns node.db.
  *
- * The merchant CLI leaf `app.store.list-product` used to open
- * <datadir>/node.db itself. A booted node holds a single-owner lease on that
- * file, so on a running store the leaf could only ever be refused. This file
+ * A booted node holds a single-owner lease on <datadir>/node.db, so the
+ * merchant CLI leaf `app.store.list-product` cannot open it itself. This file
  * is the mirror of contexts/market/controllers/src/store_buyer_controller.c
  * on the selling side: it parses params, calls the ONE listing body
  * (store_sell_list_product_apply, engine/controllers/src/store_native_

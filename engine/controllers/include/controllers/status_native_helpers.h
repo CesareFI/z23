@@ -26,10 +26,8 @@ extern "C" {
 
 /* ── Peer survey ────────────────────────────────────────────────
  *
- * One fold over the getpeerinfo JSON array, shared by all three
- * callers that used to each re-derive their own subset of these
- * counts with slightly different idioms. Each caller reads only the fields
- * it needs. */
+ * One fold over the getpeerinfo JSON array, shared by all callers. Each
+ * caller reads only the fields it needs. */
 struct peer_survey {
     int total;
     int inbound;

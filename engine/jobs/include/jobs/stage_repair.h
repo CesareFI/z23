@@ -85,7 +85,7 @@ struct stage_repair_row_quarantine_result {
     int  verdict;        /* enum block_row_verify_result */
 };
 
-/* Runtime cure (Lane B3): purge a poisoned `blocks`-table row at `height` whose
+/* Runtime cure: purge a poisoned `blocks`-table row at `height` whose
  * durable header/solution the frozen verify REJECTS, so header sync + body_fetch
  * re-request a clean body instead of the repair loop re-hitting the same poison
  * forever. Evidence-gated and conservative: the row is read RAW and run through
@@ -433,11 +433,9 @@ bool stage_repair_tipfin_refusal_is_pending_forward(
  *     takes cs_main inside it (engine/jobs/src/body_fetch_stage.c).
  *
  * A blocking acquire here closes an ABBA cycle against whichever phase it
- * does not match — progress-first deadlocked the boot window (a node wedged
- * partway through startup, P2P port open, RPC port never opening, because
- * script_validate_stage_init blocked forever on the progress store);
- * cs_main-first deadlocks the steady state against the drive. Both are the
- * same bug wearing different clothes, and neither is fixed by reordering.
+ * does not match: progress-first deadlocks the boot window (script_validate_
+ * stage_init blocks on the progress store); cs_main-first deadlocks the steady
+ * state against the drive. Reordering fixes neither.
  *
  * The resolution is to stop waiting. This reconcile is a self-heal observer
  * on the condition-engine thread (and via sticky_escalator the supervisor
@@ -446,7 +444,7 @@ bool stage_repair_tipfin_refusal_is_pending_forward(
  * same way by engine/reducer/conditions/src/reducer_drive_watchdog.c — lets it decline
  * and retry on the next tick. A path that never waits-for cannot be half of
  * a deadlock, whichever way the rest of the tree happens to be nesting.
- * Regression cover: the "lock-order" cases in
+ * Cover: the "lock-order" cases in
  * tests/harness/src/test_reducer_frontier_reconcile_light.c. */
 bool stage_reducer_frontier_reconcile_light_needed(
     struct sqlite3 *db,
@@ -468,12 +466,10 @@ void stage_reducer_frontier_reset_detect_memo_for_testing(void);
  *
  * The public entry point cannot stage the lock-order race: it calls
  * read_frontier_snapshot() first, which takes the progress store on its own
- * (holding no cs_main, so it is safe), and a test that contends the progress
- * store simply parks the caller there and never reaches the section that
- * matters. A regression test written against the public path therefore passes
- * whether the acquire below is a trylock or a blocking lock — it proves
- * nothing. This seam skips the prologue so the test can hold the progress
- * store, call in, and observe whether cs_main is held while waiting. */
+ * (holding no cs_main), so a test that contends the progress store parks the
+ * caller there and never reaches the section that matters. This seam skips
+ * the prologue so the test can hold the progress store, call in, and observe
+ * whether cs_main is held while waiting. */
 bool stage_reducer_frontier_reconcile_flags_for_testing(
     struct sqlite3 *db,
     struct main_state *ms,

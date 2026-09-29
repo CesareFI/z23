@@ -124,12 +124,11 @@ static bool detect_have_data_unreadable(void)
         }
     }
 
-    /* Candidate 3: the stage_repair body torn-read repair note (lane E3;
-     * jobs/reducer_frontier.h). stage_repair_read_active_block_checked recorded
+    /* Candidate 3: the stage_repair body torn-read repair note
+     * (jobs/reducer_frontier.h). stage_repair_read_active_block_checked recorded
      * a canonical body it could not read (torn bytes / wrong block) during a
      * reducer_frontier replay — a height utxo_apply's own step may never reach
-     * because the replay defers first (the live "read_active_block_checked:
-     * disk read failed h=3143721 ... repair defers" wedge). Re-verify against
+     * because the replay defers first. Re-verify against
      * the live index and prefer the lowest candidate, same as candidate 2. */
     struct reducer_frontier_body_read_note note;
     bool from_note = false;
@@ -175,7 +174,7 @@ static enum condition_remedy_result remedy_have_data_unreadable(void)
 
     atomic_fetch_add(&g_remedy_calls, 1);
 
-    /* Local self-heal first (2026-08 producer-fold wedge): a torn position
+    /* Local self-heal first: a torn position
      * can be stale rather than bodiless — the block still exists elsewhere
      * in the blk files (a duplicate copy, or the indexed record was
      * overwritten by a foreign writer on a hardlinked blk file). Repair the
@@ -256,7 +255,7 @@ static bool witness_have_data_unreadable(int64_t target_at_detect)
     }
 
     /* When the torn body at `target` is readable/advanced again, retire the
-     * stage_repair body-read note + its typed blocker (lane E3) so the
+     * stage_repair body-read note + its typed blocker so the
      * refetch+revalidate chain terminates even if the replay path itself does
      * not re-read the height. No-op unless the note currently names target. */
     if (healed && same_note)
@@ -270,14 +269,11 @@ static struct condition c_have_data_unreadable = {
     .poll_secs = 5,
     .backoff_secs = 30,
     .max_attempts = 3,
-    /* Continue-with-cooldown (sticky-node plan #7): the remedy depends on an
-     * external resource (a P2P re-fetch of the cleared body, driven by the
-     * sibling body_fetch_missing_have_data Condition) — giving up forever at
-     * max_attempts would leave a mid-chain unreadable/corrupt body wedged
-     * permanently. After 3 fast attempts (one operator page per episode)
-     * re-arm every 10 minutes so the clear+re-fetch keeps retrying; unbounded
-     * re-arms (0) since this is a purely external dependency, same posture as
-     * body_fetch_missing_have_data. */
+    /* Continue-with-cooldown: the remedy depends on an external resource (a
+     * P2P re-fetch of the cleared body, driven by the sibling
+     * body_fetch_missing_have_data Condition). After 3 fast attempts (one
+     * operator page per episode) re-arm every 10 minutes; unbounded re-arms
+     * (0) since this is a purely external dependency. */
     .cooldown_secs = 600,
     .cooldown_max_rearms = 0,
     .detect = detect_have_data_unreadable,

@@ -68,8 +68,8 @@ static _Atomic uint64_t g_hit_total = 0;
 static _Atomic uint64_t g_miss_total = 0;
 
 /* Bodiless-coordinate storm bound. The block index can carry BLOCK_HAVE_DATA
- * for a blk file that is absent on disk; every such height used to be
- * re-pread once per ~PVLA_RETRY_WAIT_MS sweep reclaim per worker FOREVER,
+ * for a blk file that is absent on disk; without a bound every such height
+ * would be re-pread once per ~PVLA_RETRY_WAIT_MS sweep reclaim per worker FOREVER,
  * indistinguishable from a genuine "body not yet written" gap (which must
  * re-sweep forever — gap healing is by design). The strike ring splits those
  * classes: a read failure on a HAVE_DATA height records ONE strike per

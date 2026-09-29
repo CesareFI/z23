@@ -3,7 +3,7 @@
  * sapling_anchor_frontier_unavailable -- auto-terminating cure for the empty
  * Sapling anchor-frontier stall.
  *
- * The defect (live P0): a snapshot/refold seed runs
+ * The defect: a snapshot/refold seed runs
  * anchor_kv_reset_mark_empty_below_in_tx with a nonzero activation_cursor but
  * WITHOUT an initial frontier row, so the first
  * shielded-output block above the seed finds an empty sapling_anchors table.
@@ -16,7 +16,7 @@
  * ROUTING: the EMPTY_TABLE birth defect is attempted first (tier1/1b below)
  * even when the named-remedy predicate also holds — the cold-import seed
  * heal leaves the nullifier blocker set alongside the anchor reset, and the
- * ladder cannot supply an initial frontier row (2026-08-01 live wedge).
+ * ladder cannot supply an initial frontier row.
  *   tier 1 — seed a HEADER-VERIFIED initial frontier from the flat-file sapling
  *            checkpoint the node already maintains (boot.c load path).  The
  *            frontier's own root MUST equal the block's hashFinalSaplingRoot at
@@ -499,12 +499,9 @@ static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
      * below also holds: the cold-import seed heal marks nullifier history
      * empty-below alongside the anchor reset, so the NF blocker is present in
      * almost every seed-boot episode — routing to the ladder on that disjunct
-     * alone stranded a tier1-curable anchor wedge (the ladder's Rung A anchor
+     * alone would strand a tier1-curable anchor wedge (the ladder's Rung A anchor
      * path only arms a refold respawn that the escalator's permanent-blocker
-     * hold parks; it can never supply the initial frontier row).  Observed
-     * live 2026-08-01 (anchor replay-canary): seed-boot at tip, both blockers
-     * set, the flat-file checkpoint became root-verified minutes AFTER the
-     * remedy attempts had latched at max_attempts.  Detect already records
+     * hold parks; it can never supply the initial frontier row).  Detect records
      * this dual case as a birth-defect episode precisely because the anchor
      * half is the auto-curable one; the nullifier half re-detects as a fresh
      * named-remedy episode once the anchor half clears. */
@@ -524,9 +521,7 @@ static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
                  * the blocker legitimately outlives the seed (the activation
                  * cursor stays >0 by design), so without this clear the fold
                  * never re-attempts the gate and H* never climbs; only a
-                 * process restart used to drop the memo (2026-08-02 anchor
-                 * replay-canary wedge at h=3202122, frontier seeded by
-                 * tier1b 25 min prior).  Clearing is fail-closed-safe: the
+                 * process restart drops the memo.  Clearing is fail-closed-safe: the
                  * next step re-runs the shielded gate, which re-holds if the
                  * frontier were genuinely absent. */
                 utxo_apply_history_hold_clear();
@@ -683,14 +678,13 @@ static struct condition c_sapling_anchor_frontier_unavailable = {
      * operator (tier 3 is the honest terminal for a genuinely-absent frontier).
      * Tier 2 respawns the process, so it does not accrue attempts here. */
     .max_attempts = 5,
-    /* Continue-with-cooldown (sticky-node plan #7): the remedy's inputs are
+    /* Continue-with-cooldown: the remedy's inputs are
      * produced by slower background machinery — the deferred sapling-tree
      * rebuild that makes the flat-file checkpoint root-verified (~10 min on a
-     * 3.1M-header import boot), and P2P bodies still landing at tip.  Five
+     * large import boot), and P2P bodies still landing at tip.  Five
      * remedy attempts at poll/backoff cadence exhaust in ~3 min, far sooner
-     * than those prerequisites, and the legacy latch then stranded a curable
-     * wedge forever (observed live 2026-08-01: checkpoint became valid 2 min
-     * after operator_needed).  Re-arm every 5 min instead: remedy runs are
+     * than those prerequisites, and a permanent latch would strand a curable
+     * wedge.  Re-arm every 5 min instead: remedy runs are
      * idempotent (tier1 fail-closed, tier1b capped per-process, Rung C a
      * no-op log), the operator page still fires once per episode, and a
      * genuinely-absent frontier keeps paging on the age ladder. */

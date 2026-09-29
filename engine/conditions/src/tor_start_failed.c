@@ -77,8 +77,7 @@ static bool witness_tor_start_failed(int64_t target_at_detect)
     // honest-witness-ok: the observable is core's own live-thread predicate
     // tor_integration_is_enabled(), which the remedy cannot set. The remedy
     // only calls tor_integration_start(); that returns true the instant the
-    // pthread exists, and the 2026-09-08 incident is precisely the case where
-    // it returned true and the thread then died on a config parse. The flag
+    // pthread exists, even if the thread then dies on a config parse. The flag
     // read here flips only once tor_run_main accepted the configuration and
     // entered its event loop, so it is independent evidence that the symptom
     // moved — not the inverse of detect and not a flag the remedy wrote.

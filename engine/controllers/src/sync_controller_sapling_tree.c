@@ -46,16 +46,15 @@
 #define SAPLING_TREE_FINAL_PERSIST_ATTEMPTS  8
 #define SAPLING_TREE_FINAL_PERSIST_BACKOFF_MS 125
 
-/* Heartbeat cadence for the supervised rebuild (task spec: every 60s). */
+/* Heartbeat cadence for the supervised rebuild: every 60s. */
 #define SAPLING_TREE_REBUILD_HEARTBEAT_MS 60000
 
 /* ── Supervision (platform/modules/util/include/util/supervisor.h contract) ───────────
  * The rebuild runs synchronously on WHATEVER thread invokes it (boot's own
  * thread, an RPC thread for `rebuildsaplingtree`, or a dedicated deferred
  * worker — see engine/composition/src/boot.c). Registering a liveness contract makes a
- * hung invocation a NAMED stall (independent supervisor thread notices
- * last_tick_us going stale) instead of a silent multi-hour black hole —
- * exactly the failure the live incident hit. One contract is shared across
+ * hung invocation a named stall (the supervisor thread notices
+ * last_tick_us going stale). One contract is shared across
  * invocations (registered once, re-armed at the top of every call). */
 static struct liveness_contract g_sapling_rebuild_contract;
 static _Atomic supervisor_child_id g_sapling_rebuild_sup_id =
@@ -72,10 +71,9 @@ static supervisor_child_id sapling_tree_rebuild_supervisor_ensure(void)
     liveness_contract_init(&g_sapling_rebuild_contract,
                            "sync.sapling_tree_rebuild");
     /* Self-driven (period_secs=0): the replay loop ticks itself every
-     * ~60s. deadline_secs is generous headroom over the worst-case
-     * persist-retry stall (6 attempts * up to ~1.2s backoff, each attempt
-     * behind a 10s sqlite busy_timeout) so a genuinely stuck loop — not
-     * just one slow checkpoint — is what fires the stall. */
+     * ~60s. deadline_secs is headroom over the worst-case persist-retry
+     * stall (6 attempts * up to ~1.2s backoff, each behind a 10s sqlite
+     * busy_timeout) so only a genuinely stuck loop fires the stall. */
     atomic_store(&g_sapling_rebuild_contract.deadline_secs, 180);
     atomic_store(&g_sapling_rebuild_contract.progress_max_quiet_us, 0);
 
@@ -142,21 +140,14 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int header_tip = active_chain_height(chain);
     int sapling_height = 476969; /* ZClassic Sapling activation */
 
-    /* Resolve the rebuild endpoint from coins-applied state, NOT the
-     * pre-fold header tip. On a wedged node the active/header tip can run
-     * far ahead of the durable coins frontier (active tip << header tip);
-     * the persisted hashFinalSaplingRoot above the applied frontier may be
-     * absent, so verifying the rebuilt tree against the HEADER tip would
-     * FATAL on `tip_missing_sapling_root` before the forward fold even runs.
-     * Cap the endpoint to coins-best (coins_applied_height - 1, the durable
-     * applied frontier) when that is present and lower than the header tip:
-     * coins-best is by construction a block the node has APPLIED, so its body
-     * is on disk (BLOCK_HAVE_DATA) and its hashFinalSaplingRoot is known, so
-     * the final tip-root check has a real block to verify against. When the
-     * coins frontier is ABSENT (a fresh/legacy datadir, or a unit test with no
-     * progress store) the header tip is kept unchanged — the per-block replay
-     * already skips header-only (non-HAVE_DATA) blocks (see :BLOCK_HAVE_DATA
-     * check below), so the existing legacy-resume behavior is preserved. */
+    /* Resolve the rebuild endpoint from coins-applied state, not the
+     * header tip: the persisted hashFinalSaplingRoot above the applied
+     * frontier may be absent, so verifying against the header tip would
+     * FATAL on `tip_missing_sapling_root`. Cap the endpoint to coins-best
+     * (coins_applied_height - 1) when present and lower than the header tip;
+     * that block was applied, so its body is on disk and its root is known.
+     * When the coins frontier is absent the header tip is kept; the
+     * per-block replay skips header-only (non-HAVE_DATA) blocks. */
     int chain_tip = header_tip;
     /* When the endpoint is the coins-applied frontier, every block in
      * [sapling_height, chain_tip] has been APPLIED — its body is on disk and
@@ -205,8 +196,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int first_skip_height = -1;
     int last_skip_height = -1;
 
-    /* Try to resume from a persisted frontier to avoid replaying
-     * 2.6M blocks on every crash recovery. Three candidates, most
+    /* Try to resume from a persisted frontier to avoid a full replay
+     * on crash recovery. Three candidates, most
      * authoritative first:
      *   (0) anchor_kv's sapling_anchors frontier — the CANONICAL ledger
      *       fold_sapling writes and root-verifies per block (see
@@ -414,10 +405,9 @@ int sapling_tree_rebuild(struct node_db *ndb,
 
         if ((uintmax_t)bi->nDataPos >=
             (uintmax_t)cached_mapping.view.size) {
-            /* Data position past the mapped size: the block file was still
-             * growing when it was mmap'd (stale cached_size), or the recorded
-             * position is corrupt. This is the leading suspect for a
-             * final-window drop on an actively-appended latest block file. */
+            /* Data position past the mapped size: the block file grew after
+             * it was mmap'd (stale cached_size), or the recorded position is
+             * corrupt. */
             if (sapling_rebuild_account_skip("datapos_out_of_range", h,
                     endpoint_is_coins_applied, &skipped_datapos_oob,
                     &first_skip_height, &last_skip_height)) {
@@ -461,21 +451,15 @@ int sapling_tree_rebuild(struct node_db *ndb,
         bool is_checkpoint = ((h - sapling_height) % 100000 == 0 &&
                               h > sapling_height);
 
-        /* Denser root check — mirror the LIVE fold's per-block cadence
-         * (engine/jobs/src/utxo_apply_anchors.c fold_sapling:180): whenever a
-         * block CHANGED the tree, the post-append incremental root MUST equal
-         * that block's committed hashFinalSaplingRoot. Verifying at every such
-         * block (not only on the sparse 100k grid + final tip) localizes a
-         * divergence to the EXACT block that introduced it — a dropped/missing
-         * leaf is caught at its height, not up to 99,999 blocks later at the
-         * tip. Compare against the BLOCK-INDEX root (bi->hashFinalSaplingRoot),
-         * the same authoritative, node-validated source the final tip check
-         * uses (:tip below) and the same value the gate just tested — NOT the
-         * re-read on-disk block-body header, which the node never independently
-         * validated here. Skip checkpoint heights: the existing checkpoint
-         * verify below already covers them (no double count). Detection only —
-         * the append order/tree math and what is accepted as valid are
-         * unchanged. */
+        /* Per-block root check, mirroring the live fold's cadence
+         * (fold_sapling in utxo_apply_anchors.c): whenever a block changed
+         * the tree, the post-append incremental root must equal that block's
+         * committed hashFinalSaplingRoot, localizing a divergence to the
+         * exact block. Compare against the block-index root
+         * (bi->hashFinalSaplingRoot), the node-validated source the final tip
+         * check also uses, not the re-read on-disk block header. Checkpoint
+         * heights are skipped; the checkpoint verify below covers them.
+         * Detection only. */
         if (!is_checkpoint && appended_this_block > 0 &&
             sapling_rebuild_header_root_known(bi)) {
             struct uint256 computed;
@@ -545,13 +529,10 @@ int sapling_tree_rebuild(struct node_db *ndb,
                                      last_skip_height,
                                      endpoint_is_coins_applied);
 
-    /* Verify against the RESOLVED endpoint (the coins-applied frontier, or the
-     * header tip when no coins frontier exists), not active_chain_tip() which
-     * is always the header tip — using the header tip on a wedged node would
-     * compare the rebuilt tree against a block above the applied frontier whose
-     * hashFinalSaplingRoot may be absent and FATAL on `tip_missing_sapling_root`
-     * before the fold runs. When the frontier is absent, active_chain_at(chain,
-     * chain_tip) == active_chain_tip(chain), so the legacy path is unchanged. */
+    /* Verify against the resolved endpoint (the coins-applied frontier, or the
+     * header tip when no coins frontier exists), not active_chain_tip(): a
+     * block above the applied frontier may lack hashFinalSaplingRoot and
+     * FATAL on `tip_missing_sapling_root`. */
     const struct block_index *tip = active_chain_at(chain, chain_tip);
     struct uint256 final_root;
     incremental_tree_root(&tree, &final_root);
@@ -608,13 +589,13 @@ int sapling_tree_rebuild(struct node_db *ndb,
         }
         stream_free(&ts);
         if (ps == SAPLING_PERSIST_DEFERRED) {
-            /* Stayed busy past the budget — a transient lock/timing condition,
-             * NOT a derived-state disagreement: name the persist_busy TRANSIENT
+            /* Busy past the budget: a transient lock condition, not a
+             * derived-state disagreement. Name the persist_busy TRANSIENT
              * blocker (self-clears on the next successful rebuild) and return
-             * the soft-failure code (rc<0) the deferred worker reads as "leave
-             * the tree stale, retry next pass" — deliberately NOT the
-             * fail_closed path (reserved for real root/state mismatches).
-             * Complete the child first so a clean give-up is not a hung stall. */
+             * the soft-failure code (rc<0) meaning "leave the tree stale,
+             * retry next pass", not the fail_closed path (reserved for real
+             * root/state mismatches). Complete the child first so a clean
+             * give-up is not a hung stall. */
             char reason[BLOCKER_REASON_MAX];
             snprintf(reason, sizeof(reason),
                     "final persist deferred height=%lld: connection stayed in "
@@ -668,10 +649,9 @@ fail:
     sync_block_file_mapping_close(&cached_mapping);
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_child_complete(sup_id);
-    /* Root-cause aid: a tip/intermediate root mismatch is very often the
-     * downstream shadow of an earlier dropped block. Emit the skip tally next
-     * to the fail-closed reason so the exact class + height span that dropped
-     * commitments is visible without a second run. The same tally decides the
+    /* A tip/intermediate root mismatch is often the downstream shadow of an
+     * earlier dropped block. Emit the skip tally next
+     * to the fail-closed reason. The same tally decides the
      * blocker CLASS (see sapling_tree_rebuild_raise_fail_blocker): a mismatch
      * over a known-incomplete body set is a dependency, not corruption.
      * Every recorded skip is at a height strictly below `fail_height` — the
@@ -724,14 +704,13 @@ fail:
 /* ── Deferred/live background rebuild ─────────────────────────────────
  * engine/composition/src/boot.c's "Sapling tree root MISMATCH ... deferring live
  * rebuild until after boot" branch only sets g_sapling_tree_rebuilding=true;
- * this is what actually performs the rebuild. Runs the SAME
- * rebuild-then-reload sequence the synchronous boot-time path runs, off
- * a background thread so a multi-million-block replay never blocks node
- * startup. Living in this TU means the thread_registry_spawn call site
- * below is automatically covered by this file's supervisor_register_
- * in_domain() call above (Gate #23) — sapling_tree_rebuild() registers
- * "sync.sapling_tree_rebuild" on entry, so a stuck deferred run is a
- * named supervisor stall, never a silent one. */
+ * this is what actually performs the rebuild. Runs the same
+ * rebuild-then-reload sequence as the synchronous boot-time path, off
+ * a background thread so the replay never blocks node startup. The
+ * thread_registry_spawn call site below is covered by this file's
+ * supervisor_register_in_domain() call above: sapling_tree_rebuild()
+ * registers "sync.sapling_tree_rebuild" on entry, so a stuck deferred run
+ * is a named supervisor stall. */
 struct sapling_tree_deferred_args {
     struct node_db *ndb;
     struct active_chain *chain;
@@ -754,12 +733,11 @@ static void *sapling_tree_rebuild_deferred_thread(void *arg)
             "(pre-rebuild size=%zu)", old_size);
     atomic_store(&g_sapling_tree_rebuilding, true);
 
-    /* The reducer can legitimately keep its own node_db transaction open
-     * across a batch. The old background rebuild shared that connection and
-     * could therefore DEFER every checkpoint/final persist forever. Give the
-     * rebuild a dedicated runtime connection: SQLite now arbitrates two
-     * writers, and the existing bounded BUSY/LOCKED retry either lands after
-     * the reducer commits or names sapling_tree_rebuild.persist_busy. */
+    /* The reducer can keep its own node_db transaction open across a batch,
+     * which would DEFER every persist on a shared connection. The rebuild
+     * uses a dedicated runtime connection; the bounded BUSY/LOCKED retry
+     * lands after the reducer commits or names
+     * sapling_tree_rebuild.persist_busy. */
     struct node_db persist_ndb;
     if (!sapling_tree_open_persist_lane(reducer_ndb, &persist_ndb,
                                         active_chain_height(chain))) {

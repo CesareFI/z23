@@ -10,12 +10,11 @@
  *
  * WHY THIS FILE EXISTS: two operator surfaces — the public REST status
  * endpoint (api_controller_status.c) and the agent first-call summary
- * (event_agent_summary.c) — each used to carry their OWN inline if/else-if
- * ladder assigning `operator_needed`, plus their own copies of the `status`
- * and `summary` strings for each rung. The two had already drifted: the agent
- * ladder observes four signals the REST ladder does not (peer-telemetry
- * availability, catch-up stall, download-dispatch stall, projection lag), so
- * the node could give two different answers to "does an operator need to act".
+ * (event_agent_summary.c) — must give one answer to "does an operator need to
+ * act", and separate inline if/else-if ladders and `status`/`summary` string
+ * copies drift (the agent ladder observes four signals the REST ladder does
+ * not: peer-telemetry availability, catch-up stall, download-dispatch stall,
+ * projection lag).
  * The ladder ORDER and which signals a surface can observe stay with the
  * surface (they read different snapshots); the VERDICT for a reason lives
  * here, once.

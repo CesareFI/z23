@@ -148,7 +148,7 @@ static _Atomic int64_t g_sv_unresolved_paged_height = -1;
 
 #ifdef ZCL_TESTING
 /* Test-only override of the held-budget so a test can reach the named-blocker
- * path without waiting 10 minutes (lane E3, part 3). <0 restores the default. */
+ * path without waiting 10 minutes. <0 restores the default. */
 static _Atomic int g_sv_unresolved_budget_override = -1;
 void script_validate_stage_unresolved_budget_set_for_test(int seconds)
 {
@@ -266,11 +266,11 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
     char txhex[65];
     uint256_get_hex(&s->first_failure_txid, txhex);
     /* Name the ROOT CAUSE when a stage_repair body torn-read note is active for
-     * an ancestor height (lane E3): the descendant's prevout is unresolvable
+     * an ancestor height: the descendant's prevout is unresolvable
      * precisely because that torn body has not yet been refetched + revalidated,
      * so the operator-visible blocker points at the block to fix rather than the
      * downstream symptom. `torn_h` also feeds the typed caused_by/cause_detail
-     * fields below (lane E4) once the blocker record exists — kept as a plain
+     * fields below once the blocker record exists — kept as a plain
      * string here too so the reason text stays self-contained for anyone
      * reading it without decoding the typed fields. */
     char cause[96];
@@ -297,16 +297,16 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
          * body still cannot re-derive the prevout) — this is not a legitimate
          * wait. Failing OPEN to JOB_IDLE here would name nothing and leave only
          * the generic watchdog; latch JOB_FATAL (the fatal path emits
-         * EV_OPERATOR_NEEDED) so the halt is at least surfaced (Task A #9). */
+         * EV_OPERATOR_NEEDED) so the halt is at least surfaced. */
         LOG_WARN("script_validate",
                  "[script_validate] could not name prevout_unresolved blocker "
                  "height=%d — latching JOB_FATAL rather than failing open", height);
         return JOB_FATAL;
     }
     c->blocker.retry_budget = -1;
-    /* Root-cause chaining (lane E4's typed caused_by/cause_detail, see
+    /* Root-cause chaining (typed caused_by/cause_detail, see
      * util/blocker.h "Root-cause chaining"): prefer the torn-ancestor-body
-     * note above (lane E3, the most direct and precise match — it names the
+     * note above (the most direct and precise match — it names the
      * exact height a coin_backfill/have_data_unreadable refetch is waiting
      * on). Fall back to a live body-availability blocker (utxo_apply /
      * body_persist read failure) only when no torn-body note is active, so

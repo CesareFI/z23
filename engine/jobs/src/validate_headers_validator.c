@@ -481,8 +481,7 @@ bool validate_headers_default_validator(const struct block_index *bi,
      * check_block.c:301 and accept_block_header.c:221,319). Without this,
      * the loader's synthetic genesis entry (inserted on an empty index with
      * nVersion=0, engine/services/src/block_index_loader.c) terminal-fails the
-     * version gate and the reducer dead-waits at H*=0 forever — the
-     * 2026-07-27 wipe-to-tip stall's reducer-side wedge. */
+     * version gate and the reducer dead-waits at H*=0 forever. */
     const struct chain_params *cp = chain_params_get();
     if (!cp) {
         snprintf(out_reason, out_reason_size, "no-chain-params");

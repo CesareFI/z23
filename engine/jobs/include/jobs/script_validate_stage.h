@@ -76,7 +76,7 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key);
 #ifdef ZCL_TESTING
 /* Test-only: shrink the prevout_unresolved HOLD budget so a test can reach the
  * named-blocker path without waiting SV_UNRESOLVED_BUDGET_SECONDS. Pass <0 to
- * restore the default. Lane E3, part 3. */
+ * restore the default. */
 void script_validate_stage_unresolved_budget_set_for_test(int seconds);
 #endif
 

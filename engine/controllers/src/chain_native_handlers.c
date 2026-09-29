@@ -307,8 +307,7 @@ char *zcl_native_utxo_audit_body(const struct json_value *args,
  * one line of validation, so "READY + read-only" (which both leaves are) is
  * not the right test on that path.
  *
- * They used to be staged here, and that was not a theoretical hole:
- * hotswap_leaf_stage_thunk() in engine/modules/hotswap/src/hotswap_loader.c applies NO
+ * They are not staged here: hotswap_leaf_stage_thunk() in engine/modules/hotswap/src/hotswap_loader.c applies NO
  * per-leaf allowlist to a Tier-1 generation — it accepts every row this table
  * exports — so a recompiled generation of this TU re-pointed both of them
  * even though neither leaf is named in any config/ manifest. The Tier-2

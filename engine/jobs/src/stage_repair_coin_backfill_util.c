@@ -365,9 +365,9 @@ bool find_lowest_prevout_unresolved_hole_unlocked(
     }
     sqlite3_finalize(st);
 
-    /* STEP-2A: ALSO consult the non-terminal pending-prevout HOLD signal. When
-     * script_validate HOLDS on a transient prevout_unresolved it no longer
-     * writes the terminal ok=0 row the SQL scan above looks for, so a genuinely
+    /* ALSO consult the non-terminal pending-prevout HOLD signal. When
+     * script_validate HOLDS on a transient prevout_unresolved it does not
+     * write the terminal ok=0 row the SQL scan above looks for, so a genuinely
      * torn pre-anchor coin would be invisible to coin_backfill and the boot
      * torn gate. The signal carries the same (height, block_hash) binding and
      * frozen-cursor height; admit it as the hole when it replaces or is lower

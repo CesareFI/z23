@@ -40,12 +40,11 @@
  * spending block's height (nSpendHeight - coins->nHeight < COINBASE_MATURITY,
  * where nSpendHeight = pindexPrev->nHeight + 1 = the height of the block being
  * connected). zclassic23 enforces this in the boot-reindex connect_block.c
- * path and the repair ladder, but the LIVE reducer fold below historically did
- * NOT. This flag adds the missing reject on the live path.
+ * path and the repair ladder; this flag adds the reject to the LIVE reducer
+ * fold below.
  *
- * Default false ⇒ the reducer fold makes the same accept/reject decision it
- * makes now: it does NOT reject a premature coinbase spend until the operator
- * opts in. This is a
+ * Default false ⇒ the reducer fold does NOT reject a premature coinbase
+ * spend until the operator opts in. This is a
  * tightening (reject) predicate, so it MUST stay default-off until a
  * FULL-HISTORY REPLAY against the real chain confirms ZERO false-rejects
  * first. That is the h=478544 lesson (CLAUDE.md "Consensus rule: validate
@@ -205,7 +204,7 @@ static void delta_fail(struct delta_summary *s, const char *status,
     failure_detail_set(s->failure_detail, txid, vout);
 }
 
-/* Loudly record a lookup failure (was the quietest error: no log). `kind`
+/* Loudly record a lookup failure. `kind`
  * ("lookup_spend"/"lookup_output") tags the log + failure_kind; detail kept. */
 static void lookup_fail(struct delta_summary *s, const char *kind,
                         uint32_t height, const struct uint256 *txid,
@@ -242,7 +241,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
      * the fold adds 0 outputs and spends 0 inputs for THE genesis block only
      * (its computed hash equals the active params' genesis hash), keeping
      * coins_kv matching zclassicd (count + coins_kv_commitment) rather than
-     * over-counting by +1 (the 1,354,770-vs-1,354,769 mint defect). An empty
+     * over-counting by +1. An empty
      * ok=true delta: spent/added stay NULL, counts 0, total_value_delta 0
      * (delta_summary_init above). In production height 0 IS the real genesis so
      * the mint is unchanged; a synthetic non-genesis block at height 0 (its hash
@@ -368,8 +367,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                  * block_height is the spending block's height (== nSpendHeight)
                  * and restore_height is the spent coin's creation height
                  * (== coins->nHeight). Gated default-off: until enabled, the
-                 * fold does NOT reject — same accept/reject decision as now.
-                 * Enabling it
+                 * fold does NOT reject. Enabling it
                  * requires a full-history replay confirming ZERO false-rejects
                  * first (see the g_enforce_coinbase_maturity contract above and
                  * the h=478544 doctrine). Guard against an underflow if a
@@ -543,10 +541,10 @@ void utxo_apply_compute_block_delta(const struct block *blk,
              * path a connected block takes — it must be correct, not dropped.
              *   value_in  = transparent_in + max(0, value_balance) + Σ vpub_new
              *   value_out = transparent_out + max(0,-value_balance) + Σ vpub_old
-             * The prior transparent-only test (tx_output_value > tx_input_value)
-             * false-rejected a legitimate shielded->transparent unshield, where
-             * value_balance>0 funds transparent outputs so transparent_out can
-             * exceed transparent_in (the height-3,138,977 wedge). The two helpers
+             * A transparent-only test (tx_output_value > tx_input_value)
+             * would false-reject a legitimate shielded->transparent unshield,
+             * where value_balance>0 funds transparent outputs so transparent_out
+             * can exceed transparent_in. The two helpers
              * already MoneyRange-guard every partial sum and return -1 on
              * overflow. */
             int64_t sh_in = transaction_get_shielded_value_in(tx);

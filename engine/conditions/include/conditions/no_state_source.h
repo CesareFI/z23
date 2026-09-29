@@ -4,9 +4,9 @@
  * source. On a fresh node with no complete-state bundle installed, no consumed
  * refold, and no from-anchor cutover, AND no meaningful local chain state, the
  * reducer folds from an empty genesis datadir. If it cannot make progress (no
- * bodies, no serving peers) the fold pins — previously surfacing only as a
+ * bodies, no serving peers) the fold pins, which would otherwise surface only as a
  * MISLEADING downstream symptom (e.g. proof_validate.stale_upstream_hash at
- * h=0). boot_select_state_source now names the REAL problem the moment it
+ * h=0). boot_select_state_source names the REAL problem the moment it
  * concludes with no state source: the typed bootstrap.no_state_source blocker,
  * carrying the fetch outcome, bundle status, and the exact operator next step.
  *

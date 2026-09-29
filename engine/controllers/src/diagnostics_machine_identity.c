@@ -84,9 +84,8 @@ static void push_platform(struct json_value *out)
 
 /* What the published binary digest is actually evidence OF. Derived from the
  * platform authority's own identity ladder (platform/os_proc.h) rather than
- * from a second #if here: this file used to carry its own
- * `#if defined(__linux__)`, which is how the label ends up disagreeing with
- * the mechanism the moment a platform gains or loses an implementation.
+ * from a second #if here, which would let the label disagree with the
+ * mechanism when a platform gains or loses an implementation.
  *
  *   running_image_at_boot        Linux. The boot digest was read through the
  *     kernel's exe_file reference, so it is the image this process is

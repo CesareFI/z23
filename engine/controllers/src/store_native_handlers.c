@@ -35,12 +35,10 @@
  *
  * WHERE THE WRITE HAPPENS. A booted node holds a single-owner lease on
  * `<datadir>/node.db` (engine/models/src/database_owner_lease.c), so this
- * short-lived CLI process cannot open it while a node is up — it used to
- * meet DATABASE_OWNERSHIP_CONFLICT and report STORE_NOT_INITIALISED, which
- * meant no product could be listed on a running store at all. The leaf now
+ * short-lived CLI process cannot open it while a node is up. The leaf
  * probes that lease and routes: a live lease sends the listing to the node
  * over `storesell_list_product` (the same shape the buyer leaves use for
- * storebuy_*), an idle datadir is written in-process exactly as before, and
+ * storebuy_*), an idle datadir is written in-process, and
  * an unreadable lease is refused rather than raced. Both routes execute the
  * SAME body, store_sell_list_product_apply().
  *
@@ -784,8 +782,7 @@ void zcl_native_handle_store_list_product(
     store_sell_outcome_init(&out);
     switch (node_db_owner_lease_probe(path)) {
     case NODE_DB_OWNER_LEASE_LIVE:
-        /* A node owns node.db. Never open it here — that is the refusal an
-         * operator used to meet as STORE_NOT_INITIALISED. */
+        /* A node owns node.db. Never open it here. */
         sn_list_through_node(request->input, datadir, &out);
         break;
     case NODE_DB_OWNER_LEASE_PROBE_ERROR:
@@ -819,14 +816,11 @@ void zcl_native_handle_store_products(
      *
      * This leaf is declared ZCL_COMMAND_READY_READ and its `datadir` falls
      * back to the CLI's resolved one — the operator's LIVE node when nobody
-     * passed a path. It used to open through sn_open_db -> node_db_open_
-     * runtime, which is SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE and then
-     * runs create_schema() and node_db_migrate(). The stat() guard there
-     * meant it would not MINT a node.db, but pointed at any real SQLite file
-     * sitting at <datadir>/node.db it installed the node's 67 tables into it
-     * and answered "returned": 0 — a listing command rewriting the schema of
-     * a file it was only asked to read. Listing products needs SELECT and
-     * nothing else, so it gets a handle that can do nothing else:
+     * passed a path. sn_open_db -> node_db_open_runtime is
+     * SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE and runs create_schema() and
+     * node_db_migrate(), which would rewrite the schema of any SQLite file at
+     * <datadir>/node.db. Listing products needs SELECT and nothing else, so
+     * it gets a handle that can do nothing else:
      * SQLITE_OPEN_READONLY plus PRAGMA query_only=ON, no CREATE, no schema,
      * no migrate. app.store.list-product is a declared writer and keeps
      * sn_open_db. See test_read_leaf_no_datadir_write.c. */

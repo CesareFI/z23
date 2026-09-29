@@ -6,12 +6,10 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * validate_headers_stage and script_validate_stage (and any fold stage) used to
- * return a DEAD JOB_FATAL on ANY sqlite read/write failure. A momentary
- * SQLITE_BUSY / SQLITE_LOCKED / transient SQLITE_IOERR then latched the stage
- * FATAL forever — a one-off glitch became "needs a human", which is exactly the
- * class the never-stuck doctrine forbids. This helper turns that dead FATAL into
- * a bounded ladder:
+ * A fold stage must not return a dead JOB_FATAL on ANY sqlite failure: a
+ * momentary SQLITE_BUSY / SQLITE_LOCKED / transient SQLITE_IOERR would latch
+ * the stage FATAL forever, i.e. "needs a human", which the never-stuck doctrine
+ * forbids. This helper provides a bounded ladder instead:
  *
  *   - transient + within the retry budget   -> STAGE_DB_FAULT_RETRY: the caller
  *     leaves the cursor untouched and returns JOB_IDLE; the supervisor re-ticks
@@ -23,7 +21,7 @@
  *     ESCALATE: the helper records a BOUNDED auto-reindex request
  *     (boot_auto_reindex_request — capped per anchor episode, then it pages the
  *     operator; it can never loop) and the caller returns JOB_FATAL. The FATAL
- *     is no longer dead: the next boot consumes the request and rebuilds the
+ *     is not dead: the next boot consumes the request and rebuilds the
  *     derived state from blocks/.
  *
  * CONSENSUS PARITY (INVIOLABLE)

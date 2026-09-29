@@ -273,7 +273,7 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "blocks_hydrate_quarantined",
                      block_index_blocks_hydrate_quarantined());
 
-    /* Lane B3 RUNTIME poisoned-row quarantine tally (process-monotonic): poisoned
+    /* RUNTIME poisoned-row quarantine tally (process-monotonic): poisoned
      * `blocks` rows purged by stage_repair_quarantine_blocks_row while syncing,
      * distinct from the boot-time blocks-hydrate tally above. Global, not
      * per-block. */

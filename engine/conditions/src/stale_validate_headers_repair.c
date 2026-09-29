@@ -29,7 +29,7 @@ static _Atomic int g_hstar_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
 
-/* Detective A2 — which source (oracle vs P2P) the in-flight repair attempt last
+/* Which source (oracle vs P2P) the in-flight repair attempt last
  * fired, so the completion tick can attribute the served repair. The oracle
  * pull is synchronous (attributed inline), the P2P getdata is async (its
  * solution appears on a later tick and is attributed there). Reset when the
@@ -49,18 +49,16 @@ static struct log_throttle g_stale_repair_defer_log = LOG_THROTTLE_INIT;
  * retry, so this never latches into a human dead-end on a recoverable cause. */
 #define STALE_HEADER_NO_SOURCE_BLOCKER_ID "header_repair_no_source"
 
-/* ── Lane B3: bounded runtime poisoned-`blocks`-row escalation ────────────────
- * The refetch-only ladder above can NEVER win when the DURABLE `blocks` row at
- * the frontier is itself poisoned: each attempt re-fetches a body, overwrites
- * the header_solution side-table, but leaves the poisoned durable row in place,
- * so the same poison re-hits forever. At ladder EXHAUSTION (the attempt that
- * reaches max_attempts) we escalate ONCE to stage_repair_quarantine_blocks_row,
- * which purges the durable row IFF it fails the frozen block_row_verify. The
+/* ── Bounded runtime poisoned-`blocks`-row escalation ─────────────────────────
+ * The refetch-only ladder cannot win when the DURABLE `blocks` row at the
+ * frontier is itself poisoned: each attempt re-fetches a body but leaves the
+ * poisoned row in place. At ladder EXHAUSTION (the attempt that reaches
+ * max_attempts) we escalate ONCE to stage_repair_quarantine_blocks_row, which
+ * purges the durable row IFF it fails the frozen block_row_verify. The
  * escalation fires AT MOST ONCE per target height per process: a fixed
- * remembered-height set gates re-fire, so a second exhaustion at the same height
- * falls through to the existing operator page (never a delete loop). The
- * remembered set is process-scoped (survives condition cooldown re-arms; cleared
- * only by test_reset). */
+ * remembered-height set gates re-fire, so a second exhaustion at the same
+ * height falls through to the operator page (never a delete loop). The set is
+ * process-scoped (survives cooldown re-arms; cleared only by test_reset). */
 #define RUNTIME_QUARANTINE_FIRED_MAX 64
 static _Atomic int g_runtime_quarantine_fired[RUNTIME_QUARANTINE_FIRED_MAX];
 static _Atomic int g_runtime_quarantine_fired_count = 0;
@@ -141,8 +139,8 @@ void stale_validate_headers_repair_test_set_peer_count(int n)
 }
 #endif
 
-/* LANE D / #3b + Detective A2 — file-scope forward declaration; defined after
- * the remedy. Oracle-independent P2P re-fetch of the exact best-header
+/* File-scope forward declaration; defined after the remedy.
+ * Oracle-independent P2P re-fetch of the exact best-header
  * ancestor at `height`: arms the existing bounded header-only getheaders
  * repair first, then clears BLOCK_HAVE_DATA on that hash-bound block_index
  * entry and actively enqueues a full-block getdata as the durable fallback.
@@ -164,7 +162,7 @@ static bool best_header_target_hash(struct main_state *ms, int height,
  * text use so the two can never disagree about how many peers were there. */
 static int connected_peer_count(void);
 
-/* Lane B3 — bounded, once-per-height escalation (defined after the remedy). */
+/* Bounded, once-per-height escalation (defined after the remedy). */
 static void maybe_escalate_runtime_row_quarantine(
     int target, const struct uint256 *canon, struct main_state *ms);
 
@@ -173,13 +171,9 @@ static void maybe_escalate_runtime_row_quarantine(
  * ASK the network — the height has no best-header ancestor agreeing with the
  * visible active-chain identity, so there is no authoritative block_index
  * entry to clear HAVE_DATA on and no hash to getdata.
- * That -1 used to reach the caller's `peers <= 0` test and be reported as
- * "no connected peer can serve a P2P getdata re-fetch". Measured on a real
- * wiped-datadir C3 run (2026-08-20, H* pinned at 3,193,024): the node had a
- * connected peer that was serving headers the whole time and this blocker still
- * said there was none, so the recovery ladder and the operator were both sent
- * looking for peers instead of for the successor the active chain was missing.
- * A refusal that names the wrong cause is worse than an unnamed one. */
+ * That -1 must not be reported as "no connected peer can serve a P2P getdata
+ * re-fetch": a connected peer may be serving headers the whole time, and a
+ * refusal that names the wrong cause is worse than an unnamed one. */
 static void raise_stale_header_no_source_blocker(int height,
                                                  bool refetch_attempted,
                                                  int peers)
@@ -462,7 +456,7 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
                          (unsigned long long)defer_reps);
         }
 
-        /* Lane B3 — at ladder EXHAUSTION, if the refetch-only loop has been
+        /* At ladder EXHAUSTION, if the refetch-only loop has been
          * non-advancing the whole ladder, the DURABLE `blocks` row may itself
          * be poisoned; escalate ONCE per target height to purge it (evidence-
          * gated). The H*-advance witness still governs the clear; a second
@@ -489,7 +483,7 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
     return rr.repaired ? COND_REMEDY_OK : COND_REMEDY_SKIP;
 }
 
-/* LANE D / #3b + Detective A2 — oracle-independent P2P re-fetch of the
+/* Oracle-independent P2P re-fetch of the
  * canonical best-header block at `height`. Three coordinated steps, all
  * through EXISTING machinery (Law: one way in — no second fetch stack):
  *   1. Arm header_serve_repair for the exact canonical entry. Its normal peer
@@ -623,13 +617,12 @@ static int connected_peer_count(void)
     return peers;
 }
 
-/* Lane B3 — bounded runtime poisoned-`blocks`-row escalation. Fires ONLY at
- * ladder exhaustion (runtime_quarantine_escalation_due) and AT MOST ONCE per
- * target height per process (runtime_quarantine_*_fired set). Requires the
- * canonical hash (a frontier row to address) and a node_db handle. The purge
- * itself is evidence-gated inside stage_repair_quarantine_blocks_row — a row
- * that verifies OK is refused there, so this is safe to call whenever exhausted;
- * the once-per-height gate only bounds the delete/refuse ATTEMPTS. */
+/* Bounded runtime poisoned-`blocks`-row escalation. Fires ONLY at ladder
+ * exhaustion (runtime_quarantine_escalation_due) and AT MOST ONCE per target
+ * height per process. Requires the canonical hash (a frontier row to address)
+ * and a node_db handle. The purge is evidence-gated inside
+ * stage_repair_quarantine_blocks_row: a row that verifies OK is refused
+ * there; the once-per-height gate only bounds the delete/refuse ATTEMPTS. */
 static void maybe_escalate_runtime_row_quarantine(
     int target, const struct uint256 *canon, struct main_state *ms)
 {
@@ -739,22 +732,14 @@ static struct condition c_stale_validate_headers_repair = {
     /* Finite fast ladder: 5 un-witnessed remedies page a human once per
      * episode (the honest-witness escalation the W2 tests pin). */
     .max_attempts = 5,
-    /* Continue-with-cooldown (sticky-node plan #7), routed for LANE D / #3b.
-     * The repair frontier can be solutionless purely because an EXTERNAL
-     * dependency is absent (the zclassicd oracle is unreachable / a peer is
-     * forging the header page). In that case the remedy's oracle-independent
-     * fallback (cure_request_peer_refetch + COND_REMEDY_SKIP) still accrues an
-     * attempt — condition.c:321 increments attempts UNCONDITIONALLY regardless
-     * of result, so SKIP does NOT avoid the ladder — and would otherwise trip
-     * max_attempts and LATCH FOREVER at EV_OPERATOR_NEEDED (condition.c:259 +
-     * :353). That is a human dead-end on a RECOVERABLE class. With
-     * cooldown_secs > 0 the engine re-arms the remedy every 10 minutes after the
-     * page, UNBOUNDED (cooldown_max_rearms = 0), so an oracle-absent /
-     * forged-page stall keeps retrying the P2P re-fetch forever and can NEVER
-     * permanently give up healing on a recoverable cause. The episode resets
-     * (fresh ladder) the instant the fault identity (target_at_detect) moves or
-     * detect() goes false; the single per-episode page still fires once at
-     * max_attempts so a human is informed. */
+    /* Continue-with-cooldown: the repair frontier can be solutionless because
+     * an EXTERNAL dependency is absent (oracle unreachable / a peer forging
+     * the header page). Every remedy call accrues an attempt (SKIP included),
+     * which would latch at EV_OPERATOR_NEEDED on a RECOVERABLE class. With
+     * cooldown_secs > 0 the engine re-arms every 10 minutes after the page,
+     * UNBOUNDED (cooldown_max_rearms = 0). The episode resets (fresh ladder)
+     * when the fault identity (target_at_detect) moves or detect() goes
+     * false; the single per-episode page still fires once at max_attempts. */
     .cooldown_secs = 600,
     .cooldown_max_rearms = 0,
     .detect = detect_stale_validate_headers_repair,
@@ -777,9 +762,9 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_mode_at_detect, STAGE_REPAIR_POISON_NONE);
     atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_NONE);
-    /* Lane B3: drop the per-process quarantine bookkeeping so a fresh fixture
-     * starts with an empty remembered-height set. (In production this set is
-     * deliberately process-scoped — it survives condition cooldown re-arms.) */
+    /* Drop the per-process quarantine bookkeeping so a fresh fixture starts
+     * with an empty remembered-height set. (In production the set is
+     * process-scoped and survives cooldown re-arms.) */
     atomic_store(&g_runtime_quarantine_fired_count, 0);
     atomic_store(&g_runtime_quarantine_escalations, 0);
 #ifdef ZCL_TESTING

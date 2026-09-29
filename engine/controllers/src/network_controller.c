@@ -344,8 +344,7 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     return true;
 }
 
-/* The two facts a cold-start question actually turns on, and neither of them
- * was reportable before: can a stranger find a state source THROUGH this node
+/* The two facts a cold-start question turns on: can a stranger find a state source THROUGH this node
  * (are we appending a state offer to our handshakes), and has this node been
  * offered one (how many peers are advertising state to us, and how new).
  *

@@ -1,10 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Lane A1 — the created_outputs retention prune, DECOUPLED from the utxo_apply
+ * The created_outputs retention prune, DECOUPLED from the utxo_apply
  * kernel co-commit. utxo_apply_stage_drain() calls
  * utxo_apply_created_outputs_prune_post_commit() AFTER the kernel batch has
- * committed and the kernel tx lock has been released. Wave A2 (D4): the prune
- * now runs on the projection_store handle + projection tx lock (its OWN
+ * committed and the kernel tx lock has been released. The prune runs on the projection_store handle + projection tx lock (its OWN
  * connection to the same progress.kv file), so it never re-contends the reducer
  * drive's kernel tx lock. See the .c for the crash argument. The two
  * test-observability entry points (utxo_apply_post_prune_stats,

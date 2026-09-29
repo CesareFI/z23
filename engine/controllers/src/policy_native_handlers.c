@@ -21,8 +21,7 @@
  * datadir, no wall-clock, no filesystem. That is deliberate and load-bearing:
  * it is what lets the hot-swap loader dispatch this leaf as its own
  * probe-before-publish case IN-PROCESS with no running node — the property
- * every RPC-front-door swappable TU lacks, and the reason the module harness
- * could not previously activate hermetically.
+ * every RPC-front-door swappable TU lacks.
  */
 
 #include "controllers/policy_native_handlers.h"

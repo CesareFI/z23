@@ -23,10 +23,9 @@
 
 /* Hard wall-clock deadlines so a dead-but-listening RPC port (a wedged node
  * that accepts the TCP connection but never answers, a firewalled listener,
- * a livelocked reducer) can never hang a native command indefinitely — the
- * class that once spun a flagless `status` for days. Every native command
- * routes its one loopback RPC through node_rpc_call_http, so bounding it here
- * bounds the whole typed CLI surface, not just `status`.
+ * a livelocked reducer) can never hang a native command indefinitely. Every
+ * native command routes its one loopback RPC through node_rpc_call_http, so
+ * bounding it here bounds the whole typed CLI surface.
  *
  * connect: a healthy loopback node either accepts immediately or the kernel
  * refuses instantly; anything slower is not a node we should wait on.

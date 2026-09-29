@@ -603,8 +603,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * Rides this txn and never fails it: a not-yet / store-error verdict simply
      * leaves the node refused and retries on the next applied block. */
     utxo_apply_self_derived_stamp_in_tx(db);
-    /* created_outputs prune is DECOUPLED from this kernel co-commit tx
-     * (lane A1): it now runs post-commit in its OWN transaction from
+    /* created_outputs prune is DECOUPLED from this kernel co-commit tx:
+     * it runs post-commit in its OWN transaction from
      * utxo_apply_stage_drain(), computed from the final committed cursor. The
      * prune is a projection-side retention sweep with NO consensus value —
      * lifting it out of the kernel batch relaxes the atomicity coupling. A

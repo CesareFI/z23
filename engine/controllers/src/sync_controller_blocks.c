@@ -160,10 +160,10 @@ bool advance_wallet_witnesses(struct node_db *ndb,
                                      int height, struct wallet *wallet)
 {
     /* Load ALL unspent notes that may need initial witnesses. A fixed 256-cap
-     * here (ORDER BY value DESC) left every note ranked below #256 without a
-     * witness — unspendable — and froze the witness of any note demoted out of
-     * the top-256 at a stale tree root. Size the load to the live count so
-     * EVERY unspent note gets its witness created and advanced each block. */
+     * would leave notes ranked below it without a witness (unspendable) and
+     * freeze the witness of any note demoted out of the top 256 at a stale
+     * tree root. Size the load to the live count so EVERY unspent note gets
+     * its witness created and advanced each block. */
     struct db_sapling_note *wnotes = NULL;
     int nw = db_sapling_note_list_unspent_alloc(ndb, &wnotes);
     if (nw < 0)
@@ -632,11 +632,8 @@ static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
      * only other explorer_index_block caller — early-returns on these
      * heights forever (db_tip >= chain_tip). On regtest, where this feed is
      * the ONLY connect path while the cursor stays contiguous, a block
-     * folded here without its projections can never be projected at all
-     * (the 2026-08-02 C5 COLLECT wedge: the
-     * access-token mint confirmed at h=116 yet no op_returns/zslp_transfers
-     * row ever existed, so the chain-derived store token gate correctly
-     * answered 0). Mainnet never calls the async family (the consensus path
+     * folded here without its projections can never be projected at all.
+     * Mainnet never calls the async family (the consensus path
      * defers projections to catchup by design), so this costs nothing on
      * the live hot path. The hook is fail-soft and row-idempotent; db
      * service serializes these jobs in enqueue (= chain) order and the
@@ -664,8 +661,8 @@ static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
      * tip-finalize feed): it must run after the block write above — its
      * time_received lookup reads the blocks row — and inside the same
      * single-writer enqueue so the feeder thread never blocks on db-service
-     * completion while holding progress_store_tx_lock (the 2026-08-02
-     * mining+catchup AB-BA deadlock). Ownership reads (keystore /
+     * completion while holding progress_store_tx_lock (AB-BA deadlock with
+     * mining+catchup). Ownership reads (keystore /
      * nullifier-spent) run against the live wallet singleton from the db
      * worker thread — the same reads RPC threads already perform; a key
      * created between enqueue and write is simply absent from this block's

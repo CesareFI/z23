@@ -56,13 +56,8 @@ static bool block_has_shielded_proofs(const struct block *blk)
  * so a misclassified transient failure would wedge a valid canonical
  * block forever.
  *
- * This used to be decided by string-comparing reject reasons. That test
- * was silent rot waiting to happen: it enumerated two reason strings by
- * hand, so any new transient failure — or any rewording of an existing
- * one — would have been filed as a permanent consensus reject with no
- * compiler complaint. The distinction is now carried by
- * enum contextual_check_verdict, produced at the site that actually knows
- * which kind of failure occurred. */
+ * The distinction is carried by enum contextual_check_verdict, produced at
+ * the site that knows which kind of failure occurred. */
 
 enum script_validate_ctx_verdict script_validate_contextual_gate(
     struct main_state *ms, sqlite3 *db, int next_h,

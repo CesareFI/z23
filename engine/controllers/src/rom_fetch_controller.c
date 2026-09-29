@@ -321,8 +321,7 @@ void zcl_native_handle_rom_fetch_bundle(
     }
 
     /* Synchronous download + content proof. Blocks this command worker for
-     * the duration (minutes for a full bundle over a slow peer); a
-     * background/scheduling engine is the follow-up lane.
+     * the duration (minutes for a full bundle over a slow peer).
      * `peer` may be a comma-separated host list (all sharing `port`): a
      * single peer prefers the per-chunk-verified manifest path (falling back
      * to the whole-file-only driver if the seeder doesn't serve a manifest —
@@ -481,7 +480,7 @@ void zcl_native_handle_rom_fetch_bundle(
     HexStr(m.chunk_root, 32, false, root_hex, sizeof(root_hex));
     (void)json_push_kv_str(&reply->data, "chunk_root", root_hex);
 
-    /* Per-chunk protocol observability (lane 2C/2D, wf/artifact-protocol). */
+    /* Per-chunk protocol observability. */
     (void)json_push_kv_bool(&reply->data, "used_manifest_path",
                             used_manifest_path);
     (void)json_push_kv_bool(&reply->data, "fallback_used", fallback_used);

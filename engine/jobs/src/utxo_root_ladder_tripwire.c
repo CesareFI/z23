@@ -103,10 +103,7 @@ utxo_root_ladder_tripwire_report(sqlite3 *db,
      * to the historical evidence-only posture. */
     bool observe_only = getenv("ZCL_UTXO_LADDER_OBSERVE_ONLY") != NULL;
 
-    /* The DEFAULT (fail-closed) form previously ran to 324 bytes on its own — a
-     * 256-byte local cut it at "...advance holds ", i.e. mid-sentence in the
-     * exact clause that tells the operator H* is capped and what lifts the
-     * cap; adding the coverage clause below only makes this longer. Build
+    /* The DEFAULT (fail-closed) form is longer than BLOCKER_REASON_MAX. Build
      * whole into an oversized local, then mark and log the cut via
      * zcl_text_fit() (never silent: it leaves an in-band [cut N/cap] marker
      * and WARN-logs the full untruncated text either way). */

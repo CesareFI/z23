@@ -262,7 +262,7 @@ static void *import_block_index_thread(void *arg)
             continue;
         }
 
-        /* Trust hardening (lane C4): hash-bind this row to the LevelDB key
+        /* Trust hardening: hash-bind this row to the LevelDB key
          * that named it, and check its PoW target — see import_row_verify()
          * doc comment above. A row failing either is quarantined (skipped,
          * counted, typed blocker) — the bulk import CONTINUES rather than

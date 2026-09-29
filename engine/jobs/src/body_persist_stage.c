@@ -81,9 +81,7 @@ static _Atomic int64_t  g_last_advance_height = -1;
  * the from-genesis wedge (height 0, where genesis IS the tip and no writer ever
  * produced its body). The requeue fires ONCE and the HAVE_DATA gate then idles
  * without re-reading, so a repeat COUNT never grows — the hold is invisible:
- * JOB_IDLE, blocked_count 0, nothing in `dumpstate blocker`. Measured on a bare
- * mainnet cold start 2026-07-27: read_failed_total 1, idle_count 26,545,
- * cursor 0 for 617 s with no blocker naming height 0.
+ * JOB_IDLE, blocked_count 0, nothing in `dumpstate blocker`.
  *
  * So arm a WALL-CLOCK hold instead: remember (height, first requeue time) and,
  * once the HAVE_DATA gate has been idling on that same height for longer than
@@ -253,8 +251,7 @@ static job_result_t requeue_body_for_refetch(struct block_index *bi,
      * than bodiless — a foreign writer on a hardlinked blk file (e.g. a live
      * zclassicd sharing the inode, whose append pointer lags physical EOF)
      * overwrites indexed records while a DUPLICATE copy of the block still
-     * exists on disk (2026-08 producer-fold wedge: 314 such positions, every
-     * one repairable locally). A hash-targeted rescan re-stores through
+     * exists on disk (repairable locally). A hash-targeted rescan re-stores through
      * block_index_set_have_data_verified() and the stage retries the same
      * height next step — no clear, no re-fetch. Only a genuine
      * no-copy-anywhere falls through to clear-and-hold below. */

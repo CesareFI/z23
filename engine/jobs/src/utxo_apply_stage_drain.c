@@ -95,7 +95,7 @@ int utxo_apply_stage_drain(int max_steps)
     if (committed && !coins_ram_flush_due())
         (void)stage_record_fatal(STAGE_NAME, "coins_ram deferred flush failed");
 
-    /* Post-commit, own-tx created_outputs prune (lane A1) — only after the
+    /* Post-commit, own-tx created_outputs prune — only after the
      * kernel batch durably committed at least one advance, and only once the
      * kernel tx lock has been released above (strictly sequential locks). */
     if (committed && advanced > 0) {

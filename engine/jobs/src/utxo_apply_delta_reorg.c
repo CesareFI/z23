@@ -311,13 +311,10 @@ bool utxo_apply_unwind_write_cursor(sqlite3 *db, uint64_t value)
 
 /* Name a deep-reorg refusal.
  *
- * Both refusal paths below used to be SILENT to the operator: a LOG_WARN and
- * an EV_BLOCK_REJECTED, no typed blocker, no condition, nothing withheld — so
- * `dumpstate blocker` showed a healthy node while it was permanently
- * declining to follow the rest of the network. With ZCL_FINALITY_DEPTH = 10,
- * a partition that survives more than 10 blocks on both sides never
- * reconverges, which makes this exactly the class of refusal that must be
- * named, not logged and forgotten.
+ * Both refusal paths below raise a typed blocker so `dumpstate blocker`
+ * shows the node declining to follow the network. With
+ * ZCL_FINALITY_DEPTH = 10, a partition longer than 10 blocks on both sides
+ * never reconverges, so the refusal must be named, not only logged.
  *
  * height_is_immutable() (validation/checkpoint.h) is the predicate that
  * DEFINES the refusal — the fork point sits at or below tip - FINALITY_DEPTH,
@@ -546,8 +543,7 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * purges the displaced verdict). When it enrolled in an outer drain batch
      * (the SAVEPOINT/RELEASE path above), flag the batch dirty so
      * stage_batch_end COMMITs it — a drain that ends with advanced==0 would
-     * otherwise ROLLBACK the completed unwind and oscillate (regression from
-     * 429706f87; this restores the pre-batch own-txn COMMIT durability). */
+     * otherwise ROLLBACK the completed unwind and oscillate. */
     if (ua_batched) stage_batch_mark_dirty();
 
     /* This unwind mutated coins/anchors/nullifiers (inverse deltas + range

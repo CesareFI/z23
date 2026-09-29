@@ -17,12 +17,7 @@
  * WITNESS: the Tor thread is running again. Not the inverse of detect: the
  * remedy only ASKS for a start, and tor_integration_is_enabled() flips only
  * once tor_run_main has actually accepted the configuration and entered its
- * loop — the exact fact that was false in the 2026-09-08 incident while the
- * start call kept returning true.
- *
- * Why this exists: on 2026-09-08 the SOCKS bootstrap port was still held by
- * the outgoing process, Tor's config parse failed, the thread exited -1, and
- * nothing in the tree retried or said so. */
+ * loop — a start call can return true while that fact is still false. */
 
 #ifndef ZCL_CONDITIONS_TOR_START_FAILED_H
 #define ZCL_CONDITIONS_TOR_START_FAILED_H

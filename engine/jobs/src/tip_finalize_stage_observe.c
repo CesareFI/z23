@@ -29,7 +29,7 @@
  * matching tip_finalize rewind. See tip_finalize_observe_note_cursor_gap. */
 #define TF_CURSOR_GAP_BLOCKER_ID "tip_finalize.uv_cursor_gap"
 
-/* Typed blocker id for the current-tip-missing anomaly (Task A #11): after the
+/* Typed blocker id for the current-tip-missing anomaly: after the
  * active-chain window, the durable finalized-hash table, AND the best-header
  * ancestry all fail to resolve the block at next_h that finalize extends FROM,
  * the finalize is genuinely wedged on missing data — this names it so the

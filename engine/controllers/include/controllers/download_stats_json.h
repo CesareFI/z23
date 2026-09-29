@@ -5,11 +5,9 @@
 #define ZCLASSIC23_CONTROLLERS_DOWNLOAD_STATS_JSON_H
 
 /* Single collector + single serializer for the download-manager counters
- * that used to be re-fetched and hand-serialized independently at five
- * call sites (rpc_downloadstats, api_serve_downloadstats,
- * api_serve_node_status, api_serve_node_summary, api_serve_health),
- * with real field drift between them (some had the throughput fields,
- * some didn't). See CLAUDE.md "Adding state introspection" for the
+ * shared by rpc_downloadstats, api_serve_downloadstats,
+ * api_serve_node_status, api_serve_node_summary and api_serve_health.
+ * See CLAUDE.md "Adding state introspection" for the
  * general collector convention this follows. */
 
 #include <stdbool.h>

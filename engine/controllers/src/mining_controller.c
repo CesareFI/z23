@@ -194,7 +194,7 @@ static bool mining_on_demand_allowed(const char *rpc_name,
  * (sapling_frontier_mismatch, engine/jobs/src/utxo_apply_anchors.c), so a miner
  * that leaves zeros wedges its own chain at the first shielded block — the
  * default for a from-genesis chain with Sapling active (e.g.
- * -regtestshielded). The computation is the simnet Lane C pattern
+ * -regtestshielded). The computation follows the simnet pattern
  * (engine/modules/sim/src/simnet.c): root(latest persisted Sapling frontier + this
  * block's shielded-output commitments, in tx/output order) — exactly what
  * the fold will recompute. No-op unless Sapling is active at the new height,

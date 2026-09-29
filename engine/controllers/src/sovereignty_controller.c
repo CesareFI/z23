@@ -13,12 +13,11 @@
  * is the composite G-SOV predicate (parts 2+3): continuous
  * coins_applied_height coverage AND (not-borrowed OR self-folded).
  *
- * Before this module, only snapshot/bundle export was gated on the split
+ * Snapshot/bundle export is gated on the split elsewhere
  * (engine/composition/src/bundle_exporter.c bx_qualified,
  * engine/composition/src/consensus_state_snapshot_export_proof.c,
- * engine/composition/src/boot_snapshot_offer.c) — mining and wallet spending were NOT,
- * so an operator could mint or spend on a borrowed shielded history. This
- * file closes that gap with one guard, sovereignty_guard_allow(), called
+ * engine/composition/src/boot_snapshot_offer.c). Mining and wallet spending
+ * are gated here by one guard, sovereignty_guard_allow(), called
  * from the mint entry (engine/controllers/src/mining_controller.c) and the
  * wallet-spend entry (contexts/wallet/controllers/src/wallet_shielded_send.c
  * rpc_z_sendmany — covers t->t / t->z / z->t / z->z). Tip-FOLLOWING (the
@@ -110,8 +109,7 @@ static int64_t sov_count_rows(sqlite3 *db, const char *table,
  *                ARTIFACT_VERIFIED, SOVEREIGN) — the node first became able
  *                to serve a validated tip on installed/proven state.
  *   t_sovereign: first instant `st` was SOVEREIGN or ARTIFACT_VERIFIED
- *                (self_derived, i.e. S holds) — the LANE SPEC's
- *                "SOVEREIGN or ARTIFACT_VERIFIED (self-derived)".
+ *                (self_derived, i.e. S holds).
  *
  * Hooked at both existing trust-derivation call sites in this file
  * (sovereignty_guard_allow and sovereignty_dump_state_json) — no new
@@ -189,9 +187,7 @@ static void sov_render_stamp(sqlite3 *pdb, const char *key,
  * and the shielded-history importer both hold progress_store_tx_lock for
  * extended stretches, so a BLOCKING acquire in a diagnostics/status path
  * would take the whole front door dark exactly when an operator most wants
- * it (the same class of bug commit cc4de081a fixed for refold_progress.c /
- * validate_headers_stage.c — its message names `z23 status` as a
- * victim). This cache lets the busy branch answer truthfully-but-stale
+ * it. This cache lets the busy branch answer truthfully-but-stale
  * instead of queuing: same shape as agent_security_posture.c's
  * g_posture_cache / posture_cache_store / posture_cache_load — a plain
  * mutex (never the progress-store lock) around a tiny struct copy. */

@@ -1,12 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * stage_log_rows — the O(1) published row-count for a stage's *_log table
- * (Program O1). The dump-state views used to report `log_rows` with a blocking
- * SELECT COUNT(*) over a multi-million-row table WHILE holding the recursive
- * progress-store lock — so a `dumpstate <stage>` during catch-up queued behind
- * the fold and the whole observability front door disappeared exactly when the
- * node was busiest. This module replaces that with an incrementally-maintained
- * counter published through the seqlock snapshot plane
+ * A blocking SELECT COUNT(*) over a multi-million-row table under the
+ * recursive progress-store lock would queue `dumpstate <stage>` behind the
+ * fold during catch-up. The dump-state views instead read an
+ * incrementally-maintained counter published through the seqlock snapshot plane
  * (util/subsystem_snapshot.h):
  *
  *   - seed once per progress-store epoch (boot) from ONE COUNT(*) — never on
