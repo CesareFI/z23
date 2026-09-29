@@ -33,7 +33,9 @@
 #define FXG_NO UINT32_MAX
 
 enum { FXG_C_NONE, FXG_C_IF, FXG_C_ELSE_IF, FXG_C_ELSE, FXG_C_ENDIF };
-enum { FXG_SET, FXG_LAZY, FXG_OPEN, FXG_DEFINE };
+/* FXG_DEFAULT: a root ?= line, read as its value only for a variable the
+ * premise host-target-default-tor names; any text otherwise. */
+enum { FXG_SET, FXG_LAZY, FXG_OPEN, FXG_DEFINE, FXG_DEFAULT };
 
 /* What a text may expand to: one of alt[0..n), or anything (any). */
 struct fxg_val {
@@ -70,6 +72,10 @@ struct fxg {
     bool sorted;   /* sites are sorted: an open name is a pattern */
     uint8_t *cls;       /* per root line: FXG_C_* */
     uint32_t *site_at;  /* per root line: its site, FXG_NO */
+    uint32_t *up;       /* per root line: the branch line that opens the
+                         * branch it sits in, FXG_NO at the top level */
+    uint32_t *prev;     /* per branch line: the one before it in its chain */
+    bool nest_ok;       /* up and prev follow every conditional */
     char *arena;
     size_t used;
     struct fxg_frame frames[FXM_COND_MAX];
@@ -91,5 +97,12 @@ void fxg_text(struct fxg *g, const char *s, size_t n, uint32_t t, int depth,
 
 /* make_include.c: the sites of name, [*lo, *hi). */
 void fxg_range(const struct fxg *g, const char *name, size_t *lo, size_t *hi);
+/* Root line `line` sits in a branch make provably does not take: the
+ * branch's own condition provably fails, or one before it in its chain
+ * provably holds, at that branch or any branch around it. A condition the
+ * reading cannot decide keeps the line (make may run it). What the
+ * deciding reading used is added to g->rec; an undecided one adds
+ * nothing. */
+bool fxg_dead(struct fxg *g, uint32_t line, int depth);
 
 #endif

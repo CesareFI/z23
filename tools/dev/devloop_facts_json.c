@@ -369,6 +369,9 @@ static const struct {
      "computed-targets-not-includes",
      "a rule whose targets a function or a value no text spells computes, "
      "and whose text names no missing optional include, makes none"},
+    {ZCL_DEVLOOP_PREMISE_HOST_TARGET_DEFAULT_TOR, "host-target-default-tor",
+     "ZCL_TARGET and ZCL_TOR hold their makefile defaults (host, full): no "
+     "command-line, environment or make -e value sets them"},
 };
 
 static void fx_premise_names(unsigned bits, struct fxw *w)

@@ -1429,14 +1429,21 @@ comes of a function it does not model (all but `strip`, `if`, `and`, `or`,
 `filter`, `filter-out`, `wildcard`, `addprefix`, `addsuffix`, `notdir`,
 `findstring`), a variable no line assigns (the environment's), one a line
 before the directive does not surely assign (at the top level, or in every
-branch of a chain that ends in a plain `else`), one with a `?=`, `+=`, `!=`,
-`:::=` or `define`, one another file, a target-specific value, an
+branch of a chain that ends in a plain `else`), one with a `?=` (but
+`ZCL_TARGET` and `ZCL_TOR` under `host-target-default-tor`, below), `+=`,
+`!=`, `:::=` or `define`, one another file, a target-specific value, an
 `undefine` or an `$(eval)` can set (the lines of a `define` an
 `$(eval $(call ...))` reads, the variable of a literal `$(eval X := ...)`;
 any other `$(eval)`, or a `load`, opens every variable), an automatic
 variable, a substitution reference, and a `$(shell)` other than the compile
 epoch's. A variable several branches assign is the union of the values of
-every assignment before the directive. `$(wildcard)` globs the tree the plan
+every assignment before the directive, less those in a branch make
+provably does not take: the branch's own `ifeq`/`ifneq`, read at its line
+the same way, provably fails, an earlier condition of its `else` chain
+provably holds, or a branch around it is not taken. A condition the
+reading cannot decide keeps every assignment under it, so pruning only
+drops what make never runs; what a pruning reading used is recorded with
+the skip it serves. `$(wildcard)` globs the tree the plan
 reads as make's glob does (a `*`, `?` or `[...]` never matches a leading
 `.`); its value is the empty text when nothing matches and any text
 otherwise, since how make spells a match (its sorted order, a trailing
@@ -1449,7 +1456,7 @@ the epoch. A reading is not used when a `$(shell)` or `!=` command make
 runs as it reads the makefiles names (as above, for a missing include)
 the last component with no pattern of a path the reading globbed, or the
 directories before its first pattern: that command may create a match.
-The planner reads one tree, the one the plan is for. Four named premises
+The planner reads one tree, the one the plan is for. Five named premises
 carry what the text does not hold:
 
 - `no-repair-goal`: no goal on the make command line is `vendor-ready`,
@@ -1467,7 +1474,20 @@ carry what the text does not hold:
 - `no-command-line-override` (every skip): no command-line assignment or
   `make -e` environment value overrides a variable the makefile sets with
   `=` or `:=`, and no command-line `-I dir` (`--include-dir`) gives make
-  another directory in which a missing include may be found.
+  another directory in which a missing include may be found;
+- `host-target-default-tor`: `ZCL_TARGET` and `ZCL_TOR` hold the value
+  their `?=` line gives (`host`, `full`): no command-line, environment or
+  `make -e` value sets them. It applies only to a variable whose one line
+  in any makefile is a `?=` of the root makefile that make surely reads
+  before the directive; one another line can set (`:=` in any branch,
+  `+=`, a target-specific value), or whose `?=` comes later, is any text,
+  as is every other `?=` variable. With it, a host build prunes the
+  branch that sets `ZCL_CROSS_TRIPLE`, so `TOR_MISSING_ARCHIVES` is the
+  host Tor archives the tree lacks, and the marker
+  `build/identity/tor-inputs-ready.mk` is skipped once every one exists.
+  A cross target (`ZCL_TARGET=windows-x86_64` as the default) widens:
+  the reading unions the empty triple with the one a later `:=` sets,
+  so it globs the host tree as well as the cross one.
 
 A `MAKEFLAGS += -I dir` in the makefile text is a residual: make 4.4
 re-reads `MAKEFLAGS` and searches that directory for a later include. The

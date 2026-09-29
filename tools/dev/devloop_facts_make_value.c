@@ -195,7 +195,31 @@ static bool fxg_assigned(const struct fxg *g, size_t lo, size_t hi, uint32_t t)
     return d >= 0;
 }
 
-/* The value of the variable name at root line t. */
+/* The variables the premise host-target-default-tor names. */
+static bool fxg_default_premised(const char *name)
+{
+    return strcmp(name, "ZCL_TARGET") == 0 || strcmp(name, "ZCL_TOR") == 0;
+}
+
+/* A variable host-target-default-tor names whose one site is a ?= line
+ * make surely reads before root line t: the value that line gives (make
+ * expands it where it is used, as for =). */
+static bool fxg_default(struct fxg *g, const char *name, size_t lo, size_t hi,
+                        uint32_t t, int depth, struct fxg_val *out)
+{
+    const struct fxg_site *s = &g->sites[lo];
+    if (!fxg_default_premised(name) || hi != lo + 1 || s->op != FXG_DEFAULT ||
+        s->line >= t || !fxg_assigned(g, lo, hi, t))
+        return false;
+    fxg_text(g, s->value, s->vlen, t, depth + 1, out);
+    if (!out->any)
+        g->rec.premises |= ZCL_DEVLOOP_PREMISE_HOST_TARGET_DEFAULT_TOR;
+    return true;
+}
+
+/* The value of the variable name at root line t: the union of the values
+ * of its sites before t, but for a site in a branch make provably does not
+ * take (fxg_dead). */
 static void fxg_var(struct fxg *g, const char *name, uint32_t t, int depth,
                     struct fxg_val *out)
 {
@@ -209,6 +233,8 @@ static void fxg_var(struct fxg *g, const char *name, uint32_t t, int depth,
         fxg_one(g, out, goal);
         return;
     }
+    if (lo < hi && fxg_default(g, name, lo, hi, t, depth, out))
+        return;
     for (size_t k = lo; k < hi; k++)
         if (g->sites[k].op != FXG_SET && g->sites[k].op != FXG_LAZY)
             return;
@@ -218,10 +244,14 @@ static void fxg_var(struct fxg *g, const char *name, uint32_t t, int depth,
     for (size_t k = lo; k < hi && !out->any && g->sites[k].line < t; k++) {
         const struct fxg_site *s = &g->sites[k];
         struct fxg_val v;
+        if (fxg_dead(g, s->line, depth))
+            continue;
         fxg_text(g, s->value, s->vlen, s->op == FXG_SET ? s->line : t,
                  depth + 1, &v);
         fxg_union(g, out, &v);
     }
+    if (out->n == 0)
+        fxg_any(out); /* every site pruned: a line make never reaches */
 }
 
 /* A reference whose text is not a call: a variable, maybe computed. */

@@ -220,7 +220,7 @@ static size_t fxg_op(const char *op, uint8_t *kind)
         const char *s;
         uint8_t kind;
     } ops[] = {{":::=", FXG_OPEN}, {"::=", FXG_SET}, {":=", FXG_SET},
-               {"+=", FXG_OPEN},   {"?=", FXG_OPEN}, {"!=", FXG_OPEN},
+               {"+=", FXG_OPEN},   {"?=", FXG_DEFAULT}, {"!=", FXG_OPEN},
                {"=", FXG_LAZY}};
     for (size_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++)
         if (strncmp(op, ops[k].s, strlen(ops[k].s)) == 0) {
@@ -517,6 +517,39 @@ static void fxg_evals(struct fxg *g, const char *s)
     }
 }
 
+/* Where each root line sits among the conditionals: the branch line that
+ * opens its branch (g->up), and for a branch line the one before it in its
+ * chain (g->prev). A chain the reading cannot follow (an else or endif
+ * with no if, one open at the end, too deep) leaves g->nest_ok false: no
+ * branch is then pruned. */
+static void fxg_nest(struct fxg *g)
+{
+    uint32_t head[FXM_COND_MAX], last[FXM_COND_MAX];
+    int d = 0;
+    g->nest_ok = true;
+    for (uint32_t k = 0; g->nest_ok && k < g->m->root_lines; k++) {
+        uint8_t c = g->cls[k];
+        g->up[k] = d > 0 ? last[d - 1] : FXG_NO;
+        g->prev[k] = FXG_NO;
+        if (c == FXG_C_IF) {
+            g->nest_ok = d < FXM_COND_MAX;
+            if (g->nest_ok) {
+                head[d] = k;
+                last[d++] = k;
+            }
+        } else if (c != FXG_C_NONE && d == 0) {
+            g->nest_ok = false;
+        } else if (c == FXG_C_ENDIF) {
+            d--;
+        } else if (c != FXG_C_NONE) {
+            g->up[k] = g->up[head[d - 1]];
+            g->prev[k] = last[d - 1];
+            last[d - 1] = k;
+        }
+    }
+    g->nest_ok = g->nest_ok && d == 0;
+}
+
 /* Read every line: the root's conditionals and assignments, and what
  * other lines can set. */
 static bool fxg_collect(struct fxg *g)
@@ -526,6 +559,7 @@ static bool fxg_collect(struct fxg *g)
     for (size_t k = 0; k < m->nlines && !g->open_all; k++)
         if (!fxg_line(g, k))
             return false;
+    fxg_nest(g);
     qsort(g->sites, g->nsites, sizeof(*g->sites), fxg_site_cmp);
     g->sorted = true;
     for (size_t k = 0; k < g->nsites; k++)
@@ -600,7 +634,7 @@ static int fxg_same(const struct fxg_val *a, const struct fxg_val *b)
 
 /* The condition of root line k: 1 provably holds, 0 provably fails, -1
  * neither. Only ifeq and ifneq decide, by fxg_same. */
-static int fxg_cond(struct fxg *g, uint32_t k)
+static int fxg_cond(struct fxg *g, uint32_t k, int depth)
 {
     const char *p = g->m->lines[k].raw, *a, *b;
     size_t an, bn;
@@ -617,10 +651,43 @@ static int fxg_cond(struct fxg *g, uint32_t k)
         return -1;
     if (!fxg_sides(p + (neq ? 5 : 4), &a, &an, &b, &bn))
         return -1;
-    fxg_text(g, a, an, k, 0, &va);
-    fxg_text(g, b, bn, k, 0, &vb);
+    fxg_text(g, a, an, k, depth, &va);
+    fxg_text(g, b, bn, k, depth, &vb);
     same = fxg_same(&va, &vb);
     return same < 0 ? -1 : neq ? !same : same;
+}
+
+/* The branch that branch line b opens is provably not taken: its own
+ * condition fails, or one before it in its chain holds. */
+static bool fxg_branch_dead(struct fxg *g, uint32_t b, int depth)
+{
+    if (g->cls[b] != FXG_C_ELSE && fxg_cond(g, b, depth) == 0)
+        return true;
+    for (uint32_t p = g->prev[b]; p != FXG_NO; p = g->prev[p])
+        if (fxg_cond(g, p, depth) == 1)
+            return true;
+    return false;
+}
+
+bool fxg_dead(struct fxg *g, uint32_t line, int depth)
+{
+    unsigned premises = g->rec.premises;
+    size_t nglobs = g->rec.nglobs, mark = g->used;
+    bool full = g->rec_full, dead = false;
+    if (!g->nest_ok || line >= g->m->root_lines || depth > FXG_DEPTH)
+        return false;
+    for (uint32_t b = g->up[line]; !dead && b != FXG_NO; b = g->up[b]) {
+        dead = fxg_branch_dead(g, b, depth + 1);
+        while (g->prev[b] != FXG_NO)
+            b = g->prev[b];
+    }
+    g->used = mark;
+    if (!dead) {
+        g->rec.premises = premises;
+        g->rec.nglobs = nglobs;
+        g->rec_full = full;
+    }
+    return dead;
 }
 
 static void fxg_where(const struct fxm *m, uint32_t file, uint32_t at,
@@ -638,7 +705,7 @@ static bool fxg_try(struct fxg *g, uint32_t k, int want)
     size_t mark = g->used, n;
     memset(&g->rec, 0, sizeof(g->rec));
     g->rec_full = false;
-    if (fxg_cond(g, k) == want && !g->rec_full) {
+    if (fxg_cond(g, k, 0) == want && !g->rec_full) {
         n = strlen(l->raw);
         while (n > 0 && fxg_blank(l->raw[n - 1]))
             n--;
@@ -831,6 +898,8 @@ static void fxg_free(struct fxg *g)
     free(g->pats);
     free(g->cls);
     free(g->site_at);
+    free(g->up);
+    free(g->prev);
     free(g->arena);
     free(g);
 }
@@ -839,16 +908,18 @@ static void fxg_free(struct fxg *g)
 static void fxg_skip_all(struct fxm *m)
 {
     struct fxg *g = zcl_calloc(1, sizeof(*g), "facts_consumer.mkguards");
-    size_t k = 0;
+    size_t k = 0, lines = m->root_lines + 1;
     if (g == NULL)
         return;
     g->m = m;
-    g->cls = zcl_calloc(m->root_lines + 1, 1, "facts_consumer.mkgcls");
-    g->site_at = zcl_malloc((m->root_lines + 1) * sizeof(*g->site_at),
-                            "facts_consumer.mkgsiteat");
+    g->cls = zcl_calloc(lines, 1, "facts_consumer.mkgcls");
+    g->site_at = zcl_malloc(lines * sizeof(*g->site_at), "facts_consumer.mkgsiteat");
+    g->up = zcl_malloc(lines * sizeof(*g->up), "facts_consumer.mkgup");
+    g->prev = zcl_malloc(lines * sizeof(*g->prev), "facts_consumer.mkgprev");
     g->arena = zcl_malloc(FXG_ARENA, "facts_consumer.mkgarena");
-    if (g->cls != NULL && g->site_at != NULL && g->arena != NULL) {
-        memset(g->site_at, 0xff, (m->root_lines + 1) * sizeof(*g->site_at));
+    if (g->cls != NULL && g->site_at != NULL && g->up != NULL &&
+        g->prev != NULL && g->arena != NULL) {
+        memset(g->site_at, 0xff, lines * sizeof(*g->site_at));
         if (fxg_collect(g) && !g->open_all)
             while (k < m->missing.n) {
                 size_t n = m->missing.n;

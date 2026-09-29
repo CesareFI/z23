@@ -309,7 +309,8 @@ static int sbit_t_host_target_tor(void)
         {"tor_host_none", SBI_TOR_REAL(SBI_HOST, ""), NULL, false},
         {"tor_host_cross_only", SBI_TOR_REAL(SBI_HOST, ""), k_sbi_tor_cross, false},
         {"tor_cross_default", SBI_TOR_REAL(SBI_WIN, ""), k_sbi_tor_host, false},
-        {"tor_cross_default_built", SBI_TOR_REAL(SBI_WIN, ""), k_sbi_tor_cross, true},
+        /* The reading unions the empty triple a later := replaces: widen. */
+        {"tor_cross_default_built", SBI_TOR_REAL(SBI_WIN, ""), k_sbi_tor_cross, false},
         {"tor_cross_set", SBI_TOR_REAL("ZCL_TARGET := windows-x86_64\n", ""),
          k_sbi_tor_host, false},
         {"tor_target_env", SBI_TOR_REAL("", ""), k_sbi_tor_host, false},
@@ -507,9 +508,10 @@ static int sbit_t_guard_record(void)
         ASSERT(strcmp(g->include, "build/ready.mk") == 0);
         ASSERT(strcmp(g->guard, "ifneq ($(strip $(LEASES)),)") == 0);
         ASSERT(g->premises == (ZCL_DEVLOOP_PREMISE_EPOCH_ONE_COMPONENT | SBI_EVERY_SKIP));
-        ASSERT(g->nglobs == 2 && g->found[0][0] == '\0' && g->found[1][0] == '\0');
+        /* PROFILES holds build-only: the zero epoch's else branch is not
+         * taken, so its path is neither a value of EPOCH nor globbed. */
+        ASSERT(g->nglobs == 1 && g->found[0][0] == '\0');
         ASSERT(strcmp(g->glob[0], "build/obj/epochs/{epoch}/.unverified") == 0);
-        ASSERT(strcmp(g->glob[1], "build/obj/epochs/0000/.unverified") == 0);
         ASSERT(e.rep.make_premise.premises == SBI_PLAN_PREMISE && e.rep.make_premise.nskips == 1 &&
                strcmp(e.rep.make_premise.include, "build/ready.mk") == 0);
         ASSERT(sbi_consume_files("sbi_guard_rec_v", SBI_GUARD(SBI_VENDOR, "ifneq ($(strip "
