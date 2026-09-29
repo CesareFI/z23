@@ -7208,10 +7208,12 @@ static int test_ic_local_selection_build_needs(void)
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, NULL, needs, 16,
                                               &n));
-        ASSERT(n == 5);
+        ASSERT(n == 6);
         ASSERT(ic_needs_have(needs, n, "zclassic23", "build/bin/zclassic23"));
         ASSERT(ic_needs_have(needs, n, "tools/consensus_rule_sweep",
                              "build/bin/consensus_rule_sweep"));
+        ASSERT(ic_needs_have(needs, n, "process-group-exec",
+                             "build/bin/process-group-exec"));
         n = 99;
         ASSERT(zcl_test_selection_build_needs(NULL, false, ic_gate_everything,
                                               needs, 16, &n));
