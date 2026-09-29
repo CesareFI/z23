@@ -427,9 +427,6 @@ static bool vs_expected_ready(const struct zcl_verify_attest_expected *e)
            memcmp(e->closure_sha3, zero, sizeof(zero)) != 0;
 }
 
-static bool vs_policy_uids(uid_t *signer, uid_t *publisher,
-                            const char **why);
-
 static int vs_open_store_lock(int base_fd, uid_t anchor_owner,
                               uid_t publisher, int *store_fd,
                               struct zcl_verify_store_result *out)
@@ -459,7 +456,119 @@ static int vs_open_store_lock(int base_fd, uid_t anchor_owner,
     return fd;
 }
 
-static void vs_refresh_hit(bool production, uid_t signer, uid_t publisher,
+/* Where the policy, the pins and the store live. Production is the one
+ * const site below: anchor "/", every directory and policy file root-owned.
+ * Only a ZCL_TESTING entry point names another anchor, owned by the test
+ * uid, so tests drive this exact policy, custody and lookup code. */
+struct vs_site {
+    const char *anchor;
+    uid_t owner;
+};
+
+static const struct vs_site vs_production_site = {"/", 0};
+static const char *const vs_etc_path[] = {"etc", "z23verify", NULL};
+static const char *const vs_base_path[] = {"var", "lib", "z23verify", NULL};
+
+/* anchor/names... by descriptor, each directory owned by the site owner
+ * and not group or world writable. */
+static int vs_site_dir(const struct vs_site *site, const char *const *names)
+{
+    int fd = open(site->anchor, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+                                    O_CLOEXEC);
+    struct stat st;
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) != 0 || !vs_mode(&st, site->owner, S_IFDIR)) {
+        (void)close(fd);
+        return -1;
+    }
+    for (size_t i = 0; names[i]; ++i) {
+        int next = vs_child_dir(fd, names[i], site->owner);
+        (void)close(fd);
+        if (next < 0) return -1;
+        fd = next;
+    }
+    return fd;
+}
+
+/* "z23verify.store.v1\nsigner_uid=<N>\npublisher_uid=<site owner>\n".
+ * The publisher is the site owner: root in production. The same-uid rule
+ * is not here; vs_custody() applies it to every lookup. */
+static bool vs_parse_policy_uids(const char *text, size_t len, uid_t owner,
+                                 uid_t *signer, uid_t *publisher,
+                                 const char **why)
+{
+    size_t prefix = sizeof(VS_POLICY) - 1u;
+    char suffix[40];
+    int made = snprintf(suffix, sizeof(suffix), "\n" VS_PUBLISHER "%u\n",
+                        (unsigned)owner);
+    size_t suffix_len = made > 0 ? (size_t)made : 0u;
+    *why = "store_policy_malformed";
+    if (suffix_len == 0 || suffix_len >= sizeof(suffix) ||
+        len <= prefix + suffix_len ||
+        memcmp(text, VS_POLICY, prefix) != 0 ||
+        memcmp(text + len - suffix_len, suffix, suffix_len) != 0)
+        return false;
+    unsigned long value = 0;
+    for (size_t i = prefix; i < len - suffix_len; ++i) {
+        unsigned digit = (unsigned)(text[i] - '0');
+        if (!isdigit((unsigned char)text[i]) ||
+            value > (UINT_MAX - digit) / 10ul)
+            return false;
+        value = value * 10ul + digit;
+    }
+    if (value == 0 || value > UINT_MAX) return false;
+    *why = NULL;
+    *signer = (uid_t)value;
+    *publisher = owner;
+    return true;
+}
+
+static bool vs_read_policy_file(int fd, uid_t owner, uid_t *signer,
+                                uid_t *publisher, const char **why)
+{
+    struct stat before, after;
+    if (fstat(fd, &before) != 0 || !vs_mode(&before, owner, S_IFREG) ||
+        (before.st_mode & 0777) != 0444 || before.st_nlink != 1 ||
+        before.st_size < 0 || before.st_size > 96) {
+        *why = "store_policy_unsafe";
+        return false;
+    }
+    char text[97];
+    size_t at = 0;
+    while (at < (size_t)before.st_size) {
+        ssize_t n = read(fd, text + at, (size_t)before.st_size - at);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { *why = "store_policy_changed"; return false; }
+        at += (size_t)n;
+    }
+    if (fstat(fd, &after) != 0 || !vs_same_file(&before, &after)) {
+        *why = "store_policy_changed";
+        return false;
+    }
+    text[at] = '\0';
+    return vs_parse_policy_uids(text, at, owner, signer, publisher, why);
+}
+
+/* The site's store.policy, walked by descriptor from the anchor on every
+ * call. No environment override is compiled into this loader. */
+static bool vs_site_policy(const struct vs_site *site, uid_t *signer,
+                           uid_t *publisher, const char **why)
+{
+    int dir = vs_site_dir(site, vs_etc_path);
+    if (dir < 0) { *why = "store_policy_path_unsafe"; return false; }
+    int fd = openat(dir, "store.policy", O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+                                           O_CLOEXEC);
+    bool ok = false;
+    *why = "store_policy_missing";
+    if (fd >= 0) ok = vs_read_policy_file(fd, site->owner, signer, publisher,
+                                          why);
+    if (fd >= 0) (void)close(fd);
+    (void)close(dir);
+    return ok;
+}
+
+static void vs_refresh_hit(const struct vs_site *site, uid_t signer,
+                           uid_t publisher,
                            const struct zcl_verify_attest_box_key *box,
                            const struct zcl_verify_attest_trust_root *root,
                            struct zcl_verify_store_result *out)
@@ -467,8 +576,8 @@ static void vs_refresh_hit(bool production, uid_t signer, uid_t publisher,
     struct zcl_verify_attest_trust_root current;
     uid_t fresh_signer = 0, fresh_publisher = 0;
     const char *why = NULL, *policy_why = NULL;
-    bool policy_current = !production ||
-        (vs_policy_uids(&fresh_signer, &fresh_publisher, &policy_why) &&
+    bool policy_current = !site ||
+        (vs_site_policy(site, &fresh_signer, &fresh_publisher, &policy_why) &&
          fresh_signer == signer && fresh_publisher == publisher);
     if (policy_current &&
         zcl_verify_attest_trust_root_load(NULL, box, &current, &why) &&
@@ -494,7 +603,8 @@ static const char *vs_request_ready(const struct vs_request *req)
 }
 
 static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
-                         bool production, const struct vs_request *req,
+                         const struct vs_site *site,
+                         const struct vs_request *req,
                          const struct zcl_verify_attest_box_key *box,
                          struct zcl_verify_store_result *out)
 {
@@ -532,7 +642,7 @@ static void vs_lookup_at(int base_fd, uid_t anchor_owner, uid_t signer,
     }
     vs_scan(key_fd, req, key, &root, out);
     if (out->verdict == ZCL_VERIFY_STORE_HIT) {
-        vs_refresh_hit(production, signer, req->publisher, box, &root, out);
+        vs_refresh_hit(site, signer, req->publisher, box, &root, out);
         if (out->verdict == ZCL_VERIFY_STORE_HIT) {
             out->lock_fd = lock_fd;
             lock_fd = -1;
@@ -542,91 +652,6 @@ done:
     if (key_fd >= 0) (void)close(key_fd);
     if (lock_fd >= 0) (void)close(lock_fd);
     if (store_fd >= 0) (void)close(store_fd);
-}
-
-static bool vs_parse_policy_uids(const char *text, size_t len,
-                                 uid_t *signer, uid_t *publisher,
-                                 const char **why)
-{
-    size_t prefix = sizeof(VS_POLICY) - 1u;
-    static const char suffix[] = "\n" VS_PUBLISHER "0\n";
-    size_t suffix_len = sizeof(suffix) - 1u;
-    if (len <= prefix + suffix_len ||
-        memcmp(text, VS_POLICY, prefix) != 0 ||
-        memcmp(text + len - suffix_len, suffix, suffix_len) != 0) {
-        *why = "store_policy_malformed";
-        return false;
-    }
-    unsigned long value = 0;
-    for (size_t i = prefix; i < len - suffix_len; ++i) {
-        unsigned digit = (unsigned)(text[i] - '0');
-        if (!isdigit((unsigned char)text[i]) ||
-            value > (UINT_MAX - digit) / 10ul) {
-            *why = "store_policy_malformed";
-            return false;
-        }
-        value = value * 10ul + digit;
-    }
-    if (value == 0 || value > UINT_MAX || (uid_t)value == geteuid()) {
-        *why = value == 0 ? "store_policy_malformed" : "store_owner_same_uid";
-        return false;
-    }
-    *signer = (uid_t)value;
-    *publisher = 0;
-    return true;
-}
-
-static bool vs_read_policy_file(int fd, uid_t *signer, uid_t *publisher,
-                                const char **why)
-{
-    struct stat before, after;
-    if (fstat(fd, &before) != 0 || !vs_mode(&before, 0, S_IFREG) ||
-        (before.st_mode & 0777) != 0444 || before.st_nlink != 1 ||
-        before.st_size < 0 || before.st_size > 96) {
-        *why = "store_policy_unsafe";
-        return false;
-    }
-    char text[97];
-    size_t at = 0;
-    while (at < (size_t)before.st_size) {
-        ssize_t n = read(fd, text + at, (size_t)before.st_size - at);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { *why = "store_policy_changed"; return false; }
-        at += (size_t)n;
-    }
-    if (fstat(fd, &after) != 0 || !vs_same_file(&before, &after)) {
-        *why = "store_policy_changed";
-        return false;
-    }
-    text[at] = '\0';
-    return vs_parse_policy_uids(text, at, signer, publisher, why);
-}
-
-/* Root-owned policy path, loaded by descriptors each time. No environment
- * override is compiled into this production loader. */
-static bool vs_policy_uids(uid_t *signer, uid_t *publisher,
-                            const char **why)
-{
-    int root = -1, etc = -1, dir = -1, fd = -1;
-    struct stat st;
-    bool ok = false;
-    *why = "store_policy_missing";
-    root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (root < 0 || fstat(root, &st) != 0 || !vs_mode(&st, 0, S_IFDIR))
-        goto done;
-    etc = vs_child_dir(root, "etc", 0);
-    if (etc < 0) { *why = "store_policy_path_unsafe"; goto done; }
-    dir = vs_child_dir(etc, "z23verify", 0);
-    if (dir < 0) { *why = "store_policy_path_unsafe"; goto done; }
-    fd = openat(dir, "store.policy", O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
-                                       O_CLOEXEC);
-    if (fd >= 0) ok = vs_read_policy_file(fd, signer, publisher, why);
-done:
-    if (fd >= 0) (void)close(fd);
-    if (dir >= 0) (void)close(dir);
-    if (etc >= 0) (void)close(etc);
-    if (root >= 0) (void)close(root);
-    return ok;
 }
 
 /* Pins v2 under an already-verified directory: one nlink-1 regular file,
@@ -673,69 +698,128 @@ static const char *vs_pins_read(int dir, uid_t owner,
     return why;
 }
 
+
+static const char *vs_site_pins(const struct vs_site *site,
+                                struct zcl_fixed_result_v2_roots *out)
+{
+    int dir = vs_site_dir(site, vs_etc_path);
+    const char *why = dir >= 0 ? vs_pins_read(dir, site->owner, out)
+                               : "store_pins_path_unsafe";
+    if (dir >= 0) (void)close(dir);
+    if (why) memset(out, 0, sizeof(*out));
+    return why;
+}
+
 bool zcl_verify_store_pins_load(struct zcl_fixed_result_v2_roots *out,
                                 const char **why)
 {
-    int root = -1, etc = -1, dir = -1;
-    struct stat st;
-    const char *reason = "store_pins_path_unsafe";
-    if (!out) { if (why) *why = "store_pins_unqualified"; return false; }
-    memset(out, 0, sizeof(*out));
-    root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (root >= 0 && fstat(root, &st) == 0 && vs_mode(&st, 0, S_IFDIR))
-        etc = vs_child_dir(root, "etc", 0);
-    if (etc >= 0) dir = vs_child_dir(etc, "z23verify", 0);
-    if (dir >= 0) reason = vs_pins_read(dir, 0, out);
-    if (dir >= 0) (void)close(dir);
-    if (etc >= 0) (void)close(etc);
-    if (root >= 0) (void)close(root);
-    if (reason) memset(out, 0, sizeof(*out));
+    const char *reason = out ? vs_site_pins(&vs_production_site, out)
+                             : "store_pins_unqualified";
     if (why) *why = reason;
     return reason == NULL;
+}
+
+/* The one same-uid rule; every lookup passes it before reading a store
+ * file. A receiver running as the signer or the publisher could have
+ * written what it is about to trust. Only a ZCL_TESTING entry point can
+ * pass allow_same_uid; production passes false. */
+static const char *vs_custody(uid_t signer, uid_t publisher,
+                              bool allow_same_uid)
+{
+    if (signer == 0) return "store_owner_same_uid";
+    if (allow_same_uid) return NULL;
+    if (signer == geteuid()) return "store_owner_same_uid";
+    if (publisher == geteuid()) return "store_owner_same_uid";
+    return NULL;
+}
+
+/* Uids, pins and store base named directly: the uid fixture only. */
+struct vs_given {
+    const char *root;
+    uid_t signer, publisher;
+    const struct zcl_fixed_result_v2_roots *pins;
+};
+
+/* One lookup's resolved inputs, from the site or from vs_given. */
+struct vs_plan {
+    uid_t signer, publisher, anchor_owner;
+    const struct zcl_fixed_result_v2_roots *pins;
+    struct zcl_fixed_result_v2_roots loaded;
+};
+
+/* Policy (site) or given uids, then custody, then pins. */
+static const char *vs_plan_make(const struct vs_site *site,
+                                const struct vs_given *given,
+                                bool allow_same_uid, struct vs_plan *plan)
+{
+    const char *why = NULL;
+    memset(plan, 0, sizeof(*plan));
+    if (given) {
+        plan->signer = given->signer;
+        plan->publisher = given->publisher;
+        plan->anchor_owner = given->signer;
+        plan->pins = given->pins;
+    } else if (!vs_site_policy(site, &plan->signer, &plan->publisher, &why)) {
+        return why;
+    }
+    why = vs_custody(plan->signer, plan->publisher, allow_same_uid);
+    if (why || given) return why;
+    plan->anchor_owner = site->owner;
+    plan->pins = &plan->loaded;
+    return vs_site_pins(site, &plan->loaded);
+}
+
+/* The store base: the given root, owned by the signer, or the site's
+ * var/lib/z23verify. */
+static int vs_plan_base(const struct vs_site *site,
+                        const struct vs_given *given)
+{
+    if (!given) return vs_site_dir(site, vs_base_path);
+    if (!given->root || given->root[0] != '/') return -1;
+    int fd = open(given->root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+                                   O_CLOEXEC);
+    struct stat st;
+    if (fd >= 0 && (fstat(fd, &st) != 0 ||
+                    !vs_mode(&st, given->signer, S_IFDIR))) {
+        (void)close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* Production and both ZCL_TESTING entry points run this. `given` is NULL
+ * except for the uid fixture; the site is production's except for the
+ * site fixture. */
+static void vs_lookup_shared(const struct vs_site *site,
+                             const struct vs_given *given, bool allow_same_uid,
+                             const struct zcl_verify_attest_expected *expected,
+                             const struct zcl_verify_attest_box_key *box,
+                             struct zcl_verify_store_result *out)
+{
+    if (!out) return;
+    vs_result_init(out);
+    struct vs_plan plan;
+    const char *why = vs_plan_make(site, given, allow_same_uid, &plan);
+    if (why) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
+        return;
+    }
+    int base = vs_plan_base(site, given);
+    if (base < 0) {
+        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
+        return;
+    }
+    const struct vs_request req = {expected, plan.pins, plan.publisher};
+    vs_lookup_at(base, plan.anchor_owner, plan.signer, given ? NULL : site,
+                 &req, box, out);
+    (void)close(base);
 }
 
 void zcl_verify_store_lookup(const struct zcl_verify_attest_expected *expected,
                              const struct zcl_verify_attest_box_key *box,
                              struct zcl_verify_store_result *out)
 {
-    if (!out) return;
-    vs_result_init(out);
-    uid_t signer = 0, publisher = 0;
-    const char *why = NULL;
-    if (!vs_policy_uids(&signer, &publisher, &why)) {
-        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
-        return;
-    }
-    /* A receiver running as the publisher could have written the store. */
-    if (publisher == geteuid()) {
-        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid");
-        return;
-    }
-    /* The receiver's own root-custodied pins, never the caller's. */
-    struct zcl_fixed_result_v2_roots pins;
-    if (!zcl_verify_store_pins_load(&pins, &why)) {
-        vs_set(out, ZCL_VERIFY_STORE_COLD, why);
-        return;
-    }
-    int root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    struct stat st;
-    if (root < 0 || fstat(root, &st) != 0 || !vs_mode(&st, 0, S_IFDIR)) {
-        if (root >= 0) (void)close(root);
-        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
-        return;
-    }
-    int var = vs_child_dir(root, "var", 0);
-    int lib = var >= 0 ? vs_child_dir(var, "lib", 0) : -1;
-    int base = lib >= 0 ? vs_child_dir(lib, "z23verify", 0) : -1;
-    const struct vs_request req = {expected, &pins, publisher};
-    if (base < 0)
-        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
-    else
-        vs_lookup_at(base, 0, signer, true, &req, box, out);
-    if (base >= 0) (void)close(base);
-    if (lib >= 0) (void)close(lib);
-    if (var >= 0) (void)close(var);
-    (void)close(root);
+    vs_lookup_shared(&vs_production_site, NULL, false, expected, box, out);
 }
 
 #ifdef ZCL_TESTING
@@ -747,27 +831,27 @@ void zcl_verify_store_lookup_fixture(
     const struct zcl_verify_attest_box_key *box,
     struct zcl_verify_store_result *out)
 {
-    if (!out) return;
-    vs_result_init(out);
-    bool same_uid = (uid_t)signer_uid == geteuid() ||
-                    (uid_t)publisher_uid == geteuid();
-    if (!root_path || root_path[0] != '/' || signer_uid == 0 ||
-        (!allow_same_uid && same_uid)) {
-        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_owner_same_uid");
+    const struct vs_given given = {root_path, (uid_t)signer_uid,
+                                   (uid_t)publisher_uid, pins};
+    vs_lookup_shared(&vs_production_site, &given, allow_same_uid, expected,
+                     box, out);
+}
+
+void zcl_verify_store_lookup_site_fixture(
+    const char *anchor, bool allow_same_uid,
+    const struct zcl_verify_attest_expected *expected,
+    const struct zcl_verify_attest_box_key *box,
+    struct zcl_verify_store_result *out)
+{
+    if (!anchor || anchor[0] != '/') {
+        if (out) {
+            vs_result_init(out);
+            vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
+        }
         return;
     }
-    int root = open(root_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    struct stat st;
-    if (root < 0 || fstat(root, &st) != 0 ||
-        !vs_mode(&st, (uid_t)signer_uid, S_IFDIR)) {
-        if (root >= 0) (void)close(root);
-        vs_set(out, ZCL_VERIFY_STORE_COLD, "store_path_unsafe");
-        return;
-    }
-    const struct vs_request req = {expected, pins, (uid_t)publisher_uid};
-    vs_lookup_at(root, (uid_t)signer_uid, (uid_t)signer_uid, false, &req,
-                 box, out);
-    (void)close(root);
+    const struct vs_site site = {anchor, geteuid()};
+    vs_lookup_shared(&site, NULL, allow_same_uid, expected, box, out);
 }
 
 const char *zcl_verify_store_pins_load_fixture(

@@ -398,6 +398,129 @@ static int vs_test_pins_custody(struct vs_fixture *f)
     return failures;
 }
 
+/* anchor/etc/z23verify/{store.policy,fixed_result.pins} beside the
+ * fixture store moved to anchor/var/lib/z23verify: production's layout. */
+struct vs_site {
+    char anchor[PATH_MAX], etc[PATH_MAX], base[PATH_MAX];
+    char policy[PATH_MAX], pins[PATH_MAX];
+};
+
+static bool vs_site_make(struct vs_site *s, const struct vs_fixture *f)
+{
+    char made[PATH_MAX], dir[PATH_MAX], lib[PATH_MAX];
+    uint8_t bytes[2048];
+    size_t len = 0;
+    const char *why = NULL;
+    memset(s, 0, sizeof(*s));
+    return test_mkdtemp(made, sizeof(made), "z23-verify-site") &&
+           realpath(made, s->anchor) && chmod(s->anchor, 0755) == 0 &&
+           vs_path(dir, s->anchor, "etc") && mkdir(dir, 0755) == 0 &&
+           vs_path(s->etc, dir, "z23verify") && mkdir(s->etc, 0755) == 0 &&
+           vs_path(dir, s->anchor, "var") && mkdir(dir, 0755) == 0 &&
+           vs_path(lib, dir, "lib") && mkdir(lib, 0755) == 0 &&
+           vs_path(s->base, lib, "z23verify") &&
+           vs_path(s->policy, s->etc, "store.policy") &&
+           vs_path(s->pins, s->etc, "fixed_result.pins") &&
+           zcl_fr_pins_encode(&f->vc.pins, bytes, sizeof(bytes), &len, &why) &&
+           vs_write(s->pins, bytes, len, 0444);
+}
+
+static bool vs_site_policy(const struct vs_site *s, unsigned signer,
+                           unsigned publisher, mode_t mode)
+{
+    char text[96];
+    int n = snprintf(text, sizeof(text),
+                     "z23verify.store.v1\nsigner_uid=%u\npublisher_uid=%u\n",
+                     signer, publisher);
+    if (n <= 0 || (size_t)n >= sizeof(text)) return false;
+    if (unlink(s->policy) != 0 && errno != ENOENT) return false;
+    return vs_write(s->policy, text, (size_t)n, mode);
+}
+
+static bool vs_site_is(const struct vs_site *s, const struct vs_fixture *f,
+                       bool same_uid, enum zcl_verify_store_verdict verdict,
+                       const char *reason)
+{
+    struct zcl_verify_store_result r;
+    zcl_verify_store_lookup_site_fixture(s->anchor, same_uid, &f->expected,
+                                         &f->box, &r);
+    bool ok = reason ? vs_reason(&r, verdict, reason)
+                     : r.verdict == verdict &&
+                       r.object_len == sizeof(VS_OBJ) - 1u;
+    if (!ok)
+        fprintf(stderr, "site lookup: %d %s\n", (int)r.verdict,
+                r.reason ? r.reason : "(none)");
+    zcl_verify_store_result_release(&r);
+    return ok;
+}
+
+static int vs_test_site(struct vs_fixture *f)
+{
+    int failures = 0;
+    TEST("verify store: production's policy, custody, pins and store walk "
+         "HIT under the waiver and refuse the developer uid without it") {
+        static struct vs_site s;
+        const unsigned me = (unsigned)geteuid();
+        if (me == 0) { PASS(); goto _test_next; }
+        ASSERT(vs_site_make(&s, f));
+        ASSERT(rename(f->root, s.base) == 0);
+        ASSERT(vs_site_is(&s, f, false, ZCL_VERIFY_STORE_COLD,
+                          "store_policy_missing"));
+        /* Positive: the exact production lookup, only the waiver set. */
+        ASSERT(vs_site_policy(&s, me, me, 0444));
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_HIT, NULL));
+        /* The same store without the waiver: signer and publisher are the
+         * developer uid, then the publisher alone is. */
+        ASSERT(vs_site_is(&s, f, false, ZCL_VERIFY_STORE_COLD,
+                          "store_owner_same_uid"));
+        ASSERT(vs_site_policy(&s, me + 1u, me, 0444));
+        ASSERT(vs_site_is(&s, f, false, ZCL_VERIFY_STORE_COLD,
+                          "store_owner_same_uid"));
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_HIT, NULL));
+        /* The publisher is the site owner (root in production). */
+        ASSERT(vs_site_policy(&s, me + 1u, 0u, 0444));
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_COLD,
+                          "store_policy_malformed"));
+        ASSERT(vs_site_policy(&s, me + 1u, me, 0644));
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_COLD,
+                          "store_policy_unsafe"));
+        ASSERT(vs_site_policy(&s, me + 1u, me, 0444));
+        ASSERT(unlink(s.pins) == 0);
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_COLD,
+                          "store_pins_missing"));
+        ASSERT(chmod(s.etc, 0775) == 0);
+        ASSERT(vs_site_is(&s, f, true, ZCL_VERIFY_STORE_COLD,
+                          "store_policy_path_unsafe"));
+        ASSERT(chmod(s.etc, 0755) == 0);
+        ASSERT(rename(s.base, f->root) == 0);
+        ASSERT(unlink(s.policy) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Production is hardwired to /etc and /var: without an installed policy
+ * this host's lookup refuses before reading any store file. */
+static int vs_test_production(struct vs_fixture *f)
+{
+    int failures = 0;
+    TEST("verify store: the production lookup reads only root's /etc and "
+         "/var paths") {
+        struct stat st;
+        struct zcl_verify_store_result r;
+        if (lstat("/etc/z23verify/store.policy", &st) == 0) {
+            PASS();
+            goto _test_next;
+        }
+        zcl_verify_store_lookup(&f->expected, &f->box, &r);
+        ASSERT(r.verdict == ZCL_VERIFY_STORE_COLD && r.reason &&
+               strncmp(r.reason, "store_policy_", 13) == 0);
+        zcl_verify_store_result_release(&r);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int vs_test_bounds(struct vs_fixture *f)
 {
     int failures = 0;
@@ -537,6 +660,8 @@ int test_verify_store(void)
     if (!failures) failures += vs_test_artifacts(&f);
     if (!failures) failures += vs_test_receipts(&f);
     if (!failures) failures += vs_test_pins_custody(&f);
+    if (!failures) failures += vs_test_site(&f);
+    if (!failures) failures += vs_test_production(&f);
     if (!failures) failures += vs_test_bounds(&f);
     if (!failures) failures += vs_test_signers(&f);
     if (!failures) failures += vs_test_conflicts(&f);
