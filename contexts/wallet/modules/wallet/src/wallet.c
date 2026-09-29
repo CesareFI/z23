@@ -145,8 +145,7 @@ void wallet_init(struct wallet *w)
     w->best_block = NULL;
     sapling_keystore_init(&w->sapling_keys);
     w->best_block_height = 0;
-    w->scan_retry_pending = false;
-    w->scan_retry_from = 0;
+    memset(&w->scan_retry, 0, sizeof(w->scan_retry));
     w->sapling_notes = NULL;
     w->num_sapling_notes = 0;
     w->sapling_notes_cap = 0;

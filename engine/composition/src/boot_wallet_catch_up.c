@@ -9,9 +9,11 @@
 #include "validation/chainstate.h"
 #include "util/log_macros.h"
 #include "util/util.h"
+#include "core/utiltime.h"
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 /* First height the boot catch-up scans, or -1 when it must not run. A retry
  * left pending by an earlier catch-up lowers the start and runs even when the
@@ -23,11 +25,11 @@ static int boot_wallet_catch_up_start(const struct wallet *w,
 {
     if (!active_chain_tip(chain) || w->best_block_height > tip_height)
         return -1;
-    if (!w->scan_retry_pending && w->best_block_height >= tip_height)
+    if (!w->scan_retry.pending && w->best_block_height >= tip_height)
         return -1;
     int scan_from = w->best_block_height > 0 ? w->best_block_height + 1 : 0;
-    if (w->scan_retry_pending && w->scan_retry_from < scan_from)
-        scan_from = w->scan_retry_from > 0 ? w->scan_retry_from : 0;
+    if (w->scan_retry.pending && w->scan_retry.from < scan_from)
+        scan_from = w->scan_retry.from > 0 ? w->scan_retry.from : 0;
     /* A pending range that starts above this tip cannot be read yet. */
     return scan_from > tip_height ? -1 : scan_from;
 }
@@ -37,23 +39,27 @@ static int boot_wallet_catch_up_start(const struct wallet *w,
  * from it, and wallet_advance_confirmations adds each later tip's distance
  * from it, so lowering it would overstate those depths. What a short read
  * must not do is let the wallet, or its next flush, claim it scanned the
- * range. scan_retry_from keeps the lowest unread start; the flush persists it
+ * range. scan_retry keeps the lowest unread start, the blocker and when it was
+ * first seen; the flush persists the scanned-through height and that marker
  * in the same transaction as the tx rows, and the next boot rescans from it. */
 static void boot_wallet_catch_up_settle(struct wallet *w,
                                         const struct wallet_rescan_report *r)
 {
     zcl_mutex_lock(&w->cs);
     if (r->coverage_ok) {
-        w->scan_retry_pending = false;
-        w->scan_retry_from = 0;
+        memset(&w->scan_retry, 0, sizeof(w->scan_retry));
         zcl_mutex_unlock(&w->cs);
         return;
     }
     int from = r->start_height;
-    if (w->scan_retry_pending && w->scan_retry_from < from)
-        from = w->scan_retry_from;
-    w->scan_retry_pending = true;
-    w->scan_retry_from = from;
+    if (w->scan_retry.pending && w->scan_retry.from < from)
+        from = w->scan_retry.from;
+    if (!w->scan_retry.pending)
+        w->scan_retry.since = GetTime();
+    w->scan_retry.pending = true;
+    w->scan_retry.from = from;
+    snprintf(w->scan_retry.blocker, sizeof(w->scan_retry.blocker), "%s",
+             r->blocker);
     zcl_mutex_unlock(&w->cs);
     LOG_WARN("wallet",
              "%s: boot catch-up read %" PRId64 " of %" PRId64 " blocks in "

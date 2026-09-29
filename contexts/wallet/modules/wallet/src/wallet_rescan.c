@@ -230,8 +230,8 @@ int wallet_scanned_through_height(const struct wallet *w)
 {
     if (!w)
         return -1;
-    if (w->scan_retry_pending && w->scan_retry_from - 1 < w->best_block_height)
-        return w->scan_retry_from - 1;
+    if (w->scan_retry.pending && w->scan_retry.from - 1 < w->best_block_height)
+        return w->scan_retry.from - 1;
     return w->best_block_height;
 }
 

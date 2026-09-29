@@ -294,7 +294,7 @@ bool app_init_services(struct app_context *ctx,
  * notes found, or -1 when no rescan ran; `report` (optional) receives the
  * coverage accounting. When the report is not coverage_ok the blocker is
  * logged at WARN, found outputs stay recorded at their depth from the stop
- * height, and w->scan_retry_pending/scan_retry_from hold the unread start so
+ * height, and w->scan_retry.pending/scan_retry.from hold the unread start so
  * wallet_scanned_through_height() stays below it and the next boot, which
  * loads the flushed retry, rescans from there. A pending retry is rescanned
  * even when the wallet is already level with the tip. */

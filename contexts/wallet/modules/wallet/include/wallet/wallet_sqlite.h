@@ -229,17 +229,26 @@ bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w);
 bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height);
 bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height);
 
-/* Scan state: best_block_height as node_state 'wallet_scan_height', plus a
- * boot catch-up's pending retry (wallet.scan_retry_*) as
- * 'wallet_scan_retry_from', a row that exists only while the retry is
- * pending. The flush calls the write inside its transaction with w->cs held,
- * so a retry is cleared only with the tx rows its rescan found. The state
- * read loads both into `w` and returns true when a scan height row exists;
- * the retry read returns true only when a pending row exists. */
+/* Scan state. node_state 'wallet_scan_height' holds the height through which
+ * every block was read (wallet_scanned_through_height()), and
+ * 'wallet_scan_incomplete' exists only while a boot catch-up's range is
+ * unread. The flush calls the write inside its transaction with w->cs held,
+ * so the marker is cleared only with the tx rows its rescan found. The state
+ * read loads both into `w`, restoring best_block_height to the marker's depth
+ * height, and returns true when a scan height row exists. The marker read
+ * returns true when the row exists; an unparseable row reads as incomplete
+ * from height 0 under WALLET_SCAN_MARKER_UNREADABLE. */
+struct wallet_scan_marker {
+    int from;             /* lowest height not yet fully read */
+    int depth_height;     /* best_block_height at the flush; -1 if unknown */
+    int64_t since;        /* unix time the marker was first set */
+    char blocker[48];     /* WALLET_RESCAN_BLOCKER_* name */
+};
 bool wallet_sqlite_write_scan_state(struct wallet_sqlite *ws,
                                     const struct wallet *w);
 bool wallet_sqlite_read_scan_state(struct wallet_sqlite *ws, struct wallet *w);
-bool wallet_sqlite_read_scan_retry(struct wallet_sqlite *ws, int *retry_from);
+bool wallet_sqlite_read_scan_marker(struct wallet_sqlite *ws,
+                                    struct wallet_scan_marker *out);
 
 bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
                                         const uint8_t seed[32]);

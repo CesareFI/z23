@@ -163,6 +163,7 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
     json_push_kv(result, "lock", &lock);
 
     wallet_readiness_append_sapling(result);
+    wallet_readiness_append_scan(result);
     return true;
 }
 

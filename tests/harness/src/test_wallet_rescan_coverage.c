@@ -154,7 +154,7 @@ static int wrc_boot_catch_up_body_root(struct wallet *w,
     WRC_CHECK("E: the wallet is level with the tip afterwards",
               w->best_block_height == WRC_NBLOCKS - 1);
     WRC_CHECK("E: a full read leaves no retry and scans through the tip",
-              !w->scan_retry_pending &&
+              !w->scan_retry.pending &&
               wallet_scanned_through_height(w) == WRC_NBLOCKS - 1);
     WRC_CHECK("E: a wallet already at the tip runs no rescan",
               boot_wallet_catch_up(w, &ms->chain_active, datadir, NULL) == -1);
@@ -186,17 +186,54 @@ static const struct wallet_tx *wrc_only_tx(const struct wallet *w)
 
 /* F fixture: the bodies sit under <base>/regtest/blocks, and `hidden` is
  * where F1 moves them so every read fails. */
-#define WRC_F_PREV 49   /* the wallet's last flushed scan height */
+#define WRC_F_PREV 49      /* the wallet's last flushed scan height */
 #define WRC_F_LAST (WRC_NBLOCKS - 1)
+#define WRC_F_FOUND_AT 149 /* F2's last readable height holding the coin */
+#define WRC_F_VALUE 1000000
 struct wrc_f {
     struct wallet *w;
+    const struct wallet *owner;
+    const struct key_id *kid;
     struct main_state *ms;
     const char *datadir;
     struct block_index *idx;
     struct wallet_sqlite *ws;
+    struct rpc_table *tbl;
+    struct tx_mempool *mempool;
     char net_blocks[384];
     char hidden[400];
 };
+
+/* A wallet as the next boot builds it: key, flushed txs, then scan state. */
+static struct wallet *wrc_reboot_wallet(struct wrc_f *f)
+{
+    struct wallet *w = zcl_calloc(1, sizeof(*w), "test-wallet");
+    wallet_init(w);
+    struct privkey key;
+    if (wallet_dump_key(f->owner, f->kid, &key))
+        (void)wallet_import_key(w, &key);
+    (void)wallet_sqlite_read_txs(f->ws, w);
+    (void)wallet_sqlite_read_scan_state(f->ws, w);
+    return w;
+}
+
+/* getwalletinfo's scan block for `w`: its status and blocker strings. */
+static bool wrc_walletinfo_scan(struct wrc_f *f, struct wallet *w,
+                                const char *status, const char *blocker)
+{
+    rpc_wallet_set_state(w, f->ms, f->datadir, f->ws, f->mempool, NULL);
+    struct json_value params, result;
+    json_init(&params);
+    json_set_array(&params);
+    json_init(&result);
+    bool ok = rpc_table_execute(f->tbl, "getwalletinfo", &params, &result);
+    const struct json_value *scan = ok ? json_get(&result, "scan") : NULL;
+    ok = scan && strcmp(wrc_str(scan, "status"), status) == 0 &&
+         strcmp(wrc_str(scan, "blocker"), blocker) == 0;
+    json_free(&params);
+    json_free(&result);
+    return ok;
+}
 
 /* F1. Zero readable bodies: every read fails, as in the journey run. */
 static int wrc_f1_no_readable_body(struct wrc_f *f)
@@ -223,9 +260,12 @@ static int wrc_f1_no_readable_body(struct wrc_f *f)
                                   WALLET_RESCAN_BLOCKER_NO_BLOCK_DATA) == 0);
     failures += wrc_expect("F1: the wallet still scanned through its old height",
                            wallet_scanned_through_height(w) == WRC_F_PREV);
-    failures += wrc_expect("F1: the unread range is pending from prev+1",
-                           w->scan_retry_pending &&
-                           w->scan_retry_from == WRC_F_PREV + 1);
+    failures += wrc_expect("F1: the marker holds the start, blocker and time",
+                           w->scan_retry.pending &&
+                           w->scan_retry.from == WRC_F_PREV + 1 &&
+                           w->scan_retry.since > 0 &&
+                           strcmp(w->scan_retry.blocker,
+                                  WALLET_RESCAN_BLOCKER_NO_BLOCK_DATA) == 0);
     failures += wrc_expect("F1: nothing recorded from blocks not read",
                            w->num_wallet_tx == 0);
     failures += wrc_expect("F1: a later catch-up is not skipped at the tip",
@@ -233,29 +273,40 @@ static int wrc_f1_no_readable_body(struct wrc_f *f)
                                                 f->datadir, &rep) == 0 &&
                            !rep.coverage_ok &&
                            rep.start_height == WRC_F_PREV + 1);
+    failures += wrc_expect("F1: getwalletinfo reports scan incomplete",
+                           wrc_walletinfo_scan(f, w, "incomplete",
+                                               "RESCAN_NO_BLOCK_DATA"));
     if (hid)
         (void)rename(f->hidden, f->net_blocks);
     return failures;
 }
 
-/* F1, durably: the flush writes the retry and the next boot loads it. */
-static int wrc_f1_persisted(struct wrc_f *f)
+/* F1 across a restart: flush, reboot a fresh wallet, and neither the
+ * durable height nor the marker may have moved. */
+static int wrc_f1_restart(struct wrc_f *f)
 {
     int failures = 0;
     struct zcl_result fr = wallet_sqlite_flush_transactions_r(f->ws, f->w);
-    int saved_retry = -1;
-    failures += wrc_expect("F1: the flush persists the pending retry",
+    int saved = -1;
+    failures += wrc_expect("F1: the flushed scan height is not advanced",
                            fr.ok &&
-                           wallet_sqlite_read_scan_retry(f->ws, &saved_retry) &&
-                           saved_retry == WRC_F_PREV + 1);
-    struct wallet *next = zcl_calloc(1, sizeof(*next), "test-wallet");
-    wallet_init(next);
-    bool loaded = wallet_sqlite_read_scan_state(f->ws, next);
-    failures += wrc_expect("F1: the next boot loads the retry and depth height",
-                           loaded && next->scan_retry_pending &&
-                           next->scan_retry_from == WRC_F_PREV + 1 &&
-                           next->best_block_height == WRC_F_LAST &&
-                           wallet_scanned_through_height(next) == WRC_F_PREV);
+                           wallet_sqlite_read_scan_height(f->ws, &saved) &&
+                           saved == WRC_F_PREV);
+    struct wallet_scan_marker m;
+    failures += wrc_expect("F1: the flushed marker holds range and blocker",
+                           wallet_sqlite_read_scan_marker(f->ws, &m) &&
+                           m.from == WRC_F_PREV + 1 &&
+                           m.depth_height == WRC_F_LAST && m.since > 0 &&
+                           strcmp(m.blocker, "RESCAN_NO_BLOCK_DATA") == 0);
+    struct wallet *next = wrc_reboot_wallet(f);
+    failures += wrc_expect("F1: after reboot the height is still not advanced",
+                           wallet_scanned_through_height(next) == WRC_F_PREV &&
+                           next->best_block_height == WRC_F_LAST);
+    failures += wrc_expect("F1: after reboot the marker is still present",
+                           next->scan_retry.pending &&
+                           next->scan_retry.from == WRC_F_PREV + 1 &&
+                           strcmp(next->scan_retry.blocker,
+                                  "RESCAN_NO_BLOCK_DATA") == 0);
     wallet_free(next);
     free(next);
     return failures;
@@ -267,7 +318,7 @@ static int wrc_f2_partial(struct wrc_f *f)
 {
     int failures = 0;
     struct wallet *w = f->w;
-    for (int i = 150; i < WRC_NBLOCKS; i++)
+    for (int i = WRC_F_FOUND_AT + 1; i < WRC_NBLOCKS; i++)
         f->idx[i].nStatus &= ~BLOCK_HAVE_DATA;
     struct wallet_rescan_report rep;
     memset(&rep, 0, sizeof(rep));
@@ -285,38 +336,55 @@ static int wrc_f2_partial(struct wrc_f *f)
                            found == 100);
     failures += wrc_expect("F2: the wallet still scanned through its old height",
                            wallet_scanned_through_height(w) == WRC_F_PREV &&
-                           w->scan_retry_pending &&
-                           w->scan_retry_from == WRC_F_PREV + 1);
+                           w->scan_retry.pending &&
+                           w->scan_retry.from == WRC_F_PREV + 1);
+    const struct wallet_tx *wtx = wrc_only_tx(w);
+    failures += wrc_expect("F2: the found coin is kept at depth tip-149+1",
+                           wtx && wtx->confirms == WRC_F_LAST - WRC_F_FOUND_AT + 1);
+    struct zcl_result fr = wallet_sqlite_flush_transactions_r(f->ws, w);
+    failures += wrc_expect("F2: the flush succeeds", fr.ok);
     return failures;
 }
 
-/* F2, depth: the fixture's one body was last folded in at height 149, so its
- * depth is measured from the stop height and later tips add exactly their
- * distance. Lowering best_block_height to the old scan height would have
- * made the advance below add 160 instead of 10. */
-static int wrc_f2_depth(struct wrc_f *f)
+/* F2 across a restart: the coinbase found at 149 must mature exactly 100
+ * blocks later. Had the reboot measured its stored depth from the durable
+ * scan height (49) instead of the marker's depth height (199), the first
+ * advance would add 198 instead of 48 and the coin would look mature at 247. */
+static int wrc_f2_restart_maturity(struct wrc_f *f, struct wallet *w)
 {
     int failures = 0;
-    struct wallet *w = f->w;
     const struct wallet_tx *wtx = wrc_only_tx(w);
-    failures += wrc_expect("F2: the found output is kept at depth tip-149+1",
-                           wtx && wtx->confirms == WRC_F_LAST - 149 + 1 &&
-                           w->best_block_height == WRC_F_LAST);
-    (void)wallet_advance_confirmations(w, WRC_F_LAST + 10);
-    failures += wrc_expect("F2: a later tip adds exactly its distance",
-                           wtx && wtx->confirms == WRC_F_LAST + 10 - 149 + 1);
+    failures += wrc_expect("F2: after reboot the coin keeps its true depth",
+                           wtx && w->num_wallet_tx == 1 &&
+                           wtx->confirms == WRC_F_LAST - WRC_F_FOUND_AT + 1 &&
+                           w->best_block_height == WRC_F_LAST &&
+                           wallet_scanned_through_height(w) == WRC_F_PREV);
+    const int almost = WRC_F_FOUND_AT + COINBASE_MATURITY - 2;
+    (void)wallet_advance_confirmations(w, almost);
+    struct coin_entry coins[4];
+    size_t ncoins = 9;
+    wallet_available_coins(w, coins, &ncoins, 4, true, false);
+    failures += wrc_expect("F2: one block short of maturity it is not spendable",
+                           wtx && wtx->confirms == COINBASE_MATURITY - 1 &&
+                           wallet_tx_get_blocks_to_maturity(wtx) == 1 &&
+                           ncoins == 0 && wallet_get_balance(w) == 0);
+    (void)wallet_advance_confirmations(w, almost + 1);
+    wallet_available_coins(w, coins, &ncoins, 4, true, false);
+    failures += wrc_expect("F2: it matures on its 100th confirmation, not before",
+                           wtx && wtx->confirms == COINBASE_MATURITY &&
+                           ncoins == 1 && wallet_get_balance(w) == WRC_F_VALUE);
     (void)wallet_rewind_confirmations(w, WRC_F_LAST);
     failures += wrc_expect("F2: rewinding to the tip restores the depth",
-                           wtx && wtx->confirms == WRC_F_LAST - 149 + 1);
+                           wtx && wtx->confirms == WRC_F_LAST - WRC_F_FOUND_AT + 1);
+    (void)f;
     return failures;
 }
 
-/* F3. A later catch-up that can read the range advances, finds the coins at
- * their depth from the tip, and clears the retry durably. */
-static int wrc_f3_readable(struct wrc_f *f)
+/* F3. On the rebooted wallet, a catch-up that can read the range advances,
+ * finds the coins once, and clears the marker durably. */
+static int wrc_f3_readable(struct wrc_f *f, struct wallet *w)
 {
     int failures = 0;
-    struct wallet *w = f->w;
     for (int i = 0; i < WRC_NBLOCKS; i++)
         f->idx[i].nStatus |= BLOCK_HAVE_DATA;
     struct wallet_rescan_report rep;
@@ -331,17 +399,22 @@ static int wrc_f3_readable(struct wrc_f *f)
     failures += wrc_expect("F3: it finds the coins",
                            found == WRC_F_LAST - WRC_F_PREV);
     failures += wrc_expect("F3: the wallet now scans through the tip",
-                           !w->scan_retry_pending &&
+                           !w->scan_retry.pending &&
                            wallet_scanned_through_height(w) == WRC_F_LAST &&
                            w->best_block_height == WRC_F_LAST);
-    const struct wallet_tx *wtx = wrc_only_tx(w);
-    failures += wrc_expect("F3: the coin's depth is re-derived from the tip",
-                           wtx && wtx->confirms == 1 && w->num_wallet_tx == 1);
-    int saved_retry = -1;
+    failures += wrc_expect("F3: rereading blocks F2 read counts the coin once",
+                           w->num_wallet_tx == 1 &&
+                           wallet_get_immature_balance(w) == WRC_F_VALUE);
+    int saved = -1;
+    struct wallet_scan_marker m;
     struct zcl_result fr = wallet_sqlite_flush_transactions_r(f->ws, w);
-    failures += wrc_expect("F3: the flush clears the persisted retry",
+    failures += wrc_expect("F3: the flush advances the height, clears the marker",
                            fr.ok &&
-                           !wallet_sqlite_read_scan_retry(f->ws, &saved_retry));
+                           wallet_sqlite_read_scan_height(f->ws, &saved) &&
+                           saved == WRC_F_LAST &&
+                           !wallet_sqlite_read_scan_marker(f->ws, &m));
+    failures += wrc_expect("F3: getwalletinfo reports scan complete",
+                           wrc_walletinfo_scan(f, w, "complete", ""));
     failures += wrc_expect("F3: a wallet level with the tip runs no rescan",
                            boot_wallet_catch_up(w, &f->ms->chain_active,
                                                 f->datadir, NULL) == -1);
@@ -353,52 +426,56 @@ static int wrc_f3_readable(struct wrc_f *f)
  * every body from the wrong directory; the rescan failed every read, still
  * moved the wallet to the tip, and the flush made that permanent, so no
  * later boot looked at those blocks again. The wallet must keep its last
- * fully scanned height, name the blocker, persist the retry, keep what it
- * did find at its depth from the stop height, and find the coins and clear
- * the retry once a later catch-up can read the range. */
-static int wrc_boot_catch_up_fail_closed(const struct wallet *owner,
-                                         const struct key_id *kid,
-                                         struct main_state *ms,
-                                         const char *datadir,
-                                         struct block_index *idx,
-                                         struct wallet_sqlite *ws)
+ * fully scanned height in memory and on disk across a restart, keep a
+ * durable marker naming the blocker, keep what it did find at its true
+ * depth, and find the coins once and clear the marker when a later
+ * catch-up can read the range. */
+static int wrc_f_steps(struct wrc_f *f)
+{
+    int failures = wrc_f1_no_readable_body(f);
+    failures += wrc_f1_restart(f);
+    failures += wrc_f2_partial(f);
+    struct wallet *rebooted = wrc_reboot_wallet(f);
+    failures += wrc_f2_restart_maturity(f, rebooted);
+    failures += wrc_f3_readable(f, rebooted);
+    wallet_free(rebooted);
+    free(rebooted);
+    return failures;
+}
+
+static int wrc_boot_catch_up_fail_closed(struct wrc_f *f)
 {
     int failures = 0;
-    struct wrc_f f = { .ms = ms, .datadir = datadir, .idx = idx, .ws = ws };
-    f.w = zcl_calloc(1, sizeof(*f.w), "test-wallet");
-    wallet_init(f.w);
+    f->w = zcl_calloc(1, sizeof(*f->w), "test-wallet");
+    wallet_init(f->w);
     struct privkey key;
     failures += wrc_expect("F: fresh wallet holds the fixture key",
-                           wallet_dump_key(owner, kid, &key) &&
-                           wallet_import_key(f.w, &key));
+                           wallet_dump_key(f->owner, f->kid, &key) &&
+                           wallet_import_key(f->w, &key));
 
     for (int i = 0; i < WRC_NBLOCKS; i++)
-        idx[i].nStatus |= BLOCK_HAVE_DATA;
+        f->idx[i].nStatus |= BLOCK_HAVE_DATA;
     char netdir[320], base_blocks[352];
-    snprintf(netdir, sizeof(netdir), "%s/regtest", datadir);
-    snprintf(base_blocks, sizeof(base_blocks), "%s/blocks", datadir);
-    snprintf(f.net_blocks, sizeof(f.net_blocks), "%s/blocks", netdir);
-    snprintf(f.hidden, sizeof(f.hidden), "%s/blocks.hidden", netdir);
+    snprintf(netdir, sizeof(netdir), "%s/regtest", f->datadir);
+    snprintf(base_blocks, sizeof(base_blocks), "%s/blocks", f->datadir);
+    snprintf(f->net_blocks, sizeof(f->net_blocks), "%s/blocks", netdir);
+    snprintf(f->hidden, sizeof(f->hidden), "%s/blocks.hidden", netdir);
     chain_params_select(CHAIN_REGTEST);
-    bool relaid = SetDataDir(datadir) &&
-                  rename(base_blocks, f.net_blocks) == 0;
+    bool relaid = SetDataDir(f->datadir) &&
+                  rename(base_blocks, f->net_blocks) == 0;
     failures += wrc_expect("F: bodies laid out under <base>/regtest/blocks",
                            relaid);
 
-    failures += wrc_f1_no_readable_body(&f);
-    failures += wrc_f1_persisted(&f);
-    failures += wrc_f2_partial(&f);
-    failures += wrc_f2_depth(&f);
-    failures += wrc_f3_readable(&f);
+    failures += wrc_f_steps(f);
 
     if (relaid)
-        (void)rename(f.net_blocks, base_blocks);
+        (void)rename(f->net_blocks, base_blocks);
     SetDataDir("");
     ClearDataDirCache();
     chain_params_select(CHAIN_MAIN);
     test_cleanup_tmpdir(netdir);
-    wallet_free(f.w);
-    free(f.w);
+    wallet_free(f->w);
+    free(f->w);
     return failures;
 }
 
@@ -666,7 +743,13 @@ int test_wallet_rescan_coverage(void)
     }
 
     failures += wrc_boot_catch_up_body_root(w1, &ms, datadir, idx);
-    failures += wrc_boot_catch_up_fail_closed(w1, &kid, &ms, datadir, idx, &ws);
+    {
+        struct wrc_f f = {
+            .owner = w1, .kid = &kid, .ms = &ms, .datadir = datadir,
+            .idx = idx, .ws = &ws, .tbl = &wtbl, .mempool = &mempool,
+        };
+        failures += wrc_boot_catch_up_fail_closed(&f);
+    }
 
     /* ── teardown ────────────────────────────────────────────────────── */
     rpc_wallet_set_state(NULL, NULL, NULL, NULL, NULL, NULL);

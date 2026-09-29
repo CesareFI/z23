@@ -11,6 +11,7 @@
 #include "sapling/sapling_prover.h"
 #include "validation/process_block.h"
 
+#include <stdio.h>
 #include <string.h>
 
 void wallet_readiness_append_sapling(struct json_value *result)
@@ -78,4 +79,41 @@ void wallet_readiness_append_sapling(struct json_value *result)
                            witness_known ? ws.stale_notes : 0);
     (void)json_push_kv(result, "sapling", &sapling);
     json_free(&sapling);
+}
+
+/* Scan coverage for getwalletinfo. A boot catch-up that could not read its
+ * range leaves the wallet incomplete: coins in the unread blocks can be
+ * missing from its balance until a later boot rescans them. */
+void wallet_readiness_append_scan(struct json_value *result)
+{
+    struct wallet_rpc_context *ctx = wallet_ctx();
+    if (!result || !ctx || !ctx->wallet)
+        return;
+    struct wallet *w = ctx->wallet;
+    zcl_mutex_lock(&w->cs);
+    struct wallet_scan_retry retry = w->scan_retry;
+    int through = wallet_scanned_through_height(w);
+    int depth_height = w->best_block_height;
+    zcl_mutex_unlock(&w->cs);
+
+    struct json_value scan = {0};
+    json_init(&scan);
+    json_set_object(&scan);
+    (void)json_push_kv_str(&scan, "status",
+                           retry.pending ? "incomplete" : "complete");
+    (void)json_push_kv_int(&scan, "scanned_through", through);
+    (void)json_push_kv_int(&scan, "depth_height", depth_height);
+    if (retry.pending) {
+        char warning[224];
+        snprintf(warning, sizeof(warning),
+                 "%s: blocks from %d were not all read; coins in them can be "
+                 "missing until the next boot rescans from %d",
+                 retry.blocker, retry.from, retry.from);
+        (void)json_push_kv_str(&scan, "blocker", retry.blocker);
+        (void)json_push_kv_int(&scan, "unread_from", retry.from);
+        (void)json_push_kv_int(&scan, "since", retry.since);
+        (void)json_push_kv_str(&scan, "warning", warning);
+    }
+    (void)json_push_kv(result, "scan", &scan);
+    json_free(&scan);
 }

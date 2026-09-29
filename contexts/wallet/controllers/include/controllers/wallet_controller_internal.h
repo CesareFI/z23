@@ -59,6 +59,8 @@ static inline struct wallet_rpc_context *wallet_ctx(void)
 
 /* wallet_readiness_controller.c — safe spend-capability posture */
 void wallet_readiness_append_sapling(struct json_value *result);
+/* Scan coverage: complete, or the durable incomplete marker and its blocker. */
+void wallet_readiness_append_scan(struct json_value *result);
 
 /* wallet_controller_keys.c — key/address import-export */
 
