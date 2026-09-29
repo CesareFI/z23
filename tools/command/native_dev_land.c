@@ -2545,6 +2545,10 @@ static void dl_submit(const struct zcl_command_request *req,
     dl_submit_loaded(&d, &r, rows, nrows, lock, qpath, full, root, reply);
 }
 
+static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
+                                   long long seq, struct dl_row *settled);
+static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b);
+
 /* ── cancel ────────────────────────────────────────────────────────────── */
 
 static void dl_cancel(const struct zcl_command_request *req,
@@ -2577,6 +2581,9 @@ static void dl_cancel(const struct zcl_command_request *req,
                 "platform_state_root too long");
         return;
     }
+    struct dl_row settled;
+    memset(&settled, 0, sizeof(settled));
+    bool push_settled = dl_cancel_push_settled(&d, qpath, seq, &settled);
     lock = dl_rows_lock(d.land);
     if (lock < 0) {
         dl_fail(reply, "QUEUE_READ_FAILED", "cancel",
@@ -2597,8 +2604,10 @@ static void dl_cancel(const struct zcl_command_request *req,
         if (rows[i].seq == seq && !found) {
             /* The durable push checkpoint means the remote may already
              * have moved even if this process has not heard back. Preserve
-             * the row for reconciliation; cancellation cannot erase it. */
-            if (strcmp(rows[i].phase, "push") == 0) {
+             * the row for reconciliation unless the same pair was just
+             * observed settled as refused. */
+            if (strcmp(rows[i].phase, "push") == 0 &&
+                !(push_settled && dl_push_pair_same(&rows[i], &settled))) {
                 free(rows);
                 dl_unlock(lock);
                 dl_fail(reply, "PUSH_OUTCOME_UNKNOWN", "cancel",
@@ -5637,10 +5646,7 @@ static bool dl_wt_proof_deps_ensure(const struct dl_dirs *d,
 /* Observe the remote before deciding whether a request landed or needs
  * rebase/proof. An unavailable observation preserves the existing request
  * and proof for retry; it is neither a negative result nor a cached pass. */
-static bool dl_observe_remote_main(const struct dl_dirs *d,
-                                   const struct dl_row *row,
-                                   char observed_main[80], bool mutated,
-                                   struct zcl_command_reply *reply)
+static bool dl_fetch_remote_main(const char *wt, char observed_main[80])
 {
     char buf[DL_GIT_CAP];
     const char *fetch_args[] = {
@@ -5653,11 +5659,21 @@ static bool dl_observe_remote_main(const struct dl_dirs *d,
      * publication still requires ancestry against this actual observation.
      * Capture the exact fetched commit before any candidate-object fetch
      * can replace FETCH_HEAD. No cached tracking ref is a fallback. */
-    if (dl_git(d->wt, fetch_args, buf, sizeof(buf), DL_GIT_TIMEOUT_MS) == 0 &&
-        dl_rev_parse(d->wt, "FETCH_HEAD", observed_main) &&
+    if (dl_git(wt, fetch_args, buf, sizeof(buf), DL_GIT_TIMEOUT_MS) == 0 &&
+        dl_rev_parse(wt, "FETCH_HEAD", observed_main) &&
         dl_sha_ok(observed_main))
         return true;
     observed_main[0] = '\0';
+    return false;
+}
+
+static bool dl_observe_remote_main(const struct dl_dirs *d,
+                                   const struct dl_row *row,
+                                   char observed_main[80], bool mutated,
+                                   struct zcl_command_reply *reply)
+{
+    if (dl_fetch_remote_main(d->wt, observed_main))
+        return true;
     dl_log(row, "remote observation unavailable: cannot fetch and resolve "
                 "origin refs/heads/main; retaining request for retry\n");
     (void)json_push_kv_str(&reply->data, "leaf", DL_LEAF);
@@ -6604,6 +6620,93 @@ static void dl_push_outcome_unknown(const struct dl_dirs *d,
                    "z23-dev dev land step");
 }
 
+/* dl_push_proven_pair is a compare-and-swap of refs/heads/main from base to
+ * local. Once an independent fetch shows main at another commit that
+ * provably does not contain local, that dispatch can never apply: its
+ * outcome is settled as refused. Anything short of that proof (same base,
+ * missing objects, git failure) leaves the outcome unknown. */
+static bool dl_push_settled_refused(const struct dl_dirs *d,
+                                    const struct dl_row *row,
+                                    const char *observed_main)
+{
+    char out[512];
+    const char *ancestor[] = { "--no-replace-objects", "merge-base",
+        "--is-ancestor", row->local, observed_main, NULL };
+    if (!observed_main || !dl_sha_ok(observed_main) ||
+        !dl_sha_ok(row->base) || !dl_sha_ok(row->local) ||
+        strcmp(observed_main, row->base) == 0 ||
+        strcmp(observed_main, row->local) == 0)
+        return false;
+    return dl_git(d->wt, ancestor, out, sizeof(out), DL_GIT_TIMEOUT_MS) == 1;
+}
+
+static void dl_push_refused_log(const struct dl_row *row, const char *next,
+                                const char *observed_main)
+{
+    char line[512];
+    (void)snprintf(line, sizeof(line),
+                   "signed push refused: main moved to %.64s without head; %s "
+                   "seq=%lld base=%.64s local=%.64s "
+                   "observed_main=%.64s\n",
+                   observed_main, next, row->seq, row->base, row->local,
+                   observed_main);
+    dl_log(row, line);
+}
+
+/* A signed push checkpoint either settles as refused (successor, which
+ * clears the publication so the new pair needs a new signature) or stays
+ * unknown. The same intent is never dispatched twice. */
+static void dl_push_checkpoint_settle(const struct dl_dirs *d,
+                                      struct dl_row *row,
+                                      const char *observed_main,
+                                      struct zcl_command_reply *reply)
+{
+    if (!dl_push_settled_refused(d, row, observed_main)) {
+        dl_push_outcome_unknown(d, row, observed_main, reply);
+        return;
+    }
+    dl_push_refused_log(row, "successor", observed_main);
+    dl_step_successor(d, row, observed_main, reply);
+}
+
+/* Cancel may drop a push checkpoint only once it is settled as refused.
+ * Observe outside the queue lock; the caller re-reads the row under the
+ * lock and requires the identical signed pair. */
+static bool dl_cancel_push_settled(const struct dl_dirs *d, const char *qpath,
+                                   long long seq, struct dl_row *settled)
+{
+    struct dl_row *rows = NULL;
+    size_t nrows = 0;
+    bool found = false;
+    char observed[80];
+    int lock = dl_rows_lock(d->land);
+    if (lock < 0)
+        return false;
+    if (dl_load_rows(qpath, &rows, &nrows, NULL, 0)) {
+        for (size_t i = 0; i < nrows && !found; i++) {
+            if (rows[i].seq == seq && strcmp(rows[i].phase, "push") == 0) {
+                *settled = rows[i];
+                found = true;
+            }
+        }
+    }
+    free(rows);
+    dl_unlock(lock);
+    if (!found || !dl_wt_ready(d->wt) ||
+        !dl_fetch_remote_main(d->wt, observed) ||
+        !dl_push_settled_refused(d, settled, observed))
+        return false;
+    dl_push_refused_log(settled, "cancel", observed);
+    return true;
+}
+
+static bool dl_push_pair_same(const struct dl_row *a, const struct dl_row *b)
+{
+    return strcmp(a->local, b->local) == 0 &&
+           strcmp(a->base, b->base) == 0 &&
+           strcmp(a->publication_signature, b->publication_signature) == 0;
+}
+
 static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
                           struct zcl_command_reply *reply)
 {
@@ -6656,7 +6759,7 @@ static void dl_step_push(const struct dl_dirs *d, struct dl_row *row,
             if (dl_reconcile_landing(d, row, observed_main, true, reply))
                 return;
             if (row->publication_signature[0]) {
-                dl_push_outcome_unknown(d, row, observed_main, reply);
+                dl_push_checkpoint_settle(d, row, observed_main, reply);
                 return;
             }
             if (strcmp(observed_main, row->base) != 0) {
@@ -6866,11 +6969,7 @@ static void dl_resume_pending_watcher_kick(const struct dl_dirs *d,
          * is never redispatched, and the requeued row re-proves and re-signs
          * a fresh pair on the new base.  Base unmoved still waits for the
          * independent receipt, exactly as before. */
-        if (strcmp(observed_main, row->base) != 0) {
-            dl_step_successor(d, row, observed_main, reply);
-            return;
-        }
-        dl_push_outcome_unknown(d, row, observed_main, reply);
+        dl_push_checkpoint_settle(d, row, observed_main, reply);
         return;
     }
     if (!dl_resume_phase_ready(row->phase)) {

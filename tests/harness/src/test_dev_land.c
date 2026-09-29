@@ -6255,6 +6255,224 @@ _test_next:;
     return failures;
 }
 
+#if !defined(_WIN32)
+static bool dlx_sibling(const struct dlx_rig *rig, const char *base,
+                        const char *ref, char out[64]);
+
+/* Attach a signed intent to a proven pair and make the next push lose its
+ * acknowledgement. `marker` counts receive-pack dispatches. With `racer`,
+ * a sibling of base wins remote main inside that lost dispatch. */
+static bool dlx_signed_push_lossy(struct dlx_rig *rig, const char *tag,
+                                  char base[64], char wt[1400],
+                                  char marker[1400], char racer[64])
+{
+    struct dlx_call c;
+    char land[1200], wrapper[1400], script[4000], extra[1600] = "";
+    if (!dlx_attach_proven_pair(rig, tag, base))
+        return false;
+    dlx_begin(&c, "attach");
+    (void)json_push_kv_int(&c.input, "seq", 1);
+    bool ok = dlx_run(&c) && dlx_ok(&c);
+    dlx_end(&c);
+    if (racer) {
+        ok = ok && dlx_sibling(rig, base, "refs/heads/side", racer);
+        (void)snprintf(extra, sizeof(extra),
+                       "git --git-dir='%s' update-ref refs/heads/main %s %s "
+                       "|| exit 92\n", rig->bare, racer, base);
+    }
+    dlx_landdir(land, sizeof(land));
+    (void)snprintf(wt, 1400, "%s/wt", land);
+    (void)snprintf(wrapper, sizeof(wrapper), "%s/lose-ack", land);
+    (void)snprintf(marker, 1400, "%s/dispatch-count", land);
+    (void)snprintf(script, sizeof(script),
+                   "#!/bin/sh\nprintf 'attempted\\n' >> '%s'\n%sexit 91\n",
+                   marker, extra);
+    const char *intercept[] = { "config", "remote.origin.receivepack",
+                                wrapper, NULL };
+    return ok && dlx_write(wrapper, script) && chmod(wrapper, 0700) == 0 &&
+           dlx_git(wt, intercept) == 0;
+}
+
+/* Commit a sibling of `base` in the clone and publish it on the bare
+ * remote as `ref`. */
+static bool dlx_sibling(const struct dlx_rig *rig, const char *base,
+                        const char *ref, char out[64])
+{
+    char update[160];
+    const char *branch[] = { "checkout", "--quiet", "-B", "side", base,
+                             NULL };
+    if (dlx_git(rig->clone, branch) != 0 ||
+        !dlx_commit(rig->clone, "side.txt", "other\n", out))
+        return false;
+    (void)snprintf(update, sizeof(update), "%s:%s", out, ref);
+    const char *fetch[] = { "fetch", "--quiet", rig->clone, update, NULL };
+    return dlx_git(rig->bare, fetch) == 0;
+}
+
+static bool dlx_dispatched_once(const char *marker)
+{
+    char attempts[128];
+    size_t len = 0;
+    return dlx_slurp(marker, attempts, sizeof(attempts), &len) &&
+           len == strlen("attempted\n");
+}
+
+/* The successor carries no publication and the land log names the settled
+ * refusal against the observed sibling. */
+static bool dlx_refused_successor(const struct dlx_call *c,
+                                  const char *sibling)
+{
+    char queue[16384], log[65536], want[160];
+    size_t qlen = 0, llen = 0;
+    const char *log_path = dlx_str(c, "log_path");
+    if (!dlx_queue_bytes(queue, sizeof(queue), &qlen) ||
+        !strstr(queue, "\"publication_signature\":\"\"") ||
+        !log_path || !dlx_slurp(log_path, log, sizeof(log) - 1, &llen))
+        return false;
+    log[llen] = '\0';
+    (void)snprintf(want, sizeof(want),
+                   "signed push refused: main moved to %s without head; "
+                   "successor seq=1", sibling);
+    return strstr(log, want) != NULL;
+}
+#endif
+
+static int test_dev_land_signed_lost_race(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: signed push checkpoint settles as refused once main moves to a sibling") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], wt[1400], marker[1400], sibling[64];
+        char upload_pack[1400];
+        dlx_isolate("signed_lost_race");
+        ASSERT(dlx_signed_push_lossy(&rig, "signed_lost_race", base, wt,
+                                     marker, NULL));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+        ASSERT_STR_EQ(dlx_str(&c, "observed_remote_tip"), base);
+        dlx_end(&c);
+        ASSERT(dlx_dispatched_once(marker));
+        ASSERT(dlx_sibling(&rig, base, "refs/heads/main", sibling));
+        /* Without a fresh observation the moved remote is not evidence. */
+        (void)snprintf(upload_pack, sizeof(upload_pack), "%s.upload-pack",
+                       rig.bare);
+        ASSERT(dlx_write(upload_pack, "#!/bin/sh\nexit 75\n"));
+        ASSERT(chmod(upload_pack, 0700) == 0);
+        const char *blind[] = { "config", "remote.origin.uploadpack",
+                                upload_pack, NULL };
+        const char *see[] = { "config", "--unset", "remote.origin.uploadpack",
+                              NULL };
+        ASSERT(dlx_git(wt, blind) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_STR_EQ(dlx_err_code(&c), "REMOTE_OBSERVATION_UNAVAILABLE");
+        dlx_end(&c);
+        dlx_begin(&c, "cancel");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && !dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_err_code(&c), "PUSH_OUTCOME_UNKNOWN");
+        dlx_end(&c);
+        dlx_begin(&c, "status");
+        (void)json_push_kv_bool(&c.input, "json", true);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        const struct json_value *flight = json_get(&c.reply.data, "in_flight");
+        ASSERT(flight != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(flight, "phase")), "push");
+        dlx_end(&c);
+        ASSERT(dlx_git(wt, see) == 0);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
+        ASSERT_EQ(dlx_int(&c, "predecessor_seq"), 1);
+        ASSERT(dlx_refused_successor(&c, sibling));
+        dlx_end(&c);
+        ASSERT(dlx_dispatched_once(marker));
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, sibling);
+        ASSERT(dlx_queue_has_one());
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
+static int test_dev_land_signed_push_lost_race(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: signed push that loses the race while dispatching requeues as successor") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], wt[1400], marker[1400], sibling[64];
+        dlx_isolate("signed_push_lost_race");
+        ASSERT(dlx_signed_push_lossy(&rig, "signed_push_lost_race", base, wt,
+                                     marker, sibling));
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "queued");
+        ASSERT_EQ(dlx_int(&c, "predecessor_seq"), 1);
+        ASSERT(dlx_refused_successor(&c, sibling));
+        dlx_end(&c);
+        ASSERT(dlx_dispatched_once(marker));
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, sibling);
+        ASSERT(dlx_queue_has_one());
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
+static int test_dev_land_cancel_push_refused(void)
+{
+    int failures = 0;
+#if !defined(_WIN32)
+    TEST("land: cancel drops a push checkpoint settled as refused") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char base[64], remote[64], sibling[64], wire[8192];
+        size_t used = 0;
+        dlx_isolate("cancel_push_refused");
+        ASSERT(dlx_attach_proven_pair(&rig, "cancel_push_refused", base));
+        ASSERT(dlx_queue_bytes(wire, sizeof(wire), &used));
+        char *phase = strstr(wire, "\"phase\":\"prove\"");
+        ASSERT(phase != NULL);
+        memcpy(phase, "\"phase\":\"push\" ", 15);
+        char land[1200], path[1400];
+        dlx_landdir(land, sizeof(land));
+        (void)snprintf(path, sizeof(path), "%s/queue.jsonl", land);
+        ASSERT(dlx_write(path, wire));
+        ASSERT(dlx_sibling(&rig, base, "refs/heads/main", sibling));
+        dlx_begin(&c, "cancel");
+        (void)json_push_kv_int(&c.input, "seq", 1);
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT_STR_EQ(dlx_str(&c, "state"), "cancelled");
+        dlx_end(&c);
+        ASSERT(dlx_origin_main(&rig, remote));
+        ASSERT_STR_EQ(remote, sibling);
+        dlx_begin(&c, "status");
+        ASSERT(dlx_run(&c) && dlx_ok(&c));
+        ASSERT(json_get(&c.reply.data, "in_flight") == NULL);
+        dlx_end(&c);
+        dlx_restore();
+        PASS();
+    }
+_test_next:;
+    dlx_restore();
+#endif
+    return failures;
+}
+
 static int test_dev_land_signed_publisher_death(void)
 {
     int failures = 0;
@@ -6829,6 +7047,9 @@ int test_dev_land(void)
     failures += test_dev_land_signed_stale();
     failures += test_dev_land_signed_recovery();
     failures += test_dev_land_signed_lost_ack();
+    failures += test_dev_land_signed_lost_race();
+    failures += test_dev_land_signed_push_lost_race();
+    failures += test_dev_land_cancel_push_refused();
     failures += test_dev_land_signed_publisher_death();
     failures += test_dev_land_watcher_admission();
     failures += test_dev_land_long_proof_root();
