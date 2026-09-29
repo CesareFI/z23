@@ -30,6 +30,9 @@ struct market_payment_authorization {
 /* Ingest a verified public claim locator, bind it to the seller's persisted
  * signed offer, and synchronously reconcile it. chain_current must describe
  * the caller's live sync state; false always yields UNKNOWN and no unlock.
+ * wallet_projection_height must be wallet_scanned_through_height() (never
+ * best_block_height); any value other than the active tip height yields
+ * UNKNOWN and no unlock, because an unread block could hold the payment.
  * Distinct claims are capped per offer at MARKET_PAYMENT_CLAIM_OFFER_MAX, and
  * the next ingest touching an expired offer prunes its non-CONFIRMED rows. */
 struct zcl_result market_payment_claim_ingest(

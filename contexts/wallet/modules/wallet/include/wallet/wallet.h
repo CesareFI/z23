@@ -621,6 +621,12 @@ int wallet_rescan_report(struct wallet *w, const struct active_chain *chain,
  * left a range unread, then scan_retry.from - 1. Caller holds w->cs or owns
  * the wallet exclusively. */
 int wallet_scanned_through_height(const struct wallet *w);
+/* wallet_scanned_through_height() read under w->cs, for a caller that does
+ * not hold the lock. -1 when `w` is NULL. This, not best_block_height, is
+ * the height a payment, order or delivery decision may treat as read: a
+ * boot catch-up that left bodies unread keeps best_block_height at its stop
+ * height while blocks below it were never scanned. */
+int wallet_read_scanned_through_height(struct wallet *w);
 /* Thin wrapper over wallet_rescan_report() that discards the report. */
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir);

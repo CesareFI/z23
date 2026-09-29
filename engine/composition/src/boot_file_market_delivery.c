@@ -26,10 +26,11 @@ boot_authorize_file_market_chunk(
         !svc->wallet || !offer_id || !buyer_pubkey)
         return FILE_MARKET_DELIVERY_UNKNOWN;
 
-    int wallet_projection_height;
-    zcl_mutex_lock(&svc->wallet->cs);
-    wallet_projection_height = svc->wallet->best_block_height;
-    zcl_mutex_unlock(&svc->wallet->cs);
+    /* Scanned-through, never best_block_height: a chunk is authorized only
+     * when every block through the tip was read, so an incomplete scan
+     * answers UNKNOWN and serves nothing. */
+    int wallet_projection_height =
+        wallet_read_scanned_through_height(svc->wallet);
 
     struct market_payment_authorization authorization;
     struct zcl_result result = market_payment_authorize_chunk(

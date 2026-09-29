@@ -505,24 +505,16 @@ size_t store_handle_request(const char *method, const char *path,
             result = store_error_response("402 Payment Required",
                 err_body, strlen(err_body), response, response_max);
         } else {
-            /* Bound the pending pool BEFORE the expensive mint. An
-             * opportunistic prune runs first so a pool that's merely
-             * full of already-expired unpaid orders (waiting on the
-             * ~30s background sweep in store_process_payments) doesn't
-             * wedge a legitimate buyer behind rows that are already
-             * dead — belt-and-suspenders with that background sweep,
-             * not a replacement for it. */
+            /* Bound the pending pool BEFORE the expensive mint. No prune
+             * here: this request cannot see the wallet's scan coverage,
+             * and deleting an expired pending order is a verdict that it
+             * was never paid. Only the background payment pass deletes
+             * one, after checking it against a covering scan, so a pool
+             * full of expired rows refuses new orders for at most one
+             * ~30s pass. */
             int pending_global = db_store_order_count_pending(&ndb);
             int pending_product =
                 db_store_order_count_pending_for_product(&ndb, id);
-            if (pending_global >= STORE_ORDER_MAX_PENDING_GLOBAL ||
-                pending_product >= STORE_ORDER_MAX_PENDING_PER_PRODUCT) {
-                db_store_order_prune_expired(&ndb,
-                    STORE_ORDER_PENDING_EXPIRE_SECS);
-                pending_global = db_store_order_count_pending(&ndb);
-                pending_product =
-                    db_store_order_count_pending_for_product(&ndb, id);
-            }
             if (pending_global >= STORE_ORDER_MAX_PENDING_GLOBAL) {
                 const char *err_body = "<h1>Store busy</h1>"
                     "<p>The order queue is at capacity. Please try "
@@ -662,40 +654,66 @@ static void store_reconcile_pending_order(
 }
 
 /* Background payment processor — called periodically from boot.c.
- * Checks pending orders for payments, mints tokens when paid. */
+ * Checks pending orders for payments, mints tokens when paid.
+ *
+ * `wallet_scanned_height` is the wallet's scanned-through height. Only a
+ * wallet that read every block through the confirmation ceiling can call a
+ * pending order unpaid; below it, a payment may sit in a block it never
+ * read. So the pass always credits what it finds, and deletes expired
+ * pending orders only when the scan covers the ceiling. Each pass checks
+ * EVERY pending order, however old, before that prune, so an order whose
+ * payment became visible late (a scan that just completed, a restart after
+ * downtime) is credited instead of deleted. */
 void store_process_payments_with_db(struct node_db *ndb,
-                                    const char *datadir)
+                                    const char *datadir,
+                                    int64_t wallet_scanned_height)
 {
     if (!ndb || !ndb->open || !datadir) return;
 
     /* Require minimum 3 confirmations to prevent reorg-based double-spend
      * (payment reversed but tokens already minted). */
     int64_t min_height = db_store_chain_tip_height(ndb) - 3;
-    int64_t window_start = (int64_t)platform_time_wall_time_t() - 3600;
+    bool scan_covers = wallet_scanned_height >= min_height;
 
-    /* Visit EVERY pending order in the window, a page at a time. The pool
-     * admits STORE_ORDER_MAX_PENDING_GLOBAL rows; reading one fixed page
-     * stranded any paid order that sat behind a page of newer unpaid ones.
-     * The cursor strictly increases, so the walk ends. */
+    /* Visit EVERY pending order, a page at a time. The pool admits
+     * STORE_ORDER_MAX_PENDING_GLOBAL rows; reading one fixed page stranded
+     * any paid order that sat behind a page of newer unpaid ones. The
+     * cursor strictly increases, so the walk ends. */
     struct db_store_pending_payment page[64];
     const size_t page_max = sizeof(page) / sizeof(page[0]);
     int64_t after_id = 0;
+    int64_t visited = 0;
     for (;;) {
         int n = db_store_order_list_pending_payments(ndb, page, page_max,
-                                                     window_start, after_id);
+                                                     0, after_id);
         for (int i = 0; i < n; ++i)
             store_reconcile_pending_order(ndb, datadir, &page[i],
                                           min_height);
+        if (n > 0)
+            visited += n;
         if (n <= 0 || (size_t)n < page_max)
             break;
         after_id = page[n - 1].id;
     }
 
-    /* Bounded background sweep: reclaim unpaid orders old enough that
-     * store_process_payments itself has stopped scanning for their
-     * payment (see the (now - 3600) window above). Without this, the
-     * pending-order caps in store_handle_request only refuse NEW rows
-     * once the pool fills — the table itself would still grow forever. */
+    if (!scan_covers) {
+        /* Not knowable yet: an absent payment here is not a refusal. Keep
+         * every pending order until the wallet has read the range. */
+        if (visited > 0)
+            LOG_WARN("store", "payment scan: wallet has read blocks only "
+                     "through %lld, below the confirmation ceiling %lld; "
+                     "%lld pending order(s) stay pending and none are "
+                     "pruned until the wallet scan completes",
+                     (long long)wallet_scanned_height,
+                     (long long)min_height, (long long)visited);
+        return;
+    }
+
+    /* Bounded background sweep: reclaim unpaid orders older than the
+     * pending lifetime, now that this pass has checked each of them against
+     * a scan that covers the confirmation ceiling. Without this, the
+     * pending-order caps in store_handle_request only refuse NEW rows once
+     * the pool fills — the table itself would still grow forever. */
     {
         int pruned = db_store_order_prune_expired(ndb,
             STORE_ORDER_PENDING_EXPIRE_SECS);
@@ -717,6 +735,8 @@ void store_process_payments(const char *datadir)
         !node_db_open_existing_runtime(&ndb, db_path,
                                        "store.payment_fixture"))
         return;
-    store_process_payments_with_db(&ndb, datadir);
+    /* A stopped fixture has no live wallet scan cursor, so it credits what
+     * it finds and never prunes: -1 is below every confirmation ceiling. */
+    store_process_payments_with_db(&ndb, datadir, -1);
     node_db_close(&ndb);
 }

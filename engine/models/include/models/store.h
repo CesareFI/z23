@@ -35,10 +35,9 @@ enum store_order_status {
 enum {
     STORE_ORDER_MAX_PENDING_GLOBAL = 1000,
     STORE_ORDER_MAX_PENDING_PER_PRODUCT = 200,
-    /* An unpaid order older than this already fell outside the payment
-     * scan window (store_process_payments only looks back 3600s), so
-     * pruning at the same threshold discards nothing a late-but-legit
-     * payer could still complete. */
+    /* Pending lifetime. store_process_payments_with_db deletes an unpaid
+     * order older than this, but only after checking it in the same pass
+     * against a wallet scan that covers the confirmation ceiling. */
     STORE_ORDER_PENDING_EXPIRE_SECS = 3600
 };
 

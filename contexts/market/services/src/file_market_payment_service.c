@@ -32,6 +32,15 @@ static void market_payment_set_status(
     }
 }
 
+/* Why a wallet height other than the tip leaves a claim UNKNOWN. */
+static const char *market_payment_projection_gap(int wallet_height,
+                                                 int tip_height)
+{
+    return wallet_height < tip_height
+        ? "wallet has not read every block through the active tip"
+        : "wallet projection is not at the active tip";
+}
+
 static struct zcl_result market_payment_persist(
     struct node_db *ndb, const struct market_payment_claim_record *record)
 {
@@ -92,10 +101,15 @@ static struct zcl_result market_payment_reconcile_record(
         ZCL_CHECK(market_payment_persist(ndb, record));
         return ZCL_OK;
     }
+    /* wallet_projection_height is the wallet's scanned-through height. Below
+     * the tip, some block up to the tip was not read, so an absent note is
+     * not evidence of non-payment: the answer is UNKNOWN, never PENDING or
+     * CONFLICTED, and never an unlock. */
     if (wallet_projection_height != tip->nHeight) {
         market_payment_set_status(record, "UNKNOWN",
-                                  "wallet projection is not at the active tip",
-                                  now_unix);
+            market_payment_projection_gap(wallet_projection_height,
+                                          tip->nHeight),
+            now_unix);
         ZCL_CHECK(market_payment_persist(ndb, record));
         return ZCL_OK;
     }

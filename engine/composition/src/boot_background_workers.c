@@ -60,12 +60,18 @@ extern void *backfill_addresses_thread(void *arg);
 static void *payment_processor_thread(void *arg);
 static void *address_backfill_service_thread(void *arg);
 
+struct payment_processor_pass {
+    struct boot_svc_ctx *svc;
+    int64_t wallet_scanned_height;
+};
+
 static bool payment_processor_lane_write(struct node_db *ndb, void *arg)
 {
-    struct boot_svc_ctx *svc = arg;
-    if (!svc || !svc->datadir)
+    struct payment_processor_pass *pass = arg;
+    if (!pass || !pass->svc || !pass->svc->datadir)
         LOG_FAIL("store", "payment processor lost its runtime owner");
-    store_process_payments_with_db(ndb, svc->datadir);
+    store_process_payments_with_db(ndb, pass->svc->datadir,
+                                   pass->wallet_scanned_height);
     return true;
 }
 
@@ -744,9 +750,17 @@ static void *payment_processor_thread(void *arg)
             sleep(1);
         if (!boot_running(svc))
             break;
+        /* Scanned-through, not best_block_height: expired orders are deleted
+         * only when the wallet read every block their payment could be in.
+         * Read before entering the DB lane so wallet->cs never nests in it. */
+        struct payment_processor_pass pass = {
+            .svc = svc,
+            .wallet_scanned_height =
+                wallet_read_scanned_through_height(svc->wallet),
+        };
         struct db_service *dbsvc = boot_db_service(svc);
         if (!dbsvc || !db_service_run_write(
-                dbsvc, payment_processor_lane_write, svc))
+                dbsvc, payment_processor_lane_write, &pass))
             LOG_WARN("store",
                      "payment scan could not enter the canonical DB lane");
         watchdog_check_stuck(svc);

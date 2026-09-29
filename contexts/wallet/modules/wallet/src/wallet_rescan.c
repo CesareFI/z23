@@ -235,6 +235,16 @@ int wallet_scanned_through_height(const struct wallet *w)
     return w->best_block_height;
 }
 
+int wallet_read_scanned_through_height(struct wallet *w)
+{
+    if (!w)
+        return -1;
+    zcl_mutex_lock(&w->cs);
+    int through = wallet_scanned_through_height(w);
+    zcl_mutex_unlock(&w->cs);
+    return through;
+}
+
 int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir)
 {

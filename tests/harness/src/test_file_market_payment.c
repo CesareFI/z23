@@ -4,6 +4,8 @@
 #include "test/test_core.h"
 
 #include "chain/chainparams.h"
+#include "config/boot_internal.h"
+#include "config/boot_msg_callbacks.h"
 #include "crypto/ed25519.h"
 #include "models/file_offer.h"
 #include "models/market_payment_claim.h"
@@ -12,11 +14,15 @@
 #include "platform/time_compat.h"
 #include "sapling/sapling.h"
 #include "services/file_market_payment_service.h"
+#include "sync/sync_state.h"
+#include "util/safe_alloc.h"
 #include "validation/main_state.h"
+#include "wallet/wallet.h"
 
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -180,6 +186,110 @@ static bool payment_test_set_block_status(struct node_db *ndb,
     sqlite3_finalize(s);
     return ok;
 }
+
+/* Walk the sync FSM along legal edges to AT_TIP so the composition adapter
+ * treats the chain as current; the scan cursor is then the only variable. */
+static bool payment_test_sync_at_tip(void)
+{
+    if (sync_get_state() == SYNC_AT_TIP)
+        return true;
+    if (sync_get_state() != SYNC_IDLE)
+        (void)sync_set_state(SYNC_IDLE, "market payment coverage test");
+    return sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                          "market payment coverage test") &&
+           sync_set_state(SYNC_AT_TIP, "market payment coverage test");
+}
+
+/* The payment adapters must judge a claim against the height the wallet READ
+ * through, not its stop height. A boot catch-up that could not read block 100
+ * leaves best_block_height at the tip (101) with scan_retry.from == 100:
+ * a claim whose paying transaction sits in block 100 is not knowable yet, so
+ * the answer is UNKNOWN — never PENDING, CONFLICTED, or an unlock. */
+static int payment_test_scan_coverage(struct node_db *ndb,
+                                      struct main_state *main_state,
+                                      const struct file_offer *base_offer,
+                                      const uint8_t seller_seed[32],
+                                      const uint8_t payment_block_hash[32],
+                                      int64_t now_unix)
+{
+    int failures = 0;
+    struct file_offer offer = *base_offer;
+    memset(offer.root_hash, 0x75, sizeof(offer.root_hash));
+    offer.nonce = 9005;
+    struct file_payment unread_paid, unread_absent;
+    struct wallet *w = zcl_calloc(1, sizeof(*w), "market payment wallet");
+    bool fixture = w && file_offer_auth_seal(&offer, seller_seed) ==
+                            FILE_OFFER_AUTH_OK &&
+                   db_file_offer_save(ndb, &offer) &&
+                   payment_test_claim_seeded(&unread_paid, &offer, 0x64,
+                                             0x95) &&
+                   payment_test_claim_seeded(&unread_absent, &offer, 0x65,
+                                             0x96) &&
+                   payment_test_insert_transaction(ndb, unread_paid.txid,
+                                                   payment_block_hash, 100) &&
+                   payment_test_sync_at_tip();
+    PAYMENT_CHECK("scan-coverage fixture: wallet stopped at tip, block 100 "
+                  "unread", fixture);
+    if (!fixture) {
+        free(w);
+        return failures;
+    }
+    wallet_init(w);
+    w->best_block_height = 101;
+    w->scan_retry.pending = true;
+    w->scan_retry.from = 100;
+    snprintf(w->scan_retry.blocker, sizeof(w->scan_retry.blocker),
+             "RESCAN_NO_BLOCK_DATA");
+    struct boot_svc_ctx svc;
+    memset(&svc, 0, sizeof(svc));
+    svc.node_db = ndb;
+    svc.state = main_state;
+    svc.wallet = w;
+
+    struct market_payment_claim_record found;
+    int verdict = boot_ingest_file_payment(&unread_paid, 0, now_unix, &svc);
+    PAYMENT_CHECK("incomplete scan: paying tx in the unread block is UNKNOWN",
+                  verdict == FILE_PAYMENT_INGEST_UNKNOWN &&
+                  db_market_payment_claim_find(ndb, unread_paid.claim_id,
+                                               &found) &&
+                  strcmp(found.status, "UNKNOWN") == 0);
+    verdict = boot_ingest_file_payment(&unread_absent, 0, now_unix, &svc);
+    PAYMENT_CHECK("incomplete scan: a claim with no visible tx is UNKNOWN, "
+                  "not PENDING",
+                  verdict == FILE_PAYMENT_INGEST_UNKNOWN);
+    struct market_payment_authorization authorization;
+    struct zcl_result result = market_payment_authorize_chunk(
+        ndb, main_state, true, wallet_read_scanned_through_height(w),
+        offer.offer_id, unread_paid.buyer_pubkey, 1, now_unix,
+        &authorization);
+    PAYMENT_CHECK("incomplete scan: the paid chunk is not served",
+                  result.ok && !authorization.authorized &&
+                  strcmp(authorization.status, "UNKNOWN") == 0);
+
+    /* The catch-up reads block 100 and clears the marker: today's
+     * full-scan answers return unchanged. */
+    memset(&w->scan_retry, 0, sizeof(w->scan_retry));
+    bool read = payment_test_insert_note(ndb, &unread_paid, &offer, 100);
+    verdict = boot_ingest_file_payment(&unread_paid, 0, now_unix + 1, &svc);
+    PAYMENT_CHECK("full scan: the paid tx in a read block is CONFIRMED",
+                  read && verdict == FILE_PAYMENT_INGEST_CONFIRMED);
+    result = market_payment_authorize_chunk(
+        ndb, main_state, true, wallet_read_scanned_through_height(w),
+        offer.offer_id, unread_paid.buyer_pubkey, 1, now_unix + 1,
+        &authorization);
+    PAYMENT_CHECK("full scan: the confirmed chunk is served",
+                  result.ok && authorization.authorized &&
+                  strcmp(authorization.status, "CONFIRMED") == 0);
+    verdict = boot_ingest_file_payment(&unread_absent, 0, now_unix + 1, &svc);
+    PAYMENT_CHECK("full scan: an unpaid claim is PENDING as before",
+                  verdict == FILE_PAYMENT_INGEST_PENDING);
+
+    (void)sync_set_state(SYNC_IDLE, "market payment coverage test");
+    wallet_free(w);
+    free(w);
+    return failures;
+}
+
 
 int file_market_payment_tests(void)
 {
@@ -463,6 +573,9 @@ int file_market_payment_tests(void)
                   db_market_payment_claim_count_for_offer(
                       &ndb, expiring_offer.offer_id) == 1);
 
+    failures += payment_test_scan_coverage(&ndb, &main_state, &offer,
+                                           seller_seed, payment_block_hash,
+                                           now_unix);
     node_db_close(&ndb);
     main_state_free(&main_state);
     test_cleanup_tmpdir(dir);

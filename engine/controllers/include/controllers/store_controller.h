@@ -40,10 +40,16 @@ size_t store_handle_request(const char *method, const char *path,
 
 /* Background: check pending orders for payments, mint tokens. */
 void store_process_payments(const char *datadir);
-/* Live-node form: caller supplies the canonical DB-service-owned ledger.
- * The path-only wrapper above remains for stopped test fixtures. */
+/* Live-node form: caller supplies the canonical DB-service-owned ledger and
+ * the wallet's scanned-through height (wallet_read_scanned_through_height(),
+ * -1 without a wallet). Every pending order is checked and credited if paid;
+ * expired pending orders are deleted only when that height reaches the
+ * confirmation ceiling (stored tip - 3), because below it an unread block
+ * may hold the payment. The path-only wrapper above remains for stopped test
+ * fixtures and passes -1, so it never prunes. */
 void store_process_payments_with_db(struct node_db *ndb,
-                                    const char *datadir);
+                                    const char *datadir,
+                                    int64_t wallet_scanned_height);
 
 /* Check if customer has enough ZSLP tokens for a service.
  * Used as before_action hook on protected routes. */

@@ -402,12 +402,11 @@ int boot_ingest_file_payment(const struct file_payment *payment,
     (void)peer_id;
     if (!svc || !svc->node_db || !svc->state || !payment)
         return FILE_PAYMENT_INGEST_REJECTED;
-    int wallet_projection_height = -1;
-    if (svc->wallet) {
-        zcl_mutex_lock(&svc->wallet->cs);
-        wallet_projection_height = svc->wallet->best_block_height;
-        zcl_mutex_unlock(&svc->wallet->cs);
-    }
+    /* The height the wallet READ through, not its stop height: while a
+     * catch-up left bodies unread this sits below the tip and the claim
+     * reconciles to UNKNOWN instead of PENDING or CONFLICTED. */
+    int wallet_projection_height =
+        wallet_read_scanned_through_height(svc->wallet);
     struct market_payment_claim_record record;
     struct zcl_result result = market_payment_claim_ingest(
         svc->node_db, svc->state, sync_get_state() == SYNC_AT_TIP,

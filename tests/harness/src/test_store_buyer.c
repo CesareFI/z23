@@ -61,6 +61,7 @@
 #include "wallet/sapling_keys.h"
 #include "wallet/wallet.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -513,6 +514,114 @@ static bool tsb_paid_order_behind_full_page(const char *datadir,
                               target.amount_zatoshi);
 }
 
+/* Push an order's created_at back past the pending lifetime, so the payment
+ * pass would delete it if it judged the order unpaid. */
+static bool tsb_age_order(struct node_db *ndb, int64_t order_id)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "UPDATE orders SET created_at = created_at - ? WHERE id = ?",
+            -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(s, 1, (int64_t)STORE_ORDER_PENDING_EXPIRE_SECS + 600);
+    sqlite3_bind_int64(s, 2, order_id);
+    bool ok = sqlite3_step(s) == SQLITE_DONE && sqlite3_changes(ndb->db) == 1;
+    sqlite3_finalize(s);
+    return ok;
+}
+
+/* -1 when the order row is gone (pruned), -2 when the ledger cannot be
+ * opened, else the order's status. */
+static int tsb_order_status(const char *datadir, int64_t order_id)
+{
+    struct db_store_order_view view;
+    struct node_db ndb;
+    if (!tsb_open(datadir, &ndb))
+        return -2;
+    memset(&view, 0, sizeof(view));
+    int status = db_store_order_find_view(&ndb, order_id, &view)
+        ? view.status : -1;
+    node_db_close(&ndb);
+    return status;
+}
+
+/* One payment pass on the merchant ledger with the wallet's scanned-through
+ * height. The seeded tip is 100, so the confirmation ceiling is 97. */
+static bool tsb_payment_pass(const char *datadir, int64_t scanned_height)
+{
+    struct node_db ndb;
+    if (!tsb_open(datadir, &ndb))
+        return false;
+    store_process_payments_with_db(&ndb, datadir, scanned_height);
+    node_db_close(&ndb);
+    return true;
+}
+
+static bool tsb_place_aged_order(const char *datadir, int64_t product_id,
+                                 const char *tag, struct store_buyer_order *o)
+{
+    struct node_db ndb;
+    char out[640];
+    (void)snprintf(out, sizeof(out), "%s/%s.bin", datadir, tag);
+    if (!store_buyer_order(datadir, product_id, TSB_CUSTOMER, out, false,
+                           o).ok)
+        return false;
+    bool ok = tsb_open(datadir, &ndb) && tsb_age_order(&ndb, o->order_id);
+    if (ndb.open)
+        node_db_close(&ndb);
+    return ok;
+}
+
+/* A confirmed, memo-bound note paying `o` in full at `height`: what the
+ * wallet persists once it has read that block. */
+static bool tsb_pay_order(const char *datadir,
+                          const struct store_buyer_order *o, int height,
+                          uint8_t tag)
+{
+    struct node_db ndb;
+    bool ok = tsb_open(datadir, &ndb) &&
+              tsb_seed_note(&ndb, o->payment_addr, o->memo, 0x00,
+                            o->amount_zatoshi, height, tag);
+    if (ndb.open)
+        node_db_close(&ndb);
+    return ok;
+}
+
+/* While the wallet has not read every block through the confirmation
+ * ceiling, an order with no visible payment is not knowably unpaid: the pass
+ * must keep it pending, however old, and still credit a payment it can see.
+ * Once the scan covers the ceiling, the pass credits the order whose payment
+ * the scan just surfaced — even though it is past the pending lifetime — and
+ * prunes only the order that is still unpaid. */
+static bool tsb_scan_coverage_gates_prune(const char *datadir,
+                                          int64_t product_id)
+{
+    struct store_buyer_order unread = {0}, unpaid = {0}, visible = {0};
+    /* Block 97 was read and pays `visible`; block 91 (holding `unread`'s
+     * payment) was not, so the wallet has read through 90 only. */
+    bool ok = tsb_place_aged_order(datadir, product_id, "unread", &unread) &&
+              tsb_place_aged_order(datadir, product_id, "unpaid", &unpaid) &&
+              tsb_place_aged_order(datadir, product_id, "visible", &visible) &&
+              tsb_pay_order(datadir, &visible, 97, 0x7a) &&
+              tsb_payment_pass(datadir, 90);
+    int unread_st = tsb_order_status(datadir, unread.order_id);
+    int unpaid_st = tsb_order_status(datadir, unpaid.order_id);
+    int visible_st = tsb_order_status(datadir, visible.order_id);
+    printf("[incomplete: unread=%d unpaid=%d visible=%d] ", unread_st,
+           unpaid_st, visible_st);
+    if (!ok || unread_st != STORE_ORDER_PENDING ||
+        unpaid_st != STORE_ORDER_PENDING || visible_st != STORE_ORDER_SENT)
+        return false;
+
+    /* The catch-up reads block 91: `unread`'s payment appears. */
+    ok = tsb_pay_order(datadir, &unread, 91, 0x7b) &&
+         tsb_payment_pass(datadir, 100);
+    unread_st = tsb_order_status(datadir, unread.order_id);
+    unpaid_st = tsb_order_status(datadir, unpaid.order_id);
+    printf("[complete: unread=%d unpaid=%d] ", unread_st, unpaid_st);
+    return ok && unread_st == STORE_ORDER_SENT && unpaid_st == -1;
+}
+
 int test_store_buyer(void)
 {
     int failures = 0;
@@ -912,6 +1021,10 @@ int test_store_buyer(void)
     failures += tsb_report("a paid order behind 64 newer unpaid is credited",
                            tsb_paid_order_behind_full_page(datadir,
                                                            product_id));
+    failures += tsb_report("an incomplete wallet scan never prunes an order "
+                           "as unpaid",
+                           tsb_scan_coverage_gates_prune(datadir,
+                                                         product_id));
 
     /* ── 8. Unknown ids are refused distinguishably ──────────────────── */
     printf("store_buyer: unknown product and purchase ids are named... ");
