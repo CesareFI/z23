@@ -5,6 +5,8 @@
  *   seal-fds  seal the launch handed over as descriptors 3..7: launch.bin,
  *             object.o, deps.d, stderr.bin, preprocessed.i (a failure
  *             receipt leaves 4 and 5 closed)
+ *   seal-fail-fds  seal a failure handed over as 3 launch.bin, 4 stderr.bin,
+ *             5 preprocessed.i
  *
  * It executes nothing and takes no path, UID or key from its arguments or
  * environment; all trust comes from root-owned /etc/z23verify. */
@@ -35,11 +37,8 @@ static int pubkey_main(void)
     return fflush(stdout) == 0 ? 0 : refuse("signer_output_failed");
 }
 
-static int seal_fds_main(void)
+static int seal_main(const int fds[ZCL_FRS_INPUTS])
 {
-    int fds[ZCL_FRS_INPUTS];
-    for (int i = 0; i < ZCL_FRS_INPUTS; i++)
-        fds[i] = fcntl(3 + i, F_GETFD) >= 0 ? 3 + i : -1;
     struct zcl_frs_result r;
     zcl_frs_seal_production(fds, &r);
     if (r.reason) return refuse(r.reason);
@@ -50,10 +49,37 @@ static int seal_fds_main(void)
     return fflush(stdout) == 0 ? 0 : refuse("signer_output_failed");
 }
 
+static int open_fd(int fd)
+{
+    return fcntl(fd, F_GETFD) >= 0 ? fd : -1;
+}
+
+/* seal-fds: 3..7 in slot order, a closed descriptor being absent. */
+static int seal_fds_main(void)
+{
+    int fds[ZCL_FRS_INPUTS];
+    for (int i = 0; i < ZCL_FRS_INPUTS; i++) fds[i] = open_fd(3 + i);
+    return seal_main(fds);
+}
+
+/* seal-fail-fds: 3 launch.bin, 4 stderr.bin, 5 preprocessed.i, the dense
+ * layout a service manager's OpenFile= list produces for a failure. */
+static int seal_fail_fds_main(void)
+{
+    int fds[ZCL_FRS_INPUTS] = {-1, -1, -1, -1, -1};
+    fds[ZCL_FRS_IN_RECEIPT] = open_fd(3);
+    fds[ZCL_FRS_IN_STDERR] = open_fd(4);
+    fds[ZCL_FRS_IN_PP] = open_fd(5);
+    if (open_fd(6) >= 0 || open_fd(7) >= 0) return refuse(ZCL_FRS_WHY_INPUTS);
+    return seal_main(fds);
+}
+
 int main(int argc, char **argv)
 {
     umask(0077);
     if (argc == 2 && strcmp(argv[1], "pubkey") == 0) return pubkey_main();
     if (argc == 2 && strcmp(argv[1], "seal-fds") == 0) return seal_fds_main();
+    if (argc == 2 && strcmp(argv[1], "seal-fail-fds") == 0)
+        return seal_fail_fds_main();
     return refuse("request_shape_unsupported");
 }
