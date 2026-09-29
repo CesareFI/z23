@@ -220,6 +220,13 @@ static bool cr_match_int_table(const char *key, const struct json_value *value,
         { "depth", 1, 1000000 },
         /* fleet.steer.grant bearer lifetime: 0 means no expiry. */
         { "ttl_seconds", 0, 2592000 },
+        /* fleet.board post/propose lifetime (the only two leaves declaring
+         * a `ttl` key, both sharing this one bound): 1..FLEET_BOARD_TTL_MAX
+         * (cognition/modules/session/.../fleet_board_proto.h). A shell
+         * `--ttl=86400` arrives as a JSON int; before this entry the key
+         * fell through to the default string rule and every numeric ttl was
+         * refused at normalize. */
+        { "ttl", 1, 2592000 },
         { "earned_score", 0, INT64_MAX },
         { "uploaded_bytes", 0, INT64_MAX },
         { "downloaded_bytes", 0, INT64_MAX },

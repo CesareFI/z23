@@ -832,6 +832,37 @@ static int t_moved_dual_shape_since(void)
     return failures;
 }
 
+/* fleet.board `ttl`: a post/proposal lifetime in seconds, bounded by
+ * FLEET_BOARD_TTL_MAX (1..2592000, cognition .../fleet_board_proto.h) and
+ * typed integer-only from the k_bounds table. Before the entry, `ttl` fell
+ * through to the default string rule, so every numeric ttl was refused at
+ * normalize and the vitals heartbeat's explicit --ttl=86400 (the documented
+ * default value, stated for its quota comment) failed INVALID_INPUT on every
+ * 5-minute run. */
+static int t_moved_ttl_bounds(void)
+{
+    int failures = 0;
+    char why[192];
+    const char *path = "fleet.board.post";
+
+    CIB_CHECK("fleet.board.post admits ttl=86400 (the documented default)",
+              cib_accepts_int(path, "ttl", 86400));
+    CIB_CHECK("fleet.board.post admits ttl=1 (low edge)",
+              cib_accepts_int(path, "ttl", 1));
+    CIB_CHECK("fleet.board.post admits ttl=2592000 (FLEET_BOARD_TTL_MAX)",
+              cib_accepts_int(path, "ttl", 2592000));
+    CIB_CHECK("fleet.board.post refuses ttl=0",
+              !cib_accepts_int_why(path, "ttl", 0, why, sizeof(why)) &&
+              cib_type_refusal(why, "ttl"));
+    CIB_CHECK("fleet.board.post refuses ttl past FLEET_BOARD_TTL_MAX",
+              !cib_accepts_int_why(path, "ttl", 2592001, why, sizeof(why)) &&
+              cib_type_refusal(why, "ttl"));
+    CIB_CHECK("fleet.board.post refuses ttl typed as a string",
+              !cib_accepts(path, "ttl", 5, why, sizeof(why)) &&
+              cib_type_refusal(why, "ttl"));
+    return failures;
+}
+
 /* cr_match_chunks_and_lines, first key: a PAID chunk count starts at one —
  * zero paid chunks is not a purchase — and stops at the 32-bit chunk index
  * space. Both edges, both sides. */
@@ -1113,6 +1144,7 @@ int test_command_input_bounds(void)
     failures += t_package_fetch_maximum_bytes();
     failures += t_fleet_usage_days();
     failures += t_moved_dual_shape_since();
+    failures += t_moved_ttl_bounds();
     failures += t_moved_chunks_paid_bounds();
     failures += t_moved_chunk_start_bounds();
     failures += t_moved_line_bounds();
