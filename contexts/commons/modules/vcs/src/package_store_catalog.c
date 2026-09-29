@@ -1185,3 +1185,15 @@ release_done:
     pthread_mutex_unlock(&store->lock);
     return result;
 }
+
+bool vcs_package_store_cache_counts(struct vcs_package_store *store,
+                                    struct vcs_package_store_cache_counts *out)
+{
+    if (!store || !out)
+        LOG_RETURN(false, STORE_LOG, "cache counts: null store or output");
+    pthread_mutex_lock(&store->lock);
+    out->manifest_loads = store->hot_loads;
+    out->trim_passes = store->hot_trim_passes;
+    pthread_mutex_unlock(&store->lock);
+    return true;
+}

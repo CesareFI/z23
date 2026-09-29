@@ -547,4 +547,15 @@ struct vcs_package_store_totals {
 enum vcs_package_store_totals_result vcs_package_store_try_totals(
     struct vcs_package_store_totals *out);
 
+/* Parsed-manifest cache work on this handle since open: manifests parsed
+ * again from disk after the bounded cache released them, and catalog passes
+ * that released cached manifests. Diagnostics for scan cost; no authority. */
+struct vcs_package_store_cache_counts {
+    uint64_t manifest_loads;
+    uint64_t trim_passes;
+};
+
+bool vcs_package_store_cache_counts(struct vcs_package_store *store,
+                                    struct vcs_package_store_cache_counts *out);
+
 #endif /* ZCL_VCS_PACKAGE_STORE_H */

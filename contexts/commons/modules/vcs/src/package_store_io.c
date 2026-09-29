@@ -856,20 +856,48 @@ void store_package_release_hot(struct vcs_package_store *store,
     if (store->hot_count) store->hot_count--;
 }
 
+/* Finding the least recently used parsed manifests is a pass over the whole
+ * catalog. Each pass releases the cache down to half its bound, so a scan
+ * that touches every record pays one catalog pass per STORE_HOT_KEEP misses
+ * instead of one per miss. The bound itself is unchanged. */
+#define STORE_HOT_KEEP (STORE_HOT_MANIFESTS / 2u)
+
+/* Indexes of the `want` least recently used loaded records, oldest first. */
+static size_t store_hot_oldest(const struct vcs_package_store *store,
+                               const struct store_package *protect,
+                               size_t *oldest, size_t want)
+{
+    size_t found = 0;
+    for (size_t i = 0; i < store->pkg_count; i++) {
+        const struct store_package *candidate = &store->pkgs[i];
+        if (candidate == protect || !candidate->manifest_loaded)
+            continue;
+        uint64_t clock = candidate->hot_clock;
+        if (found == want &&
+            clock >= store->pkgs[oldest[found - 1u]].hot_clock)
+            continue;
+        size_t at = found < want ? found++ : want - 1u;
+        while (at > 0 && store->pkgs[oldest[at - 1u]].hot_clock > clock) {
+            oldest[at] = oldest[at - 1u];
+            at--;
+        }
+        oldest[at] = i;
+    }
+    return found;
+}
+
 static void store_hot_trim(struct vcs_package_store *store,
                            const struct store_package *protect)
 {
     while (store->hot_count > STORE_HOT_MANIFESTS) {
-        struct store_package *oldest = NULL;
-        for (size_t i = 0; i < store->pkg_count; i++) {
-            struct store_package *candidate = &store->pkgs[i];
-            if (candidate == protect || !candidate->manifest_loaded)
-                continue;
-            if (!oldest || candidate->hot_clock < oldest->hot_clock)
-                oldest = candidate;
-        }
-        if (!oldest) break;
-        store_package_release_hot(store, oldest);
+        size_t oldest[STORE_HOT_MANIFESTS];
+        size_t want = store->hot_count - STORE_HOT_KEEP;
+        if (want > STORE_HOT_MANIFESTS) want = STORE_HOT_MANIFESTS;
+        size_t found = store_hot_oldest(store, protect, oldest, want);
+        store->hot_trim_passes++;
+        if (!found) break;
+        for (size_t i = 0; i < found; i++)
+            store_package_release_hot(store, &store->pkgs[oldest[i]]);
     }
 }
 
@@ -908,6 +936,7 @@ bool store_package_materialize(struct vcs_package_store *store,
     pkg->manifest_loaded = true;
     pkg->hot_clock = ++store->hot_clock;
     store->hot_count++;
+    store->hot_loads++;
     store_hot_trim(store, pkg);
     return true;
 }

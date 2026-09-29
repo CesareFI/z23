@@ -59,6 +59,8 @@ struct vcs_package_store {
     size_t *root_order; /* sorted indexes into pkgs; rebuilt from manifests */
     size_t hot_count;
     uint64_t hot_clock;
+    uint64_t hot_loads;       /* manifests parsed again after release */
+    uint64_t hot_trim_passes; /* catalog passes that released manifests */
     bool catalog_incomplete; /* committed manifest could not be replayed */
     uint8_t (*cas)[32]; /* present chunk hashes, ascending (bsearch) */
     size_t cas_count;

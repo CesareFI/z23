@@ -733,6 +733,114 @@ static int ptm_case_signature_memo(void)
     return failures;
 }
 
+/* Optional cost probe for the one full check a restart still pays per
+ * signed row: single Ed25519 verification against one batch call. */
+static int ptm_case_signature_batch_cost(void)
+{
+    if (!getenv("Z23_PROOF_SIGNATURE_BATCH_BENCH")) return 0;
+    int failures = 0;
+    TEST_CASE("proof_ticket: single versus batch signature cost") {
+        enum { N = 256, MSG = 160 };
+        uint8_t (*msgs)[MSG] = calloc(N, MSG);
+        uint8_t (*sigs)[64] = calloc(N, 64);
+        const uint8_t **mp = calloc(N, sizeof(*mp));
+        const uint8_t **sp = calloc(N, sizeof(*sp));
+        const uint8_t **pp = calloc(N, sizeof(*pp));
+        size_t *lens = calloc(N, sizeof(*lens));
+        ASSERT(msgs && sigs && mp && sp && pp && lens);
+        uint8_t seed[32], pk[32], sk[32];
+        memset(seed, 0x71, sizeof(seed));
+        ed25519_keypair(pk, sk, seed);
+        for (size_t i = 0; i < N; i++) {
+            memset(msgs[i], (int)(i & 0xffu), MSG);
+            msgs[i][0] = (uint8_t)(i >> 8);
+            ed25519_sign(sigs[i], msgs[i], MSG, sk, pk);
+            mp[i] = msgs[i];
+            sp[i] = sigs[i];
+            pp[i] = pk;
+            lens[i] = MSG;
+        }
+        int64_t t0 = platform_time_monotonic_us();
+        bool single = true;
+        for (size_t i = 0; i < N; i++)
+            single = ed25519_verify(sigs[i], msgs[i], MSG, pk) && single;
+        int64_t t1 = platform_time_monotonic_us();
+        bool batch = ed25519_verify_batch(mp, lens, sp, pp, N);
+        int64_t t2 = platform_time_monotonic_us();
+        printf("\nproof_signature_cost n=%d single_us=%lld batch_us=%lld\n",
+               N, (long long)(t1 - t0), (long long)(t2 - t1));
+        ASSERT(single);
+        ASSERT(batch);
+        free(msgs);
+        free(sigs);
+        free(mp);
+        free(sp);
+        free(pp);
+        free(lens);
+    } TEST_END
+    return failures;
+}
+
+/* Optional package-store scale probe: N unsigned blobs, so a rebuild pays
+ * only catalog, manifest and CAS costs. Population skips fsync and is
+ * outside the timings. Z23_PROOF_STORE_SCALE_BENCH=<N>. */
+static int ptm_case_store_scale(void)
+{
+    const char *env = getenv("Z23_PROOF_STORE_SCALE_BENCH");
+    if (!env) return 0;
+    size_t rows = (size_t)strtoull(env, NULL, 10);
+    int failures = 0;
+    TEST_CASE("proof_ticket: package store rebuild scale measurement") {
+        ASSERT(rows > 0);
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "proof_ticket", "storescale");
+        bool was_deferred = vcs_package_store_deferred_sync_enabled();
+        vcs_package_store_set_deferred_sync(true);
+        struct vcs_package_store *store =
+            vcs_package_store_open(dir, UINT64_C(1024) * 1024 * 1024);
+        ASSERT(store != NULL);
+        int64_t t0 = platform_time_monotonic_us();
+        bool put = true;
+        for (size_t i = 0; put && i < rows; i++) {
+            char blob[32];
+            uint8_t root[32];
+            int len = snprintf(blob, sizeof(blob), "scale-%zu", i);
+            put = len > 0 &&
+                  vcs_blob_put_to(store, (const uint8_t *)blob, (size_t)len,
+                                  root) == VCS_BLOB_OK;
+        }
+        int64_t t1 = platform_time_monotonic_us();
+        vcs_package_store_close(store);
+        vcs_package_store_set_deferred_sync(was_deferred);
+        ASSERT(put);
+        int64_t t2 = platform_time_monotonic_us();
+        store = vcs_package_store_open(dir, UINT64_C(1024) * 1024 * 1024);
+        int64_t t3 = platform_time_monotonic_us();
+        ASSERT(store != NULL);
+        struct vcs_proof_receiver *rx = vcs_proof_receiver_new();
+        ASSERT(rx != NULL);
+        size_t tickets = 0, checkpoints = 0, skipped = 0;
+        bool rebuilt = vcs_proof_receiver_rebuild_bounded(
+            rx, store, rows, &tickets, &checkpoints, &skipped);
+        int64_t t4 = platform_time_monotonic_us();
+        struct vcs_package_store_cache_counts cache = {0};
+        ASSERT(vcs_package_store_cache_counts(store, &cache));
+        printf("\nproof_store_scale rows=%zu populate_us=%lld open_us=%lld "
+               "rebuild_us=%lld skipped=%zu manifest_loads=%llu "
+               "trim_passes=%llu\n",
+               rows, (long long)(t1 - t0), (long long)(t3 - t2),
+               (long long)(t4 - t3), skipped,
+               (unsigned long long)cache.manifest_loads,
+               (unsigned long long)cache.trim_passes);
+        ASSERT(rebuilt);
+        ASSERT_EQ(skipped, rows);
+        vcs_proof_receiver_free(rx);
+        vcs_package_store_close(store);
+        test_rm_rf(dir);
+    } TEST_END
+    return failures;
+}
+
 /* ── work avoided across a restart ──────────────────────────────────── */
 
 /* 160 obligations. The first run proves 150 of them (A and B), C then
@@ -827,6 +935,7 @@ struct ptw_phase {
     size_t rows;
     uint64_t rebuild_us, executed, exec_us;
     uint64_t rebuild_checks, admit_checks; /* full Ed25519 verifications */
+    uint64_t manifest_loads, trim_passes; /* store manifest cache work */
     struct vcs_proof_admission_report rep;
 };
 
@@ -851,11 +960,16 @@ static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
     size_t tickets = 0, cps = 0, skipped = 0;
     vcs_proof_signature_forget();
     uint64_t checks = ptw_signature_checks();
+    struct vcs_package_store_cache_counts cache0 = {0}, cache1 = {0};
+    bool counted = vcs_package_store_cache_counts(store, &cache0);
     int64_t t0 = platform_time_monotonic_us();
     bool ok = vcs_proof_receiver_rebuild_bounded(w->f.rx, store, rows,
                                                  &tickets, &cps, &skipped);
     p->rebuild_us = (uint64_t)(platform_time_monotonic_us() - t0);
     p->rebuild_checks = ptw_signature_checks() - checks;
+    counted = counted && vcs_package_store_cache_counts(store, &cache1);
+    p->manifest_loads = cache1.manifest_loads - cache0.manifest_loads;
+    p->trim_passes = cache1.trim_passes - cache0.trim_passes;
     vcs_package_store_close(store);
     struct vcs_proof_change change = {.component_id = "restart",
                                       .scope_known = true};
@@ -871,7 +985,7 @@ static bool ptw_restart(struct ptw *w, size_t rows, uint32_t units,
             ok = ptw_execute(w, u);
     p->executed = w->executed - executed;
     p->exec_us = w->exec_us - exec_us;
-    return ok;
+    return ok && counted;
 }
 
 static void ptw_print(const char *phase, uint32_t units,
@@ -880,14 +994,17 @@ static void ptw_print(const char *phase, uint32_t units,
     printf("\nproof_restart_work phase=%s units=%u catalog_rows=%zu "
            "rebuild_us=%llu executed=%llu reused=%u refused=%u fresh=%u "
            "without_history=%u avoided=%llu exec_us=%llu rebuild_checks=%llu "
-           "admit_checks=%llu\n", phase, units,
+           "admit_checks=%llu manifest_loads=%llu trim_passes=%llu\n",
+           phase, units,
            p->rows, (unsigned long long)p->rebuild_us,
            (unsigned long long)p->executed, p->rep.proofs_reused,
            p->rep.proofs_refused, p->rep.proofs_fresh, units,
            (unsigned long long)(units - p->executed),
            (unsigned long long)p->exec_us,
            (unsigned long long)p->rebuild_checks,
-           (unsigned long long)p->admit_checks);
+           (unsigned long long)p->admit_checks,
+           (unsigned long long)p->manifest_loads,
+           (unsigned long long)p->trim_passes);
 }
 
 static int ptw_case_restart_work(void)
@@ -942,6 +1059,10 @@ static int ptw_case_restart_work(void)
         ASSERT(warm.rebuild_checks > 0);
         ASSERT(warm.rebuild_checks <= rows);
         ASSERT_EQ(warm.admit_checks, (uint64_t)0);
+        /* Past the parsed-manifest bound, one catalog pass frees room for
+         * many misses; one pass per miss makes a large scan quadratic. */
+        ASSERT(warm.manifest_loads > 0);
+        ASSERT(warm.trim_passes <= warm.manifest_loads / 64u + 1u);
 
         /* Restart 2: the new results survive too; nothing runs again. */
         ASSERT(ptw_publish_and_forget(w, 1790000200u, &rows));
@@ -1271,6 +1392,8 @@ int test_proof_ticket_measure(void)
     failures += ptm_case_rebuild_density();
     failures += ptm_case_late_page_conflict();
     failures += ptm_case_signature_memo();
+    failures += ptm_case_signature_batch_cost();
+    failures += ptm_case_store_scale();
     failures += ptm_case_receiver_boundary();
     failures += ptw_case_restart_work();
     failures += pta_cases();
