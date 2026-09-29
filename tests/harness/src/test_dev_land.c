@@ -1344,6 +1344,100 @@ static int test_dev_land_regen_failure_fails_row(void)
     return failures;
 }
 
+/* Each of the three regen targets appends "<make pid> <name>" to a marker
+ * file. One make start costs a full Makefile parse, so all three must run
+ * in ONE make invocation (one pid), in table order. */
+#define DLX_MARK(name) "@mkdir -p build; echo \"$$PPID " name "\" >> build/regen-marks"
+static int test_dev_land_regen_runs_all_targets_in_one_make(void)
+{
+    int failures = 0;
+    TEST("land: the regen phase runs all three targets in one make "
+        "invocation, in order") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char landwt[1300], marks[1400], buf[4096], head[64];
+        size_t len = 0;
+        const char *head_args[] = { "rev-parse", "HEAD", NULL };
+        int pid[3] = { 0, 0, 0 };
+        char nm[3][64];
+        dlx_isolate("regendocs_f");
+        ASSERT(dlx_rig_make_docregen(&rig, "regendocs_f_rig",
+                                     DLX_MARK("cap"), DLX_MARK("routing"),
+                                     DLX_MARK("counts")));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        ASSERT(strcmp(dlx_str(&c, "state"), "started") == 0);
+        dlx_end(&c);
+        dlx_land_wt(landwt, sizeof(landwt));
+        (void)snprintf(marks, sizeof(marks), "%s/build/regen-marks", landwt);
+        ASSERT(dlx_slurp(marks, buf, sizeof(buf), &len));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        ASSERT(sscanf(buf, "%d %63s\n%d %63s\n%d %63s", &pid[0], nm[0],
+                      &pid[1], nm[1], &pid[2], nm[2]) == 6);
+        ASSERT(pid[0] > 0 && pid[0] == pid[1] && pid[1] == pid[2]);
+        ASSERT(strcmp(nm[0], "cap") == 0);
+        ASSERT(strcmp(nm[1], "routing") == 0);
+        ASSERT(strcmp(nm[2], "counts") == 0);
+        /* Unchanged commit behavior: nothing drifted, no regen commit. */
+        ASSERT(dlx_git_out(landwt, head_args, head, sizeof(head)) == 0);
+        ASSERT(strcmp(head, rig.tip) == 0);
+        dlx_restore();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* A failure in the middle target still fails the row by that target's own
+ * line, stops before the later target, and commits nothing. */
+static int test_dev_land_regen_middle_failure_names_line_and_stops(void)
+{
+    int failures = 0;
+    TEST("land: a middle regen target failing names its line, skips the "
+        "later target, and commits nothing") {
+        struct dlx_rig rig;
+        struct dlx_call c;
+        char landwt[1300], marks[1400], buf[4096], head[64];
+        size_t len = 0;
+        const char *head_args[] = { "rev-parse", "HEAD", NULL };
+        dlx_isolate("regendocs_g");
+        ASSERT(dlx_rig_make_docregen(
+            &rig, "regendocs_g_rig",
+            "@printf 'regen\\n' >> docs/CAPABILITY_INVENTORY.jsonl",
+            "@echo 'FAIL: routing table is hollow' >&2; exit 1",
+            DLX_MARK("counts")));
+        setenv("ZCL_LAND_PROOF_STUB", "running", 1);
+        setenv("ZCL_LAND_ALLOW_UNSIGNED", "1", 1);
+        dlx_submit(&c, &rig, rig.tip);
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        dlx_end(&c);
+        dlx_begin(&c, "step");
+        ASSERT(dlx_run(&c));
+        ASSERT(dlx_ok(&c));
+        ASSERT(strcmp(dlx_str(&c, "state"), "failed") == 0);
+        ASSERT(strcmp(dlx_str(&c, "dimension"), "regen") == 0);
+        ASSERT(strstr(dlx_str(&c, "detail"),
+                      "FAIL: routing table is hollow") != NULL);
+        dlx_end(&c);
+        dlx_land_wt(landwt, sizeof(landwt));
+        (void)snprintf(marks, sizeof(marks), "%s/build/regen-marks", landwt);
+        /* make stopped at the failing goal: the counts recipe never ran. */
+        ASSERT(!dlx_slurp(marks, buf, sizeof(buf), &len) || len == 0);
+        ASSERT(dlx_git_out(landwt, head_args, head, sizeof(head)) == 0);
+        ASSERT(strcmp(head, rig.tip) == 0);
+        dlx_restore();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* A generated artifact rewritten with IDENTICAL bytes (git sees no diff, so
  * no commit is made) still moves that file's mtime/ctime — exactly what the
  * source-mutation token the proof checks is built from. The regen phase
@@ -8555,6 +8649,8 @@ int test_dev_land(void)
     failures += test_dev_land_regen_commits_drift();
     failures += test_dev_land_regen_no_commit_when_clean();
     failures += test_dev_land_regen_failure_fails_row();
+    failures += test_dev_land_regen_runs_all_targets_in_one_make();
+    failures += test_dev_land_regen_middle_failure_names_line_and_stops();
     failures += test_dev_land_regen_refreshes_plan_on_identical_rewrite();
     failures += test_dev_land_regen_leaves_plan_alone_when_untouched();
     failures += test_dev_land_proof_tools_preparation();

@@ -206,19 +206,42 @@ static void dlrg_first_actionable(const char *text, char *out, size_t cap)
  * to the caller's transcript. Returns the child's exit status, or -1 on a
  * launch failure. On a nonzero return `why` names the first actionable
  * line (or, failing that, a generic message naming the target). */
-static int dlrg_make(const char *wt, const char *target, char *transcript,
-                     size_t transcript_cap, size_t *used, char *why,
-                     size_t why_cap)
+/* Run one `make` invocation over `goals[0..goal_n)` in `wt`. `jobs` is the
+ * -jN argument, or NULL for the landing build job count. Every make start
+ * re-parses the whole Makefile (about 5 s on this repository), so callers
+ * hand every goal they need to ONE call. */
+static int dlrg_make_goals(const char *wt, const char *jobs_arg,
+                           const char *const *goals, size_t goal_n,
+                           char *transcript, size_t transcript_cap,
+                           size_t *used, char *why, size_t why_cap)
 {
     char jobs[16];
-    if (!platform_build_jobs_arg(jobs)) {
-        (void)snprintf(why, why_cap, "landing build job count unavailable");
-        return -1;
-    }
-    const char *argv[] = { "make", jobs, "-s", "-C", wt, target, NULL };
+    const char *argv[8 + DLRG_N];
+    size_t n = 0;
     char *buf;
     int rc;
     bool timed_out = false;
+    if (goal_n == 0 || goal_n > DLRG_N + 1) {
+        (void)snprintf(why, why_cap, "make goal list out of range");
+        return -1;
+    }
+    if (!jobs_arg) {
+        if (!platform_build_jobs_arg(jobs)) {
+            (void)snprintf(why, why_cap,
+                           "landing build job count unavailable");
+            return -1;
+        }
+        jobs_arg = jobs;
+    }
+    argv[n++] = "make";
+    argv[n++] = jobs_arg;
+    argv[n++] = "-s";
+    argv[n++] = "-C";
+    argv[n++] = wt;
+    for (size_t i = 0; i < goal_n; i++)
+        argv[n++] = goals[i];
+    argv[n] = NULL;
+    const char *target = goals[0];
     buf = (char *)zcl_malloc(DLRG_GIT_CAP, "dev.land.regen.make");
     if (!buf) {
         (void)snprintf(why, why_cap,
@@ -232,11 +255,22 @@ static int dlrg_make(const char *wt, const char *target, char *transcript,
         dlrg_first_actionable(buf, why, why_cap);
         if (!why[0])
             (void)snprintf(why, why_cap,
-                           "make %s failed%s", target,
+                           "make %s%s failed%s", target,
+                           goal_n > 1 ? " (and later goals)" : "",
                            timed_out ? " (timed out)" : "");
     }
     free(buf);
     return rc;
+}
+
+static int dlrg_make(const char *wt, const char *target, char *transcript,
+                     size_t transcript_cap, size_t *used, char *why,
+                     size_t why_cap)
+{
+    const char *goals[1];
+    goals[0] = target;
+    return dlrg_make_goals(wt, NULL, goals, 1, transcript, transcript_cap,
+                           used, why, why_cap);
 }
 
 bool zcl_dev_land_restart_plan_prepare(const char *wt, char *why,
@@ -397,21 +431,34 @@ static bool dlrg_has_makefile(const char *wt)
           stat(makefile, &st) == 0 && S_ISREG(st.st_mode);
 }
 
-/* Run every regen target in table order, appending each to `transcript`.
- * `used` carries the caller's running transcript offset forward so later
- * appends (the plan-refresh note and its own make output) land after this
- * phase's own output rather than overwriting it. Returns false on the
- * first failure, with `why` already set by dlrg_make(). */
+/* Run every regen target in table order in ONE make invocation (a make
+ * start costs a full Makefile parse, about 5 s, so three starts cost three
+ * parses), appending its output to `transcript`. `used` carries the
+ * caller's running transcript offset forward so later appends (the
+ * plan-refresh note and its own make output) land after this phase's own
+ * output rather than overwriting it. Returns false on failure, with `why`
+ * set to the first actionable line (make's own "[Makefile:N: target]
+ * Error" line names the failing target when the recipe printed none).
+ *
+ * WHY -j1. The targets are NOT provably independent under -jN.
+ * fix-doc-counts (tools/scripts/check_doc_counts.sh --fix) rewrites
+ * docs/CODEBASE_MAP.md and then scans every tracked *.md, which includes
+ * docs/agent/EXECUTOR_HEURISTICS.md — the file docs-executor-routing
+ * rewrites (z23-lint check-fleet-facts --write-doc). Run in parallel, that
+ * scan could read the routing page mid-rewrite. Table order (inventory,
+ * routing, counts) is the order the three separate calls always ran in, so
+ * -j1 keeps exactly that behavior. The tool prerequisites (z23-lint and
+ * gen_capability_inventory) are each a single direct-cc link line, so a
+ * cold or stale tool build inside this invocation gains little from -jN. */
 static bool dlrg_run_targets(const char *wt, char *transcript,
                              size_t transcript_cap, size_t *used, char *why,
                              size_t why_cap)
 {
-    for (size_t i = 0; i < DLRG_N; i++) {
-        if (dlrg_make(wt, DLRG_ARTIFACTS[i].target, transcript,
-                     transcript_cap, used, why, why_cap) != 0)
-            return false;
-    }
-    return true;
+    const char *goals[DLRG_N];
+    for (size_t i = 0; i < DLRG_N; i++)
+        goals[i] = DLRG_ARTIFACTS[i].target;
+    return dlrg_make_goals(wt, "-j1", goals, DLRG_N, transcript,
+                           transcript_cap, used, why, why_cap) == 0;
 }
 
 /* One artifact path's on-disk identity — the same fields
