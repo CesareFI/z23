@@ -207,6 +207,33 @@ static void vsg_redirect(const char *dir, const char *out_name,
         _exit(125);
 }
 
+/* The worker's refusal, and for a drifted pin the exact re-pin steps: an
+ * unrelated edit to result.c must point here, not look like a signer bug. */
+static void vsg_worker_explain(const struct vsg_world *w)
+{
+    char path[PATH_MAX];
+    struct vsg_bytes err = {0};
+    bool read = vsg_path(path, w->build, "worker.err") && vsg_read(path, &err);
+    printf("verify signer: worker qualify failed: %.*s\n",
+           read ? (int)err.n : 0, read ? (const char *)err.p : "");
+    if (read && memmem(err.p, err.n, "pinned_input_", 13u))
+        printf(
+            "verify signer: the worker pins the exact bytes of "
+            "platform/modules/base/src/result.c, base/include/base/result.h "
+            "and base/include/base/format_attribute.h, and one changed.\n"
+            "  Re-pin: 1. for each path in pinned_inputs[] in "
+            "tools/verify/fixed_result_worker.c run "
+            "`openssl dgst -sha3-256 <path>` and replace its hex;\n"
+            "  2. rerun `make -j8 t-fast-exact "
+            "ONLY=verify_signer,verify_contract` (the evidence line's "
+            "object_sha3 changes with the source);\n"
+            "  3. the worker binary changes, so an installed verifier needs "
+            "root to rebuild the source image and re-pin worker_sha3, "
+            "source_image and source_content "
+            "(docs/work/verifier-install-packet.md sections 2, 5 and 7).\n");
+    vsg_bytes_free(&err);
+}
+
 /* `worker qualify <cwd> <target> <outdir>` in a forked child: the same
  * profile, pinned inputs, -E then -c, and depfile equality it runs in the
  * jail, with no root peer and attest_eligible=0. */
@@ -226,8 +253,7 @@ static bool vsg_worker(struct vsg_world *w)
         _exit(rc);
     }
     if (!vsg_wait_ok(pid)) {
-        fprintf(stderr, "verify signer: worker qualify failed; see %s/"
-                        "worker.err\n", w->build);
+        vsg_worker_explain(w);
         return false;
     }
     return vsg_path(path, outdir, "result.o") && vsg_read(path, &w->object) &&

@@ -428,8 +428,8 @@ static bool frp_write_file(int dir, const char *name, int mode,
     return close(fd) == 0 && ok;
 }
 
-/* A refused conflict is kept for the operator in conflicts/, outside the
- * store the receiver reads; store history is not touched. */
+/* An audit note for the operator in conflicts/, beside (never instead of)
+ * the conflicting record the store now holds for the receiver. */
 static bool frp_record_conflict(const struct zcl_frt_trust *t, int state,
                                 const struct frp_work *w)
 {
@@ -529,17 +529,19 @@ static const char *frp_place(const struct zcl_frt_trust *t, int state,
     return why;
 }
 
-static const char *frp_decide(const struct frp_existing *seen,
-                              const struct frp_work *w)
+/* A second signed observation of the opposite verdict for this exact key.
+ * It is still published beside the first: the receiver's admit_set then
+ * sees both and blocks with attest_eligible_conflict. */
+static const char *frp_conflict(const struct frp_existing *seen,
+                                const struct frp_work *w)
 {
-    if (seen->record_exists) return ZCL_FRP_WHY_RECORD_EXISTS;
     if (!w->launch.failure && seen->signed_fail) return ZCL_FRP_WHY_CONFLICT_FAIL;
     if (w->launch.failure && seen->signed_pass) return ZCL_FRP_WHY_CONFLICT_PASS;
     return NULL;
 }
 
 /* Everything under LOCK_EX: the key directory, the scan of its history,
- * the conflict rule, and the no-clobber publish. */
+ * the no-clobber rule, the conflict audit note, and the publish. */
 static const char *frp_locked(const struct zcl_frt_trust *t, int state,
                               const struct frp_work *w,
                               struct zcl_frp_result *out)
@@ -550,10 +552,10 @@ static const char *frp_locked(const struct zcl_frt_trust *t, int state,
     struct frp_existing seen = {0};
     if (store < 0) why = ZCL_FRP_WHY_STORE_UNSAFE;
     if (key_fd >= 0) why = frp_scan(key_fd, w, t, &seen);
-    if (key_fd >= 0 && !why) why = frp_decide(&seen, w);
-    if (key_fd >= 0 && why && (strcmp(why, ZCL_FRP_WHY_CONFLICT_FAIL) == 0 ||
-                               strcmp(why, ZCL_FRP_WHY_CONFLICT_PASS) == 0))
-        out->conflict_recorded = frp_record_conflict(t, state, w);
+    if (key_fd >= 0 && !why && seen.record_exists)
+        why = ZCL_FRP_WHY_RECORD_EXISTS;
+    if (key_fd >= 0 && !why) out->conflict = frp_conflict(&seen, w);
+    if (out->conflict) out->conflict_recorded = frp_record_conflict(t, state, w);
     if (key_fd >= 0 && !why) why = frp_place(t, state, store, key_fd, w);
     if (key_fd >= 0) (void)close(key_fd);
     if (store >= 0) (void)close(store);

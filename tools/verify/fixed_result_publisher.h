@@ -24,11 +24,13 @@
  *      verified signed failure bound to its failure receipt (attest_*,
  *      contract_*);
  *   6. under LOCK_EX on fixed_result.lock, taken within a deadline
- *      (publisher_lock_unsafe, publisher_lock_deadline), an existing
- *      signed observation of the opposite verdict refuses and is recorded
- *      in conflicts/ (publisher_conflict_fail_exists,
- *      publisher_conflict_pass_exists), and an existing record directory
- *      is never replaced (publisher_record_exists);
+ *      (publisher_lock_unsafe, publisher_lock_deadline), an existing record
+ *      directory is never replaced (publisher_record_exists). A signed
+ *      observation of the opposite verdict for the same key is NOT a
+ *      refusal: the new record is published beside it, so the receiver's
+ *      admit_set sees both and BLOCKs with attest_eligible_conflict, and
+ *      the result names the conflict (publisher_conflict_fail_exists,
+ *      publisher_conflict_pass_exists) with an audit note in conflicts/;
  *   7. the observation is written to a root-owned temporary directory,
  *      fsynced, renamed with RENAME_NOREPLACE to store/<key>/<record-sha3>,
  *      and the key and store directories are fsynced.
@@ -72,7 +74,8 @@
 struct zcl_frp_result {
     const char *reason;     /* NULL when published */
     bool failure;           /* the observation is a signed FAIL */
-    bool conflict_recorded; /* a refused conflict was written to conflicts/ */
+    const char *conflict;   /* NULL, or the opposite verdict already held */
+    bool conflict_recorded; /* the audit note was written to conflicts/ */
     char store_key[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
     char record_sha3[ZCL_VERIFY_ATTEST_STORE_KEY_HEX];
 };

@@ -543,12 +543,25 @@ static int vsig_test_no_clobber(struct vsg_world *w)
     return failures;
 }
 
+/* Both records of a conflict live in the key directory the receiver scans,
+ * so its admit_set sees them together. */
+static bool vsig_key_records(const struct vsg_state *s, const char *key,
+                             const char *a, const char *b)
+{
+    char store[PATH_MAX], dir[PATH_MAX], rec[PATH_MAX];
+    struct stat st;
+    return vsg_path(store, s->dir, "store") && vsg_path(dir, store, key) &&
+           vsg_path(rec, dir, a) && lstat(rec, &st) == 0 &&
+           S_ISDIR(st.st_mode) && vsg_path(rec, dir, b) &&
+           lstat(rec, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 static int vsig_test_fail_then_pass(struct vsg_world *w)
 {
     int failures = 0;
     struct vsg_state *s = vsig_state(w);
-    TEST("verify signer: FAIL then PASS keeps the FAIL and records the "
-         "conflict") {
+    TEST("verify signer: FAIL then PASS publishes both and the receiver "
+         "blocks") {
         struct zcl_frs_result fail, pass;
         struct zcl_frp_result pub;
         char verdict[128];
@@ -557,17 +570,20 @@ static int vsig_test_fail_then_pass(struct vsg_world *w)
         ASSERT(fail.failure && fail.exit_code == 1);
         ASSERT_STR_EQ(vsig_publish(s, fail.record_sha3, &pub),
                       VSIG_PUBLISHED);
-        ASSERT(pub.failure);
+        ASSERT(pub.failure && !pub.conflict);
         ASSERT_STR_EQ(vsig_lookup(w, s, "fail-first", verdict),
                       "block:attest_exit_nonzero");
         ASSERT(vsig_sealed(s, &pass));
         ASSERT_STR_EQ(pass.store_key, fail.store_key);
         ASSERT_STR_EQ(vsig_publish(s, pass.record_sha3, &pub),
-                      ZCL_FRP_WHY_CONFLICT_FAIL);
-        ASSERT(pub.conflict_recorded);
+                      VSIG_PUBLISHED);
+        ASSERT(pub.conflict && pub.conflict_recorded);
+        ASSERT_STR_EQ(pub.conflict, ZCL_FRP_WHY_CONFLICT_FAIL);
+        ASSERT(vsig_key_records(s, pass.store_key, fail.record_sha3,
+                                pass.record_sha3));
         ASSERT(vsig_dir_nonempty(s->dir, "conflicts"));
-        ASSERT_STR_EQ(vsig_lookup(w, s, "fail-kept", verdict),
-                      "block:attest_exit_nonzero");
+        ASSERT_STR_EQ(vsig_lookup(w, s, "fail-then-pass", verdict),
+                      "block:" ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT);
         PASS();
     } _test_next:;
     free(s);
@@ -578,21 +594,27 @@ static int vsig_test_pass_then_fail(struct vsg_world *w)
 {
     int failures = 0;
     struct vsg_state *s = vsig_state(w);
-    TEST("verify signer: PASS then FAIL keeps the PASS and records the "
-         "conflict") {
+    TEST("verify signer: PASS then FAIL publishes both and the receiver "
+         "blocks, never HITs") {
         struct zcl_frs_result fail, pass;
         struct zcl_frp_result pub;
         char verdict[128];
         ASSERT(s && vsig_sealed(s, &pass));
         ASSERT_STR_EQ(vsig_publish(s, pass.record_sha3, &pub),
                       VSIG_PUBLISHED);
+        ASSERT(!pub.conflict);
+        ASSERT(vsig_has_prefix(vsig_lookup(w, s, "pass-first", verdict),
+                               "hit:"));
         ASSERT_STR_EQ(vsig_seal(s, false, &fail), VSIG_SEALED);
         ASSERT_STR_EQ(vsig_publish(s, fail.record_sha3, &pub),
-                      ZCL_FRP_WHY_CONFLICT_PASS);
-        ASSERT(pub.conflict_recorded);
+                      VSIG_PUBLISHED);
+        ASSERT(pub.failure && pub.conflict && pub.conflict_recorded);
+        ASSERT_STR_EQ(pub.conflict, ZCL_FRP_WHY_CONFLICT_PASS);
+        ASSERT(vsig_key_records(s, pass.store_key, pass.record_sha3,
+                                fail.record_sha3));
         ASSERT(vsig_dir_nonempty(s->dir, "conflicts"));
-        ASSERT(vsig_has_prefix(vsig_lookup(w, s, "pass-kept", verdict),
-                               "hit:"));
+        ASSERT_STR_EQ(vsig_lookup(w, s, "pass-then-fail", verdict),
+                      "block:" ZCL_VERIFY_ATTEST_WHY_ELIGIBLE_CONFLICT);
         PASS();
     } _test_next:;
     free(s);
