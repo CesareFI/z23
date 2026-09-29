@@ -1051,6 +1051,20 @@ int db_build_workers_list(struct node_db *ndb, struct db_build_worker *out,
         AR_BIND_INT(st, 1, (int64_t)max), build_worker_read(&out[count], st));
 }
 
+static void build_worker_read_any(void *out, sqlite3_stmt *st)
+{
+    build_worker_read(out, st);
+}
+
+int db_build_workers_list_checked(struct node_db *ndb,
+                                  struct db_build_worker *out, size_t max)
+{
+    return build_list_checked(ndb, "db_build_workers_list_checked",
+        "SELECT " BUILD_WORKER_COLS " FROM build_workers "
+        "ORDER BY approved DESC,revoked,worker_id LIMIT ?", NULL,
+        out, sizeof(*out), max, build_worker_read_any);
+}
+
 static bool build_proof_head_read_text(sqlite3_stmt *st, int column,
                                        char out[BUILD_FABRIC_ID_HEX + 1])
 {
