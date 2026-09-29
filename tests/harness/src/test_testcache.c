@@ -1947,12 +1947,37 @@ static int tc_unadmissible_group(struct testcache *tc)
     return failures;
 }
 
+/* Whole-link and operator-artifact groups. Their verdicts follow a built
+ * binary, a repo script, or a snapshot the forward closure does not hash. */
+static bool tc_external_exec_denied(void)
+{
+    static const char *const names[] = {
+        "test_consensus_rule_sweep",
+        "test_fleet_gateway_shard_01",
+        "test_fleet_gateway_shard_02",
+        "test_fleet_gateway_shard_03",
+        "test_fleet_gateway_shard_04",
+        "test_fleet_gateway_shard_05",
+        "test_fleet_gateway_shard_06",
+        "test_freebsd_sh",
+        "test_onion_pair_watch_live",
+        "onion_pair_watch_live",
+        "test_self_folded_anchor_heavy",
+        "self_folded_anchor_heavy",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (!testcache_group_is_denylisted(names[i]))
+            return false;
+    return true;
+}
+
 static bool tc_acme_and_agent_policy(void)
 {
     return file_contains("tests/harness/src/test_acme_worker.c",
                          "build/bin/zclassic23-acme") &&
            testcache_group_is_denylisted("test_acme_worker") &&
-           testcache_group_is_denylisted("test_agent_copy_prove");
+           testcache_group_is_denylisted("test_agent_copy_prove") &&
+           tc_external_exec_denied();
 }
 
 /* ── Phase AI: testcache_group_action_inputs ─────────────────────────────
@@ -2894,7 +2919,7 @@ int test_testcache(void)
              !testcache_group_is_denylisted("test_net_bootstrap"));
     TC_CHECK("bare (unprefixed) names match too",
              testcache_group_is_denylisted("net"));
-    TC_CHECK("groups that exec built binaries are denylisted",
+    TC_CHECK("groups that exec built binaries or external artifacts are denylisted",
              testcache_group_is_denylisted("test_cli_argv_strict") &&
              testcache_group_is_denylisted("test_kill9_recovery") &&
              testcache_group_is_denylisted("test_wallet_view") &&

@@ -404,8 +404,20 @@ static bool group_reads_external_inputs(const char *name)
         "cli_argv_strict",
         "cli_auth_robust",
         "cold_start_sync",
+        /* fork/execs build/bin/consensus_rule_sweep; that tool's link is
+         * outside this group's forward closure. */
+        "consensus_rule_sweep",
         "crypto_perf_selftest",
         "dev_platform",                   /* reads tests/harness/fixtures source */
+        /* Each shard fork/execs build/bin/z23-fleet-gateway. */
+        "fleet_gateway_shard_01",
+        "fleet_gateway_shard_02",
+        "fleet_gateway_shard_03",
+        "fleet_gateway_shard_04",
+        "fleet_gateway_shard_05",
+        "fleet_gateway_shard_06",
+        /* Spawns build/bin/fbsh; the shell binary is the verdict. */
+        "freebsd_sh",
         "importblockindex_cli_dispatch",
         "kill9_recovery",
         "make_lint_gates",                /* plants fixtures + compiles the tree */
@@ -436,9 +448,14 @@ static bool group_reads_external_inputs(const char *name)
         "no_hardcoded_home",              /* scans tree + env for home usage */
         "onion_bootstrap",
         "onion_bootstrap_slice",
+        /* fork/execs tools/scripts/onion_pair_watch.sh and the node binary. */
+        "onion_pair_watch_live",
         "replay_canary_verdict",
         "secrets_hygiene",
         "self_folded_anchor",
+        /* Re-hashes the snapshot named by ZCL_SELF_FOLD_ANCHOR_FIXTURE.
+         * The env value is in the key; the artifact bytes are not. */
+        "self_folded_anchor_heavy",
         /* read tests/fixtures/semantic_consumer; the sibling execs the
          * sensor and cc. */
         "semantic_consumer",
