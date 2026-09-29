@@ -34,6 +34,9 @@
 #include "platform/directory_compat.h"
 
 #include "controllers/wallet_controller.h"
+#include "config/boot_internal.h"
+#include "chain/chainparams.h"
+#include "util/util.h"
 
 #include "models/database.h"
 
@@ -104,6 +107,58 @@ static void wrc_params(struct json_value *p, int start, int stop)
     json_set_int(&v, stop);
     json_push_back(p, &v);
     json_free(&v);
+}
+
+/* E. The boot catch-up on a regtest node's own layout. node.db lives in the
+ * base datadir, but every block writer puts bodies under
+ * <base>/regtest/blocks. Boot hands the catch-up its base datadir. A rescan
+ * that reads <base>/blocks finds no file and fails every body, and after an
+ * unclean stop that left each coinbase at the depth it had at the last
+ * flush: the wallet refused to spend mature coins that its own vault
+ * reported as spendable. */
+static int wrc_boot_catch_up_body_root(struct wallet *w,
+                                       struct main_state *ms,
+                                       const char *datadir,
+                                       struct block_index *idx)
+{
+    int failures = 0;
+    for (int i = 0; i < WRC_NBLOCKS; i++)
+        idx[i].nStatus |= BLOCK_HAVE_DATA;
+    char netdir[320], moved_from[352], moved_to[384];
+    snprintf(netdir, sizeof(netdir), "%s/regtest", datadir);
+    snprintf(moved_from, sizeof(moved_from), "%s/blocks", datadir);
+    snprintf(moved_to, sizeof(moved_to), "%s/blocks", netdir);
+    chain_params_select(CHAIN_REGTEST);
+    bool relaid = SetDataDir(datadir) &&
+                  rename(moved_from, moved_to) == 0;
+    WRC_CHECK("E: bodies laid out under <base>/regtest/blocks", relaid);
+
+    /* The wallet loaded scan height 0 after an unclean stop. */
+    w->best_block_height = 0;
+    w->time_first_key = 0;
+    struct wallet_rescan_report rep;
+    memset(&rep, 0, sizeof(rep));
+    int found = boot_wallet_catch_up(w, &ms->chain_active, datadir, &rep);
+    WRC_CHECK("E: boot catch-up rescans the whole missing range",
+              rep.start_height == 0 && rep.stop_height == WRC_NBLOCKS - 1);
+    WRC_CHECK("E: boot catch-up reads every body from <base>/regtest",
+              rep.blocks_scanned == WRC_NBLOCKS &&
+              rep.blocks_read_failed == 0);
+    WRC_CHECK("E: boot catch-up finds the wallet's 200 outputs",
+              found == WRC_NBLOCKS);
+    WRC_CHECK("E: boot catch-up coverage_ok is true", rep.coverage_ok);
+    WRC_CHECK("E: the wallet is level with the tip afterwards",
+              w->best_block_height == WRC_NBLOCKS - 1);
+    WRC_CHECK("E: a wallet already at the tip runs no rescan",
+              boot_wallet_catch_up(w, &ms->chain_active, datadir, NULL) == -1);
+
+    if (relaid)
+        (void)rename(moved_to, moved_from);
+    SetDataDir("");
+    ClearDataDirCache();
+    chain_params_select(CHAIN_MAIN);
+    test_cleanup_tmpdir(netdir);
+    return failures;
 }
 
 int test_wallet_rescan_coverage(void);
@@ -368,6 +423,8 @@ int test_wallet_rescan_coverage(void)
         json_free(&params);
         json_free(&result);
     }
+
+    failures += wrc_boot_catch_up_body_root(w1, &ms, datadir, idx);
 
     /* ── teardown ────────────────────────────────────────────────────── */
     rpc_wallet_set_state(NULL, NULL, NULL, NULL, NULL, NULL);

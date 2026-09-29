@@ -598,8 +598,14 @@ int boot_wallet_catch_up(struct wallet *w, const struct active_chain *chain,
                scan_from, tip_height, tip_height - scan_from);
         return -1;
     }
-    return wallet_rescan_report(w, chain, scan_from, tip_height, datadir,
-                                report);
+    /* Block writers put bodies under the network-specific directory
+     * (<base>/regtest on regtest, the base itself on mainnet). Reading the
+     * base on regtest fails every body, and the wallet then keeps each
+     * coinbase at the depth it had at its last flush. */
+    char body_root[4096];
+    GetDataDir(true, body_root, sizeof(body_root));
+    return wallet_rescan_report(w, chain, scan_from, tip_height,
+                                body_root[0] ? body_root : datadir, report);
 }
 
 bool app_init_services(struct app_context *ctx,

@@ -434,6 +434,7 @@ AGENT_IMPACT_RULE("engine/services/src/header_sync_service.c|engine/services/src
 AGENT_IMPACT_RULE("engine/conditions/src/chain_integrity_failed.c|engine/services/include/services/chain_restore_integrity.h|tests/harness/src/test_chain_integrity_failed_condition.c|tests/harness/src/test_service_state.c", "chain_integrity_failed_condition service_state make_lint_gates")
 
 AGENT_IMPACT_RULE("engine/composition/src/boot_services.c", "make_lint_gates syncdiag_rpc supervisor supervisor_production_tree net_bootstrap self_heal_supervisor")
+AGENT_IMPACT_RULE("engine/composition/src/boot_services.c|engine/composition/include/config/boot_internal.h|tests/harness/src/test_wallet_rescan_coverage.c", "wallet_rescan_coverage")
 AGENT_IMPACT_RULE("engine/supervisors/src/staged_sync_supervisor.c|engine/supervisors/include/supervisors/staged_sync_supervisor.h", "supervisor supervisor_production_tree supervisor_domains make_lint_gates")
 AGENT_IMPACT_RULE("engine/jobs/src/catchup_cadence.c|engine/jobs/include/jobs/catchup_cadence.h|engine/jobs/src/refold_cadence.c|engine/jobs/include/jobs/refold_cadence.h|tests/harness/src/test_catchup_cadence.c|tests/harness/src/test_refold_cadence.c", "catchup_cadence refold_cadence supervisor supervisor_production_tree supervisor_domains make_lint_gates")
 AGENT_IMPACT_RULE("engine/supervisors/src/self_heal.c|engine/supervisors/include/supervisors/self_heal.h|tests/harness/src/test_self_heal_supervisor.c", "self_heal_supervisor supervisor supervisor_domains blocker make_lint_gates")
