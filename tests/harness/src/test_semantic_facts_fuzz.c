@@ -214,22 +214,30 @@ static bool executable(const char *path)
 }
 
 /* <prefix>/bin/clang for the first "<prefix>/lib" entry of the sensor's
- * runpath: the LLVM whose libclang the sensor parses with. */
+ * runpath. The pinned system libclang 18 fallback has no runpath; its exact
+ * DT_NEEDED instead binds the root-owned matching Clang executable. */
 static bool find_clang(const char *sensor, char *out, size_t n)
 {
     char rp[PATH_MAX], *save = NULL;
-    if (!sfz_elf_runpath(sensor, rp, sizeof(rp)))
+    if (sfz_elf_runpath(sensor, rp, sizeof(rp))) {
+        for (char *d = strtok_r(rp, ":", &save); d != NULL;
+             d = strtok_r(NULL, ":", &save)) {
+            size_t len = strlen(d);
+            if (len < 4 || strcmp(d + len - 4, "/lib") != 0)
+                continue;
+            if ((size_t)snprintf(out, n, "%.*s/bin/clang", (int)(len - 4), d) < n &&
+                executable(out))
+                return true;
+        }
         return false;
-    for (char *d = strtok_r(rp, ":", &save); d != NULL;
-         d = strtok_r(NULL, ":", &save)) {
-        size_t len = strlen(d);
-        if (len < 4 || strcmp(d + len - 4, "/lib") != 0)
-            continue;
-        if ((size_t)snprintf(out, n, "%.*s/bin/clang", (int)(len - 4), d) < n &&
-            executable(out))
-            return true;
     }
-    return false;
+    const char *system_clang = "/usr/lib/llvm-18/bin/clang";
+    struct stat st;
+    return sfz_elf_needs_without_runpath(sensor, "libclang-18.so.18") &&
+           stat(system_clang, &st) == 0 && S_ISREG(st.st_mode) &&
+           st.st_uid == 0 && (st.st_mode & 022) == 0 &&
+           (size_t)snprintf(out, n, "%s", system_clang) < n &&
+           executable(out);
 }
 
 static bool find_on_path(const char *name, char *out, size_t n)
@@ -262,7 +270,10 @@ static bool discover(struct sfz_env *env)
                "or it is not an ELF executable)\n", SFZ_SENSOR);
         return false;
     }
-    (void)find_on_path("gcc", env->gcc, sizeof(env->gcc));
+    /* The universal host gate probes this exact root-owned GCC. A PATH
+     * shadow must not change the compiler after the capability decision. */
+    if (executable("/usr/bin/gcc"))
+        (void)snprintf(env->gcc, sizeof(env->gcc), "%s", "/usr/bin/gcc");
     return true;
 }
 

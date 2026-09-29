@@ -5,10 +5,16 @@
 #include "test_group_catalog.h"
 
 #include <limits.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -37,6 +43,8 @@ zcl_test_group_host_need_kind_name(enum zcl_test_group_host_need_kind kind)
         return "file";
     case ZCL_HOST_NEED_ENV:
         return "env";
+    case ZCL_HOST_NEED_C23_TOOLCHAIN:
+        return "toolchain";
     case ZCL_HOST_NEED_BUILD:
         return "build";
     default:
@@ -76,9 +84,9 @@ static bool host_need_row_valid(size_t i)
     return true;
 }
 
-/* Two rows for one group may coexist only when both are BUILD rows naming
- * different targets: a group can exec more than one tool the tree builds,
- * but it has at most one FILE/ENV gate, and a target is named once. */
+/* A group may have one host gate plus distinct BUILD targets. The gate is
+ * resolved before a BUILD row so universal selection cannot silently treat
+ * a missing host capability as a buildable input. */
 static bool host_need_pair_valid(size_t i, size_t j)
 {
     const struct zcl_test_group_host_need *a = &g_host_needs[i];
@@ -87,6 +95,9 @@ static bool host_need_pair_valid(size_t i, size_t j)
         return true;
     if (a->kind == ZCL_HOST_NEED_BUILD && b->kind == ZCL_HOST_NEED_BUILD &&
         strcmp(a->target, b->target) != 0)
+        return true;
+    if ((a->kind == ZCL_HOST_NEED_BUILD) !=
+        (b->kind == ZCL_HOST_NEED_BUILD))
         return true;
     fprintf(stderr,
             "test_group_host_need: group '%s' declares two needs that are "
@@ -160,10 +171,103 @@ bool zcl_test_group_host_need(const char *group,
     for (size_t i = 0; i < ZCL_HOST_NEED_COUNT; i++) {
         if (strcmp(g_host_needs[i].group, group) != 0)
             continue;
-        *out = g_host_needs[i];
-        return true;
+        if (g_host_needs[i].kind != ZCL_HOST_NEED_BUILD) {
+            *out = g_host_needs[i];
+            return true;
+        }
+        if (out->kind == ZCL_HOST_NEED_NONE)
+            *out = g_host_needs[i];
     }
     return true;
+}
+
+/* A compiler probe is a host fact, not a passed test. Use only the root-owned
+ * system compiler route whose libclang runtime the proof already binds.
+ * stderr is discarded; the named host-gated row carries the refusal. */
+static bool root_owned_regular_file(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && st.st_uid == 0 &&
+           S_ISREG(st.st_mode) && (st.st_mode & 022) == 0;
+}
+
+static bool c23_compiler_accepts(const char *path)
+{
+#if defined(__linux__) && defined(__x86_64__)
+    static const char source[] =
+        "constexpr int x = 1; int main(void) { return x; }\n";
+    if (!root_owned_regular_file(path))
+        return false;
+    int fd[2];
+    if (pipe(fd) != 0)
+        return false;
+    ssize_t wrote = write(fd[1], source, sizeof(source) - 1);
+    if (wrote != (ssize_t)(sizeof(source) - 1)) {
+        close(fd[0]); close(fd[1]);
+        return false;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        close(fd[0]); close(fd[1]);
+        return false;
+    }
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd < 0 || dup2(fd[0], STDIN_FILENO) < 0 ||
+            dup2(null_fd, STDOUT_FILENO) < 0 ||
+            dup2(null_fd, STDERR_FILENO) < 0)
+            _exit(127);
+        close(fd[0]); close(fd[1]); close(null_fd);
+        char *const args[] = {(char *)path, "-std=c23", "-x", "c",
+                              "-fsyntax-only", "-", NULL};
+        execv(path, args);
+        _exit(127);
+    }
+    close(fd[0]); close(fd[1]);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+static bool c23_fuzz_toolchain_ready(void)
+{
+    /* Match the Make route that leaves the sensor with no RUNPATH and the
+     * exact system libclang 18 soname. A newer installed header prefix wins
+     * Make's selection and needs its own loaded-library proof binding. */
+    static int cached = -1;
+    if (cached < 0) {
+#if defined(__linux__) && defined(__x86_64__)
+        static const char *const competing_headers[] = {
+            "/usr/lib/llvm-20/include/clang-c/Index.h",
+            "/usr/lib/llvm-21/include/clang-c/Index.h",
+            "/usr/lib/llvm-19/include/clang-c/Index.h",
+            "/usr/lib/llvm-18/include/clang-c/Index.h",
+        };
+        bool fallback = true;
+        for (size_t i = 0; i < sizeof(competing_headers) /
+                                   sizeof(competing_headers[0]); i++)
+            if (access(competing_headers[i], F_OK) == 0)
+                fallback = false;
+        struct stat lib;
+        fallback = fallback &&
+            stat("/lib/x86_64-linux-gnu/libclang-18.so.18", &lib) == 0 &&
+            S_ISREG(lib.st_mode) && lib.st_uid == 0 &&
+            (lib.st_mode & 022) == 0;
+        cached = fallback &&
+                 c23_compiler_accepts("/usr/lib/llvm-18/bin/clang") &&
+                 c23_compiler_accepts("/usr/bin/gcc");
+#else
+        cached = 0;
+#endif
+    }
+    return cached == 1;
 }
 
 /* Does `<root>/<value>` exist? Only existence is asked: a proof generation
@@ -203,6 +307,9 @@ bool zcl_test_group_host_need_met(const char *root,
         const char *set = getenv(need->value);
         return set != NULL && set[0] != '\0';
     }
+    case ZCL_HOST_NEED_C23_TOOLCHAIN:
+        return strcmp(need->value, "bound-libclang18-full-c23") == 0 &&
+               c23_fuzz_toolchain_ready();
     default:
         fprintf(stderr,
                 "test_group_host_need: unknown need kind %d for '%s'\n",

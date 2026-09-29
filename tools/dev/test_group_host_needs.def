@@ -23,6 +23,11 @@
  *                       in; the need is met when that path exists there.
  *   ZCL_HOST_NEED_ENV   value is an environment variable name; the need is
  *                       met when it is set to a non-empty string.
+ *   ZCL_HOST_NEED_C23_TOOLCHAIN checks the exact root-owned Clang/GCC route
+ *                       against the C23 syntax the fuzz group generates.
+ * A group may carry one FILE, ENV, or C23_TOOLCHAIN gate alongside BUILD
+ * rows. The gate is resolved for universal selection before build targets;
+ * an exact selection still runs and must produce a complete verdict.
  * The id is the canonical full catalog id (`test_`/`spec_` prefix included),
  * exactly as zcl_test_group_catalog_at() spells it. An unregistered group or
  * an unknown kind is a refusal, never a silently ignored row.
@@ -42,8 +47,9 @@
  * `make t-fast-exact` and `make test-parallel` read the same rows through
  * `test_parallel --list-build-needs` and build exactly the targets their own
  * selection needs before the run, failing by the same name.
- * A group may declare several BUILD rows with distinct targets; it declares
- * at most one FILE or ENV row and never mixes the two shapes.
+ * A group may declare several BUILD rows with distinct targets and at most
+ * one host gate. A BUILD target is not evidence that its host compiler can
+ * parse the fixture language.
  */
 
 /* tests/harness/src/test_onion_pair_watch_live.c reports
@@ -71,6 +77,14 @@ ZCL_TEST_GROUP_BUILD_NEED("test_semantic_facts_live",
                           "build/bin/z23-clang-manifest", "clang-manifest")
 ZCL_TEST_GROUP_BUILD_NEED("test_semantic_consumer_live",
                           "build/bin/z23-clang-manifest", "clang-manifest")
+/* The fuzz generator emits C23 constexpr, and GCC preprocessing uses
+ * -std=c23. The proof currently binds only the root-owned system libclang
+ * 18 route. On a host where its matching Clang or default GCC cannot parse
+ * that source, a universal run names this unavailable capability instead of
+ * counting the group's self-skip as evidence. Exact selection still runs and
+ * refuses. Private LLVM runpaths do not qualify this proof generation. */
+ZCL_TEST_GROUP_NEED("test_semantic_facts_fuzz", ZCL_HOST_NEED_C23_TOOLCHAIN,
+                    "bound-libclang18-full-c23")
 ZCL_TEST_GROUP_BUILD_NEED("test_semantic_facts_fuzz",
                           "build/bin/z23-clang-manifest", "clang-manifest")
 

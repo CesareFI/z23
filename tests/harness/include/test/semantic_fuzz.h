@@ -153,6 +153,8 @@ const struct sfz_sym *sfz_sym_find(const struct sfz_syms *f, const char *name,
  * object, from its section headers. False when there is none or the file
  * is not ELF64 little-endian. */
 bool sfz_elf_runpath(const char *path, char *out, size_t outlen);
+/* Exact DT_NEEDED before DT_NULL, with no DT_RPATH/RUNPATH tag. */
+bool sfz_elf_needs_without_runpath(const char *path, const char *soname);
 
 /* ── one differential case (semantic_fuzz_case.c) ───────────────────────── */
 

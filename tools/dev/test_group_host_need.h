@@ -19,6 +19,8 @@ enum zcl_test_group_host_need_kind {
     ZCL_HOST_NEED_FILE,
     /* `value` is an environment variable name. */
     ZCL_HOST_NEED_ENV,
+    /* Exact root-owned Clang/GCC pair must parse the C23 fuzz syntax. */
+    ZCL_HOST_NEED_C23_TOOLCHAIN,
     /* `value` is a path relative to the tree the runner execs in, and
      * `target` the Make target that builds it there from that tree's own
      * sources. A proof whose selection carries the group builds `target` in
@@ -35,13 +37,12 @@ struct zcl_test_group_host_need {
 };
 
 /* Every declared row names a registered catalog group with a known kind and
- * a non-empty value. A group declares at most one row, except that it may
- * declare several BUILD rows naming distinct targets (a group that execs two
- * tools the tree builds). A violation is named on the diagnostic stream and
+ * a non-empty value. A group declares at most one host gate and may also
+ * declare distinct BUILD targets. A violation is named on stderr and
  * returns false; no caller may proceed on a false. */
 bool zcl_test_group_host_needs_valid(void);
 
-/* Resolve `group`'s gating need: its FILE/ENV row, or its first BUILD row
+/* Resolve `group`'s gating need: its FILE/ENV/TOOLCHAIN row, or first BUILD row
  * (which never gates), or NONE. Returns false — and names why — when the
  * table is invalid or `group` is not a registered catalog id; that is a
  * refusal, not an answer. Returns true with out->kind == ZCL_HOST_NEED_NONE

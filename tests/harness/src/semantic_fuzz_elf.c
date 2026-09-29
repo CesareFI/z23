@@ -20,9 +20,13 @@
 #define SYM_SIZE 24u
 #define RELA_SIZE 24u
 #define DYN_SIZE 16u
+#define PHDR_SIZE 56u
+#define PT_LOAD_ 1u
+#define PT_DYNAMIC_ 2u
 #define ET_REL_ 1u
 #define EM_X86_64_ 62u
 #define SHT_SYMTAB_ 2u
+#define SHT_STRTAB_ 3u
 #define SHT_RELA_ 4u
 #define SHT_DYNAMIC_ 6u
 #define SHT_NOBITS_ 8u
@@ -36,6 +40,9 @@
 #define STT_SECTION_ 3u
 #define SHN_LORESERVE_ 0xff00u
 #define DT_RPATH_ 15u
+#define DT_NEEDED_ 1u
+#define DT_STRTAB_ 5u
+#define DT_STRSZ_ 10u
 #define DT_RUNPATH_ 29u
 #define MAX_SHNUM 65536u
 #define MAX_IMAGE (256u * 1024u * 1024u)
@@ -53,7 +60,7 @@
 
 struct shdr {
     uint32_t name, type, link, info;
-    uint64_t flags, offset, size, entsize;
+    uint64_t flags, addr, offset, size, entsize;
 };
 
 struct elf {
@@ -129,6 +136,7 @@ static bool read_sections(struct elf *e)
         d->name = zcl_read_u32_le(s);
         d->type = zcl_read_u32_le(s + 4);
         d->flags = zcl_read_u64_le(s + 8);
+        d->addr = zcl_read_u64_le(s + 16);
         d->offset = zcl_read_u64_le(s + 24);
         d->size = zcl_read_u64_le(s + 32);
         d->link = zcl_read_u32_le(s + 40);
@@ -536,4 +544,138 @@ bool sfz_elf_runpath(const char *path, char *out, size_t outlen)
     free(e.sh);
     free(img);
     return found;
+}
+
+static bool load_maps(const struct elf *e, const uint8_t *p,
+                      uint64_t file_off, uint64_t va, uint64_t size)
+{
+    uint64_t off = zcl_read_u64_le(p + 8);
+    uint64_t start = zcl_read_u64_le(p + 16);
+    uint64_t filesz = zcl_read_u64_le(p + 32);
+    return zcl_read_u32_le(p) == PT_LOAD_ &&
+           at(e, off, filesz) != NULL &&
+           zcl_read_u64_le(p + 40) >= filesz && va >= start &&
+           file_off >= off && va - start == file_off - off &&
+           size <= filesz && file_off - off <= filesz - size;
+}
+
+static bool dyn_program_bound(const struct elf *e, const struct shdr *d,
+                              const struct shdr *strings)
+{
+    uint64_t phoff = zcl_read_u64_le(e->b + 32);
+    uint16_t phentsize = zcl_read_u16_le(e->b + 54);
+    uint16_t phnum = zcl_read_u16_le(e->b + 56);
+    const uint8_t *ph = at(e, phoff, (uint64_t)phentsize * phnum);
+    if (ph == NULL || phentsize != PHDR_SIZE || phnum == 0)
+        return false;
+    unsigned loader_dynamic = 0;
+    bool mapped_strings = false;
+    bool mapped_dynamic = false;
+    uint64_t dynamic_va = 0;
+    for (uint16_t i = 0; i < phnum; i++) {
+        const uint8_t *p = ph + (size_t)i * PHDR_SIZE;
+        if (zcl_read_u32_le(p) != PT_DYNAMIC_)
+            continue;
+        loader_dynamic++;
+        if (zcl_read_u64_le(p + 8) != d->offset ||
+            zcl_read_u64_le(p + 32) != d->size ||
+            zcl_read_u64_le(p + 40) < d->size)
+            return false;
+        dynamic_va = zcl_read_u64_le(p + 16);
+    }
+    if (loader_dynamic != 1)
+        return false;
+    for (uint16_t i = 0; i < phnum; i++) {
+        const uint8_t *p = ph + (size_t)i * PHDR_SIZE;
+        if (zcl_read_u32_le(p) == PT_LOAD_ &&
+            (at(e, zcl_read_u64_le(p + 8), zcl_read_u64_le(p + 32)) == NULL ||
+             zcl_read_u64_le(p + 40) < zcl_read_u64_le(p + 32)))
+            return false;
+        mapped_dynamic |= load_maps(e, p, d->offset, dynamic_va, d->size);
+        mapped_strings |= load_maps(e, p, strings->offset, strings->addr,
+                                    strings->size);
+    }
+    return mapped_dynamic && mapped_strings;
+}
+
+struct dyn_need_state {
+    bool found, strtab, strsz;
+};
+
+static bool dyn_need_tag(const struct elf *e, const struct shdr *d,
+                         const struct shdr *strings, const char *soname,
+                         const uint8_t *p, struct dyn_need_state *state)
+{
+    uint64_t tag = zcl_read_u64_le(p);
+    uint64_t value = zcl_read_u64_le(p + 8);
+    if (tag == DT_RPATH_ || tag == DT_RUNPATH_)
+        return false;
+    if (tag == DT_STRTAB_) {
+        if (state->strtab || value != strings->addr)
+            return false;
+        state->strtab = true;
+    }
+    if (tag == DT_STRSZ_) {
+        if (state->strsz || value != strings->size)
+            return false;
+        state->strsz = true;
+    }
+    if (tag == DT_NEEDED_) {
+        const char *s = str_at(e, d->link, value);
+        if (s == NULL)
+            return false;
+        if (strcmp(s, soname) == 0)
+            state->found = true;
+    }
+    return true;
+}
+
+/* -1 malformed/path override, 0 no match, 1 exact dependency. */
+static int dyn_need_without_path(const struct elf *e, uint32_t sec,
+                                 const char *soname)
+{
+    const struct shdr *d = &e->sh[sec];
+    if (d->size % DYN_SIZE != 0 || d->link == 0 || d->link >= e->shnum ||
+        e->sh[d->link].type != SHT_STRTAB_)
+        return -1;
+    const struct shdr *strings = &e->sh[d->link];
+    if (!dyn_program_bound(e, d, strings))
+        return -1;
+    struct dyn_need_state state = {0};
+    for (uint64_t q = 0; q < d->size / DYN_SIZE; q++) {
+        const uint8_t *p = e->b + d->offset + q * DYN_SIZE;
+        uint64_t tag = zcl_read_u64_le(p);
+        if (tag == 0)
+            return state.found && state.strtab && state.strsz ? 1 : 0;
+        if (!dyn_need_tag(e, d, strings, soname, p, &state))
+            return -1;
+    }
+    return -1;
+}
+
+bool sfz_elf_needs_without_runpath(const char *path, const char *soname)
+{
+    if (path == NULL || soname == NULL || soname[0] == '\0')
+        return false;
+    uint8_t *img = NULL;
+    size_t n = 0;
+    char err[128];
+    struct elf e = {0};
+    bool ok = read_image(path, &img, &n) &&
+              open_elf(&e, img, n, false, err, sizeof(err));
+    bool seen = false;
+    int result = -1;
+    for (uint32_t k = 0; ok && k < e.shnum; k++) {
+        if (e.sh[k].type != SHT_DYNAMIC_)
+            continue;
+        if (seen) {
+            result = -1;
+            break;
+        }
+        seen = true;
+        result = dyn_need_without_path(&e, k, soname);
+    }
+    free(e.sh);
+    free(img);
+    return ok && seen && result == 1;
 }

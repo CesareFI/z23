@@ -68,6 +68,7 @@
 #include "platform/time_compat.h"
 #include "kernel/command_registry.h"
 #include "test/selection_build_needs.h"
+#include "test/semantic_fuzz.h"
 #include "test/testcache.h"
 #include "vcs/vcs_object.h"
 #include "test_group_catalog.h"
@@ -179,6 +180,127 @@ static bool ic_host_need_full_root(const char *dir)
     system(rm);
     return ic_write(dir, "Makefile", "# dev execution tree\n") &&
            ic_write(dir, "build/bin/z23", "#!/bin/sh\n");
+}
+
+static bool ic_fuzz_host_ready(void)
+{
+    struct zcl_test_group_host_need need;
+    return zcl_test_group_host_need("test_semantic_facts_fuzz", &need) &&
+           need.kind == ZCL_HOST_NEED_C23_TOOLCHAIN &&
+           zcl_test_group_host_need_met(IC_FIX_HOST_FULL, &need);
+}
+
+static bool ic_bare_host_excludes(const char *group, bool fuzz_ready)
+{
+    return zcl_test_group_is_umbrella(group) ||
+           strcmp(group, "test_onion_pair_watch_live") == 0 ||
+           strcmp(group, "test_self_folded_anchor_heavy") == 0 ||
+           (!fuzz_ready && strcmp(group, "test_semantic_facts_fuzz") == 0);
+}
+
+static bool ic_full_host_selects(const char *group, bool fuzz_ready)
+{
+    return !zcl_test_group_is_umbrella(group) &&
+           (fuzz_ready || strcmp(group, "test_semantic_facts_fuzz") != 0);
+}
+
+static void ic_elf_u64(uint8_t *out, uint64_t v)
+{
+    for (unsigned i = 0; i < 8; i++)
+        out[i] = (uint8_t)(v >> (8 * i));
+}
+
+static bool ic_elf_write(const char *path, const uint8_t *wire, size_t n)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fwrite(wire, 1, n, f) == n;
+    return fclose(f) == 0 && ok;
+}
+
+/* A minimal ELF64 section and program table exercise their exact dynamic
+ * range binding, bytes after DT_NULL, and an invalid RUNPATH. */
+static int test_ic_fuzz_sensor_binding_parser(void)
+{
+    int failures = 0;
+    TEST_CASE("fuzz host gate: exact needed precedes DT_NULL and no path tag") {
+        static const char path[] = IC_FIX_ROOT "/sensor-binding.elf";
+        uint8_t wire[640] = {0};
+        ASSERT(mkdir(IC_FIX_ROOT, 0755) == 0 || errno == EEXIST);
+        memcpy(wire, "\177ELF", 4);
+        wire[4] = 2; wire[5] = 1;
+        ic_elf_u64(wire + 32, 448); /* program table */
+        ic_elf_u64(wire + 40, 256); /* section table */
+        wire[54] = 56; wire[56] = 2;
+        wire[58] = 64; wire[60] = 3; wire[62] = 1;
+        memcpy(wire + 65, "libclang-18.so.18",
+               sizeof("libclang-18.so.18"));
+        wire[320 + 4] = 3; /* section 1: dynamic string table */
+        ic_elf_u64(wire + 320 + 16, 0x1040);
+        ic_elf_u64(wire + 320 + 24, 64);
+        ic_elf_u64(wire + 320 + 32, 32);
+        wire[384 + 4] = 6; /* section 2: dynamic table, linked to 1 */
+        ic_elf_u64(wire + 384 + 24, 128);
+        ic_elf_u64(wire + 384 + 32, 80);
+        wire[384 + 40] = 1;
+        wire[448] = 2; /* PT_DYNAMIC */
+        ic_elf_u64(wire + 448 + 8, 128);
+        ic_elf_u64(wire + 448 + 16, 0x1080);
+        ic_elf_u64(wire + 448 + 32, 80);
+        ic_elf_u64(wire + 448 + 40, 80);
+        wire[504] = 1; /* PT_LOAD */
+        ic_elf_u64(wire + 504 + 16, 0x1000);
+        ic_elf_u64(wire + 504 + 32, sizeof(wire));
+        ic_elf_u64(wire + 504 + 40, sizeof(wire));
+        ic_elf_u64(wire + 128, 1); /* DT_NEEDED */
+        ic_elf_u64(wire + 136, 1); /* string offset */
+        ic_elf_u64(wire + 144, 5); /* DT_STRTAB */
+        ic_elf_u64(wire + 152, 0x1040);
+        ic_elf_u64(wire + 160, 10); /* DT_STRSZ */
+        ic_elf_u64(wire + 168, 32);
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-20.so.20"));
+        wire[56] = 3; /* an extra malformed PT_LOAD must fail closed */
+        wire[560] = 1;
+        ic_elf_u64(wire + 560 + 32, 16);
+        ic_elf_u64(wire + 560 + 40, 8);
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        wire[56] = 2;
+        ic_elf_u64(wire + 448 + 16, 0x1090); /* loader maps other bytes */
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        ic_elf_u64(wire + 448 + 16, 0x1080);
+        uint8_t swapped[56];
+        memcpy(swapped, wire + 448, sizeof(swapped));
+        memcpy(wire + 448, wire + 504, sizeof(swapped));
+        memcpy(wire + 504, swapped, sizeof(swapped));
+        ic_elf_u64(wire + 504 + 16, 0x1090); /* PT_LOAD before PT_DYNAMIC */
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        ic_elf_u64(wire + 504 + 16, 0x1080);
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        memcpy(wire + 504, wire + 448, sizeof(swapped));
+        memcpy(wire + 448, swapped, sizeof(swapped));
+        ic_elf_u64(wire + 448 + 8, 144); /* loader points elsewhere */
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        ic_elf_u64(wire + 448 + 8, 128);
+        ic_elf_u64(wire + 128, 0); /* DT_NULL before planted dependency */
+        ic_elf_u64(wire + 192, 1);
+        ic_elf_u64(wire + 200, 1);
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        ic_elf_u64(wire + 128, 1);
+        ic_elf_u64(wire + 144, 29); /* DT_RUNPATH, even malformed */
+        ASSERT(ic_elf_write(path, wire, sizeof(wire)));
+        ASSERT(!sfz_elf_needs_without_runpath(path, "libclang-18.so.18"));
+        unlink(path);
+    } TEST_END
+    return failures;
 }
 
 /* The operator-provisioned fold fixture, present or absent. The path never has
@@ -876,14 +998,16 @@ static int test_ic_capacity_bound_runs_everything(void)
                    &capped, IC_FIX_HOST_BARE, false, selector,
                    sizeof(selector), &selected, gated, sizeof(gated)));
         ASSERT(zcl_test_group_catalog_count() > 2);
-        ASSERT(ic_selector_is_universal(selector, selected, 2));
+        bool fuzz_ready = ic_fuzz_host_ready();
+        ASSERT(ic_selector_is_universal(selector, selected,
+                                        fuzz_ready ? 2 : 3));
         ASSERT(!ic_selector_has(selector, "test_onion_pair_watch_live"));
         ASSERT(!ic_selector_has(selector, "test_self_folded_anchor_heavy"));
+        ASSERT(ic_selector_has(selector, "test_semantic_facts_fuzz") ==
+               fuzz_ready);
         for (size_t i = 0; i < zcl_test_group_catalog_count(); i++) {
             const char *full = zcl_test_group_catalog_at(i);
-            if (strcmp(full, "test_onion_pair_watch_live") == 0 ||
-                strcmp(full, "test_self_folded_anchor_heavy") == 0 ||
-                zcl_test_group_is_umbrella(full))
+            if (ic_bare_host_excludes(full, fuzz_ready))
                 continue;
             ASSERT(ic_selector_has(selector, full));
         }
@@ -897,6 +1021,9 @@ static int test_ic_capacity_bound_runs_everything(void)
                       "test_onion_pair_watch_live:file:build/bin/z23") != NULL);
         ASSERT(strstr(gated, "test_self_folded_anchor_heavy:env:"
                              "ZCL_SELF_FOLD_ANCHOR_FIXTURE") != NULL);
+        ASSERT((strstr(gated, "test_semantic_facts_fuzz:toolchain:"
+                             "bound-libclang18-full-c23") != NULL) ==
+               !fuzz_ready);
 
         /* (b3) give the tree the binary and the operator the fixture and both
          * groups come straight back: this is a host fact, not a demotion. */
@@ -907,10 +1034,13 @@ static int test_ic_capacity_bound_runs_everything(void)
         ASSERT(zcl_dev_proof_test_build_test_selector(
                    &capped, IC_FIX_HOST_FULL, false, selector,
                    sizeof(selector), &selected, gated, sizeof(gated)));
-        ASSERT(ic_selector_is_universal(selector, selected, 0));
-        ASSERT(gated[0] == '\0');
+        ASSERT(ic_selector_is_universal(selector, selected,
+                                        fuzz_ready ? 0 : 1));
+        ASSERT((gated[0] == '\0') == fuzz_ready);
         for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
             ASSERT(zcl_test_group_is_umbrella(zcl_test_group_catalog_at(i)) ||
+                   (!fuzz_ready && strcmp(zcl_test_group_catalog_at(i),
+                                           "test_semantic_facts_fuzz") == 0) ||
                    ic_selector_has(selector, zcl_test_group_catalog_at(i)));
         ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
 
@@ -1016,6 +1146,14 @@ static int test_ic_host_need_table_is_closed(void)
             ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE,
                                                        &need));
         }
+        memset(&need, 0, sizeof(need));
+        ASSERT(zcl_test_group_host_need("test_semantic_facts_fuzz", &need));
+        ASSERT(need.kind == ZCL_HOST_NEED_C23_TOOLCHAIN);
+        ASSERT(strcmp(need.value, "bound-libclang18-full-c23") == 0);
+        ASSERT(need.target == NULL);
+        ASSERT(zcl_test_group_host_need_selectable(IC_FIX_HOST_BARE,
+                                                   &need) ==
+               ic_fuzz_host_ready());
         /* FILE is selectable exactly when met; a FILE need never names a
          * build target. */
         memset(&need, 0, sizeof(need));
@@ -4047,11 +4185,12 @@ static int test_ic_changed_set_widens_structural_changes(void)
              * never an inventory-only or empty selection. */
             ASSERT(chose);
             ASSERT(universal);
-            ASSERT(gated[0] == '\0');
-            ASSERT(ic_selector_is_universal(selector, selected, 0));
+            ASSERT((gated[0] == '\0') == ic_fuzz_host_ready());
+            ASSERT(ic_selector_is_universal(selector, selected,
+                                            ic_fuzz_host_ready() ? 0 : 1));
             for (size_t g = 0; g < catalog; g++) {
                 const char *group = zcl_test_group_catalog_at(g);
-                if (!zcl_test_group_is_umbrella(group))
+                if (ic_full_host_selects(group, ic_fuzz_host_ready()))
                     ASSERT(ic_selector_has(selector, group));
             }
             /* The structural mark is what widens: the same rows without it
@@ -9016,10 +9155,14 @@ static int test_ic_include_capacity_runs_everything(void)
                    &plan, IC_FIX_HOST_FULL, false, selector, sizeof(selector),
                    &selected, gated, sizeof(gated)));
         ic_host_fixture_restore(ic_fixture_saved, ic_fixture_was_set);
-        ASSERT(ic_selector_is_universal(selector, selected, 0));
-        ASSERT(gated[0] == '\0');
+        ASSERT(ic_selector_is_universal(selector, selected,
+                                        ic_fuzz_host_ready() ? 0 : 1));
+        ASSERT((gated[0] == '\0') == ic_fuzz_host_ready());
         for (size_t i = 0; i < zcl_test_group_catalog_count(); i++)
             ASSERT(zcl_test_group_is_umbrella(zcl_test_group_catalog_at(i)) ||
+                   (!ic_fuzz_host_ready() &&
+                    strcmp(zcl_test_group_catalog_at(i),
+                           "test_semantic_facts_fuzz") == 0) ||
                    ic_selector_has(selector, zcl_test_group_catalog_at(i)));
 
         /* (b) an untrusted graph is missing evidence: it refuses. */
@@ -9433,6 +9576,7 @@ int test_impact_composition(void)
 {
     int failures = 0;
     ic_isolate_state_root();
+    failures += test_ic_fuzz_sensor_binding_parser();
     failures += test_ic_foreground_proof_command();
 #if !defined(_WIN32)
     failures += test_ic_foreground_selected_pair();
